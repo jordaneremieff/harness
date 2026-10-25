@@ -4,7 +4,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage, createRegistry } from "@earendil-works/pi-durable";
 import { Value } from "typebox/value";
-import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
+import { AgentMetaDoc, recordAdmissionMeta, publishConversationIntent, projectConversationIntents, type NativeIntentMetadata } from "./durable-controls.ts";
 import { AgentConversationSummarySchema } from "./observation-schema.ts";
 import type { CatalogAttentionHints } from "./catalog-attention.ts";
 import {
@@ -15,6 +15,8 @@ import {
 	isCatalogView,
 	parseCatalogView,
 	withAttentionHints,
+	withIntentClaims,
+	withProfileHints,
 } from "./catalog-view.ts";
 
 function row(id: string, overrides: Partial<CatalogViewRow> = {}): CatalogViewRow {
@@ -234,4 +236,56 @@ it("refuses malformed and oversized views", () => {
 	};
 	assert.throws(() => parseCatalogView(oversized), /budget/u);
 	assert.equal(isCatalogView(oversized), false);
+});
+
+function nativeIntent(overrides: Partial<NativeIntentMetadata> = {}): NativeIntentMetadata {
+	return { cwd: "/work", repository: null, repositoryState: "outside-git", hostname: "fixture-host", startedAt: "2026-01-01T00:00:00.000Z", taskId: 2,
+		claim: { purpose: "Native plan", integration: "i".repeat(2048), authority: "a".repeat(2048), scope: { paths: ["extensions/agent"], branches: ["topic"], fullGate: true }, updatedAt: "2026-01-01T00:00:00.000Z" }, ...overrides };
+}
+
+it("keeps profiles, attention and operational rows before whole native claims under budget pressure", () => {
+	const rows = Array.from({ length: 18 }, (_, index) => row(index === 0 ? "storage" : `storage:${index + 1}`, { latestReply: "x".repeat(500) }));
+	const base = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: "storage", rows });
+	const profiles = withProfileHints(base, { rows: rows.slice(0, 6).map(candidate => ({ identity: candidate.id, handle: null, role: "r".repeat(128), revision: "a".repeat(64), hasExpertise: false, updatedAt: null })), coverage: { complete: true, omitted: 0 } });
+	const attentive = withAttentionHints(profiles, { rows: [{ identity: "storage", kind: "failed-turn" }], coverage: { complete: true, omitted: 0 } });
+	const metadata = nativeIntent();
+	const view = withIntentClaims(attentive, { rows: Object.fromEntries(rows.map(candidate => [candidate.id, metadata])), coverage: { complete: true, omitted: 0 } });
+	assert.deepEqual(view.rows, attentive.rows);
+	assert.deepEqual(view.profiles, attentive.profiles);
+	assert.deepEqual(view.attention, attentive.attention);
+	assert.ok(view.intentClaims);
+	const kept = Object.values(view.intentClaims.rows);
+	assert.ok(kept.length > 0 && kept.length < rows.length);
+	for (const item of kept) assert.deepEqual(item, metadata);
+	assert.deepEqual(view.intentClaims?.coverage, { complete: false, omitted: rows.length - kept.length });
+	assert.ok(Buffer.byteLength(JSON.stringify(view)) <= CATALOG_VIEW_BUDGET_BYTES);
+	assert.deepEqual(parseCatalogView(JSON.parse(JSON.stringify(view))).intentClaims, JSON.parse(JSON.stringify(view.intentClaims)));
+});
+
+it("rejects foreign identities, stale cwd, corrupt claims and contradictory native coverage", () => {
+	const base = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: "storage", rows: [row("storage")] });
+	const hints = { rows: { storage: nativeIntent() }, coverage: { complete: true, omitted: 0 } };
+	assert.equal(parseCatalogView({ ...base, intentClaims: { ...hints, rows: { storage: null } } }).intentClaims?.rows.storage, null);
+	for (const rows of [{ foreign: nativeIntent() }, { storage: nativeIntent({ cwd: "/elsewhere" }) }, { storage: { ...nativeIntent(), taskId: "bad" } }]) assert.throws(() => parseCatalogView({ ...base, intentClaims: { ...hints, rows } }), /Native intent/u);
+	assert.throws(() => parseCatalogView({ ...base, rows: [row("foreign:2")], intentClaims: { ...hints, rows: { "foreign:2": nativeIntent() } } }), /different storage/u);
+	assert.throws(() => parseCatalogView({ ...base, intentClaims: { ...hints, coverage: { complete: true, omitted: 2 } } }), /coverage/u);
+	const omitted = withIntentClaims(base, { ...hints, rows: { missing: nativeIntent() } });
+	assert.deepEqual(omitted.intentClaims?.coverage, { complete: false, omitted: 1 });
+});
+
+it("orders native writes by tool task, isolates documents and omits only known stale claims", async t => {
+	const harness = await Harness.open(new MemoryStorage(), { models: createModels(), registry: createRegistry() }, context);
+	t.after(() => harness.close(context));
+	const root = await harness.root(context), child = await harness.createConversation({ ownership: { kind: "ownerless" } }, context);
+	await harness.commit(tx => publishConversationIntent(tx, root.id, nativeIntent({ taskId: 20 })), context);
+	await harness.commit(tx => publishConversationIntent(tx, root.id, nativeIntent({ claim: null, taskId: 21 })), context);
+	await harness.commit(tx => publishConversationIntent(tx, root.id, nativeIntent({ taskId: 20 })), context);
+	assert.equal((await harness.snapshot(AgentMetaDoc, root.id, context))?.intent?.claim, null);
+	await harness.commit(async tx => { const doc = await tx.doc(AgentMetaDoc, child.id); delete doc.intent; }, context);
+	const rows = [row("storage"), row(`storage:${child.id}`)];
+	assert.deepEqual(JSON.parse(JSON.stringify(await projectConversationIntents(harness, "storage", rows, context))), { rows: { storage: null }, coverage: { complete: true, omitted: 0 } });
+	await harness.commit(tx => publishConversationIntent(tx, child.id, nativeIntent({ taskId: 22, cwd: "/stale" })), context);
+	const projection = await projectConversationIntents(harness, "storage", rows, context);
+	assert.equal(projection.rows.storage, null);
+	assert.deepEqual(projection.coverage, { complete: false, omitted: 1 });
 });

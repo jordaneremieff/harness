@@ -2301,13 +2301,16 @@ test('held Agent capabilities block the captured Stop control without a reservat
   assert.equal(transportLog.slice(before).filter(call => call.path === '/api/operations' || call.path.endsWith('/abort')).length, 0);
 });
 
-test('a stale Stop confirmation cannot dispatch after its captured owner leaves the active pane', async () => {
+test('a stale Stop cannot dispatch after its captured owner leaves the active pane during the run-scope read', async t => {
   const identity = 'stale-stop-owner'; await arrive({workspace: {id: 'w', revision: 1, primaryKey: 'p', selectedTarget: {kind: 'agent', identity}, conversationLayout: twoPanes(identity)}, primaries: [primaryFixture({epoch: 9531})], roster: [agentFixture(identity)], observations: [observation(identity, {revision: 1, observedAt: 'now', entries: [], live: [], nextBefore: null, status: {busy: true}, coverage})]});
-  const owner = controls(app.agentComposer()); owner('stop').click(); await settle();
-  assert.equal(byId('modal').open, true); const confirm = byId('modal-body').querySelector('button.danger'); assert.ok(confirm); const before = transportLog.length;
-  app.applyLayout(singlePane()); await settle(); const editor = primaryControl('editor'); editor.focus(); confirm.click(); await settle();
-  assert.equal(transportLog.slice(before).filter(call => call.path === '/api/operations' || call.path.endsWith('/abort')).length, 0);
-  assert.equal(hostDocument.activeElement, editor); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'primary', key: 'p', epoch: 9531}); byId('modal').close();
+  const original = globalThis.fetch; t.after(() => {globalThis.fetch = original;});
+  const scope = Promise.withResolvers<Response>(), started = Promise.withResolvers<void>();
+  globalThis.fetch = async (input, init) => { if (new URL(String(input), 'http://ui.test').pathname === `/api/agents/${identity}/run-scope`) {started.resolve(); return scope.promise;} return original(input, init); };
+  const owner = controls(app.agentComposer()); assert.equal(owner('stop').hidden, false); owner('stop').click(); await started.promise; const before = transportLog.length;
+  app.applyLayout(singlePane()); await settle(); const editor = primaryControl('editor'); editor.focus();
+  scope.resolve(Response.json({ok: true, data: {sessionId: identity, runId: 16, taskId: 17}})); await settle();
+  assert.equal(transportLog.slice(before).filter(call => call.path === '/api/operations' || call.path.endsWith('/control') || call.path.endsWith('/abort')).length, 0);
+  assert.equal(hostDocument.activeElement, editor); assert.deepEqual(app.state.workspace?.selectedTarget, {kind: 'primary', key: 'p', epoch: 9531}); assert.equal(byId('modal').open, false);
 });
 
 test('queued view writes keep the old workspace acknowledgment despite a same-key current target', async t => {

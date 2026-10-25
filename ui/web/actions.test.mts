@@ -725,7 +725,7 @@ test('the palette lists the one sidebar action that applies and still finds it b
 test('palette covers every displaced control and session availability follows the menu', () => {
   const actions = new Actions(context(workspaceReady));
   const names = actions.paletteEntries().filter(item => item.source === 'app').map(item => item.name);
-  assert.deepEqual(names, ['New session', 'Replace current session', 'Close session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Agent presentation control', 'Keyboard shortcuts', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Workspaces', 'Archived workspaces', 'Model', 'Thinking', 'Sent and received tasks']);
+  assert.deepEqual(names, ['New native session', 'New session', 'Replace current session', 'Close session', 'Sessions', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Saved drafts and messages', 'Appearance', 'Agent presentation control', 'Keyboard shortcuts', 'Harness management', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Notifications', 'Refresh agents', 'Refresh files', 'Insert /agent new', 'Hide sidebar', 'Projects', 'Workspaces', 'Archived workspaces', 'Model', 'Thinking', 'Sent and received tasks']);
   const absent = new Actions(context({...workspaceReady, primary: () => undefined})).paletteEntries();
   assert.deepEqual(absent.filter(item => !item.enabled), []);
   for (const name of ['Close session', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Model', 'Thinking', 'Sent and received tasks']) assert.equal(absent.some(item => item.name === name), false, name);
@@ -1093,11 +1093,12 @@ test('session menu clicks dispatch named actions and disabled rows reject dispat
 test('session menu keyboard navigation skips disabled rows and reaches the full palette', () => {
   const f = paletteFixture({primary: () => undefined}); try {
     f.actions.sessionMenu(); const list = f.body.children[0]; assert.ok(list);
-    assert.equal(focused?.textContent, 'New session');
-    assert.equal(key(list, 'ArrowDown').defaultPrevented, true); assert.equal(focused?.textContent, 'Sessions');
+    assert.equal(focused?.textContent, 'New native session');
+    assert.equal(key(list, 'ArrowDown').defaultPrevented, true); assert.equal(focused?.textContent, 'New session');
+    key(list, 'ArrowDown'); assert.equal(focused?.textContent, 'Sessions');
     key(list, 'ArrowDown'); assert.equal(focused?.textContent, 'Saved drafts and messages');
     key(list, 'End'); assert.equal(focused?.textContent, 'Commands');
-    key(list, 'Home'); assert.equal(focused?.textContent, 'New session');
+    key(list, 'Home'); assert.equal(focused?.textContent, 'New native session');
   } finally {f.restore();}
 });
 

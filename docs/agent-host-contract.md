@@ -523,7 +523,10 @@ Overrides and remaining members:
 | list | list/1.0.0 | H-list | absent |
 | fork | fork/1.0.0 | fork/1.0.0 | D |
 | rewind | rewind/1.1.0 | rewind/1.0.0 | D |
-| compact | compact/1.0.0 | compact/1.0.0 | D |
+| compact | compact/2.0.0 | compact/2.0.0 | D |
+| run-scope | run-scope/1.0.0 | run-scope/1.0.0 | absent |
+| run-stop | run-stop/1.0.0 | run-stop/1.0.0 | absent |
+| request-cancel | request-cancel/1.0.0 | request-cancel/1.0.0 | absent |
 | configure | configure/1.3.0 | configure/1.3.0 | absent |
 | command | command/1.1.0 | command/1.0.0 | D |
 | timer-schedule | timer-schedule/1.1.0 | timer-schedule/1.0.0 | absent |
@@ -899,6 +902,23 @@ runtime writes per microtask. Read-only operations create no change event.
 These are subscription-local invalidations, not catalog deltas or replay
 cursors. Release the handle and subscription on close.
 
+## Native namespace creation and recovery
+
+A managed namespace binds a catalogue root to one sealed Agent source and its Pi dependency installation. Runtime setup supplies these paths. A browser never selects an executable or rebinds a retained store. Existing ordinary roots keep their original source route. New namespaces remain outside the ordinary manager's configured catalogue, so an older manager cannot acquire them after their host retires.
+
+`extensions/agent/create-conversation.ts` accepts a JSON argument:
+
+```text
+{protocol:1,root,agentDir,packageDir,cwd,requestId,
+ name?,model?,thinkingLevel?,preset?,existingSources?:[{root,sourceRoot,packageDir}]}
+```
+
+It creates an empty native root through `AgentManager`, with no fabricated primary role or project-trust override. Saved trust decisions retain their normal authority. Model and preset resolution use the selected machine document and the supplied installation. A completed receipt is `{protocol:1,state:"completed",identity,name,root,sourceRoot,packageDir}`. Rejected and uncertain receipts use the same state field. Identity is null when creation never established one. Runtime binds the complete creation request before invoking the helper and preserves an uncertain result instead of blindly repeating creation. The manager's native catalogue request key deduplicates the underlying creation.
+
+The optional `existingSources` inventory contains exact trusted root/source/installation routes, not copied profiles or tasks. Agent setup merges those immutable bindings into `<root>/native-sources.json`. Nested managers read the inventory from their namespace root. Handle resolution checks the current catalogue and the bounded selected roots, rejects ambiguous or unavailable ownership, and executes a retained target through its original source and dependencies. Native controls, exact-result waits, producer watches and public observations use the target's runner and dependency installation, not the caller's installation. An earlier source needs its existing public runner and host contracts, not a newly added helper file. An identity absent from the selected native catalogues requires a real registered ordinary-primary descriptor before ordinary routing is considered. Missing native metadata alone is never that proof. This inventory is deployment metadata. Native documents remain authoritative for profiles, requests, tasks and ownership.
+
+`extensions/agent/namespace-recovery.ts` accepts `{protocol:1,root,agentDir,packageDir,cwd,existingSources?}` as its JSON argument. A runtime supervisor starts it through Chord's `forkDriver` and `createHostManager`, with a per-namespace process lock. The child supports ready, status and shutdown control messages. Ready confirms the recovery owner, not completion of every recovery. Its bounded stdout report is `{protocol:1,type:"namespace-recovery",visited,attempted,complete,failures}`. The owner reuses `AgentManager` catalogue recovery and host-loss observation without an ordinary primary or a second task index. Parent disconnect and shutdown release its clients and observations, not admitted native work. Each retained namespace keeps its selected source and dependency installation during restoration.
+
 ## Operator admission and controls
 
 ### task-submit
@@ -945,6 +965,47 @@ separate answers. Sources:
 `durable-agents.ts` (`Reporter`).
 
 The ordinary manager's `control("submit")` maps to `task-submit`; raw host `submit` is a different base operation. Match the documented wire member, not a manager method name. The standalone terminal uses operator origin and self-owned replyTo. Source: `extensions/agent/manager.ts:469-514`; `extensions/agent/terminal-client.ts:123-131`.
+
+### compact
+
+Params: `{sessionId,instructions?}`. `compact/2.0.0` requests native compaction without first aborting foreground work, background work or queued input. Native work continues while compaction prepares its result. The summary enters context at a native boundary. The response retains the native compaction observation and therefore compares the exact Durable identity `D`. Explicit Stop remains a separate operation. Self-compaction retains its native completed-tool boundary.
+
+### run-scope and run-stop
+
+`run-scope({sessionId})` returns:
+
+```text
+{
+  sessionId,runId:number|null,taskId:number|null,
+  inputs:[{sessionId,submissionId,requestId?}],
+  delegations:[{sessionId,createdBy,ownership:"created"|"reused",
+                result?:{sessionId,submissionId,requestId?},reporterTaskId?,anchorTaskId?}],
+  coverage:{complete:boolean,omitted:number}
+}
+```
+
+`runId` is the first native input submission ID in the selected admitted group. It is an opaque selector, not a task ID. `taskId` observes the current native generation. Native generation handover changes taskId while the admitted group continues with the same input identities. An idle conversation returns null selectors. Native task ancestry and retained input/task links associate owned dispatches with their input group, including dispatches from an earlier generation.
+
+`run-stop({sessionId,runId,inputs?})` returns:
+
+```text
+{
+  sessionId,runId,state:"stopped"|"settled"|"partial"|"protected",
+  inputs:[{sessionId,submissionId,requestId?}],
+  delegations:[{sessionId,runId?,state:"stopped"|"settled"|"cancelled"|"protected"|"unavailable",reason?}],
+  coverage:{complete:boolean,omitted:number},effects:"partial-effects-possible"
+}
+```
+
+Stop follows native generations only while the exact selected input remains in their admitted group. A later independent group remains untouched. An optional `inputs` list requires every observed input in the selected group to belong to that exact owned set. Delegated Stop uses this guard for both active and retired groups to preserve shared work in reused agents. A synchronous native commit observer cancels a guarded abort before admission if unrelated input joins. Generation handovers trigger bounded re-observation of the same input group, never a conversation-wide abort fallback.
+
+Stop withdraws each exact owned queued delegation before it considers active work. It then traverses each original admitted input's local or foreign group, including surviving descendants after that input answers. Retained native input/task links recover the observed cohort of a retired group. A newer unrelated group is neither selected nor aborted. Several owned references for one cohort share one guarded traversal. A settled submission alone does not establish that its descendants stopped. Native background reporters associated with the selected group stop separately. A creator label or a result reference alone does not establish ownership. Unknown ownership, unavailable host contracts, in-flight dispatch without a confirmed result, or a traversal limit produces an explicit protected, unavailable or partial boundary. `coverage.omitted` counts known omitted source rows and incomplete capture/scan markers. It is not a total of unseen tasks. Cancellation does not undo external effects.
+
+### request-cancel
+
+Params: `{result:{sessionId,submissionId,requestId?}}`. The result is `{result,state:"aborted"|"already_placed"|"settled"|"not_found",effects:"not-started"|"partial-effects-possible"}`. The host verifies the exact native conversation and request identity. Only an actual native `aborted` outcome establishes `not-started`; if placement wins the race, the response reports `already_placed` with possible partial effects. This operation never guesses a task or broadens to a conversation abort.
+
+Sources for these controls: `extensions/agent/run-control.ts`, `run-control-state.ts`, `durable-host.ts`, `durable-agents.ts`, `durable-runtime.ts`, and the installed Durable generation, submission and commit implementations.
 
 ### abort
 

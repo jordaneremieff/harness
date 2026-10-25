@@ -93,6 +93,7 @@ const CONTROL_TOOLS = [
 	"agent_configure",
 	"agent_fork",
 	"agent_inspect",
+	"agent_intent",
 	"agent_list",
 	"agent_place",
 	"agent_profile",
@@ -115,6 +116,7 @@ const REPLAY_CLASSIFICATION: Record<string, string> = {
 	agent_place: "safe",
 	agent_profile: "safe",
 	agent_inspect: "safe",
+	agent_intent: "safe",
 	agent_status: "safe",
 	agent_list: "safe",
 	agent_reset: "safe",
@@ -1550,7 +1552,7 @@ it("drives one model-issued call per control tool", async (t) => {
 	const route = createRoute();
 	const holder: DispatchHolder = {};
 	const calls: DispatchCalls = [];
-	const { registry } = buildRegistry(createDispatch(holder, calls));
+	const { registry } = buildRegistry(createDispatch(holder, calls), true, storageId, join(testCwd, "durable"));
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	holder.harness = harness;
 	t.after(async () => {
@@ -1587,6 +1589,7 @@ it("drives one model-issued call per control tool", async (t) => {
 	await settle(harness, root.id);
 	await run("agent_status", { sessionId: childSessionId });
 	await run("agent_profile", { action: "read", sessionId: childSessionId });
+	await run("agent_intent", { action: "publish", purpose: "Tool contract", integration: "Compose the fixture", authority: "Synthetic fixture authority", scope: { paths: ["extensions/agent"], branches: ["topic"] } });
 	await run("agent_list", {});
 	await run("agent_collaborate", { action: "list" });
 	await run("agent_inspect", { sessionId: childSessionId, view: "history" });

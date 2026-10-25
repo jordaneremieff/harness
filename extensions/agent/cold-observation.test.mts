@@ -90,6 +90,13 @@ async function coldSource(t: { after(fn: () => void): void }) {
 	return { f, submissionId, exited };
 }
 
+/**
+ * The production launch bound for runner readiness (`DEFAULT_LAUNCH_TIMEOUT_MS` in
+ * host-client.ts). A directly spawned runner loads the same services and Agent
+ * extension as an acquired host, so this stand-in fails no earlier than the product.
+ */
+const RUNNER_READINESS_MS = 30_000;
+
 /** Resolve on the production runner's readiness frame, bounded only for failure. */
 async function runnerReady(child: ChildProcess): Promise<void> {
 	if (!child.stdout) throw new Error("runner has no readiness stream");
@@ -110,7 +117,7 @@ async function runnerReady(child: ChildProcess): Promise<void> {
 			};
 			const onExit = (): void => finish(new Error("runner exited before readiness"));
 			const onError = (error: Error): void => finish(error);
-			const timer = setTimeout(() => finish(new Error("runner readiness frame did not arrive")), 10000);
+			const timer = setTimeout(() => finish(new Error(`runner readiness frame did not arrive within ${RUNNER_READINESS_MS} ms`)), RUNNER_READINESS_MS);
 			lines.on("line", onLine);
 			child.once("exit", onExit);
 			child.once("error", onError);

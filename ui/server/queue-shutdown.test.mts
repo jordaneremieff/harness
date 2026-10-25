@@ -20,12 +20,21 @@ const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: tru
 const forbidden = async (): Promise<never> => {throw new Error('No native agent work belongs in this fixture');};
 const agents: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, lookup: forbidden, imageInputAvailable: () => false,
   refresh: async () => empty.scan, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden,
-  image: forbidden, inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
+  image: forbidden, inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, control: forbidden, abort: forbidden,
   configure: () => {throw new Error('No native agent configuration');}, hide: async () => {}, disconnectWorkspace: async () => {}, close: async () => {}};
+
+/** The backend reads private-access settings from the machine document; a fixture must never inherit the operator's and bind the live private port. */
+function isolateAgent(t: TestContext, root: string): void {
+  const keys = ['PI_CODING_AGENT_DIR', 'PI_HARNESS_FILE', 'PI_UI_PRIVATE_ORIGIN', 'PI_UI_PRIVATE_OWNER_LOGIN', 'PI_UI_PRIVATE_PORT'];
+  const previous = keys.map(key => process.env[key]);
+  process.env.PI_CODING_AGENT_DIR = join(root, 'agent'); process.env.PI_HARNESS_FILE = 'harness.json';
+  for (const key of keys.slice(2)) delete process.env[key];
+  t.after(() => keys.forEach((key, index) => {const value = previous[index]; if (value === undefined) delete process.env[key]; else process.env[key] = value;}));
+}
 
 async function fixture(t: TestContext, response: unknown, cli = false) {
   const root = await mkdtemp(join(tmpdir(), 'ui-queue-shutdown-'));
-  const cwd = join(root, 'project'); await mkdir(cwd);
+  const cwd = join(root, 'project'); await mkdir(cwd); isolateAgent(t, root);
   const stateDir = join(root, 'state'); const child = new FakeChild(); const ready = deferred();
   child.pendingMessageCount = 4;
   child.onCommand = record => record.type === 'clear_queue' ? child.response(record, response) : child.defaults(record);

@@ -1,3 +1,4 @@
+import type {NativeControlName, JsonValue} from './contract.mts';
 import { AgentCatalog, deriveEndpoint, readClaim, type CatalogPage, type CatalogRecord, type CatalogScan } from "./catalog.mts";
 import { AgentError, HostLink, type SubmitInput } from "./client.mts";
 import { captureSubmitInput, submitInputDigest, type NativeInputMessage, type NativeInputPart } from "./input.mts";
@@ -20,6 +21,7 @@ export interface AgentServiceOptions {
   stateDir: string;
   installationId: string;
   agentDir?: string;
+  readerPath?:string;
   onRoster?: (page: CatalogPage) => void;
   onFrame?: (workspaceId: string, identity: string, connectionEpoch: number, frame: ConversationFrame) => void;
   onAvailability?: AvailabilityListener;
@@ -80,7 +82,7 @@ export class AgentService {
     this.#installationId = options.installationId;
     this.#stateDir = options.stateDir;
     this.#onImageInput = options.onImageInput ?? (() => {});
-    this.#reader = readerFactory({store:options.store,reader:() => retainedReaderPath(options.agentDir)});
+    this.#reader = readerFactory({store:options.store,reader:() => options.readerPath ? Promise.resolve(options.readerPath) : retainedReaderPath(options.agentDir)});
     this.#catalog = catalogFactory({ store: options.store, onChange: options.onRoster });
     this.#observations = new ObservationManager({ getLink: identity => this.#link(identity, true, true), onFrame: options.onFrame ?? (() => {}), onAvailability: options.onAvailability, projectFrame: options.frameProjection });
   }
@@ -277,6 +279,10 @@ export class AgentService {
       if (error instanceof AgentError && error.code === "contract_mismatch") throw new AgentError("commands_unavailable", error.message);
       throw error;
     }
+  }
+  async control(identity:string, member:NativeControlName, params:JsonObject):Promise<JsonValue> {
+    this.#ready();
+    return await (await this.#link(identity)).request(member,{...params,sessionId:identity},{identity,...(typeof params.requestId==='string'?{wireRequestId:params.requestId}:{})}) as JsonValue;
   }
   async abort(identity: string): Promise<AbortReceipt> {
     this.#ready();

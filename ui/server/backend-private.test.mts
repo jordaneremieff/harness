@@ -30,7 +30,7 @@ function agents(): AgentAdapter {
   const forbidden = async (): Promise<never> => {throw new Error('No native agent work in private backend fixtures.');};
   const catalog = {rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {state: 'ready' as const, complete: true, visited: 0, skipped: 0, omitted: 0}};
   return {roster: () => catalog, rosterRow: () => undefined, lookup: forbidden, imageInputAvailable: () => false, refresh: async () => catalog.scan,
-    prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
+    prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, control: forbidden, abort: forbidden,
     configure: () => {throw new Error('No native configuration.');}, hide: async () => {}, disconnectWorkspace: async () => {}, close: async () => {}};
 }
 async function privateRead(port: number, login: string): Promise<number> {

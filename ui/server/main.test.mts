@@ -16,10 +16,13 @@ const executable = fileURLToPath(new URL('../rpc/fake-pi.mts', import.meta.url))
 const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: true, omitted: 0}, stale: false, scan: {state: 'ready', complete: true, visited: 0, skipped: 0, omitted: 0}};
 const forbidden = async (): Promise<never> => { throw new Error('No native agent work belongs in this fixture'); };
 const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, lookup: forbidden, imageInputAvailable: () => false, refresh: async () => empty.scan, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden,
-  inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden, configure: () => { throw new Error('No native agent configuration'); },
+  inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, control: forbidden, abort: forbidden, configure: () => { throw new Error('No native agent configuration'); },
   hide: async () => {}, disconnectWorkspace: async () => {}, close: async () => {}};
 async function project(context: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'ui-main-')); const cwd = join(root, 'project'); await mkdir(cwd);
+  const keys=['PI_CODING_AGENT_DIR','PI_HARNESS_FILE','PI_UI_PRIVATE_ORIGIN','PI_UI_PRIVATE_OWNER_LOGIN','PI_UI_PRIVATE_PORT'],previous=keys.map(key=>process.env[key]);
+  process.env.PI_CODING_AGENT_DIR=join(root,'agent');process.env.PI_HARNESS_FILE='harness.json';for(const key of keys.slice(2))delete process.env[key];
+  context.after(()=>keys.forEach((key,index)=>{const value=previous[index];if(value===undefined)delete process.env[key];else process.env[key]=value;}));
   const apps: {close(): Promise<void>}[] = [];
   context.after(async () => { for (const app of apps) await app.close(); await rm(root, {recursive: true, force: true}); });
   return {root, cwd, keep: <T extends {close(): Promise<void>}>(app: T) => { apps.push(app); return app; }};

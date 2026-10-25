@@ -9,6 +9,7 @@ import { StateStore } from './state.mts';
 import type {Target} from '../shared/api.ts';
 import {LIMITS} from '../shared/api.ts';
 import {primaryMutation} from '../rpc/primary-operation.mts';
+import {ApiError} from './errors.mts';
 async function retainReturnedQueue(operations: Operations, workspace: string, target: Extract<Target, {kind: 'primary'}>, rows: {steering: string[]; followUp: string[]}) {
   const id = await operations.beginQueueClear(workspace, target, rows.steering.length + rows.followUp.length);
   await operations.retainQueue(id, rows);
@@ -98,6 +99,42 @@ test('control actions remain exact after completion, restart and idempotent retr
     assert.deepEqual(await after.execute(view.id, request, async () => { sends++; throw new Error('must not resend'); }), view);
   }
   assert.equal(sends, completed.length);
+});
+
+test('native control RPC receipts complete, project results and never admit other native RPC receipts', async t => {
+  const {operations, workspace, target, request: input} = await setup(t, 'agent');
+  for (const kind of ['agent.control', 'agent.input'] as const) {
+    const view = await operations.reserve(workspace.id, kind, target.target);
+    const request: ExecuteRequest = kind === 'agent.input' ? input : {workspaceId: workspace.id, kind, target: target.target, body: {method: 'run-stop', params: {runId: 17}}};
+    const result = await operations.execute(view.id, request, async () => ({state: kind === 'agent.input' ? 'accepted' : 'completed', receipt: {kind: 'rpc', disposition: 'started', result: {value: {runId: 17, state: 'stopped', authorization: 'PRIVATE RECEIPT'}, truncated: false}}}));
+    assert.equal(result.state, kind === 'agent.control' ? 'completed' : 'uncertain');
+    if (kind === 'agent.control') {
+      assert.equal(result.receipt?.kind, 'rpc');
+      assert.doesNotMatch(JSON.stringify(result), /PRIVATE RECEIPT/);
+      assert.deepEqual(await operations.get(view.id), JSON.parse(JSON.stringify(result)));
+    } else {
+      assert.equal(result.error?.code, 'delivery_uncertain');
+      assert.match(result.error?.message ?? '', /Wrong receipt kind/);
+      assert.ok(Buffer.byteLength(result.error?.message ?? '') <= 2048);
+    }
+  }
+});
+
+test('uncertain receipts retain bounded public errors without exception payloads', async t => {
+  const {operations, workspace, target} = await setup(t, 'agent');
+  const marker = 'INVALID_RECEIPT_FIXTURE';
+  for (const error of [new ApiError('invalid_receipt', `${marker}\x1b[31m Bearer fixture-secret-token ${'x'.repeat(4000)}`, 500, 'manual', {value: {payload: 'PRIVATE DETAILS'}, truncated: false}), Object.assign(new Error('PRIVATE EXCEPTION'), {payload: 'PRIVATE PAYLOAD'})]) {
+    operations.retainWith({complete: async () => { throw error; }, reconcile: async () => undefined});
+    const view = await operations.reserve(workspace.id, 'agent.control', target.target);
+    const result = await operations.execute(view.id, {workspaceId: workspace.id, kind: view.kind, target: target.target, body: {}}, async () => ({state: 'completed', receipt: {kind: 'rpc'}}));
+    assert.equal(result.state, 'uncertain');
+    assert.equal(result.error?.code, 'delivery_uncertain');
+    assert.equal(result.error?.retry, 'manual');assert.equal(result.error?.operationId, view.id);assert.deepEqual(result.error?.target, target.target);
+    assert.ok(Buffer.byteLength(result.error?.message ?? '') <= 2048);
+    assert.doesNotMatch(JSON.stringify(result), /PRIVATE|fixture-secret-token|\\u001b/);
+    if (error instanceof ApiError) assert.match(result.error?.message ?? '', new RegExp(marker));
+    assert.deepEqual(await operations.get(view.id), result);
+  }
 });
 
 test('control projection has no inferred action for missing or non-string values and other kinds', async t => {

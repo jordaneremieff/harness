@@ -5,16 +5,24 @@ import { hostname } from "node:os";
 import { readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 import type { PrimaryInfo, PrimaryObservedPurpose, PrimaryRepositoryState } from "./primary-channel.ts";
 import type { Dirent } from "node:fs";
+import { AgentCatalog, type CatalogRecord } from "./catalog.ts";
+import { readExistingSources } from "./source-route.ts";
+import { hostPaths } from "./host-protocol.ts";
+import { observeClaim } from "./claims.ts";
+import type { NativeIntentMetadata } from "./durable-controls.ts";
+
+type EffortFacts = Pick<PrimaryInfo, "id" | "cwd" | "name" | "repository" | "repositoryState" | "startedAt" | "lastActivityAt" | "intentClaim" | "observedPurpose" | "hostname">;
+const MAX_NATIVE_ROOTS = 256;
 
 /** Session-written intent, never a verified host fact or a grant to its reader. */
-export interface PrimaryIntentClaim {
+export type PrimaryIntentClaim = {
 	readonly purpose: string;
 	readonly integration: string;
 	readonly authority: string;
 	readonly scope: { readonly paths: string[]; readonly branches: string[]; readonly fullGate?: boolean };
 	readonly contactThread?: string;
 	readonly updatedAt: string;
-}
+};
 
 export type EffortPresenceSelf = Pick<PrimaryInfo, "id" | "cwd" | "repository" | "repositoryState" | "intentClaim" | "observedPurpose">;
 export interface RelatedEffort {
@@ -36,6 +44,8 @@ export interface RelatedEffort {
 	readonly overlap?: { readonly basis: "intentClaim"; readonly paths: string[]; readonly branches: string[] };
 }
 export interface EffortPresenceCoverage {
+	/** Producers or document rows without native intent support are not omitted claims. */
+	unsupported?: number;
 	visited: number;
 	unreadable: number;
 	dead: number;
@@ -102,7 +112,7 @@ function claimOverlap(self: PrimaryIntentClaim | undefined, other: PrimaryIntent
 	return paths.size || branches.length ? { basis: "intentClaim", paths: [...paths], branches } : undefined;
 }
 
-function relation(self: EffortPresenceSelf, other: PrimaryInfo): RelatedEffort["relationship"] | undefined {
+function relation(self: EffortPresenceSelf, other: EffortFacts): RelatedEffort["relationship"] | undefined {
 	if (self.repository && self.repository === other.repository) return "repository";
 	if (self.cwd === other.cwd) return "cwd";
 	return other.hostname === hostname() ? "machine" : undefined;
@@ -127,7 +137,7 @@ function sharedSubstrates(self: EffortPresenceSelf, other: Pick<PrimaryInfo, "cw
 	return shared;
 }
 
-function effortRow(info: PrimaryInfo, self: EffortPresenceSelf, liveness: RelatedEffort["liveness"], relationship: RelatedEffort["relationship"]): RelatedEffort {
+function effortRow(info: EffortFacts, self: EffortPresenceSelf, liveness: RelatedEffort["liveness"], relationship: RelatedEffort["relationship"]): RelatedEffort {
 	const { id, cwd, name, repository, repositoryState, startedAt, lastActivityAt, intentClaim, observedPurpose } = info;
 	const overlap = relationship === "machine" ? undefined : claimOverlap(self.intentClaim, intentClaim);
 	return {
@@ -153,7 +163,6 @@ function appendEffort(page: EffortPresencePage, row: RelatedEffort): void {
 }
 
 function visitEntry(sessionsRoot: string, self: EffortPresenceSelf, page: EffortPresencePage, entry: Dirent): void {
-	page.coverage.visited += 1;
 	const id = entry.name.endsWith(".json") ? entry.name.slice(0, -5) : undefined;
 	if (!entry.isFile() || id === undefined || id === self.id) {
 		page.coverage.unrelated += 1;
@@ -175,7 +184,62 @@ function visitEntry(sessionsRoot: string, self: EffortPresenceSelf, page: Effort
 	appendEffort(page, effortRow(descriptor.info, self, descriptor.state, relationship));
 }
 
-/** Read-only presence page; no record is removed, even after failed delivery or unknown ownership. */
+async function visitDirectory(path: string, page: EffortPresencePage, visit: (entry: Dirent) => void | Promise<void>): Promise<void> {
+	let directory: Awaited<ReturnType<typeof opendir>>;
+	try { directory = await opendir(path, { bufferSize: 16 }); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") markPartial(page, "directory-unreadable"); return; }
+	try {
+		for await (const entry of directory) {
+			if (page.coverage.visited >= page.limits.visits) { markPartial(page, "visit-limit"); break; }
+			page.coverage.visited++;
+			await visit(entry);
+			if (page.coverage.visited >= page.limits.visits) { markPartial(page, "visit-limit"); break; }
+		}
+	} catch { markPartial(page, "directory-unreadable"); }
+}
+function nativeRow(record: CatalogRecord, id: string, metadata: NativeIntentMetadata, self: EffortPresenceSelf, page: EffortPresencePage): void {
+	if (!metadata.claim || id === self.id) { page.coverage.unrelated++; return; }
+	const info: EffortFacts = { id, cwd: metadata.cwd, hostname: metadata.hostname, startedAt: metadata.startedAt, repositoryState: metadata.repositoryState, intentClaim: metadata.claim,
+		...(metadata.repository === null ? {} : { repository: metadata.repository }),
+		...(record.view?.rows.find(row => row.id === id)?.name === undefined ? {} : { name: record.view.rows.find(row => row.id === id)?.name }) };
+	if (info.repositoryState === "unknown") markPartial(page, "repository-unknown");
+	const relationship = relation(self, info);
+	if (!relationship) { page.coverage.unrelated++; return; }
+	const paths = hostPaths(record);
+	const ownership = observeClaim(paths.claim, paths.identity);
+	if (ownership.kind === "absent" || ownership.kind === "dead") { page.coverage.dead++; return; }
+	appendEffort(page, effortRow(info, self, ownership.kind === "live" ? "live" : "unknown", relationship));
+}
+function visitNativeRecord(catalog: AgentCatalog, entry: Dirent, self: EffortPresenceSelf, page: EffortPresencePage): void {
+	if (!entry.isFile() || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u.test(entry.name)) { page.coverage.unrelated++; return; }
+	let record: CatalogRecord;
+	try { record = catalog.read(entry.name.slice(0, -5)); }
+	catch { page.coverage.unreadable++; markPartial(page, "native-record-unreadable"); return; }
+	const claims = record.view?.intentClaims;
+	if (!claims) { page.coverage.unsupported = (page.coverage.unsupported ?? 0) + 1; return; }
+	page.coverage.unrelated++;
+	page.coverage.omitted += claims.coverage.omitted;
+	if (!claims.coverage.complete) markPartial(page, "native-intent-incomplete");
+	for (const [id, metadata] of Object.entries(claims.rows)) {
+		if (page.coverage.visited >= page.limits.visits) { markPartial(page, "visit-limit"); break; }
+		page.coverage.visited++;
+		if (metadata === null) page.coverage.unrelated++;
+		else nativeRow(record, id, metadata, self, page);
+	}
+}
+async function visitNativeRoots(sessionsRoot: string, self: EffortPresenceSelf, page: EffortPresencePage): Promise<void> {
+	let roots: string[];
+	try { roots = [...new Set([resolve(sessionsRoot), ...readExistingSources(sessionsRoot).map(route => route.root)])]; }
+	catch (error) { markPartial(page, (error as NodeJS.ErrnoException).code === "ENOTDIR" ? "directory-unreadable" : "native-roots-unavailable"); return; }
+	if (roots.length > MAX_NATIVE_ROOTS) markPartial(page, "root-limit");
+	for (const root of roots.slice(0, MAX_NATIVE_ROOTS)) {
+		if (page.coverage.visited >= page.limits.visits) { markPartial(page, "visit-limit"); break; }
+		const catalog = new AgentCatalog(root);
+		await visitDirectory(catalog.root, page, entry => visitNativeRecord(catalog, entry, self, page));
+	}
+}
+
+/** Read-only presence page; ordinary records and native projections share all visit, result and byte caps. */
 export async function readRelatedEfforts(sessionsRoot: string, self: EffortPresenceSelf): Promise<EffortPresencePage> {
 	const page: EffortPresencePage = {
 		efforts: [],
@@ -183,21 +247,8 @@ export async function readRelatedEfforts(sessionsRoot: string, self: EffortPrese
 		limits: EFFORT_PRESENCE_LIMITS,
 	};
 	if (self.repositoryState === "unknown") markPartial(page, "repository-unknown");
-	let directory: Awaited<ReturnType<typeof opendir>>;
-	try {
-		directory = await opendir(join(resolve(sessionsRoot), ".primaries"), { bufferSize: 16 });
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") markPartial(page, "directory-unreadable");
-		return page;
-	}
-	try {
-		for await (const entry of directory) {
-			visitEntry(sessionsRoot, self, page, entry);
-			if (page.coverage.visited >= page.limits.visits) { markPartial(page, "visit-limit"); break; }
-		}
-	} catch {
-		markPartial(page, "directory-unreadable");
-	}
+	await visitDirectory(join(resolve(sessionsRoot), ".primaries"), page, entry => visitEntry(sessionsRoot, self, page, entry));
+	if (page.coverage.visited < page.limits.visits) await visitNativeRoots(sessionsRoot, self, page);
 	page.efforts.sort((a, b) => a.id.localeCompare(b.id));
 	return page;
 }

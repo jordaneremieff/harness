@@ -19,7 +19,7 @@ export async function captureInputs(root:string):Promise<InputSnapshot> {
   for(const directory of directories) {
     const handle=await opendir(join(root,directory),{bufferSize:1});let visits=0;
     for await(const entry of handle) {
-      if(++entries>1280||++visits>256) throw new Error('capacity');
+      if(++entries>1280||++visits>512) throw new Error('capacity');
       if(!inputName(directory,entry.name)) continue;
       const path=`${directory}/${entry.name}`;const data=await captureFile(join(root,path),16*1024*1024-bytes);
       bytes+=data.length;inputs.set(path,data);

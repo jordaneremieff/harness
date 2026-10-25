@@ -1,9 +1,10 @@
+import {createAgent} from './create-agent.mts';
 import {convertSaved} from './conversion.mts';
 import type { AgentHistoryPage, Target } from '../shared/api.ts';
-import { RESERVED_COMMANDS, retainedTarget, type ConfigureResult } from '../agents/contract.mts';
+import { nativeControls, decodeInput, type JsonObject, RESERVED_COMMANDS, retainedTarget, type ConfigureResult } from '../agents/contract.mts';
 import { AgentError } from '../agents/index.mts';
 import { boundCommandResult, projectCommandList } from './agent-commands.mts';
-import { safeText } from './projection.mts';
+import { projectJson, safeText } from './projection.mts';
 import type { Registry } from './registry.mts';
 import type { RequestContext } from './http.mts';
 import { execute } from './dispatch.mts';
@@ -26,7 +27,8 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     const roster=projectRoster(page);
     return {rows:roster.rows,nextCursor:page.nextCursor,coverage:page.coverage,observedAt:roster.observedAt,stale:roster.stale,scan:roster.scan};
   }
-  if(parts[2]==='refresh') return refresh(registry,body);
+  if(parts[2]==='refresh')return refreshRoots(registry,body);
+  if(parts[2]==='create') return createAgent(registry,context);
   if(parts[2]==='convert') return convertSaved(registry,context);
   const identity=v.string(parts[2],'agent identity'); const target:Target={kind:'agent',identity};
   if(isImageRoute(method,parts)) {
@@ -34,8 +36,7 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
     try {retainedTarget(identity);} catch {throw new ApiError('invalid_request','Use the exact agent conversation identity.');}
     return new ImageResponse(await registry.agents.image(identity,request.source,request.digest));
   }
-  if(method==='GET'&&parts[3]==='commands') return commandList(registry,identity,url,context.signal);
-  if(method==='GET') return history(registry,identity,target,url,context.workspace,context.signal);
+  if(method==='GET')return readAgent(registry,context,identity,target);
   if(parts[3]==='inspect') return inspect(registry,identity,body,context.signal);
   const workspace=await registry.workspace(context.workspace);
   if(parts[3]==='start') {
@@ -55,6 +56,15 @@ export async function dispatchAgent(registry: Registry,context: RequestContext) 
   }
   return controlAction(registry,context,workspace,target,identity);
 }
+function readAgent(registry:Registry,context:RequestContext,identity:string,target:Target) {
+  if(context.parts[3]==='run-scope')return registry.agents.control(identity,'run-scope',{sessionId:identity});
+  if(context.parts[3]==='commands')return commandList(registry,identity,context.url,context.signal);
+  return history(registry,identity,target,context.url,context.workspace,context.signal);
+}
+async function refreshRoots(registry:Registry,body:Record<string,unknown>) {
+  try{await registry.discoverManagedRoots();}catch{registry.journal.publish('notice',undefined,{level:'warning',message:'Managed native sessions are unavailable. Existing sessions remain available.',code:'runtime_unavailable'});}
+  return refresh(registry,body);
+}
 /** Exact misses request bounded named record reads; answers retain request order and never start a host. */
 async function identityRows(registry:Registry,url:URL) {
   if(url.searchParams.has('cursor')||url.searchParams.has('limit')) throw new ApiError('invalid_request','An identity lookup takes no paging fields.');
@@ -73,6 +83,18 @@ async function identityRows(registry:Registry,url:URL) {
 /** Actions on one agent that are not input: stop, run a host command, configure. */
 function controlAction(registry:Registry,context:RequestContext,workspace:string,target:Extract<Target,{kind:'agent'}>,identity:string) {
   const {parts,body}=context;
+  if(parts[3]==='control') {
+    v.fields(body,['method','params'],['method','params']);
+    const member=v.choice(body.method,nativeControls,'native control');
+    if(!body.params||typeof body.params!=='object'||Array.isArray(body.params))throw new ApiError('invalid_request','The control parameters are invalid.');
+    if(['sessionId','requestId','senderIdentity'].some(key=>Object.hasOwn(body.params as object,key)))throw new ApiError('invalid_request','Native identity fields belong to the server.');
+    const params={...body.params as JsonObject,sessionId:identity,requestId:`ui:${context.operationId}`,...(['spawn','place','profile-update'].includes(member)?{senderIdentity:identity}:{})};
+    try {decodeInput(member,params,{identity});} catch {throw new ApiError('invalid_request','The native control parameters are invalid.');}
+    return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.control',target,body},async()=> {
+      const result=await registry.agents.control(identity,member,params);
+      return {state:'completed',receipt:{kind:'rpc',result:projectJson(result)}};
+    });
+  }
   if(parts[3]==='abort') {
     v.fields(body,['background'],['background']);if(body.background!==false) throw new ApiError('unsupported','Background ownership-tree abort is not exposed.');
     return execute(registry,context.operationId,{workspaceId:workspace,kind:'agent.abort',target,body},async()=> {

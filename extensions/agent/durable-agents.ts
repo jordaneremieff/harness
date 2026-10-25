@@ -19,13 +19,18 @@
  */
 
 import { realpathSync } from "node:fs";
+import { hostname } from "node:os";
+import { discoverPrimaryLocation } from "./effort-presence.ts";
+import { IntentParams, validateIntentInput } from "./effort-schema.ts";
+import { agentRunControlDoc } from "./run-control-state.ts";
+import { agentChildrenDoc, type AgentChild } from "./children.ts";
 import { readInputProviderBlock, providerBlockText, captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
 import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
 import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
 import { readCreatedAgents, renderCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
 import { initializeProfile, reconcileProfile } from "./profile.ts";
-import { AgentMetaDoc, recordAdmissionMeta } from "./durable-controls.ts";
+import { AgentMetaDoc, publishConversationIntent, recordAdmissionMeta } from "./durable-controls.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { recordRequestContext, cleanupRequestContexts } from "./request-context.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
@@ -37,7 +42,7 @@ import { CollaborationParams } from "./collaboration.ts";
 import { dirname, resolve } from "node:path";
 import { AgentCatalog } from "./catalog.ts";
 import { readFleetStatus } from "./fleet-status.ts";
-import { readEffortAwareness, formatEffortAwareness } from "./effort-awareness.ts";
+import { readEffortAwareness, formatEffortAwareness, nativeIntentSelf } from "./effort-awareness.ts";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -207,33 +212,10 @@ type ChildAgentValues = {
 
 // ─── Durable documents ──────────────────────────────────────────────────────
 
-/** One child agent conversation, created by one tool task of the owner conversation. */
-type AgentChild = {
-	readonly selection?: ExecutionSelection;
-	readonly name: string;
-	/** Local child conversation when the child lives in this storage. */
-	readonly conversationId?: Durable.ConversationId;
-	readonly anchorTaskId?: Durable.TaskId;
-	/** External identity of a child in another storage. */
-	readonly foreignSessionId?: string;
-	readonly result?: ResultReference;
-	readonly thinking?: { requested: string; effective: string };
-	/** Tool task that created the child; a rerun of that task reuses this record. */
-	readonly createdBy: Durable.TaskId;
-	/** Answer entries already reported to the owner; several messages can end in one answer. */
-	reported: Durable.EntryId[];
-};
-
 /** Child record with its local conversation and anchor present. */
 type LocalChild = AgentChild & {
 	readonly conversationId: Durable.ConversationId;
 	readonly anchorTaskId: Durable.TaskId;
-};
-
-type AgentChildrenState = {
-	children: AgentChild[];
-	/** Reporter task by the tool task that created it; a rerun of that task reuses the reporter. */
-	reporters: Record<string, number>;
 };
 
 function sessionIdOf(value: unknown): string | undefined {
@@ -707,16 +689,44 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		}
 	};
 
+	const RunControl = agentRunControlDoc(durable);
+	const rememberRunInputs = (api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => api.commit(async tx => {
+		const live = await tx.doc(durable.LiveDoc, api.conversationId);
+		const state = await tx.doc(RunControl, api.conversationId, String(api.taskId), null);
+		if (!state.recorded && live.run) { state.recorded = true; state.inputs = live.run.inputs.slice(0, 200); state.complete = live.run.inputs.length <= 200; }
+		return undefined;
+	}, context);
+	const retainDispatch = (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, result?: ResultReference | null) => api.commit(async tx => {
+		const state = await tx.doc(RunControl, api.conversationId, String(api.taskId), null);
+		state.dispatch = result === undefined ? "pending" : "confirmed";
+		if (result !== undefined) state.result = result;
+		return undefined;
+	}, context);
+
+	type DispatchCapture = { api: Durable.ToolExecutionApi<ControlDetails>; context: Context };
+	const isInputDispatch = (method: AgentControlMethod, params: Readonly<Record<string, unknown>>) => method === "submit" || method === "task-submit" || method === "resolve-agent" && params.prompt !== undefined;
+	const dispatchValue = async (perform: AgentControlDispatch, method: AgentControlMethod, params: Readonly<Record<string, unknown>>, capture?: DispatchCapture): Promise<unknown> => {
+		const input = capture && isInputDispatch(method, params);
+		if (input) await retainDispatch(capture.api, capture.context);
+		const value = await perform(method, params);
+		if (method === "submit" || method === "task-submit") dispatchFacts(method, params, value);
+		if (input) {
+			const facts = structuredObservation(DispatchOutputSchema, value) as { result?: ResultReference };
+			await retainDispatch(capture.api, capture.context, facts.result ?? null);
+		}
+		return value;
+	};
+
 	/** Forward one control to the host dispatch and format its structured result. */
 	const dispatchControl = async (
 		method: AgentControlMethod,
 		params: Readonly<Record<string, unknown>>,
 		failure: string,
+		capture?: DispatchCapture,
 	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
 		if (dispatch === undefined) return errorResult(`${failure}: no dispatch callback.`);
 		try {
-			const value = await dispatch(method, params);
-			if (method === "submit" || method === "task-submit") dispatchFacts(method, params, value);
+			const value = await dispatchValue(dispatch, method, params, capture);
 			const shown = controlText(value);
 			return textResult(method === "report" ? `${shown}\n${REPORT_DELIVERY_BOUNDARY}` : shown, value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, JsonValue> : {});
 		} catch (error) {
@@ -734,15 +744,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return params;
 	};
 
-	const Children = durable.defineDoc<AgentChildrenState>({
-		kind: "agent.children",
-		version: 1,
-		scope: "conversation",
-		history: "latest",
-		fork: "initial",
-		initial: () => ({ children: [], reporters: {} }),
-		checkpointWhen: () => false,
-	});
+	const Children = agentChildrenDoc(durable);
 
 	const Anchor = durable.defineTask<null, { phase: "done" }, null>({
 		name: "agent.anchor",
@@ -989,6 +991,32 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return { kind: "foreign", child, sessionId, deduped: true };
 	};
 
+	type ForeignCreationOutcome = { kind: "foreign"; child: AgentChild; sessionId: string; deduped: boolean } | { kind: "error"; message: string };
+	const retainForeignCreation = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, args: SpawnInput, result: unknown): Promise<ForeignCreationOutcome> => {
+		const sessionId = sessionIdOf(result);
+		if (sessionId === undefined) return { kind: "error", message: "Host spawn returned no sessionId." };
+		const thinking = (result as { thinking?: { requested: string; effective: string } }).thinking;
+		let reference: ResultReference | undefined;
+		try { reference = args.prompt === undefined ? undefined : admittedResult(sessionId, (result as Record<string, unknown>).result, `spawn:${host.storageId}:${api.taskId}`); }
+		catch (error) { return { kind: "error", message: String(error) }; }
+		if (args.prompt !== undefined) await retainDispatch(api, context, reference ?? null);
+		const child = await api.commit(async (tx) => {
+			const registry = await tx.doc(Children, api.conversationId);
+			const added: AgentChild = {
+				name: args.name ?? "agent",
+				foreignSessionId: sessionId,
+				...((result as { selection?: ExecutionSelection }).selection === undefined ? {} : { selection: (result as { selection: ExecutionSelection }).selection }),
+				...(thinking === undefined ? {} : { thinking }),
+				...(reference === undefined ? {} : { result: reference }),
+				createdBy: api.taskId,
+				reported: [],
+			};
+			registry.children.push(added);
+			return added;
+		}, context);
+		return { kind: "foreign", child, sessionId, deduped: false };
+	};
+
 	/** Spawn in another storage through the host dispatch; the host owns the new storage process. */
 	const spawnForeign = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
@@ -1006,6 +1034,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			return { kind: "error", message: "An agent with a different cwd needs the host dispatch callback." };
 		let result: unknown;
 		try {
+			if (args.prompt !== undefined) await retainDispatch(api, context);
 			result = await dispatch("spawn", {
 				...args,
 				preferenceSnapshot: await preferenceSnapshot(api, context),
@@ -1020,27 +1049,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				message: `Spawn in ${cwd} failed: ${error instanceof Error ? error.message : String(error)}`,
 			};
 		}
-		const sessionId = sessionIdOf(result);
-		if (sessionId === undefined) return { kind: "error", message: "Host spawn returned no sessionId." };
-		const thinking = (result as { thinking?: { requested: string; effective: string } }).thinking;
-		let reference: ResultReference | undefined;
-		try { reference = args.prompt === undefined ? undefined : admittedResult(sessionId, (result as Record<string, unknown>).result, `spawn:${host.storageId}:${api.taskId}`); }
-		catch (error) { return { kind: "error", message: String(error) }; }
-		const child = await api.commit(async (tx) => {
-			const registry = await tx.doc(Children, api.conversationId);
-			const added: AgentChild = {
-				name: args.name ?? "agent",
-				foreignSessionId: sessionId,
-				...((result as { selection?: ExecutionSelection }).selection === undefined ? {} : { selection: (result as { selection: ExecutionSelection }).selection }),
-				...(thinking === undefined ? {} : { thinking }),
-				...(reference === undefined ? {} : { result: reference }),
-				createdBy: api.taskId,
-				reported: [],
-			};
-			registry.children.push(added);
-			return added;
-		}, context);
-		return { kind: "foreign", child, sessionId, deduped: false };
+		return retainForeignCreation(api, context, args, result);
 	};
 
 	const foreignSpawnResult = async (
@@ -1104,7 +1113,8 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: presetParams(SpawnParams),
 		replay: "safe",
 		execute: async (args: SpawnInput, api, context) => {
-			if (args.handle !== undefined) return dispatchControl("resolve-agent", { ...args, preferenceSnapshot: await preferenceSnapshot(api, context), origin: "model", senderIdentity: identity(api.conversationId), requestId: `resolve:${host.storageId}:${api.taskId}` }, "Handle resolution failed");
+			await rememberRunInputs(api, context);
+			if (args.handle !== undefined) return dispatchControl("resolve-agent", { ...args, preferenceSnapshot: await preferenceSnapshot(api, context), origin: "model", senderIdentity: identity(api.conversationId), requestId: `resolve:${host.storageId}:${api.taskId}` }, "Handle resolution failed", { api, context });
 			if (args.role !== undefined) return errorResult("A creation role requires a handle; use agent_profile for another agent");
 			const hostCwd = resolve(host.cwd);
 			const requestedCwd = args.cwd === undefined ? undefined : resolve(host.cwd, args.cwd);
@@ -1153,6 +1163,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const sendForeign = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
+		context: Context,
 		sessionId: string,
 		message: string,
 		whenBusy: "steer" | "followUp",
@@ -1174,6 +1185,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				whenBusy,
 			},
 			`Delivery to ${sessionId} failed`,
+			{ api, context },
 		);
 	};
 
@@ -1190,7 +1202,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (conversationId === undefined) return errorResult(`Cannot resolve session ${sessionId}.`);
 		let reportTo: Durable.ConversationId | undefined;
 		if (replyTo !== undefined) {
-			if (target(replyTo).kind === "foreign") return dispatchControl("task-submit", { sessionId, message, requester: identity(api.conversationId), replyTo, whenBusy, origin: "model", checkInMinutes: minutes, requestId: `agent-deliver:${host.storageId}:${api.taskId}` }, "Task delivery failed");
+			if (target(replyTo).kind === "foreign") return dispatchControl("task-submit", { sessionId, message, requester: identity(api.conversationId), replyTo, whenBusy, origin: "model", checkInMinutes: minutes, requestId: `agent-deliver:${host.storageId}:${api.taskId}` }, "Task delivery failed", { api, context });
 			reportTo = localConversation(replyTo, api.conversationId);
 			if (reportTo === undefined) return errorResult(`Cannot resolve reply target ${replyTo}.`);
 		}
@@ -1206,10 +1218,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		whenBusy: "steer" | "followUp",
 		replyTo?: string,
 		minutes = 0,
-	): Promise<Durable.ToolExecutionResult<ControlDetails>> =>
-		target(sessionId).kind === "foreign"
-			? sendForeign(api, sessionId, message, whenBusy, replyTo, minutes)
+	): Promise<Durable.ToolExecutionResult<ControlDetails>> => {
+		await rememberRunInputs(api, context);
+		return target(sessionId).kind === "foreign"
+			? sendForeign(api, context, sessionId, message, whenBusy, replyTo, minutes)
 			: sendLocal(api, context, sessionId, message, whenBusy, replyTo, minutes);
+	};
 
 	/**
 	 * Schedule one delivery through the host control. The host creates a timer
@@ -1550,6 +1564,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			}),
 	});
 
+	const ownAwareness = async (catalogRoot: string, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
+		const agent = await api.agent(context);
+		const meta = await api.snapshot(AgentMetaDoc, api.conversationId, context);
+		return readEffortAwareness(dirname(catalogRoot), nativeIntentSelf(identity(api.conversationId), agent.cwd ?? host.cwd, meta === undefined ? null : meta.intent), undefined, "reported");
+	};
+
 	const statusTool = {
 		...durable.defineTool({
 			name: "agent_status",
@@ -1568,8 +1588,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				if (createdAgents === undefined && host.catalogRoot === undefined) return result;
 				const observed: Record<string, unknown> = { ...result.details };
 				if (host.catalogRoot !== undefined) {
-					const agent = await api.agent(context);
-					observed.awareness = await readEffortAwareness(dirname(host.catalogRoot), { id: identity(api.conversationId), cwd: agent.cwd ?? host.cwd });
+					observed.awareness = await ownAwareness(host.catalogRoot, api, context);
 				}
 				const text = [controlText(observed)];
 				if (createdAgents !== undefined) {
@@ -1717,6 +1736,27 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			),
 	});
 
+	const intentTool = durable.defineTool({
+		name: "agent_intent",
+		description: "Publish or clear this native conversation's purpose, integration intent, scope, carried operator direction and contact thread. Intent is a session claim, not verified authority or a lock. Returns the current published claim and bounded related efforts. No model wake.",
+		parameters: IntentParams,
+		replay: "safe",
+		execute: async (args, api, context) => {
+			validateIntentInput(args);
+			if (host.catalogRoot === undefined) return errorResult("Native intent requires the host's selected catalogue root");
+			const agent = await api.agent(context);
+			const location = await discoverPrimaryLocation(agent.cwd ?? host.cwd);
+			const stamp = await api.memo("agent-intent-time", new Date(api.now()).toISOString(), context);
+			const { action, ...fields } = args;
+			const claim = action === "clear" ? null : { ...fields, updatedAt: stamp } as import("./effort-presence.ts").PrimaryIntentClaim;
+			const cwd = agent.cwd ?? host.cwd;
+			const metadata = await api.commit(tx => publishConversationIntent(tx, api.conversationId, { claim, ...location, cwd, repository: location.repository ?? null, hostname: hostname(), startedAt: stamp, taskId: api.taskId }), context);
+			const published = nativeIntentSelf(identity(api.conversationId), cwd, metadata);
+			const value = { published, awareness: await readEffortAwareness(dirname(host.catalogRoot), published, undefined, "reported") };
+			return textResult(JSON.stringify(value), JSON.parse(JSON.stringify(value)));
+		},
+	});
+
 	const profileTool = { ...durable.defineTool({
 		name: "agent_profile",
 		description: "Read or revision-check an agent's durable role and sourced expertise. Default target: yourself. Profile edits work at a busy tool boundary and start no model turn. Saved expertise is evidence, not fresh authority.",
@@ -1758,10 +1798,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	const preferences = durable.section("agent-preferences", () => renderAgentPreferences(readAgentPreferences(host.agentDir, host.services.modelRuntime)));
 
-	const efforts = durable.section("agent-efforts", async (input) => {
+	const efforts = durable.section("agent-efforts", async (input, context) => {
 		if (host.catalogRoot === undefined) return undefined;
 		try {
-			return formatEffortAwareness(await readEffortAwareness(dirname(host.catalogRoot), { id: identity(input.conversationId), cwd: input.agent.cwd ?? host.cwd }));
+			const meta = await input.read.snapshot(AgentMetaDoc, input.conversationId, context);
+			const self = nativeIntentSelf(identity(input.conversationId), input.agent.cwd ?? host.cwd, meta === undefined ? null : meta.intent);
+			return formatEffortAwareness(await readEffortAwareness(dirname(host.catalogRoot), self, undefined, "reported"));
 		} catch {
 			return "Current effort and active thread awareness is unavailable. Read agent_status for a new bounded observation. Earlier notices describe changes, not current state.";
 		}
@@ -1774,6 +1816,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			structuredControl(spawnTool, DispatchOutputSchema),
 			structuredControl(awaitTool, AwaitOutputSchema),
 			profileTool,
+			intentTool,
 			structuredControl(sendTool, DispatchOutputSchema),
 			structuredControl(steerTool, DispatchOutputSchema),
 			abortTool,

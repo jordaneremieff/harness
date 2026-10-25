@@ -88,7 +88,9 @@ for (const locality of ["local", "foreign"] as const) it(`propagates native retr
 	const f = runtimeFixture(t, { withAgentExtension: true, retry: true });
 	const retry = markerFixture(t, f.testDir);
 	const releaseRetry = retry.hold("retry-requested");
-	const source = await acquireHost(f.metadata, { env: { ...f.env(locality === "local" ? "await-local" : "retry"), DURABLE_TEST_NOTIFY: retry.notifyPath, DURABLE_TEST_AWAIT_MIN_ATTEMPT: "21" } }); trackHost(t, source.pid);
+	// The foreign source has no admitted work until the consumer host is up; idle retirement is out of scope here.
+	const idle = locality === "foreign" ? { PI_AGENT_IDLE_MINUTES: "0" } : {};
+	const source = await acquireHost(f.metadata, { env: { ...f.env(locality === "local" ? "await-local" : "retry"), ...idle, DURABLE_TEST_NOTIFY: retry.notifyPath, DURABLE_TEST_AWAIT_MIN_ATTEMPT: "21" } }); trackHost(t, source.pid);
 	let consumer: HostConnection | undefined;
 	try {
 		if (locality === "local") {
@@ -149,7 +151,8 @@ for (const locality of ["local", "foreign"] as const) it(`propagates native retr
 it("observes a foreign native await in one hop and releases the selected source request through RPC", { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t, { withAgentExtension: true });
 	const remoteRecord = new AgentCatalog(f.root).create({ cwd: f.cwd, agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: f.metadata.model, thinkingLevel: "off", name: "foreign await observer", trust: true, ownerId: f.ownerId }, "foreign-observer");
-	const source = await acquireHost(f.metadata, { env: f.env("await-local") }); trackHost(t, source.pid);
+	// The source has no admitted work until the consumer host is up; idle retirement is out of scope here.
+	const source = await acquireHost(f.metadata, { env: { ...f.env("await-local"), PI_AGENT_IDLE_MINUTES: "0" } }); trackHost(t, source.pid);
 	const consumer = await acquireHost(hostMetadata(remoteRecord), { env: f.env("await-reference") }); trackHost(t, consumer.pid);
 	try {
 		const sourceReady = publishedAwait(source, f.metadata.storageId, () => true);

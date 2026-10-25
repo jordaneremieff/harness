@@ -8,7 +8,7 @@ import { assertOperation, decodeDescriptor } from '../agents/contract.mts';
 import { ApiError } from './errors.mts';
 
 export type LaunchMetadata = Pick<CatalogRecord, 'storageId' | 'cwd' | 'agentDir' | 'packageDir' | 'storagePath' | 'model' | 'thinkingLevel' | 'name' | 'trust' | 'ownerId' | 'independent'>;
-export type StartOptions = {store: string; executable:string; agentDir?:string; spawn?: (command:string,args:string[],options:SpawnOptions)=>ChildProcess; timeoutMs?: number};
+export type StartOptions = {store: string; executable:string; agentDir?:string; sourceRoot?:string; managedPackageDir?:string; spawn?: (command:string,args:string[],options:SpawnOptions)=>ChildProcess; timeoutMs?: number};
 type Attempt = {promise: Promise<void>; child?: ChildProcess; exited: boolean; cancel?:()=>void};
 const PREFIX = 'PI_AGENT_HOST_READY ';
 const OUTPUT_BYTES = 64 * 1024;
@@ -90,10 +90,24 @@ async function installation(executable:string) {
   if(process.env.PI_PACKAGE_DIR && await realpath(process.env.PI_PACKAGE_DIR) !== root)throw new Error('The Pi package override disagrees with the selected executable');
   return root;
 }
+/** Source placement comes only from the runtime service, never browser input or catalog metadata. */
+export async function managedAgentEntrypoint(sourceRoot:string,member:'durable-runner.ts'|'retained-read.ts'):Promise<string> {
+  await canonical(sourceRoot,true);
+  const manifest=(await readJson(join(sourceRoot,'package.json'),32768)).value as {name?:unknown};
+  if(manifest?.name!=='harness')throw new ApiError('invalid_request','The managed Agent source is invalid.');
+  const runner=join(sourceRoot,'extensions/agent',member);await canonical(runner,false);return runner;
+}
+async function managedInstallation(path:string|undefined):Promise<string> {
+  if(!path)throw new Error('The managed dependency installation is unavailable');
+  await canonical(path,true);
+  const metadata=(await readJson(join(path,'package.json'),32768)).value as {name?:unknown;version?:unknown;bin?:{pi?:unknown}};
+  if(metadata?.name!=='@earendil-works/pi-coding-agent'||typeof metadata.version!=='string'||metadata.bin?.pi!=='dist/bundle/cli.js')throw new Error('The managed dependency installation is invalid');
+  await canonical(join(path,'dist/bundle/cli.js'),false);return path;
+}
 /** Resolve both executable authorities before any spawn, without loading the Agent implementation. */
-export async function startBinding(options: Pick<StartOptions,'executable'|'agentDir'>) {
+export async function startBinding(options: Pick<StartOptions,'executable'|'agentDir'|'sourceRoot'|'managedPackageDir'>) {
   try {
-    const [runner,packageDir]=await Promise.all([configuredRunner(resolve(options.agentDir ?? getAgentDir())),installation(options.executable)]);
+    const [runner,packageDir]=await Promise.all([options.sourceRoot ? managedAgentEntrypoint(options.sourceRoot,'durable-runner.ts') : configuredRunner(resolve(options.agentDir ?? getAgentDir())),options.sourceRoot ? managedInstallation(options.managedPackageDir) : installation(options.executable)]);
     return {runner,packageDir};
   } catch {throw new ApiError('not_ready','The configured Agent source or current Pi installation is unavailable. No host was started.',503,'manual');}
 }

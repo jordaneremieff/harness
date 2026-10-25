@@ -1,4 +1,4 @@
-/** Ordinary intent input and tool-only awareness output, independent of host wire schemas. */
+/** Session intent input and tool-only awareness output, independent of host wire schemas. */
 import { Type } from "typebox";
 import { Value } from "typebox/value";
 import { StringEnum } from "@earendil-works/pi-ai";
@@ -39,6 +39,11 @@ export function validateIntentInput(input: unknown): void {
 	}
 }
 export const IntentClaimSchema = object({ ...intentFields, updatedAt: text });
+export const NativeIntentMetadataSchema = object({
+	claim: Type.Union([IntentClaimSchema, Type.Null()]),
+	cwd: text, repository: Type.Union([text, Type.Null()]), repositoryState,
+	hostname: text, startedAt: text, taskId: Type.Integer({ minimum: 1 }),
+});
 export const ObservedPurposeSchema = object({ source: Type.Union([Type.Literal("session-name"), Type.Literal("interactive-input")]), text });
 export const RelatedEffortSchema = object({
 	id: text, cwd: text, name: Type.Optional(text), repository: Type.Optional(text), repositoryState: Type.Optional(repositoryState), startedAt: text,
@@ -57,7 +62,7 @@ export const RecentCollaborationSchema = object({
 });
 export const EffortPresenceSchema = object({
 	efforts: Type.Array(RelatedEffortSchema),
-	coverage: object({ visited: count, unreadable: count, dead: count, unrelated: count, omitted: count, complete: Type.Boolean(), reasons: Type.Array(text) }),
+	coverage: object({ visited: count, unreadable: count, dead: count, unrelated: count, omitted: count, unsupported: Type.Optional(count), complete: Type.Boolean(), reasons: Type.Array(text) }),
 	limits: object({ visits: count, results: count, bytes: count }),
 });
 export const EffortAwarenessSchema = object({ self: EffortSelfSchema, presence: EffortPresenceSchema, threads: RecentCollaborationSchema });

@@ -22,6 +22,12 @@ import { createCheckIn } from "./durable-checkins.ts";
 import { cleanupRequestContexts, recordRequestContext, type RequestContext } from "./request-context.ts";
 import { refreshManagedInstructions } from "./profile.ts";
 import { existsSync } from "node:fs";
+import type { PrimaryIntentClaim } from "./effort-presence.ts";
+import type { PrimaryRepositoryState } from "./primary-channel.ts";
+import { Value } from "typebox/value";
+import { NativeIntentMetadataSchema } from "./effort-schema.ts";
+import { canonicalIdentity } from "./identity.ts";
+import type { CatalogIntentClaims, CatalogViewRow } from "./catalog-view.ts";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
@@ -47,8 +53,20 @@ import {
 } from "@earendil-works/pi-durable";
 import { boundedConfigurationResult, configurationModel, configurationThinkingLevel, validateConfigurationPatch, type ConfigurationPatch, type ConfigurationResult, type ConfigurationState } from "./configuration.ts";
 
+export type NativeIntentMetadata = {
+	claim: PrimaryIntentClaim | null;
+	cwd: string;
+	repository: string | null;
+	repositoryState: PrimaryRepositoryState;
+	hostname: string;
+	startedAt: string;
+	taskId: number;
+};
+
 /** Conversation metadata retained beside the transcript: display name, creating owner, and title fallback. */
 export type AgentMeta = {
+	/** An absent field means this metadata owner has not published native intent support. */
+	intent?: NativeIntentMetadata | null;
 	name: string | null;
 	/** External identity of the creating agent: the storage ID, or `storageId:conversationId`. */
 	owner: string | null;
@@ -58,7 +76,7 @@ export type AgentMeta = {
 	updatedAt: number | null;
 };
 
-const EMPTY_META: AgentMeta = { name: null, owner: null, firstMessage: null, updatedAt: null };
+const EMPTY_META: AgentMeta = { name: null, owner: null, firstMessage: null, updatedAt: null, intent: null };
 
 /**
  * Shared conversation metadata. `fork: "initial"` keeps a fork's name and owner
@@ -73,6 +91,38 @@ export const AgentMetaDoc = defineDoc<AgentMeta>({
 	initial: () => ({ ...EMPTY_META }),
 	checkpointWhen: () => false,
 });
+
+/** Publish only at the invoking native conversation; an older replay never replaces a newer native write. */
+export async function publishConversationIntent(tx: Tx, conversationId: ConversationId, input: NativeIntentMetadata): Promise<NativeIntentMetadata> {
+	const meta = await tx.doc(AgentMetaDoc, conversationId);
+	if (!meta.intent || meta.intent.taskId < input.taskId) meta.intent = { ...input, startedAt: meta.intent?.startedAt ?? input.startedAt };
+	return JSON.parse(JSON.stringify(meta.intent)) as NativeIntentMetadata;
+}
+
+function selectConversationIntent(metadata: NativeIntentMetadata | null | undefined, cwd: string | undefined): { value?: NativeIntentMetadata | null; omitted: boolean } {
+	if (metadata === undefined) return { omitted: false };
+	if (cwd === undefined) return { omitted: metadata?.claim != null };
+	if (metadata !== null && (!Value.Check(NativeIntentMetadataSchema, metadata) || metadata.cwd !== cwd)) return { omitted: true };
+	return { value: metadata?.claim ? JSON.parse(JSON.stringify(metadata)) as NativeIntentMetadata : null, omitted: false };
+}
+
+/** Project only this writer's public conversation metadata; unavailable metadata stays explicit. */
+export async function projectConversationIntents(harness: Harness, storageId: string, publishedRows: readonly CatalogViewRow[], context: Context): Promise<CatalogIntentClaims> {
+	return harness.commit(async tx => {
+		const page = await tx.scanConversations({}, 200);
+		const visible = new Map(publishedRows.map(row => [row.id, row.cwd]));
+		const rows: Record<string, NativeIntentMetadata | null> = Object.create(null);
+		let omitted = 0;
+		for (const conversation of page.items) {
+			const id = canonicalIdentity(storageId, conversation.id);
+			const metadata = (await tx.doc(AgentMetaDoc, conversation.id)).intent;
+			const selected = selectConversationIntent(metadata, visible.get(id));
+			if (selected.omitted) omitted++;
+			if (selected.value !== undefined) rows[id] = selected.value;
+		}
+		return { rows, coverage: { complete: !page.next && omitted === 0, omitted } };
+	}, context);
+}
 
 /** JSON-safe stored form of one user input. */
 export type DeliveryMessagePart = {

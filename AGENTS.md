@@ -1,7 +1,7 @@
 # Repository instructions
 
-- Earlier harness generations are evidence of needs and failure modes only — never
-  carry forward their source, comments, tests, prompts, names, or identifiers.
+- Use earlier harness generations only as evidence of needs and failure modes.
+  Never carry forward their source, comments, tests, prompts, names, or identifiers.
 - No source, comments, tests, names, prompts, or internal identifiers from any
   earlier harness generation (local snapshot, extraction, or reviews) may be
   copied into this repository.
@@ -85,7 +85,7 @@
 - Perform active development for each extension, skill, prompt, or feature in one
   dedicated persistent Git worktree and stable branch. Reuse that worktree across
   sessions and tasks. Do not remove it after one implementation cycle. Run `npm
-  run worktrees:sync` from inside your worktree before slice work and after
+  run worktrees:sync -- --current --source-only` from inside your worktree before slice work and after
   `main` advances. A worktree that is behind `main` and holds uncommitted tracked
   changes is deferred: the command leaves its branch at its current commit.
   A deferred sibling is a worktree other than the one you work in; its work
@@ -103,8 +103,7 @@
   public Pi surfaces or an explicit package-level contract owned outside either
   extension and justified by current consumers. Tests for one extension must not
   assert another extension's private implementation or display format. Generic Pi
-  event analysis must remain generic — do not recognize one sibling extension's
-  private vocabulary. Do not create a shared abstraction solely to remove small
+  event analysis must not recognise one sibling extension's private vocabulary. Do not create a shared abstraction solely to remove small
   duplication. Colocated `*.test.mts` tests, its own README, no operator-local
   paths or credentials in committed content. `scripts/check-slices.mts` checks
   literal import specifiers for slice escapes and sibling paths. Review still
@@ -241,7 +240,7 @@ Before considering repository work complete:
 8. run `npm run check` (slice isolation, hardcoded counts);
 9. run the normal full test command on dependency or compiler-setting changes,
    with promotion `--full`, or when the operator asks;
-10. report honestly the remaining untracked or modified files in each worktree
+10. report the remaining untracked or modified files in each worktree
     you changed.
 
 The automated gates are `npm run lint`, `npm run typecheck`, `npm run check` (slice isolation,

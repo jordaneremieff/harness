@@ -86,7 +86,9 @@ test('input reconciliation ignores documentation and tests and stops at a direct
   for(const name of ['web','shared','server','rpc','agents']) await mkdir(join(directory,name));
   await writeFile(join(directory,'web/app.ts'),'export {};');await writeFile(join(directory,'web/readme.md'),'one');await writeFile(join(directory,'web/app.test.mts'),'one');
   const before=await captureInputs(directory);assert.equal(before.size,1);await writeFile(join(directory,'web/readme.md'),'two');assert.equal(sameInputs(before,await captureInputs(directory)),true);
-  for(let index=0;index<254;index++) await writeFile(join(directory,`web/ignored-${index}.md`),'');
+  for(let index=0;index<257;index++) await writeFile(join(directory,`web/ignored-${index}.md`),'');
+  assert.equal(sameInputs(before,await captureInputs(directory)),true);
+  for(let index=257;index<510;index++) await writeFile(join(directory,`web/ignored-${index}.md`),'');
   await assert.rejects(()=>captureInputs(directory),/capacity/);
 });
 

@@ -1,14 +1,17 @@
 # Pi durable-harness track
 
 Pi 1.4.0 supplies the ordinary coding-agent host and the separate Pi Durable
-runtime. The ordinary primary owns the terminal. Durable owns native agent
+runtime. Ordinary sessions retain their ordinary host. A native operator
+conversation does not require an ordinary primary. Durable owns native agent
 conversations, generation, tool tasks, committed state, and recovery. The Agent
 extension supplies cwd-bound resources, process ownership, controls, and delivery.
 The [session host roles](conventions/session-host-roles.md) and
 [Agent host contract](agent-host-contract.md) define that composition.
 
-Source review date: 2026-10-22. The current review checks installed 1.4.0
+Broad source review date: 2026-10-22. That review checks installed 1.4.0
 manifests and the document, task, storage, and telemetry contracts below.
+The targeted management-contract refresh below was checked on 2026-10-25;
+it does not renew the unexamined parts of the broad review.
 Dependency installation does not replace modules in retained processes.
 Source inspection does not establish live provider behavior, conversion
 acceptance, or cumulative release acceptance. The release declaration records
@@ -95,6 +98,51 @@ power-loss, or every host-lifecycle trial. The owning slice READMEs and normal
 regressions retain those boundaries. The Agent's process transport, native
 codemode adoption, and exact operation identities require the composed host
 checks before activation. Source release labels are not acceptance evidence.
+
+## Targeted management-contract refresh
+
+Checked on 2026-10-25 against the installed coding-agent and Durable 1.4.0
+contracts, published package metadata, and upstream main commit
+`f321e5bdd26b3624bfb2ab182a334d0a5edb698a`:
+
+- The published `latest` metadata for
+  [coding-agent](https://registry.npmjs.org/@earendil-works%2fpi-coding-agent/latest)
+  and [Durable](https://registry.npmjs.org/@earendil-works%2fpi-durable/latest)
+  names 1.4.0. These are publication observations, not loaded-process evidence.
+- Installed `pi-durable/dist/harness/types.d.ts` defines native root creation,
+  conversation creation, submission reacquisition, exact task abort, queued-input
+  withdrawal, task inspection, and watches. Its `Conversation.compact()` contract
+  summarises while work continues and places the result at a native boundary.
+  These APIs support direct native operator sessions without an ordinary primary.
+- Installed `dist/core/agent-session-services.d.ts` separates cwd-bound resources,
+  settings and model services from ordinary session construction. Creating these
+  services is not a passive configuration read or proof that every ordinary
+  extension has native execution support.
+- Installed `docs/cli.md#package-commands` defines `pi update` for Pi itself and
+  `pi update --extensions` for installed packages. These remain separate from
+  dependency refresh, release intake, promotion and a safe process/source switch.
+- Upstream main defines an additional
+  [read-only Harness option](https://github.com/earendil-works/pi/blob/f321e5bdd26b3624bfb2ab182a334d0a5edb698a/packages/durable/src/harness/types.ts).
+  Its contract blocks writes and scheduling while retaining reads and watches.
+  The installed 1.4.0 `HarnessOptions` has no such option. Do not pass that
+  unreleased field to the installed host or claim that ordinary inspection gives
+  equivalent write protection.
+
+The public management adapter in `runtime/evolution.mts` composes current
+worktree and Pi commands. `runtime/upstream.mts` reports its own loaded Pi
+version separately from the published review baseline. It resolves that baseline
+from the common ancestor of main and its configured upstream, not a dirty file
+or an unpublished coverage declaration. `evolution.status` uses local evidence.
+`upstream.status` also checks the two fixed npm publication endpoints with bounded
+reads and reports unavailable metadata explicitly. Neither operation fetches
+remote Git refs, performs cumulative intake, or writes the declaration.
+
+Complete release intake remains with [Evo](../extensions/evo/README.md#release-intake).
+The targeted checks above establish only those contracts. They leave cumulative
+coverage unchanged, including the unreviewed release interval after the declared
+baseline. [Worktree promotion](conventions/worktrees.md) owns composition, gates
+and publication hygiene; the runtime adds no scheduler, release ledger or
+parallel task store.
 
 ## Native host integration contracts
 

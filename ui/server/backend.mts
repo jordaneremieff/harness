@@ -112,6 +112,7 @@ export async function startBackend(options:Options, injection:Partial<Pick<Regis
       if(status.status==='restart-required') injection.onRestart?.();
     });
     development?.build.start();diagnostics?.emit({event:'connection',code:'applied'});
+    void registry.discoverManagedRoots().catch(()=>registry.journal.publish('notice',undefined,{level:'warning',message:'Managed native sessions are unavailable. Existing sessions remain available.',code:'runtime_unavailable'}));
     void registry.agents.refresh().then(scan=>registry.reportCatalog(scan),error=>{
       registry.reportCatalog({state:'failed',error:error instanceof Error?error.message:'Catalog scan was refused.'});
       registry.journal.publish('notice',undefined,{level:'warning',message:'The retained agent catalog is unavailable.',code:'catalog_unavailable'});
@@ -176,8 +177,8 @@ function shutdownBlockCode(error:unknown):string {
   if(error&&typeof error==='object'&&'code' in error&&typeof error.code==='string'&&/^[a-z][a-z0-9_]{0,63}$/.test(error.code))return error.code;
   return 'handoff_blocked';
 }
-async function cli() {
-  if (!process.send) {await main(); return;}
+export async function cli(releaseDirectory?:string) {
+  if (!process.send) {await main(undefined,undefined,releaseDirectory?{release:{directory:releaseDirectory,manifest:await manifestAt(releaseDirectory,true)}}:{}); return;}
   type Start = {kind: string; options: Options; restarts?: number; owner?: boolean; ownerState?:OwnerStateIdentity; release?: {directory:string; manifest:ReleaseManifest; previous?:string}};
   let pending: Start | undefined, app: Awaited<ReturnType<typeof main>> | undefined, restartRequested = false;
   const connectOwner = (state: OwnerStateIdentity) => new Promise<OwnerConnection>((resolve, reject) => {

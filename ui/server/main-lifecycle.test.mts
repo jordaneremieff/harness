@@ -14,12 +14,17 @@ async function fixture() {
   const root=await mkdtemp(join(tmpdir(),'ui-main-lifecycle-')),cwd=join(root,'project'),agent=join(root,'agent'),state=join(root,'state');
   await mkdir(cwd);await mkdir(agent);await mkdir(join(root,'agent-sessions'));return {root,cwd,agent,state};
 }
+function privateEnvironment(context:test.TestContext,agent:string) {
+  const keys=['PI_CODING_AGENT_DIR','PI_HARNESS_FILE','PI_UI_PRIVATE_ORIGIN','PI_UI_PRIVATE_OWNER_LOGIN','PI_UI_PRIVATE_PORT'],previous=keys.map(key=>process.env[key]);
+  process.env.PI_CODING_AGENT_DIR=agent;process.env.PI_HARNESS_FILE='harness.json';for(const key of keys.slice(2))delete process.env[key];
+  context.after(()=>keys.forEach((key,index)=>{const value=previous[index];if(value===undefined)delete process.env[key];else process.env[key]=value;}));
+}
 const assets=new Map([['/',{type:'text/html; charset=utf-8',data:Buffer.from('<title>Fixture</title>') }]]);
 function isolated(root:string,agent:string):Parameters<typeof startBackend>[1] {return {assets,agents:options=>createAgentService({...options,store:join(root,'agent-sessions'),agentDir:agent})};}
 function ready(child:ReturnType<typeof fork>) {return new Promise<{kind:string;url:string}>((resolve,reject)=>{child.once('message',value=>resolve(value as {kind:string;url:string}));child.once('error',reject);child.once('exit',()=>reject(new Error('Child exited before readiness.')));});}
 
 test('actual Registry startup recovers a proven dead owner and refuses a live owner', {timeout:15000},async context=> {
-  const {root,cwd,agent,state}=await fixture();context.after(()=>rm(root,{recursive:true,force:true}));
+  const {root,cwd,agent,state}=await fixture();privateEnvironment(context,agent);context.after(()=>rm(root,{recursive:true,force:true}));
   const module=join(root,'lock.mjs');await writeFile(module,`import {StateStore} from ${JSON.stringify(stateModule)};await StateStore.open(${JSON.stringify(state)});process.send({ready:true});`);
   const child=fork(module,[],{stdio:['ignore','ignore','ignore','ipc']});context.after(()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');});
   await ready(child);const options={cwd,port:0,pi:'pi',stateDir:state};
@@ -31,7 +36,7 @@ test('actual Registry startup recovers a proven dead owner and refuses a live ow
 });
 
 test('routine backend restart keeps open access and acknowledged workspace state', {timeout:15000},async context=> {
-  const {root,cwd,agent,state}=await fixture();const apps:Awaited<ReturnType<typeof startBackend>>[]=[];
+  const {root,cwd,agent,state}=await fixture();privateEnvironment(context,agent);const apps:Awaited<ReturnType<typeof startBackend>>[]=[];
   context.after(async()=>{for(const app of apps)await app.close();await rm(root,{recursive:true,force:true});});
   const options={cwd,port:0,pi:'pi',stateDir:state};let app=await startBackend(options,isolated(root,agent));apps.push(app);
   assert.equal(new URL(app.url).hash,'');

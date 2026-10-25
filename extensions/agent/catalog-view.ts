@@ -10,6 +10,8 @@
  */
 
 import { Value } from "typebox/value";
+import { NativeIntentMetadataSchema } from "./effort-schema.ts";
+import type { NativeIntentMetadata } from "./durable-controls.ts";
 import { boundModelEvidence, MODEL_EVIDENCE_BUDGET_BYTES, ModelEvidenceSchema, type ModelEvidence } from "./model-evidence.ts";
 import { AgentConversationSummarySchema } from "./observation-schema.ts";
 import { ProfileHintsSchema, type ProfileHints } from "./profile-schema.ts";
@@ -45,8 +47,15 @@ export interface CatalogViewRow {
 	readonly health?: unknown;
 }
 
+export interface CatalogIntentClaims {
+	readonly rows: Readonly<Record<string, NativeIntentMetadata | null>>;
+	readonly coverage: { readonly complete: boolean; readonly omitted: number };
+}
+
 /** Bounded projection of one host's conversations. */
 export interface CatalogView {
+	/** Optional native claims. Absence means unsupported or unavailable, never an empty claim set. */
+	readonly intentClaims?: CatalogIntentClaims;
 	/** Optional intervention hints; absence remains unknown, even with complete coverage. */
 	readonly attention?: CatalogAttentionHints;
 	/** Optional sampled model evidence; absence means unknown, never zero usage. */
@@ -169,7 +178,25 @@ function validateAttentionHints(candidate: Partial<CatalogView>): void {
 	}
 }
 
+function validateIntentOwner(identity: string, storageId: string): void {
+	const owner = identity.split(":");
+	if (owner[0] !== storageId || owner.length > 2 || owner[1] !== undefined && (!/^[1-9]\d*$/u.test(owner[1]) || !Number.isSafeInteger(Number(owner[1])))) throw new Error("Native intent belongs to a different storage");
+}
+
+function validateIntentClaims(candidate: Partial<CatalogView>): void {
+	const claims = candidate.intentClaims;
+	if (claims === undefined) return;
+	if (!candidate.storageId || !claims || typeof claims !== "object" || !claims.rows || typeof claims.rows !== "object" || Array.isArray(claims.rows)) throw new Error("Invalid native intent projection");
+	if (!claims.coverage || typeof claims.coverage.complete !== "boolean" || !Number.isSafeInteger(claims.coverage.omitted) || claims.coverage.omitted < 0 || claims.coverage.complete && claims.coverage.omitted !== 0) throw new Error("Invalid native intent coverage");
+	const rows = new Map(candidate.rows?.map(row => [row.id, row]));
+	for (const [identity, metadata] of Object.entries(claims.rows)) {
+		const row = rows.get(identity);
+		validateIntentOwner(identity, candidate.storageId);
+		if (!row || metadata !== null && (!Value.Check(NativeIntentMetadataSchema, metadata) || metadata.cwd !== row.cwd)) throw new Error("Native intent belongs to a different conversation or location");
+	}
+}
 function validateHints(candidate: Partial<CatalogView>): void {
+	validateIntentClaims(candidate);
 	validateAttentionHints(candidate);
 	if (candidate.modelEvidence !== undefined && (!Value.Check(ModelEvidenceSchema, candidate.modelEvidence) || byteLength(candidate.modelEvidence) > MODEL_EVIDENCE_BUDGET_BYTES))
 		throw new Error("Invalid model evidence");
@@ -205,6 +232,21 @@ export function parseCatalogView(value: unknown): CatalogView {
 	if (byteLength(view) > CATALOG_VIEW_BUDGET_BYTES) throw new Error("Agent view exceeds its byte budget");
 	if (!Number.isFinite(Date.parse(view.updatedAt)) || new Date(view.updatedAt).toISOString() !== view.updatedAt) throw new Error("Agent view has an invalid updatedAt");
 	return view;
+}
+
+/** Retain whole claims only; omission never changes their text or weakens their declared scope. */
+export function withIntentClaims(view: CatalogView, source: CatalogIntentClaims): CatalogView {
+	const { intentClaims: _previous, ...base } = view;
+	const identities = new Set(base.rows.map(row => row.id));
+	const rows: Record<string, NativeIntentMetadata | null> = Object.create(null);
+	let omitted = source.coverage.omitted;
+	const result = () => ({ ...base, intentClaims: { rows, coverage: { complete: source.coverage.complete && omitted === 0, omitted } } });
+	for (const [identity, metadata] of Object.entries(source.rows)) {
+		if (!identities.has(identity)) { omitted++; continue; }
+		rows[identity] = metadata;
+		if (byteLength(result()) > CATALOG_VIEW_BUDGET_BYTES) { delete rows[identity]; omitted++; }
+	}
+	return byteLength(result()) > CATALOG_VIEW_BUDGET_BYTES ? base : parseCatalogView(result());
 }
 
 /** Add optional hints without evicting base operational rows from their budget. */

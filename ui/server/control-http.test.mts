@@ -11,16 +11,19 @@ import type {AgentAdapter} from './registry.mts';
 import {readControlDescriptor} from './control-discovery.mts';
 import {runControl} from '../cli/control.mts';
 import type {ControlRequest,ControlReceipt,ControlLayout} from '../shared/control.ts';
-import {workspaceTabKey,type Workspace,type WorkspaceTab} from '../shared/api.ts';
+import {workspaceTabKey,type OperationView,type Workspace,type WorkspaceTab} from '../shared/api.ts';
 
 class Page extends EventEmitter {writableLength=0;onRequest?:(request:ControlRequest)=>void;writeHead(){}flushHeaders(){}write(text:string){if(text.includes('event: control.request\n'))this.onRequest?.(JSON.parse(/^data: (.+)$/m.exec(text)?.[1]??'{}').data);return true;}end(){this.emit('close');}get response(){return this as unknown as ServerResponse;}}
 type Reply={status:number;body:{ok:true;data:unknown}|{ok:false;error:{code:string}}};
 function data<T>(reply:Reply):T {assert.equal(reply.body.ok,true);return reply.body.data as T;}
 async function fixture(t:TestContext) {
   const directory=await mkdtemp(join(tmpdir(),'ui-control-http-')),project=join(directory,'project'),stateDir=join(directory,'state');await mkdir(project);await writeFile(join(project,'notes.md'),'PRIVATE FILE CONTENT');
+  const keys=['PI_CODING_AGENT_DIR','PI_HARNESS_FILE','PI_UI_PRIVATE_ORIGIN','PI_UI_PRIVATE_OWNER_LOGIN','PI_UI_PRIVATE_PORT'],previous=keys.map(key=>process.env[key]);
+  process.env.PI_CODING_AGENT_DIR=join(directory,'agent');process.env.PI_HARNESS_FILE='harness.json';for(const key of keys.slice(2))delete process.env[key];
+  t.after(()=>keys.forEach((key,index)=>{const value=previous[index];if(value===undefined)delete process.env[key];else process.env[key]=value;}));
   const forbidden=async():Promise<never>=>{throw new Error('Input, preparation and process work are forbidden.');};
   const catalog={rows:[],nextCursor:null,coverage:{complete:true,omitted:0},stale:false,scan:{state:'ready' as const,complete:true,visited:0,skipped:0,omitted:0}};
-  const agents:AgentAdapter={roster:()=>catalog,rosterRow:()=>undefined,lookup:forbidden,imageInputAvailable:()=>false,refresh:async()=>catalog.scan,prepare:forbidden,select:forbidden,reconnect:forbidden,history:forbidden,image:forbidden,inspect:forbidden,inventory:forbidden, command:forbidden, threads:forbidden,thread:forbidden,submit:forbidden,retrySubmit:forbidden,abort:forbidden,configure:()=>{throw new Error('No configuration');},hide:async()=>{},disconnectWorkspace:async()=>{},close:async()=>{}};
+  const agents:AgentAdapter={roster:()=>catalog,rosterRow:()=>undefined,lookup:forbidden,imageInputAvailable:()=>false,refresh:async()=>catalog.scan,prepare:forbidden,select:forbidden,reconnect:forbidden,history:forbidden,image:forbidden,inspect:forbidden,inventory:forbidden, command:forbidden, threads:forbidden,thread:forbidden,submit:forbidden,retrySubmit:forbidden,control:forbidden,abort:forbidden,configure:()=>{throw new Error('No configuration');},hide:async()=>{},disconnectWorkspace:async()=>{},close:async()=>{}};
   const app=await startBackend({cwd:project,port:0,pi:'not-executed',stateDir},{agents:()=>agents,assets:new Map([['/',{data:Buffer.from('<html><head></head><body></body></html>'),type:'text/html'}]])});
   t.after(async()=>{await app.close();await rm(directory,{recursive:true,force:true});});
   const origin=app.http.boundary.origin,descriptor=await readControlDescriptor(stateDir);
@@ -36,6 +39,20 @@ test('real HTTP opens local control and preserves browser request guards and bou
   const f=await fixture(t);assert.equal((await f.request('/api/control/layout')).status,200);assert.equal((await f.browser('/api/control/layout')).status,200);assert.equal((await f.agent('/api/bootstrap')).status,200);assert.equal((await f.request('/api/control/layout','GET',undefined,{Origin:'http://127.0.0.1:1'})).status,403);
   const layout=data<ControlLayout>(await f.agent(`/api/control/layout?workspace=${f.workspace.id}`));assert.equal(layout.workspaces[0]?.id,f.workspace.id);assert.equal(layout.workspaces[0]?.enabled,true);assert.doesNotMatch(JSON.stringify(layout),/PRIVATE|credential|draft|prompt/);
   assert.equal((await f.agent('/api/control/requests','POST',{workspaceId:f.workspace.id,intent:{action:'notice',text:'x'.repeat(17000)}})).status,413);assert.equal((await f.agent('/api/control/requests','POST',{workspaceId:f.workspace.id,intent:{action:'start',identity:'not-allowed'}})).status,400);assert.equal(f.registry.sessions.size,0);assert.deepEqual(await f.registry.operations.list(f.workspace.id),[]);
+});
+
+test('native run-stop completes through the control HTTP route and real operation store',async t=> {
+  const f=await fixture(t),identity='00000000-0000-4000-8000-000000000001',calls:unknown[]=[];
+  t.mock.method(f.registry.agents,'control',async(...args:unknown[])=>{calls.push(args);return {runId:17,state:'stopped'};});
+  const scope=`?workspace=${f.workspace.id}`,body={method:'run-stop',params:{runId:17}};
+  const {operationId}=data<{operationId:string}>(await f.request(`/api/operations${scope}`,'POST',{kind:'agent.control',target:{kind:'agent',identity}}));
+  const path=`/api/agents/${identity}/control${scope}`,headers={'Idempotency-Key':operationId};
+  const reply=await f.request(path,'POST',body,headers),result=data<OperationView>(reply);
+  assert.equal(reply.status,200);assert.equal(result.state,'completed');assert.equal(result.error,undefined);
+  assert.deepEqual(result.receipt,{kind:'rpc',result:{value:{runId:17,state:'stopped'},truncated:false}});
+  assert.deepEqual(calls,[[identity,'run-stop',{runId:17,sessionId:identity,requestId:`ui:${operationId}`}]]);
+  assert.deepEqual(data<OperationView>(await f.request(path,'POST',body,headers)),result);assert.equal(calls.length,1);
+  assert.deepEqual(await f.registry.operations.get(operationId),result);
 });
 
 test('control read rate exhaustion leaves browser reads and acknowledgments admitted',async t=> {

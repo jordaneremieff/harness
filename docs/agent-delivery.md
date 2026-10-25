@@ -143,9 +143,11 @@ only the act that requires a missing decision.
 
 ## Coordinate with related efforts
 
-At kickoff and before each promotion, publish the ordinary primary's purpose,
+At kickoff and before each promotion, publish your invoking session's purpose,
 integration intent, declared scope, carried operator direction, and contact
-thread through `agent_intent`. Read the related efforts in its result or in
+thread through `agent_intent`. An ordinary primary publishes its own claim; a
+native root or child publishes only its own conversation claim without a primary
+or terminal. The tool accepts no target identity. Read the related efforts in its result or in
 `agent_status`. Update or clear intent when integration completes; a completed
 plan must not remain the declared next action. Host facts and session intent
 claims are different evidence; unknown liveness and incomplete coverage do not
@@ -154,6 +156,16 @@ prove absence. Awareness appears in per-run context, explicit tool reads, and
 create unsolicited transcript messages. Endpoint records and local roster
 refresh still expose the current view. This excludes automatic effort notices,
 not direct messages, check-ins, or peer-thread notices.
+
+Current-source readers see native claims only after the owning host publishes
+its coalesced catalogue view. Discovery includes the reader's sessions root and
+retained existing-source roots, with liveness from the host writer claim. Readers
+running the unchanged original Agent source inspect only ordinary `.primaries`
+descriptors and never see native claims. Do not assume that a new writer updates
+an existing reader. Scan limits apply across ordinary and native records;
+cut-off scans report partial coverage and unsupported producers count separately
+from omitted claims. Retained claims keep their full authority and scope; byte
+pressure omits a whole claim instead of shortening those fields.
 
 Use `agent_send` for direct contact with a live effort primary. The operator
 also sends direct messages from `/agent`'s Related efforts view. A delivery receipt
@@ -173,7 +185,8 @@ hold, release, or continuing condition. Rejoin to replace your contribution and
 cite the source exchange. Threads and Related efforts display these declarations;
 a member's release is not consensus, permission, or proof of machine availability.
 
-Before a full suite, read untargeted `agent_status`. Declare the start of a full
+Before a full suite, read untargeted `agent_status`. A native coordinator declares
+its own claim rather than another session's claim. Declare the start of a full
 gate or promotion window in your own integration intent with `scope.fullGate`
 set to `true`, and clear that claim on release. Run one full gate per machine at
 a time. Notify only efforts that requested the release; do not broadcast routine

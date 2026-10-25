@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {mkdtemp,mkdir,writeFile,readFile,realpath,chmod,rm,lstat,access,rename,utimes} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,readFile,realpath,chmod,rm,lstat,access,rename,utimes,copyFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
@@ -8,7 +8,7 @@ import {execFile} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 import {publishSnapshot} from './release-stage.mts';
-import {inventory,manifestAt,removeStagingTree,sealTree,sha256} from './release-store.mts';
+import {inventory,manifestAt,removeStagingTree,sealTree,sha256,RELEASE_LIMITS} from './release-store.mts';
 import {RELEASE_FORMAT,BROWSER_API,type ReleaseManifest} from '../shared/release.ts';
 import {OWNER_PROTOCOL} from '../shared/owner.ts';
 import {STALE_ASSETS_MESSAGE} from './browser-assets.mts';
@@ -71,20 +71,21 @@ const OLD=new Date('2026-01-01T00:00:00Z'),NEW=new Date('2026-01-02T00:00:00Z');
 async function sourceFixture(context:test.TestContext){
   const base=await realpath(await mkdtemp(join(tmpdir(),'ui-stage-source-'))),source=join(base,'checkout'),state=join(base,'state');
   context.after(async()=>{for(const entry of await inventory(base))if(entry.directory)await chmod(join(base,entry.path),0o700);await rm(base,{recursive:true});});
-  for(const directory of ['ui/server','ui/rpc','ui/agents','ui/shared','ui/web','ui/dist/web','ui/dist/shared','ui/cli','transport','node_modules/fixture'])await mkdir(join(source,directory),{recursive:true});
-  for(const directory of ['ui/server','ui/rpc','ui/agents','ui/cli','transport'])await writeFile(join(source,directory,'index.mts'),'export {};');
+  for(const directory of ['ui/server','ui/rpc','ui/agents','ui/shared','ui/web','ui/dist/web','ui/dist/shared','ui/cli','transport','runtime','extensions/agent','scripts','node_modules/fixture'])await mkdir(join(source,directory),{recursive:true});
+  for(const directory of ['ui/server','ui/rpc','ui/agents','ui/cli','transport','runtime','extensions/agent','scripts'])await writeFile(join(source,directory,'index.mts'),'export {};');
   await writeFile(join(source,'ui/web/tsconfig.json'),JSON.stringify({include:['./*.ts','../shared/api.ts'],compilerOptions:{rootDir:'..',outDir:'../dist'}}));
   await writeFile(join(source,'ui/web/app.ts'),'export const app=1;');await writeFile(join(source,'ui/shared/api.ts'),'export const api=1;');
   await writeFile(join(source,'ui/web/index.html'),'<!doctype html><html><head></head><body></body></html>');await writeFile(join(source,'ui/web/style.css'),'body{}');await writeFile(join(source,'ui/web/favicon.svg'),'<svg/>');
   await writeFile(join(source,'node_modules/fixture/index.js'),'module.exports={};');
-  await writeFile(join(source,'package.json'),'{}');await writeFile(join(source,'package-lock.json'),'{}');await writeFile(join(source,'.gitignore'),'ui/dist/\nnode_modules/\n');
+  await writeFile(join(source,'package.json'),'{}');await writeFile(join(source,'package-lock.json'),'{}');await writeFile(join(source,'LICENSE'),'Fixture licence');
+  await writeFile(join(source,'ui/server/main.mts'),'export async function main(){return 0;}');await writeFile(join(source,'ui/server/backend.mts'),'export async function cli(){}');await writeFile(join(source,'.gitignore'),'ui/dist/\nnode_modules/\n');
   for(const path of ['ui/web/tsconfig.json','ui/web/app.ts','ui/shared/api.ts'])await utimes(join(source,path),OLD,OLD);
   await git(source,'init','--quiet');await git(source,'add','--all');await git(source,'commit','--quiet','-m','fixture');
   const emit=async(time:Date)=>{await writeFile(join(source,'ui/dist/web/app.js'),'export const app=1;');
     for(const name of ['api','version','files','health','control','inspection'])await writeFile(join(source,'ui/dist/shared',`${name}.js`),'export {};');
     for(const directory of ['web','shared'])for(const entry of await inventory(join(source,'ui/dist',directory)))await utimes(join(source,'ui/dist',directory,entry.path),time,time);};
   const stage=()=>run(process.execPath,['--experimental-vm-modules',releaseCli,'stage','--source',source,'--state-dir',state]);
-  return {source,emit,stage};
+  return {source,state,emit,stage};
 }
 test('staging refuses a checkout with no emitted browser modules',async context=>{
   const f=await sourceFixture(context);
@@ -101,6 +102,44 @@ test('staging seals emitted browser modules built after the committed source',as
   const staged=JSON.parse((await f.stage()).stdout) as {directory:string;manifest:{id:string;files:Record<string,string>}};
   assert.match(staged.manifest.id,/^[a-f0-9]{64}$/);assert.ok('ui/dist/web/app.js' in staged.manifest.files);
 });
+test('the packaged runtime stages a later release from its canonical development checkout',async context=>{
+  const f=await sourceFixture(context),checkout=fileURLToPath(new URL('../../',import.meta.url));
+  for(const name of ['ui/server','ui/rpc','ui/agents','ui/shared','ui/cli','transport','runtime','extensions/agent','scripts','ui/dist','node_modules']) {
+    for(const entry of await inventory(join(checkout,name),name==='node_modules',name==='node_modules'?RELEASE_LIMITS.bytes:128*1024*1024,name==='node_modules'?RELEASE_LIMITS.entries:4096)) {
+      if(entry.directory||entry.path.endsWith('.test.mts')||entry.path.endsWith('.test.ts'))continue;
+      const path=join(name,entry.path);await mkdir(join(f.source,path,'..'),{recursive:true});await copyFile(join(checkout,path),join(f.source,path));
+    }
+  }
+  await writeFile(join(f.source,'package.json'),JSON.stringify({name:'fixture',type:'module',license:'MIT'}));await writeFile(join(f.source,'LICENSE'),await readFile(join(checkout,'LICENSE')));
+  await git(f.source,'add','--all');await git(f.source,'commit','--quiet','-m','Package release implementation');
+  const first=JSON.parse((await f.stage()).stdout) as {directory:string;manifest:{id:string}};
+  await writeFile(join(f.source,'ui/web/style.css'),'body{color:inherit}');await git(f.source,'commit','--quiet','--all','-m','Change stylesheet');
+  const {spawn}=await import('node:child_process');
+  const {discoverRuntime,callRuntime}=await import('../../runtime/client.mts');
+  const isolated=await realpath(await mkdtemp(join(tmpdir(),'rt-'))),agentDir=join(isolated,'a'),stateDir=join(isolated,'r'),temp=join(isolated,'t'),sourceRoot=join(first.directory,'ui/package');
+  await mkdir(temp,{mode:0o700});
+  const env:NodeJS.ProcessEnv={...process.env,TMPDIR:temp,PI_CODING_AGENT_DIR:agentDir,PI_HARNESS_FILE:'harness.json',PI_AGENT_SESSIONS_DIR:join(agentDir,'agent-sessions')};
+  for(const key of ['PI_UI_PRIVATE_ORIGIN','PI_UI_PRIVATE_OWNER_LOGIN','PI_UI_PRIVATE_PORT'])delete env[key];
+  const child=spawn(process.execPath,[join(sourceRoot,'runtime/cli.mts'),'serve','--source-root',sourceRoot,'--cwd',await realpath(f.source),'--agent-dir',agentDir,'--state-dir',stateDir,'--ui-state-dir',f.state,'--port','0'],{env,stdio:['ignore','pipe','pipe']});
+  const exited=new Promise<void>((accept,reject)=>{child.once('exit',()=>accept());child.once('error',reject);});let output='',errors='';child.stderr.on('data',data=>{errors=(errors+data.toString()).slice(-8192);});
+  const close=async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGTERM');await exited;await rm(isolated,{recursive:true,force:true});};
+  context.after(close);
+  try {
+    const descriptor=await new Promise<{protocol:string;pid:number}>((accept,reject)=>{
+      const timer=setTimeout(()=>reject(new Error(`Runtime descriptor deadline: ${errors}`)),15000);
+      child.once('error',error=>{clearTimeout(timer);reject(error);});
+      child.once('exit',()=>{clearTimeout(timer);reject(new Error(`Runtime exited before discovery: ${errors}`));});
+      child.stdout.on('data',data=>{output+=data.toString();if(output.length>65536){clearTimeout(timer);reject(new Error('Runtime descriptor exceeds its bound'));return;}const end=output.indexOf('\n');if(end<0)return;clearTimeout(timer);try{accept(JSON.parse(output.slice(0,end)));}catch(error){reject(error);}});
+    });
+    assert.equal(descriptor.protocol,'harness.runtime/1');assert.equal(descriptor.pid,child.pid);
+    assert.equal((await discoverRuntime({agentDir,stateDir})).pid,child.pid);
+    const result=await callRuntime({operation:'release.stage'},{agentDir,stateDir});assert.ok(result.ok,JSON.stringify(result));
+    const next=result.value as {directory:string;manifest:{id:string;files:Record<string,string>}};
+    assert.notEqual(next.manifest.id,first.manifest.id);assert.ok('ui/package/runtime/cli.mts' in next.manifest.files);
+    assert.equal(await readFile(join(next.directory,'ui/web/style.css'),'utf8'),'body{color:inherit}');await manifestAt(next.directory,true);
+  } finally {await close();}
+});
+
 test('staging keeps the newest commit subjects in the release, newest first, for the page to list',async context=>{
   const f=await sourceFixture(context);await f.emit(NEW);
   await writeFile(join(f.source,'ui/web/style.css'),'body{margin:0}');await git(f.source,'commit','--quiet','--all','-m','Second change\twith a tab');

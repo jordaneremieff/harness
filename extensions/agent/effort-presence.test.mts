@@ -5,6 +5,8 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
+import { AgentCatalog } from "./catalog.ts";
+import { boundCatalogView } from "./catalog-view.ts";
 import { PRIMARY_ENDPOINT_VERSION, primaryEndpointPath } from "./primary-channel.ts";
 import { discoverPrimaryLocation, readRelatedEfforts, type PrimaryIntentClaim } from "./effort-presence.ts";
 
@@ -215,4 +217,48 @@ it("does not claim a shared machine gate for foreign-host records", async (t) =>
 	const page = await readRelatedEfforts(root, { ...self(), repository: "/work/common", intentClaim: claim });
 	assert.equal(page.efforts[0]?.liveness, "unknown");
 	assert.deepEqual(page.efforts[0]?.sharedSubstrates, ["repository", "cwd"]);
+});
+
+function unsupportedNative(root: string) {
+	return new AgentCatalog(root).create({ cwd: "/work/topic", agentDir: root, packageDir: root, model: { provider: "fixture", modelId: "model" }, thinkingLevel: "off", trust: true });
+}
+
+it("counts unsupported native producers separately from omitted claims and contains corrupt records", async t => {
+	const root = rootFor(t);
+	unsupportedNative(root);
+	let page = await readRelatedEfforts(root, self());
+	assert.equal(page.coverage.unsupported, 1);
+	assert.equal(page.coverage.omitted, 0);
+	assert.equal(page.coverage.complete, true);
+	writeFileSync(join(new AgentCatalog(root).root, `${randomUUID()}.json`), "corrupt catalogue record");
+	page = await readRelatedEfforts(root, self());
+	assert.equal(page.coverage.unsupported, 1);
+	assert.equal(page.coverage.unreadable, 1);
+	assert.equal(page.coverage.omitted, 0);
+	assert.equal(page.coverage.complete, false);
+	assert.deepEqual(page.coverage.reasons, ["native-record-unreadable"]);
+});
+
+it("does not count an omitted native claim again as an unsupported producer", async t => {
+	const root = rootFor(t), record = unsupportedNative(root), catalog = new AgentCatalog(root);
+	const view = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: record.storageId, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, modifiedAt: 1, owner: "here", state: "idle", cost: 0, partial: false }] });
+	writeFileSync(catalog.path(record.storageId), JSON.stringify({ ...record, view: { ...view, intentClaims: { rows: {}, coverage: { complete: false, omitted: 1 } } } }));
+	const page = await readRelatedEfforts(root, self());
+	assert.equal(page.coverage.unsupported, undefined);
+	assert.equal(page.coverage.omitted, 1);
+	assert.equal(page.coverage.complete, false);
+	assert.deepEqual(page.coverage.reasons, ["native-intent-incomplete"]);
+});
+
+it("shares visit, result and byte caps across ordinary and native roots without counting unsupported claims as omissions", async t => {
+	const root = rootFor(t);
+	for (let index = 0; index < 140; index++) { record(root); unsupportedNative(root); }
+	const page = await readRelatedEfforts(root, self());
+	assert.equal(page.coverage.visited, page.limits.visits);
+	assert.equal(page.efforts.length, page.limits.results);
+	assert.equal(page.coverage.omitted, 140 - page.limits.results);
+	assert.equal(page.coverage.unsupported, page.limits.visits - 140);
+	assert.equal(page.coverage.complete, false);
+	assert.ok(page.coverage.reasons.includes("visit-limit"));
+	assert.ok(Buffer.byteLength(JSON.stringify(page)) <= page.limits.bytes);
 });

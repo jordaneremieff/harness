@@ -24,7 +24,7 @@ Choose the surface that serves your task:
 | Use an existing agent as the main terminal conversation | [Standalone terminal attachment](#standalone-terminal-attachment). |
 | Delegate and receive an answer | [Agent collaboration and placement](#agent-collaboration-and-placement); native callers also [await exact peer results](#await-exact-peer-results). |
 | Reuse an expert or develop a shared outcome | [Standing agents and expertise](#standing-agents-and-expertise) and [peer threads](#peer-threads). |
-| Coordinate with another primary | [Efforts, presence, and intent](#efforts-presence-and-intent); intent is a claim, not authority or a lock. |
+| Coordinate with another effort | [Efforts, presence, and intent](#efforts-presence-and-intent); intent is a claim, not authority or a lock. |
 | Understand lifetime, delivery, or recovery | [Runtime and identity](#runtime-and-identity) and [recovery and delivery](#recovery-and-delivery). |
 
 For task contracts, permission decisions, review, and acceptance, use
@@ -59,9 +59,10 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
 | `agent_configure` | Change an idle conversation's name, exact model, or reasoning level. |
 | `agent_profile` | Read a complete bounded profile, or update role and expertise with `expectedRevision`. Reads start no host. A conflict returns the current profile without a change. |
+| `agent_intent` | Publish or clear the invoking session's intent claim. Native conversations persist their own claim without an ordinary primary. Claims are not locks or authority. |
 | `agent_fork` | Create an idle native fork at an entry or current leaf. |
 | `agent_rewind` | Fork before a mistaken entry and submit a correction. Files remain current. |
-| `agent_compact` | Abort another conversation's active work, then run native compaction. Self-compaction uses its completed tool boundary. |
+| `agent_compact` | Run native compaction without stopping active work or withdrawing queued inputs. The summary applies at the next native boundary. Self-compaction uses its completed tool boundary. |
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths; optional `checkInMinutes` overrides it and 0 disables it. |
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
@@ -1068,8 +1069,8 @@ projection bounds its output; it is not a bounded storage scan.
 
 Lifecycle boundaries stay with the creating conversation. Its reset or ordinary
 abort does not reach background agent work or its reporters; a background abort
-crosses those boundaries within the storage. Compacting another conversation
-aborts the native agents it reaches first; self-compaction does not. Idle host
+crosses those boundaries within the storage. Compaction preserves active work and
+queued inputs; its summary applies at a native boundary. Idle host
 retirement cannot proceed while same-storage agents hold live work. An agent's
 foreign detached host survives its creator's host retirement. Result delivery reacquires a retired owner host. Answers,
 reports, and check-ins follow each task's retained request route; the
@@ -1080,6 +1081,22 @@ Agents are eligible for the operator's bounded roster without a depth-based
 exclusion. Catalog, storage-scan, and display limits still apply. The operator
 can steer, abort, or reset a retained agent by canonical identity without routing
 through its creator.
+
+Browser Stop selects a native admitted-input group, not whichever generation is
+current when the request arrives. It follows that group's generation handovers,
+withdraws its exact queued delegations, and preserves unrelated work in a shared
+agent. An answered child does not hide its surviving background descendants.
+Stop follows their original input links without selecting a newer child group.
+Partial cancellation and unavailable ownership remain explicit. See the
+[public control contract](../../docs/agent-host-contract.md#run-scope-and-run-stop)
+for selectors, native ownership, cancellation races, and coverage limits.
+
+Managed browser namespaces use the same Agent manager and native storage. Setup
+binds each namespace to its selected Agent source and Pi installation, then runs
+an independent Agent recovery owner. The browser is a client, not the session
+scheduler. Existing profiles and handles stay in their owning namespace. The
+source-route inventory carries deployment paths, not copied profiles or task
+state. See [namespace creation and recovery](../../docs/agent-host-contract.md#native-namespace-creation-and-recovery).
 
 An answer settles a request; it does not represent a pause for later work.
 Use report mode for interim progress. Put the substantive result or exact
@@ -1476,7 +1493,13 @@ RPC and extension-generated input do not supply the fallback. The extension does
 not interpret another extension's prompts or entry formats. A session name or
 declared purpose still supplies useful context.
 
-`agent_intent` is an ordinary-primary tool. Publish with `action: "publish"`,
+`agent_intent` publishes only the invoking ordinary primary or native
+conversation. It takes no target identity. Native conversations retain claims in
+their own conversation metadata; a native root or child needs no ordinary primary
+or terminal. Forks do not inherit their parent's claim. Older replayed tool writes
+do not replace a newer publish or clear.
+
+Publish with `action: "publish"`,
 `purpose`, `integration`, `authority`, `scope: { paths, branches, fullGate? }`, and
 an optional `contactThread`. Clear with `action: "clear"` alone. The tool declares
 one object schema so models receive the action and publish fields directly.
@@ -1484,15 +1507,27 @@ Execution rejects missing publish fields and any publish fields on clear.
 The host supplies the
 claim's update time. Repository-relative paths use exact or component-prefix
 matching, not globs. `scope.fullGate` declares a planned full-gate run; it is not
-a reservation or lock. The endpoint's total byte bound still applies to a claim.
+a reservation or lock. The ordinary endpoint or native catalogue view's total
+byte bound still applies to a claim. Stored claims and retained prompt claims keep
+their authority and scope unchanged; a claim that does not fit is omitted as a
+whole rather than weakened.
 Publishing returns the recorded host facts, the labeled claim, and current effort
 awareness. Clearing removes the declared claim, not the observed purpose. Update
 or clear intent when integration completes, before the terminal report, so a
 finished plan does not remain current. A settled model turn is not proof of
 integration completion, so the host does not infer that transition.
 
+Current-source readers discover native claims from catalogue views in their own
+sessions root and retained existing-source roots. The owning host publishes the
+view through its coalesced native commit path; a commit is not immediate peer
+visibility. Host writer claims supply native liveness. Absent or dead writers do
+not appear; unknown ownership remains unknown. Readers running the unchanged
+original Agent source read only ordinary `.primaries` descriptors and never see
+native claims. Updating one writer does not update another reader.
+
 The bounded view lists live efforts on this machine within the configured
-`PI_AGENT_SESSIONS_DIR`, including efforts in other repositories. It shows
+`PI_AGENT_SESSIONS_DIR` and its retained existing-source roots, including efforts
+in other repositories. It shows
 purpose-level claims for those without a shared repository or cwd, and full
 intent for those with either shared location. Shared locations
 and declared machine-gate use are marked. Agents judge purpose-level relevance;
@@ -1518,7 +1553,12 @@ transcript entries or send automatic effort notices. Endpoint publication and
 local roster refresh remain independent of transcript delivery. Direct messages,
 check-ins, and thread notices retain their existing delivery behavior. There is
 no presence polling, file watcher, automatic model wake, or new store. Every view
-reports its finite coverage and omissions.
+reports its finite coverage and omissions. Ordinary descriptors, native catalogue
+entries and native claim rows share the visit, result and byte caps in the tool
+result. Ordinary descriptors consume visits first, so a large ordinary sample
+leaves fewer visits for native roots. A cut-off scan reports partial coverage.
+Native producers without intent support count separately from omitted claims;
+their absence is not a lost supported claim.
 
 Fleet and selected-session status do not read caller identity. An ordinary
 overview uses it only for the optional effort-awareness section. If identity
@@ -1592,6 +1632,16 @@ The host calls public `createAgentSessionServices()` at the selected cwd with
 its own EventBus. This preserves settings, configured package routing, resource
 loading, project trust, and configured provider registrations. `ModelRuntime`
 supplies Durable's public model interface directly.
+
+Each native runner explicitly selects its sibling `extensions/agent/index.ts`
+before configured extension factories run. Only configured local package or
+extension references to an `extensions/agent/index.ts` entrypoint redirect to that
+selected source. Other configured packages, extensions, skills and prompts keep
+their settings and SDK project-trust scopes. The selected-source settings adapter
+keeps SDK changes in the current process without rewriting global or project
+settings files. Settings load errors retain their global or project scope and
+source path in reports and returned SDK errors. Untrusted project settings stay
+deferred until Pi grants project trust.
 
 Trust uses the explicit decision when supplied, then the loaded extension
 handlers, saved decision, and settings default. A headless unresolved `ask`

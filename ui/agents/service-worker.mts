@@ -1,3 +1,4 @@
+import type {NativeControlName, JsonObject} from './contract.mts';
 import { parentPort, workerData } from "node:worker_threads";
 import { nativeImage } from "./images.mts";
 import { AgentError } from "./client.mts";
@@ -7,7 +8,7 @@ import { transferFrame, transferInspect, transferSnapshot, transferThread } from
 interface Request { id: number; member: string; args: unknown[] }
 const port = parentPort;
 if (!port) throw new Error("Agent service worker requires a parent port.");
-const service = new AgentService({ store: workerData.store, stateDir: workerData.stateDir, installationId: workerData.installationId, agentDir: workerData.agentDir,
+const service = new AgentService({ store: workerData.store, stateDir: workerData.stateDir, installationId: workerData.installationId, agentDir: workerData.agentDir, readerPath:workerData.readerPath,
   onImageInput: (...args) => port.postMessage({ event: "imageInput", args }),
   frameProjection: transferFrame,
   onRoster: page => port.postMessage({ event: "roster", args: [page] }),
@@ -40,6 +41,7 @@ async function invoke(member: string, args: unknown[], signal?: AbortSignal): Pr
     case "thread": return transferThread(await service.thread(identity, args[1] as string, args[2] as ThreadReadOptions, signal));
     case "submit": return service.submit(identity, args[1] as SubmitInput);
     case "retrySubmit": return service.retrySubmit(identity, args[1] as SubmitInput);
+    case "control": return service.control(identity,args[1] as NativeControlName,args[2] as JsonObject);
     case "abort": return service.abort(identity);
     case "inventory": return service.inventory(identity, signal);
     case "command": return service.command(identity, args[1] as CommandInput);

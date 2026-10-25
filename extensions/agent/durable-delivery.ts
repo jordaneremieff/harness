@@ -103,6 +103,12 @@ export interface DurableDeliveryOptions {
 	readonly onIdle?: () => void;
 	/** Target host acquisition; defaults to `acquireHost`. Tests inject a fake backed by a real Harness. */
 	readonly acquire?: typeof acquireHost;
+	/** Resolve native namespace ownership; undefined means a separately verified ordinary target. */
+	readonly readTarget?: (identity: string) => CatalogRecord | undefined;
+	/** Connect through the resolved target's retained source and installation. */
+	readonly connectTarget?: (record: CatalogRecord) => Promise<HostConnection>;
+	/** Release the namespace resolver after target links and in-flight delivery close. */
+	readonly onClose?: () => void | Promise<void>;
 	/** Base delay after a transient failure; doubles to 30 s. Defaults to 500 ms. */
 	readonly retryDelayMs?: number;
 	/** Root of the primary endpoint directory; defaults to `PI_AGENT_SESSIONS_DIR` or `<agentDir>/agent-sessions`. */
@@ -475,7 +481,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const existing = targets.get(record.storageId);
 		if (existing && !existing.closed) return existing;
 		if (existing) targets.delete(record.storageId);
-		const connection = await acquire(hostMetadata(record, metadata.packageDir));
+		const connection = await (options.connectTarget ? options.connectTarget(record) : acquire(hostMetadata(record, metadata.packageDir)));
 		if (closed || signal.aborted) {
 			await connection.close().catch(() => undefined);
 			throw new Error("durable delivery is closed");
@@ -486,6 +492,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 
 	/** Catalog lookup: an absent record alone permits primary-channel routing; every other failure refuses. */
 	const ownerRecord = (ownerId: string): CatalogRecord | undefined => {
+		if (options.readTarget) return options.readTarget(ownerId);
 		try {
 			return catalog.read(ownerId);
 		} catch (error) {
@@ -1008,6 +1015,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			);
 			targets.clear();
 			if (inFlight) await inFlight.catch(() => undefined);
+			await options.onClose?.();
 		})();
 		return closePromise;
 	};

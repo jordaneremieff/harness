@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { CatalogRow } from '../agents/index.mts';
-import {taskSenderHints} from '../agents/contract.mts';
+import {nativeControls,taskSenderHints} from '../agents/contract.mts';
 import type { AgentRow, CachedRoster, DisplayCoverage, EntryView, ImageSource, JsonDisplay, MessageView, PartView, ProjectedFrame, ToolOutputInfo, GenerationRetry, ProviderBlock } from '../shared/api.ts';
 import { imagePart, imageSource } from './images.mts';
 import { projectCommunication, type CommunicationSource } from './communication.mts';
@@ -498,6 +498,7 @@ function scalarRows(value: unknown): JsonDisplay | undefined {
       else if (typeof item === 'boolean' || (typeof item === 'number' && Number.isFinite(item))) result[field] = item;
     }
     return result;
+
   });
   const result = jsonDisplay(rows, 8192); result.truncated ||= source.length > 32 || supplied.truncated === true; return result;
 }
@@ -634,7 +635,7 @@ function rosterOptionals(row: AgentRow, source: Record<string, unknown>): void {
   const retry = publishedRetry(source); if (retry) row.publishedRetry = retry;
   const attention = rosterAttention(source.attention); if (attention) row.attention = attention;
   const caps = object(source.capabilities);
-  if (typeof source.identity === 'string' && source.capabilities) row.capabilities = {history: caps.history === true, observe: caps.observe === true, input: caps.input === true, abort: caps.abort === true, configure: caps.configure === true, inspect: caps.inspect === true, commands: caps.commands === true};
+  if (typeof source.identity === 'string' && source.capabilities) row.capabilities = {...Object.fromEntries(Object.entries(caps).filter(([key,value])=>nativeControls.includes(key as typeof nativeControls[number])&&typeof value==='boolean')),history: caps.history === true, observe: caps.observe === true, input: caps.input === true, abort: caps.abort === true, configure: caps.configure === true, inspect: caps.inspect === true, commands: caps.commands === true};
 }
 function rosterIdentity(source: Record<string, unknown>): CatalogRow['id'] | undefined {
   const id = source.identity ?? source.id;

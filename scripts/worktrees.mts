@@ -24,6 +24,9 @@ interface RunOptions {
 	env?: NodeJS.ProcessEnv;
 	inherit?: boolean;
 	accept?: readonly number[];
+	timeout?: number;
+	maxBuffer?: number;
+	privateOutput?: boolean;
 }
 
 interface RunResult {
@@ -91,6 +94,7 @@ interface PromoteOptions {
 	json: boolean;
 	dryRun: boolean;
 	full: boolean;
+	syncSelected?: boolean;
 }
 
 type PromoteOptionName = keyof PromoteOptions;
@@ -311,10 +315,12 @@ function run(command: string, args: readonly string[], options: RunOptions = {})
 		encoding: "utf8",
 		env: options.env ?? process.env,
 		stdio: options.inherit ? "inherit" : "pipe",
+		timeout: options.timeout,
+		maxBuffer: options.maxBuffer,
 	});
 	const accepted = options.accept ?? [0];
 	if (!accepted.includes(result.status ?? 1)) {
-		const detail = (result.stderr || result.stdout || "").trim();
+		const detail = options.privateOutput ? "" : (result.stderr || result.stdout || "").trim();
 		throw new Error(`${command} ${args.join(" ")} failed${detail ? `: ${detail}` : ""}`);
 	}
 	return {
@@ -481,7 +487,11 @@ function ensureSliceWorktree(
 	};
 }
 
-function repositoryState(repoRoot: string, worktreeRoot: string): { records: WorktreeRecord[]; problems: string[] } {
+function repositoryState(
+	repoRoot: string,
+	worktreeRoot: string,
+	onlyBranches?: readonly string[],
+): { records: WorktreeRecord[]; problems: string[] } {
 	const problems: string[] = [];
 	const branches: string[] = [];
 	for (const kind of sliceKinds) {
@@ -502,6 +512,7 @@ function repositoryState(repoRoot: string, worktreeRoot: string): { records: Wor
 
 	mkdirSync(worktreeRoot, { recursive: true });
 	for (const branch of branches) {
+		if (onlyBranches !== undefined && !onlyBranches.includes(branch)) continue;
 		try {
 			records.push(ensureSliceWorktree(repoRoot, worktreeRoot, branch, byBranch, nameOwners));
 		} catch (error) {
@@ -708,6 +719,8 @@ export function mainCheckoutRoot(candidateRoot: string): string {
 	try {
 		const common = git(candidateRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
 			accept: [0, 1, 128],
+			timeout: 5000,
+			maxBuffer: 8000,
 		});
 		if (common.status !== 0) return candidateRoot;
 		const commonDir = resolve(candidateRoot, common.stdout.trim());
@@ -736,6 +749,7 @@ export function parsePromoteArguments(args: readonly string[]): {
 		["--json", "json"],
 		["--dry-run", "dryRun"],
 		["--full", "full"],
+		["--sync-selected", "syncSelected"],
 	]);
 	const seen = new Set<string>();
 	const names: string[] = [];
@@ -1043,6 +1057,81 @@ function preparePromotion(
 	return { name, branch, kind, shipping, held, mainBefore, devRecordRoot };
 }
 
+/** Deterministic signatures only; semantic publication review remains mandatory. */
+export function scanPublicationText(text: string): Array<{ line: number; rule: string }> {
+	const rules: Array<[string, RegExp]> = [
+		["personal-path", /(?:\/Users\/|\/home\/)[A-Za-z0-9._-]+\//],
+		["private-key", /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
+		["credential", /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|sk-ant-[A-Za-z0-9_-]{30,})\b/],
+		["session-transcript", /^\s*<(?:agent-request-context|agent-efforts|agent-preferences)>\s*$/],
+	];
+	const findings: Array<{ line: number; rule: string }> = [];
+	for (const [index, line] of text.split("\n").entries()) {
+		for (const [rule, pattern] of rules) {
+			if (pattern.test(line)) findings.push({ line: index + 1, rule });
+		}
+		if (findings.length >= 100) break;
+	}
+	return findings;
+}
+
+function publicationBlob(
+	repoRoot: string,
+	commit: ReplayCommit,
+	path: string,
+	budget: { bytes: number; paths: number },
+): string | undefined {
+	if (++budget.paths > 2000) return "publication scan exceeds 2000 file revisions; split the promotion";
+	const specifier = `${commit.full}:${path}`;
+	const size = git(repoRoot, ["cat-file", "-s", specifier], {
+		accept: [0, 128],
+		timeout: 5000,
+		maxBuffer: 1000,
+		privateOutput: true,
+	});
+	if (size.status !== 0) {
+		const entry = git(repoRoot, ["ls-tree", "-z", commit.full, "--", path], {
+			timeout: 5000,
+			maxBuffer: 16_000,
+			privateOutput: true,
+		}).stdout;
+		if (entry === "") return undefined;
+		return `publication blob unavailable at ${commit.sha}:${path}`;
+	}
+	const length = Number(size.stdout.trim());
+	budget.bytes += length;
+	if (!Number.isSafeInteger(length) || length > 1_000_000 || budget.bytes > 8_000_000) {
+		return `publication scan byte limit at ${commit.sha}:${path}; split the promotion`;
+	}
+	const content = git(repoRoot, ["cat-file", "blob", specifier], {
+		timeout: 5000,
+		maxBuffer: 1_000_001,
+		privateOutput: true,
+	}).stdout;
+	if (content.includes("\0")) return undefined;
+	const finding = scanPublicationText(content)[0];
+	return finding ? `${commit.sha}:${path}:${finding.line}: ${finding.rule}` : undefined;
+}
+
+function promotionHygiene(repoRoot: string, commits: ReplayCommit[]): string | undefined {
+	if (commits.length > 500) return "publication scan exceeds 500 commits; split the promotion";
+	const budget = { bytes: 0, paths: 0 };
+	for (const commit of commits) {
+		const message = git(repoRoot, ["log", "-1", "--format=%B", commit.full], {
+			timeout: 5000,
+			maxBuffer: 128_000,
+			privateOutput: true,
+		}).stdout;
+		const messageFinding = scanPublicationText(message)[0];
+		if (messageFinding) return `${commit.sha} commit message: ${messageFinding.rule} at line ${messageFinding.line}`;
+		for (const path of commit.shipped) {
+			const problem = publicationBlob(repoRoot, commit, path, budget);
+			if (problem) return problem;
+		}
+	}
+	return undefined;
+}
+
 function promotionCommits(repoRoot: string, branch: string, roots: Array<string | null>): ReplayCommit[] {
 	const shas = git(repoRoot, ["rev-list", "--reverse", "--topo-order", `main..${branch}`])
 		.stdout.trim()
@@ -1154,10 +1243,11 @@ function completePromotion(
 		completed.pushed = true;
 	}
 	try {
-		const { records, problems } = repositoryState(context.repoRoot, context.worktreeRoot);
+		const branches = options.syncSelected ? report.slices?.map((slice) => slice.branch) : undefined;
+		const { records, problems } = repositoryState(context.repoRoot, context.worktreeRoot, branches);
 		const branchResult = syncBranches(context, records);
 		branchResult.failures.unshift(...problems);
-		reconcileSettings(context, records);
+		if (!options.syncSelected) reconcileSettings(context, records);
 		return {
 			...completed,
 			syncOk: branchResult.failures.length === 0,
@@ -1288,6 +1378,10 @@ async function promote(
 	const selected = preparePromotions(context, requestedReferences);
 	if (!Array.isArray(selected)) return selected;
 	const prepared = selected.map((selection) => selection.prepared);
+	for (const entry of prepared) {
+		const problem = promotionHygiene(context.repoRoot, entry.shipping);
+		if (problem) return failedPromotion(entry.name, "hygiene", problem);
+	}
 	const { mainBefore } = prepared[0];
 	const slices: SlicePromotionReport[] = prepared.map((entry) => ({
 		name: entry.name,
@@ -1518,7 +1612,9 @@ function restoreMain(
 		const foreign = replayed
 			? changesOutsideReplay(repo, replayed).length > 0
 			: git(repo, ["status", "--porcelain"]).stdout.trim() !== "" || Boolean(pausedGitOperation(repo));
-		const held = [`main holds unpushed commits from the failed promotion (${mainBefore.slice(0, 7)}..${head.slice(0, 7)}) or changed outside it, and was not reset; inspect git -C ${repo} log ${mainBefore}..main and git -C ${repo} status, then git -C ${repo} reset --hard ${mainBefore} only if nothing there is needed`];
+		const held = [
+			`main holds unpushed commits from the failed promotion (${mainBefore.slice(0, 7)}..${head.slice(0, 7)}) or changed outside it, and was not reset; inspect git -C ${repo} log ${mainBefore}..main and git -C ${repo} status, then git -C ${repo} reset --hard ${mainBefore} only if nothing there is needed`,
+		];
 		const own = git(repo, ["rev-list", `${mainBefore}..${head}`])
 			.stdout.split("\n")
 			.filter(Boolean)
@@ -1913,6 +2009,19 @@ function reportReconciliation(
 	}
 }
 
+function scopedSyncBranch(command: string, args: string[]): string[] | undefined {
+	const currentOnly = args.includes("--current");
+	const sourceOnly = args.includes("--source-only");
+	if ((currentOnly || sourceOnly) && command !== "sync") {
+		throw new Error("--current and --source-only apply only to sync");
+	}
+	if (sourceOnly && !currentOnly) throw new Error("--source-only requires --current");
+	if (!currentOnly) return undefined;
+	const branch = git(process.cwd(), ["symbolic-ref", "--quiet", "--short", "HEAD"]).stdout.trim();
+	if (!sliceKindForBranch(branch)) throw new Error("--current requires a slice worktree");
+	return [branch];
+}
+
 async function executeCommand(context: HarnessContext, args: string[]): Promise<void> {
 	const command = args.find((arg) => !arg.startsWith("--")) ?? "sync";
 	const commandIndex = args.indexOf(command);
@@ -1934,7 +2043,8 @@ async function executeCommand(context: HarnessContext, args: string[]): Promise<
 		return;
 	}
 
-	const state = repositoryState(context.repoRoot, context.worktreeRoot);
+	const branches = scopedSyncBranch(command, args);
+	const state = repositoryState(context.repoRoot, context.worktreeRoot, branches);
 	const records = state.records;
 	const problems = state.problems;
 	if (command === "status") {
@@ -1952,7 +2062,9 @@ async function executeCommand(context: HarnessContext, args: string[]): Promise<
 
 	let branchResult: SyncResult = { changed: [], deferred: [], failures: [] };
 	if (command === "sync") branchResult = syncBranches(context, records);
-	const settingsResult = reconcileSettings(context, records);
+	// A scoped source update does not reconcile incomplete extension routing.
+	const settingsResult =
+		branches !== undefined ? { changed: false, activeNames: [] as string[] } : reconcileSettings(context, records);
 	const own = worktreeContaining(records, process.cwd());
 	const ownDeferred = own !== undefined && branchResult.deferred.includes(own.name) ? own.name : undefined;
 	reportReconciliation(context, branchResult, settingsResult, problems, quiet, ownDeferred);

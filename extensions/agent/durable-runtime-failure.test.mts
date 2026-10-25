@@ -9,7 +9,8 @@ import { createDurableRuntime } from "./durable-runtime.ts";
 import { runtimeFixture } from "./durable-runtime-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
-for (const reloaded of [false, true]) it(`publishes fatal Session closure${reloaded ? " after reload" : ""} to runtime supervision and retains recovery due`, { timeout: 15000 }, async (t) => {
+// Construction and reload each load the host services and the Agent extension stack in this process; the bound matches the other host-loading tests.
+for (const reloaded of [false, true]) it(`publishes fatal Session closure${reloaded ? " after reload" : ""} to runtime supervision and retains recovery due`, { timeout: 60000 }, async (t) => {
 	const fixture = runtimeFixture(t);
 	const models = await createTestRuntime();
 	const open = DurableHost.open;

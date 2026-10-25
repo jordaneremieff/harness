@@ -51,7 +51,7 @@ function publish(root: string, id: string, intentClaim: PrimaryIntentClaim | nul
 function publishThread(catalog: AgentCatalog, root: string): string {
 	const record = catalog.create({ cwd: root, agentDir: root, packageDir: root, model: { provider: "faux", modelId: "faux-1" }, thinkingLevel: "off", ownerId: "owner" });
 	const id = `${record.storageId}/${"a".repeat(32)}`;
-	catalog.updateView(record.storageId, { storageId: record.storageId, updatedAt: "2026-10-04T10:00:00.000Z", rows: [], coverage: { complete: true, omitted: 0 } }, { items: [{ id, title: "Active shared work", purpose: "Coordinate integration", updatedAt: 100, closed: false, members: 2 }], omitted: 0, updatedAt: "2026-10-04T10:00:00.000Z" });
+	catalog.updateView(record.storageId, { storageId: record.storageId, updatedAt: "2026-10-04T10:00:00.000Z", rows: [], coverage: { complete: true, omitted: 0 }, intentClaims: { rows: {}, coverage: { complete: true, omitted: 0 } } }, { items: [{ id, title: "Active shared work", purpose: "Coordinate integration", updatedAt: 100, closed: false, members: 2 }], omitted: 0, updatedAt: "2026-10-04T10:00:00.000Z" });
 	return id;
 }
 
@@ -178,7 +178,7 @@ it("bounds self input with explicit omissions rather than a shortened authority 
 	assert.equal(Value.Check(EffortAwarenessSchema, view), true);
 });
 
-it("reserves prompt space for active threads and marks shortened claim text and omitted efforts", async (t) => {
+it("reserves prompt space for active threads and retains or omits whole claims", async (t) => {
 	const { root, catalog, self } = fixture(t);
 	const longClaim = claim("😀".repeat(256));
 	longClaim.scope.paths.push(...Array.from({ length: 12 }, (_, index) => `extensions/agent/${index}`));
@@ -188,8 +188,11 @@ it("reserves prompt space for active threads and marks shortened claim text and 
 	const prompt = formatEffortAwareness(view);
 	assert.ok(Buffer.byteLength(prompt) <= EFFORT_AWARENESS_PROMPT_BYTES);
 	assert.ok(prompt.includes("Active shared work"));
-	assert.ok(prompt.includes("Claim text or scope shortened"), prompt);
-	assert.match(prompt, /Prompt omissions: self 0, related efforts [1-9][0-9]*, active threads 0/u);
+	const retained = prompt.split("\n").filter(line => line.startsWith("Related effort: ")).map(line => JSON.parse(line.slice("Related effort: ".length)));
+	assert.ok(retained.some(row => row.intentClaim));
+	for (const row of retained) if (row.intentClaim) assert.deepEqual(row.intentClaim, longClaim);
+	assert.equal(prompt.includes("Claim text or scope shortened"), false);
+	assert.match(prompt, /Prompt omissions: self 0, related efforts [0-9]+, active threads 0/u);
 	assert.equal(formatEffortAwareness(view), prompt);
 });
 

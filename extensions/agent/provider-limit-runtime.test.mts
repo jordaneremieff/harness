@@ -89,9 +89,10 @@ async function requester(t: TestContext, f: RuntimeFixture) {
 	t.after(() => channel.close());
 	return { owner, notices };
 }
+/** The consumer has no admitted work until the producer host is up and its request is on the wire; idle retirement is out of scope here. */
 async function consumer(t: TestContext, f: RuntimeFixture) {
 	const record = new AgentCatalog(f.root).create({ cwd: f.cwd, agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: { provider: "durable-runtime-fixture", modelId: "fixture-model" }, thinkingLevel: "off", name: "HTTP result requester", trust: true, ownerId: f.ownerId }, "http-requester");
-	const host = await acquireHost(hostMetadata(record), { env: f.env("await-reference") }); trackHost(t, host.pid);
+	const host = await acquireHost(hostMetadata(record), { env: { ...f.env("await-reference"), PI_AGENT_IDLE_MINUTES: "0" } }); trackHost(t, host.pid);
 	t.after(() => host.close().catch(() => {}));
 	return { record, host };
 }

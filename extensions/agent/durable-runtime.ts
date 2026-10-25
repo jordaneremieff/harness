@@ -21,22 +21,23 @@ import { observeProducerAwait } from "./await-producer-observer.ts";
 import { projectCollaboration, collaborationStorage } from "./collaboration.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
+import { AgentCatalog, storageIdOf } from "./catalog.ts";
 import { boundCatalogView, withAttentionHints, withModelEvidence } from "./catalog-view.ts";
 import { projectCatalogAttention } from "./catalog-attention.ts";
 import { observeColdStorage } from "./cold-observation.ts";
-import { acquireHost } from "./host-client.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { HostRuntime } from "./host-process.ts";
 import { DurableHost } from "./durable-host.ts";
+import { stopForeignReferences } from "./run-control.ts";
 import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
 import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
-import { AgentDeliveryDoc } from "./durable-controls.ts";
+import { AgentDeliveryDoc, projectConversationIntents } from "./durable-controls.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { AgentManager } from "./manager.ts";
 import { deliveryOwnerIsDead, startDurableDelivery } from "./durable-delivery.ts";
-import { connectPrimaryChannel } from "./primary-channel.ts";
+import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 
 function controlParams(input: unknown): Record<string, unknown> {
 	if (input !== undefined && (input === null || typeof input !== "object" || Array.isArray(input))) throw new Error("Control parameters must be an object");
@@ -46,7 +47,7 @@ function controlParams(input: unknown): Record<string, unknown> {
 /** Methods that admit work or delivery into this storage. */
 import { projectProfiles } from "./profile.ts";
 import { requestContextSection } from "./request-context.ts";
-import { withProfileHints } from "./catalog-view.ts";
+import { withProfileHints, withIntentClaims } from "./catalog-view.ts";
 import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 
 const ADMITTING_METHODS: ReadonlySet<string> = new Set(["task-submit", "profile-update", "resolve-agent", "submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule", "collaboration-mutate", "passive-submit"]);
@@ -56,7 +57,7 @@ const PUBLISH_COALESCE_MS = 250;
 async function bootstrap(metadata: HostMetadata, controller: AbortController, execution: boolean, options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {}): Promise<DurableServices> {
 	const independent = metadata.independent;
 	return createDurableServices({ ...options, cwd: metadata.cwd, agentDir: metadata.agentDir, storageId: metadata.storageId, catalogRoot: dirname(metadata.storagePath),
-		packageDir: metadata.packageDir, trusted: metadata.trust, signal: controller.signal,
+		packageDir: metadata.packageDir, agentExtensionPath: fileURLToPath(new URL("./index.ts", import.meta.url)), trusted: metadata.trust, signal: controller.signal,
 		...(independent === undefined ? {} : { resolveProjectTrust: async () => independent.projectTrusted }),
 		launchIndependent: (input) => launchIndependentCommand(input, {
 			root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir,
@@ -181,7 +182,9 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 				const profiled = withProfileHints(base, { ...profiles, coverage: { complete: profiles.coverage.complete && base.coverage.omitted === 0, omitted: profiles.coverage.omitted + base.coverage.omitted } });
 				const attention = await projectCatalogAttention(host.harness, attentionSources);
 				const attentive = withAttentionHints(profiled, { ...attention, coverage: { complete: attention.coverage.complete && base.coverage.omitted === 0, omitted: attention.coverage.omitted + base.coverage.omitted } });
-				const view = withModelEvidence(attentive, projection.modelEvidence);
+				const intents = await projectConversationIntents(host.harness, metadata.storageId, projection.rows, BACKGROUND_CONTEXT);
+				const intended = withIntentClaims(attentive, intents);
+				const view = withModelEvidence(intended, projection.modelEvidence);
 				catalog.updateView(metadata.storageId, view, await projectCollaboration(host.harness, BACKGROUND_CONTEXT));
 				for (const listener of changeListeners) listener();
 			} catch (error) {
@@ -251,18 +254,19 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		return client.request("status", { sessionId });
 	}
 	async function foreignControl(method: string, params: Record<string, unknown>, sessionId: string, context?: Context): Promise<unknown> {
-		let record: CatalogRecord;
-		try { record = catalog.read(sessionId); }
-		catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			return primaryControl(method, params, sessionId);
-		}
-		const client = await acquireHost(hostMetadata(record, metadata.packageDir));
+		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
 		try {
-			if (method === "submit" && typeof params.senderIdentity === "string" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return await client.request("task-submit", { ...params, requester: params.senderIdentity });
+			try { manager.nativeTarget(sessionId); }
+			catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				if (!readPrimaryEndpointDescriptor(dirname(dirname(metadata.storagePath)), sessionId).info) throw new Error("The exact native target is not retained and no ordinary primary is registered");
+				return await primaryControl(method, params, sessionId);
+			}
+			const client = await manager.connectNative(sessionId);
+			if (method === "submit" && typeof params.senderIdentity === "string" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return await client.request("task-submit", { ...params, requester: params.senderIdentity }, { signal: context?.abortSignal });
 			if (method !== "attach") return await client.request(method, params, { signal: context?.abortSignal });
 			return await attachForeign(client, params, sessionId);
-		} finally { await client.close(); }
+		} finally { manager.close(); }
 	}
 	async function collaborationObservation(method: string, params: Record<string, unknown>): Promise<unknown> {
 		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
@@ -292,13 +296,13 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		if (typeof params.publish !== "function") throw new Error("Producer observation requires an in-process callback");
 		const publish = params.publish as (fact: ProducerAwaitFact) => Promise<void>;
 		if (storageIdOf(sessionId) === metadata.storageId) return observeProducerAwait(sessionId, async () => await host.request("await-state", { sessionId, results: params.results }, context) as import("./await-facts.ts").ProducerState, async (changed) => host.harness.subscribeCommits((publication) => { if (publication.changes.length) changed(); }), publish, context);
-		const record = catalog.read(sessionId);
-		const client = await acquireHost(hostMetadata(record, metadata.packageDir));
+		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
 		try {
+			const client = await manager.connectNative(sessionId);
 			const subscribe = client.subscribeChanges?.bind(client);
 			if (subscribe === undefined) throw new Error("Producer host has no commit observation capability");
-			return await observeProducerAwait(sessionId, async () => await client.request("await-state", { sessionId, results: params.results }, { signal: context.abortSignal }) as import("./await-facts.ts").ProducerState, (changed) => subscribe(changed, context.abortSignal), publish, context, client.onClose.bind(client));
-		} finally { await client.close(); }
+			return await observeProducerAwait(sessionId, async () => await client.request("await-state", { sessionId, ...(params.results === undefined ? {} : { results: params.results }) }, { signal: context.abortSignal }) as import("./await-facts.ts").ProducerState, (changed) => subscribe(changed, context.abortSignal), publish, context, client.onClose.bind(client));
+		} finally { manager.close(); }
 	}
 	const dispatch: AgentControlDispatch = async (method, input, context = BACKGROUND_CONTEXT) => {
 		const params = await resolveSelectors(input, method.startsWith("collaboration-"));
@@ -341,6 +345,12 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		try {
 			await services.install(opened.harness);
 			host = opened;
+			opened.setForeignStop(async (references, context) => {
+				const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+				const caller = { id: metadata.storageId, cwd: metadata.cwd };
+				try { return await stopForeignReferences((method, input) => manager.control(method, input, caller), references, context); }
+				finally { manager.close(); }
+			});
 			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(() => host.harness)] });
 			unsubscribeClose?.();
 			unsubscribeClose = opened.harness.subscribeClose(() => {
@@ -376,7 +386,22 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	};
 	try { host = await openHost(); }
 	catch (error) { restoreDispatch(); controller.abort(); await services.close().catch(() => {}); throw error; }
-	const delivery = () => startDurableDelivery({ host, metadata, catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), signal: controller.signal, onIdle: notifyActivity, onError: (error) => { process.stderr.write(`Agent delivery: ${error.message}\n`); } });
+	const delivery = () => {
+		const sessionsRoot = dirname(dirname(metadata.storagePath));
+		const targets = new AgentManager({ root: sessionsRoot, agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+		return startDurableDelivery({ host, metadata, catalog, sessionsRoot, signal: controller.signal, onIdle: notifyActivity,
+			readTarget: (identity) => {
+				try { return targets.nativeTarget(identity); }
+				catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+					if (!readPrimaryEndpointDescriptor(sessionsRoot, identity).info) throw new Error("The exact delivery target is not retained and no ordinary primary is registered");
+					return undefined;
+				}
+			},
+			connectTarget: (record) => targets.connectNative(record.storageId), onClose: () => targets.close(),
+			onError: (error) => { process.stderr.write(`Agent delivery: ${error.message}\n`); },
+		});
+	};
 	let deliveries = delivery();
 
 	async function configure(params: Record<string, unknown>, requestId: string): Promise<ExecutionSelection> {

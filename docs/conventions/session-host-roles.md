@@ -10,6 +10,19 @@ expected Chord hello name identifies the target, not the peer's user identity. T
 prompts. The [Agent host contract](../agent-host-contract.md#chord-wire-contract)
 defines the shared typed Endpoint and Feed for terminal and browser consumers.
 
+An operator also uses a native conversation directly through a browser. That
+selection does not create a new instruction role, change its creator, or replace
+request-local requester and reply routes. Closing the browser releases its
+client observations, not the native conversation or its admitted work.
+
+A managed namespace binds one catalogue root to its selected Agent source and
+Pi dependency installation. Runtime supervises an Agent-owned namespace recovery
+process independently of UI assets and provider availability. That process uses
+the existing catalogue recovery and exclusive host acquisition. It registers no
+ordinary primary and holds no second task index. New and retained namespaces
+keep their own source routes. See
+[native namespace creation and recovery](../agent-host-contract.md#native-namespace-creation-and-recovery).
+
 One independent process owns each Durable storage. It takes the exclusive writer
 claim before storage opens, and it alone resumes the native scheduler. A root
 agent uses the storage ID; its forks and same-directory agents use conversation
@@ -20,7 +33,13 @@ ancestry describe provenance, not result dependencies or current request routes.
 Native awaited results retain the original request; the ordinary primary stays
 responsive. Semantic awaiting facts are separate from native task state.
 The selected-run release returns partial results without dispatch or producer
-cancellation; a real abort still stops the original request.
+cancellation; a real abort still stops the original request. Browser Stop uses
+native admitted-input identities across generation handovers, with an exact-input
+guard for independently shared delegated work. Original admitted inputs still
+identify surviving descendants after an intermediate agent answers. Newer unrelated
+work in that agent remains untouched. It never treats a stale task ID as
+permission to abort whatever work is now current. Native compaction does not
+first abort work or withdraw queued inputs.
 
 Loading configured extension factories into cwd-bound public services does not
 run an ordinary session lifecycle. Factories emit native capability bundles

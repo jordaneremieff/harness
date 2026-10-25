@@ -29,7 +29,8 @@ import type { AgentConversationPage, AgentConversationSummary, AgentPriorityPage
 import { emptyConversationSnapshot, type ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 
-import { MANAGER_CONTRACT, operationContractMismatch } from "./version-contract.ts";
+import { callExistingSource, readExistingSources, sourceHostOptions, type ExistingSource } from "./source-route.ts";
+import { HOST_CONTRACT, MANAGER_CONTRACT, operationContractMismatch } from "./version-contract.ts";
 import { collaborationIdentity, collaborationStorage } from "./collaboration.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
@@ -80,6 +81,8 @@ export interface AgentManagerOptions {
 	failureLimit?: number;
 }
 interface PrimaryClient { sentWork?: Set<string>; retainSentWork?(sessionId: string): void; send(text: string, details: unknown, sourceId: string, requireRetained: boolean): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
+type RecoveryOwner = { signal: AbortSignal };
+export type NamespaceRecoveryReport = { visited: number; attempted: number; complete: boolean; failures: Array<{ storageId: string; error: string }> };
 interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
 interface ListCursor { storage?: string; catalog?: string; native?: unknown; query: string; cwd: string }
 interface ListRecordStep { record: CatalogRecord; catalog?: string }
@@ -190,7 +193,10 @@ export class AgentManager {
 	private stopCatalogObservation?: () => void;
 	private observeCatalogChanges(): void {
 		if (this.stopCatalogObservation) return;
-		const changed = () => { void this.refreshFooter().catch((error) => this.failures.set("footer", errorText(error))); };
+		const changed = () => {
+			void this.refreshFooter().catch((error) => this.failures.set("footer", errorText(error)));
+			if (this.namespaceOwner && !this.stopping(this.namespaceOwner)) void this.recoverNamespace(this.namespaceOwner.signal).catch(error => this.failures.set("namespace", errorText(error)));
+		};
 		this.stopCatalogObservation = subscribeCatalogChanges(this.catalog.root, changed, (error) => {
 			this.failures.set("catalog-observation", `Catalog updates are unavailable: ${error.message}. Restart this Pi process.`);
 			changed();
@@ -198,7 +204,7 @@ export class AgentManager {
 		this.failures.delete("catalog-observation");
 	}
 	private releaseCatalogObservation(): void {
-		if (this.primaries.size || this.rosterListeners.size) return;
+		if (this.primaries.size || this.rosterListeners.size || this.namespaceOwner && !this.namespaceOwner.signal.aborted) return;
 		this.stopCatalogObservation?.();
 		this.stopCatalogObservation = undefined;
 		this.failures.delete("catalog-observation");
@@ -222,6 +228,9 @@ export class AgentManager {
 	private readonly launchRows = new Map<string, AgentConversationSummary>();
 	private readonly recovering = new Set<string>();
 	private recoveryQueue: Promise<void> = Promise.resolve();
+	private namespaceOwner?: RecoveryOwner;
+	private namespaceScan?: Promise<NamespaceRecoveryReport>;
+	private namespaceRescan = false;
 	private readonly recoveryClients = new Map<string, { close: () => void; refresh: () => Promise<void> }>();
 	private readonly primaries = new Map<string, PrimaryClient>();
 	private readonly primaryChannels = new Map<string, PrimaryChannel>();
@@ -259,7 +268,10 @@ export class AgentManager {
 		}
 		if (!launch) this.attaching.add(record.storageId);
 		const acquire = launch ? this.options.acquire ?? acquireHost : this.options.connect ?? connectHost;
-		const open = Promise.resolve().then(() => acquire(hostMetadata(record, this.options.packageDir), MANAGED_LINK))
+		const route = this.existingTarget(record.storageId);
+		const metadata = hostMetadata(record, route?.packageDir ?? this.options.packageDir);
+		const options = route ? sourceHostOptions(route) : MANAGED_LINK;
+		const open = Promise.resolve().then(() => acquire(metadata, options))
 			.then((client) => this.adoptClient(record, client, primary))
 			.finally(() => { this.opening.delete(record.storageId); this.attaching.delete(record.storageId); });
 		this.opening.set(record.storageId, open);
@@ -312,12 +324,44 @@ export class AgentManager {
 			if (client) return client.request(method, params);
 			if (primary?.signal.aborted) throw new Error("Agent primary released during observation");
 			if (this.options.observe) return this.options.observe(record, method, params);
+			const route = this.existingTarget(record.storageId);
+			if (route) return callExistingSource({ route, action: "control", method, input: params, caller: { id: "source-observation", cwd: record.cwd }, agentDir: record.agentDir, expected: HOST_CONTRACT.operations });
 			const { observeDurableStorage } = await import("./durable-runtime.ts");
 			return observeDurableStorage(record, method, params);
 		})();
 	}
 
+	private existingTarget(selector: string): ExistingSource | undefined {
+		const routes = readExistingSources(this.options.root);
+		if (!routes.length) return undefined;
+		const matches: Array<ExistingSource | undefined> = [];
+		const find = (catalog: AgentCatalog, route?: ExistingSource) => {
+			if (route && !statSync(route.root).isDirectory()) throw new Error("An existing source namespace is unavailable");
+			try {
+				const id = selector.startsWith("@") ? handleStorageId(selector.slice(1), catalog.root) : storageIdOf(selector);
+				catalog.read(id); matches.push(route);
+			} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+		};
+		find(this.catalog);
+		for (const route of routes) find(new AgentCatalog(route.root), route);
+		if (matches.length > 1) throw new Error("The target has ambiguous ownership across source namespaces");
+		return matches[0];
+	}
+
+	/** Resolve one retained native target without guessing an ordinary primary or copying its catalog. */
+	nativeTarget(sessionId: string): CatalogRecord {
+		const route = this.existingTarget(sessionId);
+		return (route ? new AgentCatalog(route.root) : this.catalog).read(sessionId);
+	}
+
+	/** The caller owns this manager and closes it after waits or subscriptions finish. */
+	async connectNative(sessionId: string, launch = true): Promise<HostConnection> {
+		return this.connection(this.nativeTarget(sessionId), undefined, launch);
+	}
+
 	async resolveTarget(selector: string): Promise<string> {
+		const route = this.existingTarget(selector);
+		if (route) return await callExistingSource({ route, action: "resolve", input: { sessionId: selector }, caller: { id: "source-route", cwd: this.options.root }, agentDir: this.options.agentDir, expected: HOST_CONTRACT.operations }) as string;
 		if (!selector.startsWith("@")) return selector;
 		const id = handleStorageId(selector.slice(1), this.catalog.root);
 		const record = this.catalog.read(id);
@@ -426,6 +470,8 @@ export class AgentManager {
 	}
 
 	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+		const route = input.handle === undefined ? undefined : this.existingTarget(`@${handleSlug(input.handle)}`);
+		if (route) return callExistingSource({ route, action: "spawn", input: { ...input }, caller: { id: caller.id, cwd: caller.cwd }, agentDir: this.options.agentDir, expected: HOST_CONTRACT.operations });
 		if (input.handle !== undefined) return this.spawnHandled({ ...input, handle: input.handle }, caller, onCreated);
 		if (input.role !== undefined) throw new Error("A creation role requires a handle; use agent_profile to configure another agent");
 		const previous = input.requestId === undefined ? undefined : this.catalog.readRequest(caller.id, input.requestId);
@@ -487,9 +533,10 @@ export class AgentManager {
 		if (typeof input.replyTo === "string") input = { ...input, replyTo: await this.resolveTarget(input.replyTo) };
 		if (sessionId === caller.id && ["abort", "fork", "rewind", "compact", "configure", "command"].includes(method)) throw new Error("This control cannot target the calling primary session");
 		let record: CatalogRecord;
-		try { record = this.catalog.read(sessionId); }
+		try { record = this.nativeTarget(sessionId); }
 		catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			if (!readPrimaryEndpointDescriptor(this.options.root, sessionId).info) throw new Error("The exact native target is not retained and no ordinary primary is registered");
 			return this.primaryControl(method, input, sessionId, caller);
 		}
 		const params: Record<string, unknown> = { ...input, sessionId, ownerId: caller.id };
@@ -722,7 +769,7 @@ export class AgentManager {
 	async snapshot(sessionId: string, params: { before?: number; limit?: number; maxBytes?: number } = {}): Promise<ConversationSnapshotPage> {
 		sessionId = await this.resolveTarget(sessionId);
 		if (this.launchRows.has(storageIdOf(sessionId)) && this.opening.has(storageIdOf(sessionId))) return emptyConversationSnapshot();
-		return this.observe(this.catalog.read(sessionId), "snapshot", { sessionId, ...params }) as Promise<ConversationSnapshotPage>;
+		return this.observe(this.nativeTarget(sessionId), "snapshot", { sessionId, ...params }) as Promise<ConversationSnapshotPage>;
 	}
 
 	/**
@@ -738,7 +785,7 @@ export class AgentManager {
 	): Promise<(() => void) | undefined> {
 		if (this.shuttingDown || signal?.aborted) return undefined;
 		sessionId = await this.resolveTarget(sessionId);
-		const record = this.catalog.read(sessionId);
+		const record = this.nativeTarget(sessionId);
 		return (async () => {
 			const client = await this.observationConnection(record);
 			if (!client?.observe || signal?.aborted) return undefined;
@@ -774,7 +821,7 @@ export class AgentManager {
 		const sessionId = typeof input.sessionId === "string" ? input.sessionId : threadId ? collaborationStorage(threadId) : undefined;
 		if (action === "list" && !sessionId) return discoverCollaboration(this.catalog, input);
 		if (!sessionId) throw new Error("Create requires an agent sessionId; discover an agent or create one first.");
-		if (action === "list" || action === "read") return this.observe(this.catalog.read(sessionId), action === "list" ? "collaboration-list" : "collaboration-read", { ...input, sessionId });
+		if (action === "list" || action === "read") return this.observe(this.nativeTarget(sessionId), action === "list" ? "collaboration-list" : "collaboration-read", { ...input, sessionId });
 		return this.control("collaboration-mutate", { ...input, sessionId, senderIdentity: caller.id, origin: input.origin ?? "model", requestId: input.requestId ?? randomUUID() }, caller);
 	}
 
@@ -786,7 +833,7 @@ export class AgentManager {
 		if (sessionId) {
 			sessionId = await this.resolveTarget(sessionId);
 			let record: CatalogRecord;
-			try { record = this.catalog.read(sessionId); }
+			try { record = this.nativeTarget(sessionId); }
 			catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 				return this.observePrimary(sessionId, { view: "status" });
@@ -839,17 +886,39 @@ export class AgentManager {
 		catch (error) { this.failures.set("catalog-observation", `Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`); }
 		this.rosterChanged();
 		await this.refreshFooter();
+		await this.scanRecovery(primary);
+	}
+
+	/** Restore this source-bound catalogue without an ordinary primary or a new task index. */
+	recoverNamespace(signal: AbortSignal): Promise<NamespaceRecoveryReport> {
+		if (this.shuttingDown || signal.aborted) return Promise.reject(new Error("Namespace recovery is closed"));
+		this.namespaceOwner = { signal };
+		this.observeCatalogChanges();
+		if (this.namespaceScan) { this.namespaceRescan = true; return this.namespaceScan; }
+		this.namespaceRescan = false;
+		const pending = this.scanRecovery(this.namespaceOwner).finally(() => {
+			if (this.namespaceScan !== pending) return;
+			this.namespaceScan = undefined;
+			if (this.namespaceRescan && !this.shuttingDown && !signal.aborted) void this.recoverNamespace(signal).catch(error => this.failures.set("namespace", errorText(error)));
+		});
+		this.namespaceScan = pending;
+		return pending;
+	}
+
+	private async scanRecovery(owner: RecoveryOwner): Promise<NamespaceRecoveryReport> {
 		const due: CatalogRecord[] = [];
-		let cursor: string | undefined;
+		let cursor: string | undefined, visited = 0;
 		for (let pageIndex = 0; pageIndex < MAX_INVENTORY_PAGES; pageIndex++) {
-			if (this.stopping(primary)) return;
+			if (this.stopping(owner)) break;
 			const page = await this.catalog.page({ cursor, limit: 20 });
-			due.push(...page.records.filter((record) => record.recoveryDue === true));
+			visited += page.records.length;
+			due.push(...page.records.filter(record => record.recoveryDue === true));
 			cursor = page.nextCursor ?? undefined;
 			if (!cursor) break;
 		}
 		if (cursor) this.failures.set("startup", "Startup recovery reached its inventory bound; use agent_list for the remaining storage");
-		await this.enqueueRecovery(due, primary);
+		await this.enqueueRecovery(due, owner);
+		return { visited, attempted: due.length, complete: !cursor && !this.stopping(owner), failures: [...this.recoveryErrors.entries].slice(0, 64).map(([storageId, error]) => ({ storageId, error })) };
 	}
 
 	/** Await only this registration's teardown, including endpoint removal before process replacement. */
@@ -950,7 +1019,7 @@ export class AgentManager {
 		}
 	}
 
-	private async enqueueRecovery(due: CatalogRecord[], primary: PrimaryClient, afterLoss = false): Promise<void> {
+	private async enqueueRecovery(due: CatalogRecord[], primary: RecoveryOwner, afterLoss = false): Promise<void> {
 		let next = 0;
 		const recover = async () => {
 			while (!this.stopping(primary) && next < due.length) {
@@ -967,7 +1036,7 @@ export class AgentManager {
 		for (const record of due.slice(next)) this.queuedRecovery.delete(record.storageId);
 	}
 
-	private async recover(record: CatalogRecord, primary: PrimaryClient, afterLoss: boolean): Promise<void> {
+	private async recover(record: CatalogRecord, primary: RecoveryOwner, afterLoss: boolean): Promise<void> {
 		if (this.crashes.get(record.storageId)?.stopped) return;
 		const cached = this.clients.get(record.storageId);
 		if (cached) {
@@ -1025,7 +1094,7 @@ export class AgentManager {
 	}
 
 	private hostLost(storageId: string): void {
-		const primary = [...this.primaries.values()].find((candidate) => !this.stopping(candidate));
+		const primary = this.namespaceOwner && !this.stopping(this.namespaceOwner) ? this.namespaceOwner : [...this.primaries.values()].find((candidate) => !this.stopping(candidate));
 		if (!primary || this.queuedRecovery.has(storageId)) return;
 		try {
 			const record = this.catalog.read(storageId);
@@ -1048,7 +1117,7 @@ export class AgentManager {
 		} catch (error) { this.recordRecoveryError(storageId, errorText(error)); }
 	}
 
-	private async monitorRecovery(storageId: string, client: HostConnection, primary: PrimaryClient): Promise<void> {
+	private async monitorRecovery(storageId: string, client: HostConnection, primary: RecoveryOwner): Promise<void> {
 		let closed = false;
 		let unsubscribe = () => {};
 		let removeClose = () => {};
@@ -1101,7 +1170,7 @@ export class AgentManager {
 		} catch (error) { close(); throw error; }
 	}
 
-	private stopping(primary: PrimaryClient): boolean {
+	private stopping(primary: RecoveryOwner): boolean {
 		return this.shuttingDown || primary.signal.aborted;
 	}
 

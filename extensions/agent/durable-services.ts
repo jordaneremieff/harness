@@ -24,7 +24,7 @@
  * the host signal, then awaits the registered close work in reverse registration
  * order and releases every execution environment it created.
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -150,6 +150,15 @@ export interface CreateDurableServicesOptions {
 	 */
 	readonly packageDir?: string;
 	readonly settingsManager?: SettingsManager;
+	/**
+	 * Select this runner's Agent entrypoint before configured factories execute.
+	 * Local extensions/agent/index.ts references redirect to this canonical file;
+	 * other resources retain their SDK scopes and trust. SDK settings saves stay
+	 * in process memory rather than changing the configured source documents.
+	 * Reads use the source manager's bootstrap snapshot, including scope errors.
+	 * An in-process settings reload does not reread files; host reload creates new services.
+	 */
+	readonly agentExtensionPath?: string;
 	/** A runtime that already carries inherited providers. The bootstrap registers loaded providers into it. */
 	readonly modelRuntime?: ModelRuntime;
 	/** Additional extension resource paths, as the CLI `-e` paths of the configured set. */
@@ -574,6 +583,71 @@ function projectTrustResolver(pi: PiRuntime, options: CreateDurableServicesOptio
 	});
 }
 
+/** Select the runner's Agent before Pi executes configured extension factories. */
+function selectAgentEntry(path: string, selected: string): string {
+	return /(?:^|\/)extensions\/agent\/index\.ts$/u.test(path) ? selected : path;
+}
+
+function selectAgentSettings(settings: ReturnType<SettingsManager["getGlobalSettings"]>, selected: string): ReturnType<SettingsManager["getGlobalSettings"]> {
+	return {
+		...settings,
+		...(settings.packages === undefined ? {} : { packages: settings.packages.map(entry => typeof entry === "string" ? selectAgentEntry(entry, selected) : { ...entry, source: selectAgentEntry(entry.source, selected) }) }),
+		...(settings.extensions === undefined ? {} : { extensions: settings.extensions.map(path => selectAgentEntry(path, selected)) }),
+	};
+}
+
+/** Keep SDK saves local, and defer project reads until Pi grants project trust. */
+function selectedAgentSettingsManager(pi: PiRuntime, source: SettingsManager, selected: string, report: (error: unknown) => void): SettingsManager {
+	const writes = new Map<"global" | "project", string>();
+	const errors = new Map<"global" | "project", Error>();
+	const read = (scope: "global" | "project") => {
+		if (scope === "project") source.setProjectTrusted(true);
+		for (const item of source.drainErrors()) {
+			const error = new Error(`${item.scope} settings${item.path === undefined ? "" : ` ${item.path}`}: ${item.error.message}`, { cause: item.error });
+			errors.set(item.scope, error);
+			report(error);
+		}
+		const error = errors.get(scope);
+		if (error !== undefined) throw error;
+		return scope === "global" ? source.getGlobalSettings() : source.getProjectSettings();
+	};
+	return pi.SettingsManager.fromStorage({
+		withLock(scope, update) {
+			const current = writes.get(scope);
+			const settings = current === undefined ? read(scope) : JSON.parse(current) as ReturnType<SettingsManager["getGlobalSettings"]>;
+			const next = update(JSON.stringify(selectAgentSettings(settings, selected)));
+			if (next !== undefined) writes.set(scope, next);
+		},
+	}, { projectTrusted: source.isProjectTrusted() });
+}
+
+function selectedAgentResources(pi: PiRuntime, options: CreateDurableServicesOptions, cwd: string, agentDir: string, report: (error: unknown) => void) {
+	// The selected host loads project settings only after the resource loader grants trust.
+	const sourceSettings = options.settingsManager ?? pi.SettingsManager.create(cwd, agentDir, options.agentExtensionPath === undefined ? undefined : { projectTrusted: false });
+	let selectedAgent: string | undefined;
+	if (options.agentExtensionPath !== undefined) {
+		if (!isAbsolute(options.agentExtensionPath)) throw new Error("The selected Agent entrypoint must be an absolute file path");
+		selectedAgent = realpathSync(options.agentExtensionPath);
+		if (!statSync(selectedAgent).isFile()) throw new Error("The selected Agent entrypoint must be a file");
+	}
+	const settingsManager = selectedAgent === undefined ? sourceSettings : selectedAgentSettingsManager(pi, sourceSettings, selectedAgent, report);
+	const extensionPaths = selectedAgent === undefined ? options.extensionPaths : [...new Set([selectedAgent, ...(options.extensionPaths ?? []).map(path => selectAgentEntry(path, selectedAgent))])];
+	return { settingsManager, extensionPaths, selectedAgent };
+}
+
+function unselectedAgentContribution(data: unknown, selected: string | undefined): Error | undefined {
+	if (selected === undefined || typeof data !== "object" || data === null) return undefined;
+	const contribution = data as Record<string, unknown>;
+	if (contribution.name !== "agent" || contribution.source === selected) return undefined;
+	const source = typeof contribution.source === "string" ? contribution.source : "<invalid source>";
+	return new Error(`An unselected Agent contribution was emitted from ${source}`);
+}
+
+function requireSelectedAgent(selected: string | undefined, contributions: readonly DurableContribution[], selectionError: Error | undefined): void {
+	if (selectionError !== undefined) throw selectionError;
+	if (selected !== undefined && !contributions.some(item => item.name === "agent" && item.source === selected)) throw new Error("The selected Agent entrypoint did not supply its native contribution");
+}
+
 function providerStreamSettings(settings: SettingsManager): NonNullable<Durable.HarnessSettings["stream"]> {
 	const provider = settings.getProviderRetrySettings();
 	const idle = settings.getHttpIdleTimeoutMs();
@@ -593,13 +667,16 @@ export async function createDurableServices(options: CreateDurableServicesOption
 	const pi = await loadPiRuntime(options.packageDir);
 	const cwd = resolve(options.cwd);
 	const agentDir = options.agentDir === undefined ? pi.getAgentDir() : resolve(options.agentDir);
-	const settingsManager = options.settingsManager ?? pi.SettingsManager.create(cwd, agentDir);
+	const report = options.onReport ?? (() => {});
+	const { settingsManager, extensionPaths, selectedAgent } = selectedAgentResources(pi, options, cwd, agentDir, report);
 
 	const bus = pi.createEventBus();
 	const contributions: DurableContribution[] = [];
 	const collectionErrors: Error[] = [];
+	let selectionError: Error | undefined;
 	const unsubscribe = bus.on("durable:contribution", (data) => {
 		try {
+			selectionError ??= unselectedAgentContribution(data, selectedAgent);
 			contributions.push(readContribution(data, contributions));
 		} catch (error) {
 			collectionErrors.push(error instanceof Error ? error : new Error(String(error)));
@@ -610,7 +687,6 @@ export async function createDurableServices(options: CreateDurableServicesOption
 	if (options.signal?.aborted) controller.abort(options.signal.reason);
 	else options.signal?.addEventListener("abort", forwardAbort, { once: true });
 
-	const report = options.onReport ?? (() => {});
 	const resolveTrust = projectTrustResolver(pi, options, cwd, settingsManager, agentDir, report);
 	let services: AgentSessionServices;
 	try {
@@ -621,7 +697,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 			...(options.modelRuntime === undefined ? {} : { modelRuntime: options.modelRuntime }),
 			resourceLoaderOptions: {
 				eventBus: bus,
-				...(options.extensionPaths === undefined ? {} : { additionalExtensionPaths: [...options.extensionPaths] }),
+				...(extensionPaths === undefined ? {} : { additionalExtensionPaths: [...extensionPaths] }),
 				...(options.skillPaths === undefined ? {} : { additionalSkillPaths: [...options.skillPaths] }),
 				...(options.extensionFactories === undefined ? {} : { extensionFactories: [...options.extensionFactories] }),
 			},
@@ -678,6 +754,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 		reportIssues(report, collectionErrors, services, loaded, contributions);
 		const loadedPaths = loaded.extensions.map((extension) => extension.resolvedPath);
 		const matched = matchContributions(contributions, loadedPaths);
+		requireSelectedAgent(selectedAgent, matched, selectionError);
 		const inventory = buildInventory(matched, loadedPaths, loaded.errors);
 		const commands = buildCommands(matched);
 		const builtin = buildBuiltin(pi, services, inventory, controller.signal);

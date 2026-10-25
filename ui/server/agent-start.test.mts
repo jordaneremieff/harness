@@ -36,7 +36,7 @@ async function fixture(t: TestContext) {
   });
   const ready = (child:ChildProcess,patch:Record<string,unknown>={}) => child.stdout?.emit('data',Buffer.from(`PI_AGENT_HOST_READY ${JSON.stringify({pid:child.pid,socketPath:endpoint.socketPath,contract,...patch})}\n`));
   const starter = new StoredAgentStarter({store,executable,agentDir,spawn:fakeSpawn,timeoutMs:100});
-  return {root,record,save,store,executable,agentDir,ownerSlice,packageDir,endpoint,claim,children,launches,ready,starter,setSpawn(fn:typeof onSpawn){onSpawn=fn;}};
+  return {root,record,save,store,executable,agentDir,ownerSlice,packageDir,endpoint,claim,children,launches,ready,starter,fakeSpawn,setSpawn(fn:typeof onSpawn){onSpawn=fn;}};
 }
 test('start accepts only exact canonical storage and conversation identities',()=> {
   for(const id of ['stored','stored:2','stored:9007199254740991']) assert.equal(startIdentity(id),'stored');
@@ -51,6 +51,21 @@ test('canonical project path and existing regular database are required',async t
   await assert.rejects(f.starter.start('stored'),{code:'invalid_request'});
   f.record.cwd = join(f.root,'project'); await f.save(); await rm(f.record.storagePath);
   await assert.rejects(f.starter.start('stored'),{code:'invalid_request'}); assert.equal(f.launches.length,0);
+});
+test('managed roots keep their selected source and dependency closure after the active executable changes',async t=>{
+  const placements=[await fixture(t),await fixture(t)];
+  for(const f of placements){
+    const sourceRoot=dirname(dirname(f.ownerSlice));
+    const binding=await startBinding({executable:'/absent/current-pi',agentDir:f.agentDir,sourceRoot,managedPackageDir:f.packageDir});
+    assert.deepEqual(binding,{runner:join(f.ownerSlice,'durable-runner.ts'),packageDir:f.packageDir});
+    f.setSpawn(async child=>{await f.claim();f.ready(child);});
+    const starter=new StoredAgentStarter({store:f.store,sourceRoot,managedPackageDir:f.packageDir,executable:'/absent/current-pi',agentDir:f.agentDir,spawn:f.fakeSpawn,timeoutMs:100});
+    await starter.start('stored');assert.equal(f.launches[0].args[0],binding.runner);assert.equal(JSON.parse(f.launches[0].args[1]).packageDir,f.packageDir);starter.close();
+  }
+  assert.notEqual(placements[0].packageDir,placements[1].packageDir);
+});
+test('managed source without its trusted dependency binding refuses before spawn',async t=>{
+  const f=await fixture(t);await assert.rejects(startBinding({executable:f.executable,agentDir:f.agentDir,sourceRoot:dirname(dirname(f.ownerSlice))}),{code:'not_ready'});
 });
 test('binding selects the configured owner source and explicit CLI installation, not the UI package',async t=> {
   const f=await fixture(t);const binding=await startBinding({executable:f.executable,agentDir:f.agentDir});

@@ -32,7 +32,7 @@ function agents() {
   let detached!: () => void; const disconnected = new Promise<void>(resolve => { detached = resolve; });
   const forbidden = async (): Promise<never> => { throw new Error('No native agent work belongs in this fixture'); };
   const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, lookup: forbidden, imageInputAvailable: () => false, refresh: async () => { counts.refresh++; return empty.scan; },
-    prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, abort: forbidden,
+    prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden, submit: forbidden, retrySubmit: forbidden, control: forbidden, abort: forbidden,
     configure: () => { throw new Error('No native agent configuration'); }, hide: async () => {},
     disconnectWorkspace: async () => { counts.disconnect++; detached(); }, close: async () => { counts.close++; }};
   return {adapter, counts, disconnected};
@@ -53,8 +53,15 @@ async function send(origin: string, path: string, method = 'GET', body?: unknown
   });
 }
 function data<T>(reply: Reply): T { assert.ok(reply.json?.ok, reply.text); return reply.json.data as T; }
+function isolateAgent(context:TestContext,root:string):void {
+  const keys=['PI_CODING_AGENT_DIR','PI_HARNESS_FILE','PI_UI_PRIVATE_ORIGIN','PI_UI_PRIVATE_OWNER_LOGIN','PI_UI_PRIVATE_PORT'];
+  const previous=keys.map(key=>process.env[key]);
+  process.env.PI_CODING_AGENT_DIR=join(root,'agent');process.env.PI_HARNESS_FILE='harness.json';
+  for(const key of keys.slice(2))delete process.env[key];
+  context.after(()=>keys.forEach((key,index)=>{const value=previous[index];if(value===undefined)delete process.env[key];else process.env[key]=value;}));
+}
 async function fixture(context: TestContext) {
-  const root = await mkdtemp(join(tmpdir(), 'ui-http-')); const cwd = join(root, 'project'); await mkdir(cwd);
+  const root = await mkdtemp(join(tmpdir(), 'ui-http-')); const cwd = join(root, 'project'); await mkdir(cwd);isolateAgent(context,root);
   const shell = Buffer.from('<!doctype html><title>Fixture</title>');
   const fake = agents();
   const app = await startBackend({cwd, port: 0, pi: executable, stateDir: join(root, 'state')}, {agents: () => fake.adapter, assets: new Map([['/', {data: shell, type: 'text/html; charset=utf-8'}]])});
@@ -423,7 +430,7 @@ test('request rate accounting rejects the next request at a deterministic fixed 
 
 const requiredAssets = ['web/index.html', 'web/style.css', 'web/favicon.svg', 'dist/web/app.js', 'dist/shared/api.js', 'dist/shared/version.js', 'dist/shared/files.js', 'dist/shared/health.js', 'dist/shared/control.js', 'dist/shared/inspection.js'];
 async function browserBuild(context: TestContext, emptyFiles = false) {
-  const root = await mkdtemp(join(tmpdir(), 'ui-browser-assets-'));
+  const root = await mkdtemp(join(tmpdir(), 'ui-browser-assets-'));isolateAgent(context,root);
   const apps: Awaited<ReturnType<typeof startBackend>>[] = [];
   context.after(async () => {
     try { for (const app of apps) await app.close(); }

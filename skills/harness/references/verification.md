@@ -45,6 +45,9 @@ collapse distinct failures into a single pass percentage.
    assertions rather than weakening them.
 3. Run the affected suite after final source and test edits.
 4. Inspect package metadata and archive contents when delivery is in scope.
+   Apply the [publication content review](../../../docs/conventions/worktrees.md#publication-content-review)
+   to outgoing files, source, comments, and commits; filenames and signature
+   scans do not establish semantic hygiene.
 5. Use isolated Pi discovery, SDK/RPC, shutdown, or PTY checks only for claims
    those layers uniquely establish.
 6. Update existing or explicitly required README/operator guidance and

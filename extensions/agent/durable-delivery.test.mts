@@ -239,6 +239,51 @@ async function addReceipt(source: DurableHost, ownerId: string, requestId = "sou
 	return admitted.submissionId;
 }
 
+it("uses the retained native target reader and connection before ordinary fallback, then closes their owner", { timeout: 10000 }, async t => {
+	const root = fixtureRoot(t), sourceId = randomUUID();
+	const targetCatalog = new AgentCatalog(join(root, "earlier-root"));
+	const record = targetCatalog.create({ cwd: root, agentDir: join(root, "target-agent"), packageDir: join(root, "target-package"), model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off", trust: true });
+	const source = await openHost(join(root, "source.sqlite"), sourceId, root);
+	const target = await openHost(join(root, "target.sqlite"), record.storageId, root);
+	t.after(async () => { await source.close(); await target.close(); });
+	const calls: SubmitRecord[] = [], closed: boolean[] = [];
+	const link = fakeTarget(target, calls);
+	const reported = await recordReport(source.harness, { ownerId: record.storageId, senderIdentity: sourceId, message: "retained target report", requestId: "retained-source" }, BACKGROUND_CONTEXT);
+	const delivery = startDurableDelivery({ host: source, metadata: sourceMetadata(root, sourceId, join(root, "source.sqlite")), catalog: new AgentCatalog(join(root, "new-root")), signal: new AbortController().signal,
+		readTarget: identity => { assert.equal(identity, record.storageId); return record; },
+		connectTarget: async value => { assert.equal(value, record); return link; },
+		onClose: () => { closed.push(link.closed); },
+	});
+	try {
+		await waitForDelivery(source, async () => (await deliveryState(source))?.reports.some(report => report.sourceId === reported.sourceId && report.acknowledged) === true);
+		assert.equal(calls.length, 1);
+		assert.equal(calls[0].params.sessionId, record.storageId);
+		assert.deepEqual(calls[0].params.provenance, { classification: "report", sender: sourceId });
+		assert.equal(calls[0].params.ownerId, undefined);
+	} finally { await delivery.close(); }
+	assert.deepEqual(closed, [true]);
+});
+
+it("does not broadcast an unresolved native delivery to ordinary primaries", { timeout: 10000 }, async t => {
+	const root = fixtureRoot(t), sourceId = randomUUID(), missing = randomUUID(), sessionsRoot = join(root, "sessions");
+	const source = await openHost(join(root, "unresolved.sqlite"), sourceId, root);
+	t.after(() => source.close());
+	const received: PrimaryDelivery[] = [];
+	const ordinary = await createPrimaryChannel({ id: randomUUID(), cwd: root, sessionsRoot, deliver: message => { received.push(message); }, promptTrust: async () => undefined });
+	t.after(() => ordinary.close());
+	await recordReport(source.harness, { ownerId: missing, senderIdentity: sourceId, message: "native report", requestId: "unknown-native" }, BACKGROUND_CONTEXT);
+	const errors = eventLog<Error>();
+	const delivery = startDurableDelivery({ host: source, metadata: sourceMetadata(root, sourceId, join(root, "unresolved.sqlite")), catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal,
+		readTarget: () => { throw Object.assign(new Error("The exact native target is not retained"), { code: "ENOENT" }); }, onError: error => errors.push(error),
+	});
+	try {
+		await errors.waitForCount(1);
+		assert.match(errors[0].message, /exact native target is not retained/u);
+		assert.deepEqual(received, []);
+		assert.equal((await deliveryState(source))?.reports[0].acknowledged, false);
+	} finally { await delivery.close(); }
+});
+
 for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live steer with its answer for ${recipients} recipients`, { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sessionsRoot = join(root, "sessions");

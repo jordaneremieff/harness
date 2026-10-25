@@ -12,7 +12,7 @@ import { PrimarySession, type PrimarySessionOptions } from '../rpc/session.mts';
 import { LIMITS, type ConversationLayout, type Workspace, type Target, type TargetState, type PrimaryView, type TargetPreparation, type SessionMetadata, type SessionMetadataTarget, type OperationView } from '../shared/api.ts';
 import { Registry, type AgentAdapter, type RegistryOptions } from './registry.mts';
 import { StateStore } from './state.mts';
-import { assertOperation, decodeDescriptor, supportedOperations, type OperationName } from '../agents/contract.mts';
+import { assertOperation, decodeDescriptor, nativeControls, supportedOperations, type OperationName } from '../agents/contract.mts';
 import { activity, descriptor, frame, CHILD, STORAGE } from '../agents/fake-host.mts';
 import { deriveEndpoint, type CatalogRecord } from '../agents/catalog-record.mts';
 
@@ -21,7 +21,7 @@ const empty: CatalogPage = {rows: [], nextCursor: null, coverage: {complete: tru
 function fakeAgents() {
   const forbidden = async (): Promise<never> => { throw new Error('No native work in a registry fixture'); };
   const adapter: AgentAdapter = {roster: () => empty, rosterRow: () => undefined, lookup: forbidden, imageInputAvailable: () => false, refresh: forbidden, prepare: forbidden, select: forbidden, reconnect: forbidden, history: forbidden, image: forbidden, inspect: forbidden, inventory: forbidden, command: forbidden, threads: forbidden, thread: forbidden,
-    submit: forbidden, retrySubmit: forbidden, abort: forbidden, configure: () => { throw new Error('No native configuration'); },
+    submit: forbidden, retrySubmit: forbidden, control: forbidden, abort: forbidden, configure: () => { throw new Error('No native configuration'); },
     hide: async () => {}, disconnectWorkspace: async () => {}, close: async () => {}};
   return () => adapter;
 }
@@ -74,6 +74,26 @@ async function fixture(context: TestContext) {
   context.after(async () => { for (const registry of registries) await registry.close(); await rm(root, {recursive: true, force: true}); });
   return {cwd, counts, options, open};
 }
+
+test('managed roots retain separate readers and reject a changed source or dependency route',async t=>{
+  const setup=await fixture(t),added:{root:string;readerPath?:string}[]=[];
+  const adapter=fakeAgents()();adapter.addStore=(root,readerPath)=>{added.push({root,readerPath});};adapter.refresh=async()=>empty.scan;
+  setup.options.agents=()=>adapter;
+  const registry=await setup.open();
+  async function placement(name:string) {
+    const source=join(setup.cwd,name),slice=join(source,'extensions/agent');await mkdir(slice,{recursive:true});
+    await Promise.all([writeFile(join(source,'package.json'),JSON.stringify({name:'harness'})),writeFile(join(slice,'retained-read.ts'),'// inert reader')]);
+    const sourceRoot=await realpath(source);return {root:join(sourceRoot,'native'),sourceRoot,packageDir:join(sourceRoot,'installation')};
+  }
+  const earlier=await placement('earlier'),current=await placement('current');
+  await registry.addManagedRoot(earlier.root,earlier.sourceRoot,earlier.packageDir);
+  await registry.addManagedRoot(current.root,current.sourceRoot,current.packageDir);
+  await registry.addManagedRoot(earlier.root,earlier.sourceRoot,earlier.packageDir);
+  assert.deepEqual(added,[earlier,current].map(value=>({root:value.root,readerPath:join(value.sourceRoot,'extensions/agent/retained-read.ts')})));
+  await assert.rejects(registry.addManagedRoot(earlier.root,current.sourceRoot,earlier.packageDir),{code:'source_conflict'});
+  await assert.rejects(registry.addManagedRoot(earlier.root,earlier.sourceRoot,current.packageDir),{code:'source_conflict'});
+  assert.equal(setup.counts.started,0);
+});
 
 test('registry restart restores stopped records, drafts, and workspace without spawning', {timeout: 10000}, async context => {
   const setup = await fixture(context); const registry = await setup.open(); const workspace = await registry.store.workspace();
@@ -475,7 +495,7 @@ test('repeated agent preparation returns the same saved draft without selection 
   assert.equal(second.targetState.targetKey,first.targetState.targetKey);
   assert.equal(second.targetState.draft.text,'Retain this exact draft.');
   assert.equal(second.targetState.draft.revision,1); assert.equal(second.availability,'live'); assert.equal(second.reason,undefined);
-  assert.deepEqual(second.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:true,inspect:true,commands:false});
+  assert.deepEqual(second.capabilities,{history:true,observe:true,input:true,images:false,abort:false,configure:true,inspect:true,commands:false});
   assert.deepEqual(await registry.store.workspace(workspace.id),workspace);
   assert.equal(registry.frames.size,0); assert.equal(registry.availability.size,0);
   assert.equal(setup.counts.started,0); assert.deepEqual(calls,['storage:2','storage:2']);
@@ -532,7 +552,7 @@ test('current host identities enable input, activity inspection and configuratio
     inspect: async (identity, options) => { calls.push({identity, options}); return activity(identity) as Awaited<ReturnType<AgentAdapter['inspect']>>; }});
   const registry = await setup.open(); const workspace = await registry.store.workspace(); const identity = 'storage:2';
   const prepared = await prepareRoute(registry, workspace.id, {target:{kind:'agent',identity}});
-  assert.deepEqual(prepared.capabilities,{history:true,observe:true,input:true,images:false,abort:true,configure:true,inspect:true,commands:true});
+  assert.deepEqual(prepared.capabilities,{...Object.fromEntries(nativeControls.map(key=>[key,true])),history:true,observe:true,input:true,images:false,abort:true,configure:true,inspect:true,commands:true});
   const inspected = await registry.dispatch({parts:['api','agents',identity,'inspect'],body:{view:'activity',limit:20},method:'POST',
     url:new URL('http://localhost/api/agents/storage:2/inspect')}) as {identity:string;view:string};
   assert.equal(inspected.identity,identity);assert.equal(inspected.view,'activity');

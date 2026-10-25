@@ -444,22 +444,26 @@ it("returns the full configure outcome with the model-clamped reasoning level", 
 	}
 });
 
-it("aborts active work before compacting and does not resume it", { timeout: 30000 }, async (t) => {
+it("compacts without aborting active work or withdrawing queued input", { timeout: 30000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
 	const started = defer();
 	const release = defer();
 	const registry = fixtureRegistry([gateTool(release.promise, started.resolve)]);
-	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("summary answer")]), registry), BACKGROUND_CONTEXT);
+	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([toolCallMessage("gate"), answerMessage("summary answer"), answerMessage("work answer"), answerMessage("queued answer")]), registry), BACKGROUND_CONTEXT);
 	try {
 		const submitted = await host.submit({ message: "busy work", requestId: "compact-busy" });
 		await started.promise;
-		const compacted = (await host.request("compact", { instructions: "condense the work", wait: true })) as { status: string; entryId?: EntryId };
-		assert.equal(compacted.status, "completed");
-		const settled = await host.wait(submitted.submissionId);
-		assert.notEqual(settled.status, "done", "the interrupted submission does not complete");
+		const queued = await host.submit({ message: "later work", requestId: "compact-queued", whenBusy: "followUp" });
+		const compacted = (await host.request("compact", { instructions: "condense the work", wait: false })) as { status: string; taskId: number };
+		assert.equal(compacted.status, "task");
 		const inspection = await host.inspect();
-		assert.equal(inspection.tasks.length, 0, "nothing resumes after compaction");
-		assert.equal(inspection.submissions.filter((item) => item.status === "queued" || item.status === "placed").length, 0);
+		assert.equal(inspection.submissions.find(item => item.id === submitted.submissionId)?.status, "placed");
+		assert.equal(inspection.submissions.find(item => item.id === queued.submissionId)?.status, "queued");
+		assert.equal(inspection.tasks.some(item => item.record.abortRequested), false);
+		release.resolve();
+		assert.equal((await host.wait(submitted.submissionId)).status, "done");
+		assert.equal((await host.wait(queued.submissionId)).status, "done");
+		assert.equal((await host.harness.waitForTask(compacted.taskId as import("@earendil-works/pi-durable").TaskId, BACKGROUND_CONTEXT)).state.outcome.status, "completed");
 	} finally {
 		release.resolve();
 		await host.close();

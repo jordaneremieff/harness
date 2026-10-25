@@ -242,8 +242,8 @@ export async function descriptor(): Promise<JsonObject> {
 			"response": "abort/1.0.0"
 		},
 		"compact": {
-			"request": "compact/1.0.0",
-			"response": "compact/1.0.0",
+			"request": "compact/2.0.0",
+			"response": "compact/2.0.0",
 			"durable": durable
 		},
 		"configure": {
@@ -255,6 +255,8 @@ export async function descriptor(): Promise<JsonObject> {
 			"response": "command/1.0.0",
 			"durable": durable
 		},
+    'run-scope':{request:'run-scope/1.0.0',response:'run-scope/1.0.0'},'run-stop':{request:'run-stop/1.0.0',response:'run-stop/1.0.0'},
+    'request-cancel':{request:'request-cancel/1.0.0',response:'request-cancel/1.0.0'},
 		"reset": {
 			"request": "reset/1.0.0",
 			"response": "reset/1.0.0"

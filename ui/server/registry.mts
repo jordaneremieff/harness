@@ -1,7 +1,12 @@
+import {runtimeValue,dispatchRuntime} from './runtime-bridge.mts';
+import {readRecord} from '../agents/catalog-record.mts';
+import {nativeControls} from '../agents/contract.mts';
+import {join} from 'node:path';
+import {createFederatedService} from '../agents/federated.mts';
 import { randomUUID } from 'node:crypto';
 import { realpath, stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import { AgentError, createAgentService, type AgentService, type AgentServiceOptions } from '../agents/index.mts';
+import { AgentError, type AgentService, type AgentServiceOptions } from '../agents/index.mts';
 import { PrimarySession, type PrimarySessionOptions } from '../rpc/session.mts';
 import { LIMITS, type AgentCapabilities, type Bootstrap, type EventData, type EventName, type PrimaryView, type ProjectedFrame, type SavedSessionPage, type Snapshot, type Target, type TargetPreparation } from '../shared/api.ts';
 import { ApiError } from './errors.mts';
@@ -20,13 +25,13 @@ import { dispatchAgent } from './routes-agent.mts';
 import { dispatchThreads } from './routes-threads.mts';
 import { dispatchView } from './routes-view.mts';
 import { dispatchSessionMetadata } from './session-metadata.mts';
-import { StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
+import { managedAgentEntrypoint, StoredAgentStarter, startIdentity, type StartOptions } from './agent-start.mts';
 import { savedSessionId, validateSessionProject } from './sessions.mts';
 import type {Control} from './control.mts';
 import type {OwnerConnection} from './owner-client.mts';
 import type {OwnerDescriptor, OwnerStateIdentity, OwnerRecovery} from '../shared/owner.ts';
 
-export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'lookup' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'inventory' | 'command' | 'threads' | 'thread' | 'submit' | 'retrySubmit' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'> & {readonly available?:boolean};
+export type AgentAdapter = Pick<AgentService, 'roster' | 'rosterRow' | 'lookup' | 'prepare' | 'refresh' | 'select' | 'hide' | 'reconnect' | 'history' | 'image' | 'imageInputAvailable' | 'inspect' | 'inventory' | 'command' | 'threads' | 'thread' | 'submit' | 'retrySubmit' | 'control' | 'abort' | 'configure' | 'disconnectWorkspace' | 'close'> & {readonly available?:boolean;addStore?(store:string,readerPath?:string):void};
 export type RegistryOptions = {stateDir: string; cwd: string; executable: string; agentStore: string;
   agents?: (options: AgentServiceOptions) => AgentAdapter; primary?: (options: PrimarySessionOptions) => PrimarySession; measure?: Measure;
   agentStart?: Pick<StartOptions,'spawn'|'timeoutMs'|'agentDir'>;
@@ -120,6 +125,37 @@ export class Registry {
   private attachmentRevision = 0;
   readonly agents: AgentAdapter;
   private readonly starter: StoredAgentStarter;
+  private readonly managedRoots=new Map<string,{sourceRoot:string;packageDir:string;starter:StoredAgentStarter}>();
+  async addManagedRoot(root:string,sourceRoot:string,packageDir:string):Promise<void> {
+    const prior=this.managedRoots.get(root);if(prior){if(prior.sourceRoot!==sourceRoot||prior.packageDir!==packageDir)throw new ApiError('source_conflict','The native root source changed.');return;}
+    const readerPath=await managedAgentEntrypoint(sourceRoot,'retained-read.ts');
+    if(!this.agents.addStore)throw new ApiError('unsupported','The Agent adapter does not accept another native root.');
+    this.agents.addStore(root,readerPath);
+    this.managedRoots.set(root,{sourceRoot,packageDir,starter:new StoredAgentStarter({store:root,sourceRoot,managedPackageDir:packageDir,executable:this.options.executable,...this.options.agentStart})});
+    await this.agents.refresh();
+  }
+  async discoverManagedRoots():Promise<void> {
+    if(!this.agents.addStore)return;
+    const result=await runtimeValue(this,{operation:'sessions.list'}) as {roots:{root:string;sourceRoot:string;packageDir:string}[];complete:boolean};
+    if(!result.complete||!Array.isArray(result.roots))throw new ApiError('source_unavailable','The managed native-root inventory is incomplete.',503,'read');
+    for(const item of result.roots)await this.addManagedRoot(item.root,item.sourceRoot,item.packageDir);
+  }
+  private async knownStarter(storageId:string):Promise<StoredAgentStarter|undefined> {
+    const roots=[{root:this.options.agentStore,starter:this.starter},...[...this.managedRoots].map(([root,value])=>({root,starter:value.starter}))];
+    const candidates=await Promise.all(roots.map(async value=>{
+      try{await readRecord(join(value.root,'durable'),storageId);return value.starter;}
+      catch(error){if(['ENOENT','ENOTDIR'].includes((error as NodeJS.ErrnoException).code??''))return undefined;throw new ApiError('source_unavailable','A native catalogue record is unreadable or invalid.',503,'read');}
+    }));
+    const matches=candidates.filter(value=>value!==undefined);
+    if(matches.length>1)throw new ApiError('identity_conflict','The agent identity appears in more than one native root.');
+    return matches[0];
+  }
+  private async nativeStarter(identity:string):Promise<StoredAgentStarter> {
+    const storageId=startIdentity(identity),known=await this.knownStarter(storageId);if(known)return known;
+    await this.discoverManagedRoots();const found=await this.knownStarter(storageId);if(found)return found;
+    throw new ApiError('host_unavailable','The exact agent identity is absent from the available native roots.',503,'read');
+  }
+  private closeStarters():void {this.starter.close();for(const value of this.managedRoots.values())value.starter.close();}
   private readonly starts = new Map<string,{identity:string; promise:Promise<TargetPreparation>}>();
   private closing = false;
   private shutdownReady = false;
@@ -139,7 +175,7 @@ export class Registry {
       if (record.view.target) this.refreshSentImages(record.view.target);
     }});
     this.starter = new StoredAgentStarter({store:options.agentStore,executable:options.executable,...options.agentStart});
-    this.agents = (options.agents ?? createAgentService)({store: options.agentStore, stateDir: store.root, installationId: store.instanceId, agentDir: options.agentStart?.agentDir,
+    this.agents = (options.agents ?? createFederatedService)({store: options.agentStore, stateDir: store.root, installationId: store.instanceId, agentDir: options.agentStart?.agentDir,
       onRoster: page => {
         this.reportCatalog(page.scan);
         const roster = projectRoster({...page,rows:page.changed??page.rows});
@@ -271,8 +307,8 @@ export class Registry {
     }
   }
   private capabilities(identity: string, supported?: Record<string,boolean>): AgentCapabilities {
-    return {history: supported?.snapshot === true, observe: ['observe-open','observe-frame','observe-close','snapshot'].every(key=>supported?.[key] === true),
-      input:supported?.['task-submit'] === true,images:supported?.['task-submit'] === true && this.agents.imageInputAvailable(identity),abort:supported?.abort === true,configure:supported?.configure === true,inspect:supported?.inspect === true,commands:supported?.status === true && supported?.command === true};
+    return {...Object.fromEntries(nativeControls.filter(key=>typeof supported?.[key]==='boolean').map(key=>[key,supported?.[key]])),history: supported?.snapshot === true, observe: ['observe-open','observe-frame','observe-close','snapshot'].every(key=>supported?.[key] === true),
+      input:supported?.['task-submit'] === true,images:supported?.['task-submit'] === true && this.agents.imageInputAvailable(identity),abort:supported?.['run-scope'] === true && supported?.['run-stop'] === true,configure:supported?.configure === true,inspect:supported?.inspect === true,commands:supported?.status === true && supported?.command === true};
   }
   async prepareTarget(workspace: string, target: Extract<Target,{kind:'agent'}>): Promise<TargetPreparation> {
     let availability: TargetPreparation['availability'] = 'live';
@@ -316,7 +352,7 @@ export class Registry {
     this.starts.set(key,{identity,promise}); return promise;
   }
   private async startAgentOnce(workspace: string, identity: string): Promise<TargetPreparation> {
-    await this.starter.start(identity);
+    await (await this.nativeStarter(identity)).start(identity);
     if(this.closing) throw new ApiError('not_ready','The backend closed. Agent work continues independently.',503,'read');
     await this.agents.refresh();
     let result: TargetPreparation;
@@ -633,6 +669,7 @@ export class Registry {
   async dispatch(context: RequestContext): Promise<unknown> {
     if(this.closing) throw new ApiError('not_ready','The backend no longer accepts work.',503);
     const family = context.parts[1];
+    if(family === 'runtime')return dispatchRuntime(this,context);
     if(family === 'sessions') return dispatchSessionMetadata(this,context);
     if(family === 'primaries') return dispatchPrimary(this,context);
     if(family === 'agents') return dispatchAgent(this,context);
@@ -641,7 +678,7 @@ export class Registry {
   }
   async detach(): Promise<void> {
     await this.keepClientWorkspaces();
-    this.closing = true; this.starter.close(); this.#writerWatch?.close();
+    this.closing = true; this.closeStarters(); this.#writerWatch?.close();
     await Promise.all([...this.opens]);
     await Promise.all([...this.sessions.values()].map(session => session.detach()));
     await this.agents.close(); await this.metadataWrite; await this.store.savePrimaries(this.views());
@@ -653,7 +690,7 @@ export class Registry {
   }
   private async closeOnce() {
     await this.keepClientWorkspaces();
-    this.closing = true; this.starter.close(); this.#writerWatch?.close(); this.journal.close();
+    this.closing = true; this.closeStarters(); this.#writerWatch?.close(); this.journal.close();
     await Promise.allSettled([...this.opens]);
     const results = await Promise.allSettled([...this.sessions.values()].map(session=>session.close()).concat(this.agents.close()));
     this.shutdownReady=true;

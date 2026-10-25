@@ -59,6 +59,9 @@ const root = fileURLToPath(new URL('../../', import.meta.url));
 const ui = path.join(root, 'ui');
 const transport = path.join(root, 'transport');
 const publicTransport = path.join(transport, 'index.ts');
+/** The documented public runtime interface (runtime/README.md): the client and its request contract. Nothing else in runtime/ is importable from the UI. */
+const runtimeDir = path.join(root, 'runtime');
+const runtimeInterface = new Set(['client.mts', 'contract.mts'].map(name => path.join(runtimeDir, name)));
 type Edge = {specifier: string; typeOnly: boolean};
 type Analysis = {edges: Edge[]; errors: string[]};
 const inventoryBudget = 5 * 1024 * 1024;
@@ -151,11 +154,16 @@ function target(filename: string, specifier: string, files: ReadonlyMap<string, 
 }
 function checkLocal(filename: string, specifier: string, files: ReadonlyMap<string, Analysis>): string | undefined {
   const resolved = path.resolve(path.dirname(filename), specifier);
+  if (filename.startsWith(`${runtimeDir}${path.sep}`)) {
+    // Only the public interface files are inventoried; their runtime-internal edges belong to the runtime's own checks.
+    return resolved.startsWith(`${runtimeDir}${path.sep}`) ? undefined : `runtime escape: ${specifier}`;
+  }
   if (filename.startsWith(`${transport}${path.sep}`)) {
     if (!resolved.startsWith(`${transport}${path.sep}`)) return `transport escape: ${specifier}`;
   } else if (!resolved.startsWith(`${ui}${path.sep}`)) {
     const publicAgentTransport = filename.startsWith(`${path.join(ui, 'agents')}${path.sep}`) && specifier === '../../transport/index.ts' && resolved === publicTransport;
-    if (!publicAgentTransport) return `harness escape: ${specifier}`;
+    const publicRuntime = filename.startsWith(`${path.join(ui, 'server')}${path.sep}`) && /^\.\.\/\.\.\/runtime\/(?:client|contract)\.mts$/.test(specifier) && runtimeInterface.has(resolved);
+    if (!publicAgentTransport && !publicRuntime) return `harness escape: ${specifier}`;
   }
   return target(filename, specifier, files) ? undefined : `missing local source: ${specifier}`;
 }
@@ -233,6 +241,7 @@ async function sources(directories = [ui, transport], maxVisits = 768, maxBytes 
     } finally {await file.close();}
   }
   for (const directory of directories) await walk(directory);
+  if (directories.includes(ui)) for (const filename of runtimeInterface) admit(filename);
   for (const filename of [...filenames].sort()) {
     const value = await readAnalysis(filename); files.set(filename, value.info);
     peakBytes = Math.max(peakBytes, retainedBytes + value.sourceBytes + value.analysisBytes);
@@ -347,6 +356,23 @@ test('only the named public transport entrypoint crosses the agent UI boundary',
   assert.ok(check(files, runtime, new Set()).some(error => error.includes('transport escape')));
   const browser = path.join(ui, 'web', 'fixture.ts'); files.set(browser, analyze("import '../../transport/index.ts';", browser));
   assert.ok(check(files, runtime, new Set()).some(error => error.includes('browser server graph')));
+});
+
+test('only the documented public runtime interface crosses the server UI boundary', () => {
+  const server = path.join(ui, 'server', 'fixture.mts');
+  const client = path.join(root, 'runtime', 'client.mts'), contract = path.join(root, 'runtime', 'contract.mts');
+  const files = new Map([[server, analyze("import '../../runtime/client.mts'; import '../../runtime/contract.mts';", server)],
+    [client, analyze("import './contract.mts';", client)], [contract, analyze('export const RUNTIME_PROTOCOL = 1;', contract)]]);
+  assert.deepEqual(check(files, new Set(), new Set()), []);
+  for (const specifier of ['../../runtime/lifecycle.mts', '../../runtime/service.mts', '../../runtime/http.mts', '../../runtime/cli.mts', '../../runtime', '../../runtime/./client.mts']) {
+    files.set(server, analyze(`import ${JSON.stringify(specifier)};`, server));
+    assert.ok(check(files, new Set(), new Set()).some(error => error.includes('harness escape')), specifier);
+  }
+  for (const other of [path.join(ui, 'agents', 'fixture.mts'), path.join(ui, 'web', 'fixture.ts'), path.join(ui, 'cli', 'fixture.mts')]) {
+    files.delete(server); files.set(other, analyze("import '../../runtime/client.mts';", other));
+    assert.ok(check(files, new Set(), new Set()).some(error => error.includes('harness escape') || error.includes('browser server graph')), other);
+    files.delete(other);
+  }
 });
 
 test('unshipped browser test support is not an entrypoint but runtime imports still traverse it', () => {

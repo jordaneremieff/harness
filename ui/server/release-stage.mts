@@ -1,12 +1,13 @@
 import {execFile} from 'node:child_process';
 import {mkdir,copyFile,lstat,opendir,rename,realpath} from 'node:fs/promises';
-import {join,resolve,dirname} from 'node:path';
+import {join,resolve} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
 import vm from 'node:vm';
 import {assetMap} from './http.mts';
 import {assetDigest} from './version.mts';
 import {assertBrowserAssetsFresh} from './browser-assets.mts';
 import {AssetGeneration} from './asset-generations.mts';
+import {copyReleaseSource,packageEntryDrivers} from './release-package.mts';
 import {RELEASE_FORMAT,BROWSER_API,type ReleaseManifest} from '../shared/release.ts';
 import {RECENT_COMMITS,UI_ITERATION,parseRecentCommits} from '../shared/version.ts';
 import {atomicJson,boundedFile,inventory,RELEASE_LIMITS,releaseRoot,sealTree,sha256,removeStagingTree,manifestAt,assertSealedTree,type InventoryEntry} from './release-store.mts';
@@ -28,13 +29,13 @@ async function descriptorCount(root:string) {
 async function exists(path:string) {try{await lstat(path);return true;}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return false;throw error;}}
 async function sourceRevision(source:string,allowDirty?:boolean) {
   const [sourceCommit,sourceTree,committedAt,branch,dirty]=await Promise.all([
-    run(source,['rev-parse','HEAD']),run(source,['rev-parse','HEAD^{tree}']),run(source,['show','--no-patch','--format=%cI','HEAD']),run(source,['rev-parse','--abbrev-ref','HEAD']),run(source,['status','--porcelain=v1','--untracked-files=normal','--','ui','transport','package.json','package-lock.json'])]);
-  if(dirty&&!allowDirty)throw new Error('Release staging requires checked, committed UI and transport source.');
+    run(source,['rev-parse','HEAD']),run(source,['rev-parse','HEAD^{tree}']),run(source,['show','--no-patch','--format=%cI','HEAD']),run(source,['rev-parse','--abbrev-ref','HEAD']),run(source,['status','--porcelain=v1','--untracked-files=normal','--','ui','transport','runtime','extensions/agent','scripts','package.json','package-lock.json','LICENSE'])]);
+  if(dirty&&!allowDirty)throw new Error('Release staging requires checked, committed source.');
   const recent=parseRecentCommits(await run(source,['log','-n',String(RECENT_COMMITS),'--format=%H%x00%s','HEAD']).catch(()=>''));
   return {sourceCommit,sourceTree,committedAt,branch,...(recent.length?{recent}:{})};
 }
 async function snapshotInputs(source:string) {
-  const names=['ui/server','ui/rpc','ui/agents','ui/shared','ui/web','ui/dist','ui/cli','transport'],inputs=new Map<string,InventoryEntry[]>();let bytes=128*1024,count=0;
+  const names=['ui/server','ui/rpc','ui/agents','ui/shared','ui/web','ui/dist','ui/cli','transport','runtime','extensions/agent','scripts'],inputs=new Map<string,InventoryEntry[]>();let bytes=256*1024+[...packageEntryDrivers().values()].reduce((sum,value)=>sum+Buffer.byteLength(value),0),count=6;
   for(const name of names){const entries=await inventory(join(source,name));inputs.set(name,entries);count+=entries.length;bytes+=entries.reduce((sum,v)=>sum+v.bytes,0);}
   if(count>4096||bytes>128*1024**2)throw new Error('The release source exceeds its staging reservation.');return {inputs,bytes};
 }
@@ -52,17 +53,6 @@ async function ensureRuntime(root:string,runtime:string,source:string,dependenci
     try{const copied=await copyInventory(source,join(temporary,'node_modules'),dependencies);if(copied!==digest)throw new Error('Runtime dependencies changed during staging.');await sealTree(join(temporary,'node_modules'));await mkdir(join(temporary,'releases'),{mode:0o700});await rename(temporary,runtime);}
     catch(failure){await removeStagingTree(temporary).catch(()=>{});throw failure;}
   }
-}
-async function copySourceEntry(source:string,directory:string,name:string,entry:InventoryEntry,files:Record<string,string>) {
-  if(entry.path.endsWith('.test.mts')||entry.path.endsWith('.test.ts'))return;
-  const path=`${name}/${entry.path}`,destination=join(directory,path);if(entry.directory){await mkdir(destination,{recursive:true,mode:0o700});return;}
-  const bytes=await boundedFile(join(source,name,entry.path),RELEASE_LIMITS.fileBytes);if(bytes.length!==entry.bytes)throw new Error('The source changed after its staging reservation.');files[path]=sha256(bytes);
-  await mkdir(dirname(destination),{recursive:true,mode:0o700});await copyFile(join(source,name,entry.path),destination,1);
-  if(sha256(await boundedFile(destination,RELEASE_LIMITS.fileBytes))!==files[path])throw new Error('Source changed during staging.');
-}
-async function copySource(source:string,directory:string,inputs:Map<string,InventoryEntry[]>) {
-  const files:Record<string,string>={};for(const [name,entries]of inputs){await mkdir(join(directory,name),{recursive:true,mode:0o700});for(const entry of entries)await copySourceEntry(source,directory,name,entry,files);}
-  const bytes=await boundedFile(join(source,'package.json'),128*1024);files['package.json']=sha256(bytes);await copyFile(join(source,'package.json'),join(directory,'package.json'),1);return files;
 }
 async function buildManifest(directory:string,revision:Awaited<ReturnType<typeof sourceRevision>>,runtimeDigest:string,lockDigest:string,files:Record<string,string>,ownerProtocol:string):Promise<ReleaseManifest> {
   const assets=await assetMap(join(directory,'ui')),imports:Record<string,string[]>={};for(const [route,asset]of assets)if(route.endsWith('.js'))imports[route]=[...new vm.SourceTextModule(asset.data.toString('utf8')).dependencySpecifiers];
@@ -101,6 +91,6 @@ export async function stageRelease(sourceRoot:string,stateDir:string,options:{ow
   const lockDigest=sha256(await boundedFile(join(source,'package-lock.json'),16*1024**2)),runtimeDigest=await dependencyDigest(runtimeSource,dependencies),runtime=join(root,'runtimes',runtimeDigest);
   await mkdir(join(root,'runtimes'),{recursive:true,mode:0o700});const snapshot=await snapshotInputs(source);await reserveCapacity(root,runtime,dependencies,snapshot.bytes);await ensureRuntime(root,runtime,runtimeSource,dependencies,runtimeDigest);
   const directory=join(runtime,'releases',`.stage-${randomUUID()}`);
-  try{await mkdir(directory,{mode:0o700});const files=await copySource(source,directory,snapshot.inputs),manifest=await buildManifest(directory,revision,runtimeDigest,lockDigest,files,options.ownerProtocol);return await publishSnapshot(root,runtime,directory,manifest);}
+  try{await mkdir(directory,{mode:0o700});const files=await copyReleaseSource(source,directory,snapshot.inputs),manifest=await buildManifest(directory,revision,runtimeDigest,lockDigest,files,options.ownerProtocol);return await publishSnapshot(root,runtime,directory,manifest);}
   catch(error){await removeStagingTree(directory).catch(()=>{});throw error;}
 }

@@ -12,10 +12,18 @@ const failed=(error:string)=>({state:'failed' as const,complete:false,visited:0,
 const page=(scan:typeof ready|ReturnType<typeof failed>)=>({rows:[],nextCursor:null,coverage:{complete:scan.state==='ready',omitted:0},stale:scan.state!=='ready',scan});
 function adapter(scan:typeof ready|ReturnType<typeof failed>,refresh:()=>Promise<unknown>):AgentAdapter {
   const forbidden=async():Promise<never>=>{throw new Error('Not used.');};
-  return {roster:()=>page(scan),rosterRow:()=>undefined,lookup:forbidden,imageInputAvailable:()=>false,refresh:refresh as AgentAdapter['refresh'],prepare:forbidden,select:forbidden,reconnect:forbidden,history:forbidden,image:forbidden,inspect:forbidden,inventory:forbidden,command:forbidden,threads:forbidden,thread:forbidden,submit:forbidden,retrySubmit:forbidden,abort:forbidden,configure:()=>{throw new Error('Not used.');},hide:async()=>{},disconnectWorkspace:async()=>{},close:async()=>{}};
+  return {roster:()=>page(scan),rosterRow:()=>undefined,lookup:forbidden,imageInputAvailable:()=>false,refresh:refresh as AgentAdapter['refresh'],prepare:forbidden,select:forbidden,reconnect:forbidden,history:forbidden,image:forbidden,inspect:forbidden,inventory:forbidden,command:forbidden,threads:forbidden,thread:forbidden,submit:forbidden,retrySubmit:forbidden,control:forbidden,abort:forbidden,configure:()=>{throw new Error('Not used.');},hide:async()=>{},disconnectWorkspace:async()=>{},close:async()=>{}};
+}
+/** The backend reads private-access settings from the machine document; a fixture must never inherit the operator's and bind the live private port. */
+function isolateAgent(t:TestContext,root:string):void {
+  const keys=['PI_CODING_AGENT_DIR','PI_HARNESS_FILE','PI_UI_PRIVATE_ORIGIN','PI_UI_PRIVATE_OWNER_LOGIN','PI_UI_PRIVATE_PORT'];
+  const previous=keys.map(key=>process.env[key]);
+  process.env.PI_CODING_AGENT_DIR=join(root,'agent');process.env.PI_HARNESS_FILE='harness.json';
+  for(const key of keys.slice(2))delete process.env[key];
+  t.after(()=>keys.forEach((key,index)=>{const value=previous[index];if(value===undefined)delete process.env[key];else process.env[key]=value;}));
 }
 async function backend(t:TestContext,agents:AgentAdapter) {
-  const directory=await mkdtemp(join(tmpdir(),'ui-unavailable-')),project=join(directory,'project'),stateDir=join(directory,'state');await mkdir(project);await mkdir(stateDir,{mode:0o700});
+  const directory=await mkdtemp(join(tmpdir(),'ui-unavailable-')),project=join(directory,'project'),stateDir=join(directory,'state');await mkdir(project);await mkdir(stateDir,{mode:0o700});isolateAgent(t,directory);
   const stderr:string[]=[];t.mock.method(process.stderr,'write',(text:string|Uint8Array)=>{stderr.push(String(text));return true;});
   const app=await startBackend({cwd:project,port:0,pi:'not-executed',stateDir},{agents:()=>agents,assets:new Map([['/',{data:Buffer.from('<html><head></head><body></body></html>'),type:'text/html'}]])});
   let closed=false;const close=async()=>{if(!closed){closed=true;await app.close();}};

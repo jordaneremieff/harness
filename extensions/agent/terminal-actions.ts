@@ -33,7 +33,7 @@ export async function terminalAction(controller: TerminalController, ask: Termin
 		abort: async () => await confirm("stop", "Stop current work in this conversation. History and other conversations stay.") ? result(await control("abort")) : undefined,
 		"await-release": async () => await confirm("release", "Return partial await results. Producers continue.") ? result(await control(name, { expectedRunId: target.awaiting?.runId })) : undefined,
 		compact: async () => {
-			if (!await confirm("compact", "Stop active work and compact without a new model turn.")) return undefined;
+			if (!await confirm("compact", "Compact at the next native boundary. Active work and queued input stay.")) return undefined;
 			const instructions = await ask("Compaction instructions", [], "Instructions (optional): ");
 			return instructions === undefined ? undefined : result(await control(name, { instructions }));
 		},

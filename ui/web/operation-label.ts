@@ -6,7 +6,18 @@ function uncertainLabel(operation: OperationView): string {
   if (operation.kind === 'agent.configure') return 'Settings update not confirmed';
   return operation.kind === 'primary.handoff' ? 'Terminal switch not confirmed' : 'Action not confirmed';
 }
+function nativeControlLabel(operation:OperationView):string {
+  const value=operation.receipt?.kind==='rpc'?operation.receipt.result?.value:undefined;
+  if(!value||typeof value!=='object')return 'Native control acknowledged';
+  const result=value as Record<string,unknown>;
+  if(result.effects==='not-started'&&result.state==='aborted')return 'Queued input cancelled';
+  if(result.effects!=='partial-effects-possible')return 'Native control acknowledged';
+  const labels:Record<string,string>={partial:'Run stopped; some work remains protected',protected:'The selected run remains protected',already_placed:'Input already placed; open its conversation to stop its run',stopped:'Selected run stopped',settled:'The selected work already settled'};
+  return labels[String(result.state)]??'Native control acknowledged';
+}
 function completedLabel(operation: OperationView): string {
+  if(operation.kind==='agent.create')return 'Native conversation created';
+  if(operation.kind==='agent.control')return nativeControlLabel(operation);
   if(operation.kind==='agent.configure')return operation.receipt?.kind==='configuration'&&operation.receipt.clamped?'Settings changed to supported values':'Settings changed';
   if (operation.kind === 'agent.command') return operation.receipt?.kind === 'command' ? `Command /${operation.receipt.name} ran` : 'Command ran';
   if (operation.kind === 'primary.handoff') return 'Ready for terminal';

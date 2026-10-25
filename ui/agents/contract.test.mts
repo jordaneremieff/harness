@@ -56,6 +56,16 @@ function descriptor(): JsonObject {
 			"collaboration-read": { request: "collaboration-read/1.0.0", response: "collaboration-read/1.0.0" },
 			status: { request: "status/1.0.0", response: "d1f5f022e262aba18b6de135e891aef526cf9f0f62f114e51f3c132e624eb6cf", durable: D },
 			command: { request: "command/1.1.0", response: "command/1.0.0", durable: D },
+      compact:{request:'compact/2.0.0',response:'compact/2.0.0',durable:D},
+      reset:{request:'reset/1.0.0',response:'reset/1.0.0'},fork:{request:'fork/1.0.0',response:'fork/1.0.0',durable:D},
+      rewind:{request:'rewind/1.1.0',response:'rewind/1.0.0',durable:D},
+      'timer-list':{request:'timer-list/1.0.0',response:'timer-list/1.0.0'},'timer-cancel':{request:'timer-cancel/1.0.0',response:'timer-cancel/1.0.0'},
+      'timer-schedule':{request:'timer-schedule/1.1.0',response:'timer-schedule/1.0.0'},
+      'run-scope':{request:'run-scope/1.0.0',response:'run-scope/1.0.0'},'run-stop':{request:'run-stop/1.0.0',response:'run-stop/1.0.0'},
+      'request-cancel':{request:'request-cancel/1.0.0',response:'request-cancel/1.0.0'},
+      'profile-read':{request:'profile-read/1.0.0',response:'b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889'},
+      'profile-update':{request:'profile-update/1.0.0',response:'7c805d143fae0d6a9fd373a4acb24fc080c94fa4b0787d447545e08714907eb4'},
+      spawn:{request:'spawn/2.0.0',response:'spawn/2.0.0'},place:{request:'place/2.0.0',response:'place/2.0.0'},
 		},
 	};
 }

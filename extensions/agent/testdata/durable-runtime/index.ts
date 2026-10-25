@@ -1,6 +1,6 @@
 /**
  * testdata/durable-runtime: faux provider and unsafe effect tool for the
- * durable-runtime SIGKILL tests. This module loads inside the production host
+ * durable-runtime tests. This module loads inside the production host
  * process, so it uses only public extension APIs. The test process controls it
  * through the environment:
  *
@@ -15,6 +15,8 @@
  *     then blocks. The test kills the host after the effect.
  *   - `answer`: answer every model request with final text and mark `answered`.
  *   - `tool-round`: read the fixture input before the final answer on each turn.
+ *   - `intent`: execute one tagged intent or status request, retain its tool
+ *     result, and answer without an external provider.
  *   - `spawn`: the owner calls `agent_spawn` for `DURABLE_TEST_CHILD_CWD`, the
  *     child answers `CHILD_RESULT`, and the owner marks `delivered` when the
  *     routed follow-up arrives.
@@ -174,12 +176,29 @@ function retryError() {
 	return events;
 }
 
+function intent(context: TranscriptContext) {
+	const texts = context.messages.flatMap(item => item.role === "user" ? [typeof item.content === "string" ? item.content : item.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n")] : []);
+	const text = texts.findLast(value => value.startsWith("INTENT_INPUT:"));
+	if (text === undefined) throw new Error("The intent fixture requires a tagged input");
+	const input = JSON.parse(text.slice("INTENT_INPUT:".length)) as { requestId: string; input: Extract<AssistantMessage["content"][number], { type: "toolCall" }>["arguments"] | "DISCOVER" };
+	const id = `intent-${input.requestId}`;
+	const result = context.messages.findLast(item => item.role === "toolResult" && item.toolCallId === id);
+	if (result !== undefined) {
+		appendFileSync(join(controlDir(), "intent-returns.jsonl"), `${JSON.stringify(result)}\n`);
+		return answer();
+	}
+	if (context.messages.some(item => item.role === "assistant" && item.content.some(part => part.type === "toolCall" && part.id === id))) throw new Error("The completed intent call has no result in the model context");
+	const name = input.input === "DISCOVER" ? "agent_status" : "agent_intent";
+	return completed([{ type: "toolCall", id, name, arguments: input.input === "DISCOVER" ? {} : input.input }], "toolUse");
+}
+
 function stream(_model: unknown, context: TranscriptContext, options?: RequestOptions) {
 	recordSessionOptions(options);
 	const mode = process.env.DURABLE_TEST_MODE ?? "answer";
 	if (mode === "request") return pending(options?.signal);
 	if (mode === "retry") return retryError();
 	if (mode === "spawn") return spawn(context);
+	if (mode === "intent") return intent(context);
 	if (mode === "await-local" || mode === "await-reference") return awaited(context, mode, options?.signal);
 	if (mode === "tool-round" && context.messages.at(-1)?.role !== "toolResult") {
 		return completed([{ type: "toolCall", id: `read-${context.messages.length}`, name: "read", arguments: { path: join(controlDir(), "input.txt") } }], "toolUse");

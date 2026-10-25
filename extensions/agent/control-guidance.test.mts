@@ -18,6 +18,7 @@ const CURRENT_TOOLS = [
 	"agent_configure",
 	"agent_fork",
 	"agent_inspect",
+	"agent_intent",
 	"agent_list",
 	"agent_place",
 	"agent_profile",
@@ -74,6 +75,7 @@ it("keeps the approved snippets", () => {
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_attach.snippet, "Attach to a stored agent session");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_configure.snippet, "Configure an idle session without starting work");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_list.snippet, "Find retained agent sessions");
+	assert.equal(AGENT_CONTROL_GUIDANCE.agent_intent.snippet, "Publish or clear your integration intent");
 });
 
 it("keeps the contract, reporting, polling, live-work, and authority guidance", () => {

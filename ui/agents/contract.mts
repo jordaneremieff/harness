@@ -3,12 +3,12 @@ import { createRequire } from "node:module";
 import { LIMITS } from "../shared/api.ts";
 import type { NativeInputMessage, NativeInputPart } from "./input.mts";
 
-type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
+export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export type JsonObject = { [key: string]: JsonValue };
 export type OperationContract = Readonly<{ request: string; response: string; durable?: string }>;
 export type OperationName = "dashboard" | "snapshot" | "inspect" | "observe-open" | "observe-frame"
 	| "observe-close" | "changes" | "task-submit" | "abort" | "configure" | "collaboration-list" | "collaboration-read"
-	| "status" | "command";
+	| "status" | "command" | "compact" | "reset" | "fork" | "rewind" | "timer-list" | "timer-cancel" | "timer-schedule" | "run-scope" | "run-stop" | "request-cancel" | "profile-read" | "profile-update" | "spawn" | "place";
 export type RuntimeDescriptor = {
 	format: "pi.agent.contract/1"; release: string;
 	upstream: { codingAgent: string; durable: string };
@@ -76,6 +76,7 @@ export type Responses = {
 	changes: JsonObject; "task-submit": Admission; abort: AbortReceipt; configure: ConfigureResult;
 	"collaboration-list": ThreadList; "collaboration-read": ThreadPage;
 	status: StatusReply; command: CommandResult;
+"compact": JsonValue; "reset": JsonValue; "fork": JsonValue; "rewind": JsonValue; "timer-list": JsonValue; "timer-cancel": JsonValue; "timer-schedule": JsonValue; "run-scope": JsonValue; "run-stop": JsonValue; "request-cancel": JsonValue; "profile-read":JsonValue; "profile-update":JsonValue; spawn:JsonValue; place:JsonValue;
 };
 
 export class ContractError extends Error {
@@ -183,6 +184,19 @@ export const supportedOperations: Readonly<Record<OperationName, OperationContra
 	"collaboration-list": contract("collaboration-list"), "collaboration-read": contract("collaboration-read"),
 	status: contract("status", "1.0.0", "d1f5f022e262aba18b6de135e891aef526cf9f0f62f114e51f3c132e624eb6cf", true),
 	command: contract("command", "1.1.0", "command/1.0.0", true),
+"profile-read":contract("profile-read","1.0.0","b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889"),
+"profile-update":contract("profile-update","1.0.0","7c805d143fae0d6a9fd373a4acb24fc080c94fa4b0787d447545e08714907eb4"),
+spawn:contract("spawn","2.0.0"),place:contract("place","2.0.0"),
+"compact":contract("compact","2.0.0","compact/2.0.0",true),
+"reset":contract("reset","1.0.0","reset/1.0.0",false),
+"fork":contract("fork","1.0.0","fork/1.0.0",true),
+"rewind":contract("rewind","1.1.0","rewind/1.0.0",true),
+"timer-list":contract("timer-list","1.0.0","timer-list/1.0.0",false),
+"timer-cancel":contract("timer-cancel","1.0.0","timer-cancel/1.0.0",false),
+"timer-schedule":contract("timer-schedule","1.1.0","timer-schedule/1.0.0",false),
+"run-scope":contract("run-scope","1.0.0","run-scope/1.0.0",false),
+"run-stop":contract("run-stop","1.0.0","run-stop/1.0.0",false),
+"request-cancel":contract("request-cancel","1.0.0","request-cancel/1.0.0",false),
 });
 function operation(value: JsonValue): OperationContract {
 	const o = object(value); only(o, ["request", "response", "durable"]);
@@ -598,6 +612,7 @@ function canonicalModel(value: JsonValue): void {
 }
 function configureInput(o: JsonObject): void {
 	only(o, ["sessionId", "requestId", "name", "model", "thinkingLevel", "preset"]); identity(o.sessionId); string(o.requestId, 512);
+
 	requireValue(["name", "model", "thinkingLevel", "preset"].some(key => o[key] !== undefined), "Empty configuration");
 	optional(o, ["name"], v => { string(v, 256, true); requireValue(!/[\p{Cc}\p{Cf}\ud800-\udfff\u2028\u2029]/u.test(v as string), "Invalid configuration name"); });
 	if (o.model !== undefined) { const m = object(o.model); only(m, ["provider", "modelId"]); fields(m, ["provider", "modelId"], v => string(v, 512)); requireValue(!String(m.provider).includes('/'), "Invalid model provider"); canonicalModel(`${m.provider}/${m.modelId}`); }
@@ -724,6 +739,7 @@ function threadPage(value: JsonValue): ThreadPage {
 }
 export function decodeResponse<M extends OperationName>(member: M, value: unknown, context: Context = {}): Responses[M] {
 	const v = json(value);
+  if(nativeControls.includes(member as NativeControlName))return nativeControlResult(member as NativeControlName,v,context) as Responses[M];
 	const decoders = {
 		dashboard: () => { array(v, summary); return v as unknown as Summary[]; }, snapshot: () => snapshot(v),
 		inspect: () => inspect(v, context), "observe-frame": () => frameValue(object(v), context),
@@ -734,6 +750,16 @@ export function decodeResponse<M extends OperationName>(member: M, value: unknow
 		changes: () => changes(v), "task-submit": () => admission(v, context), abort: () => abort(v, context), configure: () => configureResult(v, context),
 		"collaboration-list": () => threadList(v), "collaboration-read": () => threadPage(v),
 		status: () => statusReply(v), command: () => commandResult(v, context),
+"compact":()=>v,
+"reset":()=>v,
+"fork":()=>v,
+"rewind":()=>v,
+"timer-list":()=>v,
+"timer-cancel":()=>v,
+"timer-schedule":()=>v,
+"run-scope":()=>v,
+"run-stop":()=>v,
+"request-cancel":()=>v,"profile-read":()=>v,"profile-update":()=>v,spawn:()=>v,place:()=>v,
 	};
 	const decoder = decoders[member];
 	requireValue(Object.hasOwn(decoders, member) && decoder, "Unsupported operation"); return decoder() as Responses[M];
@@ -805,6 +831,7 @@ export function decodeInput(member: OperationName, value: unknown, context: Cont
 	if (context.requestId !== undefined) requireValue(o.requestId === context.requestId, "Wrong input request ID");
 	if (context.token !== undefined) requireValue(o.token === context.token, "Wrong input observation token");
 	if (member === "task-submit") return o;
+ if(nativeControls.includes(member as NativeControlName)){nativeControlInput(member as NativeControlName,o);return o;}
 	if (member === "configure") { configureInput(o); return o; }
 	if (member === "observe-open") { observeInput(o); return o; }
 	if (member === "observe-frame" || member === "observe-close") { only(o, ["token"]); token(o.token); return o; }
@@ -854,4 +881,33 @@ function inspectInput(o: JsonObject): void {
 	if (o.view === "result") requireValue(o.submissionId !== undefined || o.requestId !== undefined || o.operationId !== undefined, "Result inspection requires a selector");
 	if (o.view !== undefined) choice(o.view, ["activity", "history", "branch", "search", "exact", "result"]);
 	if (o.source !== undefined) choice(o.source, ["user", "assistant", "toolResult", "summary", "custom"]);
+}
+
+function nativeControlResult(member:NativeControlName,value:JsonValue,context:Context):JsonValue {
+  if(!['run-scope','run-stop','request-cancel'].includes(member))return value;
+  const o=object(value);
+  if(member==='request-cancel'){
+    resultReference(o.result);if(context.identity!==undefined)requireValue(object(o.result).sessionId===context.identity,'Wrong cancellation result');
+    choice(o.state,['aborted','already_placed','settled']);choice(o.effects,['not-started','partial-effects-possible']);return o;
+  }
+  identity(o.sessionId);if(context.identity!==undefined)requireValue(o.sessionId===context.identity,'Wrong native run target');
+  if(member==='run-scope'){nullableId(o.runId);nullableId(o.taskId);}else{integer(o.runId,1);choice(o.state,['stopped','settled','partial','protected']);requireValue(o.effects==='partial-effects-possible','Missing effect disclosure');}
+  array(o.inputs,resultReference,2048);array(o.delegations,item=>{const child=object(item);identity(child.sessionId);if(member==='run-scope'){integer(child.createdBy,1);choice(child.ownership,['created','reused']);}else choice(child.state,['stopped','settled','cancelled','protected','unavailable']);},64);
+  const c=object(o.coverage);boolean(c.complete);integer(c.omitted);return o;
+}
+export const nativeControls=["compact","reset","fork","rewind","timer-list","timer-cancel","timer-schedule","run-scope","run-stop","request-cancel","profile-read","profile-update","spawn","place"] as const;
+export type NativeControlName=typeof nativeControls[number];
+function nativeControlInput(member:NativeControlName,o:JsonObject):void {
+ const extras:Record<NativeControlName,string[]>={"profile-read":[],"profile-update":["expectedRevision","role","expertise","senderIdentity"],spawn:["senderIdentity","cwd","name","handle","preset","model","thinkingLevel","role","prompt"],place:["senderIdentity","area","topic","preset","model","thinkingLevel","prompt"],"run-scope":[],"run-stop":["runId"],"request-cancel":["result"],compact:["instructions","wait"],reset:["handoff"],fork:["entryId","name"],rewind:["entryId","correction","name","selfOwned","origin","whenBusy","wait"],"timer-list":[],"timer-cancel":["timerId"],"timer-schedule":["message","deliverAt","mode","origin","ownerId","selfOwned","scheduleId"]};
+ only(o,["sessionId","requestId",...extras[member]]);identity(o.sessionId);optional(o,["requestId"],v=>string(v,512));
+ optional(o,["entryId","timerId","runId"],v=>integer(v,1));
+ optional(o,["instructions","handoff","correction","message"],v=>string(v,65536,true));
+ optional(o,["name"],v=>string(v,256));optional(o,["wait","selfOwned"],boolean);
+ if(member==='profile-update'){string(o.expectedRevision,64);string(o.senderIdentity,512);optional(o,['role'],v=>string(v,2000,true));optional(o,['expertise'],v=>string(v,16384,true));}
+ if(member==='spawn'||member==='place'){requireValue(o.senderIdentity===o.sessionId,'Native creation requires its captured sender');optional(o,['cwd','area'],v=>string(v,4096));optional(o,['prompt'],v=>string(v,65536));optional(o,['handle','preset','model','thinkingLevel','topic','role'],v=>string(v,2000));}
+ if(member==="rewind"){ integer(o.entryId,1);string(o.correction,65536);requireValue(o.selfOwned===true&&o.origin==="operator","Operator rewind requires self ownership");}
+ if(member==="timer-cancel")integer(o.timerId,1);
+ if(member==="run-stop")integer(o.runId,1);
+ if(member==="request-cancel"){resultReference(o.result);requireValue(object(o.result).sessionId===o.sessionId,"Wrong cancellation target");}
+ if(member==="timer-schedule"){string(o.message,65536);timestamp(o.deliverAt);string(o.ownerId,512);requireValue(o.origin==="operator"&&o.selfOwned===true,"Operator timer requires self ownership");}
 }

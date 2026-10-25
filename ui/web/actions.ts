@@ -1,3 +1,4 @@
+import {creationIdentity,nativeOptions,nativeParameters,nonemptyFields,rpcValue,type NativeField} from './native-actions.ts';
 import {cardAction, cardIcon} from './card-icons.ts';
 import {ModelMemory, modelKey} from './model-memory.ts';
 import { ProjectPicker } from './picker.ts';
@@ -329,6 +330,59 @@ export class Actions {
   projectPicker(): void { this.sessionPicker().open(); }
   openProject(): void { this.sessionPicker().openProject(); }
   newSession(project?: string): void { this.ctx.newSession(project); }
+  newNativeSession(): void {
+    const modal=this.ctx.modal,workspace=this.ctx.snapshot()?.workspace.id;
+    modal.open('New native session');const token=modal.token;
+    const folder=input('Working folder',this.ctx.primary()?.cwd??this.ctx.agents().find(row=>row.identity===this.ctx.selectedAgent()?.identity)?.cwd??'');
+    const name=input('Name (optional)'),preset=input('Preset (optional)');
+    modal.body.append(folder.label,folder.field,name.label,name.field,preset.label,preset.field,element('p','secondary','This creates an independent Durable conversation. It does not send a message or convert another session.'));
+    let attempted=false;
+    modal.actions(button('Cancel',()=>modal.close()),button('Create',()=>{if(attempted)return;void modal.run(async()=>{
+      const id=await reserve('agent.create');attempted=true;
+      const result=await operation('agent.create','/api/agents/create',{cwd:folder.field.value,...nonemptyFields({name:name.field.value,preset:preset.field.value})},undefined,id);
+      this.ctx.result(result);
+      await this.openCreatedNative(creationIdentity(result),id,()=>modal.owns(token)&&this.ctx.snapshot()?.workspace.id===workspace);
+    });},'main-action'));
+    folder.field.focus();
+  }
+  private async openCreatedNative(identity:string,id:string,current:()=>boolean):Promise<void> {
+    if(!current())return;
+    await request(`/api/agents/${encodeURIComponent(identity)}/start`,'POST',{},`start:${id}`);await this.ctx.reload();
+    if(!current())return;
+    let row=this.ctx.agents().find(item=>item.identity===identity);
+    if(!row){const exact=await request<{rows:AgentRow[]}>(`/api/agents?identity=${encodeURIComponent(identity)}`);row=exact.rows.find(item=>item.identity===identity);}
+    if(!current())return;
+    if(!row)throw new Error('The created conversation is not yet in its native catalogue. Refresh agents to open it.');
+    this.ctx.selectAgent(row);
+  }
+  harnessManagement():void {
+    const modal=this.ctx.modal;modal.open('Harness management');const token=modal.token;
+    modal.body.append(element('p','secondary','The independent management page controls accounts, configuration, trust, resources, updates and recovery.'));
+    void request<{managementUrl:string;health:unknown}>('/api/runtime').then(result=>{
+      if(!modal.owns(token))return;
+      const destination=new URL(result.managementUrl);
+      if(!['http:','https:'].includes(destination.protocol)||destination.username||destination.password)throw new Error('The management address is invalid.');
+      const link=element('a',undefined,'Open harness management');link.href=destination.href;link.target='_blank';link.rel='noopener noreferrer';modal.body.append(link,details('Runtime state',rawText(result.health)));
+    }).catch(error=>{if(modal.owns(token))modal.error(error,'The independent runtime is unavailable. Start its installed service to restore management.');});
+    modal.focusTitle();
+  }
+  private nativeAction(title:string,method:string,fields:readonly NativeField[]=[],warning?:string):void {
+    const identity=this.ctx.selectedAgent()?.identity;if(!identity)return;
+    const modal=this.ctx.modal;modal.open(title);const token=modal.token;
+    if(warning)modal.body.append(element('p','secondary',warning));
+    const controls=fields.map(([key,label,multiline])=>({key,...input(label,'',multiline)}));
+    for(const control of controls)modal.body.append(control.label,control.field);
+    let attempted=false;
+    modal.actions(button('Cancel',()=>modal.close()),button(title,()=>{if(attempted)return;void modal.run(async()=>{
+      const params=nativeParameters(method,controls,identity);
+      const target:Target={kind:'agent',identity};const id=await reserve('agent.control',target);attempted=true;
+      const result=await operation('agent.control',`/api/agents/${encodeURIComponent(identity)}/control`,{method,params},target,id);this.ctx.result(result);
+      if(result.state!=='completed')throw new Error(result.error?.message??'The action was not confirmed. Inspect its operation before another attempt.');
+      await this.ctx.reload();
+      if(modal.owns(token)){modal.body.append(details('Result',rawText(rpcValue(result))));}
+    },false);},'main-action'));
+    modal.focusTitle();
+  }
   replaceCurrentSession(): void {
     const primary = this.readyPrimary(); if (!primary) return;
     if (this.changingSession) return;
@@ -601,6 +655,7 @@ export class Actions {
     const ready = !!this.readyPrimary(primary), workspaceReady = !!this.ctx.snapshot()?.workspace, copyLastAnswer=this.ctx.copyLastAnswer?.();
     const entry = (name: string, description: string, run: () => void, enabled = true, alias?: string, disabledReason = 'Requires a Primary session'): PaletteEntry => ({name, description, source: 'app', enabled, run, ...(!enabled ? {disabledReason} : {}), ...(alias ? {search: [alias, `/${alias}`]} : {})});
     const entries = [
+      entry('New native session', 'Create an independent Durable conversation', () => this.newNativeSession(), workspaceReady),
       entry('New session', 'Create another session in the working folder', () => this.newSession(), true, 'new'),
       entry('Replace current session', 'Start fresh in this Primary without creating another Primary', () => this.replaceCurrentSession(), ready),
       ...this.closeSessionEntries(primary,agent),
@@ -621,6 +676,7 @@ export class Actions {
         });
       }),checked:this.ctx.snapshot()?.workspace.agentControl !== false},
       {...entry('Keyboard shortcuts', 'Show available shortcuts for this tab', () => this.keyboardShortcuts()), search: ['hotkeys', 'key bindings']},
+      entry('Harness management','Accounts, configuration, updates and independent recovery',()=>this.harnessManagement()),
       entry('Help', 'Browser controls and terminal fallback', () => this.help()),
       entry('Expand loaded tools', 'Expand loaded tool output', () => this.ctx.view(true, true), transcript, undefined, 'Requires a conversation transcript'),
       entry('Collapse loaded tools', 'Collapse loaded tool output', () => this.ctx.view(true, false), transcript, undefined, 'Requires a conversation transcript'),
@@ -651,6 +707,7 @@ export class Actions {
     entries.push(...this.tabEntries(entry));
     if (primary?.lifecycle === 'ready' && (primary.lastError || primary.responseOutcome === 'failed' || responseOutcome(this.ctx.primaryEntries()) === 'failed')) entries.push(entry('Review message', 'Restore the last loaded Primary user prompt for review', () => this.retryOutput()));
     if (agent) {
+      entries.push(...nativeOptions.filter(option=>agent.capabilities?.[option.method]).map(option=>entry(option.name,option.description,()=>this.nativeAction(option.name,option.method,option.fields,option.warning))));
       entries.push(entry('Copy agent ID', 'Copy the full agent ID to the clipboard', () => this.ctx.copyAgent()));
 
     }
@@ -712,6 +769,7 @@ export class Actions {
   }
   sessionMenuEntries(agent = false): PaletteEntry[] {
     const names = new Set(agent ? ['Conversation details', 'Copy agent ID', 'Sent and received tasks', 'Saved drafts and messages', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Appearance', 'Help'] : ['New session', 'Replace current session', 'Close session', 'Sessions', 'Continue a handover', 'Fork from message', 'Compact', 'Automatic retry', 'Automatic compaction', 'Continue in terminal', 'Conversation details', 'Sent and received tasks', 'Saved drafts and messages', 'Appearance', 'Help', 'Expand loaded tools', 'Collapse loaded tools', 'Show thinking', 'Hide thinking', 'Find text', 'Jump to message…', 'Model', 'Thinking', 'Review message']);
+    for(const name of ['New native session','Compact native context','Reset native context','Fork native conversation','Correct native branch','Scheduled inputs','Cancel scheduled input','Schedule input','Harness management','Read agent profile','Edit agent profile','Create agent','Open area agent'])names.add(name);
     return this.paletteEntries().filter(item => item.source === 'app' && names.has(item.name));
   }
   sessionMenu(agent = false): void {

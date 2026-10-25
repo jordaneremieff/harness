@@ -27,7 +27,7 @@ export function dashboardActions(row: AgentConversationSummary): DashboardAction
 		{ name: "reset", label: "Reset context", description: "Start a new context; history and timers stay." },
 		{ name: "schedule", label: "Schedule message", description: "Send a message at an exact deadline." },
 		{ name: "timers", label: "Scheduled messages", description: "Read or cancel a scheduled message." },
-		{ name: "compact", label: "Compact", description: "Stop active work and compact without resuming." },
+		{ name: "compact", label: "Compact", description: "Compact at the next native boundary while work continues." },
 		{
 			name: "attach",
 			label: "Reconnect",

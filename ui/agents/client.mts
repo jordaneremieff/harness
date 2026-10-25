@@ -11,7 +11,7 @@ import { AgentError, nativeInputDigest, type NativeSubmitInput } from "./input.m
 import { LIMITS } from "../shared/api.ts";
 export interface RequestContext { wireRequestId?: string; identity?: string; requestId?: string; token?: string }
 export interface ObservationSubscription { baseline: ConversationFrame; start(): void; dispose(): Promise<void> }
-const mutations = new Set<OperationName>(["task-submit", "abort", "configure", "command"]);
+const mutations = new Set<OperationName>(["task-submit", "abort", "configure", "command", "compact", "reset", "fork", "rewind", "timer-cancel", "timer-schedule", "run-stop", "request-cancel", "profile-update", "spawn", "place"]);
 const localRefusalCodes = { "frame-limit": "payload_too_large", "queue-limit": "capacity", serialization: "invalid_request" } as const;
 
 /** One negotiated connection. Disconnect never replays work or opens another connection. */
@@ -235,6 +235,7 @@ function assertResponseContext(member: OperationName, value: unknown, params: Js
   };
   const echoed: Partial<Record<OperationName, [string, unknown]>> = { abort: ["background", params.background ?? false], command: ["name", params.name] };
   const echo = echoed[member]; if (echo) equal(echo[0], echo[1]);
+  assertRunResponse(member,response,params);
   if (member.startsWith("collaboration-")) assertThreadContext(member as "collaboration-list" | "collaboration-read", response, params);
   if (member === "inspect") {
     equal("view", params.view ?? "history");
@@ -243,6 +244,12 @@ function assertResponseContext(member: OperationName, value: unknown, params: Js
     }
     if (params.view === "exact") { equal("entryId", params.entryId); equal("offset", params.offset ?? 0); }
   }
+}
+function assertRunResponse(member:OperationName,response:Record<string,unknown>,params:JsonObject):void {
+  if(member==='run-stop'&&response.runId!==params.runId)throw new AgentError('protocol_error','The Stop receipt identifies a different run.');
+  if(member!=='request-cancel')return;
+  const actual=response.result as JsonObject,expected=params.result as JsonObject;
+  if(['sessionId','submissionId','requestId'].some(key=>actual[key]!==expected[key]))throw new AgentError('protocol_error','The cancellation receipt identifies a different input.');
 }
 /** Thread pages answer the request that selected them: same thread, within the page size, ending at the requested boundary. */
 function assertThreadContext(member: "collaboration-list" | "collaboration-read", response: Record<string, unknown>, params: JsonObject): void {

@@ -17,6 +17,7 @@ import { randomUUID } from "node:crypto";
 import { reconcileInputCommunications } from "./communication-retention.ts";
 import { parseCommunication, parseCommunicationPassive } from "./communication.ts";
 import { taskInputSender } from "./task-senders.ts";
+import { cancelRequest, readRunScope, stopRun, type ForeignStop } from "./run-control.ts";
 import { ProviderModels } from "./provider-models.ts";
 import { ProviderRetryNotices, ProviderRetryNoticeSchema } from "./provider-notices.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
@@ -392,6 +393,9 @@ export class DurableHost {
 		}
 	}
 
+	private foreignStop?: ForeignStop;
+	setForeignStop(stop: ForeignStop): void { this.foreignStop = stop; }
+
 	/** Resume only after the caller installs contributions and model-facing sections. */
 	async resume(context: Context = BACKGROUND_CONTEXT): Promise<void> {
 		await this.requireOpen();
@@ -455,6 +459,22 @@ export class DurableHost {
 					expectedRevision: requestRequiredString(params, "expectedRevision"), requestId: requestRequiredString(params, "requestId"), senderIdentity: requestRequiredString(params, "senderIdentity"),
 					...optionalParam("role", requestString(params, "role")), ...optionalParam("expertise", requestString(params, "expertise")),
 				}, requestContext);
+			}
+			case "run-scope": {
+				const conversation = await this.target(params, requestContext);
+				return readRunScope(this.harness, this.storageId, conversation.id, requestContext);
+			}
+			case "run-stop": {
+				const conversation = await this.target(params, requestContext);
+				const inputs = params?.inputs;
+				if (inputs !== undefined && (!Array.isArray(inputs) || inputs.length > 200 || inputs.some(input => !Value.Check(ResultReferenceSchema, input)))) throw new TypeError("Invalid guarded run inputs");
+				return stopRun(this.harness, this.storageId, conversation.id, requestRequiredId(params?.runId, "runId") as import("@earendil-works/pi-durable").SubmissionId, requestContext, { inputs: inputs as ResultReference[] | undefined, foreign: this.foreignStop });
+			}
+			case "request-cancel": {
+				if (!Value.Check(ResultReferenceSchema, params?.result)) throw new TypeError("An exact native result is required");
+				const result = params.result as ResultReference;
+				const conversation = await this.conversation(result.sessionId, requestContext);
+				return cancelRequest(this.harness, this.storageId, result, conversation.id, requestContext);
 			}
 			case "task-submit": return this.taskSubmitRequest(params, requestContext);
 			case "submit":
@@ -808,8 +828,6 @@ export class DurableHost {
 
 	private async compactRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
 		const conversation = await this.target(params, context);
-		// Stop every reached task first; compaction starts from an idle conversation and does not resume the stopped work.
-		await abortConversation(conversation, true, context);
 		const agent = await conversation.agent(context);
 		let name: string | undefined;
 		let metadataError: string | undefined;

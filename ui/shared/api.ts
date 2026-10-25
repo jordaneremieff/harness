@@ -223,7 +223,7 @@ export type TargetState = {targetKey: string; target: Target; draft: DraftView; 
   unconfirmed: UnconfirmedInput[]; retainedInputs: RetainedInput[]; imageAvailability: DraftImageAvailability[]; imageStorageError?: ErrorView; recoveryPreviewTruncated?: true; presentation?: PresentationView};
 export type TargetPreparation = {targetState: TargetState; availability: 'live' | 'stored' | 'unavailable' | 'incompatible';
   capabilities: AgentCapabilities; reason?: string};
-export type AgentCapabilities = {history: boolean; observe: boolean; input: boolean; abort: boolean; configure: boolean; inspect?: boolean; images?: boolean; commands?: boolean};
+export type AgentCapabilities = {[method:string]:boolean|undefined; history: boolean; observe: boolean; input: boolean; abort: boolean; configure: boolean; inspect?: boolean; images?: boolean; commands?: boolean};
 /** The commands one live agent host installed, flattened for the slash list. Each item names the host contribution that supplies it. */
 export type AgentCommandList = {items: {name: string; description: string; source: string}[]; incomplete: boolean};
 /** The most a command result keeps; a longer result is cut and says so. */
@@ -261,7 +261,7 @@ export function validSessionMetadataTarget(value:unknown):value is SessionMetada
 export type SessionMetadata = {target:SessionMetadataTarget;aliases:string[];name?:string;title:string;archived:boolean;canRename:boolean;canArchive:boolean;canRestore:boolean;reason?:string};
 export type SessionMetadataRecord = {key:string;target:SessionMetadataTarget;name?:string;title:string;archived:boolean};
 export type OperationKind = 'session.metadata' | 'primary.open' | 'primary.input' | 'primary.stop' | 'primary.session' |
-  'primary.control' | 'primary.dialog' | 'primary.handoff' | 'primary.close' | 'agent.input' | 'agent.abort' | 'agent.configure' | 'agent.convert' | 'agent.command';
+  'primary.control' | 'primary.dialog' | 'primary.handoff' | 'primary.close' | 'agent.input' | 'agent.abort' | 'agent.configure' | 'agent.convert' | 'agent.create' | 'agent.control' | 'runtime.control' | 'agent.command';
 /** Admission is separate from the eventual answer. Completed is a local control response. */
 export type OperationView = {id: string; kind: OperationKind; target?: Target; action?: string;
   state: 'reserved' | 'dispatched' | 'accepted' | 'rejected' | 'uncertain' | 'completed';
@@ -334,7 +334,7 @@ export type EventEnvelope<N extends EventName = EventName> = {at: string; worksp
 /** Closed HTTP route vocabulary. Dynamic segments are encoded single path segments. */
 export const ROUTES = [
   'GET /api/sessions/metadata', 'POST /api/sessions/metadata/read', 'POST /api/sessions/metadata',
-  'POST /api/agents/convert', 'GET /api/sessions/published', 'GET /api/sessions/history',
+  'POST /api/agents/convert', 'POST /api/agents/create', 'POST /api/agents/:identity/control', 'POST /api/runtime/operation', 'GET /api/runtime', 'GET /api/sessions/published', 'GET /api/sessions/history',
   'GET /api/control/layout', 'POST /api/control/requests', 'GET /api/control/requests/:id', 'POST /api/control/ack',
   'POST /api/dev/lease',
   'GET /', 'GET /api/bootstrap', 'GET /api/events', 'GET /api/snapshot',
@@ -345,7 +345,7 @@ export const ROUTES = [
   'GET /api/agents', 'POST /api/agents/refresh', 'GET /api/agents/:identity/history', 'GET /api/agents/:identity/history/image', 'POST /api/agents/:identity/inspect',
   'GET /api/threads', 'GET /api/threads/read',
   'POST /api/agents/:identity/inputs', 'POST /api/agents/:identity/abort', 'POST /api/agents/:identity/configure',
-  'GET /api/agents/:identity/commands', 'POST /api/agents/:identity/command',
+  'GET /api/agents/:identity/run-scope', 'GET /api/agents/:identity/commands', 'POST /api/agents/:identity/command',
   'POST /api/workspaces/:id/targets', 'PUT /api/workspaces/:id/selection', 'GET /api/workspaces/:id/targets/:targetKey', 'PUT /api/workspaces/:id/targets/:targetKey/draft',
   'POST /api/workspaces/:id/targets/:targetKey/images', 'GET /api/workspaces/:id/targets/:targetKey/images/:digest',
   'PUT /api/workspaces/:id/targets/:targetKey/reading', 'PUT /api/workspaces/:id/targets/:targetKey/presentation',

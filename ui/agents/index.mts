@@ -1,3 +1,4 @@
+import type {NativeControlName, JsonValue} from './contract.mts';
 import { isAbsolute } from "node:path";
 import { captureSubmitInput, submitInputDigest } from "./input.mts";
 import type { ImageSource } from "../shared/api.ts";
@@ -57,7 +58,7 @@ interface Selection {
 	confirmed: boolean;
 	promise?: Promise<void>;
 }
-const mutations = new Set(["submit", "retrySubmit", "abort", "command", "configure"]);
+const mutations = new Set(["submit", "retrySubmit", "abort", "command", "configure", "control"]);
 const MAX_ROWS = 2048,
 	MAX_BYTES = 8 * 1024 * 1024;
 
@@ -111,7 +112,7 @@ export class AgentService {
 	#createWorker(): WorkerPort {
 		const options = this.#options;
 		const worker = this.#factory(new URL("./service-worker.mts", import.meta.url), {
-			workerData: { store: options.store, stateDir: options.stateDir, installationId: options.installationId, agentDir: options.agentDir },
+			workerData: { store: options.store, stateDir: options.stateDir, installationId: options.installationId, agentDir: options.agentDir, readerPath:options.readerPath },
 		});
 		if (worker === this.#worker) throw new AgentError("not_ready", "Agent replacement requires a new worker.");
 		return worker;
@@ -358,6 +359,9 @@ export class AgentService {
 			coverage: { ...this.#page.coverage, complete: this.#page.coverage.complete && !nextCursor },
 		};
 	}
+  catalogSnapshot():CatalogPage {
+    return {...structuredClone(this.#page),rows:this.#orderedRows.map(value=>structuredClone(value.row)),nextCursor:null};
+  }
 	rosterRow(identity: string): CatalogRow | undefined {
 		const cached = this.#rows.get(identity);
 		return cached ? structuredClone(cached.row) : undefined;
@@ -481,6 +485,9 @@ export class AgentService {
 		this.#ready();
 		return this.#request("command", [identity, input]);
 	}
+ async control(identity:string,member:NativeControlName,params:import('./contract.mts').JsonObject):Promise<JsonValue> {
+  this.#ready();return this.#request("control",[identity,member,params]);
+ }
 	async abort(identity: string): Promise<AbortReceipt> {
 		this.#ready();
 		return this.#request("abort", [identity]);

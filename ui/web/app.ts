@@ -1,4 +1,5 @@
 import type { AgentHistoryPage, AgentRow, Bootstrap, EntryView, EventData, HistoryPage, OperationView, PrimaryView, PresentationView, ProjectedFrame, SavedSession, SessionMetadata, SessionMetadataTarget, SessionTab, Snapshot, Target, TargetState, ThreadOverview, ThreadPageView, Workspace, WorkspacePage } from '../shared/api.ts';
+import {stopNativeRun,cancelNativeRequest} from './native-control.ts';
 import { persistentSidebarQuery } from './layout-breakpoints.ts';
 import { absoluteTime, relativeTime, toolArgumentText } from './format.ts';
 import { appendSummaryActions, renderSessionSummary, type SessionSummary, type SummaryAction } from './session-summary.ts';
@@ -2828,8 +2829,7 @@ function canStopController(controller: ConversationController): boolean {
 async function stopDelegated(controller: ConversationController, references: readonly TaskReference[]): Promise<void> {
   const workspace = controller.workspaceId;
   const results = await Promise.allSettled(references.map(async reference => {
-    const target: Target = {kind: 'agent', identity: reference.sessionId};
-    showOperation(await operation('agent.abort', `/api/agents/${encodeURIComponent(reference.sessionId)}/abort`, {background: false}, target), workspace);
+    showOperation(await cancelNativeRequest(reference), workspace);
   }));
   const failed = results.find(result => result.status === 'rejected');
   if (failed) showStatusError(controller.elements.receipt, 'Stop could not be confirmed.', failed.reason);
@@ -2839,10 +2839,12 @@ async function stopController(controller: ConversationController): Promise<void>
   const target = controller.target;
   if (!canStopController(controller) || controller.root.hidden || controller.root.inert || controllerNode(controller, 'stop').hidden) return;
   if (target.kind === 'agent') {
-    modal.confirm(`Stop ${presentation(target).name}?`, 'This stops the current response. Background work and scheduled actions continue.', async () => {
-      if (!canStopController(controller) || controller.root.hidden || controller.root.inert || controllerNode(controller, 'stop').hidden) return;
-      setText(controller.elements.receipt, 'Stop requested'); showOperation(await operation('agent.abort', `/api/agents/${encodeURIComponent(target.identity)}/abort`, {background: false}, target), controller.workspaceId);
-    }, 'Stop'); return;
+    setText(controller.elements.receipt, 'Stop requested');
+    const workspace=controller.workspaceId;
+    const isCurrent=()=>controller.workspaceId===workspace&&workspace===state.workspace?.id&&!controller.root.hidden&&!controller.root.inert&&!controller.abort.signal.aborted&&sameTarget(state.workspace?.selectedTarget,target)&&canStopController(controller);
+    try {const result=await stopNativeRun(target.identity,isCurrent);if(result===false)setText(controller.elements.receipt,'Stop not sent: this conversation is no longer active.');else if(result)showOperation(result,workspace);else setText(controller.elements.receipt,'The observed run already stopped.');}
+    catch(error){showStatusError(controller.elements.receipt,'Stop could not be confirmed.',error);}
+    return;
   }
   if (controller.workspaceId !== state.workspace?.id || controller.root.hidden || controller.abort.signal.aborted) return;
   const delegated = controller.transcript.outstandingTasks();

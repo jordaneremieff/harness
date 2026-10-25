@@ -37,8 +37,21 @@ Run the reconciliation command from inside your worktree before slice work and
 after `main` changes:
 
 ```bash
-npm run worktrees:sync
+npm run worktrees:sync -- --current --source-only
 ```
+
+This scoped command updates only the current slice from `main`. It neither
+creates or rebases sibling worktrees nor reads or writes Pi settings. It fails
+outside a recognised slice branch. Use it for ordinary isolated development,
+especially when unrelated siblings have conflicts or the active routing must
+stay unchanged. `--source-only` requires `--current`; `--current` also leaves
+settings unchanged because a partial slice inventory cannot reconcile global
+routing. The shared mutation lock still protects the selected rebase against
+promotion or another mutation of `main`. It does not lock ordinary source edits,
+focused tests, or agent work.
+
+The unscoped `npm run worktrees:sync` reconciles the whole repository and Pi
+routing. Reserve it for deliberate repository-wide reconciliation.
 
 The command creates a missing worktree for each branch in the four namespaces.
 It rebases a branch when `main` has advanced. A worktree that is behind `main`
@@ -283,6 +296,7 @@ report's direct Git push recovery. After the push succeeds, run
 | `--dry-run` | Report the plan without changing checkout or settings content; remote refs may refresh |
 | `--json` | Emit one machine-readable report |
 | `--no-push` | Promote and synchronize locally without a push |
+| `--sync-selected` | Synchronise only selected slices after promotion; leave Pi settings and other worktrees unchanged |
 | `--no-gates` | Skip shared and resource gates |
 | `--full` | Run the complete `npm test` as the default test gate |
 
@@ -316,6 +330,40 @@ sibling appears only in the report's `deferred` list; deferral does not affect
 undo the promotion: the report keeps `ok` true, sets `syncOk` to false, lists the
 failure in `branchFailures`, and the command exits nonzero. Resolve that
 sibling, then run `npm run worktrees:sync`.
+
+## Publication content review
+
+Before a dry run or real promotion, the command checks each shipped commit's
+complete message and changed text blobs. It rejects high-confidence private-key,
+credential, absolute personal-home path, and retained-session envelope signatures.
+The report names the commit, path, line, and rule, never the matched secret text.
+This check is independent of gates: `--no-gates` does not disable it.
+
+The check is deliberately not a semantic classifier. Binary blobs, ordinary
+words such as "plan", and durable design documentation do not prove private
+provenance. A different filename does not make task material publishable. Review
+the complete outgoing files, source, comments, commit messages, and diff for
+private context, task records, operator quotations, generated reports, and
+non-durable chronology before publication. Existing repository content bans and
+reserved development-record filtering remain binding.
+
+The scanner bounds commits, file revisions, individual blobs, total blob bytes,
+and subprocess output. Exceeding a bound stops promotion rather than claims
+coverage. Split the promotion or obtain an explicit operator decision for the
+specific blocked act; the runtime exposes no bypass. Binary content still needs
+manual review. A passing signature scan is not proof of publishable content.
+Do not commit evidence captures or a task-specific review report.
+
+For a local-only release without unrelated sibling reconciliation:
+
+```bash
+npm run worktrees -- promote feature/example --no-push --sync-selected --json
+```
+
+The command still composes the selected changes and runs the normal gates once.
+`--full`, dependency changes, compiler-setting changes, and an explicit operator
+full-suite request keep their existing meaning. No automatic gate waiver or
+cached acceptance attaches to scoped synchronisation.
 
 ## Entrypoint load checks
 

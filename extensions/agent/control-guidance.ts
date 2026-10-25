@@ -19,6 +19,7 @@ export const AGENT_CONTROL_TOOL_NAMES = [
 	"agent_reset",
 	"agent_configure",
 	"agent_profile",
+	"agent_intent",
 	"agent_compact",
 	"agent_command",
 	"agent_status",
@@ -97,6 +98,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 	},
 	agent_configure: { snippet: "Configure an idle session without starting work", guidelines: [MODEL_SELECTION_GUIDANCE, EXECUTION_PRESET_GUIDANCE] },
 	agent_profile: { snippet: "Read or update a durable agent profile", guidelines: ["Read saved expertise after context loss and before relying on past findings. Update role or a bounded sourced synthesis with expectedRevision from a current read. Profile edits work at a busy tool boundary; model/name changes remain agent_configure. Current evidence and task restrictions outrank stale expertise."] },
+	agent_intent: { snippet: "Publish or clear your integration intent", guidelines: ["Intent is your claim, not verified authority or a machine lock. Publish your purpose, shared acts, scope and carried operator direction at kickoff and before promotion. Declare full-gate work with scope.fullGate true, then clear or update the claim on release. Native conversations publish only their own claim. Current updated readers discover native claims through bounded catalogue projections; unchanged readers do not gain that support."] },
 	agent_compact: { snippet: "Compact an agent while preserving its continuity" },
 	agent_command: { snippet: "Run a command through an agent's owner" },
 	agent_status: {
