@@ -176,8 +176,9 @@ it("captures the same-storage requester for a native local send", async (t) => {
 	await readOutcome(host.harness, admitted.submissionId as Durable.SubmissionId, context);
 	await reconcileInputCommunications(host.harness, storageId, context);
 	const page = await readConversationSnapshotPage(host.harness, child.id, {}, context, storageId);
-	const input = page.entries.find((entry) => entry.kind === "pi.user");
+	const input = page.entries.find((entry) => entry.kind === "agent.input");
 	assert.ok(input);
+	assert.deepEqual(input.data, { author: { role: "agent", identity: storageId } });
 	assert.deepEqual(page.taskSenders?.[input.id], { identity: storageId, name: "Local sender" });
 	assert.deepEqual(input.communication, { state: "unresolved" });
 });

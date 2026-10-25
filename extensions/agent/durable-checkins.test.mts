@@ -44,6 +44,11 @@ it("creates a host-owned check-in without a native agent contribution, and ends 
 	await f.waitForFirstRequest();
 	const checkTask = (await f.host.harness.inspect(BACKGROUND_CONTEXT)).tasks.find((task) => task.record.kind === "agent.check-in");
 	assert.ok(checkTask);
+	const conversation = await f.host.harness.conversation(1 as ConversationId, BACKGROUND_CONTEXT);
+	assert.ok(conversation);
+	const input = (await conversation.entries({}, 10, undefined, BACKGROUND_CONTEXT)).items.find((entry) => entry.kind === "agent.input");
+	assert.ok(input);
+	assert.deepEqual(input.data, { author: { role: "agent" } });
 	f.releaseAnswer();
 	await f.waitForReceipt("check-held");
 	await f.host.harness.waitForTask(checkTask.record.id, BACKGROUND_CONTEXT);

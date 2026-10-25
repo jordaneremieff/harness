@@ -1,5 +1,6 @@
 /** An invocation-owned native wait keeps its original run open without provider work. */
 import type { Context } from "@earendil-works/chord";
+import { inputEntry } from "./input-entry.ts";
 import { withCancel } from "@earendil-works/chord/context";
 import { InboxDoc, type ToolExecutionApi, type TaskId, type DocumentWatch } from "@earendil-works/pi-durable";
 import { AwaitDoc, boundedAwaitAnswer, declareAwait, commitAwaitOutcome, localProducer, referenceKey, type AwaitDeclaration, type AwaitOutcome, type AwaitInput, type AwaitDelivery } from "./awaited-results.ts";
@@ -61,7 +62,7 @@ async function withdrawNamedCheckIns(api: ToolExecutionApi, context: Context): P
 	const recipient = await api.conversation(api.conversationId, context);
 	if (recipient === undefined) throw new Error("The awaiting conversation is missing");
 	for (const requestId of requestIds) {
-		const input = await recipient.submit({ type: "input", content: "", requestId, whenBusy: "followUp" }, context);
+		const input = await recipient.submit({ type: "input", content: "", requestId, whenBusy: "followUp", entry: inputEntry("model") }, context);
 		await input.abort(context);
 	}
 }
@@ -78,7 +79,7 @@ async function withdrawCoveredDeliveries(api: ToolExecutionApi, current: AwaitDe
 	const recipient = await api.conversation(api.conversationId, context);
 	if (recipient === undefined) throw new Error("The awaiting conversation is missing");
 	for (const requestId of queued) {
-		const input = await recipient.submit({ type: "input", content: "", requestId, whenBusy: "followUp" }, context);
+		const input = await recipient.submit({ type: "input", content: "", requestId, whenBusy: "followUp", entry: inputEntry("model") }, context);
 		await input.abort(context);
 	}
 }

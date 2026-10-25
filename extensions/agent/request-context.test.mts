@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { inputEntry } from "./input-entry.ts";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { CompactionEntry, Harness, LiveDoc, MemoryStorage, UserEntry, createRegistry, defineExtension, type ConversationId, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
@@ -16,7 +17,8 @@ async function fixture(t: TestContext) {
 	return { harness, conversation };
 }
 async function placed(tx: Tx, conversationId: ConversationId, request: RequestContext, text = "Task"): Promise<SubmissionId> {
-	const entry = await tx.appendEntry(UserEntry, conversationId, { model: [{ role: "user", content: text, timestamp: 1 }] });
+	const override = inputEntry(request.origin, request.requester);
+	const entry = await tx.appendEntry(conversationId, { kind: "pi.user", ...override, model: [{ role: "user", content: text, timestamp: 1 }] });
 	return (await tx.createSubmission({ conversationId, requestId: request.requestId, type: "input", status: "placed", entry: entry.id })).id;
 }
 

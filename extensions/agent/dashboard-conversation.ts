@@ -1,4 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
+import { AGENT_INPUT_KIND, isInputKind } from "./input-entry.ts";
 import type { AssistantMessage, Message, ToolResultMessage } from "@earendil-works/pi-ai";
 import type { NestedToolSlot } from "@earendil-works/pi-durable";
 import {
@@ -134,12 +135,13 @@ export function firstTaskEntry(
 	if (first === "") return undefined;
 	const present = snapshot.entries.some(
 		(entry) =>
-			entry.kind === "pi.user" && (entry.model ?? []).some((message) => contentText(message.content, false).trimStart().startsWith(first)),
+			isInputKind(entry.kind) && (entry.model ?? []).some((message) => contentText(message.content, false).trimStart().startsWith(first)),
 	);
 	if (present) return undefined;
 	return {
 		id: "first-task",
-		kind: "pi.user",
+		kind: AGENT_INPUT_KIND,
+		data: { author: { role: "unknown" } },
 		model: [{ role: "user", content: `Historical first input:\n${row?.firstMessage ?? first}`, timestamp: 0 }],
 	};
 }

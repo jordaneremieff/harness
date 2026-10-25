@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { isInputKind } from "./input-entry.ts";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -134,7 +135,7 @@ it("forwards the native request selector and returns terminal inspection text th
 	});
 });
 
-it("joins an admitted input without changing native model bytes or raw inspection", async () => {
+it("preserves user model bytes and keeps communication out of input metadata", async () => {
 	await withHost(async (host, storageId) => {
 		const message = "Original input\n\t🙂 and preserved spaces  ";
 		const result = await host.request("submit", { requestId: "active", message, communication }) as { submissionId: number };
@@ -146,7 +147,7 @@ it("joins an admitted input without changing native model bytes or raw inspectio
 		const input = native.items.find((entry) => entry.id === outcome.entryId);
 		assert.equal(input?.model?.[0]?.role, "user");
 		assert.equal(input?.model?.[0]?.content, message);
-		assert.equal(input?.data, undefined);
+		assert.deepEqual(input?.data, { author: { role: "unknown" } });
 		const snapshot = await readConversationSnapshotPage(host.harness, ROOT, {}, BACKGROUND_CONTEXT, storageId);
 		const view = parseCommunicationView(snapshot.entries.find((entry) => entry.id === String(outcome.entryId))?.communication);
 		assert.equal(view?.state, "ready");
@@ -414,7 +415,7 @@ for (const abortResult of ["already_placed", "settled", "aborted"] as const) it(
 			const conversation = await original(ROOT, BACKGROUND_CONTEXT);
 			assert.ok(conversation);
 			const entries = await conversation.entries({}, 20, undefined, BACKGROUND_CONTEXT);
-			assert.equal(entries.items.filter((entry) => entry.kind === "pi.user").length, abortResult === "settled" ? 2 : 1);
+			assert.equal(entries.items.filter((entry) => isInputKind(entry.kind)).length, abortResult === "settled" ? 2 : 1);
 			assert.equal(entries.items.filter((entry) => entry.kind === "agent.communication").length, abortResult === "aborted" ? 0 : 1);
 		} finally { control.release(); }
 	}, control.models);

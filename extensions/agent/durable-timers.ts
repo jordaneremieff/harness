@@ -20,6 +20,7 @@
  * contribution registers the definition in the registry.
  */
 import type { Context } from "@earendil-works/chord";
+import { inputEntry } from "./input-entry.ts";
 import { classifyAwaitInput, reconcileInputRelease } from "./awaited-results.ts";
 import { defineDoc, defineTask, type ConversationId, type Harness, type SubmissionRecord, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { linkDeliveryIntent, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
@@ -207,7 +208,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 				return undefined;
 			}, context);
 			const submission = await conversation.submit(
-				{ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: mode },
+				{ type: "input", content: task.input.message, requestId: task.input.requestId, whenBusy: mode, entry: inputEntry(task.input.origin, task.input.requestContext?.requester) },
 				context,
 			);
 			await runtime.commit(async (tx) => { await reconcileInputRelease(tx, conversationId, task.input.requestId); return undefined; }, context);
@@ -263,7 +264,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 					return undefined;
 				}, context);
 				const submission = await conversation.submit(
-					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: mode },
+					{ type: "input", content: input.message, requestId: input.requestId, whenBusy: mode, entry: inputEntry(input.origin, input.requestContext?.requester) },
 					context,
 				);
 				await runtime.commit(async (tx) => { await reconcileInputRelease(tx, conversationId, input.requestId); return undefined; }, context);

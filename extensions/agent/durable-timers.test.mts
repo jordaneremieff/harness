@@ -181,6 +181,14 @@ it("records the admission origin that decides the answer notice wake", { timeout
 	const modelReceipt = await f.waitForReceipt("timer-model-delivery");
 	assert.equal(modelReceipt.status, "done");
 	assert.equal(modelReceipt.origin, "model", "a model-scheduled answer keeps the waking notice");
+	const conversation = await f.host.harness.conversation(1 as ConversationId, BACKGROUND_CONTEXT);
+	assert.ok(conversation);
+	const entries = (await conversation.entries({}, 30, undefined, BACKGROUND_CONTEXT)).items;
+	const operatorInput = entries.find((entry) => entry.id === operatorReceipt.entryId);
+	const modelInput = entries.find((entry) => entry.id === modelReceipt.entryId);
+	assert.equal(operatorInput?.kind, "pi.user");
+	assert.equal(modelInput?.kind, "agent.input");
+	assert.deepEqual(modelInput?.data, { author: { role: "agent", identity: f.ownerId } });
 	const page = (await f.host.request("timer-list", { sessionId: f.storageId })) as TimerListPage;
 	for (const requestId of ["timer-operator", "timer-model"]) {
 		const row = page.timers.find((timer) => timer.scheduleId === requestId);

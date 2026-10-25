@@ -1,7 +1,8 @@
 /** Host-authored request routes, retained independently of the active transcript. */
 import type { Context } from "@earendil-works/chord";
+import { isInputKind } from "./input-entry.ts";
 import { AgentDeliveryDoc } from "./durable-controls.ts";
-import { defineDoc, LiveDoc, section, UserEntry, type ConversationId, type Harness, type PromptSection, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, LiveDoc, section, type ConversationId, type Harness, type PromptSection, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 
 export type RequestContext = {
 	readonly requestId: string;
@@ -129,7 +130,8 @@ export async function projectRequestContexts(tx: Tx, conversationId: Conversatio
 async function requestTask(tx: Tx, conversationId: ConversationId, requestId: string): Promise<{ preview: string; truncated: boolean } | null> {
 	const submission = await tx.submissionByRequest(conversationId, requestId);
 	if (submission?.type !== "input" || submission.entry === undefined) return null;
-	const entry = await tx.entry(UserEntry, submission.entry);
+	const entry = await tx.entry(submission.entry);
+	if (entry === undefined || !isInputKind(entry.kind)) return null;
 	const text = (entry?.model ?? []).filter((message) => message.role === "user").flatMap((message) => typeof message.content === "string" ? [message.content] : message.content.filter((part) => part.type === "text").map((part) => part.text)).join("\n");
 	const points = [...text];
 	return { preview: points.slice(0, 512).join(""), truncated: points.length > 512 };

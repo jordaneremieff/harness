@@ -1,4 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { AGENT_INPUT_KIND, isInputKind } from "./input-entry.ts";
 import type { AgentCommandAction, AgentActionOutcome } from "./command.ts";
 import type { AgentConversationEntry, AgentConversationSummary } from "./dashboard-types.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
@@ -26,7 +27,7 @@ export async function hideAround<T>(surface: NativeSurface, action: () => Promis
 }
 export function committedChoices(entries: readonly AgentConversationEntry[]): Array<{ id: string; label: string }> {
 	return entries
-		.filter((entry) => /^\d+$/.test(entry.id) && (entry.kind === "pi.user" || entry.kind === "pi.assistant"))
+		.filter((entry) => /^\d+$/.test(entry.id) && (isInputKind(entry.kind) || entry.kind === "pi.assistant"))
 		.map((entry) => {
 			const text = (entry.model ?? [])
 				.flatMap((message) =>
@@ -39,7 +40,7 @@ export function committedChoices(entries: readonly AgentConversationEntry[]): Ar
 				.slice(0, 100);
 			return {
 				id: entry.id,
-				label: `${entry.kind === "pi.user" ? "You" : "Agent"}: ${text || "(no text)"} · ${entry.id}`,
+				label: `${entry.kind === "pi.user" ? "You" : entry.kind === AGENT_INPUT_KIND ? "Agent input" : "Agent"}: ${text || "(no text)"} · ${entry.id}`,
 			};
 		});
 }

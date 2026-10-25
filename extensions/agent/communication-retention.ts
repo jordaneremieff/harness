@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
+import { isInputKind } from "./input-entry.ts";
 import type { Context } from "@earendil-works/chord";
-import { defineDocFamily, UserEntry, type ConversationId, type EntryId, type Session, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
+import { defineDocFamily, type ConversationId, type EntryId, type Session, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
 import { AwaitDoc } from "./awaited-results.ts";
 import { communicationFingerprint, parseCommunication, parseCommunicationCompanion, type Communication, type CommunicationInputLink } from "./communication.ts";
 import { parseTaskSenderRecord, retainTaskInputSender, TASK_SENDER_ENTRY_KIND, type RetainedTaskSender, type TaskInputSender } from "./task-senders.ts";
@@ -51,8 +52,8 @@ export async function prepareCommunication(tx: Tx, storageId: string, conversati
 	if (intent.linkedEntryId !== undefined) return nothing;
 	const submission = knownSubmission ?? await tx.submissionByRequest(conversationId, requestId);
 	if (submission?.type !== "input" || submission.entry === undefined) return nothing;
-	const input = await tx.entry(UserEntry, submission.entry);
-	if (input === undefined || input.conversationId !== conversationId) return async () => { intent.diagnostic = "invalid"; };
+	const input = await tx.entry(submission.entry);
+	if (input === undefined || !isInputKind(input.kind) || input.conversationId !== conversationId) return async () => { intent.diagnostic = "invalid"; };
 	const target: CommunicationInputLink = { mode: "input", storageId, conversationId, entryId: String(input.id), submissionId: submission.id, requestId };
 	const key = communicationIndexKey(storageId, conversationId, target.entryId);
 	const index = await tx.doc(CommunicationIndexDoc, key, null);

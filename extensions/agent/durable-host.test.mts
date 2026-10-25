@@ -166,7 +166,7 @@ it("dedupes one submission when the prompt is submitted twice under the same req
 		assert.equal(second.deduped, true);
 		const outcome = await wait(host, first.submissionId);
 		assert.equal(outcome.status, "done");
-		const userEntries = (await host.transcript()).split("\n").filter((line) => line.startsWith("pi.user"));
+		const userEntries = (await host.transcript()).split("\n").filter((line) => line.startsWith("agent.input"));
 		assert.equal(userEntries.length, 1, "the prompt is admitted once");
 	} finally {
 		await host.close();
@@ -312,7 +312,7 @@ it("admits a busy steer and settles both inputs on the run's answer", async (t) 
 		assert.equal(outcome.answer, "steered answer");
 		const steered = await wait(host, second.submissionId);
 		assert.equal(steered.status, "done", "the steer is part of the settled run");
-		const users = (await host.transcript()).split("\n").filter((line) => line.startsWith("pi.user"));
+		const users = (await host.transcript()).split("\n").filter((line) => line.startsWith("agent.input"));
 		assert.equal(users.length, 2, "both inputs are on the transcript");
 	} finally {
 		release.resolve();

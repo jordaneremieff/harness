@@ -48,6 +48,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
+import { inputEntry } from "./input-entry.ts";
 import { type Static, type TSchema, Type } from "typebox";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
@@ -833,11 +834,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			await recordInputProvenance(tx, { conversationId: input.conversationId, requestId: request.requestId, classification: "explicit", sender: request.requester });
 			if (admission.armed) return undefined;
 			await recordAdmissionMeta(tx, input.conversationId, input.message);
-			await createCheckIn(tx, { conversationId: input.conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(input.conversationId), message: input.message, whenBusy: input.whenBusy, origin: "model", admittedAt: now }, api.registry.task(CheckInTask.definition.name) === undefined ? 0 : input.checkInMinutes ?? 0);
+			await createCheckIn(tx, { conversationId: input.conversationId, requestId: request.requestId, ownerId: request.replyTo, senderIdentity: identity(input.conversationId), message: input.message, whenBusy: input.whenBusy, origin: "model", admittedAt: now, requester: request.requester }, api.registry.task(CheckInTask.definition.name) === undefined ? 0 : input.checkInMinutes ?? 0);
 			admission.armed = true;
 			return undefined;
 		}, context);
-		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: input.whenBusy, requestId: request.requestId }, context).catch(async (error) => {
+		const submission = await conversation.submit({ type: "input", content: input.message, whenBusy: input.whenBusy, requestId: request.requestId, entry: inputEntry("model", request.requester) }, context).catch(async (error) => {
 			await api.commit(async (tx) => { await forgetFailedAdmission(tx, input.conversationId, request.requestId); return undefined; }, BACKGROUND_CONTEXT);
 			throw error;
 		});
@@ -890,7 +891,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					const destination = reporter.input.reportTo ?? runtime.conversationId;
 					const owner = await runtime.conversation(destination, context);
 					if (owner !== undefined) {
-						await owner.submit({ type: "input", content: report, whenBusy: "followUp", requestId: `agent-report:${reporter.id}` }, context);
+						await owner.submit({ type: "input", content: report, whenBusy: "followUp", requestId: `agent-report:${reporter.id}`, entry: inputEntry("model", identity(reporter.input.conversationId)) }, context);
 					}
 				}
 				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: null } }), context);

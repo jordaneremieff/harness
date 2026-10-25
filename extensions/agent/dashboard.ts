@@ -1,4 +1,5 @@
 import { readAgentPreferences, renderPreferenceStatus } from "./agent-preferences.ts";
+import { isInputKind } from "./input-entry.ts";
 import type { ExtensionContext, Theme, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import {
 	Input,
@@ -442,7 +443,7 @@ export class AgentDashboard implements Component, Focusable {
 		}
 	}
 	private observedRow(row: AgentConversationSummary, frame: ConversationFrame): AgentConversationSummary {
-		if (row.state === "starting" && !frame.entries.some((entry) => entry.kind === "pi.user")) return row;
+		if (row.state === "starting" && !frame.entries.some((entry) => isInputKind(entry.kind))) return row;
 		return {
 			...row,
 			owner: "here",

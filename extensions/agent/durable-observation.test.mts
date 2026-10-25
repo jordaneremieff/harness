@@ -302,7 +302,7 @@ it("continues history, search, and exact reads from a cold snapshot", async (t) 
 
 		const activity = (await observation.request("inspect", { view: "activity", limit: 2 })) as { turns: readonly { entries: readonly { kind: string }[] }[] };
 		assert.ok(activity.turns.length >= 1);
-		assert.ok(activity.turns.some((turn) => turn.entries.some((entry) => entry.kind === "pi.user")));
+		assert.ok(activity.turns.some((turn) => turn.entries.some((entry) => entry.kind === "agent.input")));
 		assert.ok(JSON.stringify(activity.turns[0]).includes("needle two"), "turns are newest first");
 	} finally {
 		await observation.close();
@@ -719,7 +719,7 @@ interface SnapshotPageShape {
 	coverage: { complete: boolean; entries: number; bytes: number; hiddenExcluded: number; entryLimitReached: boolean; byteLimitReached: boolean };
 }
 
-it("keeps the first user entry when a hidden system entry exceeds the transcript byte bound", { timeout: 30000 }, async (t) => {
+it("keeps the first Agent input when a hidden system entry exceeds the transcript byte bound", { timeout: 30000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "hidden.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([answerMessage("first answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
 	try {
@@ -733,7 +733,7 @@ it("keeps the first user entry when a hidden system entry exceeds the transcript
 			BACKGROUND_CONTEXT,
 		);
 		const snapshot = (await host.request("snapshot")) as SnapshotPageShape;
-		assert.ok(snapshot.entries.some((entry) => entry.kind === "pi.user"), "the first user input survives");
+		assert.ok(snapshot.entries.some((entry) => entry.kind === "agent.input"), "the first Agent input survives");
 		assert.ok(snapshot.entries.some((entry) => entry.kind === "pi.assistant"), "the answer survives");
 		assert.ok(!snapshot.entries.some((entry) => entry.kind === "pi.system"), "hidden kinds stay out of the transcript payload");
 		assert.equal(snapshot.partial, false, "hidden exclusion alone never marks the page partial");
@@ -770,7 +770,7 @@ it("continues the transcript backwards from the page anchor to the first input",
 			before = page.nextBefore;
 		}
 		assert.equal(before, null, "the oldest page carries no anchor");
-		assert.ok(collected.some((entry) => entry.kind === "pi.user" && JSON.stringify(entry.model ?? []).includes("prompt 0")), "paging reaches the first input");
+		assert.ok(collected.some((entry) => entry.kind === "agent.input" && JSON.stringify(entry.model ?? []).includes("prompt 0")), "paging reaches the first input");
 		assert.ok([...first.entries, ...collected].some((entry) => entry.kind === "pi.assistant" && JSON.stringify(entry.model ?? []).includes("a3")), "the newest page joins the older pages");
 	} finally {
 		await host.close();

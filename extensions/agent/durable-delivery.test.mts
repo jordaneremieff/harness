@@ -1222,7 +1222,7 @@ it("reports a same-storage owner inside its storage instead of falling back", { 
 	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(admitted.submissionId)]?.acknowledged === true);
 	assert.equal(received.length, 0, "a same-storage owner never routes through a primary");
 	const entries = await sibling.entries({}, 20, undefined, BACKGROUND_CONTEXT);
-	assert.equal(entries.items.filter((entry) => entry.kind === "pi.user").length, 1);
+	assert.equal(entries.items.filter((entry) => entry.kind === "agent.input").length, 1);
 	assert.match(JSON.stringify(entries.items), /Agent result from/u);
 	const sourceEntries = await source.root().entries({}, 20, undefined, BACKGROUND_CONTEXT);
 	assert.doesNotMatch(JSON.stringify(sourceEntries.items), /Agent result from/u);

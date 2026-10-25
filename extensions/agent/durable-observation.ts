@@ -14,6 +14,7 @@
  * the temporary file. Read-only viewers never schedule work.
  */
 import { createHash } from "node:crypto";
+import { AGENT_INPUT_KIND, isInputKind } from "./input-entry.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import type { Message, Models, Usage } from "@earendil-works/pi-ai";
@@ -175,6 +176,7 @@ export function durableIdentity(storageId: string, conversationId: ConversationI
 /** Readable source category of one entry kind. */
 export function entrySource(kind: string): DurableEntrySource {
 	switch (kind) {
+		case AGENT_INPUT_KIND:
 		case "pi.user":
 			return "user";
 		case "pi.assistant":
@@ -419,6 +421,7 @@ function textRoleOf(entry: EntryRecord | undefined): DurableTextRole | undefined
 	const role = entry.model?.[0]?.role;
 	if (role === "user" || role === "assistant" || role === "toolResult" || role === "system") return role;
 	switch (entry.kind) {
+		case AGENT_INPUT_KIND:
 		case "pi.user":
 			return "user";
 		case "pi.assistant":
@@ -801,7 +804,7 @@ function currentReceipt(delivery: AgentDeliveryState | undefined, conversationId
 		if (receipt.conversationId !== conversationId) continue;
 		if (latest === undefined || receipt.submissionId > latest.submissionId) latest = receipt;
 	}
-	const newestInput = [...entries].reverse().find((entry) => entry.kind === "pi.user");
+	const newestInput = [...entries].reverse().find((entry) => isInputKind(entry.kind));
 	if (latest && newestInput && (latest.entryId === null || latest.entryId < newestInput.id)) return undefined;
 	return latest;
 }
@@ -918,7 +921,7 @@ function turnDuration(entries: readonly EntryRecord[], busy: boolean, now: numbe
 	let started: number | undefined;
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
-		if (entry?.kind !== "pi.user") continue;
+		if (entry === undefined || !isInputKind(entry.kind)) continue;
 		started = newestTimestamp(entry);
 		break;
 	}
@@ -931,7 +934,7 @@ function turnDuration(entries: readonly EntryRecord[], busy: boolean, now: numbe
 
 function firstMessageOf(meta: { readonly firstMessage: string | undefined }, entries: readonly EntryRecord[]): string | undefined {
 	if (meta.firstMessage !== undefined) return meta.firstMessage;
-	const firstUser = entries.find((entry) => entry.kind === "pi.user");
+	const firstUser = entries.find((entry) => isInputKind(entry.kind));
 	if (firstUser === undefined) return undefined;
 	return messageTextOf(firstUser) ?? undefined;
 }
@@ -952,7 +955,7 @@ async function terminalError(harness: Harness, receipt: DeliveryReceipt | undefi
 	}
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index];
-		if (entry.kind === "pi.user") break;
+		if (isInputKind(entry.kind)) break;
 		for (const message of [...(entry.model ?? [])].reverse()) {
 			if (message.role !== "assistant") continue;
 			return message.errorMessage || undefined;
@@ -980,7 +983,7 @@ async function dashboardError(harness: Harness, conversationId: ConversationId, 
 	if (state !== "failed" && state !== "stopped") return undefined;
 	const error = await terminalError(harness, receipt, entries, context);
 	if (state !== "failed" || error !== PROVIDER_BLOCK_ERROR) return error;
-	const input = receipt === undefined ? await dashboardInput(storage, conversationId, [...entries].reverse().find((entry) => entry.kind === "pi.user")?.id, context) : { submissionId: receipt.submissionId, limited: false };
+	const input = receipt === undefined ? await dashboardInput(storage, conversationId, [...entries].reverse().find((entry) => isInputKind(entry.kind))?.id, context) : { submissionId: receipt.submissionId, limited: false };
 	const block = input.submissionId === undefined ? undefined : await harness.commit((tx) => readInputProviderBlock(tx, input.submissionId as SubmissionId), context);
 	if (block === undefined) return `${error}\n[provider evidence ${input.limited ? "lookup limited" : "unavailable"}]`;
 	return `${block.error}${block.errorRedacted ? "\n[provider error redacted]" : ""}${block.errorTruncated ? "\n[provider error truncated]" : ""}`;
@@ -1614,18 +1617,18 @@ async function scanActivity(conversation: Conversation, params: DurableInspectPa
 			complete = true;
 			break;
 		}
-		const users = collected.reduce((count, entry) => count + (entry.kind === "pi.user" ? 1 : 0), 0);
+		const users = collected.reduce((count, entry) => count + (isInputKind(entry.kind) ? 1 : 0), 0);
 		if (users > turnLimit) break;
 	}
 	return { collected, complete, scannedEntries, scannedBytes };
 }
 
-/** Group oldest-first: every user entry starts a turn. */
+/** Group oldest-first: every operator or Agent input starts a turn. */
 function groupActivityTurns(collected: readonly EntryRecord[]): EntryRecord[][] {
 	const turns: EntryRecord[][] = [];
 	for (const entry of [...collected].reverse()) {
 		let turn = turns[turns.length - 1];
-		if (entry.kind === "pi.user" || turn === undefined) {
+		if (isInputKind(entry.kind) || turn === undefined) {
 			turn = [];
 			turns.push(turn);
 		}
@@ -2071,7 +2074,7 @@ function recentEntryActivity(entries:readonly EntryRecord[],operatorInputs:Reado
     if(entry.kind==='pi.user'&&operatorInputs.has(entry.id))lastUserAt=Math.max(lastUserAt??-Infinity,at);
     if(answerEntry(entry))lastAnswerAt=Math.max(lastAnswerAt??-Infinity,at);
   }
-  return {hasMessages:entries.some(entry=>entry.kind==='pi.user'||entry.kind==='pi.assistant'),...(lastUserAt===undefined?{}:{lastUserAt}),...(lastAnswerAt===undefined?{}:{lastAnswerAt})};
+  return {hasMessages:entries.some(entry=>isInputKind(entry.kind)||entry.kind==='pi.assistant'),...(lastUserAt===undefined?{}:{lastUserAt}),...(lastAnswerAt===undefined?{}:{lastAnswerAt})};
 }
 export class DurableObservation {
 	readonly harness: Harness;

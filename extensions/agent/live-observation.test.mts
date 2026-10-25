@@ -197,8 +197,8 @@ it("advances the conversation frame after a commit and serves committed entries"
 	const submitted = await host.submit({ message: "first prompt", requestId: "live-1" });
 	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
 	const frame = await service.waitForFrame(token, (value) => value.scope === "conversation" && value.revision > first.revision
-		&& value.entries.some((entry) => entry.kind === "pi.user") && value.entries.some((entry) => entry.kind === "pi.assistant"), "committed frame revision") as ConversationFrame;
-	assert.ok(frame.entries.some((entry) => entry.kind === "pi.user"), "the committed user entry is served");
+		&& value.entries.some((entry) => entry.kind === "agent.input") && value.entries.some((entry) => entry.kind === "pi.assistant"), "committed frame revision") as ConversationFrame;
+	assert.ok(frame.entries.some((entry) => entry.kind === "agent.input"), "the committed Agent input is served");
 	assert.ok(frame.entries.some((entry) => entry.kind === "pi.assistant"), "the committed answer is served");
 	assert.equal(frame.status.lastTextRole, "assistant", "the retained tail carries its author role");
 	assert.equal(frame.coverage.complete, true, "a short transcript is complete");

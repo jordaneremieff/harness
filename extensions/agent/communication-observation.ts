@@ -1,4 +1,5 @@
 import type { Context } from "@earendil-works/chord";
+import { isInputKind } from "./input-entry.ts";
 import type { Conversation, EntryId, EntryRecord, Harness, SubmissionId } from "@earendil-works/pi-durable";
 import { boundCommunicationViews, COMMUNICATION_PAGE_ENTRIES, parseCommunicationCompanion, parseCommunicationLink, parseCommunicationPassive, parseCommunicationView, type CommunicationInputLink, type CommunicationView } from "./communication.ts";
 import { CommunicationIndexDoc, communicationIndexKey, communicationNativeEntryId, type CommunicationIndex } from "./communication-retention.ts";
@@ -47,7 +48,7 @@ export async function captureCommunicationReader(harness: Harness, storageId: st
 		return parseCommunicationView({ state: "ready", recordEntryId: String(visible.id), target: { mode: "passive", storageId, conversationId: visible.conversationId, entryId: String(visible.id), requestId: value.requestId }, value: value.value }) ?? invalid;
 	}
 	async function nativeTargetMatches(target: CommunicationInputLink, visible: EntryRecord): Promise<boolean> {
-		if (visible.kind !== "pi.user" || visible.conversationId !== target.conversationId) return false;
+		if (!isInputKind(visible.kind) || visible.conversationId !== target.conversationId) return false;
 		const submission = await harness.submission(target.submissionId as SubmissionId, context);
 		const native = await submission?.status(context);
 		return native?.type === "input" && native.id === target.submissionId && native.entry === visible.id && native.conversationId === target.conversationId && native.requestId === target.requestId;
@@ -80,7 +81,7 @@ export async function captureCommunicationReader(harness: Harness, storageId: st
 	async function resolve(entry: EntryRecord): Promise<CommunicationView> {
 		if (tail === undefined || entry.id > tail) return unresolved;
 		if (entry.kind === "agent.thread-notice") return passiveView(entry);
-		return entry.kind === "pi.user" ? inputView(entry) : unresolved;
+		return isInputKind(entry.kind) ? inputView(entry) : unresolved;
 	}
 	function taskSenderRecordView(record: EntryRecord, target: CommunicationInputLink, visible: EntryRecord): TaskInputSender | undefined {
 		if (!modelLessCompanion(record, visible.conversationId, TASK_SENDER_ENTRY_KIND)) return undefined;
@@ -88,7 +89,7 @@ export async function captureCommunicationReader(harness: Harness, storageId: st
 		return captured !== undefined && targetMatches(captured.target, visible, storageId) && sameSubmission(captured.target, target) ? captured.sender : undefined;
 	}
 	async function taskSender(entry: EntryRecord): Promise<TaskInputSender | undefined> {
-		if (entry.kind !== "pi.user" || tail === undefined || entry.id > tail) return undefined;
+		if (!isInputKind(entry.kind) || tail === undefined || entry.id > tail) return undefined;
 		const index = await harness.snapshot(CommunicationIndexDoc, communicationIndexKey(storageId, entry.conversationId, String(entry.id)), context);
 		const target = parseCommunicationLink(index?.target);
 		const recordId = index?.taskSenderEntryId === undefined ? undefined : communicationNativeEntryId(index.taskSenderEntryId);

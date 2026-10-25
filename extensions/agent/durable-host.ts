@@ -36,6 +36,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
+import { isInputKind } from "./input-entry.ts";
 import { AssistantEntry, UserEntry, ToolResultEntry, type Tx, Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
@@ -262,7 +263,7 @@ export class DurableHost {
 		// A commit may add or remove work; the cached idle result is stale until the refresh settles.
 		harness.subscribeCommits((publication) => {
 			if (publication.changes.length > 0) liveObservations.get(harness)?.invalidate();
-			if (publication.changes.some((change) => change.type === "submission" || (change.type === "entry" && change.value.kind === "pi.user"))) queueMicrotask(() => {
+			if (publication.changes.some((change) => change.type === "submission" || (change.type === "entry" && isInputKind(change.value.kind)))) queueMicrotask(() => {
 				if (!this.closed) void reconcileInputCommunications(harness, this.storageId, BACKGROUND_CONTEXT).catch(() => { this.communicationDiagnostic = "retention-unavailable"; });
 			});
 			this.commitGeneration += 1;

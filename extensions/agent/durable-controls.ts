@@ -15,11 +15,12 @@
  * defining a second copy.
  */
 import { randomUUID } from "node:crypto";
+import { inputEntry } from "./input-entry.ts";
 import { configureProviderRecovery, captureProviderRecovery, linkProviderRecovery, readInputRecovery, readInputProviderBlock, readProviderBlock, type ProviderBlockFact, type ProviderRetryNotice } from "./provider-block.ts";
 import { AwaitDoc, acknowledgeProviderRetry, classifyAwaitInput, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
 import { createCheckIn } from "./durable-checkins.ts";
-import { cleanupRequestContexts, recordRequestContext, type RequestContext } from "./request-context.ts";
+import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { refreshManagedInstructions } from "./profile.ts";
 import { existsSync } from "node:fs";
 import type { PrimaryIntentClaim } from "./effort-presence.ts";
@@ -358,6 +359,7 @@ export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationI
 		conversationId, requestId: admission.requestId, ownerId: admission.ownerId,
 		senderIdentity: admission.senderIdentity ?? String(conversationId), message: storedMessage(message),
 		whenBusy: admission.whenBusy ?? "steer", origin: admission.origin, admittedAt,
+		...(admission.requestContext === undefined ? {} : { requester: admission.requestContext.requester }),
 	}, admission.checkInMinutes ?? 0);
 	state.intents.push({
 		requestId: admission.requestId,
@@ -473,6 +475,10 @@ async function authorizeProviderNotice(tx: Tx, conversationId: ConversationId, r
 	return { suppressed: false };
 }
 
+function inputAuthor(params: DurableSubmitParams): string | undefined {
+	return params.requestContext?.requester ?? params.communication?.taskSender?.identity ?? params.provenance?.sender;
+}
+
 async function admitConversation(conversation: Conversation, params: DurableSubmitParams, context: Context, now: () => number): Promise<DurableSubmitResult> {
 	const { message, requestId, ownerId, whenBusy, operationId, origin } = params;
 	if (params.providerRetry !== undefined) {
@@ -506,6 +512,7 @@ async function admitConversation(conversation: Conversation, params: DurableSubm
 			content: message,
 			requestId,
 			whenBusy: awaitInputMode(classification, whenBusy),
+			entry: inputEntry(origin, inputAuthor(params)),
 		},
 		context,
 	);
@@ -1191,10 +1198,12 @@ export async function reconcileDeliveries(harness: Harness, context: Context): P
 		if (submissionId === undefined) {
 			const conversation = await harness.conversation(intent.conversationId, context);
 			if (!conversation) continue;
+			const request = (await harness.snapshot(RequestContextDoc, intent.conversationId, context))?.requests.find((item) => item.requestId === intent.requestId);
 			const admitted = await conversation.submit(
 				{
 					type: "input",
 					content: deliveredMessage(intent.message),
+					entry: inputEntry(intent.origin, request?.requester),
 					requestId: intent.requestId,
 					...(intent.whenBusy === null ? {} : { whenBusy: intent.whenBusy }),
 				},

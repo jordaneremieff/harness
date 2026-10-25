@@ -34,6 +34,25 @@ different states; a receipt does not prove the requested outcome.
 
 ## Controls
 
+Native input entries distinguish their author without changing the model message.
+Explicit operator admissions use `pi.user`. Model-origin admissions use the
+application kind `agent.input` with `data.author.role: "agent"` and the known
+caller in `data.author.identity`. Unowned admissions without origin also use
+`agent.input`, with `data.author.role: "unknown"`. An absent identity stays absent.
+Every input still contributes the same user-role model content. Local and foreign
+requests, scheduled inputs, check-in recovery and delivery recovery preserve this
+classification. Automated reports use application inputs, not operator inputs.
+An admission retains its kind through queued placement and request-ID
+deduplication. Source changes do not reclassify existing inputs or replace the
+admission code in retained hosts. Drain existing runs before a host transition.
+
+Agent history, search, activity and dashboards recognise both input kinds. Their
+`source: "user"` selector includes both. Raw and exact reads retain the kind and
+author data. Other extensions that need operator input use native placed input
+submissions and `pi.user`, not Agent document names or entry formats. Native
+repair continuations are user messages without new input submissions, so entry
+kind alone does not establish new operator direction.
+
 Answer-bearing `agent_send`, `agent_steer`, and prompted `agent_spawn` return
 `result: { sessionId, submissionId, requestId? }` after native admission. The
 reference names the canonical conversation and its actual admitted submission,

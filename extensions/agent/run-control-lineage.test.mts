@@ -20,7 +20,7 @@ function contribution(root: string, storageId: string, dispatch?: AgentControlDi
 async function addSharedInput(api: native.ToolExecutionApi): Promise<void> {
 	await api.commit(async tx => {
 		const original = (await tx.scanEntries({ conversationId: api.conversationId, order: "ascending" }, 1)).items[0];
-		assert.equal(original?.kind, native.UserEntry.kind); assert.ok(original);
+		assert.equal(original?.kind, "agent.input"); assert.ok(original);
 		const live = await tx.doc(native.LiveDoc, api.conversationId); assert.ok(live.run);
 		const shared = await tx.createSubmission({ conversationId: api.conversationId, type: "input", status: "placed", entry: original.id, requestId: "shared-child-input" });
 		live.run.inputs.push(shared.id);
