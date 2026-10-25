@@ -14,6 +14,16 @@ test('captured input appears before dispatch and native confirmation replaces th
   assert.deepEqual(echoes.entries('workspace',target,[native]),[native]);
   assert.deepEqual(echoes.entries('workspace',target,[native]),[native]);
 });
+test('application user messages do not consume an identical operator input copy',()=>{
+  const echoes=new InputEchoes(),target={kind:'agent' as const,identity:'dev'};
+  echoes.capture('workspace',{operationId:'one',target,text:'hello',mode:'followUp',images:[],draftRevision:1,edit:1},[]);
+  const application:EntryView={id:'application',kind:'app.request',messages:[{id:'message',role:'user',timestamp:Date.now(),parts:[{type:'text',text:'hello'}],state:'final',coverage:{complete:true,truncated:false,omitted:0}}]};
+  assert.equal(echoes.entries('workspace',target,[application]).length,2);
+  echoes.settle({id:'one',kind:'agent.input',target,state:'accepted',createdAt:'',updatedAt:''});
+  assert.equal(echoes.entries('workspace',target,[application]).length,2);
+  const operator:EntryView={...application,id:'operator',kind:'pi.user'};
+  assert.deepEqual(echoes.entries('workspace',target,[application,operator]),[application,operator]);
+});
 test('queued acceptance survives a late HTTP failure and stale reconnect records without a second copy',()=>{
   const echoes=new InputEchoes(),target={kind:'primary' as const,key:'p',epoch:1};
   echoes.capture('workspace',{operationId:'queued',target,text:'hello',mode:'steer',images:[],draftRevision:1,edit:1},[]);

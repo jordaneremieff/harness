@@ -35,6 +35,16 @@ test('native association retains exact input and provenance origins without chan
 test('native unresolved and unavailable states remain distinct', () => {
   for (const communication of [{state: 'unresolved'}, {state: 'unavailable', reason: 'invalid'}, {state: 'unavailable', reason: 'limit'}]) assert.deepEqual(native(communication).messages?.[0]?.communication, communication);
 });
+test('application input preserves communication states without a separate author record', () => {
+  for (const communication of [{state: 'unresolved'}, {state: 'unavailable', reason: 'invalid'}, {state: 'unavailable', reason: 'limit'}, wire()]) {
+    const entry = projectEntry({id: '41', kind: 'app.request', data: {author: {role: 'agent'}}, model: [{role: 'user', content: 'Original transport content.'}], communication});
+    assert.equal(entry.data, undefined);
+    assert.equal(entry.messages?.[0]?.role, 'user');
+    assert.deepEqual(entry.messages?.[0]?.parts, [{type: 'text', text: 'Original transport content.'}]);
+    if (communication.state === 'ready') assert.equal(entry.messages?.[0]?.communication?.state, 'ready');
+    else assert.deepEqual(entry.messages?.[0]?.communication, communication);
+  }
+});
 test('native mismatched links and multi-message attribution refuse the sender', () => {
   assert.equal(native({...wire(), target: {...wire().target, entryId: '40'}}).messages?.[0]?.communication?.state, 'unavailable');
   const entry = native(wire(), [{role: 'user', content: 'first'}, {role: 'user', content: 'second'}]);

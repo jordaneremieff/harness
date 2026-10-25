@@ -426,7 +426,7 @@ function displayEntry(raw: unknown, fallbackId: string, options: ProjectionOptio
     result.messages = messages.slice(0, 8).map((item, index) => {
       const message = object(item); const messageId = Array.isArray(message.parts) && typeof message.id === 'string' ? message.id : `${id}:message:${index}`;
       const source = entryImageSource(id, index, raw);
-      const native = kind === 'pi.user' || kind === 'agent.thread-notice' || object(object(raw).communication).state === 'ready' ? object(raw).communication : undefined;
+      const native = object(raw).communication;
       const sourceId = typeof object(raw).id === 'string' ? object(raw).id as string : undefined;
       const communicationSource: CommunicationSource = {...options.communicationSource, entryId: sourceId, timestamp: object(raw).timestamp, native, nativeEntryId: sourceId, singleMessage: messages.length === 1 && message.role === 'user'};
       return projectMessage(item, messageId, 'final', source, {...options, budget, deferred, communicationSource});

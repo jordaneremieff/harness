@@ -7,6 +7,7 @@ import type {Submission} from './draft-state.ts';
 
 type Echo={workspace:string;submission:Submission;at:number;baseline:Set<string>;state:'sending'|'accepted'|'rejected'|'uncertain';requestId?:string;result?:OperationView};
 function matchesInput(echo:Echo,entry:EntryView):boolean {
+  if(entry.kind!=='pi.user'&&entry.kind!=='message')return false;
   return (entry.messages??[]).some(message=>{
     if(message.role!=='user'||message.timestamp!==undefined&&message.timestamp<echo.at-1000)return false;
     const communication=message.communication;
