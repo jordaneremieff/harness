@@ -89,11 +89,12 @@ async function start(t: { after(fn: () => Promise<void>): void }, checker = chec
 		await open.close(context);
 		for (const close of closers) await close();
 	});
-	const run = async (...replies: FauxResponseStep[]) => {
+	const runInput = async (input: Durable.InputSubmissionDraft, ...replies: FauxResponseStep[]) => {
 		faux.setResponses(replies);
-		const settled = await (await root.submit({ type: "input", content: "question" }, context)).wait(context);
+		const settled = await (await root.submit(input, context)).wait(context);
 		assert.equal(settled.status, "done", settled.status === "unanswered" ? settled.reason : "");
 	};
+	const run = (...replies: FauxResponseStep[]) => runInput({ type: "input", content: "question" }, ...replies);
 	const transcript = async () =>
 		(await root.context(context)).messages
 			.map((message: Message) =>
@@ -102,7 +103,7 @@ async function start(t: { after(fn: () => Promise<void>): void }, checker = chec
 					: message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
 			)
 			.join("\n---\n");
-	return { run, transcript, faux, services, registry, dir };
+	return { run, runInput, root, harness: open, transcript, faux, services, registry, dir };
 }
 const count = (text: string, needle: string) => text.split(needle).length - 1;
 
@@ -118,6 +119,113 @@ test("real findings continue once and the next run resets the guard", { timeout:
 	assert.equal(count(await h.transcript(), "The prose meter found problems"), 1);
 	await h.run(fauxAssistantMessage("A dash — again"), fauxAssistantMessage("The parser rejects an empty file."));
 	assert.equal(count(await h.transcript(), "The prose meter found problems"), 2);
+});
+test("application input skips the checker even after operator conversation history", { timeout: 30000 }, async (t) => {
+	let checks = 0;
+	const h = await start(t, async () => {
+		checks += 1;
+		return { kind: "repair", text: "Please repair." };
+	});
+	await h.run(fauxAssistantMessage("Operator answer"), fauxAssistantMessage("Repaired answer"));
+	assert.equal(checks, 1);
+	await h.runInput(
+		{ type: "input", content: "Peer task", entry: { kind: "test.request", data: { author: "peer" } } },
+		fauxAssistantMessage("A dash — here"),
+	);
+	assert.equal(checks, 1);
+	assert.equal(h.faux.state.callCount, 3);
+});
+test("passive user-role notices do not mask operator input or cause another repair", { timeout: 30000 }, async (t) => {
+	const h = await start(t);
+	const notice: FauxResponseStep = async () => {
+		await h.root.submit(
+			{
+				type: "write",
+				entry: { kind: "test.notice", model: [{ role: "user", content: "A passive notice", timestamp: 0 }] },
+			},
+			context,
+		);
+		return fauxAssistantMessage("A dash — here");
+	};
+	await h.run(notice, notice);
+	assert.equal(h.faux.state.callCount, 2);
+	assert.equal(count(await h.transcript(), "The prose meter found problems"), 1);
+});
+test("unsubmitted pi.user writes do not enable checking on an application run", { timeout: 30000 }, async (t) => {
+	let checks = 0;
+	const h = await start(t, async () => {
+		checks += 1;
+		return { kind: "clean" };
+	});
+	await h.runInput({ type: "input", content: "Peer task", entry: { kind: "test.request" } }, async () => {
+		await h.root.submit(
+			{
+				type: "write",
+				entry: { kind: "pi.user", model: [{ role: "user", content: "Not an input submission", timestamp: 0 }] },
+			},
+			context,
+		);
+		return fauxAssistantMessage("A dash — here");
+	});
+	assert.equal(checks, 0);
+});
+test("queued operator input does not check the preceding application answer", { timeout: 30000 }, async (t) => {
+	const checked: string[] = [];
+	const h = await start(t, async (text) => {
+		checked.push(text);
+		return { kind: "clean" };
+	});
+	let queued: Durable.Submission | undefined;
+	await h.runInput(
+		{ type: "input", content: "Peer task", entry: { kind: "test.request" } },
+		async () => {
+			queued = await h.root.submit({ type: "input", content: "Operator task", whenBusy: "followUp" }, context);
+			return fauxAssistantMessage("Peer answer");
+		},
+		fauxAssistantMessage("Operator answer"),
+	);
+	assert.ok(queued);
+	assert.equal((await queued.wait(context)).status, "done");
+	assert.deepEqual(checked, ["Operator answer"]);
+});
+test("operator input placed at a tool boundary enables checking in a mixed run", { timeout: 30000 }, async (t) => {
+	const checked: string[] = [];
+	const h = await start(t, async (text) => {
+		checked.push(text);
+		return { kind: "clean" };
+	});
+	let steer: Durable.Submission | undefined;
+	await h.runInput(
+		{ type: "input", content: "Peer task", entry: { kind: "test.request" } },
+		async () => {
+			steer = await h.root.submit({ type: "input", content: "Operator correction", whenBusy: "steer" }, context);
+			return fauxAssistantMessage(fauxToolCall("draft", { text: "A note.", kind: "prose" }), { stopReason: "toolUse" });
+		},
+		fauxAssistantMessage("Mixed answer"),
+	);
+	assert.ok(steer);
+	assert.equal((await steer.wait(context)).status, "done");
+	assert.deepEqual(checked, ["Mixed answer"]);
+});
+test("exact input lookup survives a new context head", { timeout: 30000 }, async (t) => {
+	let checks = 0;
+	const h = await start(t, async () => {
+		checks += 1;
+		return { kind: "repair", text: "Please repair." };
+	});
+	const replaceContext: FauxResponseStep = async () => {
+		await h.harness.commit(async (tx) => {
+			await tx.appendEntry(h.root.id, {
+				kind: "test.summary",
+				head: "self",
+				model: [{ role: "user", content: "Summary", timestamp: 0 }],
+			});
+		}, context);
+		return fauxAssistantMessage("A dash — here");
+	};
+	await h.run(replaceContext, replaceContext);
+	assert.equal(checks, 1);
+	assert.equal(h.faux.state.callCount, 2);
 });
 test("a clean answer adds no findings", { timeout: 30000 }, async (t) => {
 	const h = await start(t);

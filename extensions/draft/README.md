@@ -29,8 +29,12 @@ the same guidance through a prompt section.
 
 The ordinary `agent_before_settle` hook and native `GenerationTask.onYield`
 hook analyse the final reply in process. Neither starts a subprocess.
-The native check also covers replies to agents. Pi's public hook and default
-input entries do not distinguish operator input from agent input.
+The native check runs only when the active run includes a placed `pi.user`
+input. The host reserves that input kind for operator requests and places agent
+requests under application kinds. Draft reads only the Pi-owned distinction.
+It joins placed submissions to their exact transcript entries, including entries
+before a context summary. Queued inputs and passive notices do not decide
+whether the current answer gets a check.
 
 The hook requests one repair when:
 
@@ -47,9 +51,11 @@ The message lists hard findings first, then scored findings, up to
 repair above the form, preserve claims and avoid a neighbouring tell.
 
 The ordinary form clears its repair flag at `before_agent_start`. The native
-form recognises its findings message as the latest user message and memoises
-each answer's decision. Each run gets at most one automatic repair pass.
-The native notice document retains `checkpointWhen: () => false`.
+form memoises each answer's decision and records the oldest placed submission
+of the run that received a repair. Each run gets at most one automatic repair
+pass, even after a passive notice or a context summary. The findings continuation
+is not an input submission and does not enable checks on agent requests.
+The native state document retains `checkpointWhen: () => false`.
 
 Empty replies, aborted or failed ordinary runs, and disabled checks produce
 no hook findings. The hook checks only the first `maxChars` characters.

@@ -14,7 +14,7 @@ import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "node:url";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { JsonObject } from "@earendil-works/pi-durable";
-import { checkReply, FINDINGS_HEADER } from "./check.ts";
+import { checkReply, type CheckOutcome } from "./check.ts";
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
 import { checkDraft, description, parameters, promptGuidelines, promptSnippet } from "./tool.ts";
 
@@ -38,6 +38,8 @@ type DraftState = {
 	noticed: boolean;
 	/** Task that delivered the latest notice; a replayed hook does not deliver it twice. */
 	noticeTask: string;
+	/** Oldest submission in the run that already received its repair pass. */
+	repairedRun?: number;
 };
 
 type Decision = {
@@ -47,7 +49,16 @@ type Decision = {
 	notice?: string;
 	/** Set when a working meter must clear the notice latch. */
 	cleared?: boolean;
+	/** Oldest placed input identifies the run across successor generation tasks. */
+	repairedRun?: number;
 };
+
+function checkedDecision(outcome: CheckOutcome, noticed: boolean, run: number): Decision {
+	if (outcome.kind === "repair") return { continue: true, text: outcome.text, cleared: true, repairedRun: run };
+	if (outcome.kind === "unavailable") return noticed ? { continue: false } : { continue: false, notice: outcome.text };
+	if (outcome.kind === "clean") return { continue: false, cleared: noticed };
+	return { continue: false };
+}
 
 function answerText(answer: AssistantMessage): string {
 	return answer.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
@@ -88,34 +99,35 @@ export function createDraftDurableExtension(host: DraftDurableHost, checker = ch
 		initial: () => ({ noticed: false, noticeTask: "" }),
 	});
 
-	/** True when the latest user message of the conversation is a findings message, so this answer is the repair pass. */
-	async function repairPassActive(api: Durable.HookApi, context: Context): Promise<boolean> {
+	/** Placed submissions belong to the active run; queued input and passive writes do not. */
+	async function operatorRun(api: Durable.HookApi, context: Context): Promise<number | undefined> {
 		const conversation = await host.harness.conversation(api.conversationId, context);
-		if (!conversation) return false;
-		const view = await conversation.context(context);
-		const lastUser = view.messages.findLast((message) => message.role === "user");
-		if (!lastUser) return false;
-		const text =
-			typeof lastUser.content === "string"
-				? lastUser.content
-				: lastUser.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("");
-		return text.startsWith(FINDINGS_HEADER);
+		if (!conversation) return undefined;
+		const { submissions } = await host.harness.inspect(context);
+		const placed = submissions.filter(
+			(input) => input.conversationId === api.conversationId && input.type === "input" && input.status === "placed",
+		);
+		for (const input of placed) {
+			if (input.type !== "input" || input.status !== "placed") continue;
+			const page = await conversation.entries(
+				{ minEntryId: input.entry, maxEntryId: input.entry },
+				1,
+				undefined,
+				context,
+			);
+			if (page.items[0]?.kind === "pi.user") return placed[0]?.id;
+		}
+		return undefined;
 	}
 
 	async function decide(answer: AssistantMessage, api: Durable.HookApi, context: Context): Promise<Decision> {
 		const config = readSettings({ agentDir: host.agentDir }).values;
 		if (!config.enabled) return { continue: false };
-		const outcome = await checker(answerText(answer), config);
-		if (outcome.kind === "repair") return { continue: true, text: outcome.text, cleared: true };
-		if (outcome.kind === "unavailable") {
-			const state = await api.snapshot(stateDoc, api.conversationId, context);
-			return state?.noticed ? { continue: false } : { continue: false, notice: outcome.text };
-		}
-		if (outcome.kind === "clean") {
-			const state = await api.snapshot(stateDoc, api.conversationId, context);
-			return { continue: false, ...(state?.noticed ? { cleared: true } : {}) };
-		}
-		return { continue: false };
+		const run = await operatorRun(api, context);
+		if (run === undefined) return { continue: false };
+		const state = await api.snapshot(stateDoc, api.conversationId, context);
+		if (state?.repairedRun === run) return { continue: false };
+		return checkedDecision(await checker(answerText(answer), config), state?.noticed === true, run);
 	}
 
 	async function apply(decision: Decision, api: Durable.HookApi, context: Context): Promise<void> {
@@ -123,6 +135,7 @@ export function createDraftDurableExtension(host: DraftDurableHost, checker = ch
 		const task = String(api.taskId);
 		await host.harness.commit(async (tx) => {
 			const state = await tx.doc(stateDoc, api.conversationId);
+			if (decision.repairedRun !== undefined) state.repairedRun = decision.repairedRun;
 			if (decision.cleared) {
 				state.noticed = false;
 				return;
@@ -166,9 +179,7 @@ export function createDraftDurableExtension(host: DraftDurableHost, checker = ch
 			host.durable.hook(host.durable.GenerationTask, {
 				onYield: async (answer: AssistantMessage, api, context) => {
 					const known = (await api.memo<JsonObject>(`answer:${answer.timestamp}`, context)) as Decision | undefined;
-					const decision: Decision =
-						known ??
-						((await repairPassActive(api, context)) ? { continue: false } : await decide(answer, api, context));
+					const decision: Decision = known ?? (await decide(answer, api, context));
 					const stored = (await api.memo(`answer:${answer.timestamp}`, decision as JsonObject, context)) as Decision;
 					await apply(stored, api, context);
 					return stored.continue && stored.text !== undefined ? { continue: stored.text } : undefined;
