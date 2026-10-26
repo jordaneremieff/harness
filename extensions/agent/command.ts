@@ -6,10 +6,10 @@ import { dashboardSessionState } from "./dashboard-state.ts";
 import { readAgentBranch } from "./agent-git.ts";
 import type { DashboardPreferences } from "./dashboard-preferences.ts";
 import type { ToolDisplayLookup } from "./tool-display.ts";
-import { showAgentDashboard, type DashboardResult } from "./dashboard.ts";
+import type { DashboardResult } from "./dashboard.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
-import { hideAround, runActionDialog, type ActionDialogExtras } from "./action-dialogs.ts";
+import type { ActionDialogExtras } from "./action-dialogs.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
 import { actionOutcomeText, agentDisplayName, outcomeSessionId } from "./action-outcome.ts";
 
@@ -217,6 +217,10 @@ export function createAgentCommand(
 		const state = dashboardSessionState(ctx.sessionManager.getSessionId(), preferences?.load);
 		state.hideThinkingBlock = readHideThinkingBlock?.() ?? false;
 		try {
+			const [{ showAgentDashboard }, { hideAround, runActionDialog }] = await Promise.all([
+				import("./dashboard.ts"),
+				import("./action-dialogs.ts"),
+			]);
 			await showAgentDashboard({
 				ctx,
 				state,

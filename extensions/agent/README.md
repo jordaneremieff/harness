@@ -103,7 +103,8 @@ a different query or cwd is refused explicitly. `agent_list` reports each
 unreadable catalog record in `coverage.unavailable`, even when
 `coverage.complete` is true.
 
-Agent catalogue readers keep a bounded process-local cache of validated records.
+Agent catalogue readers compile their projection schemas once per process.
+They keep a bounded process-local cache of validated records.
 Every read still opens the current file without following symlinks and checks
 its size and content. Identical content reuses validation. Changed content is
 validated on that read. Each caller receives an independent record, so caller
@@ -922,6 +923,10 @@ sees database creation. The independent public reader instead returns
 `not_found` for an absent database and owns no cache. See
 [independent retained reads](#independent-retained-reads) for source-isolation
 and process guarantees.
+
+The command loads the terminal dashboard and its action dialogs only when you
+open the dashboard. Control commands and completion stay available before that
+load.
 
 The dashboard does not embed InteractiveMode. The published extension API has
 no complete InteractiveMode view, editor state, dialog, widget, or renderer

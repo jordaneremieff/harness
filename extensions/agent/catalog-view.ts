@@ -9,7 +9,7 @@
  * bootstraps an older record.
  */
 
-import { Value } from "typebox/value";
+import { Compile } from "typebox/compile";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
 import { boundModelEvidence, MODEL_EVIDENCE_BUDGET_BYTES, ModelEvidenceSchema, type ModelEvidence } from "./model-evidence.ts";
@@ -24,6 +24,11 @@ export const CATALOG_VIEW_BUDGET_BYTES = 24 * 1024;
 /** Longest display text kept for one row field. */
 export const CATALOG_VIEW_TEXT_LIMIT = 2000;
 const TEXT_TRUNCATION_MARKER = " […]";
+const conversationSummaryValidator = Compile(AgentConversationSummarySchema);
+const attentionHintsValidator = Compile(CatalogAttentionHintsSchema);
+const intentMetadataValidator = Compile(NativeIntentMetadataSchema);
+const modelEvidenceValidator = Compile(ModelEvidenceSchema);
+const profileHintsValidator = Compile(ProfileHintsSchema);
 
 /** One conversation row projected for host metadata. Extra source fields travel unchanged. */
 export interface CatalogViewRow {
@@ -141,7 +146,7 @@ export function boundCatalogView<Row extends CatalogViewRow>(source: CatalogView
 	let omitted = 0;
 	let trimmed = false;
 	for (const candidate of order) {
-		if (!Value.Check(AgentConversationSummarySchema, candidate)) throw new Error("Agent view has an invalid row");
+		if (!conversationSummaryValidator.Check(candidate)) throw new Error("Agent view has an invalid row");
 		const bounded = boundRow(candidate);
 		if (bounded.trimmed) trimmed = true;
 		const next = [...rows, bounded.row];
@@ -162,14 +167,14 @@ export function boundCatalogView<Row extends CatalogViewRow>(source: CatalogView
 
 function validateRows(rows: readonly CatalogViewRow[], storageId: string | undefined): void {
 	for (const row of rows) {
-		if (!Value.Check(AgentConversationSummarySchema, row)) throw new Error("Agent view has an invalid row");
+		if (!conversationSummaryValidator.Check(row)) throw new Error("Agent view has an invalid row");
 		if (storageId !== undefined && row.storageId !== storageId) throw new Error("Agent view row has a different storageId");
 	}
 }
 
 function validateAttentionHints(candidate: Partial<CatalogView>): void {
 	if (candidate.attention === undefined) return;
-	if (!Value.Check(CatalogAttentionHintsSchema, candidate.attention)) throw new Error("Invalid attention hints");
+	if (!attentionHintsValidator.Check(candidate.attention)) throw new Error("Invalid attention hints");
 	const identities = new Set(candidate.rows?.map((row) => row.id));
 	const seen = new Set<string>();
 	for (const hint of candidate.attention.rows) {
@@ -192,15 +197,15 @@ function validateIntentClaims(candidate: Partial<CatalogView>): void {
 	for (const [identity, metadata] of Object.entries(claims.rows)) {
 		const row = rows.get(identity);
 		validateIntentOwner(identity, candidate.storageId);
-		if (!row || metadata !== null && (!Value.Check(NativeIntentMetadataSchema, metadata) || metadata.cwd !== row.cwd)) throw new Error("Native intent belongs to a different conversation or location");
+		if (!row || metadata !== null && (!intentMetadataValidator.Check(metadata) || metadata.cwd !== row.cwd)) throw new Error("Native intent belongs to a different conversation or location");
 	}
 }
 function validateHints(candidate: Partial<CatalogView>): void {
 	validateIntentClaims(candidate);
 	validateAttentionHints(candidate);
-	if (candidate.modelEvidence !== undefined && (!Value.Check(ModelEvidenceSchema, candidate.modelEvidence) || byteLength(candidate.modelEvidence) > MODEL_EVIDENCE_BUDGET_BYTES))
+	if (candidate.modelEvidence !== undefined && (!modelEvidenceValidator.Check(candidate.modelEvidence) || byteLength(candidate.modelEvidence) > MODEL_EVIDENCE_BUDGET_BYTES))
 		throw new Error("Invalid model evidence");
-	if (candidate.profiles !== undefined && !Value.Check(ProfileHintsSchema, candidate.profiles)) throw new Error("Invalid profile hints");
+	if (candidate.profiles !== undefined && !profileHintsValidator.Check(candidate.profiles)) throw new Error("Invalid profile hints");
 	if (candidate.profileSeed === undefined) return;
 	handleSlug(candidate.profileSeed.handle);
 	if (typeof candidate.profileSeed.role !== "string" || [...candidate.profileSeed.role].length > 2000) throw new Error("Invalid profile creation seed");
@@ -265,7 +270,7 @@ export function withProfileHints(view: CatalogView, profiles: ProfileHints): Cat
 
 /** Add intervention hints only in the space left by operational rows and profile hints. */
 export function withAttentionHints(view: CatalogView, source: CatalogAttentionHints): CatalogView {
-	if (!Value.Check(CatalogAttentionHintsSchema, source)) throw new Error("Invalid attention hints");
+	if (!attentionHintsValidator.Check(source)) throw new Error("Invalid attention hints");
 	const { attention: _attention, ...base } = view;
 	const rows: CatalogAttentionHints["rows"] = [];
 	let omitted = source.coverage.omitted + source.rows.length;

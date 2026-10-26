@@ -33,6 +33,17 @@ function row(id: string, overrides: Partial<CatalogViewRow> = {}): CatalogViewRo
 	};
 }
 
+it("keeps catalogue row validation equal to the schema for malformed field values", () => {
+	const base = row("root");
+	const fields = [...Object.keys(base), "name", "latestReply", "currentTool", "model", "toolCalls", "durationMs"];
+	const values = [undefined, null, false, true, -1, 0, Number.NaN, Number.POSITIVE_INFINITY, "", "text", [], {}, { name: "read", argument: "file" }];
+	for (const field of fields) for (const value of values) {
+		const candidate = { ...base, [field]: value };
+		const view = { updatedAt: "2026-01-01T00:00:00.000Z", rows: [candidate], coverage: { complete: true, omitted: 0 } };
+		assert.equal(isCatalogView(view), Value.Check(AgentConversationSummarySchema, candidate), `${field}: ${String(value)}`);
+	}
+});
+
 it("bounds rows to the view budget with truthful coverage", () => {
 	const rows = Array.from({ length: 200 }, (_, index) => row(`row-${index}`, { latestReply: "x".repeat(1500) }));
 	const view = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", rows });
