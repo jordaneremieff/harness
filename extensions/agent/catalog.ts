@@ -27,6 +27,9 @@ import { profileText } from "./profile.ts";
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
 export const MAX_RECORD_BYTES = 32_768;
 const MAX_VISITS = 256;
+const VALIDATED_RECORD_LIMIT = 256;
+// Every lookup still reads the bounded file. Only unchanged content skips validation.
+const validatedRecords = new Map<string, { text: string; record: CatalogRecord }>();
 interface CatalogQuery {
 	cursor?: string;
 	limit?: number;
@@ -265,7 +268,16 @@ export class AgentCatalog {
 				length += count;
 			}
 			if (length > MAX_RECORD_BYTES) throw new Error("Agent metadata exceeds its read bound");
-			const value: unknown = JSON.parse(bytes.toString("utf8", 0, length));
+			const text = bytes.toString("utf8", 0, length);
+			const path = this.path(storageId);
+			const cached = validatedRecords.get(path);
+			if (cached?.text === text) {
+				validatedRecords.delete(path);
+				validatedRecords.set(path, cached);
+				return { record: structuredClone(cached.record), modifiedAt: info.mtimeMs };
+			}
+			validatedRecords.delete(path);
+			const value: unknown = JSON.parse(text);
 			if (!value || typeof value !== "object") throw new Error("Agent metadata is invalid");
 			const record = value as CatalogRecord;
 			if (
@@ -285,6 +297,8 @@ export class AgentCatalog {
 			this.parseProjections(record);
 			if (record.recoveryDue !== undefined && typeof record.recoveryDue !== "boolean")
 				throw new Error("Agent metadata has an invalid recovery marker");
+			validatedRecords.set(path, { text, record: structuredClone(record) });
+			if (validatedRecords.size > VALIDATED_RECORD_LIMIT) validatedRecords.delete(validatedRecords.keys().next().value!);
 			return { record, modifiedAt: info.mtimeMs };
 		} finally {
 			closeSync(fd);

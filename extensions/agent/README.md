@@ -103,6 +103,12 @@ a different query or cwd is refused explicitly. `agent_list` reports each
 unreadable catalog record in `coverage.unavailable`, even when
 `coverage.complete` is true.
 
+Agent catalogue readers keep a bounded process-local cache of validated records.
+Every read still opens the current file without following symlinks and checks
+its size and content. Identical content reuses validation. Changed content is
+validated on that read. Each caller receives an independent record, so caller
+edits never change later observations.
+
 Discovery is not a frozen snapshot. Each page lists the current directory names,
 then bounds entry visits and record reads. Records created behind the cursor,
 or changed to match a filter after their name was visited, appear on the next

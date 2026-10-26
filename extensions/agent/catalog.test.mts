@@ -50,6 +50,55 @@ it("keeps creation records within the host metadata envelope and 32768-byte boun
 	}
 });
 
+it("reuses validation only for identical bytes and returns independent records across readers", (t) => {
+	const { catalog, input } = fixture(t);
+	const record = catalog.create(input);
+	const path = catalog.path(record.storageId);
+	const text = readFileSync(path, "utf8");
+	const parse = JSON.parse;
+	let parses = 0;
+	t.mock.method(JSON, "parse", (...args: Parameters<typeof JSON.parse>) => {
+		if (args[0] === text) parses++;
+		return parse(...args);
+	});
+	const first = catalog.read(record.storageId);
+	first.model.modelId = "changed-by-reader";
+	const second = new AgentCatalog(input.cwd).read(record.storageId);
+	assert.deepEqual(second, record);
+	assert.equal(parses, 1);
+	const modified = { ...record, name: "Fresh publication" };
+	writeFileSync(path, JSON.stringify(modified));
+	utimesSync(path, 1, 1);
+	assert.deepEqual(catalog.read(record.storageId), modified);
+	writeFileSync(path, JSON.stringify({ ...modified, thinkingLevel: "invalid" }));
+	assert.throws(() => catalog.read(record.storageId), /reasoning level/u);
+	writeFileSync(path, text);
+	assert.deepEqual(catalog.read(record.storageId), record);
+	assert.equal(parses, 2, "invalid replacement evicts the prior validation");
+	unlinkSync(path);
+	assert.throws(() => catalog.read(record.storageId), /ENOENT/u);
+	const target = join(input.cwd, "replacement.json");
+	writeFileSync(target, text);
+	symlinkSync(target, path);
+	assert.throws(() => catalog.read(record.storageId), /ELOOP/u);
+});
+
+it("evicts old validated records at the bounded cache limit", (t) => {
+	const { catalog, input } = fixture(t);
+	const first = catalog.create(input);
+	const text = readFileSync(catalog.path(first.storageId), "utf8");
+	const parse = JSON.parse;
+	let parses = 0;
+	t.mock.method(JSON, "parse", (...args: Parameters<typeof JSON.parse>) => {
+		if (args[0] === text) parses++;
+		return parse(...args);
+	});
+	catalog.read(first.storageId);
+	for (let index = 0; index < 256; index++) catalog.read(catalog.create(input).storageId);
+	catalog.read(first.storageId);
+	assert.equal(parses, 2);
+});
+
 it("publishes one complete handle seed without replacing creation defaults", (t) => {
 	const { catalog, input } = fixture(t);
 	const role = "😀".repeat(2000);
