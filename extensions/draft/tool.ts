@@ -2,9 +2,11 @@ import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Type } from "typebox";
+import { verdictText } from "./check.ts";
 import { measure } from "./meter.ts";
 import { kindForPath } from "./scripts/extract.mts";
 import { renderText } from "./scripts/report.mts";
+import { type Band, settings } from "./settings.ts";
 
 export const MAX_TOOL_CHARS = 200000;
 const MAX_FILE_BYTES = MAX_TOOL_CHARS * 4;
@@ -22,14 +24,15 @@ export const parameters = Type.Object({
 	kind: Type.Union([Type.Literal("prose"), Type.Literal("commit"), Type.Literal("diff")]),
 });
 export type DraftInput = { text?: string; path?: string; kind: "prose" | "commit" | "diff" };
-export const promptSnippet = "Check final text that leaves the chat for slop tells; report findings without rewriting.";
+export const promptSnippet =
+	"Check final text that leaves the chat for slop tells; report findings and a pass or fail verdict without rewriting.";
 export const promptGuidelines = [
-	"Run draft once after facts, evidence and position are settled, only on text the automatic reply check does not see: documents, commit messages, pull request descriptions, tickets and other text that leaves the chat.",
-	"Do not call draft on chat replies or status reports. The reply check checks final chat replies automatically. After a reply-check repair, send the repaired reply without another draft call.",
-	"Do not run draft on notes, intermediate drafts or work in progress. A clean result does not show that the text is good.",
+	"Run draft once after facts, evidence and position are settled, only on text the automatic reply check does not see: documents, pull request descriptions, tickets and messages to people outside the chat. Check a commit message or diff only when asked.",
+	"Do not call draft on chat replies or status reports. The reply check checks final chat replies automatically.",
+	"Stop at a pass verdict. After a fail verdict, repair the text and check it once more. Do not run draft on notes, intermediate drafts or work in progress.",
 ];
 export const description =
-	"Find slop tells in final prose, commit messages or unified diffs. Supply text or a saved file path and its kind. Return hard and scored findings with line numbers, score, band and calibration. Never rewrite text.";
+	"Find slop tells in final prose, commit messages or unified diffs. Supply text or a saved file path and its kind. Return hard and scored findings with line numbers, score, band, calibration and a pass or fail verdict. Never rewrite text.";
 
 async function readSaved(path: string, signal?: AbortSignal): Promise<string> {
 	signal?.throwIfAborted();
@@ -52,7 +55,11 @@ async function readSaved(path: string, signal?: AbortSignal): Promise<string> {
 	}
 }
 
-export async function checkDraft(input: DraftInput, cwd: string, signal?: AbortSignal) {
+export async function checkDraft(
+	input: DraftInput,
+	cwd: string,
+	{ notifyBand = settings.fields.notifyBand.default, signal }: { notifyBand?: Band; signal?: AbortSignal } = {},
+) {
 	signal?.throwIfAborted();
 	if ((input.text === undefined) === (input.path === undefined)) throw new Error("Supply exactly one of text or path.");
 	if (!["prose", "commit", "diff"].includes(input.kind)) throw new Error("Unknown text kind.");
@@ -62,5 +69,8 @@ export async function checkDraft(input: DraftInput, cwd: string, signal?: AbortS
 	signal?.throwIfAborted();
 	const kind = input.kind === "prose" ? (path === undefined ? "md" : (kindForPath(path) ?? "text")) : input.kind;
 	const report = measure(text, kind, path);
-	return { report, text: renderText(report, { verbose: false, quiet: false, color: false }) };
+	return {
+		report,
+		text: `${renderText(report, { verbose: false, quiet: false, color: false })}${verdictText(report, notifyBand)}\n`,
+	};
 }

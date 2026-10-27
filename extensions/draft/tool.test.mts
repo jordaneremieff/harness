@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { filler } from "./scripts/test-kit.mts";
 import { checkDraft, MAX_TOOL_CHARS, promptGuidelines, promptSnippet } from "./tool.ts";
 
 test("the tool reports hard and scored findings with locations, score and calibration", async () => {
@@ -23,13 +24,23 @@ test("explicit checks retain spelling findings", async () => {
 	assert.ok(result.report.scored.some((finding) => finding.rule === "spelling.our"));
 	assert.match(result.text, /spelling\.our/u);
 });
-test("tool guidance leaves chat to the reply check and prohibits repeat calls after reply repair", () => {
+test("tool guidance leaves chat to the reply check, commits to explicit requests and stops at a pass", () => {
 	const guidance = [promptSnippet, ...promptGuidelines].join("\n");
 	assert.match(guidance, /only on text the automatic reply check does not see/u);
-	assert.match(guidance, /documents, commit messages, pull request descriptions, tickets/u);
+	assert.match(guidance, /documents, pull request descriptions, tickets/u);
+	assert.match(guidance, /Check a commit message or diff only when asked/u);
 	assert.match(guidance, /Do not call draft on chat replies or status reports/u);
-	assert.match(guidance, /After a reply-check repair, send the repaired reply without another draft call/u);
-	assert.doesNotMatch(guidance, /longer than three sentences|run it once more/u);
+	assert.match(guidance, /Stop at a pass verdict\. After a fail verdict, repair the text and check it once more\./u);
+});
+test("the verdict uses the reply gate and the configured band", async () => {
+	const text = `${filler(200)} This pivotal design is robust. It will foster a dynamic landscape.`;
+	const pass = await checkDraft({ text, kind: "prose" }, process.cwd());
+	assert.equal(pass.report.score.band, "amber");
+	assert.match(pass.text, /Verdict: pass\..*red band\. Do not run the meter again on this text/u);
+	const strict = await checkDraft({ text, kind: "prose" }, process.cwd(), { notifyBand: "amber" });
+	assert.match(strict.text, /Verdict: fail\./u);
+	const hard = await checkDraft({ text: "A dash \u2014 here.", kind: "prose" }, process.cwd());
+	assert.match(hard.text, /Verdict: fail\. Repair every hard finding/u);
 });
 test("a careful reply has no findings", async () => {
 	const result = await checkDraft(
@@ -74,7 +85,7 @@ test("invalid input, oversized files, binary files and cancellation fail explici
 		await assert.rejects(checkDraft({ path: "large.txt", kind: "prose" }, dir), /limit/u);
 		const controller = new AbortController();
 		controller.abort();
-		await assert.rejects(checkDraft({ text: "x", kind: "prose" }, dir, controller.signal), /abort/iu);
+		await assert.rejects(checkDraft({ text: "x", kind: "prose" }, dir, { signal: controller.signal }), /abort/iu);
 	} finally {
 		await rm(dir, { recursive: true, force: true });
 	}

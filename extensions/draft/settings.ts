@@ -66,22 +66,14 @@ export const settings = {
 			type: "enum",
 			env: "PI_DRAFT_NOTIFY_BAND",
 			choices: ["green", "amber", "red"],
-			default: "amber",
+			default: "red",
 			description:
-				"Lowest reliable score band that requests reply repair, regardless of finding count. This band and worse bands notify. Hard findings always notify. Spelling is excluded.",
+				"Lowest reliable score band that fails a check. This band and worse bands request reply repair and fail the tool verdict. Hard findings always fail. Text too short for a reliable band fails on hard findings only. Spelling is excluded from replies.",
 		},
-		minScoredFindings: {
+		maxRules: {
 			type: "integer",
-			env: "PI_DRAFT_MIN_SCORED_FINDINGS",
-			description: "Minimum scored findings that request reply repair only when the score is not reliable. Spelling is excluded.",
-			default: 2,
-			min: 1,
-			max: 50,
-		},
-		maxFindings: {
-			type: "integer",
-			env: "PI_DRAFT_MAX_FINDINGS",
-			description: "Most findings listed in one message to the agent.",
+			env: "PI_DRAFT_MAX_RULES",
+			description: "Most rules listed in one repair message. Each listed rule carries its count and line numbers.",
 			default: 12,
 			min: 1,
 			max: 50,
@@ -93,8 +85,7 @@ export type DraftSettings = {
 	enabled: boolean;
 	maxChars: number;
 	notifyBand: Band;
-	minScoredFindings: number;
-	maxFindings: number;
+	maxRules: number;
 };
 export type Snapshot = SettingsPublication & { values: DraftSettings };
 type Field = {

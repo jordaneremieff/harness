@@ -6,12 +6,12 @@ description: >
   come with it (dashes as connectors, bold-label bullets, stock buzzwords,
   coined compounds, unexplained codes, meta-openers, signposts, closing offers).
   Use on final text that leaves the chat after facts, evidence and position
-  are settled: documents, tickets, commit messages, pull request descriptions
-  and questions for other people outside the chat. Also use when such text is
-  flagged as slop, AI-sounding or too long and needs repair. Do not call the
-  draft tool on chat replies or status reports; the reply check checks final
-  chat replies automatically. After a reply-check repair, send the repaired
-  reply without another draft call. Do not use on notes, intermediate drafts,
+  are settled: documents, tickets, pull request descriptions and questions for
+  other people outside the chat, and on commit messages when asked. Also use
+  when such text is flagged as slop, AI-sounding or too long and needs repair.
+  Do not call the draft tool on chat replies or status reports; the reply
+  check checks final chat replies automatically. Stop at a pass verdict.
+  Do not use on notes, intermediate drafts,
   work in progress, code review, factual research or text that must stay
   verbatim. The draft tool reports findings and never rewrites text.
 compatibility: >
@@ -24,18 +24,21 @@ compatibility: >
 
 Slop is text written from no position. Nothing in it could be wrong, so the reader learns nothing and must reorganise it before using it. Its surface tells are symptoms: dashes joining unrelated clauses, bold-label bullets, stock importance words, coined terms, signposts and closing offers. Removing a symptom without finding the position leaves the cause, and the cause returns in a neighbouring form. The meter finds symptoms. You supply the position.
 
-A clean meter result is a floor, never acceptance.
+A clean meter result is a floor, never acceptance. The meter's verdict ends meter work; your reread for position does not.
 
 ## 1. Check the final text
 
 Use the `draft` tool once after facts, evidence and position are settled. Pass
 exactly one of `text` or a saved file `path`, with `kind` set to `prose`,
 `commit`, or `diff`. Check only text the automatic reply check does not see:
-documents, tickets, commit messages, pull request descriptions and other text
-that leaves the chat. Do not call the tool on chat replies or status reports.
-The reply check checks final chat replies automatically. After a reply-check
-repair, send the repaired reply without another draft call. Do not check notes,
-intermediate drafts or work in progress.
+documents, tickets, pull request descriptions and messages to people outside
+the chat. Check a commit message or diff only when asked. Do not call the tool
+on chat replies or status reports. The reply check checks final chat replies
+automatically, and the system prompt lists the hard rules it enforces. Do not
+check notes, intermediate drafts or work in progress.
+
+Each result ends with a verdict. At a pass, stop: do not run the meter again on
+that text. At a fail, repair the text and check it once more.
 
 The tool never rewrites text. Shell workflows outside Pi retain the CLI for
 commit messages and unified diffs; see [README.md](README.md#shell-use).
@@ -67,10 +70,10 @@ For the reasoning behind these rules, consult the Pillars entries `principle-une
 
 1. Write the position first. Before drafting, state in one sentence what the reader should believe, decide or do, and what evidence supports it. If you cannot, you have no position yet. Get one: read the source, run the check, or ask.
 2. Draft for a reader who arrives cold. Lead with the answer, the state or the decision. Define each project term at first use, or use an ordinary word. Include only what changes the reader's understanding or next move.
-3. For text that leaves the chat, run the meter once (section 1). For chat replies and status reports, let the automatic reply check run.
+3. For text that leaves the chat, run the meter once (section 1) and stop at a pass verdict. For chat replies and status reports, let the automatic reply check run.
 4. Repair above the form. Follow `references/repair.md`. Rebuild each flagged unit from its claim and evidence, or delete it. Never swap one tell for its neighbour. A dash becoming a semicolon, `pivotal` becoming `crucial` and three items becoming four are all the same tell. Never narrate the repair.
 5. Diff your claims against the earlier draft. A claim that got weaker or lost its owner needs a stated reason.
-6. Remove every hard finding. Reread the text once for position: could a sentence be wrong, and would the reader act on it? After a reply-check repair, send the repaired reply without another draft call.
+6. Remove every hard finding. Reread the text once for position: could a sentence be wrong, and would the reader act on it? After a reply-check repair, send the repaired reply as text; tools stay blocked until you do.
 
 ## 4. By surface
 
@@ -79,6 +82,6 @@ This skill owns the universal standard. Instruction files own register, spelling
 - Chat replies and status reports: answer first. Select content for the reader's current task, not the work log. Describe a designed state as expected behaviour, not as a failure. Stop when the answer is complete: no closing menu, no offer.
 - Questions to stakeholders: state the decision needed, your recommendation, and the cost of each side. Give the context the reader lacks in two or three sentences.
 - Documents and tickets: open with the purpose or the current state, not a statement about the document. Use headings only where the content has parts. Prefer sentences to bold-label bullets.
-- Commit and pull request text: pass the message with kind `commit` and the diff with kind `diff`. Explain why the change was needed. Do not narrate steps or restate the diff.
+- Pull request text: explain why the change was needed. Do not narrate steps or restate the diff. When asked to check a commit message or diff, pass it with kind `commit` or `diff`.
 
 The meter checks Australian spelling in prose, but not in code, identifiers, quoted literals or URLs. The CLI exposes optional spelling and time-format flags.

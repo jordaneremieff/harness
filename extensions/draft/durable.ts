@@ -14,7 +14,14 @@ import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { fileURLToPath } from "node:url";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { JsonObject } from "@earendil-works/pi-durable";
-import { checkReply, type CheckOutcome } from "./check.ts";
+import {
+	type CheckOutcome,
+	type CheckRecord,
+	checkReply,
+	REPAIR_BLOCK,
+	RULES_SECTION,
+	replyRulesText,
+} from "./check.ts";
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
 import { checkDraft, description, parameters, promptGuidelines, promptSnippet } from "./tool.ts";
 
@@ -40,6 +47,8 @@ type DraftState = {
 	noticeTask: string;
 	/** Oldest submission in the run that already received its repair pass. */
 	repairedRun?: number;
+	/** Run whose repaired answer is still owed; tool calls in that run are blocked. */
+	repairOpen?: number;
 };
 
 type Decision = {
@@ -51,10 +60,17 @@ type Decision = {
 	cleared?: boolean;
 	/** Oldest placed input identifies the run across successor generation tasks. */
 	repairedRun?: number;
+	/** The repaired answer arrived; tool calls in the run are no longer blocked. */
+	closeRepair?: boolean;
+	/** Facts about the check that requested the repair. */
+	record?: CheckRecord;
 };
 
+export const CHECK_ENTRY = "draft.check";
+
 function checkedDecision(outcome: CheckOutcome, noticed: boolean, run: number): Decision {
-	if (outcome.kind === "repair") return { continue: true, text: outcome.text, cleared: true, repairedRun: run };
+	if (outcome.kind === "repair")
+		return { continue: true, text: outcome.text, cleared: true, repairedRun: run, record: outcome.record };
 	if (outcome.kind === "unavailable") return noticed ? { continue: false } : { continue: false, notice: outcome.text };
 	if (outcome.kind === "clean") return { continue: false, cleared: noticed };
 	return { continue: false };
@@ -121,21 +137,34 @@ export function createDraftDurableExtension(host: DraftDurableHost, checker = ch
 	}
 
 	async function decide(answer: AssistantMessage, api: Durable.HookApi, context: Context): Promise<Decision> {
-		const config = readSettings({ agentDir: host.agentDir }).values;
-		if (!config.enabled) return { continue: false };
-		const run = await operatorRun(api, context);
-		if (run === undefined) return { continue: false };
 		const state = await api.snapshot(stateDoc, api.conversationId, context);
-		if (state?.repairedRun === run) return { continue: false };
-		return checkedDecision(await checker(answerText(answer), config), state?.noticed === true, run);
+		// Any later answer ends an owed repair: the repaired answer itself, or an answer in a later run.
+		const idle: Decision =
+			state?.repairOpen === undefined ? { continue: false } : { continue: false, closeRepair: true };
+		const config = readSettings({ agentDir: host.agentDir }).values;
+		if (!config.enabled) return idle;
+		const run = await operatorRun(api, context);
+		if (run === undefined || state?.repairedRun === run) return idle;
+		const decision = checkedDecision(await checker(answerText(answer), config), state?.noticed === true, run);
+		return idle.closeRepair ? { ...decision, closeRepair: true } : decision;
+	}
+
+	/** Opens or closes the owed repair; returns the record to append when this decision first opens it. */
+	function applyRepair(state: DraftState, decision: Decision): JsonObject | undefined {
+		if (decision.closeRepair && state.repairOpen !== decision.repairedRun) delete state.repairOpen;
+		if (decision.repairedRun === undefined || state.repairedRun === decision.repairedRun) return undefined;
+		state.repairedRun = decision.repairedRun;
+		state.repairOpen = decision.repairedRun;
+		return decision.record as JsonObject | undefined;
 	}
 
 	async function apply(decision: Decision, api: Durable.HookApi, context: Context): Promise<void> {
-		if (decision.notice === undefined && !decision.cleared) return;
+		if (decision.notice === undefined && !decision.cleared && !decision.closeRepair) return;
 		const task = String(api.taskId);
 		await host.harness.commit(async (tx) => {
 			const state = await tx.doc(stateDoc, api.conversationId);
-			if (decision.repairedRun !== undefined) state.repairedRun = decision.repairedRun;
+			const record = applyRepair(state, decision);
+			if (record !== undefined) await tx.appendEntry(api.conversationId, { kind: CHECK_ENTRY, data: record });
 			if (decision.cleared) {
 				state.noticed = false;
 				return;
@@ -161,7 +190,11 @@ export function createDraftDurableExtension(host: DraftDurableHost, checker = ch
 				replay: "safe",
 				async execute(input, api, context) {
 					const agent = await api.agent(context);
-					const result = await checkDraft(input, agent.cwd ?? process.cwd(), context.abortSignal);
+					const { notifyBand } = readSettings({ agentDir: host.agentDir }).values;
+					const result = await checkDraft(input, agent.cwd ?? process.cwd(), {
+						notifyBand,
+						signal: context.abortSignal,
+					});
 					return { output: [{ type: "text", text: result.text }] };
 				},
 			}),
@@ -174,6 +207,17 @@ export function createDraftDurableExtension(host: DraftDurableHost, checker = ch
 						? [promptSnippet, ...promptGuidelines].join("\n")
 						: undefined,
 			},
+			{
+				key: RULES_SECTION,
+				render: () => {
+					if (!readSettings({ agentDir: host.agentDir }).values.enabled) return undefined;
+					try {
+						return replyRulesText();
+					} catch {
+						return undefined;
+					}
+				},
+			},
 		],
 		hooks: [
 			host.durable.hook(host.durable.GenerationTask, {
@@ -183,6 +227,13 @@ export function createDraftDurableExtension(host: DraftDurableHost, checker = ch
 					const stored = (await api.memo(`answer:${answer.timestamp}`, decision as JsonObject, context)) as Decision;
 					await apply(stored, api, context);
 					return stored.continue && stored.text !== undefined ? { continue: stored.text } : undefined;
+				},
+			}),
+			host.durable.hook(host.durable.ToolTask, {
+				beforeTool: async (_call, api, context) => {
+					const state = await api.snapshot(stateDoc, api.conversationId, context);
+					if (state?.repairOpen === undefined) return undefined;
+					return (await operatorRun(api, context)) === state.repairOpen ? { block: REPAIR_BLOCK } : undefined;
 				},
 			}),
 		],

@@ -17,38 +17,69 @@ line numbers. Diff findings refer to added lines and carry new-file paths.
 
 The ordinary tool's `promptSnippet` and `promptGuidelines` tell the model to
 check only final text the automatic reply check does not see, after facts,
-evidence and position are settled. This includes documents, commit messages,
-pull request descriptions, tickets and other text that leaves the chat.
-Agents do not call the tool on chat replies or status reports. The reply check
-checks final chat replies automatically. After a reply-check repair, the agent
-sends the repaired reply without another draft call. Notes, intermediate drafts
-and work in progress stay outside the tool's scope. The native form supplies
-the same guidance through a prompt section.
+evidence and position are settled. This includes documents, pull request
+descriptions, tickets and messages to people outside the chat. Commit messages
+and diffs are checked only on request. Agents do not call the tool on chat
+replies or status reports, because the reply check covers final chat replies.
+Notes, intermediate drafts and work in progress stay outside the tool's scope.
+The native form supplies the same guidance through a prompt section.
+
+Each tool result ends with a verdict from the reply-check gate below, using the
+configured `notifyBand`. A pass tells the agent not to run the meter again on
+that text. A fail asks for one repair and one more check.
+
+## Writing rules in the prompt
+
+While the reply check is enabled, both forms add a `draft-rules` system prompt
+section. It lists every hard prose rule from the rule data, with its message
+and repair direction, so a reply avoids the findings that trigger a repair.
+Commit-message rules stay out of the section. The ordinary form sets the
+section at `before_agent_start`; the native form renders it as a prompt
+section. The text changes only when the rule data changes, so the prompt cache
+stays valid across runs.
 
 ## Reply check
 
 The ordinary `agent_before_settle` hook and native `GenerationTask.onYield`
 hook analyse the final reply in process. Neither starts a subprocess.
-The native check runs only when the active run includes a placed `pi.user`
-input. The host reserves that input kind for operator requests and places agent
-requests under application kinds. Draft reads only the Pi-owned distinction.
-It joins placed submissions to their exact transcript entries, including entries
-before a context summary. Queued inputs and passive notices do not decide
-whether the current answer gets a check.
+Both check only replies to operator input. The ordinary form arms the check
+when `before_agent_start` reports `messageType: "user"`. Runs started by custom
+messages, such as agent reports, are not checked. The native check runs only
+when the active run includes a placed `pi.user` input. The host reserves that
+input kind for operator requests and places agent requests under application
+kinds. Draft reads only the Pi-owned distinction. It joins placed submissions
+to their exact transcript entries, including entries before a context summary.
+Queued inputs and passive notices do not decide whether the current answer
+gets a check.
 
 The hook requests one repair when:
 
 - At least one hard finding exists.
 - A reliable score reaches `notifyBand` or worse, in green, amber, red order.
-- Scored findings reach `minScoredFindings` only when the score is not reliable.
 
-A reliable green score does not request repair at the default amber threshold,
-regardless of finding count. Reply analysis excludes spelling rules before
-detection and scoring. Explicit tool calls still report spelling findings.
+Text too short for a reliable band requests repair only for hard findings.
+At the default red band, amber and green scores do not request repair.
+Reply analysis excludes spelling rules before detection and scoring. Explicit
+tool calls still report spelling findings.
 
-The message lists hard findings first, then scored findings, up to
-`maxFindings`. It includes the score and calibration. It asks the model to
-repair above the form, preserve claims and avoid a neighbouring tell.
+The message groups findings by rule. Each rule appears once with its count,
+its line numbers and its repair direction, so a listing cap never hides a
+finding of a listed rule. A hard-finding repair lists hard rules only. A
+score repair lists the scored rules. At most `maxRules` rules appear. The
+message includes the score and calibration. It asks the model to repair above
+the form, preserve claims, avoid a neighbouring tell and reply with text only.
+
+While the repaired reply is owed, both forms block every tool call, including
+calls nested in another tool, with a reason that asks for the repaired text.
+The ordinary form uses `tool_call`; the native form uses the `ToolTask`
+`beforeTool` hook and blocks only calls in the run that received the repair.
+The next final answer releases the block.
+
+Each repair keeps a record of the check outside model context: the trigger
+(`hard` or `band`), the hard and scored totals, the score, band, reliability,
+word count and the count for every rule. The ordinary form stores it as the
+`details` of the `draft-findings` message. The native form appends a
+`draft.check` entry with the record as data and no model messages.
 
 The ordinary form clears its repair flag at `before_agent_start`. The native
 form memoises each answer's decision and records the oldest placed submission
@@ -104,16 +135,15 @@ feed the score. Short text gets findings but no reliable band.
 
 Settings follow [the configuration contract](../../docs/conventions/extension-config.md):
 one `draft` section in `<agentDir>/harness.json`, with per-field environment
-overrides. These settings control the reply hook, not explicit tool calls.
+overrides. These settings control the reply hook and the prompt section; `notifyBand` also sets the tool verdict.
 
 <!-- harness:settings:start -->
 | Key | Environment | Type | Default | Constraints | Description |
 |---|---|---|---|---|---|
 | enabled | `PI_DRAFT_ENABLED` | boolean | true | none | Run the prose meter on final replies. |
 | maxChars | `PI_DRAFT_MAX_CHARS` | integer | 20000 | min 100; max 200000 | Longest reply prefix sent to the meter, in characters. |
-| notifyBand | `PI_DRAFT_NOTIFY_BAND` | enum | "amber" | green, amber, red | Lowest reliable score band that requests reply repair, regardless of finding count. This band and worse bands notify. Hard findings always notify. Spelling is excluded. |
-| minScoredFindings | `PI_DRAFT_MIN_SCORED_FINDINGS` | integer | 2 | min 1; max 50 | Minimum scored findings that request reply repair only when the score is not reliable. Spelling is excluded. |
-| maxFindings | `PI_DRAFT_MAX_FINDINGS` | integer | 12 | min 1; max 50 | Most findings listed in one message to the agent. |
+| notifyBand | `PI_DRAFT_NOTIFY_BAND` | enum | "red" | green, amber, red | Lowest reliable score band that fails a check. This band and worse bands request reply repair and fail the tool verdict. Hard findings always fail. Text too short for a reliable band fails on hard findings only. Spelling is excluded from replies. |
+| maxRules | `PI_DRAFT_MAX_RULES` | integer | 12 | min 1; max 50 | Most rules listed in one repair message. Each listed rule carries its count and line numbers. |
 <!-- harness:settings:end -->
 
 ## Checks

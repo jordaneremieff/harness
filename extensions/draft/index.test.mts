@@ -4,7 +4,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, test } from "node:test";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
-import { checkReply, needsRepair, repairText, unavailableText } from "./check.ts";
+import {
+	type CheckRecord,
+	checkReply,
+	needsRepair,
+	REPAIR_BLOCK,
+	RULES_SECTION,
+	repairText,
+	replyRulesText,
+	unavailableText,
+} from "./check.ts";
 import draft from "./index.ts";
 import { measure, runMeter } from "./meter.ts";
 import { filler } from "./scripts/test-kit.mts";
@@ -33,8 +42,12 @@ afterEach(async () => {
 	await rm(dir, { recursive: true, force: true });
 });
 
-type Entry = { customType: string; content: string; display: boolean };
-type Handler = (event: unknown) => Promise<{ entries?: Entry[]; continue?: boolean } | undefined> | undefined;
+const AMBER = `${filler(200)} This pivotal design is robust. It will foster a dynamic landscape.`;
+const RED = `${filler(200)} This pivotal design is robust. It will foster a dynamic landscape. It underscores a vibrant realm. Moreover, it is a beacon.`;
+
+type Entry = { customType: string; content: string; display: boolean; details?: CheckRecord };
+type Result = { entries?: Entry[]; continue?: boolean; block?: boolean; reason?: string } | undefined;
+type Handler = (event: unknown) => Promise<Result> | Result | undefined;
 function load(checker = checkReply) {
 	const handlers = new Map<string, Handler>();
 	const tools: unknown[] = [];
@@ -46,9 +59,15 @@ function load(checker = checkReply) {
 		} as never,
 		checker,
 	);
+	const start = (messageType: "user" | "custom" = "user") => {
+		const sections: Record<string, string> = { [RULES_SECTION]: "stale" };
+		handlers.get("before_agent_start")?.({ messageType, systemPromptOptions: { sections } });
+		return sections;
+	};
 	return {
 		tools,
-		start: () => handlers.get("before_agent_start")?.({}),
+		start,
+		tool: (toolName = "read") => handlers.get("tool_call")?.({ toolName, input: {} }) as Result,
 		settle: (text: string, outcome = "completed") =>
 			handlers.get("agent_before_settle")?.({
 				outcome,
@@ -56,29 +75,91 @@ function load(checker = checkReply) {
 			}),
 	};
 }
+/** A loaded extension whose current run started from operator input. */
+function operator(checker = checkReply) {
+	const h = load(checker);
+	h.start();
+	return h;
+}
 
-test("hard findings request one hidden repair with real line numbers and calibration", async () => {
-	const result = await load().settle("A plain line.\nA dash — here.");
+test("hard findings request one hidden repair grouped by rule with the rule repair and a record", async () => {
+	const result = await operator().settle("A plain line.\nA dash — here — and there.\n- **Label:** text");
 	assert.equal(result?.continue, true);
-	assert.equal(result?.entries?.[0]?.display, false);
-	assert.match(result?.entries?.[0]?.content ?? "", /punctuation\.em-dash line 2/u);
-	assert.match(result?.entries?.[0]?.content ?? "", /Calibration: .*cohort/u);
-	assert.match(result?.entries?.[0]?.content ?? "", /without another draft tool call/u);
+	const entry = result?.entries?.[0];
+	assert.equal(entry?.display, false);
+	assert.match(entry?.content ?? "", /punctuation\.em-dash, 2 times on line 2: .*Repair: Split into two sentences/u);
+	assert.match(entry?.content ?? "", /structure\.bold-label, 1 time on line 3/u);
+	assert.match(entry?.content ?? "", /Hard findings: 3\. Fix every one\./u);
+	assert.match(entry?.content ?? "", /Calibration: .*cohort/u);
+	assert.match(entry?.content ?? "", /text only: tool calls are blocked/u);
+	assert.equal(entry?.details?.trigger, "hard");
+	assert.equal(entry?.details?.hard, 3);
+	assert.deepEqual(entry?.details?.rules, { "punctuation.em-dash": 2, "structure.bold-label": 1 });
 });
-test("a reply that only names lexical findings does not request a repair", async () => {
-	const result = await load().settle('The report flags “pivotal” and “robust” as stock vocabulary. Both findings occur on line 2.');
-	assert.equal(result, undefined);
+test("a hard-finding repair lists hard rules only", () => {
+	const message = repairText(measure(`${AMBER} A dash — here.`), 12);
+	assert.match(message, /punctuation\.em-dash/u);
+	assert.doesNotMatch(message, /lexical\./u);
 });
-
-test("a reply that uses lexical terms inside a quoted sentence still requests a repair", async () => {
-	const result = await load().settle('The proposal says, “This pivotal design is robust.”');
-	assert.equal(result?.continue, true);
-	assert.match(result?.entries?.[0]?.content ?? "", /lexical\.pivotal/u);
-	assert.match(result?.entries?.[0]?.content ?? "", /lexical\.robust/u);
+test("runs started by custom messages and replies before any run are not checked", async () => {
+	let checks = 0;
+	const counting = async () => {
+		checks += 1;
+		return { kind: "clean" } as const;
+	};
+	assert.equal(await load(counting).settle("A dash — here"), undefined);
+	const h = load(counting);
+	h.start("custom");
+	assert.equal(await h.settle("A dash — here"), undefined);
+	assert.equal(checks, 0);
+	h.start("user");
+	await h.settle("A dash — here");
+	assert.equal(checks, 1);
 });
-
+test("the default gate repairs hard findings and red scores but not amber or short scored replies", async () => {
+	assert.equal(await operator().settle(AMBER), undefined);
+	assert.equal(await operator().settle("The pivotal design is robust and uses color."), undefined);
+	const red = await operator().settle(RED);
+	assert.equal(red?.continue, true);
+	assert.match(red?.entries?.[0]?.content ?? "", /The score reached the red band/u);
+	assert.match(red?.entries?.[0]?.content ?? "", /lexical\./u);
+	assert.equal(red?.entries?.[0]?.details?.trigger, "band");
+	process.env.PI_DRAFT_NOTIFY_BAND = "amber";
+	assert.equal((await operator().settle(AMBER))?.continue, true);
+});
+test("tool calls are blocked only while a repaired reply is owed", async () => {
+	const h = operator();
+	assert.equal(h.tool(), undefined);
+	assert.equal((await h.settle("A dash — here"))?.continue, true);
+	assert.deepEqual(h.tool("draft"), { block: true, reason: REPAIR_BLOCK });
+	assert.deepEqual(h.tool("bash"), { block: true, reason: REPAIR_BLOCK });
+	assert.equal(await h.settle("Another — dash"), undefined);
+	assert.equal(h.tool(), undefined);
+	assert.equal((await h.settle("A dash — here"))?.continue, undefined);
+	h.start();
+	assert.equal((await h.settle("Another — dash"))?.continue, true);
+	h.start();
+	assert.equal(h.tool(), undefined);
+});
+test("the system prompt carries the hard prose rules while the check is enabled", () => {
+	const sections = load().start();
+	const rules = sections[RULES_SECTION] ?? "";
+	assert.equal(rules, replyRulesText());
+	assert.match(rules, /Bold label at the start of a list item\. Instead: Write the item as a plain sentence/u);
+	assert.match(rules, /Em dash/u);
+	assert.doesNotMatch(rules, /commit|Lowercase|subject/iu);
+	process.env.PI_DRAFT_ENABLED = "0";
+	assert.equal(load().start()[RULES_SECTION], undefined);
+});
+test("quoted lexical mentions stay exempt while quoted sentences still count", () => {
+	const named = measure("The report flags “pivotal” and “robust” as stock vocabulary. Both findings occur on line 2.");
+	assert.deepEqual(named.scored, []);
+	const quoted = measure("The proposal says, “This pivotal design is robust.”");
+	assert.ok(quoted.scored.some((finding) => finding.rule === "lexical.pivotal"));
+	assert.ok(quoted.scored.some((finding) => finding.rule === "lexical.robust"));
+});
 test("clean, empty, aborted, failed and disabled replies add nothing", async () => {
-	const h = load();
+	const h = operator();
 	assert.equal(await h.settle("The parser rejects an empty file."), undefined);
 	assert.equal(await h.settle("  "), undefined);
 	assert.equal(await h.settle("A dash — here", "aborted"), undefined);
@@ -86,29 +167,22 @@ test("clean, empty, aborted, failed and disabled replies add nothing", async () 
 	process.env.PI_DRAFT_ENABLED = "0";
 	assert.equal(await h.settle("A dash — here"), undefined);
 });
-test("one automatic repair per run, then the guard resets", async () => {
-	const h = load();
-	assert.equal((await h.settle("A dash — here"))?.continue, true);
-	assert.equal(await h.settle("Another — dash"), undefined);
-	await h.start();
-	assert.equal((await h.settle("Another — dash"))?.continue, true);
-});
-test("reliable bands ignore listed and omitted counts while short replies retain count triggers", () => {
+test("the gate fails on hard findings or a reliable band at the notify band", () => {
 	const clean = measure("The parser rejects an empty file.");
-	const scored = { ...clean, hard: [], scored: [], omitted: { ...clean.omitted, scored: 2 } };
-	assert.equal(needsRepair(scored, "amber", 2), true);
-	assert.equal(needsRepair(scored, "amber", 3), false);
-	const green = { ...scored, score: { ...scored.score, reliable: true, band: "green" as const } };
-	assert.equal(needsRepair(green, "amber", 2), false);
-	assert.equal(needsRepair(green, "red", 2), false);
-	assert.equal(needsRepair(green, "green", 2), true);
-	assert.equal(needsRepair({ ...clean, score: { ...clean.score, reliable: true, band: "amber" } }, "amber", 2), true);
-	assert.equal(needsRepair({ ...clean, score: { ...clean.score, reliable: true, band: "amber" } }, "red", 2), false);
-	assert.equal(needsRepair({ ...clean, omitted: { ...clean.omitted, hard: 1 } }, "red", 50), true);
-	const report = measure("Frankly, this pivotal solution — unlocks a robust ecosystem.");
+	assert.equal(needsRepair(clean, "green"), false);
+	const scored = { ...clean, omitted: { ...clean.omitted, scored: 9 } };
+	assert.equal(needsRepair(scored, "green"), false);
+	const amber = { ...clean, score: { ...clean.score, reliable: true, band: "amber" as const } };
+	assert.equal(needsRepair(amber, "amber"), true);
+	assert.equal(needsRepair(amber, "red"), false);
+	assert.equal(needsRepair({ ...amber, score: { ...amber.score, band: "green" as const } }, "green"), true);
+	assert.equal(needsRepair({ ...clean, omitted: { ...clean.omitted, hard: 1 } }, "red"), true);
+});
+test("rules beyond the listing cap are counted, and omitted findings keep their total", () => {
+	const report = measure(`Frankly, this — that.\n${"- **Label:** text\n".repeat(30)}`);
 	const message = repairText(report, 1);
-	assert.ok(message.indexOf(report.hard[0]?.rule ?? "") >= 0);
-	assert.match(message, /more not listed/u);
+	assert.match(message, /more rules not listed/u);
+	assert.match(message, /structure\.bold-label, 30 times on lines 2, 3, 4, 5, 6, 7, 8, 9 and more/u);
 });
 test("reliable green replies with several lexical findings settle without repair", async () => {
 	const text = `${filler(200)} A pivotal design is robust.`;
@@ -116,10 +190,14 @@ test("reliable green replies with several lexical findings settle without repair
 	assert.equal(report.score.reliable, true);
 	assert.equal(report.score.band, "green");
 	assert.ok(report.scored.length >= 2);
-	assert.equal(await load().settle(text), undefined);
+	assert.equal(await operator().settle(text), undefined);
 });
 test("reply analysis excludes spelling from counts, omitted findings and score", async () => {
-	for (const text of ["The color and behavior changed.", `${filler(100)} The color and behavior changed.`, "color ".repeat(60)]) {
+	for (const text of [
+		"The color and behavior changed.",
+		`${filler(100)} The color and behavior changed.`,
+		"color ".repeat(60),
+	]) {
 		const explicit = measure(text);
 		assert.ok(explicit.scored.some((finding) => finding.rule.startsWith("spelling.")));
 		const reply = runMeter(text);
@@ -129,22 +207,16 @@ test("reply analysis excludes spelling from counts, omitted findings and score",
 		assert.deepEqual(reply.report.score, explicit.score);
 		assert.equal(reply.report.omitted.scored, 0);
 		assert.deepEqual(reply.report.omitted.byRule, {});
-		assert.equal(await load().settle(text), undefined);
+		assert.equal(await operator().settle(text), undefined);
 	}
-});
-test("spelling does not add to the count for a short lexical reply", async () => {
-	assert.equal(await load().settle("The pivotal design uses color."), undefined);
-	const result = await load().settle("The pivotal design is robust and uses color.");
-	assert.equal(result?.continue, true);
-	assert.doesNotMatch(result?.entries?.[0]?.content ?? "", /spelling\./u);
 });
 test("the hook measures only the configured prefix", async () => {
 	process.env.PI_DRAFT_MAX_CHARS = "100";
-	assert.equal(await load().settle(`${"x".repeat(100)} — unmeasured`), undefined);
+	assert.equal(await operator().settle(`${"x".repeat(100)} — unmeasured`), undefined);
 });
 test("an unavailable notice repeats only after analysis works again", async () => {
 	let unavailable = true;
-	const h = load(async () =>
+	const h = operator(async () =>
 		unavailable
 			? { kind: "unavailable", reason: "failed", text: unavailableText("failed", "rule data unavailable") }
 			: { kind: "clean" },
@@ -163,7 +235,16 @@ test("the in-process hook stays fast at the maximum supported reply length", asy
 			.repeat(Math.ceil(settings.fields.maxChars.max / pattern.length))
 			.slice(0, settings.fields.maxChars.max);
 		const started = performance.now();
-		await load().settle(text);
+		await operator().settle(text);
 		assert.ok(performance.now() - started < 750, `hook exceeded 750 ms for ${pattern.slice(0, 20)}`);
 	}
+});
+test("a checker outcome keeps the configured listing cap", async () => {
+	const outcome = await checkReply("Frankly, this — that.\n- **Label:** text", {
+		maxChars: 20000,
+		notifyBand: "red",
+		maxRules: 1,
+	});
+	assert.equal(outcome.kind, "repair");
+	if (outcome.kind === "repair") assert.match(outcome.text, /more rules not listed/u);
 });

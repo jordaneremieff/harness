@@ -21,8 +21,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { checkReply, unavailableText } from "./check.ts";
+import { type CheckRecord, checkReply, REPAIR_BLOCK, replyRulesText, unavailableText } from "./check.ts";
 import {
+	CHECK_ENTRY,
 	createDraftDurableExtension,
 	type DraftDurableContribution,
 	type DraftDurableHost,
@@ -33,6 +34,16 @@ import { filler } from "./scripts/test-kit.mts";
 import { promptGuidelines } from "./tool.ts";
 
 const context = BACKGROUND_CONTEXT;
+const RECORD: CheckRecord = {
+	trigger: "hard",
+	hard: 1,
+	scored: 0,
+	sq: 0,
+	band: null,
+	reliable: false,
+	words: 3,
+	rules: { "punctuation.em-dash": 1 },
+};
 async function start(t: { after(fn: () => Promise<void>): void }, checker = checkReply) {
 	const dir = await mkdtemp(join(tmpdir(), "draft-durable-"));
 	t.after(() => rm(dir, { recursive: true, force: true }));
@@ -120,11 +131,41 @@ test("real findings continue once and the next run resets the guard", { timeout:
 	await h.run(fauxAssistantMessage("A dash — again"), fauxAssistantMessage("The parser rejects an empty file."));
 	assert.equal(count(await h.transcript(), "The prose meter found problems"), 2);
 });
+test("tools are blocked in the repair turn and the check is recorded outside model context", {
+	timeout: 30000,
+}, async (t) => {
+	const h = await start(t);
+	let blocked = "";
+	await h.run(
+		fauxAssistantMessage("A dash \u2014 here"),
+		fauxAssistantMessage(fauxToolCall("draft", { text: "A note.", kind: "prose" }), { stopReason: "toolUse" }),
+		(request) => {
+			blocked = JSON.stringify(request.messages.findLast((message) => message.role === "toolResult"));
+			return fauxAssistantMessage("The parser rejects an empty file.");
+		},
+	);
+	assert.ok(blocked.includes(REPAIR_BLOCK), blocked);
+	const page = await h.root.entries({}, 200, undefined, context);
+	const checks = page.items.filter((entry: Durable.EntryRecord) => entry.kind === CHECK_ENTRY);
+	assert.equal(checks.length, 1);
+	assert.equal(checks[0]?.model, undefined);
+	const record = checks[0]?.data as CheckRecord | undefined;
+	assert.deepEqual(record?.rules, { "punctuation.em-dash": 1 });
+	await h.run(
+		fauxAssistantMessage(fauxToolCall("draft", { text: "A note.", kind: "prose" }), { stopReason: "toolUse" }),
+		(request) => {
+			const result = JSON.stringify(request.messages.findLast((message) => message.role === "toolResult"));
+			assert.ok(!result.includes(REPAIR_BLOCK), result);
+			assert.match(result, /Verdict: pass/u);
+			return fauxAssistantMessage("The parser rejects an empty file.");
+		},
+	);
+});
 test("application input skips the checker even after operator conversation history", { timeout: 30000 }, async (t) => {
 	let checks = 0;
 	const h = await start(t, async () => {
 		checks += 1;
-		return { kind: "repair", text: "Please repair." };
+		return { kind: "repair", text: "Please repair.", record: RECORD } as const;
 	});
 	await h.run(fauxAssistantMessage("Operator answer"), fauxAssistantMessage("Repaired answer"));
 	assert.equal(checks, 1);
@@ -211,7 +252,7 @@ test("exact input lookup survives a new context head", { timeout: 30000 }, async
 	let checks = 0;
 	const h = await start(t, async () => {
 		checks += 1;
-		return { kind: "repair", text: "Please repair." };
+		return { kind: "repair", text: "Please repair.", record: RECORD } as const;
 	});
 	const replaceContext: FauxResponseStep = async () => {
 		await h.harness.commit(async (tx) => {
@@ -277,6 +318,7 @@ test("native composition supplies the skill, tool, saved file access and usage g
 			const system = getCurrentSystemPrompt(request.messages) ?? "";
 			assert.match(system, /<name>draft<\/name>/u);
 			assert.match(system, /after facts, evidence and position are settled/u);
+			assert.ok(system.includes(replyRulesText()));
 			for (const guideline of promptGuidelines) assert.ok(system.includes(guideline));
 			return fauxAssistantMessage(fauxToolCall("draft", { path: "note.md", kind: "prose" }), { stopReason: "toolUse" });
 		},
