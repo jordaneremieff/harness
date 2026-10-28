@@ -21,7 +21,7 @@ type RunResult = SpawnSyncReturns<string> & { report: Report };
 const KINDS = ["task", "lead", "partner", "review", "frame", "handoff"] as const;
 
 const script = fileURLToPath(new URL("./contract.mts", import.meta.url));
-const root = mkdtempSync(join(tmpdir(), "orchestrate-contract-test-"));
+const root = mkdtempSync(join(tmpdir(), "delegate-contract-test-"));
 let sequence = 0;
 
 after(() => rmSync(root, { recursive: true, force: true }));

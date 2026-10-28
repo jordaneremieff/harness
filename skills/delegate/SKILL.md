@@ -1,10 +1,11 @@
 ---
-name: orchestrate
+name: delegate
 description: >
-  Take and hold the orchestrator role: manage other agents so this session
-  keeps its context for the operator, planning, judgment, and integration.
-  Use when the operator asks a session to orchestrate, coordinate, lead, or
-  manage agents, to act as main driver over a team, to have agents with their
+  Delegate work to other agents and hold the orchestrator role, so this
+  session keeps its context for the operator, planning, judgment, and
+  integration. Use when the operator asks a session to delegate, orchestrate,
+  coordinate, lead, or manage agents, to act as main driver over a team, to
+  have agents with their
   own context do the work, to set up threads for agents, or to keep its own
   context clean on long-horizon research, planning, or implementation; also
   when a coordinating session must bootstrap workers, write task contracts,
@@ -15,7 +16,7 @@ description: >
 compatibility: Requires Pi with the harness agent extension (spawn, send, steer, await, status, inspect, collaborate, intent, profile, reset) and codemode. Points to sibling sources extensions/agent/README.md and skills/dig/SKILL.md. Uses the operator's presets and delegation preferences; no fixed model or provider roster.
 ---
 
-# Orchestrate
+# Delegate
 
 Hold the orchestrator role for as long as the work lasts. This session keeps
 the operator conversation, the frame, team selection, contracts, acceptance,

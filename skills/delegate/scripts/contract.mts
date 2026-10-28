@@ -84,7 +84,7 @@ function find(code: string, message: string) {
 }
 
 function usage() {
-	return `Usage: node skills/orchestrate/scripts/contract.mts <command> [options]
+	return `Usage: node skills/delegate/scripts/contract.mts <command> [options]
 
 Print, check, or convert orchestration contracts. Dependency-free Node.
 
