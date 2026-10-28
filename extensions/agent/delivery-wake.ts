@@ -1,8 +1,8 @@
 /** Writer-owned parked-recipient discovery, separate from the storage catalogue. */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { storageIdOf } from "./catalog.ts";
+import { hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
 import { publishCatalogChange } from "./catalog-events.ts";
 
 const FORMAT = "agent.delivery-wake/1";
@@ -12,7 +12,12 @@ const MAX_BYTES = 32 * 1024;
 export interface DeliveryWake {
 	readonly format: typeof FORMAT;
 	readonly recipients: readonly string[];
+	readonly failedAvailability: Readonly<Record<string, string | null>>;
 	readonly omitted: number;
+}
+
+export function nativeRecipientAvailability(record: CatalogRecord, packageDir?: string): string {
+	return createHash("sha256").update(JSON.stringify(hostMetadata(record, packageDir))).digest("hex");
 }
 
 export function deliveryWakePath(sessionsRoot: string, storageId: string): string {
@@ -45,27 +50,33 @@ export function readDeliveryWake(sessionsRoot: string, storageId: string): Deliv
 	if (text === undefined) return undefined;
 	const value = JSON.parse(text) as Partial<DeliveryWake> | null;
 	if (!value || value.format !== FORMAT || !Array.isArray(value.recipients) || value.recipients.length > DELIVERY_WAKE_RECIPIENT_LIMIT || !Number.isSafeInteger(value.omitted) || (value.omitted ?? -1) < 0) throw new Error("Delivery wake metadata is invalid");
+	const failed = value.failedAvailability;
+	if (!failed || typeof failed !== "object" || Array.isArray(failed) || Object.keys(failed).length !== value.recipients.length) throw new Error("Delivery wake availability is invalid");
 	for (const identity of value.recipients) {
 		if (typeof identity !== "string") throw new Error("Delivery wake recipient is invalid");
 		storageIdOf(identity);
+		const fingerprint = failed[identity];
+		if (!Object.hasOwn(failed, identity) || (fingerprint !== null && (typeof fingerprint !== "string" || !/^[a-f0-9]{64}$/u.test(fingerprint)))) throw new Error("Delivery wake fingerprint is invalid");
 	}
 	if (new Set(value.recipients).size !== value.recipients.length) throw new Error("Delivery wake recipients are duplicated");
 	return value as DeliveryWake;
 }
 
-function boundedWake(identities: readonly string[]): DeliveryWake {
+function boundedWake(identities: readonly string[], lastFailed: (identity: string) => string | null): DeliveryWake {
 	const unique = [...new Set(identities)].sort();
-	const recipients: string[] = [];
+	const recipients: string[] = [], failedAvailability: Record<string, string | null> = {};
 	for (const identity of unique.slice(0, DELIVERY_WAKE_RECIPIENT_LIMIT)) {
 		storageIdOf(identity);
-		const next = [...recipients, identity];
-		if (Buffer.byteLength(JSON.stringify({ format: FORMAT, recipients: next, omitted: unique.length - next.length })) + 1 <= MAX_BYTES) recipients.push(identity);
+		const next = [...recipients, identity], failed = { ...failedAvailability, [identity]: lastFailed(identity) };
+		if (Buffer.byteLength(JSON.stringify({ format: FORMAT, recipients: next, failedAvailability: failed, omitted: unique.length - next.length })) + 1 > MAX_BYTES) continue;
+		recipients.push(identity);
+		failedAvailability[identity] = failed[identity];
 	}
-	return { format: FORMAT, recipients, omitted: unique.length - recipients.length };
+	return { format: FORMAT, recipients, failedAvailability, omitted: unique.length - recipients.length };
 }
 
 /** Only the source storage's exclusive writer publishes or removes this projection. */
-export function writeDeliveryWake(sessionsRoot: string, storageId: string, identities: readonly string[]): { changed: boolean; omitted: number } {
+export function writeDeliveryWake(sessionsRoot: string, storageId: string, identities: readonly string[], lastFailed: (identity: string) => string | null = () => null): { changed: boolean; omitted: number } {
 	const path = deliveryWakePath(sessionsRoot, storageId);
 	if (identities.length === 0) {
 		try { unlinkSync(path); }
@@ -73,7 +84,7 @@ export function writeDeliveryWake(sessionsRoot: string, storageId: string, ident
 		publishCatalogChange(join(sessionsRoot, "durable"));
 		return { changed: true, omitted: 0 };
 	}
-	const value = boundedWake(identities);
+	const value = boundedWake(identities, lastFailed);
 	const text = `${JSON.stringify(value)}\n`;
 	if (readWakeText(path) === text) return { changed: false, omitted: value.omitted };
 	mkdirSync(join(sessionsRoot, ".delivery-wake"), { recursive: true, mode: 0o700 });

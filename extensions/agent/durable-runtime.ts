@@ -37,7 +37,7 @@ import { publishAgentControlDispatch, type AgentControlDispatch } from "./durabl
 import { AgentDeliveryDoc, projectConversationIntents } from "./durable-controls.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { AgentManager } from "./manager.ts";
-import { observeDeliveryEligibility, startDurableDelivery } from "./durable-delivery.ts";
+import { observeDeliveryEligibility, startDurableDelivery, type NativeTargetFailure } from "./durable-delivery.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
 import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 
@@ -133,7 +133,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	let unsubscribeObservation: (() => void) | undefined;
 	let unsubscribeClose: (() => void) | undefined;
 	const catalog = new AgentCatalog(dirname(dirname(metadata.storagePath)));
-	const unavailableDeliveryTargets = new Map<string, string>();
+	const unavailableDeliveryTargets = new Map<string, NativeTargetFailure>();
 	let readDeliveryTarget: ((identity: string) => CatalogRecord | undefined) | undefined;
 	let publishTimer: ReturnType<typeof setTimeout> | undefined;
 	let publishPromise: Promise<void> | undefined;
@@ -173,11 +173,11 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	async function recoveryState(): Promise<{ readonly workPending: boolean; readonly deliveriesPending: boolean; readonly deliveriesActive: boolean }> {
 		const generation = activityGeneration;
 		const idle = await host.refreshIdle();
-		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets });
+		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets, packageDir: metadata.packageDir });
 		const deliveriesActive = rows.some((row) => row.eligibility.state === "active");
 		const pending = await deliveriesPending();
 		if (generation === activityGeneration) {
-			const wake = writeDeliveryWake(dirname(dirname(metadata.storagePath)), metadata.storageId, rows.filter((row) => row.eligibility.state === "parked").map((row) => row.row.ownerId));
+			const wake = writeDeliveryWake(dirname(dirname(metadata.storagePath)), metadata.storageId, rows.filter((row) => row.eligibility.state === "parked").map((row) => row.row.ownerId), recipient => unavailableDeliveryTargets.get(storageIdOf(recipient))?.availability ?? null);
 			if (wake.changed && wake.omitted > 0) host.reportDeliveryError(new Error(`parked: delivery wake metadata omits ${wake.omitted} recipients at its bound; retained rows require explicit acquisition`));
 			markRecoveryDue(activeAdmissions > 0 || !idle || deliveriesActive);
 		} else recoveryDirty = true;
@@ -232,7 +232,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		blockers.push(...native);
 		const state = await recoveryState();
 		if (state.workPending && native.length === 0) blockers.push("Native work remains in this storage");
-		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets });
+		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets, packageDir: metadata.packageDir });
 		blockers.push(...rows.filter((row) => row.eligibility.state === "active").map((row) => `Active delivery to ${row.row.ownerId}`));
 		if (generation !== activityGeneration) blockers.push("Native state changed during the release check; retry the request");
 		if (blockers.length > 0) return { retiring: false, blockers: [...new Set(blockers)] };

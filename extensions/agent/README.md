@@ -2370,7 +2370,10 @@ true. Before clearing the marker, the source writer atomically publishes its
 parked recipients in `sessionsRoot/.delivery-wake/<storageId>.json`. Each source
 owns one file outside the catalog directory. The file contains a bounded set of
 exact recipient identities and an `omitted` count; omitted rows remain retained
-and require explicit acquisition. An unchanged set causes no write. The writer
+and require explicit acquisition. `failedAvailability` records each recipient's
+last failed native launch fingerprint, or null when no available target was
+attempted. A fingerprint hashes launch metadata and the caller's Pi installation.
+An unchanged recipient set and unchanged fingerprints cause no write. The writer
 removes the file when no parked row remains. Terminal rows never enter this
 projection. Publishing the sidecar first preserves wake discovery if the writer
 crashes before the marker clears.
@@ -2408,8 +2411,9 @@ Any primary registration runs the existing bounded scan of runnable recovery
 and wakes parked sources whose sidecar names that exact primary. Unrelated
 registration leaves those sources cold. Namespace and catalog-change scans also
 wake a parked source when a named recipient has a native catalog record or a
-live compatible primary endpoint. Each manager remembers attempted recipient
-availability so unchanged source publications do not cause repeated wakes.
+live compatible primary endpoint, and its current fingerprint differs from the
+source's recorded failure. This comparison survives manager restarts. A bounded
+manager cache only coalesces attempts before the source records their outcome.
 Explicit acquisition also reopens retained rows. A recovery-state read refreshes
 delivery when the exact recipient is active,
 even if the source host is still up. A recorded fallback copy never repeats.

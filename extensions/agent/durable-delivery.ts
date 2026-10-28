@@ -51,6 +51,7 @@ import { acquireHost, type HostConnection } from "./host-client.ts";
 import { HostError, hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { observeClaim } from "./claims.ts";
 import { isChordError } from "@earendil-works/chord";
+import { nativeRecipientAvailability } from "./delivery-wake.ts";
 import {
 	connectPrimaryChannel,
 	primaryEndpointIncompatibleError,
@@ -97,6 +98,11 @@ export interface PrimaryDiscovery {
 	readonly visited: number;
 }
 
+export interface NativeTargetFailure {
+	readonly reason: string;
+	readonly availability: string;
+}
+
 export interface DurableDeliveryOptions {
 	readonly host: DurableHost;
 	/** Source host metadata; `storageId` names this storage in routed request IDs. */
@@ -122,7 +128,7 @@ export interface DurableDeliveryOptions {
 	/** Registered-primary discovery for the fallback; defaults to a bounded scan of endpoint records. */
 	readonly listPrimaryChannels?: (sessionsRoot: string) => Promise<PrimaryDiscovery>;
 	/** Failed native acquisitions stay parked until a new watcher or explicit refresh. */
-	readonly unavailableTargets?: Map<string, string>;
+	readonly unavailableTargets?: Map<string, NativeTargetFailure>;
 }
 
 export interface DurableDelivery {
@@ -466,7 +472,8 @@ interface EligibilityOptions {
 	readonly sessionsRoot: string;
 	readonly storageId?: string;
 	readonly readTarget?: DurableDeliveryOptions["readTarget"];
-	readonly unavailableTargets?: ReadonlyMap<string, string>;
+	readonly unavailableTargets?: ReadonlyMap<string, NativeTargetFailure>;
+	readonly packageDir?: string;
 	readonly fallbackFailures?: ReadonlyMap<string, string>;
 }
 
@@ -479,7 +486,9 @@ function recipientFacts(ownerId: string, options: EligibilityOptions): Pick<Deli
 		if (options.readTarget !== undefined || (error as NodeJS.ErrnoException).code !== "ENOENT") return { nativeRecord: false, primaryState: "unknown", nativeFailure: asError(error).message };
 	}
 	const primary = PRIMARY_ID.test(ownerId) ? primaryEndpointStatus(options.sessionsRoot, ownerId) : { state: "absent" as const };
-	return { nativeRecord: record !== undefined, primaryState: primary.state, primaryVersion: primary.version, nativeFailure: options.unavailableTargets?.get(ownerStorageId(ownerId)) };
+	const failed = options.unavailableTargets?.get(ownerStorageId(ownerId));
+	const nativeFailure = record && failed?.availability === nativeRecipientAvailability(record, options.packageDir) ? failed.reason : undefined;
+	return { nativeRecord: record !== undefined, primaryState: primary.state, primaryVersion: primary.version, nativeFailure };
 }
 
 /** One observation supplies routing, status, recovery and the retirement seal. */
@@ -573,9 +582,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let inFlight: Promise<void> | undefined;
 	let closePromise: Promise<void> | undefined;
 	let unsubscribe: (() => void) | undefined;
-	const unavailableTargets = options.unavailableTargets ?? new Map<string, string>();
+	const unavailableTargets = options.unavailableTargets ?? new Map<string, NativeTargetFailure>();
 	const fallbackFailures = new Map<string, string>();
-	const eligibilityOptions = { catalog, sessionsRoot, storageId: metadata.storageId, readTarget: options.readTarget, unavailableTargets, fallbackFailures };
+	const eligibilityOptions = { catalog, sessionsRoot, storageId: metadata.storageId, packageDir: metadata.packageDir, readTarget: options.readTarget, unavailableTargets, fallbackFailures };
 	let eligibility = new Map<string, DeliveryEligibility>();
 	const retryOwners = new Set<string>();
 	let routingFailed = false;
@@ -600,7 +609,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		let connection: HostConnection;
 		try { connection = await (options.connectTarget ? options.connectTarget(record) : acquire(hostMetadata(record, metadata.packageDir))); }
 		catch (error) {
-			if (!transientTargetFailure(error, record)) unavailableTargets.set(record.storageId, `native host cannot start: ${asError(error).message}`);
+			if (!transientTargetFailure(error, record)) unavailableTargets.set(record.storageId, { reason: `native host cannot start: ${asError(error).message}`, availability: nativeRecipientAvailability(record, metadata.packageDir) });
 			throw error;
 		}
 		unavailableTargets.delete(record.storageId);

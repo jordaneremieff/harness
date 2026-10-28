@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { AgentDeliveryDoc, recordDeliveryIntent, reconcileDeliveries, type DeliveryReceipt } from "./durable-controls.ts";
-import { classifyDelivery, observeDeliveryEligibility, startDurableDelivery } from "./durable-delivery.ts";
+import { classifyDelivery, observeDeliveryEligibility, startDurableDelivery, type NativeTargetFailure } from "./durable-delivery.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { eventLog } from "./host-fixture.mts";
@@ -141,7 +141,7 @@ it("parks a native target whose host cannot start without a retry timer", { time
 	const f = await fixture(t);
 	const target = f.catalog.create({ cwd: f.root, agentDir: f.metadata.agentDir, packageDir: getPackageDir(), model: f.metadata.model, thinkingLevel: "off" });
 	await f.host.harness.commit(async tx => { (await tx.doc(AgentDeliveryDoc)).receipts["999"] = receipt(target.storageId); }, context);
-	const idle = eventLog<void>(), unavailableTargets = new Map<string, string>();
+	const idle = eventLog<void>(), unavailableTargets = new Map<string, NativeTargetFailure>();
 	let acquisitions = 0;
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const watcher = startDurableDelivery({ host: f.host, metadata: f.metadata, catalog: f.catalog, sessionsRoot: f.root, unavailableTargets, signal: new AbortController().signal,
@@ -159,7 +159,7 @@ it("parks a native target whose host cannot start without a retry timer", { time
 });
 
 for (const failure of ["unavailable", "live-claim", "closing"] as const) it(`retries native acquisition after ${failure} without an explicit refresh`, { timeout: 10000 }, async t => {
-	const f = await fixture(t), idle = eventLog<void>(), delivered = eventLog<void>(), unavailableTargets = new Map<string, string>();
+	const f = await fixture(t), idle = eventLog<void>(), delivered = eventLog<void>(), unavailableTargets = new Map<string, NativeTargetFailure>();
 	const target = f.catalog.create({ cwd: f.root, agentDir: f.metadata.agentDir, packageDir: getPackageDir(), model: f.metadata.model, thinkingLevel: "off" });
 	if (failure === "live-claim") {
 		const paths = hostPaths(target); mkdirSync(dirname(paths.claim), { recursive: true });
@@ -171,7 +171,7 @@ for (const failure of ["unavailable", "live-claim", "closing"] as const) it(`ret
 	const watcher = startDurableDelivery({ host: f.host, metadata: f.metadata, catalog: f.catalog, sessionsRoot: f.root, signal: new AbortController().signal, unavailableTargets, retryDelayMs: 50,
 		connectTarget: async () => {
 			if (++attempts === 1) throw failure === "unavailable" ? new HostError("target starts elsewhere", "unavailable") : failure === "closing" ? new ChordError("unavailable", "target is shutting down", { reason: "closing" }) : new Error("endpoint not ready");
-			unavailableTargets.set(target.storageId, "stale failed acquisition");
+			unavailableTargets.set(target.storageId, { reason: "stale failed acquisition", availability: "a".repeat(64) });
 			return link;
 		}, onIdle: () => idle.push(undefined) });
 	try {

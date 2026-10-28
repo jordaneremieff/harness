@@ -1,7 +1,7 @@
 import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -1225,6 +1225,35 @@ it("wakes a source when its exact native recipient gains a catalogue record", { 
 	publishCatalogChange(manager.catalog.root);
 	await acquired.waitForCount(1, 5000);
 	assert.deepEqual([...acquired], [source.storageId]);
+});
+
+it("persists failed recipient availability across fresh managers and wakes once after a change", { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t), acquired: string[] = [];
+	let target!: CatalogRecord;
+	const fingerprint = () => createHash("sha256").update(JSON.stringify(hostMetadata(target, join(root, "package")))).digest("hex");
+	const options = managerOptions(root, { acquire: async metadata => {
+		acquired.push(metadata.storageId);
+		writeDeliveryWake(root, metadata.storageId, [target.storageId], () => fingerprint());
+		return fakeConnection(metadata, async () => ({ workPending: false, deliveriesPending: true, deliveriesActive: false }));
+	}, connect: noHost });
+	const first = new AgentManager(options); t.after(() => first.close());
+	const source = createRecord(first, root); target = createRecord(first, root);
+	first.catalog.markRecoveryDue(source.storageId, false);
+	writeDeliveryWake(root, source.storageId, [target.storageId], () => fingerprint());
+	assert.equal((await first.recoverNamespace(new AbortController().signal)).attempted, 0);
+	await first.close();
+	const second = new AgentManager(options); t.after(() => second.close());
+	const signal = new AbortController().signal;
+	assert.equal((await second.recoverNamespace(signal)).attempted, 0);
+	assert.equal(acquired.length, 0);
+	target = { ...target, model: { ...target.model, modelId: "model-y" } };
+	writeFileSync(second.catalog.path(target.storageId), JSON.stringify(target));
+	assert.equal((await second.recoverNamespace(signal)).attempted, 1);
+	assert.equal((await second.recoverNamespace(signal)).attempted, 0);
+	await second.close();
+	const third = new AgentManager(options); t.after(() => third.close());
+	assert.equal((await third.recoverNamespace(new AbortController().signal)).attempted, 0);
+	assert.deepEqual(acquired, [source.storageId]);
 });
 
 it("does not repeat a parked wake for unchanged recipient availability", { timeout: 15000 }, async t => {

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readDeliveryWake } from "./delivery-wake.ts";
+import { nativeRecipientAvailability, readDeliveryWake } from "./delivery-wake.ts";
 import { launchIndependentCommand, type IndependentCommandInput, type IndependentCommandReceipt } from "./independent-launch.ts";
 import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { admittedResult } from "./result-reference.ts";
@@ -913,7 +913,7 @@ export class AgentManager {
 	private recipientAvailability(identity: string): string | undefined {
 		try {
 			const record = this.nativeTarget(identity);
-			return createHash("sha256").update(JSON.stringify(hostMetadata(record, this.options.packageDir))).digest("hex");
+			return nativeRecipientAvailability(record, this.options.packageDir);
 		} catch { /* An ordinary primary has no native catalogue record. */ }
 		if (primaryEndpointStatus(this.options.root, identity).state !== "live") return undefined;
 		const info = readPrimaryEndpointDescriptor(this.options.root, identity).info;
@@ -923,12 +923,17 @@ export class AgentManager {
 	private parkedWakeDue(record: CatalogRecord, registeringPrimary?: string): boolean {
 		const wake = readDeliveryWake(this.options.root, record.storageId);
 		if (wake === undefined) { this.wakeAttempts.delete(record.storageId); return false; }
-		if (registeringPrimary !== undefined) return wake.recipients.includes(registeringPrimary);
+		if (registeringPrimary !== undefined) {
+			if (!wake.recipients.includes(registeringPrimary)) return false;
+			if (wake.failedAvailability[registeringPrimary] === null) return true;
+			const current = this.recipientAvailability(registeringPrimary);
+			return current !== undefined && current !== wake.failedAvailability[registeringPrimary];
+		}
 		const previous = this.wakeAttempts.get(record.storageId);
 		const available = new Map<string, string>();
 		for (const recipient of wake.recipients) {
 			const fingerprint = this.recipientAvailability(recipient);
-			if (fingerprint !== undefined) available.set(recipient, fingerprint);
+			if (fingerprint !== undefined && fingerprint !== wake.failedAvailability[recipient]) available.set(recipient, fingerprint);
 		}
 		this.wakeAttempts.set(record.storageId, available);
 		return [...available].some(([recipient, fingerprint]) => previous?.get(recipient) !== fingerprint);

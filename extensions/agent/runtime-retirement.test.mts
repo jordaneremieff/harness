@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { hostname } from "node:os";
@@ -8,7 +8,8 @@ import { fileURLToPath } from "node:url";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
-import { AgentCatalog } from "./catalog.ts";
+import { AgentCatalog, hostMetadata } from "./catalog.ts";
+import { readDeliveryWake } from "./delivery-wake.ts";
 import { AgentDeliveryDoc, AgentMetaDoc } from "./durable-controls.ts";
 import type { TimerTask } from "./durable-timers.ts";
 import type { ConversationFrame, TasksFrame } from "./live-frames.ts";
@@ -72,6 +73,23 @@ function markerChanges(t: TestContext, f: Awaited<ReturnType<typeof fixture>>) {
 	});
 	return changed;
 }
+
+it("publishes the native availability that failed before clearing recovery", { timeout: 15000 }, async t => {
+	const f = await fixture(t), parked = eventLog<void>();
+	const target = f.catalog.create({ cwd: join(f.root, "missing-target-directory"), agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: f.metadata.model, thinkingLevel: "off" });
+	const report = f.native.reportDeliveryError.bind(f.native);
+	t.mock.method(f.native, "reportDeliveryError", (error?: Error) => { report(error); if (error?.message.includes("native host cannot start")) parked.push(undefined); });
+	await f.runtime.request("report", { ownerId: target.storageId, senderIdentity: f.metadata.storageId, message: "retain until target changes" }, "failed-native-availability");
+	await parked.waitForCount(1, 5000);
+	await f.runtime.request("recovery-state", {}, "publish-failed-availability");
+	const wake = readDeliveryWake(f.root, f.metadata.storageId) as { failedAvailability?: Readonly<Record<string, string | null>> } | undefined;
+	const expected = createHash("sha256").update(JSON.stringify(hostMetadata(target, f.metadata.packageDir))).digest("hex");
+	assert.equal(wake?.failedAvailability?.[target.storageId], expected);
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
+	writeFileSync(f.catalog.path(target.storageId), JSON.stringify({ ...target, thinkingLevel: "low" }));
+	const changed = await f.runtime.request("recovery-state", {}, "changed-native-availability") as { deliveriesActive: boolean };
+	assert.equal(changed.deliveriesActive, true, "a live source rechecks a changed target instead of keeping its old failure");
+});
 
 it("clears recovery due after completion before the idle retirement interval", { timeout: 15000 }, async (t) => {
 	const f = await fixture(t), changes = markerChanges(t, f);

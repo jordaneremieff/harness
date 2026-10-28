@@ -27,6 +27,16 @@ it("writes only changed parked sets and removes an empty projection", t => {
 	assert.equal(writeDeliveryWake(path, source, []).changed, false);
 });
 
+it("persists changed failed fingerprints for an unchanged recipient set", t => {
+	const path = root(t), source = randomUUID(), owner = randomUUID();
+	const failed = "a".repeat(64), changed = "b".repeat(64);
+	writeDeliveryWake(path, source, [owner], () => failed);
+	assert.equal(readDeliveryWake(path, source)?.failedAvailability[owner], failed);
+	assert.equal(writeDeliveryWake(path, source, [owner], () => failed).changed, false);
+	assert.equal(writeDeliveryWake(path, source, [owner], () => changed).changed, true);
+	assert.equal(readDeliveryWake(path, source)?.failedAvailability[owner], changed);
+});
+
 it("bounds exact recipients and records every omitted identity", t => {
 	const path = root(t), source = randomUUID(), owners = Array.from({ length: DELIVERY_WAKE_RECIPIENT_LIMIT + 2 }, () => randomUUID());
 	const result = writeDeliveryWake(path, source, owners);
@@ -52,7 +62,7 @@ it("refuses malformed, oversized and non-exact wake metadata", t => {
 	const path = root(t), source = randomUUID();
 	writeDeliveryWake(path, source, [randomUUID()]);
 	const file = deliveryWakePath(path, source);
-	writeFileSync(file, JSON.stringify({ format: "agent.delivery-wake/1", recipients: ["12345678"], omitted: 0 }));
+	writeFileSync(file, JSON.stringify({ format: "agent.delivery-wake/1", recipients: ["12345678"], failedAvailability: { "12345678": null }, omitted: 0 }));
 	assert.throws(() => readDeliveryWake(path, source), /identity/u);
 	writeFileSync(file, "x".repeat(32769));
 	assert.throws(() => readDeliveryWake(path, source), /bounded regular file/u);
