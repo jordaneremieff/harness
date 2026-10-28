@@ -1823,7 +1823,7 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   Retirement requires no native live task or unsettled submission, no active
   delivery or in-flight delivery effect, no active request or host-local control,
   and no open conversation or task observation. Parked and terminal delivery
-  rows remain in storage with the recovery marker set; those rows alone do not
+  rows remain in storage without a recovery marker; those rows alone do not
   require a live host or recovery link. Native check-in and timer tasks keep the host alive while
   they wait. Actual storage changes and completed requests start a new idle
   interval; passive connections and change subscriptions do not reset it.
@@ -1842,7 +1842,7 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   acknowledged the row while its effect was in flight. Late controls receive a shutdown refusal;
   the manager does not retry unprotected mutations after transport loss. Requests
   with a declared replay-safe contract reuse their retained deduplication key. Final catalog
-  publication precedes recovery-marker clearance. A failed final publication
+  publication and the final recovery-marker check precede writer release. A failed final publication
   or marker write rejects shutdown and retains the writer claim until process
   death, rather than announce a clean retirement. Busy shutdown retains the recovery marker,
   attempts final catalog publication, seals native admission, and exits through
@@ -1852,6 +1852,15 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   host returns the reload error and takes the same process shutdown path. It
   retains the recovery marker and writer claim until process death; the next
   acquisition starts a fresh host.
+- The runtime's `requestRelease()` returns `{ retiring, blockers }` without a
+  model turn. Native work in any conversation, a waiting timer or check-in task,
+  an active delivery recipient, or another active request blocks release. Open
+  observation tokens do not block it. An accepted release waits for requester
+  disconnect or a 100 ms response grace, whichever comes first, then closes the
+  observations and runs the normal retirement seal without the idle interval.
+  The transport exposes no per-response flush signal; the grace bounds the wait
+  for a client that stays connected. Release never deletes delivery rows or
+  cancels timers.
 - Reload requires an idle storage and no live observation tokens. The runtime
   refuses reload before teardown while any observer remains, including native
   local command dispatch. Release the observers before reload; an attempted
@@ -2331,14 +2340,19 @@ makes one bounded attach attempt and reports when no readiness event is
 available.
 
 The host sets a top-level `recoveryDue` marker before it admits work, and when
-opening finds pending native work or pending delivery. Startup recovery reads
+opening finds pending native work or active delivery. Native commits, request
+completion and delivery-idle transitions reconcile the marker. The marker clears
+as soon as no native work or active delivery remains, before idle retirement.
+An in-progress admission preserves the marker through its pre-input gap. Marker
+writes occur only when its value changes. Parked and terminal rows never keep it
+true. Startup recovery reads
 only that marker from bounded catalog pages; it does not open, copy, or
 status-probe every storage. Recovery acquisitions run at most two at a time. A
 transient recovery link closes when the internal `recovery-state` check reports
 no pending native work and no active delivery; host change notifications trigger
 that check, not polling. A row addressed only to a proven-dead ordinary primary
 waits in durable storage without a recovery link or a delivery retry timer. The
-host retires normally and keeps `recoveryDue` set while that row remains pending,
+host retires normally with `recoveryDue` false while that row remains parked,
 with or without a live fallback recipient. Source-ledger deliveries explicitly
 set `requireRetained:true` for both owning and fallback primary routes. The
 channel defaults to that strong acceptance mode: a live ordinary primary
@@ -2360,15 +2374,12 @@ retention. Invalid header identity, incomplete tails, file replacement, and
 truncation refuse confirmation. No second persistent delivery queue or
 exactly-once historical ledger exists. A crash after retention but before source
 acknowledgment still permits replay.
-Any primary registration runs the
-existing bounded recovery scan; a resumed owner with the same session ID receives
-its pending notice. A recovery-state read requests a delivery scan even if the
-source host is still up, so owner registration before retirement also resumes
-delivery. Other registrations never repeat a recorded fallback copy.
-Live, unknown, incompatible, absent, and catalog owner routes remain active and
-keep their existing retry and retirement behavior. No row expiry or new catalog
-scan bound is introduced. The marker clears only on a clean
-close with nothing pending, after final catalog publication. Clean retirement
+Any primary registration runs the existing bounded scan of runnable recovery.
+Parked-only storages stay cold. Explicit acquisition reopens their retained rows.
+A recovery-state read refreshes delivery when the exact recipient is active,
+even if the source host is still up. A recorded fallback copy never repeats.
+Only active routes retry and block retirement. No row expiry or new catalog scan
+bound is introduced. A final marker check also runs during clean close. Clean retirement
 closes cached manager and peer delivery links without a recovery acquisition or
 crash-budget charge. Native shutdown releases the writer claim before the
 transport closes. A retained delivery marker with a released claim does not

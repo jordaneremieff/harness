@@ -368,12 +368,13 @@ export class AgentCatalog {
 
 	/**
 	 * Set the host-local recovery marker, preserving the view and every immutable
-	 * field. The caller sets true before admission or resume and false only on a
-	 * clean idle host with no deliveries.
+	 * field. The caller sets true before admission or resume and clears it when
+	 * no native work or active delivery remains.
 	 */
 	markRecoveryDue(identity: string, recoveryDue: boolean): CatalogRecord {
 		if (typeof recoveryDue !== "boolean") throw new TypeError("recoveryDue must be a boolean");
 		const record = this.read(identity);
+		if (record.recoveryDue === recoveryDue) return record;
 		return this.rewrite({ ...record, recoveryDue });
 	}
 

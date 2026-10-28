@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
@@ -16,10 +17,10 @@ import { createDurableRuntime } from "./durable-runtime.ts";
 import { runtimeFixture } from "./durable-runtime-fixture.mts";
 import { resolveAgentControlDispatch } from "./durable-agents.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
-import { primaryEndpointPath } from "./primary-channel.ts";
+import { createPrimaryChannel, primaryEndpointPath } from "./primary-channel.ts";
 import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
 import { connectHost } from "./host-client.ts";
-import { hostPaths } from "./host-protocol.ts";
+import { hostPaths, parseHostReadyLine } from "./host-protocol.ts";
 import { runHost } from "./host-process.ts";
 import { AgentManager } from "./manager.ts";
 
@@ -59,6 +60,169 @@ async function eligible(runtime: Awaited<ReturnType<typeof createDurableRuntime>
 	assert.equal(await runtime.tryRetire(() => { eligible = true; return false; }), false);
 	return eligible;
 }
+
+function markerChanges(t: TestContext, f: Awaited<ReturnType<typeof fixture>>) {
+	const changed = eventLog<boolean>();
+	const mark = AgentCatalog.prototype.markRecoveryDue;
+	t.mock.method(AgentCatalog.prototype, "markRecoveryDue", function (this: AgentCatalog, identity: string, due: boolean) {
+		const prior = this.read(identity).recoveryDue;
+		const result = mark.call(this, identity, due);
+		if (identity === f.metadata.storageId && prior !== due) changed.push(due);
+		return result;
+	});
+	return changed;
+}
+
+it("clears recovery due after completion before the idle retirement interval", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t), changes = markerChanges(t, f);
+	const admitted = await f.runtime.request("submit", { message: "finish before retirement", requestId: "finish-marker", ownerId: f.ownerId, origin: "operator" }, "finish-marker") as { submissionId: SubmissionId };
+	await f.native.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+	await changes.waitForCount(2);
+	assert.deepEqual([...changes], [true, false]);
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
+	assert.equal(f.native.sessionEnded, false, "the marker clears while the native storage remains open");
+});
+
+it("sets recovery due before the native input exists and preserves the admission gap", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t), entered = deferred(), release = deferred();
+	const request = f.native.request.bind(f.native);
+	t.mock.method(f.native, "request", async (...args: Parameters<typeof request>) => {
+		if (args[0] === "submit") { entered.resolve(); await release.promise; }
+		return request(...args);
+	});
+	const admitting = f.runtime.request("submit", { message: "admission gap", requestId: "gap-marker", ownerId: f.ownerId, origin: "operator" }, "gap-marker") as Promise<{ submissionId: SubmissionId }>;
+	await entered.promise;
+	try {
+		assert.equal((await f.native.harness.inspect(BACKGROUND_CONTEXT)).submissions.length, 0);
+		assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, true);
+		await f.runtime.request("status", {}, "gap-read");
+		await new Promise<void>(setImmediate);
+		assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, true, "marker reconciliation cannot clear an admission that still owns the gap");
+	} finally { release.resolve(); }
+	const admitted = await admitting; await f.native.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+});
+
+for (const recipient of ["absent", "malformed"] as const) it(`keeps recovery due false with only ${recipient} delivery`, { timeout: 15000 }, async (t) => {
+	const f = await fixture(t), errors = eventLog<Error>();
+	const report = f.native.reportDeliveryError.bind(f.native);
+	t.mock.method(f.native, "reportDeliveryError", (error?: Error) => { report(error); if (error) errors.push(error); });
+	await f.native.harness.commit(async tx => {
+		(await tx.doc(AgentDeliveryDoc)).reports.push({ sourceId: "report:cold", requestId: "cold", ownerId: recipient === "absent" ? f.ownerId : "12345678", senderIdentity: f.metadata.storageId, message: "retained", replyTo: null, acknowledged: false, createdAt: Date.now() });
+	}, BACKGROUND_CONTEXT);
+	await errors.waitForCount(1);
+	await new Promise<void>(setImmediate);
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
+	assert.equal((await f.native.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports[0]?.delivery?.state, recipient === "absent" ? "parked" : "terminal");
+});
+
+it("keeps an active transient delivery due and blocks both retirement and release", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t), errors = eventLog<Error>();
+	const channel = await createPrimaryChannel({ id: f.ownerId, cwd: f.cwd, sessionsRoot: f.root, deliver: () => { throw new Error("transient receiver failure"); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const report = f.native.reportDeliveryError.bind(f.native);
+	t.mock.method(f.native, "reportDeliveryError", (error?: Error) => { report(error); if (error) errors.push(error); });
+	await f.runtime.request("report", { ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "active delivery", requestId: "active-marker" }, "active-marker");
+	await errors.waitForCount(1);
+	const state = await f.runtime.request("recovery-state", {}, "active-state") as { deliveriesActive: boolean };
+	assert.equal(state.deliveriesActive, true);
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, true);
+	assert.equal(await eligible(f.runtime), false);
+	assert.ok(f.runtime.requestRelease);
+	const release = await f.runtime.requestRelease();
+	assert.equal(release.retiring, false);
+	assert.ok(release.blockers.some(text => text.includes(`Active delivery to ${f.ownerId}`)));
+});
+
+for (const checkIn of [false, true]) it(`reports native work in another conversation as a release blocker, check-in=${checkIn}`, { timeout: 15000 }, async (t) => {
+	const f = await fixture(t);
+	const seed = await f.native.submit({ message: "seed the parent", requestId: "release-parent" });
+	await f.native.wait(seed.submissionId, BACKGROUND_CONTEXT);
+	const fork = await f.native.request("fork", { requestId: "release-child" }) as { conversationId: ConversationId };
+	process.env.DURABLE_TEST_MODE = "request";
+	const admitted = await f.native.submit({ conversationId: fork.conversationId, message: "hold release", requestId: "release-held", ownerId: f.ownerId, origin: "model", ...(checkIn ? { checkInMinutes: 60 } : {}) });
+	await f.marker("requested");
+	assert.ok(f.runtime.requestRelease);
+	try {
+		const result = await f.runtime.requestRelease();
+		assert.equal(result.retiring, false);
+		assert.ok(result.blockers.some(text => text.includes(`Native work in conversation ${f.metadata.storageId}:${fork.conversationId}`)));
+		if (checkIn) assert.ok(result.blockers.some(text => text.includes("waiting check-in task")));
+	} finally {
+		await f.native.request("abort", { sessionId: `${f.metadata.storageId}:${fork.conversationId}`, background: true });
+		await f.native.wait(admitted.submissionId, BACKGROUND_CONTEXT);
+		await f.native.harness.waitForIdle(BACKGROUND_CONTEXT);
+	}
+});
+
+it("reports a waiting timer as a release blocker without cancelling it", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t);
+	const timer = await f.runtime.request("timer-schedule", { message: "later", deliverAt: Date.now() + 3600000, origin: "operator", ownerId: f.ownerId }, "release-timer") as { timerId: number };
+	assert.ok(f.runtime.requestRelease);
+	try {
+		const result = await f.runtime.requestRelease();
+		assert.equal(result.retiring, false);
+		assert.ok(result.blockers.some(text => text.includes("waiting timer")));
+		const rows = await f.runtime.request("timer-list", {}, "release-timers") as { timers: Array<{ timerId: number; status: string }> };
+		assert.equal(rows.timers.find(row => row.timerId === timer.timerId)?.status, "pending");
+	} finally { await f.runtime.request("timer-cancel", { timerId: timer.timerId }, "cancel-release-timer"); }
+});
+
+it("reports another active request as a release blocker", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t), entered = deferred(), release = deferred();
+	const request = f.native.request.bind(f.native);
+	t.mock.method(f.native, "request", async (...args: Parameters<typeof request>) => {
+		if (args[0] === "status") { entered.resolve(); await release.promise; }
+		if (args[0] === "release") {
+			assert.ok(f.runtime.requestRelease);
+			return f.runtime.requestRelease();
+		}
+		return request(...args);
+	});
+	const pending = f.runtime.request("status", {}, "held-control");
+	await entered.promise;
+	assert.ok(f.runtime.requestRelease);
+	try {
+		const result = await f.runtime.requestRelease();
+		assert.equal(result.retiring, false);
+		assert.ok(result.blockers.some(text => text.includes("Another active request")));
+	} finally { release.resolve(); await pending; }
+	assert.deepEqual(await f.runtime.request("release", {}, "own-release"), { retiring: true, blockers: [] });
+});
+
+it("releases an idle storage after its response and closes open observations", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t), request = f.runtime.request.bind(f.runtime);
+	assert.ok(f.runtime.requestRelease);
+	const release = f.runtime.requestRelease.bind(f.runtime);
+	const host = await runHost(() => ({ ...f.runtime, request: async (method, params, requestId, signal) => method === "status" && (params as { releaseFixture?: boolean })?.releaseFixture ? release() : request(method, params, requestId, signal) }), { metadata: f.metadata, idleMs: 3600000, announceReady: () => {} });
+	t.after(() => host.close());
+	const client = await connectHost(f.metadata, { retryAttempts: 0 });
+	t.after(() => client.close());
+	assert.ok(client.observe);
+	await client.observe({ scope: "conversation", sessionId: f.metadata.storageId });
+	assert.equal(f.native.observationCount, 1);
+	assert.deepEqual(await client.request("status", { releaseFixture: true }), { retiring: true, blockers: [] });
+	await host.done;
+	assert.equal(f.native.observationCount, 0);
+	assert.deepEqual(await release(), { retiring: false, blockers: ["The runtime is closed or reload is in progress"] });
+	assert.equal(existsSync(hostPaths(f.metadata).claim), false);
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
+});
+
+it("exits its dedicated process after an idle release response with recovery due false", { timeout: 20000 }, async (t) => {
+	const f = runtimeFixture(t, { withAgentExtension: true });
+	const child = spawn(process.execPath, [fileURLToPath(new URL("./runtime-release-fixture.mts", import.meta.url)), JSON.stringify(f.metadata)], { env: { ...process.env, ...f.env("answer"), PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root }, stdio: ["ignore", "pipe", "pipe"] });
+	t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await waitForProcessExit(child); });
+	const ready = eventLog<void>();
+	let output = "";
+	child.stdout?.on("data", chunk => { output = `${output}${String(chunk)}`.slice(-32768); if (output.split("\n").some(line => parseHostReadyLine(line) !== undefined)) ready.push(undefined); });
+	await ready.waitForCount(1, 10000);
+	const client = await connectHost(f.metadata, { retryAttempts: 0 });
+	t.after(() => client.close());
+	assert.deepEqual(await client.request("status", { releaseFixture: true }), { retiring: true, blockers: [] });
+	await waitForProcessExit(child);
+	assert.equal(child.exitCode, 0);
+	assert.equal(new AgentCatalog(f.root).read(f.metadata.storageId).recoveryDue, false);
+});
 
 it("does not report delivery retries as host activity", { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
@@ -140,7 +304,7 @@ for (const kind of ["intent", "missing-receipt", "receipt", "report"] as const) 
 	assert.equal(await eligible(f.runtime), true);
 });
 
-for (const kind of ["receipt", "report"] as const) it(`retires with a dead-owner ${kind} and retains the recovery marker`, { timeout: 15000 }, async (t) => {
+for (const kind of ["receipt", "report"] as const) it(`retires with a dead-owner ${kind} and clears the recovery marker`, { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
 	const dead = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
 	await waitForProcessExit(dead, 5000);
@@ -159,7 +323,7 @@ for (const kind of ["receipt", "report"] as const) it(`retires with a dead-owner
 	assert.deepEqual(state, { workPending: false, deliveriesPending: true, deliveriesActive: false });
 	assert.equal(await eligible(f.runtime), true);
 	await f.runtime.close();
-	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, true);
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
 });
 
 it("delivers a parked row when its owner registers before the source host retires", { timeout: 15000 }, async (t) => {
@@ -183,11 +347,12 @@ it("delivers a parked row when its owner registers before the source host retire
 	t.after(() => manager.close());
 	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: randomUUID(), cwd: f.cwd });
 	await manager.registerPrimary(f.ownerId, { cwd: f.cwd, signal: new AbortController().signal, send: (text) => notices.push(text) });
+	await f.runtime.request("recovery-state", {}, "refresh-owner-route");
 	await notices.waitForCount(1, 3000);
 	assert.equal(notices.length, 1);
 });
 
-it("keeps cached dead-owner delivery cold after clean retirement and resumes at owner registration", { timeout: 15000 }, async (t) => {
+it("keeps cached dead-owner delivery cold after clean retirement and resumes at explicit acquisition", { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
 	const dead = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
 	await waitForProcessExit(dead, 5000);
@@ -233,18 +398,20 @@ it("keeps cached dead-owner delivery cold after clean retirement and resumes at 
 	await host.done;
 	await lost.waitForCount(1);
 	await (manager as unknown as { recoveryQueue: Promise<void> }).recoveryQueue;
-	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, true);
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
 	assert.equal(acquisitions, 1);
 	assert.equal((manager as unknown as { crashes: { entries: Iterable<unknown> } }).crashes.entries[Symbol.iterator]().next().done, true);
 	assert.equal((manager as unknown as { clients: Map<string, unknown> }).clients.size, 0);
 	returning = true;
 	const delivered = eventLog<string>();
 	await manager.registerPrimary(f.ownerId, { cwd: f.cwd, signal: new AbortController().signal, send: (text) => delivered.push(text) });
+	assert.equal(acquisitions, 1, "a parked row does not mark runnable recovery");
+	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: f.ownerId, cwd: f.cwd });
 	await delivered.waitForCount(1);
-	assert.equal(acquisitions, 2, "owner registration, not clean retirement, reopens storage");
+	assert.equal(acquisitions, 2, "explicit acquisition reopens the retained row");
 	assert.equal(fallback.length, 1);
-	await lost.waitForCount(2);
 	await reopened?.close();
+	await lost.waitForCount(2);
 	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
 	assert.equal((manager as unknown as { crashes: { entries: Iterable<unknown> } }).crashes.entries[Symbol.iterator]().next().done, true);
 });
@@ -332,7 +499,7 @@ for (const fault of ["catalog", "marker"] as const) it(`rejects a final ${fault}
 	await assert.rejects(host.close(), /write refused/u);
 	await assert.rejects(host.done, /write refused/u);
 	assert.equal(existsSync(hostPaths(f.metadata).claim), true);
-	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, true);
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, fault === "marker");
 });
 
 it("keeps two native observation watches until close, selection change, and abort release them", { timeout: 15000 }, async (t) => {

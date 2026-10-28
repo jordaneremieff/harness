@@ -433,13 +433,13 @@ copies never acknowledge the original owner's row. The delivery worker
 acknowledges each accepted normal-owner route independently, even when another
 route fails. Inspect the requested outcome before accepting the task.
 
-Rows for proven-dead owners wait in durable storage, not a permanently live
-host. The host retires with its recovery marker set, and the recovery link
-closes. Primary registration runs the existing bounded recovery scan; the same
-owner ID receives its pending result when its endpoint returns. A row whose
-owner never returns has no new expiry. Catalog scan limits still bound automatic
-recovery reach, not retained-row lifetime. Live or unknown owners retain their
-existing retry behavior. See [Agent recovery and delivery](../extensions/agent/README.md#recovery-and-delivery)
+Parked and terminal rows wait in durable storage, not a permanently live host.
+The recovery marker clears when no native work or active delivery remains,
+before the idle retirement interval. Primary registration scans runnable
+recovery; parked-only sources stay cold. Explicit acquisition retries retained
+rows whose recipients return. Rows have no expiry. Catalog scan limits bound
+automatic recovery reach, not retained-row lifetime. Only reachable active
+recipients retry transient failures. See [Agent recovery and delivery](../extensions/agent/README.md#recovery-and-delivery)
 for route distinctions, stale check-in pruning, and current process contracts.
 
 ## Deliver and report

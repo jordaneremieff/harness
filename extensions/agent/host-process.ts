@@ -40,6 +40,11 @@ export interface HostRuntime {
 	isIdle(): boolean;
 	/** Revalidate native work, delivery, and local controls, then synchronously seal both admission boundaries. */
 	tryRetire?(seal: () => boolean): Promise<boolean>;
+	/** Ask for immediate guarded retirement without cancelling work or retained rows. */
+	requestRelease?(): Promise<{ retiring: boolean; blockers: string[] }>;
+	readonly releaseRequested?: boolean;
+	/** The process applies release after requester disconnect or the bounded response grace. */
+	onReleaseRequested?(listener: () => void): () => void;
 	/** A failed runtime requires process shutdown after the current response. */
 	readonly shutdownRequired?: boolean;
 	/**
@@ -123,6 +128,8 @@ interface AttachmentState {
 }
 
 const IDLE_MINUTES_MAX = 35791;
+/** Bound the response grace when the transport exposes no per-response flush signal. */
+const RELEASE_RESPONSE_GRACE_MS = 100;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -235,6 +242,14 @@ class HostProcessServer implements HostProcess {
 	private activityGeneration = 0;
 	private readonly attachments = new Map<string, AttachmentState>();
 	private retirementChecking = false;
+	private releasePending = false;
+	private releaseScheduled = false;
+	private releaseGraceExpired = false;
+	private releaseTimer: ReturnType<typeof setTimeout> | undefined;
+	private readonly releaseRequesters = new Set<AttachmentState>();
+	private releaseChecking = false;
+	private releaseAgain = false;
+	private unsubscribeRelease: (() => void) | undefined;
 	private closing = false;
 	private readonly cancelableRequests = new AbortController();
 	private closePromise: Promise<void> | undefined;
@@ -313,11 +328,15 @@ class HostProcessServer implements HostProcess {
 			this.activityGeneration++;
 			this.cancelIdleCheck?.();
 			this.cancelIdleCheck = undefined;
-			this.scheduleRetirement();
+			if (this.releasePending) this.scheduleRelease();
+			else this.scheduleRetirement();
 		});
 		this.unsubscribeQuiescent = this.runtime.onQuiescent?.(() => {
-			if (this.cancelIdleCheck === undefined) this.scheduleRetirement();
+			if (this.releasePending) this.scheduleRelease();
+			else if (this.cancelIdleCheck === undefined) this.scheduleRetirement();
 		});
+		this.unsubscribeRelease = this.runtime.onReleaseRequested?.(() => { this.releasePending = true; this.scheduleRelease(); });
+		if (this.runtime.releaseRequested) { this.releasePending = true; this.scheduleRelease(); }
 		announce({ pid: this.pid, socketPath: this.paths.socket, contract: HOST_CONTRACT });
 		this.scheduleRetirement();
 	}
@@ -339,6 +358,12 @@ class HostProcessServer implements HostProcess {
 		for (const token of [...state.tokens]) this.closeObservationToken(token, state);
 		// A disconnected peer owns its tokens until native cleanup settles.
 		void Promise.allSettled(state.closingTokens.values()).then(() => { this.attachments.delete(peer); });
+		if (this.releaseRequesters.delete(state)) {
+			this.releaseGraceExpired = true;
+			if (this.releaseTimer !== undefined) clearTimeout(this.releaseTimer);
+			this.releaseScheduled = false;
+			this.scheduleRelease();
+		}
 	}
 
 	private async invoke(request: TransportRequest, signal: AbortSignal, state: AttachmentState): Promise<unknown> {
@@ -485,6 +510,7 @@ class HostProcessServer implements HostProcess {
 			const signal = isCancelableHostWait(method, params) ? this.waitSignal(callerSignal) : undefined;
 			if (method === "observe-close" && token !== undefined) await state.closingTokens.get(token);
 			const result = await this.runtime.request(method, params, requestId, signal);
+			if (this.releasePending && isRecord(result) && result.retiring === true) this.releaseRequesters.add(state);
 			this.trackObservationResult(method, params, result, state);
 			return result;
 		} catch (error) {
@@ -500,7 +526,12 @@ class HostProcessServer implements HostProcess {
 		if (mismatch) throw new ChordError("unavailable", `${mismatch} Restart the caller or host with matching current agent code; no operation was admitted.`, { reason: "version" });
 	}
 
+	private assertObservationAdmission(method: string): void {
+		if (method === "observe-open" && this.releasePending) throw new ChordError("unavailable", "The durable host release is pending", { reason: "closing" });
+	}
+
 	private prepareObservationToken(method: string, params: unknown, state: AttachmentState): string | undefined {
+		this.assertObservationAdmission(method);
 		const token = params !== null && typeof params === "object" && "token" in params && typeof params.token === "string" ? params.token : undefined;
 		if (method === "observe-frame" && (token === undefined || !state.tokens.has(token) || state.closingTokens.has(token))) throw invalid("observation", "The observation token does not belong to this connection");
 		if ((method === "observe-open" || method === "observe-close") && token !== undefined) {
@@ -548,7 +579,43 @@ class HostProcessServer implements HostProcess {
 
 	private endActivity(): void {
 		this.activeRequests--;
-		this.scheduleRetirement();
+		if (this.releasePending) this.scheduleRelease();
+		else this.scheduleRetirement();
+	}
+
+	/** Give the response a bounded grace; requester disconnect ends the grace early. */
+	private scheduleRelease(): void {
+		if (this.closing || this.releaseScheduled) return;
+		if (this.releaseChecking) { this.releaseAgain = true; return; }
+		this.releaseScheduled = true;
+		this.releaseTimer = setTimeout(() => {
+			this.releaseTimer = undefined;
+			this.releaseGraceExpired = true;
+			this.releaseScheduled = false;
+			void this.releaseWhenQuiescent().catch(() => {});
+		}, this.releaseGraceExpired ? 0 : RELEASE_RESPONSE_GRACE_MS);
+	}
+
+	private async releaseWhenQuiescent(): Promise<void> {
+		if (this.closing || !this.releasePending || this.releaseChecking || this.activeRequests > 0) return;
+		this.releaseChecking = true;
+		this.cancelIdleCheck?.();
+		this.cancelIdleCheck = undefined;
+		let generation = this.activityGeneration;
+		try {
+			for (const state of this.attachments.values()) {
+				for (const entry of [...state.observations.values()]) entry.close();
+				for (const token of state.tokens) this.closeObservationToken(token, state);
+			}
+			await Promise.all([...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]));
+			generation = this.activityGeneration;
+			await this.onIdleCheck();
+		} finally {
+			this.releaseChecking = false;
+			const again = this.releaseAgain;
+			this.releaseAgain = false;
+			if (again || generation !== this.activityGeneration) this.scheduleRelease();
+		}
 	}
 
 	private hasObservations(): boolean {
@@ -575,7 +642,7 @@ class HostProcessServer implements HostProcess {
 			const retired = this.runtime.tryRetire ? await this.runtime.tryRetire(seal) : this.runtime.isIdle() && seal();
 			if (retired) await this.shutdown();
 		} catch { /* A failed check is not proof that storage is idle. */ }
-		finally { this.retirementChecking = false; this.scheduleRetirement(); }
+		finally { this.retirementChecking = false; if (!this.releasePending) this.scheduleRetirement(); }
 	}
 
 	close(): Promise<void> {
@@ -601,6 +668,9 @@ class HostProcessServer implements HostProcess {
 	private async performShutdown(): Promise<void> {
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
+		if (this.releaseTimer !== undefined) clearTimeout(this.releaseTimer);
+		this.releaseTimer = undefined;
+		this.releaseRequesters.clear();
 		this.closing = true;
 		this.unsubscribeObservation?.();
 		this.unsubscribeObservation = undefined;
@@ -608,6 +678,8 @@ class HostProcessServer implements HostProcess {
 		this.unsubscribeActivity = undefined;
 		this.unsubscribeQuiescent?.();
 		this.unsubscribeQuiescent = undefined;
+		this.unsubscribeRelease?.();
+		this.unsubscribeRelease = undefined;
 		this.cancelableRequests.abort(new Error("The durable host process is shutting down"));
 		try {
 			await closeRuntime(this.runtime, this.exit);

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, parsePreferenceSnapshot, type ExecutionSelection, type ExecutionFields } from "./agent-preferences.ts";
 import { defineDocFamily } from "@earendil-works/pi-durable";
 
@@ -112,6 +113,13 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	let sessionFailed = false;
 	let reloadClosingHost: DurableHost | undefined;
 	let activeRequests = 0;
+	let activeAdmissions = 0;
+	const requestScope = new AsyncLocalStorage<string>();
+	let releaseRequested = false;
+	const releaseListeners = new Set<() => void>();
+	let recoveryReady = false;
+	let recoveryDirty = false;
+	let recoverySync: Promise<void> | undefined;
 	let activityGeneration = 0;
 	let retirementSealed = false;
 	const changeListeners = new Set<() => void>();
@@ -161,16 +169,66 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 
 	/** Native work plus pending delivery state used by the marker and transient monitors. */
 	async function recoveryState(): Promise<{ readonly workPending: boolean; readonly deliveriesPending: boolean; readonly deliveriesActive: boolean }> {
+		const generation = activityGeneration;
 		const idle = await host.refreshIdle();
 		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets });
 		const deliveriesActive = rows.some((row) => row.eligibility.state === "active");
-		return { workPending: !idle, deliveriesPending: await deliveriesPending(), deliveriesActive };
+		const pending = await deliveriesPending();
+		if (generation === activityGeneration) markRecoveryDue(activeAdmissions > 0 || !idle || deliveriesActive);
+		else recoveryDirty = true;
+		return { workPending: !idle, deliveriesPending: pending, deliveriesActive };
 	}
 
-	/** Clear the marker only when the storage closes with no work and no pending delivery. */
+	/** Keep the crash marker aligned with runnable work, preserving in-progress admissions. */
 	async function settleRecoveryMarker(): Promise<void> {
+		await recoveryState();
+	}
+
+	/** Commit bursts share one observation; read-only requests do not create marker writes. */
+	function scheduleRecoveryMarker(): void {
+		if (!recoveryReady || closed || reloading) return;
+		recoveryDirty = true;
+		if (recoverySync !== undefined) return;
+		recoverySync = (async () => {
+			do {
+				recoveryDirty = false;
+				await settleRecoveryMarker();
+			} while (recoveryDirty && !closed && !reloading);
+		})().catch((error: unknown) => { process.stderr.write(`Recovery marker: ${String(error)}\n`); }).finally(() => { recoverySync = undefined; if (recoveryDirty) scheduleRecoveryMarker(); });
+	}
+
+	async function nativeReleaseBlockers(): Promise<string[]> {
+		const graph = await host.harness.taskGraph(BACKGROUND_CONTEXT);
+		try {
+			return Object.values(graph.value.tasks).map((task) => {
+				const kind = task.kind === "agent.timer" ? "A waiting timer" : (task.kind === "agent.check-in" || task.kind === "agent.check-in-deadline") ? "A waiting check-in task" : "Native work";
+				return `${kind} in conversation ${host.identity(task.conversationId)}`;
+			});
+		} finally { graph.dispose(); }
+	}
+
+	function hasOtherActiveRequests(): boolean {
+		return activeRequests > (requestScope.getStore() === "release" ? 1 : 0);
+	}
+
+	/** Release never cancels native tasks or removes retained delivery rows. */
+	async function requestRelease(): Promise<{ retiring: boolean; blockers: string[] }> {
+		if (runtimeUnavailable() || reloading) return { retiring: false, blockers: ["The runtime is closed or reload is in progress"] };
+		const generation = activityGeneration;
+		const blockers: string[] = [];
+		if (hasOtherActiveRequests()) blockers.push("Another active request uses this storage");
+		const native = await nativeReleaseBlockers();
+		blockers.push(...native);
 		const state = await recoveryState();
-		if (!state.workPending && !state.deliveriesPending) markRecoveryDue(false);
+		if (state.workPending && native.length === 0) blockers.push("Native work remains in this storage");
+		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets });
+		blockers.push(...rows.filter((row) => row.eligibility.state === "active").map((row) => `Active delivery to ${row.row.ownerId}`));
+		if (generation !== activityGeneration) blockers.push("Native state changed during the release check; retry the request");
+		if (blockers.length > 0) return { retiring: false, blockers: [...new Set(blockers)] };
+		markRecoveryDue(false);
+		releaseRequested = true;
+		for (const listener of releaseListeners) listener();
+		return { retiring: true, blockers: [] };
 	}
 
 	/** Build and publish one bounded catalog view; `force` publishes during shutdown. */
@@ -292,8 +350,9 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
 		activeRequests++;
 		activityGeneration++;
+		if (ADMITTING_METHODS.has(method)) activeAdmissions++;
 		try { return await foreignControl(method, params, sessionId, context); }
-		finally { activeRequests--; notifyActivity(); }
+		finally { if (ADMITTING_METHODS.has(method)) activeAdmissions--; activeRequests--; scheduleRecoveryMarker(); notifyActivity(); }
 	}
 	async function observeAwaitProducer(params: Record<string, unknown>, context: Context): Promise<unknown> {
 		const sessionId = String(params.sessionId);
@@ -320,12 +379,6 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		return request(method, params, controlRequestId(params), context.abortSignal);
 	};
 	const restoreDispatch = publishAgentControlDispatch(dispatch);
-	/** Mark recovery due before scheduling when committed work or delivery is pending. */
-	async function markPendingRecovery(): Promise<void> {
-		const pending = await recoveryState();
-		if (pending.workPending || pending.deliveriesPending) markRecoveryDue(true);
-	}
-
 	/** Agent choices for the opened Harness; a missing retained model keeps its stored level for attach repair. */
 	function hostAgent(): { readonly model: HostMetadata["model"]; readonly thinkingLevel: ModelThinkingLevel; readonly cwd: string; readonly instructions?: string } {
 		const selectedModel = services.services.modelRuntime.getModel(metadata.model.provider, metadata.model.modelId);
@@ -376,9 +429,9 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			unsubscribeChanges?.();
 			unsubscribeChanges = opened.harness.subscribeCommits((publication) => {
 				activityGeneration++;
-				if (publication.changes.length) { notifyActivity(); scheduleCatalogView(); }
+				if (publication.changes.length) { scheduleRecoveryMarker(); notifyActivity(); scheduleCatalogView(); }
 			});
-			await markPendingRecovery();
+			await settleRecoveryMarker();
 			await opened.resume(BACKGROUND_CONTEXT);
 			scheduleCatalogView();
 			return opened;
@@ -400,13 +453,15 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 				return undefined;
 			}
 		};
-		return startDurableDelivery({ host, metadata, catalog, sessionsRoot, signal: controller.signal, unavailableTargets: unavailableDeliveryTargets, onIdle: () => { for (const listener of quiescentListeners) listener(); },
+		return startDurableDelivery({ host, metadata, catalog, sessionsRoot, signal: controller.signal, unavailableTargets: unavailableDeliveryTargets, onIdle: () => { scheduleRecoveryMarker(); for (const listener of quiescentListeners) listener(); },
 			readTarget: readDeliveryTarget,
 			connectTarget: (record) => targets.connectNative(record.storageId), onClose: () => targets.close(),
 			onError: (error) => { process.stderr.write(`Agent delivery: ${error.message}\n`); },
 		});
 	};
 	let deliveries = delivery();
+	recoveryReady = true;
+	scheduleRecoveryMarker();
 
 	async function configure(params: Record<string, unknown>, requestId: string): Promise<ExecutionSelection> {
 		const conversation = await host.conversation(typeof params.sessionId === "string" ? params.sessionId : undefined);
@@ -460,6 +515,18 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		}
 		return { sessionId: params.sessionId ?? metadata.storageId, inventory: services.inventory, reloaded: true };
 	}
+	function beginRequest(method: string, counted: boolean): void {
+		if (counted) activeRequests++;
+		if (ADMITTING_METHODS.has(method)) activeAdmissions++;
+	}
+
+	function finishRequest(method: string, counted: boolean, reload: boolean): void {
+		if (counted) activeRequests--;
+		if (ADMITTING_METHODS.has(method)) activeAdmissions--;
+		if (reload) reloading = false;
+		scheduleRecoveryMarker(); notifyActivity();
+	}
+
 	async function request(method: string, input: unknown, requestId: string, signal?: AbortSignal): Promise<unknown> {
 		if (runtimeUnavailable()) throw new Error("Durable host is closed");
 		if (reloading) throw new Error("Durable host reload is in progress; retry the control after reload");
@@ -467,10 +534,10 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		if (reload && activeRequests > 0) throw new Error("Reload requires all other controls to settle");
 		const counted = method !== "receipts";
 		activityGeneration++;
-		if (counted) activeRequests++;
+		beginRequest(method, counted);
 		reloading = reload;
-		try { return await executeRequest(method, input, requestId, signal); }
-		finally { if (counted) activeRequests--; if (reload) reloading = false; notifyActivity(); }
+		try { return await requestScope.run(method, () => executeRequest(method, input, requestId, signal)); }
+		finally { finishRequest(method, counted, reload); }
 	}
 	async function spawn(params: Record<string, unknown>, requestId: string, method: "spawn" | "place" = "spawn"): Promise<unknown> {
 		if (typeof params.senderIdentity !== "string") throw new Error("A native spawn requires its sender identity");
@@ -562,6 +629,8 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		activityListeners.clear();
 		quiescentListeners.clear();
 		controller.abort();
+		await recoverySync;
+		releaseListeners.clear();
 		if (publishTimer !== undefined) {
 			clearTimeout(publishTimer);
 			publishTimer = undefined;
@@ -584,7 +653,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		await closeIdleRuntime();
 		return undefined;
 	};
-	return { request, onQuiescent: (listener) => { quiescentListeners.add(listener); return () => { quiescentListeners.delete(listener); }; }, get shutdownRequired() { return reloadFailed || sessionFailed || (host.sessionEnded && host !== reloadClosingHost); }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, onObservationChange: (listener) => { observationListeners.add(listener); return () => { observationListeners.delete(listener); }; }, close: closeHost };
+	return { request, requestRelease, get releaseRequested() { return releaseRequested; }, onReleaseRequested: (listener) => { releaseListeners.add(listener); return () => { releaseListeners.delete(listener); }; }, onQuiescent: (listener) => { quiescentListeners.add(listener); return () => { quiescentListeners.delete(listener); }; }, get shutdownRequired() { return reloadFailed || sessionFailed || (host.sessionEnded && host !== reloadClosingHost); }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, onObservationChange: (listener) => { observationListeners.add(listener); return () => { observationListeners.delete(listener); }; }, close: closeHost };
 }
 
 /** Cold inspection writes a bounded disposable SQLite snapshot; it never writes source content. */

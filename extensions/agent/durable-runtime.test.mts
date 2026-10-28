@@ -301,7 +301,39 @@ it("resumes an outstanding model request after SIGKILL without a duplicate submi
 	}
 });
 
-it("retires pending dead-owner delivery and recovers it through primary registration", { timeout: 60000 }, async (t) => {
+for (const signal of ["SIGTERM", "SIGKILL"] as const) it(`keeps the cleared recovery marker after ${signal} during the idle interval`, { timeout: 30000 }, async (t) => {
+	const f = runtimeFixture(t), catalog = new AgentCatalog(f.root);
+	const client = await acquireHost(f.metadata, { env: { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "60", PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root } });
+	trackHost(t, client.pid);
+	t.after(() => client.close());
+	const admitted = await client.request("submit", { message: "finish before signal", requestId: "idle-signal", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+	await waitForReceipt(client, f.ownerId, admitted.submissionId);
+	const cleared = eventLog<void>();
+	assert.ok(client.subscribeChanges);
+	const stop = await client.subscribeChanges(() => { if (catalog.read(f.metadata.storageId).recoveryDue === false) cleared.push(undefined); }, AbortSignal.timeout(10000));
+	try { await cleared.waitForCount(1, 10000); } finally { stop(); }
+	assert.equal(client.closed, false, "the host is still inside its idle interval");
+	process.kill(client.pid, signal);
+	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false);
+});
+
+it("keeps recovery due after a crash with an active transient delivery", { timeout: 30000 }, async (t) => {
+	const f = runtimeFixture(t), catalog = new AgentCatalog(f.root);
+	const channel = await createPrimaryChannel({ id: f.ownerId, cwd: f.cwd, sessionsRoot: f.root, deliver: () => { throw new Error("temporary receiver failure"); }, promptTrust: async () => undefined });
+	t.after(() => channel.close());
+	const client = await acquireHost(f.metadata, { env: { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "60", PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root } });
+	trackHost(t, client.pid); t.after(() => client.close());
+	const admitted = await client.request("submit", { message: "keep deliverable result", requestId: "active-crash", ownerId: f.ownerId, origin: "model" }) as SubmitResult;
+	await waitForReceipt(client, f.ownerId, admitted.submissionId);
+	assert.equal((await client.request("recovery-state", {} as Record<string, unknown>) as { deliveriesActive: boolean }).deliveriesActive, true);
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true);
+	killHost(client.pid);
+	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true);
+});
+
+it("retires parked delivery with a clear marker and delivers it after explicit acquisition", { timeout: 60000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const owner = randomUUID();
 	const other = randomUUID();
@@ -322,7 +354,7 @@ it("retires pending dead-owner delivery and recovers it through primary registra
 	await first.close();
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 	const catalog = new AgentCatalog(f.root);
-	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true);
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false);
 	await channel.close();
 	const acquired: number[] = [];
 	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, acquire: async (metadata) => {
@@ -332,14 +364,15 @@ it("retires pending dead-owner delivery and recovers it through primary registra
 	t.after(() => manager.close());
 	await manager.registerPrimary(other, { cwd: f.cwd, signal: new AbortController().signal, send: (_text, details) => { fallback.push(details); } });
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
-	assert.equal(acquired.length, 1, "another primary reopens the marked storage");
+	assert.equal(acquired.length, 0, "another primary does not reopen a parked-only storage");
 	assert.equal(fallback.length, 1, "the recorded fallback never repeats at receiver re-registration");
-	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "retirement preserves the pending owner row");
+	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false, "the retained parked row is not runnable recovery");
 	const delivered = eventLog<unknown>();
 	await manager.registerPrimary(owner, { cwd: f.cwd, signal: new AbortController().signal, send: (_text, details) => { delivered.push(details); } });
+	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: owner, cwd: f.cwd });
 	await delivered.waitForCount(1);
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
-	assert.equal(acquired.length, 2);
+	assert.equal(acquired.length, 1);
 	assert.equal(delivered.length, 1);
 	assert.equal((delivered[0] as { liveOwner: boolean }).liveOwner, true);
 	assert.equal((delivered[0] as { wake: boolean }).wake, true);

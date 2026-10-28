@@ -71,6 +71,27 @@ async function deadPid(): Promise<number> {
 	return pid;
 }
 
+it("rechecks a release when delivery becomes quiescent during the retirement check", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t), closed = eventLog<void>();
+	let releaseListener: (() => void) | undefined, quiescentListener: (() => void) | undefined;
+	let attempts = 0;
+	const runtime: HostRuntime = {
+		request: async () => { releaseListener?.(); return { retiring: true, blockers: [] }; },
+		isIdle: () => true,
+		close: async () => { closed.push(undefined); },
+		onReleaseRequested: listener => { releaseListener = listener; return () => { releaseListener = undefined; }; },
+		onQuiescent: listener => { quiescentListener = listener; return () => { quiescentListener = undefined; }; },
+		tryRetire: async seal => { attempts++; if (attempts === 1) { quiescentListener?.(); return false; } return seal(); },
+	};
+	const { host, metadata: config } = await startHost(root, 3600000, () => runtime);
+	t.after(() => host.close());
+	const client = await connectClient(config); t.after(() => client.dispose());
+	assert.deepEqual(await call(client, config, "status"), { retiring: true, blockers: [] });
+	await closed.waitForCount(1, 5000);
+	await host.done;
+	assert.equal(attempts, 2);
+});
+
 it("serves a request and rejects a client with the wrong serverId", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const { host, metadata: config } = await startHost(root);

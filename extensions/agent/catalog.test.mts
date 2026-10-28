@@ -7,6 +7,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	unlinkSync,
 	utimesSync,
@@ -347,6 +348,19 @@ it("persists the recovery marker independently of the view", (t) => {
 	const cleared = catalog.markRecoveryDue(record.storageId, false);
 	assert.equal(cleared.recoveryDue, false);
 	assert.deepEqual(cleared.view, view, "the marker preserves the view");
+});
+
+it("does not rewrite an unchanged recovery marker", (t) => {
+	const { catalog, input } = fixture(t);
+	const { record } = catalog.createTracked(input, "unchanged-marker");
+	catalog.markRecoveryDue(record.storageId, false);
+	const cleared = statSync(catalog.path(record.storageId));
+	catalog.markRecoveryDue(record.storageId, false);
+	assert.equal(statSync(catalog.path(record.storageId)).ino, cleared.ino);
+	catalog.markRecoveryDue(record.storageId, true);
+	const marked = statSync(catalog.path(record.storageId));
+	catalog.markRecoveryDue(record.storageId, true);
+	assert.equal(statSync(catalog.path(record.storageId)).ino, marked.ino);
 });
 
 it("refuses view writes through a symlink, corrupt record, or wrong identity", (t) => {

@@ -56,21 +56,22 @@ only accepted normal-owner routes, independently of other routes. Admission is
 not model consumption or task acceptance.
 
 Only an absent or proven-dead ordinary-owner endpoint permits informational
-fallback copies to other registered primaries. The watcher requires complete
-bounded discovery before copies, excludes the normal owners, and labels copies
+fallback copies to other registered primaries. The watcher uses bounded
+discovery, excludes the normal owners, and labels copies
 `no live owning session` while retaining the original owner identity. It records
 each accepted copy recipient, but copies never acknowledge the original owner's
-row. Incomplete discovery refuses copies and reports that limit. Copy failures
+row. Incomplete discovery still attempts discovered recipients and reports that limit. Copy failures
 also leave owner delivery pending. Direct thread notifications stay pending
 without broadcast when their recipient has no live endpoint. Live, unknown, and
 incompatible endpoints do not justify fallback; transport failure is not proof
 of death.
 
-Pending delivery and active delivery differ. Rows for proven-dead ordinary
-owners remain durable without a delivery retry timer. Those rows retain the
-recovery marker but alone do not prevent otherwise idle host retirement. Native
-work, unsettled intents, in-flight effects, controls, and observations still
-prevent retirement. An absent or unknown endpoint is not the proven-dead case.
+Pending delivery and active delivery differ. Parked and terminal rows remain
+durable without a delivery retry timer. Those rows neither retain the recovery
+marker nor prevent otherwise idle host retirement. Native work, pending
+admissions, active rows, in-flight effects, controls, and observations still
+prevent normal retirement. Explicit release closes observations before the
+normal retirement seal; it never cancels native tasks or deletes retained rows.
 
 Delivery is at-least-once. The cross-host boundary has no shared transaction or
 general exactly-once promise. The manager does not poll receipts, and footer

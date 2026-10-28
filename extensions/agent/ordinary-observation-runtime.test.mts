@@ -122,6 +122,8 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	assert.deepEqual(opened, [record.storageId]);
 	assert.equal(existsSync(catalog.path(ordinaryId)), false);
 	assert.equal(existsSync(join(catalog.root, `${ordinaryId}.sqlite`)), false);
+	await peer.harness.waitForIdle(context);
+	await runtime.request("recovery-state", {}, "settled-observation-marker");
 	assert.equal(catalog.read(record.storageId).recoveryDue, recoveryBefore);
 	assert.equal((await peer.harness.inspect(context)).submissions.length, 0);
 	assert.equal(readFileSync(sessionFile, "utf8"), retained);
