@@ -53,6 +53,8 @@ export interface HostRuntime {
 	onObservationChange?(listener: () => void): () => void;
 	/** Native commits and host-local control completion reset the idle interval without publishing a footer change. */
 	onActivity?(listener: () => void): () => void;
+	/** Delivery effects settled without new native activity. */
+	onQuiescent?(listener: () => void): () => void;
 }
 
 /** Called once the claim is held; the runtime opens storage only after this point. */
@@ -247,6 +249,7 @@ class HostProcessServer implements HostProcess {
 	private observationAgain = false;
 	private unsubscribeObservation: (() => void) | undefined;
 	private unsubscribeActivity: (() => void) | undefined;
+	private unsubscribeQuiescent: (() => void) | undefined;
 
 	private readonly exit: (() => never) | undefined;
 
@@ -311,6 +314,9 @@ class HostProcessServer implements HostProcess {
 			this.cancelIdleCheck?.();
 			this.cancelIdleCheck = undefined;
 			this.scheduleRetirement();
+		});
+		this.unsubscribeQuiescent = this.runtime.onQuiescent?.(() => {
+			if (this.cancelIdleCheck === undefined) this.scheduleRetirement();
 		});
 		announce({ pid: this.pid, socketPath: this.paths.socket, contract: HOST_CONTRACT });
 		this.scheduleRetirement();
@@ -600,6 +606,8 @@ class HostProcessServer implements HostProcess {
 		this.unsubscribeObservation = undefined;
 		this.unsubscribeActivity?.();
 		this.unsubscribeActivity = undefined;
+		this.unsubscribeQuiescent?.();
+		this.unsubscribeQuiescent = undefined;
 		this.cancelableRequests.abort(new Error("The durable host process is shutting down"));
 		try {
 			await closeRuntime(this.runtime, this.exit);

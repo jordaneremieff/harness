@@ -60,6 +60,27 @@ async function eligible(runtime: Awaited<ReturnType<typeof createDurableRuntime>
 	return eligible;
 }
 
+it("does not report delivery retries as host activity", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t);
+	const sessionsRoot = dirname(dirname(f.metadata.storagePath));
+	const path = primaryEndpointPath(sessionsRoot, f.ownerId);
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, JSON.stringify({ version: PRIMARY_DELIVERY_CONTRACT, id: f.ownerId, serverId: randomUUID(), startedAt: new Date().toISOString(), pid: process.pid, hostname: hostname(), socketPath: join(f.root, "unavailable.sock"), cwd: f.cwd }));
+	const errors = eventLog<Error>();
+	const reportError = f.native.reportDeliveryError.bind(f.native);
+	t.mock.method(f.native, "reportDeliveryError", (error?: Error) => { reportError(error); if (error) errors.push(error); });
+	await f.runtime.request("report", { ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "pending", requestId: "retry" }, "retry");
+	await errors.waitForCount(1);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	let activity = 0;
+	const unsubscribe = f.runtime.onActivity?.(() => { activity++; });
+	try {
+		await errors.waitForCount(2, 5000);
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(activity, 0);
+	} finally { unsubscribe?.(); }
+});
+
 it("keeps a native future timer alive even when the root has no submission", { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
 	const timer = await f.runtime.request("timer-schedule", { message: "later", deliverAt: Date.now() + 3600000, origin: "operator", ownerId: f.ownerId }, "timer") as { timerId: number };
@@ -191,9 +212,12 @@ it("keeps cached dead-owner delivery cold after clean retirement and resumes at 
 	await fallback.waitForCount(1);
 	const idle = deferred();
 	assert.ok(f.runtime.onActivity);
-	const stop = f.runtime.onActivity(() => { void eligible(f.runtime).then((ready) => { if (ready) idle.resolve(); }); });
+	const checkIdle = () => { void eligible(f.runtime).then((ready) => { if (ready) idle.resolve(); }); };
+	const stop = f.runtime.onActivity(checkIdle);
+	const stopQuiescent = f.runtime.onQuiescent?.(checkIdle);
 	if (!await eligible(f.runtime)) await idle.promise;
 	stop();
+	stopQuiescent?.();
 	checks[checks.length - 1]();
 	await host.done;
 	await lost.waitForCount(1);
