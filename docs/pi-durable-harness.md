@@ -8,10 +8,11 @@ extension supplies cwd-bound resources, process ownership, controls, and deliver
 The [session host roles](conventions/session-host-roles.md) and
 [Agent host contract](agent-host-contract.md) define that composition.
 
-Broad source review date: 2026-10-22. That review checks installed 1.4.0
-manifests and the document, task, storage, and telemetry contracts below.
-The targeted management-contract refresh below was checked on 2026-10-25;
-it does not renew the unexamined parts of the broad review.
+Source review date: 2026-10-28. Cumulative source coverage includes the
+coding-agent, Durable, Chord, and MCP release notes from 1.0.4 through 1.4.0.
+The review checks installed 1.4.0 manifests and defining contracts against
+current harness consumers. Each contract below names its source boundary;
+release-note coverage is not package-wide runtime parity.
 Dependency installation does not replace modules in retained processes.
 Source inspection does not establish live provider behavior, conversion
 acceptance, or cumulative release acceptance. The release declaration records
@@ -101,8 +102,8 @@ checks before activation. Source release labels are not acceptance evidence.
 
 ## Targeted management-contract refresh
 
-Checked on 2026-10-25 against the installed coding-agent and Durable 1.4.0
-contracts, published package metadata, and upstream main commit
+Checked on 2026-10-28 against the installed coding-agent and Durable 1.4.0
+contracts, published package metadata, and the immutable upstream commit
 `f321e5bdd26b3624bfb2ab182a334d0a5edb698a`:
 
 - The published `latest` metadata for
@@ -139,9 +140,9 @@ remote Git refs, performs cumulative intake, or writes the declaration.
 
 Complete release intake remains with [Evo](../extensions/evo/README.md#release-intake).
 The targeted checks above establish only those contracts. They leave cumulative
-coverage unchanged, including the unreviewed release interval after the declared
-baseline. [Worktree promotion](conventions/worktrees.md) owns composition, gates
-and publication hygiene; the runtime adds no scheduler, release ledger or
+coverage unchanged until the coordinator accepts and publishes the complete
+release interval. [Worktree promotion](conventions/worktrees.md) owns composition,
+gates and publication hygiene; the runtime adds no scheduler, release ledger or
 parallel task store.
 
 ## Native host integration contracts
@@ -154,11 +155,15 @@ parallel task store.
 - Native Codemode supplies synchronous `acquireWorker`. Its release callback
   runs once on construction failure or actual worker exit, not result settlement.
   Ordinary coding-agent Codemode reserves workers through a separate arrival-order
-  queue with a bounded wait and a `PI_CODEMODE_MAX_WORKERS` override. That queue
-  does not appear in the native sandbox contract. Removing native admission does
-  not adopt the ordinary queue. Sources: `pi-codemode/dist/types.d.ts`,
-  `pi-codemode/dist/runtime/host.js`, and
-  `dist/extensions/codemode/execute.js`.
+  queue with a bounded wait and a `PI_CODEMODE_MAX_WORKERS` override. The Agent
+  host's native admission queue reads the same upstream process setting, with
+  the same positive-integer parser and a default of two workers. It retains a
+  slot until the native worker lease ends. The sandbox contract still supplies
+  synchronous acquisition, not the ordinary wrapper's queue. Sources:
+  `pi-codemode/dist/types.d.ts`,
+  `pi-codemode/dist/runtime/host.js`,
+  `dist/extensions/codemode/execute.js`, and
+  `extensions/agent/codemode-admission.ts`.
 - Native generation retains the original tool call. Tool-task validation passes
   it to AI validation, which rejects `argumentsError`. ProviderModels forwards
   original events and messages; observation and UI projections preserve the
@@ -180,10 +185,10 @@ checks. The Pi package comparison does not verify a wrapper's treatment of
 messages, tool-result images, `argumentsError`, or identity and telemetry options.
 No wrapper implementation belongs in this repository.
 
-These contracts do not close the cumulative acceptance gap after 1.0.3. Static
-checks do not establish released UI behavior, loaded dependency replacement, or
-successful conversion. Resource registry replacement alone does not replace
-cached package modules.
+The release review declaration, not these source contracts, records cumulative
+acceptance. Static checks do not establish released UI behavior, loaded
+dependency replacement, or successful conversion. Resource registry replacement
+alone does not replace cached package modules.
 
 ## Runtime adoption and distribution
 

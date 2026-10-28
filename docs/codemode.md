@@ -33,10 +33,22 @@ declaration before changing instructions or policy: `registry` with
 `kind: "tool"` and `name: "codemode"` reports `configured` and `active`
 separately. `/reload` activates a tool newly added to `defaultTools` in a
 running session. CLI `--tools` entries with `+name` or `-name` adjust the
-inherited selection; unsigned entries replace it. Use `pi -t +codemode` to
-preserve the default tools. `*` patterns select matching tools. MCP tools remain
-available unless an entry starts with `mcp__`; `--no-mcp` disables MCP for that
-run. This setup describes ordinary Pi sessions.
+inherited selection; unsigned entries replace it. On resume, modifiers apply to
+the branch's restored active tools. Use `pi -t +codemode` to preserve that
+selection. Modifier entries take exact names, not patterns, and must not mix
+with unsigned entries. For example:
+
+```bash
+pi --tools +codemode,-write
+pi --tools read,codemode,'mcp__dev_docs__*'
+```
+
+The first command adds codemode and removes write from the inherited selection.
+The second selects an explicit allowlist and only the named MCP server's tools.
+Unsigned `--tools` and `--exclude-tools` entries accept `*` patterns; quote them
+to prevent shell expansion. MCP tools remain available unless a `--tools` entry
+starts with `mcp__`; `--no-mcp` disables MCP for that run. The installed Pi
+`docs/cli.md` Tools section defines these rules for ordinary Pi sessions.
 Durable agents use the [agent extension's native execution
 integration](../extensions/agent/README.md#capabilities-and-project-resources),
 not the ordinary codemode factory.
@@ -376,9 +388,11 @@ applied the assessment.
 
 Ordinary Codemode queues scripts for a free worker in arrival order, with a
 bounded wait that counts toward the script deadline. Its
-`PI_CODEMODE_MAX_WORKERS` setting belongs to that ordinary wrapper. The native
-sandbox's `acquireWorker` remains synchronous; it does not inherit the ordinary
-queue. The [Agent README](../extensions/agent/README.md#capabilities-and-project-resources)
+`PI_CODEMODE_MAX_WORKERS` setting also sets the Agent host's native worker
+capacity. Both parsers accept a positive integer and otherwise use two workers.
+The native sandbox's `acquireWorker` remains synchronous; the Agent host supplies
+its own admission queue and retains each slot until the worker lease ends. The
+[Agent README](../extensions/agent/README.md#capabilities-and-project-resources)
 owns the Durable host's admission and limits.
 
 Check a tool's presence with `"name" in tools` before an optional call. Reading

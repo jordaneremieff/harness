@@ -8,7 +8,8 @@ Pi's own capabilities instead of maintaining a parallel agent core; the
 contracts and when this repository adopts them.
 
 Start with [Architecture](docs/architecture.md) for installation, how Pi loads
-the package, and machine configuration.
+the package, and machine configuration. Use the [Codemode guide](docs/codemode.md)
+for tool composition, inherited tool selection, and explicit MCP allowlists.
 
 ## Contents
 
