@@ -22,7 +22,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { TSchema } from "typebox";
 import { QueuedCodemodeSandbox } from "./codemode-admission.ts";
-import { McpGuardian } from "./mcp-guardian.ts";
+import { guardStdio, McpGuardian } from "./mcp-guardian.ts";
 
 // ─── Public contract ────────────────────────────────────────────────────────
 
@@ -811,19 +811,7 @@ class McpServerConnection {
 		let transport: StdioTransport | StreamableHttpTransport | undefined;
 		try {
 			transport = createTransport(this.entry, this.cwd, this.authProvider);
-			if (transport instanceof StdioTransport) {
-				const stdio = transport;
-				const start = stdio.start.bind(stdio);
-				stdio.start = () => {
-					const started = start();
-					const pid = stdio.pid;
-					if (pid !== undefined) {
-						this.guardian.register(pid);
-						stdio.onClose(() => this.guardian.unregister(pid));
-					}
-					return started;
-				};
-			}
+			if (transport instanceof StdioTransport) guardStdio(transport, this.guardian);
 			await client.connect(transport);
 			if (this.closed) throw new Error("shut down while connecting");
 			const tools = client.serverCapabilities?.tools === undefined ? [] : await client.listTools();

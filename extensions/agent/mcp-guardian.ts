@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import type { StdioTransport } from "@earendil-works/pi-mcp";
 
 const PROGRAM = `
 groups=''
@@ -42,4 +43,18 @@ export class McpGuardian {
 	register(pid: number): void { this.send("add", pid); }
 	unregister(pid: number): void { this.send("remove", pid); }
 	close(): void { this.child?.stdin?.end(); }
+}
+
+/** Register the process as soon as the transport creates it. */
+export function guardStdio(transport: StdioTransport, guardian: McpGuardian): void {
+	const start = transport.start.bind(transport);
+	transport.start = () => {
+		const started = start();
+		const pid = transport.pid;
+		if (pid !== undefined) {
+			guardian.register(pid);
+			transport.onClose(() => guardian.unregister(pid));
+		}
+		return started;
+	};
 }
