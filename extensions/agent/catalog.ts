@@ -156,6 +156,11 @@ export function storageIdOf(identity: string): string {
 	return storageId;
 }
 
+/** Validate an exact delivery recipient before accepting a new route. */
+export function validateDeliveryRecipient(identity: string): void {
+	try { storageIdOf(identity); } catch { throw new Error("Delivery recipient must be an exact native or primary identity"); }
+}
+
 /** Discovery metadata locates storage. It never substitutes for native conversation state. */
 export class AgentCatalog {
 	readonly root: string;

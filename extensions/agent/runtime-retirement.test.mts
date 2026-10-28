@@ -81,6 +81,17 @@ it("does not report delivery retries as host activity", { timeout: 15000 }, asyn
 	} finally { unsubscribe?.(); }
 });
 
+it("refuses malformed recipients before creating report and intent rows", { timeout: 15000 }, async (t) => {
+	const f = await fixture(t);
+	await assert.rejects(f.runtime.request("report", { ownerId: "12345678", senderIdentity: f.metadata.storageId, message: "invalid", requestId: "invalid-report" }, "invalid-report"), /Delivery recipient must be an exact/u);
+	await assert.rejects(f.runtime.request("submit", { message: "invalid", requestId: "invalid-intent", ownerId: "12345678", origin: "operator" }, "invalid-intent"), /Delivery recipient must be an exact/u);
+	await assert.rejects(f.runtime.request("task-submit", { message: "invalid", requestId: "invalid-task", requester: f.ownerId, replyTo: "12345678", origin: "operator" }, "invalid-task"), /Delivery recipient must be an exact/u);
+	await assert.rejects(f.runtime.request("timer-schedule", { message: "invalid", deliverAt: Date.now() + 60000, ownerId: "12345678" }, "invalid-timer"), /Delivery recipient must be an exact/u);
+	const state = await f.native.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	assert.equal(state?.reports.some((report) => report.ownerId === "12345678") ?? false, false);
+	assert.equal(state?.intents.some((intent) => intent.ownerId === "12345678") ?? false, false);
+});
+
 it("keeps a native future timer alive even when the root has no submission", { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
 	const timer = await f.runtime.request("timer-schedule", { message: "later", deliverAt: Date.now() + 3600000, origin: "operator", ownerId: f.ownerId }, "timer") as { timerId: number };

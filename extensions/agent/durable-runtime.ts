@@ -23,7 +23,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { AgentCatalog, storageIdOf } from "./catalog.ts";
+import { AgentCatalog, storageIdOf, validateDeliveryRecipient } from "./catalog.ts";
 import { boundCatalogView, withAttentionHints, withModelEvidence } from "./catalog-view.ts";
 import { projectCatalogAttention } from "./catalog-attention.ts";
 import { observeColdStorage } from "./cold-observation.ts";
@@ -38,6 +38,12 @@ import { isThinkingLevel } from "./configuration.ts";
 import { AgentManager } from "./manager.ts";
 import { deliveryOwnerIsDead, startDurableDelivery } from "./durable-delivery.ts";
 import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
+
+function validateControlRecipient(method: string, params: Readonly<Record<string, unknown>>): void {
+	const recipient = method === "task-submit" ? params.replyTo ?? params.requester
+		: ["submit", "report", "timer-schedule"].includes(method) ? params.ownerId : undefined;
+	if (typeof recipient === "string") validateDeliveryRecipient(recipient);
+}
 
 function controlParams(input: unknown): Record<string, unknown> {
 	if (input !== undefined && (input === null || typeof input !== "object" || Array.isArray(input))) throw new Error("Control parameters must be an object");
@@ -520,6 +526,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	}
 	async function executeRequest(method: string, input: unknown, requestId: string, signal?: AbortSignal): Promise<unknown> {
 		const params = controlParams(input);
+		validateControlRecipient(method, params);
 		if (method === "recovery-state") {
 			const state = await recoveryState();
 			if (state.deliveriesPending) deliveries.refresh();
