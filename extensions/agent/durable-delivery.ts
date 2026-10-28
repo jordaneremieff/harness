@@ -48,7 +48,9 @@ import {
 import type { DurableHost } from "./durable-host.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
 import { acquireHost, type HostConnection } from "./host-client.ts";
-import type { HostMetadata } from "./host-protocol.ts";
+import { HostError, hostPaths, type HostMetadata } from "./host-protocol.ts";
+import { observeClaim } from "./claims.ts";
+import { isChordError } from "@earendil-works/chord";
 import {
 	connectPrimaryChannel,
 	primaryEndpointIncompatibleError,
@@ -543,6 +545,12 @@ export function deliveryEligibilityError(rows: readonly EligibilityRow[]): Error
 	return row === undefined ? undefined : new Error(`Delivery ${row.key} to ${row.row.ownerId}: ${row.eligibility.state}: ${row.eligibility.reason}`);
 }
 
+function transientTargetFailure(error: unknown, record: CatalogRecord): boolean {
+	if ((error instanceof HostError || isChordError(error)) && error.code === "unavailable") return true;
+	const paths = hostPaths(record);
+	return observeClaim(paths.claim, paths.identity).kind === "live";
+}
+
 /**
  * Start the source-side delivery watcher. The watcher owns its commit
  * subscription, target links, primary-channel connections, and retry timer;
@@ -592,9 +600,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		let connection: HostConnection;
 		try { connection = await (options.connectTarget ? options.connectTarget(record) : acquire(hostMetadata(record, metadata.packageDir))); }
 		catch (error) {
-			unavailableTargets.set(record.storageId, `native host cannot start: ${asError(error).message}`);
+			if (!transientTargetFailure(error, record)) unavailableTargets.set(record.storageId, `native host cannot start: ${asError(error).message}`);
 			throw error;
 		}
+		unavailableTargets.delete(record.storageId);
 		if (closed || signal.aborted) {
 			await connection.close().catch(() => undefined);
 			throw new Error("durable delivery is closed");

@@ -2030,9 +2030,10 @@ Fallback discovery never makes an unavailable owner active.
 One classification controls delivery, status and retirement:
 
 - `active`: a live primary with a compatible contract, or a retained native target
-  whose host is available. Transient transport failures retry.
+  whose host is available. Transient transport and unavailable-host failures
+  retry, including acquisition failures while a live writer starts or shuts down.
 - `parked`: an absent, dead, unknown or incompatible primary, an unretained native
-  target, or a native host that cannot start. The row stays retained without a
+  target, or a native host with a persistent launch failure. The row stays retained without a
   retry timer and does not block retirement. A fresh watcher or explicit refresh
   permits another native acquisition attempt.
 - `terminal`: a malformed recipient, corrupt admission origin, or linked intent

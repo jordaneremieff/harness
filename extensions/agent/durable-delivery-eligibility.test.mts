@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { hostname, tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -16,6 +16,9 @@ import { eventLog } from "./host-fixture.mts";
 import { createTestRuntime } from "./test-runtime.mts";
 import { createPrimaryChannel } from "./primary-channel.ts";
 import { createDurableRuntime } from "./durable-runtime.ts";
+import { HostError, hostPaths } from "./host-protocol.ts";
+import type { HostConnection } from "./host-client.ts";
+import { ChordError } from "@earendil-works/chord";
 
 async function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "delivery-eligibility-"));
@@ -152,6 +155,31 @@ it("parks a native target whose host cannot start without a retry timer", { time
 		t.mock.timers.tick(300000); await new Promise<void>(setImmediate);
 		assert.equal(acquisitions, 1);
 		assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, context))?.receipts["999"].delivery?.state, "parked");
+	} finally { await watcher.close(); }
+});
+
+for (const failure of ["unavailable", "live-claim", "closing"] as const) it(`retries native acquisition after ${failure} without an explicit refresh`, { timeout: 10000 }, async t => {
+	const f = await fixture(t), idle = eventLog<void>(), delivered = eventLog<void>(), unavailableTargets = new Map<string, string>();
+	const target = f.catalog.create({ cwd: f.root, agentDir: f.metadata.agentDir, packageDir: getPackageDir(), model: f.metadata.model, thinkingLevel: "off" });
+	if (failure === "live-claim") {
+		const paths = hostPaths(target); mkdirSync(dirname(paths.claim), { recursive: true });
+		writeFileSync(paths.claim, JSON.stringify({ sessionId: target.storageId, cwd: target.cwd, host: hostname(), pid: process.pid, createdAt: new Date().toISOString() }));
+	}
+	await f.host.harness.commit(async tx => { (await tx.doc(AgentDeliveryDoc)).receipts["999"] = receipt(target.storageId); }, context);
+	let attempts = 0;
+	const link = { closed: false, request: async () => { delivered.push(undefined); return {}; }, close: async () => {} } as unknown as HostConnection;
+	const watcher = startDurableDelivery({ host: f.host, metadata: f.metadata, catalog: f.catalog, sessionsRoot: f.root, signal: new AbortController().signal, unavailableTargets, retryDelayMs: 50,
+		connectTarget: async () => {
+			if (++attempts === 1) throw failure === "unavailable" ? new HostError("target starts elsewhere", "unavailable") : failure === "closing" ? new ChordError("unavailable", "target is shutting down", { reason: "closing" }) : new Error("endpoint not ready");
+			unavailableTargets.set(target.storageId, "stale failed acquisition");
+			return link;
+		}, onIdle: () => idle.push(undefined) });
+	try {
+		await idle.waitForCount(1);
+		assert.equal((await observeDeliveryEligibility(f.host.harness, { catalog: f.catalog, sessionsRoot: f.root, unavailableTargets }))[0]?.eligibility.state, "active");
+		await delivered.waitForCount(1, 3000);
+		assert.equal(attempts, 2);
+		assert.equal(unavailableTargets.has(target.storageId), false);
 	} finally { await watcher.close(); }
 });
 
