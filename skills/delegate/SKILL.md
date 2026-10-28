@@ -10,7 +10,10 @@ description: >
   context clean on long-horizon research, planning, or implementation; also
   when a coordinating session must bootstrap workers, write task contracts,
   choose presets, supervise check-ins, recover from quota walls, or reset or
-  hand over agents. Do not use for one evidence question (dig), orientation
+  hand over agents. Read it before the first dispatch whenever the operator
+  puts this session in that role, even for one wave of workers: the agent
+  tool descriptions omit contracts, threads, preset choice, supervision,
+  and close-out. Do not use for one evidence question (dig), orientation
   only (prime), Pi session audits (audit), harness surface changes (harness),
   or a small task the session can finish directly.
 compatibility: Requires Pi with the harness agent extension (spawn, send, steer, await, status, inspect, collaborate, intent, profile, reset) and codemode. Points to sibling sources extensions/agent/README.md and skills/dig/SKILL.md. Uses the operator's presets and delegation preferences; no fixed model or provider roster.
