@@ -9,7 +9,9 @@ and challenge decisions. Runtime detail: `extensions/agent/README.md`
 ## When a thread earns its cost
 
 Create a thread when two or more agents share one purpose, need the same
-operator words and restrictions, or must see each other's findings. Skip it
+operator words and restrictions, or must see each other's findings. Parts
+that look independent still qualify: one part's finding often changes
+another part's answer, and the operator observes the work there. Skip it
 for a single worker; the contract carries the frame. An ordinary primary
 with no agent yet uses direct exchange. Never spawn an agent only to hold a
 thread.

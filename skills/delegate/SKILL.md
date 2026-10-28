@@ -73,7 +73,9 @@ Do these in one or two tool batches:
    create.
 4. **Intent.** Publish your claim with `agent_intent`: purpose, integration
    plan, carried authority, and scope.
-5. **Thread.** Create one when more than one agent shares the work. Read
+5. **Thread.** Create one whenever two or more agents work toward the same
+   purpose, even when their parts are independent: one part's finding often
+   changes another part's answer. Read
    `references/threads.md` for placement and the frame.
 6. **Own context.** Read your current context usage with `registry`.
 
@@ -142,6 +144,14 @@ If you are an ordinary primary and the work needs a thread, spawn the agent
 that will host it idle, create the thread in its storage, then send its task
 with the thread ID. A native Durable orchestrator creates the thread in its
 own storage first. Every other agent spawns with its task as the prompt.
+
+Spawn one-off workers without a `handle`. A handle names a standing agent
+in a catalogue that other efforts share: a common handle such as
+`fix-docs` can resolve to another effort's agent, which keeps its own
+directory and context, and a conflicting `cwd` refuses. Give a handle only
+to a standing agent for a recurring concern, and make it specific to that
+concern. Use `name` for a readable label.
+
 Keep every returned result reference (`sessionId`, `submissionId`,
 `requestId`). A creation receipt, report,
 thread post, or name is not a result reference.

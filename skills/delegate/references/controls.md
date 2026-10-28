@@ -19,8 +19,8 @@ answers win over this table.
 
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
-| A recurring concern needs a standing owner | `agent_spawn` with `handle` (slug without `@`), `role` | Resolve or create one standing root; address it later as `@slug` | Reuse never reapplies creation defaults; supplied model, thinking and role come back unapplied, a name is ignored, a conflicting cwd refuses | `#standing-agents-and-expertise` |
-| One-off worker | `agent_spawn` without `handle` | Same cwd places a conversation in the caller's storage; a different cwd creates a new storage host | `role` requires a handle; set another agent's role with `agent_profile` | `#agent-collaboration-and-placement` |
+| A recurring concern needs a standing owner | `agent_spawn` with `handle` (slug without `@`), `role` | Resolve or create one standing root; address it later as `@slug` | Other efforts share the handle catalogue, so a common handle can resolve to their agent; reuse never reapplies creation defaults; supplied model, thinking and role come back unapplied, a name is ignored, a conflicting cwd refuses | `#standing-agents-and-expertise` |
+| One-off worker | `agent_spawn` without `handle`, with `name` for a label | Same cwd places a conversation in the caller's storage; a different cwd creates a new storage host | `role` requires a handle; set another agent's role with `agent_profile` | `#agent-collaboration-and-placement` |
 | Pick the model | `preset` on spawn or place | Omit model and preset for the configured default; name an exact model only when a direction requires it | Creation never inherits the creator's model or thinking; absent thinking defaults to off | `#execution-presets-and-delegation-preferences` |
 | Change an idle agent's model | `agent_configure` | Idle only; explicit argument, then preset, then retained values | A busy refusal names the target; repeat after its run ends | `#selection-and-unapplied-fields` |
 | Work bound to a directory | `agent_place` | Resolves the longest directory binding or creates one | A reused owner keeps its own model; supplied fields are reported unapplied | `#controls` |
