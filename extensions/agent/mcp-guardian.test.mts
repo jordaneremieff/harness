@@ -52,6 +52,36 @@ console.log(JSON.stringify([guard.processId, pid]));
 	assert.equal(alive.size, 0);
 });
 
+it("kills a Durable execution server after its host is killed", { timeout: 15000, skip: process.platform === "win32" }, async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "durable-mcp-kill-"));
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	const source = `
+import { readFileSync } from 'node:fs';
+import { executionFixture, fixtureServerPath } from './extensions/agent/durable-execution-fixture.mts';
+const directory = process.env.PI_AGENT_DIR;
+const events = directory + '/events';
+const fixture = await executionFixture({after(){}}, {mcpServers: {docs: {command: process.execPath, args: [fixtureServerPath], env: {PI_AGENT_DIR: directory, PI_AGENT_SESSIONS_DIR: directory, MCP_FIXTURE_EVENTS_FILE: events, MCP_FIXTURE_IGNORE_CLOSE: 'true'}, exposure: 'direct'}}, awaitReady: true});
+const pid = Number(/started (\\d+)/.exec(readFileSync(events, 'utf8'))[1]);
+console.log(JSON.stringify({pid, root: fixture.root}));
+setInterval(()=>{},1000);
+`;
+	const host = spawn(process.execPath, ["--input-type=module", "-e", source], { cwd: process.cwd(), env: { ...process.env, PI_AGENT_DIR: directory, PI_AGENT_SESSIONS_DIR: directory }, stdio: ["ignore", "pipe", "pipe"] });
+	t.after(() => { if (host.exitCode === null && host.signalCode === null) host.kill("SIGKILL"); });
+	const [chunk] = await once(host.stdout, "data") as [Buffer];
+	const info = JSON.parse(chunk.toString().trim()) as { pid: number; root: string };
+	t.after(() => rmSync(info.root, { recursive: true, force: true }));
+	assert.ok(Number.isSafeInteger(info.pid) && info.pid > 0);
+	host.kill("SIGKILL");
+	await once(host, "exit");
+	const end = Date.now() + 6000;
+	let alive = true;
+	while (alive && Date.now() < end) {
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		try { process.kill(info.pid, 0); } catch { alive = false; }
+	}
+	assert.equal(alive, false);
+});
+
 it("kills a registered stdio server after its host is killed", { timeout: 12000, skip: process.platform === "win32" }, async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "mcp-guardian-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));

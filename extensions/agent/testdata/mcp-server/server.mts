@@ -1,6 +1,6 @@
 /**
  * testdata/mcp-server: durable test fixture. A stdio MCP server that speaks
- * newline-delimited JSON-RPC and exits when its stdin closes.
+ * newline-delimited JSON-RPC and normally exits when its stdin closes.
  *
  * MCP_FIXTURE_EVENTS_PORT names a loopback TCP port. When set, the server
  * connects to it and writes one line per event ("started <pid>", "initialize"),
@@ -9,6 +9,7 @@
  *
  * MCP_FIXTURE_EVENTS_FILE records the same events in a fixture-owned file for startup checks.
  *
+ * MCP_FIXTURE_IGNORE_CLOSE=true keeps the process alive after stdin closes and ignores SIGTERM.
  * MCP_FIXTURE_MODE=silent reads every request and never answers. Any other
  * value answers `initialize` (with instructions), `tools/list`, and `tools/call`.
  *
@@ -21,6 +22,8 @@ import { connect } from "node:net";
 import { createInterface } from "node:readline";
 
 const silent = process.env.MCP_FIXTURE_MODE === "silent";
+const ignoreClose = process.env.MCP_FIXTURE_IGNORE_CLOSE === "true";
+if (ignoreClose) { process.on("SIGTERM", () => {}); setInterval(() => {}, 1000); }
 const port = Number(process.env.MCP_FIXTURE_EVENTS_PORT);
 const events = Number.isInteger(port) && port > 0 ? connect(port, "127.0.0.1") : undefined;
 events?.on("error", () => undefined);
@@ -55,4 +58,4 @@ input.on("line", (line) => {
 		send({ id: request.id, error: { code: -32601, message: "method not found" } });
 	}
 });
-input.on("close", () => process.exit(0));
+input.on("close", () => { if (!ignoreClose) process.exit(0); });
