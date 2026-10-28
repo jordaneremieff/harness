@@ -1901,8 +1901,13 @@ An uncertain result retains its candidate identity when available and never
 replays automatically. See [the public process contract](../../docs/agent-host-contract.md#saved-context-creation)
 for source limits, identity matching, exact output and refusal semantics.
 
-Native Codemode admits at most two workers per process, with a 256 MiB QuickJS
-heap limit per worker. Its FIFO queue retains at most 64 waiting calls. A full
+Native Codemode admits two workers per process by default, with a 256 MiB
+QuickJS heap limit per worker. `PI_CODEMODE_MAX_WORKERS` selects another positive
+integer limit; missing, zero, negative, fractional and non-finite values use the
+default. The queue reads the value at each admission. A lower limit does not
+cancel existing workers; later calls wait for capacity. The setting affects
+native hosts in that process, independently of the ordinary host's queue.
+Its FIFO queue retains at most 64 waiting calls. A full
 queue refuses the next call explicitly without displacing existing waiters.
 Each native tool task persists a wait deadline on the Harness clock. An
 unfinished wait expires after 60 seconds, including interruption; an admitted

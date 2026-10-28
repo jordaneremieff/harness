@@ -16,6 +16,53 @@ const workerUrl = new URL(`data:text/javascript,${encodeURIComponent(`import { p
 parentPort.on("message", () => {});
 parentPort.postMessage({type: "done", ok: true, value: '"ok"', writes: "[]"});`)}`);
 
+for (const value of [undefined, "", "0", "-1", "1.5", "NaN", "Infinity", "invalid", "3"])
+	it(`uses the process worker limit or the default for ${JSON.stringify(value)}`, async (t) => {
+		const previous = process.env.PI_CODEMODE_MAX_WORKERS;
+		t.after(() => { if (previous === undefined) delete process.env.PI_CODEMODE_MAX_WORKERS; else process.env.PI_CODEMODE_MAX_WORKERS = previous; });
+		if (value === undefined) delete process.env.PI_CODEMODE_MAX_WORKERS;
+		else process.env.PI_CODEMODE_MAX_WORKERS = value;
+		const queue = new CodemodeWorkerQueue();
+		const signal = new AbortController().signal;
+		const deadline = Date.now() + 5000;
+		const releases: (() => void)[] = [];
+		for (let index = 0; index < (value === "3" ? 3 : 2); index++) releases.push(await queue.reserve(signal, deadline));
+		let admitted = false;
+		const pending = queue.reserve(signal, deadline).then((release) => { admitted = true; return release; });
+		await nextTurn();
+		assert.equal(admitted, false);
+		const releaseFirst = releases.shift();
+		assert.ok(releaseFirst);
+		releaseFirst();
+		(await pending)();
+		for (const release of releases) release();
+	});
+
+it("reads changed process limits at admission without releasing live reservations", async (t) => {
+	const previous = process.env.PI_CODEMODE_MAX_WORKERS;
+	t.after(() => { if (previous === undefined) delete process.env.PI_CODEMODE_MAX_WORKERS; else process.env.PI_CODEMODE_MAX_WORKERS = previous; });
+	process.env.PI_CODEMODE_MAX_WORKERS = "1";
+	const queue = new CodemodeWorkerQueue();
+	const signal = new AbortController().signal;
+	const deadline = Date.now() + 5000;
+	const first = await queue.reserve(signal, deadline);
+	const order: number[] = [];
+	const second = queue.reserve(signal, deadline).then((release) => { order.push(2); return release; });
+	process.env.PI_CODEMODE_MAX_WORKERS = "3";
+	const third = await queue.reserve(signal, deadline);
+	const releaseSecond = await second;
+	assert.deepEqual(order, [2]);
+	process.env.PI_CODEMODE_MAX_WORKERS = "1";
+	let admitted = false;
+	const fourth = queue.reserve(signal, deadline).then((release) => { admitted = true; return release; });
+	first();
+	releaseSecond();
+	await nextTurn();
+	assert.equal(admitted, false);
+	third();
+	(await fourth)();
+});
+
 it("admits worker reservations in FIFO order and removes cancelled waiters", async () => {
 	const queue = new CodemodeWorkerQueue(1);
 	const controller = new AbortController();

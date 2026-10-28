@@ -5,6 +5,11 @@ class WorkerQueueFullError extends WorkerWaitError {}
 
 const CODEMODE_MAX_WAITERS = 64;
 
+function maxCodemodeWorkers(): number {
+	const value = Number(process.env.PI_CODEMODE_MAX_WORKERS);
+	return Number.isInteger(value) && value > 0 ? value : 2;
+}
+
 function waitFailure(error: unknown, signal: AbortSignal): CodemodeResult {
 	if (!signal.aborted && !(error instanceof WorkerWaitError)) throw error;
 	return { ok: false, error: { kind: signal.aborted ? "aborted" : error instanceof WorkerQueueFullError ? "sandbox" : "timeout", message: error instanceof Error ? error.message : String(error) }, output: [], calls: [] };
@@ -14,9 +19,9 @@ function waitFailure(error: unknown, signal: AbortSignal): CodemodeResult {
 export class CodemodeWorkerQueue {
 	private active = 0;
 	private readonly waiting: (() => void)[] = [];
-	private readonly limit: number;
+	private readonly limit: number | undefined;
 	private readonly maxWaiters: number;
-	constructor(limit = 2, maxWaiters = CODEMODE_MAX_WAITERS) { this.limit = limit; this.maxWaiters = maxWaiters; }
+	constructor(limit?: number, maxWaiters = CODEMODE_MAX_WAITERS) { this.limit = limit; this.maxWaiters = maxWaiters; }
 
 	reserve(signal: AbortSignal, deadline: number): Promise<() => void> {
 		if (this.waiting.length >= this.maxWaiters) return Promise.reject(new WorkerQueueFullError(`The codemode worker queue is full (${this.maxWaiters} waiting calls).`));
@@ -58,7 +63,7 @@ export class CodemodeWorkerQueue {
 	}
 
 	private admit(): void {
-		while (this.active < this.limit && this.waiting.length > 0) this.waiting[0]?.();
+		while (this.waiting.length > 0 && this.active < (this.limit ?? maxCodemodeWorkers())) this.waiting[0]?.();
 	}
 }
 
