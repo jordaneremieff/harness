@@ -1822,9 +1822,9 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   `PI_AGENT_IDLE_MINUTES` controls the idle interval; zero disables retirement.
   Retirement requires no native live task or unsettled submission, no active
   delivery or in-flight delivery effect, no active request or host-local control,
-  and no open conversation or task observation. Pending rows for proven-dead
-  ordinary owners remain in storage with the recovery marker set; those rows
-  alone do not require a live host or recovery link. Native check-in and timer tasks keep the host alive while
+  and no open conversation or task observation. Parked and terminal delivery
+  rows remain in storage with the recovery marker set; those rows alone do not
+  require a live host or recovery link. Native check-in and timer tasks keep the host alive while
   they wait. Actual storage changes and completed requests start a new idle
   interval; passive connections and change subscriptions do not reset it.
   Closing the last observation starts a new interval. The open-to-subscribe
@@ -1993,7 +1993,7 @@ that owner's receipts without a follow-up or a model turn. This applies to
 operator and model admissions, including unanswered outcomes after abort or
 failure. The conversation already retains its outcome. Other owners still
 receive the complete answer group, including its self-owned submissions. Missing
-or malformed admission origins remain pending and reported, even for a self owner.
+or malformed admission origins become terminal with a retained reason, even for a self owner.
 A noncatalog owner is an ordinary primary reached
 through its registered primary channel. Only an absent or proven-dead owner
 endpoint permits fallback: the watcher broadcasts to every live primary within
@@ -2002,15 +2002,33 @@ one bounded discovery of registered endpoints, and each delivery is labeled
 details. These copies are informational and never acknowledge the owner row.
 Each accepted fallback recipient is recorded in the retained row, so subsequent
 passes and host reopens do not repeat that copy. Other owners of the same answer
-receive their normal delivery rather than a fallback substitute. A partial or
-unavailable scan leaves the row pending and reports that coverage explicitly.
-A live or unknown owner endpoint refuses fallback and retries. Failed passes wait
+receive their normal delivery rather than a fallback substitute. A partial scan still attempts the discovered recipients and reports its incomplete coverage.
+Fallback discovery never makes an unavailable owner active.
+
+One classification controls delivery, status and retirement:
+
+- `active`: a live primary with a compatible contract, or a retained native target
+  whose host is available. Transient transport failures retry.
+- `parked`: an absent, dead, unknown or incompatible primary, an unretained native
+  target, or a native host that cannot start. The row stays retained without a
+  retry timer and does not block retirement. A fresh watcher or explicit refresh
+  permits another native acquisition attempt.
+- `terminal`: a malformed recipient, corrupt admission origin, or linked intent
+  whose native submission is absent. The delivery document retains the reason
+  beside the row. The watcher never retries a terminal row.
+
+An unlinked intent remains pending for admission replay. A replay with an absent
+conversation becomes terminal; transient replay failures leave it pending.
+Elapsed time never changes eligibility. Status `deliveryError` names the state
+and reason without changing the response shape. Only active rows and pending
+intents keep delivery active. A live or unknown owner endpoint refuses fallback.
+Active failed passes wait
 for the configured retry delay, which doubles after each failure up to 30 seconds
 and resets after a successful pass. A native commit or explicit refresh starts a
 pass immediately, even during that wait. Commits during an active pass coalesce
 into one immediate follow-up pass. Closing the watcher cancels its retry timer.
-The timer alone is not an in-flight delivery effect; pending active-owner rows
-still prevent host retirement and retain recovery state.
+The timer alone is not an in-flight delivery effect; active rows still prevent
+host retirement and retain recovery state. Parked and terminal rows do not.
 An owner endpoint carries the primary channel contract version. A host
 that meets a live owner with another version holds that delivery pending and
 reports the endpoint version and the restart that clears it; it never treats the

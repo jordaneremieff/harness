@@ -141,13 +141,17 @@ export type DeliveryMessage = string | DeliveryMessagePart[];
  * Who caused one admission. An operator action from the board or the
  * `/agent` command is `operator`; an agent tool from a model is `model`.
  * Each owned admission requires an explicit origin. A receipt with a missing
- * or malformed origin stays pending and reports an error instead of choosing
+ * or malformed origin retains a terminal delivery reason instead of choosing
  * whether to wake its recipient.
  */
 export type DeliveryOrigin = "operator" | "model";
 
+/** Retained delivery diagnostics; terminal decisions survive process reopen. */
+export type DeliveryDisposition = { readonly state: "parked" | "terminal"; readonly reason: string };
+
 /** One durable delivery intent, written before the submission it describes. */
 export type DeliveryIntent = {
+	readonly delivery?: DeliveryDisposition;
 	readonly requestId: string;
 	readonly ownerId: string;
 	readonly conversationId: ConversationId;
@@ -160,6 +164,7 @@ export type DeliveryIntent = {
 
 /** One settled result waiting for its owner to acknowledge it. */
 export type DeliveryReceipt = {
+	readonly delivery?: DeliveryDisposition;
 	readonly submissionId: SubmissionId;
 	readonly requestId: string;
 	readonly ownerId: string;
@@ -183,6 +188,7 @@ export type DeliveryReceipt = {
 
 /** One recorded outbound report from a Durable agent to an owner session. */
 export type DeliveryReport = {
+	readonly delivery?: DeliveryDisposition;
 	/** Stable source identity: `report:<requestId>`. */
 	readonly sourceId: string;
 	readonly requestId: string;
@@ -1076,10 +1082,15 @@ function receiptRow(intent: DeliveryIntent, record: Extract<SubmissionRecord, { 
 	};
 }
 
+function receiptIsRetainedOrTerminal(state: AgentDeliveryState, intent: DeliveryIntent): boolean {
+	return intent.delivery?.state === "terminal" || (intent.submissionId !== null && state.receipts[String(intent.submissionId)] !== undefined);
+}
+
 async function finalizeReceipt(tx: Tx, state: AgentDeliveryState, intent: DeliveryIntent, index: number): Promise<void> {
-	if (intent.submissionId !== null && state.receipts[String(intent.submissionId)] !== undefined) return;
+	if (receiptIsRetainedOrTerminal(state, intent)) return;
 	const record = await tx.submissionByRequest(intent.conversationId, intent.requestId);
 	if (record === undefined || record.type !== "input") return;
+	if (intent.submissionId !== null && record.id !== intent.submissionId) return;
 	if (intent.submissionId === null) state.intents[index] = { ...intent, submissionId: record.id };
 	if (record.status !== "done" && record.status !== "unanswered") return;
 	if (state.receipts[String(record.id)] !== undefined) return;
@@ -1130,7 +1141,9 @@ export async function settleDeliveries(harness: Harness, context: Context): Prom
 	await harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
 		for (const [index, intent] of state.intents.entries()) await finalizeReceipt(tx, state, intent, index);
-		for (const conversationId of new Set(state.intents.map((intent) => intent.conversationId))) await cleanupRequestContexts(tx, conversationId);
+		for (const conversationId of new Set(state.intents.filter((intent) => intent.delivery?.state !== "terminal").map((intent) => intent.conversationId))) {
+			if (await tx.conversation(conversationId) !== undefined) await cleanupRequestContexts(tx, conversationId);
+		}
 		await retireAutomaticReports(tx, state);
 	}, context);
 }
@@ -1193,11 +1206,18 @@ export async function reconcileDeliveries(harness: Harness, context: Context): P
 	const state = await harness.snapshot(AgentDeliveryDoc, context);
 	if (!state) return;
 	for (const intent of state.intents) {
-		if (intent.submissionId !== null) continue;
+		if (intent.submissionId !== null || intent.delivery?.state === "terminal") continue;
 		let submissionId = (await harness.commit((tx) => tx.submissionByRequest(intent.conversationId, intent.requestId), context))?.id;
 		if (submissionId === undefined) {
 			const conversation = await harness.conversation(intent.conversationId, context);
-			if (!conversation) continue;
+			if (!conversation) {
+				await harness.commit(async (tx) => {
+					const current = await tx.doc(AgentDeliveryDoc);
+					const index = intentIndex(current, intent.conversationId, intent.requestId);
+					if (index >= 0) current.intents[index] = { ...current.intents[index], delivery: { state: "terminal", reason: "replay target conversation does not exist" } };
+				}, context);
+				continue;
+			}
 			const request = (await harness.snapshot(RequestContextDoc, intent.conversationId, context))?.requests.find((item) => item.requestId === intent.requestId);
 			const admitted = await conversation.submit(
 				{

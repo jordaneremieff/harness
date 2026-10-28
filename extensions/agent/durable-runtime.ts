@@ -23,7 +23,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { AgentCatalog, storageIdOf, validateDeliveryRecipient } from "./catalog.ts";
+import { AgentCatalog, type CatalogRecord, storageIdOf, validateDeliveryRecipient } from "./catalog.ts";
 import { boundCatalogView, withAttentionHints, withModelEvidence } from "./catalog-view.ts";
 import { projectCatalogAttention } from "./catalog-attention.ts";
 import { observeColdStorage } from "./cold-observation.ts";
@@ -36,7 +36,7 @@ import { publishAgentControlDispatch, type AgentControlDispatch } from "./durabl
 import { AgentDeliveryDoc, projectConversationIntents } from "./durable-controls.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { AgentManager } from "./manager.ts";
-import { deliveryOwnerIsDead, startDurableDelivery } from "./durable-delivery.ts";
+import { observeDeliveryEligibility, startDurableDelivery } from "./durable-delivery.ts";
 import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 
 function validateControlRecipient(method: string, params: Readonly<Record<string, unknown>>): void {
@@ -123,6 +123,8 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	let unsubscribeObservation: (() => void) | undefined;
 	let unsubscribeClose: (() => void) | undefined;
 	const catalog = new AgentCatalog(dirname(dirname(metadata.storagePath)));
+	const unavailableDeliveryTargets = new Map<string, string>();
+	let readDeliveryTarget: ((identity: string) => CatalogRecord | undefined) | undefined;
 	let publishTimer: ReturnType<typeof setTimeout> | undefined;
 	let publishPromise: Promise<void> | undefined;
 	let publishingView = false;
@@ -160,13 +162,8 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	/** Native work plus pending delivery state used by the marker and transient monitors. */
 	async function recoveryState(): Promise<{ readonly workPending: boolean; readonly deliveriesPending: boolean; readonly deliveriesActive: boolean }> {
 		const idle = await host.refreshIdle();
-		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
-		const sessionsRoot = dirname(dirname(metadata.storagePath));
-		const active = (owner: string) => !deliveryOwnerIsDead(catalog, sessionsRoot, owner);
-		const deliveriesActive = state !== undefined && (
-			state.intents.some((intent) => intent.submissionId === null || state.receipts[String(intent.submissionId)] === undefined)
-			|| Object.values(state.receipts).some((receipt) => !receipt.acknowledged && active(receipt.ownerId))
-			|| state.reports.some((report) => !report.acknowledged && active(report.ownerId)));
+		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets });
+		const deliveriesActive = rows.some((row) => row.eligibility.state === "active");
 		return { workPending: !idle, deliveriesPending: await deliveriesPending(), deliveriesActive };
 	}
 
@@ -396,15 +393,15 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	const delivery = () => {
 		const sessionsRoot = dirname(dirname(metadata.storagePath));
 		const targets = new AgentManager({ root: sessionsRoot, agentDir: metadata.agentDir, packageDir: metadata.packageDir });
-		return startDurableDelivery({ host, metadata, catalog, sessionsRoot, signal: controller.signal, onIdle: () => { for (const listener of quiescentListeners) listener(); },
-			readTarget: (identity) => {
-				try { return targets.nativeTarget(identity); }
-				catch (error) {
-					if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-					if (!readPrimaryEndpointDescriptor(sessionsRoot, identity).info) throw new Error("The exact delivery target is not retained and no ordinary primary is registered");
-					return undefined;
-				}
-			},
+		readDeliveryTarget = (identity) => {
+			try { return targets.nativeTarget(identity); }
+			catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+				return undefined;
+			}
+		};
+		return startDurableDelivery({ host, metadata, catalog, sessionsRoot, signal: controller.signal, unavailableTargets: unavailableDeliveryTargets, onIdle: () => { for (const listener of quiescentListeners) listener(); },
+			readTarget: readDeliveryTarget,
 			connectTarget: (record) => targets.connectNative(record.storageId), onClose: () => targets.close(),
 			onError: (error) => { process.stderr.write(`Agent delivery: ${error.message}\n`); },
 		});
@@ -529,7 +526,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		validateControlRecipient(method, params);
 		if (method === "recovery-state") {
 			const state = await recoveryState();
-			if (state.deliveriesPending) deliveries.refresh();
+			if (state.deliveriesActive) deliveries.refresh();
 			return state;
 		}
 		if (ADMITTING_METHODS.has(method)) markRecoveryDue(true);

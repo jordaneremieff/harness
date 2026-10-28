@@ -306,7 +306,7 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	}
 	const started = eventLog<void>();
 	const sourcePath = join(root, "source.sqlite");
-	const source = await DurableHost.open({ storagePath: sourcePath, storageId: "source-storage", cwd: root,
+	const source = await DurableHost.open({ storagePath: sourcePath, storageId: "11111111-1111-4111-8111-111111111111", cwd: root,
 		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage(), answerMessage()]),
 		registry: fixtureRegistry([gateTool(toolGate, () => { started.push(undefined); })]),
 		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
@@ -345,7 +345,7 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	assert.deepEqual(details.submissions.map((member) => member.origin), ["operator", "model"]);
 	const own = details.submissions.filter((member) => member.ownerId === details.deliveryRecipient);
 	assert.equal(details.wake, own.some((member) => member.origin === "model"), "wake follows the recipient's own admissions");
-	assert.match(received[0]?.text ?? "", /^Agent “source-storage” finished\./u);
+	assert.match(received[0]?.text ?? "", /^Agent “11111111-1111-4111-8111-111111111111” finished\./u);
 	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 	releaseDelivery();
 	await waitForDelivery(source, async () => ids.every((id) => revisions.at(-1)?.receipts[String(id)]?.acknowledged === (recipients !== "overlap" || id === original.submissionId)));
@@ -379,7 +379,7 @@ for (const route of ["operator", "model", "fallback"] as const) it(`delivers a $
 		deliver: async (message) => { received.push(message); await gate; }, promptTrust: async () => undefined });
 	t.after(() => channel.close());
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(() => source.close());
 	const checkIn = { conversationId: 1, requestId: "task", origin: route === "operator" ? "operator" as const : "model" as const, elapsedMs: 11_100_000, cost: 0.125 };
 	const digest = "Tool calls: 4. Current tool: bash, 8 minutes since tool-call entry. Latest reply: tests in progress.";
@@ -399,7 +399,7 @@ for (const route of ["operator", "model", "fallback"] as const) it(`delivers a $
 	release();
 	await waitForDelivery(source, async () => route === "fallback" ? (await deliveryState(source))?.reports[0]?.checkIn?.fallbackBroadcast === true : (await deliveryState(source))?.reports[0]?.acknowledged === true);
 	const message = received[0];
-	assert.equal(message.sourceId, "source-storage:checkin:task:1");
+	assert.equal(message.sourceId, "11111111-1111-4111-8111-111111111111:checkin:task:1");
 	const details = message.details as Record<string, unknown>;
 	assert.equal(details.kind, "report");
 	assert.equal(details.reportSourceId, "checkin:task:1");
@@ -411,7 +411,7 @@ for (const route of ["operator", "model", "fallback"] as const) it(`delivers a $
 	assert.equal(retained?.checkIn?.fallbackBroadcast, route === "fallback" ? true : undefined);
 	assert.match(message.text, /still working.*not finished/u);
 	assert.match(message.text, /3h05m.*\$0\.125 conversation total/u);
-	assert.match(message.text, /\(check-in from source-storage; source checkin:task:1\)/u);
+	assert.match(message.text, /\(check-in from 11111111-1111-4111-8111-111111111111; source checkin:task:1\)/u);
 	assert.match(message.text, /Assess.*report progress.*let.*run.*steer.*abort/u);
 	assert.match(message.text, /Steering cannot interrupt a running tool/u);
 	assert.match(message.text, /Tool calls: 4/u);
@@ -430,7 +430,7 @@ it("retains one accepted check-in fallback broadcast per watched task and owner"
 		deliver: async (message) => { received.push(message); if (received.length === 1) await firstGate; }, promptTrust: async () => undefined });
 	t.after(async () => { releaseFirst(); await channel.close(); });
 	const sourcePath = join(root, "source.sqlite");
-	let source = await openHost(sourcePath, "source-storage", root);
+	let source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	let watcher: ReturnType<typeof startDurableDelivery> | undefined;
 	t.after(async () => { await watcher?.close(); await source.close(); });
 	const add = async (sourceId: string, requestId = "task", conversationId = 1, ownerId = owner): Promise<void> => {
@@ -460,7 +460,7 @@ it("retains one accepted check-in fallback broadcast per watched task and owner"
 	assert.equal(received.length, 1, "the coalesced row uses the accepted broadcast instead of another notice");
 	await watcher.close();
 	await source.close();
-	source = await openHost(sourcePath, "source-storage", root);
+	source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	await add("checkin:task:2");
 	watcher = start();
 	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:2")?.checkIn?.fallbackBroadcast === true);
@@ -501,7 +501,7 @@ for (const route of ["catalog", "primary", "fallback"] as const) it(`drops a che
 	const toolGate = new Promise<void>((resolve) => { releaseTool = resolve; });
 	const started = eventLog<void>();
 	const sourcePath = join(root, "source.sqlite");
-	const source = await DurableHost.open({ storagePath: sourcePath, storageId: "source-storage", cwd: root,
+	const source = await DurableHost.open({ storagePath: sourcePath, storageId: "11111111-1111-4111-8111-111111111111", cwd: root,
 		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage()]),
 		registry: fixtureRegistry([gateTool(toolGate, () => started.push(undefined))]),
 		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
@@ -555,7 +555,7 @@ for (const origin of [undefined, "unknown"]) it(`holds a check-in with invalid s
 		deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
 	t.after(() => channel.close());
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(() => source.close());
 	await source.harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
@@ -574,11 +574,11 @@ for (const origin of [undefined, "unknown"]) it(`holds a check-in with invalid s
 	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "report:valid")?.acknowledged === true);
 	await watcher.close();
 	assert.equal(received.length, 1, "a malformed check-in neither delivers nor chooses a wake default");
-	assert.equal(received[0].sourceId, "source-storage:report:valid");
+	assert.equal(received[0].sourceId, "11111111-1111-4111-8111-111111111111:report:valid");
 	assert.equal((received[0].details as { wake?: boolean }).wake, true, "ordinary reports remain unaffected");
 	assert.equal((await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:1")?.acknowledged, false);
 	assert.ok(errors.length > 0);
-	assert.ok(errors.every((error) => /checkin:task:1.*no valid admission origin.*stays pending/u.test(error.message)));
+	assert.ok(errors.every((error) => /checkin:task:1.*terminal: corrupt admission origin/u.test(error.message)));
 });
 
 for (const route of ["primary", "same-storage", "catalog"] as const) it(`delivers an exact long-answer continuation through the ${route} route`, { timeout: 10000 }, async (t) => {
@@ -586,7 +586,7 @@ for (const route of ["primary", "same-storage", "catalog"] as const) it(`deliver
 	const sessionsRoot = join(root, "sessions");
 	const sourcePath = join(root, "source.sqlite");
 	const answer = `${"x".repeat(17000)}EXACT-END`;
-	const source = await DurableHost.open({ storagePath: sourcePath, storageId: "source-storage", cwd: root,
+	const source = await DurableHost.open({ storagePath: sourcePath, storageId: "11111111-1111-4111-8111-111111111111", cwd: root,
 		models: await scriptedRuntime([answerMessage(answer), answerMessage("RECEIVED")]), registry: fixtureRegistry(),
 		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
 	t.after(() => source.close());
@@ -643,7 +643,7 @@ it("bounds a check-in digest while retaining the full source", { timeout: 30000 
 		deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
 	t.after(() => channel.close());
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(() => source.close());
 	const digest = `${"x".repeat(15_999)}😀OMITTED`;
 	const checkIn = { conversationId: 1, requestId: "task", origin: "model" as const, elapsedMs: 1_800_000, cost: null };
@@ -676,7 +676,7 @@ for (const route of ["catalog", "same-storage"] as const) it(`routes a check-in 
 	const record = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
 		model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off", ownerId: "owner" });
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	const target = route === "same-storage" ? source : await openHost(record.storagePath, record.storageId, root);
 	const owner = route === "same-storage" ? source.storageId : `${record.storageId}:1`;
 	t.after(async () => { await source.close(); if (target !== source) await target.close(); });
@@ -708,8 +708,8 @@ for (const route of ["catalog", "same-storage"] as const) it(`routes a check-in 
 	assert.equal(call.params.sessionId, owner);
 	assert.equal(call.params.whenBusy, "followUp");
 	assert.equal(call.params.ownerId, undefined);
-	assert.equal(call.params.requestId, `deliver:source-storage:report:${createHash("sha256").update("checkin:task:2").digest("hex").slice(0, 32)}`);
-	assert.match(String(call.params.message), /Check-in from source-storage.*source checkin:task:2/u);
+	assert.equal(call.params.requestId, `deliver:11111111-1111-4111-8111-111111111111:report:${createHash("sha256").update("checkin:task:2").digest("hex").slice(0, 32)}`);
+	assert.match(String(call.params.message), /Check-in from 11111111-1111-4111-8111-111111111111.*source checkin:task:2/u);
 	assert.match(String(call.params.message), /still working.*not finished.*30m/u);
 	assert.doesNotMatch(String(call.params.message), /conversation total unavailable/u);
 	assert.match(String(call.params.message), /Task is active/u);
@@ -730,7 +730,7 @@ it("routes a receipt and a report only after the target admits them", { timeout:
 	});
 	const owner = `${record.storageId}:1`;
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	const target = await openHost(record.storagePath, record.storageId, root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
@@ -786,7 +786,7 @@ it("routes a receipt and a report only after the target admits them", { timeout:
 		(call) => typeof call.params.requestId === "string" && (call.params.requestId as string).includes(":report:"),
 	) as SubmitRecord;
 	const expectedReceipt = `deliver:${await receiptSourceId(source, submissionId)}`;
-	const expectedReport = `deliver:source-storage:report:${createHash("sha256").update("report:source-report").digest("hex").slice(0, 32)}`;
+	const expectedReport = `deliver:11111111-1111-4111-8111-111111111111:report:${createHash("sha256").update("report:source-report").digest("hex").slice(0, 32)}`;
 	assert.equal(receiptCall.requestId, expectedReceipt);
 	assert.equal(receiptCall.params.requestId, expectedReceipt);
 	assert.equal(reportCall.requestId, expectedReport);
@@ -817,7 +817,7 @@ it("identifies an absent peer report without blocking a catalog owner's result",
 	assert.equal(record.storageId, "df9df4ea-5dc7-236d-fbf2-d087b48aadfb", "a native storage identity need not be a canonical primary UUID");
 	const missingPeer = "11111111-2222-f333-7444-555555555555";
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	const target = await openHost(record.storagePath, record.storageId, root);
 	t.after(async () => { await source.close(); await target.close(); });
 	const report = await recordReport(source.harness, {
@@ -848,8 +848,8 @@ it("identifies an absent peer report without blocking a catalog owner's result",
 	assert.equal(calls.length, 1);
 	assert.equal(calls[0]?.params.sessionId, record.storageId);
 	assert.equal(calls[0]?.params.ownerId, undefined, "the result does not create another ownership intent");
-	assert.match(String(calls[0]?.params.message), /Agent result from source-storage:1/u);
-	assert.equal(errors[0]?.message, `Delivery source-storage:${report.sourceId} to ${missingPeer} failed: delivery owner ${missingPeer} has no catalog record and is not a canonical primary id; refusing fallback`);
+	assert.match(String(calls[0]?.params.message), /Agent result from 11111111-1111-4111-8111-111111111111:1/u);
+	assert.match(errors[0]?.message ?? "", /parked: native recipient has no catalog record/u);
 	const status = await source.request("status", {}, BACKGROUND_CONTEXT) as { deliveryError?: string };
 	assert.equal(status.deliveryError, errors[0]?.message, "status identifies the failed report, not the delivered result");
 });
@@ -867,7 +867,7 @@ it("resumes after reopen and native dedup keeps one submission", { timeout: 3000
 	});
 	const owner = `${record.storageId}:1`;
 	const sourcePath = join(root, "source.sqlite");
-	const first = await openHost(sourcePath, "source-storage", root);
+	const first = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	const submissionId = await addReceipt(first, owner);
 	const expected = `deliver:${await receiptSourceId(first, submissionId)}`;
 	await first.close();
@@ -881,7 +881,7 @@ it("resumes after reopen and native dedup keeps one submission", { timeout: 3000
 		BACKGROUND_CONTEXT,
 	)) as { submissionId: number };
 
-	const reopened = await openHost(sourcePath, "source-storage", root);
+	const reopened = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await reopened.close().catch(() => undefined);
 	});
@@ -929,7 +929,7 @@ it("delivers a noncatalog owner to its registered primary channel with source me
 		await channel.close().catch(() => undefined);
 	});
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -949,19 +949,19 @@ it("delivers a noncatalog owner to its registered primary channel with source me
 	const details = message.details as Record<string, unknown>;
 	assert.equal(message.sourceId, await receiptSourceId(source, submissionId));
 	assert.equal(details.originalOwnerId, owner);
-	assert.equal(details.storageId, "source-storage");
+	assert.equal(details.storageId, "11111111-1111-4111-8111-111111111111");
 	assert.equal(details.saved, true);
 	assert.equal(details.provider, fixtureProvider);
 	assert.equal(details.modelId, fixtureModelId);
-	assert.equal(details.identity, "source-storage");
+	assert.equal(details.identity, "11111111-1111-4111-8111-111111111111");
 	assert.equal(details.liveOwner, true);
 	assert.equal(details.deliveryRecipient, owner);
 	assert.equal(details.metadataUnknown, undefined);
 	assert.equal(details.textTruncated, undefined, "a short body carries no truncation flag");
 	assert.equal(typeof details.thinkingLevel, "string");
-	assert.equal(details.label, "source-storage");
+	assert.equal(details.label, "11111111-1111-4111-8111-111111111111");
 	assert.equal(details.wake, true, "a model-origin admission wakes its owner");
-	assert.match(message.text, /^Agent “source-storage” finished\./u);
+	assert.match(message.text, /^Agent “11111111-1111-4111-8111-111111111111” finished\./u);
 	assert.match(message.text, /Results do not establish task acceptance/u);
 	assert.doesNotMatch(message.text, /no live owning session/u);
 	assert.doesNotMatch(message.text, /submissions/u);
@@ -989,7 +989,7 @@ it("delivers an operator-only answer group without waking the primary", { timeou
 		await channel.close().catch(() => undefined);
 	});
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1012,7 +1012,7 @@ it("delivers an operator-only answer group without waking the primary", { timeou
 	const details = received[0]?.details as { wake?: unknown; submissions?: Array<{ origin?: string }> };
 	assert.equal(details.wake, false, "an operator-only answer group does not start a primary turn");
 	assert.deepEqual(details.submissions?.map((member) => member.origin), ["operator"]);
-	assert.match(received[0]?.text ?? "", /^Agent “source-storage” finished\./u);
+	assert.match(received[0]?.text ?? "", /^Agent “11111111-1111-4111-8111-111111111111” finished\./u);
 	assert.doesNotMatch(received[0]?.text ?? "", /submissions/u);
 	await watcher.close();
 	assert.deepEqual(errors, [], "delivery completes without errors");
@@ -1036,7 +1036,7 @@ it("keeps a stored admission origin across a host reopen before delivery", { tim
 		await channel.close().catch(() => undefined);
 	});
 	const sourcePath = join(root, "source.sqlite");
-	const first = await openHost(sourcePath, "source-storage", root);
+	const first = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	const admitted = await first.request(
 		"submit",
 		{ sessionId: first.storageId, message: "restart task", requestId: "survives-restart", ownerId: owner, origin: "operator" },
@@ -1044,7 +1044,7 @@ it("keeps a stored admission origin across a host reopen before delivery", { tim
 	) as { submissionId: SubmissionId };
 	await first.wait(admitted.submissionId, BACKGROUND_CONTEXT);
 	await first.close();
-	const reopened = await openHost(sourcePath, "source-storage", root);
+	const reopened = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await reopened.close().catch(() => undefined);
 	});
@@ -1069,7 +1069,7 @@ for (const origin of ["operator", "model"] as const) for (const target of ["root
 	it(`acknowledges ${origin} self-owned answered receipts in ${target} without follow-up input`, { timeout: 10000 }, async (t) => {
 		const root = fixtureRoot(t);
 		const path = join(root, "source.sqlite");
-		const source = await openHost(path, "source-storage", root);
+		const source = await openHost(path, "11111111-1111-4111-8111-111111111111", root);
 		t.after(() => source.close());
 		const sibling = target === "sibling" ? await source.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT) : undefined;
 		const identity = sibling ? source.identity(sibling.id) : source.storageId;
@@ -1093,7 +1093,7 @@ it("acknowledges an aborted self-owned receipt without follow-up input", { timeo
 	const started = eventLog<void>();
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
-	const source = await DurableHost.open({ storagePath: path, storageId: "source-storage", cwd: root,
+	const source = await DurableHost.open({ storagePath: path, storageId: "11111111-1111-4111-8111-111111111111", cwd: root,
 		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage()]), registry: fixtureRegistry([gateTool(gate, () => started.push(undefined))]),
 		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
 	t.after(() => source.close());
@@ -1124,7 +1124,7 @@ it("delivers every submission in an answer group to another owner without self f
 	const started = eventLog<void>();
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
-	const source = await DurableHost.open({ storagePath: path, storageId: "source-storage", cwd: root,
+	const source = await DurableHost.open({ storagePath: path, storageId: "11111111-1111-4111-8111-111111111111", cwd: root,
 		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage(), answerMessage()]), registry: fixtureRegistry([gateTool(gate, () => started.push(undefined))]),
 		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
 	t.after(() => source.close());
@@ -1156,7 +1156,7 @@ it("delivers every submission in an answer group to another owner without self f
 for (const origin of [undefined, "invalid"] as const) it(`keeps a self-owned receipt with ${origin} origin pending and reported`, { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const path = join(root, "source.sqlite");
-	const source = await openHost(path, "source-storage", root);
+	const source = await openHost(path, "11111111-1111-4111-8111-111111111111", root);
 	t.after(() => source.close());
 	const id = await addReceipt(source, source.storageId);
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
@@ -1174,8 +1174,8 @@ for (const origin of [undefined, "invalid"] as const) it(`keeps a self-owned rec
 		await errors.waitForCount(1);
 		assert.equal((await deliveryState(source))?.receipts[String(id)]?.acknowledged, false);
 		assert.equal(calls.mock.calls.filter((call) => call.arguments[0] === "submit").length, 0);
-		assert.match(errors[0]?.message ?? "", /no valid admission origin/u);
-		assert.match(((await source.request("status", {})) as { deliveryError?: string }).deliveryError ?? "", /no valid admission origin/u);
+		assert.match(errors[0]?.message ?? "", /terminal: corrupt admission origin/u);
+		assert.match(((await source.request("status", {})) as { deliveryError?: string }).deliveryError ?? "", /terminal: corrupt admission origin/u);
 	} finally { await watcher.close(); }
 });
 
@@ -1197,7 +1197,7 @@ it("reports a same-storage owner inside its storage instead of falling back", { 
 		await channel.close().catch(() => undefined);
 	});
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1248,7 +1248,7 @@ it("reports a malformed admission origin without crash-looping and keeps other r
 		await channel.close().catch(() => undefined);
 	});
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1277,10 +1277,11 @@ it("reports a malformed admission origin without crash-looping and keeps other r
 	await received.waitForCount(1);
 	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(goodId)]?.acknowledged === true);
 	assert.equal((await deliveryState(source))?.receipts[String(corruptId)]?.acknowledged, false, "the malformed row stays pending");
-	assert.match(errors[0]?.message ?? "", /no valid admission origin/u);
+	await errors.waitForCount(1);
+	assert.match(errors[0]?.message ?? "", /terminal: corrupt admission origin/u);
 	const status = (await source.request("status", {})) as { deliveryError?: string };
-	assert.match(status.deliveryError ?? "", /no valid admission origin/u, "the corruption stays visible in host status");
-	assert.ok(errors.every((error) => /no valid admission origin/u.test(error.message)), "every report names the corruption");
+	assert.match(status.deliveryError ?? "", /terminal: corrupt admission origin/u, "the corruption stays visible in host status");
+	assert.ok(errors.every((error) => /terminal: corrupt admission origin/u.test(error.message)), "every report names the corruption");
 });
 
 it("clears the delivery error after a malformed receipt is corrected", { timeout: 5000 }, async (t) => {
@@ -1290,7 +1291,7 @@ it("clears the delivery error after a malformed receipt is corrected", { timeout
 	const channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot, deliver() {}, promptTrust: async () => undefined });
 	t.after(() => channel.close());
 	const path = join(root, "source.sqlite");
-	const source = await openHost(path, "source-storage", root);
+	const source = await openHost(path, "11111111-1111-4111-8111-111111111111", root);
 	t.after(() => source.close());
 	const id = await addReceipt(source, owner, "corrected-origin");
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
@@ -1315,13 +1316,14 @@ it("clears the delivery error after a malformed receipt is corrected", { timeout
 		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onError: () => reported() });
 	t.after(() => watcher.close());
 	await corruption;
-	assert.match(((await source.request("status", {})) as { deliveryError?: string }).deliveryError ?? "", /no valid admission origin/u);
+	assert.match(((await source.request("status", {})) as { deliveryError?: string }).deliveryError ?? "", /terminal: corrupt admission origin/u);
 	corrected = true;
 	await source.harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
 		const receipt = state.receipts[String(id)];
 		assert.ok(receipt);
-		state.receipts[String(id)] = { ...receipt, origin: "operator" };
+		const { delivery: _terminal, ...repaired } = receipt;
+		state.receipts[String(id)] = { ...repaired, origin: "operator" };
 	}, BACKGROUND_CONTEXT);
 	await clearance;
 	assert.equal(((await source.request("status", {})) as { deliveryError?: string }).deliveryError, undefined);
@@ -1340,7 +1342,7 @@ it("holds a quiet notice for an older owner, then delivers after that owner rest
 	t.after(async () => { ownerProcess.kill("SIGTERM"); await exited; });
 	writeIncompatibleEndpoint(sessionsRoot, owner, ownerProcess.pid);
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1388,7 +1390,7 @@ it("holds a quiet notice for an older owner, then delivers after that owner rest
 	t.after(async () => {
 		await channel.close().catch(() => undefined);
 	});
-	await source.harness.commit(async () => {}, BACKGROUND_CONTEXT);
+	watcher.refresh();
 	await received.waitForCount(1);
 	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(admitted.submissionId)]?.acknowledged === true);
 	const notice = received[0]?.details as { wake?: unknown } | undefined;
@@ -1419,7 +1421,7 @@ it("holds a fallback when a registered primary runs an older endpoint", { timeou
 	});
 	writeIncompatibleEndpoint(sessionsRoot, older);
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1461,7 +1463,7 @@ it("falls back to one registered live primary when the owning endpoint is absent
 		await channel.close().catch(() => undefined);
 	});
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1481,12 +1483,12 @@ it("falls back to one registered live primary when the owning endpoint is absent
 	const details = message.details as Record<string, unknown>;
 	assert.equal(details.fallback, true);
 	assert.equal(details.fallbackLabel, "no live owning session");
-	assert.equal(details.label, "source-storage");
+	assert.equal(details.label, "11111111-1111-4111-8111-111111111111");
 	assert.equal(details.wake, false, "a fallback broadcast never wakes a primary model");
 	assert.equal(details.originalOwnerId, absentOwner);
 	assert.equal(details.liveOwner, false);
 	assert.equal(details.deliveryRecipient, fallbackOwner);
-	assert.equal(details.identity, "source-storage");
+	assert.equal(details.identity, "11111111-1111-4111-8111-111111111111");
 	assert.match(message.text, /no live owning session/u);
 	assert.ok(message.text.includes(absentOwner));
 	const state = await deliveryState(source);
@@ -1526,7 +1528,7 @@ it("refuses fallback when the live owning endpoint is unreachable", { timeout: 3
 	});
 	unlinkSync(ownerChannel.socketPath);
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1569,7 +1571,7 @@ it("refuses primary-channel routing for a malformed catalog record", { timeout: 
 	mkdirSync(join(root, "durable"), { recursive: true });
 	writeFileSync(join(root, "durable", `${owner}.json`), JSON.stringify({ storageId: owner }), { mode: 0o600 });
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1622,7 +1624,7 @@ it("acknowledges a primary-channel row only after the channel accepts it", { tim
 		await channel.close().catch(() => undefined);
 	});
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1657,7 +1659,7 @@ async function retryFixture(t: TestContext, gate?: Promise<void>) {
 	const record = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"),
 		model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off" });
 	const path = join(root, "source.sqlite");
-	const source = await openHost(path, "source-storage", root);
+	const source = await openHost(path, "11111111-1111-4111-8111-111111111111", root);
 	t.after(() => source.close());
 	const id = await addReceipt(source, record.storageId);
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
@@ -1668,7 +1670,7 @@ async function retryFixture(t: TestContext, gate?: Promise<void>) {
 	const errors = eventLog<Error>();
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog,
 		signal: new AbortController().signal, retryDelayMs: 500,
-		acquire: async () => { entered.push(undefined); if (gate) await gate; throw new Error("transient"); },
+		acquire: async () => ({ ...fakeTarget(source, []), request: async () => { entered.push(undefined); if (gate) await gate; throw new Error("transient"); } }),
 		onError: (error) => errors.push(error), onIdle: () => idle.push(undefined) });
 	t.after(() => watcher.close());
 	const publish = () => source.harness.commit(async (tx) => {
@@ -1746,7 +1748,7 @@ it("preserves the live owner's wake when an absent owner shares its answer", { t
 	const channel = await createPrimaryChannel({ id: live, cwd: root, sessionsRoot, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
 	t.after(() => channel.close());
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(() => source.close());
 	const submissionId = await addReceipt(source, absent);
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
@@ -1778,7 +1780,7 @@ for (const kind of ["receipt", "report"] as const) it(`keeps a dead owner's ${ki
 	const fallback = eventLog<PrimaryDelivery>();
 	let channel = await createPrimaryChannel({ id: other, cwd: root, sessionsRoot, deliver: (message) => { fallback.push(message); }, promptTrust: async () => undefined });
 	const sourcePath = join(root, "source.sqlite");
-	let source = await openHost(sourcePath, "source-storage", root);
+	let source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	let watcher: ReturnType<typeof startDurableDelivery> | undefined;
 	t.after(async () => { await watcher?.close(); await channel.close(); await source.close(); });
 	const submissionId = kind === "receipt" ? await addReceipt(source, owner) : undefined;
@@ -1800,7 +1802,7 @@ for (const kind of ["receipt", "report"] as const) it(`keeps a dead owner's ${ki
 	await source.close();
 	await channel.close();
 	channel = await createPrimaryChannel({ id: other, cwd: root, sessionsRoot, deliver: (message) => { fallback.push(message); }, promptTrust: async () => undefined });
-	source = await openHost(sourcePath, "source-storage", root);
+	source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	const passes = idle.length;
 	watcher = start();
 	await idle.waitForCount(passes + 1);
@@ -1850,7 +1852,7 @@ it("broadcasts a fallback to every registered live primary exactly once", { time
 		await secondChannel.close().catch(() => undefined);
 	});
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1924,7 +1926,7 @@ it("retries a failed broadcast without duplicating a successful receiver", { tim
 		await failingChannel.close().catch(() => undefined);
 	});
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1956,7 +1958,7 @@ it("retries a failed broadcast without duplicating a successful receiver", { tim
 it("refuses acknowledgement when candidate discovery is incomplete", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -1982,7 +1984,7 @@ it("refuses acknowledgement when candidate discovery is incomplete", { timeout: 
 it("leaves a fallback row pending when no registered primary can receive it", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -2034,7 +2036,7 @@ it("leaves the broadcast pending when a registered live candidate is unreachable
 	});
 	unlinkSync(unreachableChannel.socketPath);
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -2075,7 +2077,7 @@ it("bounds the default primary discovery and refuses an incomplete scan", { time
 	mkdirSync(directory, { recursive: true });
 	for (let index = 0; index < 21; index += 1) writeFileSync(join(directory, `${randomUUID()}.json`), "{}");
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -2115,7 +2117,7 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 		await channel.close().catch(() => undefined);
 	});
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);
 	});
@@ -2152,7 +2154,7 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 	});
 	const bySource = new Map(received.map((message) => [message.sourceId, message]));
 	const receiptMessage = bySource.get(await receiptSourceId(source, submissionId));
-	const reportMessage = bySource.get("source-storage:report:long-report");
+	const reportMessage = bySource.get("11111111-1111-4111-8111-111111111111:report:long-report");
 	assert.ok(receiptMessage, "the long answer was delivered");
 	assert.ok(reportMessage, "the long report was delivered");
 	for (const message of [receiptMessage, reportMessage]) {
@@ -2220,7 +2222,7 @@ it("keeps a direct thread notice pending rather than broadcasting to another pri
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog: new AgentCatalog(root), signal: new AbortController().signal, sessionsRoot: root, listPrimaryChannels: async () => { discoveries++; return { ids: [], visited: 0, complete: true }; }, onError: (error) => errors.push(error) });
 	t.after(() => watcher.close());
 	await errors.waitForCount(1);
-	assert.match(errors[0].message, /without broadcast/u);
+	assert.match(errors[0].message, /parked: primary endpoint is absent/u);
 	assert.equal(discoveries, 0);
 	assert.equal((await deliveryState(source))?.reports[0].acknowledged, false);
 });
@@ -2238,7 +2240,7 @@ it("bounds the native catalog follow-up body", { timeout: 30000 }, async (t) => 
 	});
 	const owner = `${record.storageId}:1`;
 	const sourcePath = join(root, "source.sqlite");
-	const source = await openHost(sourcePath, "source-storage", root);
+	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	const target = await openHost(record.storagePath, record.storageId, root);
 	t.after(async () => {
 		await source.close().catch(() => undefined);

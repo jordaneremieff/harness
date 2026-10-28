@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +12,7 @@ import { installSourceRoutes } from "./source-route.ts";
 
 const sourceRoot = dirname(dirname(fileURLToPath(new URL("./", import.meta.url))));
 const claim = (purpose: string) => ({ action: "publish", purpose, integration: "Run the authorised gate", authority: "Synthetic operator authority", scope: { paths: ["extensions/agent"], branches: ["feature/native-intent"], fullGate: true } });
-const observer = "native-intent-fixture-observer";
+const observer = randomUUID();
 async function run(client: HostConnection, sessionId: string, input: unknown, requestId: string) {
 	const admission = await client.request("submit", { sessionId, message: `INTENT_INPUT:${JSON.stringify({ requestId, input })}`, origin: "operator", ownerId: observer, requestId }) as { submissionId: number };
 	const receipt = await waitForReceipt(client, observer, admission.submissionId, 10000).catch(async error => {

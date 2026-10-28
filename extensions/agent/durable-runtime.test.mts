@@ -191,6 +191,7 @@ it("reads a cold observation without bootstrapping contributions", { timeout: 18
 	} finally {
 		await primary.close().catch(() => {});
 	}
+	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(15000) });
 	const marker = join(f.testDir, "observation-create.txt");
 	process.env.DURABLE_TEST_CREATE_MARKER = marker;
 	try {

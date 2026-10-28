@@ -14,8 +14,9 @@
  * that primary endpoint is absent or its owner process is proven dead, every
  * registered live or unknown primary receives a labeled informational copy.
  * Accepted copies are retained per recipient and never acknowledge the owner.
- * A proven-dead owner waits in durable storage without a delivery retry timer;
- * other routes retry without treating transport failure as proof of death.
+ * Unavailable recipients wait in durable storage without a delivery retry timer.
+ * Reachable recipients retry transient transport failures. Malformed identities
+ * and corrupt origins retain terminal reasons and never retry.
  *
  * Delivery is at-least-once. Request IDs and channel source IDs derive from the
  * source storage and the answer, unanswered submission, or report identity.
@@ -30,14 +31,17 @@ import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ConversationId } from "@earendil-works/pi-durable";
-import { type AgentCatalog, type CatalogRecord, hostMetadata } from "./catalog.ts";
+import type { ConversationId, Harness } from "@earendil-works/pi-durable";
+import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
 import {
 	AgentDeliveryDoc,
 	acknowledgeReports,
 	type DeliveryOrigin,
 	type DeliveryReceipt,
 	type DeliveryReport,
+	type DeliveryIntent,
+	type DeliveryDisposition,
+	type AgentDeliveryState,
 	settleDeliveries,
 	providerRetryReportSettled,
 } from "./durable-controls.ts";
@@ -115,6 +119,8 @@ export interface DurableDeliveryOptions {
 	readonly sessionsRoot?: string;
 	/** Registered-primary discovery for the fallback; defaults to a bounded scan of endpoint records. */
 	readonly listPrimaryChannels?: (sessionsRoot: string) => Promise<PrimaryDiscovery>;
+	/** Failed native acquisitions stay parked until a new watcher or explicit refresh. */
+	readonly unavailableTargets?: Map<string, string>;
 }
 
 export interface DurableDelivery {
@@ -239,13 +245,13 @@ function primarySourceStatus(sessionsRoot: string, identity: string): SourceStat
 
 /**
  * Admission origin of one receipt. A missing or malformed origin is corruption,
- * not a default: the row is reported and stays pending instead of silently
+ * not a default: the row retains a terminal reason instead of silently
  * waking or suppressing one owner.
  */
 function receiptOrigin(receipt: DeliveryReceipt): DeliveryOrigin {
 	const origin = receipt.origin;
 	if (origin !== "operator" && origin !== "model")
-		throw new Error(`retained delivery ${receipt.submissionId} has no valid admission origin; the row stays pending`);
+		throw new Error(`retained delivery ${receipt.submissionId} has no valid admission origin`);
 	return origin;
 }
 
@@ -257,22 +263,6 @@ function rowWakes(row: DeliveryRow, recipient: string): boolean {
 	const own = row.receipts.filter((receipt) => receipt.ownerId === recipient);
 	if (own.length === 0) return true;
 	return own.some((receipt) => receiptOrigin(receipt) === "model");
-}
-
-/** Invalid stored admission origins hold their row pending, without blocking other deliveries. */
-function rowOriginFailure(row: DeliveryRow): Error | undefined {
-	try {
-		if (row.kind === "receipt") {
-			for (const receipt of row.receipts) receiptOrigin(receipt);
-		} else if (row.report.checkIn !== undefined) {
-			const origin = row.report.checkIn.origin;
-			if (origin !== "operator" && origin !== "model")
-				throw new Error(`retained check-in ${row.report.sourceId} has no valid admission origin; the row stays pending`);
-		}
-		return undefined;
-	} catch (error) {
-		return error instanceof Error ? error : new Error(String(error));
-	}
 }
 
 /** Plain outcome word for one settled receipt. */
@@ -316,14 +306,6 @@ function rowSourceId(metadata: HostMetadata, row: DeliveryRow): string {
 	return row.kind === "receipt"
 		? `${metadata.storageId}:${receiptKey(row.receipt)}`
 		: `${metadata.storageId}:${row.report.sourceId}`;
-}
-
-/** Only a proven-dead ordinary primary permits delivery to wait in cold storage. */
-export function deliveryOwnerIsDead(catalog: AgentCatalog, sessionsRoot: string, owner: string): boolean {
-	if (!PRIMARY_ID.test(owner)) return false;
-	try { catalog.read(owner); return false; }
-	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") return false; }
-	return primaryEndpointStatus(sessionsRoot, owner).state === "dead";
 }
 
 function rowOwners(row: DeliveryRow): string[] {
@@ -439,6 +421,128 @@ async function scanPrimaryChannels(sessionsRoot: string): Promise<PrimaryDiscove
 	return { ids, complete: !truncated, visited };
 }
 
+export type DeliveryEligibility = { readonly state: "active" | "parked" | "terminal"; readonly reason: string; readonly fallback?: boolean };
+
+export interface DeliveryFacts {
+	readonly ownerId: string;
+	readonly terminalReason?: string;
+	readonly originValid: boolean;
+	readonly pendingIntent?: boolean;
+	readonly missingSubmission?: boolean;
+	readonly nativeRecord: boolean;
+	readonly nativeFailure?: string;
+	readonly primaryState: ReturnType<typeof primaryEndpointStatus>["state"];
+	readonly primaryVersion?: string;
+	readonly fallbackFailure?: string;
+}
+
+/** Eligibility depends on retained facts and current reachability, never elapsed time. */
+export function classifyDelivery(facts: DeliveryFacts): DeliveryEligibility {
+	if (facts.terminalReason !== undefined) return { state: "terminal", reason: facts.terminalReason };
+	try { storageIdOf(facts.ownerId); }
+	catch { return { state: "terminal", reason: "malformed recipient identity" }; }
+	if (!facts.originValid) return { state: "terminal", reason: "corrupt admission origin" };
+	if (facts.missingSubmission) return { state: "terminal", reason: "linked native submission is absent" };
+	if (facts.pendingIntent) return { state: "active", reason: "native admission or submission is pending" };
+	if (facts.nativeFailure !== undefined) return { state: "parked", reason: facts.nativeFailure };
+	if (facts.nativeRecord) return { state: "active", reason: "native recipient is available" };
+	if (!PRIMARY_ID.test(facts.ownerId)) return { state: "parked", reason: "native recipient has no catalog record" };
+	if (facts.primaryState === "live") return { state: "active", reason: "primary recipient is live with a compatible delivery contract" };
+	if (facts.primaryState === "incompatible") return { state: "parked", reason: primaryEndpointIncompatibleError(facts.ownerId, facts.primaryVersion ?? "unadvertised").message };
+	return { state: "parked", reason: `primary endpoint is ${facts.primaryState}${facts.fallbackFailure === undefined ? "" : `; ${facts.fallbackFailure}`}`, fallback: facts.primaryState === "absent" || facts.primaryState === "dead" };
+}
+
+type EligibilityRow = {
+	readonly key: string;
+	readonly kind: "intent" | "receipt" | "report";
+	readonly row: DeliveryIntent | DeliveryReceipt | DeliveryReport;
+	readonly eligibility: DeliveryEligibility;
+};
+
+interface EligibilityOptions {
+	readonly catalog: AgentCatalog;
+	readonly sessionsRoot: string;
+	readonly storageId?: string;
+	readonly readTarget?: DurableDeliveryOptions["readTarget"];
+	readonly unavailableTargets?: ReadonlyMap<string, string>;
+	readonly fallbackFailures?: ReadonlyMap<string, string>;
+}
+
+/** Namespace lookup failure is unavailability, not permission to assume a live route. */
+function recipientFacts(ownerId: string, options: EligibilityOptions): Pick<DeliveryFacts, "nativeRecord" | "nativeFailure" | "primaryState" | "primaryVersion"> {
+	if (options.storageId !== undefined && ownerStorageId(ownerId) === options.storageId) return { nativeRecord: true, primaryState: "absent" };
+	let record: CatalogRecord | undefined;
+	try { record = options.readTarget ? options.readTarget(ownerId) : options.catalog.read(ownerId); }
+	catch (error) {
+		if (options.readTarget !== undefined || (error as NodeJS.ErrnoException).code !== "ENOENT") return { nativeRecord: false, primaryState: "unknown", nativeFailure: asError(error).message };
+	}
+	const primary = PRIMARY_ID.test(ownerId) ? primaryEndpointStatus(options.sessionsRoot, ownerId) : { state: "absent" as const };
+	return { nativeRecord: record !== undefined, primaryState: primary.state, primaryVersion: primary.version, nativeFailure: options.unavailableTargets?.get(ownerStorageId(ownerId)) };
+}
+
+/** One observation supplies routing, status, recovery and the retirement seal. */
+export async function observeDeliveryEligibility(harness: Harness, options: EligibilityOptions): Promise<readonly EligibilityRow[]> {
+	const state = await harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	if (state === undefined) return [];
+	const missing = await harness.commit(async (tx) => {
+		const ids = new Set<string>();
+		for (const intent of state.intents) {
+			if (intent.submissionId === null || state.receipts[String(intent.submissionId)] !== undefined) continue;
+			const record = await tx.submissionByRequest(intent.conversationId, intent.requestId);
+			if (record?.id !== intent.submissionId) ids.add(`${intent.conversationId}:${intent.requestId}`);
+		}
+		return ids;
+	}, BACKGROUND_CONTEXT);
+	const result: EligibilityRow[] = [];
+	const add = (kind: EligibilityRow["kind"], key: string, row: EligibilityRow["row"], originValid: boolean, intent?: DeliveryIntent) => {
+		const terminalReason = row.delivery?.state === "terminal" ? row.delivery.reason : undefined;
+		const eligibility = classifyDelivery({ ownerId: row.ownerId, originValid, terminalReason, fallbackFailure: options.fallbackFailures?.get(row.ownerId), ...recipientFacts(row.ownerId, options), ...(intent === undefined ? {} : { pendingIntent: true, missingSubmission: missing.has(`${intent.conversationId}:${intent.requestId}`) }) });
+		result.push({ key, kind, row, eligibility });
+	};
+	for (const intent of state.intents) {
+		if (intent.submissionId !== null && state.receipts[String(intent.submissionId)] !== undefined) continue;
+		add("intent", `intent:${intent.conversationId}:${intent.requestId}`, intent, intent.origin === "model" || intent.origin === "operator", intent);
+	}
+	for (const receipt of Object.values(state.receipts)) if (!receipt.acknowledged) add("receipt", `receipt:${receipt.submissionId}`, receipt, receipt.origin === "model" || receipt.origin === "operator");
+	for (const report of state.reports) if (!report.acknowledged) add("report", `report:${report.sourceId}:${report.ownerId}`, report, report.checkIn === undefined || report.checkIn.origin === "model" || report.checkIn.origin === "operator");
+	return result;
+}
+
+/** Diagnostics are retained beside each row; terminal decisions survive reopen. */
+async function retainEligibility(harness: Harness, rows: readonly EligibilityRow[]): Promise<void> {
+	await harness.commit(async (tx) => {
+		const state = await tx.doc(AgentDeliveryDoc);
+		for (const item of rows) {
+			const disposition: DeliveryDisposition | undefined = item.eligibility.state === "active" ? undefined : { state: item.eligibility.state, reason: item.eligibility.reason };
+			const update = <T extends { readonly delivery?: DeliveryDisposition }>(row: T): T => {
+				const { delivery: _prior, ...rest } = row;
+				return { ...rest, ...(disposition === undefined ? {} : { delivery: disposition }) } as T;
+			};
+			if (item.kind === "receipt") {
+				const key = String((item.row as DeliveryReceipt).submissionId);
+				if (state.receipts[key] !== undefined) state.receipts[key] = update(state.receipts[key]);
+			} else retainListEligibility(state, item, update);
+		}
+	}, BACKGROUND_CONTEXT);
+}
+
+function retainListEligibility(state: AgentDeliveryState, item: EligibilityRow, update: <T extends { readonly delivery?: DeliveryDisposition }>(row: T) => T): void {
+	if (item.kind === "intent") {
+		const intent = item.row as DeliveryIntent;
+		const index = state.intents.findIndex((row) => row.conversationId === intent.conversationId && row.requestId === intent.requestId);
+		if (index >= 0) state.intents[index] = update(state.intents[index]);
+	} else {
+		const report = item.row as DeliveryReport;
+		const index = state.reports.findIndex((row) => row.sourceId === report.sourceId && row.ownerId === report.ownerId);
+		if (index >= 0) state.reports[index] = update(state.reports[index]);
+	}
+}
+
+export function deliveryEligibilityError(rows: readonly EligibilityRow[]): Error | undefined {
+	const row = rows.find((item) => item.eligibility.state === "terminal") ?? rows.find((item) => item.eligibility.state === "parked");
+	return row === undefined ? undefined : new Error(`Delivery ${row.key} to ${row.row.ownerId}: ${row.eligibility.state}: ${row.eligibility.reason}`);
+}
+
 /**
  * Start the source-side delivery watcher. The watcher owns its commit
  * subscription, target links, primary-channel connections, and retry timer;
@@ -461,7 +565,11 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let inFlight: Promise<void> | undefined;
 	let closePromise: Promise<void> | undefined;
 	let unsubscribe: (() => void) | undefined;
-	const corruptRows = new Set<string>();
+	const unavailableTargets = options.unavailableTargets ?? new Map<string, string>();
+	const fallbackFailures = new Map<string, string>();
+	const eligibilityOptions = { catalog, sessionsRoot, storageId: metadata.storageId, readTarget: options.readTarget, unavailableTargets, fallbackFailures };
+	let eligibility = new Map<string, DeliveryEligibility>();
+	const retryOwners = new Set<string>();
 	let routingFailed = false;
 
 	/** Report one routing failure. The host keeps the latest failure in its status. */
@@ -481,7 +589,12 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const existing = targets.get(record.storageId);
 		if (existing && !existing.closed) return existing;
 		if (existing) targets.delete(record.storageId);
-		const connection = await (options.connectTarget ? options.connectTarget(record) : acquire(hostMetadata(record, metadata.packageDir)));
+		let connection: HostConnection;
+		try { connection = await (options.connectTarget ? options.connectTarget(record) : acquire(hostMetadata(record, metadata.packageDir))); }
+		catch (error) {
+			unavailableTargets.set(record.storageId, `native host cannot start: ${asError(error).message}`);
+			throw error;
+		}
 		if (closed || signal.aborted) {
 			await connection.close().catch(() => undefined);
 			throw new Error("durable delivery is closed");
@@ -748,13 +861,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		}, BACKGROUND_CONTEXT);
 	};
 
-	/** Registered candidates for an absent or dead owner; incomplete discovery refuses before any delivery. */
+	/** Registered candidates are best-effort copies, independent of owner eligibility. */
 	const fallbackCandidates = async (owner: string, row: DeliveryRow): Promise<readonly string[]> => {
 		const discovery = await listPrimaryChannels(sessionsRoot);
-		if (!discovery.complete)
-			throw new Error(
-				`primary discovery is incomplete after ${discovery.visited} visits; refusing to acknowledge fallback for ${owner}`,
-			);
+		if (!discovery.complete) fallbackFailures.set(owner, `primary discovery is incomplete after ${discovery.visited} visits`);
 		const normalOwners = row.kind === "receipt" ? row.receipts.map((receipt) => receipt.ownerId) : [owner];
 		const candidates = discovery.ids.filter((id) => !normalOwners.includes(id));
 		if (candidates.length === 0)
@@ -804,7 +914,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			&& prior.checkIn.fallbackBroadcast === true) ?? false;
 	};
 
-	/** Broadcast the fallback to every registered primary; an older, unreachable, or absent audience holds the row. */
+	/** Fallback copies never acknowledge the owner or activate a parked route. */
 	const deliverFallbackOwner = async (row: DeliveryRow, identity: string, owner: string): Promise<void> => {
 		if (await fallbackAlreadyAccepted(row, owner)) return;
 		const candidates = await fallbackCandidates(owner, row);
@@ -889,15 +999,32 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		return deliverPrimary(row, owner);
 	};
 
-	/** A dead owner's error remains visible without a process-local retry loop. */
+	const ownerEligibility = (row: DeliveryRow, owner: string): DeliveryEligibility => {
+		const key = row.kind === "report" ? `report:${row.report.sourceId}:${owner}` : `receipt:${row.receipts.find((receipt) => receipt.ownerId === owner)?.submissionId}`;
+		return eligibility.get(key) ?? { state: "terminal", reason: "delivery row is absent" };
+	};
+
+	/** A failed native acquisition parks the route; a reachable transport retries. */
 	const routeFailure = (row: DeliveryRow, owner: string, error: unknown): Error | undefined => {
-		const failure = new Error(`Delivery ${rowSourceId(metadata, row)} to ${owner} failed: ${asError(error).message}`, { cause: error });
-		if (!deliveryOwnerIsDead(catalog, sessionsRoot, owner)) return failure;
-		fail(failure);
-		return undefined;
+		const current = classifyDelivery({ ownerId: owner, originValid: true, ...recipientFacts(owner, eligibilityOptions) });
+		if (current.state !== "active") return undefined;
+		retryOwners.add(owner);
+		return new Error(`Delivery ${rowSourceId(metadata, row)} to ${owner}: active: transient transport failure: ${asError(error).message}`, { cause: error });
+	};
+
+	const tryParkedFallback = async (row: DeliveryRow, owner: string): Promise<void> => {
+		if (!ownerEligibility(row, owner).fallback || directReport(row)) return;
+		try { await deliverFallbackOwner(row, deliverySender(row, host), owner); }
+		catch (error) { fallbackFailures.set(owner, `${fallbackFailures.has(owner) ? `${fallbackFailures.get(owner)}; ` : ""}${asError(error).message}`); }
 	};
 
 	const tryRouteOwner = async (row: DeliveryRow, owner: string): Promise<{ accepted: boolean; failure?: Error }> => {
+		const state = ownerEligibility(row, owner);
+		if (state.state === "terminal") return { accepted: false };
+		if (state.state === "parked") {
+			await tryParkedFallback(row, owner);
+			return { accepted: false };
+		}
 		try { return { accepted: await routeOwner(row, owner) }; }
 		catch (error) { return { accepted: false, failure: routeFailure(row, owner, error) }; }
 	};
@@ -920,12 +1047,6 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const routeRows = async (rows: readonly DeliveryRow[]): Promise<Error | undefined> => {
 		let failure: Error | undefined;
 		for (const row of rows) {
-			const corruption = rowOriginFailure(row);
-			if (corruption !== undefined) {
-				corruptRows.add(rowSourceId(metadata, row));
-				fail(corruption);
-				continue;
-			}
 			const owners = rowOwners(row);
 			if (owners.length === 0) continue;
 			try { await routeRow(row, owners); }
@@ -936,17 +1057,24 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 
 	/** One pass: settle intents, route every unacknowledged record, report the first failure. */
 	const scan = async (): Promise<void> => {
-		corruptRows.clear();
 		routingFailed = false;
+		fallbackFailures.clear();
+		retryOwners.clear();
 		await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
 		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
 		if (state === undefined) return;
+		const observed = await observeDeliveryEligibility(host.harness, eligibilityOptions);
+		eligibility = new Map(observed.map((item) => [item.key, item.eligibility]));
 		const rows: DeliveryRow[] = [
-			...receiptRows(Object.values(state.receipts)),
+			...receiptRows(Object.values(state.receipts).filter((receipt) => eligibility.get(`receipt:${receipt.submissionId}`)?.state !== "terminal")),
 			...state.reports.map((report): DeliveryRow => ({ kind: "report", report, deliveredTo: new Set() })),
 		];
 		const failure = await routeRows(rows);
-		if (failure !== undefined) throw failure;
+		const after = await observeDeliveryEligibility(host.harness, eligibilityOptions);
+		await retainEligibility(host.harness, after);
+		const diagnostic = deliveryEligibilityError(after);
+		if (diagnostic !== undefined) fail(diagnostic);
+		if (failure !== undefined && after.some((item) => retryOwners.has(item.row.ownerId) && item.eligibility.state === "active")) throw failure;
 	};
 
 	const run = async (): Promise<void> => {
@@ -955,7 +1083,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		let retry: number | undefined;
 		try {
 			await scan();
-			if (corruptRows.size === 0 && !routingFailed) host.reportDeliveryError(undefined);
+			if (!routingFailed) host.reportDeliveryError(undefined);
 			nextRetryDelayMs = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
 		} catch (error) {
 			fail(error);
@@ -1027,5 +1155,5 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	signal.addEventListener("abort", onAbort, { once: true });
 	unsubscribe = host.harness.subscribeCommits(() => schedule(0));
 	if (!signal.aborted) schedule(0);
-	return { get busy() { return running || inFlight !== undefined; }, refresh: () => schedule(0), sealAdmission, close };
+	return { get busy() { return running || inFlight !== undefined; }, refresh: () => { unavailableTargets.clear(); schedule(0); }, sealAdmission, close };
 }

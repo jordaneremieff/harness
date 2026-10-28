@@ -1,4 +1,5 @@
 import { machineConfig } from "./settings-fixture.mts";
+import { randomUUID } from "node:crypto";
 /**
  * Helpers for production durable-runtime tests.
  *
@@ -75,7 +76,7 @@ export function runtimeFixture(t: FixtureContext, options: { withAgentExtension?
 			},
 		} }));
 	}
-	const ownerId = "primary-owner";
+	const ownerId = randomUUID();
 	const record = new AgentCatalog(root).create({
 		cwd,
 		agentDir,

@@ -119,7 +119,7 @@ it("keeps another conversation's native work and owner check-in task alive", { t
 	assert.equal(await eligible(f.runtime), true);
 });
 
-for (const kind of ["intent", "missing-receipt", "receipt", "report"] as const) it(`keeps delivery-only ${kind} state alive until it settles`, { timeout: 15000 }, async (t) => {
+for (const kind of ["intent", "missing-receipt", "receipt", "report"] as const) it(`retains delivery-only ${kind} with its expected retirement eligibility`, { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
 	const intent = { requestId: "pending", ownerId: f.ownerId, conversationId: 1 as ConversationId, message: "pending", whenBusy: null, operationId: null, submissionId: kind === "intent" ? null : 999 as SubmissionId, origin: "operator" as const };
 	const receipt = { submissionId: 999 as SubmissionId, requestId: "pending", ownerId: f.ownerId, conversationId: 1 as ConversationId, operationId: null, origin: "operator" as const, status: "done" as const, entryId: null, answerEntryId: 999 as EntryId, answer: "answer", reason: null, acknowledged: false };
@@ -130,7 +130,7 @@ for (const kind of ["intent", "missing-receipt", "receipt", "report"] as const) 
 		if (kind === "report") state.reports.push({ sourceId: "report:pending", requestId: "pending", ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "pending", replyTo: null, acknowledged: false, createdAt: Date.now() });
 	}, BACKGROUND_CONTEXT);
 	assert.equal(await f.native.refreshIdle(), true, "delivery rows alone are not native tasks");
-	assert.equal(await eligible(f.runtime), false);
+	assert.equal(await eligible(f.runtime), kind !== "intent", "only the pending unlinked admission prevents retirement");
 	await f.native.harness.commit(async (tx) => {
 		const state = await tx.doc(AgentDeliveryDoc);
 		state.intents.splice(0);
@@ -286,7 +286,7 @@ it("keeps a host-local foreign control alive across retirement", { timeout: 1500
 	assert.equal(await eligible(f.runtime), false);
 	release.resolve();
 	await report;
-	assert.equal(await eligible(f.runtime), false, "the admitted report still needs delivery");
+	assert.equal(await eligible(f.runtime), true, "the report to an absent primary is parked and does not block retirement");
 	await f.native.harness.commit(async (tx) => { const state = await tx.doc(AgentDeliveryDoc); state.reports.splice(0); }, BACKGROUND_CONTEXT);
 	assert.equal(await eligible(f.runtime), true);
 });
