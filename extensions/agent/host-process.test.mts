@@ -83,7 +83,7 @@ it("cancels a refused release without closing observations and resumes idle reti
 		},
 		isIdle: () => true, close: async () => {},
 		onReleaseRequested: listener => { releaseListener = listener; return () => { releaseListener = undefined; }; },
-		tryRetire: async seal => { attempts++; if (attempts === 1) { checked.push(undefined); return false; } return seal(); },
+		tryRetire: async seal => { attempts++; if (attempts === 1) { releaseListener?.(false); checked.push(undefined); return false; } return seal(); },
 	};
 	const config = metadata(root);
 	const host = await runHost(() => runtime, { metadata: config, idleMs: 3600000, announceReady: noop, scheduleIdleCheck: check => { checks.push(check); return () => {}; } });
@@ -100,6 +100,30 @@ it("cancels a refused release without closing observations and resumes idle reti
 	checks[checks.length - 1]();
 	await host.done;
 	assert.equal(attempts, 2);
+});
+
+it("waits for an in-flight delivery scan at grace expiry and retires on quiescence", { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t), checked = eventLog<void>(), closed = eventLog<void>();
+	let releaseListener: ((requested: boolean) => void) | undefined, quiescentListener: (() => void) | undefined;
+	let busy = false, attempts = 0;
+	const runtime: HostRuntime = {
+		request: async () => { releaseListener?.(true); return { retiring: true, blockers: [] }; },
+		isIdle: () => true, close: async () => { closed.push(undefined); },
+		onReleaseRequested: listener => { releaseListener = listener; return () => { releaseListener = undefined; }; },
+		onQuiescent: listener => { quiescentListener = listener; return () => { quiescentListener = undefined; }; },
+		tryRetire: async seal => { attempts++; if (busy) { checked.push(undefined); return false; } return seal(); },
+	};
+	const { host, metadata: config } = await startHost(root, 3600000, () => runtime);
+	t.after(() => host.close());
+	const client = await connectClient(config); t.after(() => client.dispose());
+	assert.deepEqual(await call(client, config, "status"), { retiring: true, blockers: [] });
+	busy = true;
+	await checked.waitForCount(1, 5000);
+	assert.equal(closed.length, 0);
+	busy = false; quiescentListener?.();
+	await closed.waitForCount(1, 1000);
+	await host.done;
+	assert.equal(attempts, 2, "quiescence retries release without the normal idle interval");
 });
 
 it("serves a request and rejects a client with the wrong serverId", { timeout: 15000 }, async (t) => {

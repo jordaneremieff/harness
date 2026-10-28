@@ -72,8 +72,10 @@ marker nor prevent otherwise idle host retirement. Native work, pending
 admissions, active rows, in-flight effects, controls, and observations still
 prevent normal retirement. Explicit release closes observations only on a
 successful retirement seal; it never cancels native tasks or deletes retained
-rows. New admissions and refused retirement checks cancel the release and
-restore normal idle retirement without closing observations.
+rows. New admissions, pending native work and active delivery rows cancel the
+release and restore normal idle retirement without closing observations.
+Delivery scans, read-only requests and generation-only races leave the release
+pending for the next activity or quiescent event.
 The source writer publishes a bounded parked-recipient sidecar before clearing
 its recovery marker. An exact primary registration or newly available named
 recipient wakes the matching source through existing bounded catalogue scans.

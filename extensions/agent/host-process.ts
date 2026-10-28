@@ -248,6 +248,7 @@ class HostProcessServer implements HostProcess {
 	private releaseTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly releaseRequesters = new Set<AttachmentState>();
 	private releaseChecking = false;
+	private releaseAgain = false;
 	private unsubscribeRelease: (() => void) | undefined;
 	private closing = false;
 	private readonly cancelableRequests = new AbortController();
@@ -584,8 +585,8 @@ class HostProcessServer implements HostProcess {
 
 	/** Give the response a bounded grace; requester disconnect ends the grace early. */
 	private scheduleRelease(): void {
-		if (this.closing || this.releaseScheduled) return;
-		if (this.releaseChecking) return;
+		if (this.closing || !this.releasePending || this.releaseScheduled) return;
+		if (this.releaseChecking) { this.releaseAgain = true; return; }
 		this.releaseScheduled = true;
 		this.releaseTimer = setTimeout(() => {
 			this.releaseTimer = undefined;
@@ -597,6 +598,7 @@ class HostProcessServer implements HostProcess {
 
 	private cancelRelease(): void {
 		this.releasePending = false;
+		this.releaseAgain = false;
 		this.releaseGraceExpired = false;
 		this.releaseScheduled = false;
 		this.releaseRequesters.clear();
@@ -610,8 +612,14 @@ class HostProcessServer implements HostProcess {
 		this.releaseChecking = true;
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
+		const generation = this.activityGeneration;
 		try { await this.onIdleCheck(true); }
-		finally { this.releaseChecking = false; }
+		finally {
+			this.releaseChecking = false;
+			const again = this.releaseAgain;
+			this.releaseAgain = false;
+			if (this.releasePending && (again || generation !== this.activityGeneration)) this.scheduleRelease();
+		}
 	}
 
 	private closeReleaseObservations(): void {
@@ -647,9 +655,13 @@ class HostProcessServer implements HostProcess {
 			if (retired) {
 				if (releasing) await Promise.all([...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]));
 				await this.shutdown();
-			} else if (releasing) this.cancelRelease();
-		} catch { if (releasing && !this.closing) this.cancelRelease(); }
-		finally { this.retirementChecking = false; if (!this.releasePending) this.scheduleRetirement(); }
+			}
+		} catch { /* An unavailable check waits for the next activity or quiescent event. */ }
+		finally {
+			this.retirementChecking = false;
+			if (!this.releasePending) this.scheduleRetirement();
+			else if (!releasing) this.scheduleRelease();
+		}
 	}
 
 	close(): Promise<void> {

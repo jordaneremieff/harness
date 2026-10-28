@@ -145,11 +145,11 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 
 	/** Check committed work and delivery under one unchanged admission generation. */
 	async function tryRetire(seal: () => boolean): Promise<boolean> {
-		if (runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy) { cancelRequestedRelease(); return false; }
+		if (runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy) return false;
 		const generation = activityGeneration;
 		const state = await recoveryState();
-		if (state.workPending || state.deliveriesActive || !host.isIdle() || generation !== activityGeneration
-			|| runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy || !seal()) { cancelRequestedRelease(); return false; }
+		if (state.workPending || state.deliveriesActive || !host.isIdle()) { cancelRequestedRelease(); return false; }
+		if (generation !== activityGeneration || runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy || !seal()) return false;
 		deliveries.sealAdmission();
 		retirementSealed = true;
 		return true;

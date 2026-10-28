@@ -1860,8 +1860,11 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   observation tokens do not block it. An accepted release waits for requester
   disconnect or a 100 ms response grace, whichever comes first, then checks the
   normal retirement seal without the idle interval. Only a successful seal
-  closes observations. A new admitting control or a refused retirement check
-  cancels the release and restores normal idle retirement.
+  closes observations. A new admitting control, pending native work or an active
+  delivery row cancels the release and restores normal idle retirement.
+  A delivery scan, a read-only request or a generation-only race keeps the
+  release pending; the next activity or quiescent event retries it without the
+  normal idle interval.
   The transport exposes no per-response flush signal; the grace bounds the wait
   for a client that stays connected. Release never deletes delivery rows or
   cancels timers.

@@ -257,7 +257,7 @@ it("cancels release when a second client admits work during the response grace",
 	} finally { admit.resolve(); await admitted.catch(() => undefined); held.mock.restore(); }
 });
 
-it("cancels release when a generation change refuses the retirement seal", { timeout: 15000 }, async t => {
+it("preserves release through a generation change without new work", { timeout: 15000 }, async t => {
 	const f = await fixture(t);
 	assert.ok(f.runtime.requestRelease);
 	assert.ok(f.runtime.tryRetire);
@@ -271,8 +271,24 @@ it("cancels release when a generation change refuses the retirement seal", { tim
 	});
 	try {
 		assert.equal(await f.runtime.tryRetire(() => { assert.fail("changed generation must not seal"); }), false);
-		assert.equal(f.runtime.releaseRequested, false);
+		assert.equal(changed, true);
+		assert.equal(f.runtime.releaseRequested, true);
 	} finally { gate.mock.restore(); }
+});
+
+it("preserves release through a read-only request", { timeout: 15000 }, async t => {
+	const f = await fixture(t), entered = deferred(), resume = deferred();
+	assert.ok(f.runtime.requestRelease); assert.ok(f.runtime.tryRetire);
+	assert.equal((await f.runtime.requestRelease()).retiring, true);
+	const request = f.native.request.bind(f.native);
+	const gate = t.mock.method(f.native, "request", async (...args: Parameters<typeof request>) => { if (args[0] === "status") { entered.resolve(); await resume.promise; } return request(...args); });
+	const read = f.runtime.request("status", {}, "read-only-release");
+	try {
+		await entered.promise;
+		assert.equal(await f.runtime.tryRetire(() => { assert.fail("an active read must not seal"); }), false);
+		assert.equal(f.runtime.releaseRequested, true);
+	} finally { resume.resolve(); await read; gate.mock.restore(); }
+	assert.equal(f.runtime.releaseRequested, true);
 });
 
 it("exits its dedicated process after an idle release response with recovery due false", { timeout: 20000 }, async (t) => {
