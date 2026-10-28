@@ -415,6 +415,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			agent: hostAgent(),
 			initialMessages, meta: { name: metadata.name, owner: metadata.ownerId }, profileSeed: catalog.read(metadata.storageId).view?.profileSeed, commands: services.commands, contributionHost: services.contributionHost,
 			resume: false, onReport: (error) => { process.stderr.write(`Durable task: ${String(error)}\n`); },
+			requestRelease: () => requestRelease(),
 		});
 		initialMessages = undefined;
 		try {
