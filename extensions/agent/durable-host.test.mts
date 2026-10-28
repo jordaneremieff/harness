@@ -89,6 +89,26 @@ function defer(): { promise: Promise<void>; resolve: () => void } {
 
 const wait = (host: DurableHost, submissionId: SubmissionId) => host.wait(submissionId, BACKGROUND_CONTEXT);
 
+it("preserves malformed tool arguments through the provider boundary and refuses their parsed prefix", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const effect = join(root, "effect.txt");
+	const message = toolCallMessage();
+	const call = message.content.find((part) => part.type === "toolCall");
+	assert.ok(call);
+	call.argumentsError = "Malformed JSON after the parsed prefix";
+	const host = await DurableHost.open(hostOptions(join(root, "arguments.sqlite"),
+		await scriptedRuntime([message, answerMessage("Invalid call observed")]), fixtureRegistry([slowEffectTool(effect, undefined, false)])), BACKGROUND_CONTEXT);
+	t.after(() => host.close());
+	const submitted = await host.submit({ message: "Try the malformed call", requestId: "invalid-arguments" });
+	assert.equal((await wait(host, submitted.submissionId)).status, "done");
+	assert.equal(existsSync(effect), false);
+	const conversation = await host.harness.root(BACKGROUND_CONTEXT);
+	const retained = await conversation.context(BACKGROUND_CONTEXT);
+	const parts = retained.entries.flatMap((entry) => entry.model ?? []);
+	assert.ok(parts.some((entry) => entry.role === "assistant" && entry.content.some((part) => part.type === "toolCall" && part.argumentsError === call.argumentsError)));
+	assert.ok(parts.some((entry) => entry.role === "toolResult" && entry.isError && JSON.stringify(entry.content).includes("Malformed JSON after the parsed prefix")));
+});
+
 it("clears a native retry after the next attempt settles the same exact input", { timeout: 15000 }, async (t) => {
 	const storagePath = join(fixtureRoot(t), "retry.sqlite");
 	let now = Date.now();
