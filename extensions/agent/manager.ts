@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { readDeliveryWake } from "./delivery-wake.ts";
 import { launchIndependentCommand, type IndependentCommandInput, type IndependentCommandReceipt } from "./independent-launch.ts";
 import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { admittedResult } from "./result-reference.ts";
@@ -16,7 +17,7 @@ import { sentWorkIdentity } from "./session-work.ts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { firstInteractivePurpose, purposeExcerpt } from "./effort-purpose.ts";
 import { readEffortAwareness, type EffortAwareness } from "./effort-awareness.ts";
-import { createPrimaryChannel, connectPrimaryChannel, readPrimaryEndpointDescriptor, type PrimaryChannel, type PrimaryInfo, type PrimaryIntentClaim } from "./primary-channel.ts";
+import { createPrimaryChannel, connectPrimaryChannel, primaryEndpointStatus, readPrimaryEndpointDescriptor, type PrimaryChannel, type PrimaryInfo, type PrimaryIntentClaim } from "./primary-channel.ts";
 import { readPrimaryObservation, type OrdinaryPrimaryObservation } from "./primary-observation.ts";
 import { discoverPrimaryLocation, readRelatedEfforts, type EffortPresencePage } from "./effort-presence.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
@@ -195,7 +196,7 @@ export class AgentManager {
 		if (this.stopCatalogObservation) return;
 		const changed = () => {
 			void this.refreshFooter().catch((error) => this.failures.set("footer", errorText(error)));
-			if (this.namespaceOwner && !this.stopping(this.namespaceOwner)) void this.recoverNamespace(this.namespaceOwner.signal).catch(error => this.failures.set("namespace", errorText(error)));
+			this.recoverCatalogueChanges();
 		};
 		this.stopCatalogObservation = subscribeCatalogChanges(this.catalog.root, changed, (error) => {
 			this.failures.set("catalog-observation", `Catalog updates are unavailable: ${error.message}. Restart this Pi process.`);
@@ -231,6 +232,9 @@ export class AgentManager {
 	private namespaceOwner?: RecoveryOwner;
 	private namespaceScan?: Promise<NamespaceRecoveryReport>;
 	private namespaceRescan = false;
+	private catalogueScan?: Promise<void>;
+	private catalogueScanAgain = false;
+	private readonly wakeAttempts = new BoundedMap<ReadonlyMap<string, string>>(MAX_INVENTORY_PAGES * 20);
 	private readonly recoveryClients = new Map<string, { close: () => void; refresh: () => Promise<void> }>();
 	private readonly primaries = new Map<string, PrimaryClient>();
 	private readonly primaryChannels = new Map<string, PrimaryChannel>();
@@ -886,7 +890,7 @@ export class AgentManager {
 		catch (error) { this.failures.set("catalog-observation", `Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`); }
 		this.rosterChanged();
 		await this.refreshFooter();
-		await this.scanRecovery(primary);
+		await this.scanRecovery(primary, ownerId);
 	}
 
 	/** Restore this source-bound catalogue without an ordinary primary or a new task index. */
@@ -905,14 +909,61 @@ export class AgentManager {
 		return pending;
 	}
 
-	private async scanRecovery(owner: RecoveryOwner): Promise<NamespaceRecoveryReport> {
+	/** Availability changes, not source view publication, permit another parked wake. */
+	private recipientAvailability(identity: string): string | undefined {
+		try {
+			const record = this.nativeTarget(identity);
+			return createHash("sha256").update(JSON.stringify(hostMetadata(record, this.options.packageDir))).digest("hex");
+		} catch { /* An ordinary primary has no native catalogue record. */ }
+		if (primaryEndpointStatus(this.options.root, identity).state !== "live") return undefined;
+		const info = readPrimaryEndpointDescriptor(this.options.root, identity).info;
+		return info === undefined ? undefined : createHash("sha256").update(JSON.stringify([info.pid, info.hostname, info.startedAt, info.socketPath])).digest("hex");
+	}
+
+	private parkedWakeDue(record: CatalogRecord, registeringPrimary?: string): boolean {
+		const wake = readDeliveryWake(this.options.root, record.storageId);
+		if (wake === undefined) { this.wakeAttempts.delete(record.storageId); return false; }
+		if (registeringPrimary !== undefined) return wake.recipients.includes(registeringPrimary);
+		const previous = this.wakeAttempts.get(record.storageId);
+		const available = new Map<string, string>();
+		for (const recipient of wake.recipients) {
+			const fingerprint = this.recipientAvailability(recipient);
+			if (fingerprint !== undefined) available.set(recipient, fingerprint);
+		}
+		this.wakeAttempts.set(record.storageId, available);
+		return [...available].some(([recipient, fingerprint]) => previous?.get(recipient) !== fingerprint);
+	}
+
+	private recoveryCandidate(record: CatalogRecord, registeringPrimary?: string): boolean {
+		if (record.recoveryDue === true) return true;
+		try { return this.parkedWakeDue(record, registeringPrimary); }
+		catch (error) { this.recordRecoveryError(record.storageId, `Delivery wake metadata: ${errorText(error)}`); return false; }
+	}
+
+	private recoverCatalogueChanges(): void {
+		if (this.catalogueScan !== undefined) { this.catalogueScanAgain = true; return; }
+		this.catalogueScan = (async () => {
+			do {
+				this.catalogueScanAgain = false;
+				const owner = this.namespaceOwner && !this.stopping(this.namespaceOwner) ? this.namespaceOwner : [...this.primaries.values()].find((primary) => !this.stopping(primary));
+				if (owner === undefined || this.stopping(owner)) return;
+				if (owner === this.namespaceOwner) await this.recoverNamespace(owner.signal);
+				else await this.scanRecovery(owner);
+			} while (this.catalogueScanAgain && !this.shuttingDown);
+		})().catch((error) => { this.failures.set("catalog-recovery", errorText(error)); }).finally(() => {
+			this.catalogueScan = undefined;
+			if (this.catalogueScanAgain && !this.shuttingDown) this.recoverCatalogueChanges();
+		});
+	}
+
+	private async scanRecovery(owner: RecoveryOwner, registeringPrimary?: string): Promise<NamespaceRecoveryReport> {
 		const due: CatalogRecord[] = [];
 		let cursor: string | undefined, visited = 0;
 		for (let pageIndex = 0; pageIndex < MAX_INVENTORY_PAGES; pageIndex++) {
 			if (this.stopping(owner)) break;
 			const page = await this.catalog.page({ cursor, limit: 20 });
 			visited += page.records.length;
-			due.push(...page.records.filter(record => record.recoveryDue === true));
+			due.push(...page.records.filter(record => this.recoveryCandidate(record, registeringPrimary)));
 			cursor = page.nextCursor ?? undefined;
 			if (!cursor) break;
 		}

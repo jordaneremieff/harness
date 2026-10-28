@@ -1943,6 +1943,10 @@ and trusted project files. The host does not read untrusted project files.
 An admitted input has a stable Durable request ID. Reconnecting or retrying the
 same admission reuses that identity. A pending delivery intent precedes input
 admission, so a crash between those operations does not lose the reply route.
+The runtime validates each fresh control's delivery recipient before admission.
+The recipient must be an exact storage or conversation identity, not a shortened
+ID or display name. Retained malformed routes become terminal during delivery;
+that check does not reject admission replay of retained native work.
 
 Task admission preserves the caller's original text and images in native user
 messages. Host-authored routing evidence holds requester, reply recipient,
@@ -2345,9 +2349,18 @@ completion and delivery-idle transitions reconcile the marker. The marker clears
 as soon as no native work or active delivery remains, before idle retirement.
 An in-progress admission preserves the marker through its pre-input gap. Marker
 writes occur only when its value changes. Parked and terminal rows never keep it
-true. Startup recovery reads
-only that marker from bounded catalog pages; it does not open, copy, or
-status-probe every storage. Recovery acquisitions run at most two at a time. A
+true. Before clearing the marker, the source writer atomically publishes its
+parked recipients in `sessionsRoot/.delivery-wake/<storageId>.json`. Each source
+owns one file outside the catalog directory. The file contains a bounded set of
+exact recipient identities and an `omitted` count; omitted rows remain retained
+and require explicit acquisition. An unchanged set causes no write. The writer
+removes the file when no parked row remains. Terminal rows never enter this
+projection. Publishing the sidecar first preserves wake discovery if the writer
+crashes before the marker clears.
+
+Startup recovery reads the marker and matching wake sidecars within existing
+bounded catalog pages; it does not enumerate the wake directory or open, copy,
+or status-probe every storage. Recovery acquisitions run at most two at a time. A
 transient recovery link closes when the internal `recovery-state` check reports
 no pending native work and no active delivery; host change notifications trigger
 that check, not polling. A row addressed only to a proven-dead ordinary primary
@@ -2374,9 +2387,14 @@ retention. Invalid header identity, incomplete tails, file replacement, and
 truncation refuse confirmation. No second persistent delivery queue or
 exactly-once historical ledger exists. A crash after retention but before source
 acknowledgment still permits replay.
-Any primary registration runs the existing bounded scan of runnable recovery.
-Parked-only storages stay cold. Explicit acquisition reopens their retained rows.
-A recovery-state read refreshes delivery when the exact recipient is active,
+Any primary registration runs the existing bounded scan of runnable recovery
+and wakes parked sources whose sidecar names that exact primary. Unrelated
+registration leaves those sources cold. Namespace and catalog-change scans also
+wake a parked source when a named recipient has a native catalog record or a
+live compatible primary endpoint. Each manager remembers attempted recipient
+availability so unchanged source publications do not cause repeated wakes.
+Explicit acquisition also reopens retained rows. A recovery-state read refreshes
+delivery when the exact recipient is active,
 even if the source host is still up. A recorded fallback copy never repeats.
 Only active routes retry and block retirement. No row expiry or new catalog scan
 bound is introduced. A final marker check also runs during clean close. Clean retirement

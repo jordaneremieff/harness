@@ -38,6 +38,7 @@ import { AgentDeliveryDoc, projectConversationIntents } from "./durable-controls
 import { isThinkingLevel } from "./configuration.ts";
 import { AgentManager } from "./manager.ts";
 import { observeDeliveryEligibility, startDurableDelivery } from "./durable-delivery.ts";
+import { writeDeliveryWake } from "./delivery-wake.ts";
 import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 
 function validateControlRecipient(method: string, params: Readonly<Record<string, unknown>>): void {
@@ -174,8 +175,11 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets });
 		const deliveriesActive = rows.some((row) => row.eligibility.state === "active");
 		const pending = await deliveriesPending();
-		if (generation === activityGeneration) markRecoveryDue(activeAdmissions > 0 || !idle || deliveriesActive);
-		else recoveryDirty = true;
+		if (generation === activityGeneration) {
+			const wake = writeDeliveryWake(dirname(dirname(metadata.storagePath)), metadata.storageId, rows.filter((row) => row.eligibility.state === "parked").map((row) => row.row.ownerId));
+			if (wake.changed && wake.omitted > 0) host.reportDeliveryError(new Error(`parked: delivery wake metadata omits ${wake.omitted} recipients at its bound; retained rows require explicit acquisition`));
+			markRecoveryDue(activeAdmissions > 0 || !idle || deliveriesActive);
+		} else recoveryDirty = true;
 		return { workPending: !idle, deliveriesPending: pending, deliveriesActive };
 	}
 

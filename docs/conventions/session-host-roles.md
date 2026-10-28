@@ -72,6 +72,11 @@ marker nor prevent otherwise idle host retirement. Native work, pending
 admissions, active rows, in-flight effects, controls, and observations still
 prevent normal retirement. Explicit release closes observations before the
 normal retirement seal; it never cancels native tasks or deletes retained rows.
+The source writer publishes a bounded parked-recipient sidecar before clearing
+its recovery marker. An exact primary registration or newly available named
+recipient wakes the matching source through existing bounded catalogue scans.
+Unrelated registration does not relaunch parked-only hosts. Sidecars stay
+outside the catalogue directory; only their source writer changes them.
 
 Delivery is at-least-once. The cross-host boundary has no shared transaction or
 general exactly-once promise. The manager does not poll receipts, and footer

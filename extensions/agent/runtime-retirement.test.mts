@@ -347,12 +347,11 @@ it("delivers a parked row when its owner registers before the source host retire
 	t.after(() => manager.close());
 	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: randomUUID(), cwd: f.cwd });
 	await manager.registerPrimary(f.ownerId, { cwd: f.cwd, signal: new AbortController().signal, send: (text) => notices.push(text) });
-	await f.runtime.request("recovery-state", {}, "refresh-owner-route");
 	await notices.waitForCount(1, 3000);
 	assert.equal(notices.length, 1);
 });
 
-it("keeps cached dead-owner delivery cold after clean retirement and resumes at explicit acquisition", { timeout: 15000 }, async (t) => {
+it("keeps cached dead-owner delivery cold after clean retirement and wakes at exact owner registration", { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
 	const dead = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
 	await waitForProcessExit(dead, 5000);
@@ -405,10 +404,8 @@ it("keeps cached dead-owner delivery cold after clean retirement and resumes at 
 	returning = true;
 	const delivered = eventLog<string>();
 	await manager.registerPrimary(f.ownerId, { cwd: f.cwd, signal: new AbortController().signal, send: (text) => delivered.push(text) });
-	assert.equal(acquisitions, 1, "a parked row does not mark runnable recovery");
-	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: f.ownerId, cwd: f.cwd });
 	await delivered.waitForCount(1);
-	assert.equal(acquisitions, 2, "explicit acquisition reopens the retained row");
+	assert.equal(acquisitions, 2, "exact owner registration reopens only its retained row");
 	assert.equal(fallback.length, 1);
 	await reopened?.close();
 	await lost.waitForCount(2);

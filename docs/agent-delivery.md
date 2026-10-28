@@ -435,11 +435,14 @@ route fails. Inspect the requested outcome before accepting the task.
 
 Parked and terminal rows wait in durable storage, not a permanently live host.
 The recovery marker clears when no native work or active delivery remains,
-before the idle retirement interval. Primary registration scans runnable
-recovery; parked-only sources stay cold. Explicit acquisition retries retained
-rows whose recipients return. Rows have no expiry. Catalog scan limits bound
-automatic recovery reach, not retained-row lifetime. Only reachable active
-recipients retry transient failures. See [Agent recovery and delivery](../extensions/agent/README.md#recovery-and-delivery)
+before the idle retirement interval. The source writer publishes its parked
+recipients in a bounded wake sidecar before it clears the marker. Exact primary
+registration wakes only matching parked sources; unrelated registration leaves
+them cold. Existing namespace and catalog-change scans also wake sources whose
+named native or compatible primary recipient becomes available. Explicit
+acquisition retries retained rows outside automatic discovery bounds. Rows have
+no expiry. Catalog scan limits bound automatic recovery reach, not retained-row
+lifetime. Only reachable active recipients retry transient failures. See [Agent recovery and delivery](../extensions/agent/README.md#recovery-and-delivery)
 for route distinctions, stale check-in pruning, and current process contracts.
 
 ## Deliver and report

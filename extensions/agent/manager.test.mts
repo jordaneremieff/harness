@@ -2,7 +2,7 @@ import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { after, it } from "node:test";
@@ -11,6 +11,8 @@ const preferenceOverride = process.env.PI_HARNESS_FILE;
 delete process.env.PI_HARNESS_FILE;
 after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
 import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
+import { writeDeliveryWake } from "./delivery-wake.ts";
+import { publishCatalogChange } from "./catalog-events.ts";
 import { dashboardText } from "./dashboard-roster.ts";
 import { connectHost, type HostConnection } from "./host-client.ts";
 import { runHost } from "./host-process.ts";
@@ -1181,7 +1183,7 @@ it("keeps hundreds of clean catalog records out of board reads and host launches
 	assert.equal(observes, 0);
 });
 
-it("closes a recovery link with parked deliveries and recovers again at another registration", { timeout: 15000 }, async (t) => {
+it("keeps unrelated registrations cold and wakes parked delivery only for its exact primary", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const links: FakeConnection[] = [];
 	const manager = new AgentManager(managerOptions(root, {
@@ -1194,15 +1196,53 @@ it("closes a recovery link with parked deliveries and recovers again at another 
 		observe: async () => ({ conversations: [] }), connect: noHost,
 	}));
 	t.after(() => manager.close());
-	const record = createRecord(manager, root, "parked");
-	manager.catalog.markRecoveryDue(record.storageId, true);
-	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	const owner = randomUUID(), record = createRecord(manager, root, owner);
+	manager.catalog.markRecoveryDue(record.storageId, false);
+	writeDeliveryWake(root, record.storageId, [owner]);
+	await manager.registerPrimary(randomUUID(), fakePrimary(new AbortController().signal).client);
+	assert.equal(links.length, 0, "an unrelated registration cannot relaunch a parked-only source");
+	await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
 	assert.equal(links.length, 1);
 	assert.equal(links[0].closed, true, "parked rows release the transient recovery link");
-	assert.equal(manager.catalog.read(record.storageId).recoveryDue, true);
-	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
-	assert.equal(links.length, 2);
-	assert.equal(links[1].closed, true);
+	assert.equal(manager.catalog.read(record.storageId).recoveryDue, false);
+	await manager.registerPrimary(randomUUID(), fakePrimary(new AbortController().signal).client);
+	assert.equal(links.length, 1);
+});
+
+it("wakes a source when its exact native recipient gains a catalogue record", { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t), acquired = eventLog<string>();
+	const manager = new AgentManager(managerOptions(root, { acquire: async metadata => {
+		acquired.push(metadata.storageId);
+		return fakeConnection(metadata, async () => ({ workPending: false, deliveriesPending: false, deliveriesActive: false }));
+	}, connect: noHost }));
+	t.after(() => manager.close());
+	const source = createRecord(manager, root), target = createRecord(manager, root);
+	unlinkSync(manager.catalog.path(target.storageId));
+	manager.catalog.markRecoveryDue(source.storageId, false);
+	writeDeliveryWake(root, source.storageId, [`${target.storageId}:7`]);
+	assert.equal((await manager.recoverNamespace(new AbortController().signal)).attempted, 0);
+	writeFileSync(manager.catalog.path(target.storageId), JSON.stringify(target));
+	publishCatalogChange(manager.catalog.root);
+	await acquired.waitForCount(1, 5000);
+	assert.deepEqual([...acquired], [source.storageId]);
+});
+
+it("does not repeat a parked wake for unchanged recipient availability", { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t), acquired: string[] = [];
+	const manager = new AgentManager(managerOptions(root, { acquire: async metadata => {
+		acquired.push(metadata.storageId);
+		return fakeConnection(metadata, async () => ({ workPending: false, deliveriesPending: true, deliveriesActive: false }));
+	}, connect: noHost }));
+	t.after(() => manager.close());
+	const source = createRecord(manager, root), target = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(source.storageId, false);
+	writeDeliveryWake(root, source.storageId, [target.storageId]);
+	const signal = new AbortController().signal;
+	assert.equal((await manager.recoverNamespace(signal)).attempted, 1);
+	assert.equal((await manager.recoverNamespace(signal)).attempted, 0);
+	assert.deepEqual(acquired, [source.storageId]);
+	manager.catalog.updateView(target.storageId, { updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } });
+	assert.equal((await manager.recoverNamespace(signal)).attempted, 0, "a view publication is not new host availability");
 });
 
 it("refreshes an existing recovery link at another primary registration", { timeout: 15000 }, async (t) => {

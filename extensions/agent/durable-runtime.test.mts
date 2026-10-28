@@ -333,7 +333,7 @@ it("keeps recovery due after a crash with an active transient delivery", { timeo
 	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true);
 });
 
-it("retires parked delivery with a clear marker and delivers it after explicit acquisition", { timeout: 60000 }, async (t) => {
+it("retires parked delivery with a clear marker and wakes only for its returning owner", { timeout: 60000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const owner = randomUUID();
 	const other = randomUUID();
@@ -369,7 +369,6 @@ it("retires parked delivery with a clear marker and delivers it after explicit a
 	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false, "the retained parked row is not runnable recovery");
 	const delivered = eventLog<unknown>();
 	await manager.registerPrimary(owner, { cwd: f.cwd, signal: new AbortController().signal, send: (_text, details) => { delivered.push(details); } });
-	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: owner, cwd: f.cwd });
 	await delivered.waitForCount(1);
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 	assert.equal(acquired.length, 1);
@@ -377,6 +376,9 @@ it("retires parked delivery with a clear marker and delivers it after explicit a
 	assert.equal((delivered[0] as { liveOwner: boolean }).liveOwner, true);
 	assert.equal((delivered[0] as { wake: boolean }).wake, true);
 	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, false);
+	await manager.registerPrimary(owner, { cwd: f.cwd, signal: new AbortController().signal, send: (_text, details) => { delivered.push(details); } });
+	assert.equal(acquired.length, 1, "a delivered row has no remaining wake sidecar");
+	assert.equal(delivered.length, 1);
 });
 
 it("preserves a crash recovery marker through primary startup and clears it after idle retirement", { timeout: 120000 }, async (t) => {
