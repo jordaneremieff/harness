@@ -26,7 +26,6 @@ it in a contract.
 | policy | Operator-approved rules on tool choice and arguments | `policy_rules`, `policy_propose` | `extensions/policy/README.md` |
 | jobs | Background builds, test suites, and servers while the agent works | `bash` with `background`, `jobs` | `extensions/jobs/README.md` |
 | brave | Public web search and bounded page reads | `web_search`, `web_read` | `extensions/brave/README.md` |
-| draft | Slop checks on text that leaves the chat | `draft` | `extensions/draft/README.md` |
 | clipboard | macOS clipboard and its history | `clipboard_*` | `extensions/clipboard/README.md` |
 | evo | Directed harness improvement through full agent sessions | `/evo` | `extensions/evo/README.md` |
 | statusline | Two-line session footer for long sessions | none | `extensions/statusline/README.md` |
@@ -44,7 +43,6 @@ that calls other tools in one step; see `references/codemode.md`.
 | harness | Adding, changing, or removing a harness surface | `skills/harness/SKILL.md` |
 | github | Read-only GitHub evidence | `skills/github/SKILL.md` |
 | troll | Press a claim at full strength on the operator's cue | `skills/troll/SKILL.md` |
-| draft | Repair and check text that leaves the chat | `extensions/draft/SKILL.md` |
 
 Route an evidence question inside an orchestrated effort to a worker that
 loads dig, rather than running dig's method in the orchestrator.
