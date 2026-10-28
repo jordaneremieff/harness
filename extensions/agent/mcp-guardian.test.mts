@@ -6,7 +6,29 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import type { StdioTransport } from "@earendil-works/pi-mcp";
-import { guardStdio, type McpGuardian } from "./mcp-guardian.ts";
+import { guardStdio, McpGuardian } from "./mcp-guardian.ts";
+
+it("starts one guardian on the first registration", { skip: process.platform === "win32" }, async () => {
+	const guardian = new McpGuardian((message) => { throw new Error(message); });
+	assert.equal(guardian.processId, undefined);
+	let resolve!: () => void;
+	const pending = new Promise<void>((done) => { resolve = done; });
+	const transport = { pid: 2147483647, start: () => pending, onClose: () => () => {} } as unknown as StdioTransport;
+	const registered: number[] = [];
+	const register = guardian.register.bind(guardian);
+	guardian.register = (pid) => { registered.push(pid); register(pid); };
+	guardStdio(transport, guardian);
+	const start = transport.start();
+	assert.deepEqual(registered, [2147483647]);
+	const pid = guardian.processId;
+	assert.ok(pid);
+	guardian.register(2147483647);
+	assert.equal(guardian.processId, pid);
+	guardian.unregister(2147483647);
+	resolve();
+	await start;
+	guardian.close();
+});
 
 it("registers a process before transport start settles", async () => {
 	let resolve!: () => void;

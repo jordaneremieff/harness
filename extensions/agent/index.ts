@@ -613,7 +613,11 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 				if (release !== undefined && release !== "release") throw new Error("Use release or omit the second argument");
 				const stopped = await control(release === "release" ? "release" : "abort", { sessionId }, ctx);
 				const label = await agentLabel(sessionId);
-				return release === "release" ? outcome(JSON.stringify(stopped), sessionId) : outcome(`Requested stop for “${label}”`, sessionId);
+				if (release !== "release") return outcome(`Requested stop for “${label}”`, sessionId);
+				const result = stopped as { retiring: boolean; blockers: string[]; writesPlaced: number };
+				const message = result.retiring ? `Released “${label}”; its host is retiring.` : `Stopped “${label}”; the host stays up: ${result.blockers.join("; ")}.`;
+				const writes = result.writesPlaced > 0 ? ` Placed ${result.writesPlaced} leftover ${result.writesPlaced === 1 ? "write" : "writes"}.` : "";
+				return outcome(`${message}${writes}`, sessionId);
 			},
 		},
 		{

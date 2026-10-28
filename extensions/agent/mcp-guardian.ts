@@ -18,31 +18,39 @@ for pid in $groups; do kill -KILL -- "-$pid" 2>/dev/null || :; done
 
 /** Owns the lifeline for process groups created by MCP stdio transports. */
 export class McpGuardian {
-	private readonly child: ChildProcess | undefined;
+	private child: ChildProcess | undefined;
 	private readonly report: (message: string) => void;
+	private started = false;
+	private closed = false;
 
-	constructor(report: (message: string) => void) {
-		this.report = report;
-		if (process.platform === "win32") return;
+	constructor(report: (message: string) => void) { this.report = report; }
+
+	private start(): void {
+		if (this.started || this.closed || process.platform === "win32") return;
+		this.started = true;
 		try {
 			this.child = spawn("/bin/sh", ["-c", PROGRAM], { detached: true, stdio: ["pipe", "ignore", "ignore"] });
-			this.child.on("error", (error) => report(`MCP guardian failed: ${error.message}`));
-			this.child.stdin?.on("error", (error) => report(`MCP guardian lifeline failed: ${error.message}`));
+			this.child.on("error", (error) => this.report(`MCP guardian failed: ${error.message}`));
+			this.child.stdin?.on("error", (error) => this.report(`MCP guardian lifeline failed: ${error.message}`));
 			this.child.unref();
-		} catch (error) { report(`MCP guardian failed: ${error instanceof Error ? error.message : String(error)}`); }
+		} catch (error) { this.report(`MCP guardian failed: ${error instanceof Error ? error.message : String(error)}`); }
 	}
 
 	get processId(): number | undefined { return this.child?.pid; }
 
 	private send(action: string, pid: number): void {
-		if (!this.child?.stdin || !Number.isSafeInteger(pid) || pid <= 0) return;
+		if (this.closed || !this.child?.stdin || !Number.isSafeInteger(pid) || pid <= 0) return;
 		try {
 			if (!this.child.stdin.write(`${action} ${pid}\n`) || this.child.stdin.writableLength !== 0) this.report(`MCP guardian registration did not flush for process group ${pid}`);
 		} catch (error) { this.report(`MCP guardian lifeline failed: ${error instanceof Error ? error.message : String(error)}`); }
 	}
-	register(pid: number): void { this.send("add", pid); }
+	register(pid: number): void {
+		if (!Number.isSafeInteger(pid) || pid <= 0) return;
+		this.start();
+		this.send("add", pid);
+	}
 	unregister(pid: number): void { this.send("remove", pid); }
-	close(): void { this.child?.stdin?.end(); }
+	close(): void { this.closed = true; this.child?.stdin?.end(); }
 }
 
 /** Register the process as soon as the transport creates it. */

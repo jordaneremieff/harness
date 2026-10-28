@@ -16,7 +16,8 @@ it("the ordinary abort tool dispatches release and rejects timer combinations", 
 	const originalStatus = AgentManager.prototype.status;
 	AgentManager.prototype.status = async () => ({ conversation: { name: "target" } });
 	const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
-	AgentManager.prototype.control = async (method, input) => { calls.push({ method, input }); return { retiring: true, blockers: [], writesPlaced: 0 }; };
+	let response = { retiring: true, blockers: [] as string[], writesPlaced: 0 };
+	AgentManager.prototype.control = async (method, input) => { calls.push({ method, input }); return response; };
 	t.after(() => {
 		AgentManager.prototype.control = original;
 		AgentManager.prototype.status = originalStatus;
@@ -36,6 +37,12 @@ it("the ordinary abort tool dispatches release and rejects timer combinations", 
 	await assert.rejects(execute("call" as never, { sessionId: "target", release: true, timerId: 2 } as never, undefined as never, undefined as never, ctx as never), /cannot be combined/u);
 	assert.equal(calls.length, 1);
 	assert.ok(command);
-	await command.handler("abort target release", { ...ctx, ui: { notify() {} } } as never);
+	const messages: string[] = [];
+	const commandContext = { ...ctx, ui: { notify: (message: string) => messages.push(message) } } as never;
+	await command.handler("abort target release", commandContext);
 	assert.deepEqual(calls.at(-1), { method: "release", input: { sessionId: "target" } });
+	assert.equal(messages.at(-1), "Released “target”; its host is retiring.");
+	response = { retiring: false, blockers: ["pending timer", "active work"], writesPlaced: 2 };
+	await command.handler("abort target release", commandContext);
+	assert.equal(messages.at(-1), "Stopped “target”; the host stays up: pending timer; active work. Placed 2 leftover writes.");
 });
