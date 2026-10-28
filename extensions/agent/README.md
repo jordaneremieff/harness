@@ -73,7 +73,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries use one Durable lead for answer-bearing fan-out and refuse this native-only operation. |
 | `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
-| `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. |
+| `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. `release` and `timerId` cannot be combined. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
 | `agent_configure` | Change an idle conversation's name, exact model, or reasoning level. |
@@ -1453,7 +1453,9 @@ a nonmember without that permission joins and posts a proposal instead.
 Creating or joining opts into passive notices for later events. Each notice
 contains a bounded excerpt and a thread/event reference. A native write places
 it at an existing conversation boundary without starting a model turn. An idle
-peer learns it on later work, not immediately. Only named `notify` recipients
+peer learns it on later work, not immediately. If a run ends with only writes
+queued, the host places those writes at an idle boundary without starting a run.
+Only named `notify` recipients
 receive steering and a model wake. No post or notice arms a check-in. Leaving
 stops future subscription notices. Notification admission and acknowledgment
 do not prove model awareness, understanding, or acceptance.
@@ -1938,6 +1940,12 @@ process, not ordinary coding-agent workers or other processes.
 Native MCP configuration accepts one leading UTF-8 byte-order mark in global
 and trusted project files. The host does not read untrusted project files.
 
+On POSIX systems, a guardian tracks each stdio MCP server's process group.
+If the host dies, the guardian sends SIGTERM and then SIGKILL after two seconds.
+The transport creates its process before its public API exposes the process ID.
+A host killed between creation and guardian registration can leave that server
+unregistered. Guardian startup failures appear in host diagnostics.
+
 ## Recovery and delivery
 
 An admitted input has a stable Durable request ID. Reconnecting or retrying the
@@ -2322,8 +2330,11 @@ fields. Provider parsing buffers do not enter these live projections; raw native
 state stays unchanged. A status schema error alone does not establish different
 process versions.
 
-When a conversation has no live run, has queued non-write inputs, and its latest
-retained assistant task failed with `model_error`, the host submits a passive
+When a conversation has no live run and its inbox contains only queued writes,
+the host places them at a boundary without starting a run. It checks after an
+unanswered submission and when the host resumes. When a conversation has no
+live run, has queued non-write inputs, and its latest retained assistant task
+failed with `model_error`, the host submits a passive
 status write through Pi Durable's public conversation API. The write places
 queued inputs at a final boundary and starts their next run. It tells the model
 the previous error and identifies the notice as host status, not an operator

@@ -80,6 +80,7 @@ const abort = Type.Object(
 		sessionId: id,
 		trust: maybeTrust,
 		background: Type.Optional(Type.Boolean()),
+		release: Type.Optional(Type.Boolean()),
 		timerId: Type.Optional(Type.Integer({ minimum: 1 })),
 	},
 	{ additionalProperties: false },
@@ -403,12 +404,14 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	);
 	register(
 		"agent_abort",
-		"Abort this agent's native task tree without deleting retained evidence. With timerId, cancel only that scheduled input. Other storage conversations remain separate.",
+		"Abort the selected conversation without deleting retained evidence. With timerId, cancel only that input. With release, request host retirement; other work and timers remain.",
 		abort,
-		(input, ctx) =>
-			input.timerId === undefined
-				? control("abort", input, ctx)
-				: control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx),
+		(input, ctx) => {
+			if (input.timerId !== undefined && input.release === true) throw new Error("release cannot be combined with timerId");
+			if (input.timerId !== undefined) return control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx);
+			const { release, ...params } = input;
+			return control(release === true ? "release" : "abort", params, ctx);
+		},
 	);
 	register(
 		"agent_attach",
@@ -604,12 +607,13 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			name: "abort",
 			description: "Stop current work; keep the agent",
 			confirm: "This stops the selected agent's current operation without deleting its evidence.",
-			help: sessionHelp,
-			args: [{ name: "session", complete: "session-control" }],
-			run: async ([sessionId], ctx) => {
-				await control("abort", { sessionId }, ctx);
+			help: `${sessionHelp} Add release to request host retirement.`,
+			args: [{ name: "session", complete: "session-control" }, { name: "release", optional: true }],
+			run: async ([sessionId, release], ctx) => {
+				if (release !== undefined && release !== "release") throw new Error("Use release or omit the second argument");
+				const stopped = await control(release === "release" ? "release" : "abort", { sessionId }, ctx);
 				const label = await agentLabel(sessionId);
-				return outcome(`Requested stop for “${label}”`, sessionId);
+				return release === "release" ? outcome(JSON.stringify(stopped), sessionId) : outcome(`Requested stop for “${label}”`, sessionId);
 			},
 		},
 		{

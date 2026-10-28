@@ -34,6 +34,19 @@ export async function recoverStrandedInputs(conversation: Conversation, context:
 	}, context);
 }
 
+/** Place a write-only inbox at an idle boundary without starting a run. */
+export async function placeLeftoverWrites(conversation: Conversation, context: Context): Promise<number> {
+	const newest = await conversation.commit(async (tx) => {
+		const live = await tx.doc(LiveDoc, conversation.id);
+		const inbox = await tx.doc(InboxDoc, conversation.id);
+		if (live.run || inbox.items.length === 0 || inbox.items.some((item) => item.mode !== "write")) return undefined;
+		return { id: inbox.items[inbox.items.length - 1].id, count: inbox.items.length };
+	}, context);
+	if (newest === undefined) return 0;
+	const boundary = await conversation.submit({ type: "write", requestId: `agent-inbox-boundary:${conversation.id}:${newest.id}`, entry: { kind: "agent.inbox-boundary", edits: [] } }, context);
+	return (await boundary.status(context)).status === "done" ? newest.count : 0;
+}
+
 /** Commit-driven recovery; opening checks existing queued inputs once. */
 export class StrandedInputRecovery {
 	private readonly pending = new Map<ConversationId, Promise<void>>();
@@ -49,7 +62,7 @@ export class StrandedInputRecovery {
 		this.onError = onError;
 		this.context = withAbortSignal(this.lifecycle.signal, BACKGROUND_CONTEXT);
 		this.unsubscribe = harness.subscribeCommits((publication) => {
-			const ended = new Set(publication.changes.flatMap((change) => change.type === "submission" && change.value.status === "unanswered" && change.value.reason === "model_error" ? [change.value.conversationId] : []));
+			const ended = new Set(publication.changes.flatMap((change) => change.type === "submission" && change.value.status === "unanswered" ? [change.value.conversationId] : []));
 			for (const id of ended) void this.recover(id);
 		});
 	}
@@ -59,7 +72,10 @@ export class StrandedInputRecovery {
 		const next = previous.then(async () => {
 			if (this.lifecycle.signal.aborted) return;
 			const conversation = await this.harness.conversation(id, this.context);
-			if (conversation) await recoverStrandedInputs(conversation, this.context);
+			if (conversation) {
+				await recoverStrandedInputs(conversation, this.context);
+				await placeLeftoverWrites(conversation, this.context);
+			}
 		}).catch((error: unknown) => { if (!this.lifecycle.signal.aborted) this.onError(error); });
 		this.pending.set(id, next);
 		void next.then(() => { if (this.pending.get(id) === next) this.pending.delete(id); });
@@ -68,7 +84,7 @@ export class StrandedInputRecovery {
 
 	async open(context: Context): Promise<void> {
 		const inspection = await this.harness.inspect(context);
-		const ids = new Set(inspection.submissions.filter((submission) => submission.type === "input" && submission.status === "queued").map((submission) => submission.conversationId));
+		const ids = new Set(inspection.submissions.filter((submission) => submission.status === "queued").map((submission) => submission.conversationId));
 		await Promise.all([...ids].map((id) => this.recover(id)));
 	}
 

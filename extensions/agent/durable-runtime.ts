@@ -371,8 +371,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			return await observeProducerAwait(sessionId, async () => await client.request("await-state", { sessionId, ...(params.results === undefined ? {} : { results: params.results }) }, { signal: context.abortSignal }) as import("./await-facts.ts").ProducerState, (changed) => subscribe(changed, context.abortSignal), publish, context, client.onClose.bind(client));
 		} finally { manager.close(); }
 	}
-	const dispatch: AgentControlDispatch = async (method, input, context = BACKGROUND_CONTEXT) => {
-		const params = await resolveSelectors(input, method.startsWith("collaboration-"));
+	const dispatchResolved = async (method: Parameters<AgentControlDispatch>[0], params: Record<string, unknown>, context: Context = BACKGROUND_CONTEXT): Promise<unknown> => {
 		if (method === "await-native") return nativeResult(host, params.result as ResultReference, context);
 		if (method === "observe-producer-await") return observeAwaitProducer(params, context);
 		if (method === "report") return request("report", { ...params, ownerId: params.sessionId }, controlRequestId(params));
@@ -381,6 +380,14 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		const sessionId = typeof params.sessionId === "string" ? params.sessionId : metadata.storageId;
 		if (storageIdOf(sessionId) !== metadata.storageId) return dispatchForeign(method, params, sessionId, context);
 		return request(method, params, controlRequestId(params), context.abortSignal);
+	};
+	const dispatch: AgentControlDispatch = async (method, input, context = BACKGROUND_CONTEXT) => {
+		if (method === "resolve-target") {
+			const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+			try { return await manager.resolveTarget(String(input.sessionId)); } finally { await manager.close(); }
+		}
+		const params = await resolveSelectors(input, method.startsWith("collaboration-"));
+		return dispatchResolved(method, params, context);
 	};
 	const restoreDispatch = publishAgentControlDispatch(dispatch);
 	/** Agent choices for the opened Harness; a missing retained model keeps its stored level for attach repair. */

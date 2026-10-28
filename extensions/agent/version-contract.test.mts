@@ -69,6 +69,16 @@ it("refuses self-owned rewind and timer requests in both contract directions wit
 	}
 });
 
+it("keeps abort compatible and refuses release when either peer lacks it", () => {
+	const operations = { ...HOST_CONTRACT.operations };
+	delete operations.release;
+	const oldRuntime = { ...HOST_CONTRACT, operations };
+	assert.match(contractRefusal("release", oldRuntime)?.message ?? "", /does not advertise release/u);
+	assert.match(operationContractMismatch("release", HOST_CONTRACT.operations.release, oldRuntime) ?? "", /no current contract/u);
+	assert.equal(contractRefusal("abort", oldRuntime), undefined);
+	assert.equal(operationContractMismatch("abort", HOST_CONTRACT.operations.abort, oldRuntime), undefined);
+});
+
 it("advertises actual upstream releases separately from current operation contracts", () => {
 	const parsed = parseRuntimeContract(JSON.parse(JSON.stringify(HOST_CONTRACT)));
 	assert.deepEqual(parsed, HOST_CONTRACT);

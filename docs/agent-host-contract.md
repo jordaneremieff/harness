@@ -502,10 +502,12 @@ The current descriptor requires `codingAgent: "1.3.0"` and `durable: "1.4.0"`. N
 For every member in the following set, request and response are both `<member>/1.0.0`, with no `durable` field:
 
 ```text
-close attach report acknowledge abort reset
+close attach report acknowledge abort release reset
  timer-list timer-cancel observe-close changes
  collaboration-list collaboration-read collaboration-mutate await-release
 ```
+
+`release` aborts the target, places eligible queued writes, and requests host retirement with blockers reported.
 
 Overrides and remaining members:
 

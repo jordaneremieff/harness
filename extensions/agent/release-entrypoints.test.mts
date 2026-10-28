@@ -1,0 +1,41 @@
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { it } from "node:test";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import registerAgentExtension from "./index.ts";
+import { AgentManager } from "./manager.ts";
+
+it("the ordinary abort tool dispatches release and rejects timer combinations", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "agent-release-entry-"));
+	const previousAgent = process.env.PI_AGENT_DIR, previousSessions = process.env.PI_AGENT_SESSIONS_DIR;
+	process.env.PI_AGENT_DIR = root;
+	process.env.PI_AGENT_SESSIONS_DIR = join(root, "sessions");
+	const original = AgentManager.prototype.control;
+	const originalStatus = AgentManager.prototype.status;
+	AgentManager.prototype.status = async () => ({ conversation: { name: "target" } });
+	const calls: Array<{ method: string; input: Record<string, unknown> }> = [];
+	AgentManager.prototype.control = async (method, input) => { calls.push({ method, input }); return { retiring: true, blockers: [], writesPlaced: 0 }; };
+	t.after(() => {
+		AgentManager.prototype.control = original;
+		AgentManager.prototype.status = originalStatus;
+		if (previousAgent === undefined) delete process.env.PI_AGENT_DIR; else process.env.PI_AGENT_DIR = previousAgent;
+		if (previousSessions === undefined) delete process.env.PI_AGENT_SESSIONS_DIR; else process.env.PI_AGENT_SESSIONS_DIR = previousSessions;
+		rmSync(root, { recursive: true, force: true });
+	});
+	const tools = new Map<string, { execute: (...args: never[]) => Promise<unknown> }>();
+	let command: { handler: (input: string, ctx: never) => Promise<void> } | undefined;
+	const pi = { events: { on: () => () => {}, emit() {} }, on() {}, registerShortcut() {}, registerToolRenderer() {}, registerMessageRenderer() {}, registerCommand(name: string, value: typeof command) { if (name === "agent") command = value; }, getThinkingLevel: () => "off", registerTool(tool: { name: string }) { tools.set(tool.name, tool as never); } } as unknown as ExtensionAPI;
+	registerAgentExtension(pi);
+	const execute = tools.get("agent_abort")?.execute;
+	assert.ok(execute);
+	const ctx = { cwd: root, sessionManager: { getSessionId: () => "primary", getSessionName: () => undefined }, modelRegistry: { find: () => undefined, getAll: () => [] } };
+	await execute("call" as never, { sessionId: "target", release: true } as never, undefined as never, undefined as never, ctx as never);
+	assert.deepEqual(calls, [{ method: "release", input: { sessionId: "target" } }]);
+	await assert.rejects(execute("call" as never, { sessionId: "target", release: true, timerId: 2 } as never, undefined as never, undefined as never, ctx as never), /cannot be combined/u);
+	assert.equal(calls.length, 1);
+	assert.ok(command);
+	await command.handler("abort target release", { ...ctx, ui: { notify() {} } } as never);
+	assert.deepEqual(calls.at(-1), { method: "release", input: { sessionId: "target" } });
+});

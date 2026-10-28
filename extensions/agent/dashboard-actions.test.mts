@@ -8,6 +8,7 @@ it("actions contain only ordered selected-agent controls with reasons", () => {
 		choices.map((choice) => choice.label),
 		[
 			"Stop current work",
+			"Stop and release host",
 			"Configure",
 			"Tasks",
 			"Fork",
@@ -22,7 +23,7 @@ it("actions contain only ordered selected-agent controls with reasons", () => {
 			"Details",
 		],
 	);
-	assert.equal(choices[1].disabled, "Stop current work first");
+	assert.equal(choices[2].disabled, "Stop current work first");
 	assert.ok(choices.every((choice) => choice.description));
 	assert.equal(dashboardActions(row("one", { state: "idle" }))[0].disabled, "No current work");
 	assert.equal(dashboardActions(row("one", { state: "unavailable" })).find((choice) => choice.name === "attach")?.disabled, undefined);

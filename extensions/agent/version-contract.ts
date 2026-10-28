@@ -34,7 +34,7 @@ const operations: Record<string, OperationContract> = {};
 for (const method of ["close", "recovery-state", "submit", "passive-submit", "spawn", "place", "attach", "receipts", "report", "acknowledge", "inspect", "status", "list", "fork", "rewind", "abort", "compact", "configure", "command", "reset", "timer-schedule", "timer-list", "timer-cancel", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "changes", "collaboration-list", "collaboration-read", "collaboration-mutate"]) {
 	operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 }
-for (const method of ["profile-read", "profile-update", "profile-list", "resolve-agent", "task-submit"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
+for (const method of ["profile-read", "profile-update", "profile-list", "resolve-agent", "task-submit", "release"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 operations["task-submit"] = { ...operations["task-submit"], response: "task-submit/1.2.0" };
 for (const method of ["spawn", "resolve-agent", "place"]) operations[method] = { request: `${method}/2.0.0`, response: `${method}/2.0.0` };
 operations.configure = { request: "configure/1.3.0", response: "configure/1.3.0" };

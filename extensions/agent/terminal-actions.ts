@@ -31,6 +31,7 @@ export async function terminalAction(controller: TerminalController, ask: Termin
 		status: async () => result(await control("status")),
 		attach: async () => result(await control("attach")),
 		abort: async () => await confirm("stop", "Stop current work in this conversation. History and other conversations stay.") ? result(await control("abort")) : undefined,
+		release: async () => await confirm("release", "Stop this conversation and request retirement of its host. Other work stays.") ? result(await control("release")) : undefined,
 		"await-release": async () => await confirm("release", "Return partial await results. Producers continue.") ? result(await control(name, { expectedRunId: target.awaiting?.runId })) : undefined,
 		compact: async () => {
 			if (!await confirm("compact", "Compact at the next native boundary. Active work and queued input stay.")) return undefined;

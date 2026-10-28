@@ -172,6 +172,9 @@ it("native action confirmation cancels safely and uses the captured target", asy
 	assert.equal(cancelled, undefined); assert.equal(f.calls.some((call) => call.method === "abort"), false);
 	await terminalAction(f.controller, async () => "stop", "abort", captured);
 	assert.equal(f.calls.at(-1)?.input.sessionId, "a");
+	await terminalAction(f.controller, async () => "release", "release", captured);
+	assert.equal(f.calls.at(-1)?.method, "release");
+	assert.equal(f.calls.at(-1)?.input.sessionId, "a");
 	assert.equal(f.controller.target, "b");
 	await assert.rejects(terminalAction(f.controller, async () => '{"sessionId":"other"}', "configure", captured), /Use only/);
 	f.controller.close();

@@ -15,6 +15,7 @@ export function dashboardActions(row: AgentConversationSummary): DashboardAction
 			description: "Stop this conversation; history stays.",
 			disabled: row.state === "working" ? undefined : "No current work",
 		},
+		{ name: "release", label: "Stop and release host", description: "Stop this conversation and request host retirement." },
 		{
 			name: "configure",
 			label: "Configure",

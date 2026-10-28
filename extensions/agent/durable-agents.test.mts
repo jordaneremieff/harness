@@ -1538,7 +1538,7 @@ for (const conflictingProfile of [false, true]) it(`resumes an accepted Reporter
 it("resolves a namespaced native handle before applying self-control restrictions", async (t) => {
 	const route = createRoute();
 	const id = handleStorageId("native", testCwd);
-	const { registry } = buildRegistry(undefined, true, id, testCwd);
+	const { registry } = buildRegistry(async (method) => { assert.equal(method, "resolve-target"); return id; }, true, id, testCwd);
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
 	route.script.push({ tool: "agent_abort", args: { sessionId: "@native" } });
@@ -1546,6 +1546,61 @@ it("resolves a namespaced native handle before applying self-control restriction
 	const outcome = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_abort");
 	assert.equal(outcome?.isError, true);
 	assert.match(outcome?.text ?? "", /self|calling|itself/iu);
+});
+
+it("checks the resolved identity before an alias can abort the caller", async (t) => {
+	const route = createRoute();
+	const calls: string[] = [];
+	const { registry } = buildRegistry(async (method) => { calls.push(method); if (method === "resolve-target") return storageId; throw new Error("unexpected abort dispatch"); });
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_abort", args: { sessionId: "remote-alias", background: true } });
+	await say(root, "Try alias abort");
+	const outcome = (await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort");
+	assert.match(outcome?.text ?? "", /abort scope includes the calling conversation/u);
+	assert.deepEqual(calls, ["resolve-target"]);
+});
+
+it("dispatches release to the resolved target and refuses a timer combination", async (t) => {
+	const route = createRoute();
+	const calls: Array<{ method: string; params: Readonly<Record<string, unknown>> }> = [];
+	const { registry } = buildRegistry(async (method, params) => {
+		calls.push({ method, params });
+		if (method === "resolve-target") return "canonical-remote";
+		if (method === "release") return { retiring: false, blockers: ["active work"], writesPlaced: 0 };
+		throw new Error(`unexpected ${method}`);
+	});
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_abort", args: { sessionId: "alias", release: true } });
+	await say(root, "Release the remote host");
+	assert.deepEqual(calls.map((call) => call.method), ["resolve-target", "release"]);
+	assert.equal(calls[1].params.sessionId, "canonical-remote");
+	route.script.push({ tool: "agent_abort", args: { sessionId: "alias", release: true, timerId: 1 } });
+	await say(root, "Reject release with a timer");
+	assert.match((await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort")?.text ?? "", /cannot be combined with timerId/u);
+	assert.equal(calls.length, 2);
+});
+
+it("refuses an owner abort that crosses the caller's background anchor", async (t) => {
+	const route = createRoute();
+	const holder: DispatchHolder = {};
+	const dispatch: AgentControlDispatch = async (method, params, callContext) => method === "resolve-target" ? params.sessionId : createDispatch(holder, [])(method, params, callContext);
+	const { registry } = buildRegistry(dispatch);
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	holder.harness = harness;
+	t.after(() => harness.close(context));
+	const child = await spawnChild(harness, root, route, "owner-abort", "ready");
+	const conversation = await harness.conversation(child.conversationId, context);
+	assert.ok(conversation);
+	route.script.push({ tool: "agent_abort", args: { sessionId: storageId, background: true } });
+	await say(conversation, "Try owner abort");
+	let outcome = (await toolOutcomes(harness, child.conversationId)).find((entry) => entry.name === "agent_abort");
+	assert.match(outcome?.text ?? "", /abort scope includes the calling conversation/u);
+	route.script.push({ tool: "agent_abort", args: { sessionId: storageId } });
+	await say(conversation, "Abort owner without background");
+	outcome = (await toolOutcomes(harness, child.conversationId)).find((entry) => entry.name === "agent_abort");
+	assert.equal(outcome?.isError, false, outcome?.text);
 });
 
 it("drives one model-issued call per control tool", async (t) => {

@@ -421,7 +421,7 @@ export function renderListCall(value: unknown, theme: Theme, context: AgentCardC
 export function renderAbortCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
 	const target = text(args.sessionId);
-	const qualifier = count(args.timerId) !== undefined ? `timer ${args.timerId}` : args.background === true ? "background tasks" : undefined;
+	const qualifier = count(args.timerId) !== undefined ? `timer ${args.timerId}` : [args.background === true ? "background tasks" : "", args.release === true ? "release host" : ""].filter(Boolean).join(" · ") || undefined;
 	return argumentCard("agent_abort", target ? targetLabel(target, context) : "(target pending)", qualifier, args, theme, context, target.length > 300 || args.trust !== undefined);
 }
 
@@ -538,6 +538,11 @@ function timerLines(details: Record<string, unknown>, theme: Theme, context: Age
 function abortLines(details: Record<string, unknown>, theme: Theme, context: AgentCardContext): string[] | undefined {
 	const timer = timerLines(details, theme, context);
 	if (timer) return timer;
+	if (typeof details.retiring === "boolean") {
+		const lines = [theme.fg("toolOutput", details.retiring ? "Host retirement requested" : "Host remains active")];
+		for (const blocker of array(details.blockers)) if (typeof blocker === "string") lines.push(muted(theme, displayPreview(blocker, 160)));
+		return lines;
+	}
 	if (text(details.identity) === "" || details.background === undefined) return undefined;
 	const lines = [theme.fg("toolOutput", `Abort requested${targetSuffix(text(details.identity), context)}`)];
 	if (details.background === true && record(context.args).background !== true) lines.push(muted(theme, "Includes background task trees"));

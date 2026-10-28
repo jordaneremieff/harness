@@ -53,6 +53,7 @@ import { type Static, type TSchema, Type } from "typebox";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines } from "./control-guidance.ts";
+import { abortScopeContains } from "./abort-scope.ts";
 import { parseDeliverAt, TimerTask, type TimerMode } from "./durable-timers.ts";
 import { CheckInTask, checkInMinutes, createCheckIn } from "./durable-checkins.ts";
 import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
@@ -81,6 +82,8 @@ export type AgentControlMethod =
 	| "fork"
 	| "rewind"
 	| "abort"
+	| "release"
+	| "resolve-target"
 	| "compact"
 	| "configure"
 	| "attach"
@@ -407,6 +410,7 @@ const AbortParams = Type.Object(
 		timerId: Type.Optional(
 			Type.Integer({ minimum: 1, description: "Timer ID from agent_status; cancels only that scheduled input." }),
 		),
+		release: Type.Optional(Type.Boolean({ description: "Request host retirement after abort." })),
 	},
 	{ additionalProperties: false },
 );
@@ -1289,13 +1293,42 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			sendTarget(api, context, args.sessionId, args.message, "steer", args.replyTo),
 	});
 
+	const abortLocal = async (args: AbortInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
+		const conversationId = localConversation(args.sessionId, api.conversationId);
+		if (conversationId === undefined) return errorResult(`Cannot resolve session ${args.sessionId}.`);
+		const includesCaller = await api.commit((tx) => abortScopeContains(tx, api.conversationId, conversationId, args.background === true), context);
+		if (includesCaller) return errorResult("The target's abort scope includes the calling conversation.");
+		if (args.release === true) return dispatchControl("release", { sessionId: identity(conversationId), ...(args.background === true ? { background: true } : {}) }, `Release of ${args.sessionId} failed`);
+		const conversation = await api.conversation(conversationId, context);
+		if (conversation === undefined) return errorResult(`Conversation ${conversationId} is not retained.`);
+		await conversation.abort(context, args.background === true ? { background: true } : undefined);
+		return textResult(`Aborted ${args.sessionId}.`, { conversationId });
+	};
+
+	const resolveAbortTarget = async (sessionId: string, context: Context): Promise<string> => {
+		if (!dispatch) throw new Error("Target resolution is unavailable.");
+		const resolved = await dispatch("resolve-target", { sessionId }, context);
+		if (typeof resolved !== "string") throw new Error("Target resolution returned an invalid identity.");
+		return resolved;
+	};
+
+	const abortResolved = async (args: AbortInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
+		if (args.sessionId === identity(api.conversationId)) return errorResult("The target's abort scope includes the calling conversation.");
+		let resolved: string;
+		try { resolved = await resolveAbortTarget(args.sessionId, context); }
+		catch (error) { return errorResult(`Target resolution failed: ${error instanceof Error ? error.message : String(error)}`); }
+		if (target(resolved).kind !== "foreign") return abortLocal({ ...args, sessionId: resolved }, api, context);
+		return dispatchControl(args.release === true ? "release" : "abort", { sessionId: resolved, ...(args.background === true ? { background: true } : {}) }, `Abort of ${resolved} failed`);
+	};
+
 	const abortTool = durable.defineTool({
 		name: "agent_abort",
 		description:
-			"Stop a conversation's current work without deleting its transcript. With timerId, cancel only that scheduled input from agent_status. Background work such as anchors and reporters survives unless background is true.",
+			"Stop a conversation's current work without deleting its transcript. With timerId, cancel only that scheduled input. With release, request host retirement after stopping; other work and timers remain. Background work survives unless background is true.",
 		parameters: AbortParams,
 		replay: "unsafe",
 		execute: async (args: AbortInput, api, context) => {
+			if (args.timerId !== undefined && args.release === true) return errorResult("release cannot be combined with timerId");
 			if (args.timerId !== undefined) {
 				return dispatchControl(
 					"timer-cancel",
@@ -1303,20 +1336,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 					`Cancellation of timer ${args.timerId} failed`,
 				);
 			}
-			if (target(args.sessionId).kind === "foreign") {
-				return dispatchControl(
-					"abort",
-					{ sessionId: args.sessionId, ...(args.background === true ? { background: true } : {}) },
-					`Abort of ${args.sessionId} failed`,
-				);
-			}
-			const conversationId = localConversation(args.sessionId, api.conversationId);
-			if (conversationId === undefined) return errorResult(`Cannot resolve session ${args.sessionId}.`);
-			if (conversationId === api.conversationId) return errorResult("Cannot abort the calling conversation.");
-			const conversation = await api.conversation(conversationId, context);
-			if (conversation === undefined) return errorResult(`Conversation ${conversationId} is not retained.`);
-			await conversation.abort(context, args.background === true ? { background: true } : undefined);
-			return textResult(`Aborted ${args.sessionId}.`, { conversationId });
+			return abortResolved(args, api, context);
 		},
 	});
 

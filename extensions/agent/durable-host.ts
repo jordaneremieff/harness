@@ -24,7 +24,7 @@ import type { ProviderRetryNotice } from "./provider-block.ts";
 import { initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
 import { canonicalIdentity } from "./identity.ts";
 import { Value } from "typebox/value";
-import { StrandedInputRecovery } from "./stranded-inputs.ts";
+import { placeLeftoverWrites, StrandedInputRecovery } from "./stranded-inputs.ts";
 import { admittedResult, ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
 import type { InputProvenance } from "./awaited-results.ts";
 import { ownAwaitFact, producerRetryFact, releaseAwait } from "./await-observation.ts";
@@ -90,6 +90,7 @@ export interface DurableHostOptions {
 	/** Resolved generation retry ceiling (`maxRetries + 1`) for dashboard auto-retry health. */
 	readonly retryMaxAttempts?: number;
 	readonly onReport?: HarnessOptions["onReport"];
+	readonly requestRelease?: () => Promise<{ readonly retiring: boolean; readonly blockers: readonly string[] }>;
 }
 
 async function initializeSavedContext(tx: Tx, id: ConversationId, messages: readonly import("./initial-context.ts").InitialMessage[]): Promise<void> {
@@ -235,6 +236,7 @@ export class DurableHost {
 	private recovery: StrandedInputRecovery | undefined;
 	private resumeWork: Promise<void> | undefined;
 	private recoveryError: ((error: unknown) => void) | undefined;
+	private requestRelease: DurableHostOptions["requestRelease"];
 
 	private constructor(harness: Harness, storage: Storage, storageId: string, root: Conversation, commands: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>, contributionHost: DurableContributionHost | undefined, cwd: string | undefined, models: Models, storagePath: string, registry: HarnessOptions["registry"], retryMaxAttempts: number | undefined, settings: HarnessOptions["settings"], now: () => number) {
 		this.harness = harness;
@@ -373,6 +375,7 @@ export class DurableHost {
 			await reconcileProviderControls(harness, context);
 			providerModels.bind();
 			const host = new DurableHost(harness, storage, options.storageId, root, options.commands ?? [], options.contributionHost, options.cwd, options.models, options.storagePath, options.registry, options.retryMaxAttempts, options.settings, now);
+			host.requestRelease = options.requestRelease;
 			host.providerModels = providerModels;
 			host.providerNotices = new ProviderRetryNotices(harness, options.storageId, options.settings, (error) => { host.deliveryError = `Provider retry notice failed: ${error instanceof Error ? error.message : String(error)}`; report(error); }, now);
 			await host.providerNotices.initialize();
@@ -503,6 +506,8 @@ export class DurableHost {
 				return this.rewindRequest(params, requestContext);
 			case "abort":
 				return this.abortRequest(params, requestContext);
+			case "release":
+				return this.releaseRequest(params, requestContext);
 			case "compact":
 				return this.compactRequest(params, requestContext);
 			case "configure":
@@ -825,6 +830,23 @@ export class DurableHost {
 		const background = requestBoolean(params, "background") ?? false;
 		await abortConversation(conversation, background, context);
 		return { conversationId: conversation.id, identity: this.identity(conversation.id), background };
+	}
+
+	private async releaseRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		if (params?.timerId !== undefined) throw new Error("release cannot be combined with timerId");
+		const aborted = await this.abortRequest(params, context);
+		let cursor: import("@earendil-works/pi-durable").Cursor | undefined;
+		let writesPlaced = 0;
+		do {
+			const page = await this.harness.commit((tx) => tx.scanConversations({}, 50, cursor), context);
+			for (const record of page.items) {
+				const conversation = await this.harness.conversation(record.id, context);
+				if (conversation) writesPlaced += await placeLeftoverWrites(conversation, context);
+			}
+			cursor = page.next;
+		} while (cursor);
+		const outcome = this.requestRelease ? await this.requestRelease() : { retiring: false, blockers: ["Release is not available in this host."] };
+		return { aborted, writesPlaced, ...outcome };
 	}
 
 	private async compactRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {

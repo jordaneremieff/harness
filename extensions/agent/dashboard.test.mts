@@ -96,7 +96,7 @@ for (const [width, height] of [
 			for (let index = 0; index < dashboardActions(row()).length; index++) {
 				const screen = f.ui.render(width).join("\n");
 				assert.match(screen, /› /);
-				if (width === 80) assert.match(screen, /\+4 more/);
+				if (width === 80) assert.match(screen, /\+5 more/);
 				else assert.match(screen, /Reconnect[\s\S]*Run agent command[\s\S]*Details/);
 				f.ui.handleInput("\x1b[B");
 			}
@@ -813,8 +813,7 @@ it("Tasks opens a resolved unloaded conversation, releases its graph, and Esc re
 	const f = fixture(80, 24, observed);
 	await turn();
 	f.ui.handleInput("a");
-	f.ui.handleInput("\x1b[B");
-	f.ui.handleInput("\x1b[B");
+	for (let step = 0; step < dashboardActions(row()).findIndex((choice) => choice.name === "tasks"); step++) f.ui.handleInput("\x1b[B");
 	f.ui.handleInput("\r");
 	await turn();
 	assert.equal(f.ui.navigation.screen, "tasks");

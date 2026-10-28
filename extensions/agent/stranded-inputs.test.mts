@@ -10,7 +10,7 @@ import { Type } from "typebox";
 import { recordRequestContext, requestContextSection } from "./request-context.ts";
 import { createAssistantMessageEventStream, type TranscriptContext } from "@earendil-works/pi-ai";
 import { DurableHost } from "./durable-host.ts";
-import { recoverStrandedInputs } from "./stranded-inputs.ts";
+import { placeLeftoverWrites, recoverStrandedInputs, StrandedInputRecovery } from "./stranded-inputs.ts";
 import { answerMessage, completed, fixtureRegistry, hostOptions } from "./durable-host-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
@@ -41,6 +41,143 @@ async function queue(conversation: Conversation) {
 	return Promise.all(["one", "two"].map((content) => conversation.submit({ type: "input", content, whenBusy: "followUp", requestId: content }, context)));
 }
 async function recoveryEntries(conversation: Conversation) { return (await conversation.entries({}, 100, undefined, context)).items.filter((entry) => entry.kind === "agent.recovery"); }
+
+it("places an aborted run's queued write on open without another run", { timeout: 10000 }, async (t) => {
+	const p = await provider();
+	const harness = await Harness.open(await openNodeSqliteStorage(rootPath(t)), { models: p.runtime, registry: fixtureRegistry(), settings }, context);
+	t.after(() => harness.close(context));
+	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
+	await conversation.submit({ type: "input", content: "first" }, context);
+	await p.started.promise;
+	const write = await conversation.submit({ type: "write", requestId: "notice", entry: { kind: "agent.thread-notice", model: [{ role: "user", content: "notice", timestamp: 0 }] } }, context);
+	const aborted = conversation.abort(context);
+	p.release.resolve();
+	await aborted;
+	assert.equal((await harness.snapshot(InboxDoc, conversation.id, context))?.items.length, 1);
+	const recovery = new StrandedInputRecovery(harness, (error) => { throw error; });
+	t.after(() => recovery.close());
+	await recovery.open(context);
+	assert.equal((await write.wait(context)).status, "done");
+	assert.equal((await harness.inspect(context)).submissions.length, 0);
+	assert.equal(p.calls(), 1);
+	assert.equal(await placeLeftoverWrites(conversation, context), 0);
+	assert.equal((await conversation.entries({}, 100, undefined, context)).items.filter((entry) => entry.kind === "agent.inbox-boundary").length, 1);
+});
+
+it("places queued writes before requesting host retirement", { timeout: 10000 }, async (t) => {
+	const p = await provider();
+	let emptyAtRelease = false;
+	let host!: DurableHost;
+	host = await DurableHost.open({ ...hostOptions(rootPath(t), p.runtime, fixtureRegistry()), settings, requestRelease: async () => {
+		emptyAtRelease = (await host.harness.snapshot(InboxDoc, host.root().id, context))?.items.length === 0;
+		return { retiring: true, blockers: [] };
+	} });
+	t.after(() => host.close());
+	await host.root().submit({ type: "input", content: "first" }, context);
+	await p.started.promise;
+	const notice = await host.root().submit({ type: "write", entry: { kind: "notice", model: [{ role: "user", content: "notice", timestamp: 0 }] } }, context);
+	const release = host.request("release", {}, context);
+	p.release.resolve();
+	const result = await release as { retiring: boolean; blockers: string[] };
+	assert.equal(result.retiring, true);
+	assert.deepEqual(result.blockers, []);
+	assert.equal(emptyAtRelease, true);
+	assert.equal((await notice.wait(context)).status, "done");
+});
+
+it("places a queued write after abort without another run", { timeout: 10000 }, async (t) => {
+	const p = await provider();
+	const host = await DurableHost.open({ ...hostOptions(rootPath(t), p.runtime, fixtureRegistry()), settings });
+	t.after(() => host.close());
+	const input = await host.root().submit({ type: "input", content: "first" }, context);
+	await p.started.promise;
+	const write = await host.root().submit({ type: "write", requestId: "notice", entry: { kind: "agent.thread-notice", model: [{ role: "user", content: "notice", timestamp: 0 }] } }, context);
+	const aborted = host.root().abort(context);
+	p.release.resolve();
+	await aborted;
+	assert.equal((await input.wait(context)).reason, "aborted");
+	assert.equal((await write.wait(context)).status, "done");
+	assert.equal((await host.harness.inspect(context)).submissions.length, 0);
+	assert.equal(p.calls(), 1);
+});
+
+it("places a queued write after a failed run without another run", { timeout: 10000 }, async (t) => {
+	const p = await provider();
+	const host = await DurableHost.open({ ...hostOptions(rootPath(t), p.runtime, fixtureRegistry()), settings });
+	t.after(() => host.close());
+	const input = await host.root().submit({ type: "input", content: "first" }, context);
+	await p.started.promise;
+	const write = await host.root().submit({ type: "write", requestId: "notice", entry: { kind: "agent.thread-notice", model: [{ role: "user", content: "notice", timestamp: 0 }] } }, context);
+	p.release.resolve();
+	assert.equal((await input.wait(context)).status, "unanswered");
+	assert.equal((await write.wait(context)).status, "done");
+	assert.equal((await host.harness.inspect(context)).submissions.length, 0);
+	assert.equal(p.calls(), 1);
+});
+
+it("places a queued write after an unavailable model ends the run", { timeout: 10000 }, async (t) => {
+	const p = await provider();
+	const host = await DurableHost.open({ ...hostOptions(rootPath(t), p.runtime, fixtureRegistry()), agent: { model: { provider: "missing", modelId: "missing" } }, settings });
+	t.after(() => host.close());
+	const input = await host.root().submit({ type: "input", content: "first" }, context);
+	const write = await host.root().submit({ type: "write", requestId: "notice", entry: { kind: "agent.thread-notice", model: [{ role: "user", content: "notice", timestamp: 0 }] } }, context);
+	assert.equal((await input.wait(context)).reason, "no_model");
+	assert.equal((await write.wait(context)).status, "done");
+	assert.equal((await host.harness.inspect(context)).submissions.length, 0);
+	assert.equal((await host.root().entries({}, 100, undefined, context)).items.filter((entry) => entry.kind === "agent.inbox-boundary").length, 1);
+	for (const view of ["history", "activity"]) assert.ok(await host.request("inspect", { view }, context));
+	assert.ok(await host.request("dashboard", {}, context));
+	assert.ok(await host.request("snapshot", {}, context));
+	assert.equal(p.calls(), 0);
+});
+
+it("keeps a mixed inbox after an unavailable model", { timeout: 10000 }, async (t) => {
+	const p = await provider();
+	const host = await DurableHost.open({ ...hostOptions(rootPath(t), p.runtime, fixtureRegistry()), agent: { model: { provider: "missing", modelId: "missing" } }, settings });
+	t.after(() => host.close());
+	const first = await host.root().submit({ type: "input", content: "first" }, context);
+	await host.root().submit({ type: "input", content: "queued", whenBusy: "followUp" }, context);
+	await host.root().submit({ type: "write", entry: { kind: "notice", model: [{ role: "user", content: "notice", timestamp: 0 }] } }, context);
+	assert.equal((await first.wait(context)).reason, "no_model");
+	await host.root().waitForIdle(context);
+	assert.equal((await host.harness.snapshot(InboxDoc, host.root().id, context))?.items.length, 2);
+	assert.equal((await host.root().entries({}, 100, undefined, context)).items.some((entry) => entry.kind === "agent.inbox-boundary"), false);
+});
+
+it("uses the newest queued write to choose a fresh boundary request ID", { timeout: 10000 }, async (t) => {
+	const p = await provider();
+	const harness = await Harness.open(await openNodeSqliteStorage(rootPath(t)), { models: p.runtime, registry: fixtureRegistry(), settings }, context);
+	t.after(() => harness.close(context));
+	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
+	await conversation.submit({ type: "input", content: "first" }, context);
+	await p.started.promise;
+	const notice = await conversation.submit({ type: "write", entry: { kind: "notice", model: [{ role: "user", content: "notice", timestamp: 0 }] } }, context);
+	const boundary = await conversation.submit({ type: "write", requestId: `agent-inbox-boundary:${conversation.id}:${notice.id}`, entry: { kind: "agent.inbox-boundary", edits: [] } }, context);
+	const aborted = conversation.abort(context);
+	p.release.resolve();
+	await aborted;
+	assert.equal(await placeLeftoverWrites(conversation, context), 2);
+	assert.equal((await notice.wait(context)).status, "done");
+	assert.equal((await boundary.wait(context)).status, "done");
+	assert.equal((await harness.inspect(context)).submissions.length, 0);
+	assert.equal((await conversation.entries({}, 100, undefined, context)).items.filter((entry) => entry.kind === "agent.inbox-boundary").length, 2);
+});
+
+it("leaves a mixed inbox untouched when recovery is not applicable", { timeout: 10000 }, async (t) => {
+	const p = await provider();
+	const harness = await Harness.open(await openNodeSqliteStorage(rootPath(t)), { models: p.runtime, registry: fixtureRegistry(), settings }, context);
+	t.after(() => harness.close(context));
+	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
+	const input = await conversation.submit({ type: "input", content: "first" }, context);
+	await p.started.promise;
+	await conversation.submit({ type: "input", content: "queued", whenBusy: "followUp" }, context);
+	await conversation.submit({ type: "write", entry: { kind: "notice", model: [{ role: "user", content: "notice", timestamp: 0 }] } }, context);
+	p.release.resolve();
+	await input.wait(context);
+	await conversation.waitForIdle(context);
+	assert.equal(await placeLeftoverWrites(conversation, context), 0);
+	assert.equal((await harness.snapshot(InboxDoc, conversation.id, context))?.items.length, 2);
+});
 
 it("recovers queued follow-ups after a model error and tells the model the facts", { timeout: 10000 }, async (t) => {
 	const p = await provider();

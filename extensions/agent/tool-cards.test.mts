@@ -297,6 +297,10 @@ describe("agent result cards", () => {
 		assert.match(screen(renderAgentResult(result({ conversationId: 1, identity: "storage-a" }), { expanded: false, isPartial: false }, theme, context())), /Configuration applied · storage-a/);
 		const abort = createAgentToolCards().agent_abort.renderResult(result({ conversationId: 1, identity: "storage-a", background: false }), { expanded: false, isPartial: false }, theme, context());
 		assert.match(screen(abort), /Abort requested · storage-a/);
+		assert.match(screen(renderAbortCall({ sessionId: "storage-a", release: true }, theme, context())), /release host/);
+		const release = createAgentToolCards().agent_abort.renderResult(result({ aborted: { identity: "storage-a" }, retiring: false, blockers: ["pending timer"], writesPlaced: 0 }), { expanded: false, isPartial: false }, theme, context());
+		assert.match(screen(release), /Host remains active/);
+		assert.match(screen(release), /pending timer/);
 		const command = createAgentToolCards().agent_command.renderResult(result({ name: "reload", conversationId: 1, identity: "storage-a", text: "Reloaded 3 extensions" }), { expanded: false, isPartial: false }, theme, context());
 		assert.match(screen(command), /Reloaded 3 extensions/);
 		assert.match(screen(command), /command reload\nstorage-a/);

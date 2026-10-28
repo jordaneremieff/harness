@@ -535,7 +535,7 @@ export class AgentManager {
 		const selector = String(input.sessionId ?? "");
 		const sessionId = await this.resolveTarget(selector);
 		if (typeof input.replyTo === "string") input = { ...input, replyTo: await this.resolveTarget(input.replyTo) };
-		if (sessionId === caller.id && ["abort", "fork", "rewind", "compact", "configure", "command"].includes(method)) throw new Error("This control cannot target the calling primary session");
+		if (sessionId === caller.id && ["abort", "release", "fork", "rewind", "compact", "configure", "command"].includes(method)) throw new Error("This control cannot target the calling primary session");
 		let record: CatalogRecord;
 		try { record = this.nativeTarget(sessionId); }
 		catch (error) {

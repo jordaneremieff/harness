@@ -89,6 +89,21 @@ function defer(): { promise: Promise<void>; resolve: () => void } {
 
 const wait = (host: DurableHost, submissionId: SubmissionId) => host.wait(submissionId, BACKGROUND_CONTEXT);
 
+it("requests retirement after abort and reports its blockers", async (t) => {
+	const root = fixtureRoot(t);
+	let calls = 0;
+	const host = await DurableHost.open({ ...hostOptions(join(root, "release.sqlite"), await fixtureRuntime("answer"), fixtureRegistry()), requestRelease: async () => { calls++; return { retiring: false, blockers: ["pending timer"] }; } }, BACKGROUND_CONTEXT);
+	t.after(() => host.close());
+	const outcome = await host.request("release", {}, BACKGROUND_CONTEXT) as { aborted: { identity: string }; writesPlaced: number; retiring: boolean; blockers: string[] };
+	assert.equal(outcome.aborted.identity, fixtureStorageId);
+	assert.equal(outcome.writesPlaced, 0);
+	assert.equal(outcome.retiring, false);
+	assert.deepEqual(outcome.blockers, ["pending timer"]);
+	assert.equal(calls, 1);
+	await assert.rejects(host.request("release", { timerId: 1 }, BACKGROUND_CONTEXT), /cannot be combined/u);
+	assert.equal(calls, 1);
+});
+
 it("preserves malformed tool arguments through the provider boundary and refuses their parsed prefix", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const effect = join(root, "effect.txt");
