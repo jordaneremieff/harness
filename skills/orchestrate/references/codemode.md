@@ -33,7 +33,7 @@ const frameFile = "<scratch>/frame.md";
 const taskFile = "<scratch>/task.md";
 
 const framed = await tools.bash({ command: `node ${skill}/scripts/contract.mts frame ${frameFile}` });
-if (framed.exitCode !== 0) return { stop: "frame check failed", findings: framed.output.slice(0, 2000) };
+if (framed.exit_code !== 0) return { stop: "frame check failed", findings: framed.output.slice(0, 2000) };
 const frame = JSON.parse(framed.output);
 
 const receipt = asObject(await tools.agent_spawn({ name: "lead", preset: "worker" }));
@@ -94,8 +94,10 @@ for settled failures.
 ```js
 const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
 const overview = asObject(await tools.agent_status({}));
+// Created agents appear only in a native session's status; an ordinary primary
+// relies on the result references that the dispatch recipes stored.
 const owned = (overview.createdAgents?.agents ?? []).map((a) => a.identity);
-const ids = owned.length > 0 ? owned : []; // add identities here when this session created none
+const ids = [...new Set([...owned, ...(load("refs") ?? []).map((r) => r.sessionId)])];
 
 const agents = await Promise.all(ids.map(async (sessionId) => {
   try {
