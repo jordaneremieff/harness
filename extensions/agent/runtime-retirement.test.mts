@@ -305,6 +305,22 @@ it("refuses malformed recipients before creating report and intent rows", { time
 	assert.equal(state?.intents.some((intent) => intent.ownerId === "12345678") ?? false, false);
 });
 
+it("validates rewind recipients but permits a self-owned rewind", { timeout: 15000 }, async t => {
+	const f = await fixture(t);
+	const seed = await f.native.submit({ message: "establish a rewind point", requestId: "rewind-recipient-seed" });
+	await f.native.wait(seed.submissionId, BACKGROUND_CONTEXT);
+	const page = await f.native.root().entries({}, 20, undefined, BACKGROUND_CONTEXT);
+	const point = page.items.find(entry => entry.kind === "pi.assistant");
+	assert.ok(point);
+	const params = { entryId: point.id, correction: "correct the answer", ownerId: "12345678", origin: "operator" };
+	await assert.rejects(f.runtime.request("rewind", params, "rewind-invalid-owner"), /Delivery recipient must be an exact/u);
+	const result = await f.runtime.request("rewind", { ...params, selfOwned: true }, "rewind-self-owner") as { identity: string; conversationId: ConversationId; submissionId: SubmissionId };
+	assert.equal((await f.native.wait(result.submissionId, BACKGROUND_CONTEXT)).status, "done");
+	assert.equal(result.identity, `${f.metadata.storageId}:${result.conversationId}`);
+	const state = await f.native.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	assert.equal(state?.intents.some(intent => intent.ownerId === "12345678") ?? false, false);
+});
+
 it("keeps a native future timer alive even when the root has no submission", { timeout: 15000 }, async (t) => {
 	const f = await fixture(t);
 	const timer = await f.runtime.request("timer-schedule", { message: "later", deliverAt: Date.now() + 3600000, origin: "operator", ownerId: f.ownerId }, "timer") as { timerId: number };

@@ -1956,7 +1956,9 @@ same admission reuses that identity. A pending delivery intent precedes input
 admission, so a crash between those operations does not lose the reply route.
 The runtime validates each fresh control's delivery recipient before admission.
 The recipient must be an exact storage or conversation identity, not a shortened
-ID or display name. Retained malformed routes become terminal during delivery;
+ID or display name. Rewind validates `ownerId` unless `selfOwned` is true;
+a self-owned rewind derives its recipient from the new conversation.
+Retained malformed routes become terminal during delivery;
 that check does not reject admission replay of retained native work.
 
 Task admission preserves the caller's original text and images in native user

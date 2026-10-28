@@ -42,8 +42,9 @@ import { writeDeliveryWake } from "./delivery-wake.ts";
 import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 
 function validateControlRecipient(method: string, params: Readonly<Record<string, unknown>>): void {
+	if (method === "rewind" && params.selfOwned === true) return;
 	const recipient = method === "task-submit" ? params.replyTo ?? params.requester
-		: ["submit", "report", "timer-schedule"].includes(method) ? params.ownerId : undefined;
+		: ["submit", "report", "rewind", "timer-schedule"].includes(method) ? params.ownerId : undefined;
 	if (typeof recipient === "string") validateDeliveryRecipient(recipient);
 }
 
