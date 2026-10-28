@@ -65,7 +65,7 @@ it("keeps the approved snippets", () => {
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_steer.snippet, "Redirect a running agent session");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_abort.snippet, "Abort an agent session operation");
 	assert.match((AGENT_CONTROL_GUIDANCE.agent_abort.guidelines ?? []).join(" "), /release: true/u);
-	assert.match((AGENT_CONTROL_GUIDANCE.agent_abort.guidelines ?? []).join(" "), /Do not combine release with timerId/u);
+	assert.match((AGENT_CONTROL_GUIDANCE.agent_abort.guidelines ?? []).join(" "), /Do not combine release with timerId or background: true/u);
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_fork.snippet, "Fork an agent session for side work");
 	assert.equal(AGENT_CONTROL_GUIDANCE.agent_status.snippet, "Show agent session status");
 	assert.equal(

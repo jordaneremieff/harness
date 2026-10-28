@@ -1328,6 +1328,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: AbortParams,
 		replay: "unsafe",
 		execute: async (args: AbortInput, api, context) => {
+			if (args.release === true && args.background === true) return errorResult("release cannot be combined with background; abort with background first, then release");
 			if (args.timerId !== undefined && args.release === true) return errorResult("release cannot be combined with timerId");
 			if (args.timerId !== undefined) {
 				return dispatchControl(

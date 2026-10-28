@@ -90,6 +90,18 @@ it("deduplicates a repeated schedule key into one pending timer", { timeout: 600
 	assert.equal(cancelled.status, "cancelled");
 });
 
+it("refuses background release and preserves a pending timer", { timeout: 10000 }, async (t) => {
+	const f = await scheduleFixture(t, { agentExtension: true });
+	const scheduled = await schedule(f, { message: "PRESERVED_TIMER", deadline: Date.now() + 30000, scheduleId: "timer-preserved", requestId: "timer-preserved-delivery" });
+	await assert.rejects(f.host.request("release", { sessionId: f.storageId, background: true }), /release cannot be combined with background; abort with background first, then release/u);
+	let page = (await f.host.request("timer-list", { sessionId: f.storageId })) as TimerListPage;
+	assert.equal(page.timers.find((timer) => timer.timerId === scheduled.timerId)?.status, "pending");
+	await f.host.request("release", { sessionId: f.storageId });
+	page = (await f.host.request("timer-list", { sessionId: f.storageId })) as TimerListPage;
+	assert.equal(page.timers.find((timer) => timer.timerId === scheduled.timerId)?.status, "pending");
+	await f.host.request("timer-cancel", { sessionId: f.storageId, timerId: scheduled.timerId });
+});
+
 it("keeps a pending timer as live work so the host cannot idle-retire", { timeout: 60000 }, async (t) => {
 	const f = await scheduleFixture(t, { agentExtension: true });
 	const deadline = Date.now() + 30000;

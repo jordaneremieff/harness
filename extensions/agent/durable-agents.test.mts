@@ -1568,6 +1568,7 @@ it("dispatches release to the resolved target and refuses a timer combination", 
 		calls.push({ method, params });
 		if (method === "resolve-target") return "canonical-remote";
 		if (method === "release") return { retiring: false, blockers: ["active work"], writesPlaced: 0 };
+		if (method === "abort") return { identity: "canonical-remote", background: true };
 		throw new Error(`unexpected ${method}`);
 	});
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
@@ -1580,6 +1581,14 @@ it("dispatches release to the resolved target and refuses a timer combination", 
 	await say(root, "Reject release with a timer");
 	assert.match((await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort")?.text ?? "", /cannot be combined with timerId/u);
 	assert.equal(calls.length, 2);
+	route.script.push({ tool: "agent_abort", args: { sessionId: "alias", release: true, background: true } });
+	await say(root, "Reject release with background");
+	assert.match((await toolOutcomes(harness, root.id)).find((entry) => entry.name === "agent_abort")?.text ?? "", /release cannot be combined with background; abort with background first, then release/u);
+	assert.equal(calls.length, 2);
+	route.script.push({ tool: "agent_abort", args: { sessionId: "alias", background: true } });
+	await say(root, "Abort background work");
+	assert.deepEqual(calls.slice(2).map((call) => call.method), ["resolve-target", "abort"]);
+	assert.equal(calls.at(-1)?.params.background, true);
 });
 
 it("refuses an owner abort that crosses the caller's background anchor", async (t) => {

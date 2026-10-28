@@ -407,6 +407,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		"Abort the selected conversation without deleting retained evidence. With timerId, cancel only that input. With release, request host retirement; other work and timers remain.",
 		abort,
 		(input, ctx) => {
+			if (input.release === true && input.background === true) throw new Error("release cannot be combined with background; abort with background first, then release");
 			if (input.timerId !== undefined && input.release === true) throw new Error("release cannot be combined with timerId");
 			if (input.timerId !== undefined) return control("timer-cancel", { sessionId: input.sessionId, timerId: input.timerId }, ctx);
 			const { release, ...params } = input;

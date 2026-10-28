@@ -35,7 +35,10 @@ it("the ordinary abort tool dispatches release and rejects timer combinations", 
 	await execute("call" as never, { sessionId: "target", release: true } as never, undefined as never, undefined as never, ctx as never);
 	assert.deepEqual(calls, [{ method: "release", input: { sessionId: "target" } }]);
 	await assert.rejects(execute("call" as never, { sessionId: "target", release: true, timerId: 2 } as never, undefined as never, undefined as never, ctx as never), /cannot be combined/u);
+	await assert.rejects(execute("call" as never, { sessionId: "target", release: true, background: true } as never, undefined as never, undefined as never, ctx as never), /release cannot be combined with background; abort with background first, then release/u);
 	assert.equal(calls.length, 1);
+	await execute("call" as never, { sessionId: "target", background: true } as never, undefined as never, undefined as never, ctx as never);
+	assert.deepEqual(calls.at(-1), { method: "abort", input: { sessionId: "target", background: true } });
 	assert.ok(command);
 	const messages: string[] = [];
 	const commandContext = { ...ctx, ui: { notify: (message: string) => messages.push(message) } } as never;

@@ -86,7 +86,7 @@ export const AGENT_CONTROL_GUIDANCE: Readonly<Record<AgentControlToolName, Agent
 		guidelines: [
 			"Self-targets refuse.",
 			"With timerId from agent_status, cancel only that scheduled input and leave other work running.",
-			"With release: true, abort the target and request host retirement. Other work and timers stay; blockers are reported. Do not combine release with timerId.",
+			"With release: true, abort the target and request host retirement. Other work and timers stay; blockers are reported. Do not combine release with timerId or background: true; abort with background first, then release.",
 		],
 	},
 	agent_fork: { snippet: "Fork an agent session for side work" },

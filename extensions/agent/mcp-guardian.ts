@@ -11,8 +11,6 @@ while IFS=' ' read -r action pid; do
   esac
 done
 [ -n "$groups" ] || exit 0
-for pid in $groups; do kill -TERM -- "-$pid" 2>/dev/null || :; done
-sleep 2
 for pid in $groups; do kill -KILL -- "-$pid" 2>/dev/null || :; done
 `;
 

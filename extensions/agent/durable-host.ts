@@ -833,6 +833,7 @@ export class DurableHost {
 	}
 
 	private async releaseRequest(params: RequestParams | undefined, context: Context): Promise<unknown> {
+		if (requestBoolean(params, "background") === true) throw new Error("release cannot be combined with background; abort with background first, then release");
 		if (params?.timerId !== undefined) throw new Error("release cannot be combined with timerId");
 		const aborted = await this.abortRequest(params, context);
 		let cursor: import("@earendil-works/pi-durable").Cursor | undefined;

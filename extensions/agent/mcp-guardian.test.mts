@@ -43,6 +43,31 @@ it("registers a process before transport start settles", async () => {
 	await start;
 });
 
+it("does not signal a group unregistered before lifeline closure", { timeout: 10000, skip: process.platform === "win32" }, async (t) => {
+	const child = spawn(process.execPath, ["-e", "let signals = 0; process.on('SIGTERM', () => signals++); process.on('message', () => process.send(signals)); process.send('ready'); setInterval(() => {}, 1000)"], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+	t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+	await once(child, "message");
+	assert.ok(child.pid);
+	const guardian = new McpGuardian((message) => { throw new Error(message); });
+	guardian.register(child.pid);
+	guardian.unregister(child.pid);
+	const guardianPid = guardian.processId;
+	assert.ok(guardianPid);
+	guardian.close();
+	const end = Date.now() + 3000;
+	let alive = true;
+	while (alive && Date.now() < end) {
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		try { process.kill(guardianPid, 0); } catch { alive = false; }
+	}
+	assert.equal(alive, false, "the guardian exited");
+	assert.equal(child.exitCode, null);
+	assert.equal(child.signalCode, null);
+	const response = once(child, "message");
+	child.send("check");
+	assert.equal((await response)[0], 0);
+});
+
 it("exits the guardian after clean close", { timeout: 10000, skip: process.platform === "win32" }, async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "mcp-guardian-clean-"));
 	t.after(() => rmSync(directory, { recursive: true, force: true }));
@@ -125,11 +150,11 @@ setInterval(()=>{},1000);
 	assert.ok(Number.isSafeInteger(pid) && pid > 0);
 	host.kill("SIGKILL");
 	await once(host, "exit");
-	const end = Date.now() + 6000;
+	const end = Date.now() + 1800;
 	let alive = true;
 	while (alive && Date.now() < end) {
-		await new Promise((resolve) => setTimeout(resolve, 50));
+		await new Promise((resolve) => setTimeout(resolve, 25));
 		try { process.kill(pid, 0); } catch { alive = false; }
 	}
-	assert.equal(alive, false, "guardian must stop the server after host death");
+	assert.equal(alive, false, "guardian must stop the server without delayed escalation");
 });
