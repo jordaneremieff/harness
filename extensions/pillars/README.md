@@ -507,8 +507,11 @@ The evaluation-only [`evaluation.ts`](evaluation.ts) wrapper calls the real
 extension factory and admits only `check`, `derive`, and `review` invocations.
 It waits for Pi's `agent_settled` event before command return
 because this SDK evaluation adapter does not bind command-context `waitForIdle`
-actions. The production command and prompt are unchanged. Synthetic SDK tests
-cover completed and aborted command turns, source approval, and cleanup.
+actions. Its `aborted` flag reports a cancelled evaluation command as a command
+error, including cancellation before a new assistant message exists. Fixture
+shutdown also cancels an active command. The production command and prompt are
+unchanged. Synthetic SDK tests cover completed and aborted command turns,
+settlement before the idle check, source approval, and cleanup.
 
 The variant's `pillars-eval-source` flag binds a digest of the corpus and local
 extension TypeScript sources into the approved plan. The wrapper checks this

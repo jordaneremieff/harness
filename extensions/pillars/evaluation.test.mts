@@ -164,6 +164,42 @@ test("source approval covers the command implementation and live doctrine", asyn
 	assert.equal(process.env.PI_PILLARS_COLLECT, before);
 });
 
+test("the evaluation preserves early cancellation and cancels a command on fixture shutdown", async () => {
+	const source = await evaluationSource();
+	let command: Parameters<ExtensionAPI["registerCommand"]>[1] | undefined;
+	let settle: ((event: { type: "agent_settled"; aborted: boolean }) => void) | undefined;
+	const shutdown: Array<() => Promise<void>> = [];
+	let aborted = true;
+	try {
+		await evaluationExtension({
+			events: { emit() {}, on: () => () => {} },
+			registerFlag() {},
+			getFlag: () => source.digest,
+			registerTool() {},
+			registerEntryRenderer() {},
+			registerCommand(_name, definition) { command = definition; },
+			sendMessage() { settle?.({ type: "agent_settled", aborted }); },
+			on(name, handler) {
+				if (name === "agent_settled") settle = handler as unknown as typeof settle;
+				if (name === "session_shutdown") shutdown.push(handler as unknown as () => Promise<void>);
+				return () => {};
+			},
+		} as Partial<ExtensionAPI> as ExtensionAPI);
+		assert.ok(command);
+		const context = { isIdle: () => true } as Parameters<typeof command.handler>[1];
+		await assert.rejects(command.handler("check", context), /evaluation command was aborted/);
+		aborted = false;
+		await command.handler("check", context);
+		settle = undefined;
+		const pending = command.handler("check", { isIdle: () => false } as typeof context);
+		const rejected = assert.rejects(pending, /evaluation command was aborted/);
+		for (const close of shutdown) await close();
+		await rejected;
+	} finally {
+		for (const close of shutdown) await close();
+	}
+});
+
 test("an adapter failure preserves the environment and removes its isolated store", async () => {
 	const keys = ["PI_PILLARS_CORPUS", "PI_PILLARS_COLLECT", "PI_PILLARS_DIR"] as const;
 	const previous = keys.map((key) => [key, process.env[key]] as const);
@@ -322,7 +358,7 @@ test("the evaluation wrapper awaits real command output and confines filesystem 
 		await pending;
 		assert.equal(runtime.session.isIdle, true);
 		assert.deepEqual(await readdir(store), []);
-		assert.deepEqual(errors, []);
+		assert.deepEqual(errors, ["Pillars evaluation command was aborted."]);
 	} finally {
 		try {
 			await runtime?.dispose();
