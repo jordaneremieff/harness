@@ -117,7 +117,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	let activeAdmissions = 0;
 	const requestScope = new AsyncLocalStorage<string>();
 	let releaseRequested = false;
-	const releaseListeners = new Set<() => void>();
+	const releaseListeners = new Set<(requested: boolean) => void>();
 	let recoveryReady = false;
 	let recoveryDirty = false;
 	let recoverySync: Promise<void> | undefined;
@@ -144,11 +144,11 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 
 	/** Check committed work and delivery under one unchanged admission generation. */
 	async function tryRetire(seal: () => boolean): Promise<boolean> {
-		if (runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy) return false;
+		if (runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy) { cancelRequestedRelease(); return false; }
 		const generation = activityGeneration;
 		const state = await recoveryState();
 		if (state.workPending || state.deliveriesActive || !host.isIdle() || generation !== activityGeneration
-			|| runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy || !seal()) return false;
+			|| runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy || !seal()) { cancelRequestedRelease(); return false; }
 		deliveries.sealAdmission();
 		retirementSealed = true;
 		return true;
@@ -215,6 +215,12 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		return activeRequests > (requestScope.getStore() === "release" ? 1 : 0);
 	}
 
+	function cancelRequestedRelease(): void {
+		if (!releaseRequested) return;
+		releaseRequested = false;
+		for (const listener of releaseListeners) listener(false);
+	}
+
 	/** Release never cancels native tasks or removes retained delivery rows. */
 	async function requestRelease(): Promise<{ retiring: boolean; blockers: string[] }> {
 		if (runtimeUnavailable() || reloading) return { retiring: false, blockers: ["The runtime is closed or reload is in progress"] };
@@ -231,7 +237,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		if (blockers.length > 0) return { retiring: false, blockers: [...new Set(blockers)] };
 		markRecoveryDue(false);
 		releaseRequested = true;
-		for (const listener of releaseListeners) listener();
+		for (const listener of releaseListeners) listener(true);
 		return { retiring: true, blockers: [] };
 	}
 
@@ -354,7 +360,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		if (runtimeUnavailable() || reloading) throw new Error("Durable host is closed or reloading");
 		activeRequests++;
 		activityGeneration++;
-		if (ADMITTING_METHODS.has(method)) activeAdmissions++;
+		if (ADMITTING_METHODS.has(method)) { activeAdmissions++; cancelRequestedRelease(); }
 		try { return await foreignControl(method, params, sessionId, context); }
 		finally { if (ADMITTING_METHODS.has(method)) activeAdmissions--; activeRequests--; scheduleRecoveryMarker(); notifyActivity(); }
 	}
@@ -528,7 +534,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	}
 	function beginRequest(method: string, counted: boolean): void {
 		if (counted) activeRequests++;
-		if (ADMITTING_METHODS.has(method)) activeAdmissions++;
+		if (ADMITTING_METHODS.has(method)) { activeAdmissions++; cancelRequestedRelease(); }
 	}
 
 	function finishRequest(method: string, counted: boolean, reload: boolean): void {

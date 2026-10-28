@@ -208,6 +208,55 @@ it("releases an idle storage after its response and closes open observations", {
 	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
 });
 
+it("cancels release when a second client admits work during the response grace", { timeout: 15000 }, async t => {
+	const f = await fixture(t), entered = deferred(), admit = deferred();
+	assert.ok(f.runtime.requestRelease);
+	const release = f.runtime.requestRelease.bind(f.runtime);
+	const request = f.runtime.request.bind(f.runtime), nativeRequest = f.native.request.bind(f.native);
+	const held = t.mock.method(f.native, "request", async (...args: Parameters<typeof nativeRequest>) => {
+		if (args[0] === "submit") { entered.resolve(); await admit.promise; }
+		return nativeRequest(...args);
+	});
+	const host = await runHost(() => ({ ...f.runtime, request: (method, params, requestId, signal) => method === "status" && (params as { releaseFixture?: boolean })?.releaseFixture ? release() : request(method, params, requestId, signal) }), { metadata: f.metadata, idleMs: 500, announceReady: () => {} });
+	t.after(() => host.close());
+	const first = await connectHost(f.metadata, { retryAttempts: 0 }), second = await connectHost(f.metadata, { retryAttempts: 0 });
+	t.after(() => first.close()); t.after(() => second.close());
+	assert.deepEqual(await first.request("status", { releaseFixture: true }), { retiring: true, blockers: [] });
+	const admitted = second.request("submit", { message: "finish after release cancellation", requestId: "release-new-work", ownerId: f.metadata.storageId, origin: "operator" });
+	try {
+		await entered.promise;
+		assert.ok(second.observe);
+		const observation = await second.observe({ scope: "conversation", sessionId: f.metadata.storageId });
+		assert.equal(f.runtime.releaseRequested, false);
+		assert.equal(f.native.observationCount, 1);
+		admit.resolve();
+		const submission = await admitted as { submissionId: SubmissionId };
+		await f.native.wait(submission.submissionId, BACKGROUND_CONTEXT);
+		assert.equal(f.native.observationCount, 1, "cancelled release preserves the new client's observation");
+		await observation.close();
+		await host.done;
+		assert.equal(existsSync(hostPaths(f.metadata).claim), false);
+	} finally { admit.resolve(); await admitted.catch(() => undefined); held.mock.restore(); }
+});
+
+it("cancels release when a generation change refuses the retirement seal", { timeout: 15000 }, async t => {
+	const f = await fixture(t);
+	assert.ok(f.runtime.requestRelease);
+	assert.ok(f.runtime.tryRetire);
+	assert.equal((await f.runtime.requestRelease()).retiring, true);
+	const refresh = f.native.refreshIdle.bind(f.native);
+	let changed = false;
+	const gate = t.mock.method(f.native, "refreshIdle", async () => {
+		const idle = await refresh();
+		if (!changed) { changed = true; await f.runtime.request("status", {}, "change-release-generation"); }
+		return idle;
+	});
+	try {
+		assert.equal(await f.runtime.tryRetire(() => { assert.fail("changed generation must not seal"); }), false);
+		assert.equal(f.runtime.releaseRequested, false);
+	} finally { gate.mock.restore(); }
+});
+
 it("exits its dedicated process after an idle release response with recovery due false", { timeout: 20000 }, async (t) => {
 	const f = runtimeFixture(t, { withAgentExtension: true });
 	const child = spawn(process.execPath, [fileURLToPath(new URL("./runtime-release-fixture.mts", import.meta.url)), JSON.stringify(f.metadata)], { env: { ...process.env, ...f.env("answer"), PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root }, stdio: ["ignore", "pipe", "pipe"] });
@@ -444,12 +493,15 @@ it("keeps a host-local foreign control alive across retirement", { timeout: 1500
 		if (args[0] === "report") { entered.resolve(); await release.promise; }
 		return request(...args);
 	});
+	assert.ok(f.runtime.requestRelease);
+	assert.equal((await f.runtime.requestRelease()).retiring, true);
 	const report = resolveAgentControlDispatch()("report", { sessionId: f.ownerId, message: "foreign control", senderIdentity: f.metadata.storageId, requestId: "foreign-report" });
-	await entered.promise;
-	assert.equal(f.runtime.isIdle(), false);
-	assert.equal(await eligible(f.runtime), false);
-	release.resolve();
-	await report;
+	try {
+		await entered.promise;
+		assert.equal(f.runtime.releaseRequested, false, "foreign admission cancels the release before retirement checks");
+		assert.equal(f.runtime.isIdle(), false);
+		assert.equal(await eligible(f.runtime), false);
+	} finally { release.resolve(); await report; }
 	assert.equal(await eligible(f.runtime), true, "the report to an absent primary is parked and does not block retirement");
 	await f.native.harness.commit(async (tx) => { const state = await tx.doc(AgentDeliveryDoc); state.reports.splice(0); }, BACKGROUND_CONTEXT);
 	assert.equal(await eligible(f.runtime), true);

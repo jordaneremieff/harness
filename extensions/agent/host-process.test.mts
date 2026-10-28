@@ -71,23 +71,33 @@ async function deadPid(): Promise<number> {
 	return pid;
 }
 
-it("rechecks a release when delivery becomes quiescent during the retirement check", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t), closed = eventLog<void>();
-	let releaseListener: (() => void) | undefined, quiescentListener: (() => void) | undefined;
-	let attempts = 0;
+it("cancels a refused release without closing observations and resumes idle retirement", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t), checked = eventLog<void>(), checks = eventLog<() => void>();
+	let releaseListener: ((requested: boolean) => void) | undefined;
+	let attempts = 0, closedTokens = 0;
 	const runtime: HostRuntime = {
-		request: async () => { releaseListener?.(); return { retiring: true, blockers: [] }; },
-		isIdle: () => true,
-		close: async () => { closed.push(undefined); },
+		request: async method => {
+			if (method === "observe-open") return { token: randomUUID() };
+			if (method === "observe-close") { closedTokens++; return {}; }
+			releaseListener?.(true); return { retiring: true, blockers: [] };
+		},
+		isIdle: () => true, close: async () => {},
 		onReleaseRequested: listener => { releaseListener = listener; return () => { releaseListener = undefined; }; },
-		onQuiescent: listener => { quiescentListener = listener; return () => { quiescentListener = undefined; }; },
-		tryRetire: async seal => { attempts++; if (attempts === 1) { quiescentListener?.(); return false; } return seal(); },
+		tryRetire: async seal => { attempts++; if (attempts === 1) { checked.push(undefined); return false; } return seal(); },
 	};
-	const { host, metadata: config } = await startHost(root, 3600000, () => runtime);
+	const config = metadata(root);
+	const host = await runHost(() => runtime, { metadata: config, idleMs: 3600000, announceReady: noop, scheduleIdleCheck: check => { checks.push(check); return () => {}; } });
 	t.after(() => host.close());
 	const client = await connectClient(config); t.after(() => client.dispose());
+	const first = await call(client, config, "observe-open") as { token: string };
 	assert.deepEqual(await call(client, config, "status"), { retiring: true, blockers: [] });
-	await closed.waitForCount(1, 5000);
+	await checked.waitForCount(1, 5000);
+	await new Promise<void>(setImmediate);
+	assert.equal(closedTokens, 0, "a refused seal preserves existing observations");
+	const second = await call(client, config, "observe-open") as { token: string };
+	await call(client, config, "observe-close", { token: first.token });
+	await call(client, config, "observe-close", { token: second.token });
+	checks[checks.length - 1]();
 	await host.done;
 	assert.equal(attempts, 2);
 });

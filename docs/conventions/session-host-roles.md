@@ -70,8 +70,10 @@ Pending delivery and active delivery differ. Parked and terminal rows remain
 durable without a delivery retry timer. Those rows neither retain the recovery
 marker nor prevent otherwise idle host retirement. Native work, pending
 admissions, active rows, in-flight effects, controls, and observations still
-prevent normal retirement. Explicit release closes observations before the
-normal retirement seal; it never cancels native tasks or deletes retained rows.
+prevent normal retirement. Explicit release closes observations only on a
+successful retirement seal; it never cancels native tasks or deletes retained
+rows. New admissions and refused retirement checks cancel the release and
+restore normal idle retirement without closing observations.
 The source writer publishes a bounded parked-recipient sidecar before clearing
 its recovery marker. An exact primary registration or newly available named
 recipient wakes the matching source through existing bounded catalogue scans.

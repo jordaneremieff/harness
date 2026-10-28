@@ -1858,8 +1858,10 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   model turn. Native work in any conversation, a waiting timer or check-in task,
   an active delivery recipient, or another active request blocks release. Open
   observation tokens do not block it. An accepted release waits for requester
-  disconnect or a 100 ms response grace, whichever comes first, then closes the
-  observations and runs the normal retirement seal without the idle interval.
+  disconnect or a 100 ms response grace, whichever comes first, then checks the
+  normal retirement seal without the idle interval. Only a successful seal
+  closes observations. A new admitting control or a refused retirement check
+  cancels the release and restores normal idle retirement.
   The transport exposes no per-response flush signal; the grace bounds the wait
   for a client that stays connected. Release never deletes delivery rows or
   cancels timers.

@@ -44,7 +44,7 @@ export interface HostRuntime {
 	requestRelease?(): Promise<{ retiring: boolean; blockers: string[] }>;
 	readonly releaseRequested?: boolean;
 	/** The process applies release after requester disconnect or the bounded response grace. */
-	onReleaseRequested?(listener: () => void): () => void;
+	onReleaseRequested?(listener: (requested: boolean) => void): () => void;
 	/** A failed runtime requires process shutdown after the current response. */
 	readonly shutdownRequired?: boolean;
 	/**
@@ -248,7 +248,6 @@ class HostProcessServer implements HostProcess {
 	private releaseTimer: ReturnType<typeof setTimeout> | undefined;
 	private readonly releaseRequesters = new Set<AttachmentState>();
 	private releaseChecking = false;
-	private releaseAgain = false;
 	private unsubscribeRelease: (() => void) | undefined;
 	private closing = false;
 	private readonly cancelableRequests = new AbortController();
@@ -335,7 +334,7 @@ class HostProcessServer implements HostProcess {
 			if (this.releasePending) this.scheduleRelease();
 			else if (this.cancelIdleCheck === undefined) this.scheduleRetirement();
 		});
-		this.unsubscribeRelease = this.runtime.onReleaseRequested?.(() => { this.releasePending = true; this.scheduleRelease(); });
+		this.unsubscribeRelease = this.runtime.onReleaseRequested?.((requested) => { if (!requested) { this.cancelRelease(); return; } this.releasePending = true; this.scheduleRelease(); });
 		if (this.runtime.releaseRequested) { this.releasePending = true; this.scheduleRelease(); }
 		announce({ pid: this.pid, socketPath: this.paths.socket, contract: HOST_CONTRACT });
 		this.scheduleRetirement();
@@ -586,7 +585,7 @@ class HostProcessServer implements HostProcess {
 	/** Give the response a bounded grace; requester disconnect ends the grace early. */
 	private scheduleRelease(): void {
 		if (this.closing || this.releaseScheduled) return;
-		if (this.releaseChecking) { this.releaseAgain = true; return; }
+		if (this.releaseChecking) return;
 		this.releaseScheduled = true;
 		this.releaseTimer = setTimeout(() => {
 			this.releaseTimer = undefined;
@@ -596,25 +595,29 @@ class HostProcessServer implements HostProcess {
 		}, this.releaseGraceExpired ? 0 : RELEASE_RESPONSE_GRACE_MS);
 	}
 
+	private cancelRelease(): void {
+		this.releasePending = false;
+		this.releaseGraceExpired = false;
+		this.releaseScheduled = false;
+		this.releaseRequesters.clear();
+		if (this.releaseTimer !== undefined) clearTimeout(this.releaseTimer);
+		this.releaseTimer = undefined;
+		this.scheduleRetirement();
+	}
+
 	private async releaseWhenQuiescent(): Promise<void> {
 		if (this.closing || !this.releasePending || this.releaseChecking || this.activeRequests > 0) return;
 		this.releaseChecking = true;
 		this.cancelIdleCheck?.();
 		this.cancelIdleCheck = undefined;
-		let generation = this.activityGeneration;
-		try {
-			for (const state of this.attachments.values()) {
-				for (const entry of [...state.observations.values()]) entry.close();
-				for (const token of state.tokens) this.closeObservationToken(token, state);
-			}
-			await Promise.all([...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]));
-			generation = this.activityGeneration;
-			await this.onIdleCheck();
-		} finally {
-			this.releaseChecking = false;
-			const again = this.releaseAgain;
-			this.releaseAgain = false;
-			if (again || generation !== this.activityGeneration) this.scheduleRelease();
+		try { await this.onIdleCheck(true); }
+		finally { this.releaseChecking = false; }
+	}
+
+	private closeReleaseObservations(): void {
+		for (const state of this.attachments.values()) {
+			for (const entry of [...state.observations.values()]) entry.close();
+			for (const token of state.tokens) this.closeObservationToken(token, state);
 		}
 	}
 
@@ -628,20 +631,24 @@ class HostProcessServer implements HostProcess {
 		this.cancelIdleCheck = this.scheduleIdleCheck(() => { void this.onIdleCheck(); }, Math.max(1, this.idleMs));
 	}
 
-	private async onIdleCheck(): Promise<void> {
+	private async onIdleCheck(releasing = false): Promise<void> {
 		this.cancelIdleCheck = undefined;
-		if (this.closing || this.retirementChecking || this.activeRequests > 0 || this.hasObservations()) return;
+		if (this.closing || this.retirementChecking || this.activeRequests > 0 || (!releasing && this.hasObservations())) return;
 		this.retirementChecking = true;
 		const generation = this.activityGeneration;
 		const seal = (): boolean => {
-			if (this.closing || generation !== this.activityGeneration || this.activeRequests > 0 || this.hasObservations()) return false;
+			if (this.closing || generation !== this.activityGeneration || this.activeRequests > 0 || (releasing ? !this.releasePending : this.hasObservations())) return false;
 			this.closing = true;
+			if (releasing) this.closeReleaseObservations();
 			return true;
 		};
 		try {
 			const retired = this.runtime.tryRetire ? await this.runtime.tryRetire(seal) : this.runtime.isIdle() && seal();
-			if (retired) await this.shutdown();
-		} catch { /* A failed check is not proof that storage is idle. */ }
+			if (retired) {
+				if (releasing) await Promise.all([...this.attachments.values()].flatMap((state) => [...state.closingTokens.values()]));
+				await this.shutdown();
+			} else if (releasing) this.cancelRelease();
+		} catch { if (releasing && !this.closing) this.cancelRelease(); }
 		finally { this.retirementChecking = false; if (!this.releasePending) this.scheduleRetirement(); }
 	}
 
