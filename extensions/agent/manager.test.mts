@@ -1502,7 +1502,7 @@ it("returns a compact status snapshot from a mutation instead of the full status
 			live: { run: { taskId: 4 }, tools: [{ name: "bash", status: "running" }] },
 			submissions: [{ id: 1, type: "input", status: "done" }],
 		},
-		inventory: { contributions: [{ source: "a" }], ordinaryOnly: ["/home/example/extensions/legacy.ts"] },
+		inventory: { contributions: [{ source: "a" }], ordinaryOnly: ["/opt/example/extensions/legacy.ts"] },
 		pid: 42,
 		storageId: "storage-a",
 	};
@@ -1522,7 +1522,7 @@ it("returns a compact status snapshot from a mutation instead of the full status
 		assert.equal(outcome.status.state, "idle");
 		assert.deepEqual(outcome.status.agent.model, { provider: "acme", modelId: "model-x" });
 		assert.equal(outcome.status.agent.thinkingLevel, "high");
-		assert.deepEqual(outcome.status.limits?.ordinaryOnly, ["/home/example/extensions/legacy.ts"]);
+		assert.deepEqual(outcome.status.limits?.ordinaryOnly, ["/opt/example/extensions/legacy.ts"]);
 		const serialized = JSON.stringify(outcome);
 		assert.equal(serialized.includes("firstMessage"), false, "the prompt excerpt does not repeat in the spawn result");
 		assert.equal(serialized.includes("lastText"), false, "live assistant text stays out of the spawn result");
