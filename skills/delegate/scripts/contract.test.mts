@@ -5,6 +5,36 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { runInNewContext } from "node:vm";
+
+test("bootstrap recipe accepts the bash result of each supported host and stops on failure", async () => {
+	const recipes = readFileSync(new URL("../references/codemode.md", import.meta.url), "utf8");
+	const source = recipes.match(/```js\n([\s\S]*?)\n```/)?.[1];
+	assert.ok(source);
+	for (const field of ["exit_code", "exitCode"]) {
+		for (const exit of [0, 1]) {
+			const calls: string[] = [];
+			const values = new Map<string, unknown>();
+			const result = await runInNewContext(`(async () => {\n${source}\n})()`, {
+				tools: {
+					bash: async () => ({ [field]: exit, output: '{"action":"create"}' }),
+					agent_spawn: async () => { calls.push("spawn"); return { result: { sessionId: "lead" } }; },
+					agent_collaborate: async () => ({ threadId: "thread" }),
+					read: async () => "Task for {{THREAD_ID}}",
+					agent_send: async (args: { message: string }) => {
+						assert.equal(args.message, "Task for thread");
+						return { result: { sessionId: "lead", submissionId: 1 } };
+					},
+				},
+				store: (key: string, value: unknown) => values.set(key, value),
+				load: (key: string) => values.get(key),
+			});
+			assert.equal(result.stop, exit === 0 ? undefined : "frame check failed", field);
+			assert.equal(calls.length, exit === 0 ? 1 : 0, field);
+			assert.equal(values.has("refs"), exit === 0, field);
+		}
+	}
+});
 
 type Finding = { code: string; message: string };
 type ContractSize = { words: number; approxTokens: number };

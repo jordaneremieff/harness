@@ -33,7 +33,8 @@ const frameFile = "<scratch>/frame.md";
 const taskFile = "<scratch>/task.md";
 
 const framed = await tools.bash({ command: `node ${skill}/scripts/contract.mts frame ${frameFile}` });
-if (framed.exit_code !== 0) return { stop: "frame check failed", findings: framed.output.slice(0, 2000) };
+const exitCode = framed.exitCode ?? framed.exit_code;
+if (exitCode !== 0) return { stop: "frame check failed", findings: framed.output.slice(0, 2000) };
 const frame = JSON.parse(framed.output);
 
 const receipt = asObject(await tools.agent_spawn({ name: "lead", preset: "worker" }));
@@ -57,6 +58,9 @@ Notes:
   Durable orchestrator omits it to create the thread in its own storage.
 - The worker joins the thread itself as the first act of its task.
 - Choose `preset` and `checkInMinutes` per `SKILL.md` sections 2 and 4.
+- The ordinary bash tool returns `exit_code`; the native host returns `exitCode`.
+  The recipe accepts those two current host contracts and stops on a nonzero or
+  absent exit code.
 
 ## Parallel dispatch
 
