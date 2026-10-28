@@ -259,6 +259,7 @@ const contextVariables = new Set([
 	"PI_MANAGED_INSTALL_ROOT",
 	"PI_SESSION_ID",
 	"PI_HARNESS_FILE",
+	"PI_CODEMODE_MAX_WORKERS",
 ]);
 const configurationVariable = (name: string) => !contextVariables.has(name) && !/^PI_.*_TEST_/.test(name);
 // Lexical detection covers direct and injected env access, not arbitrary aliases.

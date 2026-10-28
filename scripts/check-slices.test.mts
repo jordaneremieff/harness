@@ -717,6 +717,18 @@ test("settings imports have no package escape", () => {
 	}
 });
 
+test("upstream codemode worker capacity is a process setting, not slice configuration", async () => {
+	assert.deepEqual(environmentReads("process.env.PI_CODEMODE_MAX_WORKERS; env['PI_CODEMODE_MAX_WORKERS'];"), []);
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	try {
+		const runtime = join(root, "extensions/example/runtime.ts");
+		writeFileSync(runtime, "export const limit = Number(process.env.PI_CODEMODE_MAX_WORKERS);");
+		assert.deepEqual(await auditSettings(root, [runtime]), []);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("configuration access detection covers direct and injected lexical spellings", () => {
 	assert.deepEqual(
 		environmentReads(`
