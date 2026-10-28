@@ -73,7 +73,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries use one Durable lead for answer-bearing fan-out and refuse this native-only operation. |
 | `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
-| `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
+| `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; the result reports `live: false`. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
 | `agent_configure` | Change an idle conversation's name, exact model, or reasoning level. |
@@ -1867,7 +1867,11 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   normal idle interval.
   The transport exposes no per-response flush signal; the grace bounds the wait
   for a client that stays connected. Release never deletes delivery rows or
-  cancels timers.
+  cancels timers. The manager attaches for release without launching a host.
+  A confirmed absent or dead writer returns
+  `{ retiring: false, blockers: [], live: false }`; tools and `/agent` report that
+  the agent is not running. Live or unknown writer ownership preserves the
+  attachment error rather than claiming absence.
 - Reload requires an idle storage and no live observation tokens. The runtime
   refuses reload before teardown while any observer remains, including native
   local command dispatch. Release the observers before reload; an attempted

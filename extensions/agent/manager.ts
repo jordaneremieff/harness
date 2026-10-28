@@ -556,11 +556,24 @@ export class AgentManager {
 	}
 
 	private async selectedControl(record: CatalogRecord, method: string, params: Record<string, unknown>, caller: AgentCaller, selector: string): Promise<unknown> {
+		if (method === "release") return this.releaseControl(record, params, caller);
 		try { return await this.controlClient(await this.connection(record), method, params, caller); }
 		catch (error) {
 			if (method !== "configure" || !selector.startsWith("@")) throw error;
 			throw new Error(`Configure of ${String(params.sessionId)} (${selector}) failed: ${errorText(error)}`, { cause: error });
 		}
+	}
+
+	private async releaseControl(record: CatalogRecord, params: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
+		let client: HostConnection;
+		try { client = await this.connection(record, undefined, false); }
+		catch (error) {
+			if (this.shuttingDown || this.lifecycle.signal.aborted) throw error;
+			const paths = hostPaths(record), writer = observeClaim(paths.claim, paths.identity);
+			if (writer.kind !== "absent" && writer.kind !== "dead") throw error;
+			return { retiring: false, blockers: [], live: false };
+		}
+		return this.controlClient(client, "release", params, caller);
 	}
 
 	private requestedOperation(method: string, params: Record<string, unknown>): string {

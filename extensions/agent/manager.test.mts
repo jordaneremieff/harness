@@ -342,6 +342,30 @@ const noHost = async () => {
 	throw new Error("no live host");
 };
 
+for (const writer of ["absent", "dead"] as const) it(`does not launch a cold host on release when the writer is ${writer}`, async t => {
+	const root = fixtureRoot(t);
+	let acquisitions = 0;
+	const manager = new AgentManager(managerOptions(root, { acquire: async () => { acquisitions++; throw new Error("release acquisition is forbidden"); }, connect: noHost }));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	if (writer === "dead") writeClaim(record, claimFor(record, deadProcessId()));
+	assert.deepEqual(await manager.control("release", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }), { retiring: false, blockers: [], live: false });
+	assert.equal(acquisitions, 0);
+	assert.equal(manager.catalog.read(record.storageId).recoveryDue, true, "release does not resume or discard retained work");
+});
+
+for (const writer of ["live", "unknown"] as const) it(`preserves attachment failure on release when the writer is ${writer}`, async t => {
+	const root = fixtureRoot(t);
+	let acquisitions = 0;
+	const manager = new AgentManager(managerOptions(root, { acquire: async () => { acquisitions++; throw new Error("release acquisition is forbidden"); }, connect: noHost }));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	writeClaim(record, writer === "live" ? claimFor(record, process.pid) : "unreadable claim");
+	await assert.rejects(manager.control("release", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }), /no live host/u);
+	assert.equal(acquisitions, 0);
+});
+
 it("preserves a successful spawn admission when its status snapshot fails", async (t) => {
 	const root = fixtureRoot(t);
 	const manager = new AgentManager(managerOptions(root, {

@@ -539,6 +539,7 @@ function abortLines(details: Record<string, unknown>, theme: Theme, context: Age
 	const timer = timerLines(details, theme, context);
 	if (timer) return timer;
 	if (typeof details.retiring === "boolean") {
+		if (details.live === false) return [theme.fg("toolOutput", "The agent is not running.")];
 		const lines = [theme.fg("toolOutput", details.retiring ? "Host retirement requested" : "Host remains active")];
 		for (const blocker of array(details.blockers)) if (typeof blocker === "string") lines.push(muted(theme, displayPreview(blocker, 160)));
 		return lines;

@@ -1591,6 +1591,20 @@ it("dispatches release to the resolved target and refuses a timer combination", 
 	assert.equal(calls.at(-1)?.params.background, true);
 });
 
+it("reports a cold host in native release tool output", async t => {
+	const route = createRoute();
+	const { registry } = buildRegistry(async method => {
+		if (method === "resolve-target") return "canonical-remote";
+		if (method === "release") return { retiring: false, blockers: [], live: false };
+		throw new Error(`unexpected ${method}`);
+	});
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
+	t.after(() => harness.close(context));
+	route.script.push({ tool: "agent_abort", args: { sessionId: "alias", release: true } });
+	await say(root, "Release a cold host");
+	assert.match((await toolOutcomes(harness, root.id)).find(entry => entry.name === "agent_abort")?.text ?? "", /not running/u);
+});
+
 it("refuses an owner abort that crosses the caller's background anchor", async (t) => {
 	const route = createRoute();
 	const holder: DispatchHolder = {};

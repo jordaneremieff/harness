@@ -282,6 +282,12 @@ describe("agent result cards", () => {
 		assert.doesNotMatch(text, /no matches|absent|not found/i);
 	});
 
+	it("reports a cold release without an active-host message", () => {
+		const card = createAgentToolCards().agent_abort.renderResult(result({ retiring: false, blockers: [], live: false }), { expanded: false, isPartial: false }, theme, context());
+		assert.match(screen(card), /not running/u);
+		assert.doesNotMatch(screen(card), /remains active/u);
+	});
+
 	it("shows admission receipts, fork, rewind, configure, abort, and command outcomes", () => {
 		const receipt = { submissionId: 9, conversationId: 1, deduped: false, identity: "storage-a" };
 		const send = screen(renderSendResult(result(receipt), { expanded: false, isPartial: false }, theme, context()));

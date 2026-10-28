@@ -29,7 +29,7 @@ import { dashboardPreferences } from "./dashboard-preferences.ts";
 import { collectToolDisplay, publishToolDisplay } from "./tool-display.ts";
 import { configurationWithApply } from "./configuration-dialog.ts";
 import { THINKING_LEVELS, isThinkingLevel, parseConfigurationArguments } from "./configuration.ts";
-import { createAgentContribution, resolveAgentControlDispatch } from "./durable-agents.ts";
+import { controlText, createAgentContribution, resolveAgentControlDispatch } from "./durable-agents.ts";
 import {
 	createResetTimerActions,
 	registerResetTimerTools,
@@ -167,6 +167,14 @@ const result = (value: unknown, schema?: TSchema): AgentToolResult<unknown> => (
 	details: value,
 	structuredContent: schema ? structuredObservation(schema, value) : JSON.parse(JSON.stringify(value ?? null)),
 });
+function releaseCommandMessage(value: unknown, label: string): string {
+	const state = value as { live: false; retiring: false; blockers: string[] } | { live?: true; retiring: boolean; blockers: string[]; writesPlaced: number };
+	if (state.live === false) return `Agent “${label}” is not running.`;
+	const message = state.retiring ? `Released “${label}”; its host is retiring.` : `Stopped “${label}”; the host stays up: ${state.blockers.join("; ")}.`;
+	const writes = state.writesPlaced > 0 ? ` Placed ${state.writesPlaced} leftover ${state.writesPlaced === 1 ? "write" : "writes"}.` : "";
+	return `${message}${writes}`;
+}
+
 const observationSchemas: Partial<Record<AgentControlToolName, TSchema>> = {
 	agent_spawn: DispatchOutputSchema,
 	agent_send: DispatchOutputSchema,
@@ -293,6 +301,8 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 				}
 				const value = await execute(admitted, ctx, callId, admissionCaller);
 				const output = result(value, schema);
+				if (name === "agent_abort" && admitted.release === true && (value as { live?: unknown })?.live === false)
+					return { ...output, content: [{ type: "text", text: controlText(value) }] };
 				if (name === "agent_compact" && typeof (value as { text?: unknown })?.text === "string")
 					return { ...output, content: [{ type: "text", text: (value as { text: string }).text }] };
 				return output;
@@ -615,10 +625,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 				const stopped = await control(release === "release" ? "release" : "abort", { sessionId }, ctx);
 				const label = await agentLabel(sessionId);
 				if (release !== "release") return outcome(`Requested stop for “${label}”`, sessionId);
-				const result = stopped as { retiring: boolean; blockers: string[]; writesPlaced: number };
-				const message = result.retiring ? `Released “${label}”; its host is retiring.` : `Stopped “${label}”; the host stays up: ${result.blockers.join("; ")}.`;
-				const writes = result.writesPlaced > 0 ? ` Placed ${result.writesPlaced} leftover ${result.writesPlaced === 1 ? "write" : "writes"}.` : "";
-				return outcome(`${message}${writes}`, sessionId);
+				return outcome(releaseCommandMessage(stopped, label), sessionId);
 			},
 		},
 		{
