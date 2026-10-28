@@ -12,6 +12,7 @@ import { Value } from "typebox/value";
 import { Harness, MemoryStorage, LiveDoc, UsageDoc, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox, type CodemodeRunOptions, type CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
+import { StdioTransport } from "@earendil-works/pi-mcp";
 import { CodemodeWorkerQueue, QueuedCodemodeSandbox } from "./codemode-admission.ts";
 import type { CreatedAgents } from "./agent-lineage.ts";
 import type { readEffortAwareness } from "./effort-awareness.ts";
@@ -1140,6 +1141,31 @@ it("preserves an expired persisted worker wait at the native tool boundary", { t
 	assert.equal(output.isError, true);
 	assert.match(toolResultBody(output), /worker wait timed out/u);
 	assert.deepEqual((output.details as CodemodeToolDetails).calls, []);
+});
+
+it("reports a transport that exceeds the close deadline", { timeout: 12000 }, async (t) => {
+	const isolated = mkdtempSync(join(tmpdir(), "mcp-deadline-"));
+	t.after(() => rmSync(isolated, { recursive: true, force: true }));
+	const f = await executionFixture(t, { mcpServers: { docs: { command: process.execPath, args: [fixtureServerPath], env: { PI_AGENT_DIR: isolated, PI_AGENT_SESSIONS_DIR: isolated }, exposure: "direct" } }, awaitReady: true });
+	const original = StdioTransport.prototype.close;
+	let called = false;
+	StdioTransport.prototype.close = async () => { called = true; await new Promise<void>(() => {}); };
+	t.after(() => { StdioTransport.prototype.close = original; });
+	try {
+		const first = f.execution.close();
+		assert.equal(first, f.execution.close());
+		await first;
+		assert.equal(called, true);
+		assert.ok(f.services.services.diagnostics.some((entry) => entry.message.includes("MCP shutdown timed out: docs")));
+	} finally { StdioTransport.prototype.close = original; }
+});
+
+it("joins the same execution close promise", async (t) => {
+	const f = await executionFixture(t, {});
+	const first = f.execution.close();
+	const second = f.execution.close();
+	assert.equal(first, second);
+	await first;
 });
 
 it("aborts an owned nested call with the conversation and reaches idle", { timeout: 30000 }, async (t) => {

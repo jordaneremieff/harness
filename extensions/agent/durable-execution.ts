@@ -22,6 +22,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { TSchema } from "typebox";
 import { QueuedCodemodeSandbox } from "./codemode-admission.ts";
+import { McpGuardian } from "./mcp-guardian.ts";
 
 // ─── Public contract ────────────────────────────────────────────────────────
 
@@ -709,8 +710,10 @@ class McpServerConnection {
 
 	readonly onTools: () => void;
 	readonly authProvider: AuthProvider | undefined;
+	private readonly guardian: McpGuardian;
 
-	constructor(entry: McpServerEntry, cwd: string, onTools: () => void, authProvider: AuthProvider | undefined) {
+	constructor(entry: McpServerEntry, cwd: string, onTools: () => void, authProvider: AuthProvider | undefined, guardian: McpGuardian) {
+		this.guardian = guardian;
 		this.entry = entry;
 		this.cwd = cwd;
 		this.onTools = onTools;
@@ -808,6 +811,19 @@ class McpServerConnection {
 		let transport: StdioTransport | StreamableHttpTransport | undefined;
 		try {
 			transport = createTransport(this.entry, this.cwd, this.authProvider);
+			if (transport instanceof StdioTransport) {
+				const stdio = transport;
+				const start = stdio.start.bind(stdio);
+				stdio.start = () => {
+					const started = start();
+					const pid = stdio.pid;
+					if (pid !== undefined) {
+						this.guardian.register(pid);
+						stdio.onClose(() => this.guardian.unregister(pid));
+					}
+					return started;
+				};
+			}
 			await client.connect(transport);
 			if (this.closed) throw new Error("shut down while connecting");
 			const tools = client.serverCapabilities?.tools === undefined ? [] : await client.listTools();
@@ -957,14 +973,17 @@ class DurableExecutionRuntime implements DurableExecution {
 	private readonly namespaces: CodemodeNamespace[] = [];
 	private readonly resourceTools: NestedTool[];
 	private readonly servers: McpServerConnection[] = [];
+	private readonly guardian: McpGuardian;
 	private readonly sandbox = new CodemodeSandbox({ acquireWorker: () => { throw new Error("Codemode calls require queued worker admission."); } });
 	private readonly queuedSandboxes = new Set<QueuedCodemodeSandbox>();
 	private readonly readyTimeoutMs: number;
 	private readonly closeOnHostAbort = () => void this.close();
 	private closed = false;
+	private closePromise: Promise<void> | undefined;
 
 	constructor(host: DurableExecutionHost, options: DurableExecutionOptions = {}) {
 		this.host = host;
+		this.guardian = new McpGuardian((message) => host.services.diagnostics.push({ type: "warning", message }));
 		this.readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 		this.resourceTools = this.defineResourceTools();
 		const activation = computeActivation(host);
@@ -973,7 +992,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		if (host.signal.aborted) void this.close();
 		else host.signal.addEventListener("abort", this.closeOnHostAbort, { once: true });
 		for (const server of host.signal.aborted ? [] : activation.servers) {
-			this.servers.push(new McpServerConnection(server, host.cwd, () => this.rebuildMcpTools(), createServerAuthProvider(server, authStore, host.services.modelRuntime)));
+			this.servers.push(new McpServerConnection(server, host.cwd, () => this.rebuildMcpTools(), createServerAuthProvider(server, authStore, host.services.modelRuntime), this.guardian));
 		}
 		this.ready = this.waitForDirectServers();
 	}
@@ -1043,11 +1062,21 @@ class DurableExecutionRuntime implements DurableExecution {
 		return result;
 	}
 
-	async close(): Promise<void> {
-		if (this.closed) return;
+	close(): Promise<void> {
+		if (this.closePromise) return this.closePromise;
 		this.closed = true;
 		this.host.signal.removeEventListener("abort", this.closeOnHostAbort);
-		await Promise.all([this.sandbox.close(), ...[...this.queuedSandboxes].map((sandbox) => sandbox.close()), ...this.servers.map((server) => server.close())]);
+		const pending = new Set(this.servers.map((server) => server.entry.name));
+		const closing = Promise.all([this.sandbox.close(), ...[...this.queuedSandboxes].map((sandbox) => sandbox.close()), ...this.servers.map(async (server) => { await server.close(); pending.delete(server.entry.name); })]);
+		this.closePromise = new Promise<void>((resolve, reject) => {
+			const deadline = setTimeout(() => {
+				this.host.services.diagnostics.push({ type: "warning", message: `MCP shutdown timed out: ${[...pending].join(", ")}` });
+				this.guardian.close();
+				resolve();
+			}, 5000);
+			void closing.then(() => { clearTimeout(deadline); this.guardian.close(); resolve(); }, (error: unknown) => { clearTimeout(deadline); this.guardian.close(); reject(error); });
+		});
+		return this.closePromise;
 	}
 
 	private rebuildMcpTools(): void {
