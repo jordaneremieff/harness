@@ -18,6 +18,9 @@ The exact paths, branches, and acts this task authorises.
 ## Starting sources
 Files, threads, notes, or URLs to read first, with why each matters.
 
+## Skills to load
+The skills the worker reads before work, with the reason, such as dig for an evidence question; leave empty when this contract carries the whole method.
+
 ## Dependencies and other owners
 Work this task depends on or must not touch, and who owns that work.
 

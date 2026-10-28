@@ -21,6 +21,9 @@ An explicit invitation to challenge the framing and to propose alternatives.
 ## Reply route <!-- required -->
 The exact session identity or thread that receives the partner's judgment.
 
+## Skills to load
+The skills the partner reads before work, with the reason; name delegate when the partner will coordinate other agents.
+
 ## Thread ID
 The collaboration thread where the partnership works.
 

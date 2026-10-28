@@ -46,6 +46,11 @@ the filled copy with `check <file> --kind <kind>`.
   post to threads and make other tool calls first; the last message is the
   complete deliverable.
 - **Reply route:** the exact identity that receives the answer.
+- **Skills to load:** the skills the agent reads before work, each with its
+  reason. Agents seldom read a listed skill by themselves when the tool
+  descriptions seem enough, so name the one whose method matters: `delegate`
+  for an agent that runs its own team, `dig` for an evidence question. Leave
+  it empty when the contract carries the whole method.
 - **Thread ID:** the thread to join first, when work is shared.
 - **Provider or budget notes:** known walls, the substitution order, and
   what to do at a wall (stop and report the exact error text).

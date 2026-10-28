@@ -72,3 +72,5 @@ Find them with `registry` `kind: "prompt"`; do not assume one exists.
 - **Review:** name the sources the verdict must reach and pillars for design
   judgment.
 - **Continuity:** name stash for handovers and memory for durable lessons.
+- **Coordination:** name delegate in the Skills to load slot for a lead or
+  partner that will run its own team.

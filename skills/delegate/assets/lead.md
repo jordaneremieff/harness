@@ -15,6 +15,9 @@ What the lead and its workers must not do.
 ## Permitted edits and acts <!-- required -->
 The paths, branches, and acts this lead and its workers may use.
 
+## Skills to load
+The skills the lead reads before its first dispatch, with the reason; name delegate when the lead runs its own team.
+
 ## Fan-out ownership <!-- required -->
 Which parts the lead delegates, to which preset each part goes, and what the lead keeps.
 

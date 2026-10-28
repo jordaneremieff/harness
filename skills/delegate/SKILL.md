@@ -132,11 +132,22 @@ Every deliverable contract says: post to threads and make other tool calls
 first; the last message is the complete deliverable. A worker that answers a
 passive notice after its deliverable can displace the answer.
 
+Decide for each contract which skills its agent must read, and name them in
+the Skills to load slot. An agent sees its skill list but reads a skill only
+when it judges the task needs one, and agents often skip a skill when the
+agent tool descriptions look sufficient. Name `delegate` when the agent will
+run its own team: a lead that fans out, a partner that coordinates other
+agents, or any agent that runs more than one wave, a thread, or a long role.
+Otherwise name the skill whose method the task depends on, such as `dig`
+for an evidence question. Leave the slot empty for a bounded task that the
+contract fully describes; a skill there adds context cost and nothing else.
+
 Read `references/contracts.md` for slot meanings, registers, and message
 shapes.
 
 **Complete when:** each contract passes the checker, or you named why a
-finding does not apply.
+finding does not apply, and each contract names the skills its agent must
+read or none.
 
 ## 4. Dispatch
 
