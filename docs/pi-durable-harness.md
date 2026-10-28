@@ -31,7 +31,7 @@ Earlier runtime trials do not become current trials through a comparison.
 
 ## Release review coverage
 
-<!-- pi-release-reviewed-through: 1.0.3 -->
+<!-- pi-release-reviewed-through: 1.4.0 -->
 
 This declaration records the latest Pi release through which the harness
 completed cumulative release intake. Its value is a numeric major.minor.patch
