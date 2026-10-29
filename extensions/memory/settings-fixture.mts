@@ -9,11 +9,13 @@ export function isolateMachineSettings(): void {
 	const previous = {
 		PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
 		PI_HARNESS_FILE: process.env.PI_HARNESS_FILE,
+		PI_MEMORY_PROACTIVE: process.env.PI_MEMORY_PROACTIVE,
 	};
 	before(() => {
 		agentDir = mkdtempSync(join(tmpdir(), "memory-agent-settings-"));
 		process.env.PI_CODING_AGENT_DIR = agentDir;
 		process.env.PI_HARNESS_FILE = join(agentDir, "harness.json");
+		delete process.env.PI_MEMORY_PROACTIVE;
 	});
 	after(() => {
 		for (const [key, value] of Object.entries(previous)) {

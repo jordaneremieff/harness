@@ -17,6 +17,7 @@ import type { AgentSessionServices, ExtensionAPI } from "@earendil-works/pi-codi
 import type { MemoryDurableContribution, MemoryDurableContributionHost } from "./durable.ts";
 import memory from "./index.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
+import { proactiveCorpus, recallText, writeRecall } from "./proactive-fixture.mts";
 
 isolateMachineSettings();
 
@@ -474,6 +475,94 @@ test("native codemode receives memory pages and errors through nested tool tasks
 		await sandbox.close();
 		if (previous === undefined) delete process.env.PI_MEMORY_DIR;
 		else process.env.PI_MEMORY_DIR = previous;
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
+test("Durable notices stay stable through tool rounds and later tasks while their input remains visible", async () => {
+	const root = mkdtempSync(join(tmpdir(), "memory-durable-recall-"));
+	const corpus = proactiveCorpus(root);
+	const oldDir = process.env.PI_MEMORY_DIR;
+	const oldSwitch = process.env.PI_MEMORY_PROACTIVE;
+	process.env.PI_MEMORY_DIR = corpus;
+	process.env.PI_MEMORY_PROACTIVE = "true";
+	const faux = fauxProvider();
+	const models = createModels();
+	models.setProvider(faux.provider);
+	const registry = Durable.createRegistry();
+	const harness = await Durable.Harness.open(
+		new Durable.MemoryStorage(),
+		{ models, registry, settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 } } },
+		BACKGROUND_CONTEXT,
+	);
+	try {
+		const contribution = emitContribution();
+		registry.install(await contribution.create(hostFor(contribution, root, harness)));
+		const conversation = await harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: { provider: "faux", modelId: "faux-1" } },
+		});
+		const requests: TranscriptContext[] = [];
+		faux.setResponses([
+			(context) => {
+				requests.push(structuredClone(context));
+				writeRecall(corpus, "Changed after the first request.");
+				return fauxAssistantMessage("", { stopReason: "error", errorMessage: "503 temporarily unavailable" });
+			},
+			(context) => {
+				requests.push(structuredClone(context));
+				return fauxAssistantMessage(fauxToolCall("memory_search", { query: "ordinary" }), { stopReason: "toolUse" });
+			},
+			(context) => {
+				requests.push(structuredClone(context));
+				return fauxAssistantMessage("done");
+			},
+		]);
+		await (await conversation.submit({ type: "input", content: recallText }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
+		const texts = (request: TranscriptContext) =>
+			request.messages.flatMap((message) =>
+				message.role === "user"
+					? [
+							typeof message.content === "string"
+								? message.content
+								: message.content
+										.filter((part) => part.type === "text")
+										.map((part) => part.text)
+										.join("\n"),
+						]
+					: [],
+			);
+		const notices = requests.map((request) => texts(request).filter((text) => text.startsWith("Memory notice.")));
+		assert.equal(notices[0].length, 1);
+		assert.deepEqual(notices[1], notices[0]);
+		assert.deepEqual(notices[2], notices[0]);
+		assert.match(notices[0][0], /unknown admitted task input/);
+		assert.doesNotMatch(notices[0][0], /Memory check: this message uses preference/);
+		const entries = await conversation.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+		const records = entries.items.filter((entry) => entry.kind === "memory.notice");
+		assert.equal(records.length, 1);
+		assert.equal(records[0].model, undefined);
+		assert.doesNotMatch(JSON.stringify(records[0].data), /portable amber/);
+		faux.setResponses([
+			(context) => {
+				requests.push(structuredClone(context));
+				return fauxAssistantMessage("done");
+			},
+		]);
+		await (await conversation.submit({ type: "input", content: "Unrelated next task" }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
+		assert.deepEqual(
+			texts(requests.at(-1) as TranscriptContext).filter((text) => text.startsWith("Memory notice.")),
+			notices[0],
+		);
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+		if (oldDir === undefined) delete process.env.PI_MEMORY_DIR;
+		else process.env.PI_MEMORY_DIR = oldDir;
+		if (oldSwitch === undefined) delete process.env.PI_MEMORY_PROACTIVE;
+		else process.env.PI_MEMORY_PROACTIVE = oldSwitch;
 		rmSync(root, { recursive: true, force: true });
 	}
 });

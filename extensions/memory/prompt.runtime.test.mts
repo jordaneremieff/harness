@@ -198,18 +198,19 @@ for (const form of ["titles", "slugs", "partial"] as const) {
 
 			delete process.env.PI_MEMORY_DIR;
 			await session.prompt("Unavailable memory");
-			assert.equal(promptSection(), undefined);
-			assert.deepEqual(patches(), [first, changed, null]);
+			const unavailable = promptSection();
+			assert.match(unavailable as string, /Memory is unavailable, not empty/);
+			assert.deepEqual(patches(), [first, changed, unavailable]);
 			await session.prompt("Still unavailable");
-			assert.deepEqual(patches(), [first, changed, null]);
+			assert.deepEqual(patches(), [first, changed, unavailable]);
 			process.env.PI_MEMORY_DIR = corpus;
 			await session.prompt("Restored memory");
 			assert.equal(promptSection(), changed);
-			assert.deepEqual(patches(), [first, changed, null, changed]);
+			assert.deepEqual(patches(), [first, changed, unavailable, changed]);
 			rmSync(join(corpus, "README.md"));
 			await session.prompt("Missing contract");
-			assert.equal(promptSection(), undefined);
-			assert.deepEqual(patches(), [first, changed, null, changed, null]);
+			assert.equal(promptSection(), unavailable);
+			assert.deepEqual(patches(), [first, changed, unavailable, changed, unavailable]);
 			assert.equal(requests.length, form === "titles" ? 8 : 9);
 			assert.deepEqual(errors, []);
 		} finally {

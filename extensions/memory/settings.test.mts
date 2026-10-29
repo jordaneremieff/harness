@@ -39,10 +39,12 @@ function environment(t: { after(fn: () => void): void }, agentDir: string): void
 	const old = {
 		PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR,
 		PI_MEMORY_DIR: process.env.PI_MEMORY_DIR,
+		PI_MEMORY_PROACTIVE: process.env.PI_MEMORY_PROACTIVE,
 		PI_HARNESS_FILE: process.env.PI_HARNESS_FILE,
 	};
 	process.env.PI_CODING_AGENT_DIR = agentDir;
 	delete process.env.PI_MEMORY_DIR;
+	delete process.env.PI_MEMORY_PROACTIVE;
 	delete process.env.PI_HARNESS_FILE;
 	t.after(() => {
 		for (const [key, value] of Object.entries(old)) {
@@ -136,7 +138,7 @@ test("ordinary tools and prompt read the current file on each invocation and pub
 	await assert.rejects(read(reader), /Memory unavailable/);
 	const event = { systemPromptOptions: { sections: { memory_index: "old" } } };
 	await owner.handlers.get("before_agent_start")?.(event as never, { signal } as never);
-	assert.equal(event.systemPromptOptions.sections.memory_index, undefined);
+	assert.match(event.systemPromptOptions.sections.memory_index, /Memory is unavailable, not empty/);
 	delete process.env.PI_MEMORY_DIR;
 	const absent = join(root, "absent");
 	document(agentDir, absent);

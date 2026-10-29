@@ -12,6 +12,12 @@ export const settings = {
 			maxLength: 1024,
 			description: "Absolute directory of the external Markdown memory corpus.",
 		},
+		proactive: {
+			type: "boolean",
+			env: "PI_MEMORY_PROACTIVE",
+			default: true,
+			description: "Show bounded memory candidates and storage consideration cues for admitted input.",
+		},
 	},
 } as const;
 
@@ -21,8 +27,8 @@ export const SETTINGS_REQUEST = "harness:settings:request";
 export type Environment = Readonly<Record<string, string | undefined>>;
 export type Origin = "env" | "file" | "default";
 export type ReadOptions = { agentDir: string; env?: Environment };
-type Key = "dir";
-type Values = { dir: string | undefined };
+type Key = "dir" | "proactive";
+type Values = { dir: string | undefined; proactive: boolean };
 export type Diagnostic = {
 	field: string;
 	source: Origin;
@@ -38,13 +44,13 @@ export type Source = {
 export type SettingRecord = {
 	name: string;
 	key: string;
-	type: "path";
+	type: "path" | "boolean";
 	description: string;
 	env: string;
 	secret: boolean;
 	origin: Origin;
 	status: "valid" | "unset" | "invalid";
-	value?: string;
+	value?: string | boolean;
 };
 export type SettingsPublication = {
 	version: 1;
@@ -141,7 +147,12 @@ function checked(value: unknown, agentDir: string): string {
 	if (path.length > settings.fields.dir.maxLength) throw new Error("Resolved path exceeds length bound");
 	return path;
 }
-type Selection = { value: string | undefined; origin: Origin; invalid: boolean };
+function checkedBoolean(input: unknown, origin: Origin): boolean {
+	if (origin === "env" && ["true", "false", "0", "1"].includes(String(input))) return input === "true" || input === "1";
+	if (origin === "file" && typeof input === "boolean") return input;
+	throw new Error("Invalid boolean");
+}
+type Selection = { value: string | boolean | undefined; origin: Origin; invalid: boolean };
 function readSection(options: ReadOptions) {
 	const { source, document, diagnostics } = readDocument(options);
 	const sectionValue = document && Object.hasOwn(document, settings.slice) ? document[settings.slice] : undefined;
@@ -156,8 +167,7 @@ function readSection(options: ReadOptions) {
 			diagnostics.push(diagnostic("coverage", "file", "coverage"));
 	};
 	for (const key of Object.keys(section)) {
-		if (!Object.hasOwn(settings.fields, key))
-			add(diagnostic(unknownField(key), "file", "unknown"));
+		if (!Object.hasOwn(settings.fields, key)) add(diagnostic(unknownField(key), "file", "unknown"));
 	}
 	return { source, section, diagnostics, add };
 }
@@ -177,7 +187,7 @@ function selectField(
 	if (origin === undefined) return { value: fallback, origin: "default", invalid };
 	try {
 		const input = origin === "env" ? env[field.env] : section[key];
-		const value = checked(input, options.agentDir);
+		const value = key === "proactive" ? checkedBoolean(input, origin) : checked(input, options.agentDir);
 		return { value, origin, invalid };
 	} catch {
 		add(diagnostic(name, origin, "invalid"));
@@ -203,10 +213,11 @@ export function readSettings(options: ReadOptions): Snapshot {
 	const { source, section, diagnostics, add } = readSection(options);
 	const values = Object.create(null) as Values;
 	const records: SettingRecord[] = [];
-	for (const key of Object.keys(settings.fields) as Key[]) {
-		const fallback = undefined;
+	for (const key of ["dir", "proactive"] as const) {
+		const fallback = key === "proactive" ? true : undefined;
 		const selected = selectField(key, fallback, section, options, add);
-		values[key] = selected.value;
+		if (key === "dir") values.dir = selected.value as string | undefined;
+		else values.proactive = selected.value as boolean;
 		records.push(settingRecord(key, selected));
 	}
 	return { version: 1, slice: settings.slice, source, values, records, diagnostics };

@@ -3,6 +3,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
+import { durableRecall } from "./proactive-durable.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
 import { editMemory, memoryRoot, retireMemory, reviewMemory, type WriteReceipt, writeMemory } from "./store.ts";
@@ -23,8 +24,8 @@ import {
  * Native Pi Durable form of the memory extension.
  *
  * The corpus and its revision history stay external, as in the ordinary form.
- * Nothing is copied into Durable documents. Every tool keeps the ordinary
- * name, parameter schema, details, and execution against the configured corpus; the
+ * Task memos retain bounded discovery notices for request retries. Every tool keeps
+ * the ordinary name, parameter schema, details, and execution against the configured corpus; the
  * ordinary same-process mutation queue serializes corpus writes.
  *
  * Replay classes are explicit per tool. Reads rescan current sources and
@@ -82,7 +83,8 @@ export function createMemoryContribution(
 			disposeOrdinarySettings();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));
 			const { defineExtension, defineTool, section } = host.durable;
-			const configuredDir = () => readSettings({ agentDir: host.agentDir }).values.dir;
+			const configuration = () => readSettings({ agentDir: host.agentDir }).values;
+			const configuredDir = () => configuration().dir;
 			// The ordinary memory_search returns the page as both details and structuredContent.
 			const searchResult = (details: Record<string, unknown>) => {
 				const structured = details as Durable.JsonObject;
@@ -116,12 +118,26 @@ export function createMemoryContribution(
 			});
 			return defineExtension({
 				name: "memory",
+				hooks: [
+					host.durable.hook(
+						host.durable.GenerationTask,
+						durableRecall(configuration, async (data, api, context) => {
+							await host.harness.commit(
+								(tx) => tx.appendEntry(api.conversationId, { kind: "memory.notice", data }),
+								context,
+							);
+						}),
+					),
+				],
 				sections: [
 					section("memory", () => memoryGuidance()),
 					// The index text depends only on corpus content. A stable corpus
 					// renders identical bytes, so the section adds no prompt delta and
 					// provider caches stay warm; a changed corpus reaches the next request.
-					section("memory_index", (_input, context) => memoryIndex(configuredDir(), context.abortSignal)),
+					section("memory_index", (_input, context) => {
+						const config = configuration();
+						return memoryIndex(config.dir, context.abortSignal, config.proactive);
+					}),
 				],
 				tools: [
 					searchTool,

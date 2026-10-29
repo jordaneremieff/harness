@@ -8,6 +8,7 @@ import {
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { publishSettings, readSettings } from "./settings.ts";
+import { registerProactive } from "./proactive-ordinary.ts";
 import { createMemoryContribution } from "./durable.ts";
 import { renderCall, renderResult } from "./presentation.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
@@ -29,7 +30,9 @@ import {
 } from "./tool-contract.ts";
 
 export default function memory(pi: ExtensionAPI): void {
-	const configuredDir = () => readSettings({ agentDir: getAgentDir() }).values.dir;
+	const configuration = () => readSettings({ agentDir: getAgentDir() }).values;
+	const configuredDir = () => configuration().dir;
+	registerProactive(pi, configuration);
 	const disposeSettings = publishSettings(pi.events, { agentDir: getAgentDir() });
 	pi.on("session_shutdown", disposeSettings);
 	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
@@ -46,7 +49,8 @@ export default function memory(pi: ExtensionAPI): void {
 	);
 	pi.on("before_agent_start", async (event, ctx) => {
 		delete event.systemPromptOptions.sections.memory_index;
-		const section = await memoryIndex(configuredDir(), ctx.signal);
+		const config = configuration();
+		const section = await memoryIndex(config.dir, ctx.signal, config.proactive);
 		if (section !== undefined) event.systemPromptOptions.sections.memory_index = section;
 	});
 	registerTool({

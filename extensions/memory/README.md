@@ -4,8 +4,9 @@ Registered tools retrieve and curate durable operator knowledge in plain Markdow
 Before each agent run, the extension adds a bounded pointer-only memory index to the
 structured system prompt. It has no service, stored search index, background task,
 slash command, model request, or corpus Git operation. Corpus I/O belongs to a
-tool call or the run's `before_agent_start` event. Configuration snapshots also
-read the machine document at factory setup and on settings requests.
+tool call, prompt-index refresh, or a newly admitted input with proactive notices
+enabled. Configuration snapshots also read the machine document at factory setup
+and on settings requests.
 
 The ordinary extension publishes its registered tool renderers at factory time and
 on display requests through the [tool display contract](../../docs/conventions/tool-display.md);
@@ -23,6 +24,7 @@ See [extension configuration](../../docs/conventions/extension-config.md).
 | Key | Environment | Type | Default | Constraints | Description |
 |---|---|---|---|---|---|
 | dir | `PI_MEMORY_DIR` | path | unset | maxLength 1024; absolute input | Absolute directory of the external Markdown memory corpus. |
+| proactive | `PI_MEMORY_PROACTIVE` | boolean | true | none | Show bounded memory candidates and storage consideration cues for admitted input. |
 <!-- harness:settings:end -->
 
 The path accepts at most 1024 UTF-16 code units and rejects empty, relative,
@@ -30,7 +32,10 @@ control/format-character, and unpaired-surrogate input. Invalid selected input
 leaves the corpus unavailable, even when a valid file value exists beneath an
 invalid environment override. The settings snapshot names the rejected source;
 tools report `Memory unavailable: configure memory.dir or PI_MEMORY_DIR with an absolute corpus path`.
-An unavailable corpus omits the prompt index without blocking the agent run.
+With proactive notices enabled, an unavailable corpus renders one stable state line in
+`memory_index`, naming `memory.dir` and `PI_MEMORY_DIR`. An empty readable corpus
+retains its empty index. The off switch restores omission for unavailable memory.
+Neither state blocks the agent run.
 
 The factory publishes redacted configured snapshots through the
 [settings contract](../../docs/conventions/extension-config.md). Native setup replaces the ordinary
@@ -529,14 +534,101 @@ title and compact pointers, metadata-budget qualifications, unchanged suppressio
 changed cues, removal, and restoration. These tests establish delivery and coverage, not model comprehension
 or improved answer quality.
 
+## Proactive notices
+
+`memory.proactive` defaults to `true`. Set it to `false`, or set
+`PI_MEMORY_PROACTIVE=false`, to disable automatic recall, storage cues and the
+unavailable-state line. Existing tools, guidance and pointer indexes stay available.
+Environment booleans accept `true`, `false`, `1` and `0`; invalid selected input
+uses `true` with a settings diagnostic, not a lower-priority file value.
+
+For complete input of at most 2,000 UTF-16 units, automatic recall scores exact
+lowercase Unicode words from subject slugs, titles and the first 800 summary
+characters. It drops short words and a fixed stop list. Rare cue words carry more
+weight than summary-only words. The score sums the six largest term weights,
+normalises for cue and summary length, and requires at least two cue matches and
+a score of 18. It selects at most one positively active note. Scores are internal
+selection values, not confidence probabilities. There is no stemming, fuzzy
+matching, synonym expansion, short-token recall or model-specific routing.
+
+A notice contains a title, a discovery excerpt, the exact source digest, lifecycle
+and review state, and a requirement to read the full note before use. The excerpt
+is not an answer: later qualifications and current instructions still control.
+The title and excerpt fit at most 160 and 300 UTF-8 bytes respectively, which also
+bounds their character counts. The complete notice fits 2,048 UTF-8 bytes.
+
+A separate phrase detector recognises preference and future-use language outside
+Markdown fences and blockquotes. Its cue directs the agent to search with
+`memory_search`, then use `memory_edit` or `memory_write` if the message states
+knowledge that should guide future sessions. The cue tells the agent to skip
+task-only, quoted or already-stored content. The hook never writes memory; the
+agent decides whether the condition applies and performs the memory calls.
+Task-local phrases such as “we can use a loop here” also match; the cue is not a
+durable-fact classifier. It names a note only through the same strong recall gate.
+Input-source labels do not establish human authorship or create authority.
+
+Ordinary Pi captures raw input before expansion and inserts a separate generated
+message immediately after its exact admitted user message in the `context` hook.
+Recall uses admitted content: an exact match to a pending raw capture permits
+recall regardless of that capture's source. It does not establish operator
+provenance. Queued, ambiguous and unresolved captures receive qualified source
+labels, never an inferred direct-input label. Custom-message runs permit recall,
+not storage cues.
+
+Storage cues require an interactive or RPC source plus an admission check. For
+idle input, `before_agent_start` must supply the same text as the raw capture.
+For queued input, exactly one pending capture must have that text. Any unresolved
+slash-command, skill or template marker in the current run withholds storage
+cues, whether it arrived before or after the capture. Those inputs become opaque
+markers because their expansion can equal a capture's text. Ambiguity withholds
+the storage cue, not content recall. Indistinguishable queued captures remain
+ambiguity evidence until run end, including staggered steering and follow-up
+admission. The adapter scores each newly admitted occurrence once, not once per
+tool round. The hook does not infer authorship from an input-source label.
+
+An idle capture without a confirmed start expires at the next input event.
+Queued captures expire at run end, after Pi drains the queues. Distinct steering
+and follow-up inputs queued together each retain their notice. The adapter keeps
+at most 32 pending captures and opaque markers. Overflow withholds unproved
+queued storage cues until run end while retained content remains eligible for
+recall. A timestamp not newer than previous user context still abstains from raw
+correlation. Public input/start events supply no shared input ID for expanded
+command correlation; the adapter never interprets a command's expansion as raw
+operator intent.
+
+The ordinary adapter retains 128 recent notice keys. Keys bind corpus root, slug
+and digest; storage keys also bind the input digest.
+A successful own `memory_read` satisfies recall for that digest. Failed calls do
+not. An unchanged represented note is not pushed again; a changed digest permits
+new recall. Delivered notice bytes stay unchanged in later provider requests,
+including tool rounds and later source-read failures. Non-cancellation failures
+abstain from a new notice without removing earlier notice bytes. Cancellation
+remains host-owned. Retained notices stop at 128 rather than evict visible
+notices and change old prompt bytes. Session changes, tree changes and compaction
+clear transient state. Process restart permits a repeated bounded notice.
+
+Proactive discovery shares explicit retrieval's regular-file checks and lifecycle
+parser. It inventories at most 16,384 directory entries and examines at most 512
+candidate notes, with at most 8 KiB per prefix and 4 MiB total prefix reads. A
+complete eligible header and Summary section must fit that prefix. It reads only
+the selected full note, up to 64 KiB, to bind the digest and current review state.
+A changed title, summary or lifecycle between discovery and selection abstains.
+Notices label partial coverage; omitted sources remain unknown. No background
+scan or stored index runs.
+
+Ordinary delivery appends a non-context `memory_notice` session entry. Durable
+appends a non-context `memory.notice` entry. Both record slug, digest, kind and
+input digest, never raw input. These records describe delivery, not agent use or
+usefulness. Notice hooks never mutate corpus files.
+
 ## Durable agents
 
 Agent sessions on Pi Durable receive the memory corpus through the native
 contribution in `durable.ts`. The ordinary factory in `index.ts` emits it on the
 `durable:contribution` channel with the entrypoint path as its source. The
 [agent extension](../agent/README.md) owns contribution discovery and host
-installation. The corpus and its revision history stay external; no note content
-enters a Durable document.
+installation. Corpus files and revision history stay external. Bounded notice
+payloads enter generation-task memos for stable request retries.
 
 The contribution offers the same tools as the ordinary form, with the same
 names, parameter schemas, descriptions, and execution against the configured corpus.
@@ -568,6 +660,38 @@ checks the replay policy recorded in the durable tool intent. Public native
 codemode tests also check structured pages, schema-less text, rejected read and
 blocked mutation errors, data-bearing schema errors, distinct nested tool tasks,
 and guidance through the following model request. All stores are isolated fixtures.
+
+`GenerationHooks.beforeRequest` inserts recall notices only in provider requests.
+The first request considers only its newest user input. An ordered user-prefix
+key identifies each occurrence, including identical queued inputs with the same
+timestamp. The conversation watermark uses that key, not message value alone.
+A changed or missing user prefix resets recall to the newest input. This is a
+request-context identity, not a public admission ID or proof of authorship.
+
+Generation tasks change between tool rounds. Retained conversation state preserves
+unchanged notice bytes while their input remains in context, including later
+source-read failures. Task memos freeze the payload for retries. Non-cancellation
+failures during new-notice preparation retain earlier notices.
+
+Conversations without notices retain only a watermark in an independent,
+least-recently-used cache of at most 1,024 entries. Eviction from that cache loses
+no visible notice bytes. Conversation churn does not evict a conversation's
+notices while the host notice budget holds. Each conversation retains at most
+128 notices, and the host retains at most 2 MiB of serialized notice records,
+including their text and metadata. Requests refresh retention order.
+
+Only pressure beyond that byte budget evicts the least recently used
+conversation that holds notices. This extreme case behaves like a host restart
+for that conversation: its newest input permits at most one repeated bounded
+notice, and earlier notices can drop from its next fresh request. Task memo
+recovery can preserve its current retry payload but does not establish
+session-wide exactly-once delivery.
+
+Durable storage cues remain withheld. The public hook exposes admitted model
+messages, not raw pre-expansion input or operator-source provenance. Thus a short
+expanded template body is indistinguishable from a fresh operator statement.
+Recall retains the unknown-source label and never infers authority. Skill-tagged
+bodies abstain. This boundary does not affect tools or the unavailable-state line.
 
 ## Technical examples and credential refusals
 
@@ -791,8 +915,21 @@ its explicit clipping notice. Write/edit payloads and review/retirement reasons 
 sources stay withheld in both call views. Presentation never changes model-visible evidence or retained native history.
 Semantic tool behavior is identical in TUI and headless modes.
 
-Run focused tests with `node --test extensions/memory/*.test.mts`. Run the native
-loader with `node scripts/extension-load-check.mts extensions/memory/index.ts`.
+Run focused tests with `node --test --test-concurrency=1 extensions/memory/*.test.mts`.
+`proactive.test.mts` checks scorer gates, storage cue boundaries, lifecycle,
+source bounds, deduplication, availability and settings. The controlled ordinary
+provider checks admission order, streamed input, stable notice bytes, delivery
+records and the off switch. The Durable MemoryStorage regression checks notice
+bytes across provider retries, tool rounds and tasks, unknown provenance and
+non-context records. `proactive-adapter.test.mts` covers handled, rejected,
+aborted, transformed and expanded inputs, plus ordinary source-read fault recovery.
+`proactive-provenance.test.mts` checks staggered duplicate admission, opaque
+markers, source labels, capture expiry and overflow. The native runtime test
+queues steering and follow-up together. `proactive-durable.test.mts` covers
+identical queued occurrences, notice preservation across completed conversations,
+and Durable source-read fault recovery. `durable-state.test.mts` checks
+watermark-only eviction, the host byte budget and retention order.
+Run the native loader with `node scripts/extension-load-check.mts extensions/memory/index.ts`.
 The native lifecycle regression loads the extension in an isolated ordinary Pi
 session and drives its registered tools with a controlled provider. It checks
 technical-note creation, empty-window cursor continuation, Unicode current and

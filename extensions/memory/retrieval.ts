@@ -1817,10 +1817,14 @@ function renderMemoryIndex(scan: Scan): string {
 }
 
 /** Pointer-only prompt context; an unavailable corpus never blocks an agent run. */
-export async function memoryIndex(root: string | undefined, signal?: AbortSignal): Promise<string | undefined> {
+export async function memoryIndex(
+	root: string | undefined,
+	signal?: AbortSignal,
+	proactive = false,
+): Promise<string | undefined> {
 	try {
 		checkAbort(signal);
-		if (root === undefined) return undefined;
+		if (root === undefined) return proactive ? MEMORY_UNAVAILABLE : undefined;
 		const resolved = validateRoot(memoryRoot(root));
 		requireReadme(resolved);
 		const scan = await scanCorpus(resolved, null, signal, undefined, 0, PROMPT_NOTE_CAP);
@@ -1829,8 +1833,102 @@ export async function memoryIndex(root: string | undefined, signal?: AbortSignal
 	} catch (error) {
 		if (error instanceof InventoryLimitError)
 			return `${error.message}. Subject count and lifecycle coverage are unknown; no pointers are included.`;
+		return proactive && !signal?.aborted ? MEMORY_UNAVAILABLE : undefined;
+	}
+}
+
+export const MEMORY_UNAVAILABLE =
+	"Memory is unavailable, not empty. Configure memory.dir or PI_MEMORY_DIR with a readable corpus.";
+
+export type RecallSource = {
+	slug: string;
+	title: string;
+	summary: string;
+	freshness: ReturnType<typeof sourceFreshness>;
+};
+export type RecallScan = { root: string; notes: RecallSource[]; complete: boolean };
+
+function discoverySummary(text: string, truncated: boolean): string | undefined {
+	const headings = [...markdownHeadings(text)];
+	const start = headings.findIndex((heading) => heading.title === "Summary" && heading.level === 2);
+	if (start < 0) return undefined;
+	const heading = headings[start];
+	const end = headings.slice(start + 1).find((next) => next.level <= 2)?.start;
+	if (end === undefined && truncated) return undefined;
+	return text.slice(heading.end, end).trim();
+}
+
+function eligibleRecallSummary(summary: string | undefined, cue: NoteCue): summary is string {
+	return summary !== undefined && cue.metadata === "ok" && cue.size <= SOURCE_READ_BYTES;
+}
+
+/** The proactive channel shares discovery safety and lifecycle parsing with explicit retrieval. */
+export async function recallSources(root: string | undefined, signal?: AbortSignal): Promise<RecallScan | undefined> {
+	try {
+		checkAbort(signal);
+		if (root === undefined) return undefined;
+		const resolved = validateRoot(memoryRoot(root));
+		requireReadme(resolved);
+		const inventory = await inventoryDirectory(resolved, signal);
+		const entries = noteEntries(inventory);
+		const notes: RecallSource[] = [];
+		let complete = entries.length <= 512;
+		for (const entry of entries.slice(0, 512)) {
+			checkAbort(signal);
+			if (!entry.isFile()) {
+				complete = false;
+				continue;
+			}
+			const slug = addressableSlug(entry.name);
+			if (slug === undefined) {
+				complete = false;
+				continue;
+			}
+			const window = readIndexWindow(join(resolved, entry.name), signal);
+			if (!window.ok) {
+				complete = false;
+				continue;
+			}
+			const cue = buildNoteCue(entry.name, slug, window.text, window.truncated, window.size);
+			if (cue.lifecycle.status !== "active") continue;
+			const summary = discoverySummary(window.text, window.truncated);
+			if (!eligibleRecallSummary(summary, cue)) {
+				complete = false;
+				continue;
+			}
+			notes.push({ slug, title: pointerTitle(cue), summary, freshness: sourceFreshness(cue.parsed, cue.header) });
+			await setImmediate();
+		}
+		checkAbort(signal);
+		return { root: resolved, notes, complete };
+	} catch (error) {
+		if (signal?.aborted) throw error;
 		return undefined;
 	}
+}
+
+export async function recallSource(
+	scan: RecallScan,
+	expected: RecallSource,
+	signal?: AbortSignal,
+): Promise<(RecallSource & { digest: string }) | undefined> {
+	checkAbort(signal);
+	let source: SourceResult;
+	try {
+		source = readNoteSource(join(scan.root, `${expected.slug}.md`), signal);
+	} catch (error) {
+		if (signal?.aborted) throw error;
+		return undefined;
+	}
+	if (!source.ok) return undefined;
+	const text = decodeUtf8(source.buffer);
+	if (text === undefined) return undefined;
+	const cue = buildNoteCue(`${expected.slug}.md`, expected.slug, text, false, source.buffer.length);
+	const summary = discoverySummary(text, false);
+	if (cue.lifecycle.status !== "active" || pointerTitle(cue) !== expected.title || summary !== expected.summary)
+		return undefined;
+	checkAbort(signal);
+	return { ...expected, digest: sha256(source.buffer), freshness: sourceFreshness(cue.parsed, cue.header) };
 }
 
 export { NOTE_OPEN_FLAGS, addressableSlug, extractCue, openRegular, sliceByCodePoints, trimUtf8 };
