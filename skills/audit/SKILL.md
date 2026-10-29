@@ -8,6 +8,7 @@ description: >
   “how has this extension been doing” or “how often does this happen?”. Do not
   use for code or security audits, exact session retrieval, application
   telemetry, supplied billing data, or repairs and publication.
+compatibility: Pi-specific evidence contracts. The optional activity collector requires Node with built-in node:sqlite and direct TypeScript execution. Sibling harness references and extension source contracts live at ../harness/ and ../../extensions/ in the owning package.
 ---
 
 # Audit
@@ -92,6 +93,12 @@ Use the public source that matches the unit:
 - Use policy, Pillars, clipboard, or stash readers only when their retained
   evidence answers the selected question. Treat current rule and usage views as
   snapshots or retained observations, not universal event logs.
+- For cross-session tool, model, token, or cost counts, read
+  [activity-stores.md](references/activity-stores.md). It covers primary session
+  JSONL, Durable SQLite with companion catalog records, and native JSONL through
+  a bounded read-only collector. Report each store separately and preserve its
+  gaps. Exact provider request attempts are unavailable in these stores; keep
+  generation starts and retained model responses separate instead.
 - For an extension-specific audit, read `references/extension-telemetry.md`
   before collection. Read `../harness/references/extension-audit.md` only when
   the question requires a utility, retention, incident, repair, reposition, or

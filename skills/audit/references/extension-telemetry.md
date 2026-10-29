@@ -75,7 +75,10 @@ README and defining source under the owning repository's `extensions/<name>/`
 - **Agent and native history:** `agent_list` discovers metadata;
   `agent_inspect` reads bounded retained evidence without opening a writer.
   `history_search` and `history_read` cover the current session's selected
-  ancestry. None is a complete cross-session time-window counter. Run state and
+  ancestry. None is a complete cross-session time-window counter. For that
+  boundary, use [activity-stores.md](activity-stores.md): primary session JSONL,
+  Durable SQLite and catalog metadata, and native JSONL stay separate. Its
+  collector does not create an index or recorder. Run state and
   bindings are snapshots; dispatch calls, sessions, and outcomes are different
   units. Follow continuations, including empty pages, and preserve omissions.
 - **Other extensions:** inspect their documented stores and public readers.
