@@ -255,7 +255,7 @@ it("keeps startup recovery paused until contributions and request sections are i
 	t.after(() => host.close());
 	assert.equal(p.calls(), 1, "paused open does not schedule a queued recovery");
 	assert.equal((await recoveryEntries(host.root())).length, 0);
-	registry.install({ name: "initialized-contribution", tools: [defineTool({ name: "initialized-tool", description: "Initialized native tool", parameters: Type.Object({}), execute: async () => ({}) })], sections: [requestContextSection()], hooks: [hook(GenerationTask, requestContextHooks(host.harness))] });
+	registry.install({ name: "initialized-contribution", tools: [defineTool({ name: "initialized-tool", description: "Initialized native tool", parameters: Type.Object({}), execute: async () => ({}) })], sections: [requestContextSection(host.harness)], hooks: [hook(GenerationTask, requestContextHooks(host.harness))] });
 	await host.root().commit((tx) => recordRequestContext(tx, host.root().id, { requestId: "one", requester: "original-requester", replyTo: "original-recipient", origin: "model" }), context);
 	assert.equal(p.calls(), 1, "section installation and retained route writes do not enable scheduling");
 	await host.resume(context);

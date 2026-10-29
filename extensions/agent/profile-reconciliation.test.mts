@@ -79,7 +79,7 @@ it("reconciles retained children before resume and supplies routes for base-only
 		return typeof value === "function" ? value.bind(target) : value;
 	} });
 	const registry = fixtureRegistry();
-	registry.install({ name: "request-routes", sections: [requestContextSection()], hooks: [hook(GenerationTask, requestContextHooks(() => { assert.ok(host); return host.harness; }))] });
+	registry.install({ name: "request-routes", sections: [requestContextSection(() => { assert.ok(host); return host.harness; })], hooks: [hook(GenerationTask, requestContextHooks(() => { assert.ok(host); return host.harness; }))] });
 	host = await DurableHost.open({ storagePath, storageId, models, registry, resume: false }, context);
 	assert.equal(observed.length, 0);
 	for (const id of ids) {

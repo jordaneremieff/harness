@@ -1,6 +1,6 @@
 import type { ConversationId } from "@earendil-works/pi-durable";
 
-export type RouteNote = { key: string; text: string; entryId: number };
+export type RouteNote = { digest: string; text: string; entryId: number };
 export const REQUEST_NOTES_HOST_BYTES = 16 * 1024 * 1024;
 
 /** Whole-conversation eviction bounds host memory without changing a generation task's memo. */

@@ -116,7 +116,7 @@ function userText(context: TranscriptContext): string {
 	return context.messages
 		.filter((item) => item.role === "user")
 		.map((item) => typeof item.content === "string" ? item.content : item.content.map((part) => part.type === "text" ? part.text : "").join(""))
-		.filter((text) => !text.startsWith("<agent-request-route>"))
+		.filter((text) => !text.startsWith("<agent-request-route "))
 		.join("\n");
 }
 

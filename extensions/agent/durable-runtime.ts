@@ -427,7 +427,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 				try { return await stopForeignReferences((method, input) => manager.control(method, input, caller), references, context); }
 				finally { manager.close(); }
 			});
-			services.registry.install({ name: "agent.request-context", sections: [requestContextSection()], hooks: [hook(GenerationTask, requestContextHooks(opened.harness))] });
+			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(opened.harness)], hooks: [hook(GenerationTask, requestContextHooks(opened.harness))] });
 			unsubscribeClose?.();
 			unsubscribeClose = opened.harness.subscribeClose(() => {
 				activityGeneration++;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it, type TestContext } from "node:test";
-import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT as context, withAbortSignal } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import { CompactionEntry, GenerationTask, hook, Harness, LiveDoc, MemoryStorage, type Conversation, type ConversationId, type HookApi, type SubmissionId, type TaskId } from "@earendil-works/pi-durable";
 import { answerMessage, completed, fixtureRegistry, fixtureRuntime, gateTool, toolCallMessage } from "./durable-host-fixture.mts";
@@ -12,7 +12,7 @@ import { RequestRouteState } from "./request-route-state.ts";
 const user = (content: string, timestamp = 1): Message => ({ role: "user", content, timestamp });
 const route = (requestId: string): RequestContext => ({ requestId, requester: "requester", replyTo: `recipient-${requestId}`, origin: "model" });
 const text = (message: Message) => "content" in message ? typeof message.content === "string" ? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("") : "";
-const notes = (messages: readonly Message[]) => messages.filter((message) => text(message).startsWith("<agent-request-route>"));
+const notes = (messages: readonly Message[]) => messages.filter((message) => text(message).startsWith("<agent-request-route "));
 
 async function fixture(t: TestContext, state = new RequestRouteState()) {
 	const models = await fixtureRuntime("answer");
@@ -102,7 +102,7 @@ it("keeps notes stable when another hook inserts user messages before native inp
 	assert.equal(notes(two).length, 2);
 });
 
-it("distinguishes identical input values with an ordinal and includes timestamps in identity", async (t) => {
+it("distinguishes identical inputs by native order and includes timestamps in digests", async (t) => {
 	const f = await fixture(t);
 	const same = user("Same task");
 	const a = await f.add(route("a"), [same]);
@@ -114,27 +114,64 @@ it("distinguishes identical input values with an ordinal and includes timestamps
 	assert.deepEqual(notes(result).map((note) => JSON.parse(text(note).split("\n")[1]).requestId), ["a", "b", "c"]);
 });
 
-it("keeps the surviving route when compaction removes an identical earlier input", async (t) => {
+it("resolves the same task memo by native entry after overflow compaction removes an identical input", async (t) => {
 	const f = await fixture(t);
 	const same = user("Identical task");
 	const a = await f.add(route("a"), [same]);
 	const b = await f.add(route("b"), [same]);
 	await f.run([a, b]);
-	const before = await f.render([same, same]);
+	const task = f.api();
+	const before = await f.render([same, same], task);
 	assert.equal(notes(before).length, 2);
+	const saved = await task.memo("agent:request-routes", context);
+	assert.ok(Array.isArray(saved) && saved[0] && typeof saved[0] === "object");
+	assert.equal(Object.keys(saved[0]).sort().join(","), "digest,entryId,text");
 	await f.harness.commit(async (tx) => {
 		const submission = await tx.submissionByRequest(f.conversation.id, "b");
 		assert.ok(submission?.entry);
-		await tx.appendEntry(CompactionEntry, f.conversation.id, { head: submission.entry, data: { reason: "manual" }, model: [user("Summary", 2)] });
+		await tx.appendEntry(CompactionEntry, f.conversation.id, { head: submission.entry, data: { reason: "overflow" }, model: [user("Summary", 2)] });
 	}, context);
 	await f.harness.commit((tx) => tx.settleSubmission(a, { status: "unanswered", reason: "aborted" }), context);
 	await f.run([b]);
-	const compacted = await f.render((await f.conversation.context(context)).messages);
+	const compacted = await f.render((await f.conversation.context(context)).messages, task);
 	assert.deepEqual(notes(compacted), [notes(before)[1]], "the surviving input retains its own frozen note");
 	const c = await f.add(route("c"), [same]);
 	await f.run([b, c]);
 	const after = await f.render((await f.conversation.context(context)).messages);
 	assert.deepEqual(notes(after).map((note) => JSON.parse(text(note).split("\n")[1]).requestId), ["b", "c"]);
+});
+
+it("does not read the native context view for unique input digests", async (t) => {
+	const f = await fixture(t);
+	const first = user("Unique input");
+	const a = await f.add(route("a"), [first]);
+	await f.run([a]);
+	const read = t.mock.method(f.harness, "conversation", async () => { throw new Error("Unexpected context view read"); });
+	const task = f.api();
+	assert.equal(notes(await f.render([first], task)).length, 1);
+	assert.equal(notes(await f.render([first], task)).length, 1);
+	assert.equal(read.mock.callCount(), 0);
+});
+
+it("returns no change after an internal harness read fails", async (t) => {
+	const f = await fixture(t);
+	const first = user("Task");
+	const a = await f.add(route("a"), [first]);
+	await f.run([a]);
+	t.mock.method(f.harness, "commit", async () => { throw new Error("Read unavailable"); });
+	assert.ok(f.hook);
+	assert.equal(await f.hook({ messages: [first] }, f.api(), context), undefined);
+});
+
+it("propagates abort errors instead of returning no change", async (t) => {
+	const f = await fixture(t);
+	const failure = new Error("Aborted read");
+	t.mock.method(f.harness, "commit", async () => { throw failure; });
+	const controller = new AbortController();
+	controller.abort();
+	const selected = f.hook;
+	assert.ok(selected);
+	await assert.rejects(async () => selected({ messages: [user("Task")] }, f.api(), withAbortSignal(controller.signal, context)), (error) => error === failure);
 });
 
 it("freezes task notes for retries even after route settlement", async (t) => {
@@ -237,7 +274,7 @@ it("evicts the least recently used conversation and reconstructs its active rout
 	assert.equal(JSON.parse(text(recovered[0]).split("\n")[1]).requestId, "b");
 });
 
-it("sends exact provider-message prefixes after all hooks across tool rounds and settled runs", { timeout: 10000 }, async (t) => {
+it("the route hook adds no per-request bytes across tool rounds and settled runs", { timeout: 10000 }, async (t) => {
 	const runtime = await createTestRuntime();
 	const requests: Message[][] = [];
 	runtime.registerNativeProvider({
@@ -257,7 +294,7 @@ it("sends exact provider-message prefixes after all hooks across tool rounds and
 			return { messages };
 		},
 	})] });
-	registry.install({ name: "route-notes", sections: [requestContextSection()], hooks: [hook(GenerationTask, requestContextHooks(() => harness))] });
+	registry.install({ name: "route-notes", sections: [requestContextSection(() => harness)], hooks: [hook(GenerationTask, requestContextHooks(() => harness))] });
 	harness = await Harness.open(new MemoryStorage(), { models: runtime, registry }, context);
 	t.after(() => harness.close(context));
 	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
@@ -273,7 +310,7 @@ it("sends exact provider-message prefixes after all hooks across tool rounds and
 	assert.equal(notes(requests[2]).length, 2);
 	for (const request of requests) {
 		for (let index = 0; index < request.length; index++) {
-			if (text(request[index]).startsWith("<agent-request-route>")) assert.match(text(request[index - 1]), /^Task [ab]$/u);
+			if (text(request[index]).startsWith("<agent-request-route ")) assert.match(text(request[index - 1]), /^Task [ab]$/u);
 		}
 	}
 });

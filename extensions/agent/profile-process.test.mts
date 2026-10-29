@@ -35,7 +35,7 @@ function requestRoutes(request: ProviderRequest): RequestContext[] {
 	return request.context.messages.flatMap((message) => {
 		if (message.role !== "user") return [];
 		const text = typeof message.content === "string" ? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("");
-		return text.startsWith("<agent-request-route>\n") ? [JSON.parse(text.split("\n")[1]) as RequestContext] : [];
+		return text.startsWith("<agent-request-route host=") ? [JSON.parse(text.split("\n")[1]) as RequestContext] : [];
 	});
 }
 

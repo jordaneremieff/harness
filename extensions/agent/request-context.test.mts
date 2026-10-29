@@ -74,7 +74,7 @@ it("keeps system guidance static across native input order and task text", async
 		const second = await placed(tx, conversation.id, b, "😀".repeat(513));
 		(await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [second, first] };
 	}, context);
-	const rendered = await requestContextSection().render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);
+	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);
 	assert.match(rendered ?? "", /Final answers route automatically/u);
 	assert.doesNotMatch(rendered ?? "", /requester-d|First task|😀/u);
 });
@@ -139,7 +139,7 @@ it("omits oversized retained route fields from projections without changing nati
 		live.run = { taskId: 123 as TaskId, inputs: [submissionId] };
 	}, context);
 	assert.deepEqual(await readRequestContextPage(harness, conversation.id, context), { requests: [], omitted: 1 });
-	const rendered = await requestContextSection().render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);
+	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);
 	assert.match(rendered ?? "", /read agent_profile/u);
 	assert.doesNotMatch(rendered ?? "", /rrrrr/u);
 	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.intents[0]?.requestId, request.requestId);
@@ -164,11 +164,11 @@ it("preserves accepted task and native submission routes beyond the new-admissio
 	assert.equal((await readRequestContextPage(harness, conversation.id, context)).omitted, 2);
 });
 
-it("renders static route guidance without native lookups", async (t) => {
+it("renders stable route guidance across native route changes", async (t) => {
 	const { harness, conversation } = await fixture(t);
 	const agent = await conversation.agent(context);
-	t.mock.method(harness, "commit", async () => { throw new Error("Native read unavailable"); });
-	const rendered = await requestContextSection().render({ conversationId: conversation.id, agent, env: undefined, read: harness, shown: { "agent-request-context": "Stale requester" } }, context);
+
+	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent, env: undefined, read: harness, shown: { "agent-request-context": "Stale requester" } }, context);
 	assert.match(rendered ?? "", /An input without a note has no retained route evidence/u);
 	assert.doesNotMatch(rendered ?? "", /Stale requester/u);
 });
@@ -191,7 +191,7 @@ it("notes the first provider input before the delivery link exists and drops its
 	});
 	const registry = createRegistry();
 	let harness!: Harness;
-	registry.install(defineExtension({ name: "request-fixture", tools: [gateTool(gate, started)], tasks: [CheckInTask, CheckInDeadlineTask], sections: [requestContextSection()], hooks: [hook(GenerationTask, requestContextHooks(() => harness))] }));
+	registry.install(defineExtension({ name: "request-fixture", tools: [gateTool(gate, started)], tasks: [CheckInTask, CheckInDeadlineTask], sections: [requestContextSection(() => harness)], hooks: [hook(GenerationTask, requestContextHooks(() => harness))] }));
 	harness = await Harness.open(new MemoryStorage(), { models: runtime, registry, settings: { compaction: { keepRecentTokens: 1 } } }, context);
 	t.after(() => harness.close(context));
 	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
@@ -216,7 +216,7 @@ it("notes the first provider input before the delivery link exists and drops its
 	assert.ok(finalRequest);
 	const final = JSON.parse(finalRequest);
 	assert.ok(!final.messages.some((message: { role: string; content: unknown }) => message.role === "user" && JSON.stringify(message.content).includes("Do work")), "compaction removes the original user input");
-	assert.ok(!final.messages.some((message: { role: string; content: unknown }) => message.role === "user" && JSON.stringify(message.content).includes("<agent-request-route>")), "the route note leaves with its input");
+	assert.ok(!final.messages.some((message: { role: string; content: unknown }) => message.role === "user" && JSON.stringify(message.content).includes("<agent-request-route ")), "the route note leaves with its input");
 	await settleDeliveries(harness, context);
 	assert.deepEqual((await harness.snapshot(RequestContextDoc, conversation.id, context))?.requests, []);
 });

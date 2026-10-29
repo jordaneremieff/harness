@@ -1467,7 +1467,7 @@ it("reconciles an existing local child before Reporter admission", { timeout: 10
 	const { registry } = buildRegistry();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
-	registry.install({ name: "request-routes", sections: [requestContextSection()], hooks: [Durable.hook(Durable.GenerationTask, requestContextHooks(harness))] });
+	registry.install({ name: "request-routes", sections: [requestContextSection(harness)], hooks: [Durable.hook(Durable.GenerationTask, requestContextHooks(harness))] });
 	const child = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, instructions: "OLD CHILD INSTRUCTIONS" } }, context);
 	await child.commit(async (tx) => { const meta = await tx.doc(AgentMetaDoc, child.id); meta.name = "Retained child"; meta.owner = "original-founder"; }, context);
 	route.script.push({ tool: "agent_send", args: { sessionId: `${storageId}:${child.id}`, message: "CONTRACT: reply RETAINED", checkInMinutes: 0 } });
@@ -1524,7 +1524,7 @@ for (const conflictingProfile of [false, true]) it(`resumes an accepted Reporter
 	await first.close(context);
 
 	resumed = await Durable.Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, onReport: (error) => warnings.push(error) }, context);
-	registry.install({ name: "retained-request-routes", sections: [requestContextSection()] });
+	registry.install({ name: "retained-request-routes", sections: [requestContextSection(resumed)] });
 	const settled = await resumed.waitForTask(taskId, context);
 	assert.equal(settled.state.outcome.status, "completed");
 	const reopenedRecipient = await resumed.conversation(recipient.id, context);

@@ -2030,14 +2030,33 @@ The dashboard shows the original task. Profile shows a bounded view of unfinishe
 routes on demand, with `requestsOmitted` when further routes are retained. Routes
 outside the field limits are omitted, never shortened.
 
-Each note's identity uses the input message's JSON, including its timestamp, and
-an ordinal among identical messages. Other hooks' distinct user messages do not
-change that identity. Host memory retains each conversation's notes across tool
-rounds, new runs and settlement while their inputs remain in the request.
-Compaction removes notes whose inputs are absent. Each generation task's memo
-freezes its notes for retries. After a host restart, only active routes create new
-notes; settled routes have no reconstructed notes. An input without a note has no
-retained route evidence, so read `agent_profile` before an explicit report.
+Each saved note holds its native entry ID, the digest of the input message's JSON
+with its timestamp, and its frozen text. A generation task's memo freezes this
+set, not positions or ordinals. Every call resolves positions from the current
+request, including retry after overflow compaction. Unique digests need no native
+context view. Duplicate digests in the request or saved notes use native entry
+order. Notes bind to inputs by content and native order, so a hook that inserts a
+byte-identical copy of an input before it shifts the note to the copy.
+
+Host memory retains notes across tool rounds, new runs and settlement while their
+inputs remain in the request. Compaction drops notes for absent inputs. After a
+host restart, only active routes create new notes; settled routes have no
+reconstructed notes. An input without a note has no retained route evidence, so
+read `agent_profile` before an explicit report. The route hook adds no changing
+per-request bytes while its notes remain retained. This claim covers only the
+route hook, not other hooks or a separate guidance tail. Internal hook errors
+return the request unchanged; aborts still propagate.
+
+A storage-scoped Durable document holds a random secret created once inside a
+commit. HMAC-SHA256 of the conversation ID supplies a stable conversation tag.
+Each note starts with `<agent-request-route host="TAG">`; the static system
+section names the same tag. Blocks without that exact attribute, and blocks
+quoted inside inputs or tool results, have no route or origin authority.
+Status and Profile omit the tag and secret. Every inspection view replaces tag
+values inside the route guidance with `[withheld route tag]` and retains the
+guidance. Inspection schemas and operation contracts remain unchanged. Searches
+for the tag do not match. The secret never enters model messages or inspection
+results.
 `REQUEST_NOTE_LIMIT` and `REQUEST_NOTE_BYTES` in `request-context.ts` bound retained
 notes per conversation. At either bound, all current-run notes remain; the oldest
 settled notes leave first. `REQUEST_NOTES_HOST_BYTES` in `request-route-state.ts`

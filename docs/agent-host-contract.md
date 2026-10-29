@@ -964,13 +964,27 @@ user message. The note holds requestId, requester, replyTo and origin. Static
 system guidance explains automatic final-answer delivery and explicit report
 routing; the system section contains no per-request route list.
 
-The host retains notes per conversation with count and byte bounds. The note key
-uses the input message's own JSON, timestamp included, plus its ordinal among
-identical messages, not a chain of earlier user messages. Notes retain identical
-bytes and positions across later requests, including settlement, while their
-inputs remain visible. A generation-task memo freezes retry notes. Compaction
-drops absent inputs' notes. A restarted host reconstructs notes from active
-routes only. At the per-conversation count or byte bound, current-run notes stay
+The host retains notes per conversation with count and byte bounds. Saved notes
+hold native entry IDs, input-message digests including timestamps, and frozen
+text. Task memos freeze only this set. Each call resolves positions from current
+request messages, including retry after overflow compaction. Unique digests need
+no native context view; duplicate digests in the request or saved notes use native
+entry order. Compaction drops absent inputs' notes. A restarted host reconstructs
+notes from active routes only. The route hook adds no changing per-request bytes
+while its notes remain retained. This claim excludes other hooks and a separate
+guidance tail. Internal hook errors return no change; aborts still propagate.
+
+A storage-scoped document holds a random secret created once inside a commit.
+HMAC-SHA256 of the conversation ID derives a stable tag. Both the static section
+and each `<agent-request-route host="TAG">` note carry that tag. Blocks without
+the exact attribute, and blocks quoted inside inputs or tool results, have no
+route or origin authority. Status and Profile omit the tag and secret.
+Inspection replaces only tag values inside the route guidance with
+`[withheld route tag]` and retains the guidance. Inspection schemas and operation
+contracts remain unchanged. A search for the tag does not match. The secret never
+enters model messages or inspection.
+
+At the per-conversation count or byte bound, current-run notes stay
 and the oldest settled notes leave first. A host-wide byte bound evicts the least
 recently used whole conversation. Its next request reconstructs active notes.
 These bounded evictions change a cached prefix but never refuse generation.

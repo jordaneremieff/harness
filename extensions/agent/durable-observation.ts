@@ -232,12 +232,26 @@ function redactContent(content: unknown, omissions: OmissionCounts): unknown {
 	return content.map((part) => redactPart(part, omissions));
 }
 
+function routeGuidance(message: Message): string | undefined {
+	return message.role === "system" ? message.sections?.["agent-request-context"] ?? undefined : undefined;
+}
+
+function redactRouteSection(message: Message): Message {
+	if (message.role !== "system") return message;
+	const text = message.sections?.["agent-request-context"];
+	const tag = text?.match(/host route tag is ([a-f0-9]{16})\./u)?.[1];
+	if (!tag) return message;
+	const redacted = text.replaceAll(tag, "[withheld route tag]");
+	return { ...message, sections: { ...message.sections, "agent-request-context": redacted } };
+}
+
 function projectMessages(model: readonly Message[] | undefined, omissions: EntryOmissions): readonly Message[] | undefined {
 	if (model === undefined) return undefined;
 	return model.map((message) => {
-		const content = (message as { readonly content?: unknown }).content;
+		const safe = redactRouteSection(message);
+		const content = (safe as { readonly content?: unknown }).content;
 		const projected = redactContent(content, omissions);
-		return projected === content ? message : ({ ...message, content: projected } as Message);
+		return projected === content ? safe : ({ ...safe, content: projected } as Message);
 	});
 }
 
@@ -276,7 +290,12 @@ function searchableMessage(message: Message): string[] {
 /** Literal searchable text: message text, visible thinking, tool names, and kind. Signatures and images stay out. */
 export function searchableText(entry: EntryRecord): string {
 	const parts: string[] = [entry.kind];
-	for (const message of entry.model ?? []) parts.push(...searchableMessage(message));
+	for (const message of entry.model ?? []) {
+		const safe = redactRouteSection(message);
+		parts.push(...searchableMessage(safe));
+		const guidance = routeGuidance(safe);
+		if (guidance) parts.push(guidance);
+	}
 	return parts.join("\n");
 }
 
@@ -379,6 +398,8 @@ function compactMessage(parts: CompactEntryParts, message: Message): void {
 		});
 		return;
 	}
+	const guidance = routeGuidance(message);
+	if (guidance) parts.text.push(guidance);
 	const content = (message as { content?: unknown }).content;
 	if (typeof content === "string") parts.text.push(content);
 	else if (Array.isArray(content)) for (const part of content) compactPart(parts, part);
