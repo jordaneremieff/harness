@@ -7,6 +7,17 @@ import { DraftInputError, draftAssessment, DraftSchema, MAX_DRAFT_CHARACTERS, sp
 import { accessRenderers } from "./presentation.ts";
 
 const schema = Compile(DraftSchema);
+test("draft schema leaves semantic checks to the handler", () => {
+	assert.equal(Object.hasOwn(DraftSchema, "pattern"), false);
+	assert.equal(Reflect.get(DraftSchema, "minLength"), 1);
+	assert.equal(Reflect.get(DraftSchema, "maxLength"), MAX_DRAFT_CHARACTERS);
+	for (const draft of ["", null, "a".repeat(MAX_DRAFT_CHARACTERS + 1), "😀".repeat(MAX_DRAFT_CHARACTERS + 1)])
+		assert.equal(schema.Check(draft), false);
+	for (const [draft, condition] of [[" \n", /blank text/], ["\ud800", /malformed Unicode: unpaired surrogate/]] as const) {
+		assert.equal(schema.Check(draft), true);
+		assert.throws(() => splitDraft({ draft }), condition);
+	}
+});
 const validDrafts = ["A concrete proposal.", "  Keep the author's spaces.\n", "a".repeat(MAX_DRAFT_CHARACTERS), "😀".repeat(MAX_DRAFT_CHARACTERS), "e\u0301".repeat(MAX_DRAFT_CHARACTERS), "👩‍💻".repeat(MAX_DRAFT_CHARACTERS)];
 for (const draft of validDrafts) {
 	test(`draft schema and handler preserve ${Buffer.byteLength(draft)} UTF-8 bytes without normalization`, () => {
@@ -39,7 +50,6 @@ test("draft errors identify the failed condition and measured size without input
 		["\udc00", /malformed Unicode: unpaired surrogate/, /Measured 1 characters .* 3 UTF-8 bytes/],
 		["A\ud800Z", /malformed Unicode: unpaired surrogate/, /Measured 3 characters .* 5 UTF-8 bytes/],
 	] as const) {
-		assert.equal(schema.Check(draft), false);
 		assert.throws(() => splitDraft({ draft }), (error: unknown) => {
 			assert.ok(error instanceof DraftInputError);
 			assert.match(error.message, condition);

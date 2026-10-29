@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
+import { Value } from "typebox/value";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { draftAssessment, MAX_DRAFT_CHARACTERS } from "./draft.ts";
 import test from "node:test";
@@ -329,6 +330,39 @@ test("a model-issued call reaches each tool and both declare safe replay", async
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 	}
+});
+
+test("native draft semantic errors pass the schema and retain specific handler messages", async (t) => {
+	const fixture = await makeFixture(t);
+	useFixtureEnvironment(t, fixture);
+	const { faux, harness, root, controller } = await openContribution(fixture);
+	t.after(() => controller.abort());
+	try {
+		const tool = (await root.agent(BACKGROUND_CONTEXT)).tools.find((entry) => entry.name === "pillars");
+		assert.ok(tool);
+		const parameters = tool.parameters as { properties: { draft: { minLength: number; maxLength: number } } };
+		assert.equal(Object.hasOwn(parameters.properties.draft, "pattern"), false);
+		assert.equal(parameters.properties.draft.minLength, 1);
+		assert.equal(parameters.properties.draft.maxLength, MAX_DRAFT_CHARACTERS);
+		for (const draft of [" \n", "\ud800"]) assert.equal(Value.Check(tool.parameters, { draft }), true);
+		faux.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("pillars", { draft: " \n" }, { id: "blank-draft" }),
+				fauxToolCall("pillars", { draft: "\ud800" }, { id: "malformed-draft" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage("Stopped."),
+		]);
+		const settled = await (await root.submit({ type: "input", content: "Check draft validation." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		assert.equal(settled.status, "done");
+		const results = toolResults((await root.context(BACKGROUND_CONTEXT)).messages);
+		for (const [id, condition] of [["blank-draft", /blank text/], ["malformed-draft", /malformed Unicode: unpaired surrogate/]] as const) {
+			const result = results.find((entry) => entry.toolCallId === id);
+			assert.ok(result);
+			assert.equal(result.isError, true);
+			assert.match(textOf(result), condition);
+			assert.doesNotMatch(textOf(result), /must match pattern/);
+		}
+	} finally { await harness.close(BACKGROUND_CONTEXT); }
 });
 
 test("a draft returns one assessment diagnostic beside the unchanged source page", async (t) => {

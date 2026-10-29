@@ -3,12 +3,11 @@ import { Value } from "typebox/value";
 import { CORRECTION_TASK, JUDGMENT_AUTHORITY } from "./commands.ts";
 
 export const MAX_DRAFT_CHARACTERS = 8192;
-/** The handler and Pi use TypeBox's grapheme count and the same string contract. */
+/** Pi checks the grapheme limit; the handler supplies semantic diagnostics. */
 export const DraftSchema = Type.String({
 	minLength: 1,
 	maxLength: MAX_DRAFT_CHARACTERS,
-	pattern: "^(?=[\\s\\S]*\\S)(?:[^\\uD800-\\uDFFF]|[\\uD800-\\uDBFF][\\uDC00-\\uDFFF])+$",
-	description: "Concrete agent-authored proposal to assess after this source read. Nonblank, well-formed Unicode, at most 8192 characters (TypeBox grapheme clusters). Retained in native history, not private scratch.",
+	description: "Concrete agent-authored proposal to assess after this source read. At most 8192 characters (TypeBox grapheme clusters). The handler rejects blank text and malformed Unicode with specific errors. Retained in native history, not private scratch.",
 });
 export const DRAFT_GUIDANCE =
 	"Before a consequential decision, action, or answer, include your concrete proposal as draft to check it before delivery; do not wait for an operator cue. A successful source read delivers an assessment task after the tool results for you to apply in the ordinary continuation. Preserve routine execution and exact-output tasks without added ceremony. The optional draft accepts at most 8192 characters (TypeBox grapheme clusters) and stays in native history, not private scratch. Source JSON remains unchanged.";

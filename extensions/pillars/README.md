@@ -171,8 +171,11 @@ Omitting `draft` keeps source-only behavior. A draft must be a nonblank,
 well-formed Unicode string of at most 8192 characters, counted as TypeBox grapheme
 clusters, the same unit used by Pi's schema validator. The schema and handler
 share this limit in ordinary and Durable sessions; there is no separate UTF-8
-byte limit. The extension preserves its text exactly and rejects invalid input
-without echoing it.
+byte limit. The schema has no regular-expression pattern. Blank text and malformed
+Unicode pass the schema's string-length checks, then the handler rejects them with
+specific diagnostics. This keeps provider-facing schemas simple and prevents
+schema-pattern errors from replacing the handler's messages. The extension preserves
+its text exactly and rejects invalid input without echoing it.
 
 After a successful source read, the extension sends a native assessment task for
 the ordinary model continuation. Pi delivers that task after the tool results

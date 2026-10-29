@@ -6,6 +6,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { Value } from "typebox/value";
 import { access } from "./access.ts";
 import { utcDay } from "./collector.ts";
 import { draftAssessment, MAX_DRAFT_CHARACTERS } from "./draft.ts";
@@ -100,6 +101,7 @@ test("native draft assessment follows source results without a context transform
 			const schema = definition.parameters as { type: string; properties: { draft: { maxLength: number } }; required?: string[] };
 			assert.equal(schema.type, "object");
 			assert.equal(schema.properties.draft.maxLength, MAX_DRAFT_CHARACTERS);
+			assert.equal(Object.hasOwn(schema.properties.draft, "pattern"), false);
 			assert.ok(!schema.required?.includes("draft"));
 			const prepare = definition.prepareArguments;
 			assert.ok(prepare);
@@ -107,12 +109,15 @@ test("native draft assessment follows source results without a context transform
 			const valid = { resource: "principle-example", draft: "😀".repeat(MAX_DRAFT_CHARACTERS) };
 			assert.deepEqual(prepare(valid), { ...valid, offset: 0 });
 			for (const draft of ["", " \n", null, 731905, { private: "do not echo" }, "a".repeat(MAX_DRAFT_CHARACTERS + 1), "😀".repeat(MAX_DRAFT_CHARACTERS + 1), "\ud800"]) {
+				if (draft === " \n" || draft === "\ud800") assert.equal(Value.Check(definition.parameters, { draft }), true);
 				const matches = (error: unknown) => {
 					assert.ok(error instanceof Error);
 					const result = JSON.parse(error.message);
 					assert.equal(result.schema, "pillars-source-error");
 					assert.equal(result.code, "invalid_input");
 					assert.match(result.message, /8192 characters \(TypeBox grapheme clusters\)/);
+					if (draft === " \n") assert.match(result.message, /blank text/);
+					if (draft === "\ud800") assert.match(result.message, /malformed Unicode: unpaired surrogate/);
 					assert.doesNotMatch(result.message, /private|731905|do not echo/);
 					return true;
 				};
