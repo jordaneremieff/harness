@@ -4,7 +4,7 @@ import type { Context } from "@earendil-works/chord";
 import type { Message } from "@earendil-works/pi-ai";
 import { isInputKind } from "./input-entry.ts";
 import { AgentDeliveryDoc } from "./durable-controls.ts";
-import { RequestRouteState, type RouteNote } from "./request-route-state.ts";
+import { RequestRouteState, type RouteNote, type UserPrefix } from "./request-route-state.ts";
 import { defineDoc, LiveDoc, section, type ConversationId, type GenerationHooks, type Harness, type HookApi, type PromptSection, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 
 export type RequestContext = {
@@ -137,6 +137,7 @@ export function requestContextSection(source: Harness | (() => Harness)): Prompt
 
 type UserInput = { index: number; message: Extract<Message, { role: "user" }> };
 type Placement = UserInput & { note: RouteNote };
+type UserSequence = { users: Map<string, UserInput[]>; prefixes: { index: number; hash: string }[] };
 export const REQUEST_NOTE_LIMIT = 1024;
 export const REQUEST_NOTE_BYTES = 4 * 1024 * 1024;
 
@@ -144,8 +145,10 @@ function inputDigest(message: Message): string {
 	return createHash("sha256").update(JSON.stringify(message)).digest("hex");
 }
 
-function userInputs(messages: readonly Message[]): Map<string, UserInput[]> {
+function userInputs(messages: readonly Message[]): UserSequence {
 	const users = new Map<string, UserInput[]>();
+	const prefixes: UserSequence["prefixes"] = [];
+	let hash = "";
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index];
 		if (message.role !== "user") continue;
@@ -153,8 +156,24 @@ function userInputs(messages: readonly Message[]): Map<string, UserInput[]> {
 		const matches = users.get(digest) ?? [];
 		matches.push({ index, message });
 		users.set(digest, matches);
+		hash = createHash("sha256").update(hash).update(digest).digest("hex");
+		prefixes.push({ index, hash });
 	}
-	return users;
+	return { users, prefixes };
+}
+
+function prefixHolds(sequence: UserSequence, previous: UserPrefix | undefined): boolean {
+	return previous !== undefined && previous.count > 0 && sequence.prefixes[previous.count - 1]?.hash === previous.hash;
+}
+
+function notedPrefix(sequence: UserSequence, placements: Placement[]): UserPrefix {
+	const last = placements.reduce((index, placement) => Math.max(index, placement.index), -1);
+	let prefix: UserPrefix = { count: 0, hash: "" };
+	for (const input of sequence.prefixes) {
+		if (input.index > last) break;
+		prefix = { count: prefix.count + 1, hash: input.hash };
+	}
+	return prefix;
 }
 
 async function requestInputEntry(tx: Tx, conversationId: ConversationId, id: SubmissionId, requestId: string) {
@@ -183,7 +202,7 @@ async function newRouteNotes(harness: Harness, api: HookApi, context: Context): 
 	}, context);
 }
 
-async function duplicatePositions(harness: Harness, api: HookApi, users: Map<string, UserInput[]>, ambiguous: Set<string>, context: Context): Promise<Map<number, UserInput>> {
+async function nativePositions(harness: Harness, api: HookApi, users: Map<string, UserInput[]>, nativeDigests: Set<string>, context: Context): Promise<Map<number, UserInput>> {
 	const positions = new Map<number, UserInput>();
 	const conversation = await harness.conversation(api.conversationId, context);
 	if (!conversation) return positions;
@@ -196,7 +215,7 @@ async function duplicatePositions(harness: Harness, api: HookApi, users: Map<str
 			const message = messages[part];
 			if (message.role !== "user") continue;
 			const digest = inputDigest(message);
-			if (!ambiguous.has(digest)) continue;
+			if (!nativeDigests.has(digest)) continue;
 			const ordinal = ordinals.get(digest) ?? 0;
 			ordinals.set(digest, ordinal + 1);
 			const match = users.get(digest)?.[ordinal];
@@ -206,16 +225,16 @@ async function duplicatePositions(harness: Harness, api: HookApi, users: Map<str
 	return positions;
 }
 
-async function placeNotes(harness: Harness, api: HookApi, users: Map<string, UserInput[]>, notes: RouteNote[], context: Context): Promise<Placement[]> {
+async function placeNotes(harness: Harness, api: HookApi, users: Map<string, UserInput[]>, notes: RouteNote[], continuous: boolean, context: Context): Promise<Placement[]> {
 	const counts = new Map<string, number>();
 	for (const note of notes) counts.set(note.digest, (counts.get(note.digest) ?? 0) + 1);
-	const ambiguous = new Set<string>();
+	const nativeDigests = new Set<string>();
 	for (const [digest, count] of counts) {
-		if (users.has(digest) && (count > 1 || (users.get(digest)?.length ?? 0) > 1)) ambiguous.add(digest);
+		if (users.has(digest) && (!continuous || count > 1 || (users.get(digest)?.length ?? 0) > 1)) nativeDigests.add(digest);
 	}
-	const positions = ambiguous.size ? await duplicatePositions(harness, api, users, ambiguous, context) : new Map<number, UserInput>();
+	const positions = nativeDigests.size ? await nativePositions(harness, api, users, nativeDigests, context) : new Map<number, UserInput>();
 	return notes.flatMap((note) => {
-		const match = ambiguous.has(note.digest) ? positions.get(note.entryId) : users.get(note.digest)?.[0];
+		const match = nativeDigests.has(note.digest) ? positions.get(note.entryId) : users.get(note.digest)?.[0];
 		return match ? [{ ...match, note }] : [];
 	});
 }
@@ -242,10 +261,10 @@ function boundNotes(notes: RouteNote[], active: Set<number>): RouteNote[] {
 	});
 }
 
-async function taskNotes(harness: Harness, api: HookApi, users: Map<string, UserInput[]>, conversations: RequestRouteState, context: Context): Promise<RouteNote[]> {
+async function taskNotes(harness: Harness, api: HookApi, users: Map<string, UserInput[]>, prior: RouteNote[], context: Context): Promise<RouteNote[]> {
 	const saved = await api.memo<RouteNote[]>("agent:request-routes", context);
 	if (saved !== undefined) return saved;
-	const retained = (conversations.get(api.conversationId) ?? []).filter((note) => users.has(note.digest));
+	const retained = prior.filter((note) => users.has(note.digest));
 	const merged = new Map(retained.map((note) => [note.entryId, note]));
 	const current = await newRouteNotes(harness, api, context);
 	for (const note of current) if (users.has(note.digest) && !merged.has(note.entryId)) merged.set(note.entryId, note);
@@ -259,10 +278,11 @@ export function requestContextHooks(source: Harness | (() => Harness), conversat
 		async beforeRequest(request, api, context) {
 			try {
 				const harness = typeof source === "function" ? source() : source;
-				const users = userInputs(request.messages);
-				const notes = await taskNotes(harness, api, users, conversations, context);
-				const placements = await placeNotes(harness, api, users, notes, context);
-				conversations.set(api.conversationId, placements.map(({ note }) => note));
+				const sequence = userInputs(request.messages);
+				const previous = conversations.get(api.conversationId);
+				const notes = await taskNotes(harness, api, sequence.users, previous?.notes ?? [], context);
+				const placements = await placeNotes(harness, api, sequence.users, notes, prefixHolds(sequence, previous?.prefix), context);
+				conversations.set(api.conversationId, { notes: placements.map(({ note }) => note), prefix: notedPrefix(sequence, placements) });
 				return placements.length ? { messages: insertRouteNotes(request.messages, placements) } : undefined;
 			} catch (error) {
 				if (context.abortSignal?.aborted) throw error;

@@ -967,22 +967,34 @@ routing; the system section contains no per-request route list.
 The host retains notes per conversation with count and byte bounds. Saved notes
 hold native entry IDs, input-message digests including timestamps, and frozen
 text. Task memos freeze only this set. Each call resolves positions from current
-request messages, including retry after overflow compaction. Unique digests need
-no native context view; duplicate digests in the request or saved notes use native
-entry order. Compaction drops absent inputs' notes. A restarted host reconstructs
-notes from active routes only. The route hook adds no changing per-request bytes
-while its notes remain retained. This claim excludes other hooks and a separate
-guidance tail. Internal hook errors return no change; aborts still propagate.
+request messages, including retry after overflow compaction. Unique digests skip
+the native context view only while the prior user-message sequence through the
+last noted input is an exact prefix. A rolling hash and count retain that prefix
+inside bounded conversation state, excluding trailing guidance messages. Without
+that prefix, every retained, memoised and new note uses native entry identity;
+this includes host start, eviction and compaction. Duplicate digests also use
+native entry order. Compaction drops absent inputs' notes. A restarted host
+reconstructs notes from active routes only. The route hook adds no changing
+per-request bytes while its notes remain retained. This claim excludes other
+hooks and a separate guidance tail. Internal hook errors return no change;
+aborts still propagate.
 
 A storage-scoped document holds a random secret created once inside a commit.
 HMAC-SHA256 of the conversation ID derives a stable tag. Both the static section
 and each `<agent-request-route host="TAG">` note carry that tag. Blocks without
 the exact attribute, and blocks quoted inside inputs or tool results, have no
-route or origin authority. Status and Profile omit the tag and secret.
+route or origin authority.
+
+The tag marks host-written notes against route-like text inside inputs and tool
+results. It is not a boundary against local agents or forks: Durable agents run
+bash, local processes can read the secret in the storage SQLite file, and forks
+already copy their parent's context.
+
+Status and Profile omit the tag and secret.
 Inspection replaces only tag values inside the route guidance with
 `[withheld route tag]` and retains the guidance. Inspection schemas and operation
-contracts remain unchanged. A search for the tag does not match. The secret never
-enters model messages or inspection.
+contracts remain unchanged. A search for the tag does not match. This route hook
+does not put the secret in model messages or inspection.
 
 At the per-conversation count or byte bound, current-run notes stay
 and the oldest settled notes leave first. A host-wide byte bound evicts the least

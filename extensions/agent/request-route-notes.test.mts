@@ -48,6 +48,17 @@ async function fixture(t: TestContext, state = new RequestRouteState()) {
 	return { harness, conversation, hook, api, add, run, render };
 }
 
+async function overflowCompaction(f: Awaited<ReturnType<typeof fixture>>, id: SubmissionId): Promise<void> {
+	const submission = await f.harness.submission(id, context);
+	assert.ok(submission);
+	const record = await submission.status(context);
+	assert.ok(record.type === "input" && record.entry !== undefined);
+	// Pi Durable 1.4.0 dist/harness/generation.js:406-419 resumes the same generation
+	// task after overflow compaction; this entry applies the native context change
+	// to the same hook API without a provider/compaction round trip.
+	await f.harness.commit((tx) => tx.appendEntry(CompactionEntry, f.conversation.id, { head: record.entry, data: { reason: "overflow" }, model: [user("Summary", 2)] }), context);
+}
+
 it("preserves exact prefixes across a tool round, a new run and request settlement", async (t) => {
 	const f = await fixture(t);
 	const first = user("First task");
@@ -126,11 +137,7 @@ it("resolves the same task memo by native entry after overflow compaction remove
 	const saved = await task.memo("agent:request-routes", context);
 	assert.ok(Array.isArray(saved) && saved[0] && typeof saved[0] === "object");
 	assert.equal(Object.keys(saved[0]).sort().join(","), "digest,entryId,text");
-	await f.harness.commit(async (tx) => {
-		const submission = await tx.submissionByRequest(f.conversation.id, "b");
-		assert.ok(submission?.entry);
-		await tx.appendEntry(CompactionEntry, f.conversation.id, { head: submission.entry, data: { reason: "overflow" }, model: [user("Summary", 2)] });
-	}, context);
+	await overflowCompaction(f, b);
 	await f.harness.commit((tx) => tx.settleSubmission(a, { status: "unanswered", reason: "aborted" }), context);
 	await f.run([b]);
 	const compacted = await f.render((await f.conversation.context(context)).messages, task);
@@ -141,16 +148,46 @@ it("resolves the same task memo by native entry after overflow compaction remove
 	assert.deepEqual(notes(after).map((note) => JSON.parse(text(note).split("\n")[1]).requestId), ["b", "c"]);
 });
 
-it("does not read the native context view for unique input digests", async (t) => {
+for (const replay of [true, false]) it(`drops a routed input's note after compaction leaves an identical unrouted input, replay=${replay}`, async (t) => {
+	const f = await fixture(t);
+	const same = user("Identical task");
+	const a = await f.add(route("a"), [same]);
+	const b = await f.add(undefined, [same]);
+	await f.run([a, b]);
+	const task = f.api();
+	assert.equal(notes(await f.render([same, same], task)).length, 1);
+	await overflowCompaction(f, b);
+	const current = (await f.conversation.context(context)).messages;
+	assert.equal(notes(await f.render(current, replay ? task : f.api())).length, 0);
+	assert.equal(notes(await f.render(current)).length, 0, "a new task does not recreate the compacted input's note");
+});
+
+it("keeps the unique-digest fast path while the noted prefix holds despite a changing guidance tail", async (t) => {
 	const f = await fixture(t);
 	const first = user("Unique input");
 	const a = await f.add(route("a"), [first]);
 	await f.run([a]);
-	const read = t.mock.method(f.harness, "conversation", async () => { throw new Error("Unexpected context view read"); });
 	const task = f.api();
-	assert.equal(notes(await f.render([first], task)).length, 1);
-	assert.equal(notes(await f.render([first], task)).length, 1);
+	assert.equal(notes(await f.render([first, user("Guidance one", 8)], task)).length, 1);
+	const read = t.mock.method(f.harness, "conversation", async () => { throw new Error("Unexpected context view read"); });
+	assert.equal(notes(await f.render([first, user("Guidance two", 9)], task)).length, 1);
+	assert.equal(notes(await f.render([first, user("Guidance three", 10)])).length, 1);
 	assert.equal(read.mock.callCount(), 0);
+});
+
+it("uses native entry validation for the first request after host restart", async (t) => {
+	const f = await fixture(t);
+	const first = user("Unique input");
+	const a = await f.add(route("a"), [first]);
+	await f.run([a]);
+	const task = f.api();
+	await f.render([first], task);
+	const original = f.harness.conversation.bind(f.harness);
+	const read = t.mock.method(f.harness, "conversation", original);
+	const restarted = requestContextHooks(f.harness).beforeRequest;
+	assert.ok(restarted);
+	assert.equal(notes(await f.render([first], task, restarted)).length, 1);
+	assert.equal(read.mock.callCount(), 1);
 });
 
 it("returns no change after an internal harness read fails", async (t) => {
@@ -245,11 +282,11 @@ for (const bound of ["count", "bytes"] as const) it(`bounds retained note ${boun
 	assert.ok(!routeIds.includes(oldestSettled), "the oldest settled input leaves first");
 	assert.ok(routeIds.includes(newestSettled), "newer settled inputs remain");
 	assert.ok(after.length <= REQUEST_NOTE_LIMIT);
-	assert.ok(Buffer.byteLength(JSON.stringify(state.get(f.conversation.id))) <= REQUEST_NOTE_BYTES);
+	assert.ok(Buffer.byteLength(JSON.stringify(state.get(f.conversation.id)?.notes)) <= REQUEST_NOTE_BYTES);
 });
 
 it("evicts the least recently used conversation and reconstructs its active route", async (t) => {
-	const state = new RequestRouteState(600);
+	const state = new RequestRouteState(900);
 	const f = await fixture(t, state);
 	const second = await f.harness.createConversation({ ownership: { kind: "ownerless" } }, context);
 	const third = await f.harness.createConversation({ ownership: { kind: "ownerless" } }, context);
@@ -267,8 +304,8 @@ it("evicts the least recently used conversation and reconstructs its active rout
 	await f.render([firstInput]);
 	await f.render([thirdInput], f.api(third.id));
 	assert.equal(state.get(second.id), undefined, "the least recently used conversation leaves the host cache");
-	assert.equal(state.get(f.conversation.id)?.length, 1);
-	assert.equal(state.get(third.id)?.length, 1);
+	assert.equal(state.get(f.conversation.id)?.notes.length, 1);
+	assert.equal(state.get(third.id)?.notes.length, 1);
 	const recovered = notes(await f.render([secondInput], f.api(second.id)));
 	assert.equal(recovered.length, 1);
 	assert.equal(JSON.parse(text(recovered[0]).split("\n")[1]).requestId, "b");

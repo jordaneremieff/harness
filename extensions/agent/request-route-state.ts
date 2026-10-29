@@ -1,22 +1,24 @@
 import type { ConversationId } from "@earendil-works/pi-durable";
 
 export type RouteNote = { digest: string; text: string; entryId: number };
+export type UserPrefix = { count: number; hash: string };
+export type RouteState = { notes: RouteNote[]; prefix: UserPrefix };
 export const REQUEST_NOTES_HOST_BYTES = 16 * 1024 * 1024;
 
 /** Whole-conversation eviction bounds host memory without changing a generation task's memo. */
 export class RequestRouteState {
-	private readonly conversations = new Map<ConversationId, { notes: RouteNote[]; bytes: number }>();
+	private readonly conversations = new Map<ConversationId, { state: RouteState; bytes: number }>();
 	private bytes = 0;
 	private readonly maxBytes: number;
 
 	constructor(maxBytes = REQUEST_NOTES_HOST_BYTES) { this.maxBytes = maxBytes; }
 
-	get(id: ConversationId): RouteNote[] | undefined {
+	get(id: ConversationId): RouteState | undefined {
 		const record = this.conversations.get(id);
 		if (!record) return undefined;
 		this.conversations.delete(id);
 		this.conversations.set(id, record);
-		return record.notes.map((note) => ({ ...note }));
+		return { notes: record.state.notes.map((note) => ({ ...note })), prefix: { ...record.state.prefix } };
 	}
 
 	delete(id: ConversationId): void {
@@ -25,11 +27,11 @@ export class RequestRouteState {
 		this.conversations.delete(id);
 	}
 
-	set(id: ConversationId, notes: RouteNote[]): void {
+	set(id: ConversationId, state: RouteState): void {
 		this.delete(id);
-		if (!notes.length) return;
-		const bytes = Buffer.byteLength(JSON.stringify(notes));
-		this.conversations.set(id, { notes: notes.map((note) => ({ ...note })), bytes });
+		if (!state.notes.length) return;
+		const bytes = Buffer.byteLength(JSON.stringify(state));
+		this.conversations.set(id, { state: { notes: state.notes.map((note) => ({ ...note })), prefix: { ...state.prefix } }, bytes });
 		this.bytes += bytes;
 		while (this.bytes > this.maxBytes) this.delete(this.conversations.keys().next().value as ConversationId);
 	}
