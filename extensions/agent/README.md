@@ -2021,10 +2021,9 @@ that check does not reject admission replay of retained native work.
 
 Task admission preserves the caller's original text and images in native user
 messages. Host-authored routing evidence holds requester, reply recipient,
-request ID, and origin separately. A stable system section explains routing;
-a generation hook supplies current routes and bounded task previews in a separate
-request-only user message, including after compaction. Route changes never patch
-the system prefix or treat the last arriving caller as the requester. The dashboard shows the original task.
+request ID, and origin separately. A native prompt section projects active routes
+with bounded task previews, including after compaction, rather than treating the
+last arriving caller as the requester. The dashboard shows the original task.
 Profile shows a bounded view of unfinished routes on demand, with
 `requestsOmitted` when further routes are retained. Routes outside the projection's
 field limits are counted as omitted, never shortened. Prompt and Profile bounds

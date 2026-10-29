@@ -52,13 +52,6 @@ async function notice(requester: Requester, text: string): Promise<void> {
 }
 function occurrences(requester: Requester, text: string): number { return requester.notices.filter((item) => item.text.includes(text)).length; }
 
-function currentRequest(request: ProviderRequest): string {
-	const message = request.context.messages.at(-1);
-	assert.ok(message?.role === "user" && typeof message.content === "string");
-	assert.match(message.content, /^<agent-request-context>\n[\s\S]+\n<\/agent-request-context>$/u);
-	return message.content;
-}
-
 it("retains a standing profile across native boundaries and routes reused work by request", { timeout: 240000 }, async (t) => {
 	const f = await profileFixture(t);
 	const [a, b, c] = await Promise.all([f.requester(), f.requester(), f.requester()]);
@@ -115,11 +108,8 @@ it("retains a standing profile across native boundaries and routes reused work b
 	request = await f.next();
 	request.answer("Check current archive evidence and retrieve the saved profile.");
 	request = await f.next();
-	const routesAfterCompact = currentRequest(request);
-	assert.ok(!request.context.messages.slice(0, -1).some((item) => item.role === "user" && JSON.stringify(item).includes("Question source-correction")), "self-compaction removes the active task text from the transcript");
-	assert.ok(routesAfterCompact.includes('"preview":"Question source-correction","truncated":false'), "the request-only message restores the current task preview");
-	assert.ok(routesAfterCompact.includes("source-correction"), "the current request ID survives outside the compacted input");
-	assert.ok(!instructions(request).includes("source-correction"), "current request data does not change the system prefix");
+	assert.ok(!request.context.messages.some((item) => item.role === "user" && JSON.stringify(item).includes("Question source-correction")), "self-compaction removes the active task text");
+	assert.ok(instructions(request).includes("source-correction"), "the current request ID survives outside the compacted input");
 	request.tool("agent_profile", { action: "read" });
 	request = await f.next();
 	const retrieved = toolData<AgentProfile>(request, "agent_profile");
@@ -283,11 +273,8 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	assert.equal(f.requests.length, 0, "refused contracts start no provider request");
 	await send(a, expert.sessionId, "current-admission");
 	let request = await f.next();
-	const routes = currentRequest(request);
-	assert.ok(routes.includes(`"requester":"${a.identity}"`));
-	assert.ok(routes.includes(`"replyTo":"${a.identity}"`));
-	assert.ok(!instructions(request).includes(`"requester":"${a.identity}"`), "current routes stay outside the system prefix");
-	assert.ok(!instructions(request).includes(`"replyTo":"${a.identity}"`));
+	assert.ok(instructions(request).includes(`"requester":"${a.identity}"`));
+	assert.ok(instructions(request).includes(`"replyTo":"${a.identity}"`));
 	assert.ok(request.context.messages.some((message) => message.role === "user" && message.content === "Question current-admission"));
 	request.tool("agent_send", { sessionId: a.identity, message: "BASE_PROGRESS", mode: "report" });
 	request = await f.next();
