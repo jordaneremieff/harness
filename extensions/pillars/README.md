@@ -119,9 +119,11 @@ Both tools validate through Pi's `prepareArguments` callback before host schema
 validation, as well as at their execution boundary. They report the first invalid
 field. For source and usage fields, numbers and booleans are shown directly. Arbitrary
 strings and unsupported field names are described by type and length, not echoed;
-object and array contents are withheld. Draft validation uses a fixed diagnostic
-that withholds every input value. The source tool echoes only a known identifier
-with its `.md` suffix.
+object and array contents are withheld. Draft validation names the failed
+condition: non-string value, blank text, malformed Unicode, or excessive character
+count. String diagnostics report the TypeBox grapheme count and UTF-8 byte size,
+never the draft text. The source tool echoes only a known identifier with its
+`.md` suffix.
 These rules prevent control characters, paths, credentials, and arbitrary input
 text from entering diagnostic messages.
 
@@ -166,8 +168,11 @@ The tool's description and prompt guidance ask the agent to submit a concrete
 proposal before a consequential decision, action, or answer without waiting for
 an operator cue. Routine execution and exact-output tasks need no added ceremony.
 Omitting `draft` keeps source-only behavior. A draft must be a nonblank,
-well-formed Unicode string of at most 8 KiB in UTF-8. The extension preserves its
-text exactly and rejects invalid input without echoing it.
+well-formed Unicode string of at most 8192 characters, counted as TypeBox grapheme
+clusters, the same unit used by Pi's schema validator. The schema and handler
+share this limit in ordinary and Durable sessions; there is no separate UTF-8
+byte limit. The extension preserves its text exactly and rejects invalid input
+without echoing it.
 
 After a successful source read, the extension sends a native assessment task for
 the ordinary model continuation. Pi delivers that task after the tool results

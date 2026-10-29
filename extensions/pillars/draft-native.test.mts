@@ -8,7 +8,7 @@ import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { access } from "./access.ts";
 import { utcDay } from "./collector.ts";
-import { draftAssessment, MAX_DRAFT_BYTES } from "./draft.ts";
+import { draftAssessment, MAX_DRAFT_CHARACTERS } from "./draft.ts";
 import { PillarsStore } from "./store.ts";
 
 const hostRoot = process.env.PI_PILLARS_TEST_HOST_ROOT;
@@ -99,20 +99,20 @@ test("native draft assessment follows source results without a context transform
 			const definition = tool();
 			const schema = definition.parameters as { type: string; properties: { draft: { maxLength: number } }; required?: string[] };
 			assert.equal(schema.type, "object");
-			assert.equal(schema.properties.draft.maxLength, MAX_DRAFT_BYTES);
+			assert.equal(schema.properties.draft.maxLength, MAX_DRAFT_CHARACTERS);
 			assert.ok(!schema.required?.includes("draft"));
 			const prepare = definition.prepareArguments;
 			assert.ok(prepare);
 			assert.deepEqual(prepare({}), { resource: "inventory", offset: 0 });
-			const valid = { resource: "principle-example", draft: "😀".repeat(MAX_DRAFT_BYTES / 4) };
+			const valid = { resource: "principle-example", draft: "😀".repeat(MAX_DRAFT_CHARACTERS) };
 			assert.deepEqual(prepare(valid), { ...valid, offset: 0 });
-			for (const draft of ["", " \n", null, 731905, { private: "do not echo" }, "a".repeat(MAX_DRAFT_BYTES + 1), "😀".repeat(MAX_DRAFT_BYTES / 4 + 1), "\ud800"]) {
+			for (const draft of ["", " \n", null, 731905, { private: "do not echo" }, "a".repeat(MAX_DRAFT_CHARACTERS + 1), "😀".repeat(MAX_DRAFT_CHARACTERS + 1), "\ud800"]) {
 				const matches = (error: unknown) => {
 					assert.ok(error instanceof Error);
 					const result = JSON.parse(error.message);
 					assert.equal(result.schema, "pillars-source-error");
 					assert.equal(result.code, "invalid_input");
-					assert.match(result.message, /8192 UTF-8 bytes/);
+					assert.match(result.message, /8192 characters \(TypeBox grapheme clusters\)/);
 					assert.doesNotMatch(result.message, /private|731905|do not echo/);
 					return true;
 				};

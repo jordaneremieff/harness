@@ -18,7 +18,7 @@ import { InputError } from "./input.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import { Collector, utcDay } from "./collector.ts";
 import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
-import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, MAX_DRAFT_BYTES, splitDraft } from "./draft.ts";
+import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, DraftSchema, splitDraft } from "./draft.ts";
 import { pillarsDurableContribution } from "./durable.ts";
 import { exportLocal, parseCommand } from "./export.ts";
 import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
@@ -185,13 +185,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 						description: "Required for continuation; prevents mixing source revisions",
 					}),
 				),
-				draft: Type.Optional(
-					Type.String({
-						minLength: 1,
-						maxLength: MAX_DRAFT_BYTES,
-						description: "Concrete agent-authored proposal to assess after this source read. Nonblank, well-formed Unicode, at most 8192 UTF-8 bytes. Retained in native history, not private scratch.",
-					}),
-				),
+				draft: Type.Optional(DraftSchema),
 			},
 			{ additionalProperties: false },
 		),

@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { type Theme, initTheme } from "@earendil-works/pi-coding-agent";
+import { Compile } from "typebox/compile";
 import { CORRECTION_TASK, judgmentPrompt, JUDGMENT_AUTHORITY } from "./commands.ts";
-import { DraftInputError, draftAssessment, MAX_DRAFT_BYTES, splitDraft } from "./draft.ts";
+import { DraftInputError, draftAssessment, DraftSchema, MAX_DRAFT_CHARACTERS, splitDraft } from "./draft.ts";
 import { accessRenderers } from "./presentation.ts";
 
-const validDrafts = ["A concrete proposal.", "  Keep the author's spaces.\n", "a".repeat(MAX_DRAFT_BYTES), "😀".repeat(MAX_DRAFT_BYTES / 4)];
+const schema = Compile(DraftSchema);
+const validDrafts = ["A concrete proposal.", "  Keep the author's spaces.\n", "a".repeat(MAX_DRAFT_CHARACTERS), "😀".repeat(MAX_DRAFT_CHARACTERS), "e\u0301".repeat(MAX_DRAFT_CHARACTERS), "👩‍💻".repeat(MAX_DRAFT_CHARACTERS)];
 for (const draft of validDrafts) {
-	test(`draft validation preserves ${Buffer.byteLength(draft)} UTF-8 bytes without normalization`, () => {
+	test(`draft schema and handler preserve ${Buffer.byteLength(draft)} UTF-8 bytes without normalization`, () => {
+		assert.equal(schema.Check(draft), true);
 		const input = Object.freeze({ resource: "governance", offset: 0, draft });
 		assert.deepEqual(splitDraft(input), { source: { resource: "governance", offset: 0 }, draft });
 		const message = draftAssessment(draft);
@@ -22,15 +25,26 @@ test("source-only input reaches the existing parser unchanged", () => {
 	}
 });
 
-test("draft rejection does not echo input contents and enforces bytes and valid Unicode", () => {
-	const diagnostic = new DraftInputError().message;
-	for (const draft of [
-		undefined, null, 731905, true, [], { confidential: "value" }, "", " \t\n", "a".repeat(MAX_DRAFT_BYTES + 1),
-		"😀".repeat(MAX_DRAFT_BYTES / 4 + 1), "é".repeat(MAX_DRAFT_BYTES / 2 + 1), "\ud800", "\udc00", "A\ud800Z",
-	]) {
+test("draft errors identify the failed condition and measured size without input contents", () => {
+	for (const [draft, condition, size] of [
+		[undefined, /expected a string/, undefined], [null, /expected a string/, undefined],
+		[731905, /expected a string/, undefined], [true, /expected a string/, undefined],
+		[[], /expected a string/, undefined], [{ confidential: "value" }, /expected a string/, undefined],
+		["", /blank text/, /Measured 0 characters .* 0 UTF-8 bytes/],
+		[" \t\n", /blank text/, /Measured 3 characters .* 3 UTF-8 bytes/],
+		["a".repeat(MAX_DRAFT_CHARACTERS + 1), /character limit exceeded/, /Measured 8193 characters .* 8193 UTF-8 bytes/],
+		["😀".repeat(MAX_DRAFT_CHARACTERS + 1), /character limit exceeded/, /Measured 8193 characters .* 32772 UTF-8 bytes/],
+		["e\u0301".repeat(MAX_DRAFT_CHARACTERS + 1), /character limit exceeded/, /Measured 8193 characters .* 24579 UTF-8 bytes/],
+		["\ud800", /malformed Unicode: unpaired surrogate/, /Measured 1 characters .* 3 UTF-8 bytes/],
+		["\udc00", /malformed Unicode: unpaired surrogate/, /Measured 1 characters .* 3 UTF-8 bytes/],
+		["A\ud800Z", /malformed Unicode: unpaired surrogate/, /Measured 3 characters .* 5 UTF-8 bytes/],
+	] as const) {
+		assert.equal(schema.Check(draft), false);
 		assert.throws(() => splitDraft({ draft }), (error: unknown) => {
 			assert.ok(error instanceof DraftInputError);
-			assert.equal(error.message, diagnostic);
+			assert.match(error.message, condition);
+			if (size) assert.match(error.message, size);
+			assert.doesNotMatch(error.message, /confidential|731905|A\\ud800Z/);
 			return true;
 		});
 	}

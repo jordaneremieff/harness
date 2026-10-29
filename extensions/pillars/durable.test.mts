@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
-import { draftAssessment } from "./draft.ts";
+import { draftAssessment, MAX_DRAFT_CHARACTERS } from "./draft.ts";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -576,7 +576,7 @@ test("native codemode receives bounded JSON text and rejects source errors while
 		extra: [createCodemodeExtension({ sandbox, models: false }), observer],
 	});
 	t.after(() => opened.controller.abort());
-	const draft = "Return the checked result, not an unsupported claim.";
+	const draft = "e\u0301".repeat(MAX_DRAFT_CHARACTERS);
 	const code = [
 		`const source = await tools.pillars({resource:"principle-one", draft:${JSON.stringify(draft)}});`,
 		'if (typeof source !== "string") throw new Error("source text contract");',

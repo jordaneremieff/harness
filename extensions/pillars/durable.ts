@@ -22,7 +22,7 @@ import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resou
 import type { Stage } from "./capacity.ts";
 import { Collector, utcDay } from "./collector.ts";
 import { judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
-import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, MAX_DRAFT_BYTES, splitDraft } from "./draft.ts";
+import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, DraftSchema, splitDraft } from "./draft.ts";
 import { InputError } from "./input.ts";
 import { accessEvidence, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
 import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
@@ -308,14 +308,7 @@ export function pillarsDurableContribution(
 							description: "Required for continuation; prevents mixing source revisions",
 						}),
 					),
-					draft: Type.Optional(
-						Type.String({
-							minLength: 1,
-							maxLength: MAX_DRAFT_BYTES,
-							description:
-								"Concrete agent-authored proposal to assess after this source read. Nonblank, well-formed Unicode, at most 8192 UTF-8 bytes. Retained in native history, not private scratch.",
-						}),
-					),
+					draft: Type.Optional(DraftSchema),
 				},
 				{ additionalProperties: false },
 			);
