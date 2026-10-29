@@ -30,6 +30,12 @@ const MAX_VISITS = 256;
 const VALIDATED_RECORD_LIMIT = 256;
 // Every lookup still reads the bounded file. Only unchanged content skips validation.
 const validatedRecords = new Map<string, { text: string; record: CatalogRecord }>();
+function cacheValidatedRecord(path: string, text: string, record: CatalogRecord): void {
+	validatedRecords.set(path, { text, record: structuredClone(record) });
+	if (validatedRecords.size <= VALIDATED_RECORD_LIMIT) return;
+	const oldest = validatedRecords.keys().next().value;
+	if (oldest !== undefined) validatedRecords.delete(oldest);
+}
 interface CatalogQuery {
 	cursor?: string;
 	limit?: number;
@@ -297,8 +303,7 @@ export class AgentCatalog {
 			this.parseProjections(record);
 			if (record.recoveryDue !== undefined && typeof record.recoveryDue !== "boolean")
 				throw new Error("Agent metadata has an invalid recovery marker");
-			validatedRecords.set(path, { text, record: structuredClone(record) });
-			if (validatedRecords.size > VALIDATED_RECORD_LIMIT) validatedRecords.delete(validatedRecords.keys().next().value!);
+			cacheValidatedRecord(path, text, record);
 			return { record, modifiedAt: info.mtimeMs };
 		} finally {
 			closeSync(fd);

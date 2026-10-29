@@ -62,7 +62,7 @@ it("reuses validation only for identical bytes and returns independent records a
 		return parse(...args);
 	});
 	const first = catalog.read(record.storageId);
-	first.model.modelId = "changed-by-reader";
+	assert.equal(Reflect.set(first.model, "modelId", "changed-by-reader"), true);
 	const second = new AgentCatalog(input.cwd).read(record.storageId);
 	assert.deepEqual(second, record);
 	assert.equal(parses, 1);
