@@ -4,10 +4,14 @@
  * The extension registers `registry` and a bounded observer over the
  * system-prompt inputs Pi passes to before_agent_start. It builds no second
  * registry and no filesystem index: every record is a projection of a Pi
- * registration entry, and the only file it can open is one a resolved record
- * already points at. Settings arrive through the public package publication contract.
+ * registration entry. Resource reads open only files identified by resolved
+ * records. Settings arrive through the public package publication contract.
  */
 
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { publishSettings, readSettings } from "./settings.ts";
+import { RegistryNotes } from "./notes.ts";
+import { noteKnowledge, ordinaryNoteResources } from "./notes-host.ts";
 import { toolDisplayPublisher } from "./tool-display.ts";
 import { settingQuery, settingsReader } from "./configuration.ts";
 import { randomUUID } from "node:crypto";
@@ -122,7 +126,30 @@ export default function registerRegistry(pi: ExtensionAPI) {
 	// ordinary session nothing subscribes and the emission has no effect.
 	pi.events.emit("durable:contribution", createRegistryDurableContribution(fileURLToPath(import.meta.url), pi.events));
 	const observations = new ObservationStore();
+	const agentDir = getAgentDir();
+	// The notes switch is this slice's own setting, published and read like any other slice's settings.
+	const stopPublishing = publishSettings(pi.events, { agentDir });
 	const configuredSettings = settingsReader(pi.events);
+	configuredSettings.read();
+	let noteCwd = "";
+	const notes = new RegistryNotes(() => {
+		const resources = ordinaryNoteResources(readSnapshot(pi, null, Date.now()));
+		return noteKnowledge(noteCwd, agentDir, resources, configuredSettings.peek());
+	}, () => configuredSettings.read(), () => readSettings({ agentDir }).values.notes);
+	pi.on("tool_result", async (event, ctx) => {
+		noteCwd = ctx.cwd;
+		const appended = notes.result({ name: event.toolName, input: event.input }, event.toolCallId,
+			event.parentToolCallId === undefined ? undefined : event.toolCallId.split("/")[0]);
+		if (!appended.length) return;
+		return { content: [...event.content, ...appended.map((text) => ({ type: "text" as const, text }))],
+			structuredContent: event.structuredContent };
+	});
+	// Notes own their session lifecycle, separate from the lookup's cursor and observation state.
+	pi.on("session_start", async () => { notes.reset(); });
+	pi.on("session_shutdown", async () => {
+		notes.reset();
+		stopPublishing();
+	});
 	// The epoch separates one session's cursors from the next. A cursor issued
 	// before a session boundary can never resume against the new session.
 	let epoch = randomUUID();

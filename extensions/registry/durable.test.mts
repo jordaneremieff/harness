@@ -670,6 +670,7 @@ test("native setting queries use the captured host bus and release collection on
 	} };
 	const nativeHost = { ...host(services), agentDir: directory, onClose: (callback: () => void | Promise<void>) => { close.push(callback); } };
 	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, observedBus).create(nativeHost);
+	assert.equal(requests, 1);
 	const { harness, root } = await open(models, extension);
 	try {
 		faux.setResponses([fauxAssistantMessage([fauxToolCall("registry", { kind: "setting" }, { id: "setting" })], { stopReason: "toolUse" }), fauxAssistantMessage("Inspected.")]);
@@ -682,7 +683,7 @@ test("native setting queries use the captured host bus and release collection on
 		assert.equal(records[0].value, 8);
 		assert.equal(records[0].origin, "file");
 		assert.equal(records[0].documentPath, join(directory, "harness.json"));
-		assert.equal(requests, 1);
+		assert.equal(requests, 2);
 		assert.equal(subscriptions, 1);
 		assert.equal(releases, 0);
 		faux.setResponses([fauxAssistantMessage([fauxToolCall("registry", { kind: "setting" }, { id: "refresh" })], { stopReason: "toolUse" }), fauxAssistantMessage("Refreshed.")]);
@@ -690,7 +691,7 @@ test("native setting queries use the captured host bus and release collection on
 		await (await root.submit({ type: "input", content: "Inspect configuration again." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 		const refreshed = await root.context(BACKGROUND_CONTEXT);
 		assert.equal(recordsOf(toolResult(refreshed.messages, "refresh"))[0].value, 9);
-		assert.equal(requests, 2);
+		assert.equal(requests, 3);
 		assert.equal(subscriptions, 1);
 		assert.ok(Check(RegistryOutputSchema, settings.details));
 		assert.match(textOf(settings), /not proof a running runtime applied/);

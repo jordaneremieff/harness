@@ -169,7 +169,7 @@ test("setting selectors reject content scans and tool/model-only parameters", ()
 	}
 });
 
-test("ordinary registry refreshes the public bus only for valid live setting queries and releases its collector", async () => {
+test("ordinary registry collects at setup, refreshes valid live setting queries, and releases its collector", async () => {
 	const agentDir = "/fixtures";
 	const bus = createEventBus();
 	let requests = 0;
@@ -190,17 +190,19 @@ test("ordinary registry refreshes the public bus only for valid live setting que
 		registerTool: (value: ToolDefinition) => { tool = value; }, getAllTools: () => [], getActiveTools: () => [], getCommands: () => [],
 	} as unknown as ExtensionAPI);
 	assert.ok(tool);
+	assert.equal(requests, 1);
 	const context = { tools: [], cwd: agentDir } as never;
 	try {
 		const result = await tool.execute("settings", { kind: "setting", name: "example.count" }, undefined, undefined, context);
 		assert.equal((result.details as { records: { value: number }[] }).records[0].value, 9);
-		assert.equal(requests, 1);
+		assert.equal(requests, 2);
 		current.records[0].value = 10;
 		const refreshed = await tool.execute("settings", { kind: "setting" }, undefined, undefined, context);
 		assert.equal((refreshed.details as { records: { value: number }[] }).records[0].value, 10);
+		assert.ok((refreshed.details as { records: { name: string }[] }).records.some((row) => row.name === "registry.notes"));
 		await tool.execute("cancel", { kind: "setting" }, AbortSignal.abort(), undefined, context);
 		await tool.execute("invalid", { kind: "setting", contains: "value" }, undefined, undefined, context);
-		assert.equal(requests, 2);
+		assert.equal(requests, 3);
 		assert.equal(subscriptions, 1);
 		assert.equal(releases, 0);
 		await handlers.get("session_shutdown")?.();
@@ -208,7 +210,7 @@ test("ordinary registry refreshes the public bus only for valid live setting que
 		bus.emit(SETTINGS_PUBLISH, { private: "ignored" });
 		const stopped = await tool.execute("stopped", { kind: "setting" }, undefined, undefined, context);
 		assert.equal((stopped.details as { outcome: string }).outcome, "cancelled");
-		assert.equal(requests, 2);
+		assert.equal(requests, 3);
 		assert.equal(subscriptions, 1);
 		await handlers.get("session_shutdown")?.();
 		assert.equal(releases, 1);

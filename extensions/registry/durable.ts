@@ -13,6 +13,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { publishSettings, readSettings } from "./settings.ts";
+import { RegistryNotes, type NoteResource } from "./notes.ts";
+import { noteKnowledge, noteResource } from "./notes-host.ts";
 import type { SettingsBus } from "./configuration-protocol.ts";
 import { settingQuery, settingsReader } from "./configuration.ts";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -121,6 +124,17 @@ function readResourceFacts(services: RegistryDurableServices): ResourceFacts | n
 		/* A failed resource read is unavailable, never an empty inventory. */
 		return null;
 	}
+}
+
+function durableNoteResources(services: RegistryDurableServices): NoteResource[] | null {
+	try {
+		const loader = services.resourceLoader;
+		return [
+			...loader.getExtensions().extensions.map((extension) => noteResource("extension", "", extension.sourceInfo, extension.resolvedPath)),
+			...loader.getSkills().skills.map((skill) => noteResource("skill", skill.name, skill.sourceInfo, skill.filePath)),
+			...loader.getPrompts().prompts.map((prompt) => noteResource("prompt", prompt.name, prompt.sourceInfo)),
+		].filter((resource) => resource !== undefined);
+	} catch { return null; }
 }
 
 /** Pi-registered provenance for a contribution's absolute source, or a synthetic label. */
@@ -452,8 +466,22 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 		create(host) {
 			const durable = host.durable;
 			const hostEpoch = randomUUID();
+			const stopPublishing = publishSettings(bus, { agentDir: host.agentDir });
 			const configuredSettings = settingsReader(bus);
-			host.onClose(() => configuredSettings.dispose());
+			configuredSettings.read();
+			const notes = new Map<string, RegistryNotes>();
+			const conversationNotes = (id: string) => {
+				let state = notes.get(id);
+				if (!state) {
+					state = new RegistryNotes(() => {
+						const resources = durableNoteResources(host.services);
+						return noteKnowledge(host.cwd, host.agentDir, resources, configuredSettings.peek());
+					}, () => configuredSettings.read(), () => readSettings({ agentDir: host.agentDir }).values.notes);
+					notes.set(id, state);
+				}
+				return state;
+			};
+			host.onClose(() => { configuredSettings.dispose(); stopPublishing(); notes.clear(); });
 			const tool = durable.defineTool({
 				name: "registry",
 				description: REGISTRY_DESCRIPTION,
@@ -503,6 +531,15 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 				name: "registry",
 				tools: [tool],
 				sections: [guidance],
+				hooks: [durable.hook(durable.ToolTask, {
+					afterTool(call, result, api) {
+						if (!Array.isArray(result.output) && call.parent === undefined) return;
+						const appended = conversationNotes(String(api.conversationId)).result(
+							{ name: call.name, input: call.arguments }, call.id, call.parent?.callId);
+						if (!appended.length || !Array.isArray(result.output)) return;
+						return { ...result, output: [...result.output, ...appended.map((text) => ({ type: "text" as const, text }))] };
+					},
+				})],
 			});
 		},
 	};

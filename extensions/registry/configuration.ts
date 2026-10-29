@@ -12,13 +12,17 @@ export interface SettingsSnapshot {
 /** The public event bus belongs to the factory's ordinary session or Durable host. */
 export function settingsReader(bus: SettingsBus) {
 	let collector: ReturnType<typeof collectSettings> | undefined;
+	const snapshot = (): SettingsSnapshot => {
+		const collection = collector?.coverage() ?? { status: "unavailable" as const, slices: [], malformed: 0, omitted: 0 };
+		return { publications: collector?.snapshots() ?? [], available: collection.status === "available", collection };
+	};
 	return {
+		peek: snapshot,
 		read(): SettingsSnapshot {
 			try {
 				if (collector) collector.refresh();
 				else collector = collectSettings(bus);
-				const collection = collector.coverage();
-				return { publications: collector.snapshots(), available: collection.status === "available", collection };
+				return snapshot();
 			} catch {
 				return { publications: [], available: false, collection: { status: "unavailable", slices: [], malformed: 0, omitted: 0 } };
 			}

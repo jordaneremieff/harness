@@ -84,8 +84,102 @@ coverage object produces an explicit blocked page rather than an absence.
 
 The ordinary tool collects on its public session bus. The native Durable
 contribution captures the public bus from the factory loaded by its host
-resource loader. It collects on that same bus, refreshes on inspection, and
-releases its subscription through the public host close callback.
+resource loader. Both start collection during setup, refresh on inspection or
+note composition, and release subscriptions at session shutdown or host close.
+
+## Registry notes
+
+Completed discovery calls can receive a short `[registry]` text part with the
+runtime facts the registry already knows. This is result annotation, not an
+extra model turn, custom message, prompt rule, argument rewrite, or block.
+The `registry` tool's description, parameters, and guidance do not change.
+
+The detector recognises:
+
+- An exact published harness settings document read, including simple shell
+  reader commands. The note prioritises environment overrides, invalid rows,
+  and diagnostics, then groups keys with default values by slice. It explains
+  that file values do not apply while their environment variable is set and
+  includes list and exact-setting calls.
+- An exact published environment or `slice.key` name in a search pattern,
+  `printenv NAME`, `echo $NAME`, or `env | rg/grep NAME`. The note includes
+  matching effective values and an exact-name registry call.
+- A read, reader path, search path, or enumeration path within an exact loaded
+  extension directory. The note identifies the loaded entry path and shows
+  that directory's published settings, with environment rows first. A slice
+  without a publication receives an explicit no-settings statement. Ordinary
+  notes also include an exact tool-detail call when host provenance names a
+  tool from that directory. Durable notes omit that tool call. The directory
+  is the deduplication target, not each source file.
+- An exact read or reader path for `<agentDir>/settings.json`. The note
+  distinguishes configured Pi sources from loaded extension provenance and
+  shows environment-origin harness settings, or an explicit no-environment
+  statement. Counts follow the host provenance available to registry;
+  ordinary extensions without registered resources remain outside that count.
+  The note does not repeat the Pi settings content.
+- Enumeration of an exact known extension, skill, or prompt root, through
+  ordinary `ls`/`find` or simple shell `ls`, `fd`, `find`, `tree`, or `rg --files`.
+  Names come from loaded provenance, not the directory listing. A listing also
+  shows files this session did not load. The note also counts other loaded
+  extension directories and gives an exact-tool call for source and scope.
+- A read of `<agentDir>/install/current-version` or the running Pi package's
+  `package.json`, or `pi --version`/`pi -v`. The note includes the running
+  version and package, documentation, and examples paths.
+
+Paths resolve against the session cwd and support `~` and `$HOME`. A path
+inside the session cwd normally does not trigger a note: that is development
+in the agent's own tree. Targets inside the agent directory are exempt unless
+the cwd is itself inside that directory. When cwd is the home directory, the
+inside-cwd rule does not apply. Search commands without an external path do not trigger
+unless they search an `env` pipe. Other checkouts, path ancestors, and
+prefix-only environment names do not match. The shell detector handles simple
+quotes, escapes, pipes, command separators, and redirections, not full shell
+evaluation. Output redirection targets do not become discovery arguments;
+input redirection targets count as reader paths. A literal `cd` changes the
+base for later relative paths in the script, not the session development
+boundary. An unresolved `cd` suppresses later relative paths; absolute and
+home-relative paths remain usable. Search context and format options consume
+their separate values. The remaining words after an `fd` execution option
+belong to its command, not its search paths.
+Heredocs, process substitutions, subshells, command substitutions, and quoted
+example commands do not trigger. The detector performs no directory walk or
+target-file read.
+
+Settings notes identify configured values from responding loaded extensions
+at a UTC time, not proof a running process applied edits. Rows include origin,
+environment name, and invalid validity where applicable. Values are clipped
+to 80 characters, or 60 characters for environment overrides in document
+notes; secrets remain only `set` or `unset`. Unavailable or partial
+settings coverage suppresses settings notes. Unavailable provenance suppresses
+resource notes. Notes include the applicable registry calls. Explicit
+no-settings and no-environment statements cover the current responding
+publishers, not inactive or nonresponding extensions.
+
+Each note has at most 10 lines and 1,200 UTF-8 bytes. Each result gains at most
+two notes and 1,600 bytes. Each ordinary session or Durable conversation gains
+at most six notes. A target receives at most one note in that lifetime,
+independently of earlier registry queries. Ordinary `session_start` resets the
+budget and pending notes. Durable state belongs to the host incarnation;
+a host restart can repeat a note once.
+
+Ordinary delivery uses `tool_result` and preserves structured content, details,
+error status, and usage. Nested results remain unchanged; notes wait for the
+outermost model-issued call. Durable delivery uses the public ToolTask
+`afterTool` hook and appends only to array-shaped output, preserving structured
+output and other carriers. Nested notes pass through each ancestor to the
+model-issued result. Errors in notes code produce no note and do not fail the
+original tool.
+
+Set `registry.notes` to `false` in the machine document or set
+`PI_REGISTRY_NOTES=false` to disable notes. The detector reads this setting
+fresh before note composition, so the next matching call uses the new value
+without a restart. Explicit registry queries remain available.
+
+Evaluate the mechanism through real discovery tasks with notes on and off.
+Compare correct answers, avoided manual steps, context cost, and noise.
+Remove the mechanism if real sessions show no shorter discovery or the
+operator finds the notes noisy. Result delivery alone does not establish use
+or benefit.
 
 ## Terminal cards
 
@@ -394,7 +488,8 @@ its schema and registered guidance without activating it.
   frontmatter state remains explicit in content-query results.
 - `session_start` and `session_shutdown` clear observation state, cancel owned
   work, and invalidate cursors. A fresh extension instance has a distinct session
-  identity. The extension writes no session entries and injects no messages.
+  identity. The extension creates no separate session entries or injected
+  messages. Registry notes annotate existing tool results instead.
 
 ## Outcomes
 
@@ -471,9 +566,22 @@ to mutate them after that validation.
 
 ## Configuration and dependencies
 
-No `PI_*` configuration is required. Node built-ins and Pi's existing peer
-packages supply the implementation. Loading this extension registers the tool;
-its source does not edit settings or activate other resources.
+Node built-ins and Pi's existing peer packages supply the implementation.
+Loading registers the tool, settings publisher, and result hook; it does not
+edit settings or activate other resources. The slice reads only its own
+section of `<agentDir>/harness.json`, or the document selected by
+`PI_HARNESS_FILE`, through the public
+[settings contract](../../docs/conventions/extension-config.md).
+
+<!-- harness:settings:start -->
+| Key | Environment | Type | Default | Constraints | Description |
+|---|---|---|---|---|---|
+| notes | `PI_REGISTRY_NOTES` | boolean | true | none | Append bounded registry facts to matching completed discovery calls. Read fresh for each matching call. |
+<!-- harness:settings:end -->
+
+Environment values take precedence over document values. Boolean environment
+values accept `true`, `false`, `1`, and `0`; invalid selected values use the
+safe default and publish a diagnostic.
 
 ## Durable agents
 
@@ -571,12 +679,25 @@ Documented differences from the ordinary tool:
 ## Verification
 
 ```bash
-node --test "extensions/registry/*.test.mts"
+node --test --test-concurrency=1 extensions/registry/notes.test.mts
+node --test --test-concurrency=1 extensions/registry/notes-ordinary.test.mts
+node --test --test-concurrency=1 extensions/registry/notes-durable.test.mts
+node --test --test-concurrency=1 extensions/registry/index.test.mts
+node --test --test-concurrency=1 extensions/registry/durable.test.mts
+node --test --test-concurrency=1 --test-name-pattern='settings contract: registry' scripts/settings-contract.test.mts
 npm run typecheck
 npm run lint
 npm run check
-npm test
+node scripts/extension-load-check.mts extensions/registry/index.ts
 ```
+
+Run the other colocated test files individually with the same serial test
+command. Notes tests cover every trigger, shell non-matches, exact provenance,
+inside-cwd skips, byte and line bounds, secrets, deduplication, unavailable
+coverage, fresh configuration, ordinary nested delivery, and real Durable
+built-in reads over `MemoryStorage` with the faux provider. Durable nested
+trials verify that program results do not receive notes and the outermost
+model-facing result does.
 
 Colocated tests cover projection, complete source identity, observer privacy and
 bounds, argument validation, host facts, lifecycle resets, session-specific
