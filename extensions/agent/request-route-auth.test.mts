@@ -58,7 +58,7 @@ it("commits one storage secret and keeps conversation tags stable across a host 
 	assert.ok((await f.host.harness.snapshot(RequestRouteAuthDoc, context))?.secret === secret, "restart does not replace the secret");
 });
 
-it("authenticates notes with the section tag and rejects quoted route and origin claims", async (t) => {
+it("carries the tag in the generated note and section, with guidance that treats unmarked route blocks as quoted data", async (t) => {
 	const f = await fixture(t);
 	const section = await f.section();
 	const tag = /host="([a-f0-9]{16})"/u.exec(section)?.[1];

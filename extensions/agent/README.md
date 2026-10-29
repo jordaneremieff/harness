@@ -2037,7 +2037,10 @@ request, including retry after overflow compaction. The unique-digest fast path
 requires an exact prefix match with the previous request's user-message keys,
 through the last input that received a note. A rolling hash and count retain that
 prefix inside the bounded conversation state; trailing guidance messages do not
-affect it. Otherwise, every retained, memoised and new note uses native entry
+affect it. The runtime clears a conversation's route state when a native head
+marker or contribution edit commits. This covers reset, compaction and context
+edits at placement, not while their writes remain queued.
+Otherwise, every retained, memoised and new note uses native entry
 identity, including the first request after host start or eviction and any
 compaction. Duplicate digests also use native entry order. Notes bind to inputs
 by content and native order, so a hook that inserts a byte-identical copy of an

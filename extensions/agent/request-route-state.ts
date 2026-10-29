@@ -1,4 +1,4 @@
-import type { ConversationId } from "@earendil-works/pi-durable";
+import type { CommitPublication, ConversationId } from "@earendil-works/pi-durable";
 
 export type RouteNote = { digest: string; text: string; entryId: number };
 export type UserPrefix = { count: number; hash: string };
@@ -25,6 +25,14 @@ export class RequestRouteState {
 		const record = this.conversations.get(id);
 		if (record) this.bytes -= record.bytes;
 		this.conversations.delete(id);
+	}
+
+	/** Native placement, not admission, ends continuity for head writes and contribution edits. */
+	observe(publication: CommitPublication): void {
+		for (const change of publication.changes) {
+			if (change.type === "entry" && (change.value.head !== undefined || (change.value.edits?.length ?? 0) > 0))
+				this.delete(change.value.conversationId);
+		}
 	}
 
 	set(id: ConversationId, state: RouteState): void {

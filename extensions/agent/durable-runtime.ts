@@ -56,6 +56,7 @@ function controlParams(input: unknown): Record<string, unknown> {
 /** Methods that admit work or delivery into this storage. */
 import { projectProfiles } from "./profile.ts";
 import { requestContextHooks, requestContextSection } from "./request-context.ts";
+import { RequestRouteState } from "./request-route-state.ts";
 import { withProfileHints, withIntentClaims } from "./catalog-view.ts";
 import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 
@@ -427,7 +428,8 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 				try { return await stopForeignReferences((method, input) => manager.control(method, input, caller), references, context); }
 				finally { manager.close(); }
 			});
-			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(opened.harness)], hooks: [hook(GenerationTask, requestContextHooks(opened.harness))] });
+			const requestRoutes = new RequestRouteState();
+			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(opened.harness)], hooks: [hook(GenerationTask, requestContextHooks(opened.harness, requestRoutes))] });
 			unsubscribeClose?.();
 			unsubscribeClose = opened.harness.subscribeClose(() => {
 				activityGeneration++;
@@ -447,6 +449,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			});
 			unsubscribeChanges?.();
 			unsubscribeChanges = opened.harness.subscribeCommits((publication) => {
+				requestRoutes.observe(publication);
 				activityGeneration++;
 				if (publication.changes.length) { scheduleRecoveryMarker(); notifyActivity(); scheduleCatalogView(); }
 			});

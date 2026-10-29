@@ -970,8 +970,11 @@ text. Task memos freeze only this set. Each call resolves positions from current
 request messages, including retry after overflow compaction. Unique digests skip
 the native context view only while the prior user-message sequence through the
 last noted input is an exact prefix. A rolling hash and count retain that prefix
-inside bounded conversation state, excluding trailing guidance messages. Without
-that prefix, every retained, memoised and new note uses native entry identity;
+inside bounded conversation state, excluding trailing guidance messages. The
+runtime clears that conversation's route state when a native head marker or
+contribution edit commits. Reset, compaction and context edits therefore break
+continuity at placement, not while their writes remain queued. Without that
+prefix, every retained, memoised and new note uses native entry identity;
 this includes host start, eviction and compaction. Duplicate digests also use
 native entry order. Compaction drops absent inputs' notes. A restarted host
 reconstructs notes from active routes only. The route hook adds no changing

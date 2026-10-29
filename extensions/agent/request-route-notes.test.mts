@@ -8,6 +8,8 @@ import { inputEntry } from "./input-entry.ts";
 import { cleanupRequestContexts, recordRequestContext, RequestContextDoc, REQUEST_NOTE_BYTES, REQUEST_NOTE_LIMIT, requestContextHooks, requestContextSection, type RequestContext } from "./request-context.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { RequestRouteState } from "./request-route-state.ts";
+import { resetConversation } from "./durable-reset.ts";
+import { placeLeftoverWrites } from "./stranded-inputs.ts";
 
 const user = (content: string, timestamp = 1): Message => ({ role: "user", content, timestamp });
 const route = (requestId: string): RequestContext => ({ requestId, requester: "requester", replyTo: `recipient-${requestId}`, origin: "model" });
@@ -19,6 +21,8 @@ async function fixture(t: TestContext, state = new RequestRouteState()) {
 	const harness = await Harness.open(new MemoryStorage(), { models, registry: fixtureRegistry() }, context);
 	t.after(() => harness.close(context));
 	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
+	const unsubscribe = harness.subscribeCommits((publication) => state.observe(publication));
+	t.after(unsubscribe);
 	const hook = requestContextHooks(harness, state).beforeRequest;
 	assert.ok(hook);
 	let nextTask = 100;
@@ -45,7 +49,7 @@ async function fixture(t: TestContext, state = new RequestRouteState()) {
 		assert.ok(selected);
 		return (await selected({ messages }, task, context))?.messages ?? messages;
 	}
-	return { harness, conversation, hook, api, add, run, render };
+	return { harness, conversation, hook, api, add, run, render, state };
 }
 
 async function overflowCompaction(f: Awaited<ReturnType<typeof fixture>>, id: SubmissionId): Promise<void> {
@@ -188,6 +192,71 @@ it("uses native entry validation for the first request after host restart", asyn
 	assert.ok(restarted);
 	assert.equal(notes(await f.render([first], task, restarted)).length, 1);
 	assert.equal(read.mock.callCount(), 1);
+});
+
+for (const replay of [true, false]) it(`drops an old route after a byte-identical fixed-clock reset, replay=${replay}`, async (t) => {
+	t.mock.method(Date, "now", () => 123456);
+	const f = await fixture(t);
+	const same = user("Identical reset handoff", Date.now());
+	const a = await f.add(route("a"), [same]);
+	await f.run([a]);
+	const task = f.api();
+	assert.equal(notes(await f.render([same], task)).length, 1);
+	await f.harness.commit(async (tx) => {
+		delete (await tx.doc(LiveDoc, f.conversation.id)).run;
+		tx.settleSubmission(a, { status: "unanswered", reason: "aborted" });
+	}, context);
+	assert.ok(f.state.get(f.conversation.id), "ending the run retains continuity until replacement places");
+	const reset = await resetConversation(f.conversation, { requestId: "identical-reset", handoff: "Identical reset handoff" }, context);
+	assert.equal(reset.status, "placed");
+	assert.equal(f.state.get(f.conversation.id), undefined, "placed reset invalidates the conversation state");
+	const current = (await f.conversation.context(context)).messages;
+	const users = current.filter((message) => message.role === "user");
+	assert.equal(users.length, 1);
+	assert.ok(JSON.stringify(users[0]) === JSON.stringify(same), "the reset reproduces the noted input, including its timestamp");
+	assert.equal(notes(await f.render(current, replay ? task : f.api())).length, 0);
+});
+
+it("invalidates route continuity when a queued reset places, not when it is requested", async (t) => {
+	t.mock.method(Date, "now", () => 123456);
+	const f = await fixture(t);
+	const first = user("Queued reset handoff", Date.now());
+	const a = await f.add(route("a"), [first]);
+	await f.run([a]);
+	const task = f.api();
+	await f.render([first], task);
+	const reset = await resetConversation(f.conversation, { requestId: "queued-reset", handoff: "Queued reset handoff" }, context);
+	assert.equal(reset.status, "queued");
+	assert.ok(f.state.get(f.conversation.id), "a queued reset preserves the old context and its route state");
+	await f.harness.commit(async (tx) => {
+		delete (await tx.doc(LiveDoc, f.conversation.id)).run;
+		tx.settleSubmission(a, { status: "unanswered", reason: "aborted" });
+	}, context);
+	assert.ok(f.state.get(f.conversation.id), "run settlement is not reset placement");
+	assert.equal(await placeLeftoverWrites(f.conversation, context), 1);
+	assert.equal(f.state.get(f.conversation.id), undefined);
+	assert.equal(notes(await f.render((await f.conversation.context(context)).messages, task)).length, 0);
+});
+
+it("invalidates route continuity when a context edit omits a noted input", async (t) => {
+	const f = await fixture(t);
+	const same = user("Identical edited input");
+	const a = await f.add(route("a"), [same]);
+	const b = await f.add(undefined, [same]);
+	await f.run([a, b]);
+	const task = f.api();
+	assert.equal(notes(await f.render([same, same], task)).length, 1);
+	const input = await f.harness.commit((tx) => tx.submissionByRequest(f.conversation.id, "a"), context);
+	assert.ok(input?.entry);
+	await f.harness.commit(async (tx) => {
+		delete (await tx.doc(LiveDoc, f.conversation.id)).run;
+		tx.settleSubmission(a, { status: "unanswered", reason: "aborted" });
+	}, context);
+	await f.conversation.submit({ type: "write", entry: { kind: "fixture.context-edit", edits: [{ target: input.entry, action: "omit" }] } }, context);
+	assert.equal(f.state.get(f.conversation.id), undefined);
+	const current = (await f.conversation.context(context)).messages;
+	assert.equal(current.filter((message) => message.role === "user").length, 1);
+	assert.equal(notes(await f.render(current, task)).length, 0);
 });
 
 it("returns no change after an internal harness read fails", async (t) => {
