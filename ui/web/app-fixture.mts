@@ -32,8 +32,13 @@ export class HostNode {
   writes = 0;
   moves = 0;
   dataset: Record<string, string> = {};
-  children: HostNode[] = [];
-  parentNode: HostNode | null = null;
+  // Assertion inspection must not traverse the connected page graph.
+  #children: HostNode[] = [];
+  #parentNode: HostNode | null = null;
+  get children(): HostNode[] { return this.#children; }
+  set children(value: HostNode[]) { this.#children = value; }
+  get parentNode(): HostNode | null { return this.#parentNode; }
+  set parentNode(value: HostNode | null) { this.#parentNode = value; }
   attributes = new Map<string, string>();
   properties = new Map<string, string>();
   classes = new Set<string>();
