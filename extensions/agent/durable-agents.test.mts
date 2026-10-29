@@ -539,9 +539,11 @@ it("describes normal follow-up timing and active await release in both tool regi
 	for (const tools of [ordinary, extension.tools ?? []]) {
 		const send = tools.find((tool) => tool.name === "agent_send");
 		const awaiting = tools.find((tool) => tool.name === "agent_await");
-		assert.ok(send); assert.ok(awaiting);
+		assert.ok(send);
+		if (tools === ordinary) assert.equal(awaiting, undefined, "ordinary primaries do not advertise native await");
+		else assert.ok(awaiting, "native conversations retain await");
 		const sendText = send.description ?? "";
-		const awaitText = awaiting.description ?? "";
+		const awaitText = awaiting?.description ?? "";
 		assert.match(sendText, /followUp normally waits for the current run to end/u);
 		assert.match(sendText, /admitted explicit followUp releases an active agent_await/u);
 		assert.match(sendText, /input already queued when the wait starts/u);
@@ -556,6 +558,7 @@ it("describes normal follow-up timing and active await release in both tool regi
 		assert.match(sendText, /steer does not interrupt a running tool/u);
 		assert.doesNotMatch(sendText, /mode followUp or report to a Durable agent waits/u);
 		assert.doesNotMatch(sendText, /Reports and follow-ups to Durable agents wait/u);
+		if (tools === ordinary) continue;
 		assert.match(awaitText, /followUp queued before or during agent_await/u);
 		assert.match(awaitText, /input joins the current work and may share its answer/u);
 		assert.match(awaitText, /Retained report-provenance input releases the wait only for a named awaited producer/u);
@@ -564,7 +567,7 @@ it("describes normal follow-up timing and active await release in both tool regi
 	}
 });
 
-it("states the handle requirement in both spawn role schemas and preserves the refusal", async (t) => {
+it("saves an explicit handle-less creation role and documents it in both schemas", async (t) => {
 	const ordinary: { name: string; parameters: { properties: Record<string, { description?: string }> } }[] = [];
 	registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
 	const { extension, registry } = buildRegistry();
@@ -572,7 +575,7 @@ it("states the handle requirement in both spawn role schemas and preserves the r
 		const spawn = tools.find((tool) => tool.name === "agent_spawn");
 		assert.ok(spawn);
 		const schema = spawn.parameters as { properties: Record<string, { description?: string }> };
-		assert.equal(schema.properties.role.description, "Requires handle. Durable role text for the created agent; without a handle, omit role and use agent_profile for another agent.");
+		assert.equal(schema.properties.role.description, "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.");
 	}
 	const route = createRoute();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
@@ -580,9 +583,16 @@ it("states the handle requirement in both spawn role schemas and preserves the r
 	route.script.push({ tool: "agent_spawn", args: { role: "Review source" } });
 	await say(root, "Create a role without a handle");
 	const result = (await toolOutcomes(harness, root.id)).find((outcome) => outcome.name === "agent_spawn");
-	assert.equal(result?.isError, true);
-	assert.equal(result?.text, "A creation role requires a handle; use agent_profile for another agent");
-	assert.equal((await harness.snapshot(TestChildren, root.id, context))?.children.length ?? 0, 0);
+	assert.ok(result && !result.isError, result?.text);
+	const children = (await harness.snapshot(TestChildren, root.id, context))?.children ?? [];
+	assert.equal(children.length, 1);
+	const childId = children[0].conversationId as Durable.ConversationId;
+	const profile = await readProfile(harness, storageId, childId, context);
+	assert.equal(profile.role, "Review source");
+	assert.equal(profile.handle, null);
+	const child = await harness.conversation(childId, context);
+	assert.ok(child);
+	assert.match((await child.agent(context)).instructions ?? "", /Your role: Review source/u);
 });
 
 it("accepts every shared thinking level in native spawn, configure, and attach schemas", () => {

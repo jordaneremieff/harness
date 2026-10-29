@@ -70,7 +70,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | Tool | Effect |
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
-| `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries use one Durable lead for answer-bearing fan-out and refuse this native-only operation. |
+| `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries have no `agent_await` tool and use one Durable lead for answer-bearing fan-out. |
 | `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; the result reports `live: false`. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
@@ -87,12 +87,19 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. |
-| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. |
+| `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `contribution` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
 
-A spawn `role` requires a `handle`; omit `role` for an unnamed creation and
-use `agent_profile` to set another agent's role. A busy configuration refusal
+An explicit spawn `role` is saved on the new agent's profile with or without
+a `handle`, before its prompt starts. Later role changes use `agent_profile`.
+A busy configuration refusal
 names the canonical target identity and preserves a supplied handle. Repeat
 `agent_configure` after that target's current work ends.
+
+Live peer observations retain strict current schemas. If the peer declares a
+different agent or Pi version, observation failures name the loaded versions
+and the replacement steps. Wait for active work to finish, release the idle
+host, then attach it from the current installation. Restart an ordinary
+primary to replace its loaded code. No older observation shape is accepted.
 
 Each `agent_list` call collects one bounded catalog batch before it observes
 hosts. Continuations retain both the native page position and the last visited

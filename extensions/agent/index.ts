@@ -7,7 +7,6 @@ import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { DispatchOutputSchema } from "./result-reference.ts";
-import { AwaitParams, AwaitOutputSchema } from "./awaited-results.ts";
 import { ordinaryReportedUsage } from "./agent-usage.ts";
 import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { profileCommand } from "./profile-dialog.ts";
@@ -36,7 +35,7 @@ import {
 	readAgentTimerRows,
 	scheduleAgentInput,
 } from "./durable-reset-timers.ts";
-import { AGENT_CONTROL_GUIDANCE, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, type AgentControlToolName } from "./control-guidance.ts";
+import { AGENT_CONTROL_GUIDANCE, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, type AgentControlToolName } from "./control-guidance.ts";
 import {
 	StatusToolOutputSchema,
 	InspectToolOutputSchema,
@@ -110,7 +109,7 @@ const spawn = Type.Object(
 	{
 		handle: Type.Optional(HandleSchema),
 		preset: PresetParameter,
-		role: Type.Optional(Type.String({ maxLength: 2000, description: "Requires handle. Durable role text for the created agent; without a handle, omit role and use agent_profile for another agent." })),
+		role: Type.Optional(Type.String({ maxLength: 2000, description: "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role." })),
 		cwd: Type.Optional(Type.String()),
 		name: Type.Optional(Type.String({ maxLength: 256 })),
 		prompt: Type.Optional(Type.String()),
@@ -281,7 +280,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		modelOnly = false,
 	): void => {
 		const guidance = AGENT_CONTROL_GUIDANCE[name];
-		const schema = name === "agent_await" ? AwaitOutputSchema : observationSchemas[name];
+		const schema = observationSchemas[name];
 		const presetAware = ["agent_spawn", "agent_place", "agent_configure"].includes(name);
 		const registerDefinition = (snapshot: PreferenceSnapshot): void => pi.registerTool({
 			name,
@@ -329,7 +328,6 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		renderCall: cards.agent_intent.renderCall,
 		renderResult: cards.agent_intent.renderResult,
 	});
-	register("agent_await", `Await exact admitted results on an open native Durable request. ${AWAIT_INPUT_DELIVERY_BOUNDARY} Ordinary primary sessions keep asynchronous delivery and do not block.`, AwaitParams, async () => { throw new Error("agent_await requires a native Durable conversation. For answer-bearing fan-out, delegate to one Durable lead that dispatches workers, awaits their exact results natively, and returns one composed answer. This primary stays responsive."); });
 	register(
 		"agent_collaborate",
 		"Discover and use shared purpose threads with full agent peers. Create preserves purpose, authority/source, restrictions, acceptance and integrator in an existing participant storage (sessionId). Join, leave and exchange sourced contributions. Joining opts into passive notices at existing boundaries. Posts wake only explicit notify recipients. Read the frame and paged exchange without starting a host.",

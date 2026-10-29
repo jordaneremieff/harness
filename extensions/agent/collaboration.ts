@@ -22,8 +22,8 @@ export const CollaborationParams = Type.Object({
 	restrictions: Type.Optional(textSchema(4000)),
 	acceptance: Type.Optional(textSchema(4000)),
 	integrator: Type.Optional(textSchema(256)),
-	contribution: Type.Optional(textSchema(256)),
-	message: Type.Optional(textSchema(8000)),
+	contribution: Type.Optional(Type.String({ minLength: 1, description: "At most 256 characters. Write longer content to a file and post its path. The handler enforces this cap with that remedy." })),
+	message: Type.Optional(Type.String({ minLength: 1, description: "At most 8,000 characters. Write longer content to a file and post its path. The handler enforces this cap with that remedy." })),
 	kind: Type.Optional(Type.Union([Type.Literal("contribution"), Type.Literal("carried-authority") ])),
 	replyTo: Type.Optional(Type.Integer({ minimum: 1 })),
 	notify: Type.Optional(Type.Array(textSchema(256), { maxItems: 16, uniqueItems: true })),
@@ -80,9 +80,15 @@ const CollaborationMutations = defineDocFamily<StoredMutation, null>({ kind: "ag
 function text(input: Record<string, unknown>, key: string, max: number, optional = false): string {
 	const value = input[key];
 	if (value === undefined && optional) return "";
+	if (typeof value === "string" && value.length > max) throw new Error(`${key} exceeds the maximum length of ${max} characters${key === "title" ? "; shorten title to at most 160 characters and repeat the call" : key === "contribution" || key === "message" ? "; write the full content to a file and post its path" : ""}`);
 	if (typeof value !== "string" || value.trim() === "") throw new Error(`${key} is required and must be nonblank text${key === "title" ? "; supply title as nonblank text in the create or revise call" : ""}`);
-	if (value.length > max) throw new Error(`${key} exceeds the maximum length of ${max} characters${key === "title" ? "; shorten title to at most 160 characters and repeat the call" : ""}`);
 	return value;
+}
+/** Pi's pre-handler validation omits schema descriptions, so these caps own their remedy. */
+export function validateCollaborationTextLimits(input: Record<string, unknown>): void {
+	for (const [key, max] of [["contribution", 256], ["message", 8000]] as const) {
+		if (typeof input[key] === "string" && input[key].length > max) text(input, key, max);
+	}
 }
 export function collaborationIdentity(value: unknown, field: string): string {
 	const requirement = `${field} requires an exact discovered identity: a canonical lowercase UUID for a bare root, or UUID:positive nonroot conversation ID (a safe integer greater than ${ROOT_CONVERSATION_ID}); a root uses the bare storage ID${field === "integrator" ? ". Call agent_list and copy the discovered identity into integrator; omit integrator to use the caller" : ""}`;
@@ -183,6 +189,7 @@ function replyReference(input: Record<string, unknown>, sequence: number): numbe
 
 /** Mutations use the actual caller identity supplied by the tool or operator adapter. */
 export async function mutateCollaboration(harness: Harness, storageId: string, input: Record<string, unknown>, context: Context): Promise<{ threadId: string; sequence: number; deduped: boolean }> {
+	validateCollaborationTextLimits(input);
 	const actor = collaborationIdentity(input.senderIdentity, "senderIdentity");
 	const origin = input.origin;
 	if (origin !== "operator" && origin !== "model") throw new Error("Collaboration requires an explicit caller origin");
@@ -324,6 +331,7 @@ function readEvent(snapshot: unknown, thread: CollaborationThread, sequence: num
 }
 
 export async function readCollaboration(session: Session, input: Record<string, unknown>, context: Context): Promise<CollaborationPage> {
+	validateCollaborationTextLimits(input);
 	const id = readText(input, "threadId", 128);
 	if (!validThreadId(id)) throw new CollaborationReadError("invalid_request", "threadId must be an identity returned by agent_collaborate");
 	const limit = readLimit(input);
@@ -352,6 +360,7 @@ export async function readCollaboration(session: Session, input: Record<string, 
 }
 
 export async function listCollaboration(session: Session, input: Record<string, unknown>, context: Context): Promise<CollaborationList> {
+	validateCollaborationTextLimits(input);
 	const storageId = readSelectedStorage(input.sessionId);
 	const limit = readLimit(input);
 	const query = readText(input, "query", 256, true).toLocaleLowerCase();

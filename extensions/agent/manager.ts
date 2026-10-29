@@ -6,6 +6,8 @@ import { admittedResult } from "./result-reference.ts";
 import { readFleetStatus } from "./fleet-status.ts";
 import { handleSlug, handleStorageId } from "./identity.ts";
 import type { AgentProfile } from "./profile-schema.ts";
+import { profileText } from "./profile.ts";
+import { observationSchema, structuredObservation } from "./observation-schema.ts";
 import { composeListRow, matchesListRow, enrichDashboardRow } from "./profile-discovery.ts";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { realpathSync, statSync } from "node:fs";
@@ -31,8 +33,8 @@ import { emptyConversationSnapshot, type ConversationSnapshotPage } from "./dura
 import type { HostObservationScope } from "./host-client.ts";
 
 import { callExistingSource, readExistingSources, sourceHostOptions, type ExistingSource } from "./source-route.ts";
-import { HOST_CONTRACT, MANAGER_CONTRACT, operationContractMismatch } from "./version-contract.ts";
-import { collaborationIdentity, collaborationStorage } from "./collaboration.ts";
+import { HOST_CONTRACT, MANAGER_CONTRACT, operationContractMismatch, type RuntimeContract } from "./version-contract.ts";
+import { collaborationIdentity, collaborationStorage, validateCollaborationTextLimits } from "./collaboration.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
 import { readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, parseExecutionSelection, parsePreferenceSnapshot, executionInputDigest, type ExecutionSelection, type ExecutionFields, type PreferenceCatalog, type PreferenceSnapshot } from "./agent-preferences.ts";
@@ -321,11 +323,27 @@ export class AgentManager {
 		}
 	}
 
+	/** Version differences explain a strict observation refusal; they never relax its schema. */
+	private observationPeerError(error: unknown, peer: RuntimeContract): Error {
+		const message = error instanceof Error ? error.message : String(error);
+		const local = HOST_CONTRACT;
+		if (peer.release === local.release && peer.upstream.codingAgent === local.upstream.codingAgent && peer.upstream.durable === local.upstream.durable) return error instanceof Error ? error : new Error(message);
+		const older = peer.release.localeCompare(local.release, undefined, { numeric: true }) < 0 || peer.upstream.codingAgent.localeCompare(local.upstream.codingAgent, undefined, { numeric: true }) < 0 || peer.upstream.durable.localeCompare(local.upstream.durable, undefined, { numeric: true }) < 0;
+		return new Error(`The peer runs ${older ? "older" : "different"} code: agent ${peer.release}, Pi ${peer.upstream.codingAgent}, Durable ${peer.upstream.durable}; this caller uses agent ${local.release}, Pi ${local.upstream.codingAgent}, Durable ${local.upstream.durable}. Replace the peer's loaded code: let its active work finish, use agent_abort with release: true when it is idle, then use agent_attach to start a host from the current installation. Restart an ordinary primary to replace its loaded code. No older observation shape was accepted. ${message}`, { cause: error });
+	}
+
+	private async observePeer(client: HostConnection, method: string, params: Record<string, unknown>): Promise<unknown> {
+		try {
+			const value = await client.request(method, params);
+			return method === "list" || method === "status" || method === "inspect" ? structuredObservation(observationSchema(method), value) : value;
+		} catch (error) { throw this.observationPeerError(error, client.runtimeContract); }
+	}
+
 	private observe(record: CatalogRecord, method: string, params: Record<string, unknown>, primary?: PrimaryClient): Promise<unknown> {
 		return (async () => {
 			if (this.shuttingDown) throw new Error("Agent manager is closed");
 			const client = await this.observationConnection(record, primary);
-			if (client) return client.request(method, params);
+			if (client) return this.observePeer(client, method, params);
 			if (primary?.signal.aborted) throw new Error("Agent primary released during observation");
 			if (this.options.observe) return this.options.observe(record, method, params);
 			const route = this.existingTarget(record.storageId);
@@ -382,7 +400,7 @@ export class AgentManager {
 			return { ...input, ...selection.values, selection };
 		}
 		const preferenceSnapshot = input.preferenceSnapshot === undefined ? readAgentPreferences(this.options.agentDir, caller.preferenceCatalog) : parsePreferenceSnapshot(input.preferenceSnapshot);
-		let selection = resolveExecutionPreset(preferenceSnapshot, input, retained ?? {}, { creation: !retained, reused: !!retained, role: !!input.handle, checkIn: input.prompt !== undefined });
+		let selection = resolveExecutionPreset(preferenceSnapshot, input, retained ?? {}, { creation: !retained, reused: !!retained, role: !!input.handle || input.role !== undefined, checkIn: input.prompt !== undefined });
 		if (input.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined, input.origin ?? "operator", this.options.agentDir); selection.origins.checkInMinutes = "default"; }
 		if (retained) selection = effectiveExecutionSelection(selection, retained.thinkingLevel);
 		const { role: _role, ...base } = input;
@@ -477,7 +495,7 @@ export class AgentManager {
 		const route = input.handle === undefined ? undefined : this.existingTarget(`@${handleSlug(input.handle)}`);
 		if (route) return callExistingSource({ route, action: "spawn", input: { ...input }, caller: { id: caller.id, cwd: caller.cwd }, agentDir: this.options.agentDir, expected: HOST_CONTRACT.operations });
 		if (input.handle !== undefined) return this.spawnHandled({ ...input, handle: input.handle }, caller, onCreated);
-		if (input.role !== undefined) throw new Error("A creation role requires a handle; use agent_profile to configure another agent");
+		if (input.role !== undefined) profileText(input.role, "role");
 		const previous = input.requestId === undefined ? undefined : this.catalog.readRequest(caller.id, input.requestId);
 		if (previous && ((input.cwd !== undefined && realpathSync(resolve(caller.cwd, input.cwd)) !== previous.cwd) || input.name !== previous.name)) throw new Error("Spawn request ID already belongs to different agent configuration");
 		const selected = this.executionInput(input, caller);
@@ -506,6 +524,14 @@ export class AgentManager {
 		return this.performSpawn(record, created, row, input, caller, onCreated);
 	}
 
+	private async saveSpawnRole(client: HostConnection, sessionId: string, created: boolean, role: string | undefined, requestId: string, senderIdentity: string): Promise<void> {
+		if (role === undefined) return;
+		const profile = await client.request("profile-read", { sessionId }) as AgentProfile;
+		if (profile.role === role || (!created && profile.role !== "")) return;
+		const update = await client.request("profile-update", { sessionId, role, expectedRevision: profile.revision, requestId: `spawn-role:${requestId}`, senderIdentity }) as { outcome: string };
+		if (update.outcome !== "applied") throw new Error("The new agent's role changed before its creation role was saved; read agent_profile before retrying");
+	}
+
 	private async performSpawn(record: CatalogRecord, created: boolean, row: AgentConversationSummary, input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
 		this.launchRows.set(record.storageId, row);
 		try {
@@ -518,6 +544,7 @@ export class AgentManager {
 			const versionError = input.prompt === undefined ? undefined : hostRequestVersionError("task-submit", client.runtimeContract);
 			if (versionError) throw versionError;
 			const requestId = input.requestId ?? randomUUID();
+			await this.saveSpawnRole(client, record.storageId, created, input.role, requestId, caller.id);
 			const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: record.storageId, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) });
 			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: this.sentWorkResult(caller.id, record.storageId, admission, requestId) }) };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
@@ -832,6 +859,7 @@ export class AgentManager {
 
 	/** Discovery uses published hints; scoped reads never acquire a storage writer. */
 	async collaborate(input: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
+		validateCollaborationTextLimits(input);
 		input = await this.collaborationTargets(input);
 		const action = String(input.action ?? "");
 		const threadId = typeof input.threadId === "string" ? input.threadId : undefined;

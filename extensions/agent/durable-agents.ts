@@ -29,7 +29,7 @@ import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutio
 import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
 import { readCreatedAgents, renderCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
-import { initializeProfile, reconcileProfile } from "./profile.ts";
+import { initializeProfile, reconcileProfile, ProfileDoc, profileText, refreshManagedInstructions } from "./profile.ts";
 import { AgentMetaDoc, publishConversationIntent, recordAdmissionMeta } from "./durable-controls.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { recordRequestContext, cleanupRequestContexts } from "./request-context.ts";
@@ -342,7 +342,7 @@ const SpawnParams = Type.Object(
 		preset: PresetParameter,
 		role: Type.Optional(Type.String({
 			maxLength: 2000,
-			description: "Requires handle. Durable role text for the created agent; without a handle, omit role and use agent_profile for another agent.",
+			description: "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
 		})),
 		prompt: Type.Optional(
 			Type.String({ description: "Initial assignment for the agent. Without one the agent stays idle." }),
@@ -954,6 +954,14 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		};
 	};
 
+	const initializeChildProfile = async (tx: Durable.Tx, conversationId: Durable.ConversationId, role: string | undefined): Promise<void> => {
+		await initializeProfile(tx, conversationId, host.storageId);
+		if (role === undefined) return;
+		const profile = await tx.doc(ProfileDoc, conversationId);
+		profile.role = profileText(role, "role");
+		await refreshManagedInstructions(tx, conversationId);
+	};
+
 	const spawnLocalInCommit = async (
 		tx: Durable.Tx,
 		api: Durable.ToolExecutionApi<ControlDetails>,
@@ -981,7 +989,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const meta = await tx.doc(AgentMetaDoc, child.conversationId);
 		meta.name = args.name ?? "agent";
 		meta.owner = identity(api.conversationId);
-		await initializeProfile(tx, child.conversationId, host.storageId);
+		await initializeChildProfile(tx, child.conversationId, args.role);
 		registry.children.push(child);
 		if (args.prompt !== undefined) {
 			const reporter = await tx.createTask(
@@ -1088,7 +1096,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			if (retained.conversationId === undefined || retained.anchorTaskId === undefined) return { kind: "error", message: "This call already created an agent in another storage." };
 			return { kind: "local", child: { ...retained, conversationId: retained.conversationId, anchorTaskId: retained.anchorTaskId }, deduped: true };
 		}
-		const selection = resolveExecutionPreset(await preferenceSnapshot(api, context), args, {}, { creation: true, checkIn: args.prompt !== undefined });
+		const selection = resolveExecutionPreset(await preferenceSnapshot(api, context), args, {}, { creation: true, role: args.role !== undefined, checkIn: args.prompt !== undefined });
 		if (args.prompt !== undefined && selection.values.checkInMinutes === undefined) { selection.values.checkInMinutes = checkInMinutes(undefined, "model", host.agentDir); selection.origins.checkInMinutes = "default"; }
 		if (selection.values.model === undefined || selection.values.thinkingLevel === undefined) throw new Error("Creation has no resolved model or thinking level");
 		const parent = await resolveChildAgent(api, context, selection.values.model, selection.values.thinkingLevel as ModelThinkingLevel, selection);
@@ -1123,7 +1131,6 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		execute: async (args: SpawnInput, api, context) => {
 			await rememberRunInputs(api, context);
 			if (args.handle !== undefined) return dispatchControl("resolve-agent", { ...args, preferenceSnapshot: await preferenceSnapshot(api, context), origin: "model", senderIdentity: identity(api.conversationId), requestId: `resolve:${host.storageId}:${api.taskId}` }, "Handle resolution failed", { api, context });
-			if (args.role !== undefined) return errorResult("A creation role requires a handle; use agent_profile for another agent");
 			const hostCwd = resolve(host.cwd);
 			const requestedCwd = args.cwd === undefined ? undefined : resolve(host.cwd, args.cwd);
 			let sameCwd = requestedCwd === undefined || requestedCwd === hostCwd;

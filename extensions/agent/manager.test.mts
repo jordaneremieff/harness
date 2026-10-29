@@ -185,6 +185,50 @@ for (const failure of ["persistence", "status", "listener"] as const) it(`keeps 
 	assert.ok(overview.failures.some(({ error }) => error.includes(failure === "persistence" ? "marker write failed" : `${failure === "status" ? "status" : "roster"} callback failed`)));
 });
 
+it("saves a handle-less spawn role before prompt admission and preserves it on replay", async (t) => {
+	const root = fixtureRoot(t);
+	const calls: string[] = [];
+	let role = "";
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory, validateModel: () => {},
+		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
+			calls.push(method);
+			if (method === "profile-read") return { role, revision: "a".repeat(64) };
+			if (method === "profile-update") { role = (params as { role: string }).role; return { outcome: "applied" }; }
+			if (method === "task-submit") { assert.equal(role, "Review source"); return nativeAdmission(params); }
+			return {};
+		}),
+	}));
+	t.after(() => manager.close());
+	const input = { role: "Review source", prompt: "Task", requestId: "spawn-role" };
+	const caller = { id: "primary", cwd: root };
+	const first = await manager.spawn(input, caller) as { sessionId: string; selection: ExecutionSelection };
+	assert.equal(first.selection.values.role, input.role);
+	assert.equal(first.selection.unapplied.includes("role"), false);
+	assert.ok(calls.indexOf("profile-update") < calls.indexOf("task-submit"));
+	await manager.spawn({ ...input, selection: first.selection }, caller);
+	assert.equal(calls.filter((method) => method === "profile-update").length, 1);
+});
+
+it("names the peer's older loaded code and replacement steps on strict observation failure", async (t) => {
+	const root = fixtureRoot(t);
+	const peer = { ...HOST_CONTRACT, upstream: { ...HOST_CONTRACT.upstream, codingAgent: "1.3.0", durable: "1.3.0" } };
+	const manager = new AgentManager(managerOptions(root, {
+		acquire: async (metadata) => fakeConnection(metadata, async () => ({ retiredShape: true }), peer),
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	await manager.control("attach", { sessionId: record.storageId }, { id: "primary", cwd: root });
+	await assert.rejects(manager.control("inspect", { sessionId: record.storageId, view: "history" }, { id: "primary", cwd: root }), (error: unknown) => {
+		assert.ok(error instanceof Error);
+		assert.match(error.message, /peer runs older code/u);
+		assert.match(error.message, /Pi 1\.3\.0/u);
+		assert.match(error.message, /agent_abort with release: true.*agent_attach/u);
+		assert.match(error.message, /Observation output does not match its schema/u);
+		return true;
+	});
+});
+
 it("retains successful work targets across manager submission paths, not reports, attachment, or failed admissions", async (t) => {
 	const root = fixtureRoot(t);
 	const retained: string[] = [];
@@ -1635,7 +1679,7 @@ it("shares one real attach across concurrent reads and a canceled live selection
 		acquire: async () => { acquisitions++; throw new Error("observation must not launch"); },
 	}));
 	const record = createRecord(manager, root);
-	const host = await runHost(() => ({ request: async () => ({}), close: async () => {}, isIdle: () => true }), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
+	const host = await runHost(() => ({ request: async () => ({ conversations: [], live: false, storageId: record.storageId }), close: async () => {}, isIdle: () => true }), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
 	t.after(async () => { gate.resolve(); manager.close(); await host.close(); });
 	const cancel = new AbortController();
 	const reads = Promise.all([manager.status(record.storageId), manager.snapshot(record.storageId), manager.observeLive(record.storageId, "conversation", () => {}, cancel.signal)]);
@@ -1656,7 +1700,7 @@ it("retains a healthy attachment when its optional change subscription fails", a
 	const root = fixtureRoot(t);
 	const links: FakeConnection[] = [];
 	const manager = new AgentManager(managerOptions(root, {
-		connect: async (metadata) => { const link = fakeConnection(metadata, async () => ({})); link.subscribeChanges = async () => { throw new Error("subscription rejected"); }; links.push(link); return link; },
+		connect: async (metadata) => { const link = fakeConnection(metadata, async () => ({ conversations: [], live: false, storageId: metadata.storageId })); link.subscribeChanges = async () => { throw new Error("subscription rejected"); }; links.push(link); return link; },
 		acquire: noHost, observe: async () => ({}),
 	}));
 	t.after(() => manager.close());
@@ -1687,7 +1731,7 @@ it("keeps acquired clients usable when only their current change contracts disag
 				link = fakeConnection(metadata, async (method) => {
 					assert.equal(contractRefusal(method, remote), undefined);
 					methods.push(method);
-					return method === "task-submit" ? { submissionId: 7 } : { ready: true };
+					return method === "task-submit" ? { submissionId: 7 } : { conversations: [], live: false, storageId: metadata.storageId };
 				}, remote);
 				link.subscribeChanges = async () => { throw contractRefusal("changes", remote); };
 				return link;
@@ -1701,7 +1745,7 @@ it("keeps acquired clients usable when only their current change contracts disag
 		assert.equal(link.closed, false);
 		assert.equal(acquisitions, 1);
 		assert.deepEqual(manager.connectedStorageIds(), [record.storageId]);
-		assert.deepEqual(await manager.status(record.storageId), { ready: true });
+		assert.deepEqual(await manager.status(record.storageId), { conversations: [], live: false, storageId: record.storageId });
 		assert.deepEqual(methods, ["task-submit", "status"]);
 		const overview = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
 		assert.ok(overview.failures.some((failure) => failure.storageId === `changes:${record.storageId}` && /Live change notices.*Restart/u.test(failure.error)));

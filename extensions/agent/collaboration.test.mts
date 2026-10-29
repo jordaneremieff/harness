@@ -5,10 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import { LiveDoc, ROOT_CONVERSATION_ID, type LiveState, type Session } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
-import { CollaborationEvents, CollaborationIndex, CollaborationReadError, CollaborationThreads, type CollaborationEvent, type CollaborationPage, type CollaborationThread, collaborationIdentity, listCollaboration, mutateCollaboration, projectCollaboration, readCollaboration } from "./collaboration.ts";
+import { CollaborationParams, CollaborationEvents, CollaborationIndex, CollaborationReadError, CollaborationThreads, type CollaborationEvent, type CollaborationPage, type CollaborationThread, collaborationIdentity, listCollaboration, mutateCollaboration, projectCollaboration, readCollaboration } from "./collaboration.ts";
 import { AgentDeliveryDoc, ThreadDeliveryDoc, acknowledgeReports } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
 import { DurableObservation, readConversationStatus } from "./durable-observation.ts";
@@ -244,6 +245,23 @@ it("retains a shared frame and deduplicates the same mutation without any model 
 	assert.equal(page.events[0].sender, actor);
 	assert.equal(page.events[0].origin, "model");
 	assert.equal(page.thread.integrator, actor);
+});
+
+it("delivers actionable length errors after Pi argument validation without relaxing stored caps", async (t) => {
+	const f = await fixture(t);
+	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
+	for (const [key, limit, action] of [["contribution", 256, "join"], ["message", 8000, "post"]] as const) {
+		const args = { action, threadId: created.threadId, [key]: "x".repeat(limit + 1) };
+		const checked = validateToolArguments({ name: "agent_collaborate", description: "Thread", parameters: CollaborationParams }, { type: "toolCall", id: "length-check", name: "agent_collaborate", arguments: args });
+		assert.deepEqual(checked, args, "Pi lets the bounded handler own the actionable length error");
+		await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation(action, `oversized-${key}`, checked), context), { message: `${key} exceeds the maximum length of ${limit} characters; write the full content to a file and post its path` });
+		for (const call of [
+			() => mutateCollaboration(f.host.harness, f.storageId, mutation("create", `unused-${key}`, { ...frame, [key]: "x".repeat(limit + 1) }), context),
+			() => readCollaboration(f.host.harness, { threadId: created.threadId, [key]: "x".repeat(limit + 1) }, context),
+			() => listCollaboration(f.host.harness, { [key]: "x".repeat(limit + 1) }, context),
+		]) await assert.rejects(call(), /write the full content to a file and post its path/u);
+		await mutateCollaboration(f.host.harness, f.storageId, mutation(action, `boundary-${key}`, { ...args, [key]: "x".repeat(limit) }), context);
+	}
 });
 
 it("names recovery calls for participation, titles, and integrators", async (t) => {
