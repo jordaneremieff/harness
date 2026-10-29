@@ -26,6 +26,7 @@ import { createPolicyDurableExtension, type PolicyDurableHost } from "./durable.
 import { makeRuleAudit, proposalRevision, RuleRegistry } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
 import { localDate } from "./store.ts";
+import { readTelemetry } from "./telemetry.ts";
 
 const context = BACKGROUND_CONTEXT;
 const MODEL = { provider: "faux", modelId: "faux-1" } as const;
@@ -448,12 +449,18 @@ test("the shell contract card reaches a model when bash is callable only", async
 		const agent = await fixture.root.agent(context);
 		assert.equal(agent.tools.some((tool) => tool.name === "bash"), false);
 		assert.equal(agent.callable.some((tool) => tool.name === "bash"), true);
-		let request = "";
-		await submit(fixture, [(modelContext: unknown) => {
-			request = JSON.stringify(modelContext);
+		const requests: Array<readonly import("@earendil-works/pi-ai").Message[]> = [];
+		await submit(fixture, [(modelContext: { messages: readonly import("@earendil-works/pi-ai").Message[] }) => {
+			requests.push(modelContext.messages);
+			return fauxAssistantMessage(fauxToolCall("policy_rules", {}), { stopReason: "toolUse" });
+		}, (modelContext: { messages: readonly import("@earendil-works/pi-ai").Message[] }) => {
+			requests.push(modelContext.messages);
 			return fauxAssistantMessage("done");
 		}], "inspect shell guidance");
-		assert.match(request, /Shell contract snapshot/);
+		const cards = requests.map((messages) => messages.filter((message) => message.role === "system" &&
+			JSON.stringify(message).includes("Shell contract snapshot")));
+		assert.equal(cards[0].length, 1);
+		assert.deepEqual(cards[1], cards[0], "the system card retains identical bytes across generation requests");
 	} finally { await fixture.close(); }
 });
 
@@ -717,6 +724,17 @@ test("enforce mode blocks a denied tool call before execution", async () => {
 		assert.match(textOf(result), /Tool call blocked/);
 		assert.match(textOf(result), /Rule durable-deny-probe\./);
 		assert.equal(counter.executed, 0);
+		const records = (await readFile(join(fixture.storeDir, `${localDate(new Date())}.jsonl`), "utf8"))
+			.trim().split("\n").map((line) => JSON.parse(line));
+		const record = records.find((entry) => entry.tool === "probe");
+		assert.equal(record.outcome, "denied");
+		assert.equal(record.policy.decision, "deny");
+		assert.ok(record.classes.includes("durable-deny-probe"));
+		assert.ok(record.policy.evaluations.some((entry: { id: string; phase: string; deny: boolean; truth: unknown; applicable: unknown }) =>
+			entry.id === "durable-deny-probe" && entry.phase === "input" && entry.deny && entry.truth === true && entry.applicable === true));
+		const day = localDate(new Date());
+		const summary = await readTelemetry(fixture.storeDir, day, day);
+		assert.equal(summary.rules.find((entry) => entry.id === "durable-deny-probe")?.deniedCalls, 1);
 	} finally {
 		await fixture.close();
 	}
@@ -980,7 +998,7 @@ test("a malformed state document is contained without failing the read", async (
 				observation: null,
 				retainedGuidance: "bad",
 				completedCalls: {},
-				shellCardDelivered: "no",
+				shellCard: 42,
 			}),
 		});
 		await fixture.harness.commit((tx) => tx.doc(MalformedState, fixture.root.id), context);

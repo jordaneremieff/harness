@@ -492,11 +492,13 @@ function retainedEntries(name: string, entries: unknown[]): unknown[] {
 	});
 }
 
-function coverageMatches(entries: unknown, counts: unknown): counts is { total: number; omitted: number } {
+function coverageMatches(entries: unknown, counts: unknown, selected: boolean): counts is { total: number; omitted: number; irrelevant?: number } {
 	if (!isObject(counts) || !Array.isArray(entries)) return false;
 	if (typeof counts.total !== "number" || typeof counts.omitted !== "number") return false;
 	if (!Number.isSafeInteger(counts.total) || !Number.isSafeInteger(counts.omitted)) return false;
-	return counts.omitted >= 0 && counts.total === entries.length + counts.omitted;
+	const irrelevant = selected ? counts.irrelevant : 0;
+	if (typeof irrelevant !== "number" || !Number.isSafeInteger(irrelevant) || irrelevant < 0) return false;
+	return counts.omitted >= 0 && counts.total === entries.length + counts.omitted + irrelevant;
 }
 
 function readCoverage(value: Record<string, unknown>, result: Record<string, unknown>): void {
@@ -506,7 +508,9 @@ function readCoverage(value: Record<string, unknown>, result: Record<string, unk
 	for (const name of ENTRY_GROUP_NAMES) {
 		const counts = raw[name];
 		const entries = value[name];
-		if (coverageMatches(entries, counts)) coverage[name] = { total: counts.total, omitted: counts.omitted };
+		if (coverageMatches(entries, counts, name === "evaluations" || name === "generations"))
+			coverage[name] = { total: counts.total, omitted: counts.omitted,
+				...(counts.irrelevant !== undefined ? { irrelevant: counts.irrelevant } : {}) };
 		else if (counts !== undefined) result.coverageUnavailable = true;
 	}
 	result.recordedCoverage = coverage;

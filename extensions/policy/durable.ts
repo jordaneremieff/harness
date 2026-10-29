@@ -12,15 +12,15 @@
  * - `afterTool` is the result and completion phase. Assert-error corrections
  *   and guide annotations replace the tool result; observation completion,
  *   retained guidance, and provenance are committed to `policy.state`.
- * - `beforeRequest` is the context phase. Context programs, retained guidance,
- *   and the one-time shell contract card append user messages to that request
+ * - `beforeRequest` is the context phase. Context programs and retained guidance
+ *   append user messages to that request
  *   only, which is the native equivalent of the ordinary `context` event.
  * - Compaction carries no policy decision and installs no hook.
  *
  * Observation periods are conversation-scoped because Durable turns and
  * replay identity are conversation-scoped; the ordinary runtime keeps one
  * session-wide state. `policy.state` holds the serialized `ObservationState`,
- * retained guidance, the delivered shell card, the counted turn, a bounded
+ * retained guidance, the initial shell card, the counted turn, a bounded
  * ring of completed calls with the result effect each decided, one message
  * effect per generation task, the revision identity, and observation
  * counters. Every update recomputes inside one in-process tail and commits the
@@ -88,6 +88,7 @@ import {
 	relevantEvaluations,
 	refusalText,
 	samePin,
+	telemetryDecisionRows,
 } from "./runtime.ts";
 import {
 	type CallEffects,
@@ -106,7 +107,7 @@ import {
 	type OperatorRuleAudit,
 	type RuleMatchContext,
 } from "./rule.ts";
-import { shellContractCard } from "./shell-card.ts";
+import { SHELL_CARD_BYTES, shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin, type StateView } from "./state.ts";
 import { appendRecord } from "./store.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
@@ -180,7 +181,7 @@ type StoredRetainedGuidance = {
 	evaluation: JsonValue;
 };
 /** Message effect of one generation task, recorded so a replayed request sends the same messages. */
-type StoredRequestEffect = { taskId: string; card?: string; guidance?: string };
+type StoredRequestEffect = { taskId: string; guidance?: string };
 type PolicyStateValue = Durable.JsonObject & {
 	identity: string;
 	generation: number;
@@ -191,7 +192,7 @@ type PolicyStateValue = Durable.JsonObject & {
 	requestEffects: JsonValue[];
 	incomplete: number;
 	stale: number;
-	shellCardDelivered: boolean;
+	shellCard: string | null;
 };
 
 /** What `beforeTool` records on the tool task for `afterTool` and for recovery. */
@@ -378,6 +379,7 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 				() =>
 					"Policy tools govern operator-approved rules for this conversation. Inspect with policy_rules before authoring, and use view=authoring then view=check before proposing. policy_propose records an inert proposal; it is never approval. policy_approve activates one proposal only under a clear operator decision carried in the conversation, and your own inference, a recommendation, or a quoted third party is not approval. policy_control carries contextual operator decisions to revision-checked controls; resolve the exact target and revision from inspection first, and report the returned state and mode instead of presumed enforcement. Approved input rules can deny or correct tool calls, result rules can mark or annotate results, and context rules can add guidance to a request.",
 			),
+			section("policy_shell", (input, context) => runtime.shellCard(input, context)),
 		],
 		hooks: [
 			hook(ToolTask, {
@@ -427,7 +429,7 @@ function initialPolicyStateValue(): PolicyStateValue {
 		requestEffects: [],
 		incomplete: 0,
 		stale: 0,
-		shellCardDelivered: false,
+		shellCard: null,
 	};
 }
 
@@ -452,7 +454,6 @@ function isStoredRequestEffect(value: JsonValue): value is StoredRequestEffect {
 	return (
 		entry !== undefined &&
 		typeof entry.taskId === "string" &&
-		(entry.card === undefined || typeof entry.card === "string") &&
 		(entry.guidance === undefined || typeof entry.guidance === "string")
 	);
 }
@@ -474,7 +475,7 @@ function normalizePolicyState(raw: Readonly<PolicyStateValue> | undefined): Poli
 			: [],
 		incomplete: safeInteger(value.incomplete) ?? 0,
 		stale: safeInteger(value.stale) ?? 0,
-		shellCardDelivered: value.shellCardDelivered === true,
+		shellCard: typeof value.shellCard === "string" && Buffer.byteLength(value.shellCard, "utf8") <= SHELL_CARD_BYTES ? value.shellCard : null,
 	};
 }
 
@@ -490,7 +491,7 @@ function repairState(state: PolicyStateValue): PolicyStateValue {
 	state.requestEffects = normalized.requestEffects;
 	state.incomplete = normalized.incomplete;
 	state.stale = normalized.stale;
-	state.shellCardDelivered = normalized.shellCardDelivered;
+	state.shellCard = normalized.shellCard;
 	return state;
 }
 
@@ -840,7 +841,7 @@ class DurablePolicyRuntime {
 		};
 	}
 
-	private memoFor(call: ObservedCall, plan: InputPlan | undefined): PolicyCallMemo {
+	private memoFor(call: ObservedCall): PolicyCallMemo {
 		const original = call.input && Buffer.byteLength(JSON.stringify(call.input), "utf8") <= MAX_MEMO_INPUT_BYTES
 			? (call.input as JsonValue)
 			: undefined;
@@ -856,8 +857,8 @@ class DurablePolicyRuntime {
 				generation: pin.generation,
 			})),
 			classes: [...call.classes],
-			corrections: plan?.corrections ?? [],
-			inputEvaluations: plan ? (boundedRows(metadata(plan.evaluations)).rows as JsonValue[]) : [],
+			corrections: call.corrections,
+			inputEvaluations: call.inputEvaluations,
 			...(call.captured !== undefined ? { captured: call.captured } : {}),
 			...(call.decision !== undefined ? { decision: call.decision } : {}),
 			...(original !== undefined ? { original } : {}),
@@ -1130,10 +1131,14 @@ class DurablePolicyRuntime {
 		now: number,
 		truncated: boolean | undefined,
 	): PolicyRecord {
+		const evaluations = [...call.inputEvaluations, ...metadata([...semantic, ...guides, ...completion, ...completionGuides])];
+		const classes = [...new Set([...call.classes, ...evaluations.flatMap((value) => {
+			const entry = value as { id: string; truth: unknown };
+			return entry.truth === true ? [entry.id] : [];
+		})])];
 		const rows = {
-			evaluations: boundedRows([...call.inputEvaluations, ...metadata([...semantic, ...guides, ...completion, ...completionGuides])]),
+			...telemetryDecisionRows(evaluations, [...call.pins.values()], classes, call.corrections),
 			corrections: boundedRows(call.corrections),
-			generations: boundedRows([...call.pins.values()]),
 			dataSnapshots: this.dataSnapshotRows(call),
 			metadata: boundedRows(
 				completion
@@ -1160,14 +1165,15 @@ class DurablePolicyRuntime {
 				dataSnapshots: rows.dataSnapshots.rows,
 				metadata: rows.metadata.rows,
 				coverage: {
-					evaluations: { total: rows.evaluations.total, omitted: rows.evaluations.omitted },
+					evaluations: { total: rows.evaluations.total, omitted: rows.evaluations.omitted, irrelevant: rows.evaluations.irrelevant },
 					corrections: { total: rows.corrections.total, omitted: rows.corrections.omitted },
-					generations: { total: rows.generations.total, omitted: rows.generations.omitted },
+					generations: { total: rows.generations.total, omitted: rows.generations.omitted, irrelevant: rows.generations.irrelevant },
 					dataSnapshots: { total: rows.dataSnapshots.total, omitted: rows.dataSnapshots.omitted },
 					metadata: { total: rows.metadata.total, omitted: rows.metadata.omitted },
 				},
 			},
 		};
+		call.pending.classes = classes;
 		const usage = objectValue(result.usage);
 		return finishCall(
 			call.pending,
@@ -1248,7 +1254,10 @@ class DurablePolicyRuntime {
 				this.refusalText(observed, plan, snapshot) ?? "[policy] The approved input checks refused this call.";
 			reason = observed.decision;
 		}
-		await api.memo("policy.call", this.memoFor(observed, plan), context);
+		if (reason !== undefined) observed.decision = reason;
+		observed.inputEvaluations = metadata([...observed.evaluations, ...plan.evaluations]) as JsonValue[];
+		observed.corrections = plan.corrections;
+		await api.memo("policy.call", this.memoFor(observed), context);
 		if (reason !== undefined) {
 			observed.resultSeen = false;
 			const update = await this.completeCall(
@@ -1334,6 +1343,25 @@ class DurablePolicyRuntime {
 		};
 	}
 
+	/** Freeze the initial shell snapshot so every request retains the same system section. */
+	async shellCard(input: Durable.PromptInput, context: Context): Promise<string | undefined> {
+		const surface: PolicySurface = {
+			conversationId: input.conversationId,
+			agent: async () => input.agent,
+			snapshot: (token, conversationId, ctx) => input.read.snapshot(token, conversationId, ctx),
+			commit: (change, ctx) => this.harness.commit(change, ctx),
+		};
+		return this.withState(surface, context, async (state) => {
+			if (state.shellCard !== null) return state.shellCard || undefined;
+			const { snapshot, agent, scope, installed } = await this.activeRules(surface, context);
+			state.shellCard = PROJECTION_MODES.includes(this.effectiveMode(snapshot)) &&
+				[...agent.tools, ...agent.callable].some((tool) => tool.name === "bash")
+				? shellContractCard(snapshot.records.values(), scope, this.publicContext(snapshot, agent, 1, installed)) ?? ""
+				: "";
+			return state.shellCard || undefined;
+		});
+	}
+
 	async beforeRequest(
 		request: { readonly messages: readonly Message[] },
 		api: Durable.HookApi,
@@ -1350,7 +1378,6 @@ class DurablePolicyRuntime {
 			this.requestEffect(state, taskId, { snapshot, agent, scope, rules, installed, mode, turn, now }),
 		);
 		const messages = [...request.messages];
-		if (effect.card) messages.push(userMessage(effect.card, now));
 		if (effect.guidance) messages.push(userMessage(effect.guidance, now));
 		return messages.length === request.messages.length ? undefined : { messages };
 	}
@@ -1383,7 +1410,7 @@ class DurablePolicyRuntime {
 		return effect;
 	}
 
-	/** Context rules, retained guidance, and the one-time shell card for one request. */
+	/** Context rules and retained guidance for one request. */
 	private projectRequest(
 		state: PolicyStateValue,
 		observation: ObservationState,
@@ -1422,17 +1449,6 @@ class DurablePolicyRuntime {
 		);
 		if (guidance) effect.guidance = guidance;
 		state.retainedGuidance = this.retainedGuidanceOf(state).filter((entry) => !projected.has(entry.id));
-		if (!state.shellCardDelivered && [...agent.tools, ...agent.callable].some((tool) => tool.name === "bash")) {
-			const card = shellContractCard(
-				snapshot.records.values(),
-				scope,
-				this.publicContext(snapshot, agent, turn, installed),
-			);
-			if (card) {
-				effect.card = card;
-				state.shellCardDelivered = true;
-			}
-		}
 	}
 
 	private validRetained(

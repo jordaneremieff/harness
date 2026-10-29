@@ -1039,8 +1039,8 @@ describe("recorded call explanations", () => {
 		assert.equal(explained.records.length, 1);
 		assert.equal(explained.records[0].session, "session");
 		assert.deepEqual(explained.records[0].classes, []);
-		assert.equal(explained.records[0].policy.evaluations[0].truth, false);
-		assert.deepEqual(explained.records[0].policy.recordedCoverage.evaluations, { total: 1, omitted: 0 });
+		assert.deepEqual(explained.records[0].policy.evaluations, []);
+		assert.deepEqual(explained.records[0].policy.recordedCoverage.evaluations, { total: 1, omitted: 0, irrelevant: 1 });
 		assert.equal(JSON.stringify(explained).includes("unretained-example-marker"), false);
 	});
 });
@@ -1162,7 +1162,9 @@ describe("input transactions and modes", () => {
 		await f.finish("a");
 		await f.writer.close();
 		const evaluations = f.records[0].policy?.evaluations as Array<{ id: string; truth: unknown }>;
-		assert.equal(evaluations.find((e) => e.id === "effective")?.truth, false);
+		assert.equal(evaluations.find((e) => e.id === "effective"), undefined);
+		const coverage = f.records[0].policy?.coverage as { evaluations: { irrelevant: number } };
+		assert.equal(coverage.evaluations.irrelevant, 1);
 	});
 	it("unavailable oversized input still honors required checks and preserves optional corrections", async () => {
 		const input = { old: "x".repeat(262145) };

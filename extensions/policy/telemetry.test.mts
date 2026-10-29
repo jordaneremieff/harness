@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { PolicyRecord } from "./record.ts";
 import { appendRecord, localDate } from "./store.ts";
+import { telemetryDecisionRows } from "./runtime.ts";
 import { formatTelemetry, readTelemetry, TELEMETRY_LIMITS } from "./telemetry.ts";
 
 const DAY = "2026-09-03";
@@ -32,7 +33,7 @@ function fixture(overrides: Partial<PolicyRecord> = {}): PolicyRecord {
 		outcome: "success",
 		observationComplete: true,
 		captured: "private-command-sentinel",
-		policy: { decision: "none", evaluations: [], coverage: { evaluations: { total: 0, omitted: 0 } } },
+		policy: { decision: "none", evaluations: [], coverage: { evaluations: { total: 0, omitted: 0, irrelevant: 0 } } },
 		...overrides,
 	};
 }
@@ -50,7 +51,7 @@ function evalRow(id: string, overrides: Record<string, unknown> = {}) {
 	};
 }
 function policy(evaluations: unknown[], decision = "deny", omitted = 0) {
-	return { decision, evaluations, coverage: { evaluations: { total: evaluations.length + omitted, omitted } } };
+	return { decision, evaluations, coverage: { evaluations: { total: evaluations.length + omitted, omitted, irrelevant: 0 } } };
 }
 async function directory(t: TestContext): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "policy-telemetry-"));
@@ -112,6 +113,45 @@ function accounting(summary: Awaited<ReturnType<typeof readTelemetry>>): void {
 	for (const row of rules)
 		assert.equal(row.evaluations, row.trueEvaluations + row.falseEvaluations + row.unknownEvaluations);
 }
+
+describe("compact policy decision records", () => {
+	it("bounds plain allows and retains full denial, unavailable, guidance and correction facts", async (t) => {
+		const evaluations = Array.from({ length: 80 }, (_, index) => evalRow(`rule-${index}`, { truth: false, deny: false }));
+		const pins = Array.from({ length: 36 }, (_, index) => ({ id: `rule-${index}`, revision: "123456789abc", generation: 1 }));
+		const rows = telemetryDecisionRows(evaluations, pins, [], []);
+		const before = Buffer.byteLength(JSON.stringify(fixture({ policy: { evaluations, generations: pins } })));
+		const compact = fixture({ policy: {
+			decision: "none",
+			evaluations: rows.evaluations.rows, generations: rows.generations.rows,
+			coverage: {
+				evaluations: { total: rows.evaluations.total, omitted: rows.evaluations.omitted, irrelevant: rows.evaluations.irrelevant },
+				generations: { total: rows.generations.total, omitted: rows.generations.omitted, irrelevant: rows.generations.irrelevant },
+			},
+		} });
+		const after = Buffer.byteLength(JSON.stringify(compact));
+		assert.ok(after < 1600, `allow record size ${after}`);
+		assert.ok(after < before / 10);
+		assert.equal(rows.evaluations.irrelevant, 80);
+		assert.equal(rows.generations.irrelevant, 36);
+		const dir = await directory(t);
+		await records(dir, [compact]);
+		const summary = await readTelemetry(dir, DAY, DAY);
+		assert.equal(summary.coverage.status, "complete");
+		assert.equal(summary.evaluations.irrelevant, 80);
+		assert.equal(summary.evaluations.writerOmitted, 0);
+		t.diagnostic(`Synthetic allow record: ${before} -> ${after} UTF-8 bytes (80 evaluations, 36 pins).`);
+		const relevant = [
+			evalRow("rule-0", { unavailable: true, truth: "unknown", unavailableReasons: ["input-unavailable"] }),
+			evalRow("rule-1", { action: "guide", deny: false }),
+			evalRow("rule-2", { action: "rename-key", deny: false }),
+			evalRow("rule-3"),
+		];
+		const denial = telemetryDecisionRows([...evaluations.slice(4), ...relevant], pins, [], [{ id: "rule-2" }]);
+		assert.deepEqual(denial.evaluations.rows, relevant);
+		assert.deepEqual(denial.generations.rows, pins.slice(0, 4));
+		assert.equal(denial.evaluations.omitted, 0);
+	});
+});
 
 describe("policy telemetry aggregation", () => {
 	it("separates confirmed outcomes, deny evaluations, and matches with exact tallies", async (t) => {
@@ -278,6 +318,19 @@ describe("policy telemetry aggregation", () => {
 });
 
 describe("policy telemetry input and filesystem bounds", () => {
+	it("selects denials before a saturated line budget, then newest records", async (t) => {
+		const dir = await directory(t);
+		await writeFile(join(dir, `${DAY}.jsonl`),
+			`${JSON.stringify(fixture({ outcome: "denied", policy: policy([evalRow("deny-first")]) }))}\n${"\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture({ tool: "newest" }))}\n`);
+		const result = await readTelemetry(dir, DAY, DAY);
+		assert.equal(result.denials.withRuleAttribution, 1);
+		assert.equal(result.tools.find((row) => row.name === "newest")?.records, 1);
+		assert.equal(result.coverage.completeLines, TELEMETRY_LIMITS.lines);
+		assert.ok(result.coverage.days[0].unprocessedBytes > 0);
+		assert.equal(result.coverage.order, "newest-days-tail-denials-first");
+		accounting(result);
+	});
+
 	it("rejects invalid dates, unordered ranges, excessive ranges, and invalid paths", async () => {
 		for (const [from, to] of [
 			["2026-9-03", DAY],
@@ -409,18 +462,20 @@ describe("policy telemetry input and filesystem bounds", () => {
 
 	it("enforces per-file and total byte limits with explicit skipped days", async (t) => {
 		const dir = await directory(t);
-		const content = `${JSON.stringify(fixture())}\n${"x".repeat(TELEMETRY_LIMITS.fileBytes)}`;
+		const content = `${"x".repeat(TELEMETRY_LIMITS.fileBytes)}\n${JSON.stringify(fixture({ outcome: "denied" }))}\n`;
 		await writeFile(join(dir, `${DAY}.jsonl`), content);
 		await writeFile(join(dir, "2026-09-04.jsonl"), content);
 		await records(dir, [fixture()], "2026-09-05");
 		const result = await readTelemetry(dir, DAY, "2026-09-05");
 		assert.equal(result.coverage.bytesRead, TELEMETRY_LIMITS.bytes);
-		assert.equal(result.records, 2);
+		assert.equal(result.records, 3);
+		assert.equal(result.denials.confirmed, 2);
 		assert.equal(result.coverage.cutoffLines, 2);
-		assert.equal(result.coverage.days[0].bytesRead, TELEMETRY_LIMITS.fileBytes);
-		assert.ok(result.coverage.days[0].issues.includes("file-byte-limit"));
-		assert.equal(result.coverage.days[2].status, "skipped");
-		assert.deepEqual(result.coverage.days[2].issues, ["total-byte-limit"]);
+		assert.deepEqual(result.coverage.days.map((day) => day.day), ["2026-09-05", "2026-09-04", DAY]);
+		assert.equal(result.coverage.days[1].bytesRead, TELEMETRY_LIMITS.fileBytes);
+		assert.ok(result.coverage.days[1].issues.includes("file-byte-limit"));
+		assert.ok(result.coverage.days[2].issues.includes("total-byte-limit"));
+		assert.ok((result.coverage.days[2].startOffset ?? 0) > 0);
 		accounting(result);
 	});
 
@@ -429,13 +484,12 @@ describe("policy telemetry input and filesystem bounds", () => {
 		await writeFile(join(dir, `${DAY}.jsonl`), `${"\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture())}\n`);
 		await records(dir, [fixture()], "2026-09-04");
 		const result = await readTelemetry(dir, DAY, "2026-09-04");
-		assert.equal(result.records, 0);
+		assert.equal(result.records, 2);
 		assert.equal(result.coverage.completeLines, TELEMETRY_LIMITS.lines);
-		assert.equal(result.coverage.malformedLines, TELEMETRY_LIMITS.lines);
-		assert.ok(result.coverage.days[0].unprocessedBytes > 0);
-		assert.ok(result.coverage.days[0].issues.includes("line-limit"));
-		assert.equal(result.coverage.days[1].status, "skipped");
-		assert.deepEqual(result.coverage.days[1].issues, ["line-limit"]);
+		assert.equal(result.coverage.malformedLines, TELEMETRY_LIMITS.lines - 2);
+		assert.ok(result.coverage.days[1].unprocessedBytes > 0);
+		assert.ok(result.coverage.days[1].issues.includes("line-limit"));
+		assert.equal(result.coverage.days[0].status, "complete");
 		accounting(result);
 	});
 });

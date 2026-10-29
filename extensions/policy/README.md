@@ -102,12 +102,14 @@ section, and native task hooks:
 - `ToolTask.afterTool` is the result and completion phase: approved
   assert-error corrections and guide annotations replace the result before it
   is committed.
-- `GenerationTask.beforeRequest` is the context phase: context rules, retained
-  completion guidance, and the one-time shell contract card append user
-  messages to that request only.
+- `GenerationTask.beforeRequest` is the context phase: context rules and retained
+  completion guidance append user messages to that request only.
+- The `policy_shell` system section stores the conversation's initial shell card.
+  Every request renders the same bytes, including after a tool call or recovery.
+  Initial absence is also retained. Current checks still use the live rule store.
 
 The approved rule store stays external and revision-checked. Observation
-periods, retained guidance, the delivered shell card, the counted turn, the
+periods, retained guidance, the initial shell card, the counted turn, the
 revision identity, observation counters, and a bounded ring of completed calls
 live in the per-conversation `policy.state` document, so a replay after process
 loss returns the recorded decision instead of deciding again. Pending evidence
@@ -144,8 +146,9 @@ Semantic differences from the ordinary runtime:
   records the same evaluation metadata without showing operator notices.
 - Completion telemetry is written after the state commit, at most once. A
   crash between the two loses that record rather than duplicating it.
-- The shell contract card is delivered on the first annotate/enforce request
-  of each conversation rather than once per session load.
+- The shell contract card is fixed at the first request of each conversation.
+  Annotate/enforce mode with callable `bash` includes the initial snapshot in
+  every request. Later rule or mode changes do not change that system section.
 
 ## Rule store and execution
 
@@ -862,8 +865,10 @@ unmatched calls. Call explanations expose selected metadata, not arbitrary store
 payloads. Evaluation metadata includes phase and input view, so original and
 final checks retain distinct evidence even when they share a rule id. Unavailable
 command evidence also carries bounded reason codes without raw command text.
-Preview omits false evaluations; recorded call explanations retain the bounded
-per-evaluation metadata, including false original and effective checks.
+Preview omits false evaluations. Recorded call explanations retain bounded
+metadata for matched, denying, and unavailable evaluations. False original and
+effective checks remain only when their rule matched or changed the call;
+coverage counts the other false evaluations without retaining their inventory.
 Missing records may lie outside the read bound or await persistence;
 absence does not prove that no decision occurred. Records remain untrusted
 historical evidence, not current rule authority.
@@ -983,12 +988,18 @@ Use `/policy telemetry 2026-09-01 2026-09-07` to read an inclusive date range.
 The dates name the writer's local-calendar day files, not UTC timestamp filters.
 The command reports retained tool volume, error classes, confirmed denials and
 rule attribution, text-output bytes, truncation, and coverage gaps in plain text.
+Intentional removal of irrelevant evaluations is counted separately from missing
+decision facts and does not make an otherwise complete read partial.
 It reads existing files only. It neither seeds a missing rule registry nor
 creates telemetry files, aggregate stores, background work, or retention changes.
 
 [telemetry.ts](telemetry.ts) defines date, byte, line, metadata, group, and output
-limits. Reads proceed oldest first. Every missing, unreadable, changed, or
-partially read day stays visible. Counts describe accepted records within those
+limits. Reads proceed newest day first and select each file's tail. Within each
+bounded snapshot, denials precede other records, with newest records first in
+each group. The report names the selected byte ranges, unread bytes, unprocessed
+bytes, malformed lines, and skipped days. Denials outside those byte snapshots
+remain unknown. Every missing, unreadable, changed, or partially read day stays
+visible. Counts describe accepted records within those
 bounds, not all live activity or lost writes. Error classes are the recorded
 text inference, not proof of the error's cause. Denial attribution uses recorded
 input decisions, not matched rule names. A call with several denying rules
@@ -1213,6 +1224,12 @@ metadata labels, changed field paths, and requested/applied effects. Named data
 snapshots retain only names, revisions, status, and freshness metadata at call
 admission, never table rows or schema payloads. Later phases can reassess freshness
 while retaining that data revision. Each metadata group reports omissions.
+Evaluation records retain matched,
+denying, guiding, correcting, and unavailable facts, not the non-matching rule
+inventory. Generation pins are limited to those rules. Coverage counts distinguish
+irrelevant evaluations and pins from facts omitted by the byte bound. Older day
+files remain readable as tool records, but evaluation coverage without the current
+irrelevant-count field is unknown; no older-shape reader or migration is supplied.
 Correlation
 loss is explicit. Records do not invent a terminal result for an unfinished call.
 Ordinary records retain no raw argument or result payload by default. Command capture

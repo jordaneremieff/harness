@@ -111,7 +111,7 @@ export function metadata(evaluations: ProgramEvaluation[]): unknown[] {
 		}),
 	);
 }
-/** Inspection omits false evaluations without changing execution or retained metadata. */
+/** Inspection omits false evaluations without changing execution. */
 export function relevantEvaluations<T extends { id: string; truth: unknown; unavailable?: boolean; deny?: boolean }>(
 	evaluations: readonly T[],
 ): T[] {
@@ -131,6 +131,34 @@ export function boundedRows(
 		bytes += size;
 	}
 	return { rows: retained, total: rows.length, omitted: rows.length - retained.length };
+}
+
+/** Retain decision facts, not the non-matching rule inventory, in both hosts. */
+export function telemetryDecisionRows(
+	evaluations: readonly unknown[],
+	pins: readonly StatePin[],
+	classes: readonly string[],
+	corrections: readonly { id: string }[],
+) {
+	const ids = new Set([...classes, ...corrections.map((entry) => entry.id)]);
+	const relevant = evaluations.filter((value) => {
+		const entry = value as { id: string; truth: unknown; unavailable?: boolean; deny?: boolean };
+		return ids.has(entry.id) || entry.truth !== false || entry.unavailable || entry.deny;
+	});
+	const retained = boundedRows(relevant);
+	for (const value of retained.rows) ids.add((value as { id: string }).id);
+	return {
+		evaluations: {
+			...retained,
+			total: evaluations.length,
+			irrelevant: evaluations.length - relevant.length,
+		},
+		generations: {
+			...boundedRows(pins.filter((pin) => ids.has(pin.id))),
+			total: pins.length,
+			irrelevant: pins.filter((pin) => !ids.has(pin.id)).length,
+		},
+	};
 }
 
 interface RowBundle {
@@ -804,16 +832,15 @@ export class PolicyRuntime {
 		call: ObservedCall,
 		completion: ProgramEvaluation[],
 	): {
-		evaluations: RowBundle;
+		evaluations: RowBundle & { irrelevant: number };
 		corrections: RowBundle;
-		generations: RowBundle;
+		generations: RowBundle & { irrelevant: number };
 		dataSnapshots: RowBundle;
 		metadata: RowBundle;
 	} {
 		return {
-			evaluations: boundedRows(metadata(call.evaluations)),
+			...telemetryDecisionRows(metadata(call.evaluations), [...call.pins.values()], call.classes, call.corrections),
 			corrections: boundedRows(call.corrections),
-			generations: boundedRows([...call.pins.values()]),
 			dataSnapshots: this.dataSnapshotRows(call),
 			metadata: this.metadataRows(completion),
 		};
@@ -841,9 +868,9 @@ export class PolicyRuntime {
 				dataSnapshots: rows.dataSnapshots.rows,
 				metadata: rows.metadata.rows,
 				coverage: {
-					evaluations: { total: rows.evaluations.total, omitted: rows.evaluations.omitted },
+					evaluations: { total: rows.evaluations.total, omitted: rows.evaluations.omitted, irrelevant: rows.evaluations.irrelevant },
 					corrections: { total: rows.corrections.total, omitted: rows.corrections.omitted },
-					generations: { total: rows.generations.total, omitted: rows.generations.omitted },
+					generations: { total: rows.generations.total, omitted: rows.generations.omitted, irrelevant: rows.generations.irrelevant },
 					dataSnapshots: { total: rows.dataSnapshots.total, omitted: rows.dataSnapshots.omitted },
 					metadata: { total: rows.metadata.total, omitted: rows.metadata.omitted },
 				},
