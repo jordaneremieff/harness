@@ -445,7 +445,7 @@ directory; the corpus default remains package-relative.
 |---|---|---|---|---|---|
 | dir | `PI_PILLARS_DIR` | path | &lt;agentDir&gt;/pillars | absolute input | Private aggregate directory. |
 | corpus | `PI_PILLARS_CORPUS` | path | Package sibling ../../pillars | absolute input | Corpus root with inventory and governance sources. |
-| collect | `PI_PILLARS_COLLECT` | boolean | true | none | Collect source access evidence. |
+| collect | `PI_PILLARS_COLLECT` | boolean | true | none | Collect source access evidence. false stops collection only; corpus access and retained-data readback stay available. |
 <!-- harness:settings:end -->
 
 Document collection values are booleans. Environment collection values accept

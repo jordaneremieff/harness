@@ -72,6 +72,39 @@ in a development checkout appear as Git diffs. Edits in a Pi-installed clone
 are not durable across package updates; make baseline edits in the development
 checkout.
 
+### Turn an extension off
+
+"Turn off" has three meanings. Select the one that matches the request:
+
+1. **One feature.** Settings tune an extension while it stays loaded. The
+   description of each setting, in the extension's README table and in
+   `registry {"kind":"setting","search":"<extension>."}`, states what it gates
+   and what stays available. A set `PI_*` environment variable wins over the
+   machine document, so a `harness.json` value for that key has no effect
+   until the variable is unset. See the
+   [configuration contract](conventions/extension-config.md#settings-and-resolution).
+2. **Every feature of one extension.** No harness extension has an
+   extension-wide `enabled` setting. Stop loading the extension instead.
+3. **Stop loading.** Pi loads what the `packages` and `extensions` entries in
+   its settings select, plus any `-e` launch paths. For any tool the extension
+   registers, `registry {"kind":"tool","name":"<tool>"}` shows
+   `sourceInfo.source`, the entry or path that loaded it, and
+   `sourceInfo.path`, its entrypoint. An
+   extension that registers no tool or command has no registry record; use
+   `pi list` for the configured sources.
+   - On a machine that routes extensions through worktrees, run
+     `npm run worktrees -- deactivate <name>`. `activate` restores it. See
+     [Pi configuration](conventions/worktrees.md#pi-configuration).
+   - For a package install, disable the extension resource in `pi config`, or
+     add an exclusion such as `"-extensions/<name>/index.ts"` to the package
+     entry's `extensions` filter. See "Select package resources" in Pi's
+     `docs/packages.md`.
+   - `pi remove <source>` removes one configured source. For the harness
+     package source, that removes every harness extension, skill, and prompt.
+
+   Start a new Pi process after the change. Stopping a load leaves the
+   extension's stored data in place.
+
 ## Load model
 
 The harness is a Pi package. `package.json` declares the resources under the

@@ -429,7 +429,7 @@ that an existing runtime applied them.
 | Key | Environment | Type | Default | Constraints | Description |
 |---|---|---|---|---|---|
 | dir | `PI_STASH_DIR` | path | &lt;agentDir&gt;/stash | none | Handover store directory. |
-| capacity | `PI_STASH_CAPACITY` | boolean | true | none | Enable capacity observation and requests. |
+| capacity | `PI_STASH_CAPACITY` | boolean | true | none | Context-capacity observation and continuity requests. false turns off only this feature; other stash tools and commands stay available. |
 | checkpointPercent | `PI_STASH_CHECKPOINT_PERCENT` | number | 85 | max 100 | Positive checkpoint threshold, strictly below the decision threshold. |
 | decisionPercent | `PI_STASH_DECISION_PERCENT` | number | 90 | max 100 | Positive continuity-decision threshold, at most 100. |
 | intakeTokenBudget | `PI_STASH_INTAKE_TOKEN_BUDGET` | integer | unset | min 1 | Positive token budget for the unknown-usage text-intake trigger. |

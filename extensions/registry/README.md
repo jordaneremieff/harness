@@ -576,7 +576,7 @@ section of `<agentDir>/harness.json`, or the document selected by
 <!-- harness:settings:start -->
 | Key | Environment | Type | Default | Constraints | Description |
 |---|---|---|---|---|---|
-| notes | `PI_REGISTRY_NOTES` | boolean | true | none | Append bounded registry facts to matching completed discovery calls. Read fresh for each matching call. |
+| notes | `PI_REGISTRY_NOTES` | boolean | true | none | Append bounded registry facts to matching completed discovery calls. Read fresh for each matching call. false turns off notes only; explicit registry queries stay available. |
 <!-- harness:settings:end -->
 
 Environment values take precedence over document values. Boolean environment

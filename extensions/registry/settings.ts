@@ -7,7 +7,7 @@ export const settings = {
 	slice: "registry",
 	fields: {
 		notes: { type: "boolean", env: "PI_REGISTRY_NOTES", default: true,
-			description: "Append bounded registry facts to matching completed discovery calls. Read fresh for each matching call." },
+			description: "Append bounded registry facts to matching completed discovery calls. Read fresh for each matching call. false turns off notes only; explicit registry queries stay available." },
 	},
 } as const;
 export type ReadOptions = { agentDir: string; env?: Readonly<Record<string, string | undefined>> };

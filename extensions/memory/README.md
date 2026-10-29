@@ -24,7 +24,7 @@ See [extension configuration](../../docs/conventions/extension-config.md).
 | Key | Environment | Type | Default | Constraints | Description |
 |---|---|---|---|---|---|
 | dir | `PI_MEMORY_DIR` | path | unset | maxLength 1024; absolute input | Absolute directory of the external Markdown memory corpus. |
-| proactive | `PI_MEMORY_PROACTIVE` | boolean | true | none | Show bounded memory candidates and storage consideration cues for admitted input. |
+| proactive | `PI_MEMORY_PROACTIVE` | boolean | true | none | Automatic recall candidates, storage cues, and the unavailable-state line for admitted input. false turns off only these notices; memory tools, guidance, and pointer indexes stay available. |
 <!-- harness:settings:end -->
 
 The path accepts at most 1024 UTF-16 code units and rejects empty, relative,

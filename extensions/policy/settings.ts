@@ -17,7 +17,7 @@ export const settings = {
 			env: "PI_POLICY_MODE",
 			choices: ["observe", "notice", "annotate", "enforce"],
 			default: "observe",
-			description: "Configured machine mode; an ordinary --policy-mode flag overrides it for that session.",
+			description: "Machine mode. observe records facts and candidate effects only; notice adds operator notices; annotate adds model guidance; enforce also applies approved denials and corrections. No mode unloads the extension. An ordinary --policy-mode flag overrides it for that session.",
 		},
 	},
 } as const;

@@ -55,7 +55,7 @@ export const settings = {
 		capacity: {
 			type: "boolean",
 			env: "PI_STASH_CAPACITY",
-			description: "Enable capacity observation and requests.",
+			description: "Context-capacity observation and continuity requests. false turns off only this feature; other stash tools and commands stay available.",
 			default: true,
 		},
 		checkpointPercent: {

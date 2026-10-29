@@ -35,6 +35,16 @@ mechanism without amending this document first.
 - A section that is present but not an object produces one `invalid` diagnostic
   for the section; its fields use environment and default values.
 
+## Scope of settings
+
+Settings tune an extension while Pi loads it. This contract defines no
+extension-wide `enabled` key; to turn a whole extension off, stop loading it as
+described in [Turn an extension off](../architecture.md#turn-an-extension-off).
+The description of a setting that switches behaviour off or selects a mode
+states what the setting gates and what stays available. That description
+reaches the README table and the registry row, so an agent can answer from
+either without reading the slice's source.
+
 ## Settings and resolution
 
 Each setting has a lower-camelCase key, a `PI_*` environment name, a type, a
@@ -173,7 +183,7 @@ export const settings = {
       env: "PI_POLICY_MODE",
       choices: ["observe", "notice", "annotate", "enforce"],
       default: "observe",
-      description: "Configured machine mode; an ordinary --policy-mode flag overrides it for that session.",
+      description: "Machine mode. observe records facts and candidate effects only; notice adds operator notices; annotate adds model guidance; enforce also applies approved denials and corrections. No mode unloads the extension. An ordinary --policy-mode flag overrides it for that session.",
     },
   },
 } as const;

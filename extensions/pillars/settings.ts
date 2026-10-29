@@ -67,7 +67,7 @@ export const settings = {
 		collect: {
 			type: "boolean",
 			env: "PI_PILLARS_COLLECT",
-			description: "Collect source access evidence.",
+			description: "Collect source access evidence. false stops collection only; corpus access and retained-data readback stay available.",
 			default: true,
 		},
 	},
