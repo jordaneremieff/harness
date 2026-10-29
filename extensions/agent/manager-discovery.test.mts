@@ -189,13 +189,18 @@ it("lists a first page from a live host without undefined wire fields", { timeou
 	const record = f.create();
 	let requests = 0;
 	const host = await runHost(() => ({
-		request: async (method) => { assert.equal(method, "list"); requests++; return { items: [{ identity: record.storageId }] }; },
+		request: async (method, params) => {
+			assert.equal(method, "list");
+			assert.deepEqual(params, { limit: 1 });
+			requests++;
+			return { items: [{ conversationId: 1, identity: record.storageId, busy: false }], next: null };
+		},
 		isIdle: () => true,
 		close: async () => {},
 	}), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
 	t.after(() => host.close());
 	const result = await f.manager.list({ limit: 1 }) as ListResult;
-	assert.equal(result.rows.length, 1);
-	assert.equal(requests, 1);
 	assert.deepEqual(result.coverage.unavailable, []);
+	assert.deepEqual(result.rows, [{ conversationId: 1, identity: record.storageId, busy: false, sessionId: record.storageId, storageId: record.storageId, cwd: f.root, handle: null, role: null, profile: null, profileCoverage: "unknown" }]);
+	assert.equal(requests, 1);
 });

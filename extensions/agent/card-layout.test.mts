@@ -66,7 +66,11 @@ it("all native tool rows share two-tier known headers, native padding and one hi
 it("every registered agent tool has shared factory coverage and both renderer registrations", () => {
 	const tools = registeredTools();
 	assert.ok(tools.has("agent_intent"));
-	assert.deepEqual([...tools.keys()].sort(), Object.keys(createAgentToolCards()).sort());
+	const cards = createAgentToolCards();
+	assert.equal(tools.has("agent_await"), false, "ordinary primaries do not register native await");
+	assert.equal(typeof cards.agent_await.renderCall, "function", "native await retains shared card coverage");
+	assert.equal(typeof cards.agent_await.renderResult, "function");
+	assert.deepEqual([...tools.keys()].sort(), Object.keys(cards).filter((name) => name !== "agent_await").sort());
 	for (const [name, tool] of tools) {
 		assert.equal(typeof tool.renderCall, "function", name);
 		assert.equal(typeof tool.renderResult, "function", name);

@@ -9,7 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { LiveDoc, UsageDoc, type ConversationId, type EntryId, type SubmissionId, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import { AgentManager } from "./manager.ts";
-import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, StatusOutputSchema, StatusToolOutputSchema, nativeStructuredObservation, structuredObservation } from "./observation-schema.ts";
+import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, NativeListOutputSchema, StatusOutputSchema, StatusToolOutputSchema, nativeStructuredObservation, structuredObservation } from "./observation-schema.ts";
 import { page as rosterPage } from "./dashboard-test-fixture.mts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
@@ -241,11 +241,15 @@ it("validates every inspect view and the empty and missing cases against a real 
 it("validates list rows and the manager list aggregation", async (t) => {
 	const { host } = await openRun(t);
 	const page = await readConversationList(host.harness, fixtureStorageId, {}, BACKGROUND_CONTEXT);
+	assert.deepEqual(structuredObservation(NativeListOutputSchema, page), page);
 	assert.equal(page.items.length, 1);
 	const row = page.items[0];
 	assert.ok(row);
 	const merged = structuredObservation(ListRowSchema, { ...row, sessionId: row.identity, storageId: fixtureStorageId, cwd: "/work" });
 	assert.equal(merged.sessionId, fixtureStorageId);
+	for (const invalid of [{ items: [{ identity: row.identity }], next: null }, { items: [merged], next: null }, { items: page.items }, { items: page.items, next: "retired-cursor" }]) {
+		assert.throws(() => structuredObservation(NativeListOutputSchema, invalid), /Observation output does not match its schema/u);
+	}
 
 	const root = fixtureRoot(t);
 	const manager = new AgentManager({

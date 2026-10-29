@@ -22,7 +22,8 @@ function declarations(): Map<string, ToolDeclaration> {
 
 it("declares shared task guidance and exact observation results on primary tools", () => {
 	const tools = declarations();
-	for (const name of AGENT_CONTROL_TOOL_NAMES) {
+	assert.equal(tools.has("agent_await"), false, "native await is absent from ordinary primaries");
+	for (const name of AGENT_CONTROL_TOOL_NAMES.filter((name) => name !== "agent_await")) {
 		const declaration = tools.get(name);
 		assert.ok(declaration);
 		assert.equal(declaration.promptSnippet, AGENT_CONTROL_GUIDANCE[name].snippet);

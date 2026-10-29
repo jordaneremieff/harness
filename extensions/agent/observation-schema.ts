@@ -263,6 +263,12 @@ export const ListRowSchema = object({
 	cwd: string,
 });
 
+/** The host list page contains native summaries, before the manager adds catalog fields. */
+export const NativeListOutputSchema = object({
+	items: Type.Array(Type.Omit(ListRowSchema, ["sessionId", "storageId", "cwd"], { additionalProperties: false })),
+	next: nullable(cursorSchema),
+});
+
 /** `agent_list` output: the manager's bounded catalog scan over native list rows. */
 export const ListOutputSchema = object({
 	rows: Type.Array(ListRowSchema),

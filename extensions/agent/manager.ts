@@ -7,7 +7,7 @@ import { readFleetStatus } from "./fleet-status.ts";
 import { handleSlug, handleStorageId } from "./identity.ts";
 import type { AgentProfile } from "./profile-schema.ts";
 import { profileText } from "./profile.ts";
-import { observationSchema, structuredObservation } from "./observation-schema.ts";
+import { NativeListOutputSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
 import { composeListRow, matchesListRow, enrichDashboardRow } from "./profile-discovery.ts";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { realpathSync, statSync } from "node:fs";
@@ -335,7 +335,8 @@ export class AgentManager {
 	private async observePeer(client: HostConnection, method: string, params: Record<string, unknown>): Promise<unknown> {
 		try {
 			const value = await client.request(method, params);
-			return method === "list" || method === "status" || method === "inspect" ? structuredObservation(observationSchema(method), value) : value;
+			if (method === "list") return structuredObservation(NativeListOutputSchema, value);
+			return method === "status" || method === "inspect" ? structuredObservation(observationSchema(method), value) : value;
 		} catch (error) { throw this.observationPeerError(error, client.runtimeContract); }
 	}
 

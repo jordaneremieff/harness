@@ -95,7 +95,9 @@ A busy configuration refusal
 names the canonical target identity and preserves a supplied handle. Repeat
 `agent_configure` after that target's current work ends.
 
-Live peer observations retain strict current schemas. If the peer declares a
+Live peer observations retain strict current schemas. Host list pages validate
+native conversation summaries before the manager adds catalogue and profile
+fields to tool results. If the peer declares a
 different agent or Pi version, observation failures name the loaded versions
 and the replacement steps. Wait for active work to finish, release the idle
 host, then attach it from the current installation. Restart an ordinary
