@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { isChordError } from "@earendil-works/chord";
 import { connectTransport, type TransportClient, type TransportRequest, type TransportSubscription } from "../../transport/index.ts";
-import { observeClaim, readClaimFile } from "./claims.ts";
+import { classifyClaim, observeClaim, readClaimFile } from "./claims.ts";
 import {
 	HOST_CONTRACT_MEMBER,
 	HostError,
@@ -195,10 +195,23 @@ async function connectClient(serverId: string, socketPath: string): Promise<Tran
 	return connectTransport({serverId, path: socketPath, timeoutMs: CONNECT_WAIT_LIMIT_MS});
 }
 
-/** A live foreign writer has no readiness event in this process. Recovery waits for its catalogue publication. */
+/** A recent live foreign writer is within the default launch readiness window. */
 export class HostReadinessUnavailableError extends HostError {
 	constructor(cause: unknown) {
 		super("The host is starting elsewhere or its live endpoint is unavailable. This Pi has no readiness event for that process. Retry the read after startup; no replacement was started.", "unavailable", { cause });
+	}
+}
+
+function foreignReadinessError(paths: HostPaths, cause: unknown): HostError | undefined {
+	try {
+		const claim = readClaimFile(paths.claim).claim;
+		if (classifyClaim(claim, paths.identity).kind !== "live") return undefined;
+		// classifyClaim validates the timestamp and identity from this same bounded read.
+		const age = Date.now() - Date.parse((claim as { createdAt: string }).createdAt);
+		if (age >= 0 && age < DEFAULT_LAUNCH_TIMEOUT_MS) return new HostReadinessUnavailableError(cause);
+		return new HostError("The live host endpoint is unavailable outside the startup readiness window. No replacement was started.", "unavailable", { cause });
+	} catch {
+		return undefined;
 	}
 }
 
@@ -208,9 +221,7 @@ async function connectWhenReady(paths: HostPaths): Promise<TransportClient> {
 	if (child) await launchedReadiness.get(child);
 	try { return await connectClient(paths.serverId, paths.socket); }
 	catch (error) {
-		if (!child && observeClaim(paths.claim, paths.identity).kind === "live")
-			throw new HostReadinessUnavailableError(error);
-		throw error;
+		throw (!child && foreignReadinessError(paths, error)) || error;
 	}
 }
 

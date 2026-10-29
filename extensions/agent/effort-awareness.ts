@@ -95,7 +95,7 @@ function awarenessPresentation(view: EffortAwareness, mode: AwarenessMode) {
 		efforts: [...view.presence.efforts].sort((a, b) => a.id.localeCompare(b.id)),
 		threads: [...view.threads.items].sort((a, b) => a.id.localeCompare(b.id)),
 		coverage: ["This is a bounded hint, not complete coverage. Read agent_status for current presence and thread coverage, limits, and omitted sources."],
-		serialize: (value: unknown) => JSON.stringify(value, (key, item) => ["lastActivityAt", "startedAt", "updatedAt"].includes(key) ? undefined : item),
+		serialize: (value: unknown) => JSON.stringify(value, (key, item) => ["lastActivityAt", "startedAt", "updatedAt", "intentUpdatedAt"].includes(key) ? undefined : item),
 	};
 	return {
 		quiet: quietAwareness(view),

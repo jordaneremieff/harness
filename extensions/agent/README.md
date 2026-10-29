@@ -1784,7 +1784,9 @@ alias field. Tool selection and MCP server configuration follow the current Pi
 settings.
 
 Durable hosts start servers with `direct` tool exposure at host startup because
-those tool schemas belong in the first model request. Servers with only
+those tool schemas belong in the first model request. The startup wait is bounded;
+a direct server that misses that wait adds its tools when it connects later.
+Servers with only
 `codemode` or `deferred` exposure start on first use, not on host creation or
 recovery. A script naming `mcp__<server>` starts only that server; script
 discovery helpers, `ALL_TOOLS`, `tool_search`, and resource tools start all
@@ -1992,9 +1994,13 @@ Guardian startup failures appear in host diagnostics.
 
 Concurrent recovery callers share the writer-claim boundary. A losing launch
 attaches to the winner when its endpoint is ready. If a live foreign writer has
-no ready endpoint yet, automatic recovery records no failure and waits for its
-catalogue publication. Explicit reads still report that readiness is unavailable;
-no retry poll or second writer bypasses the claim.
+no ready endpoint and its claim is younger than the default launch readiness
+bound (`DEFAULT_LAUNCH_TIMEOUT_MS` in `host-client.ts`), automatic recovery
+suppresses that startup observation. Later recovery observations outside that
+window retain a visible endpoint-unavailable failure until a successful connection
+clears it. Future-dated claims do not qualify for suppression. Explicit reads
+still report unavailable readiness; no retry poll or second writer bypasses
+the claim.
 
 A host that does not advertise `release` started on code without that operation,
 regardless of its advertised release number. After active work and result

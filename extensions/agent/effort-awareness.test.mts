@@ -177,6 +177,20 @@ it("includes unrelated local purpose claims without full authority or integratio
 	assert.ok(prompt.includes("Unrelated local purpose"));
 });
 
+it("keeps machine-only prompt bytes stable when intentUpdatedAt alone changes", async (t) => {
+	const { root, self } = fixture(t);
+	publish(root, randomUUID(), claim("Machine-only purpose"), join(root, "other-cwd"));
+	const view = await readEffortAwareness(root, self);
+	assert.equal(view.presence.efforts[0]?.relationship, "machine");
+	assert.equal(view.presence.efforts[0]?.intentUpdatedAt, claim().updatedAt);
+	const changed = { ...view, presence: { ...view.presence,
+		efforts: view.presence.efforts.map(effort => ({ ...effort, intentUpdatedAt: "2026-10-29T12:00:00.000Z" })),
+	} };
+	assert.equal(formatEffortAwareness(changed, "prompt"), formatEffortAwareness(view, "prompt"));
+	assert.doesNotMatch(formatEffortAwareness(changed, "prompt"), /intentUpdatedAt/u);
+	assert.notEqual(formatEffortAwareness(changed), formatEffortAwareness(view));
+});
+
 it("preserves repository state and declared full gates in the current self view", async (t) => {
 	const { root, self } = fixture(t);
 	publish(root, randomUUID());

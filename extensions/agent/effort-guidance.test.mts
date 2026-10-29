@@ -19,18 +19,16 @@ it("gives ordinary coordination tools completion and low-message guidance", () =
 	assert.match(descriptions.get("agent_send") ?? "", /agreements that others must see in a thread when a participant storage exists/u);
 });
 
-it("routes ordinary fan-out through one native lead without a primary wait", async () => {
-	let execute: (() => Promise<unknown>) | undefined;
+it("routes ordinary fan-out through one native lead without a primary wait", () => {
+	const tools = new Set<string>();
 	register({
 		events: { emit() {}, on: () => () => {} }, on: () => () => {},
-		registerTool: (tool: { name: string; execute: () => Promise<unknown> }) => {
-			if (tool.name === "agent_await") execute = tool.execute;
-		},
+		registerTool: (tool: { name: string }) => { tools.add(tool.name); },
 		registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, registerCommand() {},
 		getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
-	assert.ok(execute);
-	await assert.rejects(execute(), /one Durable lead.*awaits their exact results natively.*one composed answer/u);
+	assert.equal(tools.has("agent_await"), false);
+	assert.ok(tools.has("agent_spawn"));
 	assert.match(AGENT_CONTROL_GUIDANCE.agent_await.guidelines?.join("\n") ?? "", /one Durable lead/u);
 });
 
