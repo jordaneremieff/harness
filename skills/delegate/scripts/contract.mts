@@ -92,7 +92,7 @@ Commands:
   template <kind>                Print the contract template for a kind
   check <file|-> --kind <kind>   Check a filled contract (- reads stdin)
   frame <file|->                 Check a filled frame and print the
-                                 agent_collaborate create arguments as JSON
+                                 agent_collaborate frame fields as JSON
 
 Kinds: ${KINDS.join(", ")}
 
@@ -130,10 +130,11 @@ Checks:
   size                             Words and approximate tokens (characters / ${CHARS_PER_TOKEN})
 
 frame output:
-  On success, stdout holds one JSON object: action "create", title, purpose,
+  On success, stdout holds one JSON object: title, purpose,
   authority, source, restrictions, acceptance, and integrator when filled.
-  Add sessionId before the call when an ordinary primary creates the thread
-  in another participant's storage.
+  Set action to "create" or "revise" in the call. For revise, also set threadId.
+  Add sessionId when an ordinary primary creates the thread in another
+  participant's storage.
 
 Output:
   stdout  check: verdict line with size, or the JSON report with --json
@@ -368,7 +369,7 @@ function runCheck(kind: ContractKind, text: string): Map<string, string> {
 }
 
 function frameArguments(filled: Map<string, string>): Record<string, string> {
-	const args: Record<string, string> = { action: "create" };
+	const args: Record<string, string> = {};
 	for (const field of FRAME_REQUIRED) args[field] = slotText(filled.get(field) ?? "");
 	const integrator = slotText(filled.get("integrator") ?? "");
 	if (integrator !== "") args.integrator = integrator;

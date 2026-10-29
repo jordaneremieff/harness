@@ -22,7 +22,7 @@ Verdict form: each finding with its disposition and cited evidence; the length b
 When the review stops: every finding dispositioned, or the exact blocker named. Post to threads and make other tool calls first; the last message is the complete deliverable.
 
 ## Reply route <!-- required -->
-The exact session identity that receives the verdict.
+The exact session identity that receives the verdict. For thread posts, keep contribution within 256 characters and message within 8,000 characters; write longer content to a file and post its path.
 
 ## Provider or budget notes
 Quota walls or budget limits the reviewer must respect.

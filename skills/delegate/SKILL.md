@@ -88,7 +88,7 @@ exists, or you named why none is needed.
 Pick the fewest agents that cover the independent work. Key the topology to
 facts you can observe. Know which kind of session you are: a native Durable
 session sees its own identity and request routes in its instructions; an
-ordinary primary does not, and its `agent_await` refuses.
+ordinary primary does not, and has no `agent_await` tool.
 
 - **Ordinary primary (not Durable):** it cannot await results natively. If
   the work needs one composed answer from several agents, give the fan-out
@@ -129,7 +129,9 @@ limits; instructions to sleep, wait a fixed time, or poll; and the contract
 size, which is the cost you put on the worker.
 
 Every deliverable contract says: post to threads and make other tool calls
-first; the last message is the complete deliverable. A worker that answers a
+first; the last message is the complete deliverable. Keep thread
+`contribution` within 256 characters and `message` within 8,000 characters.
+Write longer content to a file and post its path. A worker that answers a
 passive notice after its deliverable can displace the answer.
 
 Decide for each contract which skills its agent must read, and name them in
@@ -150,6 +152,24 @@ finding does not apply, and each contract names the skills its agent must
 read or none.
 
 ## 4. Dispatch
+
+Before the first dispatch, show the operator the resolved roster in your
+first dispatch notice:
+
+- Each preset you will use, its exact `provider/model`, and its thinking level.
+  State `off` when creation has no configured thinking level. Do not infer
+  settings from your own model.
+- Recent provider failures or quota walls from `agent_status` with
+  `view: "fleet"`. Keep sampled evidence and its coverage limits explicit;
+  missing evidence is unknown, not a clean provider record.
+- Each model the operator named and its resolution: a matching preset, an
+  explicit override, or a refusal and its reason. With `enforceRoster: true`,
+  creation refuses an explicit model that matches no preset or an operator
+  exclusion. Do not weaken enforcement or silently substitute a model.
+
+Use the current preferences and registry model facts to resolve names. If a
+name remains ambiguous, hold only that dispatch and ask for the missing choice.
+Check creation receipts against this notice and report any effective change.
 
 If you are an ordinary primary and the work needs a thread, spawn the agent
 that will host it idle, create the thread in its storage, then send its task

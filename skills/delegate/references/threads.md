@@ -39,8 +39,10 @@ Fill `assets/frame.md`, then convert and check it in one step:
 node scripts/contract.mts frame <scratch>/frame.md
 ```
 
-The command prints the `create` arguments as JSON, or names the missing and
-oversized fields and exits nonzero. Fields:
+The command prints frame fields as JSON without an `action`, or names the
+missing and oversized fields and exits nonzero. Set `action: "create"` in a
+new-thread call. For an existing thread, use `{ ...frame, action: "revise",
+threadId }`. Fields:
 
 - **Title:** short and specific to the outcome.
 - **Purpose:** the goal and the use path: what changes for the operator.
@@ -62,6 +64,9 @@ operator decision distinct from your interpretation.
   task and its hold or release condition. A second join revises it.
 - **Post:** `message` with an optional `source` and `replyTo` event. Use
   `kind: "carried-authority"` with a `source` to relay an operator decision.
+- **Size:** keep `contribution` within 256 characters and `message` within
+  8,000 characters. Write longer content to a file and post its path.
+  Do not split the content across repeated posts to evade the caps.
 - **Notify:** named `notify` recipients get a steer and a model wake. Other
   members get passive notices at existing boundaries, with no model turn.
   Name recipients only when their attention matters now.

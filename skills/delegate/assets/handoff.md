@@ -22,4 +22,4 @@ Queued or expected inputs the receiver must handle.
 Ordered next steps, each with its completion condition.
 
 ## Thread ID
-The threads the receiver must rejoin, update, or close.
+The threads the receiver must rejoin, update, or close. Keep contribution within 256 characters and message within 8,000 characters; write longer content to a file and post its path.

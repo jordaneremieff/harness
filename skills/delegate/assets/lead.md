@@ -37,7 +37,7 @@ When the lead stops: all workers resolved, the answer composed, blockers named e
 The exact session identity that receives the composed answer.
 
 ## Thread ID
-The collaboration thread the lead creates, runs, or joins.
+The collaboration thread the lead creates, runs, or joins. Keep contribution within 256 characters and message within 8,000 characters; write longer content to a file and post its path.
 
 ## Provider or budget notes
 Quota walls, substitution order, or budget limits for the lead and its workers.

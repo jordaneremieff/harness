@@ -20,7 +20,7 @@ answers win over this table.
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
 | A recurring concern needs a standing owner | `agent_spawn` with `handle` (slug without `@`), `role` | Resolve or create one standing root; address it later as `@slug` | Other efforts share the handle catalogue, so a common handle can resolve to their agent; reuse never reapplies creation defaults; supplied model, thinking and role come back unapplied, a name is ignored, a conflicting cwd refuses | `#standing-agents-and-expertise` |
-| One-off worker | `agent_spawn` without `handle`, with `name` for a label | Same cwd places a conversation in the caller's storage; a different cwd creates a new storage host | `role` requires a handle; set another agent's role with `agent_profile` | `#agent-collaboration-and-placement` |
+| One-off worker | `agent_spawn` without `handle`, with `name` for a label | Same cwd places a conversation in the caller's storage; a different cwd creates a new storage host | An explicit `role` is saved on the new agent's profile without a handle; later changes use `agent_profile` | `#agent-collaboration-and-placement` |
 | Pick the model | `preset` on spawn or place | Omit model and preset for the configured default; name an exact model only when a direction requires it | Creation never inherits the creator's model or thinking; absent thinking defaults to off | `#execution-presets-and-delegation-preferences` |
 | Change an idle agent's model | `agent_configure` | Idle only; explicit argument, then preset, then retained values | A busy refusal names the target; repeat after its run ends | `#selection-and-unapplied-fields` |
 | Work bound to a directory | `agent_place` | Resolves the longest directory binding or creates one | A reused owner keeps its own model; supplied fields are reported unapplied | `#controls` |
@@ -40,7 +40,7 @@ answers win over this table.
 
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
-| A native Durable session needs several results | `agent_await` with exact references | One call, at most 16 references; no provider calls while waiting | Ordinary primaries refuse this; route answer-bearing fan-out through one Durable lead | `#await-exact-peer-results` |
+| A native Durable session needs several results | `agent_await` with exact references | One call, at most 16 references; no provider calls while waiting | Ordinary primaries have no `agent_await` tool; route answer-bearing fan-out through one Durable lead | `#await-exact-peer-results` |
 | The wait releases early | `agent_await` again | Explicit input or the first provider retry releases with partial outcomes; apply the input, then await the unresolved references on the same request | Never answer only to wait | `#await-exact-peer-results` |
 | A long answer is cut | `agent_inspect` | Use the exact continuation the await result names | A truncated answer is not a failed one | `#await-exact-peer-results` |
 | An ordinary primary waits | none | End the turn or do independent work; results arrive by delivery | Do not poll status or inspect in a loop | `#recovery-and-delivery` |

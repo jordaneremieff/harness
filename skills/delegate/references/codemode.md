@@ -35,13 +35,13 @@ const taskFile = "<scratch>/task.md";
 const framed = await tools.bash({ command: `node ${skill}/scripts/contract.mts frame ${frameFile}` });
 const exitCode = framed.exitCode ?? framed.exit_code;
 if (exitCode !== 0) return { stop: "frame check failed", findings: framed.output.slice(0, 2000) };
-const frame = JSON.parse(framed.output);
+const frame = JSON.parse(framed.output); // Fields only; the caller selects create or revise.
 
 const receipt = asObject(await tools.agent_spawn({ name: "lead", preset: "worker" }));
 const lead = receipt.result?.sessionId ?? receipt.sessionId ?? receipt.identity;
 if (!lead) return { stop: "spawn receipt names no identity", receipt };
 
-const thread = asObject(await tools.agent_collaborate({ ...frame, sessionId: lead }));
+const thread = asObject(await tools.agent_collaborate({ ...frame, action: "create", sessionId: lead }));
 const task = (await tools.read({ path: taskFile })).replace("{{THREAD_ID}}", thread.threadId ?? thread.id);
 const sent = asObject(await tools.agent_send({ sessionId: lead, message: task, checkInMinutes: 30 }));
 

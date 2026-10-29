@@ -17,9 +17,9 @@ test("bootstrap recipe accepts the bash result of each supported host and stops 
 			const values = new Map<string, unknown>();
 			const result = await runInNewContext(`(async () => {\n${source}\n})()`, {
 				tools: {
-					bash: async () => ({ [field]: exit, output: '{"action":"create"}' }),
+					bash: async () => ({ [field]: exit, output: '{"title":"Shared work"}' }),
 					agent_spawn: async () => { calls.push("spawn"); return { result: { sessionId: "lead" } }; },
-					agent_collaborate: async () => ({ threadId: "thread" }),
+					agent_collaborate: async (args: { action: string; title: string }) => { assert.equal(args.action, "create"); assert.equal(args.title, "Shared work"); return { threadId: "thread" }; },
 					read: async () => "Task for {{THREAD_ID}}",
 					agent_send: async (args: { message: string }) => {
 						assert.equal(args.message, "Task for thread");
@@ -249,12 +249,14 @@ test("does not flag prohibitions of sleep, waits, or polling", () => {
 	assert.equal(status, 0, JSON.stringify(report.findings));
 });
 
-test("frame prints agent_collaborate create arguments for a clean frame", () => {
+test("frame prints action-free fields for create and revise calls", () => {
 	const result = runFrame(fillTemplate("frame", (slot) => (slot === "Integrator" ? "" : undefined)));
 	assert.equal(result.status, 0, result.stderr);
 	const args: unknown = JSON.parse(result.stdout);
 	assert.ok(isRecord(args));
-	assert.equal(args.action, "create");
+	assert.equal(Object.hasOwn(args, "action"), false);
+	assert.equal({ action: "revise", ...args }.action, "revise");
+	assert.equal({ action: "create", ...args }.action, "create");
 	assert.equal(args.title, "Filled content for Title.");
 	assert.equal(args.source, "Filled content for Source.");
 	assert.equal(args.authority, fillerFor("Authority"));

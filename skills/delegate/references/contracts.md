@@ -22,7 +22,7 @@ the filled copy with `check <file> --kind <kind>`.
 | `lead` | A Durable lead that fans out, awaits exact results, and returns one composed answer |
 | `partner` | A capable peer invited to judge and disagree |
 | `review` | An independent check of a named claim |
-| `frame` | Thread `create` fields |
+| `frame` | Thread frame fields for `create` or `revise`, without an action |
 | `handoff` | An `agent_reset` handoff or stash handover |
 
 ## Slot meanings
@@ -51,7 +51,9 @@ the filled copy with `check <file> --kind <kind>`.
   descriptions seem enough, so name the one whose method matters: `delegate`
   for an agent that runs its own team, `dig` for an evidence question. Leave
   it empty when the contract carries the whole method.
-- **Thread ID:** the thread to join first, when work is shared.
+- **Thread ID:** the thread to join first, when work is shared. Keep
+  `contribution` within 256 characters and `message` within 8,000 characters.
+  Write longer content to a file and post its path.
 - **Provider or budget notes:** known walls, the substitution order, and
   what to do at a wall (stop and report the exact error text).
 - **Lead-only slots:** fan-out ownership (parts, presets, what the lead

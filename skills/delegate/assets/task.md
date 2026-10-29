@@ -37,7 +37,7 @@ The state at which the worker stops and reports, including the blocker form. Pos
 The exact session identity that receives the answer, and any thread to update.
 
 ## Thread ID
-The collaboration thread to join or read, when the work is shared.
+The collaboration thread to join or read, when the work is shared. Keep contribution within 256 characters and message within 8,000 characters; write longer content to a file and post its path.
 
 ## Provider or budget notes
 Quota walls, substitution order, or budget limits the worker must respect.
