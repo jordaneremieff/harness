@@ -458,6 +458,42 @@ it("applies an afterTool ToolTask hook to a nested codemode result", { timeout: 
 	}
 });
 
+it("starts only the named indirect server on demand and keeps prompt declarations stable", { timeout: 30000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "mcp-demand-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const one = join(root, "one.events"), two = join(root, "two.events");
+	const f = await executionFixture(t, {
+		code: 'return await tools.mcp__one_more__list_topics({});',
+		mcpServers: {
+			one_more: { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: one } },
+			one: { command: process.execPath, args: [fixtureServerPath], exposure: "deferred", env: { MCP_FIXTURE_EVENTS_FILE: two } },
+		},
+	});
+	assert.equal(existsSync(one), false);
+	assert.equal(existsSync(two), false);
+	const result = await f.submit("call one server");
+	assert.match(toolResultBody(result.toolResults.at(-1)), /called list-topics/u);
+	assert.match(readFileSync(one, "utf8"), /^started /u);
+	assert.equal(existsSync(two), false);
+	assert.deepEqual(declaredTools(f.requests[1]), declaredTools(f.requests[0]));
+	assert.deepEqual(f.requests[1].messages.filter(message => message.role === "system"), f.requests[0].messages.filter(message => message.role === "system"), "connection completion emits no system or tool declaration patch");
+});
+
+for (const code of ['return await searchTools("topics");', 'return ALL_TOOLS;', 'return await tools.list_mcp_resources({});']) it(`starts all indirect servers for discovery: ${code}`, { timeout: 30000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "mcp-discovery-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const one = join(root, "one.events"), two = join(root, "two.events");
+	const f = await executionFixture(t, { code, mcpServers: {
+		one: { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: one } },
+		two: { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_EVENTS_FILE: two } },
+	} });
+	assert.equal(existsSync(one), false);
+	assert.equal(existsSync(two), false);
+	await f.submit("discover resources");
+	assert.match(readFileSync(one, "utf8"), /^started /u);
+	assert.match(readFileSync(two, "utf8"), /^started /u);
+});
+
 it("reaches a stdio MCP server from codemode with normalized names and structured results", { timeout: 60000 }, async (t) => {
 	const code = `const info = await describeNamespace("dev-docs");
 		const listed = await tools.mcp__dev_docs__list_topics({});

@@ -1828,7 +1828,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		try {
 			const meta = await input.read.snapshot(AgentMetaDoc, input.conversationId, context);
 			const self = nativeIntentSelf(identity(input.conversationId), input.agent.cwd ?? host.cwd, meta === undefined ? null : meta.intent);
-			return formatEffortAwareness(await readEffortAwareness(dirname(host.catalogRoot), self, undefined, "reported"));
+			return formatEffortAwareness(await readEffortAwareness(dirname(host.catalogRoot), self, undefined, "reported"), "prompt");
 		} catch {
 			return "Current effort and active thread awareness is unavailable. Read agent_status for a new bounded observation. Earlier notices describe changes, not current state.";
 		}

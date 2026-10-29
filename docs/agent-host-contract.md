@@ -966,6 +966,13 @@ separate answers. Sources:
 `manager.ts` (`controlClient`), `durable-delivery.ts` (`reportProvenance`), and
 `durable-agents.ts` (`Reporter`).
 
+The `agent-request-context` system section contains stable routing instructions.
+A generation hook projects the active routes and bounded original-task previews
+as a request-only user message. Compaction does not remove the retained route
+evidence, and request changes do not patch the system prefix. Profile reads
+continue to expose unfinished routes. Sources: `request-context.ts`
+(`requestContextSection`, `requestContextHook`, `readRequestContextPage`).
+
 The ordinary manager's `control("submit")` maps to `task-submit`; raw host `submit` is a different base operation. Match the documented wire member, not a manager method name. The standalone terminal uses operator origin and self-owned replyTo. Source: `extensions/agent/manager.ts:469-514`; `extensions/agent/terminal-client.ts:123-131`.
 
 ### compact

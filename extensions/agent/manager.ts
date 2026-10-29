@@ -22,7 +22,7 @@ import { readPrimaryObservation, type OrdinaryPrimaryObservation } from "./prima
 import { discoverPrimaryLocation, readRelatedEfforts, type EffortPresencePage } from "./effort-presence.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
-import { acquireHost, connectHost, type HostConnection, type HostObservationListener } from "./host-client.ts";
+import { acquireHost, connectHost, HostReadinessUnavailableError, type HostConnection, type HostObservationListener } from "./host-client.ts";
 import { hostRequestVersionError, hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { observeClaim, type ClaimObservation } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
@@ -1128,6 +1128,8 @@ export class AgentManager {
 			await this.monitorRecovery(record.storageId, client, primary);
 		} catch (error) {
 			this.recovering.delete(record.storageId);
+			// A competing writer owns startup. Its catalogue publication triggers the next observation.
+			if (error instanceof HostReadinessUnavailableError) return;
 			this.recordRecoveryError(record.storageId, errorText(error));
 		}
 	}

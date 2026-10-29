@@ -690,14 +690,14 @@ function createTransport(entry: McpServerEntry, cwd: string, authProvider: AuthP
 	});
 }
 
-type ServerState = "connecting" | "connected" | "failed" | "disconnected" | "closed";
+type ServerState = "idle" | "connecting" | "connected" | "failed" | "disconnected" | "closed";
 
 /** One configured MCP server: connection, reconnection, and tool refresh. */
 class McpServerConnection {
 	readonly entry: McpServerEntry;
 	readonly timeoutMs: number;
-	readonly ready: Promise<void>;
-	state: ServerState = "connecting";
+	state: ServerState = "idle";
+	private readiness: Promise<void> | undefined;
 	error: string | undefined;
 	tools: McpTool[] = [];
 	hasResources = false;
@@ -719,7 +719,11 @@ class McpServerConnection {
 		this.onTools = onTools;
 		this.authProvider = authProvider;
 		this.timeoutMs = (entry.config.timeout ?? 60) * 1000;
-		this.ready = this.open().then(
+	}
+
+	/** Demand starts one shared connection attempt; construction alone starts no transport. */
+	get ready(): Promise<void> {
+		this.readiness ??= this.getClient().then(
 			() => undefined,
 			(error: unknown) => {
 				if (!this.closed) {
@@ -728,6 +732,7 @@ class McpServerConnection {
 				}
 			},
 		);
+		return this.readiness;
 	}
 
 	getClient(): Promise<McpClient> {
@@ -982,6 +987,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		for (const server of host.signal.aborted ? [] : activation.servers) {
 			this.servers.push(new McpServerConnection(server, host.cwd, () => this.rebuildMcpTools(), createServerAuthProvider(server, authStore, host.services.modelRuntime), this.guardian));
 		}
+		this.rebuildMcpTools();
 		this.ready = this.waitForDirectServers();
 	}
 
@@ -1078,7 +1084,8 @@ class DurableExecutionRuntime implements DurableExecution {
 			});
 			this.registerServerTools(server);
 		}
-		const exposures = new Set(this.resourceServers().map((server) => server.entry.config.exposure ?? "codemode"));
+		// Resource capabilities are unknown until use. Keep the declarations independent of connection progress.
+		const exposures = new Set(this.servers.filter((server) => server.entry.config.exposure !== "hidden").map((server) => server.entry.config.exposure ?? "codemode"));
 		if (exposures.size > 0) for (const tool of this.resourceTools) this.liveTools.push({ ...tool, ...(exposures.has("direct") ? {} : { deferred: true }) });
 	}
 
@@ -1120,7 +1127,7 @@ class DurableExecutionRuntime implements DurableExecution {
 
 	private async waitForScriptServers(code: string, context: Context): Promise<void> {
 		const wantsAll = /\b(searchTools|describeNamespace|describeTool|ALL_TOOLS)\b/.test(code);
-		const waiting = this.servers.filter((server) => wantsAll || code.includes(mcpNamespace(server.entry.name)) || /\b(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource)\b/.test(code));
+		const waiting = this.servers.filter((server) => wantsAll || new RegExp(`\\b${mcpNamespace(server.entry.name)}(?:__|\\b)`, "u").test(code) || /\b(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource)\b/.test(code));
 		await this.waitForServers(waiting, context);
 	}
 	private async waitForAllServers(context: Context): Promise<void> { await this.waitForServers(this.servers, context); }
@@ -1249,7 +1256,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		while (kept > 0 && size(kept) > MAX_SERVERS_SECTION_CHARS) kept--;
 		const perServer = kept === 0 ? 0 : Math.min(MAX_SERVER_DESCRIPTION_CHARS, Math.floor((MAX_SERVERS_SECTION_CHARS - size(kept)) / kept) - 2);
 		const lines = listed.slice(0, kept).map((server, index) => {
-			const summary = perServer > 0 ? truncateLine(server.entry.config.description ?? server.instructions ?? "", perServer) : "";
+			const summary = perServer > 0 ? truncateLine(server.entry.config.description ?? "", perServer) : "";
 			return summary === "" ? heads[index] : `${heads[index]}: ${summary}`;
 		});
 		return [intro, ...lines, ...omitted(listed.length - kept)].join("\n");

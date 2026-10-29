@@ -55,7 +55,7 @@ function controlParams(input: unknown): Record<string, unknown> {
 
 /** Methods that admit work or delivery into this storage. */
 import { projectProfiles } from "./profile.ts";
-import { requestContextSection } from "./request-context.ts";
+import { requestContextHook, requestContextSection } from "./request-context.ts";
 import { withProfileHints, withIntentClaims } from "./catalog-view.ts";
 import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 
@@ -427,7 +427,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 				try { return await stopForeignReferences((method, input) => manager.control(method, input, caller), references, context); }
 				finally { manager.close(); }
 			});
-			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(() => host.harness)] });
+			services.registry.install({ name: "agent.request-context", sections: [requestContextSection()], hooks: [requestContextHook(() => host.harness)] });
 			unsubscribeClose?.();
 			unsubscribeClose = opened.harness.subscribeClose(() => {
 				activityGeneration++;

@@ -73,7 +73,10 @@ it("keeps abort compatible and refuses release when either peer lacks it", () =>
 	const operations = { ...HOST_CONTRACT.operations };
 	delete operations.release;
 	const oldRuntime = { ...HOST_CONTRACT, operations };
-	assert.match(contractRefusal("release", oldRuntime)?.message ?? "", /does not advertise release/u);
+	const refusal = contractRefusal("release", oldRuntime)?.message ?? "";
+	assert.match(refusal, /started on agent code without release support.*does not advertise release/u);
+	assert.match(refusal, /active work and result deliveries finish.*SIGTERM.*agent_attach/u);
+	assert.doesNotMatch(refusal, /This Pi uses agent release|Restart the caller|let an idle host retire/u);
 	assert.match(operationContractMismatch("release", HOST_CONTRACT.operations.release, oldRuntime) ?? "", /no current contract/u);
 	assert.equal(contractRefusal("abort", oldRuntime), undefined);
 	assert.equal(operationContractMismatch("abort", HOST_CONTRACT.operations.abort, oldRuntime), undefined);

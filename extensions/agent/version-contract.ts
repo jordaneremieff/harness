@@ -132,5 +132,6 @@ export function operationContractMismatch(method: string, remote: OperationContr
 
 export function contractRefusal(method: string, remote: RuntimeContract): Error | undefined {
 	const mismatch = operationContractMismatch(method, remote.operations[method]);
+	if (method === "release" && !remote.operations.release) return new Error("The host started on agent code without release support and does not advertise release. After its active work and result deliveries finish, stop that host process with SIGTERM, then use agent_attach to start it with current agent code.");
 	return mismatch ? new Error(`${mismatch} This Pi uses agent release ${HOST_CONTRACT.release} (Pi ${HOST_CONTRACT.upstream.codingAgent}, Durable ${HOST_CONTRACT.upstream.durable}); the host uses ${remote.release} (Pi ${remote.upstream.codingAgent}, Durable ${remote.upstream.durable}). Restart the caller to load current agent code; let an idle host retire, then use agent_attach and retry. Active work stays intact.`) : undefined;
 }

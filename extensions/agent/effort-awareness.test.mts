@@ -78,6 +78,30 @@ it("unifies self-published purpose, related presence and active thread hints wit
 	assert.equal(formatEffortAwareness(view), prompt);
 });
 
+it("keeps prompt bytes stable when clocks, traversal counters and activity ordering change", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	publish(root, randomUUID());
+	publish(root, randomUUID());
+	publishThread(catalog, root);
+	const view = await readEffortAwareness(root, { ...self, intentClaim: claim() }, catalog);
+	const before = formatEffortAwareness(view, "prompt");
+	const changed = { ...view,
+		self: { ...view.self, intentClaim: { ...claim(), updatedAt: "2026-10-29T12:00:00Z" } },
+		presence: { ...view.presence,
+			efforts: [...view.presence.efforts].reverse().map(effort => ({ ...effort,
+				lastActivityAt: "2026-10-29T12:00:00Z", startedAt: "2026-10-29T10:00:00Z",
+				...(effort.intentClaim ? { intentClaim: { ...effort.intentClaim, updatedAt: "2026-10-29T12:00:00Z" } } : {}),
+			})),
+			coverage: { ...view.presence.coverage, visited: view.presence.coverage.visited + 1, dead: view.presence.coverage.dead + 1 },
+		},
+		threads: { ...view.threads, coverage: { ...view.threads.coverage, visited: view.threads.coverage.visited + 1 }, items: view.threads.items.map(thread => ({ ...thread, updatedAt: thread.updatedAt + 1 })) },
+	};
+	assert.equal(formatEffortAwareness(changed, "prompt"), before);
+	assert.notEqual(formatEffortAwareness(changed), formatEffortAwareness(view), "tools retain current clocks and coverage");
+	changed.self.intentClaim = { ...claim(), purpose: "New material purpose" };
+	assert.notEqual(formatEffortAwareness(changed, "prompt"), before);
+});
+
 it("never emits observed competitors with declared intent, including compact prompt rows", async (t) => {
 	const { root, self } = fixture(t);
 	const observedPurpose = { source: "interactive-input" as const, text: "UNRELATED-LATER-REMARK" };
@@ -262,10 +286,10 @@ it("refreshes native root and child sections at model requests while stable stat
 	const body = emptyPrompt.match(/<agent-efforts>\n([\s\S]*?)\n<\/agent-efforts>/u)?.[1];
 	assert.ok(body);
 	assert.equal(body.split("\n").length, 1);
-	assert.ok(body.includes("Active thread hints: 1"));
+	assert.ok(body.includes("Read agent_status for current coverage and active thread hints"));
 	rmSync(join(sessionsRoot, "durable"), { recursive: true, force: true });
 	await say(root);
-	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("No other live efforts or active thread hints in the covered sources."));
+	assert.ok(getCurrentSystemPrompt(requests.at(-1) ?? []).includes("No other live effort is shown."));
 });
 
 it("adds awareness only to native untargeted status and preserves host fields and selected status", async (t) => {

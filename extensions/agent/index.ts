@@ -893,7 +893,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("before_agent_start", async (event, ctx) => {
 		event.systemPromptOptions.sections["agent-preferences"] = renderAgentPreferences(refreshPreferences(ctx));
-		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd));
+		event.systemPromptOptions.sections["agent-efforts"] = formatEffortAwareness(await getManager().awareness(ctx.sessionManager.getSessionId(), ctx.cwd), "prompt");
 	});
 	pi.on("input", (event, ctx) => {
 		const id = ctx.sessionManager.getSessionId();

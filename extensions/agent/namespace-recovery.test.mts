@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
@@ -12,7 +13,8 @@ import { AgentCatalog } from "./catalog.ts";
 import { AgentManager } from "./manager.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureStorageId, gateTool, hostOptions, scriptedRuntime, toolCallMessage, answerMessage } from "./durable-host-fixture.mts";
-import type { HostConnection } from "./host-client.ts";
+import { connectHost, type HostConnection } from "./host-client.ts";
+import { hostPaths } from "./host-protocol.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { parseNamespaceRecovery } from "./namespace-recovery.ts";
 
@@ -56,6 +58,28 @@ test("namespace recovery resumes a retained unanswered native input after every 
 	assert.equal((await recovered.wait(input.submissionId)).status, "done");
 	assert.equal((await new AgentCatalog(ordinaryRoot).page({ limit: 20 })).records.length, 0);
 	assert.notEqual(record.storageId, fixtureStorageId);
+});
+
+test("recovery stays silent while another writer owns an unavailable startup endpoint", { timeout: 10000 }, async t => {
+	const root = mkdtempSync(join(tmpdir(), "agent-competing-recovery-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const catalog = new AgentCatalog(root);
+	const record = catalog.create({ cwd: root, agentDir: root, packageDir, model: { provider: "fixture", modelId: "fixture" }, thinkingLevel: "off", ownerId: "operator" });
+	catalog.markRecoveryDue(record.storageId, true);
+	const paths = hostPaths(record);
+	mkdirSync(dirname(paths.claim), { recursive: true });
+	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: record.storageId, cwd: record.cwd, createdAt: new Date().toISOString() }));
+	let connections = 0;
+	const manager = new AgentManager({ root, agentDir: root, packageDir,
+		connect: async metadata => { connections++; return connectHost(metadata); },
+		acquire: async () => { throw new Error("A competing live writer must not be replaced"); },
+	});
+	const controller = new AbortController();
+	t.after(() => { controller.abort(); manager.close(); });
+	const report = await manager.recoverNamespace(controller.signal);
+	assert.equal(report.attempted, 1);
+	assert.equal(connections, 1);
+	assert.deepEqual(report.failures, []);
 });
 
 test("the namespace recovery child supports Chord readiness and shutdown without provider configuration", { timeout: 10000 }, async t => {

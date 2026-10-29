@@ -7,7 +7,7 @@ import { answerMessage, completed, fixtureRegistry, fixtureRuntime, gateTool, to
 import { AgentDeliveryDoc, recordDeliveryIntent, settleDeliveries } from "./durable-controls.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
-import { cleanupRequestContexts, projectRequestContexts, readRequestContexts, readRequestContextPage, recordRequestContext, requestContextSection, validateRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT, REQUEST_CONTEXT_PROJECTION_LIMIT, type RequestContext } from "./request-context.ts";
+import { cleanupRequestContexts, projectRequestContexts, readRequestContexts, readRequestContextPage, recordRequestContext, requestContextSection, requestContextHook, renderRequestContext, validateRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT, REQUEST_CONTEXT_PROJECTION_LIMIT, type RequestContext } from "./request-context.ts";
 
 const route = (requestId = "task-a"): RequestContext => ({ requestId, requester: "requester-b", replyTo: "recipient-c", origin: "model" });
 async function fixture(t: TestContext) {
@@ -76,13 +76,29 @@ it("associates each prompt route with its bounded original task in native input 
 		const second = await placed(tx, conversation.id, b, "😀".repeat(513));
 		(await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [second, first] };
 	}, context);
-	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);
+	const rendered = await renderRequestContext(harness, conversation.id, context);
 	assert.ok(rendered);
 	const lines = rendered.split("\n").slice(1).map((line) => JSON.parse(line));
 	assert.deepEqual(lines.map((line) => line.requestId), ["b", "a"]);
 	assert.equal(lines[0].requester, "requester-d");
 	assert.deepEqual(lines[0].task, { preview: "😀".repeat(512), truncated: true });
 	assert.deepEqual(lines[1].task, { preview: "First task", truncated: false });
+});
+
+it("keeps the system section identical across route changes while current context follows the run", async (t) => {
+	const { harness, conversation } = await fixture(t);
+	const section = requestContextSection();
+	const input = { conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} };
+	const first = await section.render(input, context);
+	await harness.commit(async (tx) => {
+		const request = route("new-route");
+		await recordRequestContext(tx, conversation.id, request);
+		const submissionId = await placed(tx, conversation.id, request);
+		(await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [submissionId] };
+	}, context);
+	assert.equal(await section.render(input, context), first);
+	assert.doesNotMatch(first ?? "", /new-route|requester-b/u);
+	assert.match(await renderRequestContext(harness, conversation.id, context), /new-route.*requester-b/u);
 });
 
 it("keeps request routes independent of compaction and fork history", async (t) => {
@@ -153,7 +169,7 @@ it("omits oversized retained route fields from projections without changing nati
 	}, context);
 	assert.deepEqual(await readRequestContextPage(harness, conversation.id, context), { requests: [], omitted: 1 });
 	assert.deepEqual(await harness.commit((tx) => projectRequestContexts(tx, conversation.id), context), { requests: [], omitted: 1, unknown: 0 });
-	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);
+	const rendered = await renderRequestContext(harness, conversation.id, context);
 	assert.match(rendered ?? "", /1 further routes omitted/u);
 	assert.doesNotMatch(rendered ?? "", /rrrrr/u);
 	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.intents[0]?.requestId, request.requestId);
@@ -180,9 +196,8 @@ it("preserves accepted task and native submission routes beyond the new-admissio
 
 it("replaces stale prompt routes with an unavailable notice if native lookup fails", async (t) => {
 	const { harness, conversation } = await fixture(t);
-	const agent = await conversation.agent(context);
 	t.mock.method(harness, "commit", async () => { throw new Error("Native read unavailable"); });
-	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent, env: undefined, read: harness, shown: { "agent-request-context": "Stale requester" } }, context);
+	const rendered = await renderRequestContext(harness, conversation.id, context);
 	assert.match(rendered ?? "", /routes are unavailable/u);
 	assert.doesNotMatch(rendered ?? "", /Stale requester/u);
 });
@@ -205,7 +220,7 @@ it("renders the first provider request before the delivery link exists and resto
 	});
 	const registry = createRegistry();
 	let harness!: Harness;
-	registry.install(defineExtension({ name: "request-fixture", tools: [gateTool(gate, started)], tasks: [CheckInTask, CheckInDeadlineTask], sections: [requestContextSection(() => harness)] }));
+	registry.install(defineExtension({ name: "request-fixture", tools: [gateTool(gate, started)], tasks: [CheckInTask, CheckInDeadlineTask], sections: [requestContextSection()], hooks: [requestContextHook(() => harness)] }));
 	harness = await Harness.open(new MemoryStorage(), { models: runtime, registry, settings: { compaction: { keepRecentTokens: 1 } } }, context);
 	t.after(() => harness.close(context));
 	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
@@ -218,6 +233,8 @@ it("renders the first provider request before the delivery link exists and resto
 	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.intents[0]?.submissionId, null, "the provider observes routes before linkDeliveryIntent");
 	assert.match(requests[0], /agent-request-context/u);
 	assert.match(requests[0], /requester-b/u);
+	const firstSystems = JSON.parse(requests[0]).messages.filter((message: { role: string }) => message.role === "system");
+	assert.doesNotMatch(JSON.stringify(firstSystems), /requester-b|recipient-c|task-a/u);
 	const compaction = await conversation.compact("Summarize without requester identifiers", context);
 	const compacted = await harness.waitForTask(compaction, context);
 	assert.equal(compacted.state.outcome.status, "completed");
@@ -229,8 +246,11 @@ it("renders the first provider request before the delivery link exists and resto
 	const finalRequest = requests.at(-1);
 	assert.ok(finalRequest);
 	const final = JSON.parse(finalRequest);
-	assert.ok(!final.messages.some((message: { role: string; content: unknown }) => message.role === "user" && JSON.stringify(message.content).includes("Do work")), "compaction removes the original user input");
+	assert.ok(!final.messages.some((message: { role: string; content: unknown }) => message.role === "user" && message.content === "Do work"), "compaction removes the original user input");
 	assert.match(requests.at(-1) ?? "", /preview.*Do work/u, "the route retains a bounded association with its original task");
+	const routeSections = final.messages.filter((message: { role: string; sections?: Record<string, string> }) => message.role === "system" && message.sections?.["agent-request-context"]);
+	assert.equal(routeSections.length, 1, "changing routes produces no system patch");
+	assert.equal(routeSections[0].sections["agent-request-context"], firstSystems[0].sections["agent-request-context"]);
 	await settleDeliveries(harness, context);
 	assert.deepEqual((await harness.snapshot(RequestContextDoc, conversation.id, context))?.requests, []);
 });

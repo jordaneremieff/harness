@@ -1594,17 +1594,20 @@ leave global recency unknown.
 
 Ordinary primaries and Durable agents read this view through untargeted
 `agent_status`. Their model context receives a separate current-effort section
-at natural run boundaries. The section contains no relative ages or render-time
-clock, so unchanged source state gives unchanged text. If no other live effort
-appears, one line reports the empty or partial view and points to `agent_status`
-when thread hints or unknown sources need detail. Awareness is available only
+at natural run boundaries. Prompt rows use identity order and omit activity,
+start, and update timestamps. Traversal counters stay in `agent_status`, not
+the system prefix. Clock and counter changes alone leave section bytes unchanged;
+material purpose, scope, presence, and thread changes still update the section.
+If no other live effort appears, one line points to `agent_status` for current
+coverage and thread hints. Awareness is available only
 through this per-run context, explicit tool reads, and the Related efforts view.
 Registration, intent publication, and intent clearing do not append unsolicited
 transcript entries or send automatic effort notices. Endpoint publication and
 local roster refresh remain independent of transcript delivery. Direct messages,
 check-ins, and thread notices retain their existing delivery behavior. There is
 no presence polling, file watcher, automatic model wake, or new store. Every view
-reports its finite coverage and omissions. Ordinary descriptors, native catalogue
+reports its presentation omissions; tool observations also report finite traversal
+coverage. Ordinary descriptors, native catalogue
 entries and native claim rows share the visit, result and byte caps in the tool
 result. Ordinary descriptors consume visits first, so a large ordinary sample
 leaves fewer visits for native roots. A cut-off scan reports partial coverage.
@@ -1772,6 +1775,17 @@ saves displayed images and adds their file paths to its output. Native namespace
 discovery uses names and prefixes; Durable's public namespace contract has no
 alias field. Tool selection and MCP server configuration follow the current Pi
 settings.
+
+Durable hosts start servers with `direct` tool exposure at host startup because
+those tool schemas belong in the first model request. Servers with only
+`codemode` or `deferred` exposure start on first use, not on host creation or
+recovery. A script naming `mcp__<server>` starts only that server; script
+discovery helpers, `ALL_TOOLS`, `tool_search`, and resource tools start all
+configured servers. Resource tool declarations do not depend on connection
+progress. Indirect tool discovery alone does not change model declarations;
+`tool_search` explicitly loads selected tools. Choose exposure per server in
+`mcp.json`; any direct tool override keeps that server's startup eager.
+Ordinary primaries retain Pi's own eager MCP startup.
 
 MCP configuration is read at host startup or native host reload. In a trusted
 project, an entry in `.pi/mcp.json` without `command`, `url`, or `type` overrides
@@ -1969,6 +1983,17 @@ Guardian startup failures appear in host diagnostics.
 
 ## Recovery and delivery
 
+Concurrent recovery callers share the writer-claim boundary. A losing launch
+attaches to the winner when its endpoint is ready. If a live foreign writer has
+no ready endpoint yet, automatic recovery records no failure and waits for its
+catalogue publication. Explicit reads still report that readiness is unavailable;
+no retry poll or second writer bypasses the claim.
+
+A host that does not advertise `release` started on code without that operation,
+regardless of its advertised release number. After active work and result
+deliveries finish, stop that host process with SIGTERM, then use `agent_attach`
+to start current code. Restarting the caller does not replace a retained host.
+
 An admitted input has a stable Durable request ID. Reconnecting or retrying the
 same admission reuses that identity. A pending delivery intent precedes input
 admission, so a crash between those operations does not lose the reply route.
@@ -1981,9 +2006,10 @@ that check does not reject admission replay of retained native work.
 
 Task admission preserves the caller's original text and images in native user
 messages. Host-authored routing evidence holds requester, reply recipient,
-request ID, and origin separately. A native prompt section projects active routes
-with bounded task previews, including after compaction, rather than treating the
-last arriving caller as the requester. The dashboard shows the original task.
+request ID, and origin separately. A stable system section explains routing;
+a generation hook supplies current routes and bounded task previews in a separate
+request-only user message, including after compaction. Route changes never patch
+the system prefix or treat the last arriving caller as the requester. The dashboard shows the original task.
 Profile shows a bounded view of unfinished routes on demand, with
 `requestsOmitted` when further routes are retained. Routes outside the projection's
 field limits are counted as omitted, never shortened. Prompt and Profile bounds

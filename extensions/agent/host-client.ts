@@ -195,6 +195,13 @@ async function connectClient(serverId: string, socketPath: string): Promise<Tran
 	return connectTransport({serverId, path: socketPath, timeoutMs: CONNECT_WAIT_LIMIT_MS});
 }
 
+/** A live foreign writer has no readiness event in this process. Recovery waits for its catalogue publication. */
+export class HostReadinessUnavailableError extends HostError {
+	constructor(cause: unknown) {
+		super("The host is starting elsewhere or its live endpoint is unavailable. This Pi has no readiness event for that process. Retry the read after startup; no replacement was started.", "unavailable", { cause });
+	}
+}
+
 /** Owned launches have a readiness event. A foreign launch gets one attach attempt, never timed retries. */
 async function connectWhenReady(paths: HostPaths): Promise<TransportClient> {
 	const child = launchedChildren.get(claimPid(paths));
@@ -202,7 +209,7 @@ async function connectWhenReady(paths: HostPaths): Promise<TransportClient> {
 	try { return await connectClient(paths.serverId, paths.socket); }
 	catch (error) {
 		if (!child && observeClaim(paths.claim, paths.identity).kind === "live")
-			throw new HostError("The host is starting elsewhere or its live endpoint is unavailable. This Pi has no readiness event for that process. Retry the read after startup; no replacement was started.", "unavailable", { cause: error });
+			throw new HostReadinessUnavailableError(error);
 		throw error;
 	}
 }

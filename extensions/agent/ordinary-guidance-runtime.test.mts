@@ -142,7 +142,7 @@ function assertRunGuidance(requests: TranscriptContext[]) {
 	for (const context of requests) {
 		const sections = getCurrentSystemMessage(context.messages)?.sections;
 		assert.match(sections?.["agent-preferences"] ?? "", /PEER_RUN_GUIDANCE/u);
-		assert.match(sections?.["agent-efforts"] ?? "", /No other live efforts or active thread hints in the covered sources/u);
+		assert.match(sections?.["agent-efforts"] ?? "", /No other live effort is shown.*Read agent_status for current coverage/u);
 		assert.match(getCurrentSystemPrompt(context.messages) ?? "", /PEER_RUN_GUIDANCE/u);
 	}
 	assert.equal(getCurrentSystemMessage(requests[1].messages)?.sections?.["agent-preferences"], getCurrentSystemMessage(requests[0].messages)?.sections?.["agent-preferences"]);
