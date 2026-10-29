@@ -111,9 +111,14 @@ function answer(): ReturnType<typeof completed> {
 	return completed([{ type: "text", text: process.env.DURABLE_TEST_ANSWER ?? "durable runtime answer" }], "stop");
 }
 
+/** Provider-only route context is not fixture task input or a tool-round boundary. */
+function taskMessages(context: TranscriptContext) {
+	return context.messages.filter((item) => item.role !== "user" || !(typeof item.content === "string" ? item.content : item.content.map((part) => part.type === "text" ? part.text : "").join("")).startsWith("<agent-request-context>"));
+}
+
 /** Plain user text of one request context. */
 function userText(context: TranscriptContext): string {
-	return context.messages
+	return taskMessages(context)
 		.filter((item) => item.role === "user")
 		.map((item) => typeof item.content === "string" ? item.content : item.content.map((part) => part.type === "text" ? part.text : "").join(""))
 		.join("\n");
@@ -200,7 +205,7 @@ function stream(_model: unknown, context: TranscriptContext, options?: RequestOp
 	if (mode === "spawn") return spawn(context);
 	if (mode === "intent") return intent(context);
 	if (mode === "await-local" || mode === "await-reference") return awaited(context, mode, options?.signal);
-	if (mode === "tool-round" && context.messages.at(-1)?.role !== "toolResult") {
+	if (mode === "tool-round" && taskMessages(context).at(-1)?.role !== "toolResult") {
 		return completed([{ type: "toolCall", id: `read-${context.messages.length}`, name: "read", arguments: { path: join(controlDir(), "input.txt") } }], "toolUse");
 	}
 	if (mode === "effect" && !context.messages.some((item) => item.role === "toolResult")) {

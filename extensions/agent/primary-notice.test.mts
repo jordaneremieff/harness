@@ -379,7 +379,7 @@ it("keeps ordinary effort context to one line after the last live peer closes", 
 	const prompt = getCurrentSystemPrompt(fixture.requests.at(-1)?.messages ?? []);
 	assert.equal(prompt.includes("PEER-PURPOSE"), false);
 	const body = prompt.match(/<agent-efforts>\n([\s\S]*?)\n<\/agent-efforts>/u)?.[1];
-	assert.equal(body, "No other live efforts or active thread hints in the covered sources.");
+	assert.equal(body, "No other live effort is shown. Read agent_status for current coverage and active thread hints; omitted sources remain unknown.");
 });
 
 it("refreshes the registered primary identity on model, thinking, and name changes", async (t) => {

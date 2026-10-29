@@ -32,7 +32,7 @@ export function controlledGate() {
 }
 
 function lastUser(context: TranscriptContext) {
-	const index = context.messages.findLastIndex((message) => message.role === "user");
+	const index = context.messages.findLastIndex((message) => message.role === "user" && !(typeof message.content === "string" ? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("")).startsWith("<agent-request-context>"));
 	const user = context.messages[index];
 	if (user?.role !== "user") throw new Error("controlled model requires user input");
 	const text = typeof user.content === "string" ? user.content : user.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("");
