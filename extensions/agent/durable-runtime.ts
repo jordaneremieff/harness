@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, parsePreferenceSnapshot, type ExecutionSelection, type ExecutionFields } from "./agent-preferences.ts";
-import { defineDocFamily } from "@earendil-works/pi-durable";
+import { defineDocFamily, GenerationTask, hook } from "@earendil-works/pi-durable";
 
 const ExecutionSelectionDoc = defineDocFamily<{ input?: string; selection?: ExecutionSelection }, null>({ kind: "agent.execution-selection", family: true, version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: () => ({}) });
 import { launchIndependentCommand } from "./independent-launch.ts";
@@ -55,7 +55,7 @@ function controlParams(input: unknown): Record<string, unknown> {
 
 /** Methods that admit work or delivery into this storage. */
 import { projectProfiles } from "./profile.ts";
-import { requestContextSection } from "./request-context.ts";
+import { requestContextHooks, requestContextSection } from "./request-context.ts";
 import { withProfileHints, withIntentClaims } from "./catalog-view.ts";
 import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 
@@ -427,7 +427,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 				try { return await stopForeignReferences((method, input) => manager.control(method, input, caller), references, context); }
 				finally { manager.close(); }
 			});
-			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(() => host.harness)] });
+			services.registry.install({ name: "agent.request-context", sections: [requestContextSection()], hooks: [hook(GenerationTask, requestContextHooks(opened.harness))] });
 			unsubscribeClose?.();
 			unsubscribeClose = opened.harness.subscribeClose(() => {
 				activityGeneration++;

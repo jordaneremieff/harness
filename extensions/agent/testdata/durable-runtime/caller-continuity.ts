@@ -29,7 +29,7 @@ function childCwd(): string {
 	return cwd;
 }
 function stream(_model: unknown, context: TranscriptContext, options?: { sessionId?: string }) {
-	const index = context.messages.findLastIndex((message) => message.role === "user");
+	const index = context.messages.findLastIndex((message) => message.role === "user" && !(typeof message.content === "string" ? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("")).startsWith("<agent-request-route>"));
 	const last = context.messages[index];
 	const text = last?.role === "user" ? typeof last.content === "string" ? last.content : last.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("") : "";
 	const hasResult = context.messages.slice(index + 1).some((message) => message.role === "toolResult");

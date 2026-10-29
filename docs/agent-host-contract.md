@@ -957,12 +957,33 @@ The original request remains open after release, with unresolved producer
 references retained and their work still active. The recipient applies the
 input, then awaits unresolved references again on that same request. Distinct
 admitted inputs retain distinct request IDs. Recorded requester/reply routes
-remain per request, even when several inputs share one final answer. Durability
-preserves admitted work and its routes; it does not prescribe answer timing or
-separate answers. Sources:
+remain per request, even when several inputs share one final answer. A generation
+hook resolves each native run input through its submission and entry. It inserts
+one frozen `agent-request-route` user note immediately after that input's last
+user message. The note holds requestId, requester, replyTo and origin. Static
+system guidance explains automatic final-answer delivery and explicit report
+routing; the system section contains no per-request route list.
+
+The host retains notes per conversation with count and byte bounds. The note key
+uses the input message's own JSON, timestamp included, plus its ordinal among
+identical messages, not a chain of earlier user messages. Notes retain identical
+bytes and positions across later requests, including settlement, while their
+inputs remain visible. A generation-task memo freezes retry notes. Compaction
+drops absent inputs' notes. A restarted host reconstructs notes from active
+routes only. At the per-conversation count or byte bound, current-run notes stay
+and the oldest settled notes leave first. A host-wide byte bound evicts the least
+recently used whole conversation. Its next request reconstructs active notes.
+These bounded evictions change a cached prefix but never refuse generation.
+Profile reads remain unchanged. An input without a note has no retained route
+evidence; read `agent_profile` before an
+explicit report. Interim reports use `agent_send` with mode `report` and that
+input's replyTo. Creating-owner provenance never selects the recipient.
+Durability preserves admitted work and its routes; it does not prescribe answer
+timing or separate answers. Sources:
 `extensions/agent/durable-controls.ts` (`awaitInputMode`, `admitConversation`),
 `awaited-results.ts` (`classifyAwaitInput`, `reconcileInputRelease`),
-`request-context.ts` (`recordRequestContext`, `projectRequestContexts`),
+`request-context.ts` (`recordRequestContext`, `requestContextHooks`, `requestContextSection`),
+`request-route-state.ts` (`RequestRouteState`),
 `manager.ts` (`controlClient`), `durable-delivery.ts` (`reportProvenance`), and
 `durable-agents.ts` (`Reporter`).
 

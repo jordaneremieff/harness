@@ -8,6 +8,7 @@ import { connectTransport } from "../../transport/index.ts";
 import { existsSync, writeFileSync } from "node:fs";
 import { it } from "node:test";
 import type { AgentProfile } from "./profile-schema.ts";
+import type { RequestContext } from "./request-context.ts";
 import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { connectHost } from "./host-client.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
@@ -29,6 +30,14 @@ it("uses the OS temporary directory by default and preserves the scratch-root ov
 		else process.env.PROFILE_TEST_ROOT = saved;
 	}
 });
+
+function requestRoutes(request: ProviderRequest): RequestContext[] {
+	return request.context.messages.flatMap((message) => {
+		if (message.role !== "user") return [];
+		const text = typeof message.content === "string" ? message.content : message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("");
+		return text.startsWith("<agent-request-route>\n") ? [JSON.parse(text.split("\n")[1]) as RequestContext] : [];
+	});
+}
 
 type Updated = { outcome: "applied" | "conflict"; deduped: boolean; profile: AgentProfile };
 type Spawned = { sessionId: string; created: boolean; handle: string; profile: AgentProfile | null; availability?: string; creation?: { name: string; role: string } };
@@ -109,7 +118,8 @@ it("retains a standing profile across native boundaries and routes reused work b
 	request.answer("Check current archive evidence and retrieve the saved profile.");
 	request = await f.next();
 	assert.ok(!request.context.messages.some((item) => item.role === "user" && JSON.stringify(item).includes("Question source-correction")), "self-compaction removes the active task text");
-	assert.ok(instructions(request).includes("source-correction"), "the current request ID survives outside the compacted input");
+	assert.ok(!requestRoutes(request).some((route) => route.requestId === "source-correction"), "compaction removes the input's note");
+	assert.doesNotMatch(instructions(request), /source-correction/u, "the system section contains no request-specific bytes");
 	request.tool("agent_profile", { action: "read" });
 	request = await f.next();
 	const retrieved = toolData<AgentProfile>(request, "agent_profile");
@@ -273,8 +283,7 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	assert.equal(f.requests.length, 0, "refused contracts start no provider request");
 	await send(a, expert.sessionId, "current-admission");
 	let request = await f.next();
-	assert.ok(instructions(request).includes(`"requester":"${a.identity}"`));
-	assert.ok(instructions(request).includes(`"replyTo":"${a.identity}"`));
+	assert.deepEqual(requestRoutes(request), [{ requestId: "current-admission", requester: a.identity, replyTo: a.identity, origin: "model" }]);
 	assert.ok(request.context.messages.some((message) => message.role === "user" && message.content === "Question current-admission"));
 	request.tool("agent_send", { sessionId: a.identity, message: "BASE_PROGRESS", mode: "report" });
 	request = await f.next();

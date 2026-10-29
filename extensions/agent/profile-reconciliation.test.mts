@@ -6,13 +6,13 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt, type TranscriptContext } from "@earendil-works/pi-ai";
-import { Harness, type SubmissionId } from "@earendil-works/pi-durable";
+import { GenerationTask, hook, Harness, type SubmissionId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { AgentMetaDoc, AgentDeliveryDoc, readOutcome, type DeliveryReceipt } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { ProfileDoc } from "./profile.ts";
-import { readRequestContexts, requestContextSection } from "./request-context.ts";
+import { readRequestContexts, requestContextHooks, requestContextSection } from "./request-context.ts";
 import { testModel } from "./test-runtime.mts";
 
 it("resumes retained work despite an independent profile reconciliation failure", { timeout: 10000 }, async (t) => {
@@ -79,7 +79,7 @@ it("reconciles retained children before resume and supplies routes for base-only
 		return typeof value === "function" ? value.bind(target) : value;
 	} });
 	const registry = fixtureRegistry();
-	registry.install({ name: "request-routes", sections: [requestContextSection(() => { assert.ok(host); return host.harness; })] });
+	registry.install({ name: "request-routes", sections: [requestContextSection()], hooks: [hook(GenerationTask, requestContextHooks(() => { assert.ok(host); return host.harness; }))] });
 	host = await DurableHost.open({ storagePath, storageId, models, registry, resume: false }, context);
 	assert.equal(observed.length, 0);
 	for (const id of ids) {
@@ -103,8 +103,8 @@ it("reconciles retained children before resume and supplies routes for base-only
 		assert.ok(input);
 		const prompt = getCurrentSystemPrompt(input.messages);
 		assert.doesNotMatch(prompt, /STALE ADMISSION INSTRUCTIONS/u);
-		assert.ok(prompt.includes(`"requester":"${owner}"`));
-		assert.ok(prompt.includes(`"replyTo":"${owner}"`));
+		assert.ok(JSON.stringify(input.messages).includes(`\\"requester\\":\\"${owner}\\"`));
+		assert.ok(JSON.stringify(input.messages).includes(`\\"replyTo\\":\\"${owner}\\"`));
 		assert.ok(input.messages.some((message) => message.role === "user" && message.content === `Task for ${owner}`));
 	}
 });

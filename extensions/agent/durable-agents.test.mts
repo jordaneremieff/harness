@@ -36,7 +36,7 @@ import registerAgentExtension from "./index.ts";
 import { CheckInTask, CheckInDeadlineTask, checkInMinutes } from "./durable-checkins.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { ProfileDoc, readProfile } from "./profile.ts";
-import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
+import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextHooks, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
 import { handleStorageId } from "./identity.ts";
 import { AgentMetaDoc, AgentDeliveryDoc, AwaitInputSuppressed, readOutcome, submitConversation } from "./durable-controls.ts";
 import { AwaitDoc, type AwaitState, type AwaitOutcome } from "./awaited-results.ts";
@@ -1467,7 +1467,7 @@ it("reconciles an existing local child before Reporter admission", { timeout: 10
 	const { registry } = buildRegistry();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));
 	t.after(() => harness.close(context));
-	registry.install({ name: "request-routes", sections: [requestContextSection(harness)] });
+	registry.install({ name: "request-routes", sections: [requestContextSection()], hooks: [Durable.hook(Durable.GenerationTask, requestContextHooks(harness))] });
 	const child = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model, instructions: "OLD CHILD INSTRUCTIONS" } }, context);
 	await child.commit(async (tx) => { const meta = await tx.doc(AgentMetaDoc, child.id); meta.name = "Retained child"; meta.owner = "original-founder"; }, context);
 	route.script.push({ tool: "agent_send", args: { sessionId: `${storageId}:${child.id}`, message: "CONTRACT: reply RETAINED", checkInMinutes: 0 } });
@@ -1479,8 +1479,8 @@ it("reconciles an existing local child before Reporter admission", { timeout: 10
 	assert.doesNotMatch(prompt, /OLD CHILD INSTRUCTIONS/u);
 	assert.ok(prompt.includes(`${storageId}:${child.id}`));
 	assert.ok(prompt.includes("Retained child"));
-	assert.ok(prompt.includes(`"requester":"${storageId}"`));
-	assert.ok(prompt.includes(`"replyTo":"${storageId}"`));
+	assert.ok(JSON.stringify(messages).includes(`\\"requester\\":\\"${storageId}\\"`));
+	assert.ok(JSON.stringify(messages).includes(`\\"replyTo\\":\\"${storageId}\\"`));
 	assert.match(prompt, /mode: report/u);
 	assert.equal((await readProfile(harness, storageId, child.id, context)).creator, "original-founder");
 });
@@ -1524,7 +1524,7 @@ for (const conflictingProfile of [false, true]) it(`resumes an accepted Reporter
 	await first.close(context);
 
 	resumed = await Durable.Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, onReport: (error) => warnings.push(error) }, context);
-	registry.install({ name: "retained-request-routes", sections: [requestContextSection(resumed)] });
+	registry.install({ name: "retained-request-routes", sections: [requestContextSection()] });
 	const settled = await resumed.waitForTask(taskId, context);
 	assert.equal(settled.state.outcome.status, "completed");
 	const reopenedRecipient = await resumed.conversation(recipient.id, context);

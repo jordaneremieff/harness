@@ -116,6 +116,7 @@ function userText(context: TranscriptContext): string {
 	return context.messages
 		.filter((item) => item.role === "user")
 		.map((item) => typeof item.content === "string" ? item.content : item.content.map((part) => part.type === "text" ? part.text : "").join(""))
+		.filter((text) => !text.startsWith("<agent-request-route>"))
 		.join("\n");
 }
 
@@ -155,7 +156,7 @@ function awaited(context: TranscriptContext, mode: string, signal?: AbortSignal)
 		return completed([{ type: "toolCall", id: "await-local-result", name: "agent_await", arguments: { results: [result], ...release } }], "toolUse");
 	}
 	if (mode === "await-local") return completed([{ type: "toolCall", id: "spawn-await-source", name: "agent_spawn", arguments: { prompt: "HELD_AWAIT_SOURCE", name: "await source", checkInMinutes: 0 } }], "toolUse");
-	const result = JSON.parse(text.split("AWAIT_REFERENCE:")[1]);
+	const result = JSON.parse(text.split("AWAIT_REFERENCE:")[1].split("\n")[0]);
 	return completed([{ type: "toolCall", id: "await-foreign-result", name: "agent_await", arguments: { results: [result], ...release } }], "toolUse");
 }
 

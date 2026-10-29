@@ -2021,13 +2021,29 @@ that check does not reject admission replay of retained native work.
 
 Task admission preserves the caller's original text and images in native user
 messages. Host-authored routing evidence holds requester, reply recipient,
-request ID, and origin separately. A native prompt section projects active routes
-with bounded task previews, including after compaction, rather than treating the
-last arriving caller as the requester. The dashboard shows the original task.
-Profile shows a bounded view of unfinished routes on demand, with
-`requestsOmitted` when further routes are retained. Routes outside the projection's
-field limits are counted as omitted, never shortened. Prompt and Profile bounds
-restrict presentation, not the accepted queue.
+request ID, and origin separately. A generation hook places one frozen
+`agent-request-route` user note immediately after the native input's last user
+message. It finds that input through its native run submission and entry, not the
+last user message in the request. Static system guidance explains these notes and
+report routing. Notes never appear at the request tail merely to refresh routes.
+The dashboard shows the original task. Profile shows a bounded view of unfinished
+routes on demand, with `requestsOmitted` when further routes are retained. Routes
+outside the field limits are omitted, never shortened.
+
+Each note's identity uses the input message's JSON, including its timestamp, and
+an ordinal among identical messages. Other hooks' distinct user messages do not
+change that identity. Host memory retains each conversation's notes across tool
+rounds, new runs and settlement while their inputs remain in the request.
+Compaction removes notes whose inputs are absent. Each generation task's memo
+freezes its notes for retries. After a host restart, only active routes create new
+notes; settled routes have no reconstructed notes. An input without a note has no
+retained route evidence, so read `agent_profile` before an explicit report.
+`REQUEST_NOTE_LIMIT` and `REQUEST_NOTE_BYTES` in `request-context.ts` bound retained
+notes per conversation. At either bound, all current-run notes remain; the oldest
+settled notes leave first. `REQUEST_NOTES_HOST_BYTES` in `request-route-state.ts`
+bounds host memory by evicting the least recently used whole conversation.
+The next request reconstructs that conversation's active notes. These bounded
+evictions change a cached prefix but never refuse generation or input admission.
 
 Base routes derive from retained delivery intents and native submission state.
 An owner is the default requester and reply recipient without new wire fields or
