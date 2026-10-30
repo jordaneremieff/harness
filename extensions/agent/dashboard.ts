@@ -43,6 +43,7 @@ import type { EffortAwareness } from "./effort-awareness.ts";
 import { EffortView } from "./effort-view.ts";
 import { AgentBranchCache, type AgentBranchReader } from "./agent-git.ts";
 import type { AgentModelInfo, DelegatedFigures } from "./agent-footer.ts";
+import { DashboardRelations, relationIdentity, type ReadRelationLineage } from "./dashboard-relations.ts";
 
 export interface DashboardResult {
 	text: string;
@@ -61,6 +62,9 @@ export interface DashboardOperations {
 	modelInfo?(provider: string, modelId: string): AgentModelInfo | undefined;
 	branch?: AgentBranchReader;
 	collaborate?: Collaborate;
+	/** Exact targets retained by this session's successful task admissions. */
+	taskTargets?(): readonly string[];
+	readLineage?: ReadRelationLineage;
 	submit(input: { id: string; text: string; mode: "steer" | "followUp" }): Promise<DashboardResult>;
 	submissionFailure?(input: { id: string; text: string; mode: "steer" | "followUp" }, error: unknown): string;
 	newAgent?(input: { prompt: string; onCreated: (row: AgentConversationSummary) => void }): Promise<DashboardResult>;
@@ -69,13 +73,17 @@ export interface DashboardOperations {
 }
 const HELP = [
 	"Dashboard",
+	"Related starts with this session's work. v switches Related and All agents.",
+	"Relations use exact creation ancestry, task targets and shared thread membership, never storage or directory proximity.",
+	"Unknown relationships stay out of Related. All and Load more expose wider bounded discovery.",
 	"↑↓ selects an agent. Enter opens its full conversation.",
 	"Tab or m writes to the selected agent.",
 	"n starts a new agent.",
 	"a opens actions. / finds loaded agents. t opens Threads. b opens Related efforts. ? opens help.",
-	"[other] marks an agent created by another session, not its current task requester.",
+	"[other] marks a storage root created by another session, not its current task requester.",
 	"Related efforts shows declared intent and contact declarations, not agreement. Enter opens a contact thread; o reads observation; m sends an operator message.",
-	"Threads shows the frame, peers, and exchange. p posts without a model wake.",
+	"Threads shows the frame, peers, and exchange. m selects participants; Enter opens one; Esc returns.",
+	"e reads the exchange, f reads the frame. p posts without a model wake.",
 	"n chooses peers to notify. Tab returns to the message. Enter posts.",
 	"i switches all times between relative age and local date and time.",
 	"This time toggle stays available when it is absent from the hint line.",
@@ -161,6 +169,10 @@ export class AgentDashboard implements Component, Focusable {
 	private bodyHeight = 10;
 	private creating = false;
 	private rosterOrderLocked = false;
+	private readonly relations: DashboardRelations;
+	private relationMark = "";
+	private relationsDirty = true;
+	private allAgents: boolean;
 	focused = true;
 	private readonly tui: TUI;
 	private readonly theme: Theme;
@@ -198,6 +210,12 @@ export class AgentDashboard implements Component, Focusable {
 		this.branches = new AgentBranchCache(operations.branch, () => this.redraw());
 		this.surface = surface;
 		this.primaryId = primaryId;
+		this.allAgents = !primaryId;
+		this.relations = new DashboardRelations(operations.collaborate, () => {
+			if (this.closed) return;
+			this.reconcile();
+			this.redraw();
+		}, operations.readLineage);
 		this.navigation = new DashboardNavigation(state);
 		this.newComposer = new AgentComposer({
 			tui,
@@ -221,6 +239,8 @@ export class AgentDashboard implements Component, Focusable {
 		this.unsubscribe.push(
 			source.subscribe(() => this.frameChanged()),
 			source.subscribeRoster(() => {
+				this.relations.invalidate();
+				this.relationsDirty = true;
 				this.queueRoster();
 				if (this.navigation.screen === "threads") void this.threads?.refresh();
 				if (this.effortsOpen) void this.efforts?.refresh();
@@ -256,6 +276,7 @@ export class AgentDashboard implements Component, Focusable {
 			this.loadMore = false;
 			this.rosterFailures = 0;
 			this.rosterNotice = undefined;
+			this.refreshRelations();
 			this.sessionFigures = await this.operations.sessionFigures?.(this.page) ?? "";
 			if (this.closed) return;
 			this.reconcile();
@@ -273,6 +294,17 @@ export class AgentDashboard implements Component, Focusable {
 				this.rosterAgain = false;
 				this.queueRoster();
 			}
+		}
+	}
+	private refreshRelations(): void {
+		if (!this.primaryId || !this.page) return;
+		const targets = this.operations.taskTargets?.() ?? [];
+		this.relations.set(this.page.rows, this.primaryId, targets);
+		const mark = JSON.stringify([this.page.rows.map((row) => [row.id, row.creatingOwnerId, row.awaiting?.results]), targets]);
+		if (this.relationsDirty || mark !== this.relationMark) {
+			this.relationsDirty = false;
+			this.relationMark = mark;
+			void this.relations.refresh();
 		}
 	}
 	private rosterFailed(error: unknown): void {
@@ -346,7 +378,8 @@ export class AgentDashboard implements Component, Focusable {
 				: undefined,
 			this.navigation.screen === "find" ? this.find.getValue() : this.state.filter,
 		);
-		this.reconcileOrder(filtered);
+		const identities = this.relations.view().identities;
+		this.reconcileOrder(this.allAgents ? filtered : filtered.filter((row) => identities.has(relationIdentity(row.id))));
 		this.navigation.reconcile(this.rows);
 		const id = this.navigation.target ?? this.state.selected;
 		const row = this.page?.rows.find((item) => item.id === id);
@@ -934,16 +967,36 @@ export class AgentDashboard implements Component, Focusable {
 			collaborate: this.operations.collaborate,
 			nameFor: (id) => this.page?.rows.find((row) => row.id === id)?.name || id,
 			selectedAgent: () => this.state.selected,
+			related: this.primaryId ? () => this.relations.view() : undefined,
+			openParticipant: (id) => this.openParticipant(id),
 			redraw: () => this.redraw(),
 			onBack: () => this.back(),
 		});
 		if (contactThread) this.threads.openContact(contactThread);
 		else this.threads.open();
 	}
+	private openParticipant(id: string): void {
+		const row = this.page?.rows.find((item) => relationIdentity(item.id) === relationIdentity(id)) ?? {
+			id, storageId: id.split(":")[0], name: id, cwd: "", modifiedAt: 0,
+			owner: "unknown" as const, state: "unavailable" as const, cost: Number.NaN, partial: true,
+		};
+		this.saveConsole();
+		this.state.selected = id;
+		this.navigation.enter("console", id);
+		this.select(row);
+		this.redraw();
+	}
 	private rosterInput(data: string): void {
 		this.notice = undefined;
 		if (!matchesKey(data, "up") && !matchesKey(data, "down")) this.rosterOrderLocked = false;
 		const actions: Record<string, () => void> = {
+			v: () => {
+				if (!this.primaryId) { this.notice = "Related needs a current session. All loaded agents are shown."; return; }
+				this.allAgents = !this.allAgents;
+				this.rosterScroll = undefined;
+				this.loadMore = false;
+				this.reconcile();
+			},
 			n: () => this.openNew(),
 			t: () => this.openThreads(),
 			b: () => this.openEfforts(),
@@ -1082,7 +1135,7 @@ export class AgentDashboard implements Component, Focusable {
 		if (names[screen]) return names[screen];
 		if (screen === "console" || screen === "actions")
 			return `Agents > ${this.console ? agentDisplayName(this.console.row) : "Agent"}${screen === "actions" ? " > Actions" : ""}`;
-		return this.sessionFigures ? this.sessionFigures.replace(/^agents/, "Agents") : "Agents";
+		return this.primaryId ? `Agents > ${this.allAgents ? "All" : "Related"}${this.sessionFigures ? ` · ${this.sessionFigures.replace(/^agents:\s*/u, "")}` : ""}` : this.sessionFigures ? this.sessionFigures.replace(/^agents/, "Agents") : "Agents";
 	}
 	private heading(width: number): string {
 		let position = "";
@@ -1192,6 +1245,7 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		if (!this.page) return "Loading roster…";
 		if (this.state.filter) return `No agents match ${this.state.filter}`;
+		if (!this.allAgents) return this.relations.view().pending ? "Read related work…" : "No related agents in loaded evidence. v shows All agents; t opens Threads.";
 		return this.page.coverage.complete
 			? "No agents yet. Start an agent with a task in your own words."
 			: "Roster coverage incomplete";
@@ -1204,9 +1258,10 @@ export class AgentDashboard implements Component, Focusable {
 					[
 						"↑↓ select",
 						"Enter open",
+						this.allAgents ? "v related" : "v all",
+						"t threads",
 						"b efforts",
 						"Tab message",
-						"t threads",
 						...(this.operations.newAgent ? ["n new"] : []),
 						"a actions",
 						"/ find",
@@ -1215,12 +1270,12 @@ export class AgentDashboard implements Component, Focusable {
 					this.state.filter ? "Esc clear find" : "Esc close",
 		];
 		if (this.emptyStore()) return [["b efforts", ...(this.operations.newAgent ? ["Enter new agent", "n new"] : []), "t threads", "/ find", "? help"], "Esc close"];
-		return [["b efforts", ...(this.operations.newAgent ? ["n new"] : []), "t threads", "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
+		return [[this.allAgents ? "v related" : "v all", "t threads", "b efforts", ...(this.operations.newAgent ? ["n new"] : []), "/ find", "? help"], this.state.filter ? "Esc clear find" : "Esc close"];
 	}
 	private hintLine(width: number): string {
 		const screen = this.navigation.screen;
 		const hints: Partial<Record<typeof screen, [string[], string]>> = {
-			console: [["PgUp/PgDn read", "Enter send", "Tab steer/follow-up", "Ctrl+J newline"], "Esc dashboard"],
+			console: [["PgUp/PgDn read", "Enter send", "Tab steer/follow-up", "Ctrl+J newline"], this.navigation.previousScreen === "threads" ? "Esc participants" : "Esc dashboard"],
 			message: [["PgUp/PgDn read", "Enter send", "Tab steer/follow-up", "Ctrl+J newline"], "Esc roster"],
 			new: [["Enter start", "Ctrl+J newline"], "Esc roster"],
 			find: [["↑↓ select", "Enter keep filter"], "Esc cancel find"],
@@ -1296,6 +1351,11 @@ export class AgentDashboard implements Component, Focusable {
 		});
 		return this.loadMore ? "› Load more agents" : "Load more agents";
 	}
+	private relationNotice(): string | undefined {
+		if (this.allAgents) return undefined;
+		const related = this.relations.view();
+		return related.pending ? "Read relations…" : related.partial ? "Relations partial" : undefined;
+	}
 	private rosterFooter(summary: string, width: number, y: number): string {
 		const action = this.loadMoreLine(width, y);
 		if (this.rosterNotice) return this.theme.fg("muted", fitLine(cleanDashboardText(this.rosterNotice).replace(/\s+/g, " "), width));
@@ -1304,6 +1364,8 @@ export class AgentDashboard implements Component, Focusable {
 		if (coverage?.skipped) facts.push(`${coverage.skipped} unreadable`);
 		if (coverage?.omitted) facts.push(`${coverage.omitted} omitted`);
 		if (coverage && !coverage.complete && !coverage.nextCursor && !facts.length) facts.push("Incomplete");
+		const relationNotice = this.relationNotice();
+		if (relationNotice) facts.unshift(relationNotice);
 		const loaded = cleanDashboardText(summary);
 		let parts = [loaded, ...facts, action].filter(Boolean);
 		if (visibleWidth(parts.join(" · ")) > width) {
@@ -1489,6 +1551,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.saveConsole();
 		this.closed = true;
 		this.branches.dispose();
+		this.relations.dispose();
 		this.console?.dispose();
 		this.sourceGeneration++;
 		for (const off of this.unsubscribe) off();

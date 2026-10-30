@@ -1318,6 +1318,11 @@ export class AgentManager {
 		catch (error) { this.failures.set("footer", errorText(error)); }
 	}
 
+	/** Exact successful task admissions, for presentation-side relationship joins only. */
+	dashboardTaskTargets(ownerId: string): readonly string[] {
+		return [...this.primaries.get(ownerId)?.sentWork ?? []];
+	}
+
 	/** UI-local session totals reuse the roster and the primary's retained sent-work identities. */
 	async sessionFigures(ownerId: string, page?: AgentConversationPage): Promise<string> {
 		const observed = page ?? await this.dashboardPage({ ownerId });

@@ -68,7 +68,7 @@ async function suggest(native: CombinedAutocompleteProvider, line: string, col =
 }
 
 it("the dashboard gets its context window and session figures from the current primary context", async () => {
-	const published = rosterPage([row("one")]);
+	const published = rosterPage([row("one", { storageId: "one", creatingOwnerId: "current-primary" })]);
 	const observed = source(published.rows);
 	let reads = 0;
 	observed.list = async (input) => { reads++; assert.equal(input?.ownerId, "current-primary"); return published; };
@@ -101,7 +101,7 @@ it("the dashboard gets its context window and session figures from the current p
 		assert.deepEqual(lookups, [["test", "model"]]);
 		assert.equal(reads, 1);
 		assert.match(text, /Example model \[high\].*16%.*163k\/1.0M/);
-		assert.match(text, /Agents: 1\/1 active · ~\$0.42/);
+		assert.match(text, /Agents > Related · 1\/1 active · ~\$0.42/);
 	} finally { dashboard?.dispose(); finish(); await opened; }
 });
 it("the dashboard collaboration adapter carries its primary context and structured read", async () => {
@@ -138,7 +138,7 @@ it("the dashboard collaboration adapter carries its primary context and structur
 		assert.ok(dashboard);
 		dashboard.handleInput("t");
 		await turn();
-		assert.deepEqual(calls, [{ input: { action: "list" }, ctx }]);
+		assert.deepEqual(calls, [{ input: { action: "list", limit: 20 }, ctx }, { input: { action: "list" }, ctx }]);
 		assert.match(stripVTControlCharacters(dashboard.render(80).join("\n")), /Agents > Threads/);
 	} finally {
 		dashboard?.dispose();

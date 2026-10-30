@@ -65,7 +65,7 @@ export interface AgentConversationSummary {
 	id: string;
 	/** Storage that owns this conversation. */
 	storageId: string;
-	/** Creating-session provenance, not the current requester or task owner. */
+	/** Storage-creation provenance, not nonroot conversation ancestry or the current requester. */
 	creatingOwnerId?: string;
 	/** Presentation-only catalog rank; never part of host-published or native wire rows. */
 	rosterOrder?: { priority: boolean; modifiedAt: number };

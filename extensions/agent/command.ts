@@ -169,6 +169,8 @@ export function createAgentCommand(
 	preferences?: DashboardPreferences,
 	readHideThinkingBlock?: () => boolean,
 	toolDisplay?: ToolDisplayLookup,
+	taskTargets?: (ctx: ExtensionContext) => readonly string[],
+	readLineage?: (id: string, ctx: ExtensionContext) => Promise<unknown>,
 ): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
@@ -211,6 +213,10 @@ export function createAgentCommand(
 		const observe = effortWiring?.observeEffort;
 		return observe ? (id: string) => observe(id, ctx) : undefined;
 	};
+	const relationOperations = (ctx: ExtensionContext) => ({
+		taskTargets: taskTargets ? () => taskTargets(ctx) : undefined,
+		readLineage: readLineage ? (id: string) => readLineage(id, ctx) : undefined,
+	});
 	const openDashboard = async (ctx: ExtensionContext): Promise<void> => {
 		if (!ctx.hasUI || dashboardOpen) return;
 		dashboardOpen = true;
@@ -235,6 +241,7 @@ export function createAgentCommand(
 					modelInfo: (provider, modelId) => ctx.modelRegistry.find(provider, modelId),
 					branch: readAgentBranch,
 					collaborate: collaborate ? (input) => collaborate(input, ctx) : undefined,
+					...relationOperations(ctx),
 					chooseConversation: async (labels, surface) =>
 						hideAround(surface, async () => {
 							const choices = labels.map(

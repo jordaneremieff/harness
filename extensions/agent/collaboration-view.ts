@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import type { CollaborationList, CollaborationPage, CollaborationSummary } from "./collaboration.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { dashboardHeading, dashboardRule, dashboardSelection, fitLine } from "./dashboard-layout.ts";
+import type { RelatedWork } from "./dashboard-relations.ts";
 
 export type Collaborate = (input: Record<string, unknown>) => Promise<unknown>;
 type Discovery = CollaborationList & { sources?: Array<{ sessionId: string; omitted: number; unavailable: boolean }> };
@@ -43,7 +44,7 @@ function summary(value: unknown): value is CollaborationSummary {
 		number(value.members)
 	);
 }
-function discovery(value: unknown): value is Discovery {
+export function threadDiscovery(value: unknown): value is Discovery {
 	return (
 		object(value) &&
 		Array.isArray(value.items) &&
@@ -128,6 +129,8 @@ interface CollaborationViewOptions {
 	collaborate: Collaborate;
 	nameFor(id: string): string;
 	selectedAgent(): string | undefined;
+	related?(): RelatedWork;
+	openParticipant?(id: string): void;
 	redraw(): void;
 	onBack(): void;
 }
@@ -139,7 +142,8 @@ export class CollaborationView {
 	private bodyLineCount = 0;
 	private list?: Discovery;
 	private page?: CollaborationPage;
-	private screen: "list" | "thread" | "compose" | "notify" = "list";
+	private screen: "list" | "thread" | "members" | "compose" | "notify" = "list";
+	private all = false;
 	private index = 0;
 	private memberIndex = 0;
 	private offset = 0;
@@ -216,8 +220,9 @@ export class CollaborationView {
 			...(cursor ? { cursor } : {}),
 		});
 		if (!this.current(generation)) return;
-		if (!discovery(result)) throw new Error("The host returned an invalid thread list. Restart the Pi window or host.");
+		if (!threadDiscovery(result)) throw new Error("The host returned an invalid thread list. Restart the Pi window or host.");
 		this.mouse.reset();
+		if (this.notice.startsWith("Threads unavailable:")) this.notice = "";
 		this.list = cursor && this.list ? this.mergeList(this.list, result) : result;
 		this.index = Math.min(this.index, Math.max(0, this.choices().length - 1));
 	}
@@ -240,6 +245,7 @@ export class CollaborationView {
 		if (!threadPage(result) || result.thread.id !== id)
 			throw new Error("The host returned an invalid thread page. Restart the Pi window or host.");
 		this.mouse.reset();
+		if (this.notice.startsWith("Threads unavailable:")) this.notice = "";
 		this.page = result;
 	}
 	async refresh(cursor?: string): Promise<void> {
@@ -269,16 +275,18 @@ export class CollaborationView {
 		}
 	}
 	private choices(): Array<{ label: string; thread?: string; scope?: string; cursor?: string }> {
+		const related = !this.all && !this.scope ? this.options.related?.() : undefined;
+		const items = related ? related.threads : this.list?.items ?? [];
 		return [
-			...(this.list?.items ?? []).map((item) => ({
+			...items.map((item) => ({
 				label: `${item.closed ? "Closed" : "Open"} · ${plain(item.title)} · ${item.members} peers\n${plain(item.purpose)}`,
 				thread: item.id,
 			})),
-			...(this.list?.sources ?? []).map((item) => ({
+			...(related ? [] : this.list?.sources ?? []).map((item) => ({
 				label: `Read storage of ${this.nameFor(item.sessionId)} · ${item.unavailable ? "catalog unavailable" : `${item.omitted} threads omitted`}`,
 				scope: item.sessionId,
 			})),
-			...(this.list?.nextCursor ? [{ label: "Load more thread discovery", cursor: this.list.nextCursor }] : []),
+			...(!related && this.list?.nextCursor ? [{ label: "Load more thread discovery", cursor: this.list.nextCursor }] : []),
 		];
 	}
 	private choose(): void {
@@ -356,7 +364,8 @@ export class CollaborationView {
 		}
 	}
 	private back(): void {
-		if (this.screen === "notify") this.screen = "compose";
+		if (this.screen === "members") this.screen = "thread";
+		else if (this.screen === "notify") this.screen = "compose";
 		else if (this.screen === "compose") this.screen = "thread";
 		else if (this.screen === "thread") {
 			this.screen = "list";
@@ -390,10 +399,18 @@ export class CollaborationView {
 		if (data === " " || matchesKey(data, "enter")) this.toggleMember();
 		if (matchesKey(data, "tab")) this.screen = "compose";
 	}
+	private moveList(data: string): void {
+		const step = Math.max(1, this.options.tui.terminal.rows - 8);
+		const deltas = { up: -1, down: 1, pageUp: -step, pageDown: step };
+		for (const [key, delta] of Object.entries(deltas))
+			if (matchesKey(data, key as "up")) this.index = Math.max(0, Math.min(this.choices().length - 1, this.index + delta));
+		if (matchesKey(data, "home")) this.index = 0;
+		if (matchesKey(data, "end")) this.index = Math.max(0, this.choices().length - 1);
+	}
 	private listInput(data: string): void {
-		if (matchesKey(data, "up") || matchesKey(data, "down"))
-			this.index = Math.max(0, Math.min(this.choices().length - 1, this.index + (matchesKey(data, "up") ? -1 : 1)));
+		this.moveList(data);
 		if (matchesKey(data, "enter")) this.choose();
+		if (data === "v" && this.options.related) { this.all = !this.all; this.index = 0; }
 		if (data === "s" && this.options.selectedAgent()) this.setScope(this.options.selectedAgent());
 		if (data === "r") void this.refresh();
 	}
@@ -426,6 +443,7 @@ export class CollaborationView {
 	}
 	private threadInput(data: string): void {
 		const actions: Record<string, () => void> = {
+			m: () => { this.screen = "members"; this.memberIndex = 0; },
 			p: () => this.beginPost(false),
 			n: () => this.beginPost(true),
 			r: () => this.latest(),
@@ -472,12 +490,28 @@ export class CollaborationView {
 			return;
 		}
 		const routes = {
+			members: () => this.membersInput(data),
 			compose: () => this.composeInput(data),
 			notify: () => this.notifyInput(data),
 			list: () => this.listInput(data),
 			thread: () => this.threadInput(data),
 		};
 		routes[this.screen]();
+	}
+	private membersInput(data: string): void {
+		const members = this.page?.thread.members ?? [];
+		const step = Math.max(1, this.options.tui.terminal.rows - 7);
+		if (matchesKey(data, "up")) this.memberIndex--;
+		if (matchesKey(data, "down")) this.memberIndex++;
+		if (matchesKey(data, "pageUp")) this.memberIndex -= step;
+		if (matchesKey(data, "pageDown")) this.memberIndex += step;
+		if (matchesKey(data, "home")) this.memberIndex = 0;
+		if (matchesKey(data, "end")) this.memberIndex = members.length - 1;
+		this.memberIndex = Math.max(0, Math.min(members.length - 1, this.memberIndex));
+		if (matchesKey(data, "enter")) {
+			const member = members[this.memberIndex];
+			if (member) this.options.openParticipant?.(member.identity);
+		}
 	}
 	private eventTime(at: number): string {
 		return dashboardTime(at, this.options.exactTime());
@@ -532,9 +566,10 @@ export class CollaborationView {
 	}
 	private listLines(width: number, height: number): string[] {
 		const choices = this.choices();
+		this.index = Math.min(this.index, Math.max(0, choices.length - 1));
 		if (!choices.length)
 			return [
-				this.pending ? "Read thread discovery…" : "No threads in this page. Coverage below does not prove absence.",
+				this.pending ? "Read thread discovery…" : this.options.related && !this.all && !this.scope ? "No related threads in loaded evidence. v shows All threads; s reads selected storage." : "No threads in this page. Coverage below does not prove absence.",
 			];
 		const blocks = choices.map((choice, index) =>
 			wrapTextWithAnsi(`${index === this.index ? "›" : " "} ${choice.label}`, width).map((line, row) =>
@@ -565,6 +600,20 @@ export class CollaborationView {
 		}
 		return blocks.flat().slice(start);
 	}
+	private memberLines(width: number, height: number): string[] {
+		const members = this.page?.thread.members ?? [];
+		if (!members.length) return ["No participants in this thread."];
+		const start = Math.max(0, this.memberIndex - Math.max(0, Math.floor((height - 1) / 2)));
+		return members.slice(start).flatMap((member, offset) => {
+			const index = start + offset;
+			const label = `${index === this.memberIndex ? "›" : " "} ${this.nameFor(member.identity)} [${member.identity}]`;
+			this.mouse.add({ x: 0, y: 2 + offset * 2, width, height: 2, click: () => {
+				if (index === this.memberIndex) this.options.openParticipant?.(member.identity);
+				else this.memberIndex = index;
+			} });
+			return [dashboardSelection(label, width, index === this.memberIndex, this.options.theme), this.options.theme.fg("muted", `  ${plain(member.contribution) || "No contribution declared"}`)];
+		});
+	}
 	private notifyLines(height: number): string[] {
 		const members = this.page?.thread.members ?? [];
 		const lines = members.map((member, index) =>
@@ -590,6 +639,7 @@ export class CollaborationView {
 		return ["Select peers to notify. Each selected peer receives a steer. No automatic reply.", ...lines.slice(start)];
 	}
 	private bodyLines(width: number, height: number): string[] {
+		if (this.screen === "members") return this.memberLines(width, height);
 		if (this.screen === "list") return this.listLines(width, height);
 		if (this.screen === "notify") return this.notifyLines(height);
 		let line = 0;
@@ -619,30 +669,38 @@ export class CollaborationView {
 		return lines.slice(offset);
 	}
 	private status(): string {
+		if (this.screen === "members") return "Participants · Enter opens a conversation · Esc returns to the thread";
 		if (this.screen !== "list")
 			return `${this.draft()?.pending ? "Post pending" : "Post wakes nobody by default"} · Notify: ${
 				this.draft()
 					?.notify.map((id) => this.nameFor(id))
 					.join(", ") || "nobody"
 			}`;
+		return this.listStatus();
+	}
+	private listStatus(): string {
 		const coverage = this.list?.coverage;
-		const scope = this.scope ? `Storage: ${this.nameFor(this.scope)}` : "Catalog discovery";
+		const related = !this.all && !this.scope ? this.options.related?.() : undefined;
+		if (related) return `Related threads · ${related.pending ? "Read relationships…" : related.partial ? "Partial relationship coverage" : "Loaded relationships"} · v All threads`;
+		const scope = this.scope ? `Storage: ${this.nameFor(this.scope)}` : this.options.related ? "All threads" : "Catalog discovery";
 		if (!coverage) return `${scope} · Coverage unknown`;
 		return `${scope} · ${coverage.complete ? "Complete" : "Partial"} · ${coverage.omitted} omitted · ${coverage.unavailable ?? 0} unavailable`;
 	}
 	private hints(): string[] {
 		const hints = {
-			list: ["↑↓ select", "Enter read", "s selected storage", "r refresh"],
+			list: ["↑↓ select", "Enter read", ...(this.options.related ? [this.all ? "v related" : "v all"] : []), "s selected storage", "r refresh"],
+			members: ["↑↓ select", "Enter open", "PgUp/PgDn select"],
 			notify: ["↑↓ select", "Space/Enter toggle", "Tab write"],
 			compose: ["Enter post", "Tab notify", "Ctrl+J newline"],
 			thread: [
 				"PgUp/PgDn read",
+				"m peers",
 				"p post",
 				"n notify",
 				this.options.exactTime() ? "i relative time" : "i date and time",
-				"f frame",
-				"e exchange",
 				"b earlier",
+				"e exchange",
+				"f frame",
 				"r latest",
 			],
 		};
@@ -653,7 +711,7 @@ export class CollaborationView {
 		if (this.screen === "list") {
 			const count = this.choices().length;
 			position = `${count ? this.index + 1 : 0}/${count}${this.list?.coverage.complete ? "" : "+"}`;
-		} else if (this.screen === "notify") {
+		} else if (this.screen === "notify" || this.screen === "members") {
 			const count = this.page?.thread.members.length ?? 0;
 			position = `${count ? this.memberIndex + 1 : 0}/${count} peers`;
 		} else if (this.page) position = `Frame ${this.page.thread.revision}`;
@@ -692,7 +750,7 @@ export class CollaborationView {
 					this.offset = Math.max(0, this.offset + delta);
 				} else if (this.screen === "list")
 					this.index = Math.max(0, Math.min(this.choices().length - 1, this.index + delta));
-				else if (this.screen === "notify")
+				else if (this.screen === "notify" || this.screen === "members")
 					this.memberIndex = Math.max(
 						0,
 						Math.min((this.page?.thread.members.length ?? 1) - 1, this.memberIndex + delta),

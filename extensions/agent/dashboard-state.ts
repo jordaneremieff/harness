@@ -118,6 +118,7 @@ export class DashboardNavigation {
 		}
 		return "close";
 	}
+	get previousScreen(): DashboardScreen | undefined { return this.back.at(-1)?.screen; }
 	roster(): void {
 		this.back.length = 0;
 		this.screen = "roster";

@@ -188,13 +188,18 @@ it("creating-session provenance stays muted while roster names retain bold empha
 	colored.fg = (color, text) => `\x1b[${color === "muted" ? 90 : 37}m${text}\x1b[39m`;
 	colored.bold = (text) => `\x1b[1m${text}\x1b[22m`;
 	for (const compact of [false, true]) {
-		const lines = rosterLines([row("other", { name: "Recipient", creatingOwnerId: "peer" })], "other", 60, 20, 0, colored, compact, { primaryId: "primary" });
+		const lines = rosterLines([row("other", { storageId: "other", name: "Recipient", creatingOwnerId: "peer" })], "other", 60, 20, 0, colored, compact, { primaryId: "primary" });
 		const title = lines.find((line) => line.includes("[other]"));
 		assert.ok(title);
 		assert.ok(title.includes("\x1b[90m[other] \x1b[39m\x1b[1m"));
 		assert.ok(title.indexOf("[other]") < title.indexOf("\x1b[1m"));
 		assert.ok(lines.every((line) => visibleWidth(line) <= 60));
 	}
+});
+
+it("storage provenance never labels an independently created nonroot conversation", () => {
+	const lines = rosterLines([row("storage:2", { creatingOwnerId: "other-primary" })], "storage:2", 60, 20, 0, theme, false, { primaryId: "primary" });
+	assert.equal(lines.some((line) => line.includes("[other]")), false);
 });
 
 it("flat roster keeps model second, failure text third, and hit areas on each block", () => {

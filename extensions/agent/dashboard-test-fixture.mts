@@ -146,6 +146,7 @@ export function fixture(
 	operations?: Partial<DashboardOperations>,
 	retained?: DashboardState,
 	paint: Theme = theme,
+	caller?: string,
 ) {
 	let renders = 0;
 	let closes = 0;
@@ -174,6 +175,7 @@ export function fixture(
 			...operations,
 		},
 		{ hide() {}, show() {} },
+		caller,
 	);
 	return {
 		ui,

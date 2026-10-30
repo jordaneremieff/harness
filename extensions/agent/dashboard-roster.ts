@@ -245,7 +245,7 @@ function rosterRow(
 	const timeWidth = Math.min(visibleWidth(time), width - 4);
 	const timeX = width - timeWidth;
 	const titleWidth = compact ? Math.max(8, Math.floor((width - timeWidth - 10) * 0.3)) : Math.max(1, width - 4 - (exactRow ? 0 : timeWidth + 1));
-	const marker = primaryId && row.creatingOwnerId && row.creatingOwnerId !== primaryId ? "[other] " : "";
+	const marker = primaryId && row.id === row.storageId && row.creatingOwnerId && row.creatingOwnerId !== primaryId ? "[other] " : "";
 	const nameWidth = Math.max(0, titleWidth - visibleWidth(marker));
 	const title = pad(theme.fg("muted", marker) + theme.bold(theme.fg("text", uniqueName(row, rows, nameWidth))), titleWidth);
 	let lines: string[];

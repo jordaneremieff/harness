@@ -461,9 +461,35 @@ reader, not independent native work.
 
 ## Dashboard and agent console
 
-The dashboard is one full-screen overlay. It observes agents and effort presence,
-not primary conversations. It reads no primary draft and writes no primary editor
-text. Selection, drafts, successful-message history, reading positions, and
+The dashboard is one full-screen overlay. It starts in **Related** for the current
+session. Press `v` to show **All** loaded agents or return to Related. Find applies
+to the selected view. Each dashboard opening starts in Related; a native terminal
+without an attached conversation starts with All.
+
+Related uses exact identities from existing evidence: the current conversation,
+successful task admissions retained by the ordinary session, its published
+awaited-result targets, and creation descendants in loaded rows. A storage's
+creating owner qualifies only its root conversation. Nonroot creation owners and
+fork parents come from bounded existing status summaries. Independent conversations
+in the same storage stay excluded. Explicit root `:1` and the bare root share one
+identity; nonroot identities remain distinct. Creation traversal stops at its
+presentation bound. The caller's exact parent is related without adding its
+independent siblings. A thread that contains one of those identities adds its
+other members once. Peer membership does
+not recursively add the peer's other threads, delegates, or task targets. A shared
+cwd or repository, a name, and unknown ownership do not establish a relationship.
+
+Lineage and membership reads use bounded public status, thread discovery and
+seed-storage directories. Unchanged thread summary timestamps reuse already-read
+frames within the overlay. Catalog notifications invalidate those caches even
+when a publisher timestamp repeats. The roster's periodic refresh does not repeat
+unchanged membership reads. Read failures, scan bounds and incomplete roster pages
+remain explicit. Unknown relationships stay out of Related, not out of All.
+Load more extends the roster; All threads and selected-storage discovery expose
+wider thread evidence. No relationship store or host protocol is added.
+
+The dashboard observes agents and effort presence, not primary conversations.
+It reads no primary draft and writes no primary editor text. Selection, drafts, successful-message history, reading positions, and
 Steer/Follow-up disposition and pane layout survive closing and reopening in
 the same primary process. Different primary sessions have independent UI state.
 Stable pane preferences also survive Pi restarts in the agent-owned
@@ -1499,8 +1525,17 @@ hints are not an exhaustive search of retained history. Explicit coverage and
 scoped continuation are part of the result, not a claim that absent matches
 do not exist.
 
-In `/agent`, press `t` for Threads. Select a thread or an omitted-source row
-with arrows and Enter; `s` scopes discovery to the selected agent's storage.
+In `/agent`, press `t` for Threads. The view starts with Related threads from the
+current session's relationship evidence. Press `v` for All threads from bounded
+catalog discovery. Select a thread or an omitted-source row with arrows and Enter;
+`s` scopes discovery to the selected agent's storage. Up/Down, PageUp/PageDown,
+Home and End select list entries. In a thread, `m` opens its participants. Arrows
+select a participant; Enter opens its conversation within the dashboard. Esc
+returns to the participant list, then the same thread position. Participant reads
+do not send a message or start a model turn. Unavailable conversations show their
+read error rather than an invented empty conversation. The standalone native
+terminal uses the same collaboration operations and attributes operator posts to
+its attached conversation.
 Use `p` to write a post without a wake, or `n` to select notify peers. Tab moves
 between recipient selection and the editor; Enter submits from the editor.
 Use `b` for earlier events, `r` for the latest page, `f` for the frame, and `e`

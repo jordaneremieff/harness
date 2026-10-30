@@ -21,7 +21,7 @@ export function terminalAdmission(receipt: unknown, id: string, mode: "steer" | 
 	return `Input ${deduped ? "already admitted" : "admitted"} for ${reference.sessionId} (submission ${reference.submissionId}; requested ${mode === "followUp" ? "follow-up" : "steer"})`;
 }
 
-export type TerminalManager = Pick<AgentManager, "resolveTarget" | "control" | "snapshot" | "dashboardPage" | "observeLive" | "subscribeRoster" | "close">;
+export type TerminalManager = Pick<AgentManager, "resolveTarget" | "control" | "snapshot" | "dashboardPage" | "observeLive" | "subscribeRoster" | "close"> & Partial<Pick<AgentManager, "collaborate">>;
 export interface UnconfirmedTerminalInput { readonly text: string; readonly mode: "steer" | "followUp" }
 export interface TerminalControllerOptions {
 	manager: TerminalManager;
@@ -296,9 +296,17 @@ export class TerminalScreen implements Component {
 		const manager = this.controller.manager;
 		const source = createAgentObservationSource({ list: (input) => manager.dashboardPage(input), snapshot: (id, params) => manager.snapshot(id, params), observeLive: (id, scope, listener, signal) => manager.observeLive(id, scope, listener, signal), subscribeRoster: (listener) => manager.subscribeRoster(listener) });
 		this.dashboardSource = source;
+		const collaborate = manager.collaborate?.bind(manager);
 		const operations: DashboardOperations = {
 			enter: (id) => { void this.enter(id); },
 			branch: readAgentBranch,
+			readLineage: (id) => manager.control("status", { sessionId: id }, this.controller.caller),
+			collaborate: collaborate ? (input) => {
+				const id = this.controller.target;
+				if (!["list", "read"].includes(String(input.action)) && !id)
+					return Promise.reject(new Error("Attach a conversation before posting to a thread."));
+				return collaborate({ ...input, origin: "operator" }, { ...this.controller.caller, id: id ?? this.controller.caller.id });
+			} : undefined,
 			submit: async (input) => {
 				const receipt = await this.controller.admit(input.id, input.text, input.mode);
 				return { text: receipt.text, receipt: receipt.text };
@@ -312,7 +320,7 @@ export class TerminalScreen implements Component {
 			},
 			action: (name, target) => terminalAction(this.controller, (title, lines, prompt, initial) => this.ask(title, lines, prompt, initial), name, target),
 		};
-		this.dashboard = new AgentDashboard(this.tui, this.theme, this.keys, () => this.closeDashboard(), this.controller.state, source, operations, { hide: () => { this.dashboardHidden = true; this.tui.requestRender(); }, show: () => { this.dashboardHidden = false; this.tui.requestRender(); } });
+		this.dashboard = new AgentDashboard(this.tui, this.theme, this.keys, () => this.closeDashboard(), this.controller.state, source, operations, { hide: () => { this.dashboardHidden = true; this.tui.requestRender(); }, show: () => { this.dashboardHidden = false; this.tui.requestRender(); } }, this.controller.target);
 		this.tui.requestRender();
 	}
 	private ask(title: string, lines: string[], prompt: string, initial = ""): Promise<string | undefined> {

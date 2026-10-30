@@ -23,7 +23,11 @@ it("the production observation adapter forwards cancellation and releases late a
 	const started = [deferred(), deferred()];
 	const signals: AbortSignal[] = [];
 	const released: string[] = [];
-	t.mock.method(AgentManager.prototype, "dashboardPage", async () => page([row("one"), row("two")]));
+	t.mock.method(AgentManager.prototype, "dashboardPage", async () => page([
+		row("one", { storageId: "one", creatingOwnerId: "production-adapter-primary" }),
+		row("two", { storageId: "two", creatingOwnerId: "production-adapter-primary" }),
+	]));
+	t.mock.method(AgentManager.prototype, "collaborate", async () => ({ items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } }));
 	t.mock.method(AgentManager.prototype, "subscribeRoster", () => () => {});
 	t.mock.method(AgentManager.prototype, "snapshot", source().snapshot);
 	t.mock.method(
