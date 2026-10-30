@@ -1,5 +1,6 @@
 /** One event interpreter for approved plans, corrections, observations, and guidance. */
 import { randomUUID } from "node:crypto";
+import { ActionApprovals, actionAuthority, type ActionBinding, type ActionControl, sameActionInput, sealActionInput } from "./action-approval.ts";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { captureFor, ruleScopeMatches as scopeMatches } from "./classify.ts";
 import { compileRule } from "./compiler.ts";
@@ -58,6 +59,7 @@ interface ObservedCall extends PendingCall {
 	generation: number;
 	turn: number;
 	prepared: boolean;
+	executionStarted: boolean;
 	resultSeen: boolean;
 	abortRequested?: boolean;
 	outputBytes?: number;
@@ -240,6 +242,7 @@ export function refusalText(plan: InputPlan, snapshot: RuleSnapshot, fallbackIds
 }
 
 export class PolicyRuntime {
+	private readonly actions = new ActionApprovals();
 	private readonly state = new ObservationState();
 	private readonly pending = new Map<string, ObservedCall>();
 	private readonly ended = new Set<string>();
@@ -260,6 +263,7 @@ export class PolicyRuntime {
 	private readonly mode: () => PolicyMode;
 	private readonly enabled: () => boolean;
 	private readonly now: () => number;
+	private readonly createActionState: boolean;
 	constructor(
 		pi: ExtensionAPI,
 		load: (ctx?: ExtensionContext) => Promise<RuleSnapshot>,
@@ -268,13 +272,18 @@ export class PolicyRuntime {
 		enabled: () => boolean = () => true,
 		writer?: Pick<PolicyWriter, "enqueue" | "close">,
 		now: () => number = () => Date.now(),
+		createActionState = true,
 	) {
 		this.dir = dir;
 		this.pi = pi;
-		this.load = load;
+		this.load = async (ctx) => {
+			try { return await load(ctx); }
+			catch (error) { this.actions.clear(); throw error; }
+		};
 		this.mode = mode;
 		this.enabled = enabled;
 		this.now = now;
+		this.createActionState = createActionState;
 		this.writer = writer ?? new PolicyWriter(dir, (reason) => this.recordingFailed(reason));
 	}
 	private recordingFailed(reason: string): void {
@@ -291,6 +300,7 @@ export class PolicyRuntime {
 			[...snapshot.records.values()].map((record) => [record.id, effectiveEffect(record)]),
 		);
 		this.snapshot = snapshot;
+		if (this.effectiveMode() !== "enforce") this.actions.clear();
 		this.state.sync(
 			[...snapshot.records.values()]
 				.filter((r) => effectiveState(r) === "active" && r.matcherAvailable)
@@ -344,12 +354,24 @@ export class PolicyRuntime {
 		return !this.closed && generation === this.generation;
 	}
 	private resetSession(reason: string): void {
+		this.actions.clear();
 		this.retainedGuidance.clear();
 		this.generation++;
 		this.turn = 0;
 		this.state.reset(reason, this.now());
 		for (const call of this.pending.values()) call.complete = false;
 		this.ended.clear();
+	}
+	private actionBinding(ctx: ExtensionContext, snapshot: RuleSnapshot): ActionBinding {
+		const catalog = this.catalog();
+		if (!catalog.available) { this.actions.clear(); throw new Error("Exact-action tool schemas are unavailable"); }
+		const scope = sessionScope(ctx);
+		return { session: ctx.sessionManager.getSessionId(), scope: { cwd: scope.cwd, provider: scope.provider ?? null, model: scope.model ?? null },
+			authority: actionAuthority(snapshot, catalog.tools), mode: this.effectiveMode() };
+	}
+	async actionControl(params: ActionControl, ctx: ExtensionContext): Promise<unknown> {
+		const snapshot = await this.load(ctx);
+		return this.actions.control(params, this.actionBinding(ctx, snapshot));
 	}
 	private effectiveMode(): PolicyMode {
 		return this.snapshot?.health.status === "degraded" && this.mode() !== "observe" ? "notice" : this.mode();
@@ -506,6 +528,7 @@ export class PolicyRuntime {
 			generation: this.generation,
 			turn: this.turn,
 			prepared: false,
+			executionStarted: false,
 			resultSeen: false,
 			complete: input !== undefined,
 			evaluations: [],
@@ -548,19 +571,42 @@ export class PolicyRuntime {
 		const generation = this.generation;
 		const snapshot = await this.load(ctx);
 		if (!this.live(generation)) return;
-		this.track(this.makeCall(event.toolName, event.toolCallId, event.args, ctx, snapshot));
+		const call = this.makeCall(event.toolName, event.toolCallId, event.args, ctx, snapshot);
+		call.executionStarted = true;
+		this.track(call);
+	}
+	private prepareCall(event: ToolCallEvent, ctx: ExtensionContext, snapshot: RuleSnapshot): ObservedCall {
+		let call = this.pending.get(event.toolCallId);
+		if (!call) {
+			call = this.makeCall(event.toolName, event.toolCallId, event.input, ctx, snapshot);
+			this.track(call);
+		} else {
+			const approvalRules = [...snapshot.records.values()].some((record) => compileRule(record).program.action.kind === "require-approval") ||
+				call.rules.some((rule) => rule.program.action.kind === "require-approval");
+			if (approvalRules) {
+				const fresh = this.makeCall(event.toolName, event.toolCallId, event.input, ctx, snapshot);
+				fresh.requested = call.requested;
+				fresh.executionStarted = call.executionStarted;
+				this.pending.set(event.toolCallId, fresh);
+				call = fresh;
+			} else call.input = inputSnapshot(event.input);
+		}
+		call.prepared = true;
+		return call;
+	}
+	private approvalReason(call: ObservedCall, event: ToolCallEvent, ctx: ExtensionContext, snapshot: RuleSnapshot, plan: InputPlan): string | undefined {
+		if (this.effectiveMode() !== "enforce" || !plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.deny)) return undefined;
+		if (!this.createActionState) return "[policy] Simulation requires exact-action approval; no permission state was created.";
+		if (!call.executionStarted || !sameActionInput(call.requested, event.input) || !sameActionInput(event.input, plan.candidate))
+			return "[policy] Exact execution arguments are unproved: start, hook and final input must agree. Retry with the exact final payload without input correction.";
+		return this.actions.gate(plan, event.toolName, this.actionBinding(ctx, snapshot), () => sealActionInput(event.input as Record<string, unknown>));
 	}
 	async toolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<{ block: true; reason: string } | undefined> {
 		if (this.closed || !this.enabled()) return;
 		const generation = this.generation;
 		const snapshot = await this.load(ctx);
 		if (!this.live(generation)) return;
-		let call = this.pending.get(event.toolCallId);
-		if (!call) {
-			call = this.makeCall(event.toolName, event.toolCallId, event.input, ctx, snapshot);
-			this.track(call);
-		} else call.input = inputSnapshot(event.input);
-		call.prepared = true;
+		const call = this.prepareCall(event, ctx, snapshot);
 		const refused = this.refuseUnavailableInput(call, ctx);
 		if (refused) return refused;
 		const plan = this.inputPlan(call, this.effectiveMode() === "enforce");
@@ -568,12 +614,13 @@ export class PolicyRuntime {
 			call.matches.add(id);
 			if (!call.classes.includes(id)) call.classes.push(id);
 		}
+		const activeMode = this.effectiveMode();
+		const approvalReason = this.approvalReason(call, event, ctx, snapshot, plan);
 		this.collect(call, plan.evaluations);
 		call.corrections = plan.corrections;
-		const activeMode = this.effectiveMode();
-		const denied = this.applyInputCorrections(call, event, plan, plan.denied || !plan.valid);
+		const denied = this.applyInputCorrections(call, event, plan, approvalReason !== undefined || plan.denied || !plan.valid);
 		if (activeMode === "enforce" && denied) {
-			call.decision =
+			call.decision = approvalReason ??
 				refusalText(plan, snapshot, call.classes) ??
 				"[policy] The approved input checks refused this call.";
 			this.notice(call, ctx);
@@ -958,7 +1005,7 @@ export class PolicyRuntime {
 		const catalog = this.catalog();
 		return {
 			phases: ["input", "result", "completion", "context"],
-			actions: ["deny", "rename-key", "substitute", "assert-error", "guide", "observe"],
+			actions: ["deny", "require-approval", "rename-key", "substitute", "assert-error", "guide", "observe"],
 			mode: this.mode(),
 			effectiveMode: this.effectiveMode(),
 			schemas: {

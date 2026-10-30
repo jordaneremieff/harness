@@ -165,7 +165,7 @@ export function permitsEffectChoice(record: RuleBehavior): boolean {
 }
 
 export function actionEffect(action: ProgramAction): DefinitionEffect {
-	if (action.kind === "deny") return "block";
+	if (action.kind === "deny" || action.kind === "require-approval") return "block";
 	if (action.kind === "guide") return "steer";
 	if (action.kind === "observe") return "observe";
 	return "correct";

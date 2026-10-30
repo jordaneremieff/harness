@@ -144,10 +144,61 @@ Unknown conditions skip, unless an applicable input rule explicitly permits
 unavailable denial. Selected `steer` never denies. Arbitrary nested field names
 are not semantically proved by syntax admission; test their actual evidence.
 
-Actions are `deny` (input), `rename-key` and `substitute` (input), `assert-error`
-(result), `observe` (completion), and `guide` (input/result/completion/context).
+Actions are `deny` and `require-approval` (input), `rename-key` and `substitute`
+(input), `assert-error` (result), `observe` (completion), and `guide`
+(input/result/completion/context).
 Named data requires separate operator approval. A check uses existing approved
 data only. It never manufactures a missing mapping or selects an ambiguous row.
+
+## Gate an exact operation
+
+Use exact authority and `require-approval` for a machine-selected class of writes.
+For example, a hypothetical direct tool accepts `room` and `text` arguments:
+
+```json
+{
+  "operation": "add",
+  "id": "local.message-writes",
+  "purpose": "Send only operator-approved messages.",
+  "authority": "exact",
+  "reason": "Require exact approval before a message send.",
+  "note": "Inspect the complete target and payload before operator approval.",
+  "language": "facts/v1",
+  "program": {
+    "phase": "input",
+    "selector": {"tools": ["sample_send_message"]},
+    "when": {"op": "exists", "path": ["input"]},
+    "action": {"kind": "require-approval"},
+    "onUnavailable": "deny"
+  }
+}
+```
+
+The action always checks final policy input. Do not supply `inputView` or `state`.
+For an envelope tool, qualify its physical tool, operation and server through the
+existing codec and applicability contracts. Approval binds the complete outer
+arguments too, not just decoded fields. `onUnavailable:"deny"` blocks unknown
+input evidence without creating an approvable action; false/unknown applicability
+still skips, as with other actions.
+
+Rule approval and action approval are separate. After activation, a matching call
+produces a pending exact action in enforce mode. Inspect it with
+`policy_control` operation `action-inspect`, then use `action-approve` with the
+inspected action ID, revision and a contextual authorization explanation. Existing
+exact operator authorization suffices; an agent-selected payload under a broad
+goal does not. No fixed phrase, slash command or duplicate confirmation is
+required. An unchanged retry consumes one grant; the rule remains enabled.
+`action-reject` removes a pending or armed action. `actions` lists current action
+identities. No action control changes mode or a rule definition.
+
+All matching approval rules bind one action. Other denials remain decisive.
+Changed rules, controls, data, schemas, scope or arguments invalidate permission.
+Preview/check report the approval denial but never create or consume permissions.
+The loaded runtime alone owns pending/armed actions. A reload or restart loses
+them. Read the README's [exact execution boundaries](README.md#exact-execution-boundaries)
+for ordinary argument equality/freeze and native named-wrapper, pinned execution,
+unsafe-replay and normalization requirements. Tests with synthetic data do not authenticate a human
+or establish a real service deployment.
 
 ## Check examples
 

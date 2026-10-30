@@ -434,6 +434,7 @@ describe("finite proposal description and recursive admission", () => {
 		assert.deepEqual(
 			Object.keys(projectedControl.input_schema.properties).sort(),
 			[
+				"actionId",
 				"operation",
 				"id",
 				"selection",

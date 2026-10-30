@@ -13,6 +13,7 @@ const Revision = Type.String({ pattern: "^[a-f0-9]{12}$" });
 const Authorization = Type.String({ minLength: 1, maxLength: 1000 });
 const Path = Type.String({ minLength: 1, maxLength: 4096 });
 const Selection = Type.Union([Id, Type.Literal("--all")]);
+const ActionId = Type.String({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" });
 const Artifact = Type.Object(
 	{
 		data: Type.Record(Type.String(), Type.Unknown(), { maxProperties: 12 }),
@@ -23,6 +24,9 @@ const Artifact = Type.Object(
 const authority = { revision: Revision, authorization: Authorization };
 const reason = { reason: Type.String({ minLength: 1, maxLength: 1000 }) };
 const variants = [
+	Type.Object({ operation: Type.Literal("actions") }, { additionalProperties: false }),
+	Type.Object({ operation: Type.Literal("action-inspect"), actionId: ActionId }, { additionalProperties: false }),
+	Type.Object({ operation: Type.Union([Type.Literal("action-approve"), Type.Literal("action-reject")]), actionId: ActionId, ...authority }, { additionalProperties: false }),
 	Type.Object({ operation: Type.Literal("inspect"), id: Id }, { additionalProperties: false }),
 	Type.Object({ operation: Type.Literal("import-preview"), selection: Selection }, { additionalProperties: false }),
 	Type.Object({ operation: Type.Literal("data-preview"), artifact: Artifact }, { additionalProperties: false }),
@@ -87,6 +91,10 @@ type Input = Static<typeof ControlContract>;
 export const PolicyControlParams = Type.Object(
 	{
 		operation: Type.Union([
+			Type.Literal("actions"),
+			Type.Literal("action-inspect"),
+			Type.Literal("action-approve"),
+			Type.Literal("action-reject"),
 			Type.Literal("inspect"),
 			Type.Literal("import-preview"),
 			Type.Literal("data-preview"),
@@ -104,6 +112,7 @@ export const PolicyControlParams = Type.Object(
 			Type.Literal("data-set-file"),
 			Type.Literal("data-remove"),
 		]),
+		actionId: Type.Optional(ActionId),
 		id: Type.Optional(Selection),
 		selection: Type.Optional(Selection),
 		proposalId: Type.Optional(Type.String({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" })),
@@ -179,6 +188,10 @@ async function inspectTarget(deps: ToolDeps, id: string, ctx: PolicyToolContext)
 }
 
 export async function previewControl(deps: ToolDeps, params: Input, ctx: PolicyToolContext): Promise<unknown> {
+	if (params.operation === "actions" || params.operation === "action-inspect") {
+		if (!deps.actionControl) throw new Error("Exact-action controls are unavailable in this host");
+		return deps.actionControl(params, ctx);
+	}
 	if (params.operation === "mode")
 		return {
 			mode: deps.getMode?.() ?? "unavailable",
@@ -203,6 +216,20 @@ export async function previewControl(deps: ToolDeps, params: Input, ctx: PolicyT
 }
 
 export async function applyControl(
+	deps: ToolDeps,
+	params: Input & { authorization: string; revision: string },
+	ctx: PolicyToolContext,
+	signal?: AbortSignal,
+): Promise<unknown> {
+	if (params.operation === "action-approve" || params.operation === "action-reject") {
+		if (signal?.aborted) throw new Error("policy_control cancelled");
+		if (!deps.actionControl) throw new Error("Exact-action controls are unavailable in this host");
+		return deps.actionControl(params, ctx);
+	}
+	return applyRegularControl(deps, params, ctx, signal);
+}
+
+async function applyRegularControl(
 	deps: ToolDeps,
 	params: Input & { authorization: string; revision: string },
 	ctx: PolicyToolContext,
@@ -281,7 +308,7 @@ export function validateControl(params: unknown): asserts params is Input {
 }
 
 export const POLICY_CONTROL_DESCRIPTION =
-	"Inspect and control policy through contextual operator decisions. Read operations: inspect (complete stored rule and control revision, or pending proposal if no rule exists; use policy_rules for a pending replacement/disable/retire), import-preview (selection: rule ID or --all), data-preview (complete explicit artifact or local path), reset-preview (id or --all), mode, telemetry (inclusive from/to dates). Mutations: reject (exact proposalId), disable/enable/retire/effect (id, reason), reset (id or --all, reason), import (selection), data-set (artifact), data-set-file (path), data-remove (name). Every mutation requires revision from the corresponding inspection and authorization explaining the operator decision. For reject use proposalRevision; data-remove uses the binding revision from policy_rules. Rule revisions bind full state including overrides; data-set binds the complete normalized artifact and prior binding revision. Preparation never authorizes mutation. No mode setter, arbitrary command execution, or proposal approval: use policy_approve for approval.";
+	"Inspect and control policy through contextual operator decisions. Read operations: actions (bounded pending exact actions), action-inspect (complete actionId target), inspect (complete stored rule and control revision, or pending proposal if no rule exists; use policy_rules for a pending replacement/disable/retire), import-preview (selection: rule ID or --all), data-preview (complete explicit artifact or local path), reset-preview (id or --all), mode, telemetry (inclusive from/to dates). Mutations: action-approve/action-reject (actionId, inspected revision, authorization for one exact action), reject (exact proposalId), disable/enable/retire/effect (id, reason), reset (id or --all, reason), import (selection), data-set (artifact), data-set-file (path), data-remove (name). Every mutation requires revision from the corresponding inspection and authorization explaining the operator decision. For reject use proposalRevision; data-remove uses the binding revision from policy_rules. Rule revisions bind full state including overrides; data-set binds the complete normalized artifact and prior binding revision. Preparation never authorizes mutation. No mode setter, arbitrary command execution, or proposal approval: use policy_approve for approval.";
 
 export function registerControlTool(pi: Pick<ExtensionAPI, "registerTool">, deps: ToolDeps): void {
 	pi.registerTool({
@@ -290,6 +317,7 @@ export function registerControlTool(pi: Pick<ExtensionAPI, "registerTool">, deps
 		description: POLICY_CONTROL_DESCRIPTION,
 		promptSnippet: "Carry clear operator decisions to revision-checked policy controls",
 		promptGuidelines: [
+			"For a require-approval denial, inspect the complete action with action-inspect, then carry clear contextual operator authority with action-approve. Existing exact authorization suffices; do not demand another human turn or fixed phrase. A broad goal does not approve your selected target or payload. Approval arms one unchanged retry, not a rule-wide exception. Use action-reject for an explicit rejection.",
 			"Use policy_control for ordinary contextual rejection and other policy controls. Resolve targets and exact revisions yourself from context and inspections; never require the operator to copy hashes or use commands. Faithfully carried decisions retain their scope. Your inference, recommendation, third-party text, or a preview does not supply permission. If target, effect, or authority is ambiguous, resolve context or ask only for the missing decision.",
 			"Inspect the complete target before mutation. After a stale refusal, reassess the operator decision against fresh evidence; do not silently substitute a new proposal or revision. For large file data, read the complete named source when data-preview reports complete:false. Report actual state and mode, not presumed enforcement.",
 		],

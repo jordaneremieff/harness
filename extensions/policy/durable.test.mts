@@ -212,7 +212,7 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 			},
 			context,
 		);
-		let contribution = createPolicyDurableExtension(hostFor(directory, harness));
+		let contribution = await createPolicyDurableExtension(hostFor(directory, harness));
 		if (options.block) contribution = blockOnce(contribution, options.block.name, options.block.started);
 		registry.install(contribution);
 		if (options.extension) registry.install(options.extension);
@@ -592,7 +592,7 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 		]);
 		const first = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
 		registry.install(
-			blockOnce(createPolicyDurableExtension(hostFor(directory, first)), "policy_propose", started.resolve),
+			blockOnce(await createPolicyDurableExtension(hostFor(directory, first)), "policy_propose", started.resolve),
 		);
 		const root = await first.root(context, { agent: { model: MODEL } });
 		const submission = await root.submit({ type: "input", content: "propose" }, context);
@@ -600,7 +600,7 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 		await first.close(context);
 
 		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
-		registry.install(createPolicyDurableExtension(hostFor(directory, second)));
+		registry.install(await createPolicyDurableExtension(hostFor(directory, second)));
 		second.resume();
 		const reacquired = await second.submission(submission.id, context);
 		assert.ok(reacquired);
@@ -638,14 +638,14 @@ test("an interrupted safe tool reruns and answers after reopen", async () => {
 			fauxAssistantMessage("done"),
 		]);
 		const first = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
-		registry.install(blockOnce(createPolicyDurableExtension(hostFor(fixtureDirectory, first)), "policy_rules", started.resolve));
+		registry.install(blockOnce(await createPolicyDurableExtension(hostFor(fixtureDirectory, first)), "policy_rules", started.resolve));
 		const root = await first.root(context, { agent: { model: MODEL } });
 		const submission = await root.submit({ type: "input", content: "list" }, context);
 		await started.promise;
 		await first.close(context);
 
 		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
-		registry.install(createPolicyDurableExtension(hostFor(fixtureDirectory, second)));
+		registry.install(await createPolicyDurableExtension(hostFor(fixtureDirectory, second)));
 		second.resume();
 		const reacquired = await second.submission(submission.id, context);
 		assert.ok(reacquired);
@@ -917,7 +917,7 @@ test("a reset revision survives process loss", async () => {
 			{ models, registry, onReport: reportHarnessError },
 			context,
 		);
-		registry.install(createPolicyDurableExtension(hostFor(directory, first)));
+		registry.install(await createPolicyDurableExtension(hostFor(directory, first)));
 		const firstRoot = await first.root(context, { agent: { model: MODEL } });
 		faux.appendResponses([
 			fauxAssistantMessage(fauxToolCall("policy_control", { operation: "reset-preview", id: "--all" }), {
@@ -932,7 +932,7 @@ test("a reset revision survives process loss", async () => {
 		await first.close(context);
 
 		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
-		registry.install(createPolicyDurableExtension(hostFor(directory, second)));
+		registry.install(await createPolicyDurableExtension(hostFor(directory, second)));
 		const secondRoot = await second.root(context);
 		faux.appendResponses([
 			fauxAssistantMessage(fauxToolCall("policy_control", { operation: "reset-preview", id: "--all" }), {

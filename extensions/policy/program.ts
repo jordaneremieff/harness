@@ -68,6 +68,7 @@ export interface StateSpec {
 }
 export type ProgramAction =
 	| { kind: "deny" }
+	| { kind: "require-approval" }
 	| { kind: "rename-key"; path: string[]; from: string; to: string }
 	| { kind: "substitute"; path: string[]; table: string; stage?: "logical-target" | "values" }
 	| { kind: "assert-error" }
@@ -188,6 +189,7 @@ function programShape<C extends TSchema>(condition: C) {
 			when: condition,
 			action: Type.Union([
 				Type.Object({ kind: Type.Literal("deny") }, closed),
+				Type.Object({ kind: Type.Literal("require-approval") }, closed),
 				Type.Object(
 					{
 						kind: Type.Literal("rename-key"),
@@ -324,6 +326,7 @@ export function validateApplicability(value: unknown, program?: FactsProgram): s
 function programActionError(program: FactsProgram): string | undefined {
 	const permitted: Record<ProgramAction["kind"], ProgramPhase[]> = {
 		deny: ["input"],
+		"require-approval": ["input"],
 		"rename-key": ["input"],
 		substitute: ["input"],
 		"assert-error": ["result"],
@@ -332,6 +335,8 @@ function programActionError(program: FactsProgram): string | undefined {
 	};
 	if (!permitted[program.action.kind].includes(program.phase)) return "Action is unavailable in this phase";
 	if (program.onUnavailable === "deny" && program.phase !== "input") return "Unavailable denial requires the input phase";
+	if (program.action.kind === "require-approval" && (program.inputView !== undefined || program.state !== undefined))
+		return "Approval gates always use final input and do not use observation state";
 	if (program.inputView && program.phase !== "input") return "inputView requires the input phase";
 	if (program.inputView === "effective" && program.action.kind !== "deny" && program.action.kind !== "guide")
 		return "Only denial or guidance uses an effective-input gate";
@@ -1023,5 +1028,17 @@ export function planInput(
 		recordRule(state, rule, original);
 	for (const stage of ["logical-target", "keys", "values"] as const) planCorrectionStage(state, stage);
 	finalizePlan(state);
+	// Approval checks observe actual final input without admitting hypothetical command evidence.
+	const approvalRules = ordered.filter((entry) => entry.program.action.kind === "require-approval");
+	if (!approvalRules.length) return plan;
+	const approvalInput = context.applyCorrections === false ? state.original : plan.candidate;
+	const approvalEvidence = captureEvidenceFor(state, approvalInput);
+	for (const rule of approvalRules) {
+		const evaluation = recordRule(state, rule, approvalInput, approvalEvidence);
+		evaluation.inputView = "effective";
+		evaluation.deny = evaluation.applicable === true &&
+			(evaluation.truth === true || (evaluation.truth === "unknown" && rule.program.onUnavailable === "deny"));
+		plan.denied ||= evaluation.deny;
+	}
 	return plan;
 }

@@ -1,6 +1,7 @@
 /** Policy proposals, authorized activation, and read-only rule inspection. */
 
 import { resolve } from "node:path";
+import type { ActionControl } from "./action-approval.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Compile } from "typebox/compile";
@@ -328,6 +329,7 @@ export interface ToolDeps {
 	registry: RuleRegistry;
 	loadRegistry(ctx?: PolicyToolContext): Promise<RuleSnapshot>;
 	getMode?(): PolicyMode | "unavailable";
+	actionControl?(params: ActionControl, ctx: PolicyToolContext): unknown | Promise<unknown>;
 	resetRevision?(id: string): string | Promise<string>;
 	reset?(id: string, reason: string, revision: string): void | Promise<void>;
 	telemetry?(from: string, to: string): Promise<unknown>;

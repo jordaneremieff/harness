@@ -427,7 +427,8 @@ test("the canonical authoring guide examples satisfy admission and behavior chec
 	const guide = await authoringGuide();
 	let examples = 0;
 	for (const block of guide.matchAll(/^```json\n([\s\S]*?)^```/gm)) {
-		const params = JSON.parse(block[1]) as Record<string, unknown>;
+		const value = JSON.parse(block[1]) as Record<string, unknown>;
+		const params = value.operation ? { view: "check", draft: value } : value;
 		assert.equal(Compile(PolicyRulesParams).Check(params), true);
 		validateInspectionParams(params);
 		const f = fixture();

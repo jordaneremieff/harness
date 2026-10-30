@@ -273,6 +273,7 @@ async function runCase(
 			close: async () => {},
 		},
 		() => now,
+		false,
 	);
 	runtime.sync(snapshot);
 	runtime.attach();

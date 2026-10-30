@@ -33,6 +33,89 @@ commands:
 See [tools and operator controls](#tools-and-operator-controls) for the complete
 ordinary control surface.
 
+## Approve one exact action
+
+An operator-owned facts rule uses `action:{"kind":"require-approval"}` with
+`authority:"exact"` to gate selected tool operations. The action is input-only,
+always checks the final policy candidate, and accepts no `inputView` or observation
+`state`. It uses the existing scope, selector, codec, applicability and condition
+contracts. It is not a starter rule and does not name any service.
+
+In `enforce`, a matching action stays blocked until the operator authorizes its
+complete target and payload. The agent uses this path in ordinary, RPC and Durable
+chat without a UI confirmation requirement:
+
+1. Read the denial's action ID, or list `policy_control {"operation":"actions"}`.
+2. Inspect `{"operation":"action-inspect","actionId":"<id>"}`. The result
+   includes the complete physical tool, arguments (including routing fields),
+   session scope and every matching approval rule revision.
+3. Resolve clear contextual operator authority for that exact action. Call
+   `{"operation":"action-approve","actionId":"<id>","revision":"<inspected revision>","authorization":"<operator decision and context>"}`.
+4. Retry the unchanged tool operation once. A different call ID is expected.
+   Changed arguments, another target, and a future identical operation still
+   require their own approval. Use `action-reject` with the same mutation fields
+   to reject or withdraw an armed action.
+
+Existing exact authorization in context is sufficient; no fixed phrase or extra
+human turn is required. A broad task does not approve an agent-selected payload.
+The agent conveys the operator decision. Its authorization explanation is not
+independent human authentication and is not a hostile-agent security boundary.
+
+Approval satisfies all matching approval rules together, never another denial.
+The engine checks unrelated rules before it consumes a grant. Its synchronous
+consume removes the grant before execution, so parallel retries share no use.
+A failed, aborted or later-hook-blocked execution does not restore that use.
+The action's full JSON, tool identity, session/conversation, provider/model/cwd,
+all rule/control/data revisions and public schemas bind the grant. Inspection and
+execution reject stale scope or authority. Preview and draft checks create and
+consume no action permissions.
+
+Permissions exist only in the loaded runtime, not the rule log, telemetry or
+Durable documents. Reload, restart, ordinary session navigation and shutdown lose
+them. Native sibling/fork conversations do not inherit them. A restart before
+native tool intent loses permission safely; after intent, Pi's unsafe-tool replay
+contract reports interruption instead of another external write. The action book
+has bounded capacity and complete-payload bounds; an oversized action or full book
+stays blocked rather than authorizing a clipped payload. Reject pending actions
+to free capacity. No expiry timer or external permission store exists.
+
+### Exact execution boundaries
+
+Ordinary approval requires identical JSON at `tool_execution_start`, `tool_call`
+and the final policy candidate. Missing start evidence, earlier argument changes,
+host coercion and policy corrections refuse an approval path. Retry with the exact
+final payload instead. The runtime deep-freezes the approved hook argument object
+before it returns. Later in-place mutations throw and block; replacement of the
+hook's `event.input` does not replace Pi's actual argument reference. A tool that
+needs to mutate its arguments must copy them first. Trusted extensions must not
+change hidden retained argument references outside their declared hook contract.
+
+Native approval uses a named execute wrapper for each explicit `selector.tools`
+name in the rules loaded with the contribution. The public wrapper contract also
+covers a deferred tool registered after that load. An absent target adds no tool.
+A new gate for an unwrapped name, or a gate without explicit physical tool names,
+stays blocked until a supported exact-tool rule and policy reload supply it.
+There is no discovery watcher or wrapper refresh service.
+
+Native preflight checks an armed grant without consuming it. The final execute
+wrapper uses `ToolExecutionApi.agent()` for the actual phase's pinned tool/schema
+and scope, after every hook and host normalization. It checks the current rules
+again, refuses input that needs correction or differs from the approved payload,
+and consumes only after other denials clear. It passes the checked plain candidate
+to the original tool. Raw accessors are rejected before policy reads their values.
+Unavailable metadata, `replay:"safe"`, and a candidate changed or rejected by Pi's
+public argument validator stay blocked. External-write tools must use unsafe
+replay. A safe recovery cannot reuse a consumed grant through the wrapper.
+
+These refusals protect the executed target instead of silently accepting a changed
+operation. They do not protect against hostile installed code, a later wrapper
+that bypasses the original execute function, or a tool that acts on something other
+than its declared arguments. Installed extensions remain trusted host code.
+
+New approval rules require updated, reloaded policy sessions. A source update does
+not change already-loaded code. Existing rules retain their action and mode
+contracts; no store migration or compatibility reader is involved.
+
 ## Modes and guidance
 
 In ordinary Pi sessions, `--policy-mode` overrides the configured machine mode.
@@ -426,6 +509,7 @@ requires observation state. Session scope still applies at projection time.
 | Action | Phase | Behavior |
 | --- | --- | --- |
 | `deny` | input | Refuse execution in enforce mode |
+| `require-approval` | input | Require one contextual approval of the complete final action in enforce mode |
 | `rename-key` | input | Move a value between approved keys without changing the value |
 | `substitute` | input | Replace a value through a unique approved table lookup |
 | `assert-error` | result | Assert `isError:true` when the approved condition matches |
@@ -808,6 +892,9 @@ combinations and prohibited extra fields are checked again before any operation:
 
 | Operation | Arguments beyond `operation` | Revision source |
 | --- | --- | --- |
+| `actions` | None | Bounded action identities for this session/conversation |
+| `action-inspect` | `actionId` | Complete exact action and its `revision` |
+| `action-approve`, `action-reject` | `actionId`, `revision`, `authorization` | `action-inspect`; one unchanged retry or explicit rejection |
 | `inspect` | `id` | Complete stored rule and full-state `revision`; pending artifact only when no stored rule exists |
 | `reject` | `proposalId`, `revision`, `authorization` | `proposalRevision` from `policy_rules` pending lookup |
 | `disable`, `enable`, `retire` | `id`, `reason`, `revision`, `authorization` | `inspect` |

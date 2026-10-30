@@ -40,6 +40,8 @@
  * commit.
  */
 import { randomUUID } from "node:crypto";
+import { validateToolArguments } from "@earendil-works/pi-ai";
+import { ActionApprovals, actionAuthority, type ActionBinding, type ActionControl, sameActionInput } from "./action-approval.ts";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
@@ -276,7 +278,7 @@ const toolScope = (scope: RuleMatchContext, model: Durable.Agent["model"]): Poli
  * directory and mode use the local settings reader with the host's agent
  * directory. Ordinary session flags do not apply.
  */
-export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.Extension {
+export async function createPolicyDurableExtension(host: PolicyDurableHost): Promise<Durable.Extension> {
 	const { defineDoc, defineExtension, defineTool, hook, section, GenerationTask, ToolTask } = host.durable;
 	const configured = readSettings({ agentDir: host.agentDir });
 	const dir = configured.values.dir;
@@ -301,7 +303,13 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 		checkpointWhen: () => false,
 		initial: initialPolicyStateValue,
 	});
+	const loaded = await registry.snapshot();
+	const wrappedTools = new Set([...loaded.records.values()].flatMap((record) => {
+		const program = compileRule(record).program;
+		return program.action.kind === "require-approval" ? program.selector?.tools ?? [] : [];
+	}));
 	const runtime = new DurablePolicyRuntime({
+		wrappedTools,
 		dir,
 		registry,
 		harness: host.harness,
@@ -373,6 +381,7 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 	return defineExtension({
 		name: "policy",
 		tools: [rulesTool, proposeTool, approveTool, controlTool],
+		wraps: [...wrappedTools].map((tool) => ({ tool, wrap: (registration) => runtime.wrapActionTool(registration) })),
 		sections: [
 			section(
 				"policy",
@@ -383,7 +392,7 @@ export function createPolicyDurableExtension(host: PolicyDurableHost): Durable.E
 		],
 		hooks: [
 			hook(ToolTask, {
-				beforeTool: (call, api, context) => runtime.beforeTool(call, api, context),
+				beforeTool: runtime.beforeToolHook,
 				afterTool: (call, result, api, context) => runtime.afterTool(call, result, api, context),
 			}),
 			hook(GenerationTask, {
@@ -404,7 +413,7 @@ function inputSnapshot(value: unknown): Record<string, unknown> | undefined {
 	const source = objectValue(value);
 	if (!source) return undefined;
 	try {
-		return cloneJson({ ...source });
+		return cloneJson(source);
 	} catch {
 		return undefined;
 	}
@@ -496,6 +505,7 @@ function repairState(state: PolicyStateValue): PolicyStateValue {
 }
 
 interface DurablePolicyRuntimeOptions {
+	wrappedTools: ReadonlySet<string>;
 	dir: string;
 	registry: RuleRegistry;
 	harness: Durable.Harness;
@@ -506,6 +516,9 @@ interface DurablePolicyRuntimeOptions {
 }
 
 class DurablePolicyRuntime {
+	private readonly actions = new ActionApprovals();
+	private readonly wrappedTools: ReadonlySet<string>;
+	readonly beforeToolHook: Durable.ToolHooks["beforeTool"] = (call, api, context) => this.beforeTool(call, api, context);
 	private readonly dir: string;
 	private readonly registry: RuleRegistry;
 	private readonly harness: Durable.Harness;
@@ -517,6 +530,7 @@ class DurablePolicyRuntime {
 	private telemetryFailure?: string;
 
 	constructor(options: DurablePolicyRuntimeOptions) {
+		this.wrappedTools = options.wrappedTools;
 		this.dir = options.dir;
 		this.registry = options.registry;
 		this.harness = options.harness;
@@ -526,12 +540,74 @@ class DurablePolicyRuntime {
 		this.stateDoc = options.stateDoc;
 	}
 
+	private actionBinding(conversationId: Durable.ConversationId, snapshot: RuleSnapshot, agent: Durable.Agent, scope: RuleMatchContext): ActionBinding {
+		return { session: this.sessionLabel(conversationId), scope: { cwd: scope.cwd, provider: scope.provider ?? null, model: scope.model ?? null },
+			authority: actionAuthority(snapshot, [...agent.tools, ...agent.callable]), mode: this.effectiveMode(snapshot) };
+	}
+	private actionSafety(agent: Durable.Agent, name: string, args: Record<string, unknown>): string | undefined {
+		const tool = [...agent.tools, ...agent.callable].find((entry) => entry.name === name);
+		if (!tool) return "[policy] Exact-action tool registration is unavailable.";
+		if (tool.replay === "safe") return "[policy] Exact-action approval refuses replay:safe tools; external writes require unsafe replay.";
+		try {
+			const final = validateToolArguments(tool, { type: "toolCall", id: "policy-normalization", name, arguments: args });
+			if (!sameActionInput(args, final)) return "[policy] Host validation changes the final candidate; retry with exact normalized arguments.";
+		} catch { return "[policy] Final host validation is unavailable or rejects the exact candidate."; }
+		return undefined;
+	}
+	private async actionControl(params: ActionControl, surface: PolicySurface, context: Context): Promise<unknown> {
+		const { snapshot, agent, scope } = await this.activeRules(surface, context);
+		const binding = this.actionBinding(surface.conversationId, snapshot, agent, scope);
+		return this.actions.control(params, binding);
+	}
+	private uncoveredApproval(plan: InputPlan, name: string, rules: readonly ProgramRule[]): boolean {
+		if (!this.wrappedTools.has(name)) return true;
+		return plan.evaluations.filter((entry) => entry.action.kind === "require-approval" && entry.deny)
+			.some((entry) => !rules.find((rule) => rule.id === entry.id)?.program.selector?.tools?.includes(name));
+	}
+	private finalActionReason(plan: InputPlan, observed: ObservedCall, memo: PolicyCallMemo | undefined, agent: Durable.Agent, binding: ActionBinding): string | undefined {
+		if (!observed.input || !sameActionInput(observed.input, plan.candidate))
+			return "[policy] Final execution input is unavailable or needs a correction; retry the exact final payload.";
+		const gatedBefore = memo?.inputEvaluations.some((entry) => objectValue(entry)?.action === "require-approval" && objectValue(entry)?.truth === true);
+		const gatedNow = plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.deny);
+		if (gatedBefore && !gatedNow) return "[policy] The approval gate changed after preflight; retry and inspect the current action.";
+		if (gatedNow) {
+			if (this.uncoveredApproval(plan, observed.tool, observed.rules)) return "[policy] Native approval requires loaded wrappers and explicit selector.tools for every gate; reload policy after a new exact-tool rule.";
+			const reason = this.actionSafety(agent, observed.tool, plan.candidate) ?? this.actions.gate(plan, observed.tool, binding);
+			if (reason) return reason;
+		}
+		return plan.denied || !plan.valid ? "[policy] Final approved input checks refused this action." : undefined;
+	}
+	wrapActionTool(tool: Durable.ToolRegistration): Durable.ToolRegistration {
+		return { ...tool, execute: async (args, api, context) => {
+			const surface = this.toolSurface(api);
+			const agent = await api.agent(context);
+			const turn = await this.turnOf(api.conversationId, context);
+			const base = await this.readState(surface, context, (state) => ({ state, observation: this.observationOf(state) }));
+			const memo = await api.memo<PolicyCallMemo>("policy.call", context);
+			// The final rule read is the admission boundary; no await separates it from consumption.
+			const snapshot = await this.snapshot();
+			const { scope, rules, installed } = this.selectedRules(snapshot, agent);
+			if (this.effectiveMode(snapshot) !== "enforce") return tool.execute(args, api, context);
+			const now = Date.now();
+			base.observation.sync(rules, now);
+			const observed = this.makeObservedCall(tool.name, api.callId, args, rules, snapshot, agent, scope, base.observation, turn, now, api.conversationId, installed);
+			observed.generation = base.state.generation;
+			const plan = this.inputPlan(observed, base.observation, now, true);
+			const reason = this.finalActionReason(plan, observed, memo, agent, this.actionBinding(api.conversationId, snapshot, agent, scope));
+			if (reason) return { isError: true, output: [{ type: "text", text: reason }] };
+			return tool.execute(plan.candidate as Durable.JsonObject, api, context);
+		} };
+	}
 	getMode(): PolicyMode {
 		return this.mode;
 	}
 
 	private async snapshot(): Promise<RuleSnapshot> {
-		return this.registry.snapshot();
+		try {
+			const snapshot = await this.registry.snapshot();
+			if (this.effectiveMode(snapshot) !== "enforce") this.actions.clear();
+			return snapshot;
+		} catch (error) { this.actions.clear(); throw error; }
 	}
 
 	private sessionLabel(conversationId: Durable.ConversationId): string {
@@ -648,6 +724,9 @@ class DurablePolicyRuntime {
 	): Promise<{ snapshot: RuleSnapshot; agent: Durable.Agent; scope: RuleMatchContext; rules: ProgramRule[]; installed: string[] }> {
 		const snapshot = await this.snapshot();
 		const agent = await surface.agent(context);
+		return { snapshot, agent, ...this.selectedRules(snapshot, agent) };
+	}
+	private selectedRules(snapshot: RuleSnapshot, agent: Durable.Agent): { scope: RuleMatchContext; rules: ProgramRule[]; installed: string[] } {
 		const installed = [
 			...new Set(agent.extensions.flatMap((extension) => extension.tools?.map((tool) => tool.name) ?? [])),
 		];
@@ -665,7 +744,7 @@ class DurablePolicyRuntime {
 					ruleScopeMatches(record.definition.scope, scope),
 			)
 			.map(compileRule);
-		return { snapshot, agent, scope, rules, installed };
+		return { scope, rules, installed };
 	}
 
 	private publicContext(
@@ -1203,6 +1282,11 @@ class DurablePolicyRuntime {
 		}
 	}
 
+	private preflightActionReason(plan: InputPlan, name: string, snapshot: RuleSnapshot, agent: Durable.Agent, scope: RuleMatchContext, conversationId: Durable.ConversationId): string | undefined {
+		if (this.effectiveMode(snapshot) !== "enforce" || !plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.deny)) return undefined;
+		if (this.uncoveredApproval(plan, name, this.selectedRules(snapshot, agent).rules)) return "[policy] This native approval gate needs explicit selector.tools and a loaded exact-tool wrapper; reload policy before approval.";
+		return this.actions.gate(plan, name, this.actionBinding(conversationId, snapshot, agent, scope), undefined, false);
+	}
 	async beforeTool(
 		call: ToolCall,
 		api: Durable.HookApi,
@@ -1249,6 +1333,7 @@ class DurablePolicyRuntime {
 				reason = "[policy] An approved input check refused unavailable input.";
 		}
 		const plan = this.inputPlan(observed, base.observation, now, mode === "enforce");
+		if (reason === undefined) reason = this.preflightActionReason(plan, call.name, snapshot, agent, scope, api.conversationId);
 		if (reason === undefined && mode === "enforce" && (plan.denied || !plan.valid)) {
 			observed.decision =
 				this.refusalText(observed, plan, snapshot) ?? "[policy] The approved input checks refused this call.";
@@ -1275,11 +1360,13 @@ class DurablePolicyRuntime {
 			await this.writeTelemetry(update.record);
 			return { block: update.guidance ? `${reason}\n${update.guidance}` : reason };
 		}
-		if (mode === "enforce" && plan.valid && !plan.denied && plan.changed) {
-			observed.effects.policy = { ...observed.effects.policy, inputCorrected: true };
-			return { arguments: plan.candidate as unknown as Durable.JsonObject };
-		}
-		return undefined;
+		return this.checkedArguments(plan, mode, observed);
+	}
+	private checkedArguments(plan: InputPlan, mode: PolicyMode, observed: ObservedCall): { arguments: Durable.JsonObject } | undefined {
+		if (mode !== "enforce" || !plan.valid || plan.denied) return undefined;
+		if (!plan.changed && !plan.evaluations.some((entry) => entry.action.kind === "require-approval" && entry.truth === true)) return undefined;
+		if (plan.changed) observed.effects.policy = { ...observed.effects.policy, inputCorrected: true };
+		return { arguments: plan.candidate as Durable.JsonObject };
 	}
 
 	async afterTool(
@@ -1657,6 +1744,7 @@ class DurablePolicyRuntime {
 			registry: this.registry,
 			loadRegistry: () => this.snapshot(),
 			getMode: () => this.getMode(),
+			actionControl: (params) => this.actionControl(params, surface, context),
 			resetRevision: (id) => this.resetRevision(id, surface, context),
 			reset: (id, reason, revision) => this.resetObservation(id, reason, revision, surface, context),
 			telemetry: async (from, to) => ({ report: formatTelemetry(await readTelemetry(this.dir, from, to)) }),
@@ -1782,7 +1870,7 @@ class DurablePolicyRuntime {
 			const active = new Set(agent.tools.map((tool) => tool.name));
 			return {
 				phases: ["input", "result", "completion", "context"],
-				actions: ["deny", "rename-key", "substitute", "assert-error", "guide", "observe"],
+				actions: ["deny", "require-approval", "rename-key", "substitute", "assert-error", "guide", "observe"],
 				mode: this.getMode(),
 				effectiveMode: this.effectiveMode(snapshot),
 				schemas: {

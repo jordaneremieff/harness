@@ -868,6 +868,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		registry,
 		loadRegistry,
 		getMode: () => (ensureMode() ? mode : "unavailable"),
+		actionControl: (params, ctx) => runtime.actionControl(params, ctx as ExtensionContext),
 		resetRevision: (id) => runtime.resetRevision(id),
 		reset: (id, reason, revision) => runtime.reset(id === "--all" ? undefined : [id], reason, revision),
 		telemetry: async (from, to) => ({ report: formatTelemetry(await readTelemetry(dir, from, to)) }),
