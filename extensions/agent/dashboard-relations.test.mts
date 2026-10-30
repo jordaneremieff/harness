@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { DashboardRelations, relatedWork, relationSeeds, relationIdentity } from "./dashboard-relations.ts";
-import { fixture, source, row, turn, theme, deferred } from "./dashboard-test-fixture.mts";
+import { fixture, source, row, turn, theme, deferred, page as rosterPage, conversationFrame } from "./dashboard-test-fixture.mts";
 import type { CollaborationPage } from "./collaboration.ts";
 
 const ordinary = "11111111-1111-1111-1111-111111111111";
@@ -171,6 +171,76 @@ for (const [width, height] of [[80, 24], [140, 45]]) it(`Related, All, thread, p
 		assert.match(shown(f), /Related threads/);
 		f.ui.handleInput("\x1b");
 		assert.equal(f.ui.navigation.screen, "roster");
+	} finally { f.ui.dispose(); }
+});
+it("alias participants retain canonical selection through roster refresh and live recovery", { timeout: 5000 }, async () => {
+	const current = thread(`${storage}/abcdef`, [`${storage}:1`, peer]);
+	let currentRows = rows();
+	const observed = source(currentRows);
+	let rosterChanged = () => {};
+	let frameChanged = () => {};
+	let availability: "unavailable" | "live" = "unavailable";
+	let live: ReturnType<typeof conversationFrame> | undefined;
+	const selected: Array<string | undefined> = [];
+	const snapshots: string[] = [];
+	const refreshed = deferred<string>();
+	observed.list = async () => rosterPage(currentRows);
+	observed.subscribeRoster = (listener) => { rosterChanged = listener; return () => {}; };
+	observed.subscribe = (listener) => { frameChanged = listener; return () => {}; };
+	observed.select = (id) => { selected.push(id); };
+	observed.refresh = (id) => { refreshed.resolve(id); };
+	observed.availability = () => ({ state: availability, at: new Date(0).toISOString() });
+	observed.frame = (id) => id === storage ? live : undefined;
+	const snapshot = observed.snapshot;
+	observed.snapshot = async (id) => { snapshots.push(id); return snapshot(id); };
+	const f = fixture(100, 30, observed, { collaborate: async (input) => input.action === "list" ? discovery([current]) : current }, undefined, theme, ordinary);
+	try {
+		await turn();
+		f.ui.handleInput("t"); await turn();
+		f.ui.handleInput("\r"); await turn();
+		f.ui.handleInput("m");
+		f.ui.handleInput("\r"); await turn();
+		assert.equal(f.state.selected, storage);
+		assert.equal(f.ui.navigation.target, storage);
+		assert.equal(selected.at(-1), storage);
+		const reads = snapshots.length;
+		currentRows = currentRows.map((item) => item.id === storage ? { ...item, modifiedAt: 1, state: "idle" as const, name: "Refreshed root" } : item);
+		rosterChanged();
+		assert.equal(await refreshed.promise, storage);
+		await turn();
+		assert.equal(snapshots.length > reads, true);
+		assert.equal(snapshots.at(-1), storage);
+		assert.equal(shown(f).includes("Refreshed root"), true);
+		const initial = conversationFrame();
+		live = conversationFrame({ storageId: storage, status: { ...initial.status, identity: storage, name: "Live root", busy: false },
+			entries: [{ id: "2", kind: "pi.user", model: [{ role: "user", content: "Recovered live conversation", timestamp: 1 }] }] });
+		availability = "live";
+		frameChanged();
+		assert.equal(f.state.selected, storage);
+		assert.equal(f.ui.navigation.target, storage);
+		assert.equal(shown(f).includes("Recovered live conversation"), true);
+		assert.equal(shown(f).includes("Conversation unavailable"), false);
+	} finally { f.ui.dispose(); }
+});
+it("unknown participants retain their exact read error", async () => {
+	const missing = "55555555-5555-5555-5555-555555555555:1";
+	const current = thread(`${storage}/abcdef`, [missing, storage]);
+	const observed = source(rows());
+	const snapshot = observed.snapshot;
+	observed.snapshot = async (id) => {
+		if (id === missing) throw new Error("Participant storage is unreadable");
+		return snapshot(id);
+	};
+	const f = fixture(100, 30, observed, { collaborate: async (input) => input.action === "list" ? discovery([current]) : current }, undefined, theme, ordinary);
+	try {
+		await turn();
+		f.ui.handleInput("t"); await turn();
+		f.ui.handleInput("\r"); await turn();
+		f.ui.handleInput("m");
+		f.ui.handleInput("\r"); await turn();
+		assert.equal(f.state.selected, missing);
+		assert.equal(f.ui.navigation.target, missing);
+		assert.equal(shown(f).includes("Participant storage is unreadable"), true);
 	} finally { f.ui.dispose(); }
 });
 it("empty and failed relation evidence keep All and Threads reachable", async () => {

@@ -981,8 +981,8 @@ export class AgentDashboard implements Component, Focusable {
 			owner: "unknown" as const, state: "unavailable" as const, cost: Number.NaN, partial: true,
 		};
 		this.saveConsole();
-		this.state.selected = id;
-		this.navigation.enter("console", id);
+		this.state.selected = row.id;
+		this.navigation.enter("console", row.id);
 		this.select(row);
 		this.redraw();
 	}
