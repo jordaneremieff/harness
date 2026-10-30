@@ -297,7 +297,9 @@ identity; drafts, sent-message history, reading positions, and expanded cards
 remain local to each terminal process. Navigation away and back preserves those
 local values while native work continues. Separate terminals have independent
 local values and share operator input to the same native conversation. There is
-no exclusive input lease. Native admission determines the result.
+no exclusive input lease. Native admission determines the result. The standalone
+terminal leaves the outer fullscreen page bindings empty so PageUp and PageDown
+reach the screen that owns the conversation or thread.
 
 | Input | Effect |
 |---|---|
@@ -310,7 +312,7 @@ no exclusive input lease. Native admission determines the result.
 | Enter in the composer | Admit the text through the selected native host. |
 | Ctrl+J | Insert a native editor newline. |
 | Tab | Choose requested Steer or Follow-up. |
-| PageUp / PageDown | Read history; PageUp at the oldest loaded boundary requests earlier entries. |
+| PageUp / PageDown | Read conversation history or the open thread; PageUp at the oldest conversation boundary requests earlier entries. |
 | Ctrl+O / Ctrl+T | Expand tool output / show thinking. |
 | `/quit`, Ctrl+D with an empty composer, or process exit | Close this terminal and its observation links, not native work. |
 

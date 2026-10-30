@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { CURSOR_MARKER, type Component, type Focusable, type TUI } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, TuiAltScreen, getKeybindings, setKeybindings, type Component, type Focusable, type Terminal, type TUI } from "@earendil-works/pi-tui";
 import { AgentComposer } from "./agent-composer.ts";
 import { TerminalController, TerminalScreen, terminalAdmission, terminalKeys, terminalTargetFile, parseTerminalArgs, type TerminalManager } from "./terminal-client.ts";
 import { terminalAction, parseTerminalConfiguration } from "./terminal-actions.ts";
@@ -364,6 +364,47 @@ it("recovery dialogs forward native input focus and restore only the captured ta
 	assert.equal(f.controller.state.agents.get("a")?.mode, "followUp");
 	assert.equal(f.calls.filter((call) => call.method === "submit").length, 1);
 	screen.dispose(); f.controller.close();
+});
+
+it("fullscreen terminal dispatch gives page keys to the native conversation screen", async () => {
+	const f = fixture();
+	f.manager.snapshot = async () => ({ ...snapshot(), entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: Array.from({ length: 80 }, (_, index) => `Conversation line ${index + 1}`).join("\n"), timestamp: 0 }] }] });
+	await f.controller.attach("a");
+	let input: (data: string) => void = () => { throw new Error("Terminal input is not attached"); };
+	const terminal: Terminal = {
+		columns: 80, rows: 24, kittyProtocolActive: false,
+		start(onInput) { input = onInput; }, stop() {}, write() {}, moveBy() {},
+		hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {},
+		clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+	};
+	const previous = getKeybindings();
+	const keys = terminalKeys();
+	setKeybindings(keys);
+	const tui = new TuiAltScreen(terminal);
+	const screen = new TerminalScreen(tui, theme, keys, f.controller, () => {});
+	const received: string[] = [];
+	const handle = screen.handleInput.bind(screen);
+	screen.handleInput = (data) => { received.push(data); handle(data); };
+	tui.addChild(screen);
+	tui.setFocus(screen);
+	try {
+		tui.start();
+		tui.renderNow(true);
+		const text = () => stripVTControlCharacters(screen.render(80).join("\n"));
+		const tail = text();
+		input("\x1b[5~");
+		tui.renderNow();
+		assert.equal(text() !== tail, true);
+		input("\x1b[6~");
+		tui.renderNow();
+		assert.deepEqual(received, ["\x1b[5~", "\x1b[6~"]);
+		assert.equal(text(), tail);
+	} finally {
+		tui.stop({ preserveScreen: true });
+		screen.dispose();
+		f.controller.close();
+		setKeybindings(previous);
+	}
 });
 
 it("configured interrupt keeps its native route without introducing Alt or F application bindings", () => {

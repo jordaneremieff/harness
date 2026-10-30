@@ -201,6 +201,8 @@ export function terminalKeys(): KeybindingsManager {
 	return new KeybindingsManager({ ...TUI_KEYBINDINGS,
 		"app.interrupt": { defaultKeys: "escape" }, "app.exit": { defaultKeys: "ctrl+d" },
 		"app.clipboard.pasteImage": { defaultKeys: [] },
+		// The focused screen owns paging, not the outer fullscreen viewport.
+		"tui.altScreen.pageUp": { defaultKeys: [] }, "tui.altScreen.pageDown": { defaultKeys: [] },
 		"app.tools.expand": { defaultKeys: "ctrl+o" }, "app.thinking.toggle": { defaultKeys: "ctrl+t" },
 	});
 }
