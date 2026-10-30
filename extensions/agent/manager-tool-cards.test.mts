@@ -3,7 +3,10 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
-import type { ExtensionAPI, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionToolContext, RegisteredCommand, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { TUI } from "@earendil-works/pi-tui";
+import type { AgentDashboard } from "./dashboard.ts";
+import { page, keys, theme } from "./dashboard-test-fixture.mts";
 import registerAgentExtension from "./index.ts";
 import { AgentManager } from "./manager.ts";
 import { MANAGER_CONTRACT } from "./version-contract.ts";
@@ -38,6 +41,51 @@ it("serves only roster facts already observed by a footer refresh without lookup
 	manager.catalog.read = () => { throw new Error("lookup must not read catalog records"); };
 	assert.equal(manager.observedToolCardRows(), rows);
 	assert.equal(manager.observedToolCardRows(), rows);
+});
+
+it("reload refuses a retained manager without dashboard task targets before any lookup", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-dashboard-reload-")));
+	const saved = new Map(["PI_AGENT_SESSIONS_DIR", "PI_AGENT_DIR", "PI_HARNESS_FILE"].map((name) => [name, process.env[name]]));
+	process.env.PI_AGENT_SESSIONS_DIR = root;
+	process.env.PI_AGENT_DIR = root;
+	process.env.PI_HARNESS_FILE = join(root, "absent.json");
+	const calls: string[] = [];
+	const retained = {
+		managerProtocol: "manager/4.0.0",
+		subscribeRoster() { calls.push("subscribeRoster"); return () => {}; },
+		async dashboardPage() { calls.push("dashboardPage"); return page([]); },
+	};
+	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[Symbol.for("pi.extension.agent.owners")];
+	owners.managers.set(root, retained as unknown as AgentManager);
+	t.after(() => {
+		owners.managers.delete(root);
+		for (const [name, value] of saved) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+		rmSync(root, { recursive: true, force: true });
+	});
+	const commands = new Map<string, Omit<RegisteredCommand, "name" | "sourceInfo">>();
+	const pi = { events: { emit() {}, on: () => () => {} }, on: () => () => {}, registerTool() {},
+		registerCommand: (name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) => { commands.set(name, command); },
+		registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getSettings: () => ({}),
+	} as unknown as ExtensionAPI;
+	registerAgentExtension(pi);
+	const notices: string[] = [];
+	const ctx = { mode: "tui", hasUI: true, cwd: root, sessionManager: { getSessionId: () => "reloaded-primary" },
+		ui: { notify: (text: string) => { notices.push(text); },
+			custom: async (factory: (tui: TUI, paint: typeof theme, currentKeys: typeof keys, done: () => void) => AgentDashboard) => {
+				const dashboard = factory({ terminal: { rows: 24, columns: 80 }, requestRender() {} } as unknown as TUI, theme, keys, () => {});
+				dashboard.dispose();
+			},
+		},
+	} as unknown as ExtensionCommandContext;
+	const command = commands.get("agent");
+	assert.ok(command);
+	assert.notEqual(MANAGER_CONTRACT, retained.managerProtocol);
+	assert.equal("dashboardTaskTargets" in retained, false);
+	await command.handler("", ctx);
+	assert.equal(notices.length, 1);
+	assert.match(notices[0] ?? "", /retained agent manager uses manager\/4\.0\.0.*Restart Pi before agent controls/u);
+	assert.equal(notices[0]?.includes(`requires ${MANAGER_CONTRACT}`), true);
+	assert.deepEqual(calls, []);
 });
 
 for (const retained of ["manager/0.0.0", "manager/999.0.0"]) it(`refuses a retained manager with a different interface (${retained}) before any control executes`, async (t) => {

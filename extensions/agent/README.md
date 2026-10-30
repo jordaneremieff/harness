@@ -172,7 +172,9 @@ The chosen values remain fixed for replay of that invocation.
 
 A retained ordinary manager must match the loaded manager contract. After that
 contract changes, `/reload` does not replace the retained manager: agent controls
-refuse it and require a new Pi process. Starting a new primary does not restart
+refuse it and require a new Pi process. Refusal is a compatibility backstop, not
+permission to interrupt live work. Arrange an owner-agreed safe transition before
+restarting Pi or changing live source. Starting a new primary does not restart
 or cancel its independent Durable workers. A command request also requires the
 current host contract so an older host cannot discard structured input silently.
 
@@ -198,7 +200,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/4.0.0`; a reload over an older retained manager
+The manager contract is `manager/5.0.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 
