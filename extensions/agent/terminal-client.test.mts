@@ -375,7 +375,7 @@ it("fullscreen terminal dispatch gives page keys to the native conversation scre
 		columns: 80, rows: 24, kittyProtocolActive: false,
 		start(onInput) { input = onInput; }, stop() {}, write() {}, moveBy() {},
 		hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {},
-		clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {},
+		clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {}, async drainInput() {},
 	};
 	const previous = getKeybindings();
 	const keys = terminalKeys();

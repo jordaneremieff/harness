@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
+import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
 import { DashboardRelations, relatedWork, relationSeeds, relationIdentity } from "./dashboard-relations.ts";
 import { fixture, source, row, turn, theme, deferred, page as rosterPage, conversationFrame } from "./dashboard-test-fixture.mts";
 import type { CollaborationPage } from "./collaboration.ts";
@@ -39,11 +40,11 @@ for (const caller of [storage, `${storage}:1`, `${storage}:2`]) it(`native calle
 });
 it("exact nonroot ownership and fork ancestry connect work without joining an independent sibling", () => {
 	const values = [...rows(), row(`${storage}:2`, { storageId: storage }), row(`${storage}:3`, { storageId: storage }), row(`${storage}:4`, { storageId: storage })];
-	const lineage = [
-		{ identity: `${storage}:2`, conversationId: 2, owner: `${storage}:1`, busy: false },
-		{ identity: `${storage}:3`, conversationId: 3, forkSource: { conversationId: 2, at: 1 }, busy: false },
-		{ identity: `${storage}:4`, conversationId: 4, owner: other, busy: false },
-	] as Parameters<typeof relationSeeds>[3];
+	const lineage: NonNullable<Parameters<typeof relationSeeds>[3]> = [
+		{ identity: `${storage}:2`, conversationId: 2 as ConversationId, owner: `${storage}:1`, busy: false },
+		{ identity: `${storage}:3`, conversationId: 3 as ConversationId, forkSource: { conversationId: 2 as ConversationId, at: 1 as EntryId }, busy: false },
+		{ identity: `${storage}:4`, conversationId: 4 as ConversationId, owner: other, busy: false },
+	];
 	const seeds = relationSeeds(values, `${storage}:1`, [], lineage);
 	assert.equal(seeds.has(`${storage}:2`), true);
 	assert.equal(seeds.has(`${storage}:3`), true);
