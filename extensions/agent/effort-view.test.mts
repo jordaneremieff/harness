@@ -148,7 +148,7 @@ it("closing during an effort read drops late results", async () => {
 	assert.equal(f.counts().renders, count);
 });
 it("the creating-session marker is independent of writer availability and task requests", () => {
-	const rows = [row("one", { creatingOwnerId: "primary", owner: "unknown" }), row("two", { creatingOwnerId: "other", owner: "here" }), row("three")];
+	const rows = [row("one", { creatingOwnerId: "primary", owner: "unknown" }), row("two", { storageId: "two", creatingOwnerId: "other", owner: "here" }), row("three", { creatingOwnerId: "other" })];
 	for (const compact of [false, true]) {
 		const text = rosterLines(rows, "two", 60, 20, 0, theme, compact, { primaryId: "primary" }).join("\n");
 		assert.equal(text.match(/\[other\]/g)?.length, 1);
@@ -181,7 +181,7 @@ it("the command adapter binds effort reads and operator messages to the unchange
 	let finish = () => {};
 	const ctx = { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => "primary" }, modelRegistry: { find: () => undefined }, ui: { notify() {}, custom: async (factory: (tui: TUI, paint: typeof theme, appKeys: typeof keys, done: () => void) => AgentDashboard) => new Promise<void>((resolve) => { finish = resolve; dashboard = factory({ terminal: { rows: 30, columns: 100 }, requestRender() {} } as unknown as TUI, theme, keys, resolve); }) } } as unknown as ExtensionContext;
 	const calls: unknown[] = [];
-	const command = createAgentCommand([], source([row("one", { creatingOwnerId: "other" })]), { timers: async () => [], schedule: async () => ({ text: "scheduled" }) }, undefined, undefined, {
+	const command = createAgentCommand([], source([row("one", { storageId: "one", creatingOwnerId: "other" })]), { timers: async () => [], schedule: async () => ({ text: "scheduled" }) }, undefined, undefined, {
 		efforts: async (primary) => { calls.push(primary); return awareness(); },
 		messageEffort: async (id, text, primary) => { calls.push({ id, text, primary }); return { text: "Operator message admitted" }; },
 		observeEffort: async (id, primary) => { calls.push({ observe: id, primary }); return "Recorded activity from source"; },
@@ -189,6 +189,9 @@ it("the command adapter binds effort reads and operator messages to the unchange
 	const opened = command.openDashboard(ctx);
 	try {
 		await turn(); assert.ok(dashboard);
+		assert.doesNotMatch(dashboard.render(100).join("\n"), /\[other\]/);
+		assert.match(dashboard.render(100).join("\n"), /v shows All agents/);
+		dashboard.handleInput("v"); await turn();
 		assert.match(dashboard.render(100).join("\n"), /\[other\]/);
 		dashboard.handleInput("b"); await turn(); dashboard.handleInput("o"); await turn();
 		assert.match(dashboard.render(100).join("\n"), /Recorded activity from source/);
