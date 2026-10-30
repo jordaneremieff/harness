@@ -9,12 +9,51 @@ import { Type } from "typebox";
 import { createAgentContribution } from "./durable-agents.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { waitForReceipts } from "./durable-controls.ts";
+import { AgentCatalog } from "./catalog.ts";
+import type { FleetStatus } from "./fleet-status.ts";
+import { Value } from "typebox/value";
 
 const listing = {
 	rows: [], nextCursor: null,
 	coverage: { complete: true, storagesVisited: 0, unavailable: [], profileHints: { complete: true, unknownStorages: 0, omitted: 0 } },
 	observedAt: "2026-10-13T00:00:00.000Z", authority: "native catalog scan",
 };
+
+it("native fleet calls select local published models and reject filters outside fleet mode", { timeout: 10000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "native-fleet-selection-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const catalog = new AgentCatalog(root);
+	const source = catalog.create({ cwd: root, agentDir: root, packageDir: root, model: { provider: "sample", modelId: "a" }, thinkingLevel: "off" });
+	catalog.updateView(source.storageId, { updatedAt: "2026-10-01T00:00:00.000Z", coverage: { complete: true, omitted: 0 },
+		rows: ["a", "b"].map((modelId) => ({ id: `${source.storageId}:${modelId}`, storageId: source.storageId, cwd: root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false,
+			model: { provider: "sample", modelId, thinkingLevel: "off" } })) });
+	const registry = Durable.createRegistry();
+	const extension = createAgentContribution({ source: new URL("./index.ts", import.meta.url).pathname, configureSettings() {}, dispatch: async () => { throw new Error("fleet must not dispatch to a host"); } })
+		.create({ durable: Durable, storageId: "native-fleet", cwd: root, agentDir: root, catalogRoot: catalog.root, onClose() {}, services: { modelRuntime: { getModel: () => undefined } } });
+	registry.install(extension);
+	const status = extension.tools?.find((tool) => tool.name === "agent_status"); assert.ok(status);
+	assert.equal(Value.Check(status.parameters, { view: "fleet", model: "sample/a", provider: "sample" }), true);
+	const results: Durable.NestedToolExecutionResult[] = [];
+	registry.install(Durable.defineExtension({ name: "fleet-query-probe", tools: [Durable.defineTool({
+		name: "fleet-probe", description: "Read selected fleet evidence.", parameters: Type.Object({}),
+		execute: async (_args, api, callContext) => {
+			const inputs: Durable.JsonObject[] = [{ view: "fleet", model: "sample/a", provider: "sample" }, { model: "sample/a" }, { view: "fleet", sessionId: "target", model: "sample/a" }, { view: "fleet", model: "broken" }];
+			for (const args of inputs) results.push(await api.executeTool("agent_status", args, callContext));
+			return { output: [{ type: "text", text: "fleet probe complete" }] };
+		},
+	})] }));
+	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models: await scriptedRuntime([toolCallMessage("fleet-probe", {}), answerMessage()]), registry }, context);
+	t.after(() => harness.close(context));
+	const conversation = await harness.root(context, { agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } });
+	harness.resume();
+	await (await conversation.submit({ type: "input", content: "Read the selected candidate" }, context)).wait(context);
+	assert.equal(results[0]?.isError, false);
+	const selected = results[0]?.structuredOutput as unknown as FleetStatus;
+	assert.deepEqual(selected.models.map((model) => model.model), ["sample/a"]);
+	assert.equal(selected.selection?.filter, "model-and-provider");
+	assert.equal(selected.coverage.unknownEvidenceStorages, 1);
+	for (const result of results.slice(1)) assert.equal(result.isError, true);
+});
 
 it("returns schema control values through native nested calls with tagged tasks and parent events", { timeout: 10000 }, async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "native-controls-"));

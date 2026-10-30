@@ -6,14 +6,208 @@ import { it } from "node:test";
 import { Value } from "typebox/value";
 import { AgentCatalog, type CatalogPage, type CatalogRecord } from "./catalog.ts";
 import type { CatalogView, CatalogViewRow } from "./catalog-view.ts";
-import { FleetStatusSchema, readFleetStatus, type FleetStatus } from "./fleet-status.ts";
-import { USAGE_WEEK_MS, type ModelEvidence, type ModelFailure, type ModelWarning, type UsageSample } from "./model-evidence.ts";
+import { FleetStatusSchema, readFleetStatus, validateFleetSelection, type FleetStatus } from "./fleet-status.ts";
+import { ModelEvidenceSchema, USAGE_WEEK_MS, type ModelEvidence, type ModelFailure, type ModelWarning, type UsageSample } from "./model-evidence.ts";
 
 const observedAt = "2026-10-01T00:00:00.000Z";
 function sampled(samples: UsageSample[], at = observedAt): ModelEvidence {
 	return evidence({ sampling: { observedAt: at, samples, entriesVisited: samples.length, entriesOmitted: 0,
 		messagesOmitted: 0, invalidSamples: 0, omittedSamples: 0 } });
 }
+
+it("exposes selected candidate facts from the same publication snapshot when broad output omits them", async () => {
+	const now = Date.parse(observedAt);
+	const distractors = Array.from({ length: 18 }, (_, index) => `alpha/m${String(index).padStart(2, "0")}`);
+	const candidates = ["zulu/model-a", "zulu/model-b"];
+	const records = [record("distractors", [], sampled(distractors.map((model) => ({ model, at: now, tokens: 1000, reportedCost: 10 })))),
+		...candidates.map((model, index) => record(`candidate-${index}`, [row(`candidate-${index}`, { model: { provider: "zulu", modelId: `model-${index ? "b" : "a"}`, thinkingLevel: "high" }, state: "working", cost: 7 + index })],
+			{ ...sampled([{ model, at: now, tokens: 10 + index, reportedCost: 1 + index }]), models: [{ model, reportedCost: 3 + index, lastResponseAt: now }],
+				failures: [failure("zulu", now - index, { modelId: `model-${index ? "b" : "a"}`, message: `candidate-${index} failure` })] })),
+		record("unknown", [row("unknown-model", { state: "working" })])];
+	const snapshot = JSON.stringify(records);
+	const catalog = new FixtureCatalog([page(records)]);
+	const effort = { callerId: "candidate-0", created: ["candidate-1"] };
+	const broad = await readFleetStatus(catalog, { now, effort }); check(broad);
+	assert.equal(broad.selection, undefined);
+	assert.equal(broad.coverage.output.byteLimitReached, true);
+	assert.ok(candidates.every((model) => !broad.models.some((row) => row.model === model)));
+	for (const [index, model] of candidates.entries()) {
+		const result = await readFleetStatus(catalog, { now, effort, model }); check(result);
+		assert.deepEqual(result.models.map((row) => row.model), [model]);
+		assert.equal(result.models[0].usage?.last7d.tokens, 10 + index);
+		assert.equal(result.providers[0].usage.last7d.tokens, 10 + index, "same-provider siblings do not enter exact-model totals");
+		assert.equal(result.failures[0]?.message, `candidate-${index} failure`);
+		assert.deepEqual(result.selection?.matched, { models: 1, failures: 1, warnings: 0 });
+		assert.equal(result.selection?.outcome, "matched");
+		assert.equal(result.selection?.scope, "models-providers-failures-warnings");
+		assert.equal(result.selection?.globalScope, "source-coverage-usageCoverage-conversations-toolReportedCost-effort");
+		assert.deepEqual(result.usageCoverage, broad.usageCoverage);
+		assert.deepEqual(result.conversations, broad.conversations);
+		assert.deepEqual(result.effort, broad.effort);
+		assert.deepEqual({ ...result.coverage, output: undefined }, { ...broad.coverage, output: undefined });
+		assert.equal(result.coverage.output.omittedModels, 0);
+	}
+	assert.equal(JSON.stringify(records), snapshot);
+	assert.deepEqual(catalog.calls, [{ limit: 20 }, { limit: 20 }, { limit: 20 }]);
+});
+
+it("prioritises selected usable model facts over crowded matching failure details", async () => {
+	const now = Date.parse(observedAt);
+	const modelId = "m".repeat(500);
+	const model = `sample/${modelId}`;
+	const records = Array.from({ length: 4 }, (_, index) => record(`source-${index}`, [], {
+		...sampled([{ model, at: now, tokens: 10, reportedCost: 1 }]), models: [{ model, reportedCost: 2 }],
+	}));
+	const reference = await readFleetStatus(new FixtureCatalog([page(records)]), { now }); check(reference);
+	assert.equal(reference.models.length, 1);
+	const metadata = structuredClone(reference);
+	metadata.models = []; metadata.providers = [];
+	metadata.coverage.output.omittedModels = 1;
+	metadata.coverage.output.omittedProviders = 1;
+	metadata.coverage.output.omittedFailures = 1;
+	const detail = failure("sample", now, { modelId, conversationId: "source-0:", message: "f".repeat(160) });
+	const padding = 4096 - Buffer.byteLength(JSON.stringify(metadata)) - Buffer.byteLength(JSON.stringify(detail)) - 64;
+	assert.ok(padding > 0);
+	for (const [index, record] of records.entries()) {
+		assert.ok(record.view?.modelEvidence);
+		record.view.modelEvidence.failures = [{ ...detail, at: now - index, conversationId: `source-${index}:${"x".repeat(padding)}` }];
+		assert.equal(Value.Check(ModelEvidenceSchema, record.view.modelEvidence), true);
+		assert.ok(Buffer.byteLength(JSON.stringify(record.view.modelEvidence)) <= 4096);
+	}
+	const snapshot = JSON.stringify(records);
+	const frozenRecords: CatalogRecord[] = JSON.parse(snapshot, (_key, value: unknown) => value !== null && typeof value === "object" ? Object.freeze(value) : value);
+	const catalog = new FixtureCatalog([page(frozenRecords)]);
+	const broad = await readFleetStatus(catalog, { now }); check(broad);
+	const result = await readFleetStatus(catalog, { now, model }); check(result);
+	assert.equal(broad.failures.length, 1, "the broad failure-first order stays unchanged");
+	assert.equal(broad.models.length, 0);
+	assert.equal(broad.coverage.output.omittedModels, 1);
+	assert.equal(result.failures.length, 0);
+	assert.equal(result.models[0]?.model, model);
+	assert.equal(result.models[0].usage?.last7d.tokens, 40);
+	assert.equal(result.selection?.matched.failures, 1, "latest-per-provider reduction precedes the byte cap");
+	assert.equal(result.coverage.output.omittedFailures, 1);
+	assert.equal(result.coverage.output.omittedModels, 0);
+	assert.equal(result.coverage.output.byteLimitReached, true);
+	assert.equal(JSON.stringify(frozenRecords), snapshot);
+	assert.deepEqual(catalog.calls, [{ limit: 20 }, { limit: 20 }]);
+});
+
+it("uses exact provider intersection and preserves nested model paths", async () => {
+	const now = Date.parse(observedAt);
+	const records = [record("source", [], sampled(["sample/vendor/model", "sample/sibling", "sample-extra/vendor/model"].map((model, index) => ({ model, at: now, tokens: index + 1, reportedCost: 1 }))))];
+	const catalog = new FixtureCatalog([page(records)]);
+	const provider = await readFleetStatus(catalog, { now, provider: "sample" }); check(provider);
+	assert.deepEqual(provider.models.map((model) => model.model), ["sample/sibling", "sample/vendor/model"]);
+	assert.equal(provider.providers[0].usage.last7d.tokens, 3);
+	const exact = await readFleetStatus(catalog, { now, provider: "sample", model: "sample/vendor/model" }); check(exact);
+	assert.deepEqual(exact.models.map((model) => model.model), ["sample/vendor/model"]);
+	assert.equal(exact.providers[0].usage.last7d.tokens, 1);
+	const conflict = await readFleetStatus(catalog, { now, provider: "different", model: "sample/vendor/model" }); check(conflict);
+	assert.equal(conflict.selection?.outcome, "no-match");
+	assert.deepEqual(conflict.providers, []);
+});
+
+it("does not attribute malformed published identities to a selected provider", async () => {
+	const source = evidence({ models: ["providerX", "provider/", "/model", "provider/valid"].map((model) => ({ model, reportedCost: 1 })) });
+	assert.equal(Value.Check(ModelEvidenceSchema, source), true, "the source envelope admits malformed model text");
+	const catalog = new FixtureCatalog([page([record("source", [], source)])]);
+	const broad = await readFleetStatus(catalog); check(broad);
+	const result = await readFleetStatus(catalog, { provider: "provider" }); check(result);
+	assert.equal(broad.models.length, 4, "unfiltered source interpretation remains unchanged");
+	assert.deepEqual(result.models.map((model) => model.model), ["provider/valid"]);
+	assert.equal(result.selection?.filter, "provider");
+	assert.deepEqual(result.selection?.matched, { models: 1, failures: 0, warnings: 0 });
+	assert.deepEqual(result.coverage.evidence, broad.coverage.evidence);
+});
+
+it("retains global unknowns and source omissions when selected evidence does not match", async () => {
+	const source = evidence({ models: [{ model: "sample/other", reportedCost: 2 }], toolReportedCost: 3,
+		failures: [failure("sample", 1, { modelId: "other" })], warnings: [warning("unknown"), warning("other", { model: selected("other") })] });
+	source.coverage.omittedFailures = 9;
+	const records = [record("source", [row("unknown")], source), record("unavailable")];
+	const result = await readFleetStatus(new FixtureCatalog([page(records)]), { model: "sample/missing" }); check(result);
+	assert.equal(result.selection?.outcome, "no-match");
+	assert.deepEqual(result.selection?.matched, { models: 0, failures: 0, warnings: 0 });
+	assert.equal(result.conversations.unknownModel, 1);
+	assert.equal(result.coverage.unknownEvidenceStorages, 1);
+	assert.equal(result.coverage.evidence.omittedFailures, 9);
+	assert.equal(result.toolReportedCost, 3, "tool accounting remains global");
+	assert.deepEqual(result.failures, []);
+	assert.deepEqual(result.warnings, []);
+	assert.match(result.notes.join(" "), /absence does not establish health/u);
+	assert.match(result.notes.join(" "), /No match does not establish no use/u);
+});
+
+it("matches failure-only evidence and excludes unattributed warnings under selection", async () => {
+	const source = evidence({ failures: [failure("sample", 1, { modelId: "target" })], warnings: [warning("unknown"), warning("target", { model: selected("target") })] });
+	const result = await readFleetStatus(new FixtureCatalog([page([record("source", [], source)])]), { model: "sample/target" }); check(result);
+	assert.equal(result.selection?.outcome, "matched");
+	assert.deepEqual(result.selection?.matched, { models: 0, failures: 1, warnings: 1 });
+	assert.equal(result.models.length, 0);
+	assert.equal(result.warnings[0]?.conversationId, "target");
+});
+
+it("keeps global overflow coverage independent of selected samples", async () => {
+	const now = Date.parse(observedAt);
+	const samples = ["sample/other", "sample/target"].map((model) => ({ model, at: now, tokens: Number.MAX_VALUE, reportedCost: Number.MAX_VALUE }));
+	const catalog = new FixtureCatalog([page([record("source", [], sampled(samples))])]);
+	const broad = await readFleetStatus(catalog, { now }); check(broad);
+	const selected = await readFleetStatus(catalog, { now, model: "sample/target" }); check(selected);
+	assert.deepEqual(selected.usageCoverage, broad.usageCoverage);
+	assert.equal(selected.usageCoverage.invalidSamples, 1);
+	assert.equal(selected.models[0]?.model, "sample/target");
+	assert.equal(selected.models[0]?.usage, undefined);
+	assert.equal(selected.models[0]?.reportedCost, null);
+});
+
+it("rejects malformed selectors before traversal and filters outside the fleet view", async () => {
+	for (const model of ["", "missing-provider", "/model", "provider/", "provider/model name", "provider/model\n", "p/\ud800", `p/${"x".repeat(511)}`, 12, null]) {
+		assert.throws(() => validateFleetSelection({ view: "fleet", model }), /Fleet model/u);
+	}
+	for (const provider of ["", "provider/model", "provider name", "p\u0000", "x".repeat(201), false]) {
+		assert.throws(() => validateFleetSelection({ view: "fleet", provider }), /Fleet provider/u);
+	}
+	assert.throws(() => validateFleetSelection({ model: "sample/model" }), /require view: fleet/u);
+	assert.throws(() => validateFleetSelection({ view: "fleet", sessionId: "target", model: "sample/model" }), /omit sessionId/u);
+	assert.deepEqual(validateFleetSelection({ view: "fleet", model: "sample/vendor/model", provider: "sample" }), { model: "sample/vendor/model", provider: "sample" });
+	const catalog = new FixtureCatalog([page([])]);
+	await assert.rejects(readFleetStatus(catalog, { model: "invalid" }), /Fleet model/u);
+	assert.equal(catalog.calls.length, 0);
+});
+
+it("returns usable model facts with plain and escaped combined selectors at their identity limits", async () => {
+	const now = Date.parse(observedAt);
+	for (const escaped of [false, true]) {
+		const provider = (escaped ? "\\" : "p").repeat(200);
+		const modelId = (escaped ? "\\" : "m").repeat(311);
+		const model = `${provider}/${modelId}`;
+		const source = { ...sampled([{ model, at: now, tokens: 10, reportedCost: 1 }]), models: [{ model, reportedCost: 1, lastResponseAt: now }] };
+		assert.equal(Value.Check(ModelEvidenceSchema, source), true);
+		const catalog = new FixtureCatalog([page([record("source", [row("source", { model: { provider, modelId, thinkingLevel: "high" }, state: "working" })], source)])]);
+		const result = await readFleetStatus(catalog, { now, model, provider }); check(result);
+		assert.equal(result.selection?.filter, "model-and-provider");
+		assert.equal("model" in (result.selection ?? {}), false, "exact query identities remain in the tool arguments");
+		assert.equal("provider" in (result.selection ?? {}), false);
+		assert.equal(result.models[0]?.model, model);
+		assert.deepEqual(result.models[0]?.currentSelections, [{ thinkingLevel: "high", count: 1 }]);
+		assert.equal(result.models[0]?.usage?.last7d.tokens, 10);
+		assert.equal(result.coverage.output.omittedModels, 0);
+		assert.deepEqual(catalog.calls, [{ limit: 20 }]);
+	}
+});
+
+it("bounds selected identities without a wider scan or shortened targets", async () => {
+	const model = `sample/${"🧭".repeat(120)}`;
+	const source = evidence({ models: [{ model, reportedCost: 1 }], failures: [failure("sample", 1, { modelId: model.slice(7), message: "failure" })] });
+	const catalog = new FixtureCatalog([page([record("source", [], source)])]);
+	const result = await readFleetStatus(catalog, { model }); check(result);
+	assert.equal(result.selection?.filter, "model");
+	assert.equal(result.selection?.matched.models, 1);
+	assert.equal(result.models.length + result.coverage.output.omittedModels, 1);
+	if (result.models.length) assert.equal(result.models[0].model, model);
+	assert.deepEqual(catalog.calls, [{ limit: 20 }]);
+});
 
 it("uses exact inclusive rolling cutoffs at read time, not publication time", async () => {
 	const now = Date.parse(observedAt);

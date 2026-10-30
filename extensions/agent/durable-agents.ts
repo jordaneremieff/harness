@@ -41,7 +41,7 @@ import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { CollaborationParams } from "./collaboration.ts";
 import { dirname, resolve } from "node:path";
 import { AgentCatalog } from "./catalog.ts";
-import { readFleetStatus } from "./fleet-status.ts";
+import { readFleetStatus, FleetSelectionProperties, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
 import { readEffortAwareness, formatEffortAwareness, nativeIntentSelf } from "./effort-awareness.ts";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -473,7 +473,8 @@ const CommandParams = Type.Object(
 
 const StatusParams = Type.Object(
 	{
-		view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId." })),
+		view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })),
+		...FleetSelectionProperties,
 		sessionId: Type.Optional(
 			Type.String({ minLength: 1, description: "Default: the calling conversation; omit for the storage overview." }),
 		),
@@ -601,12 +602,12 @@ export function createAgentContribution(options: AgentContributionOptions): Agen
 }
 
 /** Fleet observation stays local; no host operation or remote forwarding participates. */
-async function fleetObservation(catalogRoot: string | undefined, sessionId: string | undefined, callerId: string, created?: CreatedAgents) {
+async function fleetObservation(catalogRoot: string | undefined, sessionId: string | undefined, callerId: string, created?: CreatedAgents, selection: FleetSelection = {}) {
 	const effort = { callerId, created: created?.agents.map((agent) => agent.identity) ?? [], omitted: created?.omitted ?? 0 };
 	try {
 		if (sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
 		if (!catalogRoot) throw new Error("Fleet discovery requires a configured local catalog root");
-		const value = structuredObservation(StatusToolOutputSchema, await readFleetStatus(new AgentCatalog(dirname(catalogRoot)), { effort })) as Record<string, JsonValue>;
+		const value = structuredObservation(StatusToolOutputSchema, await readFleetStatus(new AgentCatalog(dirname(catalogRoot)), { ...selection, effort })) as Record<string, JsonValue>;
 		return { ...nativeStructuredObservation(StatusToolOutputSchema, value, JSON.stringify(value)), details: value };
 	} catch (error) {
 		return errorResult(`Fleet status failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -1602,6 +1603,26 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		return readEffortAwareness(dirname(catalogRoot), nativeIntentSelf(identity(api.conversationId), agent.cwd ?? host.cwd, meta === undefined ? null : meta.intent), undefined, "reported");
 	};
 
+	const readStatus = async (args: StatusInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context, selection: FleetSelection) => {
+		if (args.view === "fleet") {
+			const created = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
+			return fleetObservation(host.catalogRoot, args.sessionId, identity(api.conversationId), created, selection);
+		}
+		const result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusToolOutputSchema);
+		if (args.sessionId !== undefined || result.isError) return result;
+		const createdAgents = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
+		if (createdAgents === undefined && host.catalogRoot === undefined) return result;
+		const observed: Record<string, unknown> = { ...result.details };
+		if (host.catalogRoot !== undefined) observed.awareness = await ownAwareness(host.catalogRoot, api, context);
+		const text = [controlText(observed)];
+		if (createdAgents !== undefined) {
+			observed.createdAgents = createdAgents;
+			text.push(renderCreatedAgents(createdAgents));
+		}
+		const structured = structuredObservation(StatusToolOutputSchema, observed) as Record<string, JsonValue>;
+		return { ...result, ...nativeStructuredObservation(StatusToolOutputSchema, structured, text.join("\n\n")), details: structured };
+	};
+
 	const statusTool = {
 		...durable.defineTool({
 			name: "agent_status",
@@ -1610,25 +1631,10 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			parameters: StatusParams,
 			replay: "safe",
 			execute: async (args: StatusInput, api, context) => {
-				if (args.view === "fleet") {
-					const created = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
-					return fleetObservation(host.catalogRoot, args.sessionId, identity(api.conversationId), created);
-				}
-				const result = await hostObservation("status", defined(args, ["sessionId"]), `Status of ${args.sessionId ?? "the storage"} failed`, StatusToolOutputSchema);
-				if (args.sessionId !== undefined || result.isError) return result;
-				const createdAgents = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
-				if (createdAgents === undefined && host.catalogRoot === undefined) return result;
-				const observed: Record<string, unknown> = { ...result.details };
-				if (host.catalogRoot !== undefined) {
-					observed.awareness = await ownAwareness(host.catalogRoot, api, context);
-				}
-				const text = [controlText(observed)];
-				if (createdAgents !== undefined) {
-					observed.createdAgents = createdAgents;
-					text.push(renderCreatedAgents(createdAgents));
-				}
-				const structured = structuredObservation(StatusToolOutputSchema, observed) as Record<string, JsonValue>;
-				return { ...result, ...nativeStructuredObservation(StatusToolOutputSchema, structured, text.join("\n\n")), details: structured };
+				let selection: FleetSelection;
+				try { selection = validateFleetSelection(args); }
+				catch (error) { return errorResult(error instanceof Error ? error.message : String(error)); }
+				return readStatus(args, api, context, selection);
 			},
 		}),
 		structuredOutputSchema: StatusToolOutputSchema,

@@ -3,7 +3,7 @@ import { nativeRecipientAvailability, readDeliveryWake } from "./delivery-wake.t
 import { launchIndependentCommand, type IndependentCommandInput, type IndependentCommandReceipt } from "./independent-launch.ts";
 import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
 import { admittedResult } from "./result-reference.ts";
-import { readFleetStatus } from "./fleet-status.ts";
+import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
 import { handleSlug, handleStorageId } from "./identity.ts";
 import type { AgentProfile } from "./profile-schema.ts";
 import { profileText } from "./profile.ts";
@@ -871,10 +871,10 @@ export class AgentManager {
 		return this.control("collaboration-mutate", { ...input, sessionId, senderIdentity: caller.id, origin: input.origin ?? "model", requestId: input.requestId ?? randomUUID() }, caller);
 	}
 
-	async status(sessionId?: string, view?: "fleet", caller?: AgentCaller): Promise<unknown> {
+	async status(sessionId?: string, view?: "fleet", caller?: AgentCaller, selection: FleetSelection = {}): Promise<unknown> {
+		validateFleetSelection({ ...selection, view, sessionId });
 		if (view === "fleet") {
-			if (sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
-			return readFleetStatus(this.catalog, caller ? { effort: { callerId: caller.id, callerUsage: caller.reportedUsage } } : undefined);
+			return readFleetStatus(this.catalog, { ...selection, ...(caller ? { effort: { callerId: caller.id, callerUsage: caller.reportedUsage } } : {}) });
 		}
 		if (sessionId) {
 			sessionId = await this.resolveTarget(sessionId);

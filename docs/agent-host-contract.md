@@ -438,7 +438,7 @@ hydrated `value` and `dispose`. Reconnect creates a new client host and fresh
 Feed handles and observation tokens, not `host.connect()` with old handles.
 Sources: `transport/{index,endpoint,unix-link}.ts`.
 
-The manager's retained-object identity is `manager/5.0.0`; ordinary primary
+The manager's retained-object identity is `manager/6.0.0`; ordinary primary
 channels use `primary-delivery/3.0.0`. The typed `deliver` payload accepts optional
 `requireRetained:boolean`, defaulting to true. Source-ledger owner and fallback
 routes explicitly require retained acceptance: an exact `agent.peer` source

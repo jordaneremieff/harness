@@ -9,6 +9,52 @@ import { AgentManager } from "./manager.ts";
 import type { HostConnection } from "./host-client.ts";
 import { SENT_WORK_ENTRY } from "./session-work.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
+import { Value } from "typebox/value";
+import type { FleetStatus } from "./fleet-status.ts";
+
+test("ordinary fleet calls forward exact selection and reject incompatible query shapes", async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-fleet-selection-")));
+	const saved = new Map(["PI_AGENT_SESSIONS_DIR", "PI_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]]));
+	process.env.PI_AGENT_SESSIONS_DIR = root;
+	process.env.PI_AGENT_DIR = root;
+	process.env.PI_HARNESS_FILE = join(root, "harness.json");
+	writeFileSync(join(root, "harness.json"), "{}");
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root,
+		acquire: async () => { throw new Error("fleet must not acquire a host"); },
+		observe: async () => { throw new Error("fleet must not observe native storage"); } });
+	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[Symbol.for("pi.extension.agent.owners")];
+	owners.managers.set(root, manager);
+	t.after(() => {
+		manager.close(); owners.managers.delete(root);
+		for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+		rmSync(root, { recursive: true, force: true });
+	});
+	const target = manager.catalog.create({ cwd: root, agentDir: root, packageDir: root, model: { provider: "sample", modelId: "a" }, thinkingLevel: "off" });
+	manager.catalog.updateView(target.storageId, { updatedAt: "2026-10-01T00:00:00.000Z", rows: ["a", "b"].map((modelId) => ({
+		id: `${target.storageId}:${modelId}`, storageId: target.storageId, cwd: root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false,
+		model: { provider: "sample", modelId, thinkingLevel: "off" },
+	})), coverage: { complete: true, omitted: 0 } });
+	const tools = new Map<string, ToolDefinition>();
+	register({ events: { emit() {}, on: () => () => {} }, on() {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
+		registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "off" } as unknown as ExtensionAPI);
+	const tool = tools.get("agent_status"); assert.ok(tool);
+	const input = { view: "fleet", model: "sample/a", provider: "sample" };
+	assert.equal(Value.Check(tool.parameters, input), true);
+	const session = SessionManager.create(root, join(root, "sessions"));
+	const ctx = { cwd: root, sessionManager: session } as unknown as ExtensionToolContext;
+	const result = await tool.execute("fleet", input, new AbortController().signal, undefined, ctx);
+	const value = result.details as FleetStatus;
+	assert.deepEqual(value.models.map((row) => row.model), ["sample/a"]);
+	assert.equal(value.selection?.filter, "model-and-provider");
+	assert.equal(value.coverage.unknownEvidenceStorages, 1);
+	for (const invalid of [{ model: "sample/a" }, { view: "fleet", sessionId: target.storageId, model: "sample/a" }, { view: "fleet", model: "broken" }])
+		await assert.rejects(tool.execute("invalid", invalid, new AbortController().signal, undefined, ctx), /require view: fleet|omit sessionId|Fleet model/u);
+	await assert.rejects(manager.status(undefined, undefined, undefined, { model: "sample/a" }), /require view: fleet/u);
+	for (const version of ["manager/4.0.0", "manager/5.0.0"]) {
+		Object.defineProperty(manager, "managerProtocol", { value: version, configurable: true });
+		await assert.rejects(tool.execute("stale", input, new AbortController().signal, undefined, ctx), /retained agent manager uses manager\/[45]\.0\.0.*requires manager\/6\.0\.0.*Restart Pi/u);
+	}
+});
 
 test("session start restores sent-work figures in a fresh manager and admissions persist without footer history scans", async (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-footer-reload-")));

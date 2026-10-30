@@ -37,6 +37,44 @@ const FleetModelSchema = object({
 	usage: Type.Optional(UsageWindowsSchema),
 });
 
+export const FleetSelectionProperties = {
+	model: Type.Optional(Type.String({ minLength: 1, maxLength: 512, description: "Exact provider/model identity; only with view: fleet. Combines with provider by intersection." })),
+	provider: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Exact provider identity; only with view: fleet. No provider health or quota query." })),
+};
+export interface FleetSelection { readonly model?: string; readonly provider?: string }
+
+function selectionIdentity(value: unknown, field: "model" | "provider", limit: number): string {
+	if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value) > limit || /[\s\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value) ||
+		(field === "model" ? !/^[^/]+\/.+$/u.test(value) : value.includes("/")))
+		throw new Error(`Fleet ${field} requires an exact ${field === "model" ? "provider/model" : "provider"} identity of at most ${limit} UTF-8 bytes, without whitespace or control characters`);
+	return value;
+}
+
+export function validateFleetSelection(input: { view?: unknown; sessionId?: unknown; model?: unknown; provider?: unknown }): FleetSelection {
+	const selection: { model?: string; provider?: string } = {};
+	for (const [field, limit] of [["model", 512], ["provider", 200]] as const) {
+		const value = input[field];
+		if (value === undefined) continue;
+		selection[field] = selectionIdentity(value, field, limit);
+	}
+	if (Object.keys(selection).length && input.view !== "fleet") throw new Error("Model and provider filters require view: fleet");
+	if (input.view === "fleet" && input.sessionId !== undefined) throw new Error("Fleet status describes the local catalog; omit sessionId");
+	return selection;
+}
+
+function matchesModel(selection: FleetSelection, identity: string): boolean {
+	if (selection.model === undefined && selection.provider === undefined) return true;
+	const separator = identity.indexOf("/");
+	if (separator < 1 || separator === identity.length - 1) return false;
+	return (selection.model === undefined || selection.model === identity) &&
+		(selection.provider === undefined || identity.slice(0, separator) === selection.provider);
+}
+
+function selectionKind(selection: FleetSelection): "model" | "provider" | "model-and-provider" {
+	if (selection.model === undefined) return "provider";
+	return selection.provider === undefined ? "model" : "model-and-provider";
+}
+
 export interface FleetEffortScope {
 	readonly callerId: string;
 	readonly created?: readonly string[];
@@ -47,6 +85,13 @@ export interface FleetEffortScope {
 export const FleetStatusSchema = object({
 	view: Type.Literal("fleet"),
 	observedAt: text,
+	selection: Type.Optional(object({
+		filter: Type.Union([Type.Literal("model"), Type.Literal("provider"), Type.Literal("model-and-provider")]),
+		scope: Type.Literal("models-providers-failures-warnings"),
+		globalScope: Type.Literal("source-coverage-usageCoverage-conversations-toolReportedCost-effort"),
+		outcome: Type.Union([Type.Literal("matched"), Type.Literal("no-match")]),
+		matched: object({ models: count, failures: count, warnings: count }),
+	})),
 	models: Type.Array(FleetModelSchema, { maxItems: MODEL_LIMIT }),
 	providers: Type.Array(object({ provider: text, usage: UsageWindowsSchema }), { maxItems: MODEL_LIMIT }),
 	usageCoverage: object({
@@ -140,20 +185,23 @@ function modelRow(models: Map<string, FleetModel>, model: string): FleetModel {
 	return row;
 }
 
-function observeSelection(value: FleetStatus, models: Map<string, FleetModel>, row: CatalogViewRow): void {
+function observeSelection(value: FleetStatus, models: Map<string, FleetModel>, row: CatalogViewRow, selection: FleetSelection): void {
 	const active = row.state === "starting" || row.state === "working";
 	value.conversations.observed++;
 	if (active) value.conversations.active++;
 	if (!row.model) { value.conversations.unknownModel++; return; }
-	const model = modelRow(models, `${row.model.provider}/${row.model.modelId}`);
+	const identity = `${row.model.provider}/${row.model.modelId}`;
+	if (!matchesModel(selection, identity)) return;
+	const model = modelRow(models, identity);
 	const group = model.currentSelections.find((selection) => selection.thinkingLevel === row.model?.thinkingLevel);
 	if (group) group.count++;
 	else model.currentSelections.push({ thinkingLevel: row.model.thinkingLevel, count: 1 });
 	if (active) model.activeConversations++;
 }
 
-function observeEvidence(value: FleetStatus, models: Map<string, FleetModel>, evidence: ModelEvidence): void {
+function observeEvidence(value: FleetStatus, models: Map<string, FleetModel>, evidence: ModelEvidence, selection: FleetSelection): void {
 	for (const source of evidence.models) {
+		if (!matchesModel(selection, source.model)) continue;
 		const model = modelRow(models, source.model);
 		model.reportedCost = (model.reportedCost ?? 0) + source.reportedCost;
 		if (source.lastResponseAt !== undefined)
@@ -177,6 +225,8 @@ function boundOutput(value: FleetStatus, models: FleetModel[], failures: ModelFa
 	output.omittedSelections = models.reduce((total, model) => total + selections(model), 0);
 	output.omittedActiveConversations = models.reduce((total, model) => total + model.activeConversations, 0);
 	const fits = () => Buffer.byteLength(JSON.stringify(value), "utf8") <= BYTE_LIMIT;
+	if (!fits()) throw new Error("Fleet status metadata exceeds the output byte limit");
+	if (value.selection) boundModels(value, models, fits);
 	for (const failure of failures) {
 		if (value.failures.length === FAILURE_LIMIT) break;
 		value.failures.push({ ...failure, message: evidenceText(failure.message, 160) });
@@ -185,6 +235,17 @@ function boundOutput(value: FleetStatus, models: FleetModel[], failures: ModelFa
 	}
 	const providerBudget = (BYTE_LIMIT + Buffer.byteLength(JSON.stringify(value))) / 2;
 	boundProviders(value, providers, () => fits() && Buffer.byteLength(JSON.stringify(value)) <= providerBudget);
+	if (!value.selection) boundModels(value, models, fits);
+	for (const warning of warnings) {
+		if (value.warnings.length === WARNING_LIMIT) break;
+		value.warnings.push({ ...warning, message: evidenceText(warning.message, 160) });
+		output.omittedWarnings--;
+		if (!fits()) { value.warnings.pop(); output.omittedWarnings++; output.byteLimitReached = true; }
+	}
+}
+
+function boundModels(value: FleetStatus, models: FleetModel[], fits: () => boolean): void {
+	const output = value.coverage.output;
 	for (const model of models) {
 		if (value.models.length === MODEL_LIMIT) break;
 		value.models.push(model);
@@ -195,12 +256,6 @@ function boundOutput(value: FleetStatus, models: FleetModel[], failures: ModelFa
 			value.models.pop(); output.omittedModels++; output.omittedSelections += selections(model);
 			output.omittedActiveConversations += model.activeConversations; output.byteLimitReached = true;
 		}
-	}
-	for (const warning of warnings) {
-		if (value.warnings.length === WARNING_LIMIT) break;
-		value.warnings.push({ ...warning, message: evidenceText(warning.message, 160) });
-		output.omittedWarnings--;
-		if (!fits()) { value.warnings.pop(); output.omittedWarnings++; output.byteLimitReached = true; }
 	}
 }
 
@@ -224,9 +279,7 @@ function failureOrder(left: ModelFailure, right: ModelFailure): number {
 function emptyWindows(): Static<typeof UsageWindowsSchema> {
 	return { last5h: { tokens: 0, reportedCost: 0, responses: 0 }, last7d: { tokens: 0, reportedCost: 0, responses: 0 } };
 }
-function sampleFits(windows: Static<typeof UsageWindowsSchema>, sample: UsageSample): boolean {
-	return Object.values(windows).every((total) => Number.isFinite(total.tokens + sample.tokens) && Number.isFinite(total.reportedCost + sample.reportedCost));
-}
+type SampleTotal = { tokens: number; reportedCost: number };
 function addSample(windows: Static<typeof UsageWindowsSchema>, sample: UsageSample, now: number): void {
 	for (const [key, duration] of [["last5h", 5 * 60 * 60 * 1000], ["last7d", USAGE_WEEK_MS]] as const) {
 		if (sample.at < now - duration || sample.at > now) continue;
@@ -241,10 +294,21 @@ class FleetCollector {
 	private readonly memberRows = new Map<string, CatalogViewRow>();
 	private readonly now: number;
 	private readonly effort?: FleetEffortScope;
-	constructor(now: number, effort?: FleetEffortScope) {
+	private readonly sampleTotals = new Map<string, SampleTotal>();
+	private readonly selection: FleetSelection;
+	constructor(now: number, effort: FleetEffortScope | undefined, selection: FleetSelection) {
 		this.now = now;
 		this.effort = effort;
+		this.selection = selection;
 		this.value = initialStatus(now);
+		if (selection.model !== undefined || selection.provider !== undefined) {
+			this.value.selection = { filter: selectionKind(selection), scope: "models-providers-failures-warnings", globalScope: "source-coverage-usageCoverage-conversations-toolReportedCost-effort", outcome: "no-match", matched: { models: 0, failures: 0, warnings: 0 } };
+			this.value.notes = [
+				"Published samples, not live health, quota, invoices or quality. No match does not establish no use. Zero samples do not prove zero usage.",
+				"Source coverage and accounting stay global. History/source omissions remain unknown. Effort is lifetime, not selected-model spend.",
+				"Latest matching failure per provider; absence does not establish health. Active means starting/working. No continuation.",
+			];
+		}
 		if (effort) {
 			this.members.add(effort.callerId);
 			for (const id of effort.created ?? []) this.members.add(id);
@@ -271,12 +335,13 @@ class FleetCollector {
 			this.value.coverage.evidence.conversationsComplete = false;
 			return;
 		}
-		observeEvidence(this.value, this.models, evidence);
+		observeEvidence(this.value, this.models, evidence, this.selection);
 		for (const failure of evidence.failures) {
+			if (!matchesModel(this.selection, `${failure.provider}/${failure.modelId}`)) continue;
 			const previous = this.failures.get(failure.provider);
 			if (!previous || failureOrder(failure, previous) < 0) this.failures.set(failure.provider, failure);
 		}
-		this.warnings.push(...evidence.warnings);
+		this.warnings.push(...evidence.warnings.filter((warning) => !this.value.selection || (warning.model !== undefined && matchesModel(this.selection, `${warning.model.provider}/${warning.model.modelId}`))));
 	}
 
 	private usage(evidence: ModelEvidence | undefined): void {
@@ -296,18 +361,27 @@ class FleetCollector {
 		const coverage = this.value.usageCoverage;
 		if (sample.at > publishedAt || !/^[^/]+\/.+$/u.test(sample.model)) { coverage.invalidSamples++; return; }
 		if (sample.at > this.now || sample.at < this.now - USAGE_WEEK_MS) return;
-		const model = modelRow(this.models, sample.model);
-		const modelUsage = model.usage ?? emptyWindows();
 		const provider = sample.model.slice(0, sample.model.indexOf("/"));
-		const row = this.providers.get(provider) ?? { provider, usage: emptyWindows() };
-		if (!sampleFits(modelUsage, sample) || !sampleFits(row.usage, sample)) { coverage.invalidSamples++; return; }
+		const model = matchesModel(this.selection, sample.model) ? modelRow(this.models, sample.model) : undefined;
+		if (!this.acceptSample(sample, provider)) { coverage.invalidSamples++; return; }
 		coverage.sampledResponses++;
 		coverage.oldestSampleAt = Math.min(coverage.oldestSampleAt ?? sample.at, sample.at);
 		coverage.newestSampleAt = Math.max(coverage.newestSampleAt ?? sample.at, sample.at);
+		if (!model) return;
+		const modelUsage = model.usage ?? emptyWindows();
+		const row = this.providers.get(provider) ?? { provider, usage: emptyWindows() };
 		model.usage = modelUsage;
 		this.providers.set(provider, row);
 		addSample(modelUsage, sample, this.now);
 		addSample(row.usage, sample, this.now);
+	}
+	/** Validate global sample sums before selection so overflow coverage keeps its machine-wide meaning. */
+	private acceptSample(sample: UsageSample, provider: string): boolean {
+		const keys = [`model:${sample.model}`, `provider:${provider}`];
+		const totals = keys.map((key) => this.sampleTotals.get(key) ?? { tokens: 0, reportedCost: 0 });
+		if (totals.some((total) => !Number.isFinite(total.tokens + sample.tokens) || !Number.isFinite(total.reportedCost + sample.reportedCost))) return false;
+		for (const [index, key] of keys.entries()) this.sampleTotals.set(key, { tokens: totals[index].tokens + sample.tokens, reportedCost: totals[index].reportedCost + sample.reportedCost });
+		return true;
 	}
 	private operational(view: CatalogView | undefined): void {
 		this.value.coverage.omittedOperationalRows += view?.coverage.omitted ?? 0;
@@ -317,7 +391,7 @@ class FleetCollector {
 			if (this.conversations.has(row.id)) continue;
 			this.conversations.add(row.id);
 			if (this.members.has(row.id)) this.memberRows.set(row.id, row);
-			observeSelection(this.value, this.models, row);
+			observeSelection(this.value, this.models, row, this.selection);
 		}
 	}
 
@@ -339,14 +413,20 @@ class FleetCollector {
 		this.finishEffort();
 		const models = [...this.models.values()].sort((a, b) => compareText(a.model, b.model));
 		for (const model of models) model.currentSelections.sort((a, b) => compareText(a.thinkingLevel, b.thinkingLevel));
+		if (this.value.selection) {
+			const matched = { models: models.length, failures: this.failures.size, warnings: this.warnings.length };
+			this.value.selection.matched = matched;
+			this.value.selection.outcome = matched.models || matched.failures || matched.warnings ? "matched" : "no-match";
+		}
 		boundOutput(this.value, models, [...this.failures.values()].sort(failureOrder), this.warnings.sort(compareWarnings), [...this.providers.values()].sort((a, b) => compareText(a.provider, b.provider)));
 		return this.value;
 	}
 }
 
 /** Each call starts a bounded scan; cached costs never inherit a conversation's current selection. */
-export async function readFleetStatus(catalog: AgentCatalog, options: { readonly effort?: FleetEffortScope; readonly now?: number } = {}): Promise<FleetStatus> {
-	const collector = new FleetCollector(options.now ?? Date.now(), options.effort);
+export async function readFleetStatus(catalog: AgentCatalog, options: FleetSelection & { readonly effort?: FleetEffortScope; readonly now?: number } = {}): Promise<FleetStatus> {
+	const selection = validateFleetSelection({ ...options, view: "fleet" });
+	const collector = new FleetCollector(options.now ?? Date.now(), options.effort, selection);
 	const coverage = collector.value.coverage.catalog;
 	let cursor: string | undefined;
 	for (let index = 0; index < MAX_PAGES; index++) {

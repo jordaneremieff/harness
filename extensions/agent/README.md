@@ -200,7 +200,7 @@ it opens no storage and starts no host. Each native row retains its own result
 observations so its header reflects applied settings without a discovery read.
 Tool cards retain Pi's native padding. Peer cards supply the same inner top and
 bottom padding, while Pi supplies their outer separator.
-The manager contract is `manager/5.0.0`; a reload over an older retained manager
+The manager contract is `manager/6.0.0`; a reload over an older retained manager
 refuses agent controls and requires a Pi restart.
 Expanded cards retain full IDs and the complete result within the display bound.
 
@@ -810,6 +810,47 @@ reports whether more catalog entries remain but exposes no unusable cursor.
 Missing evidence is unknown, not zero. Reported costs are not invoices or
 remaining allowance; past use is not preference. This view does not query
 provider health, quotas, account balances, or billing services.
+
+Use optional `model: "provider/model"` or `provider: "provider"` to select exact
+published evidence. Both fields use intersection when supplied together; a
+conflicting pair returns no match. Model identities preserve all text after the
+first slash. Filters require `view: "fleet"` and refuse a `sessionId`.
+Malformed, whitespace-containing, control-containing, or oversized selectors
+are refused before the catalog scan. Model selectors have a UTF-8 byte limit of
+512 and provider selectors have a limit of 200.
+
+For a task such as "Compare recent machine-local evidence for these two
+configured lead candidates; show relevant use/failure evidence and gaps":
+
+1. Resolve the current presets and their exact model identities.
+2. Read each model's current capability facts through the configured catalog.
+3. Query `agent_status` with `view: "fleet"` and each exact `model` identity.
+4. Compare the relevant published facts, source freshness, and unknown coverage.
+5. Choose by task needs and operator preferences, not a fixed model ranking.
+
+A filtered response adds `selection.filter`: `model`, `provider`, or
+`model-and-provider`. It describes the filter kind, not a standalone replayable
+query. Exact query identities remain in the tool arguments; returned model rows
+retain their complete identities. The result does not repeat selector text.
+`selection` also carries the match outcome and matching model/failure/warning
+counts before output bounds. Its `scope` names the selected rows. Matching model rows take
+output priority over failure details and provider summaries. An exact-model
+provider subtotal includes only that model's samples, never sibling models.
+Calls without filters retain their existing shape and failure-first order.
+
+`selection.globalScope` names the unchanged machine-wide coverage, usage
+coverage, conversation counts, tool cost, and caller-effort accounting. Those
+fields are not selected-model spend. Unknown-model conversations and source
+omissions remain visible. Output omissions count only matching candidates; rows
+excluded by the selectors are not output omissions. Filters change neither the
+catalog traversal bounds nor the published evidence producer.
+
+A no-match result establishes only that covered publications contain no matching
+evidence. It does not establish no use, provider health, quota, or catalog
+absence. Source publications already reduce failure samples to the latest per
+provider; filters cannot recover omitted failures, compacted history, or unread
+publications. Registry capability facts and sampled usage do not establish
+reasoning quality, invoice accuracy, or a provider cache lifetime.
 
 `models[].usage` and `providers[].usage` expose `last5h` and `last7d` sample
 sums: tokens, nominal reported cost, and response count. Each read filters
@@ -2376,10 +2417,10 @@ observation fields.
 
 `recovery-state/1.1.0` is the response contract for the separate `deliveriesActive`
 field. `deliveriesPending` still reports all pending rows and governs marker
-clearance. `manager/4.0.0` uses the package-level Chord transport and includes
+clearance. `manager/6.0.0` uses the package-level Chord transport and includes
 retained primary acceptance, joined communication display and awaited primary endpoint teardown,
 preset-first creation resolution and machine
-preference snapshots, alongside caller usage for fleet observations, effective
+preference snapshots, alongside exact fleet model/provider selection, caller usage for fleet observations, effective
 thinking from catalog validation, ordinary retained observation, first-input
 origin, independent command admission, exact result references, and
 parked-delivery recovery. Spawn, resolve-agent, and place requests and responses

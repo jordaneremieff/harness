@@ -8,6 +8,7 @@ import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-sche
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { DispatchOutputSchema } from "./result-reference.ts";
 import { ordinaryReportedUsage } from "./agent-usage.ts";
+import { FleetSelectionProperties, validateFleetSelection } from "./fleet-status.ts";
 import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { profileCommand } from "./profile-dialog.ts";
 import { join, resolve, basename } from "node:path";
@@ -361,13 +362,14 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	register(
 		"agent_status",
 		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected Durable agent returns full state and bounded pending timers. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state.",
-		Type.Object({ sessionId: Type.Optional(id), view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId." })) }, { additionalProperties: false }),
+		Type.Object({ sessionId: Type.Optional(id), view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })), ...FleetSelectionProperties }, { additionalProperties: false }),
 		(input, ctx) => {
 			const sessionId = input.sessionId as string | undefined;
 			const view = input.view as "fleet" | undefined;
+			const selection = validateFleetSelection(input);
 			const selfId = !sessionId ? ctx?.sessionManager?.getSessionId() : undefined;
 			const reportedUsage = view === "fleet" && ctx?.sessionManager?.getEntries ? ordinaryReportedUsage(ctx.sessionManager.getEntries()) : undefined;
-			return getManager().status(sessionId, view, selfId ? { id: selfId, cwd: ctx.cwd, reportedUsage } : undefined);
+			return getManager().status(sessionId, view, selfId ? { id: selfId, cwd: ctx.cwd, reportedUsage } : undefined, selection);
 		},
 	);
 	register(
