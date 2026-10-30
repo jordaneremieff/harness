@@ -20,13 +20,13 @@ import type { FactsProgram } from "./program.ts";
 const SEND = "mcp__messaging__send_message";
 const TOPIC = "mcp__messaging__set_topic";
 const payload = { room: "release-notices", text: "The maintenance window starts at 18:00 UTC." };
-const gate: FactsProgram = {
+const gate = {
 	phase: "input",
 	selector: { tools: [SEND, TOPIC] },
 	when: { op: "exists", path: ["input"] },
 	action: { kind: "require-approval" },
 	onUnavailable: "deny",
-};
+} satisfies FactsProgram;
 interface Pending {
 	actionId: string;
 	revision: string;
@@ -76,11 +76,7 @@ async function fixture(
 		schema?: Record<string, unknown>;
 		beforeHook?: (harness: Durable.Harness) => Durable.ToolHooks["beforeTool"];
 		afterHook?: Durable.ToolHooks["beforeTool"];
-		execute?: (
-			args: Durable.JsonObject,
-			api: Durable.ToolExecutionApi,
-			ctx: import("@earendil-works/chord").Context,
-		) => Promise<Durable.ToolExecutionResult>;
+		execute?: Durable.ToolRegistration["execute"];
 		prepare?: (input: Durable.JsonObject) => Durable.JsonObject;
 	} = {},
 ) {
@@ -118,7 +114,7 @@ async function fixture(
 					name,
 					description: "A harmless local write.",
 					replay: options.safe ? "safe" : "unsafe",
-					deferred: options.deferred ?? false,
+					deferred: options.deferred ? true : undefined,
 					parameters:
 						options.schema ??
 						Type.Object({ room: Type.String(), text: Type.String() }, { additionalProperties: false }),
@@ -153,7 +149,7 @@ async function fixture(
 			}),
 		);
 	const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
-	const call = async (name: string, args: Record<string, unknown>, prompt = "Use the selected operation.") => {
+	const call = async (name: string, args: Durable.JsonObject, prompt = "Use the selected operation.") => {
 		faux.appendResponses([
 			fauxAssistantMessage(fauxToolCall(name, args, { id: `action-${++sequence}` }), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Finished."),
@@ -168,7 +164,7 @@ async function fixture(
 		assert.ok(result);
 		return result;
 	};
-	const control = async (args: Record<string, unknown>, prompt?: string): Promise<Record<string, unknown>> => {
+	const control = async (args: Durable.JsonObject, prompt?: string): Promise<Record<string, unknown>> => {
 		const result = await call("policy_control", args, prompt);
 		assert.equal(result.isError, false, JSON.stringify(result.content));
 		return result.details as Record<string, unknown>;
@@ -390,7 +386,7 @@ test("native pinned phase hooks cannot change the executed approved payload", { 
 	let tailCalls = 0;
 	let currentWithoutTail = false;
 	const f = await fixture({
-		beforeHook: (harness) => async (call, api, ctx) => {
+		beforeHook: (harness) => async (call, api, ctx): Promise<undefined> => {
 			if (!enabled || call.name !== SEND) return;
 			const conversation = await harness.conversation(api.conversationId, ctx);
 			assert.ok(conversation);
@@ -468,7 +464,7 @@ test("native final rule read rejects a change during asynchronous preparation", 
 				wraps: [
 					{
 						tool: SEND,
-						wrap: (tool) => ({
+						wrap: (tool: Durable.ToolRegistration): Durable.ToolRegistration => ({
 							...tool,
 							execute: (args, api, ctx) =>
 								tool.execute(

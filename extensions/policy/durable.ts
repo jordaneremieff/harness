@@ -381,7 +381,7 @@ export async function createPolicyDurableExtension(host: PolicyDurableHost): Pro
 	return defineExtension({
 		name: "policy",
 		tools: [rulesTool, proposeTool, approveTool, controlTool],
-		wraps: [...wrappedTools].map((tool) => ({ tool, wrap: (registration) => runtime.wrapActionTool(registration) })),
+		wraps: [...wrappedTools].map((tool) => ({ tool, wrap: (registration: Durable.ToolRegistration) => runtime.wrapActionTool(registration) })),
 		sections: [
 			section(
 				"policy",
@@ -549,7 +549,8 @@ class DurablePolicyRuntime {
 		if (!tool) return "[policy] Exact-action tool registration is unavailable.";
 		if (tool.replay === "safe") return "[policy] Exact-action approval refuses replay:safe tools; external writes require unsafe replay.";
 		try {
-			const final = validateToolArguments(tool, { type: "toolCall", id: "policy-normalization", name, arguments: args });
+			// The caller's sameActionInput check already established complete strict JSON.
+			const final = validateToolArguments(tool, { type: "toolCall", id: "policy-normalization", name, arguments: args as ToolCall["arguments"] });
 			if (!sameActionInput(args, final)) return "[policy] Host validation changes the final candidate; retry with exact normalized arguments.";
 		} catch { return "[policy] Final host validation is unavailable or rejects the exact candidate."; }
 		return undefined;

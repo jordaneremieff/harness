@@ -14,13 +14,13 @@ import type { FactsProgram } from "./program.ts";
 const SEND = "mcp__messaging__send_message";
 const TOPIC = "mcp__messaging__set_topic";
 const args = { room: "release-notices", text: "The maintenance window starts at 18:00 UTC." };
-const gate: FactsProgram = {
+const gate = {
 	phase: "input",
 	selector: { tools: [SEND, TOPIC] },
 	when: { op: "exists", path: ["input"] },
 	action: { kind: "require-approval" },
 	onUnavailable: "deny",
-};
+} satisfies FactsProgram;
 interface Pending {
 	actionId: string;
 	revision: string;
@@ -130,9 +130,9 @@ async function fixture(
 			await active.prompt(request);
 			return active.messages.filter((message) => message.role === "toolResult").at(-1) as ai.ToolResultMessage;
 		};
-		const invoke = (name: string, input: Record<string, unknown>, request = "Use the selected policy control.") =>
+		const invoke = (name: string, input: ai.JsonObject, request = "Use the selected policy control.") =>
 			run([ai.fauxToolCall(name, input, { id: `call-${++sequence}` })], request);
-		const control = async (input: Record<string, unknown>, request?: string): Promise<Record<string, unknown>> => {
+		const control = async (input: ai.JsonObject, request?: string): Promise<Record<string, unknown>> => {
 			const result = await invoke("policy_control", input, request);
 			assert.equal(result.isError, false, JSON.stringify(result.content));
 			return JSON.parse(ai.contentText(result.content));
