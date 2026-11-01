@@ -167,7 +167,7 @@ test("native creation replaces the ordinary publisher with the host directory an
 	assert.equal(required(adapter.publications.at(-1)).source.path, join(ordinaryDir, "harness.json"));
 	const cleanups: Array<() => void | Promise<void>> = [];
 	const host = { durable: Durable, agentDir: nativeDir, harness: {}, storageId: "fixture", cwd: nativeDir, onClose: (cleanup: () => void | Promise<void>) => cleanups.push(cleanup) } as unknown as PolicyDurableHost;
-	adapter.contribution().create(host);
+	await adapter.contribution().create(host);
 	assert.equal(adapter.listeners.get(SETTINGS_REQUEST)?.size, 1);
 	adapter.pi.events.emit(SETTINGS_REQUEST, { version: 1 });
 	assert.equal(required(adapter.publications.at(-1)).source.path, join(nativeDir, "harness.json"));
