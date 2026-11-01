@@ -96,11 +96,12 @@ produces selection evidence; it does not wait for a proven failure to begin.
 
 Compare the developed outcome with the current approach and plausible
 alternatives. The current approach is a session on the current harness given
-the plain request the operator makes for such work. Record that request in the
-use path before the candidate takes shape, from the governing conversation or
-retained sessions rather than from the candidate's intended output; acceptance
-runs it as the before arm, the run without the candidate. Weigh expected
-operator value, reach across a coherent class of tasks, repeated user effort,
+the plain request the operator makes for such work. Preserve that plain request
+from the governing conversation or retained sessions before the candidate takes
+shape. When comparative benefit decides acceptance, use applicable observations
+or select a meaningful comparison under the acceptance policy below; this does
+not require a new paid before arm for every edit. Weigh expected operator value,
+reach across a coherent class of tasks, repeated user effort,
 implementation and operating cost, risk, and remaining uncertainty. Include
 context cost, setup, maintenance, and manual handoffs where they matter. Specialization is not automatically low value;
 generic infrastructure is not automatically ambitious. Combining patches counts
@@ -362,41 +363,45 @@ example develops an idea; a controlled dispatch test establishes delivered input
 an observed use establishes what happened under its stated conditions. None
 alone proves general model quality or operator value.
 
-When the claim is that the operator's task is better served, compare against
-the plain request recorded in the use path. A repair, removal, or maintenance
-change is accepted on its required checks. The before arm runs that plain
-request and its follow-ups on the current harness with the same facts and
-authorization. It carries an artifact form only when the operator's own request
-in the governing conversation or retained sessions names that form; a form the
-candidate introduces stays out, with its method and checklist. A before arm
-that asks for an output only the candidate introduces measures what the
-candidate adds beyond that output, not whether the candidate is needed, and
-cannot support the use path. If the before arm reaches the selected outcome,
-the candidate fails acceptance, unless its use path claimed lower cost or
-higher reliability on that task before the comparison and repeated matched
-runs show that difference. When the operator selected the outcome or waived
-the comparison, report the comparison result without treating it as a veto. A
-benefit noticed only after the comparison starts a new use path with its own
-comparison; do not deliver the original candidate on it or rewrite the
-acceptance rationale around it. Count context, output, time, and cost on the
-same task: a candidate that costs more without a difference in the operator's
-result is a burden, not an improvement, and an artifact the request did not
-ask for is cost, not a difference. For a single-run claim, one matched pair
-does not prove general equivalence, but it removes the candidate's
-demonstrated benefit, and showing one stays the candidate's burden.
+When comparative benefit decides acceptance, use a meaningful comparison against
+the plain request recorded in the use path. A repair, removal or maintenance
+change is accepted on evidence of its required contract and the repository's final
+checks; it does not automatically require a paired paid trial. Use applicable
+existing evidence before selecting new runs. Compare candidate and baseline under
+matched facts, authority and relevant execution conditions. Include an artifact
+form in the before arm only when the operator's own request names it; leave
+candidate-only methods and checklists out. A distorted baseline cannot establish
+benefit.
 
-Required source, focused, load, and repository-wide checks still bind. Passing
-tests, test counts, source existence, generated text, and worker summaries do not
-replace outcome evidence. Use obtainable, proportionate checks that decide the
-claim, not a new evaluation framework, recurring journal, or operator ceremony.
-If a required use check needs unavailable access or authority, name the exact
-boundary and narrow the affected acceptance claim; do not invent evidence.
+If the baseline reaches the selected outcome, retain the candidate's benefit claim
+only when evidence supports its stated cost or reliability advantage. Choose
+repeated matched samples when consequential variation makes that distinction
+material; neither a single pair nor a fixed quota establishes general reliability.
+Count context, output, time and operating cost on the same task. An unrequested
+artifact is cost, not benefit. Do not rewrite acceptance around a benefit noticed
+only after comparison; treat that observation as a different proposal. An operator
+selection or proof waiver governs its named scope; keep unsupported benefits
+explicit without restoring the waived veto.
 
-Return applicable findings to the same execution owner and verify the correction.
-Each finding gets the repository-required disposition: fixed with a regression
-where feasible, shown false with source evidence, or blocked with the exact
-unavailable layer. Bound review to the selected outcome and required safety and
-completion gates; reject unrelated expansion rather than grow recursive audits.
+Required checks still bind under the repository's single completion policy and
+final-verification owner. Reuse evidence that remains applicable to the composed
+candidate and execution conditions; check invalidated evidence and uncovered
+interactions. A new worker, review, commit or release milestone alone does not
+justify another complete run. Normal promotion supplies its first mandatory final
+gate; do not replace it with routine gate bypasses. Tests, counts, source existence,
+generated text and worker summaries do not replace required outcome evidence.
+Use proportionate evidence that reaches the actual claim, not a new framework,
+recurring journal or operator ceremony. An unavailable necessary layer blocks its
+dependent conclusion or act; it does not establish success.
+
+Return applicable findings to the same execution owner and verify the repaired
+contract. Select permanent regression protection for meaningful future value
+against lifecycle cost. Give every finding its repository-required disposition:
+fixed with the repaired contract verified, shown false with source evidence, or
+blocked with the exact unavailable layer. Challenge contracts and evidence;
+repeating the author's commands alone does not establish independent review.
+Bound review to the selected outcome and required safety and completion checks;
+reject unrelated expansion rather than grow recursive audits.
 
 ## Preserve continuity and ownership
 
@@ -454,9 +459,10 @@ trust, required checks, and review still bind.
 
 Before release, verify the established remote main and accepted resource scope
 from current Git evidence. Inspect accepted local commits and the complete
-outgoing diff; establish high confidence through required tests and review. Use
-the repository promotion procedure and its gates. Prior publication is not a
-prerequisite. Exclude unrelated commits and resources. If a candidate commit
+outgoing diff. Establish confidence through applicable evidence, substantive
+review and the repository's one final verification policy. Use normal promotion
+with its gates; do not pre-run the complete gate solely because publication is
+next. Prior publication is not a prerequisite. Exclude unrelated commits and resources. If a candidate commit
 already appears on remote main, report that state without replaying it. Complete
 required activation through the repository procedure and preserve unrelated
 configured activation and settings.

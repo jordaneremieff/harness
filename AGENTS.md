@@ -59,9 +59,10 @@
   This is an adapted reporting register based on ASD-STE100 Issue 9 (January 2025).
   It does not reproduce the specification or its dictionary. Do not claim certified
   STE compliance.
-- Review and audit findings get exactly one of three dispositions: fixed now (with a
-  regression test where feasible), shown false with cited source evidence, or blocked
-  with the exact unavailable layer named. Never "accepted as-is" or deferred as
+- Review and audit findings get exactly one of three dispositions: fixed now, with
+  the repaired contract verified and permanent regression protection selected under
+  Completion checks; shown false with cited source evidence; or blocked with the
+  exact unavailable layer named. Never "accepted as-is" or deferred as
   cosmetic/minor debt. Escape hatches under the pillar corpus's Contradiction Handling
   are a different object class (a deliberate bounded override), not a disposition
   under this rule. The repository forbids committing investigation reports and
@@ -104,8 +105,8 @@
   extension and justified by current consumers. Tests for one extension must not
   assert another extension's private implementation or display format. Generic Pi
   event analysis must not recognise one sibling extension's private vocabulary. Do not create a shared abstraction solely to remove small
-  duplication. Colocated `*.test.mts` tests, its own README, no operator-local
-  paths or credentials in committed content. `scripts/check-slices.mts` checks
+  duplication. Keep retained tests colocated as `*.test.mts`; each extension has its own README.
+  Keep operator-local paths and credentials out of committed content. `scripts/check-slices.mts` checks
   literal import specifiers for slice escapes and sibling paths. Review still
   enforces semantic isolation, including sibling-specific vocabulary, shared
   mutable state, and undocumented private protocols.
@@ -116,11 +117,9 @@
   and does not block an independently complete iteration unless the iteration
   worsens it, depends on its repair, or the operator requires its repair for
   release. Preserve safety requirements and the required defect dispositions.
-- Before closing work: scoped tests for the changed slices and their import
-  consumers, `npm run lint`, `npm run typecheck`, `npm run check`, and README
-  claims updated to match reality in the same change. Run the full suite with
-  promotion `--full`, on dependency or compiler-setting changes, or when the
-  operator asks.
+- Use Completion checks below as the single completion and final-verification
+  policy. Commit, review, handoff and promotion are not separate reasons to repeat
+  the same checks.
 
 ## Authority
 
@@ -226,30 +225,65 @@ completion.
 
 ## Completion checks
 
-Before considering repository work complete:
+Name one final acceptance owner for the relevant candidate and execution basis.
+Use development checks to resolve current uncertainty. For work intended for
+promotion, let promotion run the mandatory final gate on the composed tree; do
+not run the same complete gate first merely to complete a worker, commit or review
+milestone. For work completed without promotion, the final acceptance owner runs
+the selected final checks once. Reuse applicable source, behavioural and review
+evidence; inspect uncovered interactions and rerun evidence invalidated by relevant
+candidate or execution changes. Promotion still executes its required gates; an
+earlier useful focused run does not automatically suppress them. Do not use
+`--no-gates` or `PI_PROMOTE_GATES` as a normal reuse mechanism.
 
-- After a corpus mutation removes, renames, or redefines a term, grep that term across `pillars/`, `skills/`, and `docs/` before pushing.
+Workers' local passes do not establish an integrated result. Use existing context
+and tool results. Add a concise evidence summary only when complex claims,
+disputes or handoffs need it, not a compulsory ledger.
 
-1. inspect `git status`;
-2. check for accidental credentials or absolute personal paths;
-3. remove temporary files;
-4. confirm documentation links resolve;
-5. run scoped tests for the changed slices and their import consumers;
-6. run `npm run lint` (Biome lint, same tool as the Pi upstream);
-7. run `npm run typecheck` (TypeScript check against the installed Pi declarations);
-8. run `npm run check` (slice isolation, hardcoded counts);
-9. run the normal full test command on dependency or compiler-setting changes,
-   with promotion `--full`, or when the operator asks;
-10. report the remaining untracked or modified files in each worktree
-    you changed.
+During development, select checks that resolve material questions about the
+changed contract and its consumers. Verify a repaired contract. Add or retain
+permanent regression protection when its meaningful future protection warrants
+its creation, execution, maintenance and coupling costs. A disposable reproduction
+need not become a permanent test. Correct, replace, consolidate or remove invalid
+assertions, fixtures and mocks against the governing contract; never change correct
+behaviour to satisfy a mistaken test or suppress a genuine failure for a pass.
 
-The automated gates are `npm run lint`, `npm run typecheck`, `npm run check` (slice isolation,
-hardcoded counts), and scoped tests for the changed slices and their import consumers.
-The full suite applies on dependency or compiler-setting changes, with promotion
-`--full`, or when the operator asks. Credential
-and personal-path scanning, documentation-link resolution, and the git-status
-report have no automated check in the tree; they are maintained by review, and the
-honest report of remaining untracked or modified files stays the final step.
+Reuse evidence only while it reaches the claim and remains applicable to the
+candidate, dependencies, configuration, setup, environment, instrumentation and
+relevant variable conditions. Recheck the affected evidence after a material
+change. A new agent or milestone alone does not invalidate evidence; identical
+source alone does not establish unchanged execution conditions. Deliberate
+sampling for consequential variation is distinct from accidental repetition.
+
+Before final acceptance:
+
+1. Review the actual composed result and interactions not covered by existing
+   evidence. Keep necessary unresolved facts explicit.
+2. Inspect `git status`, remove temporary files, check credentials and personal
+   paths, resolve affected documentation links and update README claims. Review
+   publication content when publication is in scope.
+3. Use the mandatory final gate selected under `docs/conventions/worktrees.md`:
+   tests for changed slices and import consumers, `npm run check`, applicable
+   `npm run lint` and `npm run typecheck`, and required resource load/validation
+   checks. That document owns full-suite selection and narrow exclusions for
+   demonstrably unaffected static checks. `--full` and operator full-suite requests
+   always select full tests; broad or uncertain execution effects retain
+   conservative verification. State the delivery boundary for local-only work.
+4. Satisfy applicable corpus checks. After a corpus mutation removes, renames or
+   redefines a term, search it across `pillars/`, `skills/` and `docs/` before push.
+5. Report remaining untracked or modified files in each worktree you changed.
+
+For intermediate commits, inspect the staged diff and establish enough evidence
+to keep the commit coherent. A commit is not final acceptance. Reuse applicable
+results; the commit event does not demand another complete gate. An explicitly
+scoped proposal or read-only task does not by itself authorise execution checks or
+mutation.
+
+Credential and personal-path review, documentation-link review and the final
+Git-state report remain review responsibilities, not claims of automated coverage.
+Binding requirements remain in force until the authority that owns them changes
+them. A necessary unavailable layer blocks its dependent claim or act, not
+independent authorised work.
 
 ## Commit messages
 
@@ -284,7 +318,4 @@ Do not include:
 - review-round history;
 - generic subjects such as `updates`, `changes`, or `fix stuff`.
 
-Before committing:
-
-- inspect the staged diff;
-- run the relevant validation.
+Before committing, follow the intermediate-commit requirements in Completion checks.
