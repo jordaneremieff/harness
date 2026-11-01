@@ -87,8 +87,10 @@ text or environment variables in records. Use the originating Bash call to
 associate a command with its ID. List results omit backend error text; status
 returns the individual error, bounded to 2 KiB.
 
-Each job retains the last 256 KiB of combined stdout and stderr in memory.
-There is no full-output file. Log pages contain at most 16 KiB of decoded text
+Each job retains the last 256 KiB of combined stdout and stderr in a fixed-capacity
+byte ring. Appends copy only retained new bytes, not the existing prefix. A log
+read materialises at most that bounded tail before page selection. There is no
+full-output file. Log pages contain at most 16 KiB of decoded text
 and 200 newline-terminated lines. A byte limit also bounds an unterminated
 line. Cross-stream order reflects callback arrival, not a total ordering of
 writes in the child processes.

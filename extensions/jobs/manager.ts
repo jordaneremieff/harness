@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
+import { OutputTail } from "./output-tail.ts";
 
 export const JOB_LIMITS = Object.freeze({
 	active: 8,
@@ -67,7 +68,7 @@ interface Job {
 	snapshot: JobSnapshot;
 	controller: AbortController;
 	stopReason?: "cancelled" | "timed_out";
-	buffer: Buffer;
+	tail: OutputTail;
 	end: number;
 	done: Promise<void>;
 }
@@ -110,9 +111,7 @@ function validEnvironment(env: NodeJS.ProcessEnv): boolean {
 function appendOutput(job: Job, data: Buffer): void {
 	if (job.snapshot.status !== "running") return;
 	job.end += data.length;
-	const chunk = data.subarray(Math.max(0, data.length - JOB_LIMITS.logBytes));
-	const prior = job.buffer.subarray(Math.max(0, job.buffer.length + chunk.length - JOB_LIMITS.logBytes));
-	job.buffer = Buffer.concat([prior, chunk]);
+	job.tail.append(data);
 }
 
 function failureMessage(error: unknown): string {
@@ -180,7 +179,7 @@ export class JobManager {
 				...(timeoutSeconds === undefined ? {} : { timeoutSeconds }),
 			},
 			controller: new AbortController(),
-			buffer: Buffer.alloc(0),
+			tail: new OutputTail(JOB_LIMITS.logBytes),
 			end: 0,
 			done: Promise.resolve(),
 		};
@@ -240,16 +239,17 @@ export class JobManager {
 	logs(id: string, cursor = 0): JobLogs {
 		const job = this.get(id);
 		if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > job.end) throw new Error("Invalid log cursor");
-		const earliest = job.end - job.buffer.length;
+		const buffer = job.tail.read();
+		const earliest = job.end - buffer.length;
 		const start = Math.max(cursor, earliest);
 		const offset = start - earliest;
-		const readable = job.snapshot.status === "running" ? readableUtf8Length(job.buffer) : job.buffer.length;
-		const pendingBytes = job.buffer.length - readable;
+		const readable = job.snapshot.status === "running" ? readableUtf8Length(buffer) : buffer.length;
+		const pendingBytes = buffer.length - readable;
 		let length = Math.max(0, Math.min(readable - offset, JOB_LIMITS.pageBytes));
-		length = lineBound(job.buffer, offset, length);
+		length = lineBound(buffer, offset, length);
 		// Preserve complete UTF-8 characters across ordinary page boundaries.
-		if (offset + length < job.buffer.length) length = continuationBound(job.buffer, offset, length);
-		const page = fitUtf8Page(job.buffer, offset, length);
+		if (offset + length < buffer.length) length = continuationBound(buffer, offset, length);
+		const page = fitUtf8Page(buffer, offset, length);
 		const next = start + page.length;
 		return {
 			id,
