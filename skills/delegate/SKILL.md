@@ -230,15 +230,27 @@ works on a stale frame.
 
 ## 7. Integrate and accept
 
-Read the real change, not only the summary: the diff, the commit, the test
-output, or the cited source. Verify each load-bearing claim through its
-pointer, or through an independent delegated check. Give every finding one
-disposition: fixed now, shown false with cited evidence, or blocked at a
-named layer. Repair the failed part through its owner instead of re-running
-the whole mission. Run integration checks on the combined result.
+Read the actual result and defining evidence, not only the summary. Reuse
+applicable source reads and execution results after checking their reach and
+validity for the composed candidate and execution conditions. Use existing
+context and results; add a concise summary only when complex claims, disputes
+or handoffs need it.
 
-**Complete when:** every accepted result has verified evidence, and every
-finding has a disposition.
+Challenge the governing contracts, assertions, fixtures, mocks, omitted cases
+and evidence limits. Repeating the author's commands alone does not establish
+independent review. Choose additional review or execution for the material error
+it can expose, not for a second pass label or a different agent.
+
+Give each finding its repository-required disposition. Return repairs to their
+owner and verify the repaired contract; select permanent regression protection
+for its future value against lifecycle cost. Examine interactions not covered
+by existing evidence and check those that affect acceptance. Do not automatically
+rerun all worker checks. Assign one final owner for the relevant candidate and
+execution basis under the repository's completion policy; workers' local passes
+do not establish integration or release.
+
+**Complete when:** accepted claims have sufficient applicable evidence, material
+interactions are resolved, and every finding has its required disposition.
 
 ## 8. Keep the role durable
 

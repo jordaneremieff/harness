@@ -7,7 +7,7 @@ The exact claim, change, or artifact the reviewer must judge.
 The evidence each verdict must reach: primary sources, tool definitions, or test results.
 
 ## Independence <!-- required -->
-Direct the reviewer to verify from primary sources and not adopt the author's conclusion.
+Direct the reviewer to challenge the contract, omitted cases and evidence against defining sources, not adopt the author's conclusion. Repeating the author's commands alone does not establish independent review. State the relevant variation and shared premises.
 
 ## Context
 Verified background the reviewer needs, each fact with its source.

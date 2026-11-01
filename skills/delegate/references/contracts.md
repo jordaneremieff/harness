@@ -59,9 +59,10 @@ the filled copy with `check <file> --kind <kind>`.
 - **Lead-only slots:** fan-out ownership (parts, presets, what the lead
   keeps), result references (keep exact references and await them natively),
   composed answer (one answer covering every result, gaps named).
-- **Review-only slots:** the claim under review, the evidence each verdict
-  must reach, and independence (verify from primary sources, not from the
-  author's conclusion).
+- **Review-only slots:** the claim under review, the evidence each verdict must
+  reach, and independence. Challenge contracts, omitted cases and evidence from
+  defining sources rather than adopt the author's conclusion. Repeating the
+  author's commands alone does not establish independent review.
 
 Run the checker on every contract. Read its size line: a long contract costs
 the worker context before it starts.
