@@ -66,6 +66,38 @@ inspection; request a smaller view instead of replaying an effect. Presentation
 details contain only a short outcome and effect state, not a second machine-result
 channel.
 
+## Ordinary tool cards
+
+Ordinary Pi cards show the action and known target facts separately, followed by
+an outcome and effect state. Full IDs wrap when needed rather than receive fixed
+short forms. Pi's default tool shell supplies padding, background and expansion.
+The expansion hint uses your configured Pi key; an unbound key produces no
+invented mouse instruction.
+
+Collapsed cards keep these distinctions visible:
+
+- **UNKNOWN EFFECTS** remains meaningful even when other facts are absent.
+- Input delivery does not establish application execution.
+- An observer deadline or end does not stop independent terminal work.
+- Capture is bounded, not a complete transcript.
+- Bulk omission, shortened diagnostics, omitted references and page continuation
+  remain explicit, including a continuation offset of zero.
+- CLI success does not establish an inner application outcome. Stored phase and
+  reported program status grant neither permission nor task acceptance.
+
+Expansion exposes the request and complete bounded canonical result as JSON.
+It does not recover source data already omitted by the semantic result bound.
+Labels, request text, captures and errors escape terminal controls and directional
+format controls in both views. Previews clip safely without cancelling Pi's row
+background. These renderers do not change model text, structured output, native
+results or the small presentation metadata.
+
+The factory publishes the same registered renderer references through the public
+[tool display contract](../../docs/conventions/tool-display.md). It emits during
+factory setup, answers versioned requests and removes its request listener at
+shutdown. Consumers receive display fields only, never tool execution functions
+or schemas. Pi also owns subscription invalidation when it replaces the runtime.
+
 ## Select the right work
 
 A target accepts `server`, `session`, `window`, `block`, `client` and `source`.
@@ -300,8 +332,9 @@ scheduler, model loop or independent terminal store runs in the background.
 
 The adapter targets the installed Pi 1.4.0 contracts:
 
-- Coding-agent `dist/core/extensions/types.d.ts`: tool registration, cancellation,
-  structured results, `appendEntry` and session lifecycle.
+- Coding-agent `docs/extensions.md`, `docs/tui.md` and
+  `dist/core/extensions/types.d.ts`: tool registration, ordinary renderers,
+  cancellation, structured results, `appendEntry` and session lifecycle.
 - Coding-agent `dist/core/session-manager.js`: custom-entry retention and
   synchronous persistence after conversation admission.
 - Coding-agent `dist/core/package-manager.js` and `docs/skills.md`: normal shared

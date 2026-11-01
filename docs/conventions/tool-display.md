@@ -54,7 +54,7 @@ A request response only emits display data; it executes no tool. Publishers own
 their renderer logic and its handling of arguments and result details.
 
 The owning slices are brave, clipboard, history, memory, pillars, policy,
-registry, and stash. Agent publishes its internal cards from the same renderer
+registry, rex, and stash. Agent publishes its internal cards from the same renderer
 records used by its ordinary registration. The agent dashboard also retains
 local precedence for those cards.
 

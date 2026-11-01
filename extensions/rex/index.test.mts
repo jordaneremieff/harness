@@ -96,3 +96,51 @@ test("the final ordinary adapter bounds status composition into one canonical re
 		assert.ok(Buffer.byteLength(text, "utf8") <= budget);
 	} finally { await handlers.get("session_shutdown")?.(); }
 });
+
+test("ordinary registration publishes only identical display references and cleans up requests on reload", async () => {
+	type Publication = { version: number; tools: Array<Pick<ToolDefinition<TSchema>, "name" | "renderCall" | "renderResult" | "renderShell">> };
+	const tools = new Map<string, ToolDefinition<TSchema>>();
+	const handlers = new Map<string, () => unknown>();
+	const events = createEventBus();
+	const publications: Publication[] = [];
+	events.on("harness:tool-display:publish", (value) => { publications.push(value as Publication); });
+	const pi = { events, on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); }, registerTool: (tool: ToolDefinition<TSchema>) => tools.set(tool.name, tool), appendEntry: () => {} } as unknown as ExtensionAPI;
+	let executions = 0;
+	const options = { createCore: () => { executions++; throw new Error("Display requests must not execute tools."); } };
+	registerRex(pi, options);
+	try {
+		assert.equal(publications.length, 1, "the factory publishes before session_start");
+		const initial = publications[0];
+		assert.ok(initial);
+		assert.equal(initial.version, 1);
+		assert.equal(initial.tools.length, tools.size);
+		for (const display of initial.tools) {
+			assert.deepEqual(Object.keys(display).sort(), ["name", "renderCall", "renderResult", "renderShell"]);
+			const registered = tools.get(display.name);
+			assert.ok(registered);
+			assert.equal(typeof display.renderCall, "function");
+			assert.equal(typeof display.renderResult, "function");
+			assert.equal(display.renderCall, registered.renderCall);
+			assert.equal(display.renderResult, registered.renderResult);
+			assert.equal(display.renderShell, registered.renderShell);
+			assert.equal(display.renderShell, "default");
+		}
+		for (const request of [undefined, null, [], {}, { version: 2 }, { version: "1" }]) events.emit("harness:tool-display:request", request);
+		assert.equal(publications.length, 1);
+		await handlers.get("session_start")?.();
+		events.emit("harness:tool-display:request", { version: 1 });
+		assert.equal(publications.length, 2);
+		assert.equal(publications[1]?.tools[0]?.renderCall, initial.tools[0]?.renderCall);
+		await handlers.get("session_shutdown")?.();
+		events.emit("harness:tool-display:request", { version: 1 });
+		assert.equal(publications.length, 2, "shutdown removes the old publication listener");
+		tools.clear();
+		registerRex(pi, options);
+		assert.equal(publications.length, 3);
+		events.emit("harness:tool-display:request", { version: 1 });
+		assert.equal(publications.length, 4, "reload has one current request listener");
+		assert.notEqual(publications[3]?.tools[0]?.renderCall, initial.tools[0]?.renderCall);
+		assert.equal(publications[3]?.tools[0]?.renderCall, tools.values().next().value?.renderCall);
+		assert.equal(executions, 0);
+	} finally { await handlers.get("session_shutdown")?.(); }
+});

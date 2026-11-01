@@ -1,9 +1,10 @@
 import { fileURLToPath } from "node:url";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 import { boundResult, resultByteLimit, RexCore, type RexRequest } from "./core.ts";
 import { liveCalls, ordinaryOwner, ordinaryOwnershipStore, ordinaryStatusStore, resultChannels, serialiseOwners, type RexAdapterOptions } from "./config.ts";
 import { rexContribution } from "./durable.ts";
+import { createRexToolDisplay, publishRexToolDisplay } from "./display.ts";
 import { publishSettings, readSettings } from "./settings.ts";
 import { REX_GUIDANCE, ResultSchema, toolSpecs, type StatusRequest } from "./schema.ts";
 import { rexStatus, type RexExecutor } from "./status.ts";
@@ -21,11 +22,10 @@ export function registerRex(pi: ExtensionAPI, options: RexAdapterOptions = {}): 
 		try { for (const core of active) core.dispose(); }
 		finally { await invocations.drain(); }
 	};
-	pi.on("session_start", async () => { await stopCalls(); lifetime = new AbortController(); });
-	pi.on("session_shutdown", async () => { try { await stopCalls(); } finally { stopPublisher(); } });
-	pi.events.emit("durable:contribution", rexContribution(fileURLToPath(import.meta.url), pi.events, stopPublisher, options));
+	const tools: ToolDefinition<TSchema>[] = [];
 	for (const spec of toolSpecs) {
-		pi.registerTool<TSchema>({
+		const tool: ToolDefinition<TSchema> = {
+			...createRexToolDisplay(spec.name),
 			name: spec.name, label: spec.label, description: spec.description,
 			parameters: spec.parameters, outputSchema: ResultSchema,
 			promptSnippet: spec.description,
@@ -44,8 +44,14 @@ export function registerRex(pi: ExtensionAPI, options: RexAdapterOptions = {}): 
 					return resultChannels(boundResult(result, resultByteLimit(settings.maxOutputBytes)));
 				} finally { active.delete(core); try { core.dispose(); } finally { release(); } }
 			},
-		});
+		};
+		tools.push(tool);
+		pi.registerTool<TSchema>(tool);
 	}
+	const stopDisplay = publishRexToolDisplay(pi.events, tools);
+	pi.on("session_start", async () => { await stopCalls(); lifetime = new AbortController(); });
+	pi.on("session_shutdown", async () => { try { await stopCalls(); } finally { try { stopDisplay(); } finally { stopPublisher(); } } });
+	pi.events.emit("durable:contribution", rexContribution(fileURLToPath(import.meta.url), pi.events, stopPublisher, options));
 }
 
 export default registerRex;
