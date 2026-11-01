@@ -30,6 +30,39 @@ it("starts one guardian on the first registration", { skip: process.platform ===
 	guardian.close();
 });
 
+it("kills an owned macOS process group, including its descendant, after lifeline close", { timeout: 10000, skip: process.platform !== "darwin" }, async (t) => {
+	const source = `
+		const { spawn } = require('node:child_process');
+		const descendant = spawn(process.execPath, ['-e', "process.send('ready'); setInterval(()=>{},1000)"], {stdio:['ignore','ignore','ignore','ipc']});
+		descendant.once('message', () => process.send({descendant:descendant.pid}));
+		setInterval(()=>{},1000);
+	`;
+	const child = spawn(process.execPath, ["-e", source], { detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+	const exited = once(child, "exit");
+	const group = child.pid;
+	assert.ok(group);
+	let gone = false;
+	t.after(async () => { if (!gone) { try { process.kill(-group, "SIGKILL"); } catch {} } await exited; });
+	const [ready] = await once(child, "message") as [{ descendant: number }];
+	assert.ok(Number.isSafeInteger(ready.descendant) && ready.descendant > 0);
+	const warnings: string[] = [];
+	const guardian = new McpGuardian((message) => warnings.push(message));
+	t.after(() => guardian.close());
+	guardian.register(group);
+	guardian.close();
+	await exited;
+	const deadline = Date.now() + 3000;
+	while (!gone && Date.now() < deadline) {
+		try { process.kill(-group, 0); }
+		catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") gone = true; else throw error; }
+		if (!gone) await new Promise<void>((resolve) => setImmediate(resolve));
+	}
+	assert.equal(gone, true, "the entire owned process group disappeared");
+	assert.throws(() => process.kill(ready.descendant, 0), { code: "ESRCH" });
+	assert.deepEqual(warnings, []);
+	t.diagnostic(JSON.stringify({ platform: process.platform, groupGone: gone, descendantGone: true }));
+});
+
 it("registers a process before transport start settles", async () => {
 	let resolve!: () => void;
 	const pending = new Promise<void>((done) => { resolve = done; });

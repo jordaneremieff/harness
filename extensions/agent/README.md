@@ -2078,8 +2078,9 @@ process, not ordinary coding-agent workers or other processes.
 Native MCP configuration accepts one leading UTF-8 byte-order mark in global
 and trusted project files. The host does not read untrusted project files.
 
-On POSIX systems, a guardian sends SIGKILL to the process groups of stdio MCP
-servers still open when the host dies. It does not cover a host SIGKILL between
+On macOS, a guardian sends SIGKILL to the process groups of stdio MCP
+servers still open when the host dies. Other operating systems are outside the
+supported scope. It does not cover a host SIGKILL between
 the server spawn system call and the registration write. It also does not cover
 descendants that outlive a normal transport close: Pi MCP stops escalation when
 the direct child closes, and its public API exposes only the numeric group ID.
