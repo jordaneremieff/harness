@@ -21,7 +21,7 @@ Use this lane when behavior and architecture are fixed and existing tests or a c
 1. Read the target source, focused tests, package metadata, and required operator documentation.
 2. Extract the fixed behavior and the failing boundary.
 3. Implement the complete requested behavior before a broad source tour.
-4. Run the smallest affected check required for a reviewable result.
+4. Establish the repaired contract with applicable evidence; run a selected check when it resolves a material gap.
 5. Ground only the remaining version-sensitive claims that control correctness.
 6. Adjust when current Pi evidence contradicts the implementation.
 7. Update required documentation and run closure checks under repository sequencing rules.
@@ -38,7 +38,7 @@ Use this lane for a new extension, open architecture, substantial redesign, pack
 2. **Research open choices.** Read [extension-research.md](extension-research.md) when architecture remains open. Inspect current public Pi examples and relevant non-Pi implementations without displacing fixed operator intent.
 3. **Ground Pi questions.** Identify the active Pi package and version. Read [pi-grounding.md](pi-grounding.md) for load-bearing API, lifecycle, mode, discovery, package, SDK/RPC, or TUI claims.
 4. **Design the complete capability.** Read the implicated sections of [extension-engineering.md](extension-engineering.md). Trace registration, state ownership, cancellation, errors, presentations, discovery, upgrades, tests, and documentation.
-5. **Implement one reviewable slice.** Keep pure logic separate from Pi adapters where useful. Run a focused check after the complete behavior exists.
+5. **Implement one reviewable slice.** Keep pure logic separate from Pi adapters where useful. Select development checks for material questions; reuse applicable results and leave the mandatory final gate to its repository owner.
 6. **Verify by claim.** Use [verification.md](verification.md). Escalate to discovery, SDK/RPC, shutdown, PTY, or live checks only when those layers own the claim.
 
 **Complete when:** one coherent capability reaches the requested outcome and each release-blocking claim has an evidence layer.
@@ -59,7 +59,11 @@ Specify startup, reload, repeated registration, session changes, shutdown, and p
 
 ### TUI and headless modes
 
-Keep semantic behavior independent of presentation. Verify renderer logic with focused tests, then use live or PTY evidence for terminal focus, resize, keys, and compositing claims. Define useful RPC, print, or no-UI behavior when those modes are in scope.
+Keep semantic behaviour independent of presentation. Renderer logic and terminal
+focus, resize, keys and compositing require evidence at their respective layers.
+Use applicable existing results or selected component, live or PTY checks; a
+presentation edit alone does not require every layer. Define useful RPC, print
+or no-UI behaviour when those modes are in scope.
 
 ### Packages and discovery
 

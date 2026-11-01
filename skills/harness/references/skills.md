@@ -30,11 +30,15 @@ Under "Establish the warrant when required" in [the main harness skill](../SKILL
 
 A baseline (observing the task without the candidate, or citing an already-observed failure) strengthens the case and gives later evaluation something to measure against, but its absence never blocks a new skill.
 
-For a behavior-shaping change to an existing skill, compare with the previous version and classify the baseline as failure, partial success, or success — changing behavior needs evidence the change improves it. Read [skill evaluation](skill-evaluation.md) before constructing trigger or output checks.
+For a behaviour-shaping change, select evidence for its changed activation or
+output boundary under [skill evaluation](skill-evaluation.md). Compare with the
+previous version when the claimed benefit needs a comparison; reuse applicable
+observations. An instruction edit alone requires neither a new baseline nor a
+paid trial. Read the evaluation reference before constructing new checks.
 
 An explicit operator decision can waive a comparative baseline, trial, or replacement proof. Record the override and its reason in the session, then continue. Do not preserve the waived gate through a pilot, compatibility wrapper, hidden blocker, or renamed requirement.
 
-**Complete when:** a new skill carries its usefulness rationale, with or without a baseline; a behavior-shaping change carries a classified baseline or a recorded override.
+**Complete when:** the skill carries its required warrant, and the selected evidence or material unresolved boundary matches the actual change and claimed benefit.
 
 ### 4. Design the smallest coherent skill
 
@@ -54,30 +58,40 @@ Keep environment-specific gotchas that prevent likely errors. Remove generic exp
 
 ### 6. Validate structure and scripts
 
-Run the bundled validator from the repository root:
+Establish the required portable shape and affected link correctness. Use direct
+source/link inspection during drafting and follow resource-validator requirements
+under the repository's final-verification owner. When selected or required, run:
 
-```bash
-node skills/harness/scripts/validate-skill.mts <candidate-skill> --format json
-```
+`node skills/harness/scripts/validate-skill.mts <candidate-skill> --format json`
 
-Resolve failures and justify warnings. Test every bundled script directly with successful and failing inputs. Scripts must be non-interactive, safe by default, bounded in output, documented with `--help`, and explicit about dependencies.
+Resolve failures and justify warnings against the governing contract. Select
+checks for new or changed scripts and reuse applicable evidence for unchanged
+scripts. Preserve non-interactive operation, safe defaults, bounded output,
+documented dependencies and `--help`. Discovery evidence must reach the intended
+package, global, project, settings or CLI source when that claim is in scope.
+Do not duplicate validator or discovery checks solely for a new milestone.
 
-In Pi, also verify discovery from the intended package, global, project, settings, or CLI source.
-
-**Complete when:** the skill has a valid portable shape, its relative links resolve, its scripts behave as documented, and the intended client discovers it.
+**Complete when:** the required shape and changed script contracts have sufficient
+applicable evidence, and discovery claims reach the intended client boundary.
 
 ### 7. Evaluate proportionately
 
-Separate two claims:
+Separate activation, intended output and comparative benefit. Relevant tasks
+consult the skill; plausible near misses do not. Output evidence establishes the
+intended result. Comparative evidence establishes improved task, cost or reliability
+when that benefit decides acceptance.
 
-- **Trigger quality:** relevant prompts consult the skill and genuine near misses do not.
-- **Output quality:** the skill improves the completed task, cost, or reliability against the selected baseline.
+Select cases for the changed activation boundary, plausible near misses and
+intended output. Use the intended model or a justified proxy. Compare only where
+the claimed benefit requires it; deliberately sample consequential variation and
+state reliability limits. Reuse evidence that remains applicable and recheck
+invalidated cases, not a fixed quota or the whole set after every edit. Keep
+temporary evaluation material outside tracked paths. Follow
+[skill evaluation](skill-evaluation.md) and the repository's completion policy.
 
-Use realistic prompts and the intended model or a close proxy. Start with a small operator-reviewed set. Expand only when early results expose uncertainty that matters. Keep temporary outputs, transcripts, graders, and evaluation workspaces outside tracked repository paths.
-
-Follow the owning repository's manual-review sequence. Do not let broad automated runs delay a complete reviewable draft.
-
-**Complete when:** the evidence reaches the activation and output claims that justify placement, or an explicit operator override names the waived proof.
+**Complete when:** evidence supports the bounded activation, output and benefit
+claims that matter, or the necessary unavailable layer is explicit. An operator
+choice or waiver retains its stated scope.
 
 ### 8. Place and close
 

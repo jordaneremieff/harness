@@ -76,13 +76,18 @@ A genuine one-time migration requires explicit operator direction from concrete 
 
 Use Pi's native Mermaid rendering without an operator prompt when relationships are easier to understand visually: component or call flow, lifecycle sequence, state transition, ownership boundary, or before/after structure. Emit a compact top-level Mermaid block and pair it with the short conclusion it supports. Use the installed renderer's flowchart, sequence, state, class, or ER forms. Prefer top-to-bottom layouts and short labels so Pi renders within terminal width; simplify or split a diagram before it falls back to source.
 
-Do not paste a long tool transcript into chat. When a tool returns a purpose-built structural view, preserve its native shape and trim it to the load-bearing region; do not flatten it into a table or redraw it in Mermaid. Otherwise, preserve the raw result in the tool record and translate only the load-bearing structure. Use prose or a table when sequence or relationships are not the point. A diagram explains evidence; it does not replace source, tests, traces, or the verification ledger.
+Do not paste a long tool transcript into chat. When a tool returns a purpose-built structural view, preserve its native shape and trim it to the load-bearing region; do not flatten it into a table or redraw it in Mermaid. Otherwise, preserve the raw result in the tool record and translate only the load-bearing structure. Use prose or a table when sequence or relationships are not the point. A diagram explains evidence; it does not replace the sources or observations that establish the claim.
 
-## TypeScript call-graph checks
+## TypeScript call-structure evidence
 
-When a harness change touches TypeScript, run calldiff against the change's base ref. Use it early to read the call graph you are changing, and again before you report to confirm what moved; a no-change result confirms the call structure held. Read [calldiff.md](references/calldiff.md) for invocation, how to read the output, and its limits, then record the result as structural evidence in the verification ledger.
+Use calldiff when a material question concerns who calls whom and its structural
+view can answer that question. A TypeScript edit alone creates no obligation to
+run it. Read [calldiff.md](references/calldiff.md) for invocation and limits.
+Reuse applicable output; repeat the analysis when relevant changes invalidate it.
 
-calldiff is syntactic, not a typechecker: it proves call shape, not runtime behavior. Pair it with a focused test for any behavior claim.
+calldiff is syntactic, not a typechecker or runtime observation. Behavioural claims
+need appropriate evidence at their own layer, including applicable existing
+results. A calldiff invocation does not independently create a test obligation.
 
 ## Workflow
 
@@ -156,11 +161,19 @@ Choose local work or collaboration according to the task's dependencies and unce
 
 ### 6. Verify by claim
 
-Read [verification.md](references/verification.md) before completion. Build a compact claim ledger as working state: each consequential claim, the lowest evidence layer that reaches it, the check run, the result, and any material unperformed stronger check. Do not reproduce the ledger in the completion response by default. Use it to form a bounded conclusion and select only evidence that helps the operator assess that conclusion. Skill activation and output quality require behavior evidence; extension discovery and live UI require their own layers.
+Read [verification.md](references/verification.md) before completion. Select
+investigation, permanent protection, final acceptance and deliberate sampling by
+the evidence or protection they supply against total lifecycle cost. Use existing
+context and tool results; create a concise summary only when complex claims,
+disputes or handoffs need one. No default claim ledger is required.
 
-Follow repository sequencing rules for manual review and broad suites. Do not substitute many cheap checks for the one layer that owns the claim.
+Check evidence reach and continuing applicability before reuse. Recheck invalidated
+evidence and uncovered interactions, not every prior command. Skill activation,
+output quality, discovery and live UI are distinct claims. Follow the repository's
+single completion policy and final-verification owner; do not replace the layer
+that owns the claim with many cheap checks.
 
-**Complete when:** each release-blocking claim is established, explicitly preliminary, or blocked by one named next check.
+**Complete when:** accepted claims have sufficient applicable evidence. A preliminary or blocked report names the remaining necessary evidence and does not declare final acceptance.
 
 ### 7. Apply authority once
 
@@ -172,7 +185,7 @@ Stop only the actions that depend on a disputed fact or on authority you were no
 
 ## Closure
 
-Lead with the resulting operator-visible state and its consequence. Name the selected surface and load-bearing files when they help the operator locate or review the result. Explain a change or relationship only when it helps the operator use, review, or decide about the result. Summarize the evidence that supports the conclusion; do not dump the claim ledger or a check transcript.
+Lead with the resulting operator-visible state and its consequence. Name the selected surface and load-bearing files when they help the operator locate or review the result. Explain a change or relationship only when it helps the operator use, review, or decide about the result. Summarize the evidence that supports the conclusion; do not dump working notes or a check transcript.
 
 Report any discovery that changes the operator's available choices: evidence against the request's premise, a cheaper or safer route, an unanticipated cost, or an authority the next step will need. Report a limitation only when it blocks the requested conclusion, materially reduces confidence in it, or requires operator action. State the affected conclusion, the impact, and the narrowest next check or action. Omit irrelevant unperformed layers and optional stronger checks that would not change the conclusion. A binding repository completion or release gate remains material until satisfied or explicitly waived. Follow the owning repository's state-report requirements; otherwise, report repository state when it changes how the operator must handle the result.
 

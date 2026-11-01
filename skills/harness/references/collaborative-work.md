@@ -86,9 +86,11 @@ Apply the Pillars consultation procedure to the actual judgment:
 ## Finish the requested work
 
 Return to the main workflow with the integrated result, not just a review of
-the workers. Apply supported changes within the granted scope and run the
-owning repository's completion gates. If inspected evidence defeats a proposed
-change, show that evidence instead of creating work to satisfy the plan.
+the workers. Apply supported changes within the granted scope. Follow the owning
+repository's single completion policy and final-verification owner; reuse applicable
+evidence and check uncovered interactions rather than repeat each worker's commands.
+If inspected evidence defeats a proposed change, show that evidence instead of
+creating work to satisfy the plan.
 
 Report the actual effect and any discovery that changes the operator's next
 choice. Keep blocked actions separate from completed work. A useful candidate

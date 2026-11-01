@@ -1,167 +1,111 @@
 # Evaluation and Verification
 
-Use this reference to prove two different claims:
+Evaluate separate claims:
 
-1. **Trigger quality:** the skill is consulted for tasks it should help with
-   and ignored for near misses.
-2. **Output quality:** using the skill improves the completed work compared
-   with a baseline.
+1. Activation: relevant tasks consult the skill; plausible near misses do not.
+2. Output: the skill produces its intended result.
+3. Comparative benefit: the skill improves a task, cost or reliability against a
+   meaningful baseline when that benefit is claimed.
 
-Both matter. A skill that never triggers has no value; a skill that triggers
-but does not improve output spends context for nothing.
+An instruction edit is not automatically a paid evaluation campaign. Select
+cases and repetition for the changed boundary, unresolved material question and
+consequence of error. Reuse applicable evidence. No fixed prompt, task or run
+quota applies.
 
-## Contents
+## Select the evaluation
 
-- [Baseline first](#baseline-first)
-- [Trigger evaluation](#trigger-evaluation)
-- [Output evaluation](#output-evaluation)
-- [Structural and client verification](#structural-and-client-verification)
-- [Bounded live checks](#bounded-live-checks)
-- [Iterate](#iterate)
-- [Approval evidence](#approval-evidence)
+Inspect the edit and existing evidence first. Identify whether activation,
+instructions, scripts, output, discovery or packaging changed. Select realistic
+cases that discriminate the intended behaviour from plausible errors: changed
+activation branches, adjacent near misses, intended outputs and relevant failure
+or authority boundaries. Do not rerun unaffected cases solely for a new version.
 
-## Baseline first
+For a mechanical correction, direct source, path or structural checks may establish
+the claim without live model runs. An observed example of the actual defect can
+support a fixed repair. For a broader behavioural or benefit claim, obtain evidence
+at that boundary rather than treat structural validity as behavioural success.
 
-For a new skill or behavior-shaping edit, observe the task without the
-candidate skill, or with the previous skill version as the baseline. Record
-what happened, including wrong choices, omitted checks, rationalizations, and
-time or token cost when available.
+Choose deliberate repeated samples when consequential model variation affects
+acceptance. Vary the conditions that matter; same-condition repetition measures
+stability, not independent truth. State the observed scope and reliability limits.
+One success does not establish general reliability; neither does a fixed quota.
 
-Classify the baseline:
+## Activation
 
-- **Failure:** the skill should target the observed failure.
-- **Partial success:** the skill should close a specific gap.
-- **Success:** the skill is unnecessary unless it measurably reduces cost or
-  makes success more reliable on the same task. A convenience noticed after
-  the comparison does not turn a success into a gap; abandon or redesign.
+Write realistic positive and adjacent near-miss cases for the changed selection
+boundary. Use varied phrasing or fresh validation cases where overfitting is a
+material risk. A read of `SKILL.md` is observable activation in Pi; a direct
+`/skill:name` invocation is an override, not autonomous-trigger evidence.
 
-An explicit operator decision can waive comparative baseline or replacement
-proof. Record the override and its reason, then remove that proof from the
-blocking path rather than recreating it as a pilot or compatibility gate.
+Use clean sessions where prior exposure would confound selection. Use the
+intended model or a justified proxy. Select additional prompts or repetitions
+when their possible outcomes change the decision, not to fill a sample target.
+Bind any reported rate to the tested prompts, model and setup.
 
-Do not manufacture a failure by asking a weak model to perform a poorly
-specified task. Do not put the skill's deliverable, method, or checklist into
-the baseline prompt: that prompt measures only what the skill adds beyond its
-own frame and hides what the frame costs against the plain request. Use the
-plain request the operator would make and the intended model or a close
-proxy. For a no-op correction such as fixing one stale path, a normal
-validation check may be enough; record why deeper evaluation is not
-proportionate.
+## Output and meaningful comparisons
 
-## Trigger evaluation
+Check intended output with observable criteria derived from the real task and
+contract. Inspect assertions and graders as fallible instruments. Correct mistaken
+criteria without excusing a genuine failure. Use human or capable independent
+judgment for usefulness and tone when those claims need it; do not add a grader
+merely because an evaluation occurred.
 
-Write realistic positive and near-miss prompts before changing the
-description. Start with 8–10 prompts that should trigger and 8–10 that
-should not. Make positives varied in phrasing, explicitness, detail, and
-complexity. Make negatives genuinely adjacent: shared vocabulary, adjacent
-workflow, wrong artifact type, or a case better served by another skill.
+When comparative benefit decides acceptance, compare the candidate with no skill,
+the prior version or the existing workflow, as appropriate. Applicable prior
+observations can supply evidence; a new paired run is not mandatory for every
+instruction edit. Use matched tasks, facts, authority and relevant execution
+conditions. Keep candidate-only method, checklist and artifact demands out of the
+plain baseline request. Include time, token, context and operating cost when they
+bear on the claimed benefit. An assertion passing in both arms does not prove
+added value. If the baseline already meets the outcome, retain a benefit claim
+only when evidence supports its stated cost or reliability advantage.
 
-For Pi, a triggered skill is observable when the agent reads the skill's
-`SKILL.md`; a direct `/skill:name` invocation is an explicit override, not
-evidence of autonomous triggering. Run candidates in clean sessions where
-possible. If the harness offers parallel sessions, use them;
-otherwise run prompts serially and keep the results separate.
+Do not manufacture a failure with a weak model or distorted request. Do not
+retrofit the acceptance rationale to a benefit noticed only after comparison.
+A useful new observation can motivate a different proposal, not prove the original
+claim. An explicit operator choice or waiver governs its named proof requirement;
+do not restore it under a pilot or renamed gate. Keep unsupported benefits explicit.
 
-Track a trigger rate over repeated runs, because activation is
-nondeterministic. A practical early gate is three runs per prompt: positives
-should trigger more often than not, and near misses should usually not.
-Treat one success or failure as a signal, not proof.
+## Structure, scripts and delivery
 
-Avoid overfitting. Optimize against a training subset, then check fresh
-validation prompts. Do not paste exact failed phrasing into the description
-unless it represents a stable user-language branch. Keep the final
-description under the standard's 1024-character limit.
+Check the required portable shape, frontmatter limits and affected relative links.
+Use the bundled validator when required by repository or promotion policy:
 
-## Output evaluation
+`node skills/harness/scripts/validate-skill.mts <skill-directory> --format json`
 
-Use 2–3 realistic tasks first, then expand. Run each task with the candidate
-skill and against the chosen baseline:
+For a new or changed script, select successful, failing and workflow invocations
+that establish its changed contract. Reuse applicable results for unchanged scripts.
+Preserve non-interactive operation, bounded output, documented dependencies and
+`--help` where required. Inspect embedded network, destructive and credential
+behaviour; use isolated roots and synthetic data for execution.
 
-- new skill: no skill;
-- improved skill: previous version;
-- candidate replacement: existing skill or composed workflow.
+Discovery claims require discovery from the intended source. Packaging claims
+require the relevant archive and installed-copy boundary, not every skill edit.
+Keep activation separate from discovery and structure. Follow the repository's
+single final-acceptance and promotion policy instead of duplicating its resource
+checks for each milestone.
 
-Save outputs and transcripts by iteration. Write assertions only after seeing
-what good and bad outputs look like. Good assertions are observable:
-"validates without errors," "uses relative paths," "contains a researched
-adopt/extend/compose/create recommendation," or "does not write before
-approval." Weak assertions merely restate taste.
+## Iterate and stop
 
-Use scripts for mechanical checks and an independent grader for judgment
-checks. Require evidence for every pass. Human review remains necessary for
-tone, usefulness, and whether the result solves the real task.
+Use failures, outputs, cost and human feedback to revise the defective part.
+Generalise stable task boundaries rather than paste failed prompts into the
+skill. Remove instructions that cause waste. Retain scripts or fixtures only
+when their continuing value warrants their lifecycle cost.
 
-Compare time and token cost as well as pass rate. A skill that buys a small
-quality gain for a large repeated cost may need pruning or hidden/user-only
-invocation. Look for non-discriminating assertions that pass in both arms;
-they do not prove the skill helps.
+After an edit, recheck cases whose evidence it invalidates and select new cases
+for newly exposed risks. Do not automatically rerun the full set. Continue
+sampling or investigation while material uncertainty warrants its cost. Stop
+when evidence supports the bounded decision, a necessary unavailable layer blocks
+it, or further inquiry has sharply diminishing decision value. State necessary
+unknowns and narrow the claim; stopping does not justify guessing or unsupported
+completion. Reject or redesign a candidate when the evidence defeats its benefit.
 
-## Structural and client verification
+## Report and placement
 
-Before behavior evals, verify the artifact mechanically:
-
-- `SKILL.md` exists in the skill directory.
-- frontmatter parses and required fields are present;
-- `name` matches the directory and naming rules;
-- `description` is 1–1024 characters;
-- optional fields are standard for portability or explicitly client-specific;
-- relative resource paths resolve from the skill directory;
-- bundled scripts have `--help`, reject missing input clearly, avoid
-  interactive prompts, and bound output;
-- no secrets, credentials, private absolute paths, or surprising network or
-  destructive behavior are embedded.
-
-Run the bundled structural validator from the repository root:
-
-```bash
-node skills/harness/scripts/validate-skill.mts <skill-directory> --format json
-```
-
-In Pi, also verify discovery from the intended source: package `pi.skills`,
-global/project skill directory, settings path, or explicit `--skill`. Confirm
-`/skill:<name>` command availability when skill commands are relevant.
-
-## Bounded live checks
-
-Scale live verification to the claim:
-
-- **Metadata claim:** discovery and frontmatter checks suffice.
-- **Instruction claim:** at least one real task with the skill and a
-  comparable baseline.
-- **Activation claim:** repeated positive and near-miss trigger runs.
-- **Packaging claim:** inspect the archive, install or unpack it separately,
-  and verify discovery from the installed copy.
-- **Script claim:** direct successful and failing invocations, plus at least
-  one invocation through the skill workflow.
-
-Do not let a live agent make uncontrolled network calls, use real secrets, or
-write to a shared location during verification. Use temporary directories,
-dry runs, and operator-approved credentials.
-
-## Iterate
-
-Use failed assertions, transcripts, timing, and human feedback together.
-Generalize fixes instead of bolting on prompt-specific patches. Remove
-instructions that cause wasted work; add scripts when every run reinvents
-the same deterministic helper; strengthen completion criteria when the agent
-stops early.
-
-Rerun the full affected eval set after each substantive change. Stop when
-the operator accepts the result, feedback is empty, or further iterations no
-longer produce meaningful improvement. If evaluation shows the baseline is
-already better, abandon or redesign the skill instead of forcing it into the
-catalog.
-
-## Approval evidence
-
-When the operator has not already selected placement, the final request should
-state:
-
-- research recommendation and inspected sources;
-- target directory and invocation mode;
-- structural validation results;
-- trigger eval positives, near misses, runs, and limitations;
-- output eval baseline, assertions, pass/fail evidence, cost, and human
-  feedback;
-- packaging/discovery result when applicable;
-- remaining risks and what was intentionally not tested.
+Keep temporary outputs, transcripts, graders and reproductions outside tracked
+paths. Use existing results; add only a concise evidence summary when useful.
+For a placement decision, state the intended location and invocation mode,
+inspected sources, applicable structural and behavioural evidence, comparative
+evidence when relevant, delivery evidence when in scope, and material limits.
+Do not recreate placement approval when the operator already selected it. A
+proposal-only instruction does not authorise live evaluation or placement.

@@ -1,12 +1,13 @@
 # Call-graph diffing with calldiff
 
-Use this reference when verifying or reconstructing a TypeScript behavior change
-across git refs in a harness change — most often after a refactor that
-restructured who-calls-whom. calldiff diffs expanded call trees between two git
-trees and prints an ASCII callstack diff.
+Use this reference for a material TypeScript call-structure question, most often
+a refactor that changes who calls whom. calldiff compares expanded call trees
+between Git trees. Select it when that view answers the question, not merely
+because TypeScript changed. Repeat it when relevant changes invalidate its output.
 
-Treat its output as one row in the [verification](verification.md) claim ledger:
-evidence for "what the call graph did and now does," not for runtime behavior.
+Its output is structural evidence under [verification](verification.md), not
+runtime evidence. Existing applicable behavioural evidence can establish a
+behavioural claim; calldiff does not independently require another test.
 
 ## What it reaches and what it does not
 
@@ -70,7 +71,8 @@ needed). Pin the package version when reproducibility matters.
 ## Entry selection
 
 With no `--entry`, calldiff infers exported functions whose expanded call trees
-changed and may show several. Run this first to discover what moved.
+changed and may show several. Use inferred entries when discovery is the question;
+otherwise select the known entrypoint directly.
 
 Force an entry when:
 
@@ -120,12 +122,11 @@ Follow the tree with only the conclusion that it supports. A Mermaid diagram
 may supplement it only when a wider lifecycle or component flow is outside the
 call tree.
 
-In the claim ledger, record:
-
-- the refs compared and the entrypoint, explicit or inferred;
-- the changed subtrees that bear on the claim;
-- the source lines that explain each removal or addition.
+Keep the compared refs, relevant entrypoint and source explanation available with
+the tool result. Add a concise summary only when needed for a material claim or
+handoff, not a separate ledger entry by default.
 
 calldiff output is structural evidence. Its highlighted tree explains that
-evidence; it does not add evidence. Pair the result with a focused test or a
-runtime check for any claim about behavior, not merely about call shape.
+evidence; it adds no behavioural proof. Support a behavioural claim with suitable
+applicable evidence at its own layer, existing or new. A calldiff invocation does
+not itself require a focused test or runtime run.
