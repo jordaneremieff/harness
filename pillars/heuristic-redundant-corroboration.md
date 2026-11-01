@@ -115,6 +115,7 @@ The inventory step makes correlation visible. The common-mode question shifts re
 - **Epistemological Grounding:** source authority matters more than reviewer count, within the exact facet that the source defines.
 - **Coverage Calibration:** several reviewers can all inspect the same small fraction.
 - **Verification Reach:** reviewers sharing one proxy share its reach boundary.
+- **[Verification Selection](pattern-verification-selection.md):** selects worthwhile repetition and retained protection; this heuristic determines what shared conditions and variation let repeated checks establish.
 - **Governing Context:** preserve the frame needed to judge and integrate the work; sequence exposure to prior conclusions where practical rather than remove necessary reasoning.
 - **Failure Cost Calibration:** the consequence of a missed error sets how much review variation is worth.
 - **Committed Contribution:** synthesis must own the final judgment, including unresolved gaps, rather than outsource it to a vote.

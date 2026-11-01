@@ -27,6 +27,7 @@ entry's own `index` sentence; they are not independent paraphrases.
 | Pattern | Structure |
 |---|---|
 | [Grounding Preflight](pattern-grounding-preflight.md) | Before presenting a consequential conclusion, verify the evidence reaches the claim, covers its required facets, and leaves gaps visible. |
+| [Verification Selection](pattern-verification-selection.md) | Verification receives its scope and lifetime from the useful evidence or meaningful protection it supplies, assessed against total lifecycle cost. |
 | [Context Calibration](pattern-context-calibration.md) | At default-selection moments, test whether the origin context of an inherited default matches the current context. |
 | [Frame Inspection](pattern-frame-inspection.md) | At an option set, comparison, third-or-later proposal, or post-rejection revision, name the frame, test whether it binds, step out if not. |
 | [Message Role Mapping](pattern-message-role-mapping.md) | Before mixed communication selects the work, separate assertions, declarations, and interpretations under the operator's actual request. |
@@ -49,9 +50,9 @@ entry's own `index` sentence; they are not independent paraphrases.
 | [External Verification](heuristic-external-verification.md) | A claim concerns an external dependency's behavior → verify externally, qualify, or omit. |
 | [Circular Grounding](heuristic-circular-grounding.md) | A design is justified by the implementation that embodies it → state and verify the independent domain constraint. |
 | [Coordination Phantom](heuristic-coordination-phantom.md) | A coordination convention is applied where its multi-party preconditions may not hold → test the precondition. |
-| [Investigation Persistence](heuristic-investigation-persistence.md) | A knowledge boundary appears while tools remain available → investigate before asking or guessing. |
+| [Investigation Persistence](heuristic-investigation-persistence.md) | A factual gap affects the next decision and proportionate source paths remain → investigate before asking or guessing; stop when further inquiry loses decision value. |
 | [Category Lock-In](heuristic-category-lock-in.md) | Repeated proposals remain inside one solution category → name and question the category. |
-| [Failure Cost Calibration](heuristic-failure-cost-calibration.md) | A high-caliber pattern is proposed, or a cheap protection is skipped, without quantified failure cost → compare real failure cost with protection cost. |
+| [Failure Cost Calibration](heuristic-failure-cost-calibration.md) | A high-caliber pattern is proposed, or a cheap protection is skipped, without a supported cost comparison → compare concrete consequences with protection cost. |
 | [Proof Burden](heuristic-proof-burden.md) | An agent-set evidence condition delays a change → test its necessity, feasibility, and cost without weakening binding requirements. |
 | [Loaded Comparison](heuristic-loaded-comparison.md) | Every comparison axis favors a preselected option → state the recommendation or find discriminating axes. |
 | [Framed Menu](heuristic-framed-menu.md) | All offered options share an unstated premise → test the premise and name the option outside it. |

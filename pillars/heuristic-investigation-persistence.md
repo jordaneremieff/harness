@@ -1,13 +1,13 @@
 ---
 title: "Investigation Persistence"
-index: "A knowledge boundary appears while tools remain available → investigate before asking or guessing."
+index: "A factual gap affects the next decision and proportionate source paths remain → investigate before asking or guessing; stop when further inquiry loses decision value."
 ---
 
 # Heuristic: Investigation Persistence
 
 ## Recognition
 
-This heuristic fires when you reach a knowledge boundary, are about to ask or guess, and available tools or adjacent sources could still close the gap.
+This heuristic fires when a factual gap affects the next decision, you are about to ask or guess, and available proportionate tools or adjacent sources could close it. Tool availability alone does not require exhaustive search.
 
 Cues:
 
@@ -19,12 +19,12 @@ Cues:
 
 ## Move
 
-1. **Name the exact gap.** Separate the unknown fact from the decision it affects.
-2. **Inventory available paths.** Repository search, local history, registered tools, data stores, documentation, runtime evidence, adjacent systems, and source variants.
-3. **Try the highest-value path.** Prefer sources that directly own the fact.
-4. **Alternate intelligently.** Change query terms, identifiers, time windows, source layer, or navigation path when the first attempt fails.
-5. **Track reach and coverage.** A tool success may still be a proxy or a small sample.
-6. **Stop on structural exhaustion.** Escalate with what was tried, what each path established, and the smallest remaining question.
+1. **Name the exact gap.** Separate the unknown fact from the decision it affects and identify whether that fact is necessary for the dependent act.
+2. **Identify proportionate available paths.** Prefer sources that directly own the fact. Consider meaningful alternatives without turning the inventory into an exhaustive search obligation.
+3. **Try the highest-value path.** Obtain readily available facts whose value to the decision warrants their cost; do not transfer avoidable factual work to the operator.
+4. **Alternate intelligently.** Change query terms, identifiers, time windows, source layer or navigation path when another proportionate attempt could resolve the material gap.
+5. **Track reach and coverage.** A tool success may still be a proxy or a small sample. Do not fill an unresolved fact from an unsupported inference.
+6. **Stop at a meaningful boundary.** Stop when the decision has sufficient evidence, paths are structurally exhausted, or further inquiry has sharply diminishing decision value. State a necessary remaining unknown, what the useful attempts established and why further work stops. Narrow the claim or hold the dependent act; ask only for the missing fact or decision when the operator owns or supplies it.
 
 A good escalation:
 
@@ -46,7 +46,7 @@ stale and runtime access is unavailable. Which version is currently deployed?
 | The claim is consequential | Persist across source classes and verify reach. |
 | Further search has sharply diminishing value | Stop and explain the remaining uncertainty. |
 
-Persistence is not endlessness. It ends when available paths are structurally exhausted or further evidence would not change the decision.
+Persistence is not endlessness. It ends when the decision has sufficient evidence, available paths are structurally exhausted, or further inquiry has sharply diminishing decision value. Stopping does not establish a necessary missing fact, justify guessing or support an unearned completion claim. An explicit assumption about a minor reversible uncertainty does not satisfy a necessary evidence condition.
 
 ## Why This Works
 
@@ -66,11 +66,12 @@ Explicitly naming the gap and search paths creates a stopping rule. It prevents 
 
 - **Verification Reach:** checks whether each investigated source reaches the claim.
 - **Proof Burden:** examines whether an evidence prerequisite is necessary and proportionate.
+- **[Verification Selection](pattern-verification-selection.md):** connects the inquiry's decision value and stopping boundary to retained protection, acceptance and repeated verification.
 - **Coverage Calibration:** prevents one successful path from standing in for a large universe.
 - **External Verification:** identifies when the unresolved fact belongs to a moving external dependency.
 - **Comprehension Checkpoint:** turns broad reading into a concrete gap model.
-- **Committed Contribution:** permits a scoped conclusion after honest exhaustion instead of evasive hedging.
+- **Committed Contribution:** requires a bounded contribution after proportionate inquiry; explicit necessary unknowns still limit the claim or hold the dependent act.
 
 ## Summary
 
-Before asking or guessing at a factual gap, name it, try the available source-owning paths and meaningful alternatives, then escalate only with a concrete account of structural exhaustion.
+Before asking or guessing at a material factual gap, name it and obtain proportionate available facts from source-owning paths and useful alternatives. Stop when evidence suffices or further inquiry has sharply diminishing decision value, as well as on structural exhaustion. Keep necessary unknowns explicit and narrow the claim or hold the dependent act instead of guessing or transferring avoidable work.

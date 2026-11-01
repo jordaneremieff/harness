@@ -51,6 +51,7 @@ Operator reports are evidence of reported experience, not proof of every explana
 - **Harness Over Architecture:** establishes the need and lowest sufficient layer for new infrastructure; this heuristic examines discretionary evidence conditions across adoption, retention, and replacement.
 - **Failure Cost Calibration:** prices protection mechanisms; this heuristic prices the proof requirement itself.
 - **Verification Reach:** bounds what evidence establishes; this heuristic separates that claim boundary from a condition on action.
+- **[Verification Selection](pattern-verification-selection.md):** arranges investigation, retained protection, acceptance, repetition and retirement; this heuristic retains its broader examination of discretionary evidence prerequisites across adoption, retention, replacement and exploration.
 - **Investigation Persistence:** pursues obtainable facts without endless inquiry; this heuristic examines which proof conditions are necessary.
 - **Committed Contribution:** requires a bounded contribution; this heuristic catches a bad condition attached to an otherwise clear recommendation.
 - **Compositional Simplicity:** counts work wherever it falls, including evidence work transferred to another person.

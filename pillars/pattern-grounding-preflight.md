@@ -122,6 +122,7 @@ For low-cost reversible choices, a preliminary conclusion may be sufficient. For
 
 ## Checks Within the Preflight
 
+- **Verification Selection:** selects and reuses sufficient verification work, preserves its validity conditions and stops without concealing load-bearing gaps.
 - **Verification Reach:** checks whether a particular observation reaches the claim's subject.
 - **Coverage Calibration:** checks whether enough of the chosen source layer was examined.
 - **External Verification:** locates current primary evidence for changeable external behavior.

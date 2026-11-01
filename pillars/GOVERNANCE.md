@@ -148,6 +148,15 @@ A recorded application that contradicts a pillar's stated prediction is evidence
 5. **Proof Burden** examines discretionary evidence conditions attached to the decision.
 6. **Compositional Simplicity** evaluates the whole system rather than one component.
 
+### Verification Work
+
+1. **Proof Burden** examines discretionary evidence prerequisites without weakening binding requirements.
+2. **Verification Selection** selects verification's purpose, scope, reuse and lifetime at proportionate total cost.
+3. **Failure Cost Calibration** compares concrete consequences with protection cost at sufficient precision.
+4. **Verification Reach** and **Grounding Preflight** test claim reach and required facets.
+5. **Investigation Persistence** pursues proportionate available facts and keeps necessary unknowns explicit when inquiry stops.
+6. **Redundant Corroboration** distinguishes review variation and deliberate sampling from independent evidence.
+
 ### Prose Repair
 
 1. **Unearned Prose** supplies the register core (Position and Portability); **Tell Laundering** repairs the rhetorical move above a flagged surface form.

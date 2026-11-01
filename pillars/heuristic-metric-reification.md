@@ -89,6 +89,7 @@ Agents are especially vulnerable because arithmetic is easy to verify and theref
 - **Coverage Calibration:** asks whether enough of the population or time surface was examined.
 - **Triangulated Truth:** independent telemetry and configuration facets can separate competing explanations.
 - **Failure Cost Calibration:** determines how much measurement rigor the decision warrants.
+- **[Verification Selection](pattern-verification-selection.md):** selects measurement and sampling for decision value; a percentage or success count does not independently establish meaningful protection or reliability.
 - **Harness Over Architecture:** measured systematic omissions can support a grounded intervention only when the baseline is interpreted rather than reified.
 
 ## Summary

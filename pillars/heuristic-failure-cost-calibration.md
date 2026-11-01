@@ -1,6 +1,6 @@
 ---
 title: "Failure Cost Calibration"
-index: "A high-caliber pattern is proposed, or a cheap protection is skipped, without quantified failure cost → compare real failure cost with protection cost."
+index: "A high-caliber pattern is proposed, or a cheap protection is skipped, without a supported cost comparison → compare concrete consequences with protection cost."
 ---
 
 # Heuristic: Failure Cost Calibration
@@ -26,15 +26,15 @@ It also fires in the inverse case: a cheap protection is absent while a risky ch
 
 ## Move
 
-1. **Describe the failure concretely.** State the event, side effect, and affected party.
-2. **Quantify consequence in real units.** Money, recovery time, lost work, customer impact, integrity risk, or irreversible effect.
-3. **Estimate frequency and detectability.** A rare visible duplicate differs from silent repeated corruption.
-4. **Price the protection.** Count code, schema, state, operational burden, new failure modes, and cognitive load.
+1. **Describe the failure concretely.** State the event, side effect and affected party.
+2. **Establish consequence at useful precision.** Use supported qualitative consequences or bounds when they settle the decision. Money, recovery time, lost work, integrity risk and irreversibility can matter without precise numbers. Measure only when the added precision could change the decision; do not require a study to price the study.
+3. **Assess frequency and detectability.** Use available evidence and supported bounds. A rare visible duplicate differs from silent repeated corruption; do not invent probabilities to complete the comparison.
+4. **Price the protection.** Count code, schema, state, execution, maintenance, operational burden, new failure modes and human attention across its lifecycle.
 5. **Check existing mitigation.** Identify protections already supplied by the environment or upstream system.
-6. **Choose proportional caliber.** Use the cheapest mechanism whose residual risk is acceptable.
-7. **Record the calibration.** State what evidence would justify escalation later.
+6. **Choose proportional caliber.** Use the lowest-cost sufficient mechanism whose residual risk is acceptable under the governing constraints. Obtain readily available, proportionate facts before treating a material consequence as unknown.
+7. **Make the bounded decision.** Explain material trade-offs or unresolved consequences when the decision or handoff needs them. Identify an escalation condition when continuing protection needs reassessment; do not create routine measurement or recording work merely to show calibration.
 
-A compact decision form:
+An optional illustration, not a required record:
 
 ```text
 Failure: one duplicate request with a reversible side effect.
@@ -63,7 +63,7 @@ Decision: take a restore point before every risky phase, and have the system tak
 | High frequency but low per-event cost | Aggregate operational cost may justify automation. |
 | Low probability but catastrophic impact | Use expected loss only with care; hard safety bounds may dominate. |
 | Existing system supplies reliable protection | Avoid duplicating it unless its reach is insufficient. |
-| Failure cost is unknown | Improve measurement or choose a bounded reversible mechanism. |
+| Failure cost is unknown | Obtain proportionate facts if they could change the decision. Otherwise use a supported qualitative bound or an appropriately bounded mechanism; hold the dependent act when a necessary consequence remains unresolved. |
 | Irreplaceable state, cheap restore point | Take the restore point before the risky phase; when such phases recur, make the system take it. |
 
 ## Why This Works
@@ -82,7 +82,7 @@ Under-protection has the opposite blind spot. Working state feels temporary unti
 - The failure creates irreversible harm even once.
 - The pattern is already part of a stable platform and adds negligible marginal complexity.
 - The task is to implement a decided architecture rather than choose its caliber.
-- Quantification would delay an urgent containment action; contain first and calibrate the durable fix afterward.
+- Calibration would delay an urgent containment action; contain first and calibrate the durable fix afterward.
 - For the inverse case: the state can be regenerated cheaply from a durable source.
 
 ## Relationship to Pillars
@@ -91,10 +91,11 @@ Under-protection has the opposite blind spot. Working state feels temporary unti
 - **Compositional Simplicity:** compares pattern complexity at the whole-system level.
 - **Harness Over Architecture:** both require evidence before adding machinery.
 - **Proof Burden:** applies cost calibration to an evidence prerequisite rather than protection machinery.
+- **[Verification Selection](pattern-verification-selection.md):** applies consequence and lifecycle cost to the scope, retention, execution, repetition and retirement of verification.
 - **Metric Reification:** guards against turning one observed rate into the frequency term without preserving conditions.
 - **Committed Contribution:** requires an explicit proportionality claim rather than ritual invocation of rigor.
 - **System Autonomy:** a protection that every risky phase needs belongs in the mechanism layer, not in an agent's memory.
 
 ## Summary
 
-Before applying high-caliber protection or skipping a cheap one, quantify the concrete failure and the protection's total cost, account for existing mitigation, and choose the cheapest mechanism with acceptable residual risk.
+Before applying high-caliber protection or skipping a cheap one, compare concrete consequences with the protection's lifecycle cost and existing mitigation. Supported qualitative consequences can settle the decision. Measure only when added precision could change it, and choose the lowest-cost sufficient mechanism with acceptable residual risk.
