@@ -66,7 +66,7 @@ export type RexRequest =
 			code?: string;
 			action?: string;
 	  })
-	| (RequestBase & { op: "owned"; offset?: number; limit?: number })
+	| (RequestBase & { op: "owned"; recordId?: string; phase?: OwnershipRecord["phase"]; offset?: number; limit?: number })
 	| (RequestBase & {
 			op: "reconcile";
 			recordId?: string;
@@ -750,13 +750,16 @@ export class RexCore {
 
 	private async owned(request: Extract<RexRequest, { op: "owned" }>, context: RexCallContext): Promise<RexResult> {
 		const state = validateOwnershipState(await this.options.store.read(context.ownerId), this.maxRecords);
+		if (request.recordId !== undefined && !boundedText(request.recordId, 1024)) throw new Error("Select a complete retained record ID.");
+		if (request.phase !== undefined && !["pending", "confirmed", "unknown", "closed", "released"].includes(request.phase)) throw new Error("Select a stored ownership phase.");
 		const own = state.records.filter((record) => record.ownerId === context.ownerId);
-		const page = recordPage(own, request);
+		const selected = own.filter((record) => (request.recordId === undefined || record.callId === request.recordId) && (request.phase === undefined || record.phase === request.phase));
+		const page = recordPage(selected, request);
 		return {
 			...result(true, "owned", undefined, {
 				records: page.records,
 				inheritedRecords: state.records.length - own.length,
-				note: "Foreign-owner records do not authorise cleanup. Pending records after interruption have unknown effects.",
+				note: "Stored phases are retained claims, not current presence or cleanup permission. Foreign-owner records do not authorise cleanup. Pending records after interruption have unknown effects.",
 			}),
 			records: recordRefs(page.records),
 			coverage: pageCoverage(page, page.records.length),

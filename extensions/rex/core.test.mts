@@ -749,3 +749,73 @@ test("raw API JSON remains lossless and conflicting native target arguments are 
 	assert.equal(conflict.ok, false);
 	assert.match(conflict.error ?? "", /conflicts with the resolved target/);
 });
+
+test("owned lookup filters this owner's stored claims before pagination without CLI or writes", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const original = f.store.state.records[0];
+	assert.ok(original);
+	const phases = ["pending", "confirmed", "unknown", "closed", "released", "unknown"] as const;
+	f.store.state.records = phases.map((phase, index) => ({ ...original, callId: `complete-record-identity-${index}`, phase }));
+	f.store.state.records.push({ ...original, callId: "foreign-record", ownerId: "foreign", phase: "unknown" });
+	const before = structuredClone(f.store.state);
+	f.transport.calls.length = 0;
+	f.store.update = async () => { throw new Error("Owned lookup must not write."); };
+	const first = await f.core.execute({ op: "owned", phase: "unknown", limit: 1 }, context);
+	assert.equal(first.ok, true);
+	assert.deepEqual(first.records?.map((record) => record.recordId), ["complete-record-identity-2"]);
+	assert.equal(first.coverage.totalRecords, 2);
+	assert.equal(first.coverage.returnedRecords, 1);
+	assert.equal(first.coverage.omittedRecords, 1);
+	assert.equal(first.coverage.nextOffset, 1);
+	assert.equal((first.data as { inheritedRecords: number }).inheritedRecords, 1);
+	assert.match((first.data as { note: string }).note, /not current presence or cleanup permission/);
+	const second = await f.core.execute({ op: "owned", phase: "unknown", offset: 1, limit: 1 }, context);
+	assert.equal(second.ok, true);
+	assert.deepEqual(second.records?.map((record) => record.recordId), ["complete-record-identity-5"]);
+	assert.equal(second.coverage.nextOffset, undefined);
+	for (const phase of phases) {
+		const response = await f.core.execute({ op: "owned", phase }, context);
+		assert.equal(response.ok, true);
+		assert.ok((response.data as { records: Array<{ phase: string }> }).records.every((record) => record.phase === phase));
+	}
+	const exact = await f.core.execute({ op: "owned", recordId: "complete-record-identity-2", phase: "unknown" }, context);
+	assert.equal(exact.ok, true);
+	assert.equal(exact.coverage.totalRecords, 1);
+	assert.equal(exact.records?.[0]?.resources[0]?.blockId, block);
+	for (const selector of [{ recordId: "missing" }, { recordId: "foreign-record" }, { recordId: "complete-record-identity" }, { recordId: "complete-record-identity-2", phase: "closed" as const }, { phase: "unknown" as const, offset: 2 }]) {
+		const empty = await f.core.execute({ op: "owned", ...selector }, context);
+		assert.equal(empty.ok, true);
+		assert.deepEqual(empty.records, []);
+		assert.equal(empty.coverage.returnedRecords, 0);
+		assert.equal(empty.coverage.nextOffset, undefined);
+	}
+	assert.deepEqual(f.transport.calls, []);
+	assert.deepEqual(f.store.state, before);
+});
+
+test("owned filtered continuation uses filtered offsets after aggregate reference omission", async () => {
+	const f = fixture({ maxOutputBytes: 4096 });
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const original = f.store.state.records[0];
+	assert.ok(original);
+	const envelope = maximumIdentityEnvelope();
+	assert.ok(envelope.target);
+	const server = envelope.target.server;
+	f.store.state.records = [original, ...Array.from({ length: 4 }, (_, index) => ({ ...original, callId: `unknown-${index}`, phase: "unknown" as const, server, resources: envelope.effects.resources ?? [] }))];
+	const before = structuredClone(f.store.state);
+	f.transport.calls.length = 0;
+	const page = await f.core.execute({ op: "owned", phase: "unknown" }, context);
+	assert.equal(page.ok, true);
+	assert.equal(page.coverage.totalRecords, 4);
+	assert.equal(page.coverage.returnedRecords, 4);
+	assert.equal(page.coverage.dataOmitted, true);
+	const emitted = page.records?.length ?? 0;
+	assert.ok(emitted > 0 && emitted < 4);
+	assert.equal(page.coverage.nextOffset, emitted);
+	assert.deepEqual(page.coverage.omittedRecordIds, Array.from({ length: 4 - emitted }, (_, index) => `unknown-${index + emitted}`));
+	const next = await f.core.execute({ op: "owned", phase: "unknown", offset: page.coverage.nextOffset, limit: 1 }, context);
+	assert.equal(next.records?.[0]?.recordId, `unknown-${emitted}`);
+	assert.deepEqual(f.transport.calls, []);
+	assert.deepEqual(f.store.state, before);
+});

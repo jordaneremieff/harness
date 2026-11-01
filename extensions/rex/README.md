@@ -171,9 +171,18 @@ intervals. A native fork or an ordinary new session ID does not inherit cleanup 
 A byte-for-byte ordinary file copy with the same session header ID remains the
 same logical owner; this extension does not distinguish those copies. No external ownership database mirrors these documents.
 
-Use `owned` and `reconcile` after uncertainty. These record lists accept `offset`
-and a bounded `limit`; coverage distinguishes fetched-page counts from references
-removed by the result bound. Follow `nextOffset` to avoid skipping omitted references.
+Use `owned` and `reconcile` after uncertainty. `owned` accepts an optional exact
+`recordId` and a stored `phase`: `pending`, `confirmed`, `unknown`, `closed` or
+`released`. Filters apply within this caller's claims before pagination. For example,
+`{"op":"owned","phase":"unknown","limit":1}` selects the first unknown claim;
+`{"op":"owned","recordId":"<full retained call ID>"}` retrieves one claim without
+contacting Rex or changing storage. An absent ID returns an empty page, not an error.
+A stored phase establishes neither current presence nor cleanup permission.
+
+These record lists accept `offset` and a bounded `limit`; coverage describes the
+filtered list for `owned` and distinguishes fetched-page counts from references
+removed by the result bound. Follow `nextOffset` with the same filters to avoid
+skipping omitted references.
 Default reconciliation reports current state without resolving uncertainty.
 For one `recordId`, `recover: true` deliberately adopts conclusive current
 presence or absence of every retained full resource ID on the verified server.
