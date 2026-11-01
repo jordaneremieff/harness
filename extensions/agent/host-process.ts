@@ -15,7 +15,7 @@ import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { ChordError, invalid, isChordError } from "@earendil-works/chord";
 import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
-import { type ClaimIdentity, classifyClaim, readClaimFile } from "./claims.ts";
+import { type ClaimIdentity, type ClaimObservation, classifyClaim, readClaimFile } from "./claims.ts";
 import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
 import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from "./version-contract.ts";
 import { isObservationFrame } from "./live-frames.ts";
@@ -170,7 +170,7 @@ function takeClaim(path: string, identity: ClaimIdentity, record: ClaimRecord): 
 		if (errnoCode(error) !== "EEXIST") throw error;
 	}
 	const recovery = "Stop all relevant writers and launchers before offline claim recovery; do not remove a claim while launchers run.";
-	let observation;
+	let observation: ClaimObservation;
 	try { observation = classifyClaim(readClaimFile(path).claim, identity); }
 	catch (error) { throw new HostClaimRefusedError(`Durable host writer claim is unreadable. ${recovery}`, "unknown", error); }
 	if (observation.kind === "live") throw new HostClaimRefusedError(`Durable host writer claim is held by ${observation.label}`, "live");

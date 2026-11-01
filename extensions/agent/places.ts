@@ -172,6 +172,23 @@ function parseReadState(raw: string): PlaceReadState {
 	return { kind: "ok", bindings: places.filter(isBinding) };
 }
 
+function readPlaceFile(fd: number): PlaceReadState {
+	const stat = fstatSync(fd);
+	if (!stat.isFile()) return { kind: "corrupt", reason: "the path is not a regular file" };
+	if (stat.size > PLACE_FILE_MAX_BYTES)
+		return { kind: "corrupt", reason: `the file is larger than ${PLACE_FILE_MAX_BYTES} bytes` };
+	const buffer = Buffer.alloc(stat.size + 1);
+	let offset = 0;
+	while (offset < buffer.length) {
+		const read = readSync(fd, buffer, offset, buffer.length - offset, offset);
+		if (read <= 0) break;
+		offset += read;
+	}
+	if (offset > stat.size || fstatSync(fd).size !== stat.size)
+		return { kind: "corrupt", reason: "the file changed size during the read" };
+	return parseReadState(buffer.subarray(0, offset).toString("utf8"));
+}
+
 /**
  * The bindings file for one agent store.
  *
@@ -202,20 +219,7 @@ export class PlaceBook {
 			};
 		}
 		try {
-			const stat = fstatSync(fd);
-			if (!stat.isFile()) return { kind: "corrupt", reason: "the path is not a regular file" };
-			if (stat.size > PLACE_FILE_MAX_BYTES)
-				return { kind: "corrupt", reason: `the file is larger than ${PLACE_FILE_MAX_BYTES} bytes` };
-			const buffer = Buffer.alloc(stat.size + 1);
-			let offset = 0;
-			while (offset < buffer.length) {
-				const read = readSync(fd, buffer, offset, buffer.length - offset, offset);
-				if (read <= 0) break;
-				offset += read;
-			}
-			if (offset > stat.size || fstatSync(fd).size !== stat.size)
-				return { kind: "corrupt", reason: "the file changed size during the read" };
-			return parseReadState(buffer.subarray(0, offset).toString("utf8"));
+			return readPlaceFile(fd);
 		} catch (error) {
 			return {
 				kind: "corrupt",

@@ -66,7 +66,7 @@ async function fixture(t: TestContext, refuseReopen = false) {
 for (const refused of [false, true]) it(`rebinds live-owner feeds after transport loss with reopen refusal=${refused}`, { timeout: 10000 }, async (t) => {
 	const f = await fixture(t, refused), originalPid = f.client.pid;
 	assert.ok(f.client.observe && f.client.subscribeChanges);
-	const observation = await f.client.observe({ scope: "tasks" });
+	const observation = await f.client.observe({ scope: "tasks", sessionId: f.client.storageId });
 	const frames = eventLog<{ revision?: number; fresh: boolean; state?: string }>();
 	observation.onFrame((frame, fresh, state) => frames.push({ revision: frame?.revision, fresh, state }));
 	const changes = eventLog<number>();

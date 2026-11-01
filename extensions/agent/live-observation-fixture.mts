@@ -29,20 +29,21 @@ async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>, ret
 	const snapshotMarker = join(metadata.cwd, "snapshot-gated");
 	const rejectReopen = process.env.DURABLE_TEST_OBSERVATION_REOPEN === "fail" && existsSync(openedMarker);
 	let finishSnapshot: (() => void) | undefined;
+	const holdSnapshot = async (): Promise<void> => {
+		writeFileSync(snapshotMarker, "held");
+		const notifyPath = process.env.DURABLE_TEST_NOTIFY;
+		if (!notifyPath) throw new Error("DURABLE_TEST_NOTIFY is required for a gated snapshot");
+		await publishFixtureMarker(notifyPath, "snapshot-gated");
+		if (process.env.DURABLE_TEST_RETIRE === "clean") {
+			const finished = new Promise<void>((resolve) => { finishSnapshot = resolve; });
+			setImmediate(() => { void retire(); });
+			await finished;
+		} else await new Promise(() => {});
+	};
 	return {
 		request: async (method, params) => {
 			const input = (params ?? undefined) as Record<string, unknown> | undefined;
-			if (method === "snapshot" && input?.fixtureHold === true && !existsSync(snapshotMarker)) {
-				writeFileSync(snapshotMarker, "held");
-				const notifyPath = process.env.DURABLE_TEST_NOTIFY;
-				if (!notifyPath) throw new Error("DURABLE_TEST_NOTIFY is required for a gated snapshot");
-				await publishFixtureMarker(notifyPath, "snapshot-gated");
-				if (process.env.DURABLE_TEST_RETIRE === "clean") {
-					const finished = new Promise<void>((resolve) => { finishSnapshot = resolve; });
-					setImmediate(() => { void retire(); });
-					await finished;
-				} else await new Promise(() => {});
-			}
+			if (method === "snapshot" && input?.fixtureHold === true && !existsSync(snapshotMarker)) await holdSnapshot();
 			if (method === "observe-open") {
 				if (rejectReopen) {
 					if (process.env.DURABLE_TEST_NOTIFY) await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "observation-reopen-refused");

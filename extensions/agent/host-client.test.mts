@@ -9,7 +9,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import { connectTransport, createTransportServer } from "../../transport/index.ts";
 import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
 import { acquireHost, connectHost, snapshotHost, waitForHostRelease, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
-import { fixtureMetadata, readFixtureState, eventLog, waitForFixtureState, waitForConnectionClose, writeFixtureState } from "./host-fixture.mts";
+import { fixtureMetadata, readFixtureState, eventLog, waitForFixtureState, waitForConnectionClose } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { HOST_CONTRACT, type RuntimeContract } from "./version-contract.ts";
 import { markerFixture } from "./durable-runtime-fixture.mts";
