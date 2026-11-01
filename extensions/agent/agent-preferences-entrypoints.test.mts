@@ -24,7 +24,7 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-work
 import { createAgentContribution } from "./durable-agents.ts";
 import { HOST_CONTRACT, MANAGER_CONTRACT, CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { acquireHost, waitForHostRelease } from "./host-client.ts";
-import { runtimeFixture, trackHost, killHost, waitForReceipt } from "./durable-runtime-fixture.mts";
+import { runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 
 type RegisteredTool = { name: string; parameters: TSchema; execute(id: string, input: Record<string, unknown>, signal: undefined, update: undefined, ctx: ExtensionContext): Promise<unknown> };
@@ -229,12 +229,14 @@ for (const method of ["resolve-agent", "place"] as const) it(`native ${method} r
 	writePreset("high", 3);
 	const configured = await target.request("configure", { thinkingLevel: "medium", requestId: "retune-target" }).catch((cause: unknown) => { throw new Error("Target configuration failed", { cause }); }) as { outcome: string };
 	assert.equal(configured.outcome, "applied");
-	// No tool result is committed in the caller. Process death also drops the RPC response cache.
+	// No tool result is committed in the caller. A clean restart excludes process-local state from replay.
 	await waitForHostRelease(hostMetadata(record), { after: target.request("close"), signal: AbortSignal.timeout(10000) });
 	await target.close();
-	killHost(caller.pid); await caller.close().catch(() => {});
-	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+	const previousCallerPid = caller.pid;
+	await waitForHostRelease(f.metadata, { after: caller.request("close"), signal: AbortSignal.timeout(10000) });
+	await caller.close();
 	caller = await acquireHost(f.metadata, { env: f.env("answer") }); trackHost(t, caller.pid);
+	assert.notEqual(caller.pid, previousCallerPid);
 	const replay = await caller.request(method, args, { requestId: "retained-creation" }).catch((cause: unknown) => { throw new Error("Native creation replay failed", { cause }); }) as Outcome;
 	assert.equal(replay.sessionId, first.sessionId);
 	assert.deepEqual(replay.selection, first.selection);
