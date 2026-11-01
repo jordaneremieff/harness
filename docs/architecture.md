@@ -60,17 +60,10 @@ Keep machine-local rules outside the repository, in `~/AGENTS.md` or workspace
 and project `AGENTS.md` files. Pi loads the global rules and the ancestor
 context files for the session directory.
 
-Point Herdr at the shared configuration through the shell environment:
-
-```bash
-export HERDR_CONFIG_PATH=/absolute/path/to/harness/config/herdr/config.toml
-```
-
-The [Herdr configuration reference](https://herdr.dev/docs/configuration/)
-documents this path override and the available settings. Configuration edits
-in a development checkout appear as Git diffs. Edits in a Pi-installed clone
-are not durable across package updates; make baseline edits in the development
-checkout.
+Harness extension settings live in a machine document, by default
+`<agentDir>/harness.json`, not in `config/`. Each extension owns its section
+and its documented `PI_*` environment overrides. See the
+[extension configuration contract](conventions/extension-config.md).
 
 ### Turn an extension off
 
@@ -151,9 +144,9 @@ The manifest activates extensions, skills, and the prompt templates in
 - `pillars/` is the doctrine corpus served by the
   [Pillars extension](../extensions/pillars/README.md) and read by package-relative
   path through the [Troll skill's armory](../skills/troll/references/pillar-armory.md).
-- `config/` mirrors application-owned config paths. Machines point Pi and Herdr
-  at the files under their application directories; no package manifest entry
-  activates them.
+- `config/` holds the source for machine-independent global Pi rules under
+  `config/pi/agent/AGENTS.md`. Machines deploy it through the explicit setup
+  above; no package manifest entry activates it.
 - `docs/` explains this repository and owns repository conventions.
 - `scripts/` contains repository automation.
 
