@@ -723,26 +723,7 @@ export class RexCore {
 		context: RexCallContext,
 	): Promise<RexResult> {
 		validateNativeTarget(request, target);
-		if (request.kind === "catalog") {
-			if (request.query !== undefined && !boundedText(request.query, 256)) throw new Error("Use a nonempty literal method query within 256 characters.");
-			const offset = boundedInteger(request.offset ?? 0, 0, 1048576, "catalogue offset");
-			const limit = boundedInteger(request.limit ?? 50, 1, 100, "catalogue page size");
-			const raw = await this.cli(["api", "list", "--quiet"], target.server.endpoint, context);
-			if (raw.outcome !== "exited" || raw.exitCode !== 0) throw new NativeFailure(cliResult(raw));
-			if (raw.truncated) throw new NativeFailure({ ...cliResult(raw), ok: false, outcome: "output_limit", error: "The installed method catalogue exceeded the CLI output limit. No complete catalogue was available to filter." });
-			const installed = raw.stdout.split(/\r?\n/).filter(Boolean);
-			const query = request.query;
-			const matched = query === undefined ? installed : installed.filter((method) => method.includes(query));
-			const methods = matched.slice(offset, offset + limit);
-			const response = result(true, "catalog", target, {
-				methods, totalMethods: installed.length, matchedMethods: matched.length, returnedMethods: methods.length,
-				omittedMethods: matched.length - methods.length, offset,
-				...(offset + methods.length < matched.length ? { nextOffset: offset + methods.length } : {}),
-				note: "Follow nextOffset with the same query. Counts describe this current catalogue, not a frozen snapshot. Use describe for current schemas, examples and validation notes. Native API and Lua remain open to newly installed methods.",
-			});
-			response.coverage.truncated = methods.length < matched.length;
-			return response;
-		}
+		if (request.kind === "catalog") return this.catalog(request, target, context);
 		if (request.kind === "describe") {
 			if (!boundedText(request.method, 256) || request.method.startsWith("-"))
 				throw new Error("Select an exact Rex method to describe.");
@@ -761,6 +742,31 @@ export class RexCore {
 			return nativeResponse(raw, request.kind);
 		});
 		if (response.ok) response.effects.note = "Outer CLI success only. No inner application outcome was established. Returned failure tables and child results remain application data, even if bulk data is omitted.";
+		return response;
+	}
+
+	private async catalog(
+		request: Extract<RexRequest, { op: "native" }>,
+		target: ResolvedTarget,
+		context: RexCallContext,
+	): Promise<RexResult> {
+		if (request.query !== undefined && !boundedText(request.query, 256)) throw new Error("Use a nonempty literal method query within 256 characters.");
+		const offset = boundedInteger(request.offset ?? 0, 0, 1048576, "catalogue offset");
+		const limit = boundedInteger(request.limit ?? 50, 1, 100, "catalogue page size");
+		const raw = await this.cli(["api", "list", "--quiet"], target.server.endpoint, context);
+		if (raw.outcome !== "exited" || raw.exitCode !== 0) throw new NativeFailure(cliResult(raw));
+		if (raw.truncated) throw new NativeFailure({ ...cliResult(raw), ok: false, outcome: "output_limit", error: "The installed method catalogue exceeded the CLI output limit. No complete catalogue was available to filter." });
+		const installed = raw.stdout.split(/\r?\n/).filter(Boolean);
+		const query = request.query;
+		const matched = query === undefined ? installed : installed.filter((method) => method.includes(query));
+		const methods = matched.slice(offset, offset + limit);
+		const response = result(true, "catalog", target, {
+			methods, totalMethods: installed.length, matchedMethods: matched.length, returnedMethods: methods.length,
+			omittedMethods: matched.length - methods.length, offset,
+			...(offset + methods.length < matched.length ? { nextOffset: offset + methods.length } : {}),
+			note: "Follow nextOffset with the same query. Counts describe this current catalogue, not a frozen snapshot. Use describe for current schemas, examples and validation notes. Native API and Lua remain open to newly installed methods.",
+		});
+		response.coverage.truncated = methods.length < matched.length;
 		return response;
 	}
 

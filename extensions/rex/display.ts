@@ -23,73 +23,122 @@ export function createRexToolDisplay(name: string) {
 		renderShell: "default" as const,
 		renderCall(args: unknown, theme: CardTheme, context: { expanded: boolean; isPartial: boolean }): Component {
 			const request = object(args);
-			const action = [string(request.op), string(request.kind) ?? string(request.view) ?? string(request.condition)].filter(Boolean).join(" ");
-			const lines = [line(`${name}${action ? ` · ${action}` : ""}`, "toolTitle")];
-			const facts = [string(request.label), string(request.method), string(request.action),
-				string(request.phase) ? `phase ${request.phase}` : undefined,
-				string(request.recordId) ? `record ${request.recordId}` : undefined,
-				string(request.query) ? `query ${JSON.stringify(request.query)}` : undefined].filter(Boolean).join(" · ");
-			if (facts) lines.push(line(facts, "muted"));
+			const lines = callHeader(name, request);
 			if (context.isPartial || context.expanded) {
 				const target = targetText(request.target);
 				if (target) lines.push(line(target, "muted"));
 			}
-			if (context.expanded) lines.push(line(""), ...jsonLines(args));
-			else {
-				if (typeof request.text === "string") lines.push(line(JSON.stringify(request.text), "toolOutput", true));
-				if (Array.isArray(request.keys)) lines.push(line(`keys ${request.keys.filter((key) => typeof key === "string").join(" · ")}`, "muted", true));
-			}
+			lines.push(...callBody(args, request, context.expanded));
 			return card(lines, theme);
 		},
 		renderResult(result: RenderResult, options: ToolRenderResultOptions, theme: CardTheme, context: { args: unknown; isError: boolean }): Component {
 			const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
 			const value = canonicalResult(text);
-			const lines: Line[] = [];
-			if (!value) {
-				lines.push(line(options.isPartial ? "partial result" : "tool result", context.isError ? "error" : "toolOutput"));
-				lines.push(...text.split("\n").slice(0, options.expanded ? undefined : 2).map((part) => line(part, "toolOutput", !options.expanded)));
-			} else {
-				const effects = object(value.effects);
-				const coverage = object(value.coverage);
-				const data = object(value.data);
-				const request = object(context.args);
-				const state = effects.state;
-				const effect = state === "unknown" ? "UNKNOWN EFFECTS" : state === "confirmed" ? "effects confirmed" : "no effects";
-				lines.push(line(`${options.isPartial ? "partial · " : ""}${String(value.outcome).replaceAll("_", " ")} · ${effect}`, state === "unknown" ? "warning" : value.ok ? "toolOutput" : "error"));
-				const target = targetText(value.target);
-				if (target) lines.push(line(target, "muted"));
-				if (string(effects.recordId)) lines.push(line(`record ${effects.recordId}`, "muted"));
-				if (request.op === "input" || value.outcome === "input_delivered") lines.push(line("Input delivery is not application execution.", "muted"));
-				if (name === "rex_wait") lines.push(line(value.outcome === "timeout" ? "Observer deadline; terminal work remains independent." : "Observer end does not stop terminal work.", "muted"));
-				if (request.op === "inspect" && request.view === "capture") lines.push(line("Bounded capture, not a complete transcript.", "muted"));
-				if (name === "rex_owned" && request.op === "owned") lines.push(line("Stored phase is not live presence or cleanup permission.", "muted"));
-				if (name === "rex_status") lines.push(line("Reported status is not permission or task acceptance.", "muted"));
-				if (name === "rex_native" && ["api", "lua", "action"].includes(String(request.kind)) && value.ok) lines.push(line("CLI success is not inner application success.", "muted"));
-				const omitted: string[] = [];
-				if (coverage.dataOmitted) omitted.push("bulk data omitted");
-				if (Array.isArray(coverage.truncatedFields) && coverage.truncatedFields.length) omitted.push("diagnostics shortened");
-				if (number(coverage.omittedRecordRefs) > 0) omitted.push(`${coverage.omittedRecordRefs} record references omitted`);
-				if (number(coverage.omittedRecords) > 0) omitted.push(`${coverage.omittedRecords} records outside this page`);
-				if (number(data.omittedMethods) > 0) omitted.push(`${data.omittedMethods} methods outside this page`);
-				if (coverage.truncated && omitted.length === 0) omitted.push("source output is incomplete");
-				if (omitted.length) lines.push(line(omitted.join(" · "), "muted"));
-				if (typeof coverage.returnedRecords === "number" && typeof coverage.totalRecords === "number") lines.push(line(`${coverage.returnedRecords} of ${coverage.totalRecords} records`, "muted"));
-				if (typeof data.returnedMethods === "number" && typeof data.matchedMethods === "number") lines.push(line(`${data.returnedMethods} of ${data.matchedMethods} methods · ${data.totalMethods} installed`, "muted"));
-				const next = coverage.nextOffset ?? data.nextOffset;
-				if (typeof next === "number") lines.push(line(`next offset ${next}`, "muted"));
-				if (string(value.error)) lines.push(line(String(value.error), "error", true));
-				if (!options.expanded) {
-					if (string(effects.note)) lines.push(line(String(effects.note), "muted", true));
-					if (string(coverage.note)) lines.push(line(String(coverage.note), "muted", true));
-					const capture = string(data.content) ?? string(object(data.snapshot).content);
-					if (capture) lines.push(...capture.split("\n").slice(0, 2).map((part) => line(part, "toolOutput", true)));
-				} else lines.push(line(""), ...jsonLines(value));
-			}
+			const lines = value ? canonicalLines(name, value, options, context.args) : fallbackLines(text, options, context.isError);
 			const key = keyText("app.tools.expand");
 			if (key) lines.push(line(`${key} to ${options.expanded ? "collapse" : "expand · complete bounded result"}`, "muted"));
 			return card(lines, theme);
 		},
 	} satisfies Pick<ToolDefinition, "renderCall" | "renderResult" | "renderShell">;
+}
+
+function callHeader(name: string, request: Record<string, unknown>): Line[] {
+	const action = [string(request.op), string(request.kind) ?? string(request.view) ?? string(request.condition)].filter(Boolean).join(" ");
+	const lines = [line(`${name}${action ? ` · ${action}` : ""}`, "toolTitle")];
+	const facts = [string(request.label), string(request.method), string(request.action),
+		string(request.phase) ? `phase ${request.phase}` : undefined,
+		string(request.recordId) ? `record ${request.recordId}` : undefined,
+		string(request.query) ? `query ${JSON.stringify(request.query)}` : undefined].filter(Boolean).join(" · ");
+	if (facts) lines.push(line(facts, "muted"));
+	return lines;
+}
+
+function callBody(args: unknown, request: Record<string, unknown>, expanded: boolean): Line[] {
+	if (expanded) return [line(""), ...jsonLines(args)];
+	const lines: Line[] = [];
+	if (typeof request.text === "string") lines.push(line(JSON.stringify(request.text), "toolOutput", true));
+	if (Array.isArray(request.keys)) lines.push(line(`keys ${request.keys.filter((key) => typeof key === "string").join(" · ")}`, "muted", true));
+	return lines;
+}
+
+function fallbackLines(text: string, options: ToolRenderResultOptions, isError: boolean): Line[] {
+	return [
+		line(options.isPartial ? "partial result" : "tool result", isError ? "error" : "toolOutput"),
+		...text.split("\n").slice(0, options.expanded ? undefined : 2).map((part) => line(part, "toolOutput", !options.expanded)),
+	];
+}
+
+function canonicalLines(name: string, value: Record<string, unknown>, options: ToolRenderResultOptions, args: unknown): Line[] {
+	const effects = object(value.effects);
+	const coverage = object(value.coverage);
+	const data = object(value.data);
+	const request = object(args);
+	return [
+		...resultHeader(value, effects, options.isPartial),
+		...terminalQualifications(name, request, value),
+		...authorityQualifications(name, request, value),
+		...omissionLines(coverage, data),
+		...countLines(coverage, data),
+		...resultDetails(value, effects, coverage, data, options.expanded),
+	];
+}
+
+function resultHeader(value: Record<string, unknown>, effects: Record<string, unknown>, isPartial: boolean): Line[] {
+	const state = effects.state;
+	const effect = state === "unknown" ? "UNKNOWN EFFECTS" : state === "confirmed" ? "effects confirmed" : "no effects";
+	const lines = [line(`${isPartial ? "partial · " : ""}${String(value.outcome).replaceAll("_", " ")} · ${effect}`, state === "unknown" ? "warning" : value.ok ? "toolOutput" : "error")];
+	const target = targetText(value.target);
+	if (target) lines.push(line(target, "muted"));
+	if (string(effects.recordId)) lines.push(line(`record ${effects.recordId}`, "muted"));
+	return lines;
+}
+
+function terminalQualifications(name: string, request: Record<string, unknown>, value: Record<string, unknown>): Line[] {
+	const lines: Line[] = [];
+	if (request.op === "input" || value.outcome === "input_delivered") lines.push(line("Input delivery is not application execution.", "muted"));
+	if (name === "rex_wait") lines.push(line(value.outcome === "timeout" ? "Observer deadline; terminal work remains independent." : "Observer end does not stop terminal work.", "muted"));
+	if (request.op === "inspect" && request.view === "capture") lines.push(line("Bounded capture, not a complete transcript.", "muted"));
+	return lines;
+}
+
+function authorityQualifications(name: string, request: Record<string, unknown>, value: Record<string, unknown>): Line[] {
+	const lines: Line[] = [];
+	if (name === "rex_owned" && request.op === "owned") lines.push(line("Stored phase is not live presence or cleanup permission.", "muted"));
+	if (name === "rex_status") lines.push(line("Reported status is not permission or task acceptance.", "muted"));
+	if (name === "rex_native" && ["api", "lua", "action"].includes(String(request.kind)) && value.ok) lines.push(line("CLI success is not inner application success.", "muted"));
+	return lines;
+}
+
+function omissionLines(coverage: Record<string, unknown>, data: Record<string, unknown>): Line[] {
+	const omitted: string[] = [];
+	if (coverage.dataOmitted) omitted.push("bulk data omitted");
+	if (Array.isArray(coverage.truncatedFields) && coverage.truncatedFields.length) omitted.push("diagnostics shortened");
+	if (number(coverage.omittedRecordRefs) > 0) omitted.push(`${coverage.omittedRecordRefs} record references omitted`);
+	if (number(coverage.omittedRecords) > 0) omitted.push(`${coverage.omittedRecords} records outside this page`);
+	if (number(data.omittedMethods) > 0) omitted.push(`${data.omittedMethods} methods outside this page`);
+	if (coverage.truncated && omitted.length === 0) omitted.push("source output is incomplete");
+	return omitted.length ? [line(omitted.join(" · "), "muted")] : [];
+}
+
+function countLines(coverage: Record<string, unknown>, data: Record<string, unknown>): Line[] {
+	const lines: Line[] = [];
+	if (typeof coverage.returnedRecords === "number" && typeof coverage.totalRecords === "number") lines.push(line(`${coverage.returnedRecords} of ${coverage.totalRecords} records`, "muted"));
+	if (typeof data.returnedMethods === "number" && typeof data.matchedMethods === "number") lines.push(line(`${data.returnedMethods} of ${data.matchedMethods} methods · ${data.totalMethods} installed`, "muted"));
+	const next = coverage.nextOffset ?? data.nextOffset;
+	if (typeof next === "number") lines.push(line(`next offset ${next}`, "muted"));
+	return lines;
+}
+
+function resultDetails(value: Record<string, unknown>, effects: Record<string, unknown>, coverage: Record<string, unknown>, data: Record<string, unknown>, expanded: boolean): Line[] {
+	const lines: Line[] = [];
+	if (string(value.error)) lines.push(line(String(value.error), "error", true));
+	if (!expanded) {
+		if (string(effects.note)) lines.push(line(String(effects.note), "muted", true));
+		if (string(coverage.note)) lines.push(line(String(coverage.note), "muted", true));
+		const capture = string(data.content) ?? string(object(data.snapshot).content);
+		if (capture) lines.push(...capture.split("\n").slice(0, 2).map((part) => line(part, "toolOutput", true)));
+	} else lines.push(line(""), ...jsonLines(value));
+	return lines;
 }
 
 function object(value: unknown): Record<string, unknown> {
