@@ -145,6 +145,74 @@ release interval. [Worktree promotion](conventions/worktrees.md) owns compositio
 gates and publication hygiene; the runtime adds no scheduler, release ledger or
 parallel task store.
 
+## Upstream main: next adoption boundary
+
+Targeted review date: 2026-11-01. Upstream main resolves to
+[`2c8d1feb147f6b3d97e855da803bfe7b19f3c403`](https://github.com/earendil-works/pi/commit/2c8d1feb147f6b3d97e855da803bfe7b19f3c403).
+The latest published release remains 1.4.0. The following source contracts are
+unreleased and are not APIs of the installed 1.4.0 host. This targeted review
+neither renews earlier verification dates nor advances cumulative release coverage.
+
+Adopt the next Durable release as one host transition, in this order:
+
+1. **Observation contracts.** Main replaces `Conversation.viewState()` and
+   `Harness.taskGraph()` with watches and observers. Conversation watches carry
+   bounded transcript windows rather than the complete active context; model
+   context remains a separate read. The current consumers in
+   `extensions/agent/durable-observation.ts`, `durable-host.ts`, and
+   `durable-runtime.ts` require changes before that upgrade. Preserve transcript
+   coverage and cancellation rather than treating a window as complete history.
+   Sources: [Harness interfaces](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/types.ts#L840-L938)
+   and [windowed observation](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/view.ts#L206-L254).
+2. **Hooks for host-generated tool results.** Main passes rejected calls through
+   `afterTool`, even when the tool never executed. Interrupted calls also pass
+   through the hook when hook execution remains safe. Policy's result processing
+   in `extensions/policy/durable.ts` and the observation and assessment hooks in
+   `extensions/pillars/durable.ts` must distinguish these results from completed
+   tool execution. The existing Pillars regression explicitly expects invalid
+   preparation not to reach `afterTool`; reconcile that assertion during upgrade.
+   Source: [host-result settlement](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/tool.ts#L268-L311).
+3. **Live progress versus stored commits.** Main separates immediate observable
+   progress from deferred persistence. `progress.persistWithinMs` bounds how long
+   deferred progress remains in memory. Commit subscribers no longer establish
+   that every live partial was observed. Audit the subscribers in
+   `extensions/agent/durable-host.ts`, `durable-runtime.ts`, and
+   `provider-models.ts` against their actual purpose before the upgrade. Use
+   watches for live progress; retain commit subscriptions for stored publication.
+   Source: [progress policy](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/types.ts#L576-L592).
+4. **Interrupted work.** Main ends repeatedly interrupted tasks instead of
+   parking them. Tools return an error; runs retain a failure reason. The current
+   `restart_limit` blocked-reason schema in `extensions/agent/catalog-attention.ts`
+   requires reconciliation with the new terminal outcomes. Preserve the reason
+   in inspection and result delivery rather than resubmitting work automatically.
+   Sources: [restart policy](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/types.ts#L624-L641)
+   and [tool settlement](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/tool.ts#L250-L266).
+
+### Native schema package
+
+Main defines `@earendil-works/pi-schema`: plain JSON Schema builders and a
+validator that accepts existing JSON Schema without code generation. Its
+[manifest](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/schema/package.json)
+declares no runtime dependencies; its
+[public exports](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/schema/src/index.ts)
+include builders, `compile`, and `Validator`.
+
+On the targeted review date, the public npm registry returns 404 for that
+package, and the [1.4.0 release assets](https://github.com/earendil-works/pi/releases/tag/v1.4.0)
+contain no schema package tarball. A repository Git dependency selects the Pi
+monorepo root, not a built package from `packages/schema`. Source availability
+therefore does not yet supply the normal installable runtime dependency.
+Adoption waits for an upstream package. Do not add an unresolved dependency,
+vendor the source, or introduce installation plumbing or compatibility shims.
+
+Before direct adoption, check actual schema consumers rather than replace names
+mechanically. Input type inference, recursive references, diagnostic fields,
+unknown-property rules, and string-bound units affect suitability. In particular,
+pi-schema bounds strings by code points; the current Pillars draft contract uses
+TypeBox graphemes. Keep explicit grapheme contracts intact instead of silently
+changing their accepted text. No schema or validator changes follow from this
+source review alone.
+
 ## Native host integration contracts
 
 - Chord uses host-family placement keyed by `serverId`, explicit principals and
