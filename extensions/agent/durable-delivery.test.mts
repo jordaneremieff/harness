@@ -1858,6 +1858,7 @@ it("broadcasts a fallback to every registered live primary exactly once", { time
 	});
 	const submissionId = await addReceipt(source, absentOwner);
 	const errors = eventLog<Error>();
+	const idle = eventLog<void>();
 	const watcher = startDurableDelivery({
 		host: source,
 		metadata: sourceMetadata(root, source.storageId, sourcePath),
@@ -1865,31 +1866,39 @@ it("broadcasts a fallback to every registered live primary exactly once", { time
 		sessionsRoot,
 		signal: new AbortController().signal,
 		onError: (error) => errors.push(error),
+		onIdle: () => idle.push(undefined),
 	});
-	await Promise.all([firstReceived.waitForCount(1), secondReceived.waitForCount(1)]);
-	await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(submissionId)]?.fallbackRecipients?.length === 2);
-	assert.equal(firstReceived.length, 1, "the first registered primary receives exactly one");
-	assert.equal(secondReceived.length, 1, "the second registered primary receives exactly one");
-	for (const [id, received] of [
-		[first, firstReceived],
-		[second, secondReceived],
-	] as const) {
-		const details = received[0]?.details as Record<string, unknown>;
-		assert.equal(received[0]?.sourceId, await receiptSourceId(source, submissionId));
-		assert.equal(details.fallback, true);
-		assert.equal(details.fallbackLabel, "no live owning session");
-		assert.equal(details.wake, false, "a fallback broadcast never wakes a primary model");
-		assert.equal(details.originalOwnerId, absentOwner);
-		assert.equal(details.deliveryRecipient, id);
+	try {
+		await Promise.all([firstReceived.waitForCount(1), secondReceived.waitForCount(1)]);
+		await waitForDelivery(source, async () => (await deliveryState(source))?.receipts[String(submissionId)]?.fallbackRecipients?.length === 2);
+		await idle.waitFor((passes) => passes.length > 0 && !watcher.busy);
+		assert.equal(firstReceived.length, 1, "the first registered primary receives exactly one");
+		assert.equal(secondReceived.length, 1, "the second registered primary receives exactly one");
+		for (const [id, received] of [
+			[first, firstReceived],
+			[second, secondReceived],
+		] as const) {
+			const details = received[0]?.details as Record<string, unknown>;
+			assert.equal(received[0]?.sourceId, await receiptSourceId(source, submissionId));
+			assert.equal(details.fallback, true);
+			assert.equal(details.fallbackLabel, "no live owning session");
+			assert.equal(details.wake, false, "a fallback broadcast never wakes a primary model");
+			assert.equal(details.originalOwnerId, absentOwner);
+			assert.equal(details.deliveryRecipient, id);
+		}
+		const state = await deliveryState(source);
+		assert.equal(
+			state?.receipts[String(submissionId)]?.acknowledged,
+			false,
+			"the row waits for its owner after every fallback recipient accepts",
+		);
+	} finally {
+		await watcher.close();
 	}
-	const state = await deliveryState(source);
-	assert.equal(
-		state?.receipts[String(submissionId)]?.acknowledged,
-		false,
-		"the row waits for its owner after every fallback recipient accepts",
-	);
-	assert.deepEqual(errors, []);
-	await watcher.close();
+	assert.ok(errors.length > 0, "the absent owner remains parked after informational fallback");
+	for (const error of errors) {
+		assert.equal(error.message, `Delivery receipt:${submissionId} to ${absentOwner}: parked: primary endpoint is absent`);
+	}
 });
 
 it("retries a failed broadcast without duplicating a successful receiver", { timeout: 30000 }, async (t) => {
