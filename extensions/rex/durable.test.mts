@@ -11,7 +11,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { rexContribution } from "./durable.ts";
 import { beginOwnership, requestDigest } from "./ownership.ts";
-import type { RexResult } from "./core.ts";
+import type { RexRequest, RexResult } from "./core.ts";
 
 const server = { endpoint: "unix:///synthetic-rex", hostId: "host", instanceId: "instance", selection: "test" };
 const target = { server, source: "explicit" as const, sessionId: "session:00000000-0000-0000-0000-000000000001", blockId: "block:00000000-0000-0000-0000-000000000002" };
@@ -23,6 +23,18 @@ function resultValues(entries: readonly Durable.EntryRecord[]): RexResult[] {
 		const text = message.content.filter((part) => part.type === "text").map((part) => part.text).join("");
 		try { return [JSON.parse(text) as RexResult]; } catch { return []; }
 	}));
+}
+
+function mockResult(request: RexRequest, callId: string): RexResult {
+	if (request.op === "inspect" && request.view === "status") return { ...ok({ payload: "s".repeat(200000) }), outcome: "snapshot", target, coverage: { bounded: true, note: "Native status source qualification." } };
+	if (request.op === "input") return {
+		...ok({ payload: "x".repeat(80000) }), outcome: "input_delivered", target,
+		records: [{ recordId: callId, server, resources: [{ kind: "block", sessionId: target.sessionId, blockId: target.blockId }] }],
+		effects: { state: "confirmed", recordId: callId, note: "Input delivery does not prove application success." },
+		coverage: { bounded: true, truncated: false, note: "Source observation qualification." },
+	};
+	if (request.op === "native" && request.code === "fail") return { ...ok({ layer: "script" }), ok: false, outcome: "script_failed", error: "synthetic failure", effects: { state: "unknown" } };
+	return { ...ok({ operation: request.op }), target };
 }
 
 test("native tools use real model calls, structured channels, unsafe replay and fork-isolated ownership", { timeout: 30000 }, async () => {
@@ -55,15 +67,7 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 					assert.equal(retained.records[0]?.phase, "pending", "native commit resolves before the external-effect boundary");
 				}
 				if (request.op === "owned") return ok(await options.store.read(context.ownerId));
-				if (request.op === "inspect" && request.view === "status") return { ...ok({ payload: "s".repeat(200000) }), outcome: "snapshot", target, coverage: { bounded: true, note: "Native status source qualification." } };
-				if (request.op === "input") return {
-					...ok({ payload: "x".repeat(80000) }), outcome: "input_delivered", target,
-					records: [{ recordId: context.callId, server, resources: [{ kind: "block", sessionId: target.sessionId, blockId: target.blockId }] }],
-					effects: { state: "confirmed", recordId: context.callId, note: "Input delivery does not prove application success." },
-					coverage: { bounded: true, truncated: false, note: "Source observation qualification." },
-				};
-				if (request.op === "native" && request.code === "fail") return { ...ok({ layer: "script" }), ok: false, outcome: "script_failed", error: "synthetic failure", effects: { state: "unknown" } };
-				return { ...ok({ operation: request.op }), target };
+				return mockResult(request, context.callId);
 			},
 		}),
 	});
@@ -119,15 +123,18 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		assert.equal(status.coverage.dataOmitted, true);
 		assert.match(status.coverage.note ?? "", /Native status source qualification/);
 		assert.match(status.coverage.note ?? "", /not permission, ownership or task acceptance/);
-		assert.equal((values.find((value) => (value.data as { version?: number })?.version === 1)?.data as { records: unknown[] }).records.length, 1);
+		const owned = values.find((value) => (value.data as { version?: number })?.version === 1);
+		assert.ok(owned);
+		assert.equal((owned.data as { records: unknown[] }).records.length, 1);
 		const nestedCall = entries.flatMap((entry) => entry.model ?? []).find((message) => message.role === "toolResult" && message.toolName === "test_nested");
 		assert.ok(nestedCall?.role === "toolResult", "the model-issued nested caller returned a result");
 		assert.equal(nestedCall.isError, false, JSON.stringify(nestedCall));
 		assert.equal(concurrentRecords, 3, "concurrent native updates preserve both new pending records");
-		assert.equal(nested?.isError, true);
-		assert.equal((nested?.structuredOutput as unknown as RexResult).outcome, "script_failed");
-		assert.equal((nested?.structuredOutput as unknown as RexResult).effects.state, "unknown");
-		assert.deepEqual(nested?.details, { outcome: "script_failed", effects: "unknown" });
+		assert.ok(nested);
+		assert.equal(nested.isError, true);
+		assert.equal((nested.structuredOutput as unknown as RexResult).outcome, "script_failed");
+		assert.equal((nested.structuredOutput as unknown as RexResult).effects.state, "unknown");
+		assert.deepEqual(nested.details, { outcome: "script_failed", effects: "unknown" });
 		assert.ok(owners.every((owner) => owner === `test-storage:${root.id}`));
 		const last = entries.at(-1);
 		assert.ok(last);
@@ -135,7 +142,9 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		faux.setResponses([fauxAssistantMessage(fauxToolCall("rex_owned", { op: "owned" }), { stopReason: "toolUse" }), fauxAssistantMessage("No inherited claims.")]);
 		await (await fork.submit({ type: "input", content: "Inspect my own resources." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 		const forkValues = resultValues((await fork.entries({ order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items);
-		assert.equal((forkValues.at(-1)?.data as { records: unknown[] }).records.length, 0);
+		const forkOwned = forkValues.at(-1);
+		assert.ok(forkOwned);
+		assert.equal((forkOwned.data as { records: unknown[] }).records.length, 0);
 		assert.ok(owners.includes(`test-storage:${fork.id}`));
 		assert.ok(disposed >= 8);
 		assert.ok(endedCalls.every((active) => active() === false), "native finally releases each invocation after settlement");

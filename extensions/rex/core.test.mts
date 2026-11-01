@@ -56,14 +56,7 @@ class FakeTransport implements RexTransport {
 		const method = index >= 0 ? args[index + 1] : undefined;
 		const data = index >= 0 ? (JSON.parse(args[index + 2] ?? "{}") as Record<string, unknown>) : {};
 		this.calls.push({ args, method, data });
-		if (args.includes("whoami")) {
-			const selected = args[args.indexOf("--server") + 1];
-			return reply({
-				endpoint: selected === "other" ? "unix:///other" : "unix:///launch",
-				host_id: selected === "other" ? "other-host" : "launch-host",
-				instance_id: "instance",
-			});
-		}
+		if (args.includes("whoami")) return serverIdentityReply(args);
 		const handled = method ? await this.handler?.(method, data, call) : undefined;
 		if (handled) return handled;
 		if (method === "target.resolve") return resolveReply(data);
@@ -76,6 +69,14 @@ class FakeTransport implements RexTransport {
 		return reply({});
 	}
 	dispose() {}
+}
+function serverIdentityReply(args: readonly string[]): CliResult {
+	const selected = args[args.indexOf("--server") + 1];
+	return reply({
+		endpoint: selected === "other" ? "unix:///other" : "unix:///launch",
+		host_id: selected === "other" ? "other-host" : "launch-host",
+		instance_id: "instance",
+	});
 }
 function resolveReply(data: Record<string, unknown>): CliResult {
 	const kind = (data.kinds as string[])[0];
