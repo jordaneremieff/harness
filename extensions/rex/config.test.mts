@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { Check } from "typebox/value";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ordinaryOwnershipStore, ordinaryStatusStore, resultChannels, serialiseOwners } from "./config.ts";
 import { boundResult, resultByteLimit, type RexResult } from "./core.ts";
 import { beginOwnership, initialOwnershipState, requestDigest, type OwnershipRecord } from "./ownership.ts";
@@ -67,12 +67,18 @@ test("result schema and channels preserve diagnostic and reference omission cont
 	}
 });
 
-function fixture() {
+function fixture(sessionFile?: string) {
 	let id = "one";
-	const entries: unknown[] = [];
-	const ctx = { sessionManager: { getSessionId: () => id, getEntries: () => entries, getSessionFile: () => undefined, getBranch: () => [] } } as Pick<ExtensionContext, "sessionManager">;
-	const pi = { appendEntry: (customType: string, data: unknown) => entries.push({ type: "custom", customType, data }) } as Pick<ExtensionAPI, "appendEntry">;
-	return { ctx, pi, entries, switchTo: (next: string) => { id = next; } };
+	const sessionManager = SessionManager.inMemory("/test");
+	sessionManager.getSessionId = () => id;
+	sessionManager.getSessionFile = () => sessionFile;
+	const ctx: Pick<ExtensionContext, "sessionManager"> = { sessionManager };
+	const pi: Pick<ExtensionAPI, "appendEntry"> = { appendEntry: (customType, data) => { sessionManager.appendCustomEntry(customType, data); } };
+	return {
+		ctx, pi, get entries() { return sessionManager.getEntries(); },
+		admit: () => sessionManager.appendMessage({ role: "user", content: "Start work.", timestamp: Date.now() }),
+		switchTo: (next: string) => { id = next; },
+	};
 }
 
 test("ordinary ownership commits before the update resolves and serialises concurrent changes", async () => {
@@ -119,12 +125,11 @@ test("ordinary status cancellation while queued prevents the eventual state appe
 });
 
 test("persistent pending effects require conversation admission before the retained append", async () => {
-	const f = fixture();
-	const ctx = { sessionManager: { ...f.ctx.sessionManager, getSessionFile: () => "/test/session.jsonl" } };
-	const store = ordinaryOwnershipStore(f.pi, ctx, 128, serialiseOwners());
+	const f = fixture("/test/session.jsonl");
+	const store = ordinaryOwnershipStore(f.pi, f.ctx, 128, serialiseOwners());
 	await assert.rejects(store.update("ordinary:one", (state) => beginOwnership(state, record("before-admission"))), /admitted user or assistant/);
 	assert.equal(f.entries.length, 0);
-	f.entries.push({ type: "message", message: { role: "user", content: "Start work." } });
+	f.admit();
 	await store.update("ordinary:one", (state) => beginOwnership(state, record("after-admission")));
 	assert.equal(f.entries.length, 2);
 });
