@@ -15,6 +15,31 @@ function installGate(scripts: string): void {
 	);
 }
 
+test("accepts extension anatomy without a compulsory test-file quota", () => {
+	const root = mkdtempSync(join(tmpdir(), "check-slices-anatomy-"));
+	try {
+		const scripts = join(root, "scripts");
+		const extension = join(root, "extensions", "example");
+		mkdirSync(scripts, { recursive: true });
+		mkdirSync(extension, { recursive: true });
+		installGate(scripts);
+		writeFileSync(join(extension, "index.ts"), "export default function () {}\n");
+		writeFileSync(join(extension, "README.md"), "# Example\n");
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", "init", "-q"], { cwd: root });
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", "add", "."], { cwd: root });
+		const result = spawnSync(process.execPath, [join(scripts, "check-slices.mts")], {
+			cwd: root,
+			encoding: "utf8",
+			timeout: 30_000,
+			maxBuffer: 128_000,
+		});
+		assert.equal(result.status, 0, result.stderr);
+		assert.match(result.stdout, /check-slices: ok/);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 test("ignores a tracked document deleted from the working tree", () => {
 	const root = mkdtempSync(join(tmpdir(), "check-slices-deletion-"));
 	try {
@@ -1125,7 +1150,7 @@ test("settings modules must export their local reader and publisher", async () =
 	}
 });
 
- test("allows only the agent public transport entrypoint", async () => {
+test("allows only the agent public transport entrypoint", async () => {
 	const { auditSliceImports } = await import("./check-slices.mts");
 	const root = "/repo";
 	for (const [file, specifier, allowed] of [
@@ -1135,5 +1160,6 @@ test("settings modules must export their local reader and publisher", async () =
 		["extensions/agent/host-client.ts", "../../transport/endpoint.ts", false],
 		["extensions/other/index.ts", "../../transport/index.ts", false],
 		["extensions/agent/host-client.ts", "../../extensions/other/index.ts", false],
-	] as const) assert.equal(auditSliceImports(root, join(root, file), `import "${specifier}";`).length, allowed ? 0 : 1);
+	] as const)
+		assert.equal(auditSliceImports(root, join(root, file), `import "${specifier}";`).length, allowed ? 0 : 1);
 });

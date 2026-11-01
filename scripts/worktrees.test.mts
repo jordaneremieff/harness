@@ -63,9 +63,9 @@ interface PromoteResult {
 	status: number | null;
 }
 
-const settingsDir = "/home/operator/.pi/agent";
-const repoRoot = "/home/operator/Workspace/harness";
-const worktreeRoot = "/home/operator/Workspace/harness.worktrees";
+const settingsDir = "/fixture/operator/.pi/agent";
+const repoRoot = "/fixture/operator/Workspace/harness";
+const worktreeRoot = "/fixture/operator/Workspace/harness.worktrees";
 const entrypoints = new Map(
 	["brave", "clipboard", "demo", "stash", "statusline", "tune", "workspace"].map((name) => [
 		name,
@@ -297,6 +297,35 @@ describe("promotion arguments", () => {
 	});
 });
 
+function selectionGitOptions(root: string) {
+	return {
+		cwd: root,
+		env: { ...cleanGitEnvironment(process.env), GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+		timeout: 10_000,
+		maxBuffer: 128_000,
+	};
+}
+
+function commitSelectionFixture(root: string): void {
+	execFileSync("git", ["-c", "core.hooksPath=/dev/null", "add", "."], selectionGitOptions(root));
+	execFileSync(
+		"git",
+		[
+			"-c",
+			"core.hooksPath=/dev/null",
+			"-c",
+			"user.name=Fixture",
+			"-c",
+			"user.email=fixture@example.invalid",
+			"commit",
+			"--allow-empty",
+			"-qm",
+			"Fixture",
+		],
+		selectionGitOptions(root),
+	);
+}
+
 function testSelectionFixture(t: TestContext): string {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "promotion-test-selection-")));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -322,6 +351,7 @@ function testSelectionFixture(t: TestContext): string {
 		"evals/runner.test.mts": "",
 		"evals/subjects/subject.test.mts": "",
 		"docs/guide.md": "# Guide",
+		"tsconfig.json": '{"compilerOptions":{}}',
 	};
 	for (const [path, content] of Object.entries(files)) {
 		mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -331,7 +361,8 @@ function testSelectionFixture(t: TestContext): string {
 		["init", "-qb", "main"],
 		["add", "."],
 	])
-		execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd: root });
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], selectionGitOptions(root));
+	commitSelectionFixture(root);
 	return root;
 }
 
@@ -343,10 +374,12 @@ describe("promotion test selection", () => {
 			changedDirectories: ["extensions/demo"],
 			selectedTestFiles: ["extensions/demo/demo.test.mts"],
 			fullTests: false,
+			typecheckAndLint: true,
 		});
 		assert.deepEqual(promotionGateCommands(selection)[0].command, [
 			process.execPath,
 			"--test",
+			"--test-concurrency=1",
 			"extensions/demo/demo.test.mts",
 		]);
 	});
@@ -385,7 +418,7 @@ describe("promotion test selection", () => {
 		assert.equal(selection.fullTests, false);
 		assert.deepEqual(
 			promotionGateCommands(selection).map((entry) => entry.name),
-			["typecheck", "check", "lint"],
+			["check"],
 		);
 	});
 
@@ -408,6 +441,122 @@ describe("promotion test selection", () => {
 		] as const) {
 			assert.deepEqual((await selectPromotionTests(root, [path])).selectedTestFiles, [...tests]);
 		}
+	});
+	it("exempts bounded root metadata without hiding mixed source or explicit full tests", async (t) => {
+		const root = testSelectionFixture(t);
+		const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+		writeFileSync(
+			join(root, "package.json"),
+			JSON.stringify({ ...manifest, description: "Details", keywords: ["local"] }),
+		);
+		const metadata = await selectPromotionTests(root, ["package.json"], false, "HEAD");
+		assert.equal(metadata.fullTests, false);
+		assert.equal(metadata.typecheckAndLint, false);
+		assert.equal(metadata.selectedTestFiles.length, 0);
+		assert.deepEqual(
+			promotionGateCommands(metadata).map((entry) => entry.name),
+			["check"],
+		);
+		const mixed = await selectPromotionTests(root, ["package.json", "extensions/demo/index.ts"], false, "HEAD");
+		assert.equal(mixed.fullTests, false);
+		assert.equal(mixed.typecheckAndLint, true);
+		assert.deepEqual(mixed.selectedTestFiles, ["extensions/demo/demo.test.mts"]);
+		assert.equal((await selectPromotionTests(root, ["package.json"], true, "HEAD")).fullTests, true);
+		assert.equal((await selectPromotionTests(root, ["package.json"])).fullTests, true);
+	});
+
+	it("preserves behavioural skill and prompt tests while omitting unaffected source checks", async (t) => {
+		const root = testSelectionFixture(t);
+		const selection = await selectPromotionTests(root, ["skills/demo/SKILL.md", "prompts/example.md"]);
+		assert.equal(selection.typecheckAndLint, false);
+		assert.deepEqual(selection.selectedTestFiles, ["prompts/prompt.test.mts", "skills/demo/scripts/skill.test.mts"]);
+		assert.deepEqual(
+			promotionGateCommands(selection).map((entry) => entry.name),
+			["test", "check"],
+		);
+		assert.equal((await selectPromotionTests(root, ["unknown.txt"])).typecheckAndLint, true);
+	});
+
+	it("compares configuration representations without erasing ordered or lossless evidence", async (t) => {
+		const cases: [string, string, string, boolean][] = [
+			["whitespace", '{"compilerOptions":{"strict":true}}', '{ "compilerOptions": { "strict": true } }', false],
+			["string escapes", '{"target":"ES2023"}', '{"target":"ES\\u0032023"}', false],
+			["object order", '{"a":1,"b":2}', '{"b":2,"a":1}', true],
+			[
+				"condition order",
+				'{"exports":{".":{"default":"./a","import":"./b"}}}',
+				'{"exports":{".":{"import":"./b","default":"./a"}}}',
+				true,
+			],
+			["array order", '{"values":[1,2]}', '{"values":[2,1]}', true],
+			["duplicate root", '{"compilerOptions":{}}', '{"compilerOptions":{"strict":true},"compilerOptions":{}}', true],
+			["duplicate nested", '{"compilerOptions":{}}', '{"compilerOptions":{"strict":true,"strict":false}}', true],
+			["escaped duplicate", '{"values":[{}]}', '{"values":[{"a":1,"\\u0061":2}]}', true],
+			["rounded number", '{"value":9007199254740992}', '{"value":9007199254740993}', true],
+			["number spelling", '{"value":1}', '{"value":1.0}', true],
+			["signed zero", '{"value":0}', '{"value":-0}', true],
+			["non-finite", '{"value":1}', '{"value":1e400}', true],
+			["invalid JSON", "{}", '{"compilerOptions":', true],
+			["non-object", "{}", "[]", true],
+			["depth bound", "{}", '{"value":' + "[".repeat(70) + "0" + "]".repeat(70) + "}", true],
+			["node bound", "{}", '{"value":[' + Array(50_001).fill("0").join(",") + "]}", true],
+			["byte bound", "{}", '{"value":"' + "a".repeat(1_000_001) + '"}', true],
+		];
+		for (const [name, before, after, full] of cases) {
+			const root = testSelectionFixture(t);
+			writeFileSync(join(root, "tsconfig.json"), before);
+			commitSelectionFixture(root);
+			writeFileSync(join(root, "tsconfig.json"), after);
+			const result = await selectPromotionTests(root, ["tsconfig.json"], false, "HEAD");
+			assert.equal(result.fullTests, full, name);
+			assert.equal(result.typecheckAndLint, true, name);
+			if (!full) assert.equal(result.selectedTestFiles.length, 0, name);
+		}
+	});
+
+	it("keeps metadata exceptions narrow and validates complete documents before stripping fields", async (t) => {
+		const changes: [string, (manifest: Record<string, unknown>) => string][] = [
+			["invalid description", (manifest) => JSON.stringify({ ...manifest, description: 1 })],
+			["invalid keywords", (manifest) => JSON.stringify({ ...manifest, keywords: [1] })],
+			["read bound", (manifest) => JSON.stringify({ ...manifest, description: "a".repeat(32 * 1024) })],
+			["unknown field", (manifest) => JSON.stringify({ ...manifest, unknown: true })],
+			["dependency", (manifest) => JSON.stringify({ ...manifest, dependencies: { example: "*" } })],
+			[
+				"script",
+				(manifest) =>
+					JSON.stringify({
+						...manifest,
+						scripts: { test: (manifest.scripts as { test: string }).test + " --changed" },
+					}),
+			],
+			[
+				"duplicate metadata",
+				(manifest) => JSON.stringify(manifest).slice(0, -1) + ',"description":"old","description":"new"}',
+			],
+			["nested duplicate", (manifest) => JSON.stringify(manifest).slice(0, -1) + ',"unknown":{"x":1,"x":1}}'],
+		];
+		for (const [name, change] of changes) {
+			const root = testSelectionFixture(t);
+			const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as Record<string, unknown>;
+			writeFileSync(join(root, "package.json"), change(manifest));
+			assert.equal((await selectPromotionTests(root, ["package.json"], false, "HEAD")).fullTests, true, name);
+		}
+	});
+
+	it("treats valid manifest formatting as unchanged but keeps missing and nested bases conservative", async (t) => {
+		const root = testSelectionFixture(t);
+		const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+		writeFileSync(join(root, "package.json"), JSON.stringify(manifest, null, 2));
+		const unchanged = await selectPromotionTests(root, ["package.json"], false, "HEAD");
+		assert.equal(unchanged.fullTests, false);
+		assert.equal(unchanged.typecheckAndLint, false);
+		for (const path of ["package-lock.json", "ui/tsconfig.json", "ui/package.json", "biome.json"]) {
+			writeFileSync(join(root, path), '{"description":"metadata"}');
+			assert.equal((await selectPromotionTests(root, [path], false, "HEAD")).fullTests, true, path);
+		}
+		rmSync(join(root, "tsconfig.json"));
+		assert.equal((await selectPromotionTests(root, ["tsconfig.json"], false, "HEAD")).fullTests, true);
+		assert.equal((await selectPromotionTests(root, ["package.json"], false, "missing-ref")).fullTests, true);
 	});
 });
 

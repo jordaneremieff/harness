@@ -189,9 +189,7 @@ files shipped by another selected slice are not ignored. The next slice starts
 only after that comparison passes.
 
 If every selected slice has no shipped changes, the command returns without
-gates, push, or synchronization. Otherwise, once all selected changes form one
-tree, the command runs `typecheck`, `check`, `lint`, and scoped tests once for
-the combined result. Test selection uses the shipped diff between the starting
+gates, push, or synchronization. Otherwise, once all selected changes form one tree, the command runs selected tests and static gates once for the combined result. It always runs `check`; it runs typecheck and lint unless every shipped change is Markdown or a proven exempt root-manifest edit. The explicit selection policy below governs these decisions. Test selection uses the shipped diff between the starting
 `main` and that combined tree. It includes every test matched by the `npm test`
 globs in each changed directory: `extensions/<name>/`, `skills/<name>/`, or a
 top-level feature directory such as `ui/`, `transport/`, `scripts/`, `prompts/`,
@@ -199,13 +197,9 @@ and `evals/`. It also includes tests in directories that consume those sources
 through literal relative imports, including transitive consumers. The import
 check uses the same parser as the slice isolation check.
 
-Scoped tests run with `node --test` without repository-wide coverage thresholds.
-`--full` runs `npm test` with its coverage thresholds instead. Dependency and
-compiler-setting changes (`package.json`, `package-lock.json`, `tsconfig*.json`,
-or `biome.json`) also select the full suite. Use the full suite when the operator
-asks for it. Documentation-only changes select no tests; `SKILL.md` and prompt
-bodies are behavior, not documentation for this purpose. The other gates still
-run. Development-record-only changes still return without gates.
+Scoped tests run with `node --test` without repository-wide coverage instrumentation or thresholds. `--full` runs `npm test`. Use `--full` when the operator requests the full suite or relevant broad effects remain outside the selector's reach. Actual dependency, lockfile, executable manifest, compiler or lint-configuration changes select the full suite. A verified representation-only JSON edit does not itself select the full suite. A root `package.json` edit confined to valid `description` and `keywords` metadata also does not itself select it, provided the base and candidate remain within the root-manifest reader bound. The selector compares the starting `main` with the composed result. Both exceptions require duplicate-free member names at every object depth before parsing loses occurrences, plus lossless numeric comparison. Missing, invalid or uncertain classification keeps full-suite selection. Other changed paths still select their affected tests. Documentation-only changes select no tests; `SKILL.md` and prompt bodies are behaviour, not documentation for this purpose. Both scoped and full test commands use `--test-concurrency=1`. The repository `check` and applicable resource gates still run. Typecheck and lint run unless every shipped change is Markdown or a proven exempt root-manifest edit; their source-only inputs otherwise remain unchanged. Unknown or other path changes retain both commands. The omission concerns the source delta, not external execution conditions. If relevant toolchain, dependency, Pi declaration or setup conditions changed or remain materially uncertain, the final owner runs the affected omitted check once. Explicit operator requirements still bind. Development-record-only changes still return without gates.
+
+Full runs collect coverage as diagnostic evidence. No global line, function or branch percentage determines acceptance. Use uncovered contract paths to guide inspection or selected tests when they expose a meaningful gap. A high aggregate percentage does not establish assertion correctness, required behaviour, realistic fixtures, or adequate protection of a critical path. Do not create irrelevant tests, weaken assertions, or alter correct behaviour to raise a percentage. Test failures still fail the test gate.
 
 The command also runs an entrypoint load check for every selected extension and
 the skill validator for every selected skill. Prompts and features have no
@@ -267,9 +261,7 @@ but does not hash their contents, so a later edit to an untracked file is not se
 check falls back to the `HEAD` log alone, which sees commits, resets and checkouts but not a staged or edited
 resolution.
 
-This removes repeated shared gate sets, pushes, and synchronization runs from
-separate promotions. It does not cache gate results or measure elapsed-time
-savings.
+Promotion owns the mandatory final gate for the composed release candidate. Use development checks when they supply useful feedback; do not run a complete final gate before promotion merely to satisfy a worker, commit or review milestone. Select all completed, mutually accepted slices together when they form one release candidate. Reuse applicable development and review evidence for the claims it establishes, and inspect interactions it does not cover. Promotion still runs its mandatory gates on the composed result. An earlier useful focused run can overlap that final test selection; this design does not suppress that execution or cache gate results. A new milestone alone does not require another complete run.
 
 `PI_PROMOTE_GATES` replaces the repository gates the command runs before the
 push: a JSON array of `{ "name": string, "command": string[] }` entries, each
@@ -278,6 +270,8 @@ the default shared gates and scoped tests (`scripts/worktrees.mts`). `--full`
 changes only the default test gate; it does not alter an explicit override.
 The entrypoint load check and skill validator remain separate resource gates.
 `--no-gates` still skips both shared and resource gates entirely.
+
+These controls are not the normal evidence-reuse path. Keep default gates for ordinary promotion. An explicit operator decision or an authorised isolated tooling test defines any exception; do not use a standing override or a routine `--no-gates` invocation to declare a composed candidate accepted. Such an exception does not establish skipped load, publication or behavioural claims. Publication hygiene remains mandatory and independent of these controls.
 
 A rebase, replay, verification, gate, or promoted-branch rebuild failure before
 push triggers rollback of `main` and every changed selected branch to their
@@ -298,12 +292,12 @@ report's direct Git push recovery. After the push succeeds, run
 | `--no-push` | Promote and synchronize locally without a push |
 | `--sync-selected` | Synchronise only selected slices after promotion; leave Pi settings and other worktrees unchanged |
 | `--no-gates` | Skip shared and resource gates |
-| `--full` | Run the complete `npm test` as the default test gate |
+| `--full` | Run the complete `npm test` as the default test gate; collect diagnostic coverage without percentage acceptance floors |
 
 The JSON report carries `ok`. After composition, `changedDirectories` lists the
 changed directory boundaries, `selectedTestFiles` lists the exact selected test
 paths, and `fullTests` states whether the default test gate selects the full
-suite. Overrides and `--no-gates` retain this selection record but control which
+suite. `typecheckAndLint` states whether the source delta selects those two static gates; the final owner separately checks relevant execution-basis changes. Overrides and `--no-gates` retain this selection record but control which
 gates actually run. Dry runs do not compose a tree or select tests.
 After successful preflight resolution, `slices`
 contains one entry per selection, in input order, for both single and batch
@@ -363,9 +357,7 @@ npm run worktrees -- promote feature/example --no-push --sync-selected --json
 ```
 
 The command still composes the selected changes and runs the normal gates once.
-`--full`, dependency changes, compiler-setting changes, and an explicit operator
-full-suite request keep their existing meaning. No automatic gate waiver or
-cached acceptance attaches to scoped synchronisation.
+Full-suite selection follows the same content-aware policy for local-only and publishing promotion. Scoped synchronisation does not waive gates or attach cached acceptance.
 
 ## Entrypoint load checks
 

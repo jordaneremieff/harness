@@ -5,10 +5,12 @@ import {
 	chmodSync,
 	closeSync,
 	existsSync,
+	fstatSync,
 	mkdirSync,
 	openSync,
 	readdirSync,
 	readFileSync,
+	readSync,
 	realpathSync,
 	renameSync,
 	statSync,
@@ -151,6 +153,7 @@ interface PromotionReport {
 	changedDirectories?: string[];
 	selectedTestFiles?: string[];
 	fullTests?: boolean;
+	typecheckAndLint?: boolean;
 	pushed?: boolean;
 	syncOk?: boolean;
 	branchFailures?: string[];
@@ -792,6 +795,7 @@ export interface PromotionTestSelection {
 	changedDirectories: string[];
 	selectedTestFiles: string[];
 	fullTests: boolean;
+	typecheckAndLint: boolean;
 }
 
 function testDirectory(path: string): string {
@@ -805,6 +809,204 @@ function documentationPath(path: string): boolean {
 	return (
 		path.startsWith("docs/") || (path.endsWith(".md") && !path.startsWith("prompts/") && !path.endsWith("/SKILL.md"))
 	);
+}
+
+const comparisonBytes = 1_000_000;
+const rootManifestBytes = 32 * 1024;
+
+type ComparisonJson =
+	| { kind: "object"; members: [string, ComparisonJson][] }
+	| { kind: "array"; values: ComparisonJson[] }
+	| { kind: "string"; value: string }
+	| { kind: "number"; value: number; spelling: string }
+	| { kind: "literal"; value: boolean | null };
+
+/** Preserve property occurrences, order and number spellings before any lossy conversion. */
+class ComparisonJsonReader {
+	private offset = 0;
+	private nodes = 0;
+	private readonly source: string;
+
+	constructor(source: string) {
+		this.source = source;
+	}
+
+	read(): ComparisonJson {
+		const value = this.value(0);
+		this.whitespace();
+		if (this.offset !== this.source.length) throw new Error("Trailing JSON input");
+		return value;
+	}
+
+	private whitespace(): void {
+		while (/[ \t\r\n]/.test(this.source[this.offset] ?? "")) this.offset++;
+	}
+
+	private expect(token: string): void {
+		this.whitespace();
+		if (this.source[this.offset++] !== token) throw new Error("Unexpected JSON token");
+	}
+
+	private string(): string {
+		this.whitespace();
+		const start = this.offset;
+		if (this.source[this.offset++] !== '"') throw new Error("Expected JSON string");
+		while (this.offset < this.source.length) {
+			const token = this.source[this.offset++];
+			if (token === '"') return JSON.parse(this.source.slice(start, this.offset)) as string;
+			if (token === "\\") this.offset++;
+		}
+		throw new Error("Unterminated JSON string");
+	}
+
+	private object(depth: number): ComparisonJson {
+		this.offset++;
+		const members: [string, ComparisonJson][] = [];
+		const names = new Set<string>();
+		this.whitespace();
+		if (this.source[this.offset] === "}") {
+			this.offset++;
+			return { kind: "object", members };
+		}
+		while (true) {
+			const name = this.string();
+			if (names.has(name)) throw new Error("Duplicate JSON member");
+			names.add(name);
+			this.expect(":");
+			members.push([name, this.value(depth + 1)]);
+			this.whitespace();
+			if (this.source[this.offset] === "}") break;
+			this.expect(",");
+		}
+		this.offset++;
+		return { kind: "object", members };
+	}
+
+	private array(depth: number): ComparisonJson {
+		this.offset++;
+		const values: ComparisonJson[] = [];
+		this.whitespace();
+		if (this.source[this.offset] === "]") {
+			this.offset++;
+			return { kind: "array", values };
+		}
+		while (true) {
+			values.push(this.value(depth + 1));
+			this.whitespace();
+			if (this.source[this.offset] === "]") break;
+			this.expect(",");
+		}
+		this.offset++;
+		return { kind: "array", values };
+	}
+
+	private number(): ComparisonJson {
+		const pattern = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?/y;
+		pattern.lastIndex = this.offset;
+		const spelling = pattern.exec(this.source)?.[0];
+		if (spelling === undefined) throw new Error("Invalid JSON value");
+		const value = Number(spelling);
+		if (!Number.isFinite(value)) throw new Error("Non-finite JSON number");
+		this.offset += spelling.length;
+		return { kind: "number", value, spelling };
+	}
+
+	private value(depth: number): ComparisonJson {
+		if (depth > 64 || ++this.nodes > 50_000) throw new Error("JSON comparison limit");
+		this.whitespace();
+		switch (this.source[this.offset]) {
+			case "{":
+				return this.object(depth);
+			case "[":
+				return this.array(depth);
+			case '"':
+				return { kind: "string", value: this.string() };
+		}
+		for (const [token, value] of [
+			["true", true],
+			["false", false],
+			["null", null],
+		] as const) {
+			if (!this.source.startsWith(token, this.offset)) continue;
+			this.offset += token.length;
+			return { kind: "literal", value };
+		}
+		return this.number();
+	}
+}
+
+function sameComparisonJson(left: ComparisonJson, right: ComparisonJson): boolean {
+	switch (left.kind) {
+		case "object":
+			return (
+				right.kind === "object" &&
+				left.members.length === right.members.length &&
+				left.members.every(
+					([name, value], index) =>
+						name === right.members[index][0] && sameComparisonJson(value, right.members[index][1]),
+				)
+			);
+		case "array":
+			return (
+				right.kind === "array" &&
+				left.values.length === right.values.length &&
+				left.values.every((value, index) => sameComparisonJson(value, right.values[index]))
+			);
+		case "number":
+			return right.kind === "number" && left.spelling === right.spelling && Object.is(left.value, right.value);
+		case "string":
+			return right.kind === "string" && left.value === right.value;
+		case "literal":
+			return right.kind === "literal" && left.value === right.value;
+	}
+}
+
+function withoutManifestMetadata(value: ComparisonJson): ComparisonJson | undefined {
+	if (value.kind !== "object") return undefined;
+	for (const [name, entry] of value.members) {
+		if (name === "description" && entry.kind !== "string") return undefined;
+		if (name === "keywords" && (entry.kind !== "array" || entry.values.some((item) => item.kind !== "string"))) {
+			return undefined;
+		}
+	}
+	return { kind: "object", members: value.members.filter(([name]) => name !== "description" && name !== "keywords") };
+}
+
+function boundedComparisonFile(path: string, limit: number): string {
+	const fd = openSync(path, "r");
+	try {
+		if (!fstatSync(fd).isFile()) throw new Error("Not a JSON file");
+		const bytes = Buffer.alloc(limit + 1);
+		let length = 0;
+		while (length < bytes.length) {
+			const count = readSync(fd, bytes, length, bytes.length - length, null);
+			if (count === 0) break;
+			length += count;
+		}
+		if (length > limit) throw new Error("JSON comparison byte limit");
+		return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function configurationUnchanged(repoRoot: string, path: string, baseRef: string | undefined): boolean {
+	if (!baseRef) return false;
+	try {
+		const limit = path === "package.json" ? rootManifestBytes : comparisonBytes;
+		const before = git(repoRoot, ["show", `${baseRef}:${path}`], { maxBuffer: limit, privateOutput: true }).stdout;
+		if (Buffer.byteLength(before) > limit || before.includes("\uFFFD")) return false;
+		const left = new ComparisonJsonReader(before).read();
+		const right = new ComparisonJsonReader(boundedComparisonFile(join(repoRoot, path), limit)).read();
+		if (left.kind !== "object" || right.kind !== "object") return false;
+		if (sameComparisonJson(left, right)) return true;
+		if (path !== "package.json") return false;
+		const leftMetadata = withoutManifestMetadata(left);
+		const rightMetadata = withoutManifestMetadata(right);
+		return leftMetadata !== undefined && rightMetadata !== undefined && sameComparisonJson(leftMetadata, rightMetadata);
+	} catch {
+		return false;
+	}
 }
 
 function packageTestFiles(repoRoot: string, tracked: readonly string[]): string[] {
@@ -848,16 +1050,24 @@ export async function selectPromotionTests(
 	repoRoot: string,
 	changedPaths: readonly string[],
 	full = false,
+	baseRef?: string,
 ): Promise<PromotionTestSelection> {
 	const changedDirectories = [...new Set(changedPaths.filter((path) => path.includes("/")).map(testDirectory))].sort();
-	const fullTests =
-		full ||
-		changedPaths.some((path) => /^(?:package(?:-lock)?\.json|tsconfig[^/]*\.json|biome\.json)$/.test(basename(path)));
+	const configurationPaths = changedPaths.filter((path) =>
+		/^(?:package(?:-lock)?\.json|tsconfig[^/]*\.json|biome\.json)$/.test(basename(path)),
+	);
+	const unchanged = new Set(configurationPaths.filter((path) => configurationUnchanged(repoRoot, path, baseRef)));
+	const fullTests = full || configurationPaths.some((path) => !unchanged.has(path));
+	const typecheckAndLint = changedPaths.some(
+		(path) => !path.endsWith(".md") && !(path === "package.json" && unchanged.has(path)),
+	);
 	const tracked = git(repoRoot, ["ls-files", "-z"])
 		.stdout.split("\0")
 		.filter((path) => path && existsSync(join(repoRoot, path)));
 	const tests = packageTestFiles(repoRoot, tracked);
-	const affected = new Set(changedPaths.filter((path) => !documentationPath(path)).map(testDirectory));
+	const affected = new Set(
+		changedPaths.filter((path) => !documentationPath(path) && !unchanged.has(path)).map(testDirectory),
+	);
 	if (!fullTests && affected.size > 0) {
 		const consumers = await importConsumers(repoRoot, tracked);
 		for (const directory of affected) {
@@ -868,6 +1078,7 @@ export async function selectPromotionTests(
 		changedDirectories,
 		selectedTestFiles: fullTests ? tests : tests.filter((path) => affected.has(testDirectory(path))),
 		fullTests,
+		typecheckAndLint,
 	};
 }
 
@@ -875,13 +1086,20 @@ export function promotionGateCommands(selection: PromotionTestSelection): GateCo
 	const test: GateCommand[] = selection.fullTests
 		? [{ name: "test", command: ["npm", "test"] }]
 		: selection.selectedTestFiles.length > 0
-			? [{ name: "test", command: [process.execPath, "--test", ...selection.selectedTestFiles] }]
+			? [
+					{
+						name: "test",
+						command: [process.execPath, "--test", "--test-concurrency=1", ...selection.selectedTestFiles],
+					},
+				]
 			: [];
 	return [
 		...test,
-		{ name: "typecheck", command: ["npm", "run", "typecheck"] },
+		...(selection.typecheckAndLint
+			? [{ name: "typecheck", command: ["npm", "run", "typecheck"] } satisfies GateCommand]
+			: []),
 		{ name: "check", command: ["npm", "run", "check"] },
-		{ name: "lint", command: ["npm", "run", "lint"] },
+		...(selection.typecheckAndLint ? [{ name: "lint", command: ["npm", "run", "lint"] } satisfies GateCommand] : []),
 	];
 }
 
@@ -1730,7 +1948,7 @@ async function applyPromotions(
 		const changedPaths = git(context.repoRoot, ["diff", "--name-only", "--no-renames", "-z", mainBefore, "main"])
 			.stdout.split("\0")
 			.filter(Boolean);
-		const selection = await selectPromotionTests(context.repoRoot, changedPaths, options.full);
+		const selection = await selectPromotionTests(context.repoRoot, changedPaths, options.full, mainBefore);
 		Object.assign(report, selection);
 		if (options.gates) {
 			const outcome = promoteGates(context, selection);

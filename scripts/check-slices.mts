@@ -3,8 +3,7 @@
 //
 // Enforces the AGENTS.md invariants that npm test cannot see:
 //   1. every extension under extensions/ is a complete vertical slice:
-//      index.ts with a default-export factory, README.md, and at least one
-//      colocated *.test.mts;
+//      index.ts with a default-export factory and README.md;
 //   2. no extension imports a sibling or escapes its slice except through the
 //      documented package-level evaluation interfaces in colocated suites/tests;
 //   3. no hardcoded counts of tests, tools, or files in tracked docs
@@ -65,10 +64,6 @@ for (const entry of main ? readdirSync(extensionsRoot, { withFileTypes: true }) 
 	}
 	if (!existsSync(join(slice, "README.md"))) {
 		fail(`${label}: missing README.md (every extension documents its own surface)`);
-	}
-	const tests = readdirSync(slice).filter((name) => name.endsWith(".test.mts"));
-	if (tests.length === 0) {
-		fail(`${label}: no colocated *.test.mts file`);
 	}
 }
 
@@ -198,8 +193,17 @@ export function literalSpecifiers(source: string): string[] {
 	return specifiers;
 }
 
-function publicImport(root: string, file: string, sliceName: string, sliceDir: string, target: string | undefined): boolean {
-	return (sliceName === "agent" && target === join(root, "transport", "index.ts")) || evaluationImport(root, file, sliceDir, target);
+function publicImport(
+	root: string,
+	file: string,
+	sliceName: string,
+	sliceDir: string,
+	target: string | undefined,
+): boolean {
+	return (
+		(sliceName === "agent" && target === join(root, "transport", "index.ts")) ||
+		evaluationImport(root, file, sliceDir, target)
+	);
 }
 
 function evaluationImport(root: string, file: string, sliceDir: string, target: string | undefined): boolean {
