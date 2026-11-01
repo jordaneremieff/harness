@@ -44,12 +44,19 @@ Segments join with a dim `│` separator:
    cache-active assistant turn and an assistant session hit-rate percentage.
    See below.
 
-Usage metrics come from one pass over `ctx.sessionManager.getEntries()` per
-render. This includes abandoned branches and pre-compaction entries;
-compaction does not bound retained history. Context
-usage comes separately from `ctx.getContextUsage()` and describes the active
-model context, not cumulative session usage. No second history store or
-incremental accounting cache is maintained.
+Usage totals use one full `ctx.sessionManager.getEntries()` reconciliation on
+attachment and session-tree navigation. This includes abandoned branches and
+pre-compaction entries. Paint reads only those aggregate totals. Turn completion,
+agent completion and compaction update totals outside paint. The existing idle
+tick checks the public leaf ID for standalone usage with no completion event.
+Catch-up reads at most 256 new parent-linked entries per callback, then continues
+on another owned callback. An unexpected parent-chain change triggers one full
+reconciliation. The cache retains totals and a bounded traversal cursor, not a
+second copy of session history. It uses public `getLeafId` and `getEntry`; the
+extension context does not expose `getEntryCount`.
+
+Context usage comes separately from `ctx.getContextUsage()` and describes the
+active model context, not cumulative session usage.
 
 ## Cache telemetry
 
@@ -130,7 +137,7 @@ set the window title, write the clipboard, or emit a hyperlink.
 ## Files
 
 - `index.ts`: registration, footer factory, tick ownership, `/statusline`.
-- `metrics.ts`: pure single-pass session usage scan.
+- `metrics.ts`: session usage aggregation and bounded append catch-up.
 - `format.ts`: pure formatting, cache telemetry, and width-shedding composition.
 - `*.test.mts`: unit and entrypoint drive tests.
 

@@ -29,7 +29,7 @@ import {
 	type Fg,
 	type Line1Parts,
 } from "./format.ts";
-import { scanSession } from "./metrics.ts";
+import { MetricsCache, type SessionMetrics } from "./metrics.ts";
 
 const TICK_MS = 5_000;
 /** Full reset bounds each label and status cell's own SGR state. */
@@ -45,10 +45,9 @@ function buildLine1(
 	sep: string,
 	width: number,
 	attachedAt: number,
+	metrics: SessionMetrics,
+	usage: ReturnType<ExtensionContext["getContextUsage"]>,
 ): string {
-	// --- Line 1: session metrics ---
-	const metrics = scanSession(ctx.sessionManager.getEntries());
-	const usage = ctx.getContextUsage();
 	const model = ctx.model;
 
 	const modelName = sanitizeDisplay(model?.name || model?.id || "no-model");
@@ -128,9 +127,11 @@ function renderLines(
 	fg: Fg,
 	sep: string,
 	attachedAt: number,
+	metrics: SessionMetrics,
+	usage: ReturnType<ExtensionContext["getContextUsage"]>,
 ): string[] {
 	return [
-		truncateToWidth(buildLine1(ctx, fg, sep, width, attachedAt), width),
+		truncateToWidth(buildLine1(ctx, fg, sep, width, attachedAt, metrics, usage), width),
 		buildLine2(ctx, footerData, fg, sep, width),
 	];
 }
@@ -139,8 +140,23 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	let enabled = true;
 	let attachedAt = Date.now();
 	let tick: ReturnType<typeof setInterval> | null = null;
+	let catchup: ReturnType<typeof setImmediate> | undefined;
+	let current: ExtensionContext | undefined;
+	const metrics = new MetricsCache();
+	let contextUsage: ReturnType<ExtensionContext["getContextUsage"]>;
+	let requestRender = () => {};
+
+	function refresh(): void {
+		if (!current || !enabled) return;
+		contextUsage = current.getContextUsage();
+		if (!metrics.refresh(current.sessionManager) && catchup === undefined) {
+			catchup = setImmediate(() => { catchup = undefined; refresh(); });
+		}
+		requestRender();
+	}
 
 	const stopTick = () => {
+		if (catchup !== undefined) { clearImmediate(catchup); catchup = undefined; }
 		if (tick) {
 			clearInterval(tick);
 			tick = null;
@@ -149,6 +165,9 @@ export default function registerStatusline(pi: ExtensionAPI) {
 
 	function install(ctx: ExtensionContext) {
 		if (ctx.mode !== "tui") return;
+		current = ctx;
+		metrics.reset(ctx.sessionManager);
+		contextUsage = ctx.getContextUsage();
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const fg: Fg = (color, text) => theme.fg(color as ThemeColor, text);
 			const sep = theme.fg("dim", " │ ");
@@ -156,16 +175,18 @@ export default function registerStatusline(pi: ExtensionAPI) {
 			// Pi disposes a replaced footer, but own the tick at every boundary so
 			// a reload or rapid toggle can never accumulate intervals.
 			stopTick();
-			tick = setInterval(() => tui.requestRender(), TICK_MS);
+			requestRender = () => tui.requestRender();
+			tick = setInterval(refresh, TICK_MS);
 			tick.unref?.();
 			return {
 				dispose() {
 					unsub();
 					stopTick();
+					requestRender = () => {};
 				},
 				invalidate() {},
 				render(width: number): string[] {
-					return renderLines(width, ctx, footerData, fg, sep, attachedAt);
+					return renderLines(width, ctx, footerData, fg, sep, attachedAt, metrics.value, contextUsage);
 				},
 			};
 		});
@@ -178,6 +199,19 @@ export default function registerStatusline(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async () => {
 		stopTick();
+		current = undefined;
+		requestRender = () => {};
+	});
+
+	pi.on("turn_end", (_event, ctx) => { if (ctx.mode === "tui") { current = ctx; refresh(); } });
+	pi.on("agent_end", (_event, ctx) => { if (ctx.mode === "tui") { current = ctx; refresh(); } });
+	pi.on("session_compact", (_event, ctx) => { if (ctx.mode === "tui") { current = ctx; refresh(); } });
+	pi.on("session_tree", (_event, ctx) => {
+		if (ctx.mode !== "tui" || !enabled) return;
+		current = ctx;
+		metrics.reset(ctx.sessionManager);
+		contextUsage = ctx.getContextUsage();
+		requestRender();
 	});
 
 	pi.registerCommand("statusline", {

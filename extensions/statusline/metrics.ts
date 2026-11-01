@@ -18,7 +18,7 @@ export interface SessionEntryLike {
 	message?: { role?: string; usage?: UsageLike };
 }
 
-interface SessionMetrics {
+export interface SessionMetrics {
 	inputTokens: number;
 	outputTokens: number;
 	cost: number;
@@ -75,4 +75,51 @@ export function scanSession(entries: Iterable<SessionEntryLike>): SessionMetrics
 	const m = emptyMetrics();
 	for (const e of entries) addEntryMetrics(m, e);
 	return m;
+}
+
+export interface MetricsSource {
+	getEntries(): SessionEntryLike[];
+	getLeafId(): string | null;
+	getEntry(id: string): (SessionEntryLike & { parentId: string | null }) | undefined;
+}
+
+/** Whole-session totals with bounded catch-up over new append-only entries. */
+export class MetricsCache {
+	value = emptyMetrics();
+	private leaf: string | null = null;
+	private pending: { target: string | null; cursor: string | null; delta: SessionMetrics } | undefined;
+
+	/** Session replacement and tree navigation require one authoritative reconciliation. */
+	reset(source: MetricsSource): void {
+		this.value = scanSession(source.getEntries());
+		this.leaf = source.getLeafId();
+		this.pending = undefined;
+	}
+
+	/** False requests another bounded catch-up turn; unchanged history requires no entry reads. */
+	refresh(source: MetricsSource): boolean {
+		const target = source.getLeafId();
+		if (!this.pending && target === this.leaf) return true;
+		let pending = this.pending;
+		if (pending === undefined) {
+			pending = { target, cursor: target, delta: emptyMetrics() };
+			this.pending = pending;
+		}
+		for (let visited = 0; pending.cursor !== this.leaf && visited < 256; visited += 1) {
+			const entry = pending.cursor === null ? undefined : source.getEntry(pending.cursor);
+			if (!entry) { this.reset(source); return true; }
+			const newestCache = pending.delta.lastTurnCacheHit;
+			addEntryMetrics(pending.delta, entry);
+			if (newestCache !== null) pending.delta.lastTurnCacheHit = newestCache;
+			pending.cursor = entry.parentId;
+		}
+		if (pending.cursor !== this.leaf) return false;
+		for (const key of ["inputTokens", "outputTokens", "cost", "cacheRead", "cacheWrite"] as const)
+			this.value[key] += pending.delta[key];
+		this.value.sawCacheUsage ||= pending.delta.sawCacheUsage;
+		if (pending.delta.lastTurnCacheHit !== null) this.value.lastTurnCacheHit = pending.delta.lastTurnCacheHit;
+		this.leaf = pending.target;
+		this.pending = undefined;
+		return source.getLeafId() === this.leaf;
+	}
 }

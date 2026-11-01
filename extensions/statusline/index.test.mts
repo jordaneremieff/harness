@@ -50,6 +50,8 @@ interface ContextUsage {
 
 interface MockSessionManager {
 	getEntries(): SessionEntryLike[];
+	getLeafId?(): string | null;
+	getEntry?(id: string): (SessionEntryLike & { parentId: string | null }) | undefined;
 	getBranch?(): never;
 }
 
@@ -158,7 +160,7 @@ function makeCtx(over: CtxOverrides = {}) {
 			reasoning: true,
 		},
 		thinkingLevel: over.thinkingLevel ?? "high",
-		sessionManager: over.sessionManager ?? { getEntries: () => over.entries ?? [] },
+		sessionManager: { getEntries: () => over.entries ?? [], getLeafId: () => null, getEntry: () => undefined, ...over.sessionManager },
 		getContextUsage:
 			over.getContextUsage ?? (() => over.usage ?? { tokens: 50_000, contextWindow: 200_000, percent: 25 }),
 		ui: {
@@ -438,6 +440,34 @@ describe("footer render", () => {
 		assert.ok(!line1.includes("cache "), "no cache TTL estimate");
 		assert.match(line1, /●/);
 		assert.match(line1, /90% hit/);
+	});
+});
+
+describe("metrics invalidation", () => {
+	it("does no history work on unchanged frames and catches new standalone usage outside paint", async () => {
+		const { handlers } = makePi();
+		const entries = [{ id: "a", parentId: null as string | null, type: "usage", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.25 } } }];
+		let scans = 0, points = 0, contextReads = 0;
+		const mocks = makeCtx({ getContextUsage: () => { contextReads += 1; return undefined; }, sessionManager: {
+			getEntries: () => { scans += 1; return entries; },
+			getLeafId: () => entries.at(-1)?.id ?? null,
+			getEntry: (id) => { points += 1; return entries.find((entry) => entry.id === id); },
+		} });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		try {
+			for (let frame = 0; frame < 100; frame += 1) footer.render(120);
+			assert.equal(scans, 1); assert.equal(points, 0); assert.equal(contextReads, 1);
+			for (const tick of liveTicks) tick.callback();
+			assert.equal(scans, 1); assert.equal(points, 0);
+			entries.push({ ...entries[0], id: "b", parentId: "a" });
+			for (const tick of liveTicks) tick.callback();
+			assert.match(footer.render(120)[0], /~\$0\.50/);
+			assert.equal(scans, 1); assert.equal(points, 1);
+			await handlers.get("session_tree")({ type: "session_tree" }, mocks.ctx);
+			assert.equal(scans, 2);
+			assert.match(footer.render(120)[0], /~\$0\.50/);
+		} finally { footer.dispose(); }
 	});
 });
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { emptyMetrics, scanSession, type SessionEntryLike } from "./metrics.ts";
+import { emptyMetrics, MetricsCache, scanSession, type SessionEntryLike } from "./metrics.ts";
 
 function assistant(usage: {
 	input?: number;
@@ -23,6 +23,34 @@ function assistant(usage: {
 		},
 	};
 }
+
+describe("metrics cache", () => {
+	it("bounds catch-up and preserves all branches and standalone usage", () => {
+		const entries: Array<SessionEntryLike & { id: string; parentId: string | null }> = [];
+		let leaf: string | null = null, scans = 0, pointReads = 0;
+		const source = {
+			getEntries: () => { scans += 1; return entries; },
+			getLeafId: () => leaf,
+			getEntry: (id: string) => { pointReads += 1; return entries.find((entry) => entry.id === id); },
+		};
+		const append = (entry: SessionEntryLike) => { const id = String(entries.length); entries.push({ ...entry, id, parentId: leaf }); leaf = id; };
+		append(assistant({ cost: 1, cacheWrite: 10 }));
+		const cache = new MetricsCache(); cache.reset(source);
+		for (let index = 0; index < 600; index += 1) append(assistant({ cost: 0.125, cacheRead: index === 599 ? 10 : 0 }));
+		assert.equal(cache.refresh(source), false); assert.equal(pointReads, 256);
+		assert.equal(cache.refresh(source), false); assert.equal(pointReads, 512);
+		assert.equal(cache.refresh(source), true); assert.equal(pointReads, 600);
+		assert.equal(scans, 1);
+		assert.deepEqual(cache.value, scanSession(entries));
+		for (let frame = 0; frame < 100; frame += 1) assert.equal(cache.refresh(source), true);
+		assert.equal(pointReads, 600); assert.equal(scans, 1);
+		leaf = "0"; cache.reset(source);
+		append({ type: "usage", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: { total: 0.75 } } });
+		assert.equal(cache.refresh(source), true);
+		assert.deepEqual(cache.value, scanSession(entries));
+		assert.equal(cache.value.lastTurnCacheHit, true);
+	});
+});
 
 describe("scanSession", () => {
 	it("returns zeros for an empty session", () => {
