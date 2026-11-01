@@ -9,10 +9,11 @@
  * session bound to its parent.
  *
  * Every mutation takes one exclusive lock file beside the book. The lock claim
- * follows the shared writer-claim shape (host, session identity, cwd), so a
- * foreign host or invalid claim refuses and only a proven dead local claim is
- * recovered. Reads never follow a symlink and never read more than
- * `PLACE_FILE_MAX_BYTES`. A mutation refuses a malformed, oversized, nonregular,
+ * follows the shared writer-claim shape (host, session identity, cwd), so an
+ * existing claim refuses until offline recovery with all writers and launchers
+ * stopped. Reads never follow a symlink. Reads admit at most
+ * `PLACE_FILE_MAX_BYTES` and use one extra sentinel byte to detect growth.
+ * A mutation refuses a malformed, oversized, nonregular,
  * or symlinked book instead of replacing it, so unknown bindings are never
  * erased.
  */
@@ -22,13 +23,13 @@ import {
 	closeSync,
 	constants,
 	fstatSync,
-	lstatSync,
 	mkdirSync,
 	openSync,
 	readSync,
 	renameSync,
 	unlinkSync,
 	writeSync,
+	writeFileSync,
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
@@ -191,7 +192,7 @@ export class PlaceBook {
 	readState(): PlaceReadState {
 		let fd: number;
 		try {
-			fd = openSync(this.file, constants.O_RDONLY | noFollow());
+			fd = openSync(this.file, constants.O_RDONLY | constants.O_NONBLOCK | noFollow());
 		} catch (error) {
 			const code = (error as NodeJS.ErrnoException).code;
 			if (code === "ENOENT") return { kind: "absent" };
@@ -205,13 +206,15 @@ export class PlaceBook {
 			if (!stat.isFile()) return { kind: "corrupt", reason: "the path is not a regular file" };
 			if (stat.size > PLACE_FILE_MAX_BYTES)
 				return { kind: "corrupt", reason: `the file is larger than ${PLACE_FILE_MAX_BYTES} bytes` };
-			const buffer = Buffer.alloc(stat.size);
+			const buffer = Buffer.alloc(stat.size + 1);
 			let offset = 0;
 			while (offset < buffer.length) {
 				const read = readSync(fd, buffer, offset, buffer.length - offset, offset);
 				if (read <= 0) break;
 				offset += read;
 			}
+			if (offset > stat.size || fstatSync(fd).size !== stat.size)
+				return { kind: "corrupt", reason: "the file changed size during the read" };
 			return parseReadState(buffer.subarray(0, offset).toString("utf8"));
 		} catch (error) {
 			return {
@@ -281,21 +284,30 @@ export class PlaceBook {
 	 */
 	async withArea<T>(
 		area: string,
-		operation: (current: PlaceBinding | undefined) => Promise<PlaceOperation<T>>,
+		operation: (current: PlaceBinding | undefined, admit: (sessionId: string, topic?: string) => void) => Promise<PlaceOperation<T>>,
 	): Promise<PlaceTransaction<T>> {
 		const release = this.lock();
 		try {
 			const target = resolve(area);
-			const current = longestBinding(this.readForMutation(), target);
-			const outcome = await operation(current);
+			const bindings = this.readForMutation();
+			const current = longestBinding(bindings, target);
+			let admitted: PlaceBinding | undefined;
+			const outcome = await operation(current, (sessionId, topic) => {
+				if (current) return;
+				const candidate = { area: target, sessionId, ...(topic ? { topic } : {}), boundAt: new Date().toISOString() };
+				this.serialize([...bindings, candidate]);
+				admitted = candidate;
+			});
 			if (current !== undefined) return { binding: current, value: outcome.value, created: false };
-			const binding: PlaceBinding = {
+			if (admitted && (admitted.sessionId !== outcome.sessionId || admitted.topic !== (outcome.topic || undefined)))
+				throw new Error("Place operation differs from its admitted binding");
+			const binding: PlaceBinding = admitted ?? {
 				area: target,
 				sessionId: outcome.sessionId,
 				...(outcome.topic ? { topic: outcome.topic } : {}),
 				boundAt: new Date().toISOString(),
 			};
-			this.write([...this.readForMutation().filter((existing) => existing.area !== target), binding]);
+			this.write([...bindings, binding]);
 			return { binding, value: outcome.value, created: true };
 		} finally {
 			release();
@@ -331,7 +343,13 @@ export class PlaceBook {
 		const lockFile = `${this.file}.lock`;
 		mkdirSync(dirname(this.file), { recursive: true });
 		const claim = this.newClaim();
-		const held = this.tryTake(lockFile, claim) ?? this.replaceDead(lockFile, claim);
+		const held = this.tryTake(lockFile, claim);
+		if (!held) {
+			const file = this.readLock(lockFile);
+			const observed = classifyClaim(file.claim, this.claimIdentity());
+			throw new PlaceLockedError(lockFile, isClaim(file.claim) ? file.claim : undefined,
+				observed.kind === "live" ? undefined : "offline recovery requires all relevant writers and launchers stopped");
+		}
 		return () => this.release(lockFile, held);
 	}
 
@@ -373,32 +391,6 @@ export class PlaceBook {
 		}
 	}
 
-	private removeLock(lockFile: string, present: boolean): void {
-		if (!present) return;
-		try {
-			unlinkSync(lockFile);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-		}
-	}
-
-	/** Replace one same-host dead claim, with a dev/ino recheck so a concurrent replacement is refused. */
-	private replaceDead(lockFile: string, claim: PlaceLockClaim): PlaceLockClaim {
-		const file = this.readLock(lockFile);
-		const observed = classifyClaim(file.claim, this.claimIdentity());
-		const detail = isClaim(file.claim) ? file.claim : undefined;
-		if (observed.kind === "live") throw new PlaceLockedError(lockFile, detail);
-		if (observed.kind === "unknown") throw new PlaceLockedError(lockFile, detail, observed.error);
-		const current = lstatSync(lockFile, { throwIfNoEntry: false });
-		if (current && (current.dev !== file.dev || current.ino !== file.ino))
-			throw new PlaceLockedError(lockFile, this.lockDetail(lockFile), "the lock claim changed during replacement");
-		this.removeLock(lockFile, current !== undefined);
-		const taken = this.tryTake(lockFile, claim);
-		if (taken === undefined)
-			throw new PlaceLockedError(lockFile, this.lockDetail(lockFile), "another process replaced the dead claim first");
-		return taken;
-	}
-
 	/** Remove the lock only while this process still owns the claim. */
 	private release(lockFile: string, claim: PlaceLockClaim): void {
 		let file: ClaimFile;
@@ -412,26 +404,22 @@ export class PlaceBook {
 		unlinkSync(lockFile);
 	}
 
-	private lockDetail(lockFile: string): PlaceLockClaim | undefined {
-		try {
-			const claim = readClaimFile(lockFile).claim;
-			return isClaim(claim) ? claim : undefined;
-		} catch {
-			return undefined;
-		}
+	private serialize(places: PlaceBinding[]): string {
+		const ordered = [...places].sort((left, right) => left.area.localeCompare(right.area));
+		const serialized = `${JSON.stringify({ places: ordered } satisfies PlaceFile, null, 2)}\n`;
+		if (Buffer.byteLength(serialized, "utf8") > PLACE_FILE_MAX_BYTES)
+			throw new PlaceBookError(this.file, `the proposed book exceeds ${PLACE_FILE_MAX_BYTES} bytes`);
+		return serialized;
 	}
 
 	private write(places: PlaceBinding[]): void {
-		const ordered = [...places].sort((left, right) => left.area.localeCompare(right.area));
+		const serialized = this.serialize(places);
 		mkdirSync(dirname(this.file), { recursive: true });
 		const temporary = `${this.file}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
 		const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | noFollow(), 0o600);
 		try {
-			writeSync(fd, `${JSON.stringify({ places: ordered } satisfies PlaceFile, null, 2)}\n`, undefined, "utf8");
-		} finally {
-			closeSync(fd);
-		}
-		try {
+			try { writeFileSync(fd, serialized, "utf8"); }
+			finally { closeSync(fd); }
 			renameSync(temporary, this.file);
 		} catch (error) {
 			try {

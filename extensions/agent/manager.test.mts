@@ -20,6 +20,7 @@ import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-contract.ts";
 import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
+import { PLACE_FILE_MAX_BYTES } from "./places.ts";
 import type { ExecutionSelection } from "./agent-preferences.ts";
 import { connectPrimaryChannel, type PrimaryChannel, type PrimaryChannelOptions, type PrimaryInfo } from "./primary-channel.ts";
 import type { createPrimaryChannel } from "./primary-channel.ts";
@@ -183,6 +184,27 @@ for (const failure of ["persistence", "status", "listener"] as const) it(`keeps 
 	assert.equal(await manager.sessionFigures("primary", page), "agents: 0/1 active", "admitted scope survives callback failure and excludes reused cost");
 	const overview = await manager.status() as { failures: Array<{ error: string }> };
 	assert.ok(overview.failures.some(({ error }) => error.includes(failure === "persistence" ? "marker write failed" : `${failure === "status" ? "status" : "roster"} callback failed`)));
+});
+
+it("refuses a full place book before catalogue creation or host launch", async (t) => {
+	const root = fixtureRoot(t);
+	let launches = 0;
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory, validateModel: () => {},
+		acquire: async () => { launches += 1; throw new Error("unexpected launch"); },
+	}));
+	t.after(() => manager.close());
+	mkdirSync(manager.catalog.root, { recursive: true });
+	const places = Array.from({ length: 2500 }, (_, index) => ({ area: `/other/${index}`, sessionId: "s".repeat(36), topic: "x".repeat(256), boundAt: "2026-01-01T00:00:00.000Z" }));
+	let raw = `${JSON.stringify({ places }, null, 2)}\n`;
+	while (Buffer.byteLength(raw) > PLACE_FILE_MAX_BYTES - 128) { places.pop(); raw = `${JSON.stringify({ places }, null, 2)}\n`; }
+	const remaining = PLACE_FILE_MAX_BYTES - Buffer.byteLength(raw);
+	places[0].topic += "x".repeat(remaining);
+	writeFileSync(manager.places.file, `${JSON.stringify({ places }, null, 2)}\n`);
+	await assert.rejects(manager.place({ area: root, topic: "x".repeat(256) }, { id: "primary", cwd: root }), /exceeds/u);
+	assert.equal(launches, 0);
+	assert.equal(readdirSync(manager.catalog.root).filter((name) => name.endsWith(".json") && name !== "places.json").length, 0);
+	assert.equal(manager.places.readState().kind, "ok");
 });
 
 it("saves a handle-less spawn role before prompt admission and preserves it on replay", async (t) => {

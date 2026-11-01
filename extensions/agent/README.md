@@ -5,7 +5,7 @@ work, read its evidence, and reuse standing experts. A storage has one independe
 host process and one SQLite database; native conversations in that storage share
 its host. Quitting the primary Pi process closes its client connection, not the
 agent's work. Reopening the primary reconnects to its agents and recovers
-unfinished work when their hosts died.
+unfinished work after an owner-agreed offline claim recovery when their hosts died.
 
 The ordinary primary owns its terminal, editor, transcript, `/restart`, and
 self-compaction. `/agent` opens an agent dashboard over that workspace. The
@@ -1176,6 +1176,14 @@ agents and partial costs.
 
 ## Agent collaboration and placement
 
+Place mutations hold one exclusive book lock. Every existing lock refuses
+mutation, including an orphan. Offline recovery requires all relevant writers
+and launchers stopped. A proposed book must fit the reader's serialized UTF-8
+byte cap before publication. Creating a place reserves those exact binding
+fields under the lock before catalogue publication or host launch. Capacity
+refusal preserves the original readable bytes and starts no host. Reads use
+nonblocking, no-follow open, regular-file validation and one growth sentinel.
+
 Agent controls reach native conversations whose effective selection includes
 them, so an agent can run its own agents. Placement without a handle is
 decided at spawn time and stated in the result. An omitted cwd selects the
@@ -1924,8 +1932,13 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   Pi Durable keep their ordinary resolution. A host whose installation cannot
   supply a peer package exits before it takes the writer claim.
 - Each storage has one writer claim. The process takes it before it opens
-  SQLite or resumes the Durable scheduler. A live or unverified claim refuses
-  a second writer. A dead local owner permits a replacement.
+  SQLite or resumes the Durable scheduler. Every existing claim refuses a second
+  writer, including a dead local owner. Recovery requires all relevant writers
+  and launchers stopped before offline claim removal. Online PID, token or inode
+  checks do not authorise removal. Adoption requires older takeover-capable
+  writers and launchers to stop before the new protocol starts. A rejected
+  runtime factory retains the claim because partial construction has no close
+  handle. Validation failures before acquisition create no claim.
 - The primary talks to the host through the package-level Chord transport at
   `transport/index.ts`, shared with other host clients. Its typed Endpoint
   contract is `pi.agent.endpoint/1`, separate from the manager and primary
@@ -1965,11 +1978,11 @@ returns guidance for Pi's MCP controls rather than an interactive agent prompt.
   death, rather than announce a clean retirement. Busy shutdown retains the recovery marker,
   attempts final catalog publication, seals native admission, and exits through
   the runner. It keeps the live claim until process death; the next host
-  replaces the dead claim and resumes retained native work. Concurrent close
+  resumes retained native work only after offline claim recovery. Concurrent close
   paths share one shutdown. If reload fails after runtime teardown starts, the
   host returns the reload error and takes the same process shutdown path. It
   retains the recovery marker and writer claim until process death; the next
-  acquisition starts a fresh host.
+  acquisition requires offline claim recovery before it starts a fresh host.
 - The runtime's `requestRelease()` returns `{ retiring, blockers }` without a
   model turn. Native work in any conversation, a waiting timer or check-in task,
   an active delivery recipient, or another active request blocks release. Open
@@ -2088,6 +2101,12 @@ A host that does not advertise `release` started on code without that operation,
 regardless of its advertised release number. After active work and result
 deliveries finish, stop that host process with SIGTERM, then use `agent_attach`
 to start current code. Restarting the caller does not replace a retained host.
+
+Each local call owns an independent waiter, even when durable request IDs match.
+Abort, response and terminal failure settle only that local waiter. Client close
+rejects every remaining local waiter independently.
+Chord assigns a separate wire ID per transport attempt. Equal durable IDs do not
+coalesce local calls or promise exactly-once execution for all methods.
 
 An admitted input has a stable Durable request ID. Reconnecting or retrying the
 same admission reuses that identity. A pending delivery intent precedes input

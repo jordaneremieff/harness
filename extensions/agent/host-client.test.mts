@@ -175,7 +175,7 @@ it("refuses to connect when no host is live", { timeout: 30000 }, async (t) => {
 	await assert.rejects(connectHost(fixtureMetadata(root), launch()), /no live durable host/u);
 });
 
-it("relaunches a dead host and reuses one durable submission", { timeout: 30000 }, async (t) => {
+it("refuses online relaunch after owner death and preserves the retained submission", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
 	const config = fixtureMetadata(root);
@@ -184,30 +184,26 @@ it("relaunches a dead host and reuses one durable submission", { timeout: 30000 
 	assert.deepEqual(initial, { submissionId: 101, requestId: "stable-1", params: { prompt: "task" } });
 	const firstPid = first.pid;
 	process.kill(firstPid, "SIGKILL");
-	const second = await acquireHost(config, launch());
-	track(t, second.pid);
-	assert.notEqual(second.pid, firstPid);
-	const repeated = await second.request("submit", { prompt: "task" }, { requestId: "stable-1" });
-	assert.deepEqual(repeated, initial, "the resend reuses the retained submission");
+	await waitForConnectionClose(first);
+	await assert.rejects(acquireHost(config, launch()), /offline recovery/u);
 	assert.equal(Object.keys(readFixtureState(statePath).submitted ?? {}).length, 1);
-	assert.equal(readFixtureState(statePath).starts, 2);
-	await second.close();
+	assert.equal(readFixtureState(statePath).starts, 1);
+	await first.close();
 });
 
-it("resends a retry-safe call after a killed host", { timeout: 30000 }, async (t) => {
+it("settles a retry-safe call with an offline recovery error after owner death", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
 	const connection = await openHost(t, root);
 	const pending = connection.request("receipts", {}, { requestId: "receipts-1" });
+	const refused = assert.rejects(pending, /offline recovery/u);
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
-	writeFixtureState(statePath, { release: true });
-	assert.deepEqual(await pending, { released: true });
-	assert.notEqual(connection.pid, firstPid);
-	track(t, connection.pid);
-	assert.ok((readFixtureState(statePath).waitCompleted ?? 0) >= 1);
-	assert.equal(connection.closed, false);
+	await refused;
+	assert.equal(connection.pid, firstPid);
+	assert.equal(readFixtureState(statePath).starts, 1);
+	assert.equal(connection.closed, true);
 	await connection.close();
 });
 
@@ -222,11 +218,8 @@ it("rejects an unsafe call instead of resending it", { timeout: 30000 }, async (
 	await assert.rejects(pending, /connection was lost|disconnected|closed|peer ended/iu);
 	await waitForConnectionClose(connection);
 	await connection.close();
-	const again = await acquireHost(config, launch());
-	track(t, again.pid);
-	assert.deepEqual(await again.request("timer-list", 1), 1);
-	assert.equal(readFixtureState(statePath).starts, 2);
-	await again.close();
+	await assert.rejects(acquireHost(config, launch()), /offline recovery/u);
+	assert.equal(readFixtureState(statePath).starts, 1);
 });
 
 it("aborting a wait cancels the host-side wait without harming the host", { timeout: 30000 }, async (t) => {
@@ -293,7 +286,7 @@ it("reports initial and changed state and stops on cancel", { timeout: 30000 }, 
 	await connection.close();
 });
 
-it("re-subscribes after a host kill while a safe call is pending", { timeout: 30000 }, async (t) => {
+it("closes change subscriptions when owner death requires offline recovery", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
 	const connection = await openHost(t, root);
@@ -301,13 +294,16 @@ it("re-subscribes after a host kill while a safe call is pending", { timeout: 30
 	const unsubscribe = await subscribeChanges(connection, () => changes.push(changes.length));
 	await changes.waitForCount(1);
 	const pending = connection.request("receipts", { requestId: "changes-resume" });
+	const refused = assert.rejects(pending, /offline recovery/u);
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
-	writeFixtureState(statePath, { release: true });
-	await changes.waitFor(() => connection.pid !== firstPid && changes.length >= 2, 15000);
-	track(t, connection.pid);
-	assert.deepEqual(await pending, { released: true });
+	await refused;
+	assert.equal(connection.closed, true);
+	assert.equal(connection.pid, firstPid);
+	const stopped = changes.length;
+	await connection.close();
+	assert.equal(changes.length, stopped, "closed subscriptions produce no later notification");
 	await unsubscribe();
 	await connection.close();
 });
@@ -459,52 +455,58 @@ it("signals unavailable without relaunching after a host kill while observing", 
 	assert.equal(connection.closed, true, "the connection closes for the manager's bounded recovery");
 });
 
-it("keeps the task-graph observation live across a host recovery", { timeout: 60000 }, async (t) => {
+it("keeps a task observation live after clean writer retirement and reconnect", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), markers = markerFixture(t, root), config = fixtureMetadata(root);
+	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_RETIRE: "clean", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+	track(t, connection.pid); t.after(() => connection.close());
+	const observation = await observeFrames(connection, { scope: "tasks", sessionId: config.storageId });
+	const firstPid = connection.pid, frames = eventLog<{ fresh: boolean; state?: string }>();
+	observation.onFrame((_frame, fresh, state) => frames.push({ fresh, state }));
+	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
+	await markers.marker("snapshot-gated");
+	await pending;
+	track(t, connection.pid);
+	await frames.waitFor((items) => connection.pid !== firstPid && items.filter((item) => item.fresh && item.state === "live").length >= 2);
+	assert.equal(connection.closed, false);
+	const baseline = observation.frame.revision;
+	const changed = eventLog<number>();
+	observation.onFrame((frame, fresh, state) => { if (state === "live" && !fresh && frame?.scope === "tasks") changed.push(frame.revision); });
+	await connection.request("submit", { sessionId: config.storageId, message: "after reconnect", requestId: "tasks-reconnected" });
+	await changed.waitFor((items) => items.some((revision) => revision > baseline));
+	await observation.close();
+});
+
+it("marks a refused observation reopen unavailable without closing the recovered connection", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), markers = markerFixture(t, root), config = fixtureMetadata(root);
+	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_RETIRE: "clean", DURABLE_TEST_OBSERVATION_REOPEN: "fail", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+	track(t, connection.pid); t.after(() => connection.close());
+	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
+	const firstPid = connection.pid, states = eventLog<string | undefined>();
+	observation.onFrame((_frame, _fresh, state) => states.push(state));
+	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
+	await markers.marker("snapshot-gated");
+	await pending;
+	track(t, connection.pid);
+	await markers.marker("observation-reopen-refused");
+	await states.waitFor((items) => items.includes("unavailable"));
+	assert.notEqual(connection.pid, firstPid);
+	assert.equal(connection.closed, false);
+	const late: Array<string | undefined> = [];
+	observation.onFrame((_frame, _fresh, state) => late.push(state));
+	assert.deepEqual(late, ["unavailable"]);
+	assert.equal(states.filter((state) => state === "unavailable").length, 1);
+	await connection.request("status", { sessionId: config.storageId });
+	await observation.close();
+});
+
+for (const scope of ["tasks", "conversation"] as const) it(`marks ${scope} unavailable when a pending safe call encounters an orphan claim`, { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const markers = markerFixture(t, root);
 	const config = fixtureMetadata(root);
 	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_NOTIFY: markers.notifyPath } }));
 	track(t, connection.pid);
 	t.after(() => connection.close());
-	const observation = await observeFrames(connection, { scope: "tasks", sessionId: config.storageId });
-	assert.equal(observation.frame.scope, "tasks");
-	const firstPid = connection.pid;
-	let resumed!: () => void;
-	const freshFrame = new Promise<void>((resolve) => { resumed = resolve; });
-	observation.onFrame((frame, fresh, state) => {
-		if (connection.pid !== firstPid && fresh && state === "live") {
-			assert.equal(frame?.scope, "tasks");
-			resumed();
-		}
-	});
-	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
-	await markers.marker("snapshot-gated");
-	process.kill(firstPid, "SIGKILL");
-	await pending;
-	track(t, connection.pid);
-	await freshFrame;
-	assert.notEqual(connection.pid, firstPid, "the gated safe request recovers onto a replacement host");
-	assert.equal(connection.closed, false);
-	assert.equal(observation.frame.scope, "tasks");
-	const baseline = observation.frame.revision;
-	let changed!: () => void;
-	const nextFrame = new Promise<void>((resolve) => { changed = resolve; });
-	observation.onFrame((frame, fresh, state) => {
-		if (state === "live" && !fresh && frame?.scope === "tasks" && frame.revision > baseline) changed();
-	});
-	await connection.request("submit", { sessionId: config.storageId, message: "after recovery", requestId: "tasks-after-recovery" });
-	await nextFrame;
-	await observation.close();
-});
-
-it("marks a failed observation reopen unavailable while the recovered connection stays usable", { timeout: 10000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const markers = markerFixture(t, root);
-	const config = fixtureMetadata(root);
-	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_OBSERVATION_REOPEN: "fail", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
-	track(t, connection.pid);
-	t.after(() => connection.close());
-	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
+	const observation = await observeFrames(connection, { scope, sessionId: config.storageId });
 	const firstPid = connection.pid;
 	let unavailable!: () => void;
 	const lost = new Promise<void>((resolve) => { unavailable = resolve; });
@@ -512,22 +514,22 @@ it("marks a failed observation reopen unavailable while the recovered connection
 	observation.onFrame((frame, fresh, state) => {
 		if (state !== "unavailable") return;
 		failures += 1;
-		assert.equal(frame?.scope, "conversation");
+		assert.equal(frame?.scope, scope);
 		assert.equal(fresh, false);
 		unavailable();
 	});
 	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
+	const refused = assert.rejects(pending, /offline recovery/u);
 	await markers.marker("snapshot-gated");
 	process.kill(firstPid, "SIGKILL");
-	await pending;
-	track(t, connection.pid);
+	await refused;
 	await lost;
-	assert.notEqual(connection.pid, firstPid);
-	assert.equal(connection.closed, false);
+	assert.equal(connection.pid, firstPid);
+	assert.equal(connection.closed, true);
 	const late: Array<string | undefined> = [];
 	observation.onFrame((_frame, _fresh, state) => late.push(state));
 	assert.deepEqual(late, ["unavailable"], "a late listener never receives a stale live baseline");
-	await connection.request("status", { sessionId: config.storageId });
+	await assert.rejects(connection.request("status", { sessionId: config.storageId }), /closed/u);
 	await observation.close();
 	await connection.close();
 	assert.equal(failures, 1, "the failed observation receives one unavailable event");

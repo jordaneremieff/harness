@@ -2,7 +2,8 @@
  * agent/host-client: launch, attach, and call one durable host process.
  *
  * `acquireHost` attaches when a live writer claim exists and launches the
- * detached runner when the claim is absent, stale, or dead. The connection
+ * detached runner only when the claim is absent. Existing orphan claims require
+ * offline recovery with all relevant writers and launchers stopped. The connection
  * uses the package-level Chord Unix transport and
  * keeps the storage host's request surface: stable request IDs, automatic
  * recovery and resend of retry-safe methods, and caller abort that reaches the
@@ -116,7 +117,6 @@ interface Link {
 }
 
 interface PendingCall {
-	readonly id: string;
 	readonly method: string;
 	readonly params: unknown;
 	readonly call: TransportRequest;
@@ -387,11 +387,12 @@ export function waitForHostRelease(metadata: HostMetadata, options: { signal?: A
 	});
 }
 
-/** Attach to a live host or launch one when the claim is absent, stale, or dead. */
+/** Attach to a live host or launch only when no writer claim exists. */
 async function acquireLink(metadata: HostMetadata, options: HostLaunchOptions): Promise<Link> {
 	const paths = hostPaths(metadata);
 	const observation = observeClaim(paths.claim, paths.identity);
-	if (observation.kind === "unknown") throw new Error(`durable host writer claim cannot be replaced: ${observation.error}`);
+	if (observation.kind === "unknown") throw new Error(`durable host writer claim cannot be replaced: ${observation.error}. Offline recovery requires all relevant writers and launchers stopped`);
+	if (observation.kind === "dead") throw new Error("Durable host writer claim requires offline recovery with all relevant writers and launchers stopped");
 	if (observation.kind === "live") {
 		try {
 			return await attachLink(metadata);
@@ -402,6 +403,8 @@ async function acquireLink(metadata: HostMetadata, options: HostLaunchOptions): 
 			await waitForHostRelease(metadata, { signal: AbortSignal.timeout(Math.min(options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS, CONNECT_WAIT_LIMIT_MS)) });
 		}
 	}
+	if (observeClaim(paths.claim, paths.identity).kind === "dead")
+		throw new Error("Durable host writer claim requires offline recovery with all relevant writers and launchers stopped");
 	try {
 		return await launchRunner(metadata, options);
 	} catch (launchError) {
@@ -418,7 +421,7 @@ class HostConnectionImpl implements HostConnection {
 	private pidValue: number;
 	private socketPathValue: string;
 	private runtimeContractValue: RuntimeContract;
-	private readonly pending = new Map<string, PendingCall>();
+	private readonly pending = new Set<PendingCall>();
 	private readonly changeEntries = new Map<number, ChangeEntry>();
 	private readonly observationEntries = new Map<number, ObservationEntry>();
 	private nextObservationId = 1;
@@ -507,7 +510,6 @@ class HostConnectionImpl implements HostConnection {
 		const id = options.requestId ?? randomUUID();
 		return new Promise<unknown>((resolveCall, rejectCall) => {
 			const call: PendingCall = {
-				id,
 				method,
 				params,
 				call: { method, ...(params === undefined ? {} : { params }), requestId: id, contract: HOST_CONTRACT.operations[method] },
@@ -525,14 +527,14 @@ class HostConnectionImpl implements HostConnection {
 			};
 			if (signal) {
 				const onAbort = () => {
-					if (!this.pending.delete(id)) return;
+					if (!this.pending.delete(call)) return;
 					call.removeAbort();
 					rejectCall(abortReason(signal));
 				};
 				signal.addEventListener("abort", onAbort, { once: true });
 				call.removeAbort = () => signal.removeEventListener("abort", onAbort);
 			}
-			this.pending.set(id, call);
+			this.pending.add(call);
 			const recovery = this.recovery;
 			if (recovery) void recovery.then(() => this.startCall(call), () => this.startCall(call));
 			else this.startCall(call);
@@ -540,14 +542,14 @@ class HostConnectionImpl implements HostConnection {
 	}
 
 	private startCall(call: PendingCall): void {
-		if (this.closedValue || !this.pending.has(call.id)) return;
+		if (this.closedValue || !this.pending.has(call)) return;
 		// The wire sees a caller signal only for observational waits, so a
 		// cancel envelope can never reach admitted Durable work.
 		const wireSignal = isCancelableHostWait(call.method, call.params) ? call.signal : undefined;
 		const client = this.client;
 		void client.request(call.call, wireSignal).then(
 			(result) => {
-				if (!this.pending.delete(call.id)) return;
+				if (!this.pending.delete(call)) return;
 				try { call.resolve(result); }
 				catch (error) { call.reject(toError(error)); }
 			},
@@ -797,14 +799,14 @@ class HostConnectionImpl implements HostConnection {
 	}
 
 	private handleFailure(call: PendingCall, error: unknown): void {
-		if (!this.pending.has(call.id)) return;
+		if (!this.pending.has(call)) return;
 		if (this.client.connected || isChordError(error) && error.code !== "unavailable") {
-			this.pending.delete(call.id);
+			this.pending.delete(call);
 			call.reject(isChordError(error) ? new HostError(error.message, error.reason === "claim" || error.reason === "internal" ? error.reason : error.code) : toError(error));
 			return;
 		}
 		if (call.signal?.aborted) {
-			this.pending.delete(call.id);
+			this.pending.delete(call);
 			call.reject(abortReason(call.signal));
 			return;
 		}
@@ -842,9 +844,9 @@ class HostConnectionImpl implements HostConnection {
 		// subscription's baseline replaces any stale frame.
 		for (const entry of [...this.observationEntries.values()]) void this.bindObservation(entry).catch(() => this.failObservation(entry));
 		for (const call of calls) {
-			if (!this.pending.has(call.id)) continue;
+			if (!this.pending.has(call)) continue;
 			if (!isRetrySafeHostMethod(call.method) || call.attempts >= this.retryAttempts) {
-				this.pending.delete(call.id);
+				this.pending.delete(call);
 				call.reject(cause);
 				continue;
 			}
@@ -867,7 +869,7 @@ class HostConnectionImpl implements HostConnection {
 
 	private rejectAll(error: Error): void {
 		for (const call of [...this.pending.values()]) {
-			this.pending.delete(call.id);
+			this.pending.delete(call);
 			call.reject(error);
 		}
 	}

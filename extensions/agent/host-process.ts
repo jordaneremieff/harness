@@ -15,7 +15,7 @@ import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { ChordError, invalid, isChordError } from "@earendil-works/chord";
 import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
-import { type ClaimFile, type ClaimIdentity, classifyClaim, readClaimFile } from "./claims.ts";
+import { type ClaimIdentity, classifyClaim, readClaimFile } from "./claims.ts";
 import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
 import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from "./version-contract.ts";
 import { isObservationFrame } from "./live-frames.ts";
@@ -62,7 +62,7 @@ export interface HostRuntime {
 	onQuiescent?(listener: () => void): () => void;
 }
 
-/** Called once the claim is held; the runtime opens storage only after this point. */
+/** Called with exclusive ownership. A rejected factory retains the claim because partial native construction has no close handle. */
 export type HostRuntimeFactory = () => HostRuntime | Promise<HostRuntime>;
 
 export interface RunHostOptions {
@@ -160,41 +160,7 @@ function errnoCode(error: unknown): string | undefined {
 	return (error as NodeJS.ErrnoException | undefined)?.code;
 }
 
-/**
- * Replace a same-host claim whose process is dead, with a dev/ino recheck so a
- * concurrent replacement cannot be overwritten.
- */
-function replaceDeadClaim(path: string, identity: ClaimIdentity, record: ClaimRecord): HeldClaim {
-	let file: ClaimFile;
-	try {
-		file = readClaimFile(path);
-	} catch (error) {
-		throw new HostClaimRefusedError("durable host writer claim is unreadable", "unknown", error);
-	}
-	const observation = classifyClaim(file.claim, identity);
-	if (observation.kind === "live") throw new HostClaimRefusedError(`durable host writer claim is held by ${observation.label}`, "live");
-	if (observation.kind === "unknown") throw new HostClaimRefusedError(`durable host writer claim cannot be replaced: ${observation.error}`, "unknown");
-	const current = lstatSync(path, { throwIfNoEntry: false });
-	if (current && (current.dev !== file.dev || current.ino !== file.ino)) throw new HostClaimRefusedError("durable host writer claim changed during replacement", "unknown");
-	try {
-		if (current) unlinkSync(path);
-	} catch (error) {
-		if (errnoCode(error) !== "ENOENT") throw error;
-	}
-	try {
-		createClaimFile(path, record);
-		return new HeldClaim(path, record.token);
-	} catch (error) {
-		if (errnoCode(error) === "EEXIST") throw new HostClaimRefusedError("another durable host replaced the dead claim first", "unknown", error);
-		throw error;
-	}
-}
-
-/**
- * Take the claim once, replacing only a same-host claim whose process is dead.
- * A live, foreign-host, unreadable, invalid, or concurrently changed claim
- * refuses, so two hosts never create schedulers for one storage.
- */
+/** Existing claims are never revoked online, including claims whose recorded process is dead. */
 function takeClaim(path: string, identity: ClaimIdentity, record: ClaimRecord): HeldClaim {
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 	try {
@@ -203,7 +169,12 @@ function takeClaim(path: string, identity: ClaimIdentity, record: ClaimRecord): 
 	} catch (error) {
 		if (errnoCode(error) !== "EEXIST") throw error;
 	}
-	return replaceDeadClaim(path, identity, record);
+	const recovery = "Stop all relevant writers and launchers before offline claim recovery; do not remove a claim while launchers run.";
+	let observation;
+	try { observation = classifyClaim(readClaimFile(path).claim, identity); }
+	catch (error) { throw new HostClaimRefusedError(`Durable host writer claim is unreadable. ${recovery}`, "unknown", error); }
+	if (observation.kind === "live") throw new HostClaimRefusedError(`Durable host writer claim is held by ${observation.label}`, "live");
+	throw new HostClaimRefusedError(`Durable host writer claim requires offline recovery. ${recovery}`, "unknown");
 }
 
 class HeldClaim {
@@ -732,7 +703,7 @@ function cleanupClaim(claim: HeldClaim): void {
 	try {
 		claim.release();
 	} catch {
-		// The claim is left in place when it changed; the next host replaces it by classification.
+		// An uncertain release leaves exclusion in place until offline recovery.
 	}
 }
 
@@ -757,9 +728,9 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
 		return host;
 	} catch (error) {
-		let releasedRuntime = true;
+		let releasedRuntime = false;
 		if (runtime) {
-			try { await closeRuntime(runtime, options.exit); }
+			try { await closeRuntime(runtime, options.exit); releasedRuntime = true; }
 			catch { releasedRuntime = false; }
 		}
 		if (releasedRuntime) cleanupClaim(claim);

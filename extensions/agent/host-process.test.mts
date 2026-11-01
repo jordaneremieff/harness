@@ -205,17 +205,20 @@ it("refuses a second host while the claim is live without creating its runtime",
 	await host.close();
 });
 
-it("replaces a dead claim and records the new owner", { timeout: 15000 }, async (t) => {
+it("refuses a dead claim without constructing a runtime or replacing its bytes", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const config = metadata(root);
 	const paths = hostPaths(config);
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	writeFileSync(paths.claim, JSON.stringify({ token: "stale", pid: await deadPid(), host: hostname(), sessionId: config.storageId, cwd: config.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
-	const host = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
-	const owner = JSON.parse(readFileSync(paths.claim, "utf8")) as { token: string };
-	assert.notEqual(owner.token, "stale");
-	assert.equal(observeClaim(paths.claim, paths.identity).kind, "live");
-	await host.close();
+	const original = readFileSync(paths.claim);
+	let constructions = 0;
+	await Promise.all(Array.from({ length: 2 }, () => assert.rejects(runHost(() => {
+		constructions += 1;
+		return echoRuntime();
+	}, { metadata: config, idleMs: 0, announceReady: noop }), /offline.*all relevant writers and launchers/iu)));
+	assert.equal(constructions, 0);
+	assert.deepEqual(readFileSync(paths.claim), original);
 });
 
 it("retires after the idle window and releases the claim", { timeout: 15000 }, async (t) => {
@@ -350,6 +353,64 @@ it("publishes live observation deltas without a catalog change", { timeout: 1500
 	await subscription.dispose();
 	await host.close();
 	assert.equal(listeners.size, 0, "closing the host releases the native observation listener");
+});
+
+it("excludes a contender throughout held construction and native close", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), config = metadata(root);
+	let built = () => {}, finishConstruction = () => {}, closing = () => {}, finishClose = () => {};
+	const entered = new Promise<void>((resolve) => { built = resolve; });
+	const construction = new Promise<void>((resolve) => { finishConstruction = resolve; });
+	const closeEntered = new Promise<void>((resolve) => { closing = resolve; });
+	const nativeClose = new Promise<void>((resolve) => { finishClose = resolve; });
+	let factories = 0;
+	const first = runHost(async () => {
+		factories += 1; built(); await construction;
+		return { ...echoRuntime(), close: async () => { closing(); await nativeClose; } };
+	}, { metadata: config, idleMs: 0, announceReady: noop });
+	const contender = () => runHost(() => { factories += 1; return echoRuntime(); }, { metadata: config, idleMs: 0, announceReady: noop });
+	try {
+		await entered;
+		await assert.rejects(contender(), HostClaimRefusedError);
+		finishConstruction();
+		const host = await first;
+		const shutdown = host.close();
+		await closeEntered;
+		await assert.rejects(contender(), HostClaimRefusedError);
+		assert.equal(factories, 1);
+		finishClose(); await shutdown;
+		const next = await contender();
+		assert.equal(factories, 2);
+		await next.close();
+	} finally { finishConstruction(); finishClose(); await (await first).close(); }
+});
+
+it("retains exclusion after an uncertain factory rejection", async (t) => {
+	const root = fixtureRoot(t), config = metadata(root);
+	await assert.rejects(runHost(async () => { throw new Error("partial native construction"); }, { metadata: config, idleMs: 0 }), /partial native/u);
+	const before = readFileSync(hostPaths(config).claim);
+	await assert.rejects(runHost(echoRuntime, { metadata: config, idleMs: 0 }), HostClaimRefusedError);
+	assert.deepEqual(readFileSync(hostPaths(config).claim), before);
+});
+
+it("does not acquire a claim when validation fails before construction", async (t) => {
+	const root = fixtureRoot(t), config = metadata(root);
+	let called = false;
+	await assert.rejects(runHost(() => { called = true; return echoRuntime(); }, { metadata: config, idleMs: -1 }), /idleMs/u);
+	assert.equal(called, false);
+	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "absent");
+	const host = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
+	await host.close();
+});
+
+it("retains exclusion when native close fails", async (t) => {
+	const root = fixtureRoot(t), config = metadata(root);
+	const runtime = { ...echoRuntime(), close: async () => { throw new Error("native close failed"); } };
+	const host = await runHost(() => runtime, { metadata: config, idleMs: 0, announceReady: noop });
+	const done = assert.rejects(host.done, /native close failed/u);
+	await assert.rejects(host.close(), /native close failed/u);
+	await done;
+	await assert.rejects(runHost(echoRuntime, { metadata: config, idleMs: 0 }), HostClaimRefusedError);
+	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "live");
 });
 
 it("parses the idle window with the configured bounds", (t) => {

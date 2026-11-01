@@ -492,7 +492,7 @@ export class AgentManager {
 		});
 	}
 
-	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void): Promise<unknown> {
+	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void, beforeCreate?: (storageId: string) => void): Promise<unknown> {
 		const route = input.handle === undefined ? undefined : this.existingTarget(`@${handleSlug(input.handle)}`);
 		if (route) return callExistingSource({ route, action: "spawn", input: { ...input }, caller: { id: caller.id, cwd: caller.cwd }, agentDir: this.options.agentDir, expected: HOST_CONTRACT.operations });
 		if (input.handle !== undefined) return this.spawnHandled({ ...input, handle: input.handle }, caller, onCreated);
@@ -506,7 +506,8 @@ export class AgentManager {
 		const selection = input.selection?.thinking ? selected.selection : effectiveExecutionSelection(selected.selection, thinkingLevel);
 		input = { ...selected, selection };
 		await caller.retainExecutionSelection?.(selection);
-		const { record, created } = previous ? { record: previous, created: false } : this.catalog.createTracked(metadata, input.requestId);
+		if (previous) beforeCreate?.(previous.storageId);
+		const { record, created } = previous ? { record: previous, created: false } : this.catalog.createTracked(metadata, input.requestId, beforeCreate);
 		const row: AgentConversationSummary = {
 			id: record.storageId, storageId: record.storageId, cwd, name: input.name,
 			firstMessage: input.prompt, model: { ...model, thinkingLevel },
@@ -681,7 +682,7 @@ export class AgentManager {
 
 	async place(input: AgentSpawnInput & { area?: string; topic?: string }, caller: AgentCaller): Promise<unknown> {
 		const area = realpathSync(resolve(caller.cwd, input.area ?? "."));
-		const result = await this.places.withArea(area, async (existing) => {
+		const result = await this.places.withArea(area, async (existing, admit) => {
 			if (existing) {
 				const selected = await this.reuseExecutionInput(input, caller, this.catalog.read(existing.sessionId));
 				input = { ...input, ...selected };
@@ -689,7 +690,7 @@ export class AgentManager {
 				const response = input.prompt ? await this.control("submit", { sessionId: existing.sessionId, message: input.prompt, checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir), ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) : await this.control("attach", { sessionId: existing.sessionId }, caller);
 				return { value: { ...response as object, sessionId: existing.sessionId, selection: input.selection }, sessionId: existing.sessionId, topic: existing.topic };
 			}
-			const created = await this.spawn({ preset: input.preset, selection: input.selection, preferenceSnapshot: input.preferenceSnapshot, model: input.model, thinkingLevel: input.thinkingLevel, cwd: area, name: input.topic, prompt: input.prompt, trust: input.trust, checkInMinutes: input.checkInMinutes, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller) as { sessionId: string };
+			const created = await this.spawn({ preset: input.preset, selection: input.selection, preferenceSnapshot: input.preferenceSnapshot, model: input.model, thinkingLevel: input.thinkingLevel, cwd: area, name: input.topic, prompt: input.prompt, trust: input.trust, checkInMinutes: input.checkInMinutes, ...(input.requestId === undefined ? {} : { requestId: input.requestId }), ...originParams(input.origin) }, caller, undefined, (storageId) => admit(storageId, input.topic)) as { sessionId: string };
 			return { value: created, sessionId: created.sessionId, topic: input.topic };
 		});
 		return result.value;

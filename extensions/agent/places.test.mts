@@ -112,7 +112,7 @@ describe("place bindings", () => {
 		}
 	});
 
-	it("refuses a live or foreign lock and recovers a dead local one", () => {
+	it("refuses live, foreign, invalid and dead claims without online replacement", () => {
 		const root = base();
 		try {
 			const book = new PlaceBook(root);
@@ -128,9 +128,8 @@ describe("place bindings", () => {
 			const dead = spawnSync(process.execPath, ["-e", ""]);
 			assert.ok(dead.pid, "the helper process has a pid");
 			writeFileSync(lock, claim(root, dead.pid, "dead"));
-			book.bind("/work/area", "session");
-			assert.equal(book.exact("/work/area")?.sessionId, "session");
-			assert.equal(existsSync(lock), false, "the stale local lock is gone");
+			assert.throws(() => book.bind("/work/area", "session"), /offline recovery/u);
+			assert.equal(JSON.parse(readFileSync(lock, "utf8")).token, "dead", "the dead claim stays");
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

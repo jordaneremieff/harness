@@ -15,7 +15,7 @@ import { parseHostMetadata } from "./host-protocol.ts";
 import { runHost, type HostRuntime } from "./host-process.ts";
 import { publishFixtureMarker } from "./testdata/durable-runtime/signal.ts";
 
-async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>): Promise<HostRuntime> {
+async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>, retire: () => Promise<void>): Promise<HostRuntime> {
 	const durable = await DurableHost.open({
 		storagePath: metadata.storagePath,
 		storageId: metadata.storageId,
@@ -28,6 +28,7 @@ async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>): Pr
 	const openedMarker = join(metadata.cwd, "observation-opened");
 	const snapshotMarker = join(metadata.cwd, "snapshot-gated");
 	const rejectReopen = process.env.DURABLE_TEST_OBSERVATION_REOPEN === "fail" && existsSync(openedMarker);
+	let finishSnapshot: (() => void) | undefined;
 	return {
 		request: async (method, params) => {
 			const input = (params ?? undefined) as Record<string, unknown> | undefined;
@@ -36,15 +37,26 @@ async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>): Pr
 				const notifyPath = process.env.DURABLE_TEST_NOTIFY;
 				if (!notifyPath) throw new Error("DURABLE_TEST_NOTIFY is required for a gated snapshot");
 				await publishFixtureMarker(notifyPath, "snapshot-gated");
-				await new Promise(() => {});
+				if (process.env.DURABLE_TEST_RETIRE === "clean") {
+					const finished = new Promise<void>((resolve) => { finishSnapshot = resolve; });
+					setImmediate(() => { void retire(); });
+					await finished;
+				} else await new Promise(() => {});
 			}
 			if (method === "observe-open") {
-				if (rejectReopen) throw new Error("observation reopen refused");
+				if (rejectReopen) {
+					if (process.env.DURABLE_TEST_NOTIFY) await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "observation-reopen-refused");
+					throw new Error("observation reopen refused");
+				}
 				writeFileSync(openedMarker, "opened");
 			}
 			return durable.request(method, input);
 		},
-		close: () => durable.close(),
+		close: async () => {
+			await durable.close();
+			// Transport closure precedes completion of the interrupted local request.
+			setImmediate(() => finishSnapshot?.());
+		},
 		isIdle: () => durable.isIdle(),
 		onChange: (listener) => durable.harness.subscribeCommits(() => listener()),
 	};
@@ -56,7 +68,7 @@ async function main(): Promise<void> {
 	const metadata = parseHostMetadata(JSON.parse(raw));
 	const gate = process.env.DURABLE_TEST_HOST_START_GATE;
 	if (gate) await publishFixtureMarker(gate, "host-start-gated");
-	const host = await runHost(() => createRuntime(metadata), { metadata });
+	const host = await runHost(() => createRuntime(metadata, () => host.close()), { metadata });
 	await host.done;
 }
 

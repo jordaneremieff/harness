@@ -208,13 +208,14 @@ export class AgentCatalog {
 	 * marks whether this call owns the new record, so a caller can discard only
 	 * its own record when the first acquire fails.
 	 */
-	createTracked(input: Omit<HostMetadata, "storageId" | "storagePath">, requestId?: string): CatalogCreateResult {
+	createTracked(input: Omit<HostMetadata, "storageId" | "storagePath">, requestId?: string, beforeCreate?: (storageId: string) => void): CatalogCreateResult {
 		mkdirSync(this.root, { recursive: true, mode: 0o700 });
 		const storageId =
 			requestId === undefined ? randomUUID() : requestStorageId(JSON.stringify([input.ownerId, requestId]));
 		const metadata = parseHostMetadata({ ...input, storageId, storagePath: join(this.root, `${storageId}.sqlite`) });
 		if (!isThinkingLevel(metadata.thinkingLevel)) throw new Error("Unknown reasoning level");
 		const record: CatalogRecord = { ...metadata, createdAt: new Date().toISOString() };
+		beforeCreate?.(storageId);
 		try {
 			writeFileSync(this.path(storageId), `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 });
 		} catch (error) {
