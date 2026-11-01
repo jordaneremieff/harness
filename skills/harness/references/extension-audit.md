@@ -1,7 +1,7 @@
 # Causal extension audit
 
-The [Audit skill](../../audit/SKILL.md) owns the audit entrypoint and collection.
-Use this reference after [extension-telemetry.md](../../audit/references/extension-telemetry.md) when
+The Audit skill at repository-root path `skills/audit/SKILL.md` owns the audit entrypoint and collection.
+Use this reference after repository-root path `skills/audit/references/extension-telemetry.md` when
 the question requires a utility, retention, incident, repair, reposition,
 instrumentation, supersession, or removal judgment. Keep collection
 observations separate from the causal judgments below.

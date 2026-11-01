@@ -90,8 +90,8 @@ shape readers or migrations without authority.
 For network, credentials, filesystem or subprocesses, use synthetic data and
 isolated roots; bound output and time. Inspect package contents and installed
 behaviour when delivery claims require them. Apply the
-[publication content review](../../../docs/conventions/worktrees.md#publication-content-review)
-to outgoing material; signature scans alone do not establish semantic hygiene.
+publication content review in repository-root path `docs/conventions/worktrees.md`,
+section "Publication content review", to outgoing material; signature scans alone do not establish semantic hygiene.
 Update required documentation in the same change. Keep disposable reproductions
 and evaluation outputs outside tracked paths.
 
