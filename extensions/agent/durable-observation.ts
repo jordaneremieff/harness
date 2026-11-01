@@ -22,7 +22,8 @@ import type { ModelEvidenceCollector } from "./model-evidence.ts";
 import { AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type HarnessInspection, type LiveState, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
 import { captureSnapshot } from "./snapshot-capture.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary, DashboardAutoRetry, DashboardCompactionFailure, DashboardHealth } from "./dashboard-types.ts";
-import { AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc, pendingDeliveries, settleDeliveries, undeliveredForOwner, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
+import { AgentForkDoc, AgentMetaDoc, pendingDeliveries, settleDeliveries, undeliveredForOwner, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
+import { deliveryState, latestReceipt, migrateDeliveryStore, receiptAtInput, receiptForRequest, snapshotIntent } from "./delivery-store.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readAwaitFact } from "./await-observation.ts";
 import { PROVIDER_BLOCK_ERROR, readProviderBlock, readInputProviderBlock, readInputRecovery, type ProviderBlockFact } from "./provider-block.ts";
@@ -1082,15 +1083,20 @@ export async function readDashboard(
 	options: DurableDashboardOptions,
 	context: Context,
 ): Promise<readonly AgentConversationSummary[]> {
-	const delivery = await harness.snapshot(AgentDeliveryDoc, context);
+	const forConversations = async (ids: readonly ConversationId[]): Promise<AgentDeliveryState> => {
+		const state: AgentDeliveryState = { intents: [], receipts: {}, reports: [] };
+		for (const id of ids) { const receipt = await latestReceipt(harness, id, context); if (receipt) state.receipts[String(receipt.submissionId)] = receipt; }
+		return state;
+	};
 	const conversationId = params.conversationId;
 	if (conversationId !== undefined) {
 		const record = await harness.commit((tx) => tx.conversation(conversationId), context);
-		return record === undefined ? [] : [await dashboardSummary(harness, storageId, record, delivery, options, context)];
+		return record === undefined ? [] : [await dashboardSummary(harness, storageId, record, await forConversations([record.id]), options, context)];
 	}
 	const page = await harness.commit((tx) => tx.scanConversations({}, 200, undefined), context);
 	if (options.modelEvidence) options.modelEvidence.value.coverage.conversationsComplete = page.next == null;
 	const summaries: AgentConversationSummary[] = [];
+	const delivery = await forConversations(page.items.map((record) => record.id));
 	for (const record of page.items) summaries.push(await dashboardSummary(harness, storageId, record, delivery, options, context));
 	return summaries;
 }
@@ -1283,8 +1289,7 @@ export async function readConversationSnapshotPage(
 
 export async function readReceipts(harness: Harness, ownerId: string | undefined, context: Context): Promise<readonly DeliveryReceipt[]> {
 	await settleDeliveries(harness, context);
-	const state = await harness.snapshot(AgentDeliveryDoc, context);
-	if (!state) return [];
+	const state = await deliveryState(harness, context, true);
 	return Object.values(state.receipts).filter((receipt) => ownerId === undefined || receipt.ownerId === ownerId);
 }
 
@@ -2068,9 +2073,9 @@ export type DurableSnapshotSource = { readonly backupFrom: string } | { readonly
  * never calls `resume()`. The harness owns its storage: `close()` closes it and
  * removes the temporary snapshot directory when one was created.
  */
-async function operatorInputIds(harness:Harness,delivery:AgentDeliveryState|undefined,conversationIds:ReadonlySet<number>,context:Context):Promise<Set<number>> {
+async function operatorInputIds(harness:Harness,delivery:AgentDeliveryState|undefined,conversationIds:ReadonlySet<number>,context:Context,entries:readonly EntryRecord[]):Promise<Set<number>> {
   const inputs=new Set<number>();
-  for(const receipt of Object.values(delivery?.receipts??{}))if(conversationIds.has(receipt.conversationId)&&receipt.origin==='operator'&&receipt.entryId!==null)inputs.add(receipt.entryId);
+  for(const entry of entries){if(!isInputKind(entry.kind))continue;const receipt=await receiptAtInput(harness,entry.conversationId,entry.id,context);if(receipt?.origin==='operator')inputs.add(entry.id);}
   const unsettled=(delivery?.intents??[]).filter(intent=>conversationIds.has(intent.conversationId)&&intent.origin==='operator'&&(intent.submissionId===null||!delivery?.receipts[String(intent.submissionId)])).slice(-128);
   for(const intent of unsettled){const submission=await harness.commit(tx=>tx.submissionByRequest(intent.conversationId,intent.requestId),context);if(submission?.type==='input'&&submission.entry!==undefined)inputs.add(submission.entry);}
   return inputs;
@@ -2097,6 +2102,27 @@ function recentEntryActivity(entries:readonly EntryRecord[],operatorInputs:Reado
   }
   return {hasMessages:entries.some(entry=>isInputKind(entry.kind)||entry.kind==='pi.assistant'),...(lastUserAt===undefined?{}:{lastUserAt}),...(lastAnswerAt===undefined?{}:{lastAnswerAt})};
 }
+async function migrateObservation(harness: Harness, cleanup: (() => Promise<void>) | undefined, context: Context): Promise<void> {
+	try { await migrateDeliveryStore(harness, context); }
+	catch (error) {
+		await harness.close(BACKGROUND_CONTEXT).catch(() => {});
+		if (cleanup) await cleanup().catch(() => {});
+		throw error;
+	}
+}
+
+async function includeForkAdmissions(harness: Harness, ids: readonly number[], forks: Readonly<Record<string, number>>, delivery: AgentDeliveryState, context: Context): Promise<void> {
+	for (const [requestId, id] of Object.entries(forks)) {
+		if (!ids.includes(id) || delivery.intents.some((intent) => intent.conversationId === id && intent.requestId === requestId)) continue;
+		const intent = await snapshotIntent(harness, id, requestId, context);
+		if (intent) delivery.intents.push(intent);
+		else {
+			const receipt = await receiptForRequest(harness, id, requestId, context);
+			if (receipt) delivery.receipts[String(receipt.submissionId)] = receipt;
+		}
+	}
+}
+
 export class DurableObservation {
 	readonly harness: Harness;
 	readonly storageId: string;
@@ -2148,6 +2174,7 @@ export class DurableObservation {
 			if (cleanup) await cleanup().catch(() => {});
 			throw error;
 		}
+		await migrateObservation(harness, cleanup, context);
 		const extra = cleanup;
 		return new DurableObservation(
 			harness,
@@ -2189,14 +2216,14 @@ export class DurableObservation {
   /** Classify published conversations before reading activity in this one retained snapshot. */
   async recentActivities(ids:readonly number[],root:RecentActivity,context:Context=BACKGROUND_CONTEXT):Promise<RecentConversations> {
     const records=await this.harness.commit(tx=>Promise.all(ids.map(id=>tx.conversation(id as ConversationId))),context);
-    const forks=await this.harness.snapshot(AgentForkDoc,context),delivery=await this.harness.snapshot(AgentDeliveryDoc,context);
+    const forks=await this.harness.snapshot(AgentForkDoc,context),delivery=await deliveryState(this.harness,context);
+    await includeForkAdmissions(this.harness, ids, forks?.forks ?? {}, delivery, context);
     const result=conversationCreators(ids,records,root,forks?.forks??{},delivery);
-    const operators=new Set(result.items.filter(item=>item.activity.creator==='operator').map(item=>item.conversationId));
-    const inputs=await operatorInputIds(this.harness,delivery,operators,context);
     for(const item of result.items){
       if(item.activity.creator!=='operator')continue;
       const conversation=await this.harness.conversation(item.conversationId as ConversationId,context);if(!conversation)continue;
       const entries=(await activeEntries(conversation,context)).filter(entry=>entry.conversationId===item.conversationId);
+      const inputs=await operatorInputIds(this.harness,delivery,new Set([item.conversationId]),context,entries);
       Object.assign(item.activity,recentEntryActivity(entries,inputs));
     }
     return result;

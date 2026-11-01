@@ -15,6 +15,7 @@
  * defining a second copy.
  */
 import { randomUUID } from "node:crypto";
+import { DeliveryRowDoc, automaticDeliveryPage, deliveryState, migrateDeliveryStore, operationReceipts, readDeliveryDraft, receiptKey, reportKey, retainedIntent, retainedReceipt, retainedReport, retainedReportRequest, storeDeliveryRow, writeDeliveryDraft } from "./delivery-store.ts";
 import { inputEntry } from "./input-entry.ts";
 import { configureProviderRecovery, captureProviderRecovery, linkProviderRecovery, readInputRecovery, readInputProviderBlock, readProviderBlock, type ProviderBlockFact, type ProviderRetryNotice } from "./provider-block.ts";
 import { AwaitDoc, acknowledgeProviderRetry, classifyAwaitInput, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
@@ -225,15 +226,6 @@ export type AgentDeliveryState = {
 	readonly reports: DeliveryReport[];
 };
 
-/** Session-scoped delivery ledger shared by every conversation of one storage. */
-export const AgentDeliveryDoc = defineDoc<AgentDeliveryState>({
-	kind: "agent.delivery",
-	version: 1,
-	scope: "session",
-	initial: () => ({ intents: [], receipts: {}, reports: [] }),
-	checkpointWhen: () => true,
-});
-
 /** One bounded pending-notice count avoids reading the whole report ledger during observation. */
 export const ThreadDeliveryDoc = defineDocFamily<{ pending: number }, null>({ kind: "agent.thread-delivery", version: 1, scope: "session", family: true, checkpointWhen: () => false, initial: () => ({ pending: 0 }) });
 
@@ -310,10 +302,6 @@ export interface DurableSubmitResult {
 	readonly deduped: boolean;
 }
 
-function intentIndex(state: Readonly<AgentDeliveryState>, conversationId: ConversationId, requestId: string): number {
-	return state.intents.findIndex((intent) => intent.conversationId === conversationId && intent.requestId === requestId);
-}
-
 /** One admission's delivery identity, written before the submission it describes. */
 export interface DeliveryAdmission {
 	readonly requestId: string;
@@ -347,17 +335,15 @@ export async function recordAdmissionMeta(tx: Tx, conversationId: ConversationId
  * its answer keep the same origin rule as any other admission.
  */
 export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationId, admission: DeliveryAdmission, admittedAt = Date.now(), admissionKind: "new" | "retained" = "new"): Promise<DeliveryIntentState> {
-	const state = await tx.doc(AgentDeliveryDoc);
+	const prior = await retainedIntent(tx, conversationId, admission.requestId);
 	if (admission.requestContext !== undefined) {
 		if (admissionKind === "new" && (admission.requestContext.requestId !== admission.requestId || admission.requestContext.replyTo !== admission.ownerId || admission.requestContext.origin !== admission.origin))
 			throw new Error("The request context does not match its delivery admission");
 		await recordRequestContext(tx, conversationId, admission.requestContext, admissionKind);
 	}
 	await recordAdmissionMeta(tx, conversationId, admission.message);
-	const index = intentIndex(state, conversationId, admission.requestId);
-	if (index >= 0) {
-		const prior = state.intents[index];
-		if (prior !== undefined && prior.submissionId !== null) return { kind: "linked", submissionId: prior.submissionId };
+	if (prior !== undefined) {
+		if (prior.submissionId !== null) return { kind: "linked", submissionId: prior.submissionId };
 		return { kind: "unlinked" };
 	}
 	const message = admission.message;
@@ -367,7 +353,7 @@ export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationI
 		whenBusy: admission.whenBusy ?? "steer", origin: admission.origin, admittedAt,
 		...(admission.requestContext === undefined ? {} : { requester: admission.requestContext.requester }),
 	}, admission.checkInMinutes ?? 0);
-	state.intents.push({
+	await storeDeliveryRow(tx, "intent", {
 		requestId: admission.requestId,
 		ownerId: admission.ownerId,
 		conversationId,
@@ -376,18 +362,16 @@ export async function recordDeliveryIntent(tx: Tx, conversationId: ConversationI
 		operationId: admission.operationId ?? null,
 		submissionId: null,
 		origin: admission.origin,
-	});
+	}, true);
 	return { kind: "new" };
 }
 
 /** Link one retained intent to its submission; true when a different submission was already linked. */
 export async function linkDeliveryIntent(tx: Tx, conversationId: ConversationId, requestId: string, submissionId: SubmissionId): Promise<boolean> {
-	const state = await tx.doc(AgentDeliveryDoc);
-	const index = intentIndex(state, conversationId, requestId);
-	const intent = state.intents[index];
+	const intent = await retainedIntent(tx, conversationId, requestId);
 	if (intent === undefined) return false;
 	if (intent.submissionId === null) {
-		state.intents[index] = { ...intent, submissionId };
+		await storeDeliveryRow(tx, "intent", { ...intent, submissionId });
 		return false;
 	}
 	return intent.submissionId !== submissionId;
@@ -1001,16 +985,25 @@ export async function writeConversationName(conversation: Conversation, name: st
 /** Delivery rows the owner has not acknowledged, after settling every known receipt. */
 export async function undeliveredReceipts(harness: Harness, ownerId: string, context: Context): Promise<DeliveryReceipt[]> {
 	await settleDeliveries(harness, context);
-	const state = await harness.snapshot(AgentDeliveryDoc, context);
+	const state = await deliveryState(harness, context);
 	if (!state) return [];
 	return Object.values(state.receipts).filter((receipt) => receipt.ownerId === ownerId && !receipt.acknowledged);
 }
 
 /** Recorded outbound reports the owner has not acknowledged. */
 export async function undeliveredReports(harness: Harness, ownerId: string, context: Context): Promise<DeliveryReport[]> {
-	const state = await harness.snapshot(AgentDeliveryDoc, context);
-	if (!state) return [];
-	return state.reports.filter((report) => report.ownerId === ownerId && !report.acknowledged);
+	const state = await deliveryState(harness, context);
+	const candidates = state.reports.filter((report) => report.ownerId === ownerId && !report.acknowledged);
+	return harness.commit(async (tx) => {
+		// An explicit owner query checks its returned candidates, independent of the watcher cursor.
+		await retireAutomaticReports(tx, candidates);
+		const reports: DeliveryReport[] = [];
+		for (const candidate of candidates) {
+			const current = await retainedReport(tx, candidate.ownerId, candidate.sourceId);
+			if (current && !current.acknowledged) reports.push(current);
+		}
+		return reports;
+	}, context);
 }
 
 export interface OwnerDeliveries {
@@ -1034,13 +1027,9 @@ export async function recordReport(
 	context: Context,
 ): Promise<DeliveryReport> {
 	const { ownerId, senderIdentity, message, requestId, replyTo } = params;
-	const existing = (await harness.snapshot(AgentDeliveryDoc, context))?.reports.find(
-		(report) => report.ownerId === ownerId && report.requestId === requestId,
-	);
-	if (existing !== undefined) return existing;
+	await migrateDeliveryStore(harness, context);
 	return harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
-		const found = state.reports.find((report) => report.ownerId === ownerId && report.requestId === requestId);
+		const found = await retainedReportRequest(tx, ownerId, requestId);
 		if (found !== undefined) return found;
 		const report: DeliveryReport = {
 			sourceId: `report:${requestId}`,
@@ -1052,20 +1041,21 @@ export async function recordReport(
 			acknowledged: false,
 			createdAt: Date.now(),
 		};
-		state.reports.push(report);
-		return report;
+		return storeDeliveryRow(tx, "report", report, true);
 	}, context);
 }
 
 /** Number of known delivery intents that have no settled receipt yet. */
 export async function pendingDeliveries(harness: Harness, ownerId: string, context: Context): Promise<number> {
-	const state = await harness.snapshot(AgentDeliveryDoc, context);
+	const state = await deliveryState(harness, context);
 	if (!state) return 0;
 	const settled = new Set(Object.keys(state.receipts));
 	return state.intents.filter((intent) => intent.ownerId === ownerId && (intent.submissionId === null || !settled.has(String(intent.submissionId)))).length;
 }
 
-function receiptRow(intent: DeliveryIntent, record: Extract<SubmissionRecord, { readonly type: "input" }> & { readonly status: "done" | "unanswered" }, answer: string | null): DeliveryReceipt {
+type SettledInputRecord = Extract<SubmissionRecord, { readonly type: "input" }> & { readonly status: "done" | "unanswered" };
+
+function receiptRow(intent: DeliveryIntent, record: SettledInputRecord, answer: string | null): DeliveryReceipt {
 	return {
 		submissionId: record.id,
 		requestId: intent.requestId,
@@ -1086,6 +1076,13 @@ function receiptIsRetainedOrTerminal(state: AgentDeliveryState, intent: Delivery
 	return intent.delivery?.state === "terminal" || (intent.submissionId !== null && state.receipts[String(intent.submissionId)] !== undefined);
 }
 
+async function receiptAnswer(tx: Tx, record: SettledInputRecord): Promise<string | null> {
+	if (record.status !== "done") return null;
+	const entry = await tx.entry(AssistantEntry, record.answer);
+	const text = assistantTextOf(entry?.model);
+	return text === "" ? null : text.slice(0, 1200);
+}
+
 async function finalizeReceipt(tx: Tx, state: AgentDeliveryState, intent: DeliveryIntent, index: number): Promise<void> {
 	if (receiptIsRetainedOrTerminal(state, intent)) return;
 	const record = await tx.submissionByRequest(intent.conversationId, intent.requestId);
@@ -1094,22 +1091,14 @@ async function finalizeReceipt(tx: Tx, state: AgentDeliveryState, intent: Delive
 	if (intent.submissionId === null) state.intents[index] = { ...intent, submissionId: record.id };
 	if (record.status !== "done" && record.status !== "unanswered") return;
 	if (state.receipts[String(record.id)] !== undefined) return;
-	let answer: string | null = null;
-	if (record.status === "done") {
-		const entry = await tx.entry(AssistantEntry, record.answer);
-		const text = assistantTextOf(entry?.model);
-		answer = text === "" ? null : text.slice(0, 1200);
-	}
+	const retained = await retainedReceipt(tx, record.id);
+	if (retained) { state.receipts[String(record.id)] = retained; return; }
+	const answer = await receiptAnswer(tx, record);
 	const providerBlock = record.status === "unanswered" ? await readInputProviderBlock(tx, record.id) : undefined;
 	const recoveryOf = await readInputRecovery(tx, record.id);
 	state.receipts[String(record.id)] = { ...receiptRow(intent, record, answer), ...(providerBlock === undefined ? {} : { providerBlock }), ...(recoveryOf === undefined ? {} : { recoveryOf }) };
 }
 
-/**
- * Materialize settled inputs in one commit. Native run settlement assigns one
- * answer to all run inputs atomically, so no observer sees a partial answer
- * group. Request lookup covers admission before its intent link is written.
- */
 /** Absence is not terminal evidence; every native result and request ID must still match. */
 export async function providerRetryReportSettled(tx: Tx, report: DeliveryReport): Promise<boolean> {
 	const execution = report.providerRetry?.fact.execution;
@@ -1123,66 +1112,68 @@ export async function providerRetryReportSettled(tx: Tx, report: DeliveryReport)
 	}
 	return true;
 }
-async function retireAutomaticReports(tx: Tx, state: AgentDeliveryState): Promise<void> {
-	for (let index = state.reports.length - 1; index >= 0; index -= 1) {
-		const report = state.reports[index];
-		if (report?.providerRetry !== undefined && !report.acknowledged && await providerRetryReportSettled(tx, report)) {
-			state.reports[index] = { ...report, acknowledged: true };
+async function retireAutomaticReports(tx: Tx, reports: readonly DeliveryReport[]): Promise<void> {
+	for (const candidate of reports) {
+		const report = await retainedReport(tx, candidate.ownerId, candidate.sourceId);
+		if (!report || report.acknowledged) continue;
+		if (report.providerRetry !== undefined && await providerRetryReportSettled(tx, report)) {
+			await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
 			continue;
 		}
-		if (report?.checkIn === undefined) continue;
+		if (report.checkIn === undefined) continue;
 		const watched = await tx.submissionByRequest(report.checkIn.conversationId as ConversationId, report.checkIn.requestId);
-		if (watched?.status === "done" || watched?.status === "unanswered") state.reports.splice(index, 1);
+		if (watched?.status === "done" || watched?.status === "unanswered") await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
 	}
 }
-
-/** Materialize terminal receipts and retire obsolete automatic notices in the same native commit. */
-export async function settleDeliveries(harness: Harness, context: Context): Promise<void> {
+/** Settle answer groups atomically. A null cursor skips a completed automatic traversal. */
+export async function settleDeliveries(harness: Harness, context: Context, automaticCursor?: string | null): Promise<string | null> {
+	await migrateDeliveryStore(harness, context);
+	const reports = automaticCursor === null ? { reports: [], next: null } : await automaticDeliveryPage(harness, context, automaticCursor);
 	await harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+		const state = await readDeliveryDraft(tx, false, "intent");
 		for (const [index, intent] of state.intents.entries()) await finalizeReceipt(tx, state, intent, index);
 		for (const conversationId of new Set(state.intents.filter((intent) => intent.delivery?.state !== "terminal").map((intent) => intent.conversationId))) {
 			if (await tx.conversation(conversationId) !== undefined) await cleanupRequestContexts(tx, conversationId);
 		}
-		await retireAutomaticReports(tx, state);
+		await retireAutomaticReports(tx, reports.reports);
+		await writeDeliveryDraft(tx, state);
 	}, context);
+	return reports.next;
 }
 
 /** Mark receipts delivered by their owner. Only the owning caller can acknowledge its rows. */
-export async function acknowledgeDeliveries(
-	harness: Harness,
-	ownerId: string,
-	submissionIds: readonly SubmissionId[],
-	context: Context,
-): Promise<SubmissionId[]> {
+export async function acknowledgeDeliveries(harness: Harness, ownerId: string, submissionIds: readonly SubmissionId[], context: Context): Promise<SubmissionId[]> {
 	await settleDeliveries(harness, context);
-	const wanted = new Set(submissionIds);
 	const acknowledged: SubmissionId[] = [];
+	const existing: SubmissionId[] = [];
+	for (const id of new Set(submissionIds)) if ((await harness.snapshot(DeliveryRowDoc, receiptKey(id), context))?.value != null) existing.push(id);
 	await harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
-		for (const [key, receipt] of Object.entries(state.receipts)) {
-			if (receipt.ownerId !== ownerId || !wanted.has(receipt.submissionId) || receipt.acknowledged) continue;
-			state.receipts[key] = { ...receipt, acknowledged: true };
+		for (const id of existing) {
+			const receipt = await retainedReceipt(tx, id);
+			if (!receipt || receipt.ownerId !== ownerId || receipt.acknowledged) continue;
+			await storeDeliveryRow(tx, "receipt", { ...receipt, acknowledged: true });
 			acknowledged.push(receipt.submissionId);
 		}
 	}, context);
 	return acknowledged;
 }
 
-/** Mark reports delivered by their owner. */
+/** Report acknowledgement and the thread projection change in the same native commit. */
 export async function acknowledgeReports(harness: Harness, ownerId: string, sourceIds: readonly string[], context: Context): Promise<string[]> {
-	const wanted = new Set(sourceIds);
+	await migrateDeliveryStore(harness, context);
 	const acknowledged: string[] = [];
+	const existing: string[] = [];
+	for (const sourceId of new Set(sourceIds)) if ((await harness.snapshot(DeliveryRowDoc, reportKey(ownerId, sourceId), context))?.value != null) existing.push(sourceId);
 	await harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
-		for (const [index, report] of state.reports.entries()) {
-			if (report.ownerId !== ownerId || report.acknowledged || !wanted.has(report.sourceId)) continue;
+		for (const sourceId of existing) {
+			const report = await retainedReport(tx, ownerId, sourceId);
+			if (!report || report.acknowledged) continue;
 			if (report.threadId !== undefined) {
 				const notices = await tx.doc(ThreadDeliveryDoc, report.threadId, null);
 				if (notices.pending < 1) throw new Error("The pending thread-notice projection is inconsistent");
 				notices.pending -= 1;
 			}
-			state.reports[index] = { ...report, acknowledged: true };
+			await storeDeliveryRow(tx, "report", { ...report, acknowledged: true });
 			acknowledged.push(report.sourceId);
 		}
 	}, context);
@@ -1192,19 +1183,12 @@ export async function acknowledgeReports(harness: Harness, ownerId: string, sour
 /** Resolve retained receipts by the caller's operation ID, across owners. */
 export async function receiptsByOperation(harness: Harness, operationId: string, context: Context): Promise<DeliveryReceipt[]> {
 	await settleDeliveries(harness, context);
-	const state = await harness.snapshot(AgentDeliveryDoc, context);
-	if (!state) return [];
-	return Object.values(state.receipts).filter((receipt) => receipt.operationId === operationId);
+	return operationReceipts(harness, operationId, context);
 }
 
-/**
- * Resolve delivery intents that have no submission yet: look up the request ID
- * through Durable's deduplication first, and admit the stored message only when
- * no submission exists. Runs once per open before control traffic.
- */
+/** Reacquire unlinked admissions through Durable's request dedupe before any replay. */
 export async function reconcileDeliveries(harness: Harness, context: Context): Promise<void> {
-	const state = await harness.snapshot(AgentDeliveryDoc, context);
-	if (!state) return;
+	const state = await deliveryState(harness, context, false, false);
 	for (const intent of state.intents) {
 		if (intent.submissionId !== null || intent.delivery?.state === "terminal") continue;
 		let submissionId = (await harness.commit((tx) => tx.submissionByRequest(intent.conversationId, intent.requestId), context))?.id;
@@ -1212,32 +1196,19 @@ export async function reconcileDeliveries(harness: Harness, context: Context): P
 			const conversation = await harness.conversation(intent.conversationId, context);
 			if (!conversation) {
 				await harness.commit(async (tx) => {
-					const current = await tx.doc(AgentDeliveryDoc);
-					const index = intentIndex(current, intent.conversationId, intent.requestId);
-					if (index >= 0) current.intents[index] = { ...current.intents[index], delivery: { state: "terminal", reason: "replay target conversation does not exist" } };
+					const current = await retainedIntent(tx, intent.conversationId, intent.requestId);
+					if (current) await storeDeliveryRow(tx, "intent", { ...current, delivery: { state: "terminal", reason: "replay target conversation does not exist" } });
 				}, context);
 				continue;
 			}
 			const request = (await harness.snapshot(RequestContextDoc, intent.conversationId, context))?.requests.find((item) => item.requestId === intent.requestId);
-			const admitted = await conversation.submit(
-				{
-					type: "input",
-					content: deliveredMessage(intent.message),
-					entry: inputEntry(intent.origin, request?.requester),
-					requestId: intent.requestId,
-					...(intent.whenBusy === null ? {} : { whenBusy: intent.whenBusy }),
-				},
-				context,
-			);
+			const admitted = await conversation.submit({ type: "input", content: deliveredMessage(intent.message), entry: inputEntry(intent.origin, request?.requester), requestId: intent.requestId, ...(intent.whenBusy === null ? {} : { whenBusy: intent.whenBusy }) }, context);
 			submissionId = admitted.id;
 		}
 		const resolved = submissionId;
 		await harness.commit(async (tx) => {
-			const current = await tx.doc(AgentDeliveryDoc);
-			const index = intentIndex(current, intent.conversationId, intent.requestId);
-			if (index < 0) return;
-			const found = current.intents[index];
-			if (found !== undefined && found.submissionId === null) current.intents[index] = { ...found, submissionId: resolved };
+			const found = await retainedIntent(tx, intent.conversationId, intent.requestId);
+			if (found !== undefined && found.submissionId === null) await storeDeliveryRow(tx, "intent", { ...found, submissionId: resolved });
 		}, context);
 	}
 	await settleDeliveries(harness, context);

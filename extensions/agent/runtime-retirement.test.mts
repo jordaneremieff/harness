@@ -1,3 +1,5 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
+import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -10,7 +12,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, EntryId, SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { readDeliveryWake } from "./delivery-wake.ts";
-import { AgentDeliveryDoc, AgentMetaDoc } from "./durable-controls.ts";
+import { AgentMetaDoc } from "./durable-controls.ts";
 import type { TimerTask } from "./durable-timers.ts";
 import type { ConversationFrame, TasksFrame } from "./live-frames.ts";
 import { DurableHost } from "./durable-host.ts";
@@ -124,13 +126,13 @@ for (const recipient of ["absent", "malformed"] as const) it(`keeps recovery due
 	const f = await fixture(t), errors = eventLog<Error>();
 	const report = f.native.reportDeliveryError.bind(f.native);
 	t.mock.method(f.native, "reportDeliveryError", (error?: Error) => { report(error); if (error) errors.push(error); });
-	await f.native.harness.commit(async tx => {
-		(await tx.doc(AgentDeliveryDoc)).reports.push({ sourceId: "report:cold", requestId: "cold", ownerId: recipient === "absent" ? f.ownerId : "12345678", senderIdentity: f.metadata.storageId, message: "retained", replyTo: null, acknowledged: false, createdAt: Date.now() });
-	}, BACKGROUND_CONTEXT);
+	await f.native.harness.commit(async tx => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		(deliveryFixtureState).reports.push({ sourceId: "report:cold", requestId: "cold", ownerId: recipient === "absent" ? f.ownerId : "12345678", senderIdentity: f.metadata.storageId, message: "retained", replyTo: null, acknowledged: false, createdAt: Date.now() });
+	}), BACKGROUND_CONTEXT);
 	await errors.waitForCount(1);
 	await new Promise<void>(setImmediate);
 	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
-	assert.equal((await f.native.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports[0]?.delivery?.state, recipient === "absent" ? "parked" : "terminal");
+	assert.equal((await readRetainedDelivery(f.native.harness, BACKGROUND_CONTEXT, true))?.reports[0]?.delivery?.state, recipient === "absent" ? "parked" : "terminal");
 });
 
 it("keeps an active transient delivery due and blocks both retirement and release", { timeout: 15000 }, async (t) => {
@@ -334,7 +336,7 @@ it("refuses malformed recipients before creating report and intent rows", { time
 	await assert.rejects(f.runtime.request("submit", { message: "invalid", requestId: "invalid-intent", ownerId: "12345678", origin: "operator" }, "invalid-intent"), /Delivery recipient must be an exact/u);
 	await assert.rejects(f.runtime.request("task-submit", { message: "invalid", requestId: "invalid-task", requester: f.ownerId, replyTo: "12345678", origin: "operator" }, "invalid-task"), /Delivery recipient must be an exact/u);
 	await assert.rejects(f.runtime.request("timer-schedule", { message: "invalid", deliverAt: Date.now() + 60000, ownerId: "12345678" }, "invalid-timer"), /Delivery recipient must be an exact/u);
-	const state = await f.native.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	const state = await readRetainedDelivery(f.native.harness, BACKGROUND_CONTEXT, true);
 	assert.equal(state?.reports.some((report) => report.ownerId === "12345678") ?? false, false);
 	assert.equal(state?.intents.some((intent) => intent.ownerId === "12345678") ?? false, false);
 });
@@ -351,7 +353,7 @@ it("validates rewind recipients but permits a self-owned rewind", { timeout: 150
 	const result = await f.runtime.request("rewind", { ...params, selfOwned: true }, "rewind-self-owner") as { identity: string; conversationId: ConversationId; submissionId: SubmissionId };
 	assert.equal((await f.native.wait(result.submissionId, BACKGROUND_CONTEXT)).status, "done");
 	assert.equal(result.identity, `${f.metadata.storageId}:${result.conversationId}`);
-	const state = await f.native.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	const state = await readRetainedDelivery(f.native.harness, BACKGROUND_CONTEXT, true);
 	assert.equal(state?.intents.some(intent => intent.ownerId === "12345678") ?? false, false);
 });
 
@@ -386,20 +388,21 @@ for (const kind of ["intent", "missing-receipt", "receipt", "report"] as const) 
 	const f = await fixture(t);
 	const intent = { requestId: "pending", ownerId: f.ownerId, conversationId: 1 as ConversationId, message: "pending", whenBusy: null, operationId: null, submissionId: kind === "intent" ? null : 999 as SubmissionId, origin: "operator" as const };
 	const receipt = { submissionId: 999 as SubmissionId, requestId: "pending", ownerId: f.ownerId, conversationId: 1 as ConversationId, operationId: null, origin: "operator" as const, status: "done" as const, entryId: null, answerEntryId: 999 as EntryId, answer: "answer", reason: null, acknowledged: false };
-	await f.native.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await f.native.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		if (kind === "intent" || kind === "missing-receipt") state.intents.push(intent);
 		if (kind === "receipt") state.receipts["999"] = receipt;
 		if (kind === "report") state.reports.push({ sourceId: "report:pending", requestId: "pending", ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "pending", replyTo: null, acknowledged: false, createdAt: Date.now() });
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	assert.equal(await f.native.refreshIdle(), true, "delivery rows alone are not native tasks");
 	assert.equal(await eligible(f.runtime), kind !== "intent", "only the pending unlinked admission prevents retirement");
-	await f.native.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
-		state.intents.splice(0);
-		delete state.receipts["999"];
+	await f.native.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
+		for (const [index, intent] of state.intents.entries()) state.intents[index] = { ...intent, delivery: { state: "terminal", reason: "native admission is unavailable" } };
+		const receipt = state.receipts["999"];
+		if (receipt) state.receipts["999"] = { ...receipt, acknowledged: true };
 		state.reports.splice(0);
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	assert.equal(await eligible(f.runtime), true);
 });
 
@@ -413,11 +416,11 @@ for (const kind of ["receipt", "report"] as const) it(`retires with a dead-owner
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, JSON.stringify({ version: PRIMARY_DELIVERY_CONTRACT, id: f.ownerId, serverId: randomUUID(), startedAt: new Date().toISOString(), pid: dead.pid, hostname: hostname(), socketPath: join(f.root, "dead.sock"), cwd: f.cwd }));
 	await f.runtime.request("report", { ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "pending", requestId: "dead-owner" }, "dead-owner");
-	if (kind === "receipt") await f.native.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	if (kind === "receipt") await f.native.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		state.reports.splice(0);
 		state.receipts["999"] = { submissionId: 999 as SubmissionId, requestId: "pending", ownerId: f.ownerId, conversationId: 1 as ConversationId, operationId: null, origin: "model", status: "done", entryId: null, answerEntryId: 999 as EntryId, answer: "answer", reason: null, acknowledged: false };
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const state = await f.runtime.request("recovery-state", {}, "state") as { workPending: boolean; deliveriesPending: boolean; deliveriesActive: boolean };
 	assert.deepEqual(state, { workPending: false, deliveriesPending: true, deliveriesActive: false });
 	assert.equal(await eligible(f.runtime), true);
@@ -553,7 +556,7 @@ it("keeps a host-local foreign control alive across retirement", { timeout: 1500
 		assert.equal(await eligible(f.runtime), false);
 	} finally { release.resolve(); await report; }
 	assert.equal(await eligible(f.runtime), true, "the report to an absent primary is parked and does not block retirement");
-	await f.native.harness.commit(async (tx) => { const state = await tx.doc(AgentDeliveryDoc); state.reports.splice(0); }, BACKGROUND_CONTEXT);
+	await f.native.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => { const state = deliveryFixtureState; state.reports.splice(0); }), BACKGROUND_CONTEXT);
 	assert.equal(await eligible(f.runtime), true);
 });
 

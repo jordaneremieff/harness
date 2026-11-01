@@ -1,3 +1,4 @@
+import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -8,7 +9,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt, type TranscriptContext } from "@earendil-works/pi-ai";
 import { GenerationTask, hook, Harness, type SubmissionId } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { AgentMetaDoc, AgentDeliveryDoc, readOutcome, type DeliveryReceipt } from "./durable-controls.ts";
+import { AgentMetaDoc, readOutcome, type DeliveryReceipt } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { ProfileDoc } from "./profile.ts";
@@ -26,11 +27,11 @@ it("resumes retained work despite an independent profile reconciliation failure"
 	const agent = { model: { provider: testModel.provider, modelId: testModel.id }, instructions: "Retained instructions" };
 	const root = await original.root(context, { agent });
 	const child = await original.createConversation({ ownership: { kind: "ownerless" }, agent }, context);
-	await original.commit(async (tx) => {
+	await original.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
 		(await tx.doc(ProfileDoc, root.id)).identity = "conflicting-profile-identity";
-		const delivery = await tx.doc(AgentDeliveryDoc);
+		const delivery = deliveryFixtureState;
 		for (const id of [root.id, child.id]) delivery.intents.push({ requestId: `accepted-${id}`, conversationId: id, ownerId: "requester", origin: "operator", message: `Accepted task ${id}`, whenBusy: "followUp", operationId: null, submissionId: null });
-	}, context);
+	}), context);
 	await original.close(context);
 	const errors: unknown[] = [];
 	host = await DurableHost.open({ storagePath, storageId, models: runtime, registry: fixtureRegistry(), onReport: (error) => errors.push(error) }, context);
@@ -62,15 +63,15 @@ it("reconciles retained children before resume and supplies routes for base-only
 	}
 	const last = ids.at(-1);
 	assert.ok(last !== undefined);
-	await original.commit(async (tx) => {
+	await original.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
 		for (const id of ids) {
 			const meta = await tx.doc(AgentMetaDoc, id);
 			meta.name = `Retained ${id}`;
 			meta.owner = "founder";
 		}
-		const delivery = await tx.doc(AgentDeliveryDoc);
+		const delivery = deliveryFixtureState;
 		delivery.intents.push({ requestId: "retained-base", conversationId: last, ownerId: "old-requester", origin: "model", message: "Retained task", whenBusy: null, operationId: null, submissionId: null });
-	}, context);
+	}), context);
 	await original.close(context);
 	const observed: TranscriptContext[] = [];
 	const models = new Proxy(runtime, { get(target, property) {

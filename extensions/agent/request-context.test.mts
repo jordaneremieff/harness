@@ -1,10 +1,12 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
+import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { inputEntry } from "./input-entry.ts";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { CompactionEntry, Harness, LiveDoc, MemoryStorage, UserEntry, GenerationTask, hook, createRegistry, defineExtension, type ConversationId, type SubmissionId, type TaskId, type Tx } from "@earendil-works/pi-durable";
 import { answerMessage, completed, fixtureRegistry, fixtureRuntime, gateTool, toolCallMessage } from "./durable-host-fixture.mts";
-import { AgentDeliveryDoc, recordDeliveryIntent, settleDeliveries } from "./durable-controls.ts";
+import { recordDeliveryIntent, settleDeliveries } from "./durable-controls.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
 import { cleanupRequestContexts, readRequestContexts, readRequestContextPage, recordRequestContext, requestContextHooks, requestContextSection, validateRequestContext, RequestContextDoc, REQUEST_CONTEXT_LIMIT, type RequestContext } from "./request-context.ts";
@@ -52,11 +54,11 @@ it("exposes queued arrivals and prunes native terminal routes", async (t) => {
 it("derives default routes for already placed base submissions but not settled inputs", async (t) => {
 	const { harness, conversation } = await fixture(t);
 	const request = { requestId: "base-retained", requester: "old-owner", replyTo: "old-owner", origin: "operator" as const };
-	const id = await harness.commit(async (tx) => {
+	const id = await harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
 		const submissionId = await placed(tx, conversation.id, request);
-		(await tx.doc(AgentDeliveryDoc)).intents.push({ requestId: request.requestId, ownerId: request.replyTo, origin: request.origin, conversationId: conversation.id, message: "Task", whenBusy: null, operationId: null, submissionId });
+		(deliveryFixtureState).intents.push({ requestId: request.requestId, ownerId: request.replyTo, origin: request.origin, conversationId: conversation.id, message: "Task", whenBusy: null, operationId: null, submissionId });
 		return submissionId;
-	}, context);
+	}), context);
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), [{ ...request, status: "placed" }]);
 	assert.deepEqual((await harness.snapshot(RequestContextDoc, conversation.id, context))?.requests, []);
 	await harness.commit((tx) => tx.settleSubmission(id, { status: "unanswered", reason: "aborted" }), context);
@@ -111,38 +113,38 @@ it("refuses route changes and bounds new admissions without silent loss", async 
 it("derives oversized base queues without route writes and retains inputs beyond the profile page", async (t) => {
 	const { harness, conversation } = await fixture(t);
 	const count = REQUEST_CONTEXT_LIMIT + 1;
-	await harness.commit(async (tx) => {
-		const delivery = await tx.doc(AgentDeliveryDoc);
+	await harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const delivery = deliveryFixtureState;
 		for (let index = 0; index < count; index++) {
 			const request = { requestId: `base-${index}`, requester: "owner", replyTo: "owner", origin: "operator" as const };
 			const submissionId = await placed(tx, conversation.id, request);
 			delivery.intents.push({ requestId: request.requestId, conversationId: conversation.id, ownerId: request.requester, origin: request.origin, message: "Retained", whenBusy: "followUp", operationId: null, submissionId });
 			if (index === count - 1) (await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [submissionId] };
 		}
-	}, context);
+	}), context);
 	const page = await readRequestContextPage(harness, conversation.id, context);
 	assert.equal(page.requests.length, REQUEST_CONTEXT_LIMIT);
 	assert.equal(page.omitted, 1);
 	assert.deepEqual((await harness.snapshot(RequestContextDoc, conversation.id, context))?.requests, [], "base evidence is not materialized into admission-limited metadata");
-	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.intents.length, count);
+	assert.equal((await readRetainedDelivery(harness, context, true))?.intents.length, count);
 	assert.equal((await readRequestContexts(harness, conversation.id, context)).at(-1)?.requestId, `base-${count - 1}`);
 });
 
 it("omits oversized retained route fields from projections without changing native evidence", async (t) => {
 	const { harness, conversation } = await fixture(t);
 	const request = { requestId: "r".repeat(1025), requester: "owner", replyTo: "owner", origin: "operator" as const };
-	await harness.commit(async (tx) => {
-		const delivery = await tx.doc(AgentDeliveryDoc);
+	await harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const delivery = deliveryFixtureState;
 		const live = await tx.doc(LiveDoc, conversation.id);
 		const submissionId = await placed(tx, conversation.id, request);
 		delivery.intents.push({ requestId: request.requestId, conversationId: conversation.id, ownerId: request.requester, origin: request.origin, message: "Retained", whenBusy: "followUp", operationId: null, submissionId });
 		live.run = { taskId: 123 as TaskId, inputs: [submissionId] };
-	}, context);
+	}), context);
 	assert.deepEqual(await readRequestContextPage(harness, conversation.id, context), { requests: [], omitted: 1 });
 	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);
 	assert.match(rendered ?? "", /read agent_profile/u);
 	assert.doesNotMatch(rendered ?? "", /rrrrr/u);
-	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.intents[0]?.requestId, request.requestId);
+	assert.equal((await readRetainedDelivery(harness, context, true))?.intents[0]?.requestId, request.requestId);
 	assert.equal((await readRequestContexts(harness, conversation.id, context))[0]?.requestId, request.requestId);
 });
 
@@ -201,7 +203,7 @@ it("notes the first provider input before the delivery link exists and drops its
 	await began;
 	const submitted = await conversation.submit({ type: "input", content: "Do work", requestId: request.requestId }, context);
 	await began;
-	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.intents[0]?.submissionId, null, "the provider observes routes before linkDeliveryIntent");
+	assert.equal((await readRetainedDelivery(harness, context, true))?.intents[0]?.submissionId, null, "the provider observes routes before linkDeliveryIntent");
 	assert.match(requests[0], /agent-request-context/u);
 	assert.match(requests[0], /requester-b/u);
 	const compaction = await conversation.compact("Summarize without requester identifiers", context);

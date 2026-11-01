@@ -1,3 +1,4 @@
+import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {mkdtempSync, readFileSync, rmSync} from 'node:fs';
@@ -7,7 +8,7 @@ import test from 'node:test';
 import {BACKGROUND_CONTEXT} from '@earendil-works/chord/context';
 import {ROOT_CONVERSATION_ID,defineTask} from '@earendil-works/pi-durable';
 import {AgentCatalog} from './catalog.ts';
-import {AgentDeliveryDoc,AgentForkDoc} from './durable-controls.ts';
+import {AgentForkDoc} from './durable-controls.ts';
 import {DurableHost} from './durable-host.ts';
 import {DurableObservation} from './durable-observation.ts';
 import {answerMessage, fixtureRegistry, fixtureRuntime, hostOptions} from './durable-host-fixture.mts';
@@ -42,17 +43,17 @@ test('a current reader derives root activity without changing a live host or its
   const catalog=new AgentCatalog(root),{storageId:_storageId,storagePath:_storagePath,...metadata}=fixtureMetadata(root);
   const record=catalog.create({...metadata,ownerId:`operator:${'b'.repeat(64)}`});
   const host=await DurableHost.open({...hostOptions(record.storagePath,await fixtureRuntime('answer'),fixtureRegistry()),storageId:record.storageId,resume:false});t.after(()=>host.close());
-  await host.harness.commit(async tx=>{
+  await host.harness.commit(async tx=>editDeliveryFixture(tx, async (deliveryFixtureState) => {
     const prompt=await tx.appendEntry(ROOT_CONVERSATION_ID,{kind:'pi.user',model:[{role:'user',content:'Operator prompt',timestamp:100}]});
     const answer=await tx.appendEntry(ROOT_CONVERSATION_ID,{kind:'pi.assistant',model:[{...answerMessage('Actual answer'),timestamp:200}]});
     await tx.appendEntry(ROOT_CONVERSATION_ID,{kind:'pi.assistant',model:[{...answerMessage('Tool commentary'),timestamp:300,stopReason:'toolUse',content:[{type:'text',text:'Tool commentary'},{type:'toolCall',id:'call',name:'read',arguments:{}}]}]});
     const peer=await tx.appendEntry(ROOT_CONVERSATION_ID,{kind:'pi.user',model:[{role:'user',content:'Agent message',timestamp:400}]});
     await tx.appendEntry(ROOT_CONVERSATION_ID,{kind:'agent.status',data:{timestamp:999}});
-    const delivery=await tx.doc(AgentDeliveryDoc);
+    const delivery=deliveryFixtureState;
     const receipt={requestId:'operator-request',ownerId:record.storageId,conversationId:ROOT_CONVERSATION_ID,operationId:null,status:'done' as const,answerEntryId:answer.id,answer:'Actual answer',reason:null,acknowledged:true};
     delivery.receipts['1']={...receipt,submissionId:1 as never,origin:'operator',entryId:prompt.id};
     delivery.receipts['2']={...receipt,submissionId:2 as never,origin:'model',entryId:peer.id};
-  },BACKGROUND_CONTEXT);
+  }),BACKGROUND_CONTEXT);
   const oldPublication={updatedAt:'2026-10-25T00:00:00.000Z',rows:await host.request('dashboard'),coverage:{complete:true,omitted:0}};
   catalog.updateView(record.storageId,oldPublication as never);
   assert.equal((oldPublication.rows as {recents?:unknown}[])[0].recents,undefined);
@@ -72,20 +73,20 @@ test('one retained snapshot classifies operator rewind, task-owned and unknown c
   const registry=fixtureRegistry();registry.install({name:'recents-fixture-anchor',tasks:[anchor]});
   const host=await DurableHost.open({...hostOptions(record.storagePath,await fixtureRuntime('answer'),registry),storageId:record.storageId,resume:false});t.after(()=>host.close());
   const parent=await host.harness.commit(tx=>tx.appendEntry(ROOT_CONVERSATION_ID,{kind:'pi.assistant',model:[{...answerMessage('Inherited answer'),timestamp:9000}]}),BACKGROUND_CONTEXT);
-  const children=await host.harness.commit(async tx=>{
+  const children=await host.harness.commit(async tx=>editDeliveryFixture(tx, async (deliveryFixtureState) => {
     const operator=await tx.forkConversation(ROOT_CONVERSATION_ID,parent.id,{ownership:{kind:'ownerless'}});
     const task=await tx.createTask(anchor,null,{ownership:{kind:'conversation'},conversationId:ROOT_CONVERSATION_ID,background:true});
     const model=await tx.forkConversation(ROOT_CONVERSATION_ID,parent.id,{ownership:{kind:'task',taskId:task}});
     const plain=await tx.forkConversation(ROOT_CONVERSATION_ID,parent.id,{ownership:{kind:'ownerless'}});
     const forks=await tx.doc(AgentForkDoc);forks.forks['operator-rewind']=operator.id;forks.forks['model-proof']=model.id;forks.forks['plain-fork']=plain.id;
-    const delivery=await tx.doc(AgentDeliveryDoc);
+    const delivery=deliveryFixtureState;
     for(const [conversation,requestId,at] of [[operator,'operator-rewind',600],[model,'model-proof',800],[plain,'later-operator-input',1000]] as const){
       const input=await tx.appendEntry(conversation.id,{kind:'pi.user',model:[{role:'user',content:'Operator input',timestamp:at}]});
       const answer=await tx.appendEntry(conversation.id,{kind:'pi.assistant',model:[{...answerMessage('Own answer'),timestamp:at+100}]});
       delivery.receipts[String(at)]={submissionId:at as never,requestId,ownerId:id,conversationId:conversation.id,operationId:null,origin:'operator',entryId:input.id,answerEntryId:answer.id,status:'done',answer:'Own answer',reason:null,acknowledged:true};
     }
     return {operator:operator.id,model:model.id,plain:plain.id};
-  },BACKGROUND_CONTEXT);
+  }),BACKGROUND_CONTEXT);
   const nativeBefore=await host.harness.inspect(BACKGROUND_CONTEXT),before=createHash('sha256').update(readFileSync(catalog.path(record.storageId))).digest('hex');
   let copies=0;const activityReads:number[]=[],open=DurableObservation.open;
   t.mock.method(DurableObservation,'open',async(...args:Parameters<typeof DurableObservation.open>)=>{

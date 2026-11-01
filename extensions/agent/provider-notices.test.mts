@@ -1,3 +1,4 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5,7 +6,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { AgentDoc, LiveDoc, type ConversationId, type LiveState, type SubmissionId, type TaskId, type Tx, type Harness, type CommitPublication } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { AgentDeliveryDoc, settleDeliveries, type AgentDeliveryState } from "./durable-controls.ts";
+import { settleDeliveries, type AgentDeliveryState } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureRegistry, hostOptions, scriptedRuntime } from "./durable-host-fixture.mts";
 import { eventLog } from "./host-fixture.mts";
@@ -14,21 +15,34 @@ import { RequestContextDoc, type RequestContext } from "./request-context.ts";
 
 function fixture() {
 	const conversationId = 1 as ConversationId;
-	const ledger: AgentDeliveryState = { intents: [], receipts: {}, reports: [] };
+	const documents = new Map<string, unknown>();
+	const address = (token: { definition: { kind: string } }, args: readonly unknown[]) => `${token.definition.kind}:${JSON.stringify(args.slice(0, -1))}`;
+	const ledger = (): AgentDeliveryState => {
+		const result: AgentDeliveryState = { intents: [], receipts: {}, reports: [] };
+		for (const [key, value] of documents) {
+			if (!key.startsWith("agent.delivery-row:")) continue;
+			const row = value as { kind: string; value: AgentDeliveryState["reports"][number] | null };
+			if (row.kind === "report" && row.value !== null) result.reports.push(row.value);
+		}
+		return result;
+	};
 	const state: ReturnType<typeof ProviderRetryBurstDoc.definition.initial> = { completedThrough: 0 };
 	const routes: { requests: RequestContext[] } = { requests: [] };
 	const live: LiveState = { run: { taskId: 10 as TaskId, inputs: [] }, generation: { attempt: 1, retry: { at: 100, error: "429 too many requests" } } };
 	const inputs = new Map<string, { type: "input"; id: SubmissionId; status: "placed" }>();
 	let outcome: "completed" | "failed" | "aborted" | "orphaned" | undefined;
 	const tx = {
-		doc: async (token: unknown) => {
+		doc: async (token: { definition: { kind: string; initial(seed?: unknown): unknown } }, ...args: unknown[]) => {
 			if (token === LiveDoc) return live;
 			if (token === ProviderRetryBurstDoc) return state;
-			if (token === AgentDeliveryDoc) return ledger;
 			if (token === RequestContextDoc) return routes;
 			if (token === AgentDoc) return { model: { provider: "fixture", modelId: "model" } };
-			throw new Error("Unexpected document");
+			if (!token.definition.kind.startsWith("agent.delivery") && token.definition.kind !== "agent.check-in-fallback") throw new Error("Unexpected document");
+			const key = address(token, args);
+			if (!documents.has(key)) documents.set(key, token.definition.initial(args.at(-1)));
+			return documents.get(key);
 		},
+		retireDoc: async (token: { definition: { kind: string } }, ...args: unknown[]) => { documents.delete(address(token, [...args, null])); },
 		task: async () => outcome === undefined ? { state: { status: "running" } } : { state: { status: "terminal", outcome: { status: outcome } } },
 		submissionByRequest: async (_conversationId: ConversationId, requestId: string) => inputs.get(requestId),
 	} as unknown as Tx;
@@ -42,7 +56,7 @@ function fixture() {
 	};
 	const retain = (observations?: readonly LiveState[]) => retainProviderRetryNotices(tx, "source", conversationId, 21, 50, observations);
 	const end = (status: NonNullable<typeof outcome>) => { outcome = status; delete live.run; delete live.generation; };
-	return { ledger, state, live, routes, tx, add, retain, end };
+	return { get ledger() { return ledger(); }, state, live, routes, tx, add, retain, end };
 }
 
 it("retains burst facts without a report through every backoff and in-flight attempt", async () => {
@@ -203,29 +217,29 @@ it("reopens an active burst and retains one failure summary plus its separate na
 	});
 	const admitted = await host.submit({ message: "retry work", requestId: "retry-work", ownerId: "actual-recipient", origin: "model" });
 	await starts.waitForCount(1); unsubscribe();
-	const first = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT); assert.equal(first?.reports.length, 0);
+	const first = await readRetainedDelivery(host.harness, BACKGROUND_CONTEXT, true); assert.equal(first?.reports.length, 0);
 	const active = await host.harness.snapshot(ProviderRetryBurstDoc, 1 as ConversationId, BACKGROUND_CONTEXT); assert.equal(active?.active?.retries, 1);
 	const live = await host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT); assert.ok(live?.generation?.retry);
 	await host.close();
 	host = await DurableHost.open({ ...options, resume: false });
 	assert.equal((await host.harness.snapshot(ProviderRetryBurstDoc, 1 as ConversationId, BACKGROUND_CONTEXT))?.active?.retries, 1);
-	assert.equal((await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length, 0);
+	assert.equal((await readRetainedDelivery(host.harness, BACKGROUND_CONTEXT, true))?.reports.length, 0);
 	now = live.generation.retry.at + 1;
 	const failures = eventLog<void>();
 	const stop = host.harness.subscribeCommits((publication) => {
-		for (const change of publication.changes) if (change.type === "document" && change.record.kind === "agent.delivery" && change.value !== null && Array.isArray(change.value.reports) && change.value.reports.length === 1) failures.push(undefined);
+		for (const change of publication.changes) if (change.type === "document" && change.record.kind === "agent.delivery-row" && change.value?.kind === "report" && change.value.value !== null) failures.push(undefined);
 	});
 	await host.resume();
 	assert.equal((await host.wait(admitted.submissionId)).status, "unanswered");
 	await failures.waitForCount(1); stop();
 	await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
-	const ended = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	const ended = await readRetainedDelivery(host.harness, BACKGROUND_CONTEXT, true);
 	assert.equal(ended?.reports.length, 1);
 	assert.equal(ended?.receipts[String(admitted.submissionId)]?.status, "unanswered");
 	assert.match(ended?.reports[0].message ?? "", /Generation attempts: 2\. Native retries: 1/u);
 	assert.equal(ended?.reports[0].acknowledged, false);
 	assert.equal(ended?.reports[0].providerRetry, undefined);
 	await host.close(); host = await DurableHost.open({ ...options, resume: false });
-	assert.equal((await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length, 1);
+	assert.equal((await readRetainedDelivery(host.harness, BACKGROUND_CONTEXT, true))?.reports.length, 1);
 	assert.equal((await host.harness.snapshot(ProviderRetryBurstDoc, 1 as ConversationId, BACKGROUND_CONTEXT))?.active, undefined);
 });

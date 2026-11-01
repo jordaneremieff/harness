@@ -1,3 +1,4 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
@@ -5,7 +6,7 @@ import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { AgentCatalog } from "./catalog.ts";
-import { AgentDeliveryDoc } from "./durable-controls.ts";
+
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { startDurableDelivery } from "./durable-delivery.ts";
@@ -215,7 +216,7 @@ it("refuses busy volatile delivery, retries once after same-ID reopen, and confi
 	t.after(async () => { await watcher.close(); await source.close(); });
 	await passes.waitForCount(1); await fixture.session.waitForIdle();
 	watcher.refresh(); await passes.waitForCount(passes.length + 1);
-	assert.equal((await source.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports[0]?.acknowledged, true);
+	assert.equal((await readRetainedDelivery(source.harness, BACKGROUND_CONTEXT, true))?.reports[0]?.acknowledged, true);
 	assert.equal(fixture.retained(ready.sourceId).length, 1);
 	await fixture.restart();
 	assert.equal(await fixture.deliver(ready.sourceId, "VOLATILE_NOTICE"), true, "retained retry does not enqueue another notice");

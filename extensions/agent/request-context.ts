@@ -3,7 +3,7 @@ import { createHash, createHmac, randomBytes } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import type { Message } from "@earendil-works/pi-ai";
 import { isInputKind } from "./input-entry.ts";
-import { AgentDeliveryDoc } from "./durable-controls.ts";
+import { readDeliveryDraft } from "./delivery-store.ts";
 import { RequestRouteState, type RouteNote, type UserPrefix } from "./request-route-state.ts";
 import { defineDoc, LiveDoc, section, type ConversationId, type GenerationHooks, type Harness, type HookApi, type PromptSection, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
 
@@ -57,7 +57,7 @@ async function activeRequests(tx: Tx, conversationId: ConversationId): Promise<R
 	}
 	if (retained.length !== state.requests.length) state.requests.splice(0, state.requests.length, ...retained);
 	const known = new Set(active.map(({ route }) => route.requestId));
-	const delivery = await tx.doc(AgentDeliveryDoc);
+	const delivery = await readDeliveryDraft(tx, false, "intent");
 	for (const intent of delivery.intents) {
 		if (intent.conversationId !== conversationId || known.has(intent.requestId)) continue;
 		const evidence = await unfinishedRequest(tx, conversationId, { requestId: intent.requestId, requester: intent.ownerId, replyTo: intent.ownerId, origin: intent.origin });

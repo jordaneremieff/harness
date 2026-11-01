@@ -1,3 +1,5 @@
+import { deliveryState as readRetainedDelivery, storeDeliveryRow } from "./delivery-store.ts";
+import { waitForDeliveryFixture } from "./delivery-store-fixture.mts";
 import { machineConfig } from "./settings-fixture.mts";
 /**
  * durable-agents tests: the native agent contribution in a real Harness.
@@ -38,7 +40,7 @@ import { THINKING_LEVELS } from "./configuration.ts";
 import { ProfileDoc, readProfile } from "./profile.ts";
 import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextHooks, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
 import { handleStorageId } from "./identity.ts";
-import { AgentMetaDoc, AgentDeliveryDoc, AwaitInputSuppressed, readOutcome, submitConversation } from "./durable-controls.ts";
+import { AgentMetaDoc, AwaitInputSuppressed, readOutcome, submitConversation, type DeliveryReceipt } from "./durable-controls.ts";
 import { AwaitDoc, type AwaitState, type AwaitOutcome } from "./awaited-results.ts";
 import { readAwaitFact, releaseAwait, recordProducerAwait } from "./await-observation.ts";
 
@@ -976,6 +978,35 @@ it("projects native awaiting facts and releases only the selected live run witho
 	finish(fauxAssistantMessage("RESULT"));
 });
 
+for (const ownership of ["unowned", "owned", "mismatching-reference"] as const) it(`checks exact receipt ownership with ${ownership} native request identity`, { timeout: 10000 }, async (t) => {
+	const directory = mkdtempSync(join(tmpdir(), "exact-receipt-"));
+	t.after(() => rmSync(directory, { recursive: true, force: true }));
+	const foreign = await DurableHost.open({ storageId: "foreign", storagePath: join(directory, "source.sqlite"), cwd: directory, registry: fixtureRegistry(), models: createTestModels(() => fauxAssistantMessage("EXACT")), agent: { model } }, context);
+	t.after(() => foreign.close());
+	const input = await foreign.root().submit({ type: "input", content: "native work" }, context);
+	const terminal = await input.wait(context);
+	assert.ok(terminal.type === "input" && terminal.status === "done");
+	assert.equal(terminal.requestId, undefined);
+	const retainedRequestId = "retained-admission";
+	if (ownership !== "unowned") {
+		// Receipt ownership uses the submission identity, independently of the optional native request key.
+		const receipt: DeliveryReceipt = { submissionId: terminal.id, requestId: retainedRequestId, ownerId: storageId, conversationId: terminal.conversationId,
+			operationId: null, origin: "operator", status: "done", entryId: terminal.entry ?? null, answerEntryId: terminal.answer, answer: "EXACT", reason: null, acknowledged: false };
+		await foreign.harness.commit((tx) => storeDeliveryRow(tx, "receipt", receipt, true), context);
+	}
+	const result = { sessionId: "foreign", submissionId: terminal.id, ...(ownership === "mismatching-reference" ? { requestId: retainedRequestId } : {}) };
+	if (ownership === "unowned") await assert.rejects(foreign.request("receipts", { ownerId: storageId, result }, context), /not addressed/u);
+	else if (ownership === "mismatching-reference") await assert.rejects(foreign.request("receipts", { ownerId: storageId, result }, context), /does not identify the selected native input/u);
+	else {
+		const selected = await foreign.request("receipts", { ownerId: storageId, result }, context) as { outcome: { submissionId: number; requestId?: string; answer?: string }; delivery: { results: Array<{ sessionId: string; submissionId: number; requestId: string }> } };
+		assert.equal(selected.outcome.submissionId, terminal.id);
+		assert.equal(selected.outcome.requestId, undefined);
+		assert.equal(selected.outcome.answer, "EXACT");
+		assert.deepEqual(selected.delivery.results, [{ sessionId: "foreign", submissionId: terminal.id, requestId: retainedRequestId }]);
+		assert.equal((await input.status(context)).requestId, undefined, "receipt lookup never adds a native request key");
+	}
+});
+
 it("retains a queued shared-answer group when another owner's result is not awaited", { timeout: 10000 }, async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "multi-owner-await-")); t.after(() => rmSync(directory, { recursive: true, force: true }));
 	let start!: () => void; const started = new Promise<void>((resolve) => { start = resolve; });
@@ -1173,7 +1204,7 @@ it("keeps default check-ins and native scheduled delivery token-idle during the 
 	const holder: DispatchHolder = {}; const { registry } = buildRegistry(createDispatch(holder, []));
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models); holder.harness = harness;
 	t.after(async () => { finish(fauxAssistantMessage("RESULT")); await harness.close(context); });
-	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); await tx.doc(AgentDeliveryDoc); }, context);
+	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
 	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
 	const admission = await submitConversation(root, { message: "START DEFAULT", requestId: "original-default", ownerId: "requester", origin: "model", checkInMinutes: checkInMinutes(undefined, "model", testAgentDir, {}), senderIdentity: storageId }, context);
 	await ready;
@@ -1181,11 +1212,9 @@ it("keeps default check-ins and native scheduled delivery token-idle during the 
 	const checks = (await harness.inspect(context)).tasks.filter((item) => item.record.kind === "agent.check-in");
 	assert.equal(checks.length, 2, "default spawn and original request both retain their check-ins");
 	const interval = Math.max(...checks.map((item) => (item.record.input as { intervalMs: number }).intervalMs));
-	const watch = await harness.watchDoc(AgentDeliveryDoc, context); assert.ok(watch);
-	let reportReady!: () => void; const reportsReady = new Promise<void>((resolve) => { reportReady = resolve; });
-	watch.start(async (state) => { if ((state?.reports.length ?? 0) >= 2) reportReady(); });
-	t.mock.timers.tick(interval); await reportsReady; await watch.stop();
-	const reports = (await harness.snapshot(AgentDeliveryDoc, context))?.reports ?? [];
+	const reportsReady = waitForDeliveryFixture(harness, context, (state) => state.reports.length >= 2 ? true : undefined);
+	t.mock.timers.tick(interval); await reportsReady;
+	const reports = (await readRetainedDelivery(harness, context, true))?.reports ?? [];
 	assert.ok(reports.some((report) => report.ownerId === "requester"), "the requester still gets check-ins about the awaiter");
 	const named = reports.find((report) => report.ownerId === storageId); assert.ok(named?.checkIn);
 	const calls = callerCalls;

@@ -1,3 +1,4 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -9,7 +10,7 @@ import { AgentDoc, LiveDoc, Harness, MemoryStorage, createRegistry, defineExtens
 import { Type } from "typebox";
 import { AwaitDoc, AWAIT_PROVENANCE_LIMIT } from "./awaited-results.ts";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { AgentDeliveryDoc, AgentMetaDoc, forkConversation, rewindConversation, readOutcome, recordDeliveryIntent, recordReport, reconcileDeliveries, richSubmitConversation, settleDeliveries, submitConversation, writeConversationName } from "./durable-controls.ts";
+import { AgentMetaDoc, forkConversation, rewindConversation, readOutcome, recordDeliveryIntent, recordReport, reconcileDeliveries, richSubmitConversation, settleDeliveries, submitConversation, writeConversationName } from "./durable-controls.ts";
 import { completed, fixtureRegistry, fixtureRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { DurableHost } from "./durable-host.ts";
 import { initializeProfile, ProfileDoc } from "./profile.ts";
@@ -95,7 +96,7 @@ it("routes later rich requests to their requester or explicit reply recipient wi
 	const second = await richSubmitConversation(conversation, { message: "Second task", requestId: "second", requester: "requester-b", replyTo: "recipient-c", origin: "operator" }, context);
 	await readOutcome(harness, second.submissionId, context);
 	await settleDeliveries(harness, context);
-	const state = await harness.snapshot(AgentDeliveryDoc, context);
+	const state = await readRetainedDelivery(harness, context, true);
 	assert.equal(state?.receipts[String(first.submissionId)]?.ownerId, "requester-a");
 	assert.equal(state?.receipts[String(second.submissionId)]?.ownerId, "recipient-c");
 	assert.equal(state?.receipts[String(second.submissionId)]?.origin, "operator");
@@ -119,7 +120,7 @@ it("requires a rich host admission origin and preserves the caller operation ID"
 	const admitted = await host.request("task-submit", { ...params, origin: "operator" }, context) as { submissionId: SubmissionId };
 	await readOutcome(host.harness, admitted.submissionId, context);
 	await settleDeliveries(host.harness, context);
-	const receipt = (await host.harness.snapshot(AgentDeliveryDoc, context))?.receipts[String(admitted.submissionId)];
+	const receipt = (await readRetainedDelivery(host.harness, context, true))?.receipts[String(admitted.submissionId)];
 	assert.equal(receipt?.operationId, "caller-operation");
 	assert.equal(receipt?.ownerId, "recipient-c");
 	assert.equal(receipt?.origin, "operator");
@@ -130,7 +131,7 @@ it("keeps plain native submissions usable without invented requester evidence", 
 	const submitted = await submitConversation(conversation, { message: "Plain task", requestId: "plain" }, context);
 	assert.equal((await readOutcome(harness, submitted.submissionId, context)).status, "done");
 	assert.deepEqual(await readRequestContexts(harness, conversation.id, context), []);
-	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.intents.length ?? 0, 0);
+	assert.equal((await readRetainedDelivery(harness, context, true))?.intents.length ?? 0, 0);
 });
 
 it("replays a rich delivery intent after an admission gap with its original requester and recipient", { timeout: 10000 }, async (t) => {
@@ -142,7 +143,7 @@ it("replays a rich delivery intent after an admission gap with its original requ
 	assert.ok(submission);
 	await readOutcome(harness, submission.id, context);
 	await settleDeliveries(harness, context);
-	const state = await harness.snapshot(AgentDeliveryDoc, context);
+	const state = await readRetainedDelivery(harness, context, true);
 	assert.equal(state?.intents[0]?.message, "Recovered task");
 	assert.equal(state?.receipts[String(submission.id)]?.ownerId, "recipient-c");
 });
@@ -155,7 +156,7 @@ it("records explicit reports without an input, answer owner, or check-in task", 
 	const after = await harness.inspect(context);
 	assert.equal(after.submissions.length, before.submissions.length);
 	assert.equal(after.tasks.length, before.tasks.length);
-	assert.equal((await harness.snapshot(AgentDeliveryDoc, context))?.reports.length, 1);
+	assert.equal((await readRetainedDelivery(harness, context, true))?.reports.length, 1);
 });
 
 it("commits a display name and its managed instructions together", async (t) => {
@@ -227,7 +228,7 @@ it("resumes an accepted native timer beyond the new explicit-route admission lim
 	assert.equal(Number(submitted.id), settled.state.outcome.result.submissionId);
 	assert.equal((await readOutcome(resumed, submitted.id, context)).status, "done");
 	await settleDeliveries(resumed, context);
-	const delivery = await resumed.snapshot(AgentDeliveryDoc, context);
+	const delivery = await readRetainedDelivery(resumed, context, true);
 	assert.equal(delivery?.intents.filter((intent) => intent.requestId === request.requestId).length, 1);
 	assert.equal(delivery?.receipts[String(submitted.id)]?.ownerId, request.replyTo);
 	assert.equal(delivery?.receipts[String(submitted.id)]?.origin, request.origin);
@@ -249,7 +250,7 @@ it("preserves scheduled requester metadata until native deadline admission", { t
 	assert.ok(submitted);
 	await readOutcome(harness, submitted.id, context);
 	await settleDeliveries(harness, context);
-	const state = await harness.snapshot(AgentDeliveryDoc, context);
+	const state = await readRetainedDelivery(harness, context, true);
 	assert.equal(state?.receipts[String(submitted.id)]?.ownerId, "recipient-c");
 	assert.equal(state?.intents[0]?.message, "Later task");
 });

@@ -2207,6 +2207,27 @@ Durable records an interrupted result for the next model step. This does not
 promise general exactly-once external effects, power-loss durability, or
 termination of an uncooperative shell descendant.
 
+Delivery intents, receipts and reports each have one keyed native document.
+Bounded reference pages separate retained history from current work. Settlement
+reads current intents, and each routing pass reads one pending page plus complete
+native answer groups. Unresolved automatic notices have separate completion
+references, independent of routing eligibility. The watcher continues those pages
+even when a page changes no records. Terminal rows leave active routing pages but
+remain available for owner acknowledgement, pending counts and retained diagnostics.
+A settled watched input retires its automatic notice even when routing is terminal.
+An explicit owner query also checks completion for its returned candidates. Acknowledged
+outcomes remain available for request deduplication. Report requests deduplicate
+by owner and request ID; source IDs independently identify acknowledgements.
+Absent observation keys and unknown acknowledgement keys do not create records.
+
+The host completes a retained delivery transition before request admission,
+output observers and native resume. Each bounded batch commits its copied rows
+and cursor together; final validation and archive retirement share one commit.
+An interruption resumes from the cursor. The transition enumerates its immutable
+source once per call, not once per batch. All writers must use the same delivery
+representation. After archive retirement, a source-only rollback does not restore
+an older reader's data contract; preserve a storage restore point before adoption.
+
 Retained outcomes include submission and answer entry IDs. The source storage's
 durable-delivery watcher is the sole retained-output delivery owner: after every
 native commit it settles intents atomically and groups receipts by native answer

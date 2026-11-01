@@ -3,7 +3,8 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { inputEntry } from "./input-entry.ts";
 import { readSettings, type Environment } from "./settings.ts";
 import { defineTask, LiveDoc, UsageDoc, type ConversationId, type Tx, type UsageState, type ToolSlot, type LiveState, type EntryId, type EntryRecord } from "@earendil-works/pi-durable";
-import { AgentDeliveryDoc, type DeliveryOrigin, type DeliveryMessage } from "./durable-controls.ts";
+import type { DeliveryOrigin, DeliveryMessage } from "./durable-controls.ts";
+import { checkInFallback, currentCheckInReport, retainedReport, storeDeliveryRow } from "./delivery-store.ts";
 import { producerRetryFact, readAwaitFact } from "./await-observation.ts";
 import { awaitFactLines, retryFactLines } from "./await-facts.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
@@ -125,15 +126,12 @@ export const CheckInDeadlineTask = defineTask<CheckInInput & { next: number }, C
 				// Collapse overdue boundaries into one current notice, then return to the admission's fixed cadence.
 				const k = Math.max(task.state.checkpoint.next, Math.floor((now - input.admittedAt) / input.intervalMs));
 				const sourceId = `check-in:${id}:${input.requestId}:${k}`;
-				const state = await tx.doc(AgentDeliveryDoc);
-				if (!state.reports.some((report) => report.sourceId === sourceId)) {
-					const fallbackBroadcast = state.reports.some((report) => report.ownerId === input.ownerId && report.checkIn?.conversationId === input.conversationId && report.checkIn.requestId === input.requestId && report.checkIn.fallbackBroadcast === true);
-					for (let index = state.reports.length - 1; index >= 0; index -= 1) {
-						const previous = state.reports[index];
-						if (previous?.checkIn?.conversationId === input.conversationId && previous.checkIn.requestId === input.requestId && previous.ownerId === input.ownerId && !previous.acknowledged) state.reports.splice(index, 1);
-					}
+				if (!await retainedReport(tx, input.ownerId, sourceId)) {
+					const fallbackBroadcast = await checkInFallback(tx, input.ownerId, input.conversationId, input.requestId);
+					const previous = await currentCheckInReport(tx, input.ownerId, input.conversationId, input.requestId);
+					if (previous && !previous.acknowledged) await storeDeliveryRow(tx, "report", { ...previous, acknowledged: true });
 					const snapshot = await digest(tx, input, retained?.entry, now, maxAttempts);
-					state.reports.push({ sourceId, requestId: sourceId, ownerId: input.ownerId, senderIdentity: input.senderIdentity, message: snapshot.digest, replyTo: null, acknowledged: false, createdAt: now, checkIn: { origin: input.origin, elapsedMs: Math.max(0, now - input.admittedAt), cost: snapshot.cost, conversationId: input.conversationId, requestId: input.requestId, ...fallbackMarker(fallbackBroadcast) } });
+					await storeDeliveryRow(tx, "report", { sourceId, requestId: sourceId, ownerId: input.ownerId, senderIdentity: input.senderIdentity, message: snapshot.digest, replyTo: null, acknowledged: false, createdAt: now, checkIn: { origin: input.origin, elapsedMs: Math.max(0, now - input.admittedAt), cost: snapshot.cost, conversationId: input.conversationId, requestId: input.requestId, ...fallbackMarker(fallbackBroadcast) } }, true);
 				}
 				return { status: "sleeping", until: input.admittedAt + (k + 1) * input.intervalMs, checkpoint: { phase: "watch", next: k + 1 } };
 			}, context);

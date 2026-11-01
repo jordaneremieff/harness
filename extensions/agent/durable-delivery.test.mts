@@ -1,3 +1,6 @@
+import { deliveryState as readRetainedDelivery, deliveryPendingCount, pendingDeliveryPage } from "./delivery-store.ts";
+import { editDeliveryFixture } from "./delivery-store-fixture.mts";
+import { storeDeliveryRow } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -8,7 +11,7 @@ import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { LiveDoc, type ConversationId, type SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
-import { AgentDeliveryDoc, ThreadDeliveryDoc, type AgentDeliveryState, recordReport, richSubmitConversation, settleDeliveries } from "./durable-controls.ts";
+import { ThreadDeliveryDoc, type AgentDeliveryState, recordReport, richSubmitConversation, settleDeliveries, undeliveredReports } from "./durable-controls.ts";
 import { startDurableDelivery } from "./durable-delivery.ts";
 import { mutateCollaboration } from "./collaboration.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
@@ -164,7 +167,7 @@ function fakeTarget(target: DurableHost, calls: SubmitRecord[], gate?: Promise<v
 }
 
 async function deliveryState(host: DurableHost) {
-	return host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	return readRetainedDelivery(host.harness, BACKGROUND_CONTEXT, true);
 }
 
 /** A readable endpoint advertises an incompatible current delivery contract. */
@@ -313,9 +316,15 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	t.after(() => source.close());
 	const revisions: AgentDeliveryState[] = [];
 	const unsubscribe = source.harness.subscribeCommits((publication) => {
-		for (const change of publication.changes)
-			if (change.type === "document" && change.record.kind === "agent.delivery" && change.value !== null)
-				revisions.push(change.value as unknown as AgentDeliveryState);
+		const receipts = { ...revisions.at(-1)?.receipts };
+		let changed = false;
+		for (const change of publication.changes) {
+			if (change.type !== "document" || change.record.kind !== "agent.delivery-row" || change.value?.kind !== "receipt" || change.value.value == null) continue;
+			const receipt = JSON.parse(JSON.stringify(change.value.value)) as AgentDeliveryState["receipts"][string];
+			receipts[String(receipt.submissionId)] = receipt;
+			changed = true;
+		}
+		if (changed) revisions.push({ intents: [], receipts, reports: [] });
 	});
 	t.after(unsubscribe);
 	const errors = eventLog<Error>();
@@ -326,13 +335,13 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 	await started.waitForCount(1);
 	const steer = await source.request("submit", { message: "correct", requestId: "steer", operationId: "steer-operation", ownerId: steerOwner, whenBusy: "steer", origin: "model" }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
 	const ids = [original.submissionId, steer.submissionId];
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const index = state.intents.findIndex((intent) => intent.requestId === "steer");
 		const intent = state.intents[index];
 		assert.ok(intent);
 		state.intents[index] = { ...intent, submissionId: null };
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	releaseTool();
 	await received.waitForCount(1);
 	const pending = await deliveryState(source);
@@ -383,12 +392,12 @@ for (const route of ["operator", "model", "fallback"] as const) it(`delivers a $
 	t.after(() => source.close());
 	const checkIn = { conversationId: 1, requestId: "task", origin: route === "operator" ? "operator" as const : "model" as const, elapsedMs: 11_100_000, cost: 0.125 };
 	const digest = "Tool calls: 4. Current tool: bash, 8 minutes since tool-call entry. Latest reply: tests in progress.";
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const report = { sourceId: "checkin:task:1", requestId: "task", ownerId: owner, senderIdentity: source.storageId,
 			message: digest, replyTo: null, acknowledged: false, createdAt: 1, checkIn };
 		state.reports.push(report);
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath),
 		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
 	t.after(() => watcher.close());
@@ -434,23 +443,23 @@ it("retains one accepted check-in fallback broadcast per watched task and owner"
 	let watcher: ReturnType<typeof startDurableDelivery> | undefined;
 	t.after(async () => { await watcher?.close(); await source.close(); });
 	const add = async (sourceId: string, requestId = "task", conversationId = 1, ownerId = owner): Promise<void> => {
-		await source.harness.commit(async (tx) => {
-			const state = await tx.doc(AgentDeliveryDoc);
+		await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+			const state = deliveryFixtureState;
 			const fallbackBroadcast = state.reports.some((report) => report.ownerId === ownerId && report.checkIn?.conversationId === conversationId && report.checkIn.requestId === requestId && report.checkIn.fallbackBroadcast === true);
 			const checkIn = { ...(fallbackBroadcast ? { fallbackBroadcast: true } : {}), conversationId, requestId, origin: "model" as const, elapsedMs: 1_800_000, cost: null };
 			state.reports.push({ sourceId, requestId: sourceId, ownerId, senderIdentity: source.storageId,
 				message: "Task is active.", replyTo: null, acknowledged: false, createdAt: 1, checkIn });
-		}, BACKGROUND_CONTEXT);
+		}), BACKGROUND_CONTEXT);
 	};
 	const start = () => startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath),
 		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
 	await add("checkin:task:1");
 	watcher = start();
 	await received.waitForCount(1);
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		state.reports.splice(0, 1);
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	await add("checkin:task:coalesced");
 	releaseFirst();
 	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:task:coalesced")?.checkIn?.fallbackBroadcast === true);
@@ -510,12 +519,12 @@ for (const route of ["catalog", "primary", "fallback"] as const) it(`drops a che
 	const admitted = await source.request("submit", { sessionId: source.storageId, message: "task", requestId: "watched-task" }, BACKGROUND_CONTEXT) as { submissionId: SubmissionId };
 	await started.waitForCount(1);
 	const checkIn = { conversationId: 1, requestId: "watched-task", origin: "model" as const, elapsedMs: 1_800_000, cost: 0.125 };
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const report = { sourceId: "checkin:watched-task:1", requestId: "checkin:watched-task:1", ownerId: owner,
 			senderIdentity: source.storageId, message: "Task is active.", replyTo: null, acknowledged: false, createdAt: 1, checkIn };
 		state.reports.push(report);
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const preparing = eventLog<void>();
 	let releaseRoute!: () => void;
 	const routeGate = new Promise<void>((resolve) => { releaseRoute = resolve; });
@@ -537,12 +546,14 @@ for (const route of ["catalog", "primary", "fallback"] as const) it(`drops a che
 	releaseTool();
 	await source.wait(admitted.submissionId, BACKGROUND_CONTEXT);
 	releaseRoute();
-	await waitForDelivery(source, async () => !(await deliveryState(source))?.reports.some((report) => report.sourceId === "checkin:watched-task:1"));
+	await waitForDelivery(source, async () => (await deliveryState(source))?.reports.some((report) => report.sourceId === "checkin:watched-task:1" && report.acknowledged) === true);
 	assert.equal(calls.length, 0, "a settled check-in never admits a target follow-up");
 	assert.equal(received.length, 0, "a settled check-in never reaches a primary");
 	await passes.waitForCount(1);
 	assert.equal(passes[0], undefined, "suppression ends the route without a delivery error");
-	assert.equal((await deliveryState(source))?.reports.some((report) => report.sourceId === "checkin:watched-task:1"), false, "suppression never recreates an undelivered row as an accepted fallback");
+	const retired = (await deliveryState(source))?.reports.find((report) => report.sourceId === "checkin:watched-task:1");
+	assert.equal(retired?.acknowledged, true, "suppression retains its dedupe outcome without pending delivery");
+	assert.equal(retired?.checkIn?.fallbackBroadcast, undefined, "suppression never records accepted fallback evidence");
 	await watcher.close();
 });
 
@@ -557,15 +568,15 @@ for (const origin of [undefined, "unknown"]) it(`holds a check-in with invalid s
 	const sourcePath = join(root, "source.sqlite");
 	const source = await openHost(sourcePath, "11111111-1111-4111-8111-111111111111", root);
 	t.after(() => source.close());
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const checkIn = { conversationId: 1, requestId: "task", elapsedMs: 1_800_000, cost: null,
 			...(origin === undefined ? {} : { origin }) };
 		state.reports.push({ sourceId: "checkin:task:1", requestId: "task", ownerId: owner, senderIdentity: source.storageId,
 			message: "Task is active.", replyTo: null, acknowledged: false, createdAt: 1, checkIn } as unknown as AgentDeliveryState["reports"][number]);
 		state.reports.push({ sourceId: "report:valid", requestId: "valid", ownerId: owner, senderIdentity: source.storageId,
 			message: "Valid report.", replyTo: null, acknowledged: false, createdAt: 1 });
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const errors = eventLog<Error>();
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath),
 		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onError: (error) => errors.push(error) });
@@ -647,12 +658,12 @@ it("bounds a check-in digest while retaining the full source", { timeout: 30000 
 	t.after(() => source.close());
 	const digest = `${"x".repeat(15_999)}😀OMITTED`;
 	const checkIn = { conversationId: 1, requestId: "task", origin: "model" as const, elapsedMs: 1_800_000, cost: null };
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const report = { sourceId: "checkin:task:1", requestId: "task", ownerId: owner, senderIdentity: source.storageId,
 			message: digest, replyTo: null, acknowledged: false, createdAt: 1, checkIn };
 		state.reports.push(report);
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath),
 		catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
 	t.after(() => watcher.close());
@@ -681,12 +692,12 @@ for (const route of ["catalog", "same-storage"] as const) it(`routes a check-in 
 	const owner = route === "same-storage" ? source.storageId : `${record.storageId}:1`;
 	t.after(async () => { await source.close(); if (target !== source) await target.close(); });
 	const checkIn = { conversationId: 1, requestId: "task", origin: "model" as const, elapsedMs: 1_800_000, cost: null };
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const report = { sourceId: "checkin:task:2", requestId: "task", ownerId: owner, senderIdentity: source.storageId,
 			message: "Task is active.", replyTo: null, acknowledged: false, createdAt: 1, checkIn };
 		state.reports.push(report);
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const calls = eventLog<SubmitRecord>();
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -799,7 +810,7 @@ it("routes a receipt and a report only after the target admits them", { timeout:
 	}
 	assert.match(String(receiptCall.params.message), new RegExp(`submissions ${submissionId}`, "u"));
 	assert.match(String(reportCall.params.message), /source report:source-report/u);
-	assert.equal((await target.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.intents.length ?? 0, 0, "delivered reports and answers create no reply-owner loop");
+	assert.equal((await readRetainedDelivery(target.harness, BACKGROUND_CONTEXT, true))?.intents.length ?? 0, 0, "delivered reports and answers create no reply-owner loop");
 	assert.equal((await target.harness.inspect(BACKGROUND_CONTEXT)).tasks.some((task) => task.record.kind === "agent.check-in"), false);
 	assert.deepEqual(errors, []);
 	await passes.waitFor((events) => events.filter((error) => error === undefined).length >= 2);
@@ -1160,13 +1171,13 @@ for (const origin of [undefined, "invalid"] as const) it(`keeps a self-owned rec
 	t.after(() => source.close());
 	const id = await addReceipt(source, source.storageId);
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const receipt = state.receipts[String(id)];
 		assert.ok(receipt);
 		const { origin: _removed, ...rest } = receipt;
 		state.receipts[String(id)] = { ...rest, ...(origin === undefined ? {} : { origin }) } as typeof receipt;
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const errors = eventLog<Error>();
 	const calls = t.mock.method(source, "request");
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog: new AgentCatalog(root), signal: new AbortController().signal, onError: (error) => errors.push(error) });
@@ -1256,14 +1267,14 @@ it("reports a malformed admission origin without crash-looping and keeps other r
 	const goodId = await addReceipt(source, goodOwner, "good-origin");
 	// Remove the origin to exercise containment of a malformed current receipt.
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const receipt = state.receipts[String(corruptId)];
 		if (receipt !== undefined) {
 			const { origin: _removed, ...rest } = receipt;
 			state.receipts[String(corruptId)] = rest;
 		}
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const errors = eventLog<Error>();
 	const watcher = startDurableDelivery({
 		host: source,
@@ -1295,13 +1306,13 @@ it("clears the delivery error after a malformed receipt is corrected", { timeout
 	t.after(() => source.close());
 	const id = await addReceipt(source, owner, "corrected-origin");
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const receipt = state.receipts[String(id)];
 		assert.ok(receipt);
 		const { origin: _removed, ...rest } = receipt;
 		state.receipts[String(id)] = rest;
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	let reported!: () => void;
 	const corruption = new Promise<void>((resolve) => { reported = resolve; });
 	let cleared!: () => void;
@@ -1318,13 +1329,13 @@ it("clears the delivery error after a malformed receipt is corrected", { timeout
 	await corruption;
 	assert.match(((await source.request("status", {})) as { deliveryError?: string }).deliveryError ?? "", /terminal: corrupt admission origin/u);
 	corrected = true;
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const receipt = state.receipts[String(id)];
 		assert.ok(receipt);
 		const { delivery: _terminal, ...repaired } = receipt;
 		state.receipts[String(id)] = { ...repaired, origin: "operator" };
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	await clearance;
 	assert.equal(((await source.request("status", {})) as { deliveryError?: string }).deliveryError, undefined);
 	assert.equal((await deliveryState(source))?.receipts[String(id)]?.acknowledged, true);
@@ -1673,14 +1684,189 @@ async function retryFixture(t: TestContext, gate?: Promise<void>) {
 		acquire: async () => ({ ...fakeTarget(source, []), request: async () => { entered.push(undefined); if (gate) await gate; throw new Error("transient"); } }),
 		onError: (error) => errors.push(error), onIdle: () => idle.push(undefined) });
 	t.after(() => watcher.close());
-	const publish = () => source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	const publish = () => source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		const receipt = state.receipts[String(id)];
 		assert.ok(receipt);
-		state.receipts[String(id)] = { ...receipt, operationId: randomUUID() };
-	}, BACKGROUND_CONTEXT);
+		state.receipts[String(id)] = { ...receipt, answer: randomUUID() };
+	}), BACKGROUND_CONTEXT);
 	return { source, commits, entered, idle, errors, watcher, publish };
 }
+
+it("completes terminal automatic notices beyond a no-write page without routing activity", { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t), path = join(root, "source.sqlite"), owner = "22222222-2222-4222-8222-222222222222";
+	let release = () => {};
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const started = eventLog<void>();
+	const source = await DurableHost.open({ storagePath: path, storageId: "11111111-1111-4111-8111-111111111111", cwd: root,
+		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage("finished")]), registry: fixtureRegistry([gateTool(gate, () => { started.push(undefined); })]),
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	t.after(async () => { release(); await source.close(); });
+	const watched = await source.root().submit({ type: "input", content: "finish later", requestId: "finishing" }, BACKGROUND_CONTEXT);
+	await started.waitForCount(1);
+	const live = await source.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT);
+	assert.ok(live?.run);
+	const runId = live.run.taskId;
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	const terminalNotice = (sourceId: string, requestId: string) => ({ sourceId, requestId: sourceId, ownerId: owner, senderIdentity: source.storageId, message: "check-in", replyTo: null, acknowledged: false, createdAt: 0,
+		delivery: { state: "terminal" as const, reason: "corrupt admission origin" }, checkIn: { conversationId: 1, requestId, origin: "model" as const, elapsedMs: 60000, cost: null } });
+	await source.harness.commit(async (tx) => {
+		for (let index = 0; index < 64; index++) await storeDeliveryRow(tx, "report", terminalNotice(`check-in:1:unresolved-${index}:1`, `unresolved-${index}`), true);
+		await storeDeliveryRow(tx, "report", terminalNotice("check-in:1:finishing:1", "finishing"), true);
+		await storeDeliveryRow(tx, "report", { sourceId: "report:retry-terminal", requestId: "retry-terminal", ownerId: owner, senderIdentity: source.storageId, message: "retry summary", replyTo: null, acknowledged: false, createdAt: 0,
+			delivery: { state: "terminal", reason: "corrupt admission origin" }, providerRetry: { fact: { sessionId: source.storageId, observedAt: 0, source: "producer await-state", execution: { state: "provider-retry", runId,
+				results: [{ sessionId: source.storageId, submissionId: watched.id, requestId: "finishing" }], attempt: 1, nextRetryAt: 0, error: "fixture retry", errorTruncated: false } } } }, true);
+	}, BACKGROUND_CONTEXT);
+	assert.deepEqual((await pendingDeliveryPage(source.harness, BACKGROUND_CONTEXT)).state.reports, []);
+	assert.equal(await deliveryPendingCount(source.harness, BACKGROUND_CONTEXT), 66);
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const idle = eventLog<void>();
+	let publications = 0;
+	const unsubscribe = source.harness.subscribeCommits(() => { publications += 1; });
+	t.after(unsubscribe);
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog: new AgentCatalog(root), signal: new AbortController().signal, onIdle: () => idle.push(undefined) });
+	t.after(() => watcher.close());
+	t.mock.timers.tick(0); await idle.waitForCount(1);
+	assert.equal(publications, 0, "the first automatic page changes no records");
+	t.mock.timers.tick(0); await idle.waitForCount(2);
+	assert.equal(publications, 0, "continuation visits unsettled notices without a commit wake");
+	release(); await source.wait(watched.id, BACKGROUND_CONTEXT);
+	const beforeCompletion = idle.length;
+	t.mock.timers.tick(0); await idle.waitForCount(beforeCompletion + 1);
+	t.mock.timers.tick(0); await idle.waitForCount(beforeCompletion + 2);
+	const retained = await deliveryState(source);
+	assert.equal(retained.reports.find((row) => row.sourceId === "check-in:1:finishing:1")?.acknowledged, true);
+	assert.equal(retained.reports.find((row) => row.sourceId === "report:retry-terminal")?.acknowledged, true);
+	assert.equal(await deliveryPendingCount(source.harness, BACKGROUND_CONTEXT), 64);
+	await watcher.close();
+	await source.harness.commit((tx) => storeDeliveryRow(tx, "report", terminalNotice("check-in:1:finishing:2", "finishing"), true), BACKGROUND_CONTEXT);
+	assert.equal((await undeliveredReports(source.harness, owner, BACKGROUND_CONTEXT)).length, 64, "an explicit owner query retires its settled terminal candidate without a watcher");
+	assert.equal(await deliveryPendingCount(source.harness, BACKGROUND_CONTEXT), 64);
+});
+
+for (const completed of ["routing", "automatic"] as const) it(`preserves committed activity after ${completed} traversal completion`, { timeout: 30000 }, async (t) => {
+	const root = fixtureRoot(t), path = join(root, "source.sqlite"), catalog = new AgentCatalog(root), owner = "22222222-2222-4222-8222-222222222222";
+	const recipient = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off" });
+	let release = () => {};
+	const gate = new Promise<void>((resolve) => { release = resolve; }), started = eventLog<void>();
+	const source = await DurableHost.open({ storagePath: path, storageId: "11111111-1111-4111-8111-111111111111", cwd: root,
+		models: await scriptedRuntime([toolCallMessage("gate"), answerMessage("finished")]), registry: fixtureRegistry([gateTool(gate, () => { started.push(undefined); })]),
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
+	t.after(async () => { release(); await source.close(); });
+	const watched = await source.root().submit({ type: "input", content: "finish later", requestId: "finishing" }, BACKGROUND_CONTEXT);
+	await started.waitForCount(1);
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	await source.harness.commit(async (tx) => {
+		for (let index = 0; index < 65; index++) await storeDeliveryRow(tx, "report", {
+			sourceId: `report:existing-${index}`, requestId: `existing-${index}`, ownerId: owner, senderIdentity: source.storageId, message: "current", replyTo: null, acknowledged: false, createdAt: index, direct: true,
+			delivery: completed === "routing" ? { state: "terminal", reason: "corrupt admission origin" } : { state: "parked", reason: "primary endpoint is absent" },
+			...(completed === "routing" ? { checkIn: { conversationId: 1, requestId: `unresolved-${index}`, origin: "model" as const, elapsedMs: 60000, cost: null } } : {}),
+		}, true);
+		if (completed === "automatic") await storeDeliveryRow(tx, "report", { sourceId: "check-in:1:finishing:1", requestId: "check-in:1:finishing:1", ownerId: owner, senderIdentity: source.storageId,
+			message: "watched", replyTo: null, acknowledged: false, createdAt: 0, delivery: { state: "terminal", reason: "corrupt admission origin" },
+			checkIn: { conversationId: 1, requestId: "finishing", origin: "model", elapsedMs: 60000, cost: null } }, true);
+	}, BACKGROUND_CONTEXT);
+	const idle = eventLog<void>();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog, signal: new AbortController().signal,
+		acquire: async () => ({ ...fakeTarget(source, []), request: async () => ({}) }), onIdle: () => idle.push(undefined) });
+	t.after(() => watcher.close());
+	t.mock.timers.tick(0); await idle.waitForCount(1);
+	if (completed === "routing") await recordReport(source.harness, { ownerId: recipient.storageId, senderIdentity: source.storageId, message: "fresh", requestId: "fresh" }, BACKGROUND_CONTEXT);
+	else { release(); await source.wait(watched.id, BACKGROUND_CONTEXT); }
+	t.mock.timers.tick(0); await idle.waitForCount(2);
+	t.mock.timers.tick(0); await idle.waitForCount(3);
+	const sourceId = completed === "routing" ? "report:fresh" : "check-in:1:finishing:1";
+	assert.equal((await deliveryState(source)).reports.find((row) => row.sourceId === sourceId)?.acknowledged, true, "committed work refreshes a completed traversal before quiescence");
+	assert.equal(await deliveryPendingCount(source.harness, BACKGROUND_CONTEXT), 65);
+	await watcher.close();
+});
+
+for (const phase of ["before", "during"] as const) it(`keeps no-write page traversals finite with an unrelated settlement ${phase} the watcher pass`, { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t), path = join(root, "source.sqlite");
+	const source = await openHost(path, "11111111-1111-4111-8111-111111111111", root);
+	t.after(() => source.close());
+	// Existing settlement metadata makes the observed traversal genuinely no-write.
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	await source.harness.commit(async (tx) => {
+		for (let index = 0; index < 65; index++) await storeDeliveryRow(tx, "report", {
+			sourceId: `check-in:1:offset-${index}:1`, requestId: `check-in:1:offset-${index}:1`, ownerId: "22222222-2222-4222-8222-222222222222", senderIdentity: source.storageId,
+			message: "current", replyTo: null, acknowledged: false, createdAt: index, direct: true,
+			delivery: { state: "parked", reason: "primary endpoint is absent" },
+			checkIn: { conversationId: 1, requestId: `unresolved-${index}`, origin: "model", elapsedMs: 60000, cost: null },
+		}, true);
+	}, BACKGROUND_CONTEXT);
+	if (phase === "before") await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	let publications = 0;
+	const unsubscribe = source.harness.subscribeCommits(() => { publications += 1; });
+	t.after(unsubscribe);
+	const commits = t.mock.method(source.harness, "commit"), idle = eventLog<void>();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog: new AgentCatalog(root), signal: new AbortController().signal, onIdle: () => idle.push(undefined) });
+	t.after(() => watcher.close());
+	t.mock.timers.tick(0); await idle.waitForCount(1);
+	if (phase === "during") await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	t.mock.timers.tick(0); await idle.waitForCount(2);
+	const completedCalls = commits.mock.callCount();
+	t.mock.timers.tick(300000); await new Promise<void>(setImmediate);
+	assert.equal(publications, 0);
+	assert.equal(idle.length, 2, "both traversals complete instead of alternately restarting");
+	assert.equal(commits.mock.callCount(), completedCalls, "a completed traversal does not start a no-write pass");
+	assert.equal(watcher.busy, false);
+	await watcher.close();
+});
+
+it("retries an early-page route failure after a final already-parked page", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t), catalog = new AgentCatalog(root);
+	const recipient = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off" });
+	const path = join(root, "source.sqlite"), source = await openHost(path, "11111111-1111-4111-8111-111111111111", root);
+	t.after(() => source.close());
+	await source.harness.commit(async (tx) => {
+		for (let index = 0; index < 65; index++) await storeDeliveryRow(tx, "report", {
+			sourceId: `report:page-${index}`, requestId: `page-${index}`, ownerId: index === 0 ? recipient.storageId : "22222222-2222-4222-8222-222222222222", senderIdentity: source.storageId,
+			message: "retained", replyTo: null, acknowledged: false, createdAt: index, direct: true,
+			...(index === 0 ? {} : { delivery: { state: "parked" as const, reason: "primary endpoint is absent" } }),
+		}, true);
+	}, BACKGROUND_CONTEXT);
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	let attempts = 0, publications = 0;
+	const unsubscribe = source.harness.subscribeCommits(() => { publications += 1; });
+	t.after(unsubscribe);
+	const idle = eventLog<void>();
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog, signal: new AbortController().signal, retryDelayMs: 500,
+		acquire: async () => ({ ...fakeTarget(source, []), request: async () => { attempts += 1; if (attempts === 1) throw new Error("transient"); return {}; } }), onIdle: () => idle.push(undefined) });
+	t.after(() => watcher.close());
+	t.mock.timers.tick(0); await idle.waitForCount(1);
+	const beforeLastPage = publications;
+	t.mock.timers.tick(0); await idle.waitForCount(2);
+	assert.equal(publications, beforeLastPage, "the final already-parked page makes no writes");
+	assert.equal(attempts, 1);
+	t.mock.timers.tick(499); assert.equal(attempts, 1);
+	t.mock.timers.tick(1); await idle.waitForCount(3);
+	assert.equal(attempts, 2, "the failed early-page route retains its backoff obligation");
+	assert.equal((await deliveryState(source)).reports.find((row) => row.sourceId === "report:page-0")?.acknowledged, true);
+	await watcher.close();
+});
+
+it("does not park an acknowledged row when its recipient disappears after acceptance", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t), catalog = new AgentCatalog(root);
+	const recipient = catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off" });
+	const path = join(root, "source.sqlite"), source = await openHost(path, "11111111-1111-4111-8111-111111111111", root);
+	t.after(() => source.close());
+	await recordReport(source.harness, { ownerId: recipient.storageId, senderIdentity: source.storageId, message: "one report", requestId: "accepted" }, BACKGROUND_CONTEXT);
+	let present = true;
+	const idle = eventLog<void>(), errors = eventLog<Error>();
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog, signal: new AbortController().signal,
+		readTarget: () => present ? recipient : undefined,
+		acquire: async () => ({ ...fakeTarget(source, []), request: async () => { present = false; return {}; } }), onIdle: () => idle.push(undefined), onError: (error) => errors.push(error) });
+	t.after(() => watcher.close());
+	await idle.waitForCount(1);
+	const row = (await deliveryState(source)).reports.find((item) => item.sourceId === "report:accepted");
+	assert.equal(row?.acknowledged, true);
+	assert.equal(row?.delivery, undefined, "the post-route diagnosis uses current visited rows");
+	assert.deepEqual(errors, []);
+	await watcher.close();
+});
 
 it("waits for each doubled delivery retry delay through the cap and cancels on close", { timeout: 10000 }, async (t) => {
 	const f = await retryFixture(t);
@@ -1752,10 +1938,10 @@ it("preserves the live owner's wake when an absent owner shares its answer", { t
 	t.after(() => source.close());
 	const submissionId = await addReceipt(source, absent);
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		state.receipts["999"] = { ...state.receipts[String(submissionId)], submissionId: 999 as SubmissionId, ownerId: live, origin: "model" };
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const idle = eventLog<void>();
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal, onIdle: () => idle.push(undefined) });
 	t.after(() => watcher.close());
@@ -2133,12 +2319,12 @@ it("bounds long peer bodies without mutating the retained originals", { timeout:
 	const submissionId = await addReceipt(source, owner);
 	const longAnswer = "A".repeat(20_000);
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
-	await source.harness.commit(async (tx) => {
-		const doc = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const doc = deliveryFixtureState;
 		const current = doc.receipts[String(submissionId)];
 		if (current === undefined) throw new Error("seeded receipt is missing");
-		current.answer = longAnswer;
-	}, BACKGROUND_CONTEXT);
+		doc.receipts[String(submissionId)] = { ...current, answer: longAnswer };
+	}), BACKGROUND_CONTEXT);
 	const longReport = "B".repeat(20_000);
 	await source.request(
 		"report",
@@ -2196,10 +2382,10 @@ it("delivers opted-in thread notices as passive native writes without a reply lo
 	const source = await openHost(sourcePath, randomUUID(), root);
 	const target = await openHost(record.storagePath, record.storageId, root);
 	t.after(async () => { await source.close(); await target.close(); });
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		state.reports.push({ sourceId: "report:thread-notice", requestId: "thread-notice", ownerId: record.storageId, senderIdentity: source.storageId, message: "A joined thread has a new event. No reply is requested.", replyTo: null, acknowledged: false, createdAt: Date.now(), direct: true, passive: true, steer: false });
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const requests: string[] = [];
 	const errors = eventLog<Error>();
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog, signal: new AbortController().signal, acquire: async () => {
@@ -2213,7 +2399,7 @@ it("delivers opted-in thread notices as passive native writes without a reply lo
 	const observation = await target.request("inspect", { view: "history" }) as { entries?: unknown[]; rows?: unknown[] };
 	assert.match(JSON.stringify(observation), /agent.thread-notice/u);
 	assert.equal((await target.harness.inspect(BACKGROUND_CONTEXT)).tasks.length, 0);
-	assert.equal((await target.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.intents.length ?? 0, 0);
+	assert.equal((await readRetainedDelivery(target.harness, BACKGROUND_CONTEXT, true))?.intents.length ?? 0, 0);
 	assert.deepEqual(errors, []);
 });
 
@@ -2222,10 +2408,10 @@ it("keeps a direct thread notice pending rather than broadcasting to another pri
 	const sourcePath = join(root, "thread-direct.sqlite");
 	const source = await openHost(sourcePath, randomUUID(), root);
 	t.after(() => source.close());
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		state.reports.push({ sourceId: "report:direct", requestId: "direct", ownerId: randomUUID(), senderIdentity: source.storageId, message: "Private thread attention", replyTo: null, acknowledged: false, createdAt: Date.now(), direct: true });
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const errors = eventLog<Error>();
 	let discoveries = 0;
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog: new AgentCatalog(root), signal: new AbortController().signal, sessionsRoot: root, listPrimaryChannels: async () => { discoveries++; return { ids: [], visited: 0, complete: true }; }, onError: (error) => errors.push(error) });
@@ -2258,12 +2444,12 @@ it("bounds the native catalog follow-up body", { timeout: 30000 }, async (t) => 
 	const submissionId = await addReceipt(source, owner);
 	const longAnswer = "C".repeat(20_000);
 	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
-	await source.harness.commit(async (tx) => {
-		const doc = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const doc = deliveryFixtureState;
 		const current = doc.receipts[String(submissionId)];
 		if (current === undefined) throw new Error("seeded receipt is missing");
-		current.answer = longAnswer;
-	}, BACKGROUND_CONTEXT);
+		doc.receipts[String(submissionId)] = { ...current, answer: longAnswer };
+	}), BACKGROUND_CONTEXT);
 	const calls = eventLog<SubmitRecord>();
 	const errors = eventLog<Error>();
 	const watcher = startDurableDelivery({
@@ -2308,11 +2494,11 @@ for (const evidence of ["handle", "name", "missing", "unresolved"] as const) it(
 	const source = await openHost(sourcePath, randomUUID(), root);
 	t.after(() => source.close());
 	const report = await recordReport(source.harness, { ownerId: owner, senderIdentity, message: "A peer contributed evidence", requestId: "thread-event" }, BACKGROUND_CONTEXT);
-	await source.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await source.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		state.reports[0] = { ...report, threadId: "purpose-thread", threadTitle: "Shared review", operatorMessage: "A peer contributed evidence", direct: true, passive: true };
 		(await tx.doc(ThreadDeliveryDoc, "purpose-thread", null)).pending = 1;
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const status = t.mock.method(source, "request", source.request.bind(source));
 	const errors = eventLog<Error>();
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, sourcePath), catalog, sessionsRoot, signal: new AbortController().signal, acquire: async () => { throw new Error("Source labels must not acquire a host"); }, onError: (error) => errors.push(error) });

@@ -7,7 +7,8 @@ import { ProducerAwaitFactSchema } from "./await-facts.ts";
 import { safeFactText } from "./primary-observation.ts";
 import type { ResultReference } from "./result-reference.ts";
 import { providerRetryRevision } from "./awaited-results.ts";
-import { AgentDeliveryDoc, type AgentDeliveryState, type DeliveryReport } from "./durable-controls.ts";
+import type { AgentDeliveryState, DeliveryReport } from "./durable-controls.ts";
+import { readDeliveryDraft, retainedReportRequest, writeDeliveryDraft } from "./delivery-store.ts";
 import { RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { canonicalIdentity } from "./identity.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
@@ -82,7 +83,7 @@ async function closeBurst(tx: Tx, ledger: AgentDeliveryState, state: RetryBurstS
 	if (end === "recovered" || end === "failed") burst.attempts = Math.max(burst.attempts, burst.retries + 1);
 	for (const { ownerId, results } of end === "failed" ? burst.recipients : []) {
 		const requestId = burstRequestId(ownerId, senderIdentity, burst.runId);
-		if (ledger.reports.some((report) => report.ownerId === ownerId && report.requestId === requestId)) continue;
+		if (await retainedReportRequest(tx, ownerId, requestId)) continue;
 		const shown = results.slice(0, 16);
 		const report: DeliveryReport = { sourceId: `report:${requestId}`, requestId, ownerId, senderIdentity,
 			message: [`Provider retry burst ended at ${new Date(now).toISOString()}. End state: ${end}.`,
@@ -130,7 +131,7 @@ function retainBurstRecipients(burst: RetryBurst, owners: Map<string, ResultRefe
 export async function retainProviderRetryNotices(tx: Tx, storageId: string, conversationId: ConversationId, maxAttempts: number, now: number, observations?: readonly RetryObservation[]): Promise<void> {
 	const live = await tx.doc(LiveDoc, conversationId);
 	const state = await tx.doc(ProviderRetryBurstDoc, conversationId);
-	const ledger = await tx.doc(AgentDeliveryDoc);
+	const ledger = await readDeliveryDraft(tx, false, "intent");
 	const senderIdentity = canonicalIdentity(storageId, conversationId);
 	for (const observed of observations === undefined ? [live as RetryObservation] : [...observations, live as RetryObservation]) {
 		const run = observed.run;
@@ -144,6 +145,7 @@ export async function retainProviderRetryNotices(tx: Tx, storageId: string, conv
 		retainBurstRecipients(burst, owners);
 	}
 	await closeBurst(tx, ledger, state, senderIdentity, live, now);
+	await writeDeliveryDraft(tx, ledger);
 }
 
 function retrySnapshot(live: LiveState, routes: readonly RetryRoute[]): RetryObservation {

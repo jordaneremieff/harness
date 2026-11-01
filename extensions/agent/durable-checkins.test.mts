@@ -1,3 +1,5 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
+import { editDeliveryFixture, waitForDeliveryFixture } from "./delivery-store-fixture.mts";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,7 +7,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
-import { AgentDeliveryDoc, recordDeliveryIntent, settleDeliveries, type DeliveryReport } from "./durable-controls.ts";
+import { recordDeliveryIntent, settleDeliveries, type DeliveryReport } from "./durable-controls.ts";
 import { CheckInTask, CheckInDeadlineTask, createCheckIn } from "./durable-checkins.ts";
 import { Harness, MemoryStorage, createRegistry, defineExtension, AssistantEntry, CompactionEntry, LiveDoc, UserEntry, type ConversationId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
 import { testModel } from "./test-runtime.mts";
@@ -54,7 +56,7 @@ it("creates a host-owned check-in without a native agent contribution, and ends 
 	await f.host.harness.waitForTask(checkTask.record.id, BACKGROUND_CONTEXT);
 	await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
 	assert.equal(await f.host.refreshIdle(), true, "settlement releases the background deadline task");
-	assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length ?? 0, 0);
+	assert.equal((await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true))?.reports.length ?? 0, 0);
 });
 
 it("ends retained deadline work when recovery finds an already settled submission", { timeout: 5000 }, async (t) => {
@@ -74,7 +76,7 @@ it("ends retained deadline work when recovery finds an already settled submissio
 	harness.resume();
 	await harness.waitForTask(ids.parent, withAbortSignal(AbortSignal.timeout(1000), BACKGROUND_CONTEXT));
 	assert.equal((await harness.getTask(ids.child, BACKGROUND_CONTEXT))?.state.status, "terminal");
-	assert.equal((await harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length ?? 0, 0);
+	assert.equal((await readRetainedDelivery(harness, BACKGROUND_CONTEXT, true))?.reports.length ?? 0, 0);
 });
 
 it("cancels the owned sleeping deadline without cancelling the producer input", { timeout: 60000 }, async (t) => {
@@ -94,7 +96,7 @@ it("cancels the owned sleeping deadline without cancelling the producer input", 
 		assert.equal(watched?.status, "placed");
 		f.releaseAnswer();
 		assert.equal((await f.waitForReceipt("cancel-check-in")).status, "done");
-		assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length ?? 0, 0);
+		assert.equal((await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true))?.reports.length ?? 0, 0);
 	} finally { await graph.stop(); }
 });
 
@@ -106,7 +108,7 @@ for (const origin of ["operator", "model"] as const) for (const spelling of ["ro
 		const identity = spelling === "sibling" ? f.host.identity(sibling.id) : f.storageId;
 		const ownerId = spelling === "root-alias" ? `${f.storageId}:1` : identity;
 		await f.host.request("submit", { sessionId: identity, message: "self task", requestId: "self", ownerId, origin, checkInMinutes: 30 });
-		const state = await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+		const state = await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true);
 		assert.equal(state?.intents.find((intent) => intent.requestId === "self")?.ownerId, ownerId, "self ownership still retains a delivery intent");
 		assert.equal((await f.host.harness.inspect(BACKGROUND_CONTEXT)).tasks.some((task) => task.record.kind === "agent.check-in"), false);
 		const otherOwner = spelling === "sibling" ? f.storageId : f.host.identity(sibling.id);
@@ -132,18 +134,7 @@ it("zero and admissions without a tool interval create no check-in task", { time
 });
 
 async function waitForReport(f: Awaited<ReturnType<typeof scheduleFixture>>, sourceId: string): Promise<DeliveryReport> {
-	const watch = await f.host.harness.watchDoc(AgentDeliveryDoc, BACKGROUND_CONTEXT);
-	assert.ok(watch);
-	try {
-		const present = watch.value?.reports.find((report) => report.sourceId === sourceId);
-		if (present) return present;
-		return await new Promise<DeliveryReport>((resolve) => {
-			watch.start(async (state) => {
-				const report = state?.reports.find((row) => row.sourceId === sourceId);
-				if (report) resolve(report);
-			});
-		});
-	} finally { await watch.stop(); }
+	return waitForDeliveryFixture(f.host.harness, BACKGROUND_CONTEXT, (state) => state.reports.find((report) => report.sourceId === sourceId));
 }
 
 it("fires at the exact deadline, repeats, and resumes without duplicate or missed-deadline bursts", { timeout: 60000 }, async (t) => {
@@ -166,7 +157,7 @@ it("fires at the exact deadline, repeats, and resumes without duplicate or misse
 		assert.ok(firstCheckIn);
 		await f.host.request("acknowledge", { ownerId: f.ownerId, sourceIds: [first.sourceId] });
 		await f.reopen();
-		const replay = await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+		const replay = await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true);
 		assert.equal(replay?.reports.filter((report) => report.sourceId === key(1)).length, 1, "restart preserves one source identity per deadline");
 		now = epoch + 120000;
 		await f.reopen();
@@ -175,8 +166,9 @@ it("fires at the exact deadline, repeats, and resumes without duplicate or misse
 		await f.reopen();
 		const resumed = await waitForReport(f, key(10));
 		assert.equal(resumed.checkIn?.elapsedMs, 600000);
-		const rows = (await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports ?? [];
-		assert.deepEqual(rows.map((row) => row.sourceId), [key(1), key(10)], "newer pending notice replaces the older one; overdue boundaries collapse");
+		const rows = (await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true))?.reports ?? [];
+		assert.deepEqual(rows.map((row) => row.sourceId), [key(1), key(2), key(10)], "retained notice identities survive coalescing");
+		assert.deepEqual(rows.filter((row) => !row.acknowledged).map((row) => row.sourceId), [key(10)], "only the current notice remains pending");
 		const task = (await f.host.harness.inspect(BACKGROUND_CONTEXT)).tasks.find((row) => row.record.kind === CheckInTask.definition.name);
 		assert.ok(task);
 		const graph = await f.host.harness.watchTaskGraph(BACKGROUND_CONTEXT);
@@ -188,17 +180,18 @@ it("fires at the exact deadline, repeats, and resumes without duplicate or misse
 		assert.ok(deadline);
 		assert.equal(deadline.state.kind, "sleeping");
 		assert.equal((deadline.record.state as { checkpoint?: { next: number } }).checkpoint?.next, 11, "the next deadline keeps the admission cadence");
-		await f.host.harness.commit(async (tx) => {
-			const state = await tx.doc(AgentDeliveryDoc);
+		await f.host.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+			const state = deliveryFixtureState;
 			state.reports.push({ ...first, sourceId: "other-owner-accepted", ownerId: "another-owner", acknowledged: true,
 				checkIn: { ...firstCheckIn, fallbackBroadcast: true } });
-		}, BACKGROUND_CONTEXT);
+		}), BACKGROUND_CONTEXT);
 		f.releaseAnswer();
 		await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
 		await f.host.harness.waitForTask(task.record.id, BACKGROUND_CONTEXT);
 		await settleDeliveries(f.host.harness, BACKGROUND_CONTEXT);
-		const settled = await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
-		assert.deepEqual(settled?.reports ?? [], [], "settlement removes pending, acknowledged, and fallback rows for every owner");
+		const settled = await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT);
+		assert.deepEqual(settled.reports, [], "settlement leaves no pending notices for any owner");
+		assert.ok((await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT, true)).reports.every((row) => row.acknowledged), "retained notice identities remain acknowledged");
 		assert.equal(await f.host.refreshIdle(), true);
 	} finally { f.releaseAnswer(); }
 });
@@ -214,23 +207,23 @@ it("carries accepted fallback evidence into the next pending check-in and prunes
 		now = epoch + 60000;
 		await f.reopen();
 		const first = await waitForReport(f, `check-in:${conversation.id}:fallback-repeat:1`);
-		await f.host.harness.commit(async (tx) => {
-			const state = await tx.doc(AgentDeliveryDoc);
+		await f.host.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+			const state = deliveryFixtureState;
 			const index = state.reports.findIndex((row) => row.sourceId === first.sourceId);
 			const report = state.reports[index];
 			assert.ok(report.checkIn);
 			state.reports[index] = { ...report, checkIn: { ...report.checkIn, fallbackBroadcast: true } };
-		}, BACKGROUND_CONTEXT);
+		}), BACKGROUND_CONTEXT);
 		now = epoch + 120000;
 		await f.reopen();
 		const next = await waitForReport(f, `check-in:${conversation.id}:fallback-repeat:2`);
 		assert.equal(next.acknowledged, false);
 		assert.equal(next.checkIn?.fallbackBroadcast, true);
-		assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length, 1);
+		assert.equal((await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT))?.reports.length, 1);
 		f.releaseAnswer();
 		await f.host.harness.waitForIdle(BACKGROUND_CONTEXT);
 		await settleDeliveries(f.host.harness, BACKGROUND_CONTEXT);
-		assert.deepEqual((await f.host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports, []);
+		assert.deepEqual((await readRetainedDelivery(f.host.harness, BACKGROUND_CONTEXT))?.reports, []);
 	} finally { f.releaseAnswer(); }
 });
 
@@ -240,7 +233,6 @@ async function digestFixture(t: { after(fn: () => void | Promise<void>): void },
 	const conversation = await f.conversation();
 	await f.host.harness.commit(async (tx) => {
 		await seed(tx, conversation.id);
-		await tx.doc(AgentDeliveryDoc);
 		await createCheckIn(tx, { conversationId: Number(conversation.id), requestId: "watched", ownerId: f.ownerId,
 			senderIdentity: f.storageId, message: "second task", whenBusy: "followUp", origin: "model", admittedAt: now - 15000 }, 0.25);
 	}, BACKGROUND_CONTEXT);

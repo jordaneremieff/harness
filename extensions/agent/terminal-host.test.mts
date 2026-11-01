@@ -1,9 +1,10 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
-import { AgentDeliveryDoc, settleDeliveries, type AgentDeliveryState } from "./durable-controls.ts";
+import { settleDeliveries, type AgentDeliveryState } from "./durable-controls.ts";
 import { committedChoices } from "./action-dialogs.ts";
 import { RequestContextDoc } from "./request-context.ts";
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -59,7 +60,7 @@ for (const action of ["rewind", "schedule"] as const) it(`terminal ${action} own
 	gate.release();
 	assert.equal((await host.settled(submissionId) as { status: string }).status, "done");
 	await settleDeliveries(host.durable.harness, BACKGROUND_CONTEXT);
-	const state = await host.durable.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	const state = await readRetainedDelivery(host.durable.harness, BACKGROUND_CONTEXT, true);
 	assert.equal(state?.receipts[String(submissionId)]?.ownerId, returned.sessionId);
 	assert.equal(state?.receipts[String(submissionId)]?.conversationId, started.conversationId);
 	const errors = eventLog<Error>();
@@ -68,7 +69,7 @@ for (const action of ["rewind", "schedule"] as const) it(`terminal ${action} own
 	try {
 		await passes.waitForCount(2);
 	} finally { await watcher.close(); }
-	const delivered = await host.durable.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	const delivered = await readRetainedDelivery(host.durable.harness, BACKGROUND_CONTEXT, true);
 	assert.equal(delivered?.receipts[String(submissionId)]?.acknowledged, true);
 	assert.deepEqual(errors, []);
 	assert.equal((await host.durable.request("status", { sessionId: returned.sessionId }) as { deliveryError?: string }).deliveryError, undefined);
@@ -101,7 +102,7 @@ for (const action of ["rewind", "timer-schedule"] as const) for (const selfOwned
 	gate.release();
 	await host.settled(submissionId);
 	await settleDeliveries(host.durable.harness, BACKGROUND_CONTEXT);
-	const state = await host.durable.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+	const state = await readRetainedDelivery(host.durable.harness, BACKGROUND_CONTEXT, true);
 	assert.equal(state?.receipts[String(submissionId)]?.ownerId, selfOwned ? identity : caller);
 	assert.equal(state?.receipts[String(submissionId)]?.origin, "operator");
 	if (action === "rewind") assert.equal(result.identity, identity);
@@ -142,10 +143,15 @@ it("acknowledges terminal input without submitting its answer back to the target
 	const controller = new TerminalController({ manager: fixture.manager(), caller: { id: `terminal:${randomUUID()}`, cwd: fixture.root } });
 	const revisions = eventLog<AgentDeliveryState>();
 	const off = host.durable.harness.subscribeCommits((publication) => {
+		const receipts = { ...revisions.at(-1)?.receipts };
+		let changed = false;
 		for (const change of publication.changes) {
-			if (change.type === "document" && change.record.kind === "agent.delivery" && change.value !== null)
-				revisions.push(change.value as unknown as AgentDeliveryState);
+			if (change.type !== "document" || change.record.kind !== "agent.delivery-row" || change.value?.kind !== "receipt" || change.value.value == null) continue;
+			const receipt = JSON.parse(JSON.stringify(change.value.value)) as AgentDeliveryState["receipts"][string];
+			receipts[String(receipt.submissionId)] = receipt;
+			changed = true;
 		}
+		if (changed) revisions.push({ intents: [], receipts, reports: [] });
 	});
 	const errors = eventLog<Error>();
 	const watcher = startDurableDelivery({ host: host.durable, metadata: hostMetadata(host.record), catalog: new AgentCatalog(fixture.agentDir), signal: new AbortController().signal, onError: (error) => errors.push(error) });
@@ -158,7 +164,7 @@ it("acknowledges terminal input without submitting its answer back to the target
 		assert.equal((await host.settled(id) as { status: string }).status, "done");
 		await revisions.waitFor((states) => states.some((state) => state.receipts[String(id)]?.acknowledged === true));
 		await watcher.close();
-		const state = await host.durable.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+		const state = await readRetainedDelivery(host.durable.harness, BACKGROUND_CONTEXT, true);
 		assert.equal(state?.receipts[String(id)]?.origin, "operator");
 		assert.equal(state?.receipts[String(id)]?.ownerId, host.record.storageId);
 		assert.equal(state?.receipts[String(id)]?.acknowledged, true);

@@ -34,7 +34,8 @@ import { DurableHost } from "./durable-host.ts";
 import { stopForeignReferences } from "./run-control.ts";
 import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
 import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
-import { AgentDeliveryDoc, projectConversationIntents } from "./durable-controls.ts";
+import { projectConversationIntents } from "./durable-controls.ts";
+import { deliveryPendingCount } from "./delivery-store.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { AgentManager } from "./manager.ts";
 import { observeDeliveryEligibility, startDurableDelivery, type NativeTargetFailure } from "./durable-delivery.ts";
@@ -163,18 +164,14 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 
 	/** Pending delivery rows: unsettled intents, unacknowledged receipts, and unacknowledged reports. */
 	async function deliveriesPending(): Promise<boolean> {
-		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
-		if (state === undefined) return false;
-		if (state.intents.some((intent) => intent.submissionId === null || state.receipts[String(intent.submissionId)] === undefined)) return true;
-		if (Object.values(state.receipts).some((receipt) => !receipt.acknowledged)) return true;
-		return state.reports.some((report) => !report.acknowledged);
+		return await deliveryPendingCount(host.harness, BACKGROUND_CONTEXT) > 0;
 	}
 
 	/** Native work plus pending delivery state used by the marker and transient monitors. */
 	async function recoveryState(): Promise<{ readonly workPending: boolean; readonly deliveriesPending: boolean; readonly deliveriesActive: boolean }> {
 		const generation = activityGeneration;
 		const idle = await host.refreshIdle();
-		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets, packageDir: metadata.packageDir });
+		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets, packageDir: metadata.packageDir, activeOnly: true });
 		const deliveriesActive = rows.some((row) => row.eligibility.state === "active");
 		const pending = await deliveriesPending();
 		if (generation === activityGeneration) {
@@ -233,7 +230,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		blockers.push(...native);
 		const state = await recoveryState();
 		if (state.workPending && native.length === 0) blockers.push("Native work remains in this storage");
-		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets, packageDir: metadata.packageDir });
+		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets, packageDir: metadata.packageDir, activeOnly: true });
 		blockers.push(...rows.filter((row) => row.eligibility.state === "active").map((row) => `Active delivery to ${row.row.ownerId}`));
 		if (generation !== activityGeneration) blockers.push("Native state changed during the release check; retry the request");
 		if (blockers.length > 0) return { retiring: false, blockers: [...new Set(blockers)] };

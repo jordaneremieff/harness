@@ -1,3 +1,4 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +10,7 @@ import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { AssistantEntry, ROOT_CONVERSATION_ID, ToolTask, defineExtension, defineTool, type JsonObject, type NestedToolExecutionResult, type Registry, type RegistryReader } from "@earendil-works/pi-durable";
 import { Type, type TSchema } from "typebox";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
-import { AgentDeliveryDoc } from "./durable-controls.ts";
+
 import { DurableHost } from "./durable-host.ts";
 import { toolCallMessage } from "./durable-host-fixture.mts";
 import { createDurableRuntime } from "./durable-runtime.ts";
@@ -146,7 +147,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		assert.match(text, /canonical lowercase UUID for a bare root/u);
 		assert.match(text, /UUID:positive nonroot conversation ID/u);
 		assert.equal((await peer.harness.inspect(context)).submissions.length, 0);
-		assert.equal((await peer.harness.snapshot(AgentDeliveryDoc, context))?.reports.length ?? 0, 0);
+		assert.equal((await readRetainedDelivery(peer.harness, context, true))?.reports.length ?? 0, 0);
 		assert.equal(delivered.length, 0);
 	});
 	const invalidHandles: { field: string; fields: JsonObject }[] = [
@@ -160,7 +161,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 		const text = JSON.stringify(result.structuredOutput);
 		assert.ok(text.includes(`${field}: handle resolution failed`), text);
 		assert.equal((await peer.harness.inspect(context)).submissions.length, 0);
-		assert.equal((await peer.harness.snapshot(AgentDeliveryDoc, context))?.reports.length ?? 0, 0);
+		assert.equal((await readRetainedDelivery(peer.harness, context, true))?.reports.length ?? 0, 0);
 		assert.equal(delivered.length, 0);
 	});
 	await t.test("native collaboration identifies a required source", async () => {

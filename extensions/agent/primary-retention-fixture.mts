@@ -6,7 +6,8 @@ import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime, fixtureProvider, fixtureModelId } from "./durable-host-fixture.mts";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
-import { AgentDeliveryDoc, recordReport } from "./durable-controls.ts";
+import { recordReport } from "./durable-controls.ts";
+import { deliveryState } from "./delivery-store.ts";
 import { startDurableDelivery } from "./durable-delivery.ts";
 
 const [cwd, agentDir, sessionsRoot] = process.argv.slice(2);
@@ -31,5 +32,5 @@ await recordReport(source.harness, { ownerId: record.storageId, senderIdentity: 
 let sent = false;
 startDurableDelivery({ host: source, metadata, catalog, sessionsRoot, signal: new AbortController().signal, retryDelayMs: 60_000, onIdle: () => {
 	if (sent) return; sent = true;
-	void source.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT).then((state) => process.send?.({ metadata, ownerId: sessionManager.getSessionId(), sessionFile: sessionManager.getSessionFile(), sourceId: `${record.storageId}:${report.sourceId}`, acknowledged: state?.reports[0]?.acknowledged, independentAcknowledged: state?.reports[1]?.acknowledged, queued: session.agent.peekQueuedMessages().length }));
+	void deliveryState(source.harness, BACKGROUND_CONTEXT, true).then((state) => process.send?.({ metadata, ownerId: sessionManager.getSessionId(), sessionFile: sessionManager.getSessionFile(), sourceId: `${record.storageId}:${report.sourceId}`, acknowledged: state?.reports[0]?.acknowledged, independentAcknowledged: state?.reports[1]?.acknowledged, queued: session.agent.peekQueuedMessages().length }));
 } });

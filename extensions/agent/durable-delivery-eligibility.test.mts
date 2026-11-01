@@ -1,3 +1,5 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
+import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -8,7 +10,7 @@ import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
-import { AgentDeliveryDoc, recordDeliveryIntent, reconcileDeliveries, type DeliveryReceipt } from "./durable-controls.ts";
+import { recordDeliveryIntent, reconcileDeliveries, type DeliveryReceipt } from "./durable-controls.ts";
 import { classifyDelivery, observeDeliveryEligibility, startDurableDelivery, type NativeTargetFailure } from "./durable-delivery.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
@@ -50,14 +52,14 @@ const cases = [
 
 for (const example of cases) it(`parks or terminates ${example.name} without a retry timer`, { timeout: 10000 }, async (t) => {
 	const f = await fixture(t), owner = example.owner();
-	await f.host.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await f.host.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		if ("intent" in example) state.intents.push({ requestId: "missing", ownerId: owner, conversationId: ("missingConversation" in example ? 998 : 1) as ConversationId, message: "retained", whenBusy: null, operationId: null, submissionId: 998 as SubmissionId, origin: "model" });
 		else {
 			const { origin: _origin, ...corrupt } = receipt(owner);
 			state.receipts["999"] = "corrupt" in example ? corrupt : receipt(owner);
 		}
-	}, context);
+	}), context);
 	const idle = eventLog<void>(), errors = eventLog<Error>();
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const watcher = startDurableDelivery({ host: f.host, metadata: f.metadata, catalog: f.catalog, sessionsRoot: f.root, signal: new AbortController().signal, onIdle: () => idle.push(undefined), onError: error => errors.push(error),
@@ -67,7 +69,7 @@ for (const example of cases) it(`parks or terminates ${example.name} without a r
 	t.after(() => watcher.close());
 	t.mock.timers.tick(0); await idle.waitForCount(1);
 	t.mock.timers.tick(0); await new Promise<void>(setImmediate);
-	const state = await f.host.harness.snapshot(AgentDeliveryDoc, context);
+	const state = await readRetainedDelivery(f.host.harness, context, true);
 	const row = "intent" in example ? state?.intents[0] : state?.receipts["999"];
 	assert.equal(row?.delivery?.state, example.state);
 	assert.match(row?.delivery?.reason ?? "", example.reason);
@@ -80,12 +82,12 @@ for (const example of cases) it(`parks or terminates ${example.name} without a r
 
 it("retains a terminal reason through reopen and never routes the row", { timeout: 10000 }, async (t) => {
 	const f = await fixture(t);
-	await f.host.harness.commit(async tx => { (await tx.doc(AgentDeliveryDoc)).receipts["999"] = receipt("12345678"); }, context);
+	await f.host.harness.commit(async tx => editDeliveryFixture(tx, async (deliveryFixtureState) => { (deliveryFixtureState).receipts["999"] = receipt("12345678"); }), context);
 	const run = async () => {
 		const idle = eventLog<void>();
 		const watcher = startDurableDelivery({ host: f.host, metadata: f.metadata, catalog: f.catalog, sessionsRoot: f.root, signal: new AbortController().signal, onIdle: () => idle.push(undefined) });
 		await idle.waitForCount(1); await watcher.close();
-		return (await f.host.harness.snapshot(AgentDeliveryDoc, context))?.receipts["999"].delivery;
+		return (await readRetainedDelivery(f.host.harness, context, true))?.receipts["999"].delivery;
 	};
 	const terminal = await run();
 	await f.reopen();
@@ -107,16 +109,16 @@ it("replays and delivers a null-linked intent after a crash between intent and i
 	const watcher = startDurableDelivery({ host: f.host, metadata: f.metadata, catalog: f.catalog, sessionsRoot: f.root, signal: new AbortController().signal, onIdle: () => idle.push(undefined) });
 	try { await received.waitForCount(1); await idle.waitForCount(1); }
 	finally { await watcher.close(); }
-	assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, context))?.receipts[String(input.id)]?.acknowledged, true);
+	assert.equal((await readRetainedDelivery(f.host.harness, context, true))?.receipts[String(input.id)]?.acknowledged, true);
 });
 
 it("marks an impossible replay terminal", { timeout: 10000 }, async (t) => {
 	const f = await fixture(t), owner = randomUUID();
-	await f.host.harness.commit(async tx => {
-		(await tx.doc(AgentDeliveryDoc)).intents.push({ requestId: "orphan", ownerId: owner, conversationId: 999 as ConversationId, message: "cannot replay", origin: "model", submissionId: null, whenBusy: null, operationId: null });
-	}, context);
+	await f.host.harness.commit(async tx => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		(deliveryFixtureState).intents.push({ requestId: "orphan", ownerId: owner, conversationId: 999 as ConversationId, message: "cannot replay", origin: "model", submissionId: null, whenBusy: null, operationId: null });
+	}), context);
 	await f.reopen();
-	const state = await f.host.harness.snapshot(AgentDeliveryDoc, context);
+	const state = await readRetainedDelivery(f.host.harness, context, true);
 	assert.deepEqual(state?.intents[0]?.delivery, { state: "terminal", reason: "replay target conversation does not exist" });
 	const rows = await observeDeliveryEligibility(f.host.harness, { catalog: f.catalog, sessionsRoot: f.root });
 	assert.equal(rows[0]?.eligibility.state, "terminal");
@@ -128,7 +130,7 @@ it("leaves a transient replay failure pending and retries through reconciliation
 	await f.host.harness.commit(tx => recordDeliveryIntent(tx, 1 as ConversationId, { requestId: "transient-gap", ownerId: randomUUID(), message: "replay after recovery", origin: "model" }), context);
 	const unavailable = t.mock.method(f.host.harness, "conversation", async () => { throw new Error("temporary storage read failure"); });
 	await assert.rejects(reconcileDeliveries(f.host.harness, context), /temporary storage read/u);
-	assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, context))?.intents[0]?.delivery, undefined);
+	assert.equal((await readRetainedDelivery(f.host.harness, context, true))?.intents[0]?.delivery, undefined);
 	assert.equal((await observeDeliveryEligibility(f.host.harness, { catalog: f.catalog, sessionsRoot: f.root }))[0]?.eligibility.state, "active");
 	unavailable.mock.restore();
 	await reconcileDeliveries(f.host.harness, context);
@@ -140,7 +142,7 @@ it("leaves a transient replay failure pending and retries through reconciliation
 it("parks a native target whose host cannot start without a retry timer", { timeout: 10000 }, async (t) => {
 	const f = await fixture(t);
 	const target = f.catalog.create({ cwd: f.root, agentDir: f.metadata.agentDir, packageDir: getPackageDir(), model: f.metadata.model, thinkingLevel: "off" });
-	await f.host.harness.commit(async tx => { (await tx.doc(AgentDeliveryDoc)).receipts["999"] = receipt(target.storageId); }, context);
+	await f.host.harness.commit(async tx => editDeliveryFixture(tx, async (deliveryFixtureState) => { (deliveryFixtureState).receipts["999"] = receipt(target.storageId); }), context);
 	const idle = eventLog<void>(), unavailableTargets = new Map<string, NativeTargetFailure>();
 	let acquisitions = 0;
 	t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -154,7 +156,7 @@ it("parks a native target whose host cannot start without a retry timer", { time
 		assert.match(rows[0]?.eligibility.reason ?? "", /native host cannot start: launch refused/u);
 		t.mock.timers.tick(300000); await new Promise<void>(setImmediate);
 		assert.equal(acquisitions, 1);
-		assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, context))?.receipts["999"].delivery?.state, "parked");
+		assert.equal((await readRetainedDelivery(f.host.harness, context, true))?.receipts["999"].delivery?.state, "parked");
 	} finally { await watcher.close(); }
 });
 
@@ -165,7 +167,7 @@ for (const failure of ["unavailable", "live-claim", "closing"] as const) it(`ret
 		const paths = hostPaths(target); mkdirSync(dirname(paths.claim), { recursive: true });
 		writeFileSync(paths.claim, JSON.stringify({ sessionId: target.storageId, cwd: target.cwd, host: hostname(), pid: process.pid, createdAt: new Date().toISOString() }));
 	}
-	await f.host.harness.commit(async tx => { (await tx.doc(AgentDeliveryDoc)).receipts["999"] = receipt(target.storageId); }, context);
+	await f.host.harness.commit(async tx => editDeliveryFixture(tx, async (deliveryFixtureState) => { (deliveryFixtureState).receipts["999"] = receipt(target.storageId); }), context);
 	let attempts = 0;
 	const link = { closed: false, request: async () => { delivered.push(undefined); return {}; }, close: async () => {} } as unknown as HostConnection;
 	const watcher = startDurableDelivery({ host: f.host, metadata: f.metadata, catalog: f.catalog, sessionsRoot: f.root, signal: new AbortController().signal, unavailableTargets, retryDelayMs: 50,
@@ -188,7 +190,7 @@ it("keeps a live reachable recipient active after a transient failure and retrie
 	let attempts = 0;
 	const channel = await createPrimaryChannel({ id: owner, cwd: f.root, sessionsRoot: f.root, deliver: () => { attempts++; if (attempts === 1) throw new Error("transient transport failure"); accepted.push(undefined); }, promptTrust: async () => undefined });
 	t.after(() => channel.close());
-	await f.host.harness.commit(async tx => { (await tx.doc(AgentDeliveryDoc)).receipts["999"] = receipt(owner); }, context);
+	await f.host.harness.commit(async tx => editDeliveryFixture(tx, async (deliveryFixtureState) => { (deliveryFixtureState).receipts["999"] = receipt(owner); }), context);
 	const watcher = startDurableDelivery({ host: f.host, metadata: f.metadata, catalog: f.catalog, sessionsRoot: f.root, signal: new AbortController().signal, retryDelayMs: 50, onError: error => errors.push(error) });
 	try {
 		await errors.waitForCount(1);
@@ -201,7 +203,7 @@ it("keeps a live reachable recipient active after a transient failure and retrie
 
 for (const state of ["parked", "terminal"] as const) it(`lets tryRetire seal an idle runtime with ${state} rows`, { timeout: 15000 }, async (t) => {
 	const f = await fixture(t), owner = state === "parked" ? randomUUID() : "12345678";
-	await f.host.harness.commit(async tx => { (await tx.doc(AgentDeliveryDoc)).receipts["999"] = receipt(owner); }, context);
+	await f.host.harness.commit(async tx => editDeliveryFixture(tx, async (deliveryFixtureState) => { (deliveryFixtureState).receipts["999"] = receipt(owner); }), context);
 	await f.host.close();
 	const runtime = await createDurableRuntime(f.metadata, { modelRuntime: await createTestRuntime() });
 	try {

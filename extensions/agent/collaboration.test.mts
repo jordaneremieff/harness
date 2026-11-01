@@ -1,3 +1,4 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -10,7 +11,7 @@ import { LiveDoc, ROOT_CONVERSATION_ID, type LiveState, type Session } from "@ea
 import { AgentCatalog } from "./catalog.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 import { CollaborationParams, CollaborationEvents, CollaborationIndex, CollaborationReadError, CollaborationThreads, type CollaborationEvent, type CollaborationPage, type CollaborationThread, collaborationIdentity, listCollaboration, mutateCollaboration, projectCollaboration, readCollaboration } from "./collaboration.ts";
-import { AgentDeliveryDoc, ThreadDeliveryDoc, acknowledgeReports } from "./durable-controls.ts";
+import { ThreadDeliveryDoc, acknowledgeReports } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
 import { DurableObservation, readConversationStatus } from "./durable-observation.ts";
 import { fixtureRegistry, fixtureRuntime, hostOptions, toolCallMessage } from "./durable-host-fixture.mts";
@@ -237,7 +238,7 @@ it("retains a shared frame and deduplicates the same mutation without any model 
 	const replay = await mutateCollaboration(f.host.harness, f.storageId, input, context);
 	assert.deepEqual(replay, { ...first, deduped: true });
 	assert.equal((await f.host.harness.inspect(context)).submissions.length, 0);
-	assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, context))?.reports.length ?? 0, 0);
+	assert.equal((await readRetainedDelivery(f.host.harness, context, true))?.reports.length ?? 0, 0);
 	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, { ...input, title: "Changed" }, context), /different content/u);
 	await f.reopen();
 	const page = await readCollaboration(f.host.harness, { threadId: first.threadId }, context);
@@ -382,7 +383,7 @@ it("rejoin replaces only the caller contribution and retains independent holds a
 	assert.equal(page.thread.closed, false);
 	assert.deepEqual(page.events.slice(0, 2), before.events);
 	assert.deepEqual(page.events.at(-1), { threadId: created.threadId, sequence: receipt.sequence, at: page.thread.updatedAt, sender: actor, origin: "model", kind: "join", message: release, source: "Verification release event", replyTo: null, revision: 1, notify: [] });
-	const ledger = await f.host.harness.snapshot(AgentDeliveryDoc, context);
+	const ledger = await readRetainedDelivery(f.host.harness, context, true);
 	const notice = ledger?.reports.find((report) => report.senderIdentity === actor && report.ownerId === peer);
 	assert.equal(notice?.passive, true);
 	assert.equal(notice?.steer, false);
@@ -437,7 +438,7 @@ it("rejects invalid integrator, senderIdentity and indexed notify values without
 	}
 	assert.deepEqual(await readCollaboration(f.host.harness, { threadId: created.threadId }, context), before);
 	assert.equal((await listCollaboration(f.host.harness, {}, context)).items.length, 1);
-	assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, context))?.reports.length ?? 0, 0);
+	assert.equal((await readRetainedDelivery(f.host.harness, context, true))?.reports.length ?? 0, 0);
 	await mutateCollaboration(f.host.harness, f.storageId, mutation("revise", "valid-integrator", { ...frame, threadId: created.threadId, integrator: `${peer}:${ROOT_CONVERSATION_ID + 1}` }), context);
 	assert.equal((await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).thread.integrator, `${peer}:${ROOT_CONVERSATION_ID + 1}`);
 });
@@ -467,7 +468,7 @@ it("writes notification intents with the event and retains source-qualified dedu
 	for (const invalid of [`${actor}:1`, `${peer}:9007199254740992`]) await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("post", `invalid-${invalid}`, { threadId: created.threadId, message: "Invalid recipient", notify: [invalid] }), context), /exact discovered identity/u);
 	const post = mutation("post", "post", { threadId: created.threadId, message: "Please challenge this boundary.", notify: [peer, peer, actor] });
 	const receipt = await mutateCollaboration(f.host.harness, f.storageId, post, context);
-	let ledger = await f.host.harness.snapshot(AgentDeliveryDoc, context);
+	let ledger = await readRetainedDelivery(f.host.harness, context, true);
 	assert.equal(ledger?.reports.length, 1);
 	assert.equal(ledger?.reports[0].ownerId, peer);
 	assert.equal(ledger?.reports[0].direct, true);
@@ -478,7 +479,7 @@ it("writes notification intents with the event and retains source-qualified dedu
 	assert.match(ledger.reports[0].requestId, new RegExp(f.storageId));
 	await f.reopen();
 	assert.equal((await mutateCollaboration(f.host.harness, f.storageId, post, context)).deduped, true);
-	ledger = await f.host.harness.snapshot(AgentDeliveryDoc, context);
+	ledger = await readRetainedDelivery(f.host.harness, context, true);
 	assert.equal(ledger?.reports.length, 1);
 	assert.equal(ledger?.reports[0].threadTitle, frame.title);
 	assert.equal(ledger?.reports[0].operatorMessage, "Please challenge this boundary.");
@@ -587,7 +588,7 @@ it("bounds serialized event and read bytes independently of character and row co
 	const created = await mutateCollaboration(f.host.harness, f.storageId, mutation("create", "create", frame), context);
 	await assert.rejects(mutateCollaboration(f.host.harness, f.storageId, mutation("post", "oversized", { threadId: created.threadId, message: "\u0001".repeat(8000), notify: [peer] }), context), /byte bound/u);
 	assert.equal((await readCollaboration(f.host.harness, { threadId: created.threadId }, context)).thread.sequence, 1);
-	assert.equal((await f.host.harness.snapshot(AgentDeliveryDoc, context))?.reports.length ?? 0, 0);
+	assert.equal((await readRetainedDelivery(f.host.harness, context, true))?.reports.length ?? 0, 0);
 	for (let index = 0; index < 12; index++) await mutateCollaboration(f.host.harness, f.storageId, mutation("post", `post-${index}`, { threadId: created.threadId, message: "x".repeat(8000) }), context);
 	let before: number | undefined;
 	const sequences: number[] = [];
@@ -626,7 +627,7 @@ it("joining subscribes to bounded passive notices while explicit attention remai
 	await mutateCollaboration(f.host.harness, f.storageId, mutation("join", "join", { threadId: created.threadId, senderIdentity: peer }), context);
 	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "quiet-post", { threadId: created.threadId, message: "x".repeat(8000) }), context);
 	await mutateCollaboration(f.host.harness, f.storageId, mutation("post", "attention", { threadId: created.threadId, message: "Please challenge this decision.", notify: [peer] }), context);
-	const ledger = await f.host.harness.snapshot(AgentDeliveryDoc, context);
+	const ledger = await readRetainedDelivery(f.host.harness, context, true);
 	assert.ok(ledger);
 	const notices = ledger.reports.filter((report) => report.ownerId === peer);
 	assert.equal(notices.length, 2);

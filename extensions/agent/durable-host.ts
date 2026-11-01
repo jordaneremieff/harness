@@ -30,6 +30,7 @@ import type { InputProvenance } from "./awaited-results.ts";
 import { ownAwaitFact, producerRetryFact, releaseAwait } from "./await-observation.ts";
 import { initializeProfile, reconcileProfiles, readProfile, updateProfile, type ProfileSeed } from "./profile.ts";
 import { AwaitInputSuppressed, richSubmitConversation } from "./durable-controls.ts";
+import { answerReceipts, migrateDeliveryStore, snapshotIntent, snapshotReceipt } from "./delivery-store.ts";
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
@@ -39,7 +40,7 @@ import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { isInputKind } from "./input-entry.ts";
 import { AssistantEntry, UserEntry, ToolResultEntry, type Tx, Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { acknowledgeDeliveries, acknowledgeReports, AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
+import { acknowledgeDeliveries, acknowledgeReports, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
 import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
 import { LiveObservationService, type ObservationScope } from "./live-observation.ts";
 import type { DurableCommand, DurableContributionHost } from "./durable-services.ts";
@@ -51,7 +52,7 @@ export type { ConfigurationResult } from "./configuration.ts";
 export type { AgentDeliveryState, AgentMeta, DeliveryIntent, DeliveryReceipt, DeliveryReport, DurableConfigureParams, DurableRunOutcome, DurableSubmitParams, DurableSubmitResult } from "./durable-controls.ts";
 export type { ConversationStatus, ConversationSummary, DurableInspectParams, DurableListParams, DurableStatusOptions, RequestParams } from "./durable-observation.ts";
 export type { DurableCommandCall, DurableCommand as DurableContributionCommand } from "./durable-services.ts";
-export { AgentDeliveryDoc, AgentForkDoc, AgentMetaDoc };
+export { AgentForkDoc, AgentMetaDoc };
 
 /** The services bootstrap's contribution host, passed to a command call. */
 export type DurableCommandHost = DurableContributionHost;
@@ -361,6 +362,7 @@ export class DurableHost {
 			throw error;
 		}
 		try {
+			await migrateDeliveryStore(harness, context);
 			const root = await harness.root(context, {
 				...(options.agent === undefined ? {} : { agent: options.agent }),
 				init: async (tx, conversationId) => {
@@ -664,18 +666,14 @@ export class DurableHost {
 		const submission = await this.harness.submission(reference.submissionId as SubmissionId, context);
 		const status = await submission?.status(context);
 		if (status?.type !== "input" || this.identity(status.conversationId) !== reference.sessionId || (reference.requestId !== undefined && status.requestId !== reference.requestId)) throw new Error("The exact receipt does not identify the selected native input");
-		const routed = await this.harness.commit(async (tx) => {
-			const delivery = await tx.doc(AgentDeliveryDoc);
-			return delivery.receipts[String(status.id)]?.ownerId === ownerId || delivery.intents.some((intent) => intent.conversationId === status.conversationId && intent.requestId === status.requestId && intent.ownerId === ownerId);
-		}, context);
+		const routed = (await snapshotReceipt(this.harness, status.id, context))?.ownerId === ownerId ||
+			(status.requestId !== undefined && (await snapshotIntent(this.harness, status.conversationId, status.requestId, context))?.ownerId === ownerId);
 		if (!routed) throw new Error("The selected result is not addressed to this recipient");
 		const { usage: _storageUsage, ...outcome } = await readOutcome(this.harness, status.id, context);
 		await reconcileDeliveries(this.harness, context);
-		const delivery = await this.harness.commit(async (tx) => {
-			const receipts = Object.values((await tx.doc(AgentDeliveryDoc)).receipts);
-			const selected = receipts.find((receipt) => receipt.submissionId === status.id && receipt.ownerId === ownerId);
-			if (selected === undefined) return undefined;
-			const group = receipts.filter((receipt) => selected.answerEntryId === null ? receipt.submissionId === selected.submissionId : receipt.answerEntryId === selected.answerEntryId);
+		const selected = await snapshotReceipt(this.harness, status.id, context);
+		const delivery = selected === undefined || selected.ownerId !== ownerId ? undefined : await this.harness.commit(async (tx) => {
+			const group = await answerReceipts(tx, selected);
 			const key = selected.answerEntryId === null ? `submission:${selected.submissionId}` : `answer:${selected.answerEntryId}`;
 			return { requestId: `deliver:${this.storageId}:${key}`, results: group.slice(0, 16).map((receipt) => ({ sessionId: this.identity(receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId })), complete: group.length <= 16 };
 		}, context);

@@ -1,3 +1,4 @@
+import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -8,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { LiveDoc, SessionFailed, type Storage, type ConversationId, type EntryId, type HarnessInspection, type SubmissionId, type TaskGraph } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
-import { AgentDeliveryDoc, DurableHost, sessionIsIdle, type ConfigurationResult, type DurableCommandHost, type DurableHostOptions } from "./durable-host.ts";
+import { DurableHost, sessionIsIdle, type ConfigurationResult, type DurableCommandHost, type DurableHostOptions } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime, fixtureStorageId, gateTool, hostOptions, reasoningRuntime, redactedAnswerMessage, scriptedRuntime, slowEffectTool, toolCallMessage } from "./durable-host-fixture.mts";
 
 const fixturePath = fileURLToPath(new URL("./durable-host-fixture.mts", import.meta.url));
@@ -310,10 +311,10 @@ it("reconciles an intent written before its submission and never overwrites an a
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
 	const first = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
 	// Simulate a crash after the intent commit and before submission admission.
-	await first.harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
+	await first.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+		const state = deliveryFixtureState;
 		state.intents.push({ requestId: "recover-1", ownerId: "owner-r", conversationId: 1 as ConversationId, message: "recovered task", whenBusy: null, operationId: null, submissionId: null, origin: "operator" });
-	}, BACKGROUND_CONTEXT);
+	}), BACKGROUND_CONTEXT);
 	const submitted = await first.submit({ message: "recovered task", requestId: "recover-1", ownerId: "owner-r", origin: "operator" });
 	await wait(first, submitted.submissionId);
 	await first.request("acknowledge", { ownerId: "owner-r", submissionIds: [submitted.submissionId] });

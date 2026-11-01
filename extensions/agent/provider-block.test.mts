@@ -1,3 +1,4 @@
+import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ import { ProviderModels } from "./provider-models.ts";
 import { PROVIDER_BLOCK_ERROR, STALE_PROVIDER_ERROR, isProviderExhaustion, ProviderBlockFactSchema, captureProviderAttempt, retainProviderBlock, readProviderBlock, ProviderControlDoc, retainDeferredAttempt, readDeferredAttempt } from "./provider-block.ts";
 import { safeProviderError } from "./primary-observation.ts";
 import { ProviderRetryNoticeSchema, providerNoticeRequestId, retainProviderRetryNotices } from "./provider-notices.ts";
-import { AgentDeliveryDoc, submitConversation, providerRetryReportSettled } from "./durable-controls.ts";
+import { submitConversation, providerRetryReportSettled } from "./durable-controls.ts";
 import { RequestContextDoc } from "./request-context.ts";
 import { LiveDoc } from "@earendil-works/pi-durable";
 import { producerRetryFact } from "./await-observation.ts";
@@ -99,7 +100,7 @@ it("retains burst facts without a preterminal report while typed retry notice ID
 		assert.ok(live.run); live.generation = { attempt: 1, retry: { at: Date.now() + 100000, error: "429 too many requests" } };
 		await retainProviderRetryNotices(tx, host.storageId, 1 as ConversationId, 21, Date.now());
 	}, BACKGROUND_CONTEXT);
-	const first = (await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports ?? [];
+	const first = (await readRetainedDelivery(host.harness, BACKGROUND_CONTEXT, true))?.reports ?? [];
 	assert.equal(first.length, 0);
 	const retry = await host.harness.commit((tx) => producerRetryFact(tx, 1 as ConversationId, [{ sessionId: host.storageId, submissionId: admitted.submissionId, requestId: "provider-work" }], 21), BACKGROUND_CONTEXT);
 	assert.ok(retry);
@@ -110,7 +111,7 @@ it("retains burst facts without a preterminal report while typed retry notice ID
 		const live = await tx.doc(LiveDoc, 1 as ConversationId); assert.ok(live.generation); live.generation.attempt = 2;
 		await retainProviderRetryNotices(tx, host.storageId, 1 as ConversationId, 21, Date.now() + 5000);
 	}, BACKGROUND_CONTEXT);
-	assert.equal((await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT))?.reports.length, 0);
+	assert.equal((await readRetainedDelivery(host.harness, BACKGROUND_CONTEXT))?.reports.length, 0);
 	assert.equal((await host.harness.snapshot(RequestContextDoc, 1 as ConversationId, BACKGROUND_CONTEXT))?.requests[0].replyTo, "actual-recipient");
 	const execution = notice.fact.execution; assert.ok(execution);
 	const missing = { sourceId: "report:missing", requestId: "missing", ownerId: "actual-recipient", senderIdentity: host.storageId, message: "retry evidence", replyTo: "actual-recipient", acknowledged: false, createdAt: Date.now(), providerRetry: { fact: { ...notice.fact, execution: { ...execution, results: [{ ...execution.results[0], requestId: "missing-input" }] } } } };

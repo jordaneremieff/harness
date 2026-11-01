@@ -31,10 +31,9 @@ import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ConversationId, Harness } from "@earendil-works/pi-durable";
+import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
 import {
-	AgentDeliveryDoc,
 	acknowledgeReports,
 	type DeliveryOrigin,
 	type DeliveryReceipt,
@@ -46,6 +45,7 @@ import {
 	providerRetryReportSettled,
 } from "./durable-controls.ts";
 import type { DurableHost } from "./durable-host.ts";
+import { checkInFallback, currentCheckInReport, deliveryState, pendingDeliveryPage, reloadDeliveryRows, terminalDeliveryState, retainedIntent, retainedReceipt, retainedReport, storeDeliveryRow } from "./delivery-store.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
 import { acquireHost, type HostConnection } from "./host-client.ts";
 import { HostError, hostPaths, type HostMetadata } from "./host-protocol.ts";
@@ -475,6 +475,7 @@ interface EligibilityOptions {
 	readonly unavailableTargets?: ReadonlyMap<string, NativeTargetFailure>;
 	readonly packageDir?: string;
 	readonly fallbackFailures?: ReadonlyMap<string, string>;
+	readonly activeOnly?: boolean;
 }
 
 /** Namespace lookup failure is unavailability, not permission to assume a live route. */
@@ -492,8 +493,8 @@ function recipientFacts(ownerId: string, options: EligibilityOptions): Pick<Deli
 }
 
 /** One observation supplies routing, status, recovery and the retirement seal. */
-export async function observeDeliveryEligibility(harness: Harness, options: EligibilityOptions): Promise<readonly EligibilityRow[]> {
-	const state = await harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
+export async function observeDeliveryEligibility(harness: Harness, options: EligibilityOptions, current?: AgentDeliveryState): Promise<readonly EligibilityRow[]> {
+	const state = current ?? await deliveryState(harness, BACKGROUND_CONTEXT, false, !options.activeOnly);
 	if (state === undefined) return [];
 	const missing = await harness.commit(async (tx) => {
 		const ids = new Set<string>();
@@ -519,34 +520,35 @@ export async function observeDeliveryEligibility(harness: Harness, options: Elig
 	return result;
 }
 
+function withDisposition<T extends { readonly delivery?: DeliveryDisposition }>(row: T, disposition: DeliveryDisposition | undefined): T {
+	const { delivery: _prior, ...rest } = row;
+	return { ...rest, ...(disposition === undefined ? {} : { delivery: disposition }) } as T;
+}
+
+async function retainRowEligibility(tx: Tx, item: EligibilityRow): Promise<void> {
+	const disposition: DeliveryDisposition | undefined = item.eligibility.state === "active" ? undefined : { state: item.eligibility.state, reason: item.eligibility.reason };
+	if (item.kind === "receipt") {
+		const key = String((item.row as DeliveryReceipt).submissionId);
+		const receipt = await retainedReceipt(tx, Number(key));
+		if (receipt && !receipt.acknowledged) await storeDeliveryRow(tx, "receipt", withDisposition(receipt, disposition));
+		return;
+	}
+	if (item.kind === "intent") {
+		const intent = item.row as DeliveryIntent;
+		const current = await retainedIntent(tx, intent.conversationId, intent.requestId);
+		if (current) await storeDeliveryRow(tx, "intent", withDisposition(current, disposition));
+		return;
+	}
+	const report = item.row as DeliveryReport;
+	const current = await retainedReport(tx, report.ownerId, report.sourceId);
+	if (current && !current.acknowledged) await storeDeliveryRow(tx, "report", withDisposition(current, disposition));
+}
+
 /** Diagnostics are retained beside each row; terminal decisions survive reopen. */
 async function retainEligibility(harness: Harness, rows: readonly EligibilityRow[]): Promise<void> {
 	await harness.commit(async (tx) => {
-		const state = await tx.doc(AgentDeliveryDoc);
-		for (const item of rows) {
-			const disposition: DeliveryDisposition | undefined = item.eligibility.state === "active" ? undefined : { state: item.eligibility.state, reason: item.eligibility.reason };
-			const update = <T extends { readonly delivery?: DeliveryDisposition }>(row: T): T => {
-				const { delivery: _prior, ...rest } = row;
-				return { ...rest, ...(disposition === undefined ? {} : { delivery: disposition }) } as T;
-			};
-			if (item.kind === "receipt") {
-				const key = String((item.row as DeliveryReceipt).submissionId);
-				if (state.receipts[key] !== undefined) state.receipts[key] = update(state.receipts[key]);
-			} else retainListEligibility(state, item, update);
-		}
+		for (const item of rows) await retainRowEligibility(tx, item);
 	}, BACKGROUND_CONTEXT);
-}
-
-function retainListEligibility(state: AgentDeliveryState, item: EligibilityRow, update: <T extends { readonly delivery?: DeliveryDisposition }>(row: T) => T): void {
-	if (item.kind === "intent") {
-		const intent = item.row as DeliveryIntent;
-		const index = state.intents.findIndex((row) => row.conversationId === intent.conversationId && row.requestId === intent.requestId);
-		if (index >= 0) state.intents[index] = update(state.intents[index]);
-	} else {
-		const report = item.row as DeliveryReport;
-		const index = state.reports.findIndex((row) => row.sourceId === report.sourceId && row.ownerId === report.ownerId);
-		if (index >= 0) state.reports[index] = update(state.reports[index]);
-	}
 }
 
 export function deliveryEligibilityError(rows: readonly EligibilityRow[]): Error | undefined {
@@ -577,6 +579,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let closed = false;
 	let running = false;
 	let dirty = false;
+	let activityPending = false;
 	let nextRetryDelayMs = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let inFlight: Promise<void> | undefined;
@@ -637,18 +640,16 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (row.kind !== "report" || (row.report.checkIn === undefined && row.report.providerRetry === undefined)) return true;
 		const report = row.report;
 		return host.harness.commit(async (tx) => {
-			const state = await tx.doc(AgentDeliveryDoc);
-			const index = state.reports.findIndex((current) => current.sourceId === report.sourceId && current.ownerId === report.ownerId);
-			const current = state.reports[index];
+			const current = await retainedReport(tx, report.ownerId, report.sourceId);
 			if (current === undefined || current.acknowledged) return false;
 			if (await providerRetryReportSettled(tx, current)) {
-				state.reports[index] = { ...current, acknowledged: true };
+				await storeDeliveryRow(tx, "report", { ...current, acknowledged: true });
 				return false;
 			}
 			if (current.checkIn === undefined) return true;
 			const submission = await tx.submissionByRequest(current.checkIn.conversationId as ConversationId, current.checkIn.requestId);
 			if (submission?.status !== "done" && submission?.status !== "unanswered") return true;
-			state.reports.splice(index, 1);
+			await storeDeliveryRow(tx, "report", { ...current, acknowledged: true });
 			return false;
 		}, BACKGROUND_CONTEXT);
 	};
@@ -674,12 +675,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			return;
 		}
 		await host.harness.commit(async (tx) => {
-			const state = await tx.doc(AgentDeliveryDoc);
 			for (const receipt of row.receipts) {
-				const key = String(receipt.submissionId);
-				const current = state.receipts[key];
+				const current = await retainedReceipt(tx, receipt.submissionId);
 				if (current !== undefined && current.ownerId === receipt.ownerId && owners.includes(current.ownerId) && !current.acknowledged)
-					state.receipts[key] = { ...current, acknowledged: true };
+					await storeDeliveryRow(tx, "receipt", { ...current, acknowledged: true });
 			}
 		}, BACKGROUND_CONTEXT);
 	};
@@ -864,17 +863,15 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	/** Retain each accepted informational copy independently of owner acknowledgment. */
 	const recordFallbackRecipient = async (row: DeliveryRow, recipient: string): Promise<void> => {
 		await host.harness.commit(async (tx) => {
-			const state = await tx.doc(AgentDeliveryDoc);
 			const add = (prior: readonly string[] = []) => [...new Set([...prior, recipient])];
 			if (row.kind === "report") {
-				const index = state.reports.findIndex((report) => report.sourceId === row.report.sourceId && report.ownerId === row.report.ownerId);
-				if (index >= 0) state.reports[index] = { ...state.reports[index], fallbackRecipients: add(state.reports[index].fallbackRecipients) };
+				const current = await retainedReport(tx, row.report.ownerId, row.report.sourceId);
+				if (current) await storeDeliveryRow(tx, "report", { ...current, fallbackRecipients: add(current.fallbackRecipients) });
 				return;
 			}
 			for (const receipt of row.receipts) {
-				const current = state.receipts[String(receipt.submissionId)];
-				if (current === undefined) continue;
-				state.receipts[String(receipt.submissionId)] = { ...current, fallbackRecipients: add(current.fallbackRecipients) };
+				const current = await retainedReceipt(tx, receipt.submissionId);
+				if (current !== undefined) await storeDeliveryRow(tx, "receipt", { ...current, fallbackRecipients: add(current.fallbackRecipients) });
 			}
 		}, BACKGROUND_CONTEXT);
 	};
@@ -926,10 +923,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	const fallbackAlreadyAccepted = async (row: DeliveryRow, owner: string): Promise<boolean> => {
 		if (row.kind !== "report" || row.report.checkIn === undefined) return false;
 		const checkIn = row.report.checkIn;
-		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
-		return state?.reports.some((prior) => prior.ownerId === owner
-			&& prior.checkIn?.conversationId === checkIn.conversationId && prior.checkIn.requestId === checkIn.requestId
-			&& prior.checkIn.fallbackBroadcast === true) ?? false;
+		return host.harness.commit((tx) => checkInFallback(tx, owner, checkIn.conversationId, checkIn.requestId), BACKGROUND_CONTEXT);
 	};
 
 	/** Fallback copies never acknowledge the owner or activate a parked route. */
@@ -947,13 +941,13 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		if (delivered === 0)
 			throw new Error(`no live owning session for ${owner} and no registered primary accepted delivery`);
 		if (row.kind === "report" && row.report.checkIn !== undefined) {
-			const checkIn = row.report.checkIn;
 			await host.harness.commit(async (tx) => {
-				const state = await tx.doc(AgentDeliveryDoc);
-				for (let index = 0; index < state.reports.length; index++) {
-					const current = state.reports[index];
-					if (current.ownerId === owner && current.checkIn?.conversationId === checkIn.conversationId && current.checkIn.requestId === checkIn.requestId)
-						state.reports[index] = { ...current, checkIn: { ...current.checkIn, fallbackBroadcast: true } };
+				const current = await retainedReport(tx, row.report.ownerId, row.report.sourceId);
+				if (current?.checkIn !== undefined) {
+					await storeDeliveryRow(tx, "report", { ...current, checkIn: { ...current.checkIn, fallbackBroadcast: true } });
+					const pending = await currentCheckInReport(tx, owner, current.checkIn.conversationId, current.checkIn.requestId);
+					if (pending?.checkIn !== undefined && pending.sourceId !== current.sourceId && !pending.checkIn.fallbackBroadcast)
+						await storeDeliveryRow(tx, "report", { ...pending, checkIn: { ...pending.checkIn, fallbackBroadcast: true } });
 				}
 			}, BACKGROUND_CONTEXT);
 		}
@@ -1073,26 +1067,49 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		return failure;
 	};
 
-	/** One pass: settle intents, route every unacknowledged record, report the first failure. */
+	let pendingCursor: string | null | undefined;
+	let automaticCursor: string | null | undefined;
+	let traversing = false;
+	let traversalFailure: Error | undefined;
+	const finishTraversal = (): void => {
+		if (pendingCursor !== null || automaticCursor !== null) return;
+		traversing = false;
+		if (activityPending) dirty = true;
+		if (traversalFailure !== undefined) throw traversalFailure;
+	};
+	/** One bounded pending page per pass; complete native answer groups remain indivisible. */
 	const scan = async (): Promise<void> => {
-		routingFailed = false;
-		fallbackFailures.clear();
-		retryOwners.clear();
-		await settleDeliveries(host.harness, BACKGROUND_CONTEXT);
-		const state = await host.harness.snapshot(AgentDeliveryDoc, BACKGROUND_CONTEXT);
-		if (state === undefined) return;
-		const observed = await observeDeliveryEligibility(host.harness, eligibilityOptions);
+		if (!traversing) {
+			traversing = true;
+			activityPending = false;
+			pendingCursor = undefined;
+			automaticCursor = undefined;
+			routingFailed = false;
+			fallbackFailures.clear();
+			retryOwners.clear();
+			traversalFailure = undefined;
+		}
+		automaticCursor = await settleDeliveries(host.harness, BACKGROUND_CONTEXT, automaticCursor);
+		const page = pendingCursor === null ? { state: { intents: [], receipts: {}, reports: [] } as AgentDeliveryState, next: null }
+			: await pendingDeliveryPage(host.harness, BACKGROUND_CONTEXT, pendingCursor);
+		pendingCursor = page.next;
+		if (pendingCursor !== null || automaticCursor !== null) dirty = true;
+		const state = page.state;
+		const observed = await observeDeliveryEligibility(host.harness, eligibilityOptions, state);
 		eligibility = new Map(observed.map((item) => [item.key, item.eligibility]));
 		const rows: DeliveryRow[] = [
 			...receiptRows(Object.values(state.receipts).filter((receipt) => eligibility.get(`receipt:${receipt.submissionId}`)?.state !== "terminal")),
 			...state.reports.map((report): DeliveryRow => ({ kind: "report", report, deliveredTo: new Set() })),
 		];
 		const failure = await routeRows(rows);
-		const after = await observeDeliveryEligibility(host.harness, eligibilityOptions);
+		const current = await reloadDeliveryRows(host.harness, state, BACKGROUND_CONTEXT);
+		const after = await observeDeliveryEligibility(host.harness, eligibilityOptions, current);
 		await retainEligibility(host.harness, after);
-		const diagnostic = deliveryEligibilityError(after);
+		const terminal = await observeDeliveryEligibility(host.harness, eligibilityOptions, await terminalDeliveryState(host.harness, BACKGROUND_CONTEXT));
+		const diagnostic = deliveryEligibilityError([...terminal, ...after]);
 		if (diagnostic !== undefined) fail(diagnostic);
-		if (failure !== undefined && after.some((item) => retryOwners.has(item.row.ownerId) && item.eligibility.state === "active")) throw failure;
+		if (failure !== undefined && after.some((item) => retryOwners.has(item.row.ownerId) && item.eligibility.state === "active")) traversalFailure ??= failure;
+		finishTraversal();
 	};
 
 	const run = async (): Promise<void> => {
@@ -1101,10 +1118,16 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		let retry: number | undefined;
 		try {
 			await scan();
-			if (!routingFailed) host.reportDeliveryError(undefined);
-			nextRetryDelayMs = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
+			if (!traversing) {
+				if (!routingFailed) host.reportDeliveryError(undefined);
+				nextRetryDelayMs = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
+			}
 		} catch (error) {
 			fail(error);
+			traversing = false;
+			pendingCursor = undefined;
+			automaticCursor = undefined;
+			traversalFailure = undefined;
 			retry = nextRetryDelayMs;
 			nextRetryDelayMs = Math.min(nextRetryDelayMs * 2, MAX_RETRY_DELAY_MS);
 		} finally {
@@ -1117,8 +1140,9 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	};
 
 	/** New activity preempts backoff; commits during a pass coalesce into one follow-up. */
-	function schedule(delayMs: number): void {
+	function schedule(delayMs: number, activity = false): void {
 		if (closed || signal.aborted) return;
+		if (activity) activityPending = true;
 		if (running) {
 			dirty = true;
 			return;
@@ -1171,7 +1195,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	}
 
 	signal.addEventListener("abort", onAbort, { once: true });
-	unsubscribe = host.harness.subscribeCommits(() => schedule(0));
+	unsubscribe = host.harness.subscribeCommits(() => schedule(0, true));
 	if (!signal.aborted) schedule(0);
-	return { get busy() { return running || inFlight !== undefined; }, refresh: () => { unavailableTargets.clear(); schedule(0); }, sealAdmission, close };
+	return { get busy() { return running || inFlight !== undefined; }, refresh: () => { unavailableTargets.clear(); schedule(0, true); }, sealAdmission, close };
 }

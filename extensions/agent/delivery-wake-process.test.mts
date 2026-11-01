@@ -1,3 +1,4 @@
+import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -6,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { hostMetadata } from "./catalog.ts";
-import { AgentDeliveryDoc } from "./durable-controls.ts";
+
 import { deliveryWakePath, readDeliveryWake } from "./delivery-wake.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
@@ -32,9 +33,9 @@ function fixture(t: TestContext, idleMinutes = "60") {
 async function seed(f: ReturnType<typeof fixture>, recipient: string): Promise<void> {
 	const host = await DurableHost.open({ storageId: f.metadata.storageId, storagePath: f.metadata.storagePath, cwd: f.cwd, models: await fixtureRuntime("answer"), registry: fixtureRegistry(), agent: { model: f.metadata.model }, resume: false }, context);
 	try {
-		await host.harness.commit(async tx => {
-			(await tx.doc(AgentDeliveryDoc)).reports.push({ sourceId: "report:parked-result", requestId: "parked-result", ownerId: recipient, senderIdentity: f.metadata.storageId, message: "retained parked result", replyTo: null, acknowledged: false, createdAt: Date.now() });
-		}, context);
+		await host.harness.commit(async tx => editDeliveryFixture(tx, async (deliveryFixtureState) => {
+			(deliveryFixtureState).reports.push({ sourceId: "report:parked-result", requestId: "parked-result", ownerId: recipient, senderIdentity: f.metadata.storageId, message: "retained parked result", replyTo: null, acknowledged: false, createdAt: Date.now() });
+		}), context);
 	} finally { await host.close(); }
 }
 
