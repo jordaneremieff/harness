@@ -465,17 +465,24 @@ function acceptLine(day: TelemetryDay, aggregate: Aggregator, oversized: boolean
 		issue(day, "malformed-line");
 	}
 }
+function parsePassLine(buffer: Buffer, start: number, end: number, day: TelemetryDay, aggregate: Aggregator, denials: boolean): number {
+	if (aggregate.summary.coverage.completeLines >= TELEMETRY_LIMITS.lines) return 0;
+	const oversized = end - start + 1 > TELEMETRY_LIMITS.lineBytes;
+	const value = oversized ? undefined : parseRecord(buffer.subarray(start, end));
+	if ((value?.outcome === "denied") !== denials) return 0;
+	acceptLine(day, aggregate, oversized, value);
+	return end - start + 1;
+}
+
 function parsePass(buffer: Buffer, range: { first: number; last: number }, day: TelemetryDay, aggregate: Aggregator, denials: boolean): number {
 	let processed = 0;
 	let end = range.last - 1;
-	while (end >= range.first && aggregate.summary.coverage.completeLines < TELEMETRY_LIMITS.lines) {
+	while (end >= range.first) {
 		const start = end === 0 ? 0 : buffer.lastIndexOf(10, end - 1) + 1;
-		const oversized = end - start + 1 > TELEMETRY_LIMITS.lineBytes;
-		const value = oversized ? undefined : parseRecord(buffer.subarray(start, end));
-		if ((value?.outcome === "denied") === denials) {
-			processed += end - start + 1;
-			acceptLine(day, aggregate, oversized, value);
-		}
+		if (start === end) {
+			// Both passes visit separators; only the second accounts for their bytes.
+			if (!denials) processed += 1;
+		} else processed += parsePassLine(buffer, start, end, day, aggregate, denials);
 		end = start - 1;
 	}
 	return processed;

@@ -47,7 +47,7 @@ function errorMessage(error: unknown): string {
  */
 export async function appendRecord(dir: string, record: PolicyRecord): Promise<string | null> {
 	try {
-		const serialized = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
+		const serialized = Buffer.from(`\n${JSON.stringify(record)}\n`, "utf8");
 		if (serialized.length > MAX_RECORD_BYTES) {
 			throw new Error(`policy record exceeds ${MAX_RECORD_BYTES} bytes`);
 		}

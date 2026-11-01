@@ -321,7 +321,7 @@ describe("policy telemetry input and filesystem bounds", () => {
 	it("selects denials before a saturated line budget, then newest records", async (t) => {
 		const dir = await directory(t);
 		await writeFile(join(dir, `${DAY}.jsonl`),
-			`${JSON.stringify(fixture({ outcome: "denied", policy: policy([evalRow("deny-first")]) }))}\n${"\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture({ tool: "newest" }))}\n`);
+			`${JSON.stringify(fixture({ outcome: "denied", policy: policy([evalRow("deny-first")]) }))}\n${"null\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture({ tool: "newest" }))}\n`);
 		const result = await readTelemetry(dir, DAY, DAY);
 		assert.equal(result.denials.withRuleAttribution, 1);
 		assert.equal(result.tools.find((row) => row.name === "newest")?.records, 1);
@@ -412,7 +412,7 @@ describe("policy telemetry input and filesystem bounds", () => {
 		assert.doesNotMatch(formatTelemetry(result), /private-/);
 	});
 
-	it("counts malformed complete lines and skips the unterminated final line", async (t) => {
+	it("ignores separators, counts nonempty malformed lines and skips the unterminated final line", async (t) => {
 		const dir = await directory(t);
 		await writeFile(
 			join(dir, `${DAY}.jsonl`),
@@ -429,9 +429,9 @@ describe("policy telemetry input and filesystem bounds", () => {
 		);
 		const result = await readTelemetry(dir, DAY, DAY);
 		assert.equal(result.records, 1);
-		assert.equal(result.coverage.malformedLines, 6);
+		assert.equal(result.coverage.malformedLines, 5);
 		assert.equal(result.coverage.incompleteLines, 1);
-		assert.equal(result.coverage.completeLines, 7);
+		assert.equal(result.coverage.completeLines, 6);
 		assert.equal(result.coverage.status, "partial");
 		accounting(result);
 	});
@@ -481,7 +481,7 @@ describe("policy telemetry input and filesystem bounds", () => {
 
 	it("enforces the complete-line budget independently of byte and valid-record counts", async (t) => {
 		const dir = await directory(t);
-		await writeFile(join(dir, `${DAY}.jsonl`), `${"\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture())}\n`);
+		await writeFile(join(dir, `${DAY}.jsonl`), `${"null\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture())}\n`);
 		await records(dir, [fixture()], "2026-09-04");
 		const result = await readTelemetry(dir, DAY, "2026-09-04");
 		assert.equal(result.records, 2);

@@ -536,7 +536,7 @@ test("native telemetry preserves the full call interval from the input memo", as
 			fauxAssistantMessage("done"),
 		], "measure the isolated fixture interval");
 		const records = (await readFile(join(fixture.storeDir, `${localDate(new Date(start))}.jsonl`), "utf8"))
-			.trim().split("\n").map((line) => JSON.parse(line));
+			.split("\n").filter(Boolean).map((line) => JSON.parse(line));
 		const record = records.find((entry) => entry.tool === "clock_probe");
 		assert.equal(record?.durationMs, 750);
 		assert.equal(record?.at, new Date(start).toISOString());
@@ -725,7 +725,7 @@ test("enforce mode blocks a denied tool call before execution", async () => {
 		assert.match(textOf(result), /Rule durable-deny-probe\./);
 		assert.equal(counter.executed, 0);
 		const records = (await readFile(join(fixture.storeDir, `${localDate(new Date())}.jsonl`), "utf8"))
-			.trim().split("\n").map((line) => JSON.parse(line));
+			.split("\n").filter(Boolean).map((line) => JSON.parse(line));
 		const record = records.find((entry) => entry.tool === "probe");
 		assert.equal(record.outcome, "denied");
 		assert.equal(record.policy.decision, "deny");

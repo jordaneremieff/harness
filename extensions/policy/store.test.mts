@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { PolicyRecord } from "./record.ts";
 import { appendRecord, localDate, MAX_QUEUED_RECORDS, PolicyWriter } from "./store.ts";
+import { readTelemetry } from "./telemetry.ts";
 
 const record = (at: string): PolicyRecord => ({
 	session: "s1",
@@ -42,11 +43,42 @@ describe("appendRecord", () => {
 		assert.equal(await appendRecord(dir, entry), null);
 
 		const path = join(dir, "2026-09-03.jsonl");
-		const lines = (await readFile(path, "utf8")).trim().split("\n");
+		const lines = (await readFile(path, "utf8")).split("\n").filter(Boolean);
 		assert.equal(lines.length, 2);
 		assert.deepEqual(JSON.parse(lines[0]), entry);
 		assert.equal((await stat(path)).mode & 0o777, 0o600);
 		assert.equal((await stat(dir)).mode & 0o777, 0o700);
+		const summary = await readTelemetry(dir, "2026-09-03", "2026-09-03");
+		assert.equal(summary.records, 2);
+		assert.equal(summary.coverage.malformedLines, 0);
+		assert.equal(summary.coverage.completeLines, 2);
+		assert.equal(summary.coverage.status, "complete");
+		assert.equal(summary.coverage.days[0].unprocessedBytes, 0);
+	});
+
+	it("delimits a valid record after a torn tail without losing the valid prefix", async () => {
+		const dir = join(await mkdtemp(join(tmpdir(), "policy-torn-")), "store");
+		await mkdir(dir, { mode: 0o700 });
+		const entry = record(new Date(2026, 8, 3, 12).toISOString());
+		const path = join(dir, "2026-09-03.jsonl");
+		const prefix = `${JSON.stringify({ ...entry, callId: "prefix" })}\n{"torn":`;
+		await writeFile(path, prefix, { mode: 0o600 });
+		assert.equal(await appendRecord(dir, entry), null);
+		assert.equal(await readFile(path, "utf8"), `${prefix}\n${JSON.stringify(entry)}\n`);
+		const summary = await readTelemetry(dir, "2026-09-03", "2026-09-03");
+		assert.equal(summary.records, 2);
+		assert.equal(summary.coverage.malformedLines, 1);
+	});
+
+	it("counts both separators at the exact serialized byte limit", async () => {
+		const dir = join(await mkdtemp(join(tmpdir(), "policy-boundary-")), "store");
+		const entry = { ...record(new Date(2026, 8, 3, 12).toISOString()), captured: "" };
+		entry.captured = "x".repeat(256 * 1024 - Buffer.byteLength(`\n${JSON.stringify(entry)}\n`));
+		assert.equal(await appendRecord(dir, entry), null);
+		const before = await readFile(join(dir, "2026-09-03.jsonl"));
+		assert.equal(before.length, 256 * 1024);
+		assert.match(await appendRecord(dir, { ...entry, captured: `${entry.captured}x` }) ?? "", /exceeds/u);
+		assert.deepEqual(await readFile(join(dir, "2026-09-03.jsonl")), before);
 	});
 
 	it("keeps concurrent record appends as complete JSONL lines", async () => {
@@ -57,7 +89,7 @@ describe("appendRecord", () => {
 			await Promise.all(entries.map((entry) => appendRecord(dir, entry))),
 			entries.map(() => null),
 		);
-		const lines = (await readFile(join(dir, "2026-09-03.jsonl"), "utf8")).trim().split("\n");
+		const lines = (await readFile(join(dir, "2026-09-03.jsonl"), "utf8")).split("\n").filter(Boolean);
 		assert.equal(lines.length, entries.length);
 		assert.deepEqual(
 			new Set(lines.map((line) => JSON.parse(line).callId)),

@@ -1269,6 +1269,10 @@ registry.
 The store directory must be current-user-owned, non-symlink, and private (0700).
 The registry must be a current-user-owned regular file with mode 0600. Reads and
 writes use no-follow protections where available and checked append writes.
+Each telemetry append uses one buffer with a leading newline, the JSON record,
+and a trailing newline. Both separators count towards its byte limit. A torn
+prior tail remains malformed without absorbing the next complete record;
+readers ignore blank lines.
 Existing rule and telemetry paths open without waiting for pipe peers. Nonregular
 files are rejected before reads or writes; panel reads report partial evidence
 instead of treating an unreadable source as an empty history.
