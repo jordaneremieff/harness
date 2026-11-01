@@ -16,8 +16,6 @@ export class StoreUnavailableError extends Error {
 const LOCK = "store.lock";
 const PENDING = "pending.tmp";
 const SLOT = /^day-(?:[0-2][0-9])\.json$/;
-/** A lock older than this belongs to a dead writer; the next writer removes it. */
-const STALE_LOCK_MS = 30_000;
 const POLL_MS = 5;
 const REJECTIONS = ["clock_rollback", "store_corrupt", "response_overflow"];
 const NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
@@ -92,6 +90,7 @@ async function syncDirectory(root: string): Promise<void> {
 export class PillarsStore {
 	readonly root: string;
 	private active = false;
+	private heldLock: { dev: number; ino: number } | undefined;
 	constructor(root: string) { this.root = root; }
 
 	async capture(today: string, signal?: AbortSignal): Promise<Snapshot> {
@@ -137,6 +136,13 @@ export class PillarsStore {
 		return { shards: Object.fromEntries(Object.entries(snapshot.shards).filter(([day]) => inWindow(day, today))) };
 	}
 
+	private async confirmNoPublication(status: CommitStatus): Promise<CommitStatus> {
+		if (status !== "duplicate") return status;
+		try { await syncDirectory(this.root); }
+		catch { return "publication_failed"; }
+		return status;
+	}
+
 	private async write(batch: Batch, today: string, start: NodeJS.MemoryUsage, signal?: AbortSignal): Promise<CommitStatus> {
 		await mkdir(this.root, { recursive: true, mode: 0o700 });
 		if (!(await verifyChain(this.root))) throw new StoreUnavailableError();
@@ -154,7 +160,7 @@ export class PillarsStore {
 			const snapshot = await this.load(scan, start);
 			try { validateSnapshot(snapshot); } catch { throw corrupt(); }
 			const plan = planCommit(snapshot, batch, today);
-			if (!plan.candidate || !plan.slot) return plan.status;
+			if (!plan.candidate || !plan.slot) return await this.confirmNoPublication(plan.status);
 			if (signal?.aborted) throw aborted();
 			const payload = Buffer.from(JSON.stringify(plan.candidate), "utf8");
 			let stored = 0;
@@ -171,30 +177,15 @@ export class PillarsStore {
 	private async openLock(path: string): Promise<boolean> {
 		try {
 			const handle = await open(path, "wx", 0o600);
-			await handle.close();
+			try {
+				const { dev, ino } = await handle.stat();
+				this.heldLock = { dev, ino };
+			} finally { await handle.close(); }
 			return true;
 		} catch (error) {
 			if (code(error) !== "EEXIST") throw error;
 			return false;
 		}
-	}
-
-	private async staleLock(path: string): Promise<"broken" | "vanished" | "wait"> {
-		let info: Awaited<ReturnType<typeof lstat>> | undefined;
-		try {
-			info = await lstat(path);
-		} catch (error) {
-			if (code(error) !== "ENOENT") throw error;
-			return "vanished";
-		}
-		if (!info.isFile()) throw new StoreUnavailableError();
-		if (Date.now() - info.mtimeMs <= STALE_LOCK_MS) return "wait";
-		try {
-			await unlink(path);
-		} catch (error) {
-			if (code(error) !== "ENOENT") throw error;
-		}
-		return "broken";
 	}
 
 	private async pause(signal?: AbortSignal): Promise<void> {
@@ -205,22 +196,24 @@ export class PillarsStore {
 	private async acquire(signal?: AbortSignal): Promise<void> {
 		const path = join(this.root, LOCK);
 		const deadline = Date.now() + LIMITS.lockMilliseconds;
-		let checkStale = true;
 		for (let attempt = 0; ; attempt++) {
+			if (signal?.aborted) throw aborted();
 			if (attempt > 0 && Date.now() >= deadline) throw new StoreUnavailableError();
 			if (await this.openLock(path)) return;
-			if (!checkStale) {
-				await this.pause(signal);
-				continue;
-			}
-			const outcome = await this.staleLock(path);
-			if (outcome === "broken") checkStale = false;
-			if (outcome === "wait") await this.pause(signal);
+			await this.pause(signal);
 		}
 	}
 
 	private async release(): Promise<void> {
-		try { await unlink(join(this.root, LOCK)); } catch (error) { if (code(error) !== "ENOENT") throw error; }
+		const held = this.heldLock;
+		this.heldLock = undefined;
+		if (!held) return;
+		const path = join(this.root, LOCK);
+		try {
+			const current = await lstat(path);
+			if (current.dev !== held.dev || current.ino !== held.ino) throw new StoreUnavailableError();
+			await unlink(path);
+		} catch (error) { if (code(error) !== "ENOENT") throw error; }
 	}
 
 	private async entryStats(name: string, uid: number | undefined): Promise<Stats> {

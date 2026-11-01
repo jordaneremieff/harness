@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { writeSync } from "node:fs";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { dayNumber, emptyShard, LIMITS, overflowCell, slotFor, zero, type Batch } from "./capacity.ts";
 import { PillarsStore } from "./store.ts";
+import { Collector } from "./collector.ts";
 
 const TODAY = "2026-09-07";
 const STALE = new Date(Date.now() - 120_000);
@@ -20,7 +23,7 @@ function batch(owner = 1, seq = 1, day = TODAY): Batch {
 	}] };
 }
 async function fixture() {
-	const directory = await mkdtemp(join(process.cwd(), ".pillars-store-test-"));
+	const directory = await mkdtemp(join(process.env.PI_TEST_FIXTURE_ROOT ?? process.cwd(), ".pillars-store-test-"));
 	const root = join(directory, "store");
 	return { directory, root, store: new PillarsStore(root), async [Symbol.asyncDispose]() { await rm(directory, { recursive: true, force: true }); } };
 }
@@ -104,7 +107,7 @@ test("atomic local publication gives coherent snapshots and idempotent receipts"
 	assert.equal((await f.store.capture(TODAY)).shards[TODAY].cells[0].counters.readRequests, 2);
 });
 
-test("an active lock excludes a concurrent writer and stale locks are broken", { timeout: 15000 }, async () => {
+test("active and old locks exclude writers until offline recovery", { timeout: 15000 }, async () => {
 	await using f = await fixture();
 	assert.equal(await f.store.commit(batch(), TODAY), "committed");
 	const lock = await holdLock(f.root);
@@ -117,10 +120,95 @@ test("an active lock excludes a concurrent writer and stale locks are broken", {
 	assert.equal((await f.store.capture(TODAY)).shards[TODAY].revision, 1);
 	await rm(lock);
 	assert.equal(await f.store.commit(batch(1, 2), TODAY), "committed");
-	await holdLock(f.root, STALE);
-	assert.equal(await f.store.commit(batch(1, 3), TODAY), "committed");
-	assert.deepEqual(await readdir(f.root), [slotFor(TODAY)]);
-	assert.equal((await f.store.capture(TODAY)).shards[TODAY].cells[0].counters.readRequests, 3);
+	const orphan = await holdLock(f.root, STALE);
+	await assert.rejects(f.store.commit(batch(1, 3), TODAY), /store_unreadable/u);
+	assert.equal((await lstat(orphan)).isFile(), true);
+	assert.equal((await f.store.capture(TODAY)).shards[TODAY].cells[0].counters.readRequests, 2);
+});
+
+test("duplicate receipts retry directory sync before acknowledgement", async (t) => {
+	await using f = await fixture();
+	const original = fs.open;
+	let attempts = 0, fail = true;
+	const mocked = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+		const handle = await original(...args);
+		if (args[0] === f.root) {
+			const sync = handle.sync.bind(handle);
+			handle.sync = async () => { attempts += 1; if (fail) throw new Error("directory sync failed"); await sync(); };
+		}
+		return handle;
+	});
+	syncBuiltinESMExports();
+	try {
+		assert.equal(await f.store.commit(batch(), TODAY), "publication_failed");
+		assert.equal(await new PillarsStore(f.root).commit(batch(), TODAY), "publication_failed");
+		assert.equal(attempts, 2);
+		fail = false;
+		assert.equal(await new PillarsStore(f.root).commit(batch(), TODAY), "duplicate");
+		assert.equal(attempts, 3);
+		assert.equal((await f.store.capture(TODAY)).shards[TODAY].cells[0].counters.readRequests, 1);
+	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("the collector retains its sealed contribution through repeated sync failure and reopened dedupe", async (t) => {
+	await using f = await fixture();
+	const original = fs.open;
+	let fail = true;
+	const mocked = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+		const handle = await original(...args);
+		if (args[0] === f.root) {
+			const sync = handle.sync.bind(handle);
+			handle.sync = async () => { if (fail) throw new Error("directory sync failed"); await sync(); };
+		}
+		return handle;
+	});
+	syncBuiltinESMExports();
+	const collector = new Collector({ commit: (input, day, signal) => new PillarsStore(f.root).commit(input, day, signal) }, { now: () => Date.parse(TODAY) });
+	try {
+		collector.admit(batch().cells[0]);
+		await collector.flush(true); assert.equal(collector.bufferedEvents, 1);
+		await collector.flush(true); assert.equal(collector.bufferedEvents, 1);
+		fail = false;
+		await collector.flush(true); assert.equal(collector.bufferedEvents, 0);
+		assert.equal((await f.store.capture(TODAY)).shards[TODAY].cells[0].counters.readRequests, 1);
+	} finally { await collector.shutdown(); mocked.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("a paused writer keeps exclusion after the old lock age threshold", async (t) => {
+	await using f = await fixture();
+	const original = fs.rename;
+	let release = () => {}, entered = () => {};
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	const publishing = new Promise<void>((resolve) => { entered = resolve; });
+	const mocked = t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
+		entered(); await held; await original(...args);
+	});
+	syncBuiltinESMExports();
+	const first = f.store.commit(batch(1), TODAY);
+	try {
+		await publishing;
+		await utimes(join(f.root, "store.lock"), STALE, STALE);
+		await assert.rejects(new PillarsStore(f.root).commit(batch(2), TODAY), /store_unreadable/u);
+		release();
+		assert.equal(await first, "committed");
+		assert.equal(await new PillarsStore(f.root).commit(batch(2), TODAY), "committed");
+		assert.equal((await f.store.capture(TODAY)).shards[TODAY].cells[0].counters.readRequests, 2);
+	} finally { release(); await first.catch(() => {}); mocked.mock.restore(); syncBuiltinESMExports(); }
+});
+
+test("an old owner never removes a replacement lock during cleanup", async (t) => {
+	await using f = await fixture();
+	const original = fs.rename;
+	const mocked = t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
+		await original(...args);
+		await original(join(f.root, "store.lock"), join(f.directory, "held-lock"));
+		await writeFile(join(f.root, "store.lock"), "replacement", { mode: 0o600 });
+	});
+	syncBuiltinESMExports();
+	try {
+		await assert.rejects(f.store.commit(batch(), TODAY), /store_unreadable/u);
+		assert.equal(await readFile(join(f.root, "store.lock"), "utf8"), "replacement");
+	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
 });
 
 test("read capture rejects unresolved temporary state; the next writer reconciles it", async () => {
@@ -134,16 +222,15 @@ test("read capture rejects unresolved temporary state; the next writer reconcile
 	assert.equal((await f.store.capture(TODAY)).shards[TODAY].cells[0].counters.readRequests, 1);
 });
 
-test("a crash leftover lock and temporary file are reconciled by the next writer", async () => {
+test("an orphan claim refuses online recovery and preserves temporary bytes", async () => {
 	await using f = await fixture();
 	await f.store.commit(batch(), TODAY);
 	await writeFile(join(f.root, "pending.tmp"), "incomplete", { mode: 0o600 });
 	await holdLock(f.root, STALE);
 	await assert.rejects(f.store.capture(TODAY), /store_unreadable/);
-	assert.equal(await f.store.commit(batch(), TODAY), "duplicate");
-	await assert.rejects(lstat(join(f.root, "pending.tmp")), { code: "ENOENT" });
-	assert.deepEqual(await readdir(f.root), [slotFor(TODAY)]);
-	assert.equal((await f.store.capture(TODAY)).shards[TODAY].receipts[0].seq, 1);
+	await assert.rejects(f.store.commit(batch(), TODAY), /store_unreadable/u);
+	assert.equal(await readFile(join(f.root, "pending.tmp"), "utf8"), "incomplete");
+	assert.ok((await readdir(f.root)).includes("store.lock"));
 });
 
 test("retention publication removes expired slots only after a committed watermark", async () => {

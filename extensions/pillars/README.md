@@ -335,10 +335,15 @@ reject duplicate keys.
 
 Concurrent instances serialize writes through a cooperative `store.lock` file
 created with exclusive semantics. A writer that cannot create the lock waits
-at most 100 milliseconds; lock contention is an error, not zero use. A stale
-lock older than 30 seconds is broken by the next writer. A crashed writer can
-leave a stale lock that briefly blocks or delays the next commit. Reads are
-lock-free and reject unresolved temporary state instead of blocking.
+at most 100 milliseconds; lock contention is an error, not zero use. No writer
+removes an existing lock because of its age or recorded owner. A crashed writer
+leaves the store unavailable for publication until offline recovery. Stop all
+relevant writers and launchers before removing an orphan lock. Adoption requires
+older takeover-capable writers and launchers to stop before the new protocol
+starts. Ownership extends through publication and directory synchronisation.
+Cleanup refuses a changed lock identity; that check is not atomic fencing against
+unsupported lock replacement. Reads are lock-free and reject unresolved temporary
+state instead of blocking.
 
 The store assumes a local filesystem. It does not admit or detect filesystem
 types, so a network filesystem is unsupported but not detected. Schema
@@ -353,7 +358,10 @@ Storage uses 30 fixed daily slots, each at most 2 MiB, with 2,048 concrete
 cells, reserved per-stage overflow, and 4,096 private owner/day receipts.
 Cells, health, and consecutive-sequence receipts publish in one atomic shard
 replacement. Retries reuse an immutable sealed delta. A confirmed duplicate
-also confirms directory synchronization after an uncertain prior publication.
+also confirms directory synchronization under ownership after an uncertain prior
+publication. A repeated sync failure returns `publication_failed`; the collector
+retains its sealed delta for retry. Injected filesystem errors verify retry
+behaviour, not power-loss safety.
 Within-day pressure folds identities, preserves result classes, and removes
 reference attribution. Receipt pressure records a sticky day flag when that
 publication succeeds. Retention watermarks prevent clock rollback from
