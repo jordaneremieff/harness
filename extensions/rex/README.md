@@ -120,8 +120,19 @@ separate outcomes.
 
 ## Broad native capability
 
-Use `rex_native` with `kind: "catalog"` for the installed method names and
-`kind: "describe"` with an exact `method` for its current schemas and validation
+Use `rex_native` with `kind: "catalog"` for the installed method names. An optional
+`query` selects a case-sensitive literal substring, not a regular expression.
+`offset` starts within the matched list; `limit` defaults to 50 and accepts 1–100.
+For example, `{"op":"native","kind":"catalog","query":"session.","limit":10}`
+returns complete names in installed order. The result reports total installed,
+matched, returned and omitted method counts, plus `nextOffset` when another page
+exists. Omitted counts include matches before the current page. Follow that offset
+with the same query. Each call reads the current catalogue; pages are not a frozen
+snapshot. Filtering limits emitted method names, not CLI discovery bytes. CLI failure
+or truncated discovery remains a failure, not an empty match. Other native kinds
+reject `query`, `offset` and `limit` rather than ignore them.
+
+Use `kind: "describe"` with an exact `method` for its current schemas and validation
 notes. Use `kind: "api"` with the exact method and JSON arguments. The API receives
 `args` directly; target fields do not rewrite arbitrary native arguments. This
 preserves JSON nulls and empty objects without a Lua conversion.

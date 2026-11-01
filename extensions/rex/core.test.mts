@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { Compile } from "typebox/compile";
+import { NativeParams } from "./schema.ts";
 import { boundResult, resultByteLimit, RexCore } from "./core.ts";
 import type { RexCallContext, RexResult } from "./core.ts";
 import { changeOwnership, initialOwnershipState, validateOwnershipState } from "./ownership.ts";
@@ -818,4 +820,92 @@ test("owned filtered continuation uses filtered offsets after aggregate referenc
 	assert.equal(next.records?.[0]?.recordId, `unknown-${emitted}`);
 	assert.deepEqual(f.transport.calls, []);
 	assert.deepEqual(f.store.state, before);
+});
+
+test("catalogue discovery filters literal names before bounded pages and reads fresh installed order", async () => {
+	const f = fixture();
+	const longName = `session.${"complete-name.".repeat(20)}open`;
+	let installed = ["z.method", "session.[literal]", longName, "Session.upper", ...Array.from({ length: 58 }, (_, index) => `future.method.${index}`)];
+	const run = f.transport.run.bind(f.transport);
+	let reads = 0;
+	f.transport.run = (args, call) => {
+		if (!args.includes("list")) return run(args, call);
+		assert.deepEqual(args.slice(-3), ["api", "list", "--quiet"]);
+		reads++;
+		return Promise.resolve({ ...reply(null), stdout: `${installed.join("\r\n")}\r\n` });
+	};
+	const before = structuredClone(f.store.state);
+	const defaults = await f.core.execute({ op: "native", kind: "catalog" }, context);
+	assert.equal(defaults.ok, true);
+	assert.deepEqual((defaults.data as { methods: string[] }).methods, installed.slice(0, 50));
+	assert.equal((defaults.data as { nextOffset: number }).nextOffset, 50);
+	assert.equal(defaults.coverage.truncated, true);
+	const first = await f.core.execute({ op: "native", kind: "catalog", query: "session.", limit: 1 }, context);
+	assert.deepEqual((first.data as { methods: string[] }).methods, ["session.[literal]"]);
+	assert.equal((first.data as { totalMethods: number }).totalMethods, installed.length);
+	assert.equal((first.data as { matchedMethods: number }).matchedMethods, 2);
+	assert.equal((first.data as { returnedMethods: number }).returnedMethods, 1);
+	assert.equal((first.data as { omittedMethods: number }).omittedMethods, 1);
+	assert.equal((first.data as { nextOffset: number }).nextOffset, 1);
+	const second = await f.core.execute({ op: "native", kind: "catalog", query: "session.", offset: 1, limit: 1 }, context);
+	assert.deepEqual((second.data as { methods: string[] }).methods, [longName]);
+	assert.equal((second.data as { nextOffset?: number }).nextOffset, undefined);
+	assert.equal((second.data as { omittedMethods: number }).omittedMethods, 1);
+	const literal = await f.core.execute({ op: "native", kind: "catalog", query: "[" }, context);
+	assert.deepEqual((literal.data as { methods: string[] }).methods, ["session.[literal]"]);
+	for (const selector of [{ query: "SESSION" }, { query: "missing" }, { offset: 1048576 }]) {
+		const empty = await f.core.execute({ op: "native", kind: "catalog", ...selector }, context);
+		assert.equal(empty.ok, true);
+		assert.deepEqual((empty.data as { methods: string[] }).methods, []);
+		assert.equal((empty.data as { nextOffset?: number }).nextOffset, undefined);
+	}
+	const all = await f.core.execute({ op: "native", kind: "catalog", limit: 100 }, context);
+	assert.deepEqual((all.data as { methods: string[] }).methods, installed);
+	assert.equal(all.coverage.truncated, false);
+	installed = ["session.newly-installed", "session.[literal]"];
+	const fresh = await f.core.execute({ op: "native", kind: "catalog", query: "session.", limit: 1 }, context);
+	assert.deepEqual((fresh.data as { methods: string[] }).methods, ["session.newly-installed"]);
+	assert.equal(reads, 9);
+	assert.deepEqual(f.store.state, before);
+	assert.equal(fresh.effects.state, "none");
+});
+
+test("catalogue bounds and kind-specific fields are rejected without native effects", async () => {
+	const f = fixture();
+	const schema = Compile(NativeParams);
+	for (const kind of ["describe", "api", "lua", "action"] as const) {
+		for (const fields of [{ query: "method" }, { offset: 0 }, { limit: 1 }]) {
+			const request = { op: "native" as const, kind, ...fields };
+			assert.equal(schema.Check(request), false);
+			const response = await f.core.execute(request, context);
+			assert.equal(response.ok, false);
+			assert.match(response.error ?? "", /only to native catalog/);
+		}
+	}
+	assert.deepEqual(f.transport.calls, []);
+	for (const fields of [{ query: "" }, { query: "x".repeat(257) }, { offset: -1 }, { offset: 1.5 }, { offset: 1048577 }, { limit: 0 }, { limit: 101 }]) {
+		const request = { op: "native" as const, kind: "catalog" as const, ...fields };
+		assert.equal(schema.Check(request), false);
+		assert.equal((await f.core.execute(request, context)).ok, false);
+	}
+	assert.equal(schema.Check({ op: "native", kind: "catalog", query: "[", offset: 0, limit: 100 }), true);
+	assert.equal(f.store.state.records.length, 0);
+});
+
+test("catalogue command and output-limit errors never become empty successful matches", async () => {
+	for (const failure of [
+		{ ...reply(null), exitCode: 2, stdout: "partial.method\n", stderr: "catalogue unavailable" },
+		{ ...reply(null), outcome: "output_limit" as const, exitCode: null, truncated: true, stdout: "partial.method\n" },
+		{ ...reply(null), truncated: true, stdout: "partial.method\n" },
+	]) {
+		const f = fixture();
+		const run = f.transport.run.bind(f.transport);
+		f.transport.run = (args, call) => args.includes("list") ? Promise.resolve(failure) : run(args, call);
+		const response = await f.core.execute({ op: "native", kind: "catalog", query: "missing" }, context);
+		assert.equal(response.ok, false);
+		assert.equal(response.outcome, failure.truncated ? "output_limit" : "cli_failure");
+		assert.equal(response.effects.state, "none");
+		assert.equal((response.data as { methods?: unknown }).methods, undefined);
+		assert.equal(f.store.state.records.length, 0);
+	}
 });
