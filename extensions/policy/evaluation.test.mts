@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createEventBus, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import type { TranscriptEvent } from "vitest-evals";
 import { piSdkAdapter, runDeterministicChecks } from "../../evals/subjects/pi-sdk.mts";
 import policyEvalFixture from "./eval-fixture.ts";
@@ -19,7 +19,7 @@ interface Result {
 }
 interface FixtureTool {
 	name: string;
-	parameters: Parameters<typeof Compile>[0];
+	parameters: Parameters<typeof compile>[0];
 	execute(
 		id: string,
 		args: Record<string, unknown>,
@@ -105,7 +105,7 @@ function harness(mode: "enforce" | "observe") {
 			const tool = tools.get(step.name);
 			assert.ok(tool, step.name);
 			const args = structuredClone(step.args);
-			assert.equal(Compile(tool.parameters).Check(args), true, `outer schema: ${step.name}`);
+			assert.equal(compile(tool.parameters).check(args), true, `outer schema: ${step.name}`);
 			const id = `call-${events.length}`;
 			events.push({ type: "tool_call", id, name: step.name, arguments: structuredClone(args) });
 			await emit("tool_execution_start", { toolName: step.name, toolCallId: id, args });

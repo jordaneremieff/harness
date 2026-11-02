@@ -10,7 +10,7 @@ const preferenceOverride = process.env.PI_HARNESS_FILE;
 delete process.env.PI_HARNESS_FILE;
 after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import type { TSchema } from "typebox";
 import registerAgentExtension from "./index.ts";
 import { AgentManager } from "./manager.ts";
@@ -51,7 +51,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	for (const name of ["agent_spawn", "agent_place", "agent_configure"]) {
 		const tool = tools.get(name); assert.ok(tool);
 		const input = { preset: "review", model: "acme/model-x", thinkingLevel: "high", ...(name === "agent_configure" ? { sessionId: "target" } : {}) };
-		assert.equal(Value.Check(tool.parameters, input), true);
+		assert.equal(matchesSchema(tool.parameters, input), true);
 		await tool.execute(name, input, undefined, undefined, ctx);
 	}
 	assert.deepEqual(seen.map((entry) => entry.method), ["spawn", "place", "configure"]);
@@ -66,7 +66,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	assert.deepEqual(seen.slice(3).map((entry) => (entry.input as { preferenceSnapshot: unknown }).preferenceSnapshot), snapshots);
 	const spawn = tools.get("agent_spawn"); const send = tools.get("agent_send"); assert.ok(spawn && send);
 	await assert.rejects(spawn.execute("agent_spawn", { preset: "other" }, undefined, undefined, ctx), /different inputs/u);
-	assert.equal(Value.Check(send.parameters, { sessionId: "target", message: "hello", preset: "review" }), false);
+	assert.equal(matchesSchema(send.parameters, { sessionId: "target", message: "hello", preset: "review" }), false);
 	writeFileSync(join(directory, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "acme/model-x" }, alternate: { model: "other/model-y" } }, preferences: { excludedProviders: ["acme"], quotaSubstitutionOrder: ["alternate", "review"], reportingNotes: "Current note" } })));
 	assert.ok(beforeStart);
 	const first: StartEvent = { systemPromptOptions: { sections: {} } }; await beforeStart(first, ctx);

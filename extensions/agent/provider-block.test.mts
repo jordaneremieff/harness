@@ -4,7 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ProviderDoc, type ConversationId, type SubmissionId } from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
@@ -69,7 +69,7 @@ it("replaces terminal raw text, keeps stream/result agreement and partial usage,
 	const terminal = events.at(-1); assert.deepEqual(terminal?.type === "error" ? terminal.error : undefined, result);
 	assert.deepEqual(result.content, original.content); assert.deepEqual(result.usage, original.usage); assert.equal(original.errorMessage, raw);
 	const block = await host.harness.commit((tx) => readProviderBlock(tx, 1 as ConversationId), BACKGROUND_CONTEXT);
-	assert.ok(block); assert.equal(Value.Check(ProviderBlockFactSchema, block), true); assert.equal(block.errorRedacted, true); assert.match(block.error, /reset 2026-10-11 00:00/u);
+	assert.ok(block); assert.equal(matchesSchema(ProviderBlockFactSchema, block), true); assert.equal(block.errorRedacted, true); assert.match(block.error, /reset 2026-10-11 00:00/u);
 	assert.equal((await adapter.models.completeSimple(model, { messages: [] }, { sessionId })).errorMessage, PROVIDER_BLOCK_ERROR);
 	assert.equal(calls, 1);
 });
@@ -117,7 +117,7 @@ it("retains burst facts without a preterminal report while typed retry notice ID
 	const retry = await host.harness.commit((tx) => producerRetryFact(tx, 1 as ConversationId, [{ sessionId: host.storageId, submissionId: admitted.submissionId, requestId: "provider-work" }], 21), BACKGROUND_CONTEXT);
 	assert.ok(retry);
 	const notice = { fact: { sessionId: host.storageId, observedAt: Date.now(), source: "producer await-state" as const, execution: retry } };
-	assert.equal(Value.Check(ProviderRetryNoticeSchema, notice), true);
+	assert.equal(matchesSchema(ProviderRetryNoticeSchema, notice), true);
 	assert.equal(providerNoticeRequestId("actual-recipient", notice), providerNoticeRequestId("actual-recipient", { fact: { ...notice.fact, observedAt: notice.fact.observedAt + 5000 } }));
 	await host.harness.commit(async (tx) => {
 		const live = await tx.doc(LiveDoc, 1 as ConversationId); assert.ok(live.generation); live.generation.attempt = 2;

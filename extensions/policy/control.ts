@@ -1,8 +1,8 @@
 /** Context-authorized controls over the same registry and runtime as operator commands. */
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type Static, Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { compile, lit, obj, type Static, str, union } from "@earendil-works/pi-schema";
+import { Type } from "typebox";
 import { normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
 import { MAX_RULE_EVENT_BYTES, makeRuleAudit, proposalRevision, targetIdentity } from "./local-rules.ts";
 import { contentRevision, effectiveEffect, effectiveState, type OperatorRuleAudit } from "./rule.ts";
@@ -21,70 +21,34 @@ const Artifact = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-const authority = { revision: Revision, authorization: Authorization };
-const reason = { reason: Type.String({ minLength: 1, maxLength: 1000 }) };
+const authority = { revision: { ...Revision }, authorization: { ...Authorization } };
+const reason = { reason: { ...Type.String({ minLength: 1, maxLength: 1000 }) } };
 const variants = [
-	Type.Object({ operation: Type.Literal("actions") }, { additionalProperties: false }),
-	Type.Object({ operation: Type.Literal("action-inspect"), actionId: ActionId }, { additionalProperties: false }),
-	Type.Object({ operation: Type.Union([Type.Literal("action-approve"), Type.Literal("action-reject")]), actionId: ActionId, ...authority }, { additionalProperties: false }),
-	Type.Object({ operation: Type.Literal("inspect"), id: Id }, { additionalProperties: false }),
-	Type.Object({ operation: Type.Literal("import-preview"), selection: Selection }, { additionalProperties: false }),
-	Type.Object({ operation: Type.Literal("data-preview"), artifact: Artifact }, { additionalProperties: false }),
-	Type.Object({ operation: Type.Literal("data-preview"), path: Path }, { additionalProperties: false }),
-	Type.Object({ operation: Type.Literal("reset-preview"), id: Selection }, { additionalProperties: false }),
-	Type.Object({ operation: Type.Literal("mode") }, { additionalProperties: false }),
-	Type.Object(
-		{
-			operation: Type.Literal("telemetry"),
-			from: Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
-			to: Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
-		},
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{
-			operation: Type.Literal("reject"),
-			proposalId: Type.String({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" }),
-			...authority,
-		},
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{
-			operation: Type.Union([Type.Literal("disable"), Type.Literal("enable"), Type.Literal("retire")]),
-			id: Id,
-			...authority,
-			...reason,
-		},
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{
-			operation: Type.Literal("effect"),
-			id: Id,
-			effect: Type.Union([Type.Literal("steer"), Type.Literal("block")]),
-			...authority,
-			...reason,
-		},
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{ operation: Type.Literal("reset"), id: Selection, ...authority, ...reason },
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{ operation: Type.Literal("import"), selection: Selection, ...authority },
-		{ additionalProperties: false },
-	),
-	Type.Object(
-		{ operation: Type.Literal("data-set"), artifact: Artifact, ...authority },
-		{ additionalProperties: false },
-	),
-	Type.Object({ operation: Type.Literal("data-set-file"), path: Path, ...authority }, { additionalProperties: false }),
-	Type.Object({ operation: Type.Literal("data-remove"), name: Id, ...authority }, { additionalProperties: false }),
+	obj({ operation: lit("actions") }),
+	obj({ operation: lit("action-inspect"), actionId: { ...ActionId } }),
+	obj({ operation: union([lit("action-approve"), lit("action-reject")]), actionId: { ...ActionId }, ...authority }),
+	obj({ operation: lit("inspect"), id: { ...Id } }),
+	obj({ operation: lit("import-preview"), selection: { ...Selection } }),
+	obj({ operation: lit("data-preview"), artifact: { ...Artifact } }),
+	obj({ operation: lit("data-preview"), path: { ...Path } }),
+	obj({ operation: lit("reset-preview"), id: { ...Selection } }),
+	obj({ operation: lit("mode") }),
+	obj({
+		operation: lit("telemetry"),
+		from: str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+		to: str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+	}),
+	obj({ operation: lit("reject"), proposalId: { ...ActionId }, ...authority }),
+	obj({ operation: union([lit("disable"), lit("enable"), lit("retire")]), id: { ...Id }, ...authority, ...reason }),
+	obj({ operation: lit("effect"), id: { ...Id }, effect: union([lit("steer"), lit("block")]), ...authority, ...reason }),
+	obj({ operation: lit("reset"), id: { ...Selection }, ...authority, ...reason }),
+	obj({ operation: lit("import"), selection: { ...Selection }, ...authority }),
+	obj({ operation: lit("data-set"), artifact: { ...Artifact }, ...authority }),
+	obj({ operation: lit("data-set-file"), path: { ...Path }, ...authority }),
+	obj({ operation: lit("data-remove"), name: { ...Id }, ...authority }),
 ] as const;
-const ControlContract = Type.Union([...variants]);
-const validator = Compile(ControlContract);
+const ControlContract = union(variants);
+const validator = compile(ControlContract);
 type Input = Static<typeof ControlContract>;
 
 /** Provider adapters retain object properties; execution enforces the closed operation variants. */
@@ -296,7 +260,7 @@ async function controlReadback(
 
 export function validateControl(params: unknown): asserts params is Input {
 	if (
-		!validator.Check(params) ||
+		!validator.check(params) ||
 		("authorization" in params && !params.authorization.trim()) ||
 		("reason" in params && !params.reason.trim())
 	)

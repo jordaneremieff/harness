@@ -289,7 +289,7 @@ it("refuses an append-before-persist failure and retries after the write becomes
 		finally { rmSync(path, { recursive: true, force: true }); renameSync(backup, path); }
 	});
 	assert.equal(await fixture.deliver("peer:write-failure", "RETRY_WRITE", false), false);
-	assert.equal(fixture.sessionManager.getEntries().filter((entry) => entry.type === "custom_message").length, 1, "Pi keeps the failed append in memory");
+	assert.equal(fixture.sessionManager.getEntries().filter((entry) => entry.type === "custom_message").length, 0, "Pi drops a failed append from memory");
 	assert.equal(fixture.retained("peer:write-failure").length, 0, "memory is not write confirmation");
 	failure.mock.restore();
 	assert.equal(await fixture.deliver("peer:write-failure", "RETRY_WRITE", false), true);

@@ -115,7 +115,7 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		assert.equal(values.length, 8);
 		const unlabelled = values.find((value) => value.outcome === "invalid_request");
 		assert.ok(unlabelled, "a model-issued create without a label is rejected at the native validation boundary");
-		assert.match(unlabelled.error ?? "", /required properties label/);
+		assert.match(unlabelled.error ?? "", /\/label missing/);
 		assert.equal(unlabelled.effects.state, "none");
 		assert.ok(values.filter((value) => value !== unlabelled).every((value) => value.ok));
 		assert.ok(invalidCleanup?.isError);

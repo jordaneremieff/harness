@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile, stat } from "node:fs/promises";
 import { test } from "node:test";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import { validateFactsProgram } from "./program.ts";
 import { PolicyProposeParams, validateInspectionParams } from "./tools.ts";
 
-const proposal = Compile(PolicyProposeParams);
+const proposal = compile(PolicyProposeParams);
 
 test("documented JSON requests satisfy the current policy contracts", async () => {
 	const path = new URL("./README.md", import.meta.url);
@@ -15,7 +15,7 @@ test("documented JSON requests satisfy the current policy contracts", async () =
 	for (const block of markdown.matchAll(/^[\t ]*```json[\t ]*\r?\n([\s\S]*?)^[\t ]*```[\t ]*$/gm)) {
 		const value = JSON.parse(block[1]);
 		if (value.operation) {
-			assert.equal(proposal.Check(value), true, JSON.stringify(value));
+			assert.equal(proposal.check(value), true, JSON.stringify(value));
 			if (value.program) assert.equal(validateFactsProgram(value.program), undefined);
 			exercised.add("proposal");
 		} else if (value.phase) {

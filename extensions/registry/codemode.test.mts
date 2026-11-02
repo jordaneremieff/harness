@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { Type } from "typebox";
-import { Check } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import { createCodemodeExtension, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import registerRegistry from "./index.ts";
@@ -31,7 +31,7 @@ it("native codemode receives registry objects and filters records without parsin
 		executeTool: async (name: string, args: unknown) => {
 			assert.equal(name, "registry");
 			const result = await registry.execute("script/1", args, undefined, undefined, ctx);
-			assert.ok(Check(RegistryOutputSchema, result.structuredContent));
+			assert.ok(compile(RegistryOutputSchema).check(result.structuredContent));
 			return { toolCall: { type: "toolCall" as const, id: "script/1", name, arguments: args as Record<string, never> }, result, isError: false };
 		},
 	} as unknown as ExtensionToolContext;

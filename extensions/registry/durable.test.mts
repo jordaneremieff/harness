@@ -18,7 +18,7 @@ import * as Durable from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { Type } from "typebox";
-import { Check } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import {
 	createRegistryDurableContribution,
 	readContextEstimate,
@@ -324,7 +324,7 @@ test("durable registry answers model-issued queries from native Durable facts", 
 		assert.deepEqual(recordsOf(nonChat), []);
 		assert.match(textOf(nonChat), /missing here does not establish their absence/);
 		assert.match(String(nonChatDetails.catalogBoundary), /models\.getModelsOfType\("classifier"\)/);
-		assert.ok(Check(RegistryOutputSchema, nonChatDetails));
+		assert.ok(compile(RegistryOutputSchema).check(nonChatDetails));
 
 		const context = toolResult(messages, "context");
 		assert.equal(context.isError, false, textOf(context));
@@ -388,7 +388,7 @@ test("Durable model pages carry present, absent, and unreadable settings evidenc
 			assert.equal(scope.status, state);
 			assert.deepEqual(scope.patterns, state === "available" ? patterns : null);
 			assert.equal(typeof scope.observedAt, "number");
-			assert.ok(Check(RegistryOutputSchema, details));
+			assert.ok(compile(RegistryOutputSchema).check(details));
 			assert.ok(recordsOf(result).every((record) => record.inScope === null && record.providerHasScopedModels === null));
 			assert.ok(recordsOf(result).every((record) => record.providerNamedInSettings ===
 				(state === "available" ? record.provider === selected.provider : null)));
@@ -466,7 +466,7 @@ test("unresolved native agent leaves callable evidence unavailable", async () =>
 		registry: { tools: () => [{ extension, tool }] },
 	} as unknown as Durable.ToolExecutionApi;
 	const result = await tool.execute({ kind: "tool" }, api, BACKGROUND_CONTEXT);
-	assert.ok(Check(RegistryOutputSchema, result.structuredOutput));
+	assert.ok(compile(RegistryOutputSchema).check(result.structuredOutput));
 	const page = objectOf(result.structuredOutput);
 	assert.equal(objectOf(page.availability).callableTools, false);
 	const records = page.records;
@@ -693,7 +693,7 @@ test("native setting queries use the captured host bus and release collection on
 		assert.equal(recordsOf(toolResult(refreshed.messages, "refresh"))[0].value, 9);
 		assert.equal(requests, 3);
 		assert.equal(subscriptions, 1);
-		assert.ok(Check(RegistryOutputSchema, settings.details));
+		assert.ok(compile(RegistryOutputSchema).check(settings.details));
 		assert.match(textOf(settings), /not proof a running runtime applied/);
 		assert.equal(close.length, 1);
 	} finally {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Check } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import { createEventBus, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { SETTINGS_PUBLISH } from "./configuration-protocol.ts";
 import { fakePublisher, publication } from "./configuration-fixtures.mts";
@@ -17,7 +17,7 @@ function snapshot(): SettingsSnapshot {
 const hostSnapshot = { tools: [], activeTools: [], commands: [], observation: null,
 	availability: { tools: false, activeTools: false, commands: false }, at: 1 };
 function verify(result: Awaited<ReturnType<typeof lookup>>) {
-	assert.ok(Check(RegistryOutputSchema, result.structuredContent), JSON.stringify(result.structuredContent));
+	assert.ok(compile(RegistryOutputSchema).check(result.structuredContent), JSON.stringify(result.structuredContent));
 	const envelope = JSON.stringify({ content: [{ type: "text", text: result.text }], details: result.details, structuredContent: result.structuredContent });
 	assert.ok(Buffer.byteLength(envelope) <= 50 * 1024);
 	assert.ok(envelope.replace(/\\n/g, "\n").split("\n").length <= 2000);

@@ -1,7 +1,9 @@
 /** Native structured results for bounded stash discovery. */
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+
+/** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
+const StringEnum = <T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: values });
 import { STASH_STATES, stateLabel } from "./format.ts";
 import { SEARCH_LIMITS } from "./search.ts";
 import type { StashEntry } from "./store.ts";

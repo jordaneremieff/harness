@@ -37,7 +37,7 @@ for (const reloaded of [false, true]) it(`publishes fatal Session closure${reloa
 	const storage = (host as unknown as { storage: Storage }).storage;
 	storage.conversation = async () => { throw cause; };
 	await assert.rejects(host.harness.conversation(999 as ConversationId, context), (error) => error === cause);
-	assert.deepEqual(await host.harness.closed, { reason: "failed", error: cause });
+	assert.deepEqual(await host.harness.closed, { kind: "failed", error: cause });
 	assert.equal(runtime.shutdownRequired, true);
 	assert.equal(runtime.isIdle(), false);
 	assert.equal(signaled, true);

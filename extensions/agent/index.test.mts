@@ -9,7 +9,7 @@ import { AgentManager } from "./manager.ts";
 import type { HostConnection } from "./host-client.ts";
 import { SENT_WORK_ENTRY } from "./session-work.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import type { FleetStatus } from "./fleet-status.ts";
 
 test("ordinary fleet calls forward exact selection and reject incompatible query shapes", async (t) => {
@@ -39,7 +39,7 @@ test("ordinary fleet calls forward exact selection and reject incompatible query
 		registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "off" } as unknown as ExtensionAPI);
 	const tool = tools.get("agent_status"); assert.ok(tool);
 	const input = { view: "fleet", model: "sample/a", provider: "sample" };
-	assert.equal(Value.Check(tool.parameters, input), true);
+	assert.equal(matchesSchema(tool.parameters, input), true);
 	const session = SessionManager.create(root, join(root, "sessions"));
 	const ctx = { cwd: root, sessionManager: session } as unknown as ExtensionToolContext;
 	const result = await tool.execute("fleet", input, new AbortController().signal, undefined, ctx);

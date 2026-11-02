@@ -1,12 +1,12 @@
 /** Terminal cards for the clipboard tools: sizes, ids, and outcomes without archived content. */
 import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { keyText } from "@earendil-works/pi-coding-agent";
+import type { KeybindingHints } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./text.ts";
 
 const RESULT_DISPLAY_LIMIT = 32_000;
 
-interface CardContext {
+interface CardContext extends Partial<KeybindingHints> {
 	expanded: boolean;
 	isError: boolean;
 	args?: unknown;
@@ -63,8 +63,9 @@ function textComponent(text: string, previous?: Component): Text {
 	return component;
 }
 
-function expansionHint(subject: string): string {
-	const key = keyText("app.tools.expand");
+/** The host injects keyText with the operator's configured bindings; without it the hint names no key. */
+function expansionHint(subject: string, keys: Partial<KeybindingHints>): string {
+	const key = keys.keyText?.("app.tools.expand");
 	return key ? `${key} to expand ${subject}` : `Expand for full ${subject}`;
 }
 
@@ -115,7 +116,7 @@ export function renderCopyCall(value: unknown, theme: Theme, context: CardContex
 	const content = stringField(args, "content");
 	if (content) {
 		const size = context.argsComplete === false ? "content pending" : `${content.length} UTF-16 code units`;
-		lines.push(theme.fg("dim", `${size} · ${expansionHint("arguments")}`));
+		lines.push(theme.fg("dim", `${size} · ${expansionHint("arguments", context)}`));
 	}
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
@@ -135,7 +136,7 @@ export function renderCopyResult(
 	const id = stringField(details, "id");
 	if (id) text += theme.fg("dim", ` · id ${displayValue(id, 80)}`);
 	text += archiveNote(details, theme);
-	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result"))}`;
+	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }
 
@@ -169,7 +170,7 @@ export function renderPasteResult(
 	const page = continuationNote(numberField(details, "nextOffset"));
 	let text = `\n${theme.fg("success", `clipboard ${sizeLine(numberField(details, "lines"), chars)}${page ? ` · ${page}` : ""}`)}`;
 	if (booleanField(details, "controlsEscaped") === true) text += theme.fg("dim", " · controls escaped");
-	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result"))}`;
+	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }
 
@@ -209,7 +210,7 @@ export function renderListResult(
 	else if (searching) lead += " · end of scan";
 	let text = `\n${theme.fg("success", lead)}`;
 	if (stringField(details, "nextCursor")) text += theme.fg("dim", " · continuation");
-	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result"))}`;
+	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }
 
@@ -246,7 +247,7 @@ export function renderGetResult(
 		`${sizeLine(numberField(details, "lines"), numberField(details, "chars"))}${page ? ` · ${page}` : ""}`,
 	)}`;
 	if (booleanField(details, "controlsEscaped") === true) text += theme.fg("dim", " · controls escaped");
-	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result"))}`;
+	text += options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }
 

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import * as Durable from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { DurableHost } from "./durable-host.ts";
 import { createAgentContribution } from "./durable-agents.ts";
 import { AgentMetaDoc, readOutcome } from "./durable-controls.ts";
@@ -51,7 +51,7 @@ it("publishes task requester hints outside entries and communication while prese
 	const conversation = await host.harness.conversation(ROOT, context);
 	assert.ok(conversation);
 	const history = await readInspection(host.harness, storageId, conversation, { view: "history" }, context) as { entries: { kind: string }[] };
-	assert.equal(Value.Check(InspectOutputSchema, history), true);
+	assert.equal(matchesSchema(InspectOutputSchema, history), true);
 	assert.equal(history.entries.some((entry) => entry.kind === TASK_SENDER_ENTRY_KIND), false);
 	assert.equal("taskSenders" in history, false);
 	const opened = await host.request("observe-open", { token: "senders", scope: "conversation" }) as { frame: ConversationFrame };

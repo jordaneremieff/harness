@@ -1,7 +1,8 @@
 /** Session intent input and tool-only awareness output, independent of host wire schemas. */
 import { Type } from "typebox";
-import { Value } from "typebox/value";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { matchesSchema } from "./schema-check.ts";
+/** A string enum as `{ type: "string", enum }`, typed as its literal union. */
+const StringEnum = <const T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: [...values] });
 
 const object = <T extends Record<string, import("typebox").TSchema>>(properties: T) => Type.Object(properties, { additionalProperties: false });
 const text = Type.String();
@@ -31,10 +32,10 @@ const publishIntent = object({ action: Type.Literal("publish"), ...intentFields 
 const clearIntent = object({ action: Type.Literal("clear") });
 
 export function validateIntentInput(input: unknown): void {
-	if (!Value.Check(IntentParams, input)) throw new Error("Intent requires action publish or clear and valid publish fields");
+	if (!matchesSchema(IntentParams, input)) throw new Error("Intent requires action publish or clear and valid publish fields");
 	if ((input as { action: string }).action === "clear") {
-		if (!Value.Check(clearIntent, input)) throw new Error("Clear intent takes only action; omit all publish fields");
-	} else if (!Value.Check(publishIntent, input)) {
+		if (!matchesSchema(clearIntent, input)) throw new Error("Clear intent takes only action; omit all publish fields");
+	} else if (!matchesSchema(publishIntent, input)) {
 		throw new Error("Publish intent requires purpose, integration, authority, and scope with paths and branches");
 	}
 }

@@ -48,7 +48,7 @@ export interface FixtureContext {
 	diagnostic?(message: string): void;
 }
 
-interface RuntimeFixtureOptions { withAgentExtension?: boolean; transport?: "sse" | "auto"; retry?: boolean; packageDir?: string; httpEndpoint?: string; retryDelayMs?: number; offlineRecovery?: boolean }
+interface RuntimeFixtureOptions { withAgentExtension?: boolean; transport?: "sse" | "auto"; retry?: boolean; /** A model request cut off by a host crash counts as a failed attempt; one quick retry resends it after reopen. */ crashRetry?: boolean; packageDir?: string; httpEndpoint?: string; retryDelayMs?: number; offlineRecovery?: boolean }
 function allocateRuntimeRoot(t: FixtureContext, options: RuntimeFixtureOptions): { offline: OfflineFixture | undefined; root: string } {
 	if (offlineContexts.has(t)) throw new Error("Offline fixture context already owns its cleanup boundary");
 	if (options.offlineRecovery && (options.withAgentExtension || options.retry || options.httpEndpoint)) throw new Error("Offline recovery requires fixed non-launching fixture contributions");
@@ -77,7 +77,7 @@ export function runtimeFixture(t: FixtureContext, options: RuntimeFixtureOptions
 	const extensionPath = fileURLToPath(new URL("./testdata/durable-runtime/index.ts", import.meta.url));
 	const extensions = [extensionPath];
 	if (options.withAgentExtension === true) extensions.push(fileURLToPath(new URL("./index.ts", import.meta.url)));
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions, transport: options.transport ?? "auto", cacheWarming: { mode: "off" }, retry: { enabled: options.retry === true, maxRetries: 20, baseDelayMs: options.retryDelayMs ?? 300000, maxAgentDelayMs: 300000 } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions, transport: options.transport ?? "auto", cacheWarming: { mode: "off" }, retry: options.crashRetry === true ? { enabled: true, maxRetries: 1, baseDelayMs: 10, maxAgentDelayMs: 1000 } : { enabled: options.retry === true, maxRetries: 20, baseDelayMs: options.retryDelayMs ?? 300000, maxAgentDelayMs: 300000 } }));
 	if (options.httpEndpoint !== undefined) {
 		const endpoint = new URL(options.httpEndpoint);
 		if (endpoint.protocol !== "http:" || endpoint.hostname !== "127.0.0.1") throw new Error("provider fixture requires an isolated loopback HTTP endpoint");

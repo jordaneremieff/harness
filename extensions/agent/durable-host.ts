@@ -23,7 +23,7 @@ import { ProviderRetryNotices, ProviderRetryNoticeSchema } from "./provider-noti
 import type { ProviderRetryNotice } from "./provider-block.ts";
 import { initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
 import { canonicalIdentity } from "./identity.ts";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { placeLeftoverWrites, StrandedInputRecovery } from "./stranded-inputs.ts";
 import { admittedResult, ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
 import type { InputProvenance } from "./awaited-results.ts";
@@ -201,6 +201,13 @@ function messageText(messages: readonly { readonly content?: unknown }[] | undef
  * including a task waiting with no task dependencies because it may await an
  * external effect. Every unsettled submission counts.
  */
+/** One committed task-graph value through a synchronous observer, detached at once. */
+export async function readTaskGraph(harness: Harness, context: Context): Promise<TaskGraph> {
+	const observation = await harness.observeTaskGraph({ advance: () => {}, end: () => {} }, context);
+	observation.detach();
+	return observation.value;
+}
+
 export function sessionIsIdle(graph: TaskGraph, inspection: HarnessInspection): boolean {
 	return Object.keys(graph.tasks).length === 0 && inspection.submissions.length === 0;
 }
@@ -261,10 +268,10 @@ export class DurableHost {
 			this.idleDirty = true;
 		});
 		void harness.closed.then((end) => {
-			this.lifecycle.abort(end.reason === "failed" ? new SessionFailed(end.error) : new DurableHostClosedError());
+			this.lifecycle.abort(end.kind === "failed" ? new SessionFailed(end.error) : new DurableHostClosedError());
 		});
-		// A commit may add or remove work; the cached idle result is stale until the refresh settles.
-		harness.subscribeCommits((publication) => {
+		// A stored commit may add or remove work; the cached idle result is stale until the refresh settles.
+		harness.observeCommits({ end: () => {}, advance: (publication) => {
 			if (publication.changes.length > 0) liveObservations.get(harness)?.invalidate();
 			if (publication.changes.some((change) => change.type === "submission" || (change.type === "entry" && isInputKind(change.value.kind)))) queueMicrotask(() => {
 				if (!this.closed) void reconcileInputCommunications(harness, this.storageId, BACKGROUND_CONTEXT).catch(() => { this.communicationDiagnostic = "retention-unavailable"; });
@@ -276,7 +283,7 @@ export class DurableHost {
 					this.idleDirty = true;
 				});
 			});
-		});
+		} });
 	}
 
 	/**
@@ -293,7 +300,7 @@ export class DurableHost {
 	private async requireOpen(): Promise<void> {
 		if (this.sessionClosing) {
 			const end = await this.harness.closed;
-			if (end.reason === "failed") throw new SessionFailed(end.error);
+			if (end.kind === "failed") throw new SessionFailed(end.error);
 			throw new DurableHostClosedError();
 		}
 		if (this.closed) throw new DurableHostClosedError();
@@ -318,13 +325,7 @@ export class DurableHost {
 		if (this.closed || this.sessionClosing) return false;
 		const generation = this.commitGeneration;
 		const inspection = await this.harness.inspect(context);
-		const graphState = await this.harness.taskGraph(context);
-		let value: boolean;
-		try {
-			value = sessionIsIdle(graphState.value, inspection);
-		} finally {
-			graphState.dispose();
-		}
+		const value = sessionIsIdle(await readTaskGraph(this.harness, context), inspection);
 		this.idleValue = value;
 		if (generation === this.commitGeneration) this.idleDirty = false;
 		return value && !this.idleDirty;
@@ -333,7 +334,7 @@ export class DurableHost {
 	static async open(options: DurableHostOptions, context: Context = BACKGROUND_CONTEXT): Promise<DurableHost> {
 		const storage = await openNodeSqliteStorage(options.storagePath);
 		const now = options.now ?? Date.now;
-		const report = (error: unknown): void => options.onReport?.(error, { type: "extension_error", extension: "agent" });
+		const report = (error: unknown): void => options.onReport?.({ kind: "extension_error", extension: "agent", error });
 		let harness: Harness;
 		const providerModels = new ProviderModels(options.models, () => harness, options.storageId, now);
 		try {
@@ -473,11 +474,11 @@ export class DurableHost {
 			case "run-stop": {
 				const conversation = await this.target(params, requestContext);
 				const inputs = params?.inputs;
-				if (inputs !== undefined && (!Array.isArray(inputs) || inputs.length > 200 || inputs.some(input => !Value.Check(ResultReferenceSchema, input)))) throw new TypeError("Invalid guarded run inputs");
+				if (inputs !== undefined && (!Array.isArray(inputs) || inputs.length > 200 || inputs.some(input => !matchesSchema(ResultReferenceSchema, input)))) throw new TypeError("Invalid guarded run inputs");
 				return stopRun(this.harness, this.storageId, conversation.id, requestRequiredId(params?.runId, "runId") as import("@earendil-works/pi-durable").SubmissionId, requestContext, { inputs: inputs as ResultReference[] | undefined, foreign: this.foreignStop });
 			}
 			case "request-cancel": {
-				if (!Value.Check(ResultReferenceSchema, params?.result)) throw new TypeError("An exact native result is required");
+				if (!matchesSchema(ResultReferenceSchema, params?.result)) throw new TypeError("An exact native result is required");
 				const result = params.result as ResultReference;
 				const conversation = await this.conversation(result.sessionId, requestContext);
 				return cancelRequest(this.harness, this.storageId, result, conversation.id, requestContext);
@@ -567,7 +568,7 @@ export class DurableHost {
 		const target = await this.target(params, context);
 		const results = params?.results ?? [];
 		const identity = canonicalIdentity(this.storageId, target.id);
-		if (!Array.isArray(results) || results.length > 16 || results.some((result) => !Value.Check(ResultReferenceSchema, result) || result.sessionId !== identity)) throw new Error("Invalid producer result references");
+		if (!Array.isArray(results) || results.length > 16 || results.some((result) => !matchesSchema(ResultReferenceSchema, result) || result.sessionId !== identity)) throw new Error("Invalid producer result references");
 		return this.harness.commit(async (tx) => {
 			const awaiting = await ownAwaitFact(tx, target.id);
 			const execution = await producerRetryFact(tx, target.id, results, this.retryCeiling());
@@ -604,7 +605,7 @@ export class DurableHost {
 		await conversation.commit((tx) => initializeProfile(tx, conversation.id, this.storageId), context);
 		const provenance = params?.provenance as Omit<InputProvenance, "conversationId" | "requestId" | "submissionId"> | undefined;
 		const providerRetry = params?.providerRetry;
-		if (providerRetry !== undefined && (!Value.Check(ProviderRetryNoticeSchema, providerRetry) || providerRetry.fact.execution === undefined)) throw new TypeError("Invalid provider retry notice evidence");
+		if (providerRetry !== undefined && (!matchesSchema(ProviderRetryNoticeSchema, providerRetry) || providerRetry.fact.execution === undefined)) throw new TypeError("Invalid provider retry notice evidence");
 		const message = messageFrom(params?.message);
 		const requestId = requestRequiredString(params, "requestId");
 		const submitted = await submitConversation(

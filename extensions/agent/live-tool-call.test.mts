@@ -45,6 +45,8 @@ it("observes a provider's live tool call through native status, frames, and comp
 	const call: ToolCall = { type: "toolCall", id: "streamed-call", name: "probe", arguments: { path: "file", partialArgs: "declared argument data" }, thoughtSignature: "signature", namespace: "fixture" };
 	const text = { type: "text" as const, text: "Prepare the action" };
 	const scratch = { partialArgs: '{"path":"fi', partialJson: '{"path":', customInput: { property: "code", jsonBuffer: "{" }, streamIndex: 0, transientMarker: "private scratch" };
+	// Durable publishes its own parse of the streamed argument text, not the provider's partial arguments or buffers.
+	const streamedCall: ToolCall = { ...call, arguments: { path: "fi" } };
 	const partial: AssistantMessage = { ...answerMessage(), stopReason: "pending", content: [text, { ...call, ...scratch }] };
 	let observed: ToolResultMessage | undefined;
 	let executions = 0;
@@ -82,8 +84,9 @@ it("observes a provider's live tool call through native status, frames, and comp
 	host = await DurableHost.open(hostOptions(join(root, "agent.sqlite"), models, registry, root), context);
 	const worker = host.root();
 	watch = await worker.watch(context);
-	watch.start(async (value) => {
-		const live = value.docs["pi.live"] as Durable.LiveState | undefined;
+	watch.start(async (call) => {
+		if (call.kind !== "value") return;
+		const live = call.value.docs["pi.live"] as Durable.LiveState | undefined;
 		const block = live?.generation?.message?.content[1];
 		if (block?.type === "toolCall" && "partialArgs" in block) published.resolve();
 	});
@@ -96,7 +99,7 @@ it("observes a provider's live tool call through native status, frames, and comp
 	const status = structuredObservation(StatusOutputSchema, observed.details) as { conversations: { conversationId: number; live: Durable.LiveState }[] };
 	const workerStatus = status.conversations.find((row) => row.conversationId === worker.id);
 	assert.ok(workerStatus?.live.generation?.message);
-	assert.deepEqual(workerStatus.live.generation.message.content[1], call);
+	assert.deepEqual(workerStatus.live.generation.message.content[1], streamedCall);
 	structuredObservation(StatusOutputSchema, await dispatch("status", { sessionId: fixtureStorageId }));
 
 	service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, context);
@@ -107,7 +110,7 @@ it("observes a provider's live tool call through native status, frames, and comp
 	const liveMessage = frame.live.flatMap((entry) => entry.model ?? []).find((message) => message.role === "assistant");
 	assert.ok(liveMessage);
 	structuredObservation(AssistantMessageSchema, liveMessage);
-	assert.deepEqual(liveMessage.content[1], call);
+	assert.deepEqual(liveMessage.content[1], streamedCall);
 	for (const view of ["history", "branch", "activity"] as const) {
 		const inspection: unknown = structuredObservation(InspectOutputSchema, await host.request("inspect", { sessionId: fixtureStorageId, view }, context));
 		assert.doesNotMatch(JSON.stringify(inspection), /private scratch|partialJson|streamIndex/u);
@@ -125,7 +128,7 @@ it("observes a provider's live tool call through native status, frames, and comp
 	assert.equal(overview.sessions.length, rows.length);
 	assert.doesNotMatch(JSON.stringify(overview), /private scratch|partialJson|streamIndex/u);
 	const native = await host.harness.snapshot(Durable.LiveDoc, worker.id, context);
-	assert.deepEqual(native?.generation?.message?.content[1], { ...call, ...scratch }, "all observation paths leave the provider's private state unchanged");
+	assert.deepEqual(native?.generation?.message?.content[1], { ...call, ...scratch, arguments: streamedCall.arguments }, "all observation paths leave the provider's private state unchanged");
 	release.resolve();
 	assert.equal((await host.wait(submission.submissionId, context)).status, "done");
 	assert.equal(executions, 1);

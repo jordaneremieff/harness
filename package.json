@@ -58,6 +58,7 @@
     "@earendil-works/pi-codemode": "*",
     "@earendil-works/pi-durable": "*",
     "@earendil-works/pi-mcp": "*",
+    "@earendil-works/pi-schema": "*",
     "htmlparser2": "12.0.0"
   }
 }

@@ -4,7 +4,7 @@ import { dirname } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createEventBus, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import type { TranscriptEvent } from "vitest-evals";
 import { piSdkAdapter, runDeterministicChecks } from "../../evals/subjects/pi-sdk.mts";
 import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
@@ -20,7 +20,7 @@ type Command = { handler(args: string, ctx: ExtensionCommandContext): Promise<vo
 type Result = { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> };
 type Tool = {
 	name: string;
-	parameters: Parameters<typeof Compile>[0];
+	parameters: Parameters<typeof compile>[0];
 	execute(
 		id: string,
 		args: Record<string, unknown>,
@@ -190,7 +190,7 @@ function harness(mode: PolicyMode) {
 			const id = `call-${events.length}`;
 			events.push({ type: "tool_call", id, name: step.name, arguments: structuredClone(args) });
 			await emit("tool_execution_start", { toolName: step.name, toolCallId: id, args });
-			assert.equal(Compile(fixtureTool.parameters).Check(args), true, "host input validation precedes tool_call hooks");
+			assert.equal(compile(fixtureTool.parameters).check(args), true, "host input validation precedes tool_call hooks");
 			const decision = await emit("tool_call", { toolName: step.name, toolCallId: id, input: args });
 			inputs.push(structuredClone(args));
 			let output: Result;

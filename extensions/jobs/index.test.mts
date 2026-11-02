@@ -11,7 +11,7 @@ import {
 	type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { Check } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import registerJobs from "./index.ts";
 import type { JobLogs, JobSnapshot } from "./manager.ts";
 
@@ -102,7 +102,7 @@ function setup(cwd = root, trusted = false) {
 	const call = async (name: string, params: unknown, signal?: AbortSignal) => {
 		const tool = pi.tool(name);
 		const result = await tool.execute("call", params, signal, undefined, ctx);
-		assert.ok(Check(tool.outputSchema, result.structuredContent), "result matches its declared output schema");
+		assert.ok(compile(tool.outputSchema).check(result.structuredContent), "result matches its declared output schema");
 		return result;
 	};
 	return { pi, call };

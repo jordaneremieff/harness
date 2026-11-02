@@ -135,7 +135,7 @@ export default function (pi) {
 `;
 
 it("keeps real native work after launch-link close and manager shutdown, then recovers without a requester route", { timeout: 60000 }, async (t) => {
-	const f = runtimeFixture(t, { offlineRecovery: true });
+	const f = runtimeFixture(t, { offlineRecovery: true, crashRetry: true });
 	const initial = f.offline.generation();
 	const commandPath = join(f.agentDir, "independent.ts"); writeFileSync(commandPath, COMMAND_EXTENSION);
 	const settingsPath = join(f.agentDir, "settings.json");

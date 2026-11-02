@@ -2,6 +2,7 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { InboxDoc, LiveDoc, type Conversation, type ConversationId, type Harness, type Cursor, type EntryRecord } from "@earendil-works/pi-durable";
+import { onStoredCommit } from "./commit-observation.ts";
 
 /** One failed generation identifies one replay-safe boundary write. */
 export async function recoverStrandedInputs(conversation: Conversation, context: Context): Promise<void> {
@@ -61,7 +62,7 @@ export class StrandedInputRecovery {
 		this.harness = harness;
 		this.onError = onError;
 		this.context = withAbortSignal(this.lifecycle.signal, BACKGROUND_CONTEXT);
-		this.unsubscribe = harness.subscribeCommits((publication) => {
+		this.unsubscribe = onStoredCommit(harness, (publication) => {
 			const ended = new Set(publication.changes.flatMap((change) => change.type === "submission" && change.value.status === "unanswered" ? [change.value.conversationId] : []));
 			for (const id of ended) void this.recover(id);
 		});

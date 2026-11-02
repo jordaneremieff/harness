@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -8,7 +9,7 @@ import { it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { Type } from "typebox";
-import { Value } from "typebox/value";
+import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { Harness, MemoryStorage, LiveDoc, UsageDoc, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox, type CodemodeRunOptions, type CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
@@ -326,7 +327,7 @@ it("preserves native lineage and effort awareness together through codemode", { 
 	const output = JSON.parse(toolResultBody(result.toolResults.at(-1))) as { before: Overview; combined: Overview; selected: Overview; fleet: Record<string, unknown> };
 	assert.equal(captured.length, 4);
 	for (const [index, value] of [output.before, output.combined, output.selected, output.fleet].entries()) {
-		assert.equal(Value.Check(StatusToolOutputSchema, value), true, JSON.stringify([...Value.Errors(StatusToolOutputSchema, value)]));
+		assert.equal(matchesSchema(StatusToolOutputSchema, value), true, JSON.stringify(schemaErrors(StatusToolOutputSchema, value, 10)));
 		assert.deepEqual(captured[index]?.structuredOutput, value, "codemode retains the native structured result");
 		assert.notEqual(captured[index]?.isError, true);
 	}
@@ -345,7 +346,7 @@ it("preserves native lineage and effort awareness together through codemode", { 
 	assert.ok(combinedText.includes("Created agents (newest first; retained creation labels):"));
 	assert.ok(combinedText.includes(JSON.stringify(combined.createdAgents.agents[0]?.name)));
 	assert.ok(combinedText.endsWith("1 more omitted."));
-	assert.equal(Value.Check(StatusOutputSchema, combined), false, "the host wire schema is not widened");
+	assert.equal(matchesSchema(StatusOutputSchema, combined), false, "the host wire schema is not widened");
 	assert.deepEqual(output.selected, hostStatus);
 	assert.equal(output.fleet.view, "fleet");
 	assert.equal("awareness" in output.fleet, false);
@@ -1067,9 +1068,9 @@ it("refuses a queued native launch after the committed Harness script deadline p
 	let clock = 1000;
 	const { harness, conversation } = await nativeClockFixture(t, () => clock);
 	let persisted: { startedAt: number; deadline: number } | undefined;
-	harness.subscribeCommits((publication) => {
+	onStoredCommit(harness, (publication) => {
 		for (const change of publication.changes) {
-			if (change.type === "document" && change.record.kind === "pi.codemode.run" && change.value?.start !== undefined) {
+			if (change.type === "document" && change.kind === "change" && change.record.kind === "pi.codemode.run" && change.value.start !== undefined) {
 				const start = change.value.start as unknown as { startedAt: number; deadline: number };
 				persisted = { startedAt: start.startedAt, deadline: start.deadline };
 			}

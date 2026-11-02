@@ -215,12 +215,12 @@ export async function descriptor(): Promise<JsonObject> {
 		},
 		"inspect": {
 			"request": "inspect/1.1.0",
-			"response": "d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b",
+			"response": "f1009d22633112866c6c6b83c4734512f00c6aa4767daf07644074f932633f0a",
 			"durable": durable
 		},
 		"status": {
 			"request": "status/1.0.0",
-			"response": "d1f5f022e262aba18b6de135e891aef526cf9f0f62f114e51f3c132e624eb6cf",
+			"response": "4eb8753a974ad2769e07ec49df2add0e027554a02c13f0a2aaef304f5562ad87",
 			"durable": durable
 		},
 		"list": {
@@ -275,7 +275,7 @@ export async function descriptor(): Promise<JsonObject> {
 		},
 		"dashboard": {
 			"request": "dashboard/1.0.0",
-			"response": "a89f98f3eb28c78f115c0010581107073600bfb9ec44934ad622aeb5d1cffcd7"
+			"response": "f3e8abe67fe550c8708e5e7c19322401fb1c951e797f3ee3c667f709d5befc9e"
 		},
 		"snapshot": {
 			"request": "snapshot/1.0.0",

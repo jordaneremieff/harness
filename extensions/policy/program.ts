@@ -1,6 +1,6 @@
 /** Closed facts grammar and private correction plans. No action commits occur here. */
 import { type TSchema, Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { arr, compile, int, obj, oneOf, opt, type Schema, union } from "@earendil-works/pi-schema";
 import { type CommandEvidence, captureEvidence, type RuleEvidence } from "./compiler.ts";
 import {
 	checkToolSchema,
@@ -99,22 +99,11 @@ function conditionShape<C extends TSchema>(child: C) {
 		Type.Object({ not: child }, closed),
 		Type.Object(
 			{
-				op: Type.Union(
-					[
-						"eq",
-						"in",
-						"exists",
-						"type",
-						"gt",
-						"gte",
-						"lt",
-						"lte",
-						"starts-with",
-						"ends-with",
-						"contains",
-						"lookup",
-					].map((entry) => Type.Literal(entry)),
-				),
+				op: Type.Union([
+					Type.Literal("eq"), Type.Literal("in"), Type.Literal("exists"), Type.Literal("type"),
+					Type.Literal("gt"), Type.Literal("gte"), Type.Literal("lt"), Type.Literal("lte"),
+					Type.Literal("starts-with"), Type.Literal("ends-with"), Type.Literal("contains"), Type.Literal("lookup"),
+				]),
 				path: PathSchema,
 				value: Type.Optional(Type.Union([ScalarSchema, Type.Array(ScalarSchema, { maxItems: 64 })])),
 				table: Type.Optional(DataNameSchema),
@@ -123,7 +112,23 @@ function conditionShape<C extends TSchema>(child: C) {
 		),
 	]);
 }
-export const ConditionSchema = Type.Cyclic({ Condition: conditionShape(Type.Ref("Condition")) }, "Condition");
+const conditionReference: Schema<Condition> = { $ref: "#/$defs/Condition" };
+const conditionDefinitions = {
+	$defs: {
+		Condition: union([
+			obj({ all: arr(conditionReference, { minItems: 1, maxItems: PROGRAM_LIMITS.children }) }),
+			obj({ any: arr(conditionReference, { minItems: 1, maxItems: PROGRAM_LIMITS.children }) }),
+			obj({ not: conditionReference }),
+			obj({
+				op: oneOf(["eq", "in", "exists", "type", "gt", "gte", "lt", "lte", "starts-with", "ends-with", "contains", "lookup"]),
+				path: { ...PathSchema },
+				value: opt(union([{ ...ScalarSchema }, arr({ ...ScalarSchema }, { maxItems: 64 })])),
+				table: opt({ ...DataNameSchema }),
+			}),
+		]),
+	},
+};
+export const ConditionSchema: Schema<Condition> = { ...conditionReference, ...conditionDefinitions };
 
 export const PROPOSAL_CONDITION_GRAMMAR = `Conditions use exactly one of {all:[conditions]}, {any:[conditions]}, {not:condition}, or {op,path,value?,table?}. Nested conditions use the same leaf operators and field types. All/any arrays have 1-${PROGRAM_LIMITS.children} children. Conditions share a ${PROGRAM_LIMITS.nodes}-node budget across applicability, when, observe, and resetWhen; maximum nesting depth is ${PROGRAM_LIMITS.depth} from each root. Every nested object receives strict local validation. Read policy_rules view=authoring for operator semantics.`;
 
@@ -159,11 +164,20 @@ function stateShape<C extends TSchema>(condition: C) {
 		closed,
 	);
 }
-export const StateSpecSchema = stateShape(ConditionSchema);
+const nativeStateSchema = obj({
+	observe: conditionReference,
+	resetWhen: opt(conditionReference),
+	totalPath: opt({ ...PathSchema }),
+	window: opt(obj({ maxEvents: int({ minimum: 1, maximum: 1024 }), maxAgeMs: int({ minimum: 1, maximum: 86400000 }) })),
+	cooldownMs: opt(int({ minimum: 0, maximum: 86400000 })),
+	once: opt(oneOf(["period", "turn"])),
+	expiresAfterMs: opt(int({ minimum: 1, maximum: 86400000 })),
+});
+export const StateSpecSchema: Schema<StateSpec> = { ...nativeStateSchema, ...conditionDefinitions };
 function programShape<C extends TSchema>(condition: C) {
 	return Type.Object(
 		{
-			phase: Type.Union(["input", "result", "completion", "context"].map((entry) => Type.Literal(entry))),
+			phase: Type.Union([Type.Literal("input"), Type.Literal("result"), Type.Literal("completion"), Type.Literal("context")]),
 			selector: Type.Optional(
 				Type.Object(
 					{
@@ -223,10 +237,23 @@ function programShape<C extends TSchema>(condition: C) {
 		closed,
 	);
 }
-export const FactsProgramSchema = programShape(ConditionSchema);
 export const ProposalProgramSchema = programShape(ProposalConditionSchema);
-const programValidator = Compile(FactsProgramSchema);
-const conditionValidator = Compile(ConditionSchema);
+const proposalFields = ProposalProgramSchema.properties;
+export const FactsProgramSchema: Schema<FactsProgram> = {
+	...obj({
+		phase: { ...proposalFields.phase },
+		selector: opt({ ...proposalFields.selector }),
+		when: conditionReference,
+		action: { ...proposalFields.action },
+		onUnavailable: { ...proposalFields.onUnavailable },
+		inputView: opt({ ...proposalFields.inputView }),
+		data: opt({ ...proposalFields.data }),
+		state: opt(nativeStateSchema),
+	}),
+	...conditionDefinitions,
+};
+const programValidator = compile(FactsProgramSchema);
+const conditionValidator = compile(ConditionSchema);
 const roots = new Set([
 	"input",
 	"original",
@@ -306,7 +333,7 @@ function bindingsValid(condition: Condition, bindings: ReadonlySet<string>): boo
 export function validateApplicability(value: unknown, program?: FactsProgram): string | undefined {
 	try {
 		const copied = cloneJson(value);
-		if (!conditionValidator.Check(copied)) return "Invalid applicability condition shape";
+		if (!conditionValidator.check(copied)) return "Invalid applicability condition shape";
 		const condition = copied as Condition;
 		const budget = { nodes: 0 };
 		for (const entry of [condition, program?.when, program?.state?.observe, program?.state?.resetWhen]) {
@@ -389,7 +416,7 @@ function programConditionsError(program: FactsProgram, budget: { nodes: number }
 export function validateFactsProgram(value: unknown): string | undefined {
 	try {
 		const copied = cloneJson(value);
-		if (!programValidator.Check(copied)) return "Invalid facts program shape";
+		if (!programValidator.check(copied)) return "Invalid facts program shape";
 		const program = copied as FactsProgram;
 		const conditionsError = programConditionsError(program, { nodes: 0 });
 		if (conditionsError) return conditionsError;

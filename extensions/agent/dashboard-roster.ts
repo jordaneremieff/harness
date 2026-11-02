@@ -57,7 +57,7 @@ function recoveryLines(row: AgentConversationSummary, skipRetry = false): Array<
 		const failure = health.compactionFailure;
 		lines.push({
 			color: "warning",
-			text: `Last compaction failure (${failure.reason}) at ${failure.at}: ${oneLine(failure.errorMessage ?? "no error text")}`,
+			text: `Last compaction failure (${failure.trigger}) at ${failure.at}: ${oneLine(failure.errorMessage ?? "no error text")}`,
 		});
 	}
 	if (!skipRetry && health.autoRetry)
@@ -95,7 +95,7 @@ export function attentionReason(row: AgentConversationSummary): string | undefin
 		return `Unavailable: ${oneLine(row.error || row.ownerLabel || "Storage cannot be read")}`;
 	if (row.health?.lastError) return `Host error: ${oneLine(row.health.lastError)}`;
 	const failure = row.health?.compactionFailure;
-	if (failure) return `Compaction failed (${failure.reason}): ${oneLine(failure.errorMessage || "No error text")}`;
+	if (failure) return `Compaction failed (${failure.trigger}): ${oneLine(failure.errorMessage || "No error text")}`;
 	const retry = row.health?.autoRetry;
 	if (retry && retry.attempt >= retry.maxAttempts) return `Retries exhausted: ${oneLine(retry.errorMessage)}`;
 	if (row.state === "failed" && row.error) return oneLine(row.error);

@@ -11,11 +11,11 @@
  * evidence boundaries.
  */
 
-import {
-	type AgentToolResult,
-	keyText,
-	type Theme,
-	type ToolRenderResultOptions,
+import type {
+	AgentToolResult,
+	KeybindingHints,
+	Theme,
+	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { type Component, Text } from "@earendil-works/pi-tui";
 
@@ -63,8 +63,9 @@ function textContent(result: AgentToolResult<unknown>): string {
 		.join("\n");
 }
 
-function expandHint(subject: string): string {
-	const key = keyText("app.tools.expand");
+/** The host injects keyText with the operator's configured bindings; without it the hint names no key. */
+function expandHint(subject: string, keys: Partial<KeybindingHints>): string {
+	const key = keys.keyText?.("app.tools.expand");
 	return key ? `${key} to expand ${subject}` : `Expand for ${subject}`;
 }
 
@@ -80,13 +81,13 @@ function textComponent(text: string, previous?: Component): Text {
 	return component;
 }
 
-export interface CallContext {
+export interface CallContext extends Partial<KeybindingHints> {
 	expanded?: boolean;
 	argsComplete?: boolean;
 	lastComponent?: Component;
 }
 
-export interface ResultContext {
+export interface ResultContext extends Partial<KeybindingHints> {
 	isError: boolean;
 	lastComponent?: Component;
 }
@@ -112,9 +113,9 @@ function callCard(
 	}
 	const detail = qualifiers.join(" · ");
 	const line = detail
-		? theme.fg("muted", rowSafe(detail)) + (hint ? theme.fg("dim", ` · ${expandHint("arguments")}`) : "")
+		? theme.fg("muted", rowSafe(detail)) + (hint ? theme.fg("dim", ` · ${expandHint("arguments", context)}`) : "")
 		: hint
-			? theme.fg("dim", expandHint("arguments"))
+			? theme.fg("dim", expandHint("arguments", context))
 			: "";
 	return textComponent(line ? `${heading}\n${line}` : heading, context.lastComponent);
 }
@@ -133,7 +134,7 @@ function resultCard(
 	if (options.expanded) {
 		if (body) lines.push(theme.fg("toolOutput", boundedBody(body)));
 	} else {
-		const hintSuffix = hint ? theme.fg("dim", `${second ? " · " : ""}${expandHint("result")}`) : "";
+		const hintSuffix = hint ? theme.fg("dim", `${second ? " · " : ""}${expandHint("result", context)}`) : "";
 		const row = second ? theme.fg("muted", rowSafe(second)) + hintSuffix : hintSuffix;
 		if (row) lines.push(row);
 	}

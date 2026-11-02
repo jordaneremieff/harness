@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { mkdtempSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { AgentManager } from "./manager.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRuntime, fixtureRegistry, hostOptions } from "./durable-host-fixture.mts";
@@ -26,7 +26,7 @@ it("a cold profile read returns retained native expertise without host acquisiti
 		await host.request("profile-update", { sessionId: record.storageId, expectedRevision: initial.revision, expertise: "Sources: reference.md, checked 2026-01-01", requestId: "knowledge", senderIdentity: "author" });
 	} finally { await host.close(); }
 	const result = await manager.control("profile-read", { sessionId: record.storageId }, { id: "reader", cwd: root });
-	assert.ok(Value.Check(AgentProfileSchema, result));
+	assert.ok(matchesSchema(AgentProfileSchema, result));
 	assert.equal(result.live, false);
 	assert.equal(result.handle, "@history");
 	assert.equal(result.role, "Review decisions");

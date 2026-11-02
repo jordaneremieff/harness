@@ -10,7 +10,8 @@
 import { mkdir, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { Context, JsonValue } from "@earendil-works/chord";
-import type { AssistantMessage, Message, Models, Static } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message, Models } from "@earendil-works/pi-ai";
+import type { Static } from "typebox";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";

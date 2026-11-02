@@ -9,7 +9,7 @@ import type { ProducerAwaitFact } from "./await-facts.ts";
 import { safeFactText } from "./primary-observation.ts";
 import { recordProducerAwait, queuedAwaitInputCount } from "./await-observation.ts";
 import type { AgentControlDispatch } from "./durable-agents.ts";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { ProviderBlockFactSchema, type ProviderBlockFact } from "./provider-block.ts";
 
 export type AwaitReply = { decision: AwaitDeclaration["decision"]; results: AwaitOutcome[]; unresolved: ResultReference[]; originalInputs: number[]; queuedInputCount: number; queueSnapshot: { source: "committed InboxDoc"; conversationId: number; runId: number }; releaseReason?: string; producerRetries?: ProducerAwaitFact[] };
@@ -20,7 +20,7 @@ function observedReference(reference: ResultReference, row: Record<string, unkno
 }
 function providerBlockOutcome(row: Record<string, unknown>): { providerBlock?: ProviderBlockFact } {
 	if (row.providerBlock === undefined) return {};
-	if (row.status !== "unanswered" || !Value.Check(ProviderBlockFactSchema, row.providerBlock)) throw new Error("The result source returned an invalid provider block outcome");
+	if (row.status !== "unanswered" || !matchesSchema(ProviderBlockFactSchema, row.providerBlock)) throw new Error("The result source returned an invalid provider block outcome");
 	return { providerBlock: row.providerBlock };
 }
 function outcomeOf(reference: ResultReference, value: unknown): AwaitOutcome {
@@ -102,8 +102,8 @@ export async function executeAwait(args: AwaitInput, api: ToolExecutionApi, cont
 		if (current === undefined) { reject(new Error("The native await owner is no longer active")); return; }
 		if (current.decision !== "awaiting") resolve(current);
 	};
-	watch.start(async (value) => { check(value); });
-	const closed = watch.closed.then((end) => { throw new Error(`Native await observation ended: ${end.reason}`); });
+	watch.start(async (call) => { if (call.kind === "value") check(call.retired ? undefined : call.value); });
+	const closed = watch.closed.then((end) => { throw new Error(`Native await observation ended: ${end.kind}`); });
 	void closed.catch(() => {});
 	const initial = await api.snapshot(AwaitDoc, context);
 	check(initial);

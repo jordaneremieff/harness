@@ -4,11 +4,13 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Value } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import { type JsonObject, type Tool, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import memory from "./index.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
+
+const searchOutput = compile(memorySearchOutputSchema);
 
 isolateMachineSettings();
 
@@ -166,7 +168,7 @@ test("registered jobs round-trip source evidence and serialize concurrent update
 	];
 	for (const args of requests) {
 		const page = await call(all.get("memory_search") as Registered, args);
-		Value.Assert(memorySearchOutputSchema, page.structuredContent);
+		assert.deepEqual(searchOutput.errors(page.structuredContent), []);
 		assert.equal(page.structuredContent, page.details);
 		assert.deepEqual(page.structuredContent, JSON.parse(page.content[0].text));
 		assert.ok(Buffer.byteLength(JSON.stringify(page.structuredContent)) + 1 <= 48 * 1024);
@@ -174,7 +176,7 @@ test("registered jobs round-trip source evidence and serialize concurrent update
 	}
 	const structured = search.structuredContent;
 	assert.ok(structured);
-	Value.Assert(memorySearchOutputSchema, structured);
+	assert.deepEqual(searchOutput.errors(structured), []);
 	for (const invalid of [
 		{ ...structured, nextCursor: 17 },
 		{ ...structured, privateSource: "not public" },
@@ -182,7 +184,7 @@ test("registered jobs round-trip source evidence and serialize concurrent update
 		{ ...structured, notes: [{ ...(structured.notes as JsonObject[])[0], digest: "not-a-digest" }] },
 		{ ...structured, notes: [{ ...(structured.notes as JsonObject[])[0], sourceBuffer: "not public" }] },
 	])
-		assert.equal(Value.Check(memorySearchOutputSchema, invalid), false);
+		assert.equal(searchOutput.check(invalid), false);
 	await assert.rejects(
 		call(all.get("memory_search") as Registered, {}, AbortSignal.abort()),
 		/Memory retrieval cancelled/,

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import { authoringGuide, checkDraft, type DraftCase } from "./authoring.ts";
 import { RuleRegistry, type RuleSnapshot } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
@@ -136,7 +136,7 @@ test("draft checks share proposal admission without proposal or data writes", as
 	assert.ok(propose);
 	const before = await readFile(registry.path, "utf8");
 	const params = { view: "check", draft: draft(), cases: [{ name: "positive", steps: [call()] }] };
-	assert.equal(Compile(PolicyRulesParams).Check(params), true);
+	assert.equal(compile(PolicyRulesParams).check(params), true);
 	const inspected = JSON.parse(
 		(await inspect.execute("check", params, undefined, undefined, ctx)).content[0].text,
 	) as Check;
@@ -429,7 +429,7 @@ test("the canonical authoring guide examples satisfy admission and behavior chec
 	for (const block of guide.matchAll(/^```json\n([\s\S]*?)^```/gm)) {
 		const value = JSON.parse(block[1]) as Record<string, unknown>;
 		const params = value.operation ? { view: "check", draft: value } : value;
-		assert.equal(Compile(PolicyRulesParams).Check(params), true);
+		assert.equal(compile(PolicyRulesParams).check(params), true);
 		validateInspectionParams(params);
 		const f = fixture();
 		noMismatches((await checkDraft(params, f.snapshot, f.pi, ctx, parseAuthoringDraft)) as Check);

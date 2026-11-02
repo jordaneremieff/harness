@@ -1,5 +1,5 @@
 import { Type, type Static } from "typebox";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 
 export const COMMUNICATION_BODY_BYTES = 16_384;
 export const COMMUNICATION_VALUE_BYTES = 24_576;
@@ -82,7 +82,7 @@ export function communicationSerializedBytes(value: unknown): number {
 /** Closed shape checks and UTF-8 limits are both required at the public boundary. */
 export function parseCommunication(value: unknown): Communication | undefined {
 	try {
-		if (!Value.Check(CommunicationSchema, value) || !validValue(value) || communicationSerializedBytes(value) > COMMUNICATION_VALUE_BYTES) return undefined;
+		if (!matchesSchema(CommunicationSchema, value) || !validValue(value) || communicationSerializedBytes(value) > COMMUNICATION_VALUE_BYTES) return undefined;
 		return JSON.parse(JSON.stringify(value)) as Communication;
 	} catch { return undefined; }
 }
@@ -91,25 +91,25 @@ function validLink(value: CommunicationLink): boolean {
 }
 export function parseCommunicationLink(value: unknown): CommunicationLink | undefined {
 	try {
-		if (!Value.Check(CommunicationLinkSchema, value) || !validLink(value)) return undefined;
+		if (!matchesSchema(CommunicationLinkSchema, value) || !validLink(value)) return undefined;
 		return JSON.parse(JSON.stringify(value)) as CommunicationLink;
 	} catch { return undefined; }
 }
 export function parseCommunicationCompanion(value: unknown): CommunicationCompanion | undefined {
 	try {
-		if (!Value.Check(CommunicationCompanionSchema, value) || !validLink(value.target) || !parseCommunication(value.value) || (value.value.kind === "notice" && value.value.metadata.passive === true)) return undefined;
+		if (!matchesSchema(CommunicationCompanionSchema, value) || !validLink(value.target) || !parseCommunication(value.value) || (value.value.kind === "notice" && value.value.metadata.passive === true)) return undefined;
 		return JSON.parse(JSON.stringify(value)) as CommunicationCompanion;
 	} catch { return undefined; }
 }
 export function parseCommunicationPassive(value: unknown): CommunicationPassive | undefined {
 	try {
-		if (!Value.Check(CommunicationPassiveSchema, value) || !textFits(value.requestId, 1_024) || !parseCommunication(value.value) || value.value.kind !== "notice" || value.value.metadata.passive !== true) return undefined;
+		if (!matchesSchema(CommunicationPassiveSchema, value) || !textFits(value.requestId, 1_024) || !parseCommunication(value.value) || value.value.kind !== "notice" || value.value.metadata.passive !== true) return undefined;
 		return JSON.parse(JSON.stringify(value)) as CommunicationPassive;
 	} catch { return undefined; }
 }
 export function parseCommunicationView(value: unknown): CommunicationView | undefined {
 	try {
-		if (!Value.Check(CommunicationViewSchema, value)) return undefined;
+		if (!matchesSchema(CommunicationViewSchema, value)) return undefined;
 		if (value.state === "ready" && (!canonicalEntry(value.recordEntryId) || !validLink(value.target) || !parseCommunication(value.value) || communicationSerializedBytes(value) > COMMUNICATION_READY_BYTES)) return undefined;
 		return JSON.parse(JSON.stringify(value)) as CommunicationView;
 	} catch { return undefined; }

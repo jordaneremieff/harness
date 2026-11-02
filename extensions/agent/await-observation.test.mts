@@ -1,7 +1,8 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { AgentDoc, InboxDoc, LiveDoc, type Tx, type ConversationId, type TaskId, type SubmissionId } from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { BACKGROUND_CONTEXT, withCancel } from "@earendil-works/chord/context";
 import { CheckInTask } from "./durable-checkins.ts";
 import { observeProducerAwait } from "./await-producer-observer.ts";
@@ -89,7 +90,7 @@ it("keeps a blocked reference ahead of generic facts under both byte bounds", as
 	await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: result.sessionId, observedAt: 1, source: "producer await-state", execution: { state: "provider-retry", runId: 9, results: [result], attempt: 18, nextRetryAt: 1791200000000, error: "429 Weekly/Monthly Limit Exhausted", errorTruncated: false } });
 	const fact = await readAwaitFact(f.tx, "consumer", conversation); assert.ok(fact);
 	assert.deepEqual(fact.results[0].result, result); assert.ok(fact.omitted.results > 0);
-	assert.deepEqual(fact.producers[0].execution?.results, [result]); assert.equal(Value.Check(AwaitFactSchema, fact), true);
+	assert.deepEqual(fact.producers[0].execution?.results, [result]); assert.equal(matchesSchema(AwaitFactSchema, fact), true);
 });
 
 function parallelFixture() {
@@ -111,7 +112,7 @@ for (const reverse of [false, true]) it(`preserves one producer's retry across p
 	assert.deepEqual(fact.producers[0].execution?.results, [f.first]); assert.equal(fact.producers[0].observedAt, 1);
 	assert.deepEqual(fact.results.map((item) => item.status), ["pending", "pending"]);
 	assert.match(awaitFactLines(fact)[0], /submission 10.*provider retry/u);
-	assert.equal(Value.Check(AwaitFactSchema, fact), true);
+	assert.equal(matchesSchema(AwaitFactSchema, fact), true);
 });
 
 it("merges parallel inputs in the same producer run and clears only matching settled or newer observations", async () => {
@@ -166,7 +167,7 @@ it("deduplicates overlapping reference sets through the real local commit feed w
 		const owner = await tx.createTask(CheckInTask, input, { ownership: { kind: "conversation" }, conversationId: root.id, background: true });
 		const first = await tx.createTask(CheckInTask, { ...input, requestId: "first" }, { ownership: { kind: "conversation" }, conversationId: root.id, background: true });
 		const second = await tx.createTask(CheckInTask, { ...input, requestId: "second" }, { ownership: { kind: "conversation" }, conversationId: root.id, background: true });
-		(await tx.doc(LiveDoc, root.id)).run = { taskId: owner, inputs: [5 as SubmissionId] };
+		(await tx.doc(LiveDoc, root.id)).run = { taskId: owner, inputs: [5 as SubmissionId], turns: 0 };
 		const scopes: [TaskId, typeof a[]][] = [[first, [a]], [second, [a, b]]];
 		(await tx.doc(AwaitDoc)).declarations = scopes.map(([taskId, results]) => ({ taskId, callId: `await-${taskId}`, conversationId: root.id, runId: owner, cohort: [first, second], inputs: [5], results, outcomes: [], decision: "awaiting", releaseOnProviderRetry: { minAttempt: Number.MAX_SAFE_INTEGER } }));
 		return [first, second];
@@ -178,7 +179,7 @@ it("deduplicates overlapping reference sets through the real local commit feed w
 		reads++;
 		return { execution: { state: "provider-retry" as const, runId: 9, results: index === 0 ? [a] : [a, b], attempt: 18, maxAttempts: 21, nextRetryAt: 1791200300000, error: "429 Weekly/Monthly Limit Exhausted", errorTruncated: false } };
 	}, async (changed) => {
-		const off = f.host.harness.subscribeCommits((publication) => { if (publication.changes.length) changed(); });
+		const off = onStoredCommit(f.host.harness, (publication) => { if (publication.changes.length) changed(); });
 		return () => { closed++; off(); };
 	}, async (fact) => {
 		const changed = await f.host.harness.commit(async (tx) => { const before = JSON.stringify(await tx.doc(AwaitDoc)); await recordProducerAwait(tx, taskId, fact); return before !== JSON.stringify(await tx.doc(AwaitDoc)); }, BACKGROUND_CONTEXT);
@@ -189,7 +190,7 @@ it("deduplicates overlapping reference sets through the real local commit feed w
 		await Promise.all(jobs);
 		assert.equal(writes, 2); assert.deepEqual([...stable].sort(), [0, 1]); assert.ok(reads >= 4); assert.equal(closed, 2); assert.equal(f.modelRequestCount(), 0);
 		const fact = await f.host.harness.commit((tx) => readAwaitFact(tx, f.storageId, root.id), BACKGROUND_CONTEXT);
-		assert.deepEqual(fact?.producers[0].execution?.results, [a, b]); assert.equal(Value.Check(AwaitFactSchema, fact), true);
+		assert.deepEqual(fact?.producers[0].execution?.results, [a, b]); assert.equal(matchesSchema(AwaitFactSchema, fact), true);
 	} finally { stop(); await Promise.allSettled(jobs); t.mock.restoreAll(); }
 });
 
@@ -207,7 +208,7 @@ for (const overlap of [false, true]) for (const retry of [false, true]) it(`reta
 	else assert.equal(fact.producers[0].execution, undefined);
 	assert.deepEqual(fact.producers[0].awaiting, ownWait);
 	assert.equal(fact.producers[0].observedAt, overlap ? 4 : 1); assert.match(fact.producers[0].unavailable ?? "", /Partial observation loss.*submission 11 request second at 3: Producer host connection closed/u);
-	assert.doesNotMatch(fact.producers[0].unavailable ?? "", /submission 10/u); assert.equal(Value.Check(AwaitFactSchema, fact), true);
+	assert.doesNotMatch(fact.producers[0].unavailable ?? "", /submission 10/u); assert.equal(matchesSchema(AwaitFactSchema, fact), true);
 	assert.match(awaitFactLines(fact).join("\n"), /awaits consumer\/4.*Partial observation loss/u);
 	const retained = JSON.stringify(f.state); await recordProducerAwait(f.tx, 3 as TaskId, { ...first, observedAt: 5 }); assert.equal(JSON.stringify(f.state), retained);
 	await recordProducerAwait(f.tx, 4 as TaskId, { ...base, awaiting: ownWait, observedAt: 6, ...(retry ? { execution: f.retry(overlap ? [f.first, f.second] : [f.second]) } : {}) });
@@ -228,7 +229,7 @@ it("keeps a multi-reference retry producer before generic result detail within t
 	assert.equal(fact.results.length + fact.omitted.results, 16);
 	assert.deepEqual(fact.producers[0].execution?.results, fact.results.map((item) => item.result));
 	assert.match(awaitFactLines(fact)[0], /submission 10.*provider retry.*attempt 18\/21/u);
-	assert.ok(Buffer.byteLength(JSON.stringify(fact)) <= 12000); assert.equal(Value.Check(AwaitFactSchema, fact), true);
+	assert.ok(Buffer.byteLength(JSON.stringify(fact)) <= 12000); assert.equal(matchesSchema(AwaitFactSchema, fact), true);
 	assert.equal(JSON.stringify(f.state), before, "the projection does not mutate native observations");
 });
 
@@ -241,7 +242,7 @@ it("ranks the current retry ahead of stale parallel observations before the own-
 	const fact = await readAwaitFact(f.tx, "consumer", conversation); assert.ok(fact);
 	assert.deepEqual(fact.results[0].result, refs[15]); assert.deepEqual(fact.producers[0].execution?.results, [refs[15]]);
 	assert.equal(fact.results.length + fact.omitted.results, 16); assert.ok(fact.omitted.results > 0);
-	assert.equal(Value.Check(AwaitFactSchema, fact), true);
+	assert.equal(matchesSchema(AwaitFactSchema, fact), true);
 });
 
 it("trims a retry producer's generic own-wait detail with accurate counts without mutating observations", async () => {
@@ -254,7 +255,7 @@ it("trims a retry producer's generic own-wait detail with accurate counts withou
 	const detail = fact.producers[0].awaiting; assert.ok(detail); assert.ok(detail.omitted.results > 0); assert.equal(detail.results.length + detail.omitted.results, 16);
 	assert.equal(fact.results.length + fact.omitted.results, 16); assert.ok(Buffer.byteLength(JSON.stringify(fact)) <= 12000);
 	assert.match(awaitFactLines(fact).join("\n"), new RegExp(`omitted ${detail.omitted.results} results, 0 held requests`, "u"));
-	assert.equal(Value.Check(AwaitFactSchema, fact), true); assert.equal(JSON.stringify(f.state), before);
+	assert.equal(matchesSchema(AwaitFactSchema, fact), true); assert.equal(JSON.stringify(f.state), before);
 });
 
 it("bounds Unicode result and producer facts by bytes with exact omission counts", async () => {
@@ -264,7 +265,7 @@ it("bounds Unicode result and producer facts by bytes with exact omission counts
 	for (const result of f.results) await recordProducerAwait(f.tx, 3 as TaskId, { sessionId: result.sessionId, observedAt: 1, source: "producer await-state", awaiting: producer });
 	const fact = await readAwaitFact(f.tx, "consumer", conversation); assert.ok(fact);
 	assert.equal(fact.producers.length + fact.omittedProducers, 16); assert.ok(fact.omittedProducers > 0);
-	assert.ok(Buffer.byteLength(JSON.stringify(fact), "utf8") <= 12000); assert.equal(Value.Check(AwaitFactSchema, fact), true);
+	assert.ok(Buffer.byteLength(JSON.stringify(fact), "utf8") <= 12000); assert.equal(matchesSchema(AwaitFactSchema, fact), true);
 	assert.deepEqual(fact.likelyCycle, []); assert.equal(fact.coverage, "one hop; remote graph incomplete");
 });
 

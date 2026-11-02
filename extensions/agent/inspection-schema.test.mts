@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
-import { Check } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import register from "./index.ts";
 import { parseInspectParams } from "./durable-observation.ts";
 import { AGENT_CONTROL_TOOL_NAMES, AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
@@ -44,9 +44,9 @@ it("declares native result, exact-entry, and cursor inspection inputs on the pri
 		{ sessionId: "storage", view: "result", operationId: "invocation" },
 	];
 	for (const input of inputs) {
-		assert.equal(Check(schema, input), true, JSON.stringify(input));
+		assert.equal(matchesSchema(schema, input), true, JSON.stringify(input));
 		assert.doesNotThrow(() => parseInspectParams(input));
 	}
-	assert.equal(Check(schema, { sessionId: "storage", cursor: 5 }), false);
-	assert.equal(Check(schema, { sessionId: "storage", continuation: "retired" }), false);
+	assert.equal(matchesSchema(schema, { sessionId: "storage", cursor: 5 }), false);
+	assert.equal(matchesSchema(schema, { sessionId: "storage", continuation: "retired" }), false);
 });

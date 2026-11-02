@@ -273,7 +273,7 @@ for (const present of [false, true]) it(`reports file exists=${present} when a f
 });
 
 it("resumes an outstanding model request after SIGKILL without a duplicate submission", { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t, { offlineRecovery: true });
+	const f = runtimeFixture(t, { offlineRecovery: true, crashRetry: true });
 	const initial = f.offline.generation();
 	const first = await initial.acquire(f.metadata, { env: f.env("request") });
 	trackHost(t, first.pid);
@@ -312,6 +312,27 @@ it("resumes an outstanding model request after SIGKILL without a duplicate submi
 			assert.equal(hooks.length, 0, "offline contexts never install a bare-PID fallback");
 			assert.equal(signal.mock.callCount(), 0, "a new process at the old PID receives no sample or signal");
 		} finally { register.mock.restore(); signal.mock.restore(); }
+	} finally {
+		await second.close();
+	}
+});
+
+it("ends a model request cut off by SIGKILL as interrupted when no retry is left, without resending it", { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t, { offlineRecovery: true });
+	const first = await f.offline.generation().acquire(f.metadata, { env: f.env("request") });
+	trackHost(t, first.pid);
+	const submitted = await first.request("submit", { message: "complete the request", requestId: "kill-interrupted", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+	await f.marker("requested");
+	killHost(first.pid);
+	await first.close();
+	const second = await (await f.offline.recover()).acquire(f.metadata, { env: f.env("answer") });
+	trackHost(t, second.pid);
+	try {
+		const receipt = await waitForReceipt(second, f.ownerId, submitted.submissionId);
+		assert.equal(receipt.status, "unanswered");
+		assert.equal(receipt.reason, "interrupted", "the cut-off request counts as the last failed attempt");
+		const history = await second.request("inspect", { view: "history", source: "user", limit: 10 }) as HistoryPage;
+		assert.equal(history.entries.length, 1, "the terminal outcome is not resubmitted");
 	} finally {
 		await second.close();
 	}
@@ -398,7 +419,7 @@ it("retires parked delivery with a clear marker and wakes only for its returning
 });
 
 it("preserves a crash recovery marker through primary startup and clears it after idle retirement", { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t, { offlineRecovery: true });
+	const f = runtimeFixture(t, { offlineRecovery: true, crashRetry: true });
 	const initial = f.offline.generation();
 	const catalog = new AgentCatalog(f.root);
 	const ownerId = randomUUID();
@@ -459,7 +480,7 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 });
 
 for (const steerDuringRun of [false, true]) it(`refuses online relaunch after SIGKILL with ${steerDuringRun ? "steering" : "one input"} and resumes offline`, { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t, { offlineRecovery: true });
+	const f = runtimeFixture(t, { offlineRecovery: true, crashRetry: true });
 	const initial = f.offline.generation();
 	const ownerId = randomUUID();
 	f.offline.ordinaryRecipient(ownerId);
@@ -565,7 +586,7 @@ it("does not rerun an unsafe effect after SIGKILL and delivers the retained resu
 });
 
 for (const stop of ["SIGTERM", "close"] as const) for (const mode of ["request", "effect"] as const) it(`retains pending ${mode} work through ${stop} process shutdown`, { timeout: 30000 }, async (t) => {
-	const f = runtimeFixture(t, { offlineRecovery: true });
+	const f = runtimeFixture(t, { offlineRecovery: true, crashRetry: true });
 	const initial = f.offline.generation();
 	const catalog = new AgentCatalog(f.root);
 	const first = await initial.acquire(f.metadata, { env: f.env(mode) });

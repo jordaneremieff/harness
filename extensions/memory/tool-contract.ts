@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { REVISION_PATTERN } from "./history.ts";
 import { DIGEST, SLUG, type WriteReceipt } from "./store.ts";
 

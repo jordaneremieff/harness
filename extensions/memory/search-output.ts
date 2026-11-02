@@ -1,4 +1,4 @@
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 const count = () => Type.Integer({ minimum: 0 });
 const digest = () => Type.String({ pattern: "^[a-f0-9]{64}$" });

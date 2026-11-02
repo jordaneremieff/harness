@@ -134,7 +134,7 @@ it("retains every coordinator field on live rows with short Unicode-safe text ex
 		error: text,
 		health: {
 			lastError: text,
-			compactionFailure: { reason: "manual", at: "now", errorMessage: text },
+			compactionFailure: { trigger: "manual", at: "now", errorMessage: text },
 			autoRetry: { attempt: 1, maxAttempts: 3, delayMs: 4, errorMessage: text },
 		},
 	});
@@ -158,7 +158,7 @@ it("retains every coordinator field on live rows with short Unicode-safe text ex
 			currentTool: { name: "read", argument: shortened },
 			health: {
 				lastError: shortened,
-				compactionFailure: { reason: "manual", at: "now", errorMessage: shortened },
+				compactionFailure: { trigger: "manual", at: "now", errorMessage: shortened },
 				autoRetry: { attempt: 1, maxAttempts: 3, delayMs: 4, errorMessage: shortened },
 			},
 		},
@@ -229,7 +229,7 @@ it("recognizes recovery failures and exhausted retries without treating stopped 
 		page([
 			summary(9, { state: "stopped" }),
 			summary(8, { state: "done" }),
-			summary(1, { health: { compactionFailure: { reason: "overflow", at: "now" } } }),
+			summary(1, { health: { compactionFailure: { trigger: "overflow", at: "now" } } }),
 			summary(2, { health: { lastError: "error" } }),
 			summary(3, { health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "retry" } } }),
 			summary(4, { state: "interrupted" }),
@@ -287,7 +287,7 @@ it("preserves every dashboard health and ownership attention reason on stopped r
 				error: "aborted",
 				health: {
 					lastError: "Aborted",
-					compactionFailure: { reason: "overflow", at: "now", errorMessage: "compaction failed" },
+					compactionFailure: { trigger: "overflow", at: "now", errorMessage: "compaction failed" },
 				},
 			}),
 			summary(19, {
@@ -321,7 +321,7 @@ it("keeps genuine health attention on working and starting rows without overridi
 			summary(2, { state: "working", health: { lastError: "host failed" } }),
 			summary(3, {
 				state: "starting",
-				health: { compactionFailure: { reason: "manual", at: "now", errorMessage: "compaction failed" } },
+				health: { compactionFailure: { trigger: "manual", at: "now", errorMessage: "compaction failed" } },
 			}),
 			summary(4, { state: "starting" }),
 			summary(5, { state: "stopped", error: "aborted", owner: "unknown" }),
@@ -542,13 +542,14 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 		lastText: fullText,
 		lastTextRole: "assistant",
 		live: {
-			run: { taskId: 1, inputs: [2] },
+			run: { taskId: 1, inputs: [2], turns: 1, first: 2, afterRun: { tasks: [3] } },
 			generation: { attempt: 3, message, retry: { at: 4, error: fullText }, deferred: { pollAt: 5 } },
 			tools: [
 				{
 					callId: "call-1",
 					name: "read",
 					taskId: 6,
+					unoffered: true,
 					status: "running",
 					output: fullText,
 					droppedBytes: 7,
@@ -560,9 +561,10 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 			],
 			nestedTools: [{ callId: "call-1/child", parentCallId: "call-1", parentTaskId: 9, taskId: 10, name: "read", arguments: { path: "/work/file" }, status: "running", output: fullText, droppedBytes: 7, droppedLines: 8, details: { retained: fullText }, diagnostics: [{ severity: "warn", message: fullText, code: "test" }], summary: { isError: true, durationMs: 12, usage, error: fullText } }],
 			compactions: [
-				{ taskId: 10, reason: "threshold", blocking: true, attempt: 2, retry: { at: 11, error: fullText } },
+				{ taskId: 10, trigger: "threshold", blocking: true, attempt: 2, retry: { at: 11, error: fullText } },
 			],
-			compactionFailure: { taskId: 10, reason: "threshold", error: fullText },
+			compactionFailure: { taskId: 10, trigger: "threshold", error: fullText },
+			runFailure: { taskId: 1, inputs: [2], reason: "restart_limit", detail: fullText, first: 2 },
 		},
 		inbox: {
 			items: [

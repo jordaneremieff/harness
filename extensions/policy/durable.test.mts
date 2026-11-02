@@ -22,7 +22,7 @@ import * as DurableModule from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { Type } from "typebox";
-import { createPolicyDurableExtension, type PolicyDurableHost } from "./durable.ts";
+import { createPolicyDurableExtension, durableResultDisposition, type PolicyDurableHost } from "./durable.ts";
 import { makeRuleAudit, proposalRevision, RuleRegistry } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
 import { localDate } from "./store.ts";
@@ -30,6 +30,26 @@ import { readTelemetry } from "./telemetry.ts";
 
 const context = BACKGROUND_CONTEXT;
 const MODEL = { provider: "faux", modelId: "faux-1" } as const;
+
+test("host diagnostics distinguish rejected calls from uncertain execution and tool errors", () => {
+	for (const [code, outcome, executed] of [
+		["tool_unavailable", "unexecuted", false],
+		["invalid_arguments", "invalid", false],
+		["blocked", "denied", false],
+		["interrupted", "incomplete", "unknown"],
+		["restart_limit", "incomplete", "unknown"],
+		["aborted", "aborted", "unknown"],
+		["abandoned", "unexecuted", false],
+	] as const) {
+		assert.deepEqual(durableResultDisposition({
+			isError: true,
+			diagnostics: [{ code: "truncated", severity: "warn", message: "Partial output." }, { code, severity: "error", message: code }],
+		}), { outcome, executed, diagnostic: code });
+	}
+	assert.deepEqual(durableResultDisposition({}), { outcome: "success", executed: true });
+	assert.deepEqual(durableResultDisposition({ isError: true, diagnostics: [{ code: "tool_error", severity: "error", message: "Execution failed." }] }),
+		{ outcome: "execution-error", executed: true });
+});
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve: () => void = () => {};
@@ -614,10 +634,41 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 		await second.close(context);
 		const store = await readFile(join(storeDir, "rules.jsonl"), "utf8");
 		assert.equal(store.includes('"kind":"proposal"'), false);
+		const records = (await readFile(join(storeDir, `${localDate(new Date())}.jsonl`), "utf8"))
+			.split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((record) => record.tool === "policy_propose");
+		assert.equal(records.length, 1);
+		assert.equal(records[0].outcome, "incomplete");
+		assert.equal(records[0].observationComplete, false);
+		assert.equal(records[0].policy.hostDiagnostic, "interrupted");
 	} finally {
 		await rm(directory, { recursive: true, force: true });
 		if (priorDir === undefined) delete process.env.PI_POLICY_DIR;
 		else process.env.PI_POLICY_DIR = priorDir;
+	}
+});
+
+test("an aborted call records an uncertain execution without a completed execution outcome", async () => {
+	const started = deferred();
+	const fixture = await openFixture({ block: { name: "policy_rules", started: started.resolve } });
+	try {
+		fixture.faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("policy_rules", {}), { stopReason: "toolUse" }),
+		]);
+		const submission = await fixture.root.submit({ type: "input", content: "Inspect policy." }, context);
+		await started.promise;
+		await fixture.root.abort(context);
+		await submission.wait(context);
+		const result = (await toolResults(fixture.root, "policy_rules")).at(-1);
+		assert.equal(result?.isError, true);
+		const records = (await readFile(join(fixture.storeDir, `${localDate(new Date())}.jsonl`), "utf8"))
+			.split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((record) => record.tool === "policy_rules");
+		assert.equal(records.length, 1);
+		assert.equal(records[0].outcome, "aborted");
+		assert.equal(records[0].abortRequested, true);
+		assert.equal(records[0].observationComplete, false);
+		assert.equal(records[0].policy.hostDiagnostic, "aborted");
+	} finally {
+		await fixture.close();
 	}
 });
 
@@ -703,7 +754,7 @@ test("native read redirects preserve rule guidance and append concrete calls", a
 	}
 });
 
-test("enforce mode blocks a denied tool call before execution", async () => {
+test("enforce mode completes a denied call and projects result guidance once", async () => {
 	const counter = { executed: 0 };
 	const fixture = await openFixture({ mode: "enforce", extension: probeExtension(counter) });
 	try {
@@ -712,6 +763,12 @@ test("enforce mode blocks a denied tool call before execution", async () => {
 			when: { op: "eq", path: ["tool"], value: "probe" },
 			action: { kind: "deny" },
 			onUnavailable: "deny",
+		});
+		await addRule(fixture.policy, "durable-denial-guide", {
+			phase: "result",
+			when: { op: "eq", path: ["result", "isError"], value: true },
+			action: { kind: "guide", text: "Inspect the refusal before another call." },
+			onUnavailable: "skip",
 		});
 		await submit(
 			fixture,
@@ -723,9 +780,11 @@ test("enforce mode blocks a denied tool call before execution", async () => {
 		assert.equal(result?.isError, true);
 		assert.match(textOf(result), /Tool call blocked/);
 		assert.match(textOf(result), /Rule durable-deny-probe\./);
+		assert.equal(textOf(result).split("Inspect the refusal before another call.").length - 1, 1);
 		assert.equal(counter.executed, 0);
 		const records = (await readFile(join(fixture.storeDir, `${localDate(new Date())}.jsonl`), "utf8"))
 			.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+		assert.equal(records.filter((entry) => entry.tool === "probe").length, 1);
 		const record = records.find((entry) => entry.tool === "probe");
 		assert.equal(record.outcome, "denied");
 		assert.equal(record.policy.decision, "deny");
@@ -739,6 +798,57 @@ test("enforce mode blocks a denied tool call before execution", async () => {
 		await fixture.close();
 	}
 });
+
+for (const scenario of ["tool_unavailable", "invalid_arguments", "blocked"] as const) {
+	test(`host ${scenario} retains result policy and records nonexecution once`, async () => {
+		let executed = 0;
+		const extension = DurableModule.defineExtension({
+			name: "host-result-probe",
+			tools: [DurableModule.defineTool({
+				name: "host_probe",
+				description: "A strictly typed local probe.",
+				parameters: Type.Object({ count: Type.Integer() }, { additionalProperties: false }),
+				execute: async () => { executed++; return { output: [] }; },
+			})],
+			hooks: scenario === "blocked" ? [DurableModule.hook(DurableModule.ToolTask, {
+				beforeTool: (call) => call.name === "host_probe" ? { block: "The host refused this call." } : undefined,
+			})] : [],
+		});
+		const fixture = await openFixture({ mode: "annotate", extension });
+		try {
+			await addRule(fixture.policy, "host-result-guide", {
+				phase: "result",
+				when: { op: "eq", path: ["result", "isError"], value: true },
+				action: { kind: "guide", text: "Inspect the rejected call." },
+				onUnavailable: "skip",
+			});
+			await addRule(fixture.policy, "host-result-observe", {
+				phase: "completion",
+				when: { op: "eq", path: ["outcome", "executed"], value: false },
+				action: { kind: "observe", label: "not-executed" },
+				onUnavailable: "skip",
+			});
+			const name = scenario === "tool_unavailable" ? "absent_probe" : "host_probe";
+			const args = scenario === "invalid_arguments" ? { count: {} } : { count: 1 };
+			await submit(fixture, [
+				fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }),
+				fauxAssistantMessage("The call ended."),
+			], "Attempt the local probe.");
+			const result = (await toolResults(fixture.root, name)).at(-1);
+			assert.equal(result?.isError, true);
+			assert.match(textOf(result), /Inspect the rejected call/);
+			assert.equal(executed, 0);
+			const records = (await readFile(join(fixture.storeDir, `${localDate(new Date())}.jsonl`), "utf8"))
+				.split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((record) => record.tool === name);
+			assert.equal(records.length, 1);
+			assert.equal(records[0].outcome, scenario === "invalid_arguments" ? "invalid" : scenario === "blocked" ? "denied" : "unexecuted");
+			assert.equal(records[0].policy.hostDiagnostic, scenario);
+			assert.ok(records[0].policy.metadata.some((entry: { label: string }) => entry.label === "not-executed"));
+		} finally {
+			await fixture.close();
+		}
+	});
+}
 
 test("annotate mode appends guide text and records the observation period", async () => {
 	const counter = { executed: 0 };

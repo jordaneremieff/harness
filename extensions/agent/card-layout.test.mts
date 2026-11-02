@@ -1,3 +1,6 @@
+import { keyHint, keyText } from "@earendil-works/pi-coding-agent";
+/** Host-injected keybinding hints, as Pi passes them to renderers. */
+const cardKeys = { keyText, keyHint };
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { it } from "node:test";
@@ -111,7 +114,7 @@ it("registered intent cards show observed publish and clear outcomes and expande
 
 it("intent cards omit absent endpoint facts and keep errors and pending outcomes truthful", () => {
 	const cards = createAgentToolCards();
-	const before = text(cards.agent_intent.renderCall({ action: "clear" }, theme, { expanded: false, argsComplete: true }));
+	const before = text(cards.agent_intent.renderCall({ action: "clear" }, theme, { ...cardKeys, expanded: false, argsComplete: true }));
 	assert.match(before, /^agent_intent · this session\naction clear/u);
 	assert.doesNotMatch(before, /provider|model|unknown|unavailable/u);
 	const component = nativeTool("agent_intent", { action: "publish" }, { published: { id: identity } }, []);
@@ -119,10 +122,10 @@ it("intent cards omit absent endpoint facts and keep errors and pending outcomes
 	assert.ok(text(component).includes(`Intent cleared · ${identity}`), "the returned claim state, not the requested action, selects the outcome");
 	assert.doesNotMatch(text(component), /provider|model|unknown|unavailable/u);
 	const error = { content: [{ type: "text" as const, text: "Intent publication requires this live ordinary primary session" }], details: {} };
-	const failed = text(cards.agent_intent.renderResult(error, { expanded: false, isPartial: false }, theme, { expanded: false, isError: true }));
+	const failed = text(cards.agent_intent.renderResult(error, { ...cardKeys, expanded: false, isPartial: false }, theme, { ...cardKeys, expanded: false, isError: true }));
 	assert.match(failed, /Intent error\nIntent publication requires this live ordinary primary session/u);
 	assert.doesNotMatch(failed, /Intent published|Intent cleared/u);
-	const pending = text(cards.agent_intent.renderResult({ content: [{ type: "text", text: "Waiting for publication" }], details: { published: { id: identity } } }, { expanded: false, isPartial: true }, theme, { expanded: false }));
+	const pending = text(cards.agent_intent.renderResult({ content: [{ type: "text", text: "Waiting for publication" }], details: { published: { id: identity } } }, { ...cardKeys, expanded: false, isPartial: true }, theme, { ...cardKeys, expanded: false }));
 	assert.match(pending, /Intent pending/u);
 	assert.doesNotMatch(pending, /Intent published|Intent cleared/u);
 });
@@ -146,8 +149,8 @@ it("peer reports and steer cards use identical known configuration subheadings",
 	for (const thinkingLevel of ["xhigh", "off", undefined]) {
 		const facts = { provider: "provider", modelId: "model", thinkingLevel: thinkingLevel ?? "" };
 		const cards = createAgentToolCards(() => [{ ...row, model: facts }]);
-		const steer = cards.agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, { expanded: false, argsComplete: true });
-		const peer = renderPeerNoticeCard({ content: "Report body", details: { kind: "report", senderIdentity: identity, ...facts } }, theme, false);
+		const steer = cards.agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, { ...cardKeys, expanded: false, argsComplete: true });
+		const peer = renderPeerNoticeCard({ content: "Report body", details: { kind: "report", senderIdentity: identity, ...facts } }, theme, false, cardKeys);
 		assert.ok(peer);
 		const expected = `provider/model${thinkingLevel ? ` · ${thinkingLevel}` : ""}`;
 		assert.equal(clean(steer).filter((line) => line.trim())[1]?.trim(), expected);
@@ -155,7 +158,7 @@ it("peer reports and steer cards use identical known configuration subheadings",
 		assert.doesNotMatch(text(peer), /Model:|Provider:|unknown|unavailable/u);
 	}
 	const cards = createAgentToolCards();
-	const ctx = { expanded: false, argsComplete: true, args: {} };
+	const ctx = { ...cardKeys, expanded: false, argsComplete: true, args: {} };
 	const snapshot = { identity, conversationId: 1, name: "Parser review", agent: { model: { provider: model.provider, modelId: model.modelId }, thinkingLevel: model.thinkingLevel }, busy: false };
 	const outcomes = [
 		["agent_status", { conversation: snapshot }],
@@ -163,7 +166,7 @@ it("peer reports and steer cards use identical known configuration subheadings",
 		["agent_compact", { status: "completed", compaction: { identity, ...model } }],
 	] as const;
 	for (const [name, details] of outcomes) {
-		const result = cards[name].renderResult({ content: [{ type: "text", text: JSON.stringify(details) }], details }, { expanded: false, isPartial: false }, theme, ctx);
+		const result = cards[name].renderResult({ content: [{ type: "text", text: JSON.stringify(details) }], details }, { ...cardKeys, expanded: false, isPartial: false }, theme, ctx);
 		assert.ok(clean(result).some((line) => line.trim() === "provider/model · xhigh"), name);
 		assert.doesNotMatch(text(result), /Model:|Provider:|reasoning/u, name);
 	}
@@ -184,11 +187,11 @@ it("primary report receipts show a full-width truthful delivery outcome and raw 
 it("known metadata uses the muted subheading while absent metadata creates no placeholder", () => {
 	const colors: Array<{ color: string; value: string }> = [];
 	const spy = { fg: (color: string, value: string) => { colors.push({ color, value }); return value; }, bold: (value: string) => value } as unknown as Theme;
-	const card = createAgentToolCards(() => [row]).agent_steer.renderCall({ sessionId: identity, message: "Task" }, spy, { expanded: false, argsComplete: true });
+	const card = createAgentToolCards(() => [row]).agent_steer.renderCall({ sessionId: identity, message: "Task" }, spy, { ...cardKeys, expanded: false, argsComplete: true });
 	assert.equal(text(card).split("\n")[0], "agent_steer · Parser review");
 	assert.equal(text(card).split("\n")[1], "provider/model · xhigh");
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "provider/model · xhigh"));
-	const absent = createAgentToolCards().agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, { expanded: false, argsComplete: true });
+	const absent = createAgentToolCards().agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, { ...cardKeys, expanded: false, argsComplete: true });
 	assert.equal(text(absent).split("\n")[0], `agent_steer · ${identity}`);
 	assert.equal(text(absent).split("\n")[1], "Task");
 	assert.doesNotMatch(text(absent), /unknown|unavailable|thinking/u);
@@ -196,17 +199,17 @@ it("known metadata uses the muted subheading while absent metadata creates no pl
 
 it("expected unsaved reports and direct messages omit warnings but genuine receipt failures remain", () => {
 	for (const kind of ["report", "message"]) {
-		const card = renderPeerNoticeCard({ content: "Direct body", details: { kind, senderIdentity: identity, saved: false, liveOwner: true } }, theme, false);
+		const card = renderPeerNoticeCard({ content: "Direct body", details: { kind, senderIdentity: identity, saved: false, liveOwner: true } }, theme, false, cardKeys);
 		assert.ok(card); assert.doesNotMatch(text(card), /Result not saved|unavailable|unanswered/u);
 	}
-	const failure = renderPeerNoticeCard({ content: "Failure body", details: { kind: "receipt", status: "unanswered", saved: false, liveOwner: false, reason: "aborted", identity } }, theme, false);
+	const failure = renderPeerNoticeCard({ content: "Failure body", details: { kind: "receipt", status: "unanswered", saved: false, liveOwner: false, reason: "aborted", identity } }, theme, false, cardKeys);
 	assert.ok(failure);
 	assert.match(text(failure), /Result unavailable or unanswered/u);
 	assert.match(text(failure), /No live owner; retained result only/u);
 	assert.match(text(failure), /Result not saved; retained only by the live owner/u);
 	assert.doesNotMatch(text(failure), /aborted|Failure body/u);
 	assert.equal((text(failure).match(/to expand|expand for full/gu) ?? []).length, 1);
-	const expanded = renderPeerNoticeCard({ content: "Failure body", details: { kind: "receipt", status: "unanswered", saved: false, liveOwner: false, reason: "aborted", identity } }, theme, true);
+	const expanded = renderPeerNoticeCard({ content: "Failure body", details: { kind: "receipt", status: "unanswered", saved: false, liveOwner: false, reason: "aborted", identity } }, theme, true, cardKeys);
 	assert.ok(expanded);
 	assert.match(text(expanded), /aborted/u);
 	assert.match(text(expanded), /Failure body/u);
@@ -261,8 +264,8 @@ it("peer Markdown and wrapped reasons share the total visual preview bound", (t)
 		{ content: "```text\nFirst code line\nSecond code line\nThird code line\nFINAL_BODY\n```", details: { kind: "report" } },
 		{ content: "FINAL_BODY", details: { kind: "receipt", status: "done", reason: "Reason detail. ".repeat(20) } },
 	]) {
-		const component = renderPeerNoticeCard({ ...source, details: { senderIdentity: identity, ...source.details } }, theme, false);
-		const expanded = renderPeerNoticeCard({ ...source, details: { senderIdentity: identity, ...source.details } }, theme, true);
+		const component = renderPeerNoticeCard({ ...source, details: { senderIdentity: identity, ...source.details } }, theme, false, cardKeys);
+		const expanded = renderPeerNoticeCard({ ...source, details: { senderIdentity: identity, ...source.details } }, theme, true, cardKeys);
 		assert.ok(component); assert.ok(expanded);
 		for (const width of "reason" in source.details ? [24, 60] : [24, 160]) {
 			const lines = clean(component, width);
@@ -290,7 +293,7 @@ it("thread notice headers show the subject before known sender and secondary fac
 		{ details: { ...model, name: "Parser review", checkIn: { elapsedMs: 90_000, cost: 0 } }, header: ["[agent] still working · Parser review", "provider/model · xhigh · 1m elapsed · $0.000 conversation total"] },
 	];
 	for (const { details, header } of cases) {
-		const card = renderPeerNoticeCard({ content: "Body text", details }, theme, false);
+		const card = renderPeerNoticeCard({ content: "Body text", details }, theme, false, cardKeys);
 		assert.ok(card);
 		const lines = clean(card, 240);
 		assert.deepEqual(lines.slice(1, header.length + 1), header);
@@ -307,7 +310,7 @@ it("peer kind, subject and normal body use text while metadata and hints remain 
 	const colors: Array<{ color: string; value: string }> = [];
 	const bold: string[] = [];
 	const spy = { ...theme, fg: (color: string, value: string) => { colors.push({ color, value }); return value; }, bold: (value: string) => { bold.push(value); return value; } } as unknown as Theme;
-	const card = renderPeerNoticeCard({ content: "First body line\nSecond body line\nThird body line\nFinal body line", details: { threadId: "source/thread", threadTitle: "Parser contract", name: "Parser review", ...model } }, spy, false);
+	const card = renderPeerNoticeCard({ content: "First body line\nSecond body line\nThird body line\nFinal body line", details: { threadId: "source/thread", threadTitle: "Parser contract", name: "Parser review", ...model } }, spy, false, cardKeys);
 	assert.ok(card);
 	card.render(160);
 	assert.deepEqual(bold, ["[agent] thread notice"]);
@@ -317,7 +320,7 @@ it("peer kind, subject and normal body use text while metadata and hints remain 
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "... (ctrl+o to expand)"));
 	assert.equal(colors.some(({ color }) => ["accent", "customMessageLabel", "customMessageText", "dim"].includes(color)), false);
 	colors.length = 0;
-	const failure = renderPeerNoticeCard({ content: "Failure body", details: { status: "failed", reason: "Diagnostic reason" } }, spy, false);
+	const failure = renderPeerNoticeCard({ content: "Failure body", details: { status: "failed", reason: "Diagnostic reason" } }, spy, false, cardKeys);
 	assert.ok(failure); failure.render(160);
 	assert.ok(colors.some(({ color, value }) => color === "warning" && value === "Result unavailable or unanswered"));
 	assert.ok(colors.some(({ color, value }) => color === "text" && value === "Diagnostic reason"));
@@ -327,8 +330,8 @@ it("peer width clips use one ellipsis while wide headers and expanded details re
 	noticeKeys(t);
 	const threadId = `${identity}/${"a".repeat(32)}`;
 	const details = { kind: "report", senderIdentity: identity, threadId, provider: "provider", modelId: `model-${"m".repeat(160)}`, thinkingLevel: "xhigh" };
-	const card = renderPeerNoticeCard({ content: "Body line\n".repeat(8), details }, theme, false);
-	const expanded = renderPeerNoticeCard({ content: "Body line\n".repeat(8), details }, theme, true);
+	const card = renderPeerNoticeCard({ content: "Body line\n".repeat(8), details }, theme, false, cardKeys);
+	const expanded = renderPeerNoticeCard({ content: "Body line\n".repeat(8), details }, theme, true, cardKeys);
 	assert.ok(card); assert.ok(expanded);
 	const wide = text(card, 400);
 	assert.ok(wide.includes(threadId));
@@ -349,11 +352,11 @@ it("peer width clips use one ellipsis while wide headers and expanded details re
 it("wide headers preserve full model identities and narrow headers clip only to width", () => {
 	const modelId = `model-${"m".repeat(420)}`;
 	const cards = createAgentToolCards(() => [{ ...row, model: { ...model, modelId } }]);
-	const component = cards.agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, { expanded: false, argsComplete: true });
+	const component = cards.agent_steer.renderCall({ sessionId: identity, message: "Task" }, theme, { ...cardKeys, expanded: false, argsComplete: true });
 	assert.ok(text(component, 600).includes(`provider/${modelId}`));
 	assert.doesNotMatch(text(component, 600), /…/u);
 	assert.ok(component.render(40).every((line) => visibleWidth(line) <= 40));
-	const peer = renderPeerNoticeCard({ content: "Body", details: { kind: "report", senderIdentity: identity, provider: "provider", modelId } }, theme, false);
+	const peer = renderPeerNoticeCard({ content: "Body", details: { kind: "report", senderIdentity: identity, provider: "provider", modelId } }, theme, false, cardKeys);
 	assert.ok(peer); assert.ok(text(peer, 600).includes(`provider/${modelId}`));
 });
 

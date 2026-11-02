@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryState as readRetainedDelivery, deliveryPendingCount, pendingDeliveryPage } from "./delivery-store.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import { storeDeliveryRow } from "./delivery-store.ts";
@@ -64,7 +65,7 @@ it("delivers one failure summary and native receipt when a delayed primary route
 	const options = { ...hostOptions(storagePath, models, fixtureRegistry()), storageId: sourceId, cwd: root, now: () => now, settings: { retry: { enabled: true, maxRetries: 3, baseDelayMs: 100000, maxAgentDelayMs: 100000 } } };
 	let source = await DurableHost.open(options); t.after(() => source.close());
 	const observed = eventLog<void>();
-	const unsubscribe = source.harness.subscribeCommits((publication) => { if (publication.changes.some((change) => change.type === "document" && change.record.kind === "agent.provider-retry-burst" && change.value !== null && change.value.active !== undefined)) observed.push(undefined); });
+	const unsubscribe = onStoredCommit(source.harness, (publication) => { if (publication.changes.some((change) => change.type === "document" && change.kind === "change" && change.record.kind === "agent.provider-retry-burst" && change.value.active !== undefined)) observed.push(undefined); });
 	const admitted = await source.submit({ message: "delayed route work", requestId: "delayed-retry", ownerId: owner, origin: "model" });
 	await observed.waitForCount(1); unsubscribe();
 	assert.equal((await deliveryState(source))?.reports.length, 0);
@@ -227,7 +228,7 @@ async function waitForDelivery(host: DurableHost, predicate: () => Promise<boole
 			void evaluate().catch(failed).finally(resume);
 		};
 		const timer = setTimeout(() => finish(new Error("delivery commit did not reach the expected state")), timeoutMs);
-		const unsubscribe = host.harness.subscribeCommits(check);
+		const unsubscribe = onStoredCommit(host.harness, check);
 		check();
 	});
 }
@@ -315,11 +316,11 @@ for (const recipients of ["same", "overlap", "distinct"]) it(`groups a live stee
 		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
 	t.after(() => source.close());
 	const revisions: AgentDeliveryState[] = [];
-	const unsubscribe = source.harness.subscribeCommits((publication) => {
+	const unsubscribe = onStoredCommit(source.harness, (publication) => {
 		const receipts = { ...revisions.at(-1)?.receipts };
 		let changed = false;
 		for (const change of publication.changes) {
-			if (change.type !== "document" || change.record.kind !== "agent.delivery-row" || change.value?.kind !== "receipt" || change.value.value == null) continue;
+			if (change.type !== "document" || change.kind !== "change" || change.record.kind !== "agent.delivery-row" || change.value.kind !== "receipt" || change.value.value == null) continue;
 			const receipt = JSON.parse(JSON.stringify(change.value.value)) as AgentDeliveryState["receipts"][string];
 			receipts[String(receipt.submissionId)] = receipt;
 			changed = true;
@@ -1722,7 +1723,7 @@ it("completes terminal automatic notices beyond a no-write page without routing 
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	const idle = eventLog<void>();
 	let publications = 0;
-	const unsubscribe = source.harness.subscribeCommits(() => { publications += 1; });
+	const unsubscribe = onStoredCommit(source.harness, () => { publications += 1; });
 	t.after(unsubscribe);
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog: new AgentCatalog(root), signal: new AbortController().signal, onIdle: () => idle.push(undefined) });
 	t.after(() => watcher.close());
@@ -1798,7 +1799,7 @@ for (const phase of ["before", "during"] as const) it(`keeps no-write page trave
 	}, BACKGROUND_CONTEXT);
 	if (phase === "before") await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
 	let publications = 0;
-	const unsubscribe = source.harness.subscribeCommits(() => { publications += 1; });
+	const unsubscribe = onStoredCommit(source.harness, () => { publications += 1; });
 	t.after(unsubscribe);
 	const commits = t.mock.method(source.harness, "commit"), idle = eventLog<void>();
 	t.mock.timers.enable({ apis: ["setTimeout"] });
@@ -1830,7 +1831,7 @@ it("retries an early-page route failure after a final already-parked page", { ti
 	}, BACKGROUND_CONTEXT);
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	let attempts = 0, publications = 0;
-	const unsubscribe = source.harness.subscribeCommits(() => { publications += 1; });
+	const unsubscribe = onStoredCommit(source.harness, () => { publications += 1; });
 	t.after(unsubscribe);
 	const idle = eventLog<void>();
 	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog, signal: new AbortController().signal, retryDelayMs: 500,

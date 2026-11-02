@@ -2,7 +2,7 @@
 import { readFile, stat } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import { ruleScopeMatches } from "./classify.ts";
 import { snapshotData } from "./data.ts";
 import {
@@ -99,7 +99,7 @@ export interface ParsedDraft {
 	expectedRevision?: string;
 }
 export type ParseDraft = (value: unknown) => ParsedDraft;
-const casesValidator = Compile(DraftCasesSchema);
+const casesValidator = compile(DraftCasesSchema);
 
 function validateCaseSequence(entry: DraftCase): void {
 	if (entry.scope?.provider && !entry.scope.model)
@@ -118,7 +118,7 @@ function validateCaseSequence(entry: DraftCase): void {
 }
 
 export function validateDraftCases(value: unknown): asserts value is DraftCase[] {
-	if (!casesValidator.Check(value))
+	if (!casesValidator.check(value))
 		throw new Error("check cases require bounded names, scope, steps, times, turns, and text-only results");
 	let total = 0;
 	const names = new Set<string>();

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { Value } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { draftAssessment, MAX_DRAFT_CHARACTERS } from "./draft.ts";
 import test from "node:test";
@@ -343,8 +343,8 @@ test("native draft semantic errors pass the schema and retain specific handler m
 		const parameters = tool.parameters as { properties: { draft: { minLength: number; maxLength: number } } };
 		assert.equal(Object.hasOwn(parameters.properties.draft, "pattern"), false);
 		assert.equal(parameters.properties.draft.minLength, 1);
-		assert.equal(parameters.properties.draft.maxLength, MAX_DRAFT_CHARACTERS);
-		for (const draft of [" \n", "\ud800"]) assert.equal(Value.Check(tool.parameters, { draft }), true);
+		assert.equal(Object.hasOwn(parameters.properties.draft, "maxLength"), false);
+		for (const draft of [" \n", "\ud800"]) assert.equal(compile(tool.parameters).check({ draft }), true);
 		faux.setResponses([
 			fauxAssistantMessage([
 				fauxToolCall("pillars", { draft: " \n" }, { id: "blank-draft" }),
@@ -363,6 +363,30 @@ test("native draft semantic errors pass the schema and retain specific handler m
 			assert.doesNotMatch(textOf(result), /must match pattern/);
 		}
 	} finally { await harness.close(BACKGROUND_CONTEXT); }
+});
+
+test("host-written settlements bypass corpus observation and draft assessment", async (t) => {
+	const fixture = await makeFixture(t);
+	useFixtureEnvironment(t, fixture);
+	const opened = await openContribution(fixture);
+	t.after(() => opened.controller.abort());
+	try {
+		const handlers = opened.extension.hooks?.find((registration) => registration.task === Durable.ToolTask.definition.name)?.handlers as Partial<Durable.ToolHooks>;
+		assert.ok(handlers?.afterTool);
+		for (const code of ["tool_unavailable", "invalid_arguments", "blocked", "interrupted", "restart_limit", "aborted", "abandoned"]) {
+			const call = { type: "toolCall", name: "pillars", id: code, arguments: null } as unknown as Durable.ToolHookCall;
+			assert.equal(await handlers.afterTool(call, {
+				isError: true,
+				diagnostics: [{ code, severity: "error", message: "Host settlement." }],
+				details: { schema: "pillars-source" },
+			}, {} as Durable.HookApi, BACKGROUND_CONTEXT), undefined);
+		}
+		await opened.closeAll();
+		assert.equal(sumCounter(await storedCells(fixture.store), "readResults"), 0);
+		assert.deepEqual(opened.reports, []);
+	} finally {
+		await opened.harness.close(BACKGROUND_CONTEXT);
+	}
 });
 
 test("a draft returns one assessment diagnostic beside the unchanged source page", async (t) => {
@@ -586,7 +610,7 @@ test("native codemode receives bounded JSON text and rejects source errors while
 	useFixtureEnvironment(t, fixture);
 	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
 	t.after(() => sandbox.close());
-	const calls: Array<{ name: string; parent: boolean; output: unknown; structuredOutput: unknown; isError: boolean }> =
+	const calls: Array<{ name: string; parent: boolean; output: unknown; structuredOutput: unknown; isError: boolean; codes: Array<string | undefined> }> =
 		[];
 	const observer = Durable.defineExtension({
 		name: "pillars-test-observer",
@@ -600,6 +624,7 @@ test("native codemode receives bounded JSON text and rejects source errors while
 							output: result.output,
 							structuredOutput: result.structuredOutput,
 							isError: result.isError === true,
+							codes: (result.diagnostics ?? []).map((diagnostic) => diagnostic.code),
 						});
 					return undefined;
 				},
@@ -650,15 +675,19 @@ test("native codemode receives bounded JSON text and rejects source errors while
 		assert.ok(
 			!JSON.stringify(next.filter((message) => message.role === "user")).includes("Do not deliver this failed draft."),
 		);
-		assert.equal(calls.length, 3, "invalid preparation never reaches afterTool");
+		assert.equal(calls.length, 4, "invalid preparation reaches afterTool as a host-written result");
 		assert.ok(calls.every((call) => call.parent));
-		for (const call of calls) {
+		const rejected = calls.filter((call) => call.codes.includes("invalid_arguments"));
+		assert.equal(rejected.length, 1);
+		assert.equal(rejected[0].isError, true);
+		assert.equal(rejected[0].structuredOutput, undefined);
+		for (const call of calls.filter((call) => !call.codes.includes("invalid_arguments"))) {
 			assert.ok(Array.isArray(call.output));
 			const output = call.output as Array<{ type: string; text: string }>;
 			assert.equal(call.structuredOutput, undefined, "the tool adds no program-output contract");
 			assert.equal(typeof JSON.parse(output[0].text).schema, "string");
 		}
-		assert.equal(calls.filter((call) => call.isError).length, 1);
+		assert.equal(calls.filter((call) => call.isError).length, 2);
 		const cells = await storedCells(fixture.store);
 		assert.equal(sumCounter(cells, "bodyVerifiedAtObservation"), 1);
 		assert.equal(sumCounter(cells, "readResults"), 2);

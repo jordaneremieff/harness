@@ -1,4 +1,4 @@
-import { keyText, type ExtensionAPI, type Theme, type ThemeColor, type ToolDefinition, type ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, KeybindingHints, Theme, ThemeColor, ToolDefinition, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
 
 type DisplayRecord = Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">;
@@ -31,11 +31,12 @@ export function createRexToolDisplay(name: string) {
 			lines.push(...callBody(args, request, context.expanded));
 			return card(lines, theme);
 		},
-		renderResult(result: RenderResult, options: ToolRenderResultOptions, theme: CardTheme, context: { args: unknown; isError: boolean }): Component {
+		renderResult(result: RenderResult, options: ToolRenderResultOptions, theme: CardTheme, context: { args: unknown; isError: boolean } & Partial<KeybindingHints>): Component {
 			const text = result.content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
 			const value = canonicalResult(text);
 			const lines = value ? canonicalLines(name, value, options, context.args) : fallbackLines(text, options, context.isError);
-			const key = keyText("app.tools.expand");
+			// The host injects keyText with the operator's configured bindings; without it the card omits the key row.
+			const key = context.keyText?.("app.tools.expand");
 			if (key) lines.push(line(`${key} to ${options.expanded ? "collapse" : "expand · complete bounded result"}`, "muted"));
 			return card(lines, theme);
 		},

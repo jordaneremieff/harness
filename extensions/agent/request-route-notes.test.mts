@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import assert from "node:assert/strict";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context, withAbortSignal } from "@earendil-works/chord/context";
@@ -21,7 +22,7 @@ async function fixture(t: TestContext, state = new RequestRouteState()) {
 	const harness = await Harness.open(new MemoryStorage(), { models, registry: fixtureRegistry() }, context);
 	t.after(() => harness.close(context));
 	const conversation = await harness.root(context, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
-	const unsubscribe = harness.subscribeCommits((publication) => state.observe(publication));
+	const unsubscribe = onStoredCommit(harness, (publication) => state.observe(publication));
 	t.after(unsubscribe);
 	const hook = requestContextHooks(harness, state).beforeRequest;
 	assert.ok(hook);
@@ -43,7 +44,7 @@ async function fixture(t: TestContext, state = new RequestRouteState()) {
 		}, context);
 	}
 	async function run(ids: SubmissionId[], target: Conversation = conversation) {
-		await harness.commit(async (tx) => { (await tx.doc(LiveDoc, target.id)).run = { taskId: 123 as TaskId, inputs: ids }; }, context);
+		await harness.commit(async (tx) => { (await tx.doc(LiveDoc, target.id)).run = { taskId: 123 as TaskId, inputs: ids, turns: 0 }; }, context);
 	}
 	async function render(messages: readonly Message[], task = api(), selected = hook) {
 		assert.ok(selected);

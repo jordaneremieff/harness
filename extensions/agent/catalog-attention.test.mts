@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
-import { Harness, LiveDoc, MemoryStorage, ProviderDoc, createRegistry, defineTask, type CompactionResult, type TaskId } from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
-import { CatalogAttentionHintsSchema, projectCatalogAttention } from "./catalog-attention.ts";
+import { Harness, LiveDoc, MemoryStorage, ProviderDoc, UserEntry, createRegistry, defineTask, type CompactionResult, type TaskId } from "@earendil-works/pi-durable";
+import { isCatalogAttentionHints, projectCatalogAttention } from "./catalog-attention.ts";
+import { readDashboard } from "./durable-observation.ts";
 import { ProviderControlDoc } from "./provider-block.ts";
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
@@ -30,7 +30,7 @@ it("projects failed native turns and clears the hint when the next native state 
 	const f = await fixture(t);
 	const failed = await projectCatalogAttention(f.harness, [{ ...f.source, state: "failed" }], context);
 	assert.deepEqual(failed.rows, [{ identity: f.source.identity, kind: "failed-turn" }]);
-	assert.equal(Value.Check(CatalogAttentionHintsSchema, failed), true);
+	assert.equal(isCatalogAttentionHints(failed), true);
 	for (const state of ["working", "done", "idle", "stopped", "interrupted"]) {
 		assert.deepEqual((await projectCatalogAttention(f.harness, [{ ...f.source, state }], context)).rows, []);
 	}
@@ -83,16 +83,27 @@ it("does not treat automatic retries, compaction diagnostics or reply prose as i
 	await f.harness.commit(async (tx) => {
 		const live = await tx.doc(LiveDoc, f.root.id);
 		live.generation = { attempt: 2, retry: { at: 5000, error: "synthetic throttle" } };
-		live.compactions = [{ taskId: 10 as TaskId<CompactionResult>, reason: "manual", blocking: true, attempt: 1, retry: { at: 5000, error: "synthetic retry" } }];
-		live.compactionFailure = { taskId: 11 as TaskId<CompactionResult>, reason: "manual", error: "synthetic compaction failure" };
+		live.compactions = [{ taskId: 10 as TaskId<CompactionResult>, trigger: "manual", blocking: true, attempt: 1, retry: { at: 5000, error: "synthetic retry" } }];
+		live.compactionFailure = { taskId: 11 as TaskId<CompactionResult>, trigger: "manual", error: "synthetic compaction failure" };
 	}, context);
 	const source = { ...f.source, state: "working", latestReply: "I need your answer. Please approve this request.", error: "Needs input" };
 	const hints = await projectCatalogAttention(f.harness, [source], context);
 	assert.deepEqual(hints, { rows: [], coverage: { complete: true, omitted: 0 } });
 });
 
-it("accepts the native crash-loop guard reason without replacing it with a migration error", () => {
-	assert.equal(Value.Check(CatalogAttentionHintsSchema, { rows: [{ identity: "storage", kind: "task-blocked", taskId: 1, reason: "restart_limit" }], coverage: { complete: true, omitted: 0 } }), true);
+it("rejects the restart limit as a blocked reason and projects a run ended at the limit as a failed turn", async (t) => {
+	assert.equal(isCatalogAttentionHints({ rows: [{ identity: "storage", kind: "task-blocked", taskId: 1, reason: "restart_limit" }], coverage: { complete: true, omitted: 0 } }), false);
+	const f = await fixture(t);
+	await f.harness.commit(async (tx) => {
+		await tx.appendEntry(UserEntry, f.root.id, { model: [{ role: "user", content: "Do the work", timestamp: 1 }] });
+		(await tx.doc(LiveDoc, f.root.id)).runFailure = { taskId: 7 as TaskId, inputs: [], reason: "restart_limit", detail: "cut off 5 times in a row" };
+	}, context);
+	const [row] = await readDashboard(f.harness, "storage", {}, {}, context);
+	assert.equal(row?.state, "failed");
+	assert.equal(row?.error, "restart_limit: cut off 5 times in a row");
+	assert.deepEqual((await projectCatalogAttention(f.harness, [{ ...f.source, state: row?.state ?? "" }], context)).rows,
+		[{ identity: f.source.identity, kind: "failed-turn" }]);
+	assert.deepEqual((await f.harness.inspect(context)).tasks, [], "the terminal outcome leaves no parked task to retry");
 });
 
 it("keeps blocked-task hints within their own conversation", async (t) => {

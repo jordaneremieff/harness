@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 /**
  * Host-level reset tests over a real Harness and SQLite storage: boundary
  * placement, retained history, retained timers, request deduplication, and no
@@ -18,7 +19,7 @@ async function waitForPlacedReset(harness: Harness, conversationId: Conversation
 		const woke = new Promise<void>((resolve) => {
 			wake = resolve;
 		});
-		const unsubscribe = harness.subscribeCommits(() => {
+		const unsubscribe = onStoredCommit(harness, () => {
 			queueMicrotask(wake);
 		});
 		try {

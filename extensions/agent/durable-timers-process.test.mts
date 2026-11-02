@@ -72,10 +72,10 @@ it("fires a killed host's scheduled input once after reopen with the original de
 
 it("reattaches one sleeping check-in deadline after process loss and stops it at settlement", { timeout: 60000 }, async (t) => {
 	const f = runtimeFixture(t, { offlineRecovery: true });
-	prepareScheduleSettings(f.agentDir);
+	prepareScheduleSettings(f.agentDir, true, true);
 	const initial = f.offline.generation();
 	const runner = fileURLToPath(new URL("./durable-schedule-fixture.mts", import.meta.url));
-	const first = await initial.acquire(f.metadata, { runner, env: { DURABLE_TEST_NOW: "1000", DURABLE_TEST_HOLD_ANSWER: "1" }, retryAttempts: 0 });
+	const first = await initial.acquire(f.metadata, { runner, env: { DURABLE_TEST_NOW: "1000", DURABLE_TEST_HOLD_ANSWER: "1", DURABLE_TEST_CRASH_RETRY: "1" }, retryAttempts: 0 });
 	trackHost(t, first.pid);
 	await first.request("submit", { sessionId: f.metadata.storageId, message: "PROCESS_CHECK_IN", requestId: "process-check-in", ownerId: f.ownerId, origin: "model", checkInMinutes: 1 });
 	await first.request("command", { name: "fixture-resume" });
@@ -85,7 +85,7 @@ it("reattaches one sleeping check-in deadline after process loss and stops it at
 	await closed;
 	await first.close();
 	const resumed = await f.offline.recover();
-	const second = await resumed.acquire(f.metadata, { runner, env: { DURABLE_TEST_NOW: "61000", DURABLE_TEST_HOLD_ANSWER: "1" } });
+	const second = await resumed.acquire(f.metadata, { runner, env: { DURABLE_TEST_NOW: "61000", DURABLE_TEST_HOLD_ANSWER: "1", DURABLE_TEST_CRASH_RETRY: "1" } });
 	trackHost(t, second.pid);
 	try {
 		await second.request("command", { name: "fixture-resume" });

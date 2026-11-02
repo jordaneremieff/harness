@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 /**
  * Fixture for the reset and timer tests: one real DurableHost over a SQLite
  * file with the production agent contribution loaded, a faux provider, and an
@@ -81,13 +82,18 @@ function gate(): Gate {
 	return { promise, release };
 }
 
-function scheduleSettingsText(agentExtension: boolean): string {
-	return JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false }, ...(agentExtension ? { extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))] } : {}) });
+/**
+ * A model request cut off by a host crash counts as a failed attempt. With
+ * `crashRetry`, one immediate retry resends it after reopen, even on the
+ * subprocess's fixed clock.
+ */
+function scheduleSettingsText(agentExtension: boolean, crashRetry = process.env.DURABLE_TEST_CRASH_RETRY === "1"): string {
+	return JSON.stringify({ cacheWarming: { mode: "off" }, retry: crashRetry ? { enabled: true, maxRetries: 1, baseDelayMs: 0, maxAgentDelayMs: 0 } : { enabled: false }, ...(agentExtension ? { extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))] } : {}) });
 }
 
 /** Prepare the final configuration before the parent captures its immutable launcher inputs. */
-export function prepareScheduleSettings(agentDir: string, agentExtension = true): void {
-	writeFileSync(join(agentDir, "settings.json"), scheduleSettingsText(agentExtension));
+export function prepareScheduleSettings(agentDir: string, agentExtension = true, crashRetry = false): void {
+	writeFileSync(join(agentDir, "settings.json"), scheduleSettingsText(agentExtension, crashRetry));
 }
 
 /** A subprocess validates its prepared configuration without rewriting it. */
@@ -247,7 +253,7 @@ async function waitForSleepingCheckIn(fixture: ScheduleFixture): Promise<{ ready
 	const graph = await fixture.host.harness.watchTaskGraph(BACKGROUND_CONTEXT);
 	const ready = (value: typeof graph.value) => Object.values(value.tasks).some((node) => node.kind === "agent.check-in-deadline" && node.state.status === "sleeping");
 	try {
-		if (!ready(graph.value)) await new Promise<void>((resolve) => graph.start(async (value) => { if (ready(value)) resolve(); }));
+		if (!ready(graph.value)) await new Promise<void>((resolve) => graph.start(async (call) => { if (call.kind === "value" && ready(call.value)) resolve(); }));
 		return { ready: true };
 	} finally { await graph.stop(); }
 }
@@ -271,7 +277,7 @@ async function main(): Promise<void> {
 		},
 		close: () => fixture.close(),
 		isIdle: () => fixture.host.isIdle(),
-		onChange: (listener) => fixture.host.harness.subscribeCommits(() => listener()),
+		onChange: (listener) => onStoredCommit(fixture.host.harness, () => listener()),
 	}), { metadata, idleMs: 0 });
 	await host.done;
 }

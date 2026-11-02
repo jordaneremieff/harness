@@ -5,7 +5,7 @@ import { open } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { PrimaryInfo } from "./primary-channel.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
@@ -31,7 +31,7 @@ it("returns factual status, newest retained action, and explicit live-only unkno
 	const f = fixture(t, [message(1, null, "user", "please inspect"), message(2, 1)]);
 	const before = readFileSync(f.sessionFile);
 	const result = await readPrimaryObservation(f.primary, {});
-	assert.equal(Value.Check(OrdinaryPrimaryObservationSchema, result), true);
+	assert.equal(matchesSchema(OrdinaryPrimaryObservationSchema, result), true);
 	assert.equal(result.presence.process.state, "live");
 	assert.equal(result.presence.process.attribution, "process-existence-not-session-progress");
 	assert.equal(result.source.latestKnown, true);
@@ -70,7 +70,7 @@ it("returns pinned continuation and refuses append, replacement, mtime, and malf
 	assert.ok(first.nextCursor);
 	const second = await readPrimaryObservation(f.primary, { view: "history", limit: 1, cursor: first.nextCursor });
 	assert.deepEqual(second.entries.map(e => e.id), [entryId(2)]);
-	assert.equal(Value.Check(OrdinaryPrimaryObservationSchema, second), true);
+	assert.equal(matchesSchema(OrdinaryPrimaryObservationSchema, second), true);
 	for (const bad of [null, {}, { ...first.nextCursor, extra: true }, { ...first.nextCursor, nextId: "bad" }, { ...first.nextCursor, pin: { ...first.nextCursor.pin, size: -1 } }]) {
 		const refused = await readPrimaryObservation(f.primary, { view: "history", cursor: bad });
 		assert.deepEqual(refused.coverage.reasons, ["invalid-cursor"]);
@@ -268,7 +268,7 @@ it("omits credential headers and explicit assignments but preserves UUID referen
 it("closes every object schema and rejects fields outside its output allowlist", async t => {
 	const f = fixture(t, [message(1, null), message(2, 1)]);
 	const result = await readPrimaryObservation(f.primary, { limit: 1 });
-	assert.equal(Value.Check(OrdinaryPrimaryObservationSchema, result), true);
+	assert.equal(matchesSchema(OrdinaryPrimaryObservationSchema, result), true);
 	function visit(value: unknown): void {
 		if (value === null || typeof value !== "object") return;
 		const schema = value as Record<string, unknown>;
@@ -279,11 +279,11 @@ it("closes every object schema and rejects fields outside its output allowlist",
 		}
 	}
 	visit(OrdinaryPrimaryObservationSchema);
-	assert.equal(Value.Check(OrdinaryPrimaryObservationSchema, { ...result, raw: {} }), false);
-	assert.equal(Value.Check(OrdinaryPrimaryObservationSchema, { ...result, presence: { ...result.presence, idle: true } }), false);
-	assert.equal(Value.Check(OrdinaryPrimaryObservationSchema, { ...result, source: { ...result.source, raw: {} } }), false);
-	assert.equal(Value.Check(OrdinaryPrimaryObservationSchema, { ...result, entries: [{ ...result.entries[0], arguments: {} }] }), false);
-	assert.equal(Value.Check(OrdinaryPrimaryObservationSchema, { ...result, nextCursor: { ...result.nextCursor, raw: {} } }), false);
+	assert.equal(matchesSchema(OrdinaryPrimaryObservationSchema, { ...result, raw: {} }), false);
+	assert.equal(matchesSchema(OrdinaryPrimaryObservationSchema, { ...result, presence: { ...result.presence, idle: true } }), false);
+	assert.equal(matchesSchema(OrdinaryPrimaryObservationSchema, { ...result, source: { ...result.source, raw: {} } }), false);
+	assert.equal(matchesSchema(OrdinaryPrimaryObservationSchema, { ...result, entries: [{ ...result.entries[0], arguments: {} }] }), false);
+	assert.equal(matchesSchema(OrdinaryPrimaryObservationSchema, { ...result, nextCursor: { ...result.nextCursor, raw: {} } }), false);
 });
 it("pins mtime independently from file identity and size", async t => {
 	const f = fixture(t, [message(1, null), message(2, 1)]);

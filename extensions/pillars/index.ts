@@ -3,7 +3,6 @@ import { writeSync } from "node:fs";
 import { resolve } from "node:path";
 import { publishSettings, readSettings, type ReadOptions } from "./settings.ts";
 import { fileURLToPath } from "node:url";
-import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -224,7 +223,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		description: TOOL_DESCRIPTION,
 		parameters: Type.Object(
 			{
-				view: Type.Optional(StringEnum(["overview", "revisions"] as const)),
+				view: Type.Optional(Type.Unsafe<"overview" | "revisions">({ type: "string", enum: ["overview", "revisions"] })),
 				windowDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 30 })),
 				cursor: Type.Optional(Type.String({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$" })),
 			},

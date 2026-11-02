@@ -169,11 +169,13 @@ proposal before a consequential decision, action, or answer without waiting for
 an operator cue. Routine execution and exact-output tasks need no added ceremony.
 Omitting `draft` keeps source-only behavior. A draft must be a nonblank,
 well-formed Unicode string of at most 8192 characters, counted as TypeBox grapheme
-clusters, the same unit used by Pi's schema validator. The schema and handler
-share this limit in ordinary and Durable sessions; there is no separate UTF-8
-byte limit. The schema has no regular-expression pattern. Blank text and malformed
-Unicode pass the schema's string-length checks, then the handler rejects them with
-specific diagnostics. This keeps provider-facing schemas simple and prevents
+clusters. Preparation and execution enforce this limit in ordinary and Durable
+sessions; there is no separate UTF-8 byte limit. Pi validates JSON Schema string
+lengths as code points, not grapheme clusters. The draft schema therefore declares
+only a nonempty string, with no maximum length or regular-expression pattern.
+This lets combined-character drafts reach the handler without a stricter host
+limit. The handler rejects blank text, malformed Unicode, and excessive grapheme
+counts with specific diagnostics. This keeps provider-facing schemas simple and prevents
 schema-pattern errors from replacing the handler's messages. The extension preserves
 its text exactly and rejects invalid input without echoing it.
 
@@ -407,7 +409,11 @@ ordinary tools keep their `content` results and return no `structuredContent`.
 
 Attribution uses the native tool and generation hooks. `beforeTool` and
 `afterTool` on `ToolTask` admit request and result observations for `pillars`
-and `read`; a `GenerationTask` `afterTools` hook flushes the round's admitted
+and `read`. Pi also calls `afterTool` for host-written settlements. Diagnostic
+codes `tool_unavailable`, `invalid_arguments`, `blocked`, `interrupted`,
+`restart_limit`, `aborted`, and `abandoned` admit no result observation or draft
+assessment. A request observation already admitted by `beforeTool` remains request
+evidence only. A `GenerationTask` `afterTools` hook flushes the round's admitted
 evidence, so a settled run leaves no pending cells; the host shutdown signal
 releases the reader early; and the close registration makes the host await the
 final flush before it closes storage. Observations record the resolved

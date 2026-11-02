@@ -1,10 +1,11 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { Harness, MemoryStorage, type Seq, type StorageWrite } from "@earendil-works/pi-durable";
+import { Harness, MemoryStorage, type CommitResult, type Seq, type StorageWrite } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeReports, readOutcome, recordReport, settleDeliveries, submitConversation, ThreadDeliveryDoc, type DeliveryReport } from "./durable-controls.ts";
 import { automaticDeliveryPage, deliveryPendingCount, deliveryState, DeliveryArchiveDoc, DeliveryRowDoc, DeliveryStoreDoc, latestReceipt, migrateDeliveryStore, operationReceipts, pendingDeliveryPage, receiptAtInput, receiptForRequest, reportKey, retainedReport, snapshotIntent, snapshotReceipt, storeDeliveryRow, terminalDeliveryState } from "./delivery-store.ts";
@@ -18,14 +19,17 @@ class CountedStorage extends MemoryStorage {
 	bytes = 0;
 	writes = 0;
 	operations = 0;
-	override async commit(writes: readonly StorageWrite[], ctx: typeof context): Promise<Seq> {
-		for (const write of writes) {
-			if (write.type.startsWith("document.")) this.operations += 1;
-			if ((write.type === "document.create" || write.type === "document.change") && write.content.kind === "base") {
-				this.bytes += Buffer.byteLength(JSON.stringify(write.content.value)); this.writes += 1;
+	override async commit(batches: readonly (readonly StorageWrite[])[], receive: (index: number, seq: Seq) => void, ctx: typeof context): Promise<CommitResult> {
+		// Count only the batches the storage stored.
+		return super.commit(batches, (index, seq) => {
+			for (const write of batches[index] ?? []) {
+				if (write.type.startsWith("document.")) this.operations += 1;
+				if ((write.type === "document.create" || write.type === "document.change") && write.content.kind === "base") {
+					this.bytes += Buffer.byteLength(JSON.stringify(write.content.value)); this.writes += 1;
+				}
 			}
-		}
-		return super.commit(writes, ctx);
+			receive(index, seq);
+		}, ctx);
 	}
 }
 
@@ -123,10 +127,10 @@ it("materialises a native answer group across reference pages in one delivery co
 	release();
 	for (const id of inputs) await readOutcome(harness, id, context);
 	const publications: number[][] = [];
-	const unsubscribe = harness.subscribeCommits((publication) => {
+	const unsubscribe = onStoredCommit(harness, (publication) => {
 		const ids: number[] = [];
 		for (const change of publication.changes) {
-			if (change.type !== "document" || change.record.kind !== "agent.delivery-row" || change.value?.kind !== "receipt") continue;
+			if (change.type !== "document" || change.kind !== "change" || change.record.kind !== "agent.delivery-row" || change.value.kind !== "receipt") continue;
 			const receipt = change.value.value;
 			assert.ok(receipt !== null && typeof receipt === "object" && !Array.isArray(receipt));
 			const id = receipt.submissionId;
@@ -154,7 +158,7 @@ it("couples thread acknowledgement, the retained row and pending removal atomica
 	assert.equal((await pendingDeliveryPage(harness, context)).state.reports.length, 1);
 	await harness.commit(async (tx) => { (await tx.doc(ThreadDeliveryDoc, "thread", null)).pending = 1; }, context);
 	const commits: Array<Set<string>> = [];
-	const unsubscribe = harness.subscribeCommits((publication) => commits.push(new Set(publication.changes.filter((change) => change.type === "document").map((change) => change.record.kind))));
+	const unsubscribe = onStoredCommit(harness, (publication) => commits.push(new Set(publication.changes.filter((change) => change.type === "document").map((change) => change.record.kind))));
 	try { assert.deepEqual(await acknowledgeReports(harness, "owner", [row.sourceId], context), [row.sourceId]); }
 	finally { unsubscribe(); }
 	assert.ok(commits.some((kinds) => kinds.has("agent.thread-delivery") && kinds.has("agent.delivery-row") && kinds.has("agent.delivery-list")));

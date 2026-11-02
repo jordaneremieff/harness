@@ -19,7 +19,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
 import type { Message, Models, Usage } from "@earendil-works/pi-ai";
 import type { ModelEvidenceCollector } from "./model-evidence.ts";
-import { AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type HarnessInspection, type LiveState, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
+import { AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type ConversationView, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type HarnessInspection, type LiveState, type RunFailure, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
 import { captureSnapshot } from "./snapshot-capture.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary, DashboardAutoRetry, DashboardCompactionFailure, DashboardHealth } from "./dashboard-types.ts";
 import { AgentForkDoc, AgentMetaDoc, pendingDeliveries, settleDeliveries, undeliveredForOwner, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
@@ -147,7 +147,7 @@ export interface ConversationStatus extends ConversationSummary {
 	}[];
 	readonly submissions: readonly {
 		readonly id: number;
-		readonly type: "input" | "write";
+		readonly type: SubmissionRecord["type"];
 		readonly status: SubmissionRecord["status"];
 		readonly requestId?: string;
 		readonly entryId?: number;
@@ -636,11 +636,10 @@ function trimSubmission(submission: SubmissionRecord): ConversationStatus["submi
 		status: submission.status,
 		...(submission.requestId === undefined ? {} : { requestId: submission.requestId }),
 	};
-	if (submission.status === "done") {
-		return { ...base, entryId: submission.entry, ...(submission.type === "input" ? { answerEntryId: submission.answer } : {}) };
-	}
-	if (submission.status === "placed") return { ...base, entryId: submission.entry };
-	if (submission.status === "unanswered") return { ...base, ...(submission.entry === undefined ? {} : { entryId: submission.entry }), reason: submission.reason };
+	const entry = submission.entry === undefined ? {} : { entryId: submission.entry };
+	if (submission.status === "done") return { ...base, ...entry, ...(submission.type === "write" ? {} : { answerEntryId: submission.answer }) };
+	if (submission.status === "placed") return { ...base, ...entry };
+	if (submission.status === "unanswered") return { ...base, ...entry, reason: submission.reason };
 	return base;
 }
 
@@ -755,22 +754,14 @@ export const SNAPSHOT_BYTE_LIMIT = 64 * 1024;
 /** Largest byte bound one caller may request for a transcript page. */
 export const SNAPSHOT_BYTE_LIMIT_MAX = 1024 * 1024;
 
-/** One bounded active transcript, oldest first; the page variant adds continuation. */
+/** One bounded newest transcript page, oldest first; the page variant adds continuation. */
 export async function readConversationSnapshot(harness: Harness, conversationId: ConversationId, context: Context): Promise<AgentConversationSnapshot> {
 	return readConversationSnapshotPage(harness, conversationId, {}, context);
 }
 
-/**
- * Active entries without deriving model context. The view mount already holds
- * them; disposing the state keeps the last immutable revision readable.
- */
+/** The committed active transcript the model sees: the newest head marker, then the entries after its head. */
 async function activeEntries(conversation: Conversation, context: Context): Promise<readonly EntryRecord[]> {
-	const state = await conversation.viewState(context);
-	try {
-		return state.value.entries;
-	} finally {
-		state.dispose();
-	}
+	return (await conversation.context(context)).entries;
 }
 
 function textOfMessage(message: Message): string {
@@ -831,12 +822,22 @@ function currentReceipt(delivery: AgentDeliveryState | undefined, conversationId
 	return latest;
 }
 
-function dashboardState(busy: boolean, entries: readonly EntryRecord[], receipt: DeliveryReceipt | undefined): AgentConversationState {
+/**
+ * `runFailure` stays in `pi.live` until a later run starts, so an idle
+ * conversation with one ended its newest run without an answer. A run cut off
+ * at the restart limit is terminal like any other failure: it needs new input.
+ */
+function dashboardState(busy: boolean, entries: readonly EntryRecord[], receipt: DeliveryReceipt | undefined, runFailure?: RunFailure): AgentConversationState {
 	if (busy) return "working";
 	if (entries.length === 0) return "new";
+	if (runFailure !== undefined && runFailure.reason !== "nothing_to_answer") return runFailure.reason === "aborted" ? "stopped" : "failed";
 	if (receipt?.status === "done") return "done";
 	if (receipt?.status === "unanswered") return receipt.reason === "aborted" ? "stopped" : "failed";
-	const newest = entries[entries.length - 1];
+	return newestEntryState(entries[entries.length - 1]);
+}
+
+/** Without a native outcome, the newest retained entry decides the idle state. */
+function newestEntryState(newest: EntryRecord | undefined): AgentConversationState {
 	if (newest?.kind === "pi.assistant") {
 		if (newest.model?.some((message) => message.role === "assistant" && message.stopReason === "aborted")) return "stopped";
 		if (newest.model?.some((message) => message.role === "assistant" && message.stopReason === "error")) return "failed";
@@ -892,8 +893,8 @@ function blockedTasks(inspection: HarnessInspection, conversationId: Conversatio
 export function dashboardHealth(live: LiveState | undefined, blocked: readonly { readonly error?: string; readonly reason: string }[], now: number, retryMaxAttempts: number | undefined): DashboardHealth | undefined {
 	const failing = live?.compactions?.find((status) => status.retry !== undefined);
 	const compactionFailure: DashboardCompactionFailure | undefined = failing?.retry !== undefined
-		? { reason: failing.reason, errorMessage: failing.retry.error, at: new Date(failing.retry.at).toISOString() }
-		: live?.compactionFailure === undefined ? undefined : { reason: live.compactionFailure.reason, errorMessage: live.compactionFailure.error };
+		? { trigger: failing.trigger, errorMessage: failing.retry.error, at: new Date(failing.retry.at).toISOString() }
+		: live?.compactionFailure === undefined ? undefined : { trigger: live.compactionFailure.trigger, errorMessage: live.compactionFailure.error };
 	const retry = live?.generation?.retry;
 	const autoRetry: DashboardAutoRetry | undefined = retry === undefined || retryMaxAttempts === undefined ? undefined : { attempt: live?.generation?.attempt ?? 1, maxAttempts: retryMaxAttempts, delayMs: Math.max(0, retry.at - now), errorMessage: retry.error };
 	const lastError = blocked.find((task) => task.error !== undefined)?.error ?? blocked[0]?.reason;
@@ -969,7 +970,13 @@ function latestReplyOf(entries: readonly EntryRecord[]): string | undefined {
 	return undefined;
 }
 
-async function terminalError(harness: Harness, receipt: DeliveryReceipt | undefined, entries: readonly EntryRecord[], context: Context): Promise<string | undefined> {
+/** Why the newest run ended without an answer, as `pi.live.runFailure` records it. */
+function runFailureText(failure: RunFailure | undefined): string | undefined {
+	if (failure === undefined) return undefined;
+	return failure.detail === undefined || failure.detail.trim() === "" ? failure.reason : `${failure.reason}: ${failure.detail}`;
+}
+
+async function terminalError(harness: Harness, receipt: DeliveryReceipt | undefined, entries: readonly EntryRecord[], context: Context, runFailure?: RunFailure): Promise<string | undefined> {
 	if (receipt) {
 		const submission = await harness.submission(receipt.submissionId, context);
 		const status = await submission?.status(context);
@@ -983,7 +990,7 @@ async function terminalError(harness: Harness, receipt: DeliveryReceipt | undefi
 			return message.errorMessage || undefined;
 		}
 	}
-	return receipt?.reason ?? undefined;
+	return receipt?.reason ?? runFailureText(runFailure);
 }
 
 /** Exact terminal input lookup is bounded; absence and scan exhaustion remain distinct. */
@@ -1001,9 +1008,9 @@ async function dashboardInput(storage: Pick<Storage, "scanSubmissions"> | undefi
 }
 
 /** Native quota text is classification-safe; the display cause belongs to the exact failed input, even after recovery. */
-async function dashboardError(harness: Harness, conversationId: ConversationId, state: AgentConversationState, receipt: DeliveryReceipt | undefined, entries: readonly EntryRecord[], storage: Pick<Storage, "scanSubmissions"> | undefined, context: Context): Promise<string | undefined> {
+async function dashboardError(harness: Harness, conversationId: ConversationId, state: AgentConversationState, receipt: DeliveryReceipt | undefined, entries: readonly EntryRecord[], storage: Pick<Storage, "scanSubmissions"> | undefined, context: Context, runFailure?: RunFailure): Promise<string | undefined> {
 	if (state !== "failed" && state !== "stopped") return undefined;
-	const error = await terminalError(harness, receipt, entries, context);
+	const error = await terminalError(harness, receipt, entries, context, runFailure);
 	if (state !== "failed" || error !== PROVIDER_BLOCK_ERROR) return error;
 	const input = receipt === undefined ? await dashboardInput(storage, conversationId, [...entries].reverse().find((entry) => isInputKind(entry.kind))?.id, context) : { submissionId: receipt.submissionId, limited: false };
 	const block = input.submissionId === undefined ? undefined : await harness.commit((tx) => readInputProviderBlock(tx, input.submissionId as SubmissionId), context);
@@ -1045,12 +1052,12 @@ async function dashboardSummary(
 	const agent = conversation ? await conversation.agent(context) : undefined;
 	const entries = conversation ? (await activeEntries(conversation, context)).filter((entry) => entry.kind !== "agent.communication" && entry.kind !== TASK_SENDER_ENTRY_KIND) : [];
 	const receipt = currentReceipt(delivery, record.id, entries);
-	const state = dashboardState(live?.run !== undefined, entries, receipt);
+	const state = dashboardState(live?.run !== undefined, entries, receipt, live?.runFailure);
 	const cost = usageCost(usage);
 	const firstMessage = firstMessageOf(meta, entries);
 	const replyText = latestReplyOf(entries);
 	const liveExtras = await dashboardLiveExtras(harness, record, live, entries, options, context);
-	const error = await dashboardError(harness, record.id, state, receipt, entries, options.storage, context);
+	const error = await dashboardError(harness, record.id, state, receipt, entries, options.storage, context, live?.runFailure);
 	const awaiting = await harness.commit((tx) => readAwaitFact(tx, storageId, record.id), context);
 	const row: AgentConversationSummary = {
 		id: durableIdentity(storageId, record.id === 1 ? undefined : record.id),
@@ -1183,7 +1190,19 @@ export function selectSnapshotEntries(records: readonly EntryRecord[], limit = S
 	};
 }
 
-/** Bounds of one earlier-page read; the source query walks history older than `before`. */
+/**
+ * Bound a native view window to a transcript page. The window holds only the
+ * newest entries; when it does not start the transcript (`before` is set), the
+ * page reports incomplete coverage and continues older than its oldest entry.
+ */
+export function selectWindowEntries(view: Pick<ConversationView, "entries" | "before">, limit = SNAPSHOT_ENTRY_LIMIT, maxBytes = SNAPSHOT_BYTE_LIMIT): SnapshotSelection {
+	const selection = selectSnapshotEntries([...view.entries].reverse(), limit, maxBytes);
+	if (selection.partial || view.before === undefined) return selection;
+	const oldest = view.entries[0];
+	return { ...selection, partial: true, nextBefore: oldest === undefined ? (view.before + 1) as EntryId : oldest.id, coverage: { ...selection.coverage, complete: false } };
+}
+
+/** Bounds of one history-page read; the source query walks history newest first. */
 export const SNAPSHOT_CONTINUATION_PAGE = 64;
 export const SNAPSHOT_CONTINUATION_PAGES = 8;
 
@@ -1235,13 +1254,17 @@ async function joinedSnapshotPage(selection: SnapshotSelection, before: EntryId 
 	return { ...page, revision, ...(taskSenders === undefined ? {} : { taskSenders }), entries: page.entries.map((entry, index) => ({ ...entry, communication: views[index] ?? { state: "unavailable", reason: "limit" } })) };
 }
 
-/** One earlier page from the conversation's fork-aware history, newest first at the source. */
-async function readEarlierSnapshot(conversation: Conversation, before: EntryId, limit: number, maxBytes: number, context: Context, reader?: CapturedCommunicationReader): Promise<ConversationSnapshotPage> {
+/**
+ * One page from the conversation's fork-aware history, newest first at the
+ * source: the newest entries, or the entries strictly older than `before`.
+ * Head markers such as compaction summaries sit where they were written.
+ */
+async function readHistorySnapshot(conversation: Conversation, before: EntryId | undefined, limit: number, maxBytes: number, context: Context, reader?: CapturedCommunicationReader): Promise<ConversationSnapshotPage> {
 	const collected: EntryRecord[] = [];
 	let cursor: Cursor | undefined;
 	let sourceComplete = false;
 	for (let page = 0; page < SNAPSHOT_CONTINUATION_PAGES; page++) {
-		const result = await conversation.entries({ maxEntryId: (before - 1) as EntryId }, SNAPSHOT_CONTINUATION_PAGE, cursor, context);
+		const result = await conversation.entries(before === undefined ? {} : { maxEntryId: (before - 1) as EntryId }, SNAPSHOT_CONTINUATION_PAGE, cursor, context);
 		collected.push(...result.items);
 		cursor = result.next;
 		if (cursor === undefined) {
@@ -1267,9 +1290,9 @@ async function readEarlierSnapshot(conversation: Conversation, before: EntryId, 
 }
 
 /**
- * One bounded, oldest-first transcript page. Without `before` it reads the
- * active transcript; with `before` it continues strictly older through the
- * conversation's history. Hidden kinds are excluded before either bound.
+ * One bounded, oldest-first transcript page of the conversation's fork-aware
+ * history. Without `before` it reads the newest entries; with `before` it
+ * continues strictly older. Hidden kinds are excluded before either bound.
  */
 export async function readConversationSnapshotPage(
 	harness: Harness,
@@ -1281,10 +1304,7 @@ export async function readConversationSnapshotPage(
 	const conversation = await harness.conversation(conversationId, context);
 	if (!conversation) throw new Error(`conversation ${conversationId} does not exist`);
 	const reader = storageId === undefined ? undefined : await captureCommunicationReader(harness, storageId, conversation, context);
-	if (params.before !== undefined) return readEarlierSnapshot(conversation, params.before, params.limit ?? SNAPSHOT_ENTRY_LIMIT, params.maxBytes ?? SNAPSHOT_BYTE_LIMIT, context, reader);
-	const entries = await activeEntries(conversation, context);
-	const selection = selectSnapshotEntries([...entries].reverse(), params.limit ?? SNAPSHOT_ENTRY_LIMIT, params.maxBytes ?? SNAPSHOT_BYTE_LIMIT);
-	return joinedSnapshotPage(selection, undefined, reader);
+	return readHistorySnapshot(conversation, params.before, params.limit ?? SNAPSHOT_ENTRY_LIMIT, params.maxBytes ?? SNAPSHOT_BYTE_LIMIT, context, reader);
 }
 
 export async function readReceipts(harness: Harness, ownerId: string | undefined, context: Context): Promise<readonly DeliveryReceipt[]> {

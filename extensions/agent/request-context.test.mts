@@ -38,7 +38,7 @@ it("exposes queued arrivals and prunes native terminal routes", async (t) => {
 		await recordRequestContext(tx, conversation.id, b);
 		const id = await placed(tx, conversation.id, a);
 		await tx.createSubmission({ conversationId: conversation.id, requestId: b.requestId, type: "input", status: "queued" });
-		(await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [id] };
+		(await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [id], turns: 0 };
 	}, context);
 	assert.deepEqual((await readRequestContexts(harness, conversation.id, context)).map((request) => request.status), ["placed", "queued"]);
 	await harness.commit(async (tx) => {
@@ -74,7 +74,7 @@ it("keeps system guidance static across native input order and task text", async
 		await recordRequestContext(tx, conversation.id, b);
 		const first = await placed(tx, conversation.id, a, "First task");
 		const second = await placed(tx, conversation.id, b, "😀".repeat(513));
-		(await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [second, first] };
+		(await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [second, first], turns: 0 };
 	}, context);
 	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);
 	assert.match(rendered ?? "", /Final answers route automatically/u);
@@ -87,7 +87,7 @@ it("keeps request routes independent of compaction and fork history", async (t) 
 	await harness.commit(async (tx) => {
 		await recordRequestContext(tx, conversation.id, request);
 		const submissionId = await placed(tx, conversation.id, request);
-		(await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [submissionId] };
+		(await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [submissionId], turns: 0 };
 	}, context);
 	const head = await harness.commit(async (tx) => {
 		const prior = await tx.appendEntry(UserEntry, conversation.id, { model: [{ role: "user", content: "newer retained context", timestamp: 2 }] });
@@ -119,7 +119,7 @@ it("derives oversized base queues without route writes and retains inputs beyond
 			const request = { requestId: `base-${index}`, requester: "owner", replyTo: "owner", origin: "operator" as const };
 			const submissionId = await placed(tx, conversation.id, request);
 			delivery.intents.push({ requestId: request.requestId, conversationId: conversation.id, ownerId: request.requester, origin: request.origin, message: "Retained", whenBusy: "followUp", operationId: null, submissionId });
-			if (index === count - 1) (await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [submissionId] };
+			if (index === count - 1) (await tx.doc(LiveDoc, conversation.id)).run = { taskId: 123 as TaskId, inputs: [submissionId], turns: 0 };
 		}
 	}), context);
 	const page = await readRequestContextPage(harness, conversation.id, context);
@@ -138,7 +138,7 @@ it("omits oversized retained route fields from projections without changing nati
 		const live = await tx.doc(LiveDoc, conversation.id);
 		const submissionId = await placed(tx, conversation.id, request);
 		delivery.intents.push({ requestId: request.requestId, conversationId: conversation.id, ownerId: request.requester, origin: request.origin, message: "Retained", whenBusy: "followUp", operationId: null, submissionId });
-		live.run = { taskId: 123 as TaskId, inputs: [submissionId] };
+		live.run = { taskId: 123 as TaskId, inputs: [submissionId], turns: 0 };
 	}), context);
 	assert.deepEqual(await readRequestContextPage(harness, conversation.id, context), { requests: [], omitted: 1 });
 	const rendered = await requestContextSection(harness).render({ conversationId: conversation.id, agent: await conversation.agent(context), env: undefined, read: harness, shown: {} }, context);

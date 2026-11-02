@@ -1,7 +1,7 @@
 /** Approved structured data and bounded, noncoercing JSON operations. */
 import { createHash } from "node:crypto";
-import { type Static, type TSchema, Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { arr, compile, int, lit, num, obj, oneOf, opt, type Static, str } from "@earendil-works/pi-schema";
+import { type TSchema, Type } from "typebox";
 
 export type Scalar = string | number | boolean | null;
 export type Truth = true | false | "unknown";
@@ -14,23 +14,18 @@ export const DataNameSchema = Type.String({
 	pattern: "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
 });
 const metadata = {
-	name: DataNameSchema,
-	revision: Type.String({ pattern: "^[a-f0-9]{12}$" }),
-	source: Type.String({ minLength: 1, maxLength: 256 }),
-	capturedAt: Type.Number({ minimum: 0 }),
-	maxAgeMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 2592000000 })),
+	name: { ...DataNameSchema },
+	revision: str({ pattern: "^[a-f0-9]{12}$" }),
+	source: str({ minLength: 1, maxLength: 256 }),
+	capturedAt: num({ minimum: 0 }),
+	maxAgeMs: opt(int({ minimum: 1, maximum: 2592000000 })),
 };
-export const NamedDataSchema = Type.Object(
-	{
-		...metadata,
-		kind: Type.Literal("table"),
-		collation: Type.Optional(Type.Union([Type.Literal("exact"), Type.Literal("ascii-case-insensitive")])),
-		rows: Type.Array(Type.Object({ key: ScalarSchema, value: ScalarSchema }, { additionalProperties: false }), {
-			maxItems: DATA_LIMITS.rows,
-		}),
-	},
-	{ additionalProperties: false },
-);
+export const NamedDataSchema = obj({
+	...metadata,
+	kind: lit("table"),
+	collation: opt(oneOf(["exact", "ascii-case-insensitive"])),
+	rows: arr(obj({ key: { ...ScalarSchema }, value: { ...ScalarSchema } }), { maxItems: DATA_LIMITS.rows }),
+});
 export type NamedData = Static<typeof NamedDataSchema>;
 export interface DataSnapshot {
 	name: string;
@@ -42,7 +37,7 @@ export interface DataSnapshot {
 	data?: NamedData;
 }
 export type LookupResult = { status: "unique"; value: Scalar } | { status: "missing" | "ambiguous" | "unavailable" };
-const dataValidator = Compile(NamedDataSchema);
+const dataValidator = compile(NamedDataSchema);
 const unsafeKeys = new Set(["__proto__", "prototype", "constructor"]);
 
 export function safeKey(key: string): boolean {
@@ -160,7 +155,7 @@ export function readPath(value: unknown, path: readonly string[]): { exists: boo
 }
 
 export const SCHEMA_CACHE_LIMIT = 64;
-const schemaValidators = new Map<string, ReturnType<typeof Compile>>();
+const schemaValidators = new Map<string, ReturnType<typeof compile>>();
 
 /** Check a registered tool contract without conversion, property removal, or defaults. */
 export function checkToolSchema(schema: TSchema | undefined, value: unknown): Truth {
@@ -169,13 +164,13 @@ export function checkToolSchema(schema: TSchema | undefined, value: unknown): Tr
 		const copied = cloneJson(schema);
 		const key = createHash("sha256").update(JSON.stringify(copied)).digest("hex");
 		if (!schemaValidators.has(key)) {
-			const validator = Compile(copied);
+			const validator = compile(copied);
 			const oldest = schemaValidators.keys().next().value;
 			if (schemaValidators.size >= SCHEMA_CACHE_LIMIT && oldest !== undefined) schemaValidators.delete(oldest);
 			schemaValidators.set(key, validator);
 		}
 		const validator = schemaValidators.get(key);
-		return validator ? validator.Check(cloneJson(value)) : "unknown";
+		return validator ? validator.check(cloneJson(value)) : "unknown";
 	} catch {
 		return "unknown";
 	}
@@ -184,7 +179,7 @@ export function checkToolSchema(schema: TSchema | undefined, value: unknown): Tr
 export function validateNamedData(value: unknown): string | undefined {
 	try {
 		const copied = cloneJson(value);
-		if (!dataValidator.Check(copied)) return "Invalid named data definition";
+		if (!dataValidator.check(copied)) return "Invalid named data definition";
 		if (Buffer.byteLength(JSON.stringify(copied), "utf8") > DATA_LIMITS.bytes)
 			return "Named data exceeds serialized byte bound";
 		return undefined;

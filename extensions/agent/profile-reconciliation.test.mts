@@ -34,7 +34,7 @@ it("resumes retained work despite an independent profile reconciliation failure"
 	}), context);
 	await original.close(context);
 	const errors: unknown[] = [];
-	host = await DurableHost.open({ storagePath, storageId, models: runtime, registry: fixtureRegistry(), onReport: (error) => errors.push(error) }, context);
+	host = await DurableHost.open({ storagePath, storageId, models: runtime, registry: fixtureRegistry(), onReport: (report) => errors.push(report.error) }, context);
 	await host.harness.waitForIdle(context);
 	const result = await host.request("receipts", { ownerId: "requester", wait: false }, context) as { receipts: DeliveryReceipt[]; pending: number };
 	assert.equal(result.pending, 0);

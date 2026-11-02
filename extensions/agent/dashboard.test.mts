@@ -337,7 +337,7 @@ for (const [width, height] of [
 		{ owner: "unavailable" as const, state: "unavailable" as const, error: "Claim conflict marker" },
 		{ health: { lastError: "Host error marker" } },
 		{
-			health: { compactionFailure: { reason: "manual" as const, at: "now", errorMessage: "Compaction error marker" } },
+			health: { compactionFailure: { trigger: "manual" as const, at: "now", errorMessage: "Compaction error marker" } },
 		},
 		{ health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "Exhausted retry marker" } } },
 		{ state: "failed" as const, error: "Work failure marker" },

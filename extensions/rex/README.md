@@ -86,8 +86,10 @@ channel.
 Ordinary Pi cards show the action and known target facts separately, followed by
 an outcome and effect state. Full IDs wrap when needed rather than receive fixed
 short forms. Pi's default tool shell supplies padding, background and expansion.
-The expansion hint uses your configured Pi key; an unbound key produces no
-invented mouse instruction.
+The expansion hint uses your configured Pi key, read through the `keyText`
+function that the host passes in the tool render context. An unbound key, or a
+render context without keybinding hints, produces no hint and no invented mouse
+instruction.
 
 Collapsed cards keep these distinctions visible:
 

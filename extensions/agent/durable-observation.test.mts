@@ -38,14 +38,14 @@ it("reports retained compaction failure and nested calls after the parent model 
 	t.after(() => host.close());
 	await host.harness.commit(async (tx) => {
 		const live = await tx.doc(LiveDoc, 1 as ConversationId);
-		live.compactionFailure = { taskId: 40 as import("@earendil-works/pi-durable").TaskId<import("@earendil-works/pi-durable").CompactionResult>, reason: "manual", error: "summarization failed" };
+		live.compactionFailure = { taskId: 40 as import("@earendil-works/pi-durable").TaskId<import("@earendil-works/pi-durable").CompactionResult>, trigger: "manual", error: "summarization failed" };
 		live.nestedTools = [
 			{ taskId: 42 as import("@earendil-works/pi-durable").TaskId, parentTaskId: 41 as import("@earendil-works/pi-durable").TaskId, parentCallId: "parent", callId: "parent/read", name: "read", arguments: { path: "fixture.txt" }, status: "running", output: "partial" },
 			{ taskId: 43 as import("@earendil-works/pi-durable").TaskId, parentTaskId: 41 as import("@earendil-works/pi-durable").TaskId, parentCallId: "parent", callId: "parent/done", name: "read", arguments: {}, status: "done", summary: { isError: false } },
 		];
 	}, BACKGROUND_CONTEXT);
 	const activity = await host.request("inspect", { view: "activity" }) as { metadata: import("./durable-observation.ts").DurableActivityMetadata };
-	const retainedFailure: import("./dashboard-types.ts").DashboardCompactionFailure = { reason: "manual", errorMessage: "summarization failed" };
+	const retainedFailure: import("./dashboard-types.ts").DashboardCompactionFailure = { trigger: "manual", errorMessage: "summarization failed" };
 	assert.deepEqual(activity.metadata.compactionFailure, retainedFailure);
 	assert.deepEqual(activity.metadata.runningTools, [{ toolCallId: "parent/read", name: "read", taskId: 42, parentToolCallId: "parent", parentTaskId: 41 }]);
 	structuredObservation(InspectOutputSchema, activity);
@@ -502,12 +502,12 @@ it("bounds the activity scan by bytes and reports entry and byte flags", async (
 it("derives dashboard health only from live recovery state", () => {
 	const live = {
 		generation: { attempt: 3, retry: { at: 2000, error: "provider down" } },
-		compactions: [{ taskId: 1, reason: "threshold", blocking: true, attempt: 2, retry: { at: 3000, error: "summary failed" } }],
+		compactions: [{ taskId: 1, trigger: "threshold", blocking: true, attempt: 2, retry: { at: 3000, error: "summary failed" } }],
 	} as unknown as LiveState;
 	const health = dashboardHealth(live, [{ reason: "missing_task", error: "definition missing" }], 1000, 4);
 	assert.deepEqual(health, {
 		lastError: "definition missing",
-		compactionFailure: { reason: "threshold", errorMessage: "summary failed", at: new Date(3000).toISOString() },
+		compactionFailure: { trigger: "threshold", errorMessage: "summary failed", at: new Date(3000).toISOString() },
 		autoRetry: { attempt: 3, maxAttempts: 4, delayMs: 1000, errorMessage: "provider down" },
 	});
 	assert.equal(dashboardHealth(undefined, [], 0, 4), undefined, "a cold snapshot has no health");
@@ -610,7 +610,7 @@ it("reduces oversized activity metadata while keeping the error fields", () => {
 		pending: 0,
 		streamedText: big,
 		lastError: big,
-		compactionFailure: { reason: "manual" as const, errorMessage: big, at: "2026-10-02T00:00:00.000Z" },
+		compactionFailure: { trigger: "manual" as const, errorMessage: big, at: "2026-10-02T00:00:00.000Z" },
 		autoRetry: { attempt: 1, maxAttempts: 4, delayMs: 1000, errorMessage: big },
 	};
 	const limit = 4096;
@@ -650,7 +650,7 @@ it("bounds the activity digest when live metadata alone is oversized and no rows
 					timestamp: Date.now(),
 				},
 			};
-			(live as { compactions?: unknown }).compactions = [{ taskId: 1, reason: "manual", blocking: true, attempt: 1, retry: { at: Date.now() + 1000, error: big } }];
+			(live as { compactions?: unknown }).compactions = [{ taskId: 1, trigger: "manual", blocking: true, attempt: 1, retry: { at: Date.now() + 1000, error: big } }];
 			(live as { tools?: unknown }).tools = Array.from({ length: 40 }, (_, index) => ({ callId: `call-${index}`, name: "n".repeat(300), status: "running" }));
 			(live as { run?: unknown }).run = { taskId: 1, inputs: [] };
 		}, BACKGROUND_CONTEXT);

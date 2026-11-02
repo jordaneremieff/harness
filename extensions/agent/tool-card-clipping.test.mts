@@ -1,3 +1,6 @@
+import { keyHint, keyText } from "@earendil-works/pi-coding-agent";
+/** Host-injected keybinding hints, as Pi passes them to renderers. */
+const cardKeys = { keyText, keyHint };
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { it } from "node:test";
@@ -162,7 +165,7 @@ for (const themeName of ["dark", "light"] as const) {
 it("collapsed clipping uses Pi's grapheme width and leaves exact-fit and zero-width source intact", () => {
 	initTheme("dark", false);
 	const card = createAgentToolCards(() => []).agent_status;
-	const context: AgentCardContext = { expanded: false };
+	const context: AgentCardContext = { ...cardKeys, expanded: false };
 	for (const identity of ["ascii-identity", "界界界", "ééé", "🙂🙂🙂", "🇺🇸🇨🇦🇯🇵"]) {
 		const component = card.renderCall({ sessionId: identity }, themeModule.theme, context);
 		const source = component.render(240)[0];

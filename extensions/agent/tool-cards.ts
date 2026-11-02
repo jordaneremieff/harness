@@ -9,9 +9,9 @@ import { stripVTControlCharacters } from "node:util";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { awaitFactLines, AwaitFactSchema } from "./await-facts.ts";
 import { ProviderBlockFactSchema, providerBlockText } from "./provider-block.ts";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { getMarkdownTheme, keyText } from "@earendil-works/pi-coding-agent";
+import { getMarkdownTheme, type KeybindingHints } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Spacer, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
 
 export type AgentCardLookup = () => readonly AgentConversationSummary[];
@@ -22,8 +22,11 @@ const MESSAGE_DISPLAY_LIMIT = 32_000;
 const NOTICE_PREVIEW_LINES = 3;
 const PREVIEW_UNITS = 600;
 
-/** Card context: the subset of `ToolRenderContext` these renderers read. */
-export interface AgentCardContext {
+/**
+ * Card context: the subset of `ToolRenderContext` these renderers read. Pi
+ * injects `keyText` with the operator's configured keybindings.
+ */
+export interface AgentCardContext extends Pick<KeybindingHints, "keyText"> {
 	readonly args?: unknown;
 	readonly lookup?: AgentCardLookup;
 	readonly state?: { callHint?: boolean; compaction?: Record<string, unknown>; compactFactsShown?: boolean; observation?: Record<string, unknown>; resultSeen?: unknown };
@@ -98,6 +101,8 @@ interface CardLayoutOptions {
 	readonly expanded: boolean;
 	readonly previous?: Component;
 	readonly peerPadding?: number;
+	/** Peer cards draw their own expansion hint below hidden lines. */
+	readonly keys?: Pick<KeybindingHints, "keyText">;
 }
 
 /** Tool parts inherit Pi's Box(1,1); custom-message renderers must supply that inner vertical padding. */
@@ -121,7 +126,7 @@ function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOpt
 			const lines = content.flatMap((part) => typeof part === "string" ? new Text(part, 0, 0).render(width) : part.render(width));
 			const limit = options.expanded ? lines.length : sections.previewLines ?? lines.length;
 			const hidden = Math.max(0, lines.length - limit);
-			return [...header.map((line) => clipCardLine(line, width)), ...(header.length ? [""] : []), ...lines.slice(0, limit), ...(sections.outcome ?? []), ...(hidden || sections.hint ? [clipCardLine(theme.fg("muted", sections.hint || expansionHint()), width)] : [])];
+			return [...header.map((line) => clipCardLine(line, width)), ...(header.length ? [""] : []), ...lines.slice(0, limit), ...(sections.outcome ?? []), ...(hidden || sections.hint ? [clipCardLine(theme.fg("muted", sections.hint || expansionHint(options.keys)), width)] : [])];
 		},
 		invalidate() { for (const part of content) if (typeof part !== "string") part.invalidate(); },
 	};
@@ -129,8 +134,8 @@ function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOpt
 	return box;
 }
 
-function expansionHint(): string {
-	const key = keyText("app.tools.expand");
+function expansionHint(keys: Pick<KeybindingHints, "keyText"> | undefined): string {
+	const key = keys?.keyText("app.tools.expand");
 	return key ? `... (${key} to expand)` : "... (expand for full details)";
 }
 
@@ -140,10 +145,10 @@ function cardHint(context: AgentCardContext, part: "call" | "result", _subject: 
 	if (part === "call") {
 		const shown = context.executionStarted !== true && context.argsComplete !== false;
 		if (context.state) context.state.callHint = shown;
-		return shown ? expansionHint() : "";
+		return shown ? expansionHint(context) : "";
 	}
 	if (context.state?.callHint && context.executionStarted !== true) return "";
-	return expansionHint();
+	return expansionHint(context);
 }
 
 function displayIdentity(identity: string): string {
@@ -660,11 +665,11 @@ function newestTextLabel(working: boolean, role: string | undefined): string {
 }
 
 function providerBlockLines(block: unknown, theme: Theme): string[] {
-	return Value.Check(ProviderBlockFactSchema, block) ? [theme.fg("warning", displayText(providerBlockText(block)))] : [muted(theme, "Provider block unavailable: invalid native fact")];
+	return matchesSchema(ProviderBlockFactSchema, block) ? [theme.fg("warning", displayText(providerBlockText(block)))] : [muted(theme, "Provider block unavailable: invalid native fact")];
 }
 function activityLines(status: Record<string, unknown>, readOnly: boolean, theme: Theme): string[] {
 	if (status.providerBlock !== undefined) return providerBlockLines(status.providerBlock, theme);
-	if (status.awaiting !== undefined) return Value.Check(AwaitFactSchema, status.awaiting) ? awaitFactLines(status.awaiting).map((line) => muted(theme, displayText(line))) : [muted(theme, "Await state unavailable: invalid native fact")];
+	if (status.awaiting !== undefined) return matchesSchema(AwaitFactSchema, status.awaiting) ? awaitFactLines(status.awaiting).map((line) => muted(theme, displayText(line))) : [muted(theme, "Await state unavailable: invalid native fact")];
 	const live = record(status.live);
 	const working = status.busy === true || Object.keys(record(live.run)).length > 0;
 	const running = runningSlots(live);
@@ -1111,10 +1116,10 @@ export function operatorNoticeBody(content: string): string {
 }
 
 /** Build the native card component for one stored `agent.peer` notice. */
-export function renderPeerNoticeCard(input: { content: unknown; details?: unknown; timestamp?: number }, theme: Theme, expanded: boolean): Component | undefined {
+export function renderPeerNoticeCard(input: { content: unknown; details?: unknown; timestamp?: number }, theme: Theme, expanded: boolean, keys: KeybindingHints): Component | undefined {
 	const content = typeof input.content === "string" || Array.isArray(input.content) ? input.content : String(input.content ?? "");
 	const message = { role: "custom", customType: "agent.peer", content, display: true, details: input.details, timestamp: input.timestamp ?? 0 } as Parameters<typeof renderAgentPeerMessage>[0];
-	return renderAgentPeerMessage(message, { expanded, outputPad: 0 }, theme);
+	return renderAgentPeerMessage(message, { expanded, outputPad: 0, keyText: keys.keyText, keyHint: keys.keyHint }, theme);
 }
 
 /** Explicit warnings; an absent flag is not a health verdict. */
@@ -1181,7 +1186,7 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 		body.push(theme.fg("dim", "/agent opens the dashboard"));
 	}
 	const subject = details.threadId !== undefined ? text(details.threadTitle) || text(details.threadId) : peerLabel(details);
-	return cardLayout({ title: `[agent] ${label}`, label: subject, metadata: peerMetadata(details), body, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad });
+	return cardLayout({ title: `[agent] ${label}`, label: subject, metadata: peerMetadata(details), body, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options });
 };
 
 // --- Factory ---------------------------------------------------------------------

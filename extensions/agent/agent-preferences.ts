@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { THINKING_LEVELS, configurationModel } from "./configuration.ts";
 
 import { readSettings, type Environment, type Source } from "./settings.ts";
@@ -47,8 +47,10 @@ const selectionSchema = Type.Object({
 	thinking: Type.Optional(Type.Object({ requested: Type.String({ maxLength: 16 }), effective: Type.String({ maxLength: 16 }) }, { additionalProperties: false })),
 }, { additionalProperties: false });
 
+const snapshotSchema = Type.Object({ source: selectionSchema.properties.source, document: Type.Optional(AgentPreferencesSchema), diagnostics: selectionSchema.properties.diagnostics }, { additionalProperties: false });
+
 export function parsePreferenceSnapshot(value: unknown): PreferenceSnapshot {
-	if (!Value.Check(Type.Object({ source: selectionSchema.properties.source, document: Type.Optional(AgentPreferencesSchema), diagnostics: selectionSchema.properties.diagnostics }, { additionalProperties: false }), value)) throw new Error("Invalid machine preference snapshot");
+	if (!matchesSchema(snapshotSchema, value)) throw new Error("Invalid machine preference snapshot");
 	const snapshot = value as PreferenceSnapshot;
 	if (snapshot.document === undefined) throw new Error("Machine preference snapshot has no effective settings");
 	if (!validPresets(snapshot.document.presets) || !validPreferences(snapshot.document.preferences ?? {})) throw new Error("Invalid effective delegation settings");
@@ -56,7 +58,7 @@ export function parsePreferenceSnapshot(value: unknown): PreferenceSnapshot {
 }
 
 export function parseExecutionSelection(value: unknown): ExecutionSelection {
-	if (!Value.Check(selectionSchema, value)) throw new Error("Invalid retained execution selection");
+	if (!matchesSchema(selectionSchema, value)) throw new Error("Invalid retained execution selection");
 	return structuredClone(value) as ExecutionSelection;
 }
 
@@ -136,7 +138,7 @@ export function presetInventory(snapshot: PreferenceSnapshot): string {
 
 function selectedPreset(snapshot: PreferenceSnapshot, selector: string | undefined): ExecutionPreset | undefined {
 	if (selector === undefined) return undefined;
-	if (!Value.Check(name, selector)) throw new Error(`Invalid preset selector ${JSON.stringify(selector)}. ${presetInventory(snapshot)}`);
+	if (!matchesSchema(name, selector)) throw new Error(`Invalid preset selector ${JSON.stringify(selector)}. ${presetInventory(snapshot)}`);
 	const preset = snapshot.document && Object.hasOwn(snapshot.document.presets, selector) ? snapshot.document.presets[selector] : undefined;
 	if (!preset) throw new Error(`Cannot resolve preset ${JSON.stringify(selector)} in ${snapshot.source.path}: ${snapshot.diagnostics.find((fact) => fact.field === "document" || fact.field.startsWith("agent."))?.message ?? (snapshot.source.status === "missing" ? "file is missing" : "preset is absent")}. ${presetInventory(snapshot)}`);
 	return preset;

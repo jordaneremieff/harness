@@ -671,9 +671,9 @@ test("delivery preserves release gates and distinguishes scoped no-change from b
 		["complete diff reviewed", /Inspect accepted local commits and the complete outgoing diff/],
 		[
 			"confidence before release",
-			/Establish confidence through applicable evidence, substantive review and the repository's one final verification policy/,
+			/Establish confidence through applicable evidence, substantive review and the repository's verification rules/,
 		],
-		["promotion gates", /Use normal promotion with its gates; do not pre-run the complete gate solely because publication is next/],
+		["plain push after checks", /Run the checks the change can break, then push with plain Git/],
 		["no replay", /already appears on remote main, report that state without replaying it/],
 		[
 			"full authorized delivery",

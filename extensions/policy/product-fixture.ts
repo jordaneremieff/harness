@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { DEFAULT_LIMITS } from "./catalog.ts";
 import registerPolicy from "./index.ts";
+
+const stringEnum = <const T extends readonly string[]>(values: T) =>
+	Type.Unsafe<T[number]>({ type: "string", enum: [...values] });
 
 export const PRODUCT_TOOLS = [
 	"policy_product_request",
@@ -63,7 +65,7 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 		label: "Inert request",
 		description: "Attempt the exact requested scenario and count. No external actions occur.",
 		parameters: Type.Object(
-			{ scenario: StringEnum(["valid", "mutated-schema"]), count: Type.Integer({ minimum: 1, maximum: 8 }) },
+			{ scenario: stringEnum(["valid", "mutated-schema"]), count: Type.Integer({ minimum: 1, maximum: 8 }) },
 			{ additionalProperties: false },
 		),
 		async execute(_id, args) {
@@ -80,7 +82,7 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 				"Return synthetic structured evidence. No package rule asserts or corrects these results. No external actions occur.",
 			parameters: Type.Object(
 				{
-					scenario: StringEnum([
+					scenario: stringEnum([
 						"declared-error",
 						"success",
 						"missing-status",
@@ -105,7 +107,7 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 		description: "Try primary for a synthetic receipt. Alternate uses a different inert path and returns a receipt.",
 		parameters: Type.Object(
 			{
-				path: StringEnum(["primary", "alternate"]),
+				path: stringEnum(["primary", "alternate"]),
 				attempt: Type.Integer({ minimum: 1, maximum: DEFAULT_LIMITS.errorCount + 1 }),
 			},
 			{ additionalProperties: false },
@@ -141,7 +143,7 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 			"Return the repository's actual Pillars corpus text for one resource: an entry, the inventory, or governance. A draft submission returns a byte receipt and executes nothing; an empty draft is refused. No external actions occur.",
 		parameters: Type.Object(
 			{
-				resource: Type.Optional(StringEnum([...PRODUCT_PILLARS_RESOURCES])),
+				resource: Type.Optional(stringEnum([...PRODUCT_PILLARS_RESOURCES])),
 				draft: Type.Optional(Type.String({ maxLength: 8192 })),
 			},
 			{ additionalProperties: false },

@@ -6,7 +6,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { Value } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import { access } from "./access.ts";
 import { utcDay } from "./collector.ts";
 import { draftAssessment, MAX_DRAFT_CHARACTERS } from "./draft.ts";
@@ -100,7 +100,7 @@ test("native draft assessment follows source results without a context transform
 			const definition = tool();
 			const schema = definition.parameters as { type: string; properties: { draft: { maxLength: number } }; required?: string[] };
 			assert.equal(schema.type, "object");
-			assert.equal(schema.properties.draft.maxLength, MAX_DRAFT_CHARACTERS);
+			assert.equal(Object.hasOwn(schema.properties.draft, "maxLength"), false);
 			assert.equal(Object.hasOwn(schema.properties.draft, "pattern"), false);
 			assert.ok(!schema.required?.includes("draft"));
 			const prepare = definition.prepareArguments;
@@ -109,7 +109,7 @@ test("native draft assessment follows source results without a context transform
 			const valid = { resource: "principle-example", draft: "😀".repeat(MAX_DRAFT_CHARACTERS) };
 			assert.deepEqual(prepare(valid), { ...valid, offset: 0 });
 			for (const draft of ["", " \n", null, 731905, { private: "do not echo" }, "a".repeat(MAX_DRAFT_CHARACTERS + 1), "😀".repeat(MAX_DRAFT_CHARACTERS + 1), "\ud800"]) {
-				if (draft === " \n" || draft === "\ud800") assert.equal(Value.Check(definition.parameters, { draft }), true);
+				if (draft === " \n" || draft === "\ud800") assert.equal(compile(definition.parameters).check({ draft }), true);
 				const matches = (error: unknown) => {
 					assert.ok(error instanceof Error);
 					const result = JSON.parse(error.message);
@@ -159,6 +159,20 @@ test("native draft assessment follows source results without a context transform
 			assert.ok(message.role === "custom" && !message.display);
 			assert.match(text(message), /agent-authored DATA/);
 			assert.doesNotMatch(text(message), /operator invoked/);
+		});
+		await t.test("host validation preserves combined-character drafts at the grapheme limit", async () => {
+			const draft = "e\u0301".repeat(MAX_DRAFT_CHARACTERS);
+			const before = assessments().length;
+			const done = responses(ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "principle-example", draft }, { id: "combined-draft" })), (context) => {
+				const result = context.messages.at(-2);
+				assert.ok(result?.role === "toolResult" && !result.isError);
+				assert.equal(text(result), sourceJSON);
+				assert.equal(text(context.messages.at(-1) as { content: unknown }), draftAssessment(draft));
+				return ai.fauxAssistantMessage("The combined-character draft is intact.");
+			});
+			await active().prompt("Check a draft with combined characters.");
+			done();
+			assert.equal(assessments().length, before + 1);
 		});
 		await t.test("source errors and already-cancelled access send no assessment", async () => {
 			const before = assessments().length;

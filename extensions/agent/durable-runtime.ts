@@ -30,7 +30,8 @@ import { projectCatalogAttention } from "./catalog-attention.ts";
 import { observeColdStorage } from "./cold-observation.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { HostRuntime } from "./host-process.ts";
-import { DurableHost } from "./durable-host.ts";
+import { DurableHost, readTaskGraph } from "./durable-host.ts";
+import { onStoredCommit } from "./commit-observation.ts";
 import { stopForeignReferences } from "./run-control.ts";
 import { createDurableServices, type DurableServices, type CreateDurableServicesOptions } from "./durable-services.ts";
 import { publishAgentControlDispatch, type AgentControlDispatch } from "./durable-agents.ts";
@@ -201,13 +202,11 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	}
 
 	async function nativeReleaseBlockers(): Promise<string[]> {
-		const graph = await host.harness.taskGraph(BACKGROUND_CONTEXT);
-		try {
-			return Object.values(graph.value.tasks).map((task) => {
-				const kind = task.kind === "agent.timer" ? "A waiting timer" : (task.kind === "agent.check-in" || task.kind === "agent.check-in-deadline") ? "A waiting check-in task" : "Native work";
-				return `${kind} in conversation ${host.identity(task.conversationId)}`;
-			});
-		} finally { graph.dispose(); }
+		const graph = await readTaskGraph(host.harness, BACKGROUND_CONTEXT);
+		return Object.values(graph.tasks).map((task) => {
+			const kind = task.kind === "agent.timer" ? "A waiting timer" : (task.kind === "agent.check-in" || task.kind === "agent.check-in-deadline") ? "A waiting check-in task" : "Native work";
+			return `${kind} in conversation ${host.identity(task.conversationId)}`;
+		});
 	}
 
 	function hasOtherActiveRequests(): boolean {
@@ -367,7 +366,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		const sessionId = String(params.sessionId);
 		if (typeof params.publish !== "function") throw new Error("Producer observation requires an in-process callback");
 		const publish = params.publish as (fact: ProducerAwaitFact) => Promise<void>;
-		if (storageIdOf(sessionId) === metadata.storageId) return observeProducerAwait(sessionId, async () => await host.request("await-state", { sessionId, results: params.results }, context) as import("./await-facts.ts").ProducerState, async (changed) => host.harness.subscribeCommits((publication) => { if (publication.changes.length) changed(); }), publish, context);
+		if (storageIdOf(sessionId) === metadata.storageId) return observeProducerAwait(sessionId, async () => await host.request("await-state", { sessionId, results: params.results }, context) as import("./await-facts.ts").ProducerState, async (changed) => onStoredCommit(host.harness, (publication) => { if (publication.changes.length) changed(); }), publish, context);
 		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
 		try {
 			const client = await manager.connectNative(sessionId);
@@ -412,7 +411,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			retryMaxAttempts: services.services.settingsManager.getRetrySettings().enabled ? services.services.settingsManager.getRetrySettings().maxRetries + 1 : 1,
 			agent: hostAgent(),
 			initialMessages, meta: { name: metadata.name, owner: metadata.ownerId }, profileSeed: catalog.read(metadata.storageId).view?.profileSeed, commands: services.commands, contributionHost: services.contributionHost,
-			resume: false, onReport: (error) => { process.stderr.write(`Durable task: ${String(error)}\n`); },
+			resume: false, onReport: (report) => { process.stderr.write(`Durable task: ${report.kind}: ${String(report.error)}\n`); },
 			requestRelease: () => requestRelease(),
 		});
 		initialMessages = undefined;
@@ -433,7 +432,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 				queueMicrotask(notifyActivity);
 			});
 			void opened.harness.closed.then((end) => {
-				if (end.reason !== "failed" || host !== opened || closed) return;
+				if (end.kind !== "failed" || host !== opened || closed) return;
 				sessionFailed = true;
 				try { markRecoveryDue(true); }
 				catch (error) { process.stderr.write(`Recovery marker: ${String(error)}\n`); }
@@ -445,7 +444,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 				for (const listener of observationListeners) listener();
 			});
 			unsubscribeChanges?.();
-			unsubscribeChanges = opened.harness.subscribeCommits((publication) => {
+			unsubscribeChanges = onStoredCommit(opened.harness, (publication) => {
 				requestRoutes.observe(publication);
 				activityGeneration++;
 				if (publication.changes.length) { scheduleRecoveryMarker(); notifyActivity(); scheduleCatalogView(); }

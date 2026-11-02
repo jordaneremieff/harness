@@ -64,8 +64,8 @@ export const HOST_CONTRACT: RuntimeContract = Object.freeze({
 	format: "pi.agent.contract/1",
 	release: "1.0.0",
 	upstream: Object.freeze({ codingAgent: CODING_AGENT_VERSION, durable: durableVersion }),
-	// Native deadline tasks require durable sleeps; ordinary services retain their existing API floor.
-	requires: Object.freeze({ codingAgent: "1.3.0", durable: "1.4.0" }),
+	// Stored-commit observers, watch-based task graphs and injected keybinding hints set the floor.
+	requires: Object.freeze({ codingAgent: "1.5.0", durable: "1.5.0" }),
 	operations: Object.freeze(Object.fromEntries(Object.entries(operations).map(([name, contract]) => [name, Object.freeze(contract)]))),
 });
 

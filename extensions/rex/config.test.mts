@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Check } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ordinaryOwnershipStore, ordinaryStatusStore, resultChannels, serialiseOwners } from "./config.ts";
 import { boundResult, resultByteLimit, type RexResult } from "./core.ts";
@@ -54,7 +54,7 @@ test("result schema and channels preserve diagnostic and reference omission cont
 			truncatedFields: ["error", "effects.note", "coverage.note"],
 		},
 	};
-	assert.equal(Check(ResultSchema, source), true);
+	assert.equal(compile(ResultSchema).check(source), true);
 	const channels = resultChannels(source);
 	const model = JSON.parse(channels.content[0].text);
 	assert.deepEqual(model, source);
@@ -63,7 +63,7 @@ test("result schema and channels preserve diagnostic and reference omission cont
 	assert.deepEqual(channels.details, { outcome: "native_failure", effects: "unknown" });
 	const invalidFields = { pageOffset: "4", nextPageOffset: -1, emittedRecordRefs: "2", omittedRecordRefs: 1.5, omittedRecordIds: ["record-6", 7], truncatedFields: ["outcome"] };
 	for (const [field, invalid] of Object.entries(invalidFields)) {
-		assert.equal(Check(ResultSchema, { ...source, coverage: { ...source.coverage, [field]: invalid } }), false, field);
+		assert.equal(compile(ResultSchema).check({ ...source, coverage: { ...source.coverage, [field]: invalid } }), false, field);
 	}
 });
 

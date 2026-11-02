@@ -66,7 +66,7 @@ it("activity parent metadata binds the operation response identity without inven
 
 it("live observations validate native nested slots and retained compaction failures", () => {
 	const nested = { callId: "outer/child", name: "evidence", taskId: 2, parentCallId: "outer", parentTaskId: 1, arguments: { query: "source" }, status: "running" };
-	const failure = { taskId: 3, reason: "manual", error: "Summary failed" };
+	const failure = { taskId: 3, trigger: "manual", error: "Summary failed" };
 	const value = { nestedTools: [nested], compactionFailure: failure };
 	assert.deepEqual(structuredObservation(LiveStateSchema, value), value);
 	structuredObservation(LiveStateSchema, { nestedTools: [{ ...nested, summary: { isError: true, durationMs: 2, error: "tool failed" } }] });
@@ -290,7 +290,7 @@ it("validates list rows and the manager list aggregation", async (t) => {
 });
 
 it("recovery health accepts retained failures without timestamps and timed compaction retries", () => {
-	const retained = { reason: "manual" as const, errorMessage: "Summary failed" };
+	const retained = { trigger: "manual" as const, errorMessage: "Summary failed" };
 	const row = { id: "storage", storageId: "storage", cwd: "/work", modifiedAt: 0, owner: "here" as const, state: "failed" as const, cost: 0, partial: false };
 	const metadata = { owner: "here", live: true, operation: null, runningTools: [], pending: 0 };
 	for (const failure of [retained, { ...retained, at: "2026-01-01T00:00:00.000Z" }]) {

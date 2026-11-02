@@ -1,6 +1,6 @@
 # Pi durable-harness track
 
-Pi 1.4.0 supplies the ordinary coding-agent host and the separate Pi Durable
+Pi 1.5.0 supplies the ordinary coding-agent host and the separate Pi Durable
 runtime. Ordinary sessions retain their ordinary host. A native operator
 conversation does not require an ordinary primary. Durable owns native agent
 conversations, generation, tool tasks, committed state, and recovery. The Agent
@@ -8,10 +8,10 @@ extension supplies cwd-bound resources, process ownership, controls, and deliver
 The [session host roles](conventions/session-host-roles.md) and
 [Agent host contract](agent-host-contract.md) define that composition.
 
-Source review date: 2026-10-28. Cumulative source coverage includes the
-coding-agent, Durable, Chord, and MCP release notes from 1.0.4 through 1.4.0.
-The review checks installed 1.4.0 manifests and defining contracts against
-current harness consumers. Each contract below names its source boundary;
+Source review date: 2026-11-02. Cumulative source coverage includes the
+coding-agent, Durable, Chord, and MCP release notes from 1.0.4 through 1.5.0,
+plus the initial pi-schema 1.5.0 release notes. The review checks installed
+1.5.0 manifests and defining contracts against current harness consumers. Each contract below names its source boundary;
 release-note coverage is not package-wide runtime parity.
 Dependency installation does not replace modules in retained processes.
 Source inspection does not establish live provider behavior, conversion
@@ -22,16 +22,20 @@ The historical file comparisons cover 1.0.3 to 1.2.0 and 1.1.0 to 1.2.0 for
 coding-agent, TUI, and Durable, plus cited AI, agent-core, Codemode, and MCP files.
 They exclude source maps, bundles, native prebuild binaries, generated schemas,
 and vendored assets. Their byte-equality findings apply to those compared
-releases, not automatically to 1.4.0. A separate 1.3.0-to-1.4.0 byte comparison
+releases, not automatically to 1.5.0. A separate 1.3.0-to-1.4.0 byte comparison
 checks the defining ordinary session, resource, extension, MCP, Codemode, TUI,
 AI validation, Durable environment, provider, and task files cited below.
 It excludes bundles, maps, binaries, and unlisted files. Unchanged bytes carry
 only those source claims forward; changed files require current inspection.
+The 1.5.0 review reads the release notes and the installed defining
+declarations and sources named in each section; it is not a byte comparison
+with 1.4.0. Claims a section does not cite for 1.5.0 rest on the earlier
+comparison and the 1.5.0 release notes, which name no change to them.
 Earlier runtime trials do not become current trials through a comparison.
 
 ## Release review coverage
 
-<!-- pi-release-reviewed-through: 1.4.0 -->
+<!-- pi-release-reviewed-through: 1.5.0 -->
 
 This declaration records the latest Pi release through which the harness
 completed cumulative release intake. Its value is a numeric major.minor.patch
@@ -67,11 +71,13 @@ A manifest does not identify another process's loaded modules.
 
 | Source | Current contract |
 |---|---|
-| Coding-agent 1.4.0 manifest | Runtime exports are the ordinary root and `./rpc-entry`. `./client` and `./experimental/plugin` export keys are removed. |
-| Agent-core 1.4.0 manifest | The root and package metadata remain public; no AgentHarness lane runtime is published there. |
-| Durable 1.4.0 manifest | Root, environments, tools, native codemode, native tool-search, optional image processing, storage adapters including IndexedDB, and testing exports are published. |
-| Chord 1.4.0 manifest | Typed host runtime plus context, output, delta, Node, portable SQLite, and SQLite telemetry surfaces are public. |
-| Coding-agent dependencies | Chord is no longer its dependency. Durable still depends on Chord; this does not remove the harness's direct Chord requirement. |
+| Coding-agent 1.5.0 manifest | Runtime exports are the ordinary root and `./rpc-entry`. It depends on agent-core, AI, Codemode, MCP, TUI, and TypeBox. |
+| Agent-core 1.5.0 manifest | The root and package metadata remain public; no AgentHarness lane runtime is published there. It depends on AI and pi-schema. |
+| AI 1.5.0 manifest | The root no longer re-exports TypeBox. A `./compat` export is published; the extension loader maps both the AI root and `./compat` to an extension view that keeps `Type`, `Static`, `TSchema`, and a TypeBox `StringEnum`. AI depends on pi-schema, not TypeBox. |
+| Durable 1.5.0 manifest | Root, environments, tools, native codemode, native tool-search, optional image processing, storage adapters including IndexedDB and the Chord store (`./storage/store`), and testing exports are published. It depends on Chord, AI, Codemode, pi-schema, and telemetry; TypeBox is no longer its dependency. |
+| Chord 1.5.0 manifest | Typed host runtime plus context, output, delta, Node, portable SQLite, SQLite telemetry, and the experimental `./next` surfaces are public. It depends on pi-schema and telemetry; esbuild and ws are optional peers. TypeBox is no longer its dependency. |
+| pi-schema 1.5.0 manifest | Root and `./formats` exports. No runtime dependencies. |
+| Coding-agent dependencies | Chord is not its dependency. Durable still depends on Chord; this does not remove the harness's direct Chord requirement. |
 | Removed packages | Pi Client, Pi Protocol, and Pi Server served the removed experimental runtime and are no longer released. Their old transport is not a current integration surface. |
 | Loaded processes | Unknown unless that process reports its descriptor or its resolution is directly observed. |
 
@@ -102,14 +108,14 @@ checks before activation. Source release labels are not acceptance evidence.
 
 ## Targeted management-contract refresh
 
-Checked on 2026-10-28 against the installed coding-agent and Durable 1.4.0
-contracts, published package metadata, and the immutable upstream commit
-`f321e5bdd26b3624bfb2ab182a334d0a5edb698a`:
+Checked on 2026-11-02 against the installed coding-agent and Durable 1.5.0
+contracts and published package metadata:
 
 - The published `latest` metadata for
-  [coding-agent](https://registry.npmjs.org/@earendil-works%2fpi-coding-agent/latest)
-  and [Durable](https://registry.npmjs.org/@earendil-works%2fpi-durable/latest)
-  names 1.4.0. These are publication observations, not loaded-process evidence.
+  [coding-agent](https://registry.npmjs.org/@earendil-works%2fpi-coding-agent/latest),
+  [Durable](https://registry.npmjs.org/@earendil-works%2fpi-durable/latest), and
+  [pi-schema](https://registry.npmjs.org/@earendil-works%2fpi-schema/latest)
+  names 1.5.0. These are publication observations, not loaded-process evidence.
 - Installed `pi-durable/dist/harness/types.d.ts` defines native root creation,
   conversation creation, submission reacquisition, exact task abort, queued-input
   withdrawal, task inspection, and watches. Its `Conversation.compact()` contract
@@ -122,12 +128,11 @@ contracts, published package metadata, and the immutable upstream commit
 - Installed `docs/cli.md#package-commands` defines `pi update` for Pi itself and
   `pi update --extensions` for installed packages. These remain separate from
   dependency refresh, release intake, promotion and a safe process/source switch.
-- Upstream main defines an additional
-  [read-only Harness option](https://github.com/earendil-works/pi/blob/f321e5bdd26b3624bfb2ab182a334d0a5edb698a/packages/durable/src/harness/types.ts).
-  Its contract blocks writes and scheduling while retaining reads and watches.
-  The installed 1.4.0 `HarnessOptions` has no such option. Do not pass that
-  unreleased field to the installed host or claim that ordinary inspection gives
-  equivalent write protection.
+- Installed `HarnessOptions.readOnly` opens a Harness as a viewer of a session
+  another process drives. Open leaves running tasks as committed, every commit
+  with writes rejects with `ReadOnlySession` before it reaches Storage, and
+  `resume()` and calls that run tasks reject. Ordinary inspection without this
+  option does not give equivalent write protection.
 
 The public management adapter in `runtime/evolution.mts` composes current
 worktree and Pi commands. `runtime/upstream.mts` reports its own loaded Pi
@@ -145,73 +150,110 @@ release interval. The [development workflow](conventions/worktrees.md) owns
 checks and publication hygiene; the runtime adds no scheduler, release ledger or
 parallel task store.
 
-## Upstream main: next adoption boundary
+## Pi 1.5 host transition contracts
 
-Targeted review date: 2026-11-01. Upstream main resolves to
-[`2c8d1feb147f6b3d97e855da803bfe7b19f3c403`](https://github.com/earendil-works/pi/commit/2c8d1feb147f6b3d97e855da803bfe7b19f3c403).
-The latest published release remains 1.4.0. The following source contracts are
-unreleased and are not APIs of the installed 1.4.0 host. This targeted review
-neither renews earlier verification dates nor advances cumulative release coverage.
+Checked on 2026-11-02 against the installed Durable 1.5.0 declarations and
+release notes. Durable 1.5.0 changes these contracts together; the harness
+adopts them as one host transition with no compatibility path for 1.4.0:
 
-Adopt the next Durable release as one host transition, in this order:
-
-1. **Observation contracts.** Main replaces `Conversation.viewState()` and
-   `Harness.taskGraph()` with watches and observers. Conversation watches carry
-   bounded transcript windows rather than the complete active context; model
-   context remains a separate read. The current consumers in
-   `extensions/agent/durable-observation.ts`, `durable-host.ts`, and
-   `durable-runtime.ts` require changes before that upgrade. Preserve transcript
-   coverage and cancellation rather than treating a window as complete history.
-   Sources: [Harness interfaces](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/types.ts#L840-L938)
-   and [windowed observation](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/view.ts#L206-L254).
-2. **Hooks for host-generated tool results.** Main passes rejected calls through
-   `afterTool`, even when the tool never executed. Interrupted calls also pass
-   through the hook when hook execution remains safe. Policy's result processing
-   in `extensions/policy/durable.ts` and the observation and assessment hooks in
-   `extensions/pillars/durable.ts` must distinguish these results from completed
-   tool execution. The existing Pillars regression explicitly expects invalid
-   preparation not to reach `afterTool`; reconcile that assertion during upgrade.
-   Source: [host-result settlement](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/tool.ts#L268-L311).
-3. **Live progress versus stored commits.** Main separates immediate observable
-   progress from deferred persistence. `progress.persistWithinMs` bounds how long
-   deferred progress remains in memory. Commit subscribers no longer establish
-   that every live partial was observed. Audit the subscribers in
-   `extensions/agent/durable-host.ts`, `durable-runtime.ts`, and
-   `provider-models.ts` against their actual purpose before the upgrade. Use
-   watches for live progress; retain commit subscriptions for stored publication.
-   Source: [progress policy](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/types.ts#L576-L592).
-4. **Interrupted work.** Main ends repeatedly interrupted tasks instead of
-   parking them. Tools return an error; runs retain a failure reason. The current
-   `restart_limit` blocked-reason schema in `extensions/agent/catalog-attention.ts`
-   requires reconciliation with the new terminal outcomes. Preserve the reason
-   in inspection and result delivery rather than resubmitting work automatically.
-   Sources: [restart policy](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/types.ts#L624-L641)
-   and [tool settlement](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/durable/src/harness/tool.ts#L250-L266).
+1. **Observation contracts.** `Session.documentState()`,
+   `Conversation.viewState()`, `Harness.taskGraph()`, and `watchEvents()` are
+   removed. Consumers use `watchDoc()`, `Conversation.watch(context, window?)`,
+   `Harness.watchTaskGraph()`, and the synchronous `observeDoc()`,
+   `observeConversation()`, and `observeTaskGraph()` observers. Watches use
+   Chord's `WatchHandle`: a listener receives a tagged `WatchCall`
+   (`{ kind: "value", value, ops, retired }`), and `WatchEnd` is tagged by `kind`
+   (`stopped`, `aborted`, `ended`, `listener_error`, `failed`). Commits that arrive
+   while a listener runs fold into one call. A document watch follows its address
+   and reports retirement as `retired: true` rather than ending.
+   `ConversationView.entries` is a bounded window over the fork-aware history
+   (`ConversationWindow`, default 50 to 100 entries), not the active context.
+   `Conversation.context()` supplies model context; `ConversationTranscript` and
+   `Conversation.entries()` page older entries. The Agent's observation, host,
+   and runtime consumers preserve transcript coverage and cancellation rather
+   than treat a window as complete history.
+   Sources: `pi-durable/dist/harness/{types,view}.d.ts` and
+   `pi-durable/dist/session/session.d.ts`.
+2. **Hooks for host-written tool results.** `afterTool` runs on every result a
+   tool task writes, including the error results the Harness writes itself:
+   `tool_unavailable`, `invalid_arguments`, `blocked`, `interrupted`,
+   `restart_limit`, `aborted`, and `abandoned`. The diagnostic code tells them
+   apart. Such a result never keeps `structuredOutput`, and `call.arguments` is
+   what the model sent. Policy's result processing and the Pillars observation
+   and assessment hooks check `result.diagnostics` before they treat a result as
+   completed execution. A call to a tool its request did not offer gets a
+   `pi.tool` task flagged `unoffered: true`, settles `tool_unavailable`, and also
+   reaches `afterTool`. Sources: `pi-durable/dist/harness/{types.d.ts,tool.js}`.
+3. **Live progress versus stored commits.** Partial answers and running tool
+   output are deferred commits: watches see them at once, and Storage receives
+   them with the next commit that reads `pi.live`, or at the latest after
+   `settings.progress.persistWithinMs` (default 1,000 ms). `subscribeCommits()`
+   is replaced by `observeCommits({ advance, end })`, which returns
+   `{ detach() }` and receives only stored commits. Live progress uses watches;
+   commit observers serve stored publication only.
+   Source: `pi-durable/dist/harness/types.d.ts` (`ProgressPolicy`).
+4. **Interrupted work.** A task cut off `settings.restartLimit` times in a row
+   ends instead of parking. A tool call ends with an error result (diagnostic
+   `restart_limit`), a compaction fails into `pi.live.compactionFailure`, a
+   generation ends its run with `pi.live.runFailure` reason `restart_limit`, and
+   an extension task ends `faulted`. A model request in flight when the host died
+   counts as a failed attempt under `settings.retry` and can end the run
+   `interrupted`. `Harness.retryTask()`, the `restart_limit` blocked reason of
+   `TaskInspection` and `TaskGraphNode`, and the `task_parked` report are
+   removed. Inspection and result delivery preserve the failure reason; the
+   host does not resubmit work automatically.
+   Sources: `pi-durable/dist/{types,harness/types}.d.ts`.
+5. **Tagged ends and reports.** `SessionEnd` (`Session.closed`,
+   `Harness.closed`) is `{ kind: "closed" }` or `{ kind: "failed", error }`.
+   `HarnessOptions.onReport(report)` takes one `Report` tagged by `kind`, with
+   `session_failed` renamed `storage_failed`. `DocumentCommitChange`,
+   `FileChange`, `ReportFrom`, and `TaskInspection.state` are also tagged by
+   `kind`. Source: `pi-durable/dist/types.d.ts`.
+6. **Task and document versions.** `pi.tool` is version 3 (migrating versions 1
+   and 2), `pi.generation` is version 2, and `pi.live` is version 3 with a
+   read-time `migrate`. An older Harness leaves these tasks blocked
+   (`task_too_old`) and cannot read a `pi.live` value this release wrote.
+   `pi.live.runFailure` records why the newest run ended without an answer.
+   Sources: `pi-durable/dist/harness/{tool,generation,live}.js`.
 
 ### Native schema package
 
-Main defines `@earendil-works/pi-schema`: plain JSON Schema builders and a
-validator that accepts existing JSON Schema without code generation. Its
-[manifest](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/schema/package.json)
-declares no runtime dependencies; its
-[public exports](https://github.com/earendil-works/pi/blob/2c8d1feb147f6b3d97e855da803bfe7b19f3c403/packages/schema/src/index.ts)
-include builders, `compile`, and `Validator`.
+Checked on 2026-11-02. `@earendil-works/pi-schema` 1.5.0 is published on npm
+and installed in this checkout. It supplies plain JSON Schema builders (`str`,
+`num`, `int`, `bool`, `nul`, `unknown`, `lit`, `oneOf`, `obj`, `opt`, `arr`,
+`tuple`, `map`, `union`, `nullable`, `bytes`), a `Static` type, and
+`compile(schema, options)`, which validates JSON Schema drafts 2020-12 and 7
+without code generation. A `Validator` supplies `check` and `errors` with JSON
+Pointer paths; `{ coerce: true }` adds `coerce` and `parse`. Format checks are
+in the optional `./formats` export. The package has no runtime dependencies.
+AI, agent-core, Durable, and Chord depend on it. Sources:
+`pi-schema/{package.json,README.md,dist/builders.d.ts}`.
 
-On the targeted review date, the public npm registry returns 404 for that
-package, and the [1.4.0 release assets](https://github.com/earendil-works/pi/releases/tag/v1.4.0)
-contain no schema package tarball. A repository Git dependency selects the Pi
-monorepo root, not a built package from `packages/schema`. Source availability
-therefore does not yet supply the normal installable runtime dependency.
-Adoption waits for an upstream package. Do not add an unresolved dependency,
-vendor the source, or introduce installation plumbing or compatibility shims.
+The harness adopts it with one rule:
 
-Before direct adoption, check actual schema consumers rather than replace names
-mechanically. Input type inference, recursive references, diagnostic fields,
-unknown-property rules, and string-bound units affect suitability. In particular,
-pi-schema bounds strings by code points; the current Pillars draft contract uses
-TypeBox graphemes. Keep explicit grapheme contracts intact instead of silently
-changing their accepted text. No schema or validator changes follow from this
-source review alone.
+- Tool parameter schemas passed to `pi.registerTool` (`parameters` and
+  `outputSchema`) stay TypeBox, imported from `typebox`. The host's
+  `ToolDefinition` types parameters with TypeBox `Static`
+  (`dist/core/extensions/types.d.ts` imports `Static` and `TSchema` from
+  `typebox`). pi-schema's `Schema` brand is a type-level symbol that TypeBox
+  `Static` does not see, so a pi-schema builder types its arguments as
+  `unknown` there (`pi-schema/dist/builders.d.ts`, `Schema` and `Static`).
+  The published AI root no longer exports TypeBox, and its `StringEnum`
+  returns a pi-schema `Schema`; extensions build string enums with TypeBox.
+- Validation of JSON that is not a tool parameter (settings, stored artifacts,
+  host protocol payloads, policy data, profiles) uses pi-schema `compile()`.
+  A schema shared with a tool parameter stays TypeBox and is compiled with
+  pi-schema, because TypeBox schemas are JSON Schema.
+- No compatibility paths, dual readers, or version branches serve the 1.4.0
+  host.
+
+Adopt per consumer rather than replace names mechanically. Input type
+inference, recursive references, diagnostic paths and messages, unknown-property
+rules (`obj` is closed unless `{ open: true }`), and string-bound units affect
+suitability. pi-schema bounds strings by code points; the Pillars draft
+contract uses TypeBox graphemes. Keep explicit grapheme contracts intact
+instead of silently changing their accepted text. pi-schema treats `format` as
+an annotation unless the formats entry is supplied.
 
 ## Native host integration contracts
 
@@ -220,6 +262,14 @@ source review alone.
   The Unix adapter checks wire 4 and `codeVersion`, and returns encoded bytes
   including LF from `Link.send()`. The owning contract is
   [Chord wire contract](agent-host-contract.md#chord-wire-contract).
+- Chord 1.5.0 checks contract and state schemas with pi-schema. TypeBox-built
+  schemas still validate but type as `unknown`; `format` is an annotation and
+  is not checked. An `invalid` error's message and `details` use pi-schema
+  paths and messages. Fingerprints and identities are unchanged for schemas
+  with the same JSON. `WatchHandle`, `Watch`, and the tagged `WatchCall` and
+  `WatchEnd` shapes live in Chord; custom `SqliteDatabase` and `SqliteExecutor`
+  implementations add `runCounted`. Source: `chord/CHANGELOG.md` 1.5.0 and
+  `chord/dist`.
 - Native Codemode supplies synchronous `acquireWorker`. Its release callback
   runs once on construction failure or actual worker exit, not result settlement.
   Ordinary coding-agent Codemode reserves workers through a separate arrival-order
@@ -233,9 +283,13 @@ source review alone.
   `dist/extensions/codemode/execute.js`, and
   `extensions/agent/codemode-admission.ts`.
 - Native generation retains the original tool call. Tool-task validation passes
-  it to AI validation, which rejects `argumentsError`. ProviderModels forwards
-  original events and messages; observation and UI projections preserve the
-  error field. No second validation layer replaces native validation.
+  it to AI validation, which rejects `argumentsError` and otherwise coerces and
+  checks the arguments with pi-schema `parse()`. Durable `defineTool()` and
+  `ToolRegistration` take any JSON Schema as `parameters` and
+  `structuredOutputSchema` and type `args` with pi-schema `Static`.
+  ProviderModels forwards original events and messages; observation and UI
+  projections preserve the error field. No second validation layer replaces
+  native validation.
   Sources: `pi-durable/dist/harness/{generation,tool}.js`,
   `pi-ai/dist/utils/validation.js`, and `extensions/agent/provider-models.ts`.
 - Saved ordinary conversion uses a complete unchanged read-only snapshot and
@@ -269,7 +323,10 @@ Sources: `dist/core/{sdk,agent-session-services,agent-session-runtime}.js` and
 `pi-durable/dist/harness/{types,harness}.d.ts`.
 
 The extension loader aliases coding-agent, agent-core, AI, TUI, and TypeBox to
-the running installation. Durable, Codemode, MCP, and Chord resolve separately.
+the running installation. The AI root and `./compat` map to an extension view
+that still supplies `Type`, `Static`, `TSchema`, and a TypeBox `StringEnum`.
+Durable, Codemode, MCP, Chord, and pi-schema resolve separately.
+Source: `dist/core/extensions/loader.js`.
 A peer declaration alone does not supply one of those dependencies.
 Package-manager production installs omit development and automatic peer
 installation; current mechanisms are in `dist/core/package-manager.js`.
@@ -318,11 +375,40 @@ The ordinary public contracts remain separate from Durable adoption:
   availability is not provider health.
 - Virtual selection and the physical dispatched model are separate. Response
   usage follows the physical model; `ctx.model` names the selected virtual one.
+  Messages from pi-messages providers carry a concrete `responseModel`.
+  `Usage.cost.totalFromProvider` marks a billed total rather than a catalog
+  estimate; combined usage carries it only when every part does.
 
 Defining sources: `dist/core/{agent-session,session-manager,model-runtime}.d.ts`,
 `dist/core/{agent-session,agent-session-services,sdk}.js`,
 `dist/core/extensions/{types.d.ts,runner.js}`, `pi-ai/dist/types.d.ts`,
 `pi-agent-core/dist/{agent.d.ts,agent-loop.js}`, and `docs/virtual-models.md`.
+
+### Pi 1.5 extension contracts
+
+Checked on 2026-11-02 against the installed coding-agent 1.5.0 declarations,
+documentation, and release notes:
+
+- Tool argument validation runs on pi-schema. TypeBox features outside JSON
+  Schema (`Type.Refine()`, `Type.BigInt()`, `Type.Undefined()`, codecs,
+  `Format.Set()` formats) no longer apply to tool arguments. Plain JSON Schema
+  tools, including MCP tools, get the same coercion as TypeBox tools. Errors the
+  model sees use pi-schema messages (`- path: missing`). Sources:
+  `pi-ai/dist/utils/validation.js` and `docs/extensions.md`.
+- The tool render context and the message and entry renderer options inject
+  `keyText()` and `keyHint()`. An imported copy can resolve to the extension's
+  own package and miss the user's keybindings. Source:
+  `dist/core/extensions/types.d.ts`.
+- `pi.exec()` accepts `maxBuffer` (combined stdout and stderr). Its result has
+  `truncated`, true when output passed the limit; the command is then terminated
+  with a nonzero code. Source: `dist/core/exec.d.ts`.
+- Inline `ctx.ui.custom()` components accept `blocked` to report that Pi waits
+  for user input; overlays ignore it.
+- `pi.setActiveTools()` keeps the order of tools that stay active and appends
+  newly activated tools, so a reordered list does not change the system prompt.
+- Extension packages show their changelog after an update, from
+  `pi.changelogPath` or the package root `CHANGELOG.md`; `collapseChangelog`
+  condenses it. Sources: `docs/{packages,settings}.md`.
 
 ### Summary, model, and recovery changes
 
@@ -440,8 +526,11 @@ and parent-call events through native `ToolTask`.
 Ordinary read returns text or a structured image block. Durable's native read
 also supports PNG, JPEG, GIF, and WebP, with optional image preparation through
 its image exports. The host's selected coding-tool adaptation must preserve its
-ordinary file bounds and error semantics. Show an image with
+ordinary file bounds and error semantics. Native `read` declares a
+`structuredOutputSchema` (a text file's text or an image's `ImageContent`), so
+scripts receive an image value. Show an image with
 `image(await tools.read({path}))`; printing base64 text does not show it.
+Source: `pi-durable/dist/tools/read.js`.
 
 Ordinary declaration generation includes input constraints in property comments
 and spells out MCP result types. Ordinary tool namespaces accept registered aliases;
@@ -481,6 +570,10 @@ host capability. Current ordinary defining sources are
   declaration to await needed servers. Codemode discovery reaches all servers,
   otherwise its script words select namespaces. Tool-search reaches all servers.
   A replacement tool's name alone grants no readiness or automatic activation.
+  `tool_search` and `searchTools()` rank name matches above description mentions
+  and tokenize words in any script, in ordinary and native hosts alike.
+- MCP input schemas are plain JSON Schema. Tool argument validation coerces
+  them like TypeBox schemas.
 - Connection no longer lists every resource. `/mcp` and `pi mcp list --json`
   report resource capability as `resources: true`, not inventory counts. Resource
   tools enumerate on demand. Structured MCP content is `unknown` when no output
@@ -498,7 +591,10 @@ host capability. Current ordinary defining sources are
   files stay unread. Native startup uses the same project-trust boundary.
 - HTTP provider authentication and OAuth options stay upstream responsibilities.
   Issuer mismatch fails, including a supplied issuer without discoverable
-  metadata. Stored credentials are keyed by server identity and URL. Native
+  metadata. Sign-in accepts only `http:` and `https:` metadata and authorization
+  URLs. `oauth.clientRegistration` defaults to `auto` (a Client ID Metadata
+  Document when supported, otherwise dynamic registration), with `dcr` and
+  `cimd` modes. Stored credentials are keyed by server identity and URL. Native
   agents consume stored credentials; ordinary Pi owns interactive sign-in.
 
 These are source contracts, not fresh external-service or OAuth trials. Native
@@ -540,18 +636,22 @@ wake alarm instead of a Harness sleep timer. These are upstream task APIs, not
 authority to add agent-side waits. Source: `pi-durable/dist/harness/types.d.ts`.
 
 Repeated interruption without a new task state reaches `settings.restartLimit`
-(default 5), then parks the task with blocked reason `restart_limit`.
-`Harness.retryTask()` releases it. A clean close does not count as a crash.
-Exhaustive task-state and blocked-reason consumers must preserve sleeping and
-parked states instead of treating them as terminal or empty. Sources:
-`pi-durable/dist/{types,harness/types}.d.ts`.
+(default 5), then ends the task with a `restart_limit` outcome, as the
+[host transition contracts](#pi-15-host-transition-contracts) describe. No task
+parks and no retry call exists; running the work again needs a new submission.
+A clean close does not count as a crash. Exhaustive task-state and
+blocked-reason consumers must preserve sleeping states instead of treating them
+as terminal or empty. Sources: `pi-durable/dist/{types,harness/types}.d.ts`.
 
 ### Host options and reports
 
 `HarnessOptions.models` and `settings` accept either current objects or getter
 functions. The host resolves getters at use, rather than freezing values at
-open. `onReport(error, info)` identifies Session, task, extension, host, and
-listener failures; report metadata is not task acceptance.
+open. `onReport(report)` receives one `Report` tagged by `kind` that identifies
+storage, task, extension, host, and listener failures; report metadata is not
+task acceptance. `task_interrupted` reports built-in tasks ended by crashes, and
+a throwing telemetry adapter is reported as `host_error` with callback
+`telemetry`.
 `settings.afterFailedRun` defaults to `keep`, with `continue` and `withdraw`
 policies for queued inputs. `compaction.modelOverrides` sets thresholds by exact
 provider/model identity. Source: `pi-durable/dist/harness/types.d.ts`.
@@ -566,7 +666,7 @@ requirement to add a recorder or duplicate retained history. Sources:
 
 ## Pi Durable runtime
 
-The installed 1.4.0 `pi-durable/README.md` and manifest define a separate
+The installed 1.5.0 `pi-durable/README.md` and manifest define a separate
 runtime whose API changes between releases. Available primitives do not by
 themselves supply a complete ordinary Pi session, terminal UI, or detached host.
 
@@ -579,10 +679,11 @@ work. Generation owns native tool tasks; tool intent commits before effects.
 Safe tools replay under their contract, not a general exactly-once promise.
 Compaction changes context without deleting older retained entries.
 
-`ConversationView`, document watches, `watchEvents()`, `taskGraph()`, and
-`watchTaskGraph()` expose committed state and live ownership. They are not
-paged archives of unknown stored sessions. Slow watches replace queued frames
-with a current snapshot. The host supplies resource discovery, project trust,
+Conversation watches, document watches, `watchTaskGraph()`, and the
+synchronous observers expose committed and deferred state and live ownership.
+They are not paged archives of unknown stored sessions. A conversation view
+holds a bounded entry window. Slow watches fold queued commits into one call
+and replace more than 10,000 pending operations with a root value. The host supplies resource discovery, project trust,
 configured models, process claims, and result routing.
 
 ### Environment and tool contracts
@@ -638,10 +739,13 @@ waits and held owners; they do not prove complete cross-host graph coverage.
 
 ### Durability limits
 
-Committed state is observable, but progress intervals do not establish a fixed
-crash-loss window. Partial and tool-output commits default to 100 ms; tool output
-also adapts its interval by size. Uncommitted progress is lost on process failure.
-Sources: `pi-durable/dist/harness/{agent,generation,tool}.js` and
+Observable state is not stored state. Partial and tool-output commits are
+deferred: watches see them at once, and Storage receives them with the next
+commit that reads `pi.live` or within `settings.progress.persistWithinMs`
+(default 1,000 ms). A crash loses held progress, up to about that interval; a
+stream that crashes before its first store leaves no aborted entry and no usage
+record. Tool output also adapts its commit interval by size. Sources:
+`pi-durable/dist/harness/{types.d.ts,agent.js,generation.js,tool.js}` and
 `chord/dist/output.js`.
 
 JSONL defaults fsync off. Sidecar-before-marker ordering with fsync enabled does
@@ -655,8 +759,9 @@ exactly-once effects, orphan cleanup, or power-loss durability.
 Storage errors fail the Session closed. Pending waits and later calls reject
 with `SessionFailed`; storage owns transient retries. A read that throws
 `StorageRequestError` rejects that request without failing the Session. The same
-error from `commit()` or `mintId()` fails the Session. `Session.closed` and
-watch `session_failed` make that failure visible. Listener/report errors do not
+error from `commit()` or `mintId()` fails the Session. `Session.closed`
+(`kind: "failed"`), watch end `failed`, and the `storage_failed` report make
+that failure visible. A Session close ends synchronous observers `failed`. Listener/report errors do not
 replace the underlying storage error. Sources: `pi-durable/dist/{session/session,types}.d.ts`
 and `pi-durable/dist/session/session.js`. The host must preserve the failure rather
 than retry a failed Session or describe it as empty state.
@@ -673,19 +778,19 @@ The Agent owns exclusive writer claims and detached host lifetime; Durable does
 not supply a cross-process ownership lock. Passive connections alone do not own
 native work. Native tasks, active deliveries, controls, and open observations
 hold the host. Cold reads leave retained source stores writer-free. The capture
-path copies source bytes before it opens the disposable target; 1.4.0 migration
-of that target does not migrate the source. Source:
+path copies source bytes before it opens the disposable target; migration of
+that target does not migrate the source. Source:
 `extensions/agent/snapshot-capture.ts`. Clean retirement and unexpected host loss
 have different recovery consequences.
 
 Retained hosts keep loaded code and their selected coding-agent installation.
 Idle retirement does not silently choose a new Pi install. Source and dependency
-updates form one activation unit: a `sleepUntil()` consumer requires the 1.4.0
-task API, not a 1.3.0 dependency graph. Promotion synchronizes source into sibling
+updates form one activation unit: an `observeCommits()` or `watchDoc()`
+consumer requires the 1.5.0 Durable API, not a 1.4.0 dependency graph. Promotion synchronizes source into sibling
 worktrees, so source promotion alone can cross this boundary before any install.
 An isolated lockfile and source candidate does not establish live activation.
-The 1.4.0 transition requires both the migration decision for existing operator
-stores and an owner-agreed boundary for retained consumers. Before source or
+The 1.5.0 transition requires both the task-migration decision for existing
+operator stores and an owner-agreed boundary for retained consumers. Before source or
 dependency activation, old consumers must remain on intact old bytes, finish,
 or stop/restart at an owner-agreed boundary. This includes all changed native
 contributions, not only the Agent host. Promotion-triggered sibling source
@@ -731,7 +836,8 @@ experimental coding-agent client is assumed.
 
 ### Store format and retained task versions
 
-Durable 1.4.0 opens SQLite storage at schema version 2. `SqliteStorage.open()`
+Durable 1.5.0 opens SQLite storage at schema version 2, the version 1.4.0
+introduced; 1.5.0 adds no SQLite migration. `SqliteStorage.open()`
 automatically applies pending migrations before reading metadata. Migration 2
 rebuilds the tasks table to admit the `sleeping` status, copies its records,
 and recreates its indexes. Opening an existing schema-1 database therefore
@@ -745,12 +851,14 @@ JSONL needs no SQLite migration, but Pi 1.3.0 and earlier do not resume stored
 sleeping tasks. Source: `pi-durable/CHANGELOG.md`. Neither format supplies a safe
 rollback merely because the transcript remains readable.
 
-Native `pi.tool` remains version 2 with a migration from version 1 task input
-in `pi-durable/dist/harness/tool.js`. Task-definition migrations and SQLite
+Native `pi.tool` is version 3 with a migration from versions 1 and 2 in
+`pi-durable/dist/harness/tool.js`; `pi.generation` is version 2 and `pi.live`
+version 3. An older Harness leaves these tasks blocked (`task_too_old`) and
+cannot read a `pi.live` value 1.5.0 wrote. Task-definition migrations and SQLite
 schema migration are separate changes.
 
 The controlled `extensions/agent/host-upgrade.test.mts` trial completed an
-isolated Pi/Durable 1.3.0-to-1.4.0 transition. It drained tools and deliveries,
+isolated Pi/Durable 1.3.0-to-1.4.0 transition; no 1.4.0-to-1.5.0 trial exists. It drained tools and deliveries,
 closed the old writer, and released its claim before the new open. The trial
 checked schema 1 to 2, the rebuilt task constraint, unchanged other schema
 objects and retained rows, exact retained results, and successful follow-up work.
@@ -759,10 +867,12 @@ explicitly supplied isolated old and new runtimes and skips when those inputs
 are absent. This result concerns that drained synthetic store, not arbitrary
 operator stores, unsafe-effect replay, or compatibility with live consumers.
 
-Operator migration authority must cover a 1.4.0 open of an existing operator
-SQLite store, including a drained store. An explicit grant supplies that
+Operator migration authority must cover a 1.5.0 open of an existing operator
+store. A schema-1 SQLite store migrates to schema 2 on open, even when drained.
+Unfinished `pi.tool` tasks at version 1 or 2, unfinished `pi.generation` tasks,
+and the first `pi.live` write at version 3 also need authority, because older
+hosts cannot resume or read them afterward. An explicit grant supplies that
 authority without repeated approval; the safe consumer transition still binds.
-Unfinished `pi.tool` tasks at version `1` also need authority for task migration.
 A read-only inspection request does not authorize a writer or live migration.
 No live-store trial or compatibility reader follows from these source checks.
 UI reload, retained ordinary managers, and every changed contribution still
@@ -780,7 +890,9 @@ These are source boundaries, not a new terminal interaction trial.
 
 `ToolRenderContext` carries recorded `durationMs` and `outputPad`.
 `agent_settled.aborted` distinguishes cancellation from ordinary completion.
-OSC 7501 program status is terminal status, not task acceptance. Hardware cursor,
+OSC 7501 program status is terminal status, not task acceptance. Regular TUI
+mode no longer writes OSC 133 prompt markers, which ended that status in some
+terminals. Hardware cursor,
 mouse-wheel, shifted-key, color-reply, image, and compaction-indicator fixes belong
 to the upstream TUI unless a customized consumer changes their contract.
 

@@ -17,7 +17,7 @@
 import type { JsonValue } from "@earendil-works/chord";
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
 import { Type, type Static, type TSchema } from "typebox";
-import { Value } from "typebox/value";
+import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { FleetStatusSchema } from "./fleet-status.ts";
 import { OrdinaryPrimaryObservationSchema } from "./primary-observation.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
@@ -98,6 +98,7 @@ const toolSlot = object({
 	callId: string,
 	name: string,
 	taskId: Type.Optional(id),
+	unoffered: Type.Optional(literal(true)),
 	status: union([literal("pending"), literal("running"), literal("done")]),
 	output: Type.Optional(string),
 	droppedBytes: Type.Optional(count),
@@ -121,15 +122,17 @@ const nestedToolSlot = object({
 	diagnostics: Type.Optional(Type.Array(toolDiagnostic)),
 	summary: Type.Optional(object({ isError: boolean, durationMs: Type.Optional(number), usage: Type.Optional(UsageSchema), error: Type.Optional(string) })),
 });
+const compactionTrigger = union([literal("manual"), literal("threshold"), literal("overflow")]);
+const runFailureReasons = ["model_error", "no_model", "aborted", "reset", "faulted", "orphaned", "interrupted", "restart_limit", "nothing_to_answer", "turn_limit"] as const;
 const compactionStatus = object({
 	taskId: id,
-	reason: union([literal("manual"), literal("threshold"), literal("overflow")]),
+	trigger: compactionTrigger,
 	blocking: boolean,
 	attempt: count,
 	retry: Type.Optional(object({ at: number, error: string })),
 });
 export const LiveStateSchema = object({
-	run: Type.Optional(object({ taskId: id, inputs: Type.Array(id) })),
+	run: Type.Optional(object({ taskId: id, inputs: Type.Array(id), turns: count, first: Type.Optional(id), afterRun: Type.Optional(object({ tasks: Type.Optional(Type.Array(id)) })) })),
 	generation: Type.Optional(
 		object({
 			attempt: count,
@@ -141,11 +144,12 @@ export const LiveStateSchema = object({
 	tools: Type.Optional(Type.Array(toolSlot)),
 	nestedTools: Type.Optional(Type.Array(nestedToolSlot)),
 	compactions: Type.Optional(Type.Array(compactionStatus)),
-	compactionFailure: Type.Optional(object({ taskId: id, reason: union([literal("manual"), literal("threshold"), literal("overflow")]), error: string })),
+	compactionFailure: Type.Optional(object({ taskId: id, trigger: compactionTrigger, error: string })),
+	runFailure: Type.Optional(object({ taskId: id, inputs: Type.Array(id), reason: union(runFailureReasons.map((reason) => literal(reason))), detail: Type.Optional(string), first: Type.Optional(id) })),
 });
 
 const inboxItem = union([
-	object({ id, mode: union([literal("steer"), literal("followUp")]), content: userInputContent }),
+	object({ id, mode: union([literal("steer"), literal("followUp")]), content: userInputContent, entry: Type.Optional(jsonObject) }),
 	object({ id, mode: literal("write"), entry: jsonObject }),
 ]);
 export const InboxStateSchema = object({ items: Type.Array(inboxItem) });
@@ -187,7 +191,7 @@ export const ConversationStatusSchema = object({
 		object({
 			id,
 			kind: string,
-			status: union([literal("running"), literal("ready"), literal("waiting"), literal("sleeping"), literal("completing"), literal("blocked")]),
+			status: union([literal("running"), literal("pending"), literal("waiting"), literal("sleeping"), literal("completing"), literal("blocked")]),
 			background: boolean,
 			owner: Type.Optional(id),
 			abortRequested: boolean,
@@ -198,7 +202,7 @@ export const ConversationStatusSchema = object({
 	submissions: Type.Array(
 		object({
 			id,
-			type: union([literal("input"), literal("write")]),
+			type: union([literal("input"), literal("write"), literal("continue")]),
 			status: union([literal("queued"), literal("placed"), literal("done"), literal("unanswered")]),
 			requestId: Type.Optional(string),
 			entryId: Type.Optional(id),
@@ -213,7 +217,7 @@ export const ConversationStatusSchema = object({
 	ownerTaskId: Type.Optional(id),
 });
 
-const compactionFailure = object({ reason: union([literal("manual"), literal("threshold"), literal("overflow")]), errorMessage: Type.Optional(string), at: Type.Optional(string) });
+const compactionFailure = object({ trigger: compactionTrigger, errorMessage: Type.Optional(string), at: Type.Optional(string) });
 const autoRetry = object({ attempt: count, maxAttempts: count, delayMs: count, errorMessage: string });
 const dashboardHealth = object({ lastError: Type.Optional(string), compactionFailure: Type.Optional(compactionFailure), autoRetry: Type.Optional(autoRetry) });
 
@@ -520,12 +524,8 @@ function diagnosticScore(schema: DiagnosticBranch, record: Record<string, unknow
 /** JSON-round-trip and validate an observation, with schema paths on mismatch. */
 export function structuredObservation<T extends TSchema>(schema: T, value: unknown): Static<T> {
 	const parsed: unknown = JSON.parse(JSON.stringify(value ?? null));
-	if (!Value.Check(schema, parsed)) {
-		const detail: string[] = [];
-		for (const error of Value.Errors(diagnosticSchema(schema, parsed), parsed)) {
-			detail.push(`${error.instancePath === "" ? "/" : error.instancePath} ${error.message}`);
-			if (detail.length === 5) break;
-		}
+	if (!matchesSchema(schema, parsed)) {
+		const detail = schemaErrors(diagnosticSchema(schema, parsed), parsed, 5);
 		throw new Error(`Observation output does not match its schema: ${detail.join("; ")}`);
 	}
 	return parsed as Static<T>;

@@ -1,27 +1,30 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { type Theme, initTheme } from "@earendil-works/pi-coding-agent";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import { CORRECTION_TASK, judgmentPrompt, JUDGMENT_AUTHORITY } from "./commands.ts";
 import { DraftInputError, draftAssessment, DraftSchema, MAX_DRAFT_CHARACTERS, splitDraft } from "./draft.ts";
 import { accessRenderers } from "./presentation.ts";
 
-const schema = Compile(DraftSchema);
+const schema = compile(DraftSchema);
 test("draft schema leaves semantic checks to the handler", () => {
 	assert.equal(Object.hasOwn(DraftSchema, "pattern"), false);
 	assert.equal(Reflect.get(DraftSchema, "minLength"), 1);
-	assert.equal(Reflect.get(DraftSchema, "maxLength"), MAX_DRAFT_CHARACTERS);
-	for (const draft of ["", null, "a".repeat(MAX_DRAFT_CHARACTERS + 1), "😀".repeat(MAX_DRAFT_CHARACTERS + 1)])
-		assert.equal(schema.Check(draft), false);
+	assert.equal(Object.hasOwn(DraftSchema, "maxLength"), false);
+	for (const draft of ["", null]) assert.equal(schema.check(draft), false);
+	for (const draft of ["a".repeat(MAX_DRAFT_CHARACTERS + 1), "😀".repeat(MAX_DRAFT_CHARACTERS + 1)]) {
+		assert.equal(schema.check(draft), true);
+		assert.throws(() => splitDraft({ draft }), /character limit exceeded/);
+	}
 	for (const [draft, condition] of [[" \n", /blank text/], ["\ud800", /malformed Unicode: unpaired surrogate/]] as const) {
-		assert.equal(schema.Check(draft), true);
+		assert.equal(schema.check(draft), true);
 		assert.throws(() => splitDraft({ draft }), condition);
 	}
 });
 const validDrafts = ["A concrete proposal.", "  Keep the author's spaces.\n", "a".repeat(MAX_DRAFT_CHARACTERS), "😀".repeat(MAX_DRAFT_CHARACTERS), "e\u0301".repeat(MAX_DRAFT_CHARACTERS), "👩‍💻".repeat(MAX_DRAFT_CHARACTERS)];
 for (const draft of validDrafts) {
 	test(`draft schema and handler preserve ${Buffer.byteLength(draft)} UTF-8 bytes without normalization`, () => {
-		assert.equal(schema.Check(draft), true);
+		assert.equal(schema.check(draft), true);
 		const input = Object.freeze({ resource: "governance", offset: 0, draft });
 		assert.deepEqual(splitDraft(input), { source: { resource: "governance", offset: 0 }, draft });
 		const message = draftAssessment(draft);

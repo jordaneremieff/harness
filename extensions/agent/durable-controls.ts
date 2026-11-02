@@ -26,7 +26,7 @@ import { refreshManagedInstructions } from "./profile.ts";
 import { existsSync } from "node:fs";
 import type { PrimaryIntentClaim } from "./effort-presence.ts";
 import type { PrimaryRepositoryState } from "./primary-channel.ts";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import { canonicalIdentity } from "./identity.ts";
 import type { CatalogIntentClaims, CatalogViewRow } from "./catalog-view.ts";
@@ -104,7 +104,7 @@ export async function publishConversationIntent(tx: Tx, conversationId: Conversa
 function selectConversationIntent(metadata: NativeIntentMetadata | null | undefined, cwd: string | undefined): { value?: NativeIntentMetadata | null; omitted: boolean } {
 	if (metadata === undefined) return { omitted: false };
 	if (cwd === undefined) return { omitted: metadata?.claim != null };
-	if (metadata !== null && (!Value.Check(NativeIntentMetadataSchema, metadata) || metadata.cwd !== cwd)) return { omitted: true };
+	if (metadata !== null && (!matchesSchema(NativeIntentMetadataSchema, metadata) || metadata.cwd !== cwd)) return { omitted: true };
 	return { value: metadata?.claim ? JSON.parse(JSON.stringify(metadata)) as NativeIntentMetadata : null, omitted: false };
 }
 
@@ -1254,13 +1254,11 @@ export async function waitForReceipts(
 		const woke = new Promise<void>((resolve) => {
 			wake = resolve;
 		});
-		const unsubscribe = harness.subscribeCommits(() => {
-			queueMicrotask(wake);
-		});
+		const observation = harness.observeCommits({ advance: () => { queueMicrotask(wake); }, end: () => {} });
 		let end!: (error: Error) => void;
 		const ended = new Promise<never>((_resolve, reject) => { end = reject; });
 		const unsubscribeClose = harness.subscribeClose(() => {
-			void harness.closed.then((result) => end(result.reason === "failed" ? new SessionFailed(result.error) : new Error("Session closed while waiting for receipts")));
+			void harness.closed.then((result) => end(result.kind === "failed" ? new SessionFailed(result.error) : new Error("Session closed while waiting for receipts")));
 		});
 		void ended.catch(() => {});
 		const signals = [context.abortSignal, closeSignal].filter((signal): signal is AbortSignal => signal !== undefined);
@@ -1276,7 +1274,7 @@ export async function waitForReceipts(
 			if (cancelled !== undefined) throw cancelled;
 			throw error;
 		} finally {
-			unsubscribe();
+			observation.detach();
 			unsubscribeClose();
 			abort.dispose();
 		}

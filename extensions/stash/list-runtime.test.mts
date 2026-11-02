@@ -18,7 +18,7 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Value } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import registerStash from "./index.ts";
 import { ListOutputSchema } from "./list-result.ts";
 
@@ -81,7 +81,7 @@ test("native codemode consumes recent, search, empty and error objects without p
 			(pi) => {
 				pi.on("tool_result", (event) => {
 					if (event.toolName !== "stash_list") return;
-					assert.ok(Value.Check(ListOutputSchema, event.structuredContent));
+					assert.ok(compile(ListOutputSchema).check(event.structuredContent));
 					observed.push(event.structuredContent);
 				});
 			},

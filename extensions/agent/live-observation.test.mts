@@ -165,7 +165,7 @@ it("rolls back a failed second open without releasing the surviving task token",
 	t.mock.method(host.harness, "watchTaskGraph", async (...args: Parameters<typeof watch>) => {
 		const handle = await watch(...args);
 		return { get value() { if (fail) { fail = false; throw new Error("second frame unavailable"); } return handle.value; }, closed: handle.closed,
-			start: (listener: Parameters<typeof handle.start>[0]) => { publish = () => listener(handle.value, [], BACKGROUND_CONTEXT); handle.start(listener); },
+			start: (listener: Parameters<typeof handle.start>[0]) => { publish = () => listener({ kind: "value", value: handle.value, ops: [], retired: false }, BACKGROUND_CONTEXT); handle.start(listener); },
 			stop: async () => { stopped++; return handle.stop(); } };
 	});
 	const service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, BACKGROUND_CONTEXT);

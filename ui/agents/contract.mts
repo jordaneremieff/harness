@@ -175,16 +175,16 @@ function contract(member: string, version = "1.0.0", response = `${member}/${ver
 	return Object.freeze({ request: `${member}/${version}`, response, ...(native && durable ? { durable } : {}) });
 }
 export const supportedOperations: Readonly<Record<OperationName, OperationContract>> = Object.freeze({
-	dashboard: contract("dashboard", "1.0.0", "a89f98f3eb28c78f115c0010581107073600bfb9ec44934ad622aeb5d1cffcd7"),
+	dashboard: contract("dashboard", "1.0.0", "f3e8abe67fe550c8708e5e7c19322401fb1c951e797f3ee3c667f709d5befc9e"),
 	snapshot: contract("snapshot", "1.0.0", "snapshot/2.0.0", true),
-	inspect: contract("inspect", "1.1.0", "d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b", true),
+	inspect: contract("inspect", "1.1.0", "f1009d22633112866c6c6b83c4734512f00c6aa4767daf07644074f932633f0a", true),
 	"observe-open": contract("observe-open", "1.0.0", "observe-open/2.0.0", true),
 	"observe-frame": contract("observe-frame", "1.0.0", "observe-frame/2.0.0", true),
 	"observe-close": contract("observe-close"), changes: contract("changes"),
 	"task-submit": contract("task-submit", "1.0.0", "task-submit/1.2.0"), abort: contract("abort"),
 	configure: contract("configure", "1.3.0"),
 	"collaboration-list": contract("collaboration-list"), "collaboration-read": contract("collaboration-read"),
-	status: contract("status", "1.0.0", "d1f5f022e262aba18b6de135e891aef526cf9f0f62f114e51f3c132e624eb6cf", true),
+	status: contract("status", "1.0.0", "4eb8753a974ad2769e07ec49df2add0e027554a02c13f0a2aaef304f5562ad87", true),
 	command: contract("command", "1.1.0", "command/1.0.0", true),
 "profile-read":contract("profile-read","1.0.0","b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889"),
 "profile-update":contract("profile-update","1.0.0","7c805d143fae0d6a9fd373a4acb24fc080c94fa4b0787d447545e08714907eb4"),

@@ -12,6 +12,7 @@ import { readDeliveryDraft, retainedReportRequest, writeDeliveryDraft } from "./
 import { RequestContextDoc, type RequestContext } from "./request-context.ts";
 import { canonicalIdentity } from "./identity.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
+import { onStoredCommit } from "./commit-observation.ts";
 
 export const ProviderRetryNoticeSchema = Type.Object({ requesterSubmissionId: Type.Optional(Type.Integer({ minimum: 1 })), fact: ProducerAwaitFactSchema }, { additionalProperties: false });
 
@@ -149,7 +150,7 @@ export async function retainProviderRetryNotices(tx: Tx, storageId: string, conv
 }
 
 function retrySnapshot(live: LiveState, routes: readonly RetryRoute[]): RetryObservation {
-	return { routes: routes.map(({ requestId, replyTo, origin }) => ({ requestId, replyTo, origin })), ...(live.run === undefined ? {} : { run: { taskId: live.run.taskId, inputs: [...live.run.inputs] } }),
+	return { routes: routes.map(({ requestId, replyTo, origin }) => ({ requestId, replyTo, origin })), ...(live.run === undefined ? {} : { run: { taskId: live.run.taskId, inputs: [...live.run.inputs], turns: live.run.turns } }),
 		...(live.generation === undefined ? {} : { generation: { attempt: live.generation.attempt, ...(live.generation.retry === undefined ? {} : { retry: { ...live.generation.retry } }) } }),
 		...(live.tools === undefined ? {} : { tools: [] }) };
 }
@@ -170,7 +171,7 @@ export class ProviderRetryNotices {
 	constructor(harness: Harness, storageId: string, settings: HarnessOptions["settings"], report: (error: unknown) => void, now: () => number = Date.now) {
 		this.harness = harness; this.storageId = storageId; this.report = report; this.now = now;
 		this.ceiling = () => { const policy = { ...DEFAULT_RETRY_POLICY, ...(typeof settings === "function" ? settings() : settings)?.retry }; return policy.enabled ? policy.maxRetries + 1 : 1; };
-		this.unsubscribe = harness.subscribeCommits((publication) => {
+		this.unsubscribe = onStoredCommit(harness, (publication) => {
 			this.captureRoutes(publication);
 			this.captureLive(publication);
 			this.schedule();
@@ -178,13 +179,13 @@ export class ProviderRetryNotices {
 	}
 	private captureRoutes(publication: CommitPublication): void {
 		for (const change of publication.changes) if (change.type === "document" && change.record.kind === "agent.request-context" && change.conversationId !== undefined) {
-			const requests = change.value === null ? [] : (change.value as { requests: RequestContext[] }).requests;
+			const requests = change.kind === "retire" ? [] : (change.value as { requests: RequestContext[] }).requests;
 			if (requests.length === 0) this.routes.delete(change.conversationId);
 			else this.routes.set(change.conversationId, requests.map(({ requestId, replyTo, origin }) => ({ requestId, replyTo, origin })));
 		}
 	}
 	private captureLive(publication: CommitPublication): void {
-		for (const change of publication.changes) if (change.type === "document" && change.record.kind === "pi.live" && change.conversationId !== undefined && change.value !== null) this.captureSnapshot(change.conversationId, change.value as LiveState);
+		for (const change of publication.changes) if (change.type === "document" && change.record.kind === "pi.live" && change.conversationId !== undefined && change.kind === "change") this.captureSnapshot(change.conversationId, change.value as LiveState);
 	}
 	private captureSnapshot(conversationId: ConversationId, live: LiveState): void {
 		const pending: PendingRetries = this.pending.get(conversationId) ?? { retries: new Map() };

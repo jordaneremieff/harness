@@ -3,7 +3,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
-import { Value } from "typebox/value";
+import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { AgentCatalog, type CatalogPage, type CatalogRecord } from "./catalog.ts";
 import type { CatalogView, CatalogViewRow } from "./catalog-view.ts";
 import { FleetStatusSchema, readFleetStatus, validateFleetSelection, type FleetStatus } from "./fleet-status.ts";
@@ -71,7 +71,7 @@ it("prioritises selected usable model facts over crowded matching failure detail
 	for (const [index, record] of records.entries()) {
 		assert.ok(record.view?.modelEvidence);
 		record.view.modelEvidence.failures = [{ ...detail, at: now - index, conversationId: `source-${index}:${"x".repeat(padding)}` }];
-		assert.equal(Value.Check(ModelEvidenceSchema, record.view.modelEvidence), true);
+		assert.equal(matchesSchema(ModelEvidenceSchema, record.view.modelEvidence), true);
 		assert.ok(Buffer.byteLength(JSON.stringify(record.view.modelEvidence)) <= 4096);
 	}
 	const snapshot = JSON.stringify(records);
@@ -110,7 +110,7 @@ it("uses exact provider intersection and preserves nested model paths", async ()
 
 it("does not attribute malformed published identities to a selected provider", async () => {
 	const source = evidence({ models: ["providerX", "provider/", "/model", "provider/valid"].map((model) => ({ model, reportedCost: 1 })) });
-	assert.equal(Value.Check(ModelEvidenceSchema, source), true, "the source envelope admits malformed model text");
+	assert.equal(matchesSchema(ModelEvidenceSchema, source), true, "the source envelope admits malformed model text");
 	const catalog = new FixtureCatalog([page([record("source", [], source)])]);
 	const broad = await readFleetStatus(catalog); check(broad);
 	const result = await readFleetStatus(catalog, { provider: "provider" }); check(result);
@@ -183,7 +183,7 @@ it("returns usable model facts with plain and escaped combined selectors at thei
 		const modelId = (escaped ? "\\" : "m").repeat(311);
 		const model = `${provider}/${modelId}`;
 		const source = { ...sampled([{ model, at: now, tokens: 10, reportedCost: 1 }]), models: [{ model, reportedCost: 1, lastResponseAt: now }] };
-		assert.equal(Value.Check(ModelEvidenceSchema, source), true);
+		assert.equal(matchesSchema(ModelEvidenceSchema, source), true);
 		const catalog = new FixtureCatalog([page([record("source", [row("source", { model: { provider, modelId, thinkingLevel: "high" }, state: "working" })], source)])]);
 		const result = await readFleetStatus(catalog, { now, model, provider }); check(result);
 		assert.equal(result.selection?.filter, "model-and-provider");
@@ -344,7 +344,7 @@ async function read(records: CatalogRecord[]): Promise<FleetStatus> {
 	return result;
 }
 function check(value: FleetStatus): void {
-	assert.equal(Value.Check(FleetStatusSchema, value), true, JSON.stringify([...Value.Errors(FleetStatusSchema, value)]));
+	assert.equal(matchesSchema(FleetStatusSchema, value), true, JSON.stringify(schemaErrors(FleetStatusSchema, value, 10)));
 	assert.ok(Buffer.byteLength(JSON.stringify(value), "utf8") <= 4096);
 	assert.deepEqual(JSON.parse(JSON.stringify(value)), value);
 	assert.equal(value.view, "fleet");
@@ -552,5 +552,5 @@ it("reads an empty catalog and a stored publication without opening storage or h
 		{ model: "sample/past", reportedCost: 3 }, { model: "sample/selected", reportedCost: null },
 	]);
 	assert.deepEqual(readdirSync(catalog.root), [`${stored.storageId}.json`]);
-	assert.equal(Value.Check(FleetStatusSchema, { ...result, extra: true }), false);
+	assert.equal(matchesSchema(FleetStatusSchema, { ...result, extra: true }), false);
 });

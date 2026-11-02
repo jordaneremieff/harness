@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +10,7 @@ import { getCurrentSystemPrompt, type AssistantMessage, type Message } from "@ea
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { createAgentContribution, type AgentControlDispatch } from "./durable-agents.ts";
 import { readOutcome } from "./durable-controls.ts";
 import { observeProducerAwait } from "./await-producer-observer.ts";
@@ -58,7 +59,7 @@ async function setup(t: TestContext, producerAnswer: (text: string) => Assistant
 			const awaiting = await ownAwaitFact(tx, conversationId);
 			const execution = await producerRetryFact(tx, conversationId, params.results as ResultReference[], 5);
 			return { ...(awaiting === undefined ? {} : { awaiting }), ...(execution === undefined ? {} : { execution }) };
-		}, ctx), async (changed) => harness.subscribeCommits(changed), params.publish as (fact: ProducerAwaitFact) => Promise<void>, ctx);
+		}, ctx), async (changed) => onStoredCommit(harness, changed), params.publish as (fact: ProducerAwaitFact) => Promise<void>, ctx);
 	};
 	const registry = Durable.createRegistry();
 	registry.install(createAgentContribution({ configureSettings: () => {}, source: "extensions/agent/index.ts", dispatch }).create({ onClose() {}, durable: Durable, storageId, cwd: process.cwd(), agentDir, services: { modelRuntime: { getModel: () => undefined } } }));
@@ -78,7 +79,7 @@ async function setup(t: TestContext, producerAnswer: (text: string) => Assistant
 		const message = entries.items.flatMap((entry) => entry.model ?? []).filter((item) => item.role === "toolResult" && item.toolName === "agent_await").at(index);
 		assert.ok(message?.role === "toolResult"); assert.equal(message.isError, false, messageText(message));
 		const result = JSON.parse(messageText(message)) as AwaitReply;
-		assert.equal(Value.Check(AwaitOutputSchema, result), true);
+		assert.equal(matchesSchema(AwaitOutputSchema, result), true);
 		return result;
 	};
 	return { harness, root, submitProducer, start, output, prompts, calls: () => callerCalls };
@@ -89,7 +90,7 @@ async function waitForState(harness: Durable.Harness, predicate: (state: AwaitSt
 	try {
 		await new Promise<void>((resolve) => {
 			const check = (state: AwaitState | null | undefined) => { if (state !== null && state !== undefined && predicate(state)) resolve(); };
-			watch.start(async (state) => { check(state); });
+			watch.start(async (call) => { if (call.kind === "value") check(call.retired ? undefined : call.value); });
 			void harness.snapshot(AwaitDoc, context).then(check);
 		});
 	} finally { await watch.stop(); }

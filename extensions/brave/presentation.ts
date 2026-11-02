@@ -1,13 +1,13 @@
 /** Terminal cards for the brave tools: request identity and bounded outcome counts. */
 import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
-import { keyText } from "@earendil-works/pi-coding-agent";
+import type { KeybindingHints } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 
 const RESULT_DISPLAY_LIMIT = 32_000;
 const URL_LIMIT = 120;
 const QUERY_LIMIT = 160;
 
-interface CardContext {
+interface CardContext extends Partial<KeybindingHints> {
 	expanded: boolean;
 	isError: boolean;
 	args?: unknown;
@@ -74,8 +74,9 @@ function textComponent(text: string, previous?: Component): Text {
 	return component;
 }
 
-function expansionHint(subject: string): string {
-	const key = keyText("app.tools.expand");
+/** The host injects keyText with the operator's configured bindings; without it the hint names no key. */
+function expansionHint(subject: string, keys: Partial<KeybindingHints>): string {
+	const key = keys.keyText?.("app.tools.expand");
 	return key ? `${key} to expand ${subject}` : `Expand for full ${subject}`;
 }
 
@@ -127,7 +128,7 @@ export function renderReadCall(value: unknown, theme: Theme, context: CardContex
 		return textComponent(lines.join("\n"), context.lastComponent);
 	}
 	const parts = readQualifier(args);
-	if (url.length > URL_LIMIT) parts.push(expansionHint("arguments"));
+	if (url.length > URL_LIMIT) parts.push(expansionHint("arguments", context));
 	if (parts.length > 0) lines.push(theme.fg("dim", parts.join(" · ")));
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
@@ -186,7 +187,7 @@ export function renderReadResult(
 	const finalUrl = stringField(details, "finalUrl");
 	if (finalUrl && finalUrl !== stringField(details, "requestedUrl")) text += theme.fg("dim", ` → ${displayValue(finalUrl, URL_LIMIT)}`);
 	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
-	else text += `\n${theme.fg("dim", expansionHint("result"))}`;
+	else text += `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }
 
@@ -219,7 +220,7 @@ export function renderSearchCall(value: unknown, theme: Theme, context: CardCont
 		return textComponent(lines.join("\n"), context.lastComponent);
 	}
 	const parts = searchQualifier(args);
-	if (query.length > QUERY_LIMIT) parts.push(expansionHint("arguments"));
+	if (query.length > QUERY_LIMIT) parts.push(expansionHint("arguments", context));
 	if (parts.length > 0) lines.push(theme.fg("dim", parts.join(" · ")));
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
@@ -242,6 +243,6 @@ export function renderSearchResult(
 	if (booleanField(details, "outputTruncated") === true) parts.push("output truncated");
 	let text = `\n${theme.fg("success", parts.join(" · "))}`;
 	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
-	else text += `\n${theme.fg("dim", expansionHint("result"))}`;
+	else text += `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }

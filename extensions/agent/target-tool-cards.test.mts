@@ -1,3 +1,6 @@
+import { keyHint, keyText } from "@earendil-works/pi-coding-agent";
+/** Host-injected keybinding hints, as Pi passes them to renderers. */
+const cardKeys = { keyText, keyHint };
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { describe, it } from "node:test";
@@ -11,7 +14,7 @@ initTheme("dark", false);
 const nativeTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }) => component.render(240).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
-const context = (overrides: Partial<AgentCardContext> = {}): AgentCardContext => ({ args: {}, expanded: false, argsComplete: true, isError: false, ...overrides });
+const context = (overrides: Partial<AgentCardContext> = {}): AgentCardContext => ({ ...cardKeys, args: {}, expanded: false, argsComplete: true, isError: false, ...overrides });
 const id = "12345678-1234-1234-1234-123456789abc";
 const model = { provider: "provider", modelId: "model", thinkingLevel: "high" };
 const row: AgentConversationSummary = { id, storageId: id, name: "Parser review", cwd: "/work", model, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false };
@@ -27,7 +30,7 @@ describe("human-readable agent targets", () => {
 			const collapsed = screen(card.renderCall(args, theme, context({ executionStarted: true })));
 			assert.match(collapsed, /Parser review\nprovider\/model · high/u, name);
 			assert.doesNotMatch(collapsed, new RegExp(id), name);
-			assert.ok(screen(card.renderCall(args, theme, context({ expanded: true }))).includes(id), name);
+			assert.ok(screen(card.renderCall(args, theme, context({ ...cardKeys, expanded: true }))).includes(id), name);
 		}
 	});
 
@@ -38,9 +41,9 @@ describe("human-readable agent targets", () => {
 			assert.match(screen(cards[name].renderCall({ sessionId: "@parser", message: "Task" }, theme, context())), /@parser\nprovider\/model · high/u);
 		}
 		assert.match(screen(cards.agent_spawn.renderCall({ handle: "parser" }, theme, context())), /@parser\nprovider\/model · high/u);
-		assert.ok(screen(cards.agent_spawn.renderCall({ handle: "parser" }, theme, context({ expanded: true }))).includes(id));
-		assert.ok(screen(cards.agent_send.renderCall({ sessionId: "@parser", message: "Task" }, theme, context({ expanded: true }))).includes(id));
-		assert.match(screen(cards.agent_send.renderResult(receipt, { expanded: false, isPartial: false }, theme, context())), /provider\/model · high\nAdmitted · @parser/u);
+		assert.ok(screen(cards.agent_spawn.renderCall({ handle: "parser" }, theme, context({ ...cardKeys, expanded: true }))).includes(id));
+		assert.ok(screen(cards.agent_send.renderCall({ sessionId: "@parser", message: "Task" }, theme, context({ ...cardKeys, expanded: true }))).includes(id));
+		assert.match(screen(cards.agent_send.renderResult(receipt, { ...cardKeys, expanded: false, isPartial: false }, theme, context())), /provider\/model · high\nAdmitted · @parser/u);
 	});
 
 	it("falls back to the full identity and retains unknown handles", () => {
@@ -48,7 +51,7 @@ describe("human-readable agent targets", () => {
 		assert.ok(screen(cards.agent_send.renderCall({ sessionId: id, message: "Task" }, theme, context())).includes(`agent_send · ${id}`));
 		assert.ok(screen(cards.agent_abort.renderCall({ sessionId: `${id}:7` }, theme, context())).includes(`${id}:7`));
 		assert.match(screen(cards.agent_send.renderCall({ sessionId: "@unknown", message: "Task" }, theme, context())), /agent_send · @unknown/u);
-		assert.ok(screen(cards.agent_send.renderCall({ sessionId: id, message: "Task" }, theme, context({ expanded: true }))).includes(id));
+		assert.ok(screen(cards.agent_send.renderCall({ sessionId: id, message: "Task" }, theme, context({ ...cardKeys, expanded: true }))).includes(id));
 	});
 
 	it("disambiguates repeated names only without distinct handles", () => {
@@ -71,7 +74,7 @@ describe("human-readable agent targets", () => {
 			const state = {};
 			assert.equal(hintCount(screen(card.renderCall(args, theme, context({ state, argsComplete: false })))), 0);
 			assert.ok(hintCount(screen(card.renderCall(args, theme, context({ state })))) <= 1);
-			const phases = [{ expanded: false, isPartial: true }, { expanded: false, isPartial: false }, { expanded: true, isPartial: true }, { expanded: true, isPartial: false }, { expanded: false, isPartial: true }, { expanded: false, isPartial: false }];
+			const phases = [{ ...cardKeys, expanded: false, isPartial: true }, { ...cardKeys, expanded: false, isPartial: false }, { ...cardKeys, expanded: true, isPartial: true }, { ...cardKeys, expanded: true, isPartial: false }, { ...cardKeys, expanded: false, isPartial: true }, { ...cardKeys, expanded: false, isPartial: false }];
 			for (const { expanded, isPartial } of phases) {
 				const ctx = context({ args, state, expanded, executionStarted: true, isPartial });
 				const combined = `${screen(card.renderCall(args, theme, ctx))}\n${screen(card.renderResult(receipt, { expanded, isPartial }, theme, ctx))}`;
@@ -87,7 +90,7 @@ describe("human-readable agent targets", () => {
 		const state = {};
 		const ctx = context({ args, state });
 		const call = screen(cards.agent_send.renderCall(args, theme, ctx));
-		const output = screen(cards.agent_send.renderResult(receipt, { expanded: false, isPartial: false }, theme, ctx));
+		const output = screen(cards.agent_send.renderResult(receipt, { ...cardKeys, expanded: false, isPartial: false }, theme, ctx));
 		assert.match(call, /Parser review/u);
 		assert.doesNotMatch(call, /unknown|unavailable/u);
 		assert.equal(hintCount(call) + hintCount(output), 1);
@@ -98,10 +101,10 @@ describe("human-readable agent targets", () => {
 	it("keeps admission concise, labels the target, and preserves the full result", () => {
 		const cards = createAgentToolCards(() => [row]);
 		const before = structuredClone(receipt);
-		const collapsed = screen(cards.agent_send.renderResult(receipt, { expanded: false, isPartial: false }, theme, context({ args: { sessionId: id }, executionStarted: true })));
+		const collapsed = screen(cards.agent_send.renderResult(receipt, { ...cardKeys, expanded: false, isPartial: false }, theme, context({ args: { sessionId: id }, executionStarted: true })));
 		assert.equal(collapsed.split("\n")[0], "Admitted · submission 405");
 		assert.doesNotMatch(collapsed, /not proof|submitted|12345678/u);
-		assert.ok(screen(cards.agent_send.renderResult(receipt, { expanded: true, isPartial: false }, theme, context({ expanded: true }))).includes(id));
+		assert.ok(screen(cards.agent_send.renderResult(receipt, { ...cardKeys, expanded: true, isPartial: false }, theme, context({ ...cardKeys, expanded: true }))).includes(id));
 		assert.deepEqual(receipt, before);
 	});
 });

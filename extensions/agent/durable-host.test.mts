@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -134,7 +135,7 @@ it("clears a native retry after the next attempt settles the same exact input", 
 	let host = await DurableHost.open(options, BACKGROUND_CONTEXT);
 	try {
 		let ready!: () => void; const retryReady = new Promise<void>((resolve) => { ready = resolve; });
-		const stop = host.harness.subscribeCommits(() => { void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => { if (live?.generation?.retry) ready(); }); });
+		const stop = onStoredCommit(host.harness, () => { void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => { if (live?.generation?.retry) ready(); }); });
 		const submitted = await host.submit({ message: "task", requestId: "native-retry" });
 		await retryReady; stop();
 		const results = [{ sessionId: host.storageId, submissionId: submitted.submissionId, requestId: "native-retry" }];
@@ -154,7 +155,7 @@ it("recovers through explicit abort, idle configuration, and a new exact input w
 	const host = await DurableHost.open({ ...hostOptions(storagePath, await scriptedRuntime([error, answerMessage("continued task")]), fixtureRegistry()), settings: { retry: { enabled: true, maxRetries: 20, baseDelayMs: 300000, maxAgentDelayMs: 300000 } } }, BACKGROUND_CONTEXT);
 	try {
 		let ready!: () => void; const retryReady = new Promise<void>((resolve) => { ready = resolve; });
-		const stop = host.harness.subscribeCommits(() => { void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => { if (live?.generation?.retry) ready(); }); });
+		const stop = onStoredCommit(host.harness, () => { void host.harness.snapshot(LiveDoc, 1 as ConversationId, BACKGROUND_CONTEXT).then((live) => { if (live?.generation?.retry) ready(); }); });
 		const original = await host.submit({ message: "ordinary task", requestId: "original-task" });
 		await retryReady; stop();
 		await assert.rejects(host.request("configure", { thinkingLevel: "high" }), /busy/u);
@@ -850,7 +851,7 @@ it("seals host admission and idle retirement after a fatal Session storage read"
 	assert.equal(host.sessionEnded, true);
 	assert.equal(host.isIdle(), false);
 	assert.equal(await host.refreshIdle(), false);
-	assert.deepEqual(await host.harness.closed, { reason: "failed", error: cause });
+	assert.deepEqual(await host.harness.closed, { kind: "failed", error: cause });
 	await assert.rejects(host.request("submit", { message: "never admitted" }), failed);
 	await assert.rejects(host.request("unknown"), failed);
 	await assert.rejects(host.resume(), failed);

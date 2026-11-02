@@ -34,7 +34,7 @@ export type AgentConversationOwner = "here" | "unavailable" | "unknown";
 
 /** One failed native compaction retained in the host-published view. */
 export interface DashboardCompactionFailure {
-	reason: "manual" | "threshold" | "overflow";
+	trigger: "manual" | "threshold" | "overflow";
 	errorMessage?: string;
 	at?: string;
 }

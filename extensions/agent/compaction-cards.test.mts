@@ -1,3 +1,6 @@
+import { keyHint, keyText } from "@earendil-works/pi-coding-agent";
+/** Host-injected keybinding hints, as Pi passes them to renderers. */
+const cardKeys = { keyText, keyHint };
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
@@ -14,7 +17,7 @@ initTheme("dark", false);
 const identity = "12345678-1234-4234-8234-123456789abc";
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }, width = 240) => component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
-const context = (overrides: Partial<AgentCardContext> = {}): AgentCardContext => ({ expanded: false, argsComplete: true, ...overrides });
+const context = (overrides: Partial<AgentCardContext> = {}): AgentCardContext => ({ ...cardKeys, expanded: false, argsComplete: true, ...overrides });
 
 it("captures self context once at execution and keeps it stable through native row rerenders", async () => {
 	const tools = new Map<string, ToolDefinition>();
@@ -62,15 +65,15 @@ it("shows only observed other-agent configuration, context facts and retained su
 	const details = { status: "completed", taskId: 9, compaction: { identity, name: "Other parser", provider: "provider", modelId: "model", thinkingLevel: "off", before: { contextWindow: 48000 }, summaryChars: 150 } };
 	const result = { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
 	const ctx = context({ args, state });
-	cards.agent_compact.renderResult(result, { expanded: false, isPartial: false }, theme, ctx);
-	const text = `${screen(cards.agent_compact.renderCall(args, theme, ctx))}\n${screen(cards.agent_compact.renderResult(result, { expanded: false, isPartial: false }, theme, ctx))}`;
+	cards.agent_compact.renderResult(result, { ...cardKeys, expanded: false, isPartial: false }, theme, ctx);
+	const text = `${screen(cards.agent_compact.renderCall(args, theme, ctx))}\n${screen(cards.agent_compact.renderResult(result, { ...cardKeys, expanded: false, isPartial: false }, theme, ctx))}`;
 	assert.match(text, /agent_compact · Other parser/u);
 	assert.match(text, /provider\/model.*off/u);
 	assert.match(text, /Before: 48000 window/u);
 	assert.match(text, /Summary: 150 chars/u);
 	assert.doesNotMatch(text, /unknown|unavailable|tokens|After:/u);
 	const absent = { status: "queued", compaction: { identity, self: true, before: { tokens: null, percent: null } } };
-	const missing = screen(cards.agent_compact.renderResult({ content: [{ type: "text", text: "queued" }], details: absent }, { expanded: false, isPartial: false }, theme, context()));
+	const missing = screen(cards.agent_compact.renderResult({ content: [{ type: "text", text: "queued" }], details: absent }, { ...cardKeys, expanded: false, isPartial: false }, theme, context()));
 	assert.doesNotMatch(missing, /unknown|unavailable|Before:|After:|completed/u);
 });
 
@@ -82,7 +85,7 @@ it("retains a completed compaction outcome when its optional summary-size read f
 	assert.equal(outcome.entryId, 7);
 	assert.equal(Object.hasOwn(outcome, "summaryChars"), false);
 	assert.equal(outcome.summarySizeError, "retained entry read failed");
-	const rendered = screen(createAgentToolCards().agent_compact.renderResult({ content: [{ type: "text", text: JSON.stringify(outcome) }], details: outcome }, { expanded: false, isPartial: false }, theme, context()));
+	const rendered = screen(createAgentToolCards().agent_compact.renderResult({ content: [{ type: "text", text: JSON.stringify(outcome) }], details: outcome }, { ...cardKeys, expanded: false, isPartial: false }, theme, context()));
 	assert.match(rendered, /Compaction completed/u);
 	assert.match(rendered, /Summary size read failed: retained entry read failed/u);
 	assert.doesNotMatch(rendered, /Compact error|Summary: \d+ chars/u);
@@ -100,7 +103,7 @@ it("keeps complete target, operation, thread and revision identities at wide wid
 		assert.doesNotMatch(rendered.split("\n")[0] ?? "", /…/u, name);
 		const narrow = card.renderCall(callArgs, theme, context({ state })).render(24);
 		assert.ok(narrow.every((line) => visibleWidth(line) <= 24), name);
-		assert.ok(screen(card.renderCall(callArgs, theme, context({ expanded: true, state })), 600).includes(args.sessionId), name);
+		assert.ok(screen(card.renderCall(callArgs, theme, context({ ...cardKeys, expanded: true, state })), 600).includes(args.sessionId), name);
 	}
 	const operationId = `operation-${"a".repeat(160)}`;
 	assert.ok(screen(cards.agent_inspect.renderCall({ sessionId: identity, operationId }, theme, context()), 600).includes(operationId));
@@ -108,5 +111,5 @@ it("keeps complete target, operation, thread and revision identities at wide wid
 	assert.ok(screen(cards.agent_collaborate.renderCall({ action: "read", threadId }, theme, context()), 600).includes(threadId));
 	const revision = "c".repeat(64);
 	const profile = { identity, role: "Review", revision, live: false };
-	assert.ok(screen(cards.agent_profile.renderResult({ content: [{ type: "text", text: JSON.stringify(profile) }], details: profile }, { expanded: false, isPartial: false }, theme, context()), 600).includes(revision));
+	assert.ok(screen(cards.agent_profile.renderResult({ content: [{ type: "text", text: JSON.stringify(profile) }], details: profile }, { ...cardKeys, expanded: false, isPartial: false }, theme, context()), 600).includes(revision));
 });

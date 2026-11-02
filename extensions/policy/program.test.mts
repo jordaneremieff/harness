@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import { snapshotData, UNKNOWN, type NamedData } from "./data.ts";
 import { ObservationState } from "./state.ts";
 import {
@@ -38,7 +38,7 @@ test("closed grammar accepts nested facts through the public schema", () => {
 		{ when: { all: [yes, { any: [{ not: { op: "exists", path: ["input", "missing"] } }, yes] }] } },
 	).program;
 	assert.equal(validateFactsProgram(program), undefined);
-	assert.equal(Compile(FactsProgramSchema).Check(program), true);
+	assert.equal(compile(FactsProgramSchema).check(program), true);
 	assert.ok(validateFactsProgram({ ...program, arbitrary: true }));
 	assert.ok(validateFactsProgram({ ...program, selector: { eval: "x" } }));
 	assert.ok(validateFactsProgram({ ...program, when: { op: "regex", path: ["input"], value: "*" } }));

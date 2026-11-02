@@ -2,11 +2,12 @@ import type { Context } from "@earendil-works/chord";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import * as native from "@earendil-works/pi-durable";
 import type { CommitPublication, ConversationId, Harness, SubmissionId, TaskId, Tx } from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
 import { canonicalIdentity } from "./identity.ts";
 import { ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
 import { agentRunControlDoc } from "./run-control-state.ts";
+import { onStoredCommit } from "./commit-observation.ts";
 
 const Children = agentChildrenDoc(native);
 const RunControl = agentRunControlDoc(native);
@@ -119,7 +120,7 @@ async function collectCreated(tx: Tx, storageId: string, conversationId: Convers
 async function collectDispatch(tx: Tx, group: Group, rows: ScopeRows, task: NativeTask): Promise<void> {
 	const state = await tx.doc(RunControl, task.conversationId, String(task.id), null);
 	if (!await belongsToGroup(tx, task.id, group) || !state.dispatch) return;
-	if (!Value.Check(ResultReferenceSchema, state.result)) { rows.omitted++; return; }
+	if (!matchesSchema(ResultReferenceSchema, state.result)) { rows.omitted++; return; }
 	appendDelegation(rows, { sessionId: state.result.sessionId, createdBy: task.id, result: { ...state.result }, ownership: "reused" });
 }
 async function collectDispatches(tx: Tx, conversationId: ConversationId, group: Group, rows: ScopeRows): Promise<void> {
@@ -199,7 +200,7 @@ class GroupGuard {
 	observe(publication: CommitPublication): void {
 		for (const change of publication.changes) {
 			if (change.type === "task" && change.value.id === this.taskId && change.value.abortRequested) this.marked = true;
-			if (this.marked || change.type !== "document" || change.record.kind !== native.LiveDoc.definition.kind || change.conversationId !== this.target.conversationId || !change.value) continue;
+			if (this.marked || change.type !== "document" || change.record.kind !== native.LiveDoc.definition.kind || change.conversationId !== this.target.conversationId || change.kind !== "change") continue;
 			this.observeLive(change.value as unknown as native.LiveState);
 		}
 	}
@@ -236,7 +237,7 @@ async function markGeneration(target: Target, guard: GroupGuard): Promise<Attemp
 }
 async function stopGeneration(target: Target, options: StopOptions): Promise<Attempt> {
 	const guard = new GroupGuard(target, options.inputs);
-	const unsubscribe = target.harness.subscribeCommits(publication => guard.observe(publication));
+	const unsubscribe = onStoredCommit(target.harness, publication => guard.observe(publication));
 	try {
 		const count = { total: 0 };
 		const scope = await target.harness.commit(tx => scopeInCommit(tx, target.storageId, target.conversationId, target.runId, count), target.context);

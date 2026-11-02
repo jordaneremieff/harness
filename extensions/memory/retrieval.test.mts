@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
-import { Value } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import { memorySearchOutputSchema } from "./search-output.ts";
 import { newRevision } from "./history.ts";
 import {
@@ -33,6 +33,8 @@ import {
 	sliceByCodePoints,
 	trimUtf8,
 } from "./retrieval.ts";
+
+const searchOutput = compile(memorySearchOutputSchema);
 
 test("cue title fallback ignores fenced examples and preserves heading levels one through six", async () => {
 	for (let level = 1; level <= 6; level++) {
@@ -90,7 +92,7 @@ function boundedJson(value: Json): Json {
 }
 async function search(root: string, options: SearchOptions = {}): Promise<Json> {
 	const result = boundedJson(await searchMemory(root, options));
-	Value.Assert(memorySearchOutputSchema, result);
+	assert.deepEqual(searchOutput.errors(result), []);
 	return result;
 }
 async function read(root: string, options: ReadOptions): Promise<Json> {

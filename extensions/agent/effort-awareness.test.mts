@@ -10,7 +10,7 @@ import { getCurrentSystemPrompt, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
+import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { AgentCatalog } from "./catalog.ts";
 import { createAgentContribution } from "./durable-agents.ts";
 import { EFFORT_AWARENESS_PROMPT_BYTES, EFFORT_AWARENESS_SELF_BYTES, formatEffortAwareness, readEffortAwareness } from "./effort-awareness.ts";
@@ -63,7 +63,7 @@ it("unifies self-published purpose, related presence and active thread hints wit
 	publish(root, peer, claim("Related effort"));
 	const threadId = publishThread(catalog, root);
 	const view = await readEffortAwareness(root, { ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } }, catalog);
-	assert.equal(Value.Check(EffortAwarenessSchema, view), true, JSON.stringify([...Value.Errors(EffortAwarenessSchema, view)]));
+	assert.equal(matchesSchema(EffortAwarenessSchema, view), true, JSON.stringify(schemaErrors(EffortAwarenessSchema, view, 10)));
 	assert.deepEqual(view.self.intentClaim, intentClaim);
 	assert.equal(view.self.observedPurpose, undefined);
 	assert.equal(JSON.stringify(view).includes("First interactive input"), false);
@@ -167,7 +167,7 @@ it("includes unrelated local purpose claims without full authority or integratio
 	assert.equal(effort.contactThreadClaim, "contact/thread");
 	assert.equal(effort.intentClaim, undefined);
 	assert.ok(effort.sharedSubstrates?.includes("machine-gates"));
-	assert.equal(Value.Check(EffortAwarenessSchema, view), true);
+	assert.equal(matchesSchema(EffortAwarenessSchema, view), true);
 	const serialized = JSON.stringify(view);
 	const prompt = formatEffortAwareness(view);
 	for (const secret of ["PRIVATE-INTEGRATION", "PRIVATE-AUTHORITY", "PRIVATE-PATH"]) {
@@ -213,7 +213,7 @@ it("bounds self input with explicit omissions rather than a shortened authority 
 	assert.equal(view.self.omitted, true);
 	assert.equal(view.self.intentClaim, undefined);
 	assert.ok(Buffer.byteLength(JSON.stringify(view.self)) <= EFFORT_AWARENESS_SELF_BYTES);
-	assert.equal(Value.Check(EffortAwarenessSchema, view), true);
+	assert.equal(matchesSchema(EffortAwarenessSchema, view), true);
 });
 
 it("reserves prompt space for active threads and retains or omits whole claims", async (t) => {

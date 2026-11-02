@@ -1,6 +1,7 @@
 /** A Models boundary that retains exhaustion before native error settlement. */
 import type { Api, AssistantMessage, Model, Models, ModelsSimpleStreamOptions, ModelsApiStreamOptions, ModelsDeferredFetchOptions, DeferredHandle, Context as ModelContext } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream, type AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
+import { onStoredCommit } from "./commit-observation.ts";
 import { canonicalIdentity } from "./identity.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
@@ -57,9 +58,9 @@ export class ProviderModels {
 	}
 	/** Observe committed epochs synchronously, including explicit same-model recovery. */
 	bind(): void {
-		this.unsubscribe = this.harness().subscribeCommits((publication) => {
+		this.unsubscribe = onStoredCommit(this.harness(), (publication) => {
 			for (const change of publication.changes) {
-				if (change.type !== "document" || change.record.kind !== "agent.provider-control" || change.record.key === undefined || change.value === null) continue;
+				if (change.type !== "document" || change.kind !== "change" || change.record.kind !== "agent.provider-control" || change.record.key === undefined) continue;
 				const epoch = change.value.epoch;
 				if (typeof epoch !== "number") continue;
 				const previous = this.epochs.get(change.record.key) ?? 0;

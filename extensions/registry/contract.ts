@@ -9,7 +9,6 @@
  */
 
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	CONTAINS_MAX,
 	CONTAINS_MIN,
@@ -21,6 +20,15 @@ import {
 	NAME_MIN,
 	QUERY_KINDS,
 } from "./query.ts";
+
+/** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
+const StringEnum = <T extends readonly string[]>(values: T, options?: { description?: string; default?: T[number] }) =>
+	Type.Unsafe<T[number]>({
+		type: "string",
+		enum: values,
+		...(options?.description ? { description: options.description } : {}),
+		...(options?.default ? { default: options.default } : {}),
+	});
 
 export const RegistryParams = Type.Object(
 	{

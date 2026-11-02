@@ -1,7 +1,10 @@
 /** Shared parameter schemas for the stash tools on both entrypoints. */
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { STASH_STATES } from "./format.ts";
+
+/** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
+const StringEnum = <T extends readonly string[]>(values: T, options?: { description?: string }) =>
+	Type.Unsafe<T[number]>({ type: "string", enum: values, ...(options?.description ? { description: options.description } : {}) });
 
 const shortText = (description: string) => Type.String({ description, maxLength: 200 });
 const itemList = (description: string) =>

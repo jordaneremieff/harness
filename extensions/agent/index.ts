@@ -20,7 +20,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { StringEnum, clampThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { Type, type TSchema, type TObject } from "typebox";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { CollaborationParams } from "./collaboration.ts";
@@ -73,6 +73,8 @@ export function agentRestartHosts(): RestartHosts {
 		identity: JSON.stringify([...owners.managers].map(([root, manager]) => [root, manager.connectedStorageIds()])),
 	};
 }
+/** A string enum as `{ type: "string", enum }`, typed as its literal union. */
+const StringEnum = <const T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: [...values] });
 const id = Type.String({ minLength: 1, maxLength: 256 });
 const maybeTrust = Type.Optional(Type.Boolean());
 const abort = Type.Object(

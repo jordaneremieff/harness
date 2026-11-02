@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test, { afterEach, beforeEach } from "node:test";
+import test, { beforeEach } from "node:test";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
-import { getKeybindings, KeybindingsManager, setKeybindings, visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { resultChannels } from "./config.ts";
 import type { RexResult } from "./core.ts";
 import { createRexToolDisplay } from "./display.ts";
@@ -9,14 +9,15 @@ import { createRexToolDisplay } from "./display.ts";
 const block = "block:33333333-3333-4333-8333-333333333333";
 const server = { endpoint: "unix:///test-rex", hostId: "host", instanceId: "instance", selection: "test" };
 const theme = { fg: (_colour: ThemeColor, text: string) => text };
-const originalBindings = getKeybindings();
-beforeEach(() => setKeybindings(new KeybindingsManager({ "app.tools.expand": { defaultKeys: "ctrl+o" } })));
-afterEach(() => setKeybindings(originalBindings));
+/** The host injects keyText with the configured bindings; tests set the configured expansion key here. */
+let expandKey = "ctrl+o";
+const keyText = () => expandKey;
+beforeEach(() => { expandKey = "ctrl+o"; });
 function fixture(changes: Partial<RexResult> = {}): RexResult {
 	return { ok: true, outcome: "input_delivered", target: { server, source: "explicit", blockId: block }, effects: { state: "confirmed", recordId: "complete-operation-identity" }, coverage: { bounded: true }, ...changes };
 }
 function render(name: string, value: RexResult, args: unknown, expanded = false, width = 120): string[] {
-	return createRexToolDisplay(name).renderResult(resultChannels(value), { expanded, isPartial: false }, theme, { args, isError: !value.ok }).render(width);
+	return createRexToolDisplay(name).renderResult(resultChannels(value), { expanded, isPartial: false }, theme, { args, isError: !value.ok, keyText }).render(width);
 }
 
 test("cards retain meaningful uncertainty, delivery and observer qualifications at narrow and normal widths", () => {
@@ -41,7 +42,7 @@ test("cards expose omissions and complete bounded JSON without changing canonica
 	const channels = resultChannels(value);
 	const before = JSON.stringify(channels);
 	const display = createRexToolDisplay("rex_terminal");
-	const context = { args: { op: "inspect", view: "capture" }, isError: false };
+	const context = { args: { op: "inspect", view: "capture" }, isError: false, keyText };
 	const collapsed = display.renderResult(channels, { expanded: false, isPartial: false }, theme, context).render(72).join("\n");
 	assert.match(collapsed, /Bounded capture, not a complete transcript/);
 	assert.match(collapsed, /bulk data omitted/);
@@ -95,15 +96,13 @@ test("result summaries preserve native, stored-phase and status meaning without 
 	assert.doesNotMatch(partial, /no effects|UNKNOWN EFFECTS|\u001b/);
 });
 
-test("cards use the configured expansion key and invent no mouse fallback when it is unbound", () => {
-	const bindings = getKeybindings();
-	const previous = bindings.getUserBindings();
-	try {
-		bindings.setUserBindings({ ...previous, "app.tools.expand": ["ctrl+g"] });
-		assert.match(render("rex_terminal", fixture(), { op: "input" }).join("\n"), /ctrl\+g to expand/);
-		bindings.setUserBindings({ ...previous, "app.tools.expand": [] });
-		const unbound = render("rex_terminal", fixture(), { op: "input" }).join("\n");
-		assert.doesNotMatch(unbound, /click|to expand/);
-		assert.match(unbound, /input delivered/);
-	} finally { bindings.setUserBindings(previous); }
+test("cards use the host-injected expansion key and invent no mouse fallback when it is unbound or absent", () => {
+	expandKey = "ctrl+g";
+	assert.match(render("rex_terminal", fixture(), { op: "input" }).join("\n"), /ctrl\+g to expand/);
+	expandKey = "";
+	const unbound = render("rex_terminal", fixture(), { op: "input" }).join("\n");
+	assert.doesNotMatch(unbound, /click|to expand/);
+	assert.match(unbound, /input delivered/);
+	const withoutHints = createRexToolDisplay("rex_terminal").renderResult(resultChannels(fixture()), { expanded: false, isPartial: false }, theme, { args: { op: "input" }, isError: false }).render(120).join("\n");
+	assert.doesNotMatch(withoutHints, /to expand/);
 });

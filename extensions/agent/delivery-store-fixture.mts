@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 /** Native delivery mutations for fixtures that need exact retained or malformed rows. */
 import type { Context } from "@earendil-works/chord";
 import type { Harness, Tx } from "@earendil-works/pi-durable";
@@ -33,7 +34,7 @@ export function waitForDeliveryFixture<T>(harness: Harness, context: Context, se
 			} catch (error) { finish({ error }); }
 			finally { checking = false; }
 		};
-		unsubscribe = harness.subscribeCommits((publication) => { if (publication.changes.length) void check(); });
+		unsubscribe = onStoredCommit(harness, (publication) => { if (publication.changes.length) void check(); });
 		offClose = harness.subscribeClose(() => finish({ error: new Error("Fixture harness closed before delivery") }));
 		void check();
 	});

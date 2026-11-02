@@ -2,22 +2,25 @@
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Harness } from "@earendil-works/pi-durable";
-import { Type, type Static } from "typebox";
+import { arr, bool, compile, int, lit, obj, oneOf, str, union, type Static } from "@earendil-works/pi-schema";
 import { readProviderBlock } from "./provider-block.ts";
 
-const closed = { additionalProperties: false } as const;
-const identity = Type.String({ minLength: 1, maxLength: 512 });
-const taskReason = Type.Union([Type.Literal("missing_task"), Type.Literal("task_too_old"), Type.Literal("migration_failed"), Type.Literal("restart_limit")]);
-export const CatalogAttentionHintSchema = Type.Union([
-	Type.Object({ identity, kind: Type.Literal("provider-blocked"), blockId: Type.String({ minLength: 1, maxLength: 128 }) }, closed),
-	Type.Object({ identity, kind: Type.Literal("task-blocked"), taskId: Type.Integer({ minimum: 1 }), reason: taskReason }, closed),
-	Type.Object({ identity, kind: Type.Literal("failed-turn") }, closed),
+const identity = str({ minLength: 1, maxLength: 512 });
+/** Why no registered definition can take a live task; restart-limited work ends instead of blocking. */
+const taskReason = oneOf(["missing_task", "task_too_old", "migration_failed"]);
+export const CatalogAttentionHintSchema = union([
+	obj({ identity, kind: lit("provider-blocked"), blockId: str({ minLength: 1, maxLength: 128 }) }),
+	obj({ identity, kind: lit("task-blocked"), taskId: int({ minimum: 1 }), reason: taskReason }),
+	obj({ identity, kind: lit("failed-turn") }),
 ]);
-export const CatalogAttentionHintsSchema = Type.Object({
-	rows: Type.Array(CatalogAttentionHintSchema),
+export const CatalogAttentionHintsSchema = obj({
+	rows: arr(CatalogAttentionHintSchema),
 	/** Publication coverage only, never completeness of human-question detection. */
-	coverage: Type.Object({ complete: Type.Boolean(), omitted: Type.Integer({ minimum: 0 }) }, closed),
-}, closed);
+	coverage: obj({ complete: bool(), omitted: int({ minimum: 0 }) }),
+});
+const attentionHints = compile(CatalogAttentionHintsSchema);
+/** Whether `value` is a complete attention projection. */
+export const isCatalogAttentionHints = attentionHints.check;
 export type CatalogAttentionHint = Static<typeof CatalogAttentionHintSchema>;
 export type CatalogAttentionHints = Static<typeof CatalogAttentionHintsSchema>;
 
@@ -31,7 +34,9 @@ export interface CatalogAttentionSource {
 /**
  * Recompute intervention hints from owned state. A provider block needs explicit
  * recovery. A blocked task needs host repair, not an answer to a question. A
- * failed turn needs a new input. Automatic retries and compaction diagnostics
+ * failed turn needs a new input, including a run that ended at the native
+ * restart limit: that outcome is terminal and is never resubmitted here.
+ * Automatic retries and compaction diagnostics
  * do not establish a need for intervention. Absence remains unknown even when
  * publication coverage is complete.
  */

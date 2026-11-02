@@ -1,3 +1,6 @@
+import { keyHint, keyText } from "@earendil-works/pi-coding-agent";
+/** Host-injected keybinding hints, as Pi passes them to renderers. */
+const cardKeys = { keyText, keyHint };
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { createAgentToolCards, renderListResult, renderProfileResult } from "./tool-cards.ts";
@@ -9,27 +12,27 @@ const screen = (card: { render(width: number): string[] }, width = 80) => card.r
 it("profile tool cards keep expertise on demand and show conflicts distinctly", () => {
 	const profile = { identity: "root", handle: "@history", name: "History", role: "Review decisions", expertise: "Saved source pointer", revision: "abc", live: false, model: { provider: "fixture", modelId: "model" }, thinkingLevel: "high", requests: [] };
 	for (const width of [32, 120]) {
-		const text = screen(renderProfileResult(result(profile), { expanded: false, isPartial: false }, theme, { expanded: false }), width);
+		const text = screen(renderProfileResult(result(profile), { ...cardKeys, expanded: false, isPartial: false }, theme, { ...cardKeys, expanded: false }), width);
 		assert.match(text, /@history/);
 		assert.match(text, /Review decisions/);
 		assert.doesNotMatch(text, /Saved source pointer/);
 	}
-	assert.match(screen(renderProfileResult(result(profile), { expanded: true, isPartial: false }, theme, { expanded: true })), /Saved source\s+pointer/);
-	assert.match(screen(renderProfileResult(result({ outcome: "conflict", profile }), { expanded: false, isPartial: false }, theme, { expanded: false })), /Profile conflict; no change/);
+	assert.match(screen(renderProfileResult(result(profile), { ...cardKeys, expanded: true, isPartial: false }, theme, { ...cardKeys, expanded: true })), /Saved source\s+pointer/);
+	assert.match(screen(renderProfileResult(result({ outcome: "conflict", profile }), { ...cardKeys, expanded: false, isPartial: false }, theme, { ...cardKeys, expanded: false })), /Profile conflict; no change/);
 	assert.ok(createAgentToolCards().agent_profile);
 });
 it("profile cards qualify bounded route counts with omissions", () => {
 	const profile = { identity: "root", role: "Review decisions", revision: "abc", requests: [], requestsOmitted: 129 };
 	for (const width of [32, 120]) {
-		const text = screen(renderProfileResult(result(profile), { expanded: false, isPartial: false }, theme, { expanded: false }), width);
+		const text = screen(renderProfileResult(result(profile), { ...cardKeys, expanded: false, isPartial: false }, theme, { ...cardKeys, expanded: false }), width);
 		assert.match(text, /Request routes omitted: 129/u);
 		assert.doesNotMatch(text, /0 active request routes/u);
 	}
-	assert.doesNotMatch(screen(renderProfileResult(result({ ...profile, requestsOmitted: 0 }), { expanded: false, isPartial: false }, theme, { expanded: false })), /omitted/u);
+	assert.doesNotMatch(screen(renderProfileResult(result({ ...profile, requestsOmitted: 0 }), { ...cardKeys, expanded: false, isPartial: false }, theme, { ...cardKeys, expanded: false })), /omitted/u);
 });
 it("list tool cards show retained handles and roles rather than only record counts", () => {
 	const details = { rows: [{ identity: "root", handle: "@history", name: "History", role: "Review decisions" }, { identity: "old", role: null }], nextCursor: null, coverage: { complete: true, storagesVisited: 2, unavailable: [], profileHints: { complete: false, unknownStorages: 1, omitted: 0 } } };
-	const text = screen(renderListResult(result(details), { expanded: false, isPartial: false }, theme, { expanded: false }));
+	const text = screen(renderListResult(result(details), { ...cardKeys, expanded: false, isPartial: false }, theme, { ...cardKeys, expanded: false }));
 	assert.match(text, /@history · History/);
 	assert.match(text, /Role: Review decisions/);
 	assert.match(text, /unknown profile coverage/);

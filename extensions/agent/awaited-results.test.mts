@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { AWAIT_PROVENANCE_LIMIT, AwaitParams, AwaitDoc, recordInputProvenance, declareAwait, commitAwaitOutcome, classifyAwaitInput, reconcileInputRelease, boundedAwaitAnswer, forgetFailedAdmission, acknowledgeProviderRetry, claimProviderRetryVisibility, providerRetryRevision, type AwaitState } from "./awaited-results.ts";
 import { LiveDoc, InboxDoc, type Tx, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 
@@ -247,10 +247,10 @@ it("retains queued classifications across collection and replay for a later awai
 
 it("accepts default retry release and an explicit positive attempt threshold", () => {
 	const results = [{ sessionId: "producer", submissionId: 1 }];
-	assert.equal(Value.Check(AwaitParams, { results }), true);
-	assert.equal(Value.Check(AwaitParams, { results, releaseOnProviderRetry: {} }), true);
-	assert.equal(Value.Check(AwaitParams, { results, releaseOnProviderRetry: { minAttempt: 3 } }), true);
-	for (const releaseOnProviderRetry of [true, null, { minAttempt: 0 }, { minAttempt: 1.5 }, { minAttempt: Number.MAX_SAFE_INTEGER + 1 }, { other: true }]) assert.equal(Value.Check(AwaitParams, { results, releaseOnProviderRetry }), false);
+	assert.equal(matchesSchema(AwaitParams, { results }), true);
+	assert.equal(matchesSchema(AwaitParams, { results, releaseOnProviderRetry: {} }), true);
+	assert.equal(matchesSchema(AwaitParams, { results, releaseOnProviderRetry: { minAttempt: 3 } }), true);
+	for (const releaseOnProviderRetry of [true, null, { minAttempt: 0 }, { minAttempt: 1.5 }, { minAttempt: Number.MAX_SAFE_INTEGER + 1 }, { other: true }]) assert.equal(matchesSchema(AwaitParams, { results, releaseOnProviderRetry }), false);
 });
 
 it("retains the original retry release policy on safe replay", async () => {

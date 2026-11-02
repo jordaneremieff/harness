@@ -184,7 +184,16 @@ section, and native task hooks:
   `block`, and an enforce-mode correction replaces the call's arguments.
 - `ToolTask.afterTool` is the result and completion phase: approved
   assert-error corrections and guide annotations replace the result before it
-  is committed.
+  is committed. Pi also calls this hook for host-written failures. Policy reads
+  diagnostic codes before it classifies execution: unavailable and abandoned
+  calls are `unexecuted`, invalid arguments are `invalid`, and blocks are
+  `denied`. Aborts are `aborted`; interruptions and restart limits are
+  `incomplete`. Execution is unknown for aborts, interruptions, and restart
+  limits because the call might have partially run. Their `outcome.executed`
+  fact is unavailable, not true or false. Telemetry retains the exact code as
+  `policy.hostDiagnostic`. Result rules still inspect and annotate these error
+  results; completion rules receive the distinct outcome. A policy denial
+  already completed by the input hook produces no second record or guidance.
 - `GenerationTask.beforeRequest` is the context phase: context rules and retained
   completion guidance append user messages to that request only.
 - The `policy_shell` system section stores the conversation's initial shell card.
@@ -783,12 +792,22 @@ automatic compaction. Calls already admitted retain their captured data revision
 the next call receives the replacement.
 
 Direct-tool schemas come from `pi.getAllTools().parameters`. Policy checks the
-complete bounded candidate with TypeBox's public `Compile().Check()` operation.
+complete bounded candidate with `@earendil-works/pi-schema` `compile().check()`.
 It does not convert values, insert defaults, or remove properties. Missing
 schemas, unsafe copies, and thrown validation errors produce unavailable
-validation. The compiled schema cache is bounded.
+validation. The compiled schema cache is bounded. Internal data, recursive
+conditions, and closed control variants use pi-schema builders. Schemas shared
+with registered tool parameters remain TypeBox JSON Schema and use the same
+pi-schema validator. String limits count Unicode code points, including within
+shared schemas. Combining marks count separately; an astral character counts
+once. Closed objects still reject unknown fields. Existing policy error
+prefixes and field diagnostics remain; schema error details use pi-schema
+messages and JSON Pointer paths.
 
-Registered tool schemas use the host's TypeBox contract. Policy does not provide
+Registered tool schemas use TypeBox declarations under the host's JSON Schema
+contract. Host argument validation performs Pi's standard coercion, including
+wrapping a scalar CLI subcommand in an array. Policy's own admission and final
+candidate checks do not coerce. Policy does not provide
 arbitrary schema imports, dialect selection, strict schema-document admission,
 `matches-schema`, or `schemaData`. Unsupported rule and data shapes are rejected
 by authoring and replay validation, without migration or normalization. Existing

@@ -6,10 +6,10 @@ import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import { proposalRevision, RuleRegistry, validateLocalCandidate } from "./local-rules.ts";
 import { type Condition, PROGRAM_LIMITS, validateFactsProgram } from "./program.ts";
-import { PolicyProposeParams, registerRuleTools } from "./tools.ts";
+import { PolicyProposeParams, registerRuleTools, validateProposal } from "./tools.ts";
 
 const { validateToolArguments } = await import(
 	process.env.PI_POLICY_TEST_PI_ROOT
@@ -96,7 +96,17 @@ async function setup(t: TestContext) {
 		},
 	};
 }
-const transport = Compile(PolicyProposeParams);
+const transport = compile(PolicyProposeParams);
+
+function assertHostCliAdmission(validate: () => unknown, expected: unknown, accepted: boolean): void {
+	if (accepted) assert.deepEqual(validate(), expected);
+	else assert.throws(validate, /Validation failed/);
+}
+
+function assertPolicyCliAdmission(input: unknown, accepted: boolean): void {
+	if (accepted) assert.doesNotThrow(() => validateProposal(input));
+	else assert.throws(() => validateProposal(input), /Validation failed/);
+}
 
 describe("command-aware proposal admission", () => {
 	const commandRequest = () => ({
@@ -145,7 +155,7 @@ describe("command-aware proposal admission", () => {
 					match: { ...commandRequest().match, cli: { profile: "git", subcommand } },
 				};
 				const accepted = Array.isArray(subcommand) && subcommand.length === 1 && subcommand[0] === "push";
-				assert.equal(transport.Check(input), accepted, JSON.stringify(input));
+				assert.equal(transport.check(input), accepted, JSON.stringify(input));
 				const validate = (): unknown =>
 					validateToolArguments(
 						{ ...tool, parameters: schema },
@@ -156,15 +166,18 @@ describe("command-aware proposal admission", () => {
 							arguments: input,
 						},
 					);
-				if (accepted) assert.deepEqual(validate(), input);
-				else assert.throws(validate, /Validation failed/);
+				assertHostCliAdmission(validate, {
+					...input,
+					match: { ...input.match, cli: { profile: "git", subcommand: ["push"] } },
+				}, accepted || subcommand === "push");
+				assertPolicyCliAdmission(input, accepted);
 			}
 		}
 	});
 	it("preserves CLI declarations through host validation, proposal persistence, and replay", async (t) => {
 		const host = await setup(t);
 		const input = commandRequest();
-		assert.equal(transport.Check(input), true);
+		assert.equal(transport.check(input), true);
 		await host.execute(input as unknown as Request);
 		const matcher = (await host.registry.snapshot()).pending[0].candidate?.matcher;
 		assert.deepEqual(matcher, {
@@ -199,7 +212,7 @@ describe("command-aware proposal admission", () => {
 	it("requires explicit unknown behavior for CLI and rejects unsupported profile declarations", () => {
 		const input = commandRequest();
 		const { onUnavailable: _omitted, ...missing } = input;
-		assert.equal(transport.Check(missing), true, "execution enforces operation-by-form requirements");
+		assert.equal(transport.check(missing), true, "execution enforces operation-by-form requirements");
 		assert.throws(
 			() =>
 				validateLocalCandidate({
@@ -217,11 +230,11 @@ describe("command-aware proposal admission", () => {
 			{ profile: "git", subcommand: ["push", "extra"] },
 			{ profile: "git", subcommand: ["push"], ignored: true },
 		]) {
-			assert.equal(transport.Check({ ...input, match: { ...input.match, cli } }), false);
+			assert.equal(transport.check({ ...input, match: { ...input.match, cli } }), false);
 		}
-		assert.equal(transport.Check({ ...input, onUnavailable: "maybe" }), false);
-		assert.equal(transport.Check({ ...input, match: { ...input.match, command: "other" } }), false);
-		assert.equal(transport.Check({ ...missing, match: { command: "git", anyFlags: ["-f"] } }), true);
+		assert.equal(transport.check({ ...input, onUnavailable: "maybe" }), false);
+		assert.equal(transport.check({ ...input, match: { ...input.match, command: "other" } }), false);
+		assert.equal(transport.check({ ...missing, match: { command: "git", anyFlags: ["-f"] } }), true);
 	});
 });
 
@@ -288,7 +301,7 @@ describe("operation-by-form execution admission", () => {
 		}
 		for (const [input, diagnostic] of cases) {
 			const clean = JSON.parse(JSON.stringify(input));
-			assert.equal(transport.Check(clean), true, JSON.stringify(clean));
+			assert.equal(transport.check(clean), true, JSON.stringify(clean));
 			await assert.rejects(fixture.execute(clean), diagnostic);
 			assert.deepEqual(await fixture.bytes(), before);
 		}
@@ -458,8 +471,8 @@ describe("finite proposal description and recursive admission", () => {
 		assert.deepEqual(projected.required, ["operation", "id", "reason"]);
 		assert.deepEqual(projected.properties, schema.properties);
 		assert.equal(JSON.stringify(projected).split("Conditions use exactly one of").length - 1, 1);
-		assert.equal(transport.Check({ operation: "retire", id: "sample.rule", reason: "Retire it." }), true);
-		assert.equal(transport.Check({ operation: "add", id: "sample.rule", reason: "Add it." }), true);
+		assert.equal(transport.check({ operation: "retire", id: "sample.rule", reason: "Retire it." }), true);
+		assert.equal(transport.check({ operation: "add", id: "sample.rule", reason: "Add it." }), true);
 	});
 
 	it("declares a bounded flat object with one complete nested grammar statement", async (t) => {
@@ -495,7 +508,7 @@ describe("finite proposal description and recursive admission", () => {
 			const fixture = await setup(t);
 			const input = request();
 			setCondition(input, position, { all: [leaf(), { any: [{ not: leaf() }, leaf()] }] });
-			assert.equal(transport.Check(input), true);
+			assert.equal(transport.check(input), true);
 			await fixture.execute(input);
 			const snapshot = await fixture.registry.snapshot();
 			assert.equal(snapshot.records.size, 0);
@@ -530,7 +543,7 @@ describe("finite proposal description and recursive admission", () => {
 			for (const condition of invalid) {
 				const input = request();
 				setCondition(input, position, condition);
-				assert.equal(transport.Check(input), true, "finite descriptions defer nested validation");
+				assert.equal(transport.check(input), true, "finite descriptions defer nested validation");
 				await assert.rejects(fixture.execute(input));
 				assert.deepEqual(await fixture.bytes(), before);
 				assert.equal((await fixture.registry.snapshot()).pending.length, 0);
@@ -551,7 +564,7 @@ describe("finite proposal description and recursive admission", () => {
 					...(operation === "replace" ? { expectedRevision: "000000000000" } : {}),
 					applicability: { not: { ...leaf(), unexpected: true } },
 				};
-				assert.equal(transport.Check(input), true);
+				assert.equal(transport.check(input), true);
 				await assert.rejects(fixture.execute(input as Request), /applicability/);
 				assert.deepEqual(await fixture.bytes(), before);
 			}
@@ -584,7 +597,7 @@ describe("finite proposal description and recursive admission", () => {
 		invalidAuthority.authority = "steer-or-block";
 		Object.assign(invalidAuthority.program, { action: { kind: "rename-key", path: [], from: "a", to: "b" } });
 		for (const input of [invalidPhase, invalidAuthority]) {
-			assert.equal(transport.Check(input), true);
+			assert.equal(transport.check(input), true);
 			await assert.rejects(fixture.execute(input));
 			assert.deepEqual(await fixture.bytes(), before);
 		}

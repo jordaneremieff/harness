@@ -1,5 +1,5 @@
+import { compile, type Validator } from "@earendil-works/pi-schema";
 import { Type, type Static, type TObject, type TSchema } from "typebox";
-import { Value } from "typebox/value";
 import type { RexRequest } from "./core.ts";
 
 const text = (maxLength = 4096) => Type.String({ minLength: 1, maxLength });
@@ -56,6 +56,16 @@ const requestRules: Partial<Record<RexToolName, (request: Record<string, unknown
 	rex_terminal: (request) => (request.op === "input" && request.text === undefined && request.keys === undefined ? "input requires text or keys" : undefined),
 };
 const SELECTORS = ["op", "kind", "condition"] as const;
+const validators = new WeakMap<TSchema, Validator>();
+/** Each operation shape compiles once; the TypeBox declaration is plain JSON Schema. */
+function validatorFor(schema: TSchema): Validator {
+	let validator = validators.get(schema);
+	if (!validator) {
+		validator = compile(schema);
+		validators.set(schema, validator);
+	}
+	return validator;
+}
 const enumValues = (schema: TSchema | undefined): readonly string[] | undefined => {
 	const values = (schema as { enum?: unknown } | undefined)?.enum;
 	return Array.isArray(values) ? (values as string[]) : undefined;
@@ -105,7 +115,7 @@ export function validateRequest<T extends RexToolName>(tool: T, args: unknown): 
 	const selected = selectShapes(requestVariants[tool], request);
 	if ("error" in selected) return invalid(selected.error);
 	const schema: TSchema = selected.shapes.length === 1 ? (selected.shapes[0] as TSchema) : Type.Union([...selected.shapes]);
-	const errors = [...Value.Errors(schema, request)].map((error) => `${error.instancePath || "/"} ${error.message}`);
+	const errors = validatorFor(schema).errors(request).map((error) => `${error.path || "/"} ${error.message}`);
 	const rule = requestRules[tool]?.(request);
 	if (rule) errors.push(rule);
 	if (errors.length > 0) return invalid([...new Set(errors)].join("; "));

@@ -2,7 +2,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { ChordError, createHost, hostFamily, invalid, isChordError, isJsonValue, method, remote, type Ref, type Host } from "@earendil-works/chord";
-import { Type } from "typebox";
+import { bool, obj, oneOf, opt, str, unknown } from "@earendil-works/pi-schema";
 import { connectUnixLink, listenUnixLinks, type LocalTransportRefusal, type UnixLink } from "./unix-link.ts";
 
 const placement = hostFamily('pi.agent:', 'serverId');
@@ -11,21 +11,22 @@ type TransportPrincipal = {connection: string};
 export const Endpoint = remote("pi.agent.endpoint", {
 	version: 1,
 	host: placement,
-	input: Type.Object({ serverId: Type.String() }, { additionalProperties: false }),
+	input: obj({ serverId: str() }),
 	variants: { default: { methods: {
-		request: method(Type.Object({
-			method: Type.String({ minLength: 1, maxLength: 128 }),
-			params: Type.Optional(Type.Unknown()),
-			requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
-			contract: Type.Optional(Type.Unknown()),
-		}, { additionalProperties: false }), Type.Object({ value: Type.Optional(Type.Unknown()) }, { additionalProperties: false })),
+		request: method(obj({
+			method: str({ minLength: 1, maxLength: 128 }),
+			params: opt(unknown()),
+			requestId: opt(str({ minLength: 1, maxLength: 128 })),
+			contract: opt(unknown()),
+		}), obj({ value: opt(unknown()) })),
 	} } },
 });
+const FeedState = obj({ ready: bool(), value: opt(unknown()) });
 export const Feed = remote("pi.agent.feed", {
 	version: 1,
 	host: placement,
-	input: Type.Object({ serverId: Type.String(), kind: Type.Union([Type.Literal("changes"), Type.Literal("observation")]), token: Type.Optional(Type.String()) }, { additionalProperties: false }),
-	variants: { default: { state: { value: Type.Object({ ready: Type.Boolean(), value: Type.Optional(Type.Unknown()) }, { additionalProperties: false }) } } },
+	input: obj({ serverId: str(), kind: oneOf(["changes", "observation"]), token: opt(str()) }),
+	variants: { default: { state: { value: FeedState } } },
 });
 
 export interface TransportRequest { readonly method: string; readonly params?: unknown; readonly requestId?: string; readonly contract?: unknown }
@@ -79,7 +80,7 @@ export function createTransportServer(options: TransportServerOptions): Transpor
 		const peer = authorize(serverId, principal);
 		let closed = false, active = false;
 		let latest: {value?:unknown} | undefined;
-		const value = self.state('value', Type.Object({ready:Type.Boolean(),value:Type.Optional(Type.Unknown())},{additionalProperties:false}), {init:()=>{active=true;return {ready:true,...latest};}});
+		const value = self.state('value', FeedState, {init:()=>{active=true;return {ready:true,...latest};}});
 		self.resource('feed', {version:1,open:async()=>{
 			if(!options.subscribe)throw invalid('feed','The endpoint publishes no state feeds');
 			const publish=(next:unknown):void=>{

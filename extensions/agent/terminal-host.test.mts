@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { it } from "node:test";
@@ -142,11 +143,11 @@ it("acknowledges terminal input without submitting its answer back to the target
 	host.gates.set("answer", gate);
 	const controller = new TerminalController({ manager: fixture.manager(), caller: { id: `terminal:${randomUUID()}`, cwd: fixture.root } });
 	const revisions = eventLog<AgentDeliveryState>();
-	const off = host.durable.harness.subscribeCommits((publication) => {
+	const off = onStoredCommit(host.durable.harness, (publication) => {
 		const receipts = { ...revisions.at(-1)?.receipts };
 		let changed = false;
 		for (const change of publication.changes) {
-			if (change.type !== "document" || change.record.kind !== "agent.delivery-row" || change.value?.kind !== "receipt" || change.value.value == null) continue;
+			if (change.type !== "document" || change.kind !== "change" || change.record.kind !== "agent.delivery-row" || change.value.kind !== "receipt" || change.value.value == null) continue;
 			const receipt = JSON.parse(JSON.stringify(change.value.value)) as AgentDeliveryState["receipts"][string];
 			receipts[String(receipt.submissionId)] = receipt;
 			changed = true;

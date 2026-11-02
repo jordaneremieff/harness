@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 /**
  * Live-observation fixture host for transport tests.
  *
@@ -59,7 +60,7 @@ async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>, ret
 			setImmediate(() => finishSnapshot?.());
 		},
 		isIdle: () => durable.isIdle(),
-		onChange: (listener) => durable.harness.subscribeCommits(() => listener()),
+		onChange: (listener) => onStoredCommit(durable.harness, () => listener()),
 	};
 }
 

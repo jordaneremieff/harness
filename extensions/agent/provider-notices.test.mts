@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -28,7 +29,7 @@ function fixture() {
 	};
 	const state: ReturnType<typeof ProviderRetryBurstDoc.definition.initial> = { completedThrough: 0 };
 	const routes: { requests: RequestContext[] } = { requests: [] };
-	const live: LiveState = { run: { taskId: 10 as TaskId, inputs: [] }, generation: { attempt: 1, retry: { at: 100, error: "429 too many requests" } } };
+	const live: LiveState = { run: { taskId: 10 as TaskId, inputs: [], turns: 0 }, generation: { attempt: 1, retry: { at: 100, error: "429 too many requests" } } };
 	const inputs = new Map<string, { type: "input"; id: SubmissionId; status: "placed" }>();
 	let outcome: "completed" | "failed" | "aborted" | "orphaned" | undefined;
 	const tx = {
@@ -159,19 +160,19 @@ it("coalesces partial publications while a retention commit waits without losing
 	let release: () => void = () => undefined;
 	const gate = new Promise<void>((resolve) => { release = resolve; });
 	const harness = {
-		subscribeCommits: (callback: (publication: CommitPublication) => void) => { listener = callback; return () => { listener = () => undefined; }; },
+		observeCommits: (observer: { advance(publication: CommitPublication): void }) => { listener = (publication) => observer.advance(publication); return { detach: () => { listener = () => undefined; } }; },
 		commit: async (callback: (tx: Tx) => unknown) => { await gate; return callback(f.tx); },
 	} as unknown as Harness;
 	const notices = new ProviderRetryNotices(harness, "source", undefined, (error) => { throw error; }, () => 50);
-	const publish = () => listener({ changes: [{ type: "document", record: { kind: "pi.live" }, conversationId: 1 as ConversationId, value: structuredClone(f.live) }] } as unknown as CommitPublication);
-	listener({ changes: [{ type: "document", record: { kind: "agent.request-context" }, conversationId: 1 as ConversationId, value: structuredClone(f.routes) }] } as unknown as CommitPublication);
+	const publish = () => listener({ changes: [{ type: "document", kind: "change", record: { kind: "pi.live" }, conversationId: 1 as ConversationId, value: structuredClone(f.live) }] } as unknown as CommitPublication);
+	listener({ changes: [{ type: "document", kind: "change", record: { kind: "agent.request-context" }, conversationId: 1 as ConversationId, value: structuredClone(f.routes) }] } as unknown as CommitPublication);
 	publish();
 	for (let attempt = 2; attempt <= 3; attempt++) {
 		f.live.generation = { attempt }; for (let index = 0; index < 1000; index++) publish();
 		f.live.generation.retry = { at: attempt * 100, error: `retry ${attempt}` }; publish();
 	}
 	f.routes.requests.length = 0;
-	listener({ changes: [{ type: "document", record: { kind: "agent.request-context" }, conversationId: 1 as ConversationId, value: { requests: [] } }] } as unknown as CommitPublication);
+	listener({ changes: [{ type: "document", kind: "change", record: { kind: "agent.request-context" }, conversationId: 1 as ConversationId, value: { requests: [] } }] } as unknown as CommitPublication);
 	f.end("failed"); publish();
 	release(); await notices.close();
 	assert.equal(f.ledger.reports.length, 1);
@@ -186,11 +187,11 @@ it("retention failure stops collection with an explicit reopen diagnostic and cl
 	let fail = true;
 	const errors = eventLog<unknown>();
 	const harness = {
-		subscribeCommits: (callback: (publication: CommitPublication) => void) => { listener = callback; return () => { unsubscribed = true; listener = () => undefined; }; },
+		observeCommits: (observer: { advance(publication: CommitPublication): void }) => { listener = (publication) => observer.advance(publication); return { detach: () => { unsubscribed = true; listener = () => undefined; } }; },
 		commit: async (callback: (tx: Tx) => unknown) => { if (fail) throw new Error("injected retention failure"); return callback(f.tx); },
 	} as unknown as Harness;
 	const notices = new ProviderRetryNotices(harness, "source", undefined, (error) => errors.push(error), () => 50);
-	listener({ changes: [{ type: "document", record: { kind: "pi.live" }, conversationId: 1 as ConversationId, value: structuredClone(f.live) }] } as unknown as CommitPublication);
+	listener({ changes: [{ type: "document", kind: "change", record: { kind: "pi.live" }, conversationId: 1 as ConversationId, value: structuredClone(f.live) }] } as unknown as CommitPublication);
 	await errors.waitForCount(1);
 	assert.equal(unsubscribed, true);
 	assert.match(String(errors[0]), /Retry observation stopped.*reopen the host/u);
@@ -212,8 +213,8 @@ it("reopens an active burst and retains one failure summary plus its separate na
 	let host = await DurableHost.open(options);
 	t.after(() => host.close());
 	const starts = eventLog<void>();
-	const unsubscribe = host.harness.subscribeCommits((publication) => {
-		for (const change of publication.changes) if (change.type === "document" && change.record.kind === "agent.provider-retry-burst" && change.value !== null && change.value.active !== undefined) starts.push(undefined);
+	const unsubscribe = onStoredCommit(host.harness, (publication) => {
+		for (const change of publication.changes) if (change.type === "document" && change.kind === "change" && change.record.kind === "agent.provider-retry-burst" && change.value.active !== undefined) starts.push(undefined);
 	});
 	const admitted = await host.submit({ message: "retry work", requestId: "retry-work", ownerId: "actual-recipient", origin: "model" });
 	await starts.waitForCount(1); unsubscribe();
@@ -226,8 +227,8 @@ it("reopens an active burst and retains one failure summary plus its separate na
 	assert.equal((await readRetainedDelivery(host.harness, BACKGROUND_CONTEXT, true))?.reports.length, 0);
 	now = live.generation.retry.at + 1;
 	const failures = eventLog<void>();
-	const stop = host.harness.subscribeCommits((publication) => {
-		for (const change of publication.changes) if (change.type === "document" && change.record.kind === "agent.delivery-row" && change.value?.kind === "report" && change.value.value !== null) failures.push(undefined);
+	const stop = onStoredCommit(host.harness, (publication) => {
+		for (const change of publication.changes) if (change.type === "document" && change.kind === "change" && change.record.kind === "agent.delivery-row" && change.value.kind === "report" && change.value.value !== null) failures.push(undefined);
 	});
 	await host.resume();
 	assert.equal((await host.wait(admitted.submissionId)).status, "unanswered");

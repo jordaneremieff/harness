@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -162,7 +163,7 @@ it("records explicit reports without an input, answer owner, or check-in task", 
 it("commits a display name and its managed instructions together", async (t) => {
 	const { harness, conversation } = await fixture(t);
 	const publications: CommitPublication[] = [];
-	const unsubscribe = harness.subscribeCommits((publication) => publications.push(publication));
+	const unsubscribe = onStoredCommit(harness, (publication) => publications.push(publication));
 	t.after(unsubscribe);
 	await writeConversationName(conversation, "New name", context);
 	const changes = publications.filter((publication) => publication.changes.some((change) => change.type === "document" && change.record.kind === AgentMetaDoc.definition.kind));

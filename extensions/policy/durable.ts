@@ -142,6 +142,31 @@ const COMPLETED_CALLS = 512;
 const REQUEST_EFFECTS = 64;
 const PROJECTION_MODES: readonly PolicyMode[] = ["annotate", "enforce"];
 
+/** Host diagnostics establish rejection or uncertain execution, not a completed tool attempt. */
+export function durableResultDisposition(result: Durable.ToolExecutionResult): {
+	outcome: CallOutcome;
+	executed: boolean | "unknown";
+	diagnostic?: string;
+} {
+	for (const { code } of result.diagnostics ?? []) {
+		switch (code) {
+			case "tool_unavailable":
+			case "abandoned":
+				return { outcome: "unexecuted", executed: false, diagnostic: code };
+			case "invalid_arguments":
+				return { outcome: "invalid", executed: false, diagnostic: code };
+			case "blocked":
+				return { outcome: "denied", executed: false, diagnostic: code };
+			case "aborted":
+				return { outcome: "aborted", executed: "unknown", diagnostic: code };
+			case "interrupted":
+			case "restart_limit":
+				return { outcome: "incomplete", executed: "unknown", diagnostic: code };
+		}
+	}
+	return { outcome: result.isError === true ? "execution-error" : "success", executed: true };
+}
+
 /** One Durable contribution emitted by the ordinary factory. */
 export interface PolicyDurableContribution {
 	readonly name: string;
@@ -248,7 +273,7 @@ interface ObservedCall {
 	generation: number;
 	turn: number;
 	complete: boolean;
-	resultSeen: boolean;
+	resultSeen: boolean | typeof UNKNOWN;
 	abortRequested?: boolean;
 	preGuidanceBytes?: number;
 	outputBytes?: number;
@@ -1378,6 +1403,7 @@ class DurablePolicyRuntime {
 	): Promise<Durable.ToolExecutionResult | undefined> {
 		const now = Date.now();
 		const surface = this.hookSurface(api);
+		const disposition = durableResultDisposition(result);
 		const memo = await api.memo<PolicyCallMemo>("policy.call", context);
 		const { snapshot, agent, scope, rules, installed } = await this.activeRules(surface, context);
 		const turn = await this.turnOf(api.conversationId, context);
@@ -1400,8 +1426,12 @@ class DurablePolicyRuntime {
 			installed,
 		);
 		observed.generation = reading.state.generation;
-		observed.resultSeen = true;
-		observed.abortRequested = context.abortSignal?.aborted === true;
+		observed.resultSeen = disposition.executed === "unknown" ? UNKNOWN : disposition.executed;
+		if (disposition.diagnostic) {
+			observed.effects.policy = { ...observed.effects.policy, hostDiagnostic: disposition.diagnostic };
+			if (disposition.executed === "unknown" || memo === undefined) observed.complete = false;
+		}
+		observed.abortRequested = disposition.outcome === "aborted" || context.abortSignal?.aborted === true;
 		observed.preGuidanceBytes = textContentBytes(result.output);
 		observed.outputBytes = observed.preGuidanceBytes;
 		const details = objectValue(result.details);
@@ -1409,7 +1439,7 @@ class DurablePolicyRuntime {
 		const update = await this.completeCall(
 			observed,
 			{ ...result, content: result.output },
-			result.isError === true ? "execution-error" : "success",
+			disposition.outcome,
 			this.effectiveMode(snapshot),
 			rules,
 			truncation?.truncated === true,
@@ -1419,6 +1449,9 @@ class DurablePolicyRuntime {
 			now,
 		);
 		await this.writeTelemetry(update.record);
+		// A completed input refusal already included its recorded guidance in the block.
+		if (disposition.diagnostic === "blocked" && memo?.decision !== undefined && update.record === undefined)
+			return undefined;
 		const guidance = update.guidance;
 		if (!guidance && !update.correction) return undefined;
 		const output = guidance

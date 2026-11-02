@@ -1195,7 +1195,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	}
 
 	signal.addEventListener("abort", onAbort, { once: true });
-	unsubscribe = host.harness.subscribeCommits(() => schedule(0, true));
+	const observation = host.harness.observeCommits({ advance: () => schedule(0, true), end: () => {} });
+	unsubscribe = () => observation.detach();
 	if (!signal.aborted) schedule(0);
 	return { get busy() { return running || inFlight !== undefined; }, refresh: () => { unavailableTargets.clear(); schedule(0, true); }, sealAdmission, close };
 }

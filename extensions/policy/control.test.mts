@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import { PolicyControlParams } from "./control.ts";
 import { normalizeDataArtifact } from "./data-import.ts";
 import { proposalRevision, reduceRuleEvents, RuleRegistry, targetIdentity, validateRuleEvent } from "./local-rules.ts";
@@ -131,8 +131,8 @@ it("keeps exact authority and command/proposal boundaries intact", async (t) => 
 	};
 	const next = await f.registry.proposeAdd(candidate("local.next"), "Protect.", agent);
 	await assert.rejects(f.registry.decide(next.id, "approved", "block", audit), /revision changed/);
-	const transport = Compile(PolicyControlParams);
-	assert.equal(transport.Check({ operation: "reject" }), true, "execution enforces operation-specific requirements");
+	const transport = compile(PolicyControlParams);
+	assert.equal(transport.check({ operation: "reject" }), true, "execution enforces operation-specific requirements");
 	for (const input of [
 		{ operation: "mode", authorization },
 		{ operation: "reject", proposalId: next.id },

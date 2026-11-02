@@ -1,5 +1,5 @@
 import { Type, type Static } from "typebox";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 
 export const name = Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" });
@@ -58,15 +58,15 @@ export type DelegationPreferences = Static<typeof preferenceSchema>;
 export type ExecutionPresets = AgentPreferences["presets"];
 export function validPresets(value: unknown): value is ExecutionPresets {
 	return (
-		Value.Check(AgentPreferencesSchema.properties.presets, value) &&
+		matchesSchema(AgentPreferencesSchema.properties.presets, value) &&
 		wellFormed(value) &&
-		Object.keys(value).every((key) => Value.Check(name, key))
+		Object.keys(value).every((key) => matchesSchema(name, key))
 	);
 }
 export function validPreferences(value: unknown): value is DelegationPreferences {
 	return (
-		Value.Check(preferenceSchema, value) &&
+		matchesSchema(preferenceSchema, value) &&
 		wellFormed(value) &&
-		Object.keys((value as DelegationPreferences).contextBudgetTokens ?? {}).every((key) => Value.Check(model, key))
+		Object.keys((value as DelegationPreferences).contextBudgetTokens ?? {}).every((key) => matchesSchema(model, key))
 	);
 }

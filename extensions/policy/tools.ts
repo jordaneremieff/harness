@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import type { ActionControl } from "./action-approval.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import { authoringGuide, checkDraft, DraftCasesSchema, type ParsedDraft, validateDraftCases } from "./authoring.ts";
 import { ruleScopeVisibility } from "./classify.ts";
 import { registerControlTool } from "./control.ts";
@@ -220,7 +220,7 @@ const PolicyProposalSchema = Type.Union(
 			...FactsProposal,
 			...PredicateProposal,
 			...CommandProposal,
-			operation: Type.Union(["add", "replace", "retire", "disable"].map((value) => Type.Literal(value))),
+			operation: Type.Union([Type.Literal("add"), Type.Literal("replace"), Type.Literal("retire"), Type.Literal("disable")]),
 			match: Type.Union([MatchSchema, CliMatchSchema]),
 			expectedRevision: RevisionSchema,
 		},
@@ -271,11 +271,11 @@ const PreviewContentSchema = Type.Array(
 export const PolicyRulesParams = Type.Object(
 	{
 		view: Type.Optional(
-			Type.Union(
-				["rules", "catalog", "capabilities", "state", "health", "explain", "preview", "data", "authoring", "check"].map(
-					(value) => Type.Literal(value),
-				),
-			),
+			Type.Union([
+				Type.Literal("rules"), Type.Literal("catalog"), Type.Literal("capabilities"), Type.Literal("state"),
+				Type.Literal("health"), Type.Literal("explain"), Type.Literal("preview"), Type.Literal("data"),
+				Type.Literal("authoring"), Type.Literal("check"),
+			]),
 		),
 		id: Type.Optional(Type.String({ minLength: 1, maxLength: 261 })),
 		draft: Type.Optional(
@@ -317,7 +317,7 @@ export const PolicyApproveParams = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-const approvalValidator = Compile(PolicyApproveParams);
+const approvalValidator = compile(PolicyApproveParams);
 
 export type PolicyInspectionView = "capabilities" | "state" | "health" | "explain" | "preview" | "data";
 
@@ -746,7 +746,7 @@ function proposalCandidate(params: PolicyProposeAddOrReplace): LocalRuleCandidat
 	});
 }
 
-const proposalValidator = Compile(PolicyProposalSchema);
+const proposalValidator = compile(PolicyProposalSchema);
 
 /** Diagnose the selected form rather than report errors from unrelated union branches. */
 function proposalAdmissionError(value: unknown): string {
@@ -763,20 +763,20 @@ function proposalAdmissionError(value: unknown): string {
 			return "cli" in fields.match.properties === (isJsonObject(value.match) && "cli" in value.match);
 		return true;
 	});
-	return Compile(branch ?? PolicyProposalSchema)
-		.Errors(value)
-		.map((error) => `${error.instancePath || "root"}: ${error.message}`)
+	return compile(branch ?? PolicyProposalSchema)
+		.errors(value)
+		.map((error) => `${error.path || "root"}: ${error.message}`)
 		.join("\n");
 }
 
 export function validateProposal(value: unknown): asserts value is PolicyProposeInput {
-	if (!proposalValidator.Check(value))
+	if (!proposalValidator.check(value))
 		throw new Error(`Validation failed for policy_propose:\n${proposalAdmissionError(value)}`);
 }
 
 /** Use the public proposal grammar and candidate admission without a registry write. */
 export function parseAuthoringDraft(value: unknown): ParsedDraft {
-	if (!proposalValidator.Check(value)) throw new Error("Draft does not satisfy the policy_propose schema");
+	if (!proposalValidator.check(value)) throw new Error("Draft does not satisfy the policy_propose schema");
 	const params = value as PolicyProposeInput;
 	if (params.operation !== "add" && params.operation !== "replace")
 		throw new Error("Draft checks accept add or replace only");
@@ -896,7 +896,7 @@ function registerApprovalTool(pi: Pick<ExtensionAPI, "registerTool">, deps: Tool
 		parameters: PolicyApproveParams,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_approve cancelled");
-			if (!approvalValidator.Check(params) || !params.authorization.trim())
+			if (!approvalValidator.check(params) || !params.authorization.trim())
 				throw new Error(
 					"policy_approve requires proposalId, proposalRevision, effect (steer, block, or exact), and a nonblank authorization explanation only",
 				);

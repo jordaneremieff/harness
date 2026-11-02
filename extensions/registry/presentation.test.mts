@@ -85,7 +85,9 @@ describe("registry call card", () => {
 		const view = renderRegistryCall({ name: `\x1b]52;c;x\x07${"n".repeat(200)}` }, theme, { expanded: false, argsComplete: true });
 		const shown = screen(view, 80);
 		assert.doesNotMatch(shown, /[\x1b\x07]/);
-		assert.match(shown, /(?:to expand arguments|expand for arguments)/i);
+		assert.match(shown, /Expand for arguments/);
+		const keyed = renderRegistryCall({ name: "n".repeat(200) }, theme, { expanded: false, argsComplete: true, keyText: () => "ctrl+g" });
+		assert.match(screen(keyed, 80), /ctrl\+g to expand arguments/, "the hint uses the host-injected binding");
 		const expanded = screen(renderRegistryCall({ name: "registry", detail: true }, theme, { expanded: true, argsComplete: true }));
 		assert.match(expanded, /"detail": true/);
 	});

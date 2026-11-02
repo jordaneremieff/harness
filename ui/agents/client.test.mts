@@ -294,7 +294,7 @@ test("current inspect activity and result facts pass the negotiated transport", 
 	assert.deepEqual(await link.request("inspect", { sessionId: CHILD, view: "activity" }, { identity: CHILD }), activity(CHILD));
 	assert.deepEqual(await link.request("inspect", { sessionId: CHILD, view: "result", submissionId: 7 }, { identity: CHILD }), blockedResult(CHILD));
 	assert.deepEqual(host.calls[0].expected, { request: "inspect/1.1.0",
-		response: "d38d5e5a297d6b3738547ab0154cd494602f01c4a898423a076d2d946e430a6b", durable: link.descriptor.upstream.durable });
+		response: "f1009d22633112866c6c6b83c4734512f00c6aa4767daf07644074f932633f0a", durable: link.descriptor.upstream.durable });
 });
 
 test("missing-request results preserve exact selectors and keep inspect available", async t => {

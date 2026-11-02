@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { EntryRecord, UsageState } from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { answerMessage } from "./durable-host-fixture.mts";
 import { boundCatalogView, CATALOG_VIEW_BUDGET_BYTES, parseCatalogView, withModelEvidence, type CatalogViewRow } from "./catalog-view.ts";
 import { AgentConversationSummarySchema } from "./observation-schema.ts";
@@ -112,8 +112,8 @@ it("adds optional evidence without altering strict rows or evicting operational 
 		assert.deepEqual(view.rows, base.rows);
 		assert.deepEqual(view.coverage, base.coverage);
 		assert.ok(Buffer.byteLength(JSON.stringify(view)) <= CATALOG_VIEW_BUDGET_BYTES);
-		assert.ok(view.rows.every((item) => Value.Check(AgentConversationSummarySchema, item)));
-		assert.equal(Value.Check(AgentConversationSummarySchema, { ...row, modelEvidence: source }), false);
+		assert.ok(view.rows.every((item) => matchesSchema(AgentConversationSummarySchema, item)));
+		assert.equal(matchesSchema(AgentConversationSummarySchema, { ...row, modelEvidence: source }), false);
 		assert.deepEqual(parseCatalogView(view), view);
 	}
 });

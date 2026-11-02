@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Type } from "typebox";
-import { Check, Errors } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { readSnapshot } from "./index.ts";
 import { lookup, type LookupRequest, type LookupResult } from "./lookup.ts";
@@ -24,7 +24,7 @@ const models: ModelSnapshot = { catalogAvailable: true, availableSnapshot: true,
 const run = (params: LookupRequest["params"], overrides: Partial<LookupRequest> = {}) =>
 	lookup({ params, snapshot: snapshot(), models, session: {}, epoch: "fixture", ...overrides });
 function validate(result: LookupResult) {
-	assert.ok(Check(RegistryOutputSchema, result.structuredContent), JSON.stringify([...Errors(RegistryOutputSchema, result.structuredContent)]));
+	assert.ok(compile(RegistryOutputSchema).check(result.structuredContent), JSON.stringify(compile(RegistryOutputSchema).errors(result.structuredContent)));
 	assert.deepEqual(result.structuredContent, JSON.parse(JSON.stringify(result.details)));
 	const envelope = { content: [{ type: "text", text: result.text }], details: result.details, structuredContent: result.structuredContent };
 	assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= MAX_RESULT_BYTES);

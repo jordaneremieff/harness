@@ -229,7 +229,7 @@ function nativeCheckpoint(change: Durable.CommitChange): object | undefined {
 		return { type: "terminal", submission: change.value };
 	}
 	if (change.type === "entry" && change.value.kind === "pi.assistant") return { type: "assistant", entry: change.value };
-	if (change.type !== "document" || change.record.kind !== "pi.live" || change.value === null) return undefined;
+	if (change.type !== "document" || change.kind !== "change" || change.record.kind !== "pi.live") return undefined;
 	const generation = change.value.generation as { attempt?: number; retry?: { at: number; error: string } } | undefined;
 	if (generation?.retry === undefined) return undefined;
 	return { type: "retry", conversationId: change.conversationId, generation };
@@ -256,11 +256,12 @@ export default function registerDurableRuntimeFixture(pi: ExtensionAPI): void {
 		create(host: { readonly durable: typeof Durable; readonly services: AgentSessionServices; readonly harness: Durable.Harness; onClose(dispose: () => void): void }): Durable.Extension {
 			if (process.env.DURABLE_TEST_HTTP === "1") {
 				const version = (entry: string): string => JSON.parse(readFileSync(join(dirname(dirname(entry)), "package.json"), "utf8")).version;
-				const aiEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai"));
+				// The extension loader maps the pi-ai root to its compat view; the models entry is the package itself.
+				const aiEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-ai/models"));
 				const durableEntry = fileURLToPath(import.meta.resolve("@earendil-works/pi-durable"));
 				writeFileSync(join(controlDir(), `load-proof-${process.pid}.json`), JSON.stringify({ codingAgent: VERSION, packageDir: getPackageDir(), piAi: version(aiEntry), piAiEntry: aiEntry, durable: version(durableEntry), durableEntry, modelRuntime: host.services.modelRuntime instanceof ModelRuntime, providerRetry: host.services.settingsManager.getProviderRetrySettings(), httpIdleTimeoutMs: host.services.settingsManager.getHttpIdleTimeoutMs() }));
 				mark("load-proof");
-				host.onClose(host.harness.subscribeCommits(recordNativeCommit));
+				{ const observation = host.harness.observeCommits({ advance: recordNativeCommit, end: () => {} }); host.onClose(() => observation.detach()); }
 				const runtime = host.services.modelRuntime;
 				const upstream = runtime.streamSimple.bind(runtime);
 				runtime.streamSimple = (...args) => {

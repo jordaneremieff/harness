@@ -9,7 +9,7 @@ import type { Models, StreamOptions } from "@earendil-works/pi-ai";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { LiveDoc, InboxDoc, type ConversationId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, completed, pending, fixtureModelId, fixtureProvider, fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { readOutcome, reconcileDeliveries } from "./durable-controls.ts";
@@ -49,7 +49,7 @@ it("resolves native request IDs in the selected conversation with matching submi
 		const outcome = await readOutcome(host.harness, first.submissionId as SubmissionId, BACKGROUND_CONTEXT);
 		assert.ok(outcome.entryId);
 		const root = await host.request("inspect", { sessionId: storageId, view: "result", requestId: "qualified-request", submissionId: String(first.submissionId), entryId: String(outcome.entryId) }) as { submissionId: number; requestId: string; status: string; answer: string; conversationId: number };
-		assert.equal(Value.Check(InspectOutputSchema, root), true);
+		assert.equal(matchesSchema(InspectOutputSchema, root), true);
 		assert.equal(root.submissionId, first.submissionId);
 		assert.equal(root.requestId, "qualified-request");
 		assert.equal(root.conversationId, ROOT);
@@ -91,7 +91,7 @@ it("refuses conflicting native result selectors without treating operationId as 
 it("returns a closed unavailable result for a missing native request without inventing a submission", async () => {
 	await withHost(async (host, storageId) => {
 		const missing = await host.request("inspect", { sessionId: storageId, view: "result", requestId: "no-native-request" }) as { status: string; submissionId?: number; requestId: string; sessionId: string; conversationId: number; reason: string };
-		assert.equal(Value.Check(InspectOutputSchema, missing), true);
+		assert.equal(matchesSchema(InspectOutputSchema, missing), true);
 		assert.equal(missing.status, "unavailable");
 		assert.equal(missing.submissionId, undefined);
 		assert.equal(missing.requestId, "no-native-request");
@@ -115,7 +115,7 @@ it("forwards the native request selector and returns terminal inspection text th
 		const tool = extension.tools?.find((tool) => tool.name === "agent_inspect");
 		assert.ok(tool);
 		const args = { sessionId: storageId, view: "result", requestId: "terminal-request" };
-		assert.equal(Value.Check(tool.parameters, args), true);
+		assert.equal(matchesSchema(tool.parameters, args), true);
 		const output = await tool.execute(args, {} as never, BACKGROUND_CONTEXT);
 		assert.notEqual(output.isError, true);
 		const text = output.output?.find((part) => part.type === "text");
@@ -125,7 +125,7 @@ it("forwards the native request selector and returns terminal inspection text th
 		assert.equal(parsed.requestId, "terminal-request");
 		assert.equal(parsed.answer, "durable answer");
 		assert.deepEqual(output.structuredOutput, parsed);
-		assert.equal(Value.Check(InspectOutputSchema, output.structuredOutput), true);
+		assert.equal(matchesSchema(InspectOutputSchema, output.structuredOutput), true);
 		assert.equal(seen[0]?.requestId, args.requestId);
 		const missing = await tool.execute({ sessionId: storageId, view: "result", requestId: "no-terminal-request" }, {} as never, BACKGROUND_CONTEXT);
 		assert.notEqual(missing.isError, true);
@@ -156,17 +156,17 @@ it("preserves user model bytes and keeps communication out of input metadata", a
 		assert.equal(view.target.mode, "input");
 		assert.match(communicationText(view.value), /report from Peer.*Source body/su);
 		const history = await readInspection(host.harness, storageId, conversation, { view: "history" }, BACKGROUND_CONTEXT) as { entries: { id: number; kind: string; communication: unknown }[] };
-		assert.equal(Value.Check(InspectOutputSchema, history), true);
+		assert.equal(matchesSchema(InspectOutputSchema, history), true);
 		assert.equal(history.entries.some((entry) => entry.kind === "agent.communication"), false);
 		assert.deepEqual(history.entries.find((entry) => entry.id === outcome.entryId)?.communication, view);
 		const branch = await readInspection(host.harness, storageId, conversation, { view: "branch" }, BACKGROUND_CONTEXT) as { entries: { kind: string; communication?: unknown }[] };
-		assert.equal(Value.Check(InspectOutputSchema, branch), true);
+		assert.equal(matchesSchema(InspectOutputSchema, branch), true);
 		assert.equal(branch.entries.some((entry) => entry.kind === "agent.communication"), true);
 		assert.equal(branch.entries.some((entry) => entry.communication !== undefined), false);
 		const exact = await readInspection(host.harness, storageId, conversation, { view: "exact", entryId: outcome.entryId }, BACKGROUND_CONTEXT) as { text: string };
 		assert.equal(JSON.parse(exact.text).model[0].content, message);
 		const activity = await readInspection(host.harness, storageId, conversation, { view: "activity" }, BACKGROUND_CONTEXT);
-		assert.equal(Value.Check(InspectOutputSchema, activity), true);
+		assert.equal(matchesSchema(InspectOutputSchema, activity), true);
 	});
 });
 
@@ -352,7 +352,7 @@ for (const abortResult of ["already_placed", "settled", "aborted"] as const) it(
 			if (conversation !== undefined && !wrapped.has(conversation)) {
 				wrapped.add(conversation);
 				const submit = conversation.submit.bind(conversation);
-				t.mock.method(conversation, "submit", async (...args: Parameters<typeof submit>) => {
+				t.mock.method(conversation, "submit", async (...args: [Durable.SubmissionDraft, typeof BACKGROUND_CONTEXT]) => {
 					const submission = await submit(...args);
 					if (args[0].requestId !== "late-check-in") return submission;
 					nativeAdmissions++;
@@ -504,7 +504,7 @@ for (const status of ["done", "placed"] as const) it(`reconstructs ${status} cap
 				const conversation = await original(...args);
 				if (conversation !== undefined) {
 					const submit = conversation.submit.bind(conversation);
-					t.mock.method(conversation, "submit", async (...args: Parameters<typeof submit>) => {
+					t.mock.method(conversation, "submit", async (...args: [Durable.SubmissionDraft, typeof BACKGROUND_CONTEXT]) => {
 						const submission = await submit(...args);
 						if (args[0].requestId === "capture-race") {
 							if (status === "placed") await control.held;

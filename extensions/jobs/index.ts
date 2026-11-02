@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
-import { StringEnum } from "@earendil-works/pi-ai";
 import {
 	createBashToolDefinition,
 	createLocalBashOperations,
@@ -11,6 +10,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
 import { JOB_LIMITS, JobManager, type JobSnapshot } from "./manager.ts";
+
+/** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
+const StringEnum = <T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: values });
 
 const BashParameters = Type.Object({
 	command: Type.String({ description: "Shell command to execute", minLength: 1, maxLength: 32_768 }),

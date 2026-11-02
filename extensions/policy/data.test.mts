@@ -39,6 +39,14 @@ test("named tables retain exact identity and expose freshness", () => {
 	assert.deepEqual(lookupData(snapshotData([binding()], 1100).teams, "blue"), { status: "unavailable" });
 });
 
+test("named data uses code-point string limits and keeps closed fields noncoercing", () => {
+	assert.equal(validateNamedData(binding({ rows: [{ key: "😀".repeat(4096), value: "ok" }] })), undefined);
+	assert.equal(validateNamedData(binding({ rows: [{ key: "e\u0301".repeat(2048), value: "ok" }] })), undefined);
+	assert.equal(validateNamedData(binding({ rows: [{ key: "e\u0301".repeat(2049), value: "ok" }] })), "Invalid named data definition");
+	assert.equal(validateNamedData({ ...binding(), capturedAt: "100" }), "Invalid named data definition");
+	assert.equal(validateNamedData({ ...binding(), extra: true }), "Invalid named data definition");
+});
+
 test("revision-controlled operator data has no forced time expiry", () => {
 	const permanent = binding();
 	delete permanent.maxAgeMs;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Type } from "typebox";
-import { Check, Errors } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { readSnapshot } from "./index.ts";
 import { lookup, type LookupResult } from "./lookup.ts";
@@ -27,7 +27,7 @@ const run = (namespace: ToolInfo["namespace"], params: Parameters<typeof lookup>
 	lookup({ params, snapshot: readSnapshot(piWith(namespace), null, 1000), session: {}, epoch: "fixture" });
 
 function validate(result: LookupResult): LookupResult {
-	assert.ok(Check(RegistryOutputSchema, result.structuredContent), JSON.stringify([...Errors(RegistryOutputSchema, result.structuredContent)]));
+	assert.ok(compile(RegistryOutputSchema).check(result.structuredContent), JSON.stringify(compile(RegistryOutputSchema).errors(result.structuredContent)));
 	const envelope = { content: [{ type: "text", text: result.text }], details: result.details, structuredContent: result.structuredContent };
 	assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= MAX_RESULT_BYTES);
 	assert.ok(!result.text.includes(GUIDANCE));
@@ -77,7 +77,7 @@ describe("tool namespace aliases", () => {
 	it("blocks an oversized alias record without publishing incomplete aliases or claiming absence", async () => {
 		const namespace = { ...namespaceWith(), aliases: ["x".repeat(4 * MAX_RESULT_BYTES)] };
 		const result = await run(namespace, { kind: "tool", limit: 1 });
-		assert.ok(Check(RegistryOutputSchema, result.structuredContent));
+		assert.ok(compile(RegistryOutputSchema).check(result.structuredContent));
 		assert.equal(result.details.pageBlocked, true);
 		assert.equal(result.details.resultBounded, true);
 		assert.equal(result.details.cursor, undefined);

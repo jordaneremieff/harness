@@ -491,8 +491,8 @@ async function waitForChildGeneration(harness: Durable.Harness, rootId: Durable.
 	}
 	try {
 		await new Promise<void>((resolve) => {
-			watch.start(async (graph) => {
-				if (running(graph)) resolve();
+			watch.start(async (call) => {
+				if (call.kind === "value" && running(call.value)) resolve();
 			});
 		});
 	} finally {
@@ -744,7 +744,7 @@ it("keeps the original input placed while one native await accepts two exact res
 	let first!: () => void;
 	const declared = new Promise<void>((resolve) => { ready = resolve; });
 	const accepted = new Promise<void>((resolve) => { first = resolve; });
-	watch.start(async (state) => { if (state?.declarations.some((item) => item.decision === "awaiting")) ready(); if (state?.declarations.some((item) => item.outcomes.length === 1)) first(); });
+	watch.start(async (call) => { const state = call.kind === "value" ? call.value : undefined; if (state?.declarations.some((item) => item.decision === "awaiting")) ready(); if (state?.declarations.some((item) => item.outcomes.length === 1)) first(); });
 	t.after(() => watch.stop());
 	route.script.push({ tool: "agent_await", args: { results } });
 	const original = await root.submit({ type: "input", content: "Await both exact inputs" }, context);
@@ -767,7 +767,7 @@ async function waitForAwait(harness: Durable.Harness, predicate: (state: AwaitSt
 	assert.ok(watch);
 	try {
 		await new Promise<void>((resolve) => {
-			watch.start(async (state) => { if (state && predicate(state)) resolve(); });
+			watch.start(async (call) => { if (call.kind === "value" && predicate(call.value)) resolve(); });
 			void harness.snapshot(AwaitDoc, context).then((state) => { if (state && predicate(state)) resolve(); });
 		});
 	} finally { await watch.stop(); }
@@ -1222,7 +1222,7 @@ it("keeps default check-ins and native scheduled delivery token-idle during the 
 	await harness.commit(async (tx) => { await tx.doc(AgentTimerDoc); }, context);
 	const timerWatch = await harness.watchDoc(AgentTimerDoc, context); assert.ok(timerWatch);
 	let fired!: () => void; const timerFired = new Promise<void>((resolve) => { fired = resolve; });
-	timerWatch.start(async (state) => { if (state?.timers.some((item) => item.status === "fired")) fired(); });
+	timerWatch.start(async (call) => { const state = call.kind === "value" ? call.value : undefined; if (state?.timers.some((item) => item.status === "fired")) fired(); });
 	await scheduleTimer(harness, { scheduleId: "automatic-native", deadline: Date.now(), conversationId: root.id, identity: storageId, message: "SCHEDULED INPUT", mode: "steer", origin: "model", ownerId: "requester", requestId: "scheduled-native", createdAt: Date.now() }, context);
 	await timerFired; await timerWatch.stop();
 	assert.equal(callerCalls, calls); assert.equal((await original.status(context)).status, "placed");
@@ -1552,7 +1552,7 @@ for (const conflictingProfile of [false, true]) it(`resumes an accepted Reporter
 	assert.equal((await readRequestContexts(first, child.id, context)).length, REQUEST_CONTEXT_LIMIT);
 	await first.close(context);
 
-	resumed = await Durable.Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, onReport: (error) => warnings.push(error) }, context);
+	resumed = await Durable.Harness.open(await openNodeSqliteStorage(storagePath), { models, registry, onReport: (report) => warnings.push(report.error) }, context);
 	registry.install({ name: "retained-request-routes", sections: [requestContextSection(resumed)] });
 	const settled = await resumed.waitForTask(taskId, context);
 	assert.equal(settled.state.outcome.status, "completed");

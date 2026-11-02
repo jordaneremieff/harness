@@ -11,7 +11,7 @@ import type { Context } from "@earendil-works/chord";
 import type { ConversationId, ConversationView, Harness, LiveState, TaskGraph, WatchHandle } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
 import { captureCommunicationReader } from "./communication-observation.ts";
-import { durableIdentity, publicLiveState, readConversationStatus, selectSnapshotEntries, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_ENTRY_LIMIT, snapshotEntry } from "./durable-observation.ts";
+import { durableIdentity, publicLiveState, readConversationStatus, selectWindowEntries, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_ENTRY_LIMIT, snapshotEntry } from "./durable-observation.ts";
 import { buildLiveEntries, jsonSafeFrame, taskGraphRows, type ConversationFrame, type ObservationFrame, type TaskLabel, type TasksFrame } from "./live-frames.ts";
 
 /** What one observation token reads. */
@@ -191,7 +191,8 @@ export class LiveObservationService {
 		if (existing) return existing;
 		const conversation = await this.harness.conversation(conversationId, this.context);
 		if (!conversation) throw new Error(`observed conversation ${conversationId} does not exist`);
-		const handle = await conversation.watch(this.context);
+		// The window holds at least one frame's entry bound; older entries page through history.
+		const handle = await conversation.watch(this.context, { min: SNAPSHOT_ENTRY_LIMIT });
 		const state: ConversationWatchState = { conversationId, handle, revision: 1, dirty: true, references: 0, frame: undefined };
 		try {
 			handle.start(async () => { this.invalidateState(state); });
@@ -243,7 +244,7 @@ export class LiveObservationService {
 		const conversation = await this.harness.conversation(state.conversationId, this.context);
 		if (conversation === undefined) throw new Error(`observed conversation ${state.conversationId} does not exist`);
 		const reader = await captureCommunicationReader(this.harness, this.options.storageId, conversation, this.context);
-		const selection = selectSnapshotEntries([...value.entries].reverse(), SNAPSHOT_ENTRY_LIMIT, SNAPSHOT_BYTE_LIMIT);
+		const selection = selectWindowEntries(value, SNAPSHOT_ENTRY_LIMIT, SNAPSHOT_BYTE_LIMIT);
 		const views = await reader.views(selection.entries);
 		const taskSenders = await reader.taskSenders(selection.entries);
 		const entries = selection.entries.map((entry, index) => ({ ...snapshotEntry(entry), communication: views[index] ?? { state: "unavailable" as const, reason: "limit" as const } }));

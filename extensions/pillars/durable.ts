@@ -15,7 +15,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
-import { StringEnum, type ToolCall } from "@earendil-works/pi-ai";
+import type { ToolCall } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { ACCESS_DESCRIPTION, access, type AccessPage, parseAccess } from "./access.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
@@ -70,6 +70,11 @@ export interface DurableCommandCall {
 	readonly host: DurableContributionHost;
 	readonly invocationId: string;
 }
+
+/** Host settlements do not establish a completed corpus read or an admitted draft. */
+const HOST_RESULT_CODES = new Set([
+	"tool_unavailable", "invalid_arguments", "blocked", "interrupted", "restart_limit", "aborted", "abandoned",
+]);
 
 /** Pi Durable details are JSON values; the corpus page and usage response are plain JSON objects. */
 const asDetails = (value: unknown): JsonValue => value as JsonValue;
@@ -362,7 +367,7 @@ export function pillarsDurableContribution(
 							description: TOOL_DESCRIPTION,
 							parameters: Type.Object(
 								{
-									view: Type.Optional(StringEnum(["overview", "revisions"] as const)),
+									view: Type.Optional(Type.Unsafe<"overview" | "revisions">({ type: "string", enum: ["overview", "revisions"] })),
 									windowDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 30 })),
 									cursor: Type.Optional(Type.String({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$" })),
 								},
@@ -404,6 +409,8 @@ export function pillarsDurableContribution(
 							return undefined;
 						},
 						afterTool: async (call, result, api, context) => {
+							if (result.diagnostics?.some((diagnostic) => diagnostic.code !== undefined && HOST_RESULT_CODES.has(diagnostic.code)))
+								return undefined;
 							await observeResult(call, result, api, context);
 							await assessNested(call, result, api, context);
 							return undefined;

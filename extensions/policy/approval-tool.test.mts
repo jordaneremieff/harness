@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import {
 	type ProposalEvent,
 	proposalRevision,
@@ -111,14 +111,14 @@ describe("context-authorized policy approval tool", () => {
 	it("requires complete bounded call parameters without treating prose as intent proof", async (t) => {
 		const f = await setup(t);
 		const p = await f.submit();
-		const schema = Compile(PolicyApproveParams);
+		const schema = compile(PolicyApproveParams);
 		const base = approval(p);
-		assert.equal(schema.Check(base), true);
+		assert.equal(schema.check(base), true);
 		const before = await f.bytes();
 		for (const key of Object.keys(base)) {
 			const input = { ...base } as Record<string, unknown>;
 			delete input[key];
-			assert.equal(schema.Check(input), false);
+			assert.equal(schema.check(input), false);
 			await assert.rejects(f.call("policy_approve", input), /requires/);
 		}
 		for (const input of [

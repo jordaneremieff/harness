@@ -19,14 +19,14 @@ for (const failure of ["setup", "absent", "start", "disconnect", "snapshot"] as 
 			return {
 				start() { if (failure === "start") throw new Error("start failure"); },
 				async stop() { stopped++; },
-				closed: failure === "disconnect" ? Promise.resolve({ reason: "session_closed" }) : new Promise(() => {}),
+				closed: failure === "disconnect" ? Promise.resolve({ kind: "ended" }) : new Promise(() => {}),
 			};
 		},
 	} as unknown as ToolExecutionApi;
 	await assert.rejects(executeAwait({ results: [{ sessionId: "foreign", submissionId: 5 }] }, api, BACKGROUND_CONTEXT, "store", async (_method, _params, context) => new Promise((_resolve, reject) => {
 		if (context?.abortSignal?.aborted) reject(new Error("cancelled"));
 		else context?.abortSignal?.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
-	})), failure === "absent" ? /not committed/u : /failure|session_closed/u);
+	})), failure === "absent" ? /not committed/u : /failure|observation ended: ended/u);
 	assert.equal(owned?.abortSignal?.aborted, true);
 	assert.equal(stopped, failure === "setup" || failure === "absent" ? 0 : 1);
 });

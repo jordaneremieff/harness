@@ -1,6 +1,8 @@
 import { Type } from "typebox";
-import { StringEnum } from "@earendil-works/pi-ai";
 import { AUTH_SOURCES } from "./models.ts";
+
+/** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
+const StringEnum = <T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: values });
 
 // Aggregate byte/line limits apply before publication, including both structured copies.
 const text = Type.String({ maxLength: 50 * 1024 });

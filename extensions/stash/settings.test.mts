@@ -145,7 +145,7 @@ function factory() {
 		registerTool: () => {},
 		registerCommand: () => {},
 		registerShortcut: () => {},
-		exec: async () => ({ code: 0, stdout: "", stderr: "", killed: false }),
+		exec: async () => ({ code: 0, stdout: "", stderr: "", killed: false, truncated: false }),
 		sendUserMessage: () => {},
 		sendMessage: () => {},
 		appendEntry: () => {},

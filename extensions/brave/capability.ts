@@ -1,10 +1,18 @@
 /** Shared brave tool surface: schemas, model-facing text, and web_search execution. */
 
-import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import { type BraveClientOptions, searchBraveWeb, type BraveWebSearchRequest } from "./client.ts";
 import { formatSearchResults } from "./format.ts";
 import { PAGE_LINK_LIMITS } from "./page-links.ts";
+
+/** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
+const StringEnum = <T extends readonly string[]>(values: T, options?: { description?: string; default?: T[number] }) =>
+	Type.Unsafe<T[number]>({
+		type: "string",
+		enum: values,
+		...(options?.description ? { description: options.description } : {}),
+		...(options?.default ? { default: options.default } : {}),
+	});
 
 const FreshnessPattern = "^(pd|pw|pm|py|\\d{4}-\\d{2}-\\d{2}to\\d{4}-\\d{2}-\\d{2})$";
 

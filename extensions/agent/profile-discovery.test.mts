@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { AgentManager } from "./manager.ts";
 import { AgentConversationSummarySchema, StatusToolOutputSchema } from "./observation-schema.ts";
 import { composeListRow, enrichDashboardRow, matchesListRow } from "./profile-discovery.ts";
@@ -22,7 +22,7 @@ it("discovery joins retained hints by canonical identity and keeps missing cover
 	assert.equal(missing.profileCoverage, "unknown"); assert.equal(missing.role, null);
 	assert.equal(matchesListRow(missing, "history"), false);
 	const base = row("one");
-	assert.ok(Value.Check(AgentConversationSummarySchema, base));
+	assert.ok(matchesSchema(AgentConversationSummarySchema, base));
 	assert.equal(enrichDashboardRow(base, hints).profile?.handle, "@history");
 	assert.equal(base.profile, undefined, "base observation remains unmodified");
 });
@@ -45,7 +45,7 @@ it("manager list searches handle and role through retained hints without acquiri
 	const dashboard = await manager.dashboardPage();
 	assert.equal(dashboard.rows[0].profile?.handle, "@history");
 	const status = await manager.status();
-	assert.ok(Value.Check(StatusToolOutputSchema, status), "manager overview matches the tool status schema without composite profile fields");
+	assert.ok(matchesSchema(StatusToolOutputSchema, status), "manager overview matches the tool status schema without composite profile fields");
 	const empty = await manager.list({ query: "missing role" }) as { rows: unknown[]; coverage: { profileHints: { complete: boolean; omitted: number } } };
 	assert.equal(empty.rows.length, 0);
 	assert.equal(empty.coverage.profileHints.complete, false);

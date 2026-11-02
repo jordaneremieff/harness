@@ -56,7 +56,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		registerShortcut: (key, shortcut) => {
 			shortcuts.set(key, captureShortcut(shortcut));
 		},
-		exec: async () => ({ code: 0, stdout: "main\n", stderr: "", killed: false }),
+		exec: async () => ({ code: 0, stdout: "main\n", stderr: "", killed: false, truncated: false }),
 		sendUserMessage: (content, options) => {
 			assert.ok(typeof content === "string");
 			sent.push({ content, options });
@@ -1268,7 +1268,7 @@ describe("stash creation", () => {
 			await new Promise<void>((resolve) => {
 				resume = resolve;
 			});
-			return { code: 0, stdout: "snapshot-branch\n", stderr: "", killed: false };
+			return { code: 0, stdout: "snapshot-branch\n", stderr: "", killed: false, truncated: false };
 		};
 		const ctx = creationCtx({}, { cwd: dir, sessionManager: manager });
 		const originalSession = manager.getSessionId();

@@ -1,5 +1,5 @@
 import { AgentCatalog } from "./catalog.ts";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
 import { readRecentCollaboration, type RecentCollaborationPage } from "./collaboration-discovery.ts";
@@ -14,7 +14,7 @@ export type EffortSelf = EffortPresenceSelf & { omitted?: boolean };
 export function nativeIntentSelf(id: string, cwd: string, metadata: NativeIntentMetadata | null | undefined): EffortSelf {
 	if (metadata === undefined) return { id, cwd, omitted: true };
 	if (metadata === null) return { id, cwd };
-	if (!Value.Check(NativeIntentMetadataSchema, metadata) || metadata.cwd !== cwd) return { id, cwd, omitted: true };
+	if (!matchesSchema(NativeIntentMetadataSchema, metadata) || metadata.cwd !== cwd) return { id, cwd, omitted: true };
 	return { id, cwd, repositoryState: metadata.repositoryState,
 		...(metadata.repository === null ? {} : { repository: metadata.repository }),
 		...(metadata.claim === null ? {} : { intentClaim: metadata.claim }) };

@@ -26,17 +26,17 @@ const frame: TasksFrame = {
 		conversations: [2],
 	})),
 };
-it("shows sleeping deadlines and parked task reasons as distinct native states", async () => {
+it("shows sleeping deadlines and blocked task reasons as distinct native states", async () => {
 	const tasks: TasksFrame["tasks"] = [
 		{ ...frame.tasks[0], status: "sleeping", phase: "wait", until: 5000 },
-		{ ...frame.tasks[0], id: 2, blocked: "restart_limit" },
+		{ ...frame.tasks[0], id: 2, blocked: "missing_task" },
 	];
 	const view = new AgentTasksView({ theme, id: "storage", source: { tasks: async () => ({ ...frame, tasks }) } });
 	try {
 		await view.refresh();
 		const text = view.render(140, 10).join("\n");
 		assert.match(text, /sleeping until 1970-01-01T00:00:05\.000Z/u);
-		assert.match(text, /blocked: restart_limit/u);
+		assert.match(text, /blocked: missing_task/u);
 	} finally { view.dispose(); }
 });
 

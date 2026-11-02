@@ -1,3 +1,6 @@
+import { keyHint, keyText } from "@earendil-works/pi-coding-agent";
+/** Host-injected keybinding hints, as Pi passes them to renderers. */
+const cardKeys = { keyText, keyHint };
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { it } from "node:test";
@@ -133,8 +136,8 @@ it("a primary continuity receipt and expanded messages use plain labels", () => 
 
 it("same-target message receipts omit repeated facts but newly resolved and different targets retain their labels", () => {
 	const cards = createAgentToolCards(() => rows);
-	const context = { expanded: false, argsComplete: true, executionStarted: true, state: {} };
-	const render = (args: Record<string, unknown>, identity: string) => cards.agent_send.renderResult(fixtureResult({ identity, conversationId: 1, submissionId: 405 }), { expanded: false, isPartial: false }, { fg: (_color: string, text: string) => text } as never, { ...context, args }).render(240).join("\n");
+	const context = { ...cardKeys, expanded: false, argsComplete: true, executionStarted: true, state: {} };
+	const render = (args: Record<string, unknown>, identity: string) => cards.agent_send.renderResult(fixtureResult({ identity, conversationId: 1, submissionId: 405 }), { ...cardKeys, expanded: false, isPartial: false }, { fg: (_color: string, text: string) => text } as never, { ...context, args }).render(240).join("\n");
 	assert.match(render({ sessionId: targetId }, targetId), /^Admitted · submission 405/u);
 	assert.match(render({ sessionId: "@unobserved" }, targetId), /provider\/model · high\nAdmitted · Parser review · submission 405/u);
 	assert.match(render({ sessionId: targetId }, forkId), /provider\/model · high\nAdmitted · Fork review · submission 405/u);

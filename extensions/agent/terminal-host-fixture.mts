@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -156,7 +157,7 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 					},
 					close: () => durable.close(),
 					isIdle: () => durable.isIdle(),
-					onChange: (listener) => durable.harness.subscribeCommits(() => listener()),
+					onChange: (listener) => onStoredCommit(durable.harness, () => listener()),
 				};
 			}, { metadata: hostMetadata(record), idleMs: 0, announceReady: () => ready.resolve() });
 			await ready.promise;

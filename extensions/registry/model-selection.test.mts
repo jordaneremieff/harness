@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { CONFIG_DIR_NAME, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Check, Errors } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import { MAX_RESULT_BYTES, MAX_RESULT_LINES } from "./format.ts";
 import { lookup, type LookupResult } from "./lookup.ts";
 import { readDurableModels, readModels, readSettingsScope, type DurableModelReader, type ModelRecord, type ModelSnapshot, type SettingsScopeEvidence } from "./models.ts";
@@ -37,7 +37,7 @@ async function run(models: ModelSnapshot, params: RawParams = { kind: "model" })
 		tools: [], activeTools: [], commands: [], observation: null, at: 1,
 		availability: { tools: true, activeTools: true, commands: true },
 	} });
-	assert.ok(Check(RegistryOutputSchema, result.structuredContent), JSON.stringify([...Errors(RegistryOutputSchema, result.structuredContent)]));
+	assert.ok(compile(RegistryOutputSchema).check(result.structuredContent), JSON.stringify(compile(RegistryOutputSchema).errors(result.structuredContent)));
 	const envelope = { content: [{ type: "text", text: result.text }], details: result.details, structuredContent: result.structuredContent };
 	assert.ok(Buffer.byteLength(JSON.stringify(envelope)) <= MAX_RESULT_BYTES);
 	assert.ok(JSON.stringify(envelope, null, 2).replace(/\\n/g, "\n").split("\n").length <= MAX_RESULT_LINES);

@@ -3,11 +3,10 @@ import { Value } from "typebox/value";
 import { CORRECTION_TASK, JUDGMENT_AUTHORITY } from "./commands.ts";
 
 export const MAX_DRAFT_CHARACTERS = 8192;
-/** Pi checks the grapheme limit; the handler supplies semantic diagnostics. */
+/** JSON Schema lengths count code points; the handler enforces the grapheme limit. */
 export const DraftSchema = Type.String({
 	minLength: 1,
-	maxLength: MAX_DRAFT_CHARACTERS,
-	description: "Concrete agent-authored proposal to assess after this source read. At most 8192 characters (TypeBox grapheme clusters). The handler rejects blank text and malformed Unicode with specific errors. Retained in native history, not private scratch.",
+	description: "Concrete agent-authored proposal to assess after this source read. At most 8192 characters (TypeBox grapheme clusters), enforced by the extension. The handler rejects blank text and malformed Unicode with specific errors. Retained in native history, not private scratch.",
 });
 export const DRAFT_GUIDANCE =
 	"Before a consequential decision, action, or answer, include your concrete proposal as draft to check it before delivery; do not wait for an operator cue. A successful source read delivers an assessment task after the tool results for you to apply in the ordinary continuation. Preserve routine execution and exact-output tasks without added ceremony. The optional draft accepts at most 8192 characters (TypeBox grapheme clusters) and stays in native history, not private scratch. Source JSON remains unchanged.";
@@ -18,7 +17,7 @@ export class DraftInputError extends Error {
 	}
 }
 
-/** Measure with Pi's validator; its ordinary loader exposes value, not the guard subpath. */
+/** Preserve TypeBox's grapheme unit independently of the host's JSON Schema validator. */
 function characterCount(value: string): number {
 	let low = 0;
 	let high = value.length;

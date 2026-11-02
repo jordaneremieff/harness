@@ -1,3 +1,4 @@
+import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
@@ -15,7 +16,7 @@ import { readDeliveryWake } from "./delivery-wake.ts";
 import { AgentMetaDoc } from "./durable-controls.ts";
 import type { TimerTask } from "./durable-timers.ts";
 import type { ConversationFrame, TasksFrame } from "./live-frames.ts";
-import { DurableHost } from "./durable-host.ts";
+import { DurableHost, readTaskGraph } from "./durable-host.ts";
 import { createDurableRuntime } from "./durable-runtime.ts";
 import { runtimeFixture } from "./durable-runtime-fixture.mts";
 import { resolveAgentControlDispatch } from "./durable-agents.ts";
@@ -373,9 +374,8 @@ it("keeps another conversation's native work and owner check-in task alive", { t
 	process.env.DURABLE_TEST_MODE = "request";
 	const active = await f.native.submit({ message: "hold child", requestId: "active-child", conversationId: fork.conversationId, ownerId: f.ownerId, origin: "model", checkInMinutes: 60 });
 	await f.marker("requested");
-	const graph = await f.native.harness.taskGraph(BACKGROUND_CONTEXT);
-	try { assert.ok(Object.values(graph.value.tasks).some((task) => task.kind === "agent.check-in")); }
-	finally { graph.dispose(); }
+	const graph = await readTaskGraph(f.native.harness, BACKGROUND_CONTEXT);
+	assert.ok(Object.values(graph.tasks).some((task) => task.kind === "agent.check-in"));
 	assert.equal(await eligible(f.runtime), false);
 	await f.native.request("abort", { sessionId: `${f.metadata.storageId}:${fork.conversationId}`, background: true });
 	await f.native.wait(active.submissionId, BACKGROUND_CONTEXT);
@@ -676,7 +676,7 @@ async function waitForSleepingTimer(host: DurableHost, timerId: number): Promise
 	try {
 		if (sleeping(graph.value)) return;
 		const updates = eventLog<boolean>();
-		graph.start(async (value) => { updates.push(sleeping(value)); });
+		graph.start(async (call) => { if (call.kind === "value") updates.push(sleeping(call.value)); });
 		await updates.waitFor((rows) => rows.includes(true), 10000);
 	} finally { await graph.stop(); }
 }
@@ -703,7 +703,7 @@ it("advances the task frame on a native timer sleep publication without a status
 		const first = (await f.runtime.request("observe-open", { token: "sleep", scope: "tasks" }, "sleep-open") as { frame: TasksFrame }).frame;
 		assert.equal(first.tasks.find((task) => task.id === timer.timerId)?.status, "running");
 		const transitions: string[] = [];
-		stop = f.native.harness.subscribeCommits((publication) => {
+		stop = onStoredCommit(f.native.harness, (publication) => {
 			for (const change of publication.changes) if (change.type === "task" && change.value.id === timer.timerId) transitions.push(change.value.state.status);
 		});
 		release.resolve();
@@ -738,7 +738,7 @@ for (const scope of ["conversation", "tasks"] as const) it(`invalidates ${scope}
 	if (second.scope === "conversation") assert.equal(second.status.name, "metadata only");
 	else assert.equal(second.labels.find((label) => label.conversationId === 1)?.name, "metadata only");
 	const writes: string[] = [];
-	const stop = f.native.harness.subscribeCommits((publication) => { writes.push(...publication.changes.map((change) => change.type)); });
+	const stop = onStoredCommit(f.native.harness, (publication) => { writes.push(...publication.changes.map((change) => change.type)); });
 	try {
 		await f.runtime.request("status", undefined, "empty-read");
 		const unchanged = await f.runtime.request("observe-frame", { token: "metadata" }, "unchanged-frame") as ConversationFrame | TasksFrame;

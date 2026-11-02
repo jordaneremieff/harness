@@ -1,6 +1,6 @@
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, wrapTextWithAnsi, type Component, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 import { AgentProfileSchema, ProfileUpdateSchema, type AgentProfile } from "./profile-schema.ts";
 import type { AgentCommandAction } from "./command.ts";
 import { DashboardMouse } from "./dashboard-mouse.ts";
@@ -117,7 +117,7 @@ export class ProfilePanel implements Component {
 }
 
 function readValue(value: unknown): AgentProfile {
-	if (!Value.Check(AgentProfileSchema, value)) throw new Error("Invalid profile response");
+	if (!matchesSchema(AgentProfileSchema, value)) throw new Error("Invalid profile response");
 	return value;
 }
 const hasPatch = (draft: ProfileDraft) => draft.role !== undefined || draft.expertise !== undefined;
@@ -140,7 +140,7 @@ async function saveDraft(state: ProfileEditing): Promise<void> {
 		sessionId: profile.identity, expectedRevision: draft.expectedRevision,
 		...(draft.role === undefined ? {} : { role: draft.role }), ...(draft.expertise === undefined ? {} : { expertise: draft.expertise }),
 	}, ctx);
-	if (!Value.Check(ProfileUpdateSchema, result)) throw new Error("Invalid profile update response");
+	if (!matchesSchema(ProfileUpdateSchema, result)) throw new Error("Invalid profile update response");
 	if (result.outcome === "conflict") {
 		draft.needsRead = true;
 		throw new Error(`Profile changed to revision ${result.profile.revision}. Draft retained; read the current profile.`);

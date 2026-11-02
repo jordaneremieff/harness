@@ -191,7 +191,8 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 	function validateExtensions(metadata: HostMetadata, settings: Record<string, unknown>, bytes: Buffer, timerRunner: boolean): void {
 		const extensions = settings.extensions;
 		const agentContribution = fileURLToPath(new URL("./index.ts", import.meta.url));
-		if (timerRunner && !bytes.equals(Buffer.from(JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false }, extensions: [agentContribution] })))) fail(new Error("Timer runner requires its exact prepared configuration"));
+		const preparedTimerSettings = [{ enabled: false }, { enabled: true, maxRetries: 1, baseDelayMs: 0, maxAgentDelayMs: 0 }].map((retry) => Buffer.from(JSON.stringify({ cacheWarming: { mode: "off" }, retry, extensions: [agentContribution] })));
+		if (timerRunner && !preparedTimerSettings.some((prepared) => bytes.equals(prepared))) fail(new Error("Timer runner requires its exact prepared configuration"));
 		const permitted = timerRunner ? [agentContribution] : [fileURLToPath(new URL("./testdata/durable-runtime/index.ts", import.meta.url)), join(metadata.agentDir, "independent.ts")];
 		if (extensions !== undefined && (!Array.isArray(extensions) || extensions.some(path => !permitted.includes(path)))) fail(new Error("Offline fixture settings expose untracked launchers"));
 		if (Array.isArray(extensions) && extensions.includes(join(metadata.agentDir, "independent.ts"))) pinIndependentExtension(metadata);

@@ -22,8 +22,10 @@ import {
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
-import { Value } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import { memorySearchOutputSchema } from "./search-output.ts";
+
+const searchOutput = compile(memorySearchOutputSchema);
 
 isolateMachineSettings();
 
@@ -134,7 +136,7 @@ test("loaded tools preserve a note through correction, review, retirement, react
 							assert.equal(event.structuredContent, undefined);
 							return;
 						}
-						Value.Assert(memorySearchOutputSchema, event.structuredContent);
+						assert.deepEqual(searchOutput.errors(event.structuredContent), []);
 						assert.deepEqual(event.structuredContent, event.details);
 						assert.deepEqual(
 							event.structuredContent,

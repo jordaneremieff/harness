@@ -21,7 +21,7 @@ import {
 	SettingsManager,
 	type McpExtensionOptions,
 } from "@earendil-works/pi-coding-agent";
-import { Check, Errors } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import registerRegistry from "./index.ts";
 import { RegistryOutputSchema } from "./output.ts";
 
@@ -69,7 +69,7 @@ function envelopeBytes(result: ToolResultMessage): number {
 
 function assertBounded(result: ToolResultMessage) {
 	assert.equal(result.isError, false, textOf(result));
-	assert.ok(Check(RegistryOutputSchema, result.details), JSON.stringify([...Errors(RegistryOutputSchema, result.details)]));
+	assert.ok(compile(RegistryOutputSchema).check(result.details), JSON.stringify(compile(RegistryOutputSchema).errors(result.details)));
 	assert.ok(!JSON.stringify(result).includes(SENTENCE), "the server instructions reached the registry result");
 	assert.equal((result.details as { pageBlocked?: boolean }).pageBlocked, undefined);
 }

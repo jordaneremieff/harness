@@ -1047,8 +1047,10 @@ The roster is one flat list. Live hosts and records created by the caller come
 first, then other records. Each group uses catalog file modification time and
 identity as the tie-breaker; displayed row times remain source-published facts. State glyphs replace group headers. Failure text uses the actual
 retained error, without a `Work failed:` prefix. The host publishes the native
-unanswered submission's error detail, or the last assistant error, in the
-existing error field. A delivery receipt defines the outcome only while no
+unanswered submission's error detail, the last assistant error, or the native
+`pi.live.runFailure` reason and detail, in the existing error field. An idle
+conversation whose newest run ended without an answer is `failed` (`stopped`
+when the run was aborted) until a later run starts. A delivery receipt defines the outcome only while no
 newer input supersedes it; an unowned report still changes the current outcome.
 Attention names unavailable or conflicted storage, a host error, failed compaction, failed work with an error, or exhausted retries. Done
 and deliberately stopped work do not require attention by themselves. The selected view shows the one concrete Attention
@@ -1086,7 +1088,10 @@ Each hint has one `kind`:
 - `task-blocked`, with `taskId` and `reason`: the host requires repair because the
   native scheduler reports `missing_task`, `task_too_old`, or `migration_failed`.
   This is not a question awaiting a user answer.
-- `failed-turn`: the native summary reports a failed turn.
+- `failed-turn`: the native summary reports a failed turn. This includes a run
+  that Durable ended because host crashes cut it off at its restart limit
+  (`pi.live.runFailure` reason `restart_limit` or `interrupted`). That outcome
+  is terminal: the host never resubmits it, and a new input runs the work again.
 
 For one identity, provider blocks take priority over blocked tasks, then failed
 turns. Each publication recomputes the hints from owned facts. Explicit provider
@@ -2020,7 +2025,14 @@ ordinary `AgentSession` behind a Durable transcript.
 
 The package declares Pi Durable, Codemode, MCP, and Chord as runtime dependencies.
 Core coding-agent services come from the primary's selected public Pi package
-entrypoint. Native execution requires the Durable 1.4 sleep APIs. Opaque native
+entrypoint. The host requires Pi and Durable 1.5: it observes stored commits
+with `observeCommits()`, reads the task graph and conversation windows through
+watches and synchronous observers, and validates stored and protocol JSON with
+`@earendil-works/pi-schema`. Tool parameter and output schemas stay TypeBox.
+Work that host crashes cut off at Durable's restart limit ends with a terminal
+outcome (`runFailure`, `compactionFailure`, or a tool error result); the host
+does not park or retry it. A model request in flight when a host died counts as
+a failed attempt under the retry settings. Opaque native
 operations still require the exact loaded Durable version. Agent documents declare their checkpoint policies explicitly: ordinary mutations
 remain deltas unless that document declares a base checkpoint. No private
 upstream implementation is imported or copied.
@@ -2549,8 +2561,14 @@ upgrade, migration, or interruption of active work. Application errors from a
 live writer never authorize another writer.
 
 Native conversation and task-watch publications wake the existing observation
-feed directly, including uncommitted text, thinking and tool progress. The host
-coalesces those signals without a catalog write or a polling timer. Committed
+feed directly, including streamed text, thinking and tool progress. Durable
+shows that progress to watches at once and stores it later, so the stored-commit
+changes feed (`observeCommits()`) and catalog publications see it only when it
+is stored. A conversation frame reads a native view window over the fork-aware
+history; when the window does not start the transcript, the frame reports
+incomplete coverage and `nextBefore` pages older entries. Snapshot pages read
+the same history, head markers included. The host coalesces those signals
+without a catalog write or a polling timer. Committed
 catalog notifications retain their separate source and consumers. A running
 host retains its loaded notification code until a supported idle host restart;
 a browser or backend release alone does not replace it.

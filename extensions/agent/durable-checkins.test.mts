@@ -87,10 +87,12 @@ it("cancels the owned sleeping deadline without cancelling the producer input", 
 	const graph = await f.host.harness.watchTaskGraph(BACKGROUND_CONTEXT);
 	const deadline = (value: typeof graph.value) => Object.values(value.tasks).find((node) => node.kind === CheckInDeadlineTask.definition.name && node.state.status === "sleeping");
 	try {
-		if (deadline(graph.value) === undefined) await new Promise<void>((resolve) => graph.start(async (value) => { if (deadline(value) !== undefined) resolve(); }));
+		if (deadline(graph.value) === undefined) await new Promise<void>((resolve) => graph.start(async (call) => { if (call.kind === "value" && deadline(call.value) !== undefined) resolve(); }));
 		const child = deadline(graph.value);
 		assert.ok(child?.owner);
 		await f.host.harness.abortTask(child.owner, BACKGROUND_CONTEXT);
+		// abortTask commits the mark and schedules the abort invocation; the deadline ends with it.
+		await f.host.harness.waitForTask(child.id, BACKGROUND_CONTEXT);
 		assert.equal((await f.host.harness.getTask(child.id, BACKGROUND_CONTEXT))?.state.status, "terminal");
 		const watched = await f.host.harness.commit((tx) => tx.submissionByRequest(1 as ConversationId, "cancel-check-in"), BACKGROUND_CONTEXT);
 		assert.equal(watched?.status, "placed");
@@ -174,7 +176,7 @@ it("fires at the exact deadline, repeats, and resumes without duplicate or misse
 		const graph = await f.host.harness.watchTaskGraph(BACKGROUND_CONTEXT);
 		const asleep = (value: typeof graph.value) => Object.values(value.tasks).some((node) => node.kind === CheckInDeadlineTask.definition.name && node.owner === task.record.id && node.state.status === "sleeping");
 		try {
-			if (!asleep(graph.value)) await new Promise<void>((resolve) => graph.start(async (value) => { if (asleep(value)) resolve(); }));
+			if (!asleep(graph.value)) await new Promise<void>((resolve) => graph.start(async (call) => { if (call.kind === "value" && asleep(call.value)) resolve(); }));
 		} finally { await graph.stop(); }
 		const deadline = (await f.host.harness.inspect(BACKGROUND_CONTEXT)).tasks.find((row) => row.record.kind === CheckInDeadlineTask.definition.name && row.record.owner === task.record.id);
 		assert.ok(deadline);
@@ -258,7 +260,7 @@ for (const awaiting of [false, true]) it(`puts ${awaiting ? "dependency" : "dire
 	const { report } = await digestFixture(t, async (tx, conversationId) => {
 		const input = await placeWatched(tx, conversationId);
 		const owner = await tx.createTask(CheckInTask, { conversationId, requestId: "holding", ownerId: "owner", senderIdentity: "producer", message: "held", whenBusy: "followUp", origin: "operator", admittedAt: Date.now(), intervalMs: 300000 }, { ownership: { kind: "conversation" }, conversationId, background: true });
-		const live = await tx.doc(LiveDoc, conversationId); live.run = { taskId: owner, inputs: [input.id] };
+		const live = await tx.doc(LiveDoc, conversationId); live.run = { taskId: owner, inputs: [input.id], turns: 0 };
 		live.generation = { attempt: 18, retry: { at: Date.now() + 300000, error: "429 Weekly/Monthly Limit Exhausted" } };
 		if (awaiting) {
 			const result = { sessionId: "producer:2", submissionId: 23, requestId: "exact-request" };
@@ -298,7 +300,7 @@ it("does not give a queued watched input the active held input's dependency retr
 		const held = await tx.createSubmission({ conversationId, requestId: "active-task", type: "input", status: "placed", entry: entry.id });
 		await placeWatched(tx, conversationId, true);
 		const owner = await tx.createTask(CheckInTask, { conversationId, requestId: "holding", ownerId: "owner", senderIdentity: "producer", message: "held", whenBusy: "followUp", origin: "operator", admittedAt: Date.now(), intervalMs: 300000 }, { ownership: { kind: "conversation" }, conversationId, background: true });
-		const live = await tx.doc(LiveDoc, conversationId); live.run = { taskId: owner, inputs: [held.id] };
+		const live = await tx.doc(LiveDoc, conversationId); live.run = { taskId: owner, inputs: [held.id], turns: 0 };
 		const result = { sessionId: "producer:2", submissionId: 23, requestId: "active-worker" };
 		(await tx.doc(AwaitDoc)).declarations.push({ taskId: owner, callId: "await", conversationId, runId: owner, cohort: [owner], inputs: [held.id], results: [result], outcomes: [], decision: "awaiting", producers: [{ sessionId: result.sessionId, observedAt: 1, source: "producer await-state", execution: { state: "provider-retry", runId: 20, results: [result], attempt: 18, maxAttempts: 21, nextRetryAt: Date.now() + 300000, error: "429 Weekly/Monthly Limit Exhausted", errorTruncated: false } }] });
 	});

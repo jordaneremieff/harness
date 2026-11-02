@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Compile } from "typebox/compile";
+import { compile } from "@earendil-works/pi-schema";
 import { type NamedData, snapshotData } from "./data.ts";
 import {
 	type DataSetEvent,
@@ -539,7 +539,7 @@ describe("bundled catalog inspection and import approval", () => {
 	it("validates predicate proposals with exclusive authoring forms and bounded installed references", async (t) => {
 		const reg = await registry(t, [bundled()]);
 		const tool = toolOf(tools(reg), "policy_propose");
-		const schema = Compile(PolicyProposeParams);
+		const schema = compile(PolicyProposeParams);
 		const params = {
 			operation: "replace",
 			id: bundled().id,
@@ -550,10 +550,10 @@ describe("bundled catalog inspection and import approval", () => {
 			note: "Read a bounded file.",
 			reason: "Edit the seeded definition.",
 		};
-		assert.equal(schema.Check(params), true);
-		assert.equal(schema.Check({ ...params, match: { command: "cat" } }), true);
+		assert.equal(schema.check(params), true);
+		assert.equal(schema.check({ ...params, match: { command: "cat" } }), true);
 		await assert.rejects(call(tool, { ...params, match: { command: "cat" } }), /exactly one authoring form/);
-		assert.equal(schema.Check({ ...params, predicate: "../code" }), false);
+		assert.equal(schema.check({ ...params, predicate: "../code" }), false);
 		await call(tool, params);
 		assert.equal((await reg.snapshot()).pending[0]?.candidate?.matcher.kind, "code");
 		const { expectedRevision: _revision, ...addition } = params;
@@ -566,7 +566,7 @@ describe("bundled catalog inspection and import approval", () => {
 		const reg = await registry(t, [bundled()]);
 		const tool = toolOf(tools(reg), "policy_rules");
 		const before = await reg.snapshot();
-		assert.equal(Compile(PolicyRulesParams).Check({ view: "catalog", id: bundled().id }), true);
+		assert.equal(compile(PolicyRulesParams).check({ view: "catalog", id: bundled().id }), true);
 		const result = await call(tool, { view: "catalog", id: bundled().id });
 		assert.match(result.content[0].text, /bundled starter catalog/);
 		assert.match(result.content[0].text, /routing.cat-read/);
@@ -779,7 +779,7 @@ describe("named data controls", () => {
 
 describe("bounded tools and operator panel", () => {
 	it("exposes flat proposal fields for both languages and no tool mutation gate", async (t) => {
-		const schema = Compile(PolicyProposeParams);
+		const schema = compile(PolicyProposeParams);
 		const add = {
 			purpose: "Use valid tool arguments.",
 			authority: "exact",
@@ -790,17 +790,17 @@ describe("bounded tools and operator panel", () => {
 			language: "facts/v1",
 			program: rename,
 		};
-		assert.equal(schema.Check(add), true);
-		assert.equal(schema.Check({ ...add, purpose: "x".repeat(401) }), false);
-		assert.equal(schema.Check({ ...add, authority: "correct" }), false);
-		assert.equal(schema.Check({ ...add, effect: "block" }), false);
-		assert.equal(schema.Check({ ...add, operation: "approve" }), false);
-		assert.equal(schema.Check({ ...add, operation: "replace" }), true);
+		assert.equal(schema.check(add), true);
+		assert.equal(schema.check({ ...add, purpose: "x".repeat(401) }), false);
+		assert.equal(schema.check({ ...add, authority: "correct" }), false);
+		assert.equal(schema.check({ ...add, effect: "block" }), false);
+		assert.equal(schema.check({ ...add, operation: "approve" }), false);
+		assert.equal(schema.check({ ...add, operation: "replace" }), true);
 		const tool = toolOf(tools(await registry(t)), "policy_propose");
 		await assert.rejects(call(tool, { ...add, operation: "replace" }), /expectedRevision/);
-		assert.equal(schema.Check({ ...add, operation: "replace", expectedRevision: "123456789abc" }), true);
+		assert.equal(schema.check({ ...add, operation: "replace", expectedRevision: "123456789abc" }), true);
 		assert.equal(
-			schema.Check({
+			schema.check({
 				operation: "add",
 				id: "local.command",
 				purpose: "Keep search output bounded.",
@@ -811,7 +811,7 @@ describe("bounded tools and operator panel", () => {
 			}),
 			true,
 		);
-		assert.equal(Compile(PolicyRulesParams).Check({ view: "data", operation: "set" }), false);
+		assert.equal(compile(PolicyRulesParams).check({ view: "data", operation: "set" }), false);
 	});
 
 	it("rejects preview misuse and bounded raw JSON overflow", () => {
@@ -847,7 +847,7 @@ describe("bounded tools and operator panel", () => {
 			Array.from({ length: 65 }, () => ({ type: "text", text: "" })),
 		]) {
 			const request = { view: "preview", tool: "sample", input: {}, result: { isError: false, content } };
-			assert.equal(Compile(PolicyRulesParams).Check(request), false);
+			assert.equal(compile(PolicyRulesParams).check(request), false);
 			assert.throws(() => validateInspectionParams(request), /text blocks/);
 		}
 		const textResult = {
@@ -856,7 +856,7 @@ describe("bounded tools and operator panel", () => {
 			input: {},
 			result: { isError: false, content: [{ type: "text", text: "The request failed." }] },
 		};
-		assert.equal(Compile(PolicyRulesParams).Check(textResult), true);
+		assert.equal(compile(PolicyRulesParams).check(textResult), true);
 		assert.throws(
 			() => validateInspectionParams({ ...textResult, result: { ...textResult.result, usage: {} } }),
 			/text content only/,

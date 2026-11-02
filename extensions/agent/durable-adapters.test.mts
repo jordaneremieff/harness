@@ -11,7 +11,7 @@ import { answerMessage, fixtureModelId, fixtureProvider, scriptedRuntime, toolCa
 import { waitForReceipts } from "./durable-controls.ts";
 import { AgentCatalog } from "./catalog.ts";
 import type { FleetStatus } from "./fleet-status.ts";
-import { Value } from "typebox/value";
+import { matchesSchema } from "./schema-check.ts";
 
 const listing = {
 	rows: [], nextCursor: null,
@@ -32,7 +32,7 @@ it("native fleet calls select local published models and reject filters outside 
 		.create({ durable: Durable, storageId: "native-fleet", cwd: root, agentDir: root, catalogRoot: catalog.root, onClose() {}, services: { modelRuntime: { getModel: () => undefined } } });
 	registry.install(extension);
 	const status = extension.tools?.find((tool) => tool.name === "agent_status"); assert.ok(status);
-	assert.equal(Value.Check(status.parameters, { view: "fleet", model: "sample/a", provider: "sample" }), true);
+	assert.equal(matchesSchema(status.parameters, { view: "fleet", model: "sample/a", provider: "sample" }), true);
 	const results: Durable.NestedToolExecutionResult[] = [];
 	registry.install(Durable.defineExtension({ name: "fleet-query-probe", tools: [Durable.defineTool({
 		name: "fleet-probe", description: "Read selected fleet evidence.", parameters: Type.Object({}),
@@ -82,10 +82,14 @@ it("returns schema control values through native nested calls with tagged tasks 
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, context);
 	t.after(() => harness.close(context));
 	const root = await harness.root(context, { agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } });
-	const events: Durable.AgentEvent[] = [];
-	const stream = await Durable.watchEvents(harness, root.id, context);
-	stream.start(async (batch) => { events.push(...batch); });
-	t.after(() => stream.stop());
+	// Nested slots leave pi.live when their caller settles; the synchronous observer sees every unfolded revision.
+	const nestedDone = new Map<number, Durable.NestedToolSlot>();
+	const observation = await harness.observeConversation(root.id, { end: () => {}, advance: (call) => {
+		if (call.kind !== "value") return;
+		const live = call.value.docs["pi.live"] as Durable.LiveState | undefined;
+		for (const slot of live?.nestedTools ?? []) if (slot.status === "done") nestedDone.set(slot.taskId, structuredClone(slot));
+	} }, context);
+	t.after(() => observation.detach());
 	harness.resume();
 	await (await root.submit({ type: "input", content: "Probe controls" }, context)).wait(context);
 	assert.deepEqual(results[0]?.structuredOutput, listing);
@@ -97,9 +101,10 @@ it("returns schema control values through native nested calls with tagged tasks 
 	assert.equal(results[2]?.structuredOutput, undefined);
 	assert.ok(results[2]?.diagnostics.some((diagnostic) => diagnostic.message.includes("controlled unavailable observation")));
 	assert.ok(inputs.every((input) => input.kind === "nested" && input.parent > 0 && input.call.name.startsWith("agent_")));
-	const nestedEnds = events.filter((event) => event.type === "tool_execution_end" && event.parentToolCallId !== undefined);
+	const nestedEnds = [...nestedDone.values()];
 	assert.equal(nestedEnds.length, 3);
-	assert.ok(nestedEnds.every((event) => event.type === "tool_execution_end" && event.taskId !== undefined && event.parentTaskId !== undefined && event.result !== undefined && event.entry === undefined));
+	assert.ok(nestedEnds.every((slot) => slot.parentTaskId > 0 && slot.parentCallId !== "" && slot.summary !== undefined && slot.name.startsWith("agent_")));
+	assert.deepEqual(nestedEnds.map((slot) => slot.summary?.isError), [false, false, true]);
 	const nested = inputs[0];
 	assert.ok(nested?.kind === "nested");
 	const parent = await harness.getTask(nested.parent, context);
@@ -148,6 +153,6 @@ it("rejects a pending receipt wait with SessionFailed after a fatal storage read
 	storage.conversation = async () => { throw cause; };
 	await assert.rejects(harness.conversation(999 as Durable.ConversationId, context), (error) => error === cause);
 	await rejected;
-	assert.deepEqual(await harness.closed, { reason: "failed", error: cause });
+	assert.deepEqual(await harness.closed, { kind: "failed", error: cause });
 	await assert.rejects(harness.root(context), failed);
 });

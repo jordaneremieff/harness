@@ -20,8 +20,8 @@ import type {
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
-import { Value } from "typebox/value";
+import type { Static, TSchema } from "typebox";
+import { compile } from "@earendil-works/pi-schema";
 import type { StashPanel, StashPanelResult, PanelTheme } from "./panel.ts";
 
 export function testModel(overrides: Partial<Model<Api>> = {}): Model<Api> {
@@ -127,7 +127,8 @@ export function captureTool<P extends TSchema, D, S>(tool: ToolDefinition<P, D, 
 		name: tool.name,
 		outputSchema: tool.outputSchema,
 		execute: async (id: string, params: unknown, signal?: AbortSignal, _update?: undefined, ctx?: TestContext) => {
-			assert.ok(Value.Check(tool.parameters, params), "tool arguments satisfy the registered schema");
+			assert.ok(compile(tool.parameters).check(params), "tool arguments satisfy the registered schema");
+			const checked = params as Static<P>;
 			const toolContext = {
 				...hostContext(ctx),
 				tools: [],
@@ -135,10 +136,10 @@ export function captureTool<P extends TSchema, D, S>(tool: ToolDefinition<P, D, 
 					throw new Error("Unexpected nested tool call");
 				},
 			} satisfies ExtensionToolContext;
-			const result = await tool.execute(id, params, signal, undefined, toolContext);
+			const result = await tool.execute(id, checked, signal, undefined, toolContext);
 			if (tool.outputSchema)
 				assert.ok(
-					Value.Check(tool.outputSchema, result.structuredContent),
+					compile(tool.outputSchema).check(result.structuredContent),
 					"result satisfies the registered output schema",
 				);
 			assert.ok(typeof result.details === "object" && result.details !== null);

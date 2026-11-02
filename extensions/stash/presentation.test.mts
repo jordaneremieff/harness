@@ -38,7 +38,7 @@ function registeredTools(): Map<string, ToolDefinition> {
 		registerShortcut: () => {},
 		registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 		sendUserMessage: () => {},
-		exec: async () => ({ code: 0, stdout: "", stderr: "", killed: false }),
+		exec: async () => ({ code: 0, stdout: "", stderr: "", killed: false, truncated: false }),
 		appendEntry: () => {},
 		events: { emit: () => {}, on: () => () => {} },
 	} as unknown as Parameters<typeof registerStash>[0]);
@@ -213,7 +213,11 @@ describe("stash_list cards", () => {
 		);
 		assert.match(shown, /stash_list · "registry tool"/);
 		assert.match(shown, /tag continuity · limit 5/);
-		assert.match(shown, /(?:to expand arguments|expand for arguments)/i);
+		assert.match(shown, /Expand for arguments/);
+		const keyed = screen(
+			renderListCall({ query: "registry tool", cursor: "opaque" }, theme, { argsComplete: true, keyText: () => "ctrl+g" }),
+		);
+		assert.match(keyed, /ctrl\+g to expand arguments/, "the hint uses the host-injected binding");
 		assert.match(screen(renderListCall({}, theme, { argsComplete: true })), /stash_list · recent/);
 	});
 
