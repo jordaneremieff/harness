@@ -66,13 +66,12 @@ of the topic:
 | Public sources | Primary pages or repository records when relevant and authorized. Load the applicable skill, such as the GitHub skill, before its workflow. Search snippets select sources; they do not substantiate the final facts. |
 | Pillars | Consult the live corpus when judgment needs doctrine. Doctrine guides judgment; it is not runtime evidence. |
 
-After orientation, promptly dispatch one parallel worker wave for the remote or
-heavy sources. Group related sources by facet and avoid duplicate assignments.
-Keep raw payloads in worker contexts. The parent integrates bounded returns;
-it does not repeat their broad reads. If only one or two remote sources merit
-an inline read, state the reason in one line before using that exception. This
-exception does not license large local payloads in the parent. If all relevant
-sources are small and local, finish the bounded survey inline.
+After orientation, survey each source at the depth the topic needs. The survey
+prepares this session for a later task, so keep raw payloads out of its
+context. Read small and bounded sources inline. Give remote or heavy sources to
+workers when their payloads would crowd that context, as one parallel wave
+grouped by facet without duplicate assignments. Integrate their bounded returns
+without repeating their broad reads.
 
 Choose each worker's explicit model and thinking level from current operator
 preferences and the live model registry. Read the relevant preference sources
