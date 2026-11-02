@@ -2650,10 +2650,12 @@ bound is introduced. A final marker check also runs during clean close. Clean re
 closes cached manager and peer delivery links without a recovery acquisition or
 crash-budget charge. Native shutdown releases the writer claim before the
 transport closes. A retained delivery marker with a released claim does not
-trigger automatic recovery. Busy native shutdown retains its claim until
-process death, so unexpected loss still recovers native work. Footer totals
-remain in the catalog; later reads use cold storage without a writer, and later
-controls acquire a fresh host.
+trigger automatic recovery. Busy native shutdown retains its claim through
+process death. Unexpected loss preserves native work, but a retained claim blocks
+replacement until an owner-agreed offline recovery after all relevant writers
+and launchers stop. Footer totals remain in the catalog; later reads use cold
+storage without a writer, and later controls acquire a fresh host only when no
+writer claim remains.
 
 Cold `agent_status` returns retained conversation data with `live: false` and
 `storageId`. It omits `pid` and `inventory`: the reader loads no host, so its
@@ -2665,10 +2667,12 @@ starting a host or a model turn.
 While a primary remains registered, an unexpected host connection loss rereads
 that marker and queues recovery through the same bounded pool. The manager owns
 these relaunches; managed connections do not independently relaunch on request
-retries. Three automatic replacements are permitted per storage within sixty
-seconds. Further losses stop automatic recovery and put a host error in the
-dashboard roster. Inspect the error, then use `agent_attach` to clear the
-stop and retry. Intentional disconnects and unmarked storage do not relaunch.
+retries. Three automatic recovery attempts are permitted per storage within sixty
+seconds; these attempts never replace an existing writer claim. Further losses
+stop automatic recovery and put a host error in the dashboard roster. Inspect
+the error, then use `agent_attach` to reset the manager's retry budget and retry.
+This reset does not remove a writer claim or perform offline recovery.
+Intentional disconnects and unmarked storage do not relaunch.
 
 ## Execution presets and delegation preferences
 

@@ -398,8 +398,8 @@ async function acquireLink(metadata: HostMetadata, options: HostLaunchOptions): 
 			return await attachLink(metadata);
 		} catch (error) {
 			if (error instanceof HostError || isChordError(error)) throw error;
-			// A killed owner still reads as live until the process is reaped; wait
-			// for the claim to release, then launch the replacement.
+			// A killed owner can still appear live until the process is reaped.
+			// Wait for that observation to settle; a dead claim still refuses launch.
 			await waitForHostRelease(metadata, { signal: AbortSignal.timeout(Math.min(options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS, CONNECT_WAIT_LIMIT_MS)) });
 		}
 	}
@@ -674,7 +674,7 @@ class HostConnectionImpl implements HostConnection {
 				const current = entry.frame;
 				if (current !== undefined) {
 					try {
-						listener(current, true, "live");
+						listener(current, !entry.unavailable, entry.unavailable ? "unavailable" : "live");
 					} catch {
 						// One listener failure never stops the others.
 					}
