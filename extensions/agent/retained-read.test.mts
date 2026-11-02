@@ -422,7 +422,8 @@ it("lists and reads stopped collaboration storage without a root conversation or
 	Harness.open = async (...args) => {
 		const harness = await original(...args);
 		return new Proxy(harness, { get(target, key) {
-			if (["resume", "submit", "waitForIdle", "waitForTask", "createConversation", "root", "conversation", "commit"].includes(String(key))) return () => { forbidden++; throw new Error("Forbidden writer or conversation call"); };
+			// The isolated copy permits document initialisation; source bytes remain checked below.
+			if (["resume", "submit", "waitForIdle", "waitForTask", "createConversation", "root", "conversation"].includes(String(key))) return () => { forbidden++; throw new Error("Forbidden writer or conversation call"); };
 			const value = Reflect.get(target, key);
 			return typeof value === "function" ? value.bind(target) : value;
 		} });

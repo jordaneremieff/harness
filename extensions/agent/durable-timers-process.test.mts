@@ -6,12 +6,12 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { acquireHost, connectHost, type HostConnection } from "./host-client.ts";
+import { connectHost, type HostConnection } from "./host-client.ts";
 import type { DeliveryReceipt } from "./durable-controls.ts";
 import { killHost, runtimeFixture, trackHost } from "./durable-runtime-fixture.mts";
 import { fixtureMetadata } from "./host-fixture.mts";
 import { runHost } from "./host-process.ts";
-import { scheduleFixture } from "./durable-schedule-fixture.mts";
+import { prepareScheduleSettings, scheduleFixture } from "./durable-schedule-fixture.mts";
 
 interface TimerListPage {
 	readonly timers: Array<{ timerId: number; status: string; deadline: number; firedAt: number | null; overdueMs: number | null }>;
@@ -28,10 +28,12 @@ async function waitForRequestReceipt(host: HostConnection, ownerId: string, requ
 }
 
 it("fires a killed host's scheduled input once after reopen with the original deadline", { timeout: 60000 }, async (t) => {
-	const f = runtimeFixture(t);
+	const f = runtimeFixture(t, { offlineRecovery: true });
+	prepareScheduleSettings(f.agentDir);
+	const initial = f.offline.generation();
 	const deadline = 2000;
 	const runner = fileURLToPath(new URL("./durable-schedule-fixture.mts", import.meta.url));
-	const first = await acquireHost(f.metadata, { runner, env: { DURABLE_TEST_NOW: "1000" }, retryAttempts: 0 });
+	const first = await initial.acquire(f.metadata, { runner, env: { DURABLE_TEST_NOW: "1000" }, retryAttempts: 0 });
 	trackHost(t, first.pid);
 	assert.deepEqual(await first.request("command", { name: "fixture-clock" }), { now: 1000 });
 	const scheduled = (await first.request("timer-schedule", {
@@ -46,7 +48,8 @@ it("fires a killed host's scheduled input once after reopen with the original de
 	await closed;
 	await first.close();
 	// Only the replacement sees the clock beyond the retained deadline.
-	const second = await acquireHost(f.metadata, { runner, env: { DURABLE_TEST_NOW: "4000" } });
+	const resumed = await f.offline.recover();
+	const second = await resumed.acquire(f.metadata, { runner, env: { DURABLE_TEST_NOW: "4000" } });
 	trackHost(t, second.pid);
 	try {
 		assert.notEqual(second.pid, first.pid);
@@ -64,13 +67,15 @@ it("fires a killed host's scheduled input once after reopen with the original de
 		assert.equal(row.overdueMs, 2000);
 		const search = (await second.request("inspect", { view: "search", query: "PROCESS_TIMER" })) as { matches: unknown[] };
 		assert.equal(search.matches.length, 1, "recovery admits one input");
-	} finally { await second.close(); }
+	} finally { await second.request("close").catch(() => undefined); await second.close(); }
 });
 
 it("reattaches one sleeping check-in deadline after process loss and stops it at settlement", { timeout: 60000 }, async (t) => {
-	const f = runtimeFixture(t);
+	const f = runtimeFixture(t, { offlineRecovery: true });
+	prepareScheduleSettings(f.agentDir);
+	const initial = f.offline.generation();
 	const runner = fileURLToPath(new URL("./durable-schedule-fixture.mts", import.meta.url));
-	const first = await acquireHost(f.metadata, { runner, env: { DURABLE_TEST_NOW: "1000", DURABLE_TEST_HOLD_ANSWER: "1" }, retryAttempts: 0 });
+	const first = await initial.acquire(f.metadata, { runner, env: { DURABLE_TEST_NOW: "1000", DURABLE_TEST_HOLD_ANSWER: "1" }, retryAttempts: 0 });
 	trackHost(t, first.pid);
 	await first.request("submit", { sessionId: f.metadata.storageId, message: "PROCESS_CHECK_IN", requestId: "process-check-in", ownerId: f.ownerId, origin: "model", checkInMinutes: 1 });
 	await first.request("command", { name: "fixture-resume" });
@@ -79,7 +84,8 @@ it("reattaches one sleeping check-in deadline after process loss and stops it at
 	killHost(first.pid);
 	await closed;
 	await first.close();
-	const second = await acquireHost(f.metadata, { runner, env: { DURABLE_TEST_NOW: "61000", DURABLE_TEST_HOLD_ANSWER: "1" } });
+	const resumed = await f.offline.recover();
+	const second = await resumed.acquire(f.metadata, { runner, env: { DURABLE_TEST_NOW: "61000", DURABLE_TEST_HOLD_ANSWER: "1" } });
 	trackHost(t, second.pid);
 	try {
 		await second.request("command", { name: "fixture-resume" });
@@ -97,7 +103,7 @@ it("reattaches one sleeping check-in deadline after process loss and stops it at
 		assert.equal(after.conversation.tasks.some((task) => task.kind.startsWith("agent.check-in")), false);
 		const final = await second.request("receipts", { ownerId: f.ownerId }) as { reports: unknown[] };
 		assert.deepEqual(final.reports, []);
-	} finally { await second.close(); }
+	} finally { await second.request("close").catch(() => undefined); await second.close(); }
 });
 
 it("keeps the host process through its idle window while a timer is pending", { timeout: 60000 }, async (t) => {

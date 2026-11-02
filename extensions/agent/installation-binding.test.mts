@@ -14,7 +14,7 @@ import { INSTALLATION_PACKAGES, isInstallationImport } from "./installation-bind
 const bindingUrl = new URL("./installation-binding.ts", import.meta.url).href;
 const runnerPath = fileURLToPath(new URL("./durable-runner.ts", import.meta.url));
 
-/** A root with no `node_modules` on its path, so a peer package resolves only through the binding. */
+/** A disposable source root with fixture-owned package resolution where required. */
 function isolatedRoot(t: TestContext): string {
 	const root = mkdtempSync(join(realpathSync(tmpdir()), "agent-installation-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -76,12 +76,16 @@ it("resolves every peer import of bound source from the caller installation", as
 
 it("leaves peer imports from modules outside the bound source unchanged", async (t) => {
 	const root = isolatedRoot(t);
-	const probe = join(root, "outside", "probe.mjs");
+	const outside = join(root, "outside");
+	const packageDir = join(outside, "node_modules", "@earendil-works", "pi-coding-agent");
+	mkdirSync(packageDir, { recursive: true });
+	writeFileSync(join(packageDir, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", type: "module", exports: "./index.js" }));
+	writeFileSync(join(packageDir, "index.js"), 'export const VERSION = "outside-fixture";\n');
+	const probe = join(outside, "probe.mjs");
 	writeProbe(probe, join(root, "source"));
-	const result = await runNode([probe, getPackageDir()], root);
-	assert.notEqual(result.code, 0);
-	assert.match(result.stderr, /ERR_MODULE_NOT_FOUND/u);
-	assert.match(result.stderr, /Cannot find package '@earendil-works\/pi-coding-agent'/u);
+	const result = await runNode([probe, getPackageDir(), "@earendil-works/pi-coding-agent"], root);
+	assert.equal(result.code, 0, result.stderr);
+	assert.deepEqual(JSON.parse(result.stdout), { version: "outside-fixture", resolved: { "@earendil-works/pi-coding-agent": pathToFileURL(join(packageDir, "index.js")).href } });
 });
 
 it("loads host modules against metadata.packageDir before it takes the writer claim", async (t) => {

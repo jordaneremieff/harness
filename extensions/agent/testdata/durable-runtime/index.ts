@@ -107,8 +107,18 @@ function pending(signal?: AbortSignal) {
 }
 
 function answer(): ReturnType<typeof completed> {
-	mark("answered");
-	return completed([{ type: "text", text: process.env.DURABLE_TEST_ANSWER ?? "durable runtime answer" }], "stop");
+	const events = createAssistantMessageEventStream();
+	const value = message([{ type: "text", text: process.env.DURABLE_TEST_ANSWER ?? "durable runtime answer" }], "stop");
+	void publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY ?? "", "answered").then(() => {
+		events.push({ type: "start", partial: value });
+		events.push({ type: "done", reason: "stop", message: value });
+		events.end(value);
+	}, (cause: unknown) => {
+		const error = { ...value, stopReason: "error" as const, errorMessage: String(cause) };
+		events.push({ type: "error", reason: "error", error });
+		events.end(error);
+	});
+	return events;
 }
 
 /** Plain user text of one request context. */
@@ -152,6 +162,7 @@ function awaited(context: TranscriptContext, mode: string, signal?: AbortSignal)
 	}
 	if (last?.role === "toolResult" && toolName === "agent_spawn") {
 		const body = typeof last.content === "string" ? last.content : last.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+		if (last.isError) throw new Error(`Fixture agent_spawn failed: ${body}`);
 		const result = JSON.parse(body.split("\nResult: ")[1].split("\n")[0]);
 		return completed([{ type: "toolCall", id: "await-local-result", name: "agent_await", arguments: { results: [result], ...release } }], "toolUse");
 	}

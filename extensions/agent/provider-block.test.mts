@@ -93,8 +93,20 @@ it("explicit same-model recovery invalidates pinned dispatch and old-epoch failu
 });
 
 it("retains burst facts without a preterminal report while typed retry notice IDs remain stable", async (t) => {
-	const { host } = await fixture(t);
+	let release = () => {};
+	t.after(async () => { release(); });
+	const { host, models } = await fixture(t);
+	let started!: () => void;
+	const ready = new Promise<void>((resolve) => { started = resolve; });
+	models.streamSimple = () => {
+		const stream = createAssistantMessageEventStream();
+		const message = answerMessage();
+		release = () => { stream.push({ type: "done", reason: "stop", message }); stream.end(message); };
+		started();
+		return stream;
+	};
 	const admitted = await host.submit({ message: "retained task", requestId: "provider-work", ownerId: "actual-recipient", origin: "model", requestContext: { requester: "requester", replyTo: "actual-recipient", requestId: "provider-work", origin: "model" } });
+	await ready;
 	await host.harness.commit(async (tx) => {
 		const live = await tx.doc(LiveDoc, 1 as ConversationId);
 		assert.ok(live.run); live.generation = { attempt: 1, retry: { at: Date.now() + 100000, error: "429 too many requests" } };

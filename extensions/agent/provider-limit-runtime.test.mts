@@ -6,11 +6,13 @@ import { createServer, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
-import { acquireHost, type HostConnection } from "./host-client.ts";
+import { acquireHost, waitForHostRelease, type HostConnection } from "./host-client.ts";
+import { hostPaths } from "./host-protocol.ts";
+import { observeClaim } from "./claims.ts";
 import { eventLog } from "./host-fixture.mts";
 import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
 import type { ProviderBlockFact } from "./provider-block.ts";
-import { killHost, runtimeFixture, trackHost, waitForReceipt, type RuntimeFixture } from "./durable-runtime-fixture.mts";
+import { runtimeFixture, trackHost, waitForReceipt, type RuntimeFixture } from "./durable-runtime-fixture.mts";
 
 interface Submission { submissionId: number; deduped: boolean }
 interface Result { status: string; reason?: string; entryId?: number; answerEntryId?: number; answer?: string; providerBlock?: ProviderBlockFact }
@@ -243,8 +245,13 @@ it("retains immutable blocked results across restart, deduplicates notices, and 
 		await notices.waitForCount(2);
 		await committed(t, host, () => host.request("receipts", { ownerId: owner }), (value) => (value as { receipts: unknown[] }).receipts.length === 0);
 		const originalNotifications = notices.map((item) => item.message.sourceId);
-		killHost(host.pid); await host.close();
+		const previousPid = host.pid;
+		await waitForHostRelease(f.metadata, { after: host.request("close"), signal: AbortSignal.timeout(10000) });
+		await host.close();
+		const paths = hostPaths(f.metadata);
+		assert.equal(observeClaim(paths.claim, paths.identity).kind, "absent");
 		host = await acquireHost(f.metadata, { env: f.env("answer") }); trackHost(t, host.pid);
+		assert.notEqual(host.pid, previousPid);
 		assert.equal((await result(host, admitted.submissionId)).entryId, before.entryId);
 		const duplicate = await host.request("submit", { message: "Preserve original quota result", requestId: "retained-block", ownerId: owner, origin: "model" }) as Submission;
 		assert.equal(duplicate.submissionId, admitted.submissionId); assert.equal(duplicate.deduped, true);

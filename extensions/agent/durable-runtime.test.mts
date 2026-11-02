@@ -1,12 +1,11 @@
 /**
- * Production durable-runtime SIGKILL tests.
+ * Durable runtime process tests.
  *
- * Each test launches the real `durable-runner.ts` through `acquireHost` with a
- * fixture agent home whose settings load the faux provider and unsafe effect
- * tool from `testdata/durable-runtime`. The test kills the host process at a
- * durable checkpoint, relaunches through `acquireHost`, and checks resumption,
- * deduplication, the single unsafe effect, the retained result, and owner
- * delivery acknowledgement.
+ * Dedicated host entrypoints load the fixture provider and unsafe effect tool
+ * from `testdata/durable-runtime` in isolated agent homes. The tests cover
+ * crash resumption, deduplication, retained effects and results, owner delivery
+ * acknowledgement, and runtime reload. Unclean writer claims remain excluded
+ * until the fixture proves offline recovery is safe.
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -15,8 +14,9 @@ import { hostname } from "node:os";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
 import { createPrimaryChannel, primaryEndpointPath } from "./primary-channel.ts";
 import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { observeClaim } from "./claims.ts";
@@ -27,6 +27,7 @@ import { observeDurableStorage } from "./durable-runtime.ts";
 import { childCatalogRecord, killHost, markerFixture, runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { publishFixtureMarker } from "./testdata/durable-runtime/signal.ts";
 import type { AwaitFact } from "./await-facts.ts";
+import type { OfflineGeneration } from "./offline-recovery-fixture.mts";
 
 interface SubmitResult {
 	readonly submissionId: string | number;
@@ -272,8 +273,9 @@ for (const present of [false, true]) it(`reports file exists=${present} when a f
 });
 
 it("resumes an outstanding model request after SIGKILL without a duplicate submission", { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t);
-	const first = await acquireHost(f.metadata, { env: f.env("request") });
+	const f = runtimeFixture(t, { offlineRecovery: true });
+	const initial = f.offline.generation();
+	const first = await initial.acquire(f.metadata, { env: f.env("request") });
 	trackHost(t, first.pid);
 	const submitted = await first.request("submit", { message: "complete the request", requestId: "kill-request", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 	assert.equal(submitted.deduped, false);
@@ -281,7 +283,8 @@ it("resumes an outstanding model request after SIGKILL without a duplicate submi
 	killHost(first.pid);
 	await first.close();
 
-	const second = await acquireHost(f.metadata, { env: f.env("answer") });
+	const resumed = await f.offline.recover();
+	const second = await resumed.acquire(f.metadata, { env: f.env("answer") });
 	trackHost(t, second.pid);
 	try {
 		const receipt = await waitForReceipt(second, f.ownerId, submitted.submissionId);
@@ -296,6 +299,19 @@ it("resumes an outstanding model request after SIGKILL without a duplicate submi
 		assert.equal(acknowledged.acknowledged.length, 1, "the owner acknowledges the receipt once");
 		const after = await second.request("receipts", { ownerId: f.ownerId }) as ReceiptsPage;
 		assert.equal(after.receipts.length, 0, "an acknowledged receipt is not delivered again");
+		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+		const hooks: Array<() => unknown> = [];
+		const register = t.mock.method(t, "after", (fn: Parameters<typeof t.after>[0]) => { assert.ok(fn); hooks.push(() => fn(t, () => {})); });
+		const signal = t.mock.method(process, "kill", (_pid: number, kind?: NodeJS.Signals | number) => {
+			if (kind === 0) throw Object.assign(new Error("gone after intercepted signal"), { code: "ESRCH" });
+			return true;
+		});
+		try {
+			trackHost(t, second.pid);
+			for (const hook of hooks) await hook();
+			assert.equal(hooks.length, 0, "offline contexts never install a bare-PID fallback");
+			assert.equal(signal.mock.callCount(), 0, "a new process at the old PID receives no sample or signal");
+		} finally { register.mock.restore(); signal.mock.restore(); }
 	} finally {
 		await second.close();
 	}
@@ -382,10 +398,12 @@ it("retires parked delivery with a clear marker and wakes only for its returning
 });
 
 it("preserves a crash recovery marker through primary startup and clears it after idle retirement", { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t);
+	const f = runtimeFixture(t, { offlineRecovery: true });
+	const initial = f.offline.generation();
 	const catalog = new AgentCatalog(f.root);
 	const ownerId = randomUUID();
-	const first = await acquireHost(f.metadata, { env: f.env("request") });
+	f.offline.ordinaryRecipient(ownerId);
+	const first = await initial.acquire(f.metadata, { env: f.env("request") });
 	trackHost(t, first.pid);
 	let submitted: SubmitResult;
 	try {
@@ -396,6 +414,7 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 	} finally { await first.close(); }
 	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "SIGKILL leaves the due marker on disk");
+	const resumed = await f.offline.recover();
 
 	const acquired: string[] = [];
 	let recoveredPid = 0;
@@ -403,13 +422,15 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 		root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir,
 		acquire: async (metadata) => {
 			acquired.push(metadata.storageId);
-			const connection = await acquireHost(metadata, { env: f.env("answer") });
+			const connection = await resumed.acquire(metadata, { env: f.env("answer") });
 			recoveredPid = connection.pid;
 			trackHost(t, connection.pid);
 			return connection;
 		},
+		connect: (metadata, options) => resumed.connect(metadata, { ...options, env: f.env("answer") }),
 	});
-	const controller = new AbortController();
+	resumed.manager(manager);
+	const controller = resumed.controller(new AbortController());
 	let receipt: Record<string, unknown> | undefined;
 	let resolveDelivered: () => void = () => {};
 	const delivered = new Promise<void>((resolve) => { resolveDelivered = resolve; });
@@ -437,32 +458,40 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 	}
 });
 
-for (const steerDuringRun of [false, true]) it(`relaunches a connected host after SIGKILL with ${steerDuringRun ? "steering" : "one input"} while its primary stays alive`, { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t);
+for (const steerDuringRun of [false, true]) it(`refuses online relaunch after SIGKILL with ${steerDuringRun ? "steering" : "one input"} and resumes offline`, { timeout: 120000 }, async (t) => {
+	const f = runtimeFixture(t, { offlineRecovery: true });
+	const initial = f.offline.generation();
 	const ownerId = randomUUID();
-	const controller = new AbortController();
+	f.offline.ordinaryRecipient(ownerId);
+	const controller = initial.controller(new AbortController());
 	const pids: number[] = [];
 	let resolveRecovered: () => void = () => {};
 	const recovered = new Promise<void>((resolve) => { resolveRecovered = resolve; });
-	const manager = new AgentManager({
-		root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir,
-		acquire: async (metadata, options) => {
-			assert.equal(options?.retryAttempts, 0, "the manager owns every automatic relaunch");
-			const client = await acquireHost(metadata, { ...options, env: f.env(pids.length === 0 ? (steerDuringRun ? "effect" : "request") : "answer") });
-			pids.push(client.pid);
-			if (pids.length === 2) resolveRecovered();
-			trackHost(t, client.pid);
-			return client;
-		},
-	});
+	const managerFor = (generation: OfflineGeneration, mode: "request" | "effect" | "answer") => {
+		const value = new AgentManager({
+			root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir,
+			acquire: async (metadata, options) => {
+				assert.equal(options?.retryAttempts, 0, "the manager owns every automatic relaunch");
+				const client = await generation.acquire(metadata, { ...options, env: f.env(mode) });
+				pids.push(client.pid);
+				if (pids.length === 2) resolveRecovered();
+				trackHost(t, client.pid);
+				return client;
+			},
+			connect: (metadata, options) => generation.connect(metadata, { ...options, env: f.env(mode) }),
+		});
+		generation.manager(value);
+		return value;
+	};
+	const manager = managerFor(initial, steerDuringRun ? "effect" : "request");
+	let resumedManager: AgentManager | undefined;
+	let resumedController: AbortController | undefined;
 	const receipts: Record<string, unknown>[] = [];
 	let resolveDelivered: () => void = () => {};
 	const delivered = new Promise<void>((resolve) => { resolveDelivered = resolve; });
+	const send = (_text: string, details: unknown) => { receipts.push(details as Record<string, unknown>); resolveDelivered(); };
 	try {
-		await manager.registerPrimary(ownerId, {
-			cwd: f.cwd, signal: controller.signal,
-			send: (_text, details) => { receipts.push(details as Record<string, unknown>); resolveDelivered(); },
-		});
+		await manager.registerPrimary(ownerId, { cwd: f.cwd, signal: controller.signal, send });
 		const submitted = await manager.control("submit", { sessionId: f.metadata.storageId, message: "recover without restarting the primary", requestId: "connected-crash", origin: "model" }, { id: ownerId, cwd: f.cwd }) as SubmitResult;
 		await f.marker(steerDuringRun ? "effect" : "requested");
 		const expectedIds = [submitted.submissionId];
@@ -472,10 +501,24 @@ for (const steerDuringRun of [false, true]) it(`relaunches a connected host afte
 		}
 		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, true);
 		killHost(pids[0] as number);
-		await within(delivered, 15000, "the live primary received no recovered result").catch(async (error) => { throw new Error(`${String(error)}; pids=${JSON.stringify(pids)}; status=${JSON.stringify(await manager.status())}`); });
+		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
+		await assert.rejects(initial.acquire(f.metadata, { env: f.env("answer") }), /requires offline recovery/u);
+		assert.equal(controller.signal.aborted, false, "refusal occurs while the original primary remains live");
+		assert.equal(pids.length, 1, "the dead claim admits no automatic replacement");
+		assert.equal(receipts.length, 0);
+		const retained = await observeDurableStorage(f.metadata, "inspect", { view: "history", source: "user", limit: 10 }) as HistoryPage;
+		assert.ok(retained.entries.length >= 1, "the interrupted input remains in a read-only copy");
+		const pending = await observeDurableStorage(f.metadata, "receipts", { ownerId }) as { pending: number };
+		assert.equal(pending.pending, expectedIds.length, "the original and steered submissions remain pending before offline recovery");
+		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, true);
+		const resumed = await f.offline.recover();
+		resumedController = resumed.controller(new AbortController());
+		resumedManager = managerFor(resumed, "answer");
+		await resumedManager.registerPrimary(ownerId, { cwd: f.cwd, signal: resumedController.signal, send });
+		await within(delivered, 15000, "the fresh primary received no recovered result");
 		await within(recovered, 10000, "the replacement connection did not become ready");
-		assert.equal(controller.signal.aborted, false);
-		assert.equal(pids.length, 2, "channel loss automatically launches one replacement");
+		assert.equal(resumedController.signal.aborted, false);
+		assert.equal(pids.length, 2, "offline resumption launches one replacement");
 		assert.notEqual(pids[1], pids[0]);
 		const receipt = receipts[0];
 		assert.ok(receipt);
@@ -484,15 +527,16 @@ for (const steerDuringRun of [false, true]) it(`relaunches a connected host afte
 		assert.match(String(receipt?.answer), /durable runtime answer/u);
 		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 		assert.equal(receipts.length, 1, "the host retires after one notice and acknowledgement of every input");
-		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, false);
-		const history = await manager.control("inspect", { sessionId: f.metadata.storageId, view: "history", source: "user", limit: 10 }, { id: ownerId, cwd: f.cwd }) as HistoryPage;
+		assert.equal(resumedManager.catalog.read(f.metadata.storageId).recoveryDue, false);
+		const history = await resumedManager.control("inspect", { sessionId: f.metadata.storageId, view: "history", source: "user", limit: 10 }, { id: ownerId, cwd: f.cwd }) as HistoryPage;
 		assert.equal(history.entries.length, expectedIds.length, "relaunch resumes retained submissions without another input");
-	} finally { controller.abort(); manager.close(); }
+	} finally { controller.abort(); manager.close(); resumedController?.abort(); resumedManager?.close(); }
 });
 
 it("does not rerun an unsafe effect after SIGKILL and delivers the retained result once", { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t);
-	const first = await acquireHost(f.metadata, { env: f.env("effect") });
+	const f = runtimeFixture(t, { offlineRecovery: true });
+	const initial = f.offline.generation();
+	const first = await initial.acquire(f.metadata, { env: f.env("effect") });
 	trackHost(t, first.pid);
 	const submitted = await first.request("submit", { message: "run the effect", requestId: "kill-effect", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 	assert.equal(submitted.deduped, false);
@@ -500,7 +544,8 @@ it("does not rerun an unsafe effect after SIGKILL and delivers the retained resu
 	killHost(first.pid);
 	await first.close();
 
-	const second = await acquireHost(f.metadata, { env: f.env("answer") });
+	const resumed = await f.offline.recover();
+	const second = await resumed.acquire(f.metadata, { env: f.env("answer") });
 	trackHost(t, second.pid);
 	try {
 		const receipt = await waitForReceipt(second, f.ownerId, submitted.submissionId);
@@ -520,9 +565,10 @@ it("does not rerun an unsafe effect after SIGKILL and delivers the retained resu
 });
 
 for (const stop of ["SIGTERM", "close"] as const) for (const mode of ["request", "effect"] as const) it(`retains pending ${mode} work through ${stop} process shutdown`, { timeout: 30000 }, async (t) => {
-	const f = runtimeFixture(t);
+	const f = runtimeFixture(t, { offlineRecovery: true });
+	const initial = f.offline.generation();
 	const catalog = new AgentCatalog(f.root);
-	const first = await acquireHost(f.metadata, { env: f.env(mode) });
+	const first = await initial.acquire(f.metadata, { env: f.env(mode) });
 	trackHost(t, first.pid);
 	const submitted = await first.request("submit", { message: "retain pending native work", requestId: "process-stop", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
 	await f.marker(mode === "request" ? "requested" : "effect");
@@ -532,7 +578,8 @@ for (const stop of ["SIGTERM", "close"] as const) for (const mode of ["request",
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 	await first.close();
 	assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "process exit retains the recovery marker");
-	const second = await acquireHost(f.metadata, { env: f.env("answer") });
+	const resumed = await f.offline.recover();
+	const second = await resumed.acquire(f.metadata, { env: f.env("answer") });
 	trackHost(t, second.pid);
 	try {
 		assert.notEqual(second.pid, first.pid);
@@ -623,44 +670,13 @@ it("keeps the same native process and usable controls after successful reload", 
 });
 
 for (const pendingDelivery of [false, true]) it(`exits after a failed reload with pending delivery=${pendingDelivery} and serves controls after acquisition`, { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t);
-	const runner = join(f.testDir, "failed-reload.mts");
-	const hostModule = new URL("./durable-host.ts", import.meta.url).href;
-	const runtimeModule = new URL("./durable-runtime.ts", import.meta.url).href;
-	writeFileSync(runner, `
-		import { writeFileSync } from "node:fs";
-		import { DurableHost } from ${JSON.stringify(hostModule)};
-		const original = DurableHost.open;
-		let opens = 0;
-		DurableHost.open = async function (...args) {
-			if (++opens === 2) throw new Error("forced reload open failure");
-			return original.apply(this, args);
-		};
-		// Record the runtime state before the process handles the failed request.
-		const { createDurableRuntime } = await import(${JSON.stringify(runtimeModule)});
-		const { runHost } = await import(${JSON.stringify(new URL("./host-process.ts", import.meta.url).href)});
-		const metadata = JSON.parse(process.argv[2]);
-		const host = await runHost(async () => {
-			const runtime = await createDurableRuntime(metadata);
-			const request = runtime.request;
-			runtime.request = async (...args) => {
-				try { return await request(...args); }
-				catch (error) {
-					if (args[0] === "command" && args[1]?.name === "reload") {
-						let nextError;
-						try { await request("status", {}, "after-failure"); }
-						catch (next) { nextError = next.message; }
-						writeFileSync(${JSON.stringify(join(f.testDir, "reload-state.json"))}, JSON.stringify({ shutdownRequired: runtime.shutdownRequired ?? false, idle: runtime.isIdle(), nextError }));
-					}
-					throw error;
-				}
-			};
-			return runtime;
-		}, { metadata, exit: () => process.exit(0) });
-		await host.done;
-	`);
-	const first = await acquireHost(f.metadata, { runner, env: { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "0" }, retryAttempts: 0 });
+	const f = runtimeFixture(t, { offlineRecovery: true });
+	const initial = f.offline.generation();
+	const runner = fileURLToPath(new URL("./failed-reload-fixture.mts", import.meta.url));
+	const first = await initial.acquire(f.metadata, { runner, env: { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "0" }, retryAttempts: 0 });
 	trackHost(t, first.pid);
+	const paths = hostPaths(f.metadata);
+	const claimBefore = readFileSync(paths.claim), identityBefore = lstatSync(paths.claim);
 	let submission: SubmitResult | undefined;
 	try {
 		if (pendingDelivery) {
@@ -669,16 +685,23 @@ for (const pendingDelivery of [false, true]) it(`exits after a failed reload wit
 			await first.request("recovery-state");
 		}
 		await assert.rejects(first.request("command", { name: "reload" }), /forced reload open failure/u);
-		const state = JSON.parse(readFileSync(join(f.testDir, "reload-state.json"), "utf8"));
+		const state = JSON.parse(readFileSync(join(f.metadata.agentDir, "reload-state.json"), "utf8"));
 		assert.equal(state.idle, false, "a closed native host does not retire as idle");
 		assert.match(state.nextError, /closed/u, "later controls cannot use the torn-down runtime");
 		assert.equal(state.shutdownRequired, true, "the failed runtime requires process shutdown instead of retaining its live claim");
 		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
-		const paths = hostPaths(f.metadata);
-		assert.equal(observeClaim(paths.claim, paths.identity).kind, "dead", "process death leaves a replaceable writer claim");
+		assert.equal(observeClaim(paths.claim, paths.identity).kind, "dead", "process death leaves a writer claim for offline recovery");
 		assert.equal(new AgentCatalog(f.root).read(f.metadata.storageId).recoveryDue, true, "failure retains recovery due, including an unacknowledged delivery");
+		await assert.rejects(initial.acquire(f.metadata, { env: f.env("answer"), retryAttempts: 0 }), /requires offline recovery/u);
+		assert.deepEqual(readFileSync(paths.claim), claimBefore, "online refusal preserves the captured claim bytes");
+		const identityAfter = lstatSync(paths.claim);
+		assert.equal(identityAfter.dev, identityBefore.dev);
+		assert.equal(identityAfter.ino, identityBefore.ino);
+		assert.equal(identityAfter.uid, identityBefore.uid);
 	} finally { await first.close().catch(() => {}); }
-	const second = await acquireHost(f.metadata, { env: f.env("answer"), retryAttempts: 0 });
+	const successor = await f.offline.recover();
+	assert.notEqual(successor, initial);
+	const second = await successor.acquire(f.metadata, { env: f.env("answer"), retryAttempts: 0 });
 	trackHost(t, second.pid);
 	try {
 		assert.notEqual(second.pid, first.pid);

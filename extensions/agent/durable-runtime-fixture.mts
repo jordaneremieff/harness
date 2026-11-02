@@ -1,4 +1,5 @@
 import { machineConfig } from "./settings-fixture.mts";
+import { allocateOfflineFixture, offlineFixtureFor, type OfflineFixture } from "./offline-recovery-fixture.mts";
 import { randomUUID } from "node:crypto";
 /**
  * Helpers for production durable-runtime tests.
@@ -6,8 +7,8 @@ import { randomUUID } from "node:crypto";
  * The fixture builds an isolated agent home whose settings load the on-disk
  * `testdata/durable-runtime` extension, the metadata the production runner
  * consumes, and a marker socket that is accepting before a host starts. The tests launch
- * the production `durable-runner.ts` through `acquireHost`; no fixture runner
- * and no real provider are used.
+ * the production `durable-runner.ts` through `acquireHost`. Process-loss cases also
+ * use fixed test runners. No real provider is used.
  */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, opendirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
@@ -34,6 +35,7 @@ export interface RuntimeFixture {
 	readonly metadata: HostMetadata;
 	/** Unix socket that is accepting marker names before a host starts. */
 	readonly notifyPath: string;
+	readonly offline?: OfflineFixture;
 	/** Child environment for one fixture mode. */
 	env(mode: "request" | "effect" | "answer" | "spawn" | "tool-round" | "await-local" | "await-reference" | "retry" | "intent"): Record<string, string>;
 	/** Resolve when the host publishes this marker name. The file is not the signal. */
@@ -46,13 +48,23 @@ export interface FixtureContext {
 	diagnostic?(message: string): void;
 }
 
+interface RuntimeFixtureOptions { withAgentExtension?: boolean; transport?: "sse" | "auto"; retry?: boolean; packageDir?: string; httpEndpoint?: string; retryDelayMs?: number; offlineRecovery?: boolean }
+function allocateRuntimeRoot(t: FixtureContext, options: RuntimeFixtureOptions): { offline: OfflineFixture | undefined; root: string } {
+	if (offlineContexts.has(t)) throw new Error("Offline fixture context already owns its cleanup boundary");
+	if (options.offlineRecovery && (options.withAgentExtension || options.retry || options.httpEndpoint)) throw new Error("Offline recovery requires fixed non-launching fixture contributions");
+	const offline = options.offlineRecovery ? allocateOfflineFixture("durable-runtime-") : undefined;
+	if (offline) bindOfflineContext(t, offline);
+	const root = offline?.root ?? mkdtempSync(join(tmpdir(), "durable-runtime-"));
+	return { offline, root };
+}
 /** Build an isolated agent home for one durable runtime test. */
-export function runtimeFixture(t: FixtureContext, options: { withAgentExtension?: boolean; transport?: "sse" | "auto"; retry?: boolean; packageDir?: string; httpEndpoint?: string; retryDelayMs?: number } = {}): RuntimeFixture {
-	const root = mkdtempSync(join(tmpdir(), "durable-runtime-"));
+export function runtimeFixture(t: FixtureContext, options: RuntimeFixtureOptions & { offlineRecovery: true }): RuntimeFixture & { offline: OfflineFixture };
+export function runtimeFixture(t: FixtureContext, options?: RuntimeFixtureOptions): RuntimeFixture;
+export function runtimeFixture(t: FixtureContext, options: RuntimeFixtureOptions = {}): RuntimeFixture {
+	const { offline, root } = allocateRuntimeRoot(t, options);
 	const createdAt = Date.now();
-	// Registered first, so it runs first: every host that claimed a storage under this
-	// agent home is stopped and has exited before the directories disappear. A host that
-	// outlived the removal could otherwise relaunch a peer into a missing working directory.
+	// Directory removal requires every owned host to exit. A surviving host could
+	// otherwise relaunch a peer into a missing working directory.
 	t.after(() => fixtureTeardown(root, join(root, "agent"), createdAt, t));
 	const cwd = join(root, "work");
 	const agentDir = join(root, "agent");
@@ -89,8 +101,11 @@ export function runtimeFixture(t: FixtureContext, options: { withAgentExtension?
 	}, "primary");
 	const metadata = hostMetadata(record);
 	writeFileSync(join(agentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: `${metadata.model.provider}/${metadata.model.modelId}` } }, preferences: { defaultPreset: "standard" } })));
-	const markers = markerFixture(t, testDir);
+	offline?.allow(metadata);
+	const markerContext = offline ? { after(fn: () => void) { t.after(() => { if (offline.cleanupAllowed) fn(); }); } } : t;
+	const markers = markerFixture(markerContext, testDir);
 	return {
+		...(offline ? { offline } : {}),
 		root,
 		cwd,
 		agentDir,
@@ -101,6 +116,7 @@ export function runtimeFixture(t: FixtureContext, options: { withAgentExtension?
 		metadata,
 		notifyPath: markers.notifyPath,
 		env: (mode) => ({
+			PI_HARNESS_FILE: join(agentDir, "harness.json"),
 			DURABLE_TEST_DIR: testDir,
 			DURABLE_TEST_CHILD_CWD: childCwd,
 			DURABLE_TEST_MODE: mode,
@@ -243,6 +259,16 @@ export async function waitForProcessGone(pid: number, deadlineMs = 5000, interva
 
 /** Pids the test registered through trackHost, keyed by its context: an explicit ownership handle the fixture stops first. */
 const trackedPids = new WeakMap<FixtureContext, Set<number>>();
+const offlineContexts = new WeakMap<FixtureContext, OfflineFixture>();
+
+/** An offline context retains its allocation binding after proof failure or directory removal. */
+export function bindOfflineContext(t: FixtureContext, fixture: OfflineFixture): void {
+	if (offlineFixtureFor(fixture.root) !== fixture) throw new Error("Offline cleanup requires a fresh allocation capability");
+	const previous = offlineContexts.get(t);
+	if (previous && previous !== fixture) throw new Error("Offline fixture context cannot change its allocation");
+	offlineContexts.set(t, fixture);
+	for (const pid of trackedPids.get(t) ?? []) fixture.track(pid);
+}
 
 /** The pids registered through trackHost for one test context. */
 export function trackedHosts(t: FixtureContext): number[] {
@@ -250,15 +276,18 @@ export function trackedHosts(t: FixtureContext): number[] {
 }
 
 /**
- * Register one owned host. The fixture's first cleanup phase stops every tracked pid before
- * the root is removed, whether or not it has published a claim yet; the hook registered here is
- * the last-resort SIGKILL after that phase, and it waits for the exit it requested.
+ * Offline contexts require generation-owned PIDs and install no signal hook. Their binding
+ * also disables fallback hooks registered before it. Default contexts retain their tracked
+ * stop phase and final SIGKILL hook, which waits for the requested exit.
  */
 export function trackHost(t: FixtureContext, pid: number): void {
+	const offline = offlineContexts.get(t);
+	if (offline) { offline.track(pid); return; }
 	const set = trackedPids.get(t) ?? new Set<number>();
 	set.add(pid);
 	trackedPids.set(t, set);
 	t.after(async () => {
+		if (offlineContexts.has(t)) return;
 		killHost(pid);
 		if (!(await waitForProcessGone(pid))) throw new Error(`tracked host ${pid} did not exit after SIGKILL`);
 	});
@@ -408,6 +437,15 @@ async function stopAndWait(pids: number[], stop: (pid: number) => void, deadline
  * pid nor a claim under this agent home is outside what the cleanup observes.
  */
 export async function fixtureTeardown(root: string, agentDir: string, createdAt: number, t: FixtureContext, stop: typeof stopOwnedHosts = stopOwnedHosts): Promise<void> {
+	const bound = offlineContexts.get(t);
+	if (bound && bound.root !== resolve(root)) throw new Error("Offline context refuses legacy cleanup of another root");
+	const offline = bound ?? offlineFixtureFor(root);
+	if (offline) {
+		await offline.teardown();
+		t.diagnostic?.(`fixture teardown ${root}: isolated launch generations sealed and owned writers exited`);
+		rmSync(root, { recursive: true, force: true });
+		return;
+	}
 	const stopped = await stop(root, agentDir, createdAt, { tracked: trackedHosts(t) });
 	t.diagnostic?.(`fixture teardown ${root}: ${stopped.summary}`);
 	if (stopped.unresolved.length) throw new Error(`fixture claim ownership unresolved, root retained: ${root}; ${stopped.unresolved.join("; ")}`);

@@ -88,6 +88,16 @@ function outcome(result: StopOwnedHostsResult): Omit<StopOwnedHostsResult, "summ
 	return { stopped: result.stopped, lingering: result.lingering, unresolved: result.unresolved, complete: result.complete };
 }
 
+it("the launch environment overrides an outer harness path with the fixture configuration", async () => {
+	const t = fakeContext();
+	const f = runtimeFixture(t);
+	try {
+		const launch = { PI_HARNESS_FILE: join(f.root, "outer-harness.json"), ...f.env("answer") };
+		assert.equal(launch.PI_HARNESS_FILE, join(f.agentDir, "harness.json"));
+		assert.equal(existsSync(launch.PI_HARNESS_FILE), true);
+	} finally { await t.run(); }
+});
+
 it("a process that outlives its working directory reports the uv_cwd failure", async () => {
 	const dir = mkdtempSync(join(tmpdir(), "fixture-order-"));
 	const work = join(dir, "work");

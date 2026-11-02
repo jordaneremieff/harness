@@ -135,7 +135,8 @@ export default function (pi) {
 `;
 
 it("keeps real native work after launch-link close and manager shutdown, then recovers without a requester route", { timeout: 60000 }, async (t) => {
-	const f = runtimeFixture(t);
+	const f = runtimeFixture(t, { offlineRecovery: true });
+	const initial = f.offline.generation();
 	const commandPath = join(f.agentDir, "independent.ts"); writeFileSync(commandPath, COMMAND_EXTENSION);
 	const settingsPath = join(f.agentDir, "settings.json");
 	const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
@@ -143,10 +144,13 @@ it("keeps real native work after launch-link close and manager shutdown, then re
 	const settingsBefore = readFileSync(settingsPath, "utf8");
 	const creatorId = randomUUID(); const calls: string[] = []; let launchClient!: HostConnection; let subscriptions = 0;
 	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, acquire: async (metadata, options) => {
-		const client = await acquireHost(metadata, { ...options, env: f.env("request") }); launchClient = client; trackHost(t, client.pid);
+		assert.equal(metadata.ownerId, creatorId);
+		initial.declare(metadata);
+		const client = await initial.acquire(metadata, { ...options, env: f.env("request") }); launchClient = client; trackHost(t, client.pid);
 		return { metadata, storageId: client.storageId, pid: client.pid, socketPath: client.socketPath, get runtimeContract() { return client.runtimeContract; }, get closed() { return client.closed; }, request: async (method, params, requestOptions) => { calls.push(method); return client.request(method, params, requestOptions); },
 			onClose: () => { throw new Error("Independent client must not be adopted"); }, subscribeChanges: async () => { subscriptions++; throw new Error("Independent client must not subscribe"); }, close: () => client.close() };
-	} });
+	}, connect: (metadata, options) => initial.connect(metadata, { ...options, env: f.env("request") }) });
+	initial.manager(manager);
 	t.after(() => manager.close());
 	const input: IndependentCommandInput = { invocationId: randomUUID(), creatorId, cwd: f.cwd, command: { name: "fixture-independent", data: { source: "Captured invocation text", hint: "Captured subject", destination: "Captured target" } } };
 	const receipt = await manager.launchIndependent(input);
@@ -155,7 +159,7 @@ it("keeps real native work after launch-link close and manager shutdown, then re
 	await manager.close();
 	const record = manager.catalog.read(receipt.sessionId);
 	assert.equal(record.thinkingLevel, "high"); assert.equal(record.ownerId, creatorId); assert.equal(record.independent?.projectTrusted, true);
-	let client = await acquireHost(hostMetadata(record), { env: f.env("request") });
+	let client = await initial.acquire(hostMetadata(record), { env: f.env("request") });
 	try {
 		const status = await client.request("status", { sessionId: receipt.sessionId }) as { conversation: { busy: boolean } };
 		assert.equal(status.conversation.busy, true, "native generation remains active after caller-manager shutdown");
@@ -163,7 +167,8 @@ it("keeps real native work after launch-link close and manager shutdown, then re
 		assert.match(JSON.stringify(page), /Captured invocation text/u);
 		assert.deepEqual((await client.request("receipts", { ownerId: creatorId }) as { receipts: unknown[] }).receipts, []);
 		await killHost(client.pid); await client.close();
-		client = await acquireHost(hostMetadata(record), { env: f.env("answer") }); trackHost(t, client.pid);
+		const resumed = await f.offline.recover();
+		client = await resumed.acquire(hostMetadata(record), { env: f.env("answer") }); trackHost(t, client.pid);
 		await f.marker("answered");
 		const deadline = AbortSignal.timeout(10000);
 		let resolve!: (value: unknown) => void; let reject!: (error: unknown) => void;

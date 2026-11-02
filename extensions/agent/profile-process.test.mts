@@ -11,6 +11,7 @@ import type { AgentProfile } from "./profile-schema.ts";
 import type { RequestContext } from "./request-context.ts";
 import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { connectHost } from "./host-client.ts";
+import { observeClaim } from "./claims.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { BASE_OPERATIONS } from "./profile-base-contract-fixture.mts";
@@ -203,8 +204,14 @@ it("retains a standing profile across native boundaries and routes reused work b
 	assert.equal(committed.outcome, "applied");
 	const host = b.hosts.at(-1);
 	assert.ok(host);
+	await b.raw(identity, "close").catch((error: unknown) => {
+		assert.ok(error instanceof Error);
+		assert.equal(error.message, "raw close: durable host connection closed: server closed");
+	});
+	await b.call("release", { sessionId: identity });
+	const paths = hostPaths(metadata);
+	assert.equal(observeClaim(paths.claim, paths.identity).kind, "absent");
 	await b.close();
-	assert.equal(process.kill(host.pid, "SIGKILL"), true, "kill a live host after the update response confirms commit");
 	const restarted = await f.requester(b.identity);
 	await restarted.call("release", { sessionId: identity });
 	const reopened = await restarted.raw<Updated>(identity, "profile-update", update);

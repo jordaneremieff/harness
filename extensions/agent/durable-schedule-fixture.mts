@@ -4,7 +4,7 @@
  * optional held answer for the busy-boundary tests. As a runner, it serves
  * paused scheduling over the host protocol with an explicit native clock.
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -35,7 +35,7 @@ export interface ScheduleFixtureOptions {
 	readonly now?: () => number;
 	/** Leave scheduling paused until the test explicitly resumes it. */
 	readonly resume?: boolean;
-	/** Existing storage paths for a subprocess reopen. */
+	/** Existing storage paths with final settings already prepared for a subprocess reopen. */
 	readonly metadata?: HostMetadata;
 	readonly storageId?: string;
 }
@@ -81,6 +81,28 @@ function gate(): Gate {
 	return { promise, release };
 }
 
+function scheduleSettingsText(agentExtension: boolean): string {
+	return JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false }, ...(agentExtension ? { extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))] } : {}) });
+}
+
+/** Prepare the final configuration before the parent captures its immutable launcher inputs. */
+export function prepareScheduleSettings(agentDir: string, agentExtension = true): void {
+	writeFileSync(join(agentDir, "settings.json"), scheduleSettingsText(agentExtension));
+}
+
+/** A subprocess validates its prepared configuration without rewriting it. */
+export function requireScheduleSettings(agentDir: string, agentExtension = true): void {
+	const expected = Buffer.from(scheduleSettingsText(agentExtension));
+	const fd = openSync(join(agentDir, "settings.json"), constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+	try {
+		const stat = fstatSync(fd);
+		if (!stat.isFile() || stat.size !== expected.length) throw new Error("Schedule fixture settings differ from the prepared configuration");
+		const bytes = Buffer.alloc(expected.length + 1);
+		const length = readSync(fd, bytes, 0, bytes.length, 0);
+		if (!bytes.subarray(0, length).equals(expected)) throw new Error("Schedule fixture settings differ from the prepared configuration");
+	} finally { closeSync(fd); }
+}
+
 export async function scheduleFixture(t: { after(fn: () => void | Promise<void>): void }, options: ScheduleFixtureOptions = {}): Promise<ScheduleFixture> {
 	const root = options.metadata === undefined ? mkdtempSync(join(tmpdir(), "durable-schedule-")) : dirname(options.metadata.storagePath);
 	const cwd = options.metadata?.cwd ?? join(root, "work");
@@ -88,8 +110,8 @@ export async function scheduleFixture(t: { after(fn: () => void | Promise<void>)
 	const storagePath = options.metadata?.storagePath ?? join(root, "store.sqlite");
 	mkdirSync(cwd, { recursive: true });
 	mkdirSync(agentDir, { recursive: true });
-	const extension = fileURLToPath(new URL("./index.ts", import.meta.url));
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false }, ...(options.agentExtension === true ? { extensions: [extension] } : {}) }));
+	if (options.metadata === undefined) prepareScheduleSettings(agentDir, options.agentExtension === true);
+	else requireScheduleSettings(agentDir, options.agentExtension === true);
 	const runtime = await createTestRuntime();
 	const answerText = options.answer ?? FIXTURE_ANSWER;
 	const requested = gate();
