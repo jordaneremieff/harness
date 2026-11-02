@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { Compile } from "typebox/compile";
-import { NativeParams } from "./schema.ts";
+import { validateRequest } from "./schema.ts";
 import { boundResult, resultByteLimit, RexCore } from "./core.ts";
 import type { RexCallContext, RexResult } from "./core.ts";
 import { changeOwnership, initialOwnershipState, validateOwnershipState } from "./ownership.ts";
@@ -872,11 +871,10 @@ test("catalogue discovery filters literal names before bounded pages and reads f
 
 test("catalogue bounds and kind-specific fields are rejected without native effects", async () => {
 	const f = fixture();
-	const schema = Compile(NativeParams);
 	for (const kind of ["describe", "api", "lua", "action"] as const) {
 		for (const fields of [{ query: "method" }, { offset: 0 }, { limit: 1 }]) {
 			const request = { op: "native" as const, kind, ...fields };
-			assert.equal(schema.Check(request), false);
+			assert.equal(validateRequest("rex_native", request).ok, false);
 			const response = await f.core.execute(request, context);
 			assert.equal(response.ok, false);
 			assert.match(response.error ?? "", /only to native catalog/);
@@ -885,10 +883,10 @@ test("catalogue bounds and kind-specific fields are rejected without native effe
 	assert.deepEqual(f.transport.calls, []);
 	for (const fields of [{ query: "" }, { query: "x".repeat(257) }, { offset: -1 }, { offset: 1.5 }, { offset: 1048577 }, { limit: 0 }, { limit: 101 }]) {
 		const request = { op: "native" as const, kind: "catalog" as const, ...fields };
-		assert.equal(schema.Check(request), false);
+		assert.equal(validateRequest("rex_native", request).ok, false);
 		assert.equal((await f.core.execute(request, context)).ok, false);
 	}
-	assert.equal(schema.Check({ op: "native", kind: "catalog", query: "[", offset: 0, limit: 100 }), true);
+	assert.equal(validateRequest("rex_native", { op: "native", kind: "catalog", query: "[", offset: 0, limit: 100 }).ok, true);
 	assert.equal(f.store.state.records.length, 0);
 });
 

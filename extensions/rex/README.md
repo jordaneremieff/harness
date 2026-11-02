@@ -23,6 +23,21 @@ ordinary and native policy boundaries. No arbitrary API or Lua operation receive
 a read-only annotation. Policy remains the decision owner; terminal content and
 program reports never grant permission.
 
+Each tool's provider declaration is one plain object root whose `op` (and `kind`
+or `condition`) field enumerates the accepted values and whose other fields are
+the union of every operation's fields. Google's validated function-calling mode,
+which Pi selects for the whole request whenever one strict built-in tool such as
+`read` is present on a Gemini 3+ model, rejects a declaration whose root is a
+schema union; a flat root keeps all six Rex tools loadable beside Pi's built-ins.
+The per-operation shapes in `schema.ts` remain the request contract. Both hosts
+validate the received arguments against the selected shape before any Rex,
+ownership or status access: a wrong `op` for the tool, a missing `kind`, `label`,
+`recordId`, `method`, `code`, `action`, condition argument or input text/keys, an
+unknown or operation-incompatible field, a wrong type, an out-of-range value or an
+invalid nested target returns `outcome: "invalid_request"` with
+`effects.state: "none"`. `cleanup` never selects a claim without its exact
+`recordId`. The rejected arguments are the same arguments policy saw.
+
 Results share `ok`, `outcome`, optional `target`/`data`/`error`, `effects` and
 `coverage`. Inspect `ok` and `effects.state` in program callers. Ordinary results
 use `structuredContent`; native results use `structuredOutput` with the same

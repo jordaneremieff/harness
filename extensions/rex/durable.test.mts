@@ -52,12 +52,14 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 	const closers: Array<() => void | Promise<void>> = [];
 	let disposed = 0;
 	const owners: string[] = [];
+	const executed: string[] = [];
 	const endedCalls: Array<() => boolean | undefined> = [];
 	const contribution = rexContribution("/test/rex/index.ts", createEventBus(), () => {}, {
 		createCore: (options) => ({
 			dispose: () => { disposed++; },
 			execute: async (request, context) => {
 				owners.push(context.ownerId);
+				executed.push(request.op);
 				assert.equal(options.isCallActive?.(context.ownerId, context.callId), true);
 				endedCalls.push(() => options.isCallActive?.(context.ownerId, context.callId));
 				if (request.op === "create") {
@@ -77,6 +79,7 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		assert.ok(extension.tools?.every((tool) => tool.structuredOutputSchema !== undefined));
 		registry.install(extension);
 		let nested: Durable.NestedToolExecutionResult | undefined;
+		let invalidCleanup: Durable.NestedToolExecutionResult | undefined;
 		let concurrentRecords = 0;
 		registry.install(Durable.defineExtension({ name: "test-caller", tools: [Durable.defineTool({
 			name: "test_nested", description: "Exercise concurrent commits and the native structured error channel.", parameters: Type.Object({}), replay: "safe",
@@ -88,6 +91,7 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 				assert.ok(created.every((result) => !result.isError), JSON.stringify(created));
 				const owned = await api.executeTool("rex_owned", { op: "owned" }, context);
 				concurrentRecords = ((owned.structuredOutput as unknown as RexResult).data as { records: unknown[] }).records.length;
+				invalidCleanup = await api.executeTool("rex_owned", { op: "cleanup" }, context);
 				nested = await api.executeTool("rex_native", { op: "native", kind: "lua", code: "fail" }, context);
 				return { output: [{ type: "text", text: "Nested results inspected." }] };
 			},
@@ -100,6 +104,7 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 			fauxAssistantMessage(fauxToolCall("rex_wait", { op: "wait", condition: "child_exit" }), { stopReason: "toolUse" }),
 			fauxAssistantMessage(fauxToolCall("rex_native", { op: "native", kind: "catalog" }), { stopReason: "toolUse" }),
 			fauxAssistantMessage(fauxToolCall("rex_owned", { op: "owned" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("rex_terminal", { op: "create", kind: "session" }), { stopReason: "toolUse" }),
 			fauxAssistantMessage(fauxToolCall("rex_status", { op: "snapshot", target: { server: server.endpoint, session: target.sessionId, block: target.blockId } }), { stopReason: "toolUse" }),
 			fauxAssistantMessage(fauxToolCall("test_nested", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage("Complete."),
@@ -107,8 +112,18 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		await (await root.submit({ type: "input", content: "Exercise the Rex contracts." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 		const entries = (await root.entries({ order: "ascending" }, 100, undefined, BACKGROUND_CONTEXT)).items;
 		const values = resultValues(entries);
-		assert.equal(values.length, 7);
-		assert.ok(values.every((value) => value.ok));
+		assert.equal(values.length, 8);
+		const unlabelled = values.find((value) => value.outcome === "invalid_request");
+		assert.ok(unlabelled, "a model-issued create without a label is rejected at the native validation boundary");
+		assert.match(unlabelled.error ?? "", /required properties label/);
+		assert.equal(unlabelled.effects.state, "none");
+		assert.ok(values.filter((value) => value !== unlabelled).every((value) => value.ok));
+		assert.ok(invalidCleanup?.isError);
+		assert.equal((invalidCleanup.structuredOutput as unknown as RexResult).outcome, "invalid_request");
+		assert.match((invalidCleanup.structuredOutput as unknown as RexResult).error ?? "", /recordId/);
+		assert.deepEqual(invalidCleanup.details, { outcome: "invalid_request", effects: "none" });
+		assert.ok(!executed.includes("cleanup"), "an invalid cleanup never reaches the core");
+		assert.equal(executed.filter((op) => op === "create").length, 3, "the unlabelled create never reaches the core");
 		const observedInput = values.find((value) => value.outcome === "input_delivered");
 		assert.ok(observedInput);
 		assert.equal((observedInput.data as { payload: string }).payload.length, 80000);

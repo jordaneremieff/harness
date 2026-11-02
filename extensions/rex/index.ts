@@ -6,7 +6,7 @@ import { liveCalls, ordinaryOwner, ordinaryOwnershipStore, ordinaryStatusStore, 
 import { rexContribution } from "./durable.ts";
 import { createRexToolDisplay, publishRexToolDisplay } from "./display.ts";
 import { publishSettings, readSettings } from "./settings.ts";
-import { REX_GUIDANCE, ResultSchema, toolSpecs, type StatusRequest } from "./schema.ts";
+import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequest } from "./schema.ts";
 import { rexStatus, type RexExecutor } from "./status.ts";
 
 export function registerRex(pi: ExtensionAPI, options: RexAdapterOptions = {}): void {
@@ -31,6 +31,8 @@ export function registerRex(pi: ExtensionAPI, options: RexAdapterOptions = {}): 
 			promptSnippet: spec.description,
 			promptGuidelines: spec.name === "rex_environment" ? [REX_GUIDANCE] : undefined,
 			execute: async (callId, args, signal, _onUpdate, ctx) => {
+				const validated = validateRequest(spec.name, args);
+				if (!validated.ok) return resultChannels(validated);
 				const ownerId = ordinaryOwner(ctx);
 				const coreOptions = { ...settings, store: ordinaryOwnershipStore(pi, ctx, settings.maxRecords, serialise), isCallActive: invocations.isCallActive };
 				const core = options.createCore?.(coreOptions) ?? new RexCore(coreOptions);
@@ -39,8 +41,8 @@ export function registerRex(pi: ExtensionAPI, options: RexAdapterOptions = {}): 
 				const context = { ownerId, callId, cwd: ctx.cwd, signal: AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]) };
 				try {
 					const result = spec.name === "rex_status"
-						? await rexStatus(args as StatusRequest, context, core, ordinaryStatusStore(pi, ctx, serialise, context.signal), async () => ({ host: "ordinary", state: ctx.isIdle() ? "idle" : "active", observedAt: new Date().toISOString(), source: "ExtensionContext.isIdle()", note: "Current ordinary host activity only. Pi's interactive reporter owns TUI lifecycle output. Headless and RPC callers do not gain terminal attachment." }))
-						: await core.execute(args as RexRequest, context);
+						? await rexStatus(validated.request as StatusRequest, context, core, ordinaryStatusStore(pi, ctx, serialise, context.signal), async () => ({ host: "ordinary", state: ctx.isIdle() ? "idle" : "active", observedAt: new Date().toISOString(), source: "ExtensionContext.isIdle()", note: "Current ordinary host activity only. Pi's interactive reporter owns TUI lifecycle output. Headless and RPC callers do not gain terminal attachment." }))
+						: await core.execute(validated.request as RexRequest, context);
 					return resultChannels(boundResult(result, resultByteLimit(settings.maxOutputBytes)));
 				} finally { active.delete(core); try { core.dispose(); } finally { release(); } }
 			},

@@ -1,10 +1,10 @@
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { TSchema } from "typebox";
-import { boundResult, resultByteLimit, RexCore, type RexRequest } from "./core.ts";
+import { boundResult, resultByteLimit, RexCore, type RexCallContext, type RexRequest, type RexResult } from "./core.ts";
 import { liveCalls, resultChannels, type RexAdapterOptions } from "./config.ts";
 import { initialOwnershipState, validateOwnershipState, type OwnershipState, type OwnershipStore } from "./ownership.ts";
-import { REX_GUIDANCE, ResultSchema, toolSpecs, type StatusRequest } from "./schema.ts";
+import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequest } from "./schema.ts";
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
 import { rexStatus, validateStatusBinding, type HostActivity, type RexExecutor, type StatusStore } from "./status.ts";
 
@@ -75,6 +75,21 @@ function nativeStatusStore(api: Durable.ToolExecutionApi, token: Durable.Convers
 	};
 }
 
+function nativeResult(result: RexResult, maxBytes: number): Durable.ToolExecutionResult<Durable.JsonObject> {
+	const channels = resultChannels(boundResult(result, maxBytes));
+	return { output: channels.content, structuredOutput: channels.structuredContent, isError: channels.isError, details: channels.details };
+}
+
+async function callContext(host: DurableContributionHost, api: Durable.ToolExecutionApi, context: Context, ownerId: string): Promise<RexCallContext> {
+	return { ownerId, callId: api.callId, cwd: api.env?.cwd ?? (await api.agent(context)).cwd ?? host.cwd, signal: AbortSignal.any([host.signal, ...(context.abortSignal ? [context.abortSignal] : [])]) };
+}
+
+async function hostActivity(host: DurableContributionHost, api: Durable.ToolExecutionApi, context: Context): Promise<HostActivity> {
+	const inspection = await host.harness.inspect(context);
+	const tasks = inspection.tasks.filter((task) => task.record.conversationId === api.conversationId && task.record.id !== api.taskId);
+	return { host: "durable", state: tasks.some((task) => task.state.kind === "blocked") ? "blocked" : tasks.length ? "active" : "idle", observedAt: new Date().toISOString(), source: "Harness.inspect() current conversation tasks", tasks: tasks.slice(0, 64).map((task) => ({ id: String(task.record.id), kind: task.record.kind, state: task.state.kind, background: task.record.background, abortRequested: task.record.abortRequested, ...(task.state.kind === "blocked" ? { reason: task.state.reason } : {}) })), omittedTasks: Math.max(0, tasks.length - 64), note: "A scheduler block is not a request for operator permission. No live task does not prove task completion or acceptance. Other conversations are outside this snapshot." };
+}
+
 export function rexContribution(source: string, bus: SettingsBus, stopFactoryPublisher: () => void, options: RexAdapterOptions = {}): DurableContribution {
 	return {
 		name: "rex", source,
@@ -99,6 +114,9 @@ export function rexContribution(source: string, bus: SettingsBus, stopFactoryPub
 					replay: "unsafe", structuredOutputSchema: ResultSchema,
 					outputLimits: { maxBytes: resultByteLimit(settings.maxOutputBytes), maxLines: 2000, retain: "head" },
 					execute: async (args, api, context) => {
+						const maxBytes = resultByteLimit(settings.maxOutputBytes);
+						const validated = validateRequest(spec.name, args);
+						if (!validated.ok) return nativeResult(validated, maxBytes);
 						const ownerId = `${host.storageId}:${api.conversationId}`;
 						const store = nativeOwnershipStore(api, ownership, ownerId, settings.maxRecords, context);
 						const coreOptions = { ...settings, store, isCallActive: invocations.isCallActive };
@@ -106,15 +124,9 @@ export function rexContribution(source: string, bus: SettingsBus, stopFactoryPub
 						const release = invocations.enter(ownerId, api.callId);
 						active.add(core);
 						try {
-							const call = { ownerId, callId: api.callId, cwd: api.env?.cwd ?? (await api.agent(context)).cwd ?? host.cwd, signal: AbortSignal.any([host.signal, ...(context.abortSignal ? [context.abortSignal] : [])]) };
-							const activity = async (): Promise<HostActivity> => {
-								const inspection = await host.harness.inspect(context);
-								const tasks = inspection.tasks.filter((task) => task.record.conversationId === api.conversationId && task.record.id !== api.taskId);
-								return { host: "durable", state: tasks.some((task) => task.state.kind === "blocked") ? "blocked" : tasks.length ? "active" : "idle", observedAt: new Date().toISOString(), source: "Harness.inspect() current conversation tasks", tasks: tasks.slice(0, 64).map((task) => ({ id: String(task.record.id), kind: task.record.kind, state: task.state.kind, background: task.record.background, abortRequested: task.record.abortRequested, ...(task.state.kind === "blocked" ? { reason: task.state.reason } : {}) })), omittedTasks: Math.max(0, tasks.length - 64), note: "A scheduler block is not a request for operator permission. No live task does not prove task completion or acceptance. Other conversations are outside this snapshot." };
-							};
-							const result = spec.name === "rex_status" ? await rexStatus(args as StatusRequest, call, core, nativeStatusStore(api, binding, ownerId, context), activity) : await core.execute(args as RexRequest, call);
-							const channels = resultChannels(boundResult(result, resultByteLimit(settings.maxOutputBytes)));
-							return { output: channels.content, structuredOutput: channels.structuredContent, isError: channels.isError, details: channels.details };
+							const call = await callContext(host, api, context, ownerId);
+							const result = spec.name === "rex_status" ? await rexStatus(validated.request as StatusRequest, call, core, nativeStatusStore(api, binding, ownerId, context), () => hostActivity(host, api, context)) : await core.execute(validated.request as RexRequest, call);
+							return nativeResult(result, maxBytes);
 						} finally { active.delete(core); try { core.dispose(); } finally { release(); } }
 					},
 				})),

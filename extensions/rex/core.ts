@@ -792,6 +792,7 @@ export class RexCore {
 		request: Extract<RexRequest, { op: "reconcile" | "cleanup" }>,
 		context: RexCallContext,
 	): Promise<RexResult> {
+		if (request.op === "cleanup" && !boundedText(request.recordId, 1024)) throw new Error("Cleanup requires one exact retained record ID; it never selects another claim.");
 		const state = validateOwnershipState(await this.options.store.read(context.ownerId), this.maxRecords);
 		const selected = state.records.filter(
 			(record) => record.ownerId === context.ownerId && (!request.recordId || record.callId === request.recordId),
