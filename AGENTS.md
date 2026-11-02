@@ -59,15 +59,8 @@
   This is an adapted reporting register based on ASD-STE100 Issue 9 (January 2025).
   It does not reproduce the specification or its dictionary. Do not claim certified
   STE compliance.
-- Review and audit findings get exactly one of three dispositions: fixed now, with
-  the repaired contract verified and permanent regression protection selected under
-  Completion checks; shown false with cited source evidence; or blocked with the
-  exact unavailable layer named. Never "accepted as-is" or deferred as
-  cosmetic/minor debt. Escape hatches under the pillar corpus's Contradiction Handling
-  are a different object class (a deliberate bounded override), not a disposition
-  under this rule. The repository forbids committing investigation reports and
-  contains no evidence archive; "shown false" names its source evidence (path, URL,
-  or installed package) as the durable record.
+- Give each review finding one disposition: fixed, shown false with the source
+  named, or blocked with the unavailable layer named.
 - Verify claims about Pi or pi-tui behavior against the installed package sources
   before acting on them, including claims from reviewers and delegated agents.
 - Upstream Pi rebuilds its agent core as a durable harness ("AgentHarness", also
@@ -83,19 +76,10 @@
   implementation phases, agent or model identities, or temporary task chronology.
   Temporary planning belongs in the session or a stash. Delete comments that
   merely narrate the code (Cognitive Stratification, Intrinsic Organization).
-- Perform active development for each extension, skill, prompt, or feature in one
-  dedicated persistent Git worktree and stable branch. Reuse that worktree across
-  sessions and tasks. Do not remove it after one implementation cycle. Run `npm
-  run worktrees:sync -- --current --source-only` from inside your worktree before slice work and after
-  `main` advances. A worktree that is behind `main` and holds uncommitted tracked
-  changes is deferred: the command leaves its branch at its current commit.
-  A deferred sibling is a worktree other than the one you work in; its work
-  belongs to its owner and is not part of your result. Do not announce its
-  deferral, treat it as extra work, or touch its uncommitted changes. Report
-  actual failures that affect your assigned outcome. Keep provisional extensions
-  in their worktrees without global Pi activation. Route each active extension
-  through its worktree entrypoint instead of the main package copy. See
-  `docs/conventions/worktrees.md`.
+- Work on `main` directly, or on a short-lived branch or worktree when you need
+  isolation from concurrent work. When done: run the checks that matter for the
+  change, commit, `git push origin main`. See `docs/conventions/worktrees.md`.
+  Never rewrite or discard another session's uncommitted work.
 - Each extension is an independent vertical slice with structural, semantic, state,
   and presentation boundaries. An extension must not import a sibling, parse
   sibling-formatted output, reproduce sibling-owned types or lifecycle states,
@@ -110,16 +94,9 @@
   literal import specifiers for slice escapes and sibling paths. Review still
   enforces semantic isolation, including sibling-specific vocabulary, shared
   mutable state, and undocumented private protocols.
-- One-pass standard: complete each task fully in the current pass. Deferral,
-  staged completion, and promised follow-up passes read as reasonable
-  engineering to a generic reviewer; they are failures under this standard.
-  A defect demonstrated on the unchanged baseline is a separately owned task
-  and does not block an independently complete iteration unless the iteration
-  worsens it, depends on its repair, or the operator requires its repair for
-  release. Preserve safety requirements and the required defect dispositions.
-- Use Completion checks below as the single completion and final-verification
-  policy. Commit, review, handoff and promotion are not separate reasons to repeat
-  the same checks.
+- Complete each task in the current pass; do not defer parts of it to a later
+  pass. A defect in the unchanged baseline is a separate task unless the change
+  worsens or depends on it.
 
 ## Authority
 
@@ -223,67 +200,29 @@ practical. Use the operating system temporary directory.
 Temporary scripts created inside the repository must be removed before
 completion.
 
-## Completion checks
+## Verification
 
-Name one final acceptance owner for the relevant candidate and execution basis.
-Use development checks to resolve current uncertainty. For work intended for
-promotion, let promotion run the mandatory final gate on the composed tree; do
-not run the same complete gate first merely to complete a worker, commit or review
-milestone. For work completed without promotion, the final acceptance owner runs
-the selected final checks once. Reuse applicable source, behavioural and review
-evidence; inspect uncovered interactions and rerun evidence invalidated by relevant
-candidate or execution changes. Promotion still executes its required gates; an
-earlier useful focused run does not automatically suppress them. Do not use
-`--no-gates` or `PI_PROMOTE_GATES` as a normal reuse mechanism.
+Verify what the change can break, then stop:
 
-Workers' local passes do not establish an integrated result. Use existing context
-and tool results. Add a concise evidence summary only when complex claims,
-disputes or handoffs need it, not a compulsory ledger.
+- Run the tests of the files you changed and of their direct consumers
+  (`node --test <files>`). Run `npm test` only for changes with broad effect:
+  dependencies, compiler or lint configuration, shared helpers, or the test
+  runner itself.
+- Run `npm run check` (slice isolation, settings declarations, pillar inventory,
+  test inventory) after structural edits; `npm run typecheck` and `npm run lint`
+  after TypeScript edits.
+- Run `node scripts/extension-load-check.mts extensions/<name>/index.ts` after
+  changing an extension's registration or startup path, and
+  `node skills/harness/scripts/validate-skill.mts skills/<name>` after changing a
+  skill's structure.
+- Before pushing, inspect `git status` and the outgoing diff for temporary files,
+  credentials, personal paths, task records, and operator quotations. The
+  installed pre-push hook (`npm run hooks`) refuses credential, private-key,
+  personal-path, and session-envelope signatures; it is not a semantic review.
 
-During development, select checks that resolve material questions about the
-changed contract and its consumers. Verify a repaired contract. Add or retain
-permanent regression protection when its meaningful future protection warrants
-its creation, execution, maintenance and coupling costs. A disposable reproduction
-need not become a permanent test. Correct, replace, consolidate or remove invalid
-assertions, fixtures and mocks against the governing contract; never change correct
-behaviour to satisfy a mistaken test or suppress a genuine failure for a pass.
-
-Reuse evidence only while it reaches the claim and remains applicable to the
-candidate, dependencies, configuration, setup, environment, instrumentation and
-relevant variable conditions. Recheck the affected evidence after a material
-change. A new agent or milestone alone does not invalidate evidence; identical
-source alone does not establish unchanged execution conditions. Deliberate
-sampling for consequential variation is distinct from accidental repetition.
-
-Before final acceptance:
-
-1. Review the actual composed result and interactions not covered by existing
-   evidence. Keep necessary unresolved facts explicit.
-2. Inspect `git status`, remove temporary files, check credentials and personal
-   paths, resolve affected documentation links and update README claims. Review
-   publication content when publication is in scope.
-3. Use the mandatory final gate selected under `docs/conventions/worktrees.md`:
-   tests for changed slices and import consumers, `npm run check`, applicable
-   `npm run lint` and `npm run typecheck`, and required resource load/validation
-   checks. That document owns full-suite selection and narrow exclusions for
-   demonstrably unaffected static checks. `--full` and operator full-suite requests
-   always select full tests; broad or uncertain execution effects retain
-   conservative verification. State the delivery boundary for local-only work.
-4. Satisfy applicable corpus checks. After a corpus mutation removes, renames or
-   redefines a term, search it across `pillars/`, `skills/` and `docs/` before push.
-5. Report remaining untracked or modified files in each worktree you changed.
-
-For intermediate commits, inspect the staged diff and establish enough evidence
-to keep the commit coherent. A commit is not final acceptance. Reuse applicable
-results; the commit event does not demand another complete gate. An explicitly
-scoped proposal or read-only task does not by itself authorise execution checks or
-mutation.
-
-Credential and personal-path review, documentation-link review and the final
-Git-state report remain review responsibilities, not claims of automated coverage.
-Binding requirements remain in force until the authority that owns them changes
-them. A necessary unavailable layer blocks its dependent claim or act, not
-independent authorised work.
+Do not invent additional gates, audits, ledgers, review rounds, or approval
+steps. A passing check establishes only what it exercised; name a material
+gap instead of adding ceremony.
 
 ## Commit messages
 
@@ -317,5 +256,3 @@ Do not include:
 - prompt references;
 - review-round history;
 - generic subjects such as `updates`, `changes`, or `fix stuff`.
-
-Before committing, follow the intermediate-commit requirements in Completion checks.

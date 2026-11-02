@@ -14,9 +14,8 @@ Resolve the repository root first. Use every Git command with `git -C <repo>`
 and every package command with `npm --prefix <repo>`. Do not depend on the
 caller's current directory.
 
-Use read-only Git commands for the plan. Do not run `worktrees:status`,
-`worktrees:sync`, `activate`, or `deactivate` because those commands can change
-worktrees or Pi settings.
+Use read-only Git commands for the plan. Do not edit Pi settings or remove
+worktrees while planning.
 
 Start with these reads. Apply the repository's required record or byte bound to
 each producing command. Stop when a bound prevents an exact plan.
@@ -141,18 +140,15 @@ retry command and stop.
 
 After the local destination succeeds, or after an authorized push succeeds:
 
-1. Run `npm --prefix <repo> run worktrees -- deactivate <name>`.
-2. Verify that this removed only the exact target entry from Pi settings.
-3. Run `git -C <repo> worktree remove <exact-target-worktree>` without force.
-4. Run `git -C <repo> branch -D extension/<name>`.
-5. Run `npm --prefix <repo> run worktrees:sync` for the remaining branches.
-6. Run the focused loader check with each remaining absolute worktree entrypoint.
+1. Remove the exact target entry from Pi settings and verify that no other
+   entry changed.
+2. Run `git -C <repo> worktree remove <exact-target-worktree>` without force,
+   if a worktree exists.
+3. Run `git -C <repo> branch -D extension/<name>`, if a branch exists.
+4. Run the focused loader check with each remaining absolute entrypoint.
 
-The preflight worktree and settings invariants prevent `deactivate` from creating
-missing worktrees or normalizing unrelated settings. Synchronization defers a
-sibling that is behind `main` and holds uncommitted tracked changes. Leave that
-worktree unchanged. Report an actual synchronization failure, not a deferral.
-Never delete a remote extension branch without separate explicit authority.
+Leave other worktrees and unrelated settings entries unchanged. Never delete a
+remote extension branch without separate explicit authority.
 
 ## Failure and completion
 

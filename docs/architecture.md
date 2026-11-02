@@ -85,8 +85,7 @@ and its documented `PI_*` environment overrides. See the
    `sourceInfo.path`, its entrypoint. An
    extension that registers no tool or command has no registry record; use
    `pi list` for the configured sources.
-   - On a machine that routes extensions through worktrees, run
-     `npm run worktrees -- deactivate <name>`. `activate` restores it. See
+   - Remove the extension's package entry from Pi settings. See
      [Pi configuration](conventions/worktrees.md#pi-configuration).
    - For a package install, disable the extension resource in `pi config`, or
      add an exclusion such as `"-extensions/<name>/index.ts"` to the package
@@ -116,7 +115,7 @@ The harness is a Pi package. `package.json` declares the resources under the
 - `npm run warmup:jiti` loads the extension entrypoints named in the manifest's
   script through `pi --help --offline` to warm jiti's transpilation cache. It is
   an optional operator step, not a build or successful-load check. Use the
-  [worktree entrypoint check](conventions/worktrees.md#entrypoint-load-checks)
+  [entrypoint load check](conventions/worktrees.md#checks)
   to detect extension load errors.
 - Extensions are TypeScript sources that Pi loads through jiti. There is no
   build step. Pi requires Node 22.19 or newer; Node runs the direct TypeScript
@@ -270,7 +269,7 @@ documented surface:
 - [Evaluation suites](conventions/evaluation-suites.md): package interfaces
   available to colocated suites and deterministic tests.
 - [Prompts](conventions/prompts.md): shared template ownership and commands.
-- [Worktrees](conventions/worktrees.md): development, routing, and promotion.
+- [Development workflow](conventions/worktrees.md): branches, checks, push, routing.
 
 New cross-extension behavior belongs here before it ships: write the
 contract, name the producer and consumers, and keep it stable.

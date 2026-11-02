@@ -69,7 +69,7 @@ const requestFields:Record<string,string[]>={
     'trust.inspect':['cwd'],'trust.set':['cwd','decision'],'resources.inspect':['cwd'],'packages.list':['cwd'],'packages.install':['cwd','source','local'],'packages.remove':['cwd','source','local'],'packages.update':['cwd','source'],
     'sessions.create':['requestId','cwd','name','model','thinkingLevel','preset'],'sessions.source':['identity'],'sessions.list':[],
     'lifecycle.status':[],'lifecycle.start':[],'lifecycle.stop':[],'release.status':[],'release.stage':[],'release.switch':['releaseId'],'release.rollback':[],
-    'evolution.status':[],'evolution.sync':['sourceOnly'],'evolution.promotion-plan':['slices','full'],'evolution.promote-local':['slices','full'],'upstream.status':[],'upstream.update':[],
+    'evolution.status':[],'upstream.status':[],'upstream.update':[],
 };
 function validateConfigurationRequest(op:string,r:Record<string,unknown>) {
     if(!['runtime','pi'].includes(String(r.target)))throw new RuntimeError('invalid_request','The configuration target is invalid.');
@@ -90,12 +90,6 @@ function validateDomainRequest(op:string,r:Record<string,unknown>) {
   if(r.local!==undefined&&typeof r.local!=='boolean'||r.full!==undefined&&typeof r.full!=='boolean')throw new RuntimeError('invalid_request','The flag is invalid.');
   if(op==='release.switch'&&!/^[a-f0-9]{64}$/.test(String(r.releaseId)))throw new RuntimeError('invalid_request','The release identity is invalid.');
 }
-function validateEvolutionRequest(op:string,r:Record<string,unknown>) {
-  if(op==='evolution.sync'&&r.sourceOnly!==true)throw new RuntimeError('invalid_request','Source-only synchronisation is required.');
-  if(op==='evolution.promotion-plan'||op==='evolution.promote-local') {
-    if(!Array.isArray(r.slices)||!r.slices.length||r.slices.length>64||r.slices.some(item=>typeof item!=='string'||!/^[A-Za-z0-9_./-]{1,128}$/.test(item)))throw new RuntimeError('invalid_request','The slice selection is invalid.');
-  }
-}
 function validateSessionRequest(op:string,r:Record<string,unknown>) {
   for(const [key,max]of Object.entries({requestId:1024,name:256,model:512,thinkingLevel:512,preset:512}))if(r[key]!==undefined)text(r[key],key,max);
   if(op==='sessions.create'&&(!r.requestId||!r.cwd))throw new RuntimeError('invalid_request','Creation needs a request identity and working folder.');
@@ -108,9 +102,9 @@ export function readRequest(input:unknown):RuntimeOperation {
   for(const key of ['provider','flowId','promptId','cwd','source','releaseId','requestId','identity','name','model','thinkingLevel','preset'])if(r[key]!==undefined)text(r[key],key);
   if(op.startsWith('config.'))validateConfigurationRequest(op,r);
   if(op.startsWith('auth.'))validateAuthenticationRequest(op,r);
-  validateDomainRequest(op,r);validateEvolutionRequest(op,r);validateSessionRequest(op,r);
+  validateDomainRequest(op,r);validateSessionRequest(op,r);
   return r as RuntimeOperation;
 }
 export function isReadOperation(request:RuntimeOperation) {
-  return ['health','diagnostics','config.inspect','config.validate','auth.status','auth.poll','trust.inspect','resources.inspect','packages.list','lifecycle.status','sessions.source','sessions.list','release.status','evolution.status','evolution.promotion-plan','upstream.status'].includes(request.operation);
+  return ['health','diagnostics','config.inspect','config.validate','auth.status','auth.poll','trust.inspect','resources.inspect','packages.list','lifecycle.status','sessions.source','sessions.list','release.status','evolution.status','upstream.status'].includes(request.operation);
 }

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { getPackageDir, VERSION } from "@earendil-works/pi-coding-agent";
-import { cleanGitEnvironment } from "../scripts/worktrees.mts";
+import { cleanGitEnvironment } from "./git-environment.mts";
 
 const execute = promisify(execFile);
 const coveragePath = "docs/pi-durable-harness.md";

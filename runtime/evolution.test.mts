@@ -1,58 +1,38 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { cleanGitEnvironment } from "../scripts/worktrees.mts";
+import { cleanGitEnvironment } from "./git-environment.mts";
 import {
 	dispatchEvolutionOperation,
 	evolutionCommand,
-	evolutionEnvironment,
 	type EvolutionOperation,
 	runEvolutionCommand,
 } from "./evolution.mts";
 import { inspectPublishedUpstream, inspectUpstream } from "./upstream.mts";
 
-test("evolution exposes fixed local actions without publication or gate bypass", () => {
-	const command = evolutionCommand({
-		operation: "evolution.promote-local",
-		slices: ["feature/runtime", "extension/demo"],
-		full: true,
-	});
-	assert.ok(command);
-	assert.ok(command.includes("--no-push"));
-	assert.ok(command.includes("--sync-selected"));
-	assert.ok(command.includes("--full"));
-	assert.ok(!command.includes("--no-gates"));
-	assert.ok(evolutionCommand({ operation: "evolution.promotion-plan", slices: ["demo"] })?.includes("--dry-run"));
+test("evolution exposes only fixed upstream and status actions", () => {
 	assert.deepEqual(evolutionCommand({ operation: "upstream.update" }), ["pi", "update"]);
-	assert.throws(() => evolutionCommand({ operation: "evolution.promote-local", slices: ["--no-gates"] }));
-	assert.throws(() => evolutionCommand({ operation: "evolution.promote-local", slices: [] }));
-	assert.throws(() => evolutionCommand({ operation: "evolution.promote-local", slices: ["demo", "demo"] }));
-	assert.throws(() =>
-		evolutionCommand({ operation: "evolution.sync", sourceOnly: false } as unknown as EvolutionOperation),
-	);
+	assert.equal(evolutionCommand({ operation: "evolution.status" }), null);
 	assert.throws(() =>
 		evolutionCommand({ operation: "shell", command: "echo denied" } as unknown as EvolutionOperation),
 	);
 });
 
-test("command output is bounded and a gate environment override does not cross the adapter", async () => {
+test("command output is bounded", async () => {
 	const result = await runEvolutionCommand(
 		process.cwd(),
 		[
 			process.execPath,
 			"-e",
-			"process.stdout.write('x'.repeat(100000));process.stderr.write(String(process.env.PI_PROMOTE_GATES))",
+			"process.stdout.write('x'.repeat(100000))",
 		],
-		{ env: { ...process.env, PI_PROMOTE_GATES: "unsafe" } },
 	);
 	assert.equal(result.ok, true);
 	assert.equal(result.truncated, true);
 	assert.equal(Buffer.byteLength(result.stdout), 8_000);
-	assert.equal(result.stderr, "undefined");
 	assert.equal(result.uncertain, false);
 });
 
@@ -102,50 +82,6 @@ test("published upstream coverage ignores unpublished edits and does not advance
 	const status = await dispatchEvolutionOperation({ cwd: root }, { operation: "evolution.status" });
 	assert.ok("upstream" in status);
 	assert.equal(git(["status", "--porcelain"]), "");
-});
-
-test("relocated worktree script uses the canonical selected repository, not ambient roots", async (t) => {
-	const root = realpathSync(mkdtempSync(join(tmpdir(), "evolution-relocated-")));
-	t.after(() => rmSync(root, { recursive: true, force: true }));
-	const repo = join(root, "repo");
-	const tree = join(`${repo}.worktrees`, "demo");
-	const env = {
-		...cleanGitEnvironment(process.env),
-		GIT_CONFIG_GLOBAL: "/dev/null",
-		GIT_CONFIG_NOSYSTEM: "1",
-		GIT_AUTHOR_NAME: "Fixture",
-		GIT_AUTHOR_EMAIL: "fixture@example.com",
-		GIT_COMMITTER_NAME: "Fixture",
-		GIT_COMMITTER_EMAIL: "fixture@example.com",
-	};
-	const git = (args: string[], cwd = repo) =>
-		execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], { cwd, env, encoding: "utf8" }).trim();
-	mkdirSync(join(repo, "extensions"), { recursive: true });
-	writeFileSync(join(repo, "code.txt"), "base\n");
-	git(["init", "-q", "-b", "main"]);
-	git(["add", "."]);
-	git(["commit", "-q", "-m", "Initial source"]);
-	git(["worktree", "add", "-q", "-b", "feature/demo", tree]);
-	writeFileSync(join(repo, "code.txt"), "updated\n");
-	git(["commit", "-q", "-am", "Update main"]);
-	const snapshot = join(root, "sealed", "scripts", "worktrees.mts");
-	mkdirSync(join(root, "sealed", "scripts"), { recursive: true });
-	writeFileSync(snapshot, readFileSync(fileURLToPath(new URL("../scripts/worktrees.mts", import.meta.url))));
-	for (const ambient of [undefined, join(root, "wrong-repository")]) {
-		const bound = evolutionEnvironment(tree, {
-			...env,
-			PI_HARNESS_ROOT: ambient,
-			PI_WORKTREE_ROOT: join(root, "wrong-trees"),
-		});
-		assert.equal(bound.PI_HARNESS_ROOT, repo);
-		assert.equal(bound.PI_WORKTREE_ROOT, `${repo}.worktrees`);
-		const result = await runEvolutionCommand(tree, [process.execPath, snapshot, "sync", "--current", "--source-only"], {
-			env: bound,
-			timeoutMs: 5000,
-		});
-		assert.equal(result.ok, true, result.stderr);
-	}
-	assert.equal(readFileSync(join(tree, "code.txt"), "utf8"), "updated\n");
 });
 
 test("publication checks retain defining URLs and fail closed on malformed or oversized metadata", async () => {

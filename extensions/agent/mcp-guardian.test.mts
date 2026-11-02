@@ -54,7 +54,12 @@ it("kills an owned macOS process group, including its descendant, after lifeline
 	const deadline = Date.now() + 3000;
 	while (!gone && Date.now() < deadline) {
 		try { process.kill(-group, 0); }
-		catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") gone = true; else throw error; }
+		catch (error) {
+			const code = (error as NodeJS.ErrnoException).code;
+			if (code === "ESRCH") gone = true;
+			// EPERM does not establish that the process group disappeared.
+			else if (code !== "EPERM") throw error;
+		}
 		if (!gone) await new Promise<void>((resolve) => setImmediate(resolve));
 	}
 	assert.equal(gone, true, "the entire owned process group disappeared");

@@ -65,11 +65,9 @@ collisions and retains the first loaded match; a duplicate local file is not a
 reliable override contract. Select the intended resource explicitly rather
 than depending on load order.
 
-Edit each shared template in its owning prompt's persistent worktree. In the managed
-worktree layout, the configured package continues to load the main checkout
-until promotion. Other installations load their configured package source.
-A direct worktree load verifies a candidate, not activation. See [worktrees.md](worktrees.md) for the
-promotion and routing contract.
+Pi loads templates from the configured package source, normally the main
+checkout. A template edited on a branch reaches Pi after it lands on `main`.
+See [worktrees.md](worktrees.md) for the workflow and routing.
 
 Before a template change:
 
@@ -82,5 +80,5 @@ Before a template change:
 4. Keep behavioral evidence separate from discovery results. Lexical checks do
    not establish meaning preservation or usefulness. Maintained model evaluations
    use the [evaluation application](../../evals/README.md) and its approval gate.
-5. Run the repository gates and review portability before promotion. Keep
+5. Run the relevant checks and review portability before pushing. Keep
    evaluation outputs and local configuration outside the package.

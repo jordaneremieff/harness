@@ -40,7 +40,7 @@ Requests and configuration documents have a byte bound. Responses have a separat
 | Native placement | `sessions.create`, `sessions.list`, `sessions.source`; runtime owns source placement, Agent owns the conversation |
 | UI lifecycle | `lifecycle.status`, `lifecycle.start`, `lifecycle.stop`; existing UI supervisor and owner protocol |
 | Releases | `release.status`, `release.stage`, `release.switch`, `release.rollback`; existing release CLI |
-| Maintenance | `evolution.status`, `evolution.sync`, `evolution.promotion-plan`, `evolution.promote-local`, `upstream.status`, `upstream.update`; fixed existing commands |
+| Maintenance | `evolution.status`, `upstream.status`, `upstream.update`; fixed existing commands |
 
 Successful responses are `{ok:true,value}`. Errors contain `code`, `message` and `uncertain`. When `uncertain` is true, inspect the owning domain before another mutation. A command timeout or a lost receipt does not authorise replay. Different resource domains remain available during long maintenance. A conflicting mutation receives `busy`.
 
@@ -101,7 +101,7 @@ For the ordinary-root transition, setup optionally supplies the exact original `
 
 After its listeners become available, the runtime supervises Agent's `namespace-recovery.ts` through Chord, once per retained managed root. Agent's existing catalogue and native scheduler recover unfinished work without a dummy primary or a second task index. A failed recovery owner does not prevent configuration, authentication or independent namespace recovery. Diagnostics distinguish process readiness from Agent's per-session recovery results. Recovery-owner restarts do not replay runtime management mutations.
 
-`--restore-ui` also starts the main application through its existing launcher when stopped. Release controls delegate to the retained sealed CLI. `release.stage` selects the development checkout's physical path as its source. Switch and rollback retain the existing release owner's last-good and session-preservation rules. Maintenance uses the current [worktree procedure](../docs/conventions/worktrees.md); local promotion does not grant remote publication authority.
+`--restore-ui` also starts the main application through its existing launcher when stopped. Release controls delegate to the retained sealed CLI. `release.stage` selects the development checkout's physical path as its source. Switch and rollback retain the existing release owner's last-good and session-preservation rules. Source changes follow the [development workflow](../docs/conventions/worktrees.md).
 
 ## macOS restoration
 

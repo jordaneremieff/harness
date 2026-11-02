@@ -18,7 +18,7 @@ test('a long maintenance command does not block account responses, configuration
   const service=new ManagementService({agentDir:root,stateDir:join(root,'state'),cwd:root,sourceRoot:root,uiStateDir:join(root,'ui'),env:{}},{authentication,evolution:async()=>new Promise(resolve=>{finish=resolve;})});t.after(()=>service.close());
   service.domains.sessions.create=async()=>({protocol:1,state:'completed',identity:'native-test',root,name:null,sourceRoot:root,packageDir:root});
   const held=service.call(wrap({operation:'upstream.update'}));
-  const conflict=await service.call(wrap({operation:'evolution.sync',sourceOnly:true}));assert.equal(conflict.ok,false);if(!conflict.ok)assert.equal(conflict.error.code,'busy');
+  const conflict=await service.call(wrap({operation:'upstream.update'}));assert.equal(conflict.ok,false);if(!conflict.ok)assert.equal(conflict.error.code,'busy');
   const login=await service.call(wrap({operation:'auth.login',provider:'fake',type:'api_key'}));assert.equal(login.ok,true);await started;
   const flowId=(login as {ok:true;value:{flowId:string}}).value.flowId;
   const flow=authentication.poll(flowId);assert.ok(flow.prompt);

@@ -1,13 +1,9 @@
 import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { cleanGitEnvironment, mainCheckoutRoot, parseSliceReference } from "../scripts/worktrees.mts";
+import { cleanGitEnvironment } from "./git-environment.mts";
 import { inspectPublishedUpstream, inspectUpstream } from "./upstream.mts";
 
 export type EvolutionOperation =
 	| { operation: "evolution.status" }
-	| { operation: "evolution.sync"; sourceOnly: true }
-	| { operation: "evolution.promotion-plan" | "evolution.promote-local"; slices: string[]; full?: boolean }
 	| { operation: "upstream.status" }
 	| { operation: "upstream.update" };
 
@@ -23,7 +19,6 @@ export interface EvolutionCommandResult {
 	uncertain: boolean;
 }
 
-const worktreeScript = fileURLToPath(new URL("../scripts/worktrees.mts", import.meta.url));
 const outputLimit = 8_000;
 
 /** Bound command output and time; never retry after timeout or transport loss. */
@@ -34,7 +29,6 @@ export function runEvolutionCommand(
 ): Promise<EvolutionCommandResult> {
 	return new Promise((resolve) => {
 		const env = cleanGitEnvironment(options.env ?? process.env);
-		delete env.PI_PROMOTE_GATES;
 		const child = spawn(command[0], command.slice(1), { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
 		let stdout = Buffer.alloc(0);
 		let stderr = Buffer.alloc(0);
@@ -86,29 +80,6 @@ export function runEvolutionCommand(
 	});
 }
 
-function promotionCommand(request: Extract<EvolutionOperation, { slices: string[] }>): string[] {
-	if (!Array.isArray(request.slices) || request.slices.length < 1 || request.slices.length > 32) {
-		throw new Error("Select between 1 and 32 slices.");
-	}
-	if (request.full !== undefined && typeof request.full !== "boolean") throw new Error("full must be boolean.");
-	for (const slice of request.slices) {
-		if (typeof slice !== "string" || slice.length > 160) throw new Error("Invalid slice reference.");
-		parseSliceReference(slice);
-	}
-	if (new Set(request.slices).size !== request.slices.length) throw new Error("Duplicate slice reference.");
-	return [
-		process.execPath,
-		worktreeScript,
-		"promote",
-		...request.slices,
-		"--no-push",
-		"--sync-selected",
-		"--json",
-		...(request.operation === "evolution.promotion-plan" ? ["--dry-run"] : []),
-		...(request.full ? ["--full"] : []),
-	];
-}
-
 /** Validate untyped HTTP/model input before constructing any process arguments. */
 export function evolutionCommand(request: EvolutionOperation): string[] | null {
 	if (!request || typeof request !== "object") throw new Error("Invalid evolution operation.");
@@ -116,12 +87,6 @@ export function evolutionCommand(request: EvolutionOperation): string[] | null {
 		case "evolution.status":
 		case "upstream.status":
 			return null;
-		case "evolution.sync":
-			if (request.sourceOnly !== true) throw new Error("Evolution sync requires sourceOnly: true.");
-			return [process.execPath, worktreeScript, "sync", "--current", "--source-only"];
-		case "evolution.promotion-plan":
-		case "evolution.promote-local":
-			return promotionCommand(request);
 		case "upstream.update":
 			return ["pi", "update"];
 		default:
@@ -145,18 +110,9 @@ export async function inspectEvolution(options: { cwd: string }) {
 		owners: {
 			development: "docs/conventions/worktrees.md",
 			releaseIntake: "extensions/evo/README.md#release-intake",
-			acceptance: "docs/agent-delivery.md#deliver-and-report",
 		},
-		actions: ["evolution.sync", "evolution.promotion-plan", "evolution.promote-local", "upstream.update"],
-		publication: "separate-authority-required",
-		semanticReview: "required",
+		actions: ["upstream.update"],
 	};
-}
-
-/** Bind maintenance to the server-selected checkout, independent of the sealed script location. */
-export function evolutionEnvironment(cwd: string, environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-	const root = realpathSync(mainCheckoutRoot(realpathSync(cwd)));
-	return { ...cleanGitEnvironment(environment), PI_HARNESS_ROOT: root, PI_WORKTREE_ROOT: `${root}.worktrees` };
 }
 
 export async function dispatchEvolutionOperation(options: { cwd: string }, request: EvolutionOperation) {
@@ -167,5 +123,5 @@ export async function dispatchEvolutionOperation(options: { cwd: string }, reque
 	}
 	if (request.operation === "evolution.status") return inspectEvolution(options);
 	if (command === null) throw new Error("Operation has no command.");
-	return runEvolutionCommand(options.cwd, command, { env: evolutionEnvironment(options.cwd) });
+	return runEvolutionCommand(options.cwd, command, { env: cleanGitEnvironment(process.env) });
 }

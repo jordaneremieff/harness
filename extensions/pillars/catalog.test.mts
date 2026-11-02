@@ -39,40 +39,26 @@ function withCorpus(path: string | undefined): () => void {
 	};
 }
 
-test("corpus root defaults to the package sibling and honors PI_PILLARS_CORPUS", () => {
-	const restore = withCorpus(undefined);
-	try {
-		assert.equal(corpusRoot(), defaultCorpusRoot());
-		assert.ok(defaultCorpusRoot().startsWith("/"));
-		assert.ok(defaultCorpusRoot().endsWith("/pillars"));
-		const restoreEmpty = withCorpus("");
-		assert.equal(corpusRoot(), defaultCorpusRoot(), "empty override falls back to the default");
-		restoreEmpty();
-		const override = "/synthetic/corpus";
-		const restoreOverride = withCorpus(override);
-		assert.equal(corpusRoot(), override);
-		restoreOverride();
-		const restoreRelative = withCorpus("pillars");
-		assert.equal(corpusRoot(), defaultCorpusRoot(), "a rejected relative override uses the package default");
-		restoreRelative();
-		assert.equal(corpusRoot(), defaultCorpusRoot());
-	} finally {
-		restore();
-	}
+test("corpus root defaults to the package sibling and honors PI_PILLARS_CORPUS", async () => {
+	await using f = await corpus();
+	const root = (value?: string) => corpusRoot({ agentDir: f.root, env: { PI_PILLARS_CORPUS: value } });
+	assert.equal(root(), defaultCorpusRoot());
+	assert.ok(defaultCorpusRoot().startsWith("/"));
+	assert.ok(defaultCorpusRoot().endsWith("/pillars"));
+	assert.equal(root(""), defaultCorpusRoot(), "empty override falls back to the default");
+	assert.equal(root("/synthetic/corpus"), "/synthetic/corpus");
+	assert.equal(root("pillars"), defaultCorpusRoot(), "a rejected relative override uses the package default");
+	assert.equal(root(), defaultCorpusRoot());
 });
 
 test("default resolution loads the shipped worktree corpus without a skill resource", async () => {
-	const restore = withCorpus(undefined);
-	try {
-		const catalog = await loadCatalog();
-		const ids = catalog.resources.map((resource) => resource.resourceId);
-		assert.ok(ids.includes("inventory"));
-		assert.ok(ids.includes("governance"));
-		assert.ok(catalog.resources.some((resource) => resource.resourceClass === "entry"));
-		assert.ok(!ids.includes("skill"));
-	} finally {
-		restore();
-	}
+	await using f = await corpus();
+	const catalog = await loadCatalog(undefined, { agentDir: f.root, env: {} });
+	const ids = catalog.resources.map((resource) => resource.resourceId);
+	assert.ok(ids.includes("inventory"));
+	assert.ok(ids.includes("governance"));
+	assert.ok(catalog.resources.some((resource) => resource.resourceClass === "entry"));
+	assert.ok(!ids.includes("skill"));
 });
 
 test("env override follows canonical inventory targets and resolves resource paths", async () => {

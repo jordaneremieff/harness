@@ -141,8 +141,8 @@ remote Git refs, performs cumulative intake, or writes the declaration.
 Complete release intake remains with [Evo](../extensions/evo/README.md#release-intake).
 The targeted checks above establish only those contracts. They leave cumulative
 coverage unchanged until the coordinator accepts and publishes the complete
-release interval. [Worktree promotion](conventions/worktrees.md) owns composition,
-gates and publication hygiene; the runtime adds no scheduler, release ledger or
+release interval. The [development workflow](conventions/worktrees.md) owns
+checks and publication hygiene; the runtime adds no scheduler, release ledger or
 parallel task store.
 
 ## Upstream main: next adoption boundary

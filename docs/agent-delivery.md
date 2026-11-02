@@ -400,8 +400,8 @@ Required checks still bind under the repository's single completion policy and
 final-verification owner. Reuse evidence that remains applicable to the composed
 candidate and execution conditions; check invalidated evidence and uncovered
 interactions. A new worker, review, commit or release milestone alone does not
-justify another complete run. Normal promotion supplies its first mandatory final
-gate; do not replace it with routine gate bypasses. Tests, counts, source existence,
+justify another complete run. Run the checks the change can break once, then
+commit and push. Tests, counts, source existence,
 generated text and worker summaries do not replace required outcome evidence.
 Use proportionate evidence that reaches the actual claim, not a new framework,
 recurring journal or operator ceremony. An unavailable necessary layer blocks its
@@ -473,9 +473,8 @@ trust, required checks, and review still bind.
 Before release, verify the established remote main and accepted resource scope
 from current Git evidence. Inspect accepted local commits and the complete
 outgoing diff. Establish confidence through applicable evidence, substantive
-review and the repository's one final verification policy. Use normal promotion
-with its gates; do not pre-run the complete gate solely because publication is
-next. Prior publication is not a prerequisite. Exclude unrelated commits and resources. If a candidate commit
+review and the repository's verification rules. Run the checks the change can
+break, then push with plain Git. Prior publication is not a prerequisite. Exclude unrelated commits and resources. If a candidate commit
 already appears on remote main, report that state without replaying it. Complete
 required activation through the repository procedure and preserve unrelated
 configured activation and settings.

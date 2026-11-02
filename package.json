@@ -12,7 +12,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=1 --experimental-test-coverage \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"ui/*/*.test.mts\" \"transport/*.test.mts\" \"runtime/*.test.mts\"",
+    "test": "node --test --test-concurrency=4 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"ui/*/*.test.mts\" \"transport/*.test.mts\" \"runtime/*.test.mts\"",
+    "test:coverage": "npm test -- --experimental-test-coverage",
     "evals": "node evals/cli.mts",
     "lint": "biome lint --error-on-warnings .",
     "format": "biome format --error-on-warnings .",
@@ -23,10 +24,7 @@
     "ui:start": "node ui/server/main.mts",
     "runtime": "node runtime/cli.mts",
     "check": "node scripts/check-slices.mts",
-    "worktrees": "node scripts/worktrees.mts",
-    "worktrees:sync": "node scripts/worktrees.mts sync",
-    "worktrees:status": "node scripts/worktrees.mts status",
-    "worktrees:hooks": "node scripts/worktrees.mts install-hooks",
+    "hooks": "node scripts/publication-scan.mts --install",
     "warmup:jiti": "pi --help --offline --extension extensions/brave/index.ts --extension extensions/statusline/index.ts --extension extensions/clipboard/index.ts --extension extensions/stash/index.ts"
   },
   "peerDependencies": {

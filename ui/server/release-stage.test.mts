@@ -104,12 +104,13 @@ test('staging seals emitted browser modules built after the committed source',as
 });
 test('the packaged runtime stages a later release from its canonical development checkout',async context=>{
   const f=await sourceFixture(context),checkout=fileURLToPath(new URL('../../',import.meta.url));
-  for(const name of ['ui/server','ui/rpc','ui/agents','ui/shared','ui/cli','transport','runtime','extensions/agent','scripts','ui/dist','node_modules']) {
+  for(const name of ['ui/server','ui/rpc','ui/agents','ui/shared','ui/cli','transport','runtime','extensions/agent','scripts','node_modules']) {
     for(const entry of await inventory(join(checkout,name),name==='node_modules',name==='node_modules'?RELEASE_LIMITS.bytes:128*1024*1024,name==='node_modules'?RELEASE_LIMITS.entries:4096)) {
       if(entry.directory||entry.path.endsWith('.test.mts')||entry.path.endsWith('.test.ts'))continue;
       const path=join(name,entry.path);await mkdir(join(f.source,path,'..'),{recursive:true});await copyFile(join(checkout,path),join(f.source,path));
     }
   }
+  await run(process.execPath,[join(checkout,'node_modules/typescript/bin/tsc'),'-p',join(checkout,'ui/web/tsconfig.json'),'--outDir',join(f.source,'ui/dist')]);
   await writeFile(join(f.source,'package.json'),JSON.stringify({name:'fixture',type:'module',license:'MIT'}));await writeFile(join(f.source,'LICENSE'),await readFile(join(checkout,'LICENSE')));
   await git(f.source,'add','--all');await git(f.source,'commit','--quiet','-m','Package release implementation');
   const first=JSON.parse((await f.stage()).stdout) as {directory:string;manifest:{id:string}};
