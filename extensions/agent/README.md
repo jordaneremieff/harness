@@ -70,7 +70,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | Tool | Effect |
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
-| `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries have no `agent_await` tool and use one Durable lead for answer-bearing fan-out. |
+| `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries have no `agent_await` tool; they receive each answer through normal delivery. Waiting is a capability, not a staffing rule. |
 | `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; the result reports `live: false`. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
@@ -1769,7 +1769,7 @@ credentials are omitted with safe counts; ordinary prose and non-secret identity
 references remain readable. Compaction and context-edit records remain raw
 locators, not a reconstruction of the model's effective context.
 
-For quiet coordination and Durable-lead fan-out, see
+For quiet coordination and composed delegated results, see
 [agent delivery](../../docs/agent-delivery.md#coordinate-with-related-efforts).
 
 The ordinary manager interface changes independently of the primary delivery

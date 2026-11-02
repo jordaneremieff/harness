@@ -3,7 +3,8 @@
 This package-level workflow connects an invocation such as `/evo` to registered
 full Pi sessions. It owns outcome development and coordination, not a runtime
 adapter. The invoking session owns selection, synthesis, acceptance, and the
-integrated operator result. Participating extensions remain independently
+integrated operator result, and remains free to investigate, implement, and
+verify substantive work itself. Participating extensions remain independently
 loadable; use their public controls, never sibling imports, private stores, or
 parsers for sibling-formatted output.
 
@@ -195,12 +196,13 @@ starts or releases to every related primary. Each direct model-origin notice
 can start a primary turn. Intent and contributor statements are declarations,
 not locks.
 
-An ordinary primary routes answer-bearing fan-out through one Durable lead. The
-lead dispatches workers, waits natively with their exact `agent_await` references,
-and returns one composed answer. The primary stays responsive and receives that
-answer through normal delivery. Ordinary primaries do not support native await;
-separate direct lanes also produce separate result deliveries. Use native lead
-composition rather than a primary-side result buffer.
+Ordinary primaries have no native await. Each delegated answer reaches the
+primary through normal delivery while it stays responsive; separate tasks
+produce separate deliveries, which the primary integrates as they arrive. A
+native Durable agent can wait on exact `agent_await` references and return one
+composed answer. When one composed result serves the work, that agent remains
+free to perform the main work itself and use assistance selectively. Neither
+capability prescribes staffing. Do not build a primary-side result buffer.
 
 Each coordinator controls only its own workers, checkouts, and branches. Never
 control another coordinator's resources or promote its unpublished commits.
@@ -216,12 +218,15 @@ content and operation outcomes, correction delivery, and native context/session
 control. Check active availability, not just configured presence; use no frozen
 tool list or private lifecycle vocabulary.
 
-Use full Pi sessions for implementation, with the selected workspace's
+Choose the arrangement by the task and revise it as the work develops. The
+invoking session can investigate, implement, and verify substantive work
+itself, collaborate, delegate, or use a dedicated coordinator. When other
+agents implement, use full Pi sessions with the selected workspace's
 resources, instructions, tools, extensions, trust decisions, and model
 configuration. A headless host is not a TUI-parity claim. A missing capability,
 failed bootstrap, or rejected trust decision is explicit. Do not silently
-substitute a reduced worker loop, separate implementation backend, or local-only
-implementation and call it full-session delivery.
+substitute a reduced worker loop or separate implementation backend for a full
+session and call it full-session delivery.
 
 Where collaboration helps, invite a full-session collaborator to develop or
 challenge the use path or its decisive uncertainty while the approach remains
@@ -233,9 +238,11 @@ No mandatory council, fork, roster, or candidate count applies. Parallelize
 independent investigation and review where useful. Auxiliary helpers remain
 distinct from full-session implementation.
 
-Use the current [peer thread surface](../extensions/agent/README.md#peer-threads)
-to discover related work and keep purpose, authority source, restrictions,
-acceptance, and integration attached to the exchange. Participants choose and
+Use a [peer thread](../extensions/agent/README.md#peer-threads) when evolving
+shared facts, decisions, or coordination need one retained place; it keeps
+purpose, authority source, restrictions, acceptance, and integration attached to
+the exchange. Otherwise, reuse sufficient context or direct messages. List
+existing threads to discover related work. Participants choose and
 revise their contributions. A frame remains an attributed claim; challenge it
 against the original source rather than treat peer agreement as verification.
 A revised frame or carried decision preserves the operator's restrictions.
@@ -248,7 +255,7 @@ replies. Leave or close an arrangement that no longer serves the work. The
 operator observes the exchange through the dashboard and retains the ordinary
 primary as the main conversation.
 
-Each execution contract carries:
+Give each assignment what its owner needs to judge and deliver it, drawn from:
 
 - the purpose, selected use path, expected benefit, known facts, uncertainties,
   and alternatives needed to judge the approach;
@@ -257,20 +264,26 @@ Each execution contract carries:
 - acceptance evidence, required checks, and the terminal end condition; and
 - integration ownership, dependencies on other units, and the result consumer.
 
-Separate binding operator decisions from revisable agent-authored recipes.
-Execution owners retain room to develop the approach within scope. A normal
-self-contained terminal response is a valid full-session result; do not impose
-an auxiliary worker's submission protocol. Keep concurrent edit ownership
-disjoint. One coordinator serializes shared worktree synchronization,
-integration, promotion, push, and activation.
+A direct task message is sufficient; no contract file or template is required.
+Reuse context the owner already has instead of repeating it. Separate binding
+operator decisions from revisable agent-authored recipes. Execution owners
+retain room to develop the approach within scope, raise discoveries, propose a
+changed division of work, and exchange findings directly with relevant peers. A
+normal self-contained terminal response is a valid full-session result; do not
+impose an auxiliary worker's submission protocol. Keep concurrent edits
+disjoint. An owner's area follows the work, such as one behaviour with its
+implementation, tests, and documentation, not a file count. One coordinator
+serializes shared worktree synchronization, integration, promotion, push, and
+activation; that coordinator can also do substantive work.
 
 Reuse a session when its retained expertise, context, and ownership serve the
 current task. Check its current operation and preserve the current requester and
 reply route before admission. For recurring concerns such as session history,
 resolve an existing expert before creating another. Use a fresh session for
 unrelated work, necessary independent judgment, conflicting ownership, or context
-that no longer serves the task. State the reason for the choice, not a ritual
-justification for reuse. Keep corrections, review repairs, and native compaction
+that no longer serves the task. Explain the session choice only when it affects
+authority, independence, concurrent ownership, or a decision the operator needs.
+Keep corrections, review repairs, and native compaction
 in that session while its task is open.
 
 ## Accept the outcome, not just the changes

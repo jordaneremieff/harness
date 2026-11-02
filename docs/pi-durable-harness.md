@@ -630,7 +630,8 @@ Replay-safe creation and reporting reuse native request IDs.
 
 The Agent slice returns exact admitted result references and holds native
 `agent_await` requests without provider calls merely to wait. An ordinary primary
-remains responsive through one Durable lead. Result settlement is not acceptance.
+has no native await; it remains responsive and receives results through normal
+delivery. Result settlement is not acceptance.
 The [Agent README](../extensions/agent/README.md#controls) owns exact result,
 placement, release, and delivery semantics. Native task graph cycle checks cover
 waits and held owners; they do not prove complete cross-host graph coverage.

@@ -13,7 +13,7 @@ const HARNESS_ROOT = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
 /** Command text shared by the ordinary command and the Durable contribution. */
 export const EVO_COMMAND_DESCRIPTION =
-	"Coordinate autonomous harness improvement through full Pi sessions; optional trailing text directs the run";
+	"Deliver autonomous harness improvement, directly or with full Pi sessions; optional trailing text directs the run";
 
 /** Structural copy of the package-level Durable contribution contract. */
 export interface DurableContribution {

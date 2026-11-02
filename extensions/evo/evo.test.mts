@@ -307,10 +307,15 @@ for (const direction of [undefined, "Improve ordinary document tasks; do not pub
 				"reuse before repeated briefing",
 				/Reuse relevant expertise instead of repeating a corpus brief; create the expert only when none exists/,
 			],
-			["full-session implementation", /registered full Pi agent controls and use full Pi sessions for implementation/],
+			[
+				"owner keeps substantive work",
+				/active session owns the integrated outcome and remains free to investigate, implement, and verify substantive work itself/,
+			],
+			["arrangement chosen by task", /Choose direct work, collaboration, delegation, or a dedicated coordinator by the task/],
+			["full-session delegated implementation", /When other agents implement, discover the registered full Pi agent controls and use full Pi sessions/],
 			[
 				"no silent reduced replacement",
-				/unavailable execution capability is an exact blocker.*not permission to substitute a reduced backend/,
+				/unavailable execution capability that the chosen arrangement needs is an exact blocker, not permission to substitute a reduced backend/,
 			],
 			[
 				"outcome continuity",
@@ -502,8 +507,12 @@ test("collaboration preserves the use path and accepts observed task improvement
 		],
 		["availability is current", /Check active availability, not just configured presence/],
 		[
+			"arrangement remains a judgment",
+			/Choose the arrangement by the task and revise it as the work develops. The invoking session can investigate, implement, and verify substantive work itself, collaborate, delegate, or use a dedicated coordinator/,
+		],
+		[
 			"full implementation sessions",
-			/full Pi sessions for implementation.*resources, instructions, tools, extensions, trust decisions, and model configuration/,
+			/When other agents implement, use full Pi sessions with the selected workspace's resources, instructions, tools, extensions, trust decisions, and model configuration/,
 		],
 		[
 			"early shared development",
@@ -511,12 +520,21 @@ test("collaboration preserves the use path and accepts observed task improvement
 		],
 		["selection-changing discoveries", /Share discoveries that change selection or another task's question/],
 		["integration and peer judgment", /coordinator owns the integrated outcome; peers revise their own arrangement against the shared purpose/],
+		[
+			"conditional threads",
+			/Use a \[peer thread\]\([^)]*\) when evolving shared facts, decisions, or coordination need one retained place.*Otherwise, reuse sufficient context or direct messages/,
+		],
 		["shared context and source", /purpose, authority source, restrictions, acceptance, and integration attached to the exchange/],
 		["admission is not understanding", /do not mistake a retained post or delivery acknowledgment for understanding/],
 		["flexible collaboration", /No mandatory council, fork, roster, or candidate count/],
 		[
 			"task frame",
-			/Each execution contract carries:.*purpose, selected use path.*source pointers.*explicit exclusions.*acceptance evidence.*end condition.*integration ownership.*dependencies.*result consumer/,
+			/Give each assignment what its owner needs to judge and deliver it, drawn from:.*purpose, selected use path.*source pointers.*explicit exclusions.*acceptance evidence.*end condition.*integration ownership.*dependencies.*result consumer/,
+		],
+		["inline assignment", /A direct task message is sufficient; no contract file or template is required/],
+		[
+			"contributor discretion",
+			/raise discoveries, propose a changed division of work, and exchange findings directly with relevant peers/,
 		],
 		[
 			"relevant reuse",
@@ -532,7 +550,9 @@ test("collaboration preserves the use path and accepts observed task improvement
 			"same-owner corrections",
 			/Keep corrections, review repairs, and native compaction in that session while its task is open/,
 		],
-		["disjoint edits", /Keep concurrent edit ownership disjoint/],
+		["disjoint edits", /Keep concurrent edits disjoint/],
+		["coherent ownership", /owner's area follows the work, such as one behaviour with its implementation, tests, and documentation, not a file count/],
+		["working coordinator", /One coordinator serializes shared worktree synchronization, integration, promotion, push, and activation; that coordinator can also do substantive work/],
 		[
 			"settlement is not acceptance",
 			/Prompt admission, idle state, provider completion, and task acceptance are different facts/,
@@ -550,23 +570,30 @@ test("collaboration preserves the use path and accepts observed task improvement
 			"distinct evidence reach",
 			/hypothetical example develops an idea; a controlled dispatch test establishes delivered input; an observed use establishes what happened/,
 		],
-		["required checks remain", /Required source, focused, load, and repository-wide checks still bind/],
+		[
+			"required checks remain",
+			/Required checks still bind under the repository's single completion policy and final-verification owner/,
+		],
+		[
+			"no milestone reruns",
+			/A new worker, review, commit or release milestone alone does not justify another complete run/,
+		],
 		[
 			"no proxy acceptance",
-			/Passing tests, test counts, source existence, generated text, and worker summaries do not replace outcome evidence/,
+			/Tests, counts, source existence, generated text and worker summaries do not replace required outcome evidence/,
 		],
-		["no new operator process", /not a new evaluation framework, recurring journal, or operator ceremony/],
+		["no new operator process", /not a new framework, recurring journal or operator ceremony/],
 		[
 			"acceptance boundaries explicit",
-			/required use check needs unavailable access or authority, name the exact boundary and narrow the affected acceptance claim/,
+			/unavailable necessary layer blocks its dependent conclusion or act; it does not establish success/,
 		],
 		[
 			"repair verified with same owner",
-			/Return applicable findings to the same execution owner and verify the correction/,
+			/Return applicable findings to the same execution owner and verify the repaired contract/,
 		],
 		[
 			"repository dispositions",
-			/fixed with a regression.*shown false with source evidence, or blocked with the exact unavailable layer/,
+			/fixed with the repaired contract verified, shown false with source evidence, or blocked with the exact unavailable layer/,
 		],
 		["native continuity", /Use native compaction and session controls/],
 		["live ownership resolved", /Before coordinator exit, resolve every live worker/],
@@ -574,7 +601,7 @@ test("collaboration preserves the use path and accepts observed task improvement
 	]);
 });
 
-test("acceptance compares the candidate against the operator's plain request and rejects equivalent baselines", () => {
+test("acceptance compares against the operator's plain request without a fixed paid trial", () => {
 	assertContracts(deliveryWorkflow, [
 		[
 			"plain request defines the current approach",
@@ -582,45 +609,39 @@ test("acceptance compares the candidate against the operator's plain request and
 		],
 		[
 			"plain request precedes the candidate",
-			/Record that request in the use path before the candidate takes shape, from the governing conversation or retained sessions rather than from the candidate's intended output/,
+			/Preserve that plain request from the governing conversation or retained sessions before the candidate takes shape/,
+		],
+		["no paid arm for every edit", /this does not require a new paid before arm for every edit/],
+		[
+			"comparison scoped to deciding benefit",
+			/When comparative benefit decides acceptance, use a meaningful comparison against the plain request recorded in the use path/,
 		],
 		[
-			"comparison scoped to task claims",
-			/When the claim is that the operator's task is better served, compare against the plain request recorded in the use path/,
+			"maintenance accepted on contract evidence",
+			/repair, removal or maintenance change is accepted on evidence of its required contract and the repository's final checks; it does not automatically require a paired paid trial/,
 		],
-		["maintenance accepted on checks", /repair, removal, or maintenance change is accepted on its required checks/],
-		[
-			"before arm runs the request and follow-ups",
-			/before arm runs that plain request and its follow-ups on the current harness/,
-		],
+		["existing evidence first", /Use applicable existing evidence before selecting new runs/],
+		["matched baseline", /Compare candidate and baseline under matched facts, authority and relevant execution conditions/],
 		[
 			"before arm excludes the candidate",
-			/carries an artifact form only when the operator's own request.*names that form; a form the candidate introduces stays out, with its method and checklist/,
+			/Include an artifact form in the before arm only when the operator's own request names it; leave candidate-only methods and checklists out/,
 		],
+		["distorted baseline", /A distorted baseline cannot establish benefit/],
 		[
-			"restated output measures only the addition",
-			/asks for an output only the candidate introduces measures what the candidate adds beyond that output, not whether the candidate is needed/,
+			"equivalent baseline needs a supported advantage",
+			/If the baseline reaches the selected outcome, retain the candidate's benefit claim only when evidence supports its stated cost or reliability advantage/,
 		],
-		["equivalent baseline fails acceptance", /before arm reaches the selected outcome, the candidate fails acceptance/],
-		[
-			"cost or reliability claim precedes the comparison",
-			/claimed lower cost or higher reliability on that task before the comparison and repeated matched runs show that difference/,
-		],
-		["operator-selected outcome is not vetoed", /report the comparison result without treating it as a veto/],
-		[
-			"later benefit starts a new use path",
-			/benefit noticed only after the comparison starts a new use path with its own comparison/,
-		],
+		["deliberate sampling", /neither a single pair nor a fixed quota establishes general reliability/],
+		["cost on the same task counts", /Count context, output, time and operating cost on the same task/],
+		["unrequested artifact is cost", /An unrequested artifact is cost, not benefit/],
 		[
 			"rationale rewriting forbidden",
-			/do not deliver the original candidate on it or rewrite the acceptance rationale around it/,
+			/Do not rewrite acceptance around a benefit noticed only after comparison; treat that observation as a different proposal/,
 		],
 		[
-			"cost on the same task counts",
-			/costs more without a difference in the operator's result is a burden, not an improvement/,
+			"operator selection keeps its scope",
+			/operator selection or proof waiver governs its named scope; keep unsupported benefits explicit without restoring the waived veto/,
 		],
-		["unrequested artifact is cost", /artifact the request did not ask for is cost, not a difference/],
-		["burden stays with the candidate", /For a single-run claim.*showing one stays the candidate's burden/],
 		[
 			"one-component name before implementation",
 			/skill or prompt candidate also needs its one-component name before implementation/,
@@ -634,9 +655,9 @@ test("acceptance compares the candidate against the operator's plain request and
 	const normalized = deliveryWorkflow.replace(/\s+/g, " ");
 	const develop = normalized.indexOf("## Develop a useful outcome");
 	const accept = normalized.indexOf("## Accept the outcome, not just the changes");
-	const plainRequest = normalized.indexOf("Record that request in the use path before the candidate");
+	const plainRequest = normalized.indexOf("Preserve that plain request");
 	const nameTest = normalized.indexOf("one-component name before implementation");
-	const comparison = normalized.indexOf("The before arm runs that plain request");
+	const comparison = normalized.indexOf("use a meaningful comparison against the plain request");
 	assert.ok(develop >= 0 && plainRequest > develop && nameTest > plainRequest && nameTest < accept);
 	assert.ok(accept > develop && comparison > accept);
 });
@@ -648,8 +669,11 @@ test("delivery preserves release gates and distinguishes scoped no-change from b
 			/verify the established remote main and accepted resource scope from current Git evidence/,
 		],
 		["complete diff reviewed", /Inspect accepted local commits and the complete outgoing diff/],
-		["confidence before release", /establish high confidence through required tests and review/],
-		["promotion gates", /repository promotion procedure and its gates/],
+		[
+			"confidence before release",
+			/Establish confidence through applicable evidence, substantive review and the repository's one final verification policy/,
+		],
+		["promotion gates", /Use normal promotion with its gates; do not pre-run the complete gate solely because publication is next/],
 		["no replay", /already appears on remote main, report that state without replaying it/],
 		[
 			"full authorized delivery",

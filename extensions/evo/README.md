@@ -5,9 +5,10 @@ with agents. It starts from operator purposes and plausible uses, not only broke
 contracts. Addition, enhancement, refinement, repair, and removal are legitimate
 contributions.
 
-The active session coordinates an integrated outcome through full Pi agent
-sessions. The [agent extension](../agent/README.md) owns the execution host and
-controls. Evo supplies invocation and direction framing, not a scheduler,
+The active session owns an integrated outcome. It can do substantive work
+itself, collaborate, or delegate to full Pi agent sessions as the task warrants.
+The
+[agent extension](../agent/README.md) owns the execution host and controls. Evo supplies invocation and direction framing, not a scheduler,
 worker store, model loop, or fixed roster. The required package-level
 [delivery workflow](../../docs/agent-delivery.md) owns orientation, outcome
 development, collaboration, acceptance, continuity, and release checks.
