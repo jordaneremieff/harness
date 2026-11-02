@@ -321,6 +321,7 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 					)
 						.trim()
 						.split("\n")
+						.filter(Boolean)
 						.map((line) => JSON.parse(line)),
 				),
 			)
