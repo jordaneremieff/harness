@@ -86,7 +86,8 @@ function find(code: string, message: string) {
 function usage() {
 	return `Usage: node skills/delegate/scripts/contract.mts <command> [options]
 
-Print, check, or convert orchestration contracts. Dependency-free Node.
+Print, check, or convert optional assignment templates and thread frames.
+Dependency-free Node.
 
 Commands:
   template <kind>                Print the contract template for a kind

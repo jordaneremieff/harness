@@ -1,17 +1,17 @@
-# Harness surface for orchestrators and workers
+# Harness surface for collaborating agents
 
-The harness surfaces an orchestrator or its workers use. Each entry names
+The harness surfaces a delegating agent or its contributors use. Each entry names
 its purpose and where to read more. Availability differs per session:
 confirm a tool, skill, or prompt with the `registry` tool (`search` for a
 purpose, `kind` and `name` for one resource) before you rely on it or name
-it in a contract.
+it in an assignment.
 
 ## Contents
 
 - Extensions
 - Skills
 - Prompts
-- Choosing for a worker
+- Choosing for a contributor
 
 ## Extensions
 
@@ -37,15 +37,16 @@ that calls other tools in one step; see `references/codemode.md`.
 
 | Skill | Use for | Read more |
 |---|---|---|
-| dig | One evidence question or unknown root cause; frames, delegates, checks, synthesizes | `skills/dig/SKILL.md` |
+| dig | One evidence question or unknown root cause; frames, investigates directly or with other agents, checks, synthesizes | `skills/dig/SKILL.md` |
 | prime | Orientation before a task, then wait | `skills/prime/SKILL.md` |
 | audit | Evidence checks of Pi session and harness activity | `skills/audit/SKILL.md` |
 | harness | Adding, changing, or removing a harness surface | `skills/harness/SKILL.md` |
 | github | Read-only GitHub evidence | `skills/github/SKILL.md` |
 | troll | Press a claim at full strength on the operator's cue | `skills/troll/SKILL.md` |
 
-Route an evidence question inside an orchestrated effort to a worker that
-loads dig, rather than running dig's method in the orchestrator.
+Dig supplies an investigation method, not a staffing layer. Whoever owns an
+evidence question applies it, whether that is you or a contributor; loading it
+does not require another agent.
 
 ## Prompts
 
@@ -61,14 +62,14 @@ Harness prompt templates in `prompts/`:
 The operator can install further prompt templates in the agent directory.
 Find them with `registry` `kind: "prompt"`; do not assume one exists.
 
-## Choosing for a worker
+## Choosing for a contributor
 
-- **Research or diagnosis:** name dig in the contract and the web tools when
+- **Research or diagnosis:** name dig in the assignment and the web tools when
   external sources matter.
 - **Implementation:** name the repository's own instructions and its check
   commands; name jobs for long suites.
 - **Review:** name the sources the verdict must reach and pillars for design
   judgment.
 - **Continuity:** name stash for handovers and memory for durable lessons.
-- **Coordination:** name delegate in the Skills to load slot for a lead or
-  partner that will run its own team.
+- **Coordination:** name delegate for an agent that will coordinate other
+  agents.

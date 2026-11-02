@@ -1,4 +1,4 @@
-# Agent controls for orchestration moments
+# Agent controls for collaboration moments
 
 Each row gives the moment, the control, the decision, and the pitfall. The
 anchor is a heading in `extensions/agent/README.md`; read it when the
@@ -7,7 +7,7 @@ answers win over this table.
 
 ## Contents
 
-- Start and shape the team
+- Start and shape the work
 - Dispatch and deliver
 - Wait and receive
 - Supervise and correct
@@ -15,12 +15,12 @@ answers win over this table.
 - Provider limits
 - Discovery and close-out
 
-## Start and shape the team
+## Start and shape the work
 
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
 | A recurring concern needs a standing owner | `agent_spawn` with `handle` (slug without `@`), `role` | Resolve or create one standing root; address it later as `@slug` | Other efforts share the handle catalogue, so a common handle can resolve to their agent; reuse never reapplies creation defaults; supplied model, thinking and role come back unapplied, a name is ignored, a conflicting cwd refuses | `#standing-agents-and-expertise` |
-| One-off worker | `agent_spawn` without `handle`, with `name` for a label | Same cwd places a conversation in the caller's storage; a different cwd creates a new storage host | An explicit `role` is saved on the new agent's profile without a handle; later changes use `agent_profile` | `#agent-collaboration-and-placement` |
+| One-off agent | `agent_spawn` without `handle`, with `name` for a label | Same cwd places a conversation in the caller's storage; a different cwd creates a new storage host | An explicit `role` is saved on the new agent's profile without a handle; later changes use `agent_profile` | `#agent-collaboration-and-placement` |
 | Pick the model | `preset` on spawn or place | Omit model and preset for the configured default; name an exact model only when a direction requires it | Creation never inherits the creator's model or thinking; absent thinking defaults to off | `#execution-presets-and-delegation-preferences` |
 | Change an idle agent's model | `agent_configure` | Idle only; explicit argument, then preset, then retained values | A busy refusal names the target; repeat after its run ends | `#selection-and-unapplied-fields` |
 | Work bound to a directory | `agent_place` | Resolves the longest directory binding or creates one | A reused owner keeps its own model; supplied fields are reported unapplied | `#controls` |
@@ -40,7 +40,7 @@ answers win over this table.
 
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
-| A native Durable session needs several results | `agent_await` with exact references | One call, at most 16 references; no provider calls while waiting | Ordinary primaries have no `agent_await` tool; route answer-bearing fan-out through one Durable lead | `#await-exact-peer-results` |
+| A native Durable session needs several results | `agent_await` with exact references | One call, at most 16 references; no provider calls while waiting | Ordinary primaries have no `agent_await` tool; they receive each answer through normal delivery | `#await-exact-peer-results` |
 | The wait releases early | `agent_await` again | Explicit input or the first provider retry releases with partial outcomes; apply the input, then await the unresolved references on the same request | Never answer only to wait | `#await-exact-peer-results` |
 | A long answer is cut | `agent_inspect` | Use the exact continuation the await result names | A truncated answer is not a failed one | `#await-exact-peer-results` |
 | An ordinary primary waits | none | End the turn or do independent work; results arrive by delivery | Do not poll status or inspect in a loop | `#recovery-and-delivery` |
@@ -60,7 +60,7 @@ answers win over this table.
 
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
-| A long-lived agent nears its budget | `agent_reset` with `handoff` | Fresh context; history, identity, files, settings and timers stay; no model turn starts | Write the handoff from the `handoff` template | `#controls` |
+| A long-lived agent nears its budget | `agent_reset` with `handoff` | Fresh context; history, identity, files, settings and timers stay; no model turn starts | Cover the fields that the `handoff` template lists | `#controls` |
 | A continuing context grows | `agent_compact` | Shrinks context without stopping work or queued inputs | The summary applies at the next native boundary | `#controls` |
 | Save lessons for a standing agent | `agent_profile` `action: "update"` | Bounded sourced expertise that survives reset and compaction | Forks start with an empty profile | `#standing-agents-and-expertise` |
 

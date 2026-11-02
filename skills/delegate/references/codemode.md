@@ -1,7 +1,7 @@
 # Codemode recipes
 
 Codemode runs JavaScript that calls tools in one step, so raw payloads stay
-out of the orchestrator's context and only the shaped result returns. Paste
+out of your context and only the shaped result returns. Paste
 a recipe into one `codemode` call and replace the values in the first lines.
 Find unlisted tools with `searchTools()` and check argument shapes with
 `describeTool()` before you change a recipe.
@@ -13,69 +13,64 @@ for result references and thread positions.
 
 ## Contents
 
-- Team bootstrap
+- Thread hosted by a new agent
 - Parallel dispatch
 - Fleet sweep
 - Thread digest
 
-## Team bootstrap
+## Thread hosted by a new agent
 
-Spawn the agent that will host the thread, create the thread from a checked
-frame file, and send the task, in one call. Write `frame.md` and `task.md`
-in a scratch directory first (from the `frame` and `task` templates) and
-check `task.md` with `scripts/contract.mts check`. Paths in `scripts/` are
-relative to this skill's directory; the recipe needs its absolute path.
+An ordinary primary has no thread storage of its own. When a thread is useful,
+spawn an agent the work needs anyway, create the thread in its storage, and
+send its task, in one call.
 
 ```js
 const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
-const skill = "<absolute path of this skill's directory>";
-const frameFile = "<scratch>/frame.md";
-const taskFile = "<scratch>/task.md";
+const frame = {
+  title: "<short outcome title>",
+  purpose: "<shared purpose and use path>",
+  authority: "<the operator's words in quotes, and what they grant>",
+  source: "<where and when the words were given>",
+  restrictions: "<boundaries that bind every member>",
+  acceptance: "<what decides completion>",
+};
+const task = "<task message; {{THREAD_ID}} marks where the thread ID goes>";
 
-const framed = await tools.bash({ command: `node ${skill}/scripts/contract.mts frame ${frameFile}` });
-const exitCode = framed.exitCode ?? framed.exit_code;
-if (exitCode !== 0) return { stop: "frame check failed", findings: framed.output.slice(0, 2000) };
-const frame = JSON.parse(framed.output); // Fields only; the caller selects create or revise.
+const receipt = asObject(await tools.agent_spawn({ name: "<label>", preset: "worker" }));
+const host = receipt.result?.sessionId ?? receipt.sessionId ?? receipt.identity;
+if (!host) return { stop: "spawn receipt names no identity", receipt };
 
-const receipt = asObject(await tools.agent_spawn({ name: "lead", preset: "worker" }));
-const lead = receipt.result?.sessionId ?? receipt.sessionId ?? receipt.identity;
-if (!lead) return { stop: "spawn receipt names no identity", receipt };
-
-const thread = asObject(await tools.agent_collaborate({ ...frame, action: "create", sessionId: lead }));
-const task = (await tools.read({ path: taskFile })).replace("{{THREAD_ID}}", thread.threadId ?? thread.id);
-const sent = asObject(await tools.agent_send({ sessionId: lead, message: task, checkInMinutes: 30 }));
+const thread = asObject(await tools.agent_collaborate({ ...frame, action: "create", sessionId: host }));
+const threadId = thread.threadId ?? thread.id;
+const sent = asObject(await tools.agent_send({ sessionId: host, message: task.split("{{THREAD_ID}}").join(threadId), checkInMinutes: 30 }));
 
 const refs = [...(load("refs") ?? []), sent.result];
 store("refs", refs);
-return { lead, threadId: thread.threadId ?? thread.id, ref: sent.result };
+return { host, threadId, ref: sent.result };
 ```
 
 Notes:
 
-- Put the literal `{{THREAD_ID}}` in the Thread ID slot of `task.md`; the
-  recipe fills it after the thread exists.
-- `sessionId` on `create` places the thread in the lead's storage. A native
-  Durable orchestrator omits it to create the thread in its own storage.
-- The worker joins the thread itself as the first act of its task.
+- `sessionId` on `create` places the thread in the new agent's storage. A
+  native Durable session omits it to create the thread in its own storage.
+- The agent joins the thread itself as the first act of its task.
+- A long or reused frame can live in a file filled from `assets/frame.md`;
+  `node scripts/contract.mts frame <file>` prints its fields as JSON.
 - Choose `preset` and `checkInMinutes` per `SKILL.md` sections 2 and 4.
-- The ordinary bash tool returns `exit_code`; the native host returns `exitCode`.
-  The recipe accepts those two current host contracts and stops on a nonzero or
-  absent exit code.
 
 ## Parallel dispatch
 
-Send one wave of tasks and keep only the result references.
+Send independent tasks together and keep only the result references.
 
 ```js
 const asObject = (v) => (typeof v === "string" ? JSON.parse(v) : v);
 const tasks = [
-  { name: "reader-a", preset: "reader", file: "<scratch>/task-a.md", checkInMinutes: 0 },
-  { name: "builder-b", preset: "worker", file: "<scratch>/task-b.md", checkInMinutes: 30 },
+  { name: "<label>", preset: "reader", prompt: "<task message>", checkInMinutes: 0 },
+  { name: "<label>", preset: "worker", prompt: "<task message>", checkInMinutes: 30 },
 ];
 
 const sent = await Promise.all(tasks.map(async (t) => {
-  const prompt = await tools.read({ path: t.file });
-  const receipt = asObject(await tools.agent_spawn({ name: t.name, preset: t.preset, prompt, checkInMinutes: t.checkInMinutes }));
+  const receipt = asObject(await tools.agent_spawn({ name: t.name, preset: t.preset, prompt: t.prompt, checkInMinutes: t.checkInMinutes }));
   return { name: t.name, ref: receipt.result ?? null, receipt: receipt.result ? undefined : receipt };
 }));
 
@@ -84,9 +79,11 @@ store("refs", refs);
 return sent.map((s) => (s.ref ? { name: s.name, ref: s.ref } : { name: s.name, failed: s.receipt }));
 ```
 
-A native Durable orchestrator then waits in one call:
-`agent_await` with `results` set to the stored references (at most 16). An
-ordinary primary does not wait; results arrive through delivery.
+A task message that already lives in a scratch file can come from
+`await tools.read({ path })`. A native Durable session that needs the results
+for its answer waits in one call: `agent_await` with `results` set to the
+stored references (at most 16). An ordinary primary does not wait; results
+arrive through delivery.
 
 ## Fleet sweep
 

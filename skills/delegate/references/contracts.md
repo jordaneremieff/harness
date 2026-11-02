@@ -1,10 +1,12 @@
-# Contracts and messages
+# Assignments and messages
 
-A contract gives a worker everything it needs without the orchestrator's
-context. Templates live in `assets/`; print one with
+A direct task message is the normal assignment. It gives the contributor what
+it needs to judge and deliver its part; `SKILL.md` section 3 lists that
+content. The templates in `assets/` give the same content a fixed structure
+for long, reused, or handed-over assignments and thread frames. Print one with
 `node scripts/contract.mts template <kind>` (paths relative to this skill's
-directory) and check
-the filled copy with `check <file> --kind <kind>`.
+directory). When a structural check helps, check the filled copy with
+`check <file> --kind <kind>`. Neither step is a prerequisite for dispatch.
 
 ## Contents
 
@@ -18,8 +20,8 @@ the filled copy with `check <file> --kind <kind>`.
 
 | Kind | Use for |
 |---|---|
-| `task` | One worker, one outcome |
-| `lead` | A Durable lead that fans out, awaits exact results, and returns one composed answer |
+| `task` | One outcome with one owner; the outcome can span implementation, tests, and documentation |
+| `lead` | An agent that owns one composed result and does the work itself or with helpers as it judges |
 | `partner` | A capable peer invited to judge and disagree |
 | `review` | An independent check of a named claim |
 | `frame` | Thread frame fields for `create` or `revise`, without an action |
@@ -27,56 +29,63 @@ the filled copy with `check <file> --kind <kind>`.
 
 ## Slot meanings
 
-- **Purpose:** why the work exists and where it fits; lets the worker judge
+- **Purpose:** why the work exists and where it fits; lets the contributor judge
   tradeoffs you did not foresee.
 - **Objective:** one observable end state, not an activity.
 - **Operator authority:** the operator's words verbatim in quotes, with the
   source. Agent interpretations go elsewhere, labelled as such.
-- **Restrictions and exclusions:** what the worker must not do, including
+- **Restrictions and exclusions:** what the contributor must not do, including
   reserved acts and other owners' paths.
-- **Permitted edits and acts:** exact paths, branches, and acts.
+- **Permitted edits and acts:** the paths, branches, and acts. Scope a coherent
+  piece of work rather than a file count, and keep it disjoint from concurrent
+  edits by other owners.
 - **Starting sources:** files, threads, or notes to read first, each with why
   it matters. Point to sources; do not paste them.
-- **Dependencies and other owners:** work in flight that this task touches
-  or must not touch, and its owner.
-- **Acceptance evidence:** the checks or outputs that prove the objective.
+- **Dependencies and other owners:** work in flight that this task touches or
+  must not touch, its owner, and the peers the contributor can contact directly
+  about shared findings or a proposed change of ownership.
+- **Acceptance evidence:** the checks or outputs that establish the objective.
 - **Output format and length:** sections and a length bound for the final
   answer. Large output goes to a file, cited by path.
-- **End condition:** when to stop and how to report a blocker. Always add:
-  post to threads and make other tool calls first; the last message is the
-  complete deliverable.
+- **End condition:** when to stop and how to report a blocker. Add: make other
+  tool calls and thread posts first; the last message is the complete
+  deliverable.
 - **Reply route:** the exact identity that receives the answer.
 - **Skills to load:** the skills the agent reads before work, each with its
-  reason. Agents seldom read a listed skill by themselves when the tool
-  descriptions seem enough, so name the one whose method matters: `delegate`
-  for an agent that runs its own team, `dig` for an evidence question. Leave
-  it empty when the contract carries the whole method.
-- **Thread ID:** the thread to join first, when work is shared. Keep
+  reason. Name one only when its method matters: `delegate` for an agent that
+  will coordinate others, `dig` for an evidence question. Agents often skip a
+  skill that the tool descriptions seem to cover, so name it when it matters.
+- **Thread ID:** an existing thread to join when it serves this assignment;
+  otherwise omit this slot. Keep
   `contribution` within 256 characters and `message` within 8,000 characters.
   Write longer content to a file and post its path.
-- **Provider or budget notes:** known walls, the substitution order, and
-  what to do at a wall (stop and report the exact error text).
-- **Lead-only slots:** fan-out ownership (parts, presets, what the lead
-  keeps), result references (keep exact references and await them natively),
-  composed answer (one answer covering every result, gaps named).
+- **Provider or budget notes:** known walls, the substitution order, and what to
+  do at a wall (stop and report the exact error text).
+- **Lead-only slots:** division of work (the parts you can see and any
+  suggested helpers; the lead can do the work itself, revise the split, or use
+  helpers selectively), result references (keep exact references for delegated
+  parts and await them natively), and composed answer (one answer for the
+  whole result, gaps named).
 - **Review-only slots:** the claim under review, the evidence each verdict must
   reach, and independence. Challenge contracts, omitted cases and evidence from
   defining sources rather than adopt the author's conclusion. Repeating the
   author's commands alone does not establish independent review.
 
-Run the checker on every contract. Read its size line: a long contract costs
-the worker context before it starts.
+The checker's size line shows what a long assignment costs the contributor's
+context before it starts.
 
 ## Partner and mechanical registers
 
-- **Mechanical worker:** precise steps, exact paths, exact checks, a fixed
-  output shape. Leave no design choice open that you care about.
+- **Mechanical:** precise steps, exact paths, exact checks, a fixed output
+  shape. Leave no design choice open that you care about.
 - **Partner:** share purpose, facts, and constraints; state the decision or
-  question; invite disagreement with the framing. Do not prescribe steps.
-  Decide together, and record the decision in the thread.
+  question; invite disagreement with the framing and the division of work. Do
+  not prescribe steps. Decide together, and record a decision that others must
+  see where they will see it.
 
-Pick the register by the work, not by the model: a strong model on a
-mechanical task still gets a precise contract.
+Pick the register by the work, not by the model: a strong model on a mechanical
+task still gets precise steps. A contributor in either register can raise a
+discovery that changes the plan.
 
 ## Message shapes
 
@@ -84,24 +93,25 @@ mechanical task still gets a precise contract.
 |---|---|---|
 | Correction to busy work | `steer` | The change, its source, the affected step, and what to do with work already done |
 | Next act at a check-in | `steer` | One concrete act, its completion condition, and the end condition if it changed |
-| New task to a reused agent | `followUp` | A full contract; on a busy Durable agent it waits for the current run and may share one answer |
+| New task to a reused agent | `followUp` | A sufficient task message; on a busy Durable agent it waits for the current run and may share one answer |
 | Notice without an answer | `report` | The fact, its source, and whether any action is expected |
 | Operator decision relay | `steer` or thread post with `kind: "carried-authority"` | The verbatim words, source, and scope |
 
-Every terminal answer from a worker carries the result or the exact blocker,
-never a waiting note.
+Every terminal answer from a contributor carries the result or the exact
+blocker, never a waiting note.
 
 ## Check-in intervals
 
 Model-origin tasks arm automatic owner check-ins at the configured interval.
 Each check-in costs the owner a model turn.
 
-- **Keep the default** for long builds, leads, and anything you must steer.
+- **Keep the default** for long builds, composed results, and anything you must
+  steer.
 - **Use 0** for short tasks, informational steers, and reports.
 - **Set longer** for long, self-contained work you trust to run.
 
-A lead waiting in `agent_await` reacts to input by origin. A report or
-followUp from an ordinary primary releases the wait; the lead applies it and
+A native agent waiting in `agent_await` reacts to input by origin. A report or
+followUp from an ordinary primary releases the wait; the agent applies it and
 awaits the unresolved references again. A report from a native agent that is
-not an awaited producer stays queued until the wait ends. Send a lead input
-during its wait only when it must act on it now.
+not an awaited producer stays queued until the wait ends. Send a waiting agent
+input only when it must act on it now.

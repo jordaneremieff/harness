@@ -7,31 +7,46 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 
-test("bootstrap recipe accepts the bash result of each supported host and stops on failure", async () => {
+test("thread-hosting recipe creates the thread in the new agent's storage and keeps its result reference", async () => {
 	const recipes = readFileSync(new URL("../references/codemode.md", import.meta.url), "utf8");
-	const source = recipes.match(/```js\n([\s\S]*?)\n```/)?.[1];
+	const source = recipes.match(/## Thread hosted by a new agent\n[\s\S]*?```js\n([\s\S]*?)\n```/)?.[1];
 	assert.ok(source);
-	for (const field of ["exit_code", "exitCode"]) {
-		for (const exit of [0, 1]) {
-			const calls: string[] = [];
-			const values = new Map<string, unknown>();
-			const result = await runInNewContext(`(async () => {\n${source}\n})()`, {
-				tools: {
-					bash: async () => ({ [field]: exit, output: '{"title":"Shared work"}' }),
-					agent_spawn: async () => { calls.push("spawn"); return { result: { sessionId: "lead" } }; },
-					agent_collaborate: async (args: { action: string; title: string }) => { assert.equal(args.action, "create"); assert.equal(args.title, "Shared work"); return { threadId: "thread" }; },
-					read: async () => "Task for {{THREAD_ID}}",
-					agent_send: async (args: { message: string }) => {
-						assert.equal(args.message, "Task for thread");
-						return { result: { sessionId: "lead", submissionId: 1 } };
-					},
+	for (const identified of [true, false]) {
+		const calls: string[] = [];
+		const values = new Map<string, unknown>();
+		const result = await runInNewContext(`(async () => {\n${source}\n})()`, {
+			tools: {
+				agent_spawn: async (args: { prompt?: string }) => {
+					calls.push("spawn");
+					assert.equal(args.prompt, undefined);
+					return identified ? { sessionId: "host" } : {};
 				},
-				store: (key: string, value: unknown) => values.set(key, value),
-				load: (key: string) => values.get(key),
-			});
-			assert.equal(result.stop, exit === 0 ? undefined : "frame check failed", field);
-			assert.equal(calls.length, exit === 0 ? 1 : 0, field);
-			assert.equal(values.has("refs"), exit === 0, field);
+				agent_collaborate: async (args: { action: string; sessionId: string; title: string }) => {
+					calls.push("create");
+					assert.equal(args.action, "create");
+					assert.equal(args.sessionId, "host");
+					assert.ok(args.title.length > 0);
+					return JSON.stringify({ threadId: "thread-42" });
+				},
+				agent_send: async (args: { sessionId: string; message: string }) => {
+					calls.push("send");
+					assert.equal(args.sessionId, "host");
+					assert.match(args.message, /thread-42/);
+					assert.doesNotMatch(args.message, /\{\{THREAD_ID\}\}/);
+					return { result: { sessionId: "host", submissionId: 1 } };
+				},
+			},
+			store: (key: string, value: unknown) => values.set(key, value),
+			load: (key: string) => values.get(key),
+		});
+		if (identified) {
+			assert.deepEqual(calls, ["spawn", "create", "send"]);
+			assert.equal(JSON.stringify(values.get("refs")), JSON.stringify([{ sessionId: "host", submissionId: 1 }]));
+			assert.equal(result.threadId, "thread-42");
+		} else {
+			assert.equal(result.stop, "spawn receipt names no identity");
+			assert.deepEqual(calls, ["spawn"]);
+			assert.equal(values.has("refs"), false);
 		}
 	}
 });
@@ -175,7 +190,9 @@ test("reports a missing end condition with its own code", () => {
 });
 
 test("reports a slot that still holds the template guidance", () => {
-	const guidance = "The single outcome the worker must deliver, stated as an observable end state.";
+	const lines = template("task").split("\n");
+	const guidance = lines[lines.findIndex((line) => line.startsWith("## Objective")) + 1];
+	assert.ok(guidance);
 	const path = writeContract(fillTemplate("task", (slot) => (slot === "Objective" ? guidance : undefined)));
 	const { status, report } = runJson(["check", path, "--kind", "task"]);
 	assert.equal(status, 1);

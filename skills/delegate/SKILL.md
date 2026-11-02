@@ -1,166 +1,159 @@
 ---
 name: delegate
 description: >
-  Delegate work to other agents and hold the orchestrator role, so this
-  session keeps its context for the operator, planning, judgment, and
-  integration. Use when the operator asks a session to delegate, orchestrate,
-  coordinate, lead, or manage agents, to act as main driver over a team, to
-  have agents with their
-  own context do the work, to set up threads for agents, or to keep its own
-  context clean on long-horizon research, planning, or implementation; also
-  when a coordinating session must bootstrap workers, write task contracts,
-  choose presets, supervise check-ins, recover from quota walls, or reset or
-  hand over agents. Read it before the first dispatch whenever the operator
-  puts this session in that role, even for one wave of workers: the agent
-  tool descriptions omit contracts, threads, preset choice, supervision,
-  and close-out. Do not use for one evidence question (dig), orientation
-  only (prime), Pi session audits (audit), harness surface changes (harness),
-  or a small task the session can finish directly.
-compatibility: Requires Pi with the harness agent extension (spawn, send, steer, await, status, inspect, collaborate, intent, profile, reset) and codemode. Points to sibling sources extensions/agent/README.md and skills/dig/SKILL.md. Uses the operator's presets and delegation preferences; no fixed model or provider roster.
+  Work with other agents and choose how: do the work directly, take selective
+  help, collaborate with peers, or coordinate a team, and revise that choice
+  as the work develops. Use when the operator asks a session to delegate,
+  collaborate, orchestrate, coordinate, lead, or manage agents, to act as main
+  driver over a team, to have agents with their own context do work, to set
+  up threads for agents, or to keep its own context clean on long-horizon
+  research, planning, or implementation; also when a session must brief
+  agents, choose presets, keep result references, supervise check-ins, recover
+  from quota walls, or reset or hand over agents. Read it before the first
+  dispatch of such work: the agent tool descriptions omit assignments,
+  threads, preset choice, supervision, and close-out. Do not use for one
+  evidence question (dig), orientation only (prime), Pi session audits
+  (audit), harness surface changes (harness), or a small task the session can
+  finish directly.
+compatibility: Requires Pi with the harness agent extension (spawn, send, steer, status, inspect, collaborate, intent, profile, reset; await in native Durable sessions) and codemode. Points to sibling sources extensions/agent/README.md and skills/dig/SKILL.md. Uses the operator's presets and delegation preferences; no fixed model or provider roster.
 ---
 
 # Delegate
 
-Hold the orchestrator role for as long as the work lasts. This session keeps
-the operator conversation, the frame, team selection, contracts, acceptance,
-and integration. Agents with their own context do the reading, building,
-testing, and reviewing. The role exists to protect this session's context:
-mechanical work that fills it degrades the judgment the operator relies on
-over a long horizon. Lower spend on premium models often follows, but it is
-not the aim. This skill supplies a method, not enforced limits.
+Choose how agents work together for the outcome the operator wants, and revise
+that choice as the work develops. Delegation serves the outcome. Context
+preservation, parallel progress, expertise, and independent challenge are
+reasons to involve other agents; none of them alone decides who does what.
+This skill supplies methods, not enforced limits or a required topology.
 
-Work from a short, outcome-first request. Do not ask the operator for a
-process. The bootstrap is a few tool calls, not a ritual.
-
-## 0. The role
-
-Keep what you need to judge. Hand off what you need only to do.
-
-- **Keep:** the operator dialogue; the frame and its corrections; the choice
-  of agents and presets; contracts; the defining excerpt behind a
-  load-bearing claim; acceptance; integration; and shared acts that the
-  frame reserves to the integrator, such as sync, promotion, push, and
-  activation.
-- **Hand off:** bulk reading, searches, history and log mining, web research,
-  implementation, mechanical edits, tests and gates, reviews, and trials.
-- **Inline exception:** do a small, quick fix yourself when it costs less
-  than the contract that would describe it. Do not let exceptions accumulate
-  into the main work.
+The session that owes the operator the result owns its integration and
+acceptance. That ownership is not a management-only role. The owner can read,
+implement, test, and verify substantive work itself, hand parts to others, and
+change the arrangement when evidence changes the problem.
 
 Use the existing agent tools. Build no coordination machinery: no ledgers,
 mailboxes, schedulers, journals, watcher scripts, or wait loops. Durable
-progress lives in the thread frame, stash handovers, agent profiles, and the
-retained task routes the host already keeps.
+progress lives in threads, stash handovers, agent profiles, and the retained
+task routes the host already keeps.
 
-Treat capable builders as partners: share the operator's words, the facts,
-and the constraints, and invite judgment and disagreement. Give mechanical
-workers precise contracts. Read `references/contracts.md` for the two
-registers.
+## 1. Frame the work
 
-## 1. Bootstrap the role
+Ground the work in the operator's words before you split it: the purpose and
+use path, restrictions, acceptance, and the authority the words grant. Label
+your own interpretations as yours. A frame in the conversation is enough until
+other agents or a later session need to share it.
 
-Do these in one or two tool batches:
+Gather what the next decision needs, not a fixed checklist:
 
-1. **Frame.** Copy the operator's words verbatim with their source. State the
-   purpose and use path, restrictions, acceptance, and the authority the
-   words grant. Label your own interpretations as yours.
-2. **Preferences.** Read the delegation preferences and presets in your
-   context. Search memory for delegation, roster, and model preferences.
-   Read `agent_status` with `view: "fleet"` for recent provider failures.
-3. **Existing work.** Read untargeted `agent_status` and list threads with
-   `agent_collaborate` `action: "list"`. Reuse a standing `@handle` whose
-   role covers a recurring concern. Do not control agents you did not
-   create.
-4. **Intent.** Publish your claim with `agent_intent`: purpose, integration
-   plan, carried authority, and scope.
-5. **Thread.** Create one whenever two or more agents work toward the same
-   purpose, even when their parts are independent: one part's finding often
-   changes another part's answer. Read
-   `references/threads.md` for placement and the frame.
-6. **Own context.** Read your current context usage with `registry`.
+- **Preferences:** the delegation preferences and presets in your context, and
+  memory when a choice depends on earlier operator preferences.
+- **Existing work:** untargeted `agent_status` and an `agent_collaborate`
+  `action: "list"` when related efforts, standing agents, or an existing thread
+  can affect the work. Reuse a standing `@handle` whose role covers a recurring
+  concern. Do not control agents you did not create.
+- **Provider state:** `agent_status` with `view: "fleet"` before a large or long
+  dispatch, for recent provider failures.
+- **Intent:** a claim through `agent_intent` when the work includes shared
+  repository acts or overlaps other efforts.
+- **Own context:** your context usage through `registry` before a long effort.
 
-**Complete when:** a one-paragraph frame exists that every contract can copy;
-the roster for this work is resolved; intent is published; and a thread
-exists, or you named why none is needed.
+**Complete when:** you can state the purpose, authority, restrictions, and
+acceptance that the work needs, and you know which existing agents, efforts,
+and preferences apply.
 
-## 2. Shape the team
+## 2. Choose an arrangement
 
-Pick the fewest agents that cover the independent work. Key the topology to
-facts you can observe. Know which kind of session you are: a native Durable
-session sees its own identity and request routes in its instructions; an
-ordinary primary does not, and has no `agent_await` tool.
+Choose by the task: its dependencies, uncertainty, size, the context it will
+consume, the expertise it needs, and where independent judgment matters. Each
+of these arrangements can fit, and work can move between them:
 
-- **Ordinary primary (not Durable):** it cannot await results natively. If
-  the work needs one composed answer from several agents, give the fan-out
-  to one Durable lead that dispatches, awaits, and composes. Independent
-  single tasks can still go direct; each answer arrives through normal
-  delivery.
-- **Native Durable session:** await exact result references yourself.
+- **Direct:** do the work yourself when coordination costs more than it gives.
+- **Selective assistance:** keep the main line of work and hand off a bounded
+  part, such as broad reading, a parallel change, an experiment, or an
+  independent check.
+- **Peer collaboration:** work alongside capable agents that share the purpose
+  and contribute to the direction as well as the content.
+- **Dedicated coordination:** one session spends most of its effort on
+  coordination when many parallel parts and a long horizon make that worth its
+  cost. That session can be you or another agent.
+
+No minimum or maximum agent count applies, and no topology needs a stated
+justification. Revisit the arrangement when a result, a surprise, or a
+contributor's proposal changes the problem.
+
+These facts shape the choice:
+
+- **Waiting differs by session kind.** A native Durable session sees its own
+  identity and request routes in its instructions and can call `agent_await` on
+  exact result references. An ordinary primary has no `agent_await`. It stays
+  responsive, receives each answer through normal delivery, and can integrate
+  answers as they arrive. When one composed answer from a native agent serves
+  the work, that agent can do the main work itself and use helpers selectively.
+  Neither capability prescribes staffing.
 - **Recurring concern:** a standing agent with a handle and a role.
-- **Long, judgment-heavy work:** a partner.
-- **Independent check:** a fresh agent, from a different model family where
-  the claim matters. Agreement between agents that share a briefing counts as
-  one line of evidence.
+- **Independent check:** a fresh agent, from a different model family where the
+  claim matters. Agreement between agents that share a briefing counts as one
+  line of evidence.
+- **Ownership:** give each contributor a coherent piece of work, such as one
+  behaviour with its implementation, focused tests, and documentation. Edit
+  boundaries protect concurrent work; they do not define the unit of thought.
+  Give each path that changes concurrently one owner at a time. Name one
+  accountable owner for composition and for shared acts such as sync,
+  promotion, push, and activation; that owner need not be a separate session.
+- **Model choice:** choose each agent by preset from the operator's preferences.
+  Name an exact model only when a direction requires it. At a quota wall,
+  substitute in the configured order and report the substitution. Read
+  `references/controls.md` for spawn, handle, and placement rules.
 
-Give each builder disjoint edit ownership and name one integrator. Choose
-each agent by preset from the operator's preferences. Name an exact model
-only when a direction requires it. At a quota wall, substitute in the
-configured order and report the substitution. Read `references/controls.md`
-for spawn, handle, and placement rules.
+**Complete when:** each part of the work has an owner, concurrent edits do not
+overlap, and composition and shared acts have one accountable owner.
 
-**Complete when:** each piece of work has one owner, a preset, and a stated
-reason for its topology, and no two owners edit the same paths.
+## 3. Brief contributors
 
-## 3. Write contracts
+A direct task message is the normal assignment. Give the contributor what it
+needs to judge and deliver its part:
 
-Start from the templates and check each contract before dispatch. The
-script path is relative to this skill's directory. Keep filled contracts in
-a scratch directory outside the skill and outside tracked paths.
+- the purpose and where the part fits;
+- the outcome and how it will be accepted;
+- relevant facts and source pointers, with their qualifications;
+- carried operator decisions in the operator's words with their source, apart
+  from your interpretations;
+- real restrictions: reserved acts, other owners' paths, and shared state it
+  must not change;
+- the edits and acts it may use; and
+- the end condition and the reply route.
 
-```bash
-node scripts/contract.mts template task
-node scripts/contract.mts check <scratch>/task.md --kind task
-```
+Reuse context the contributor already has, such as a thread frame, a standing
+agent's expertise, or an earlier task in the same session, instead of repeating
+it. Pick the register by the work: invite a capable peer to judge, challenge
+the framing, and decide with you; give precise steps where each step matters to
+you. Leave contributors room to raise discoveries, propose a changed approach or
+division of work, and exchange findings directly with relevant peers through
+`agent_send` or a thread, within the authority they carry.
 
-Kinds: `task`, `lead`, `partner`, `review`, `frame`, `handoff`. The checker
-reports missing, empty, or unfilled required slots; a missing end condition;
-authority without quoted words and a source; frame fields over the thread
-limits; instructions to sleep, wait a fixed time, or poll; and the contract
-size, which is the cost you put on the worker.
+Name a skill the contributor must read only when its method matters to the
+task, such as `delegate` for an agent that will coordinate others or `dig` for
+an evidence question. When a contributor posts to threads or can receive
+notices, ask it to make other tool calls first and put the complete
+deliverable in its last message.
 
-Every deliverable contract says: post to threads and make other tool calls
-first; the last message is the complete deliverable. Keep thread
-`contribution` within 256 characters and `message` within 8,000 characters.
-Write longer content to a file and post its path. A worker that answers a
-passive notice after its deliverable can displace the answer.
+The templates in `assets/` and the checker in `scripts/contract.mts` are
+optional aids for long, reused, or handed-over assignments and thread frames.
+They are not a prerequisite for dispatch. Read `references/contracts.md` for
+slots, registers, message shapes, and check-in intervals.
 
-Decide for each contract which skills its agent must read, and name them in
-the Skills to load slot. An agent sees its skill list but reads a skill only
-when it judges the task needs one, and agents often skip a skill when the
-agent tool descriptions look sufficient. Name `delegate` when the agent will
-run its own team: a lead that fans out, a partner that coordinates other
-agents, or any agent that runs more than one wave, a thread, or a long role.
-Otherwise name the skill whose method the task depends on, such as `dig`
-for an evidence question. Leave the slot empty for a bounded task that the
-contract fully describes; a skill there adds context cost and nothing else.
-
-Read `references/contracts.md` for slot meanings, registers, and message
-shapes.
-
-**Complete when:** each contract passes the checker, or you named why a
-finding does not apply, and each contract names the skills its agent must
-read or none.
+**Complete when:** each contributor has what it needs to judge its part, without
+your full context and without restrictions it does not need.
 
 ## 4. Dispatch
 
-Before the first dispatch, show the operator the resolved roster in your
-first dispatch notice:
+Tell the operator what started in one short notice:
 
-- Each preset you will use, its exact `provider/model`, and its thinking level.
+- Each preset you used, its exact `provider/model`, and its thinking level.
   State `off` when creation has no configured thinking level. Do not infer
   settings from your own model.
 - Recent provider failures or quota walls from `agent_status` with
-  `view: "fleet"`. Keep sampled evidence and its coverage limits explicit;
+  `view: "fleet"` when you read them. Sampled evidence has coverage limits;
   missing evidence is unknown, not a clean provider record.
 - Each model the operator named and its resolution: a matching preset, an
   explicit override, or a refusal and its reason. With `enforceRoster: true`,
@@ -169,97 +162,104 @@ first dispatch notice:
 
 Use the current preferences and registry model facts to resolve names. If a
 name remains ambiguous, hold only that dispatch and ask for the missing choice.
-Check creation receipts against this notice and report any effective change.
+Check creation receipts against the notice and report any effective change.
 
-If you are an ordinary primary and the work needs a thread, spawn the agent
-that will host it idle, create the thread in its storage, then send its task
-with the thread ID. A native Durable orchestrator creates the thread in its
-own storage first. Every other agent spawns with its task as the prompt.
+If you are an ordinary primary and a thread is useful, spawn an agent the work
+needs anyway without a prompt, create the thread in its storage, then send its
+task with the thread ID. A native Durable session creates the thread in its own
+storage. Every other agent spawns with its task as the prompt.
 
-Spawn one-off workers without a `handle`. A handle names a standing agent
-in a catalogue that other efforts share: a common handle such as
-`fix-docs` can resolve to another effort's agent, which keeps its own
-directory and context, and a conflicting `cwd` refuses. Give a handle only
-to a standing agent for a recurring concern, and make it specific to that
-concern. Use `name` for a readable label.
+Spawn one-off agents without a `handle`. A handle names a standing agent in a
+catalogue that other efforts share: a common handle such as `fix-docs` can
+resolve to another effort's agent, which keeps its own directory and context,
+and a conflicting `cwd` refuses. Give a handle only to a standing agent for a
+recurring concern, and make it specific to that concern. Use `name` for a
+readable label.
 
 Keep every returned result reference (`sessionId`, `submissionId`,
-`requestId`). A creation receipt, report,
-thread post, or name is not a result reference.
+`requestId`). A creation receipt, report, thread post, or name is not a result
+reference.
 
-Choose `checkInMinutes` per task: keep the default for long work you must
-supervise; use 0 for short or informational tasks. Each check-in costs you a
-model turn.
+Choose `checkInMinutes` per task: keep the default for long work you supervise;
+use 0 for short or informational tasks. Each check-in costs you a model turn.
 
-Dispatch a wave in one codemode call. Read `references/codemode.md` for the
-bootstrap and parallel-dispatch recipes.
+Batch independent dispatches in one codemode call when that helps. Read
+`references/codemode.md` for dispatch, thread, sweep, and digest recipes.
 
 **Complete when:** every dispatched task has a retained result reference, and
-the operator knows what started, in one short notice.
+the operator knows what started.
 
-## 5. Run the thread and the operator conversation
+## 5. Share facts, decisions, and corrections
 
-Stay responsive to the operator throughout. An operator correction changes
-the frame: revise the thread frame, then steer each affected agent with the
-correction and its source. Send the operator an interim notice only for a
-real wait, a blocker that needs their decision, or a finding that changes
-the work. Ask only for authority or a decision that existing authority cannot
+Use a thread when evolving shared facts, decisions, or coordination among
+several agents need one retained place: one part's findings change another
+part's question, several agents act on the same carried decision and its
+corrections, or the operator wants to follow the exchange there. A shared
+purpose alone does not require a thread. Independent parts with sufficient
+briefs need none, and direct `agent_send` covers a single exchange. Read
+`references/threads.md` for placement, frames, and posts.
+
+Stay responsive to the operator. An operator correction changes the frame:
+revise the thread frame when one exists, then steer each affected agent with
+the correction and its source. Send the operator an interim notice only for a
+real wait, a blocker that needs their decision, or a finding that changes the
+work. Ask only for authority or a decision that existing authority cannot
 supply.
 
-Read new thread events through the digest recipe in `references/codemode.md`
-instead of full re-reads. Name `notify` recipients only when their attention
-matters now.
-
-**Complete when:** the frame matches the latest operator direction, and every
-affected agent received the change.
+**Complete when:** every affected agent works from the latest operator
+direction.
 
 ## 6. Supervise without polling
 
-Results and check-ins arrive automatically. Do not poll status, sleep, or
-repeat inspections as a wait. Do independent work while agents run.
+Results and check-ins arrive automatically. Do not poll status, sleep, or repeat
+inspections as a wait. Continue your own part of the work while agents run.
 
 At each check-in, read the bounded content and act: let work continue with a
 reason, steer a concrete next act, or abort a hung tool. Verify that a steer
-changed the work before you rely on it. Watch each long-lived agent's
-context and reset it with a handoff before it overflows. Read
+changed the work before you rely on it. Watch each long-lived agent's context
+and reset it with a handoff before it overflows. Read
 `references/supervision.md` for triage, stalls, quota walls, context resets,
 and the displaced-answer pitfall.
 
-**Complete when:** every check-in has a recorded decision, and no agent
-works on a stale frame.
+**Complete when:** every check-in has a decision, and no agent works on a stale
+frame.
 
 ## 7. Integrate and accept
 
-Read the actual result and defining evidence, not only the summary. Reuse
-applicable source reads and execution results after checking their reach and
-validity for the composed candidate and execution conditions. Use existing
-context and results; add a concise summary only when complex claims, disputes
-or handoffs need it.
+Read the actual result and defining evidence, not only the summary. Complete,
+repair, or extend work yourself when that serves the outcome, or return it to
+its owner. Reuse applicable source reads and execution results after checking
+their reach and validity for the composed candidate and execution conditions.
+Use existing context and results; add a concise summary only when complex
+claims, disputes, or handoffs need it.
 
-Challenge the governing contracts, assertions, fixtures, mocks, omitted cases
+Challenge the governing contracts, assertions, fixtures, mocks, omitted cases,
 and evidence limits. Repeating the author's commands alone does not establish
-independent review. Choose additional review or execution for the material error
-it can expose, not for a second pass label or a different agent.
+independent review. Choose additional review or execution for the material
+error it can expose, not for a second pass label or a different agent.
 
-Give each finding its repository-required disposition. Return repairs to their
-owner and verify the repaired contract; select permanent regression protection
-for its future value against lifecycle cost. Examine interactions not covered
-by existing evidence and check those that affect acceptance. Do not automatically
-rerun all worker checks. Assign one final owner for the relevant candidate and
-execution basis under the repository's completion policy; workers' local passes
-do not establish integration or release.
+Give each finding its repository-required disposition. Verify the repaired
+contract; select permanent regression protection for its future value against
+lifecycle cost. Examine interactions not covered by existing evidence and check
+those that affect acceptance. Do not automatically rerun all contributor checks.
+A new contributor, reviewer, commit, or handoff alone is not a reason to repeat
+a complete gate. Assign one final owner for the relevant candidate and execution
+basis under the repository's completion policy; contributors' local passes do
+not establish integration or release.
 
 **Complete when:** accepted claims have sufficient applicable evidence, material
 interactions are resolved, and every finding has its required disposition.
 
-## 8. Keep the role durable
+## 8. Keep long work resumable
 
-Your context is the scarce resource of a long role. Checkpoint before large
-intake. Before compaction or a session change, write a stash handover from
-the `handoff` template: role, carried operator words, team rules, verified
-state, owned agents with their exact result references, unread inputs, and
-next actions. Record durable lessons for standing agents in their profiles
-with `agent_profile`.
+Context is finite for every long-running session, including yours. Checkpoint
+before large intake. Before compaction or a session change, preserve the
+context needed for continuity: purpose and current arrangement, carried
+operator words, standing rules, verified state, owned agents with their exact
+result references, unread inputs, and next actions. Use native compaction when
+its checked summary suffices; use a stash for a fresh-session handover.
+`assets/handoff.md` lists the same fields. Record
+durable lessons for standing agents in their profiles with `agent_profile`.
 
 **Complete when:** a fresh session can resume from the handover without
 re-reading sources.
@@ -268,34 +268,32 @@ re-reading sources.
 
 Before the final answer:
 
-1. Resolve every live agent you own: accept its result, redirect changed
-   work, or abort work that is no longer needed. Leave unrelated and
-   standing work alone.
+1. Resolve every live agent you own: accept its result, redirect changed work,
+   or abort work that is no longer needed. Leave unrelated and standing work
+   alone.
 2. Update or clear your intent claim.
-3. Post a conclusion to each thread you integrate; close it when the work
-   ends.
+3. Post a conclusion to each thread you integrate; close it when the work ends.
 4. Restore any temporary configuration you changed.
 5. Report the result first, then evidence, limits, and substitutions made.
 
-**Complete when:** no owned agent is unresolved, the intent claim is current,
+**Complete when:** no owned agent is unresolved, any intent claim is current,
 and the operator has the result.
 
 ## References
 
-- Read [controls](references/controls.md) when you choose which agent
-  control fits a moment, or need its pitfall and README anchor.
-- Read [threads](references/threads.md) when you place, frame, post to,
-  revise, or close a thread.
-- Read [contracts](references/contracts.md) when you fill a slot, pick the
-  partner or mechanical register, shape a steer, report, or followUp, or set
-  a check-in interval.
-- Read [supervision](references/supervision.md) when a check-in, stall,
-  quota wall, acknowledgement-like answer, context limit, or exit needs a
-  decision.
+- Read [controls](references/controls.md) when you choose which agent control
+  fits a moment, or need its pitfall and README anchor.
+- Read [threads](references/threads.md) when you place, frame, post to, revise,
+  or close a thread.
+- Read [contracts](references/contracts.md) when you use a template, pick the
+  partner or mechanical register, shape a steer, report, or followUp, or set a
+  check-in interval.
+- Read [supervision](references/supervision.md) when a check-in, stall, quota
+  wall, acknowledgement-like answer, context limit, or exit needs a decision.
 - Read [surface](references/surface.md) when you name a harness extension,
-  skill, or prompt in a contract.
-- Read [codemode](references/codemode.md) when you bootstrap a team,
-  dispatch a wave, sweep the fleet, or digest a thread.
+  skill, or prompt in an assignment.
+- Read [codemode](references/codemode.md) when you batch dispatches, host a
+  thread in a new agent, sweep owned agents, or digest a thread.
 
 The agent extension owns runtime behaviour. Check claims against
 `extensions/agent/README.md` and the live tool definitions; the tool's own

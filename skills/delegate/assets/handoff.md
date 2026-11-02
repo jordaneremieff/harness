@@ -1,13 +1,13 @@
 # Handoff
 
-## Role <!-- required -->
-The role the receiving session continues, in one sentence.
+## Purpose and arrangement <!-- required -->
+What the receiving session continues and the current division of work, in one or two sentences.
 
 ## Operator directions <!-- required -->
 Carried operator decisions verbatim in quotes, each with its source and scope.
 
-## Team rules <!-- required -->
-The standing rules the receiver must keep: roster, boundaries, prohibitions.
+## Standing rules <!-- required -->
+The rules the receiver must keep: roster, boundaries, prohibitions.
 
 ## Verified state <!-- required -->
 What is true now, each fact with the path, command output, or source checked.

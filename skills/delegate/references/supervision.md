@@ -1,8 +1,8 @@
 # Supervision
 
 Supervise from delivered events: results, check-ins, thread notices, and
-operator input. Never poll, sleep, or loop on status or inspection. Do
-independent work while agents run.
+operator input. Never poll, sleep, or loop on status or inspection. Continue
+your own part of the work while agents run.
 
 ## Contents
 
@@ -24,7 +24,7 @@ last tool lines, and an unfinished-reply excerpt. Decide one of three:
   something you can supply. Send one concrete next act with its completion
   condition. Do not send "keep going".
 - **Abort:** a tool hangs, or the work is no longer needed. Abort, then
-  re-dispatch only the missing part.
+  finish the missing part yourself or re-dispatch only that part.
 
 After a steer, check that the next check-in or result shows the change
 before you rely on dependent work.
@@ -44,10 +44,10 @@ submissions. Common causes:
 
 ## The displaced-answer pitfall
 
-A worker writes its deliverable in a message that also calls a tool, such as
-a thread post. A passive notice then arrives, the worker replies to the
+An agent writes its deliverable in a message that also calls a tool, such as
+a thread post. A passive notice then arrives, the agent replies to the
 notice, and that short acknowledgement becomes the request's terminal
-answer. Prevent it in the contract: post to threads and make other tool
+answer. Prevent it in the assignment: post to threads and make other tool
 calls first; the last message is the complete deliverable.
 
 If a delivered answer reads like an acknowledgement, do not re-dispatch
@@ -85,13 +85,13 @@ standing agent's usage through `agent_status` or check-in content. Plan
 against the preferences' planning context budget when one exists; otherwise
 reset well before the model's window.
 
-1. Fill `assets/handoff.md`: role, carried operator words, team rules,
-   verified state, owned agents with exact result references, unread
-   inputs, next actions.
-2. Check it: `node scripts/contract.mts check <scratch>/handoff.md --kind handoff`.
-3. Reset with `agent_reset` and the handoff. History, identity, files,
+1. Write the handoff: purpose and current arrangement, carried operator
+   words, standing rules, verified state, owned agents with exact result
+   references, unread inputs, next actions. `assets/handoff.md` lists these
+   fields.
+2. Reset with `agent_reset` and the handoff. History, identity, files,
    settings, and timers stay; no model turn starts.
-4. Send the next task.
+3. Send the next task.
 
 Use `agent_compact` instead when the same context should continue in a
 smaller form. Apply the same watch to your own context: checkpoint before

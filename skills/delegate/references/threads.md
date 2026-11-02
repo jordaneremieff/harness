@@ -1,20 +1,21 @@
 # Threads
 
 A peer thread keeps shared purpose and evidence in one participant's native
-Durable storage. It is not an agent, a broker, or a transcript. The
-orchestrator seeds the frame; peers choose contributions, share findings,
-and challenge decisions. Runtime detail: `extensions/agent/README.md`
+Durable storage. It is not an agent, a broker, or a transcript. The thread's
+creator seeds the frame; members choose contributions, share findings, and
+challenge decisions. Runtime detail: `extensions/agent/README.md`
 `#peer-threads`.
 
 ## When a thread earns its cost
 
-Create a thread when two or more agents share one purpose, need the same
-operator words and restrictions, or must see each other's findings. Parts
-that look independent still qualify: one part's finding often changes
-another part's answer, and the operator observes the work there. Skip it
-for a single worker; the contract carries the frame. An ordinary primary
-with no agent yet uses direct exchange. Never spawn an agent only to hold a
-thread.
+Create a thread when evolving shared facts, decisions, or coordination among
+several agents need one retained place: one part's findings change another
+part's question, several agents act on the same carried decision and its
+corrections, or the operator wants to follow the exchange there. A shared
+purpose alone does not require one. Independent parts with sufficient briefs
+need none, and direct `agent_send` covers a single exchange. An ordinary
+primary with no agent yet uses direct exchange. Never spawn an agent only to
+hold a thread.
 
 Before creating, list existing threads with `agent_collaborate`
 `action: "list"` and a short `query`. Join a thread whose purpose already
@@ -24,25 +25,19 @@ covers the work instead of creating a duplicate.
 
 A thread lives in a participant's storage:
 
-- **Native Durable orchestrator:** create it in your own storage (the
-  default).
-- **Ordinary primary:** pick an agent the work needs anyway, often the lead
-  or first worker. Spawn it idle (no prompt), create the thread with
-  `sessionId` set to that agent, then send its task with the thread ID. The
-  creator is a member from the start.
+- **Native Durable session:** create it in your own storage (the default).
+- **Ordinary primary:** pick an agent the work needs anyway. Spawn it idle (no
+  prompt), create the thread with `sessionId` set to that agent, then send its
+  task with the thread ID. The creator is a member from the start.
 
 ## Frame
 
-Fill `assets/frame.md`, then convert and check it in one step:
-
-```bash
-node scripts/contract.mts frame <scratch>/frame.md
-```
-
-The command prints frame fields as JSON without an `action`, or names the
-missing and oversized fields and exits nonzero. Set `action: "create"` in a
-new-thread call. For an existing thread, use `{ ...frame, action: "revise",
-threadId }`. Fields:
+Pass the frame fields directly to `agent_collaborate` with
+`action: "create"`; the tool refuses missing or oversized fields. For an
+existing thread, use `{ ...frame, action: "revise", threadId }`. When a long
+or reused frame is easier to keep in a file, fill `assets/frame.md` and
+convert it with `node scripts/contract.mts frame <scratch>/frame.md`, which
+prints the fields as JSON or names missing and oversized fields. Fields:
 
 - **Title:** short and specific to the outcome.
 - **Purpose:** the goal and the use path: what changes for the operator.
@@ -75,7 +70,7 @@ operator decision distinct from your interpretation.
   `references/codemode.md` to read only new events.
 
 No post or notice arms a check-in or requests a reply. A passive notice can
-arrive after a worker's deliverable; contracts therefore put tool calls
+arrive after a contributor's deliverable; assignments therefore put tool calls
 first and the deliverable last.
 
 ## Revise and close
