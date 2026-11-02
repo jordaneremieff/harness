@@ -185,6 +185,10 @@ For a command array whose own exit status matters, set `shell: "none"`.
 This disables both the shell and login wrapper. `shell: "auto"` or an omitted
 shell retains the installed shell/login behaviour, so the reported direct-child
 exit can describe a wrapper rather than the intended inner command.
+A wait or native call without `timeoutMs` uses 30 seconds or the configured cap,
+whichever is lower. A `timeoutMs` above the configured `maxWaitMs` cap is not
+an error: the call uses the cap and `coverage.note` names the deadline it used,
+so the agent knows the observation was shorter than requested.
 It does not observe an inner command typed into a live shell. A wait deadline is
 not a child exit, application failure or service shutdown. Child nonzero exit,
 observer timeout, observer cancellation and missing completion evidence remain
@@ -356,7 +360,7 @@ fresh configuration snapshots, not proof of runtime application.
 |---|---|---|---|---|---|
 | executable | `PI_REX_EXECUTABLE` | string | "rex" | minLength 1; maxLength 4096 | Installed Rex executable name or path. The extension uses the supported CLI without a shell. |
 | maxOutputBytes | `PI_REX_MAX_OUTPUT_BYTES` | integer | 32768 | min 4096; max 1048576 | Maximum combined stdout/stderr bytes retained from one Rex CLI process. Core results have a separate aggregate bound. Capture is not a complete transcript. |
-| maxWaitMs | `PI_REX_MAX_WAIT_MS` | integer | 30000 | min 1000; max 300000 | Deadline cap for each Rex CLI process, in milliseconds. An operation can use several processes. Deadline cancellation does not stop persistent terminal work. |
+| maxWaitMs | `PI_REX_MAX_WAIT_MS` | integer | 120000 | min 1000; max 300000 | Deadline cap for each Rex CLI process, in milliseconds. A request above the cap uses the cap and reports it. An operation can use several processes. Deadline cancellation does not stop persistent terminal work. |
 | maxRecords | `PI_REX_MAX_RECORDS` | integer | 128 | min 2; max 256 | Maximum retained ownership and operation records per caller. |
 <!-- harness:settings:end -->
 

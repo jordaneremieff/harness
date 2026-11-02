@@ -668,13 +668,35 @@ export class RexCore {
 		}
 	}
 
+	/**
+	 * The effective deadline for one request. A request above the configured cap waits for the
+	 * cap instead of failing, and the result names the shorter deadline it actually used.
+	 */
+	private deadline(requested: number | undefined, name: string): { timeoutMs: number; capped: boolean } {
+		const value = boundedInteger(requested ?? Math.min(30000, this.maxWaitMs), 1, 300000, name);
+		return { timeoutMs: Math.min(value, this.maxWaitMs), capped: value > this.maxWaitMs };
+	}
+	private cappedDeadline(response: RexResult, requested: number | undefined): RexResult {
+		const note = `The requested ${requested} ms deadline exceeded the configured ${this.maxWaitMs} ms cap (rex.maxWaitMs); the operation used ${this.maxWaitMs} ms.`;
+		return { ...response, coverage: { ...response.coverage, note: response.coverage.note ? `${note} ${response.coverage.note}` : note } };
+	}
+
 	private async wait(
 		request: Extract<RexRequest, { op: "wait" }>,
 		target: ResolvedTarget,
 		context: RexCallContext,
 	): Promise<RexResult> {
 		requireBlock(target);
-		const timeoutMs = boundedInteger(request.timeoutMs ?? Math.min(30000, this.maxWaitMs), 1, this.maxWaitMs, "wait duration");
+		const { timeoutMs, capped } = this.deadline(request.timeoutMs, "wait duration");
+		const response = await this.observe(request, target, context, timeoutMs);
+		return capped ? this.cappedDeadline(response, request.timeoutMs) : response;
+	}
+	private async observe(
+		request: Extract<RexRequest, { op: "wait" }>,
+		target: ResolvedTarget & { sessionId: string; blockId: string },
+		context: RexCallContext,
+		timeoutMs: number,
+	): Promise<RexResult> {
 		if (request.condition === "child_exit") {
 			const before = object(await this.block("process", {}, target, context));
 			if (before.last_exit)
@@ -790,7 +812,7 @@ export class RexCore {
 				await this.json(["api", "describe", request.method, "--json"], target.server.endpoint, context),
 			);
 		}
-		const timeoutMs = boundedInteger(request.timeoutMs ?? Math.min(30000, this.maxWaitMs), 1, this.maxWaitMs, "native duration");
+		const { timeoutMs, capped } = this.deadline(request.timeoutMs, "native duration");
 		const cli = nativeCommand(request, target);
 		const response = await this.effect(request, target, context, async () => {
 			const raw = await this.cli(cli, target.server.endpoint, context, timeoutMs);
@@ -798,7 +820,7 @@ export class RexCore {
 			return nativeResponse(raw, request.kind);
 		});
 		if (response.ok) response.effects.note = "Outer CLI success only. No inner application outcome was established. Returned failure tables and child results remain application data, even if bulk data is omitted.";
-		return response;
+		return capped ? this.cappedDeadline(response, request.timeoutMs) : response;
 	}
 
 	private async catalog(

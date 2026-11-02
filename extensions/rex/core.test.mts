@@ -658,7 +658,7 @@ test("queued cancellation prevents release, recovery and forgetting at state adm
 	}
 });
 
-test("configured low wait caps supply valid defaults without weakening explicit timeout bounds", async () => {
+test("configured low wait caps supply valid defaults and bound explicit timeouts with a named cap", async () => {
 	const f = fixture({ maxWaitMs: 1000 });
 	const durations: number[] = [];
 	f.transport.handler = (method, _data, call) => {
@@ -669,9 +669,15 @@ test("configured low wait caps supply valid defaults without weakening explicit 
 	assert.equal((await f.core.execute({ op: "wait", condition: "child_exit", target }, context)).ok, true);
 	assert.equal((await f.core.execute({ op: "native", kind: "api", method: "new.capability", target }, { ...context, callId: "native-default" })).ok, true);
 	assert.deepEqual(durations, [1000]);
-	assert.equal((await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 1001, target }, context)).ok, false);
-	assert.equal((await f.core.execute({ op: "native", kind: "api", method: "new.capability", timeoutMs: 1001, target }, { ...context, callId: "native-explicit" })).ok, false);
-	assert.deepEqual(durations, [1000]);
+	const cappedWait = await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 45000, target }, context);
+	assert.equal(cappedWait.ok, true);
+	assert.match(cappedWait.coverage.note ?? "", /requested 45000 ms deadline exceeded the configured 1000 ms cap/);
+	const cappedNative = await f.core.execute({ op: "native", kind: "api", method: "new.capability", timeoutMs: 45000, target }, { ...context, callId: "native-explicit" });
+	assert.equal(cappedNative.ok, true);
+	assert.deepEqual(durations, [1000, 1000]);
+	assert.match(cappedNative.coverage.note ?? "", /used 1000 ms/);
+	assert.equal((await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 300001, target }, context)).ok, false);
+	assert.deepEqual(durations, [1000, 1000]);
 });
 
 test("native actions distinguish absent arguments from explicit objects without changing Lua", async () => {
