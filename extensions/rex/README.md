@@ -11,8 +11,8 @@ It does not replace Bash, Jobs, Agent, Policy, Rex configuration or Rex's skill.
 | Tool | Operations | Contract |
 |---|---|---|
 | `rex_environment` | `environment`, `resolve` | Discover the selected server, sessions and clients; resolve session, window, block or client selectors. Return full IDs and server identity. |
-| `rex_terminal` | `create`, `inspect`, `input` | Establish persistent sessions, windows or splits; inspect structure, capture, process or program status; deliver application text and keys. |
-| `rex_wait` | `wait` | Observe direct child exit, literal text or a reported status. Combine bounded live events with current snapshots. |
+| `rex_terminal` | `create`, `inspect`, `input` | Establish persistent sessions, windows or splits, optionally shown to the operator; inspect structure, the most recent output, process or program status; deliver application text and keys. |
+| `rex_wait` | `wait` | Observe direct child exit with its exit status and most recent output, literal text in the most recent output, or a reported status. Combine bounded live events with current snapshots. |
 | `rex_native` | `native` | Retrieve the installed method catalogue or one method's schema; call an API, execute Lua or invoke an existing action. |
 | `rex_owned` | `owned`, `reconcile`, `cleanup` | Revisit this caller's effects and resources, inspect current state after interruption, close only recorded owned blocks, or forget closed records. |
 | `rex_status` | `snapshot`, `bind`, `unbind` | Inspect cooperating programs' reports beside actual current host activity. Optionally retain one verified inspection target per caller. |
@@ -141,8 +141,12 @@ input to the terminal that hosts the agent.
 For an owned interactive application, use `rex_terminal` with `op: "create"`,
 `kind: "session"`, a useful `label`, and a command array such as
 `["node", "--interactive"]`. New windows and splits use an explicit existing
-session or anchor block. Creation preserves completed output and does not request
-focus for new windows or splits. Save the returned target and effect record ID.
+session or anchor block. Creation preserves completed output. A new window or
+split does not take focus unless the request sets `focus: true`; use that when
+the operator asked to see the work, such as a diff tab or a test run. A new
+session cannot be shown this way; `focus` is refused there, and a client action
+such as `session.select` displays it. Save the returned target and effect
+record ID.
 
 Use `inspect` before application input. Deliver text with `input`; add keys such
 as `enter` when the application needs them. `observe: true` returns a subsequent
@@ -156,6 +160,25 @@ message, a cooperating program's status, or an independent service request as
 appropriate evidence. Inspect the same IDs after an interruption. Start dependent
 work only after the prerequisite's relevant outcome is observed; unrelated work
 need not stop.
+
+## Read the most recent output
+
+`inspect` with `view: "capture"` (and the capture inside `view: "summary"`)
+returns the end of the terminal's screen and retained scrollback, up to
+`maxBytes` as Rex measures JSON-encoded text. Rex itself returns the first part
+of long output; when the output exceeds the bound, the extension reads the last
+`maxBytes` through the same result's continuation and drops a partial leading
+line. The data reports `content`, the byte `total` of the whole output, and the
+`start` and `end` byte offsets the content covers. `coverage.truncated` is true
+when earlier output was left out or the end was not reached. The beginning of
+long output remains reachable through `rex_native` with the `format` and
+`blob_read` block methods.
+
+The `text` wait condition matches against the same most recent output, so a
+readiness line printed after a long build log still matches. A `child_exit`
+completion result carries the exit status beside a best-effort `capture` of the
+most recent output, or `captureError` when that read failed; one wait therefore
+answers both whether a test run ended and what it printed last.
 
 `child_exit` observes the program Rex launched as the terminal's direct child.
 For a command array whose own exit status matters, set `shell: "none"`.

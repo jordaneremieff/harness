@@ -43,6 +43,7 @@ export type RexRequest =
 			shell?: string;
 			direction?: "right" | "left" | "above" | "below";
 			ratio?: number;
+			focus?: boolean;
 	  })
 	| (RequestBase & {
 			op: "inspect";
@@ -127,6 +128,20 @@ export interface RexCoreOptions {
 export function resultByteLimit(maxOutputBytes: number): number {
 	return maxOutputBytes + 98304;
 }
+
+/**
+ * A bounded slice of a terminal's screen and scrollback: bytes `start` to `end` of `total`.
+ * Content that reaches `total` ends with the most recent output, which is what readiness
+ * and completion checks need.
+ */
+export interface Capture {
+	content: string;
+	total: number;
+	start: number;
+	end: number;
+}
+/** Continuation reads that assemble a tail when the first bounded reply stops short of the end. */
+const TAIL_READS = 4;
 
 export class RexCore {
 	private readonly transport: RexTransport;
@@ -267,6 +282,48 @@ export class RexCore {
 			target.server,
 			context,
 		);
+	}
+	/**
+	 * Read the most recent output up to `maxBytes` (JSON-encoded, as Rex measures it). Rex
+	 * returns the first part of long output, so when output exceeds the bound the end is read
+	 * through the same result's continuation ID from the last `maxBytes` of the whole output.
+	 */
+	private async capture(target: ResolvedTarget, context: RexCallContext, maxBytes: number): Promise<Capture> {
+		const first = object(
+			await this.block("format", { format: "text", trim: true, unwrap: true, max_bytes: maxBytes }, target, context),
+		);
+		const content = typeof first.content === "string" ? first.content : "";
+		const total = typeof first.total === "number" ? first.total : Buffer.byteLength(content);
+		if (typeof first.id !== "number" || first.eof === true) return { content, total, start: 0, end: total };
+		let offset = Math.max(0, total - maxBytes);
+		const parts: string[] = [];
+		let eof = false;
+		for (let reads = 0; reads < TAIL_READS && !eof; reads++) {
+			const part = object(
+				await this.block("blob_read", { id: first.id, offset, max_bytes: maxBytes }, target, context),
+			);
+			const data = typeof part.data === "string" ? part.data : "";
+			eof = part.eof === true;
+			if (data.length === 0) break;
+			parts.push(data);
+			offset += Buffer.byteLength(data);
+		}
+		const tail = tailText(parts.join(""), maxBytes);
+		return { content: tail, total, start: offset - Buffer.byteLength(tail), end: offset };
+	}
+	/** Best-effort recent output beside a completion result; a capture failure never hides the exit. */
+	private async captureOutput(
+		target: ResolvedTarget,
+		context: RexCallContext,
+	): Promise<{ capture: Capture } | { captureError: string }> {
+		try {
+			return { capture: await this.capture(target, context, this.defaultCaptureBytes()) };
+		} catch (error) {
+			return { captureError: errorText(error) };
+		}
+	}
+	private defaultCaptureBytes(): number {
+		return Math.min(16384, Math.floor(this.maxOutputBytes / 4));
 	}
 	private async selectServer(intent: TargetIntent | undefined, context: RexCallContext): Promise<ServerRef> {
 		const selection = intent?.server ?? this.options.server ?? this.env.REX_SERVER;
@@ -505,21 +562,19 @@ export class RexCore {
 		}
 		requireBlock(target);
 		const maxBytes = boundedInteger(
-			request.maxBytes ?? Math.min(16384, Math.floor(this.maxOutputBytes / 4)),
+			request.maxBytes ?? this.defaultCaptureBytes(),
 			256,
 			Math.floor(this.maxOutputBytes / 2),
 			"capture bytes",
 		);
 		if (view === "capture") {
-			const data = object(
-				await this.block("format", { format: "text", trim: true, unwrap: true, max_bytes: maxBytes }, target, context),
-			);
+			const data = await this.capture(target, context, maxBytes);
 			return {
 				...result(true, "capture", target, data),
 				coverage: {
 					bounded: true,
-					truncated: data.id !== undefined || data.eof === false,
-					note: "First bounded part of current screen and retained scrollback, not a complete transcript. Alternate screens contain the visible application only.",
+					truncated: captureTruncated(data),
+					note: "Most recent bounded part of current screen and retained scrollback, not a complete transcript. Alternate screens contain the visible application only.",
 				},
 			};
 		}
@@ -535,7 +590,7 @@ export class RexCore {
 			this.block("process", {}, target, context),
 			this.block("modes", {}, target, context),
 			this.block("program_status", {}, target, context),
-			this.block("format", { format: "text", trim: true, unwrap: true, max_bytes: maxBytes }, target, context),
+			this.capture(target, context, maxBytes),
 		]);
 		return {
 			...result(true, "snapshot", target, {
@@ -548,7 +603,7 @@ export class RexCore {
 			}),
 			coverage: {
 				bounded: true,
-				truncated: object(capture).id !== undefined,
+				truncated: captureTruncated(capture),
 				note: "Independent current snapshots, not an atomic view or a complete transcript. Block API schemas require explicit native discovery.",
 			},
 		};
@@ -622,7 +677,8 @@ export class RexCore {
 		const timeoutMs = boundedInteger(request.timeoutMs ?? Math.min(30000, this.maxWaitMs), 1, this.maxWaitMs, "wait duration");
 		if (request.condition === "child_exit") {
 			const before = object(await this.block("process", {}, target, context));
-			if (before.last_exit) return childResult(target, before, "current process snapshot");
+			if (before.last_exit)
+				return childResult(target, before, "current process snapshot", await this.captureOutput(target, context));
 			const deadline = Date.now() + timeoutMs;
 			const observer = await this.cli(
 				["wait", "-s", target.sessionId, target.blockId, "--for", `${timeoutMs}ms`, "--json"],
@@ -637,7 +693,12 @@ export class RexCore {
 				/* Return the observer result when the resource disappeared. */
 			}
 			if (object(after).last_exit)
-				return childResult(target, object(after), "current process snapshot after native event-informed wait");
+				return childResult(
+					target,
+					object(after),
+					"current process snapshot after native event-informed wait",
+					await this.captureOutput(target, context),
+				);
 			const response = cliResult(observer);
 			return {
 				...response,
@@ -701,12 +762,7 @@ export class RexCore {
 			const seen = observer.generation;
 			observation.snapshot =
 				request.condition === "text"
-					? await this.block(
-							"format",
-							{ format: "text", trim: true, unwrap: true, max_bytes: Math.min(16384, Math.floor(this.maxOutputBytes / 4)) },
-							target,
-							context,
-						)
+					? await this.capture(target, context, this.defaultCaptureBytes())
 					: await this.block("program_status", {}, target, context);
 			observation.snapshots++;
 			observation.matched = conditionMatches(request, observation.snapshot);
@@ -1202,6 +1258,22 @@ function boundedDiagnosticText(value: string, maxBytes: number): string {
 	return unicodePrefix(value, low) + marker;
 }
 
+/** The end of `text` whose JSON encoding fits `maxBytes`, starting at a line boundary when one exists. */
+function tailText(text: string, maxBytes: number): string {
+	let value = text;
+	let trimmed = false;
+	while (value.length > 0 && jsonBytes(value) > maxBytes) {
+		let start = jsonBytes(value) - maxBytes;
+		if (start < value.length && value.charCodeAt(start) >= 0xdc00 && value.charCodeAt(start) <= 0xdfff) start++;
+		value = value.slice(start);
+		trimmed = true;
+	}
+	const newline = value.indexOf("\n");
+	return trimmed && newline >= 0 && newline < value.length - 1 ? value.slice(newline + 1) : value;
+}
+function captureTruncated(capture: Capture): boolean {
+	return capture.start > 0 || capture.end < capture.total;
+}
 function unicodePrefix(value: string, end: number): string {
 	const previous = value.charCodeAt(end - 1);
 	const next = value.charCodeAt(end);
@@ -1305,6 +1377,8 @@ function createLayout(request: CreateRequest): Record<string, unknown> {
 	if (request.cwd !== undefined && (!boundedText(request.cwd, 4096) || !request.cwd.startsWith("/")))
 		throw new Error("Use an absolute cwd on the selected server.");
 	if (request.shell !== undefined && !boundedText(request.shell, 4096)) throw new Error("Rex shell is invalid.");
+	if (request.kind === "session" && request.focus !== undefined)
+		throw new Error("focus applies to window and split creation. Display a new session through a client action.");
 	return {
 		block: {
 			flavor: "com.superlogical.terminal.shell",
@@ -1339,7 +1413,7 @@ function creationCall(
 	if (request.kind === "window")
 		return {
 			method: "session.new_window",
-			args: { session_id: target.sessionId, window_label: request.label, layout, focus: false },
+			args: { session_id: target.sessionId, window_label: request.label, layout, focus: request.focus ?? false },
 		};
 	requireBlock(target);
 	const direction = request.direction ?? "right";
@@ -1354,7 +1428,7 @@ function creationCall(
 			side: before ? "before" : "after",
 			ratio: before ? ratio : 1 - ratio,
 			layout,
-			focus: false,
+			focus: request.focus ?? false,
 		},
 	};
 }
@@ -1541,7 +1615,9 @@ function conditionResult(
 		}),
 		coverage: {
 			bounded: true,
-			truncated: object(observation.snapshot).id !== undefined || observer.eventCount > observer.events.length,
+			truncated:
+				(request.condition === "text" && captureTruncated(observation.snapshot as Capture)) ||
+				observer.eventCount > observer.events.length,
 			note: "Live events have no replay guarantee. Current snapshots cover missed events, not lost history. The terminal remains independent of this observer.",
 		},
 	};
@@ -1687,11 +1763,24 @@ function childObservationOutcome(observer: CliResult, deadline: number): string 
 	if (observer.outcome !== "exited" || observer.exitCode !== 0) return "observation_failed";
 	return "completion_unknown";
 }
-function childResult(target: ResolvedTarget, process: Record<string, unknown>, evidence: string): RexResult {
+function childResult(
+	target: ResolvedTarget,
+	process: Record<string, unknown>,
+	evidence: string,
+	output: { capture: Capture } | { captureError: string },
+): RexResult {
 	const exit = object(process.last_exit);
-	return result(exit.exit_code === 0, exit.exit_code === 0 ? "child_completed" : "child_failed", target, {
-		process,
-		evidence,
-		meaning: "The terminal's direct child exited. This says nothing about an inner shell command or service readiness.",
-	});
+	return {
+		...result(exit.exit_code === 0, exit.exit_code === 0 ? "child_completed" : "child_failed", target, {
+			process,
+			...output,
+			evidence,
+			meaning: "The terminal's direct child exited. This says nothing about an inner shell command or service readiness.",
+		}),
+		coverage: {
+			bounded: true,
+			truncated: "capture" in output && captureTruncated(output.capture),
+			note: "The capture is the most recent bounded output after exit, not a complete transcript.",
+		},
+	};
 }

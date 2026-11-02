@@ -464,6 +464,118 @@ test("odd output limits produce integer default capture and text-wait byte bound
 	assert.ok(bounds.every((bound) => bound === 1024));
 });
 
+/** A terminal whose output exceeds one bounded reply, served the way Rex pages a format result. */
+function longOutputFixture(lines: string[], maxBytes: number) {
+	const f = fixture({ maxOutputBytes: maxBytes * 4 });
+	const whole = Buffer.from(lines.join("\n"));
+	const part = (offset: number) => {
+		let end = Math.min(whole.length, offset + Math.floor(maxBytes * 0.9));
+		while (end < whole.length && ((whole[end] ?? 0) & 0xc0) === 0x80) end++;
+		return { data: whole.subarray(offset, end).toString(), eof: end >= whole.length };
+	};
+	f.transport.handler = (method, data) => {
+		const args = data.args as Record<string, number>;
+		if (method === "com.superlogical.terminal.format") {
+			assert.equal(args.max_bytes, maxBytes);
+			const first = part(0);
+			return reply(first.eof ? { content: first.data, total: whole.length, eof: true } : { content: first.data, total: whole.length, id: 7 });
+		}
+		if (method === "com.superlogical.terminal.blob_read") {
+			assert.equal(args.id, 7);
+			assert.ok(args.max_bytes <= maxBytes);
+			return reply({ id: 7, total: whole.length, ...part(args.offset ?? 0) });
+		}
+		return undefined;
+	};
+	return { ...f, whole };
+}
+
+test("capture returns the most recent output when scrollback exceeds the bound", async () => {
+	const lines = Array.from({ length: 400 }, (_, index) => `build output line ${index} with enough text to exceed the bound`);
+	lines.push("READY on http://localhost:3000");
+	const f = longOutputFixture(lines, 4096);
+	const response = await f.core.execute({ op: "inspect", view: "capture", target }, context);
+	const data = response.data as { content: string; total: number; start: number; end: number };
+	assert.equal(response.ok, true);
+	assert.ok(data.content.endsWith("READY on http://localhost:3000"), "the end of the output is returned");
+	assert.ok(data.content.startsWith("build output line "), "the slice starts at a line boundary");
+	assert.ok(Buffer.byteLength(JSON.stringify(data.content)) <= 4096);
+	assert.equal(data.total, f.whole.length);
+	assert.equal(data.end, f.whole.length);
+	assert.equal(data.start, f.whole.length - Buffer.byteLength(data.content));
+	assert.equal(response.coverage.truncated, true);
+	const reads = f.transport.calls.filter((call) => call.method === "com.superlogical.terminal.blob_read");
+	assert.ok(reads.length >= 2 && reads.length <= 4, `continuation reads: ${reads.length}`);
+	assert.equal((reads[0]?.data.args as Record<string, number> | undefined)?.offset, f.whole.length - 4096);
+});
+
+test("capture keeps multibyte output whole and short output unchanged", async () => {
+	const lines = Array.from({ length: 300 }, (_, index) => `ééééééééééé 日本語テキスト ${index}`);
+	lines.push("END-MB");
+	const long = longOutputFixture(lines, 2048);
+	const data = (await long.core.execute({ op: "inspect", view: "capture", target }, context)).data as { content: string; start: number; end: number };
+	assert.ok(data.content.endsWith("END-MB"));
+	assert.ok(!data.content.includes("\ufffd"));
+	assert.match(data.content, /^ééééééééééé 日本語テキスト \d+\n/);
+	assert.equal(data.start, long.whole.length - Buffer.byteLength(data.content));
+	const short = longOutputFixture(["$ npm test", "all green"], 2048);
+	const response = await short.core.execute({ op: "inspect", view: "capture", target }, context);
+	assert.deepEqual(response.data, { content: "$ npm test\nall green", total: short.whole.length, start: 0, end: short.whole.length });
+	assert.equal(response.coverage.truncated, false);
+	assert.equal(short.transport.calls.some((call) => call.method === "com.superlogical.terminal.blob_read"), false);
+});
+
+test("text readiness matches a marker printed after more output than one bounded reply", async () => {
+	const lines = Array.from({ length: 400 }, (_, index) => `compiling module ${index} ... done`);
+	lines.push("Local: http://localhost:5173/");
+	const f = longOutputFixture(lines, 4096);
+	const response = await f.core.execute({ op: "wait", condition: "text", text: "Local: http://localhost:5173/", timeoutMs: 1000, target }, context);
+	assert.equal(response.outcome, "condition_observed");
+	assert.equal(response.ok, true);
+	assert.equal(response.coverage.truncated, true);
+	const summary = await f.core.execute({ op: "inspect", view: "summary", target }, context);
+	assert.ok(((summary.data as { capture: { content: string } }).capture.content).endsWith("Local: http://localhost:5173/"));
+});
+
+test("child exit results carry the most recent output and survive a capture failure", async () => {
+	const f = fixture();
+	f.transport.handler = (method) => {
+		if (method === "com.superlogical.terminal.process") return reply({ last_exit: { exit_code: 1, error: "exit status 1" } });
+		if (method === "com.superlogical.terminal.format") return reply({ content: "1 failing\n  AssertionError: expected 2 to equal 3", total: 46, eof: true });
+		return undefined;
+	};
+	const failed = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
+	assert.equal(failed.outcome, "child_failed");
+	const data = failed.data as { capture: { content: string; start: number; end: number }; process: { last_exit: { exit_code: number } } };
+	assert.equal(data.process.last_exit.exit_code, 1);
+	assert.match(data.capture.content, /AssertionError/);
+	assert.equal(failed.coverage.truncated, false);
+	f.transport.handler = (method) => {
+		if (method === "com.superlogical.terminal.process") return reply({ last_exit: { exit_code: 0 } });
+		if (method === "com.superlogical.terminal.format") return { ...reply({}), outcome: "timeout", exitCode: null };
+		return undefined;
+	};
+	const completed = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
+	assert.equal(completed.outcome, "child_completed");
+	assert.equal(completed.ok, true);
+	assert.equal(typeof (completed.data as { captureError?: string }).captureError, "string");
+	assert.equal("capture" in (completed.data as object), false);
+});
+
+test("creation focus is explicit for windows and splits and refused for sessions", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "window", label: "Tests", focus: true, target: { session } }, { ...context, callId: "window" });
+	await f.core.execute({ op: "create", kind: "split", label: "Logs", target: { session, block } }, { ...context, callId: "split" });
+	await f.core.execute({ op: "create", kind: "split", label: "Shown", focus: true, target: { session, block } }, { ...context, callId: "shown" });
+	const focus = f.transport.calls.filter((call) => call.method === "session.new_window" || call.method === "session.new_split").map((call) => call.data.focus);
+	assert.deepEqual(focus, [true, false, true]);
+	const refused = await f.core.execute({ op: "create", kind: "session", label: "Project", focus: true }, { ...context, callId: "session" });
+	assert.equal(refused.ok, false);
+	assert.equal(refused.effects.state, "none");
+	assert.match(refused.error ?? "", /focus applies to window and split/);
+	assert.equal(f.transport.calls.some((call) => call.method === "session.create"), false);
+});
+
 test("cleanup acknowledgement preserves released original and attempt claims without revival", async () => {
 	const f = fixture();
 	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
