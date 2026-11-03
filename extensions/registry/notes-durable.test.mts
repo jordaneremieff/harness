@@ -1,3 +1,4 @@
+import { obj, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,7 +11,6 @@ import { createEventBus } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
-import { Type } from "typebox";
 import { createRegistryDurableContribution, type RegistryDurableHost } from "./durable.ts";
 
 async function fixture() {
@@ -37,13 +37,13 @@ async function fixture() {
 	const extension = await createRegistryDurableContribution("/fixture/registry/index.ts", createEventBus()).create(host);
 	const registry = Durable.createRegistry(); registry.install(extension);
 	registry.install(Durable.defineExtension({ name: "files", tools: [createReadTool(),
-		Durable.defineTool({ name: "middle", description: "Read through a nested call", parameters: Type.Object({ path: Type.String() }), replay: "safe",
+		Durable.defineTool({ name: "middle", description: "Read through a nested call", parameters: obj({ path: str() }, { open: true }), replay: "safe",
 			execute: async (args, api, context) => {
 				const result = await api.executeTool("read", args, context);
 				assert.equal(JSON.stringify(result.structuredOutput).includes("[registry]"), false);
 				return { output: [{ type: "text", text: "middle result" }] };
 			} }),
-		Durable.defineTool({ name: "outer", description: "Read through two nested calls", parameters: Type.Object({ path: Type.String() }), replay: "safe",
+		Durable.defineTool({ name: "outer", description: "Read through two nested calls", parameters: obj({ path: str() }, { open: true }), replay: "safe",
 			execute: async (args, api, context) => {
 				const result = await api.executeTool("middle", args, context);
 				assert.equal(JSON.stringify(result.structuredOutput).includes("[registry]"), false);

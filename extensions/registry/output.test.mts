@@ -1,7 +1,6 @@
+import { compile, obj, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { Type } from "typebox";
-import { compile } from "@earendil-works/pi-schema";
 import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { readSnapshot } from "./index.ts";
 import { lookup, type LookupRequest, type LookupResult } from "./lookup.ts";
@@ -12,7 +11,7 @@ import type { ModelSnapshot } from "./models.ts";
 
 const sourceInfo = { path: "/fixtures/guide.md", source: "fixture", scope: "temporary" as const, origin: "top-level" as const };
 const snapshot = (): HostSnapshot => ({ tools: ["a", "b"].map((name) => ({ name, sourceInfo, exposure: "direct",
-	parameters: Type.Object({ path: Type.String() }), promptGuidelines: ["Read the source."] })), activeTools: ["a"], callableTools: ["b"],
+	parameters: obj({ path: str() }, { open: true }), promptGuidelines: ["Read the source."] })), activeTools: ["a"], callableTools: ["b"],
 	commands: [{ name: "guide", source: "prompt", sourceInfo }], observation: null,
 	availability: { tools: true, activeTools: true, callableTools: true, commands: true }, at: 1000 });
 const models: ModelSnapshot = { catalogAvailable: true, availableSnapshot: true, catalogError: false, scopeConfigured: false, scopeOrder: null,
@@ -60,6 +59,22 @@ describe("native structured registry output", () => {
 		}
 		assert.deepEqual([...outcomes].sort(), ["ambiguous", "cancelled", "host_summary", "invalid_arguments", "io_error", "missing", "ok", "partial", "stale_cursor", "unavailable"]);
 	});
+	it("keeps optional fields, arbitrary parameter schemas and closed registry records", async () => {
+		const validate = compile(RegistryOutputSchema);
+		const result = (await run({ kind: "tool", name: "a", detail: true })).structuredContent;
+		const records = result.records as Record<string, unknown>[];
+		const record = records[0];
+		const page = (value: unknown) => ({ ...result, records: [value] });
+		assert.equal(validate.check(page({ ...record, parameters: { $defs: {}, arbitrary: [null, 1, "x"] } })), true);
+		assert.equal(validate.check(page({ ...record, parameters: null })), true);
+		assert.equal(validate.check(page({ ...record, parameters: [] })), false);
+		assert.equal(validate.check(page({ ...record, extra: true })), false);
+		assert.equal(validate.check(page({ ...record, namespace: { name: "fixture" } })), true);
+		assert.equal(validate.check(page({ ...record, namespace: { name: "fixture", extra: true } })), false);
+		assert.equal(validate.check(page({ ...record, kind: "other" })), false);
+		assert.equal(validate.check({ ...result, returnedRecords: -1 }), false);
+		assert.equal(validate.check({ ...result, records: Array.from({ length: 101 }, () => record) }), false);
+	});
 	it("retains the chat-only evidence for model misses, health reviews and bounded pages", async () => {
 		for (const params of [{ kind: "model", name: "cloudflare-workers-ai/@cf/cloudflare/clef" }, { kind: "model", health: true }]) {
 			const result = validate(await run(params));
@@ -87,7 +102,7 @@ describe("native structured registry output", () => {
 		validate({ ...outer, outcome: "unavailable" });
 		assert.equal(outer.details.omittedDetails, true);
 		assert.deepEqual(outer.structuredContent.records, []);
-		const hugeSource = snapshot(); hugeSource.tools[0].parameters = Type.Object({ payload: Type.String({ description: "x".repeat(50000) }) });
+		const hugeSource = snapshot(); hugeSource.tools[0].parameters = obj({ payload: str({ description: "x".repeat(50000) }) }, { open: true });
 		const detail = validate(await run({ kind: "tool", name: "a", detail: true }, { snapshot: hugeSource }));
 		assert.equal(detail.details.pageBlocked, true);
 		const manyLines = snapshot(); manyLines.tools[0].promptGuidelines = Array.from({ length: 1100 }, () => "x");
@@ -95,7 +110,7 @@ describe("native structured registry output", () => {
 		assert.equal(lineBound.details.pageBlocked, true);
 	});
 	it("retains exposure metadata and samples callable membership independently", async () => {
-		const metadata = { name: "a", description: "a", parameters: Type.Object({}), sourceInfo, exposure: "hidden" as const,
+		const metadata = { name: "a", description: "a", parameters: obj({}, { open: true }), sourceInfo, exposure: "hidden" as const,
 			namespace: { name: "fixture", description: "group" }, annotations: { readOnlyHint: true, openWorldHint: false } };
 		const pi = { getAllTools: () => [metadata], getActiveTools: () => ["a"], getCommands: () => [] } as unknown as ExtensionAPI;
 		const ctx = { tools: [] } as Pick<ExtensionToolContext, "tools">;

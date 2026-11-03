@@ -1,7 +1,6 @@
+import { compile, obj } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { Type } from "typebox";
-import { compile } from "@earendil-works/pi-schema";
 import { createCodemodeExtension, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import registerRegistry from "./index.ts";
@@ -12,7 +11,7 @@ it("native codemode receives registry objects and filters records without parsin
 	const definitions = new Map<string, ToolDefinition>();
 	const sourceInfo = { path: "builtin:fixture", source: "builtin", scope: "temporary" as const, origin: "top-level" as const };
 	const pi = { on: () => () => {}, events: { emit: () => {}, on: () => () => {} }, registerTool: (tool: ToolDefinition) => definitions.set(tool.name, tool),
-		getAllTools: () => [{ name: "sample", description: "read a fixture", parameters: Type.Object({}), exposure: "codemode",
+		getAllTools: () => [{ name: "sample", description: "read a fixture", parameters: obj({}, { open: true }), exposure: "codemode",
 			namespace: { name: "fixture", aliases: ["reference-guide"] }, annotations: { readOnlyHint: true }, sourceInfo }],
 		getActiveTools: () => [], getCommands: () => [], getSettings: () => ({}), appendEntry: () => { throw new Error("No store writes expected"); },
 	} as unknown as ExtensionAPI;
@@ -26,7 +25,7 @@ it("native codemode receives registry objects and filters records without parsin
 		cwd: "/fixtures", mode: "print", hasUI: false,
 		sessionManager: { getBranch: () => [] },
 		tools: [{ ...registry, execute: async () => { throw new Error("Use nested dispatch"); } },
-			{ name: "sample", label: "sample", description: "fixture", parameters: Type.Object({}),
+			{ name: "sample", label: "sample", description: "fixture", parameters: obj({}, { open: true }),
 				execute: async () => { throw new Error("Discovery must not execute discovered tools"); } }] as AgentTool[],
 		executeTool: async (name: string, args: unknown) => {
 			assert.equal(name, "registry");

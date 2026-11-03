@@ -1,109 +1,105 @@
-import { Type } from "typebox";
+import { arr, bool, int, lit, map, nul, num, obj, oneOf, opt, str, union, unknown } from "@earendil-works/pi-schema";
 import { AUTH_SOURCES } from "./models.ts";
 
-/** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
-const StringEnum = <T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: values });
-
 // Aggregate byte/line limits apply before publication, including both structured copies.
-const text = Type.String({ maxLength: 50 * 1024 });
-const count = Type.Integer({ minimum: 0 });
-const nullableBoolean = Type.Union([Type.Boolean(), Type.Null()]);
-const nullableNumber = Type.Union([Type.Number(), Type.Null()]);
-const nullableText = Type.Union([text, Type.Null()]);
-const strings = Type.Array(text, { maxItems: 25600 });
-const closed = { additionalProperties: false };
-const evidence = StringEnum(["registration", "observation", "file_content"]);
-const sourceInfo = Type.Object({ path: text, source: text,
-	scope: StringEnum(["user", "project", "temporary"]), origin: StringEnum(["package", "top-level"]),
-	baseDir: Type.Optional(text) }, closed);
-const attestedBoolean = Type.Object({ value: Type.Boolean(), evidence, at: Type.Number() }, closed);
-const attestedText = Type.Object({ value: text, evidence, at: Type.Number() }, closed);
-const resource = Type.Object({
-	kind: StringEnum(["tool", "command", "skill", "prompt"]), name: text, sourceInfo, evidence, at: Type.Number(),
-	description: Type.Optional(text), invocation: Type.Optional(text), configured: Type.Optional(Type.Boolean()),
-	active: Type.Optional(Type.Boolean()), callable: Type.Optional(Type.Boolean()),
-	callableEvidence: Type.Optional(StringEnum(["tool_context", "durable_agent"])), modelDeclared: Type.Optional(Type.Null()),
-	exposure: Type.Optional(StringEnum(["direct", "model-only", "codemode", "deferred", "hidden"])),
-	namespace: Type.Optional(Type.Object({ name: text, aliases: Type.Optional(strings), description: Type.Optional(text),
-		instructionsOmitted: Type.Optional(Type.Literal(true, { description: "Pi supplied namespace instructions that registry does not carry. Read them with codemode describeNamespace(name)." })) }, closed)),
-	annotations: Type.Optional(Type.Object({ readOnlyHint: Type.Optional(Type.Boolean()), destructiveHint: Type.Optional(Type.Boolean()),
-		idempotentHint: Type.Optional(Type.Boolean()), openWorldHint: Type.Optional(Type.Boolean()) }, closed)),
+const text = str({ maxLength: 50 * 1024 });
+const count = int({ minimum: 0 });
+const nullableBoolean = union([bool(), nul()]);
+const nullableNumber = union([num(), nul()]);
+const nullableText = union([text, nul()]);
+const strings = arr(text, { maxItems: 25600 });
+const evidence = oneOf(["registration", "observation", "file_content"]);
+const sourceInfo = obj({ path: text, source: text,
+	scope: oneOf(["user", "project", "temporary"]), origin: oneOf(["package", "top-level"]),
+	baseDir: opt(text) });
+const attestedBoolean = obj({ value: bool(), evidence, at: num() });
+const attestedText = obj({ value: text, evidence, at: num() });
+const resource = obj({
+	kind: oneOf(["tool", "command", "skill", "prompt"]), name: text, sourceInfo, evidence, at: num(),
+	description: opt(text), invocation: opt(text), configured: opt(bool()),
+	active: opt(bool()), callable: opt(bool()),
+	callableEvidence: opt(oneOf(["tool_context", "durable_agent"])), modelDeclared: opt(nul()),
+	exposure: opt(oneOf(["direct", "model-only", "codemode", "deferred", "hidden"])),
+	namespace: opt(obj({ name: text, aliases: opt(strings), description: opt(text),
+		instructionsOmitted: opt(lit(true, { description: "Pi supplied namespace instructions that registry does not carry. Read them with codemode describeNamespace(name)." })) })),
+	annotations: opt(obj({ readOnlyHint: opt(bool()), destructiveHint: opt(bool()),
+		idempotentHint: opt(bool()), openWorldHint: opt(bool()) })),
 	// Registered parameter schemas are arbitrary JSON Schema, not registry-owned fields.
-	parameters: Type.Optional(Type.Union([Type.Record(Type.String(), Type.Unknown()), Type.Null()])),
-	promptGuidelines: Type.Optional(strings), modelInvocable: Type.Optional(attestedBoolean), baseDir: Type.Optional(attestedText),
-	observationIdentityMismatch: Type.Optional(Type.Boolean()),
-}, closed);
-const finding = Type.Object({ code: StringEnum(["expiry_marker", "selected_not_in_catalog", "selected_auth_missing", "metadata_conflict"]),
-	reason: text, boundary: text, fields: Type.Optional(strings), duplicateRecords: Type.Optional(count) }, closed);
-const priceRates = { input: Type.Number(), output: Type.Number(), cacheRead: Type.Number(), cacheWrite: Type.Number() };
-const catalogCost = Type.Union([Type.Object({ ...priceRates, tiers: Type.Optional(Type.Array(
-	Type.Object({ ...priceRates, inputTokensAbove: Type.Number() }, closed))) }, closed), Type.Null()]);
-const settingsScope = Type.Object({ status: StringEnum(["available", "absent", "unavailable"]),
-	patterns: Type.Union([strings, Type.Null()]), observedAt: Type.Number() }, closed);
-const model = Type.Object({
-	kind: Type.Literal("model"), name: text, provider: text, id: text, displayName: text,
-	catalog: Type.Boolean(), selected: Type.Boolean(), reasoning: Type.Boolean(), input: strings,
-	contextWindow: Type.Number(), maxTokens: Type.Number(), supportedThinkingLevels: strings,
+	parameters: opt(union([map(unknown()), nul()])),
+	promptGuidelines: opt(strings), modelInvocable: opt(attestedBoolean), baseDir: opt(attestedText),
+	observationIdentityMismatch: opt(bool()),
+});
+const finding = obj({ code: oneOf(["expiry_marker", "selected_not_in_catalog", "selected_auth_missing", "metadata_conflict"]),
+	reason: text, boundary: text, fields: opt(strings), duplicateRecords: opt(count) });
+const priceRates = { input: num(), output: num(), cacheRead: num(), cacheWrite: num() };
+const catalogCost = union([obj({ ...priceRates, tiers: opt(arr(
+	obj({ ...priceRates, inputTokensAbove: num() }))) }), nul()]);
+const settingsScope = obj({ status: oneOf(["available", "absent", "unavailable"]),
+	patterns: union([strings, nul()]), observedAt: num() });
+const model = obj({
+	kind: lit("model"), name: text, provider: text, id: text, displayName: text,
+	catalog: bool(), selected: bool(), reasoning: bool(), input: strings,
+	contextWindow: num(), maxTokens: num(), supportedThinkingLevels: strings,
 	available: nullableBoolean, configuredAuth: nullableBoolean, extensionProvider: nullableBoolean, inScope: nullableBoolean,
-	oauth: nullableBoolean, subscriptionRecognized: nullableBoolean, authSource: Type.Union([StringEnum(AUTH_SOURCES), Type.Null()]),
+	oauth: nullableBoolean, subscriptionRecognized: nullableBoolean, authSource: union([oneOf(AUTH_SOURCES), nul()]),
 	catalogCost, catalogCostHasTiers: nullableBoolean, providerHasScopedModels: nullableBoolean, providerNamedInSettings: nullableBoolean,
-	scopeIndex: Type.Optional(count), scopeThinkingLevel: Type.Optional(text), currentThinkingLevel: Type.Optional(text),
-	evidence: Type.Literal("registration"), at: Type.Number(), findings: Type.Optional(Type.Array(finding, { maxItems: 4 })),
-}, closed);
-const contextFile = Type.Object({ kind: Type.Literal("context_file"), name: text, path: text,
-	evidence: Type.Literal("observation"), at: Type.Number() }, closed);
-const settingDiagnostic = Type.Object({ field: text, source: StringEnum(["env", "file", "default"]),
-	code: StringEnum(["document", "unknown", "secret", "invalid", "coverage", "relation"]), message: text }, closed);
-const setting = Type.Object({ kind: Type.Literal("setting"), name: text, key: text, slice: text,
-	type: StringEnum(["string", "path", "integer", "number", "boolean", "enum", "json"]),
-	description: text, env: text, secret: Type.Boolean(), origin: StringEnum(["env", "file", "default"]),
-	status: StringEnum(["valid", "unset", "invalid"]), value: Type.Optional(Type.Unknown()),
-	secretState: Type.Optional(StringEnum(["set", "unset"])), documentPath: text,
-	documentStatus: StringEnum(["loaded", "missing", "invalid", "unavailable"]), observedAt: text,
-	diagnostics: Type.Array(settingDiagnostic) }, closed);
-const settingsCoverage = Type.Object({ available: Type.Boolean(), respondingSlices: strings,
-	installedCoverage: Type.Literal("unknown"), collection: Type.Object({
-		status: StringEnum(["available", "unavailable", "disposed"]), slices: strings, malformed: count, omitted: count,
-	}, closed), publications: Type.Array(Type.Object({ slice: text,
-		documentPath: text, documentStatus: StringEnum(["loaded", "missing", "invalid", "unavailable"]),
-		observedAt: text, diagnostics: Type.Array(settingDiagnostic) }, closed)) }, closed);
-const match = Type.Object({ line: Type.Integer({ minimum: 1 }), text }, closed);
-const query = Type.Object({ match: StringEnum(["exact", "substring"]), limit: Type.Integer({ minimum: 1, maximum: 100 }),
-	name: Type.Optional(text), kind: Type.Optional(StringEnum(["tool", "command", "skill", "prompt", "model", "context_file", "setting"])),
-	search: Type.Optional(text), detail: Type.Optional(Type.Boolean()), provider: Type.Optional(text),
-	available: Type.Optional(Type.Boolean()), health: Type.Optional(Type.Boolean()), contains: Type.Optional(text) }, closed);
-const availability = Type.Object({ tools: Type.Boolean(), activeTools: Type.Boolean(), commands: Type.Boolean(),
-	callableTools: Type.Optional(Type.Boolean()) }, closed);
-const context = Type.Object({ at: Type.Number(), evidence: Type.Literal("host_estimate"),
-	state: StringEnum(["available", "unknown", "unavailable"]), model: nullableText, thinkingLevel: nullableText,
-	tokens: nullableNumber, contextWindow: nullableNumber, percent: nullableNumber }, closed);
-const health = Type.Object({ evidence: Type.Literal("local_catalog_review"), catalogRecords: count,
-	selectedAuth: StringEnum(["not_selected", "unavailable", "checked"]),
-	providerRefreshMembership: Type.Literal("unavailable"), providerRefreshTime: Type.Literal("unavailable"),
-	recentDispatchUse: Type.Literal("unavailable"), lastDispatchAge: Type.Literal("unavailable"), remoteResolution: Type.Literal("not_checked"),
-	matchedRecords: count, unflaggedRecords: count, boundaries: strings }, closed);
+	scopeIndex: opt(count), scopeThinkingLevel: opt(text), currentThinkingLevel: opt(text),
+	evidence: lit("registration"), at: num(), findings: opt(arr(finding, { maxItems: 4 })),
+});
+const contextFile = obj({ kind: lit("context_file"), name: text, path: text,
+	evidence: lit("observation"), at: num() });
+const settingDiagnostic = obj({ field: text, source: oneOf(["env", "file", "default"]),
+	code: oneOf(["document", "unknown", "secret", "invalid", "coverage", "relation"]), message: text });
+const setting = obj({ kind: lit("setting"), name: text, key: text, slice: text,
+	type: oneOf(["string", "path", "integer", "number", "boolean", "enum", "json"]),
+	description: text, env: text, secret: bool(), origin: oneOf(["env", "file", "default"]),
+	status: oneOf(["valid", "unset", "invalid"]), value: opt(unknown()),
+	secretState: opt(oneOf(["set", "unset"])), documentPath: text,
+	documentStatus: oneOf(["loaded", "missing", "invalid", "unavailable"]), observedAt: text,
+	diagnostics: arr(settingDiagnostic) });
+const settingsCoverage = obj({ available: bool(), respondingSlices: strings,
+	installedCoverage: lit("unknown"), collection: obj({
+		status: oneOf(["available", "unavailable", "disposed"]), slices: strings, malformed: count, omitted: count,
+	}), publications: arr(obj({ slice: text,
+		documentPath: text, documentStatus: oneOf(["loaded", "missing", "invalid", "unavailable"]),
+		observedAt: text, diagnostics: arr(settingDiagnostic) })) });
+const match = obj({ line: int({ minimum: 1 }), text });
+const query = obj({ match: oneOf(["exact", "substring"]), limit: int({ minimum: 1, maximum: 100 }),
+	name: opt(text), kind: opt(oneOf(["tool", "command", "skill", "prompt", "model", "context_file", "setting"])),
+	search: opt(text), detail: opt(bool()), provider: opt(text),
+	available: opt(bool()), health: opt(bool()), contains: opt(text) });
+const availability = obj({ tools: bool(), activeTools: bool(), commands: bool(),
+	callableTools: opt(bool()) });
+const context = obj({ at: num(), evidence: lit("host_estimate"),
+	state: oneOf(["available", "unknown", "unavailable"]), model: nullableText, thinkingLevel: nullableText,
+	tokens: nullableNumber, contextWindow: nullableNumber, percent: nullableNumber });
+const health = obj({ evidence: lit("local_catalog_review"), catalogRecords: count,
+	selectedAuth: oneOf(["not_selected", "unavailable", "checked"]),
+	providerRefreshMembership: lit("unavailable"), providerRefreshTime: lit("unavailable"),
+	recentDispatchUse: lit("unavailable"), lastDispatchAge: lit("unavailable"), remoteResolution: lit("not_checked"),
+	matchedRecords: count, unflaggedRecords: count, boundaries: strings });
 
 /** The same bounded data powers native scripts and the terminal card. Missing fields remain unknown. */
-export const RegistryOutputSchema = Type.Object({
-	outcome: StringEnum(["ok", "host_summary", "missing", "ambiguous", "unavailable", "partial", "cancelled", "stale_cursor", "io_error", "invalid_arguments"]),
-	records: Type.Array(Type.Union([resource, model, contextFile, setting, match]), { maxItems: 100 }),
-	resultBounded: Type.Boolean(), omittedRecordBlocks: count, returnedRecords: count,
-	cursor: Type.Optional(Type.String({ maxLength: 16384 })), pageBlocked: Type.Optional(Type.Boolean()), omittedDetails: Type.Optional(Type.Boolean()),
-	query: Type.Optional(query), total: Type.Optional(count), offset: Type.Optional(count), candidates: Type.Optional(count),
-	availability: Type.Optional(availability), observed: Type.Optional(Type.Boolean()), observedAt: Type.Optional(nullableNumber),
-	observationPartial: Type.Optional(Type.Boolean()), unavailableSurfaces: Type.Optional(strings), incompleteInventory: Type.Optional(Type.Boolean()),
-	host: Type.Optional(Type.Boolean()), context: Type.Optional(context),
-	counts: Type.Optional(Type.Object({ tool: count, command: count, skill: count, prompt: count }, closed)),
-	activeToolCount: Type.Optional(Type.Union([count, Type.Null()])),
-	catalogBoundary: Type.Optional(text),
-	catalogAvailable: Type.Optional(Type.Boolean()), availableSnapshot: Type.Optional(Type.Boolean()),
-	catalogError: Type.Optional(nullableBoolean), scopeConfigured: Type.Optional(nullableBoolean), health: Type.Optional(health),
-	settingsScope: Type.Optional(settingsScope), settingsCoverage: Type.Optional(settingsCoverage),
-	scanned: Type.Optional(Type.Boolean()), cancelled: Type.Optional(Type.Boolean()), staleCursor: Type.Optional(Type.Boolean()),
-	reason: Type.Optional(text), message: Type.Optional(text), ioError: Type.Optional(text),
-	resolved: Type.Optional(Type.Object({ kind: StringEnum(["tool", "command", "skill", "prompt"]), name: text, sourceInfo }, closed)),
-	bytesRead: Type.Optional(count), fileSize: Type.Optional(count), at: Type.Optional(Type.Number()), evidence: Type.Optional(evidence),
-	partialScan: Type.Optional(Type.Boolean()), modelInvocable: Type.Optional(attestedBoolean),
-	frontmatter: Type.Optional(Type.Object({ state: StringEnum(["absent", "incomplete", "invalid", "non_object", "valid", "unknown"]),
-		disableModelInvocation: Type.Optional(Type.Boolean()) }, closed)),
-}, { ...closed, description: "Bounded registry page. Model queries cover chat models only. Check outcome, source coverage, resultBounded and pageBlocked before treating an empty records array as absence. Continue with cursor alone. Tool callable is ctx.tools or Durable Agent.callable membership, not permission or model declaration." });
+export const RegistryOutputSchema = obj({
+	outcome: oneOf(["ok", "host_summary", "missing", "ambiguous", "unavailable", "partial", "cancelled", "stale_cursor", "io_error", "invalid_arguments"]),
+	records: arr(union([resource, model, contextFile, setting, match]), { maxItems: 100 }),
+	resultBounded: bool(), omittedRecordBlocks: count, returnedRecords: count,
+	cursor: opt(str({ maxLength: 16384 })), pageBlocked: opt(bool()), omittedDetails: opt(bool()),
+	query: opt(query), total: opt(count), offset: opt(count), candidates: opt(count),
+	availability: opt(availability), observed: opt(bool()), observedAt: opt(nullableNumber),
+	observationPartial: opt(bool()), unavailableSurfaces: opt(strings), incompleteInventory: opt(bool()),
+	host: opt(bool()), context: opt(context),
+	counts: opt(obj({ tool: count, command: count, skill: count, prompt: count })),
+	activeToolCount: opt(union([count, nul()])),
+	catalogBoundary: opt(text),
+	catalogAvailable: opt(bool()), availableSnapshot: opt(bool()),
+	catalogError: opt(nullableBoolean), scopeConfigured: opt(nullableBoolean), health: opt(health),
+	settingsScope: opt(settingsScope), settingsCoverage: opt(settingsCoverage),
+	scanned: opt(bool()), cancelled: opt(bool()), staleCursor: opt(bool()),
+	reason: opt(text), message: opt(text), ioError: opt(text),
+	resolved: opt(obj({ kind: oneOf(["tool", "command", "skill", "prompt"]), name: text, sourceInfo })),
+	bytesRead: opt(count), fileSize: opt(count), at: opt(num()), evidence: opt(evidence),
+	partialScan: opt(bool()), modelInvocable: opt(attestedBoolean),
+	frontmatter: opt(obj({ state: oneOf(["absent", "incomplete", "invalid", "non_object", "valid", "unknown"]),
+		disableModelInvocation: opt(bool()) })),
+}, { description: "Bounded registry page. Model queries cover chat models only. Check outcome, source coverage, resultBounded and pageBlocked before treating an empty records array as absence. Continue with cursor alone. Tool callable is ctx.tools or Durable Agent.callable membership, not permission or model declaration." });

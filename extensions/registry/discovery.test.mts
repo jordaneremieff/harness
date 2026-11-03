@@ -1,6 +1,6 @@
+import { bool, obj, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { Type } from "typebox";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import registerRegistry, { type RegistryParams } from "./index.ts";
@@ -31,7 +31,7 @@ function context() {
 	return { ctx, catalog };
 }
 function host(): HostSnapshot {
-	return { tools: [{ name: "inspect", description: "Read document contents", parameters: Type.Object({ path: Type.String() }),
+	return { tools: [{ name: "inspect", description: "Read document contents", parameters: obj({ path: str() }, { open: true }),
 		promptGuidelines: ["Use inspect for documents."], sourceInfo }], activeTools: [], commands: [], observation: null,
 		availability: { tools: true, commands: true, activeTools: true }, at: 1000 };
 }
@@ -285,14 +285,14 @@ describe("metadata and tool detail", () => {
 			const snapshot = host(); snapshot.tools.push({ ...snapshot.tools[0], name: "inspect2" });
 			const first = await run({ kind: "tool", limit: 1 }, snapshot);
 			if (change === "description") snapshot.tools[0].description = "changed";
-			if (change === "parameters") snapshot.tools[0].parameters = Type.Object({ changed: Type.Boolean() });
+			if (change === "parameters") snapshot.tools[0].parameters = obj({ changed: bool() }, { open: true });
 			if (change === "promptGuidelines") snapshot.tools[0].promptGuidelines = ["changed"];
 			if (change === "active") snapshot.activeTools = ["inspect"];
 			assert.equal((await run({ cursor: first.details.cursor as string }, snapshot)).outcome, "stale_cursor");
 		}
 	});
 	it("bounds an oversized exact schema and preserves incomplete-domain records", async () => {
-		const snapshot = host(); snapshot.tools[0].parameters = Type.Object({ large: Type.String({ description: "x".repeat(100000) }) });
+		const snapshot = host(); snapshot.tools[0].parameters = obj({ large: str({ description: "x".repeat(100000) }) }, { open: true });
 		const result = await run({ kind: "tool", name: "inspect", detail: true }, snapshot);
 		assert.equal(result.details.pageBlocked, true);
 		assert.ok(Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: result.text }], details: result.details })) <= 50 * 1024);

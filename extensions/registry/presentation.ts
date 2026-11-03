@@ -328,7 +328,7 @@ export interface RegistryDisplayArgs {
 }
 
 /** The subject names the primary lookup argument. */
-function subjectOf(args: Partial<RegistryDisplayArgs> | null | undefined): { subject: string; hint: boolean } {
+function subjectOf(args: Record<string, unknown>): { subject: string; hint: boolean } {
 	if (typeof args?.name === "string" && args.name) {
 		const name = previewMark(args.name, 80);
 		return { subject: name.text, hint: name.clipped };
@@ -346,7 +346,7 @@ function subjectOf(args: Partial<RegistryDisplayArgs> | null | undefined): { sub
 	return { subject: "session overview", hint: false };
 }
 
-function modeQualifiers(args: Partial<RegistryDisplayArgs> | null | undefined): string[] {
+function modeQualifiers(args: Record<string, unknown>): string[] {
 	const qualifiers: string[] = [];
 	if (args?.match === "substring") qualifiers.push("substring");
 	if (args?.detail === true) qualifiers.push("detail");
@@ -357,7 +357,7 @@ function modeQualifiers(args: Partial<RegistryDisplayArgs> | null | undefined): 
 	return qualifiers;
 }
 
-function queryQualifiers(args: Partial<RegistryDisplayArgs> | null | undefined, subject: string): string[] {
+function queryQualifiers(args: Record<string, unknown>, subject: string): string[] {
 	const qualifiers: string[] = [];
 	if (typeof args?.kind === "string" && args.kind && subject !== args.kind) qualifiers.push(args.kind);
 	if (typeof args?.contains === "string" && args.contains && !subject.startsWith("contains ")) {
@@ -369,12 +369,13 @@ function queryQualifiers(args: Partial<RegistryDisplayArgs> | null | undefined, 
 
 /** The subject names the lookup; the qualifier row carries the mode switches. */
 export function renderRegistryCall(
-	args: Partial<RegistryDisplayArgs> | null | undefined,
+	args: unknown,
 	theme: Theme,
 	context: CallContext,
 ): Component {
-	const { subject, hint } = subjectOf(args);
-	const qualifiers = [...queryQualifiers(args, subject), ...modeQualifiers(args)];
+	const displayArgs = record(args);
+	const { subject, hint } = subjectOf(displayArgs);
+	const qualifiers = [...queryQualifiers(displayArgs, subject), ...modeQualifiers(displayArgs)];
 	return callCard("registry", subject, qualifiers, hint, args, theme, context);
 }
 

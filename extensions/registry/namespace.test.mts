@@ -1,7 +1,6 @@
+import { compile, obj } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { Type } from "typebox";
-import { compile } from "@earendil-works/pi-schema";
 import type { ExtensionAPI, ToolInfo } from "@earendil-works/pi-coding-agent";
 import { readSnapshot } from "./index.ts";
 import { lookup, type LookupResult } from "./lookup.ts";
@@ -17,7 +16,7 @@ const namespaceWith = (instructions?: string): Namespace => ({ name: "mcp__docs"
 
 function piWith(namespace: ToolInfo["namespace"]): ExtensionAPI {
 	const tools: ToolInfo[] = ["lookup_doc", "list_topics", "search_docs"].map((name) => ({
-		name: `mcp__docs__${name}`, description: `Fixture ${name}`, parameters: Type.Object({}), sourceInfo, exposure: "deferred" as const,
+		name: `mcp__docs__${name}`, description: `Fixture ${name}`, parameters: obj({}, { open: true }), sourceInfo, exposure: "deferred" as const,
 		...(namespace === undefined ? {} : { namespace }),
 	}));
 	return { getAllTools: () => tools, getActiveTools: () => [], getCommands: () => [] } as unknown as ExtensionAPI;

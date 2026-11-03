@@ -8,7 +8,7 @@
  * Durable tool registry carries no per-tool prompt guidelines.
  */
 
-import { Type } from "typebox";
+import { bool, int, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import {
 	CONTAINS_MAX,
 	CONTAINS_MIN,
@@ -22,62 +22,62 @@ import {
 } from "./query.ts";
 
 /** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
-const StringEnum = <T extends readonly string[]>(values: T, options?: { description?: string; default?: T[number] }) =>
-	Type.Unsafe<T[number]>({
+const stringEnum = <const T extends readonly string[]>(values: T, options?: { description?: string; default?: T[number] }): Schema<T[number]> =>
+	({
 		type: "string",
 		enum: values,
 		...(options?.description ? { description: options.description } : {}),
 		...(options?.default ? { default: options.default } : {}),
 	});
 
-export const RegistryParams = Type.Object(
+const registryParams = obj(
 	{
-		name: Type.Optional(
-			Type.String({
+		name: opt(
+			str({
 				minLength: NAME_MIN,
 				maxLength: NAME_MAX,
 				description: "Exact case-sensitive resource name. A skill also answers to its skill:<name> invocation form.",
 			}),
 		),
-		match: Type.Optional(
-			StringEnum(["exact", "substring"] as const, {
+		match: opt(
+			stringEnum(["exact", "substring"] as const, {
 				description: "Name comparison mode; exact is the default. Both are case-sensitive.",
 			}),
 		),
-		kind: Type.Optional(
-			StringEnum(QUERY_KINDS, { description: "Resource kind. model queries chat models only, not classifiers or image models; context_file returns prior observed paths only. setting inspects fresh configured values from responding loaded publishers." }),
+		kind: opt(
+			stringEnum(QUERY_KINDS, { description: "Resource kind. model queries chat models only, not classifiers or image models; context_file returns prior observed paths only. setting inspects fresh configured values from responding loaded publishers." }),
 		),
-		search: Type.Optional(Type.String({ minLength: 1, maxLength: NAME_MAX,
+		search: opt(str({ minLength: 1, maxLength: NAME_MAX,
 			description: "Case-insensitive literal search over names, descriptions, tool guidance, and tool namespace names and aliases, not file contents. Models require every whitespace token across canonical and display names, in any order. Settings match names, descriptions, and environment variable names." })),
-		detail: Type.Optional(Type.Boolean({ description: "Return parameters and promptGuidelines for kind tool and one exact name; no search or contains." })),
-		provider: Type.Optional(Type.String({ minLength: 1, maxLength: NAME_MAX, description: "Exact provider ID; requires kind model." })),
-		available: Type.Optional(Type.Boolean({ description: "Filter cached availability; requires kind model. Not remote health." })),
-		health: Type.Optional(Type.Boolean({ description: "With kind model, true returns flagged local catalog records with reasons and checked boundaries. Offline only; false is an ordinary model query." })),
-		contains: Type.Optional(
-			Type.String({
+		detail: opt(bool({ description: "Return parameters and promptGuidelines for kind tool and one exact name; no search or contains." })),
+		provider: opt(str({ minLength: 1, maxLength: NAME_MAX, description: "Exact provider ID; requires kind model." })),
+		available: opt(bool({ description: "Filter cached availability; requires kind model. Not remote health." })),
+		health: opt(bool({ description: "With kind model, true returns flagged local catalog records with reasons and checked boundaries. Offline only; false is an ordinary model query." })),
+		contains: opt(
+			str({
 				minLength: CONTAINS_MIN,
 				maxLength: CONTAINS_MAX,
 				description:
 					"Literal, case-insensitive content query against one uniquely resolved file-backed skill or prompt.",
 			}),
 		),
-		limit: Type.Optional(
-			Type.Integer({
+		limit: opt(
+			int({
 				minimum: LIMIT_MIN,
 				maximum: LIMIT_MAX,
 				description: `Records per page; default ${LIMIT_DEFAULT}.`,
 			}),
 		),
-		cursor: Type.Optional(
-			Type.String({
+		cursor: opt(
+			str({
 				minLength: 1,
 				maxLength: CURSOR_MAX_BYTES,
 				description: "Opaque continuation from a previous page. Pass it as the only argument.",
 			}),
 		),
 	},
-	{ additionalProperties: false },
 );
+export const RegistryParams = registryParams as typeof registryParams & { readonly properties: Readonly<Record<string, Schema>> };
 
 export const REGISTRY_DESCRIPTION =
 	"Look up session tools, commands, skills, prompt templates, chat model catalog, prior observed context-file paths, and harness settings. Use search for purpose discovery across names, descriptions, tool usage guidelines, and tool namespace names and aliases, kind model with canonical provider/id name for model selection facts, health true with kind model for an offline catalog review, and detail true with kind tool and an exact name for its parameters and guidelines. With no arguments it returns current model, thinking level, live context-usage estimate, host facts, and observation boundaries. Context usage is not a safe remaining budget; unknown remains unknown after compaction. name is case-sensitive; a skill also answers to its skill:<name> invocation form and results keep both names. contains runs one literal, case-insensitive content search over a single uniquely resolved file-backed skill or prompt and returns matching lines with context. Lists are compact; exact name queries return full model metadata or resource provenance, and detail true adds tool schemas/guidelines. Structured records retain every sourceInfo field. Results state observation time and evidence type; tool records separate configured presence from active status. Complete results are bounded to 50 KiB and 2000 lines; scans read at most 256 KiB. Use kind setting for fresh configured values, origins, validity, and diagnostics from responding loaded publishers. These snapshots do not prove a running runtime applied edits; secrets show set/unset only. Read-only: it accepts no file path, crawls no directory, and mutates nothing.";

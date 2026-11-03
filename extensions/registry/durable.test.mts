@@ -17,8 +17,7 @@ import type { SourceInfo } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { Type } from "typebox";
-import { compile } from "@earendil-works/pi-schema";
+import { compile, obj } from "@earendil-works/pi-schema";
 import {
 	createRegistryDurableContribution,
 	readContextEstimate,
@@ -377,7 +376,7 @@ test("native resource pages resume after clock changes and reject substantive so
 		getAgentsFiles: () => ({ agentsFiles: files }) } };
 	const contribution = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(nativeServices));
 	const extension = { ...contribution, tools: [...(contribution.tools ?? []), Durable.defineTool({
-		name: "second_tool", description: "A second registered tool", parameters: Type.Object({}),
+		name: "second_tool", description: "A second registered tool", parameters: obj({}, { open: true }),
 		execute: async () => ({ output: [] }),
 	})] };
 	const { harness, root } = await open(models, extension);
@@ -544,11 +543,11 @@ test("native codemode receives structured registry pages and distinguishes calla
 	registry.install(extension);
 	registry.install(createCodemodeExtension({ sandbox, models: false }));
 	registry.install(Durable.defineExtension({ name: "fixture", tools: [
-		Durable.defineTool({ name: "nested_only", description: "Nested fixture", parameters: Type.Object({}), callers: ["tools"],
+		Durable.defineTool({ name: "nested_only", description: "Nested fixture", parameters: obj({}, { open: true }), callers: ["tools"],
 			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
-		Durable.defineTool({ name: "deferred_fixture", description: "Deferred fixture", parameters: Type.Object({}), deferred: true,
+		Durable.defineTool({ name: "deferred_fixture", description: "Deferred fixture", parameters: obj({}, { open: true }), deferred: true,
 			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
-		Durable.defineTool({ name: "model_only", description: "Model fixture", parameters: Type.Object({}), callers: ["model"],
+		Durable.defineTool({ name: "model_only", description: "Model fixture", parameters: obj({}, { open: true }), callers: ["model"],
 			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
 	] }));
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);

@@ -9,6 +9,7 @@
  */
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { Static } from "@earendil-works/pi-schema";
 import { publishSettings, readSettings } from "./settings.ts";
 import { RegistryNotes } from "./notes.ts";
 import { noteKnowledge, ordinaryNoteResources } from "./notes-host.ts";
@@ -185,7 +186,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 		outputSchema: RegistryOutputSchema,
 		renderCall: renderRegistryCall,
 		renderResult: renderRegistryResult,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: Static<typeof RegistryParams>, signal, _onUpdate, ctx) {
 			const at = Date.now();
 			const abortSignal = signal ? AbortSignal.any([signal, sessionAbort.signal]) : sessionAbort.signal;
 			if (abortSignal.aborted) {
