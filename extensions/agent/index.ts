@@ -21,8 +21,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
-import { str, int, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
-import { Type, type TObject } from "typebox";
+import { str, num, int, bool, lit, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { CollaborationParams } from "./collaboration.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
@@ -77,52 +76,52 @@ export function agentRestartHosts(): RestartHosts {
 /** Provider tool declarations retain an explicit string type. */
 const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
 const id = str({ minLength: 1, maxLength: 256 });
-const maybeTrust = Type.Optional(Type.Boolean());
-const abort = Type.Object(
+const maybeTrust = opt(bool());
+const abort = obj(
 	{
 		sessionId: id,
 		trust: maybeTrust,
-		background: Type.Optional(Type.Boolean()),
-		release: Type.Optional(Type.Boolean()),
-		timerId: Type.Optional(Type.Integer({ minimum: 1 })),
+		background: opt(bool()),
+		release: opt(bool()),
+		timerId: opt(int({ minimum: 1 })),
 	},
-	{ additionalProperties: false },
+	{},
 );
 const message = obj(
 	{ sessionId: id, message: str({ minLength: 1 }), replyTo: opt(id) },
 	{},
 );
-const checkIn = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval in minutes while unanswered; 0 disables. Default: configured agent.checkInMinutes (30 unless overridden)." }));
-const send = Type.Object(
+const checkIn = opt(num({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval in minutes while unanswered; 0 disables. Default: configured agent.checkInMinutes (30 unless overridden)." }));
+const send = obj(
 	{
 		sessionId: id,
-		message: Type.String({ minLength: 1 }),
-		replyTo: Type.Optional(id),
-		deliverAt: Type.Optional(
-			Type.String({
+		message: str({ minLength: 1 }),
+		replyTo: opt(id),
+		deliverAt: opt(
+			str({
 				minLength: 1,
 				description: "Absolute ISO 8601 date-time; schedule the input instead of sending it now.",
 			}),
 		),
-		mode: Type.Optional(StringEnum(["followUp", "steer", "report"])),
+		mode: opt(StringEnum(["followUp", "steer", "report"])),
 		checkInMinutes: checkIn,
 	},
-	{ additionalProperties: false },
+	{},
 );
-const spawn = Type.Object(
+const spawn = obj(
 	{
-		handle: Type.Optional(HandleSchema),
+		handle: opt(HandleSchema),
 		preset: PresetParameter,
-		role: Type.Optional(Type.String({ maxLength: 2000, description: "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role." })),
-		cwd: Type.Optional(Type.String()),
-		name: Type.Optional(Type.String({ maxLength: 256 })),
-		prompt: Type.Optional(Type.String()),
-		model: Type.Optional(Type.String({ description: MODEL_SELECTION_GUIDANCE })),
-		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
+		role: opt(str({ maxLength: 2000, description: "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role." })),
+		cwd: opt(str()),
+		name: opt(str({ maxLength: 256 })),
+		prompt: opt(str()),
+		model: opt(str({ description: MODEL_SELECTION_GUIDANCE })),
+		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
 		trust: maybeTrust,
 		checkInMinutes: checkIn,
 	},
-	{ additionalProperties: false },
+	{},
 );
 const nativeEntryId = int({ minimum: 1 });
 const inspect = obj(
@@ -153,18 +152,18 @@ const compact = obj(
 	},
 	{},
 );
-const configure = Type.Object(
+const configure = obj(
 	{
 		sessionId: id,
 		preset: PresetParameter,
-		name: Type.Optional(Type.String({ maxLength: 256 })),
-		model: Type.Optional(Type.String({ maxLength: 512, description: MODEL_SELECTION_GUIDANCE })),
-		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
+		name: opt(str({ maxLength: 256 })),
+		model: opt(str({ maxLength: 512, description: MODEL_SELECTION_GUIDANCE })),
+		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
 		trust: maybeTrust,
 	},
-	{ additionalProperties: false },
+	{},
 );
-const result = (value: unknown, schema?: object): AgentToolResult<unknown> => ({
+const result = (value: unknown, schema?: Schema): AgentToolResult<unknown> => ({
 	...((value as { outcome?: string } | null)?.outcome === "failed" ? { isError: true } : {}),
 	content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, (value as { view?: string } | null)?.view === "fleet" ? undefined : 2) }],
 	details: value,
@@ -178,7 +177,7 @@ function releaseCommandMessage(value: unknown, label: string): string {
 	return `${message}${writes}`;
 }
 
-const observationSchemas: Partial<Record<AgentControlToolName, object>> = {
+const observationSchemas: Partial<Record<AgentControlToolName, Schema>> = {
 	agent_spawn: DispatchOutputSchema,
 	agent_send: DispatchOutputSchema,
 	agent_steer: DispatchOutputSchema,
@@ -279,7 +278,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	const register = (
 		name: AgentControlToolName,
 		description: string,
-		parameters: object,
+		parameters: Schema<Record<string, unknown>>,
 		execute: (input: Record<string, unknown>, ctx: ExtensionContext, callId: string, admissionCaller?: AgentCaller) => Promise<unknown>,
 		modelOnly = false,
 	): void => {
@@ -292,10 +291,10 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			description,
 			promptSnippet: guidance.snippet,
 			promptGuidelines: [...(guidance.guidelines ?? [])],
-			parameters: presetAware ? { ...parameters, properties: { ...(parameters as TObject).properties, preset: presetParameter(snapshot) } } : parameters,
+			parameters: presetAware ? { ...parameters, properties: { ...(parameters.properties as Record<string, Schema>), preset: presetParameter(snapshot).schema } } : parameters,
 			outputSchema: schema ?? unknown(),
 			...(modelOnly ? { exposure: "model-only" as const } : {}),
-			async execute(callId, input: Record<string, unknown>, _signal, _update, ctx) {
+			async execute(callId, input: Static<typeof parameters>, _signal, _update, ctx) {
 				let admitted = input;
 				let admissionCaller: AgentCaller | undefined;
 				if (presetAware) {
@@ -365,7 +364,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	register(
 		"agent_status",
 		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected Durable agent returns full state and bounded pending timers. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state.",
-		Type.Object({ sessionId: Type.Optional(id), view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })), ...FleetSelectionProperties }, { additionalProperties: false }),
+		obj({ sessionId: opt(id), view: opt(lit("fleet", { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })), ...FleetSelectionProperties }, {}),
 		(input, ctx) => {
 			const sessionId = input.sessionId as string | undefined;
 			const view = input.view as "fleet" | undefined;
@@ -430,24 +429,24 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	register(
 		"agent_attach",
 		"Connect to a Durable storage host without new input. Retained unfinished work resumes automatically.",
-		Type.Object(
-			{ sessionId: id, model: Type.Optional(Type.String()), trust: maybeTrust },
-			{ additionalProperties: false },
+		obj(
+			{ sessionId: id, model: opt(str()), trust: maybeTrust },
+			{},
 		),
 		(input, ctx) => control("attach", input, ctx),
 	);
 	register(
 		"agent_fork",
 		"Create an idle native conversation branch in the same storage. The source remains unchanged.",
-		Type.Object({ sessionId: id, entryId: Type.Optional(id), trust: maybeTrust }, { additionalProperties: false }),
+		obj({ sessionId: id, entryId: opt(id), trust: maybeTrust }, {}),
 		(input, ctx) => control("fork", input, ctx),
 	);
 	register(
 		"agent_rewind",
 		"Fork before a mistaken entry and redo the work under your correction. The source stays unchanged. Files remain current.",
-		Type.Object(
-			{ sessionId: id, entryId: id, correction: Type.String({ minLength: 1 }), trust: maybeTrust },
-			{ additionalProperties: false },
+		obj(
+			{ sessionId: id, entryId: id, correction: str({ minLength: 1 }), trust: maybeTrust },
+			{},
 		),
 		(input, ctx) => control("rewind", { ...input, origin: "model" }, ctx),
 	);
@@ -469,18 +468,18 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	register(
 		"agent_place",
 		"Use the agent bound to a directory, or create it. Longest bound directory wins. An optional prompt starts work with automatic owner check-ins. checkInMinutes sets the interval; 0 disables.",
-		Type.Object(
+		obj(
 			{
-				area: Type.Optional(Type.String()),
+				area: opt(str()),
 				preset: PresetParameter,
-				model: Type.Optional(Type.String({ description: MODEL_SELECTION_GUIDANCE })),
-				thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
-				topic: Type.Optional(Type.String()),
-				prompt: Type.Optional(Type.String()),
+				model: opt(str({ description: MODEL_SELECTION_GUIDANCE })),
+				thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
+				topic: opt(str()),
+				prompt: opt(str()),
 				checkInMinutes: checkIn,
 				trust: maybeTrust,
 			},
-			{ additionalProperties: false },
+			{},
 		),
 		(input, ctx, callId, admissionCaller) => getManager().place({ ...input, origin: "model", requestId: `place:${ctx.sessionManager.getSessionId()}:${callId}` }, admissionCaller ?? caller(ctx, pi)),
 	);
