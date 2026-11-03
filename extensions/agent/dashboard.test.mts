@@ -15,6 +15,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { sessionFigures } from "./footer.ts";
 import type { AwaitFact } from "./await-facts.ts";
 import type { AgentConversationPage } from "./dashboard-types.ts";
+import { createAgentObservationSource } from "./agent-observation.ts";
 
 it("dashboard shows current machine file state, digest, default, names and models without a new command", async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "dashboard-machine-preferences-"));
@@ -776,6 +777,47 @@ it("Load more is selected before admission and loaded coverage survives reconcil
 	f.ui.dispose();
 });
 
+it("the Tasks r key retries a declined attachment without reopening the view", async () => {
+	const storageId = "00000000-0000-4000-8000-000000000001";
+	const base = source([row(storageId)]);
+	let attaches = 0;
+	let releases = 0;
+	const observed = createAgentObservationSource({
+		list: base.list,
+		snapshot: async () => ({ ...await base.snapshot(storageId), nextBefore: null, coverage: { complete: true, entries: 0, bytes: 0, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false } }),
+		subscribeRoster: base.subscribeRoster,
+		observeLive: async (id, scope, listener) => {
+			if (scope !== "tasks") return () => {};
+			attaches++;
+			if (attaches === 1) return undefined;
+			await Promise.resolve();
+			listener({ scope: "tasks", storageId: id, revision: 1, observedAt: new Date(0).toISOString(), tasks: [], labels: [], coverage: { complete: true, live: true } }, true, "live");
+			return () => { releases++; };
+		},
+	});
+	const f = fixture(80, 24, observed);
+	try {
+		await turn();
+		f.ui.handleInput("a");
+		for (let step = 0; step < dashboardActions(row()).findIndex((choice) => choice.name === "tasks"); step++) f.ui.handleInput("\x1b[B");
+		f.ui.handleInput("\r");
+		await turn();
+		assert.equal(f.ui.navigation.screen, "tasks");
+		assert.equal(attaches, 1);
+		assert.equal((await observed.tasks(storageId)).coverage.live, false);
+		f.ui.handleInput("r");
+		await turn();
+		assert.equal(f.ui.navigation.screen, "tasks");
+		assert.equal(attaches, 2);
+		assert.equal((await observed.tasks(storageId)).coverage.live, true);
+		assert.match(f.ui.render(80).join("\n"), /No live tasks/u);
+		f.ui.handleInput("r");
+		await turn();
+		assert.equal(attaches, 2);
+		f.ui.handleInput("\x1b");
+		assert.equal(releases, 1);
+	} finally { f.ui.dispose(); }
+});
 it("Tasks opens a resolved unloaded conversation, releases its graph, and Esc returns to roster", async () => {
 	const observed = source([row("storage")]);
 	let active = false;

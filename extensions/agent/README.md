@@ -723,6 +723,11 @@ previous watch. Tasks acquires a separate storage task-graph watch only while
 its view is open. A task with several conversations offers a conversation
 picker. Finished tasks leave the graph; their results stay in the conversation.
 No live host means no live task graph, not proof of no retained work.
+Press `r` in Tasks to retry an unavailable observation attachment. A pending or
+live attachment stays unchanged. Subscription updates only read the selected
+graph; they do not retry a declined attachment. An attached observer also accepts
+live frames after a connection recovery. Refresh never starts a host or admits
+input, and closing Tasks releases only its task-graph watch.
 
 Observation attaches to an existing host and never starts one. If the same
 manager already owns a host launch, observation joins that pending open and

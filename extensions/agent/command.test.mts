@@ -19,6 +19,7 @@ import type { ActionDialogExtras } from "./action-dialogs.ts";
 const noSource = {
 	select() {},
 	refresh() {},
+	refreshTasks() {},
 	frame: () => undefined,
 	earlier: async () => {
 		throw new Error("not requested");

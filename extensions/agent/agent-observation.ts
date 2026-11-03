@@ -23,6 +23,8 @@ export interface AgentObservationSource {
 	frame(id: string): ConversationFrame | undefined;
 	earlier(id: string, before: number): Promise<ConversationSnapshotPage>;
 	tasks(id: string): Promise<TasksFrame>;
+	/** Retry only the selected unavailable Tasks attachment, without acquiring a writer. */
+	refreshTasks(id: string): void;
 	releaseTasks(): void;
 	availability(id: string): { state: "live" | "unavailable"; at: string } | undefined;
 	subscribe(listener: () => void): () => void;
@@ -41,15 +43,18 @@ export function createAgentObservationSource(host: AgentObservationHost): AgentO
 	let taskFrame: TasksFrame | undefined;
 	let taskAbort: AbortController | undefined;
 	let taskOff: (() => void) | undefined;
+	let taskState: "pending" | "live" | "unavailable" | undefined;
 	const notify = () => {
 		for (const listener of listeners) listener();
 	};
 	function releaseTasks(): void {
 		taskId = undefined;
 		taskAbort?.abort();
+		taskAbort = undefined;
 		taskOff?.();
 		taskOff = undefined;
 		taskFrame = undefined;
+		taskState = undefined;
 	}
 	function select(id: string | undefined): void {
 		if (selected === id) return;
@@ -98,15 +103,55 @@ export function createAgentObservationSource(host: AgentObservationHost): AgentO
 				}
 			});
 	}
-	function taskChanged(value: ObservationFrame | undefined, state?: "live" | "unavailable"): void {
+	function taskChanged(value: ObservationFrame | undefined, state: "live" | "unavailable"): void {
 		if (state === "unavailable") {
 			if (!taskFrame) return;
 			taskFrame = undefined;
 		} else if (value?.scope === "tasks") {
 			if (value.revision === taskFrame?.revision) return;
 			taskFrame = value;
-		}
+		} else return;
 		notify();
+	}
+	function attachTasks(): void {
+		if (!taskId || taskState === "pending" || taskState === "live") return;
+		taskAbort?.abort();
+		taskOff?.();
+		taskOff = undefined;
+		taskFrame = undefined;
+		taskState = "pending";
+		taskAbort = new AbortController();
+		const signal = taskAbort.signal;
+		let observedState: "live" | "unavailable" = "live";
+		void host
+			.observeLive(
+				taskId,
+				"tasks",
+				(value, _fresh, state) => {
+					if (signal.aborted || (state !== "unavailable" && value?.scope !== "tasks")) return;
+					observedState = state === "unavailable" ? "unavailable" : "live";
+					if (taskState !== "pending") taskState = observedState;
+					taskChanged(value, observedState);
+				},
+				signal,
+			)
+			.then((release) => {
+				if (signal.aborted) release?.();
+				else {
+					taskOff = release;
+					taskState = release ? observedState : "unavailable";
+					if (!release) {
+						taskFrame = undefined;
+						notify();
+					}
+				}
+			})
+			.catch(() => {
+				if (signal.aborted) return;
+				taskState = "unavailable";
+				taskFrame = undefined;
+				notify();
+			});
 	}
 	return {
 		list: (input) => host.list(input),
@@ -134,22 +179,7 @@ export function createAgentObservationSource(host: AgentObservationHost): AgentO
 			if (storageId !== taskId) {
 				releaseTasks();
 				taskId = storageId;
-				taskAbort = new AbortController();
-				const signal = taskAbort.signal;
-				void host
-					.observeLive(
-						storageId,
-						"tasks",
-						(value, _fresh, state) => {
-							if (!signal.aborted) taskChanged(value, state);
-						},
-						signal,
-					)
-					.then((release) => {
-						if (signal.aborted) release?.();
-						else taskOff = release;
-					})
-					.catch(() => undefined);
+				attachTasks();
 			}
 			return (
 				taskFrame ?? {
@@ -162,6 +192,9 @@ export function createAgentObservationSource(host: AgentObservationHost): AgentO
 					coverage: { complete: false, live: false },
 				}
 			);
+		},
+		refreshTasks(id) {
+			if (storageIdOf(id) === taskId && taskState === "unavailable") attachTasks();
 		},
 		releaseTasks,
 		subscribe(listener) {

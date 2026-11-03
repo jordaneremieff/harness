@@ -14,6 +14,7 @@ import type { TaskGraphRow, TaskLabel, TasksFrame } from "./live-frames.ts";
 /** Live task source the view consumes; frames arrive from the agent observation source. */
 export interface AgentTasksSource {
 	tasks(id: string): Promise<TasksFrame>;
+	refreshTasks(id: string): void;
 	subscribe?(listener: () => void): () => void;
 }
 
@@ -88,6 +89,7 @@ export class AgentTasksView {
 	private selectedIndex = 0;
 	private unsubscribe: (() => void) | undefined;
 	private pending: Promise<void> | undefined;
+	private readAgain = false;
 	private error: string | undefined;
 	private closed = false;
 	private viewportRows = 1;
@@ -102,10 +104,10 @@ export class AgentTasksView {
 		this.onNotice = options.onNotice;
 		this.onChooseConversations = options.onChooseConversations;
 		queueMicrotask(() => {
-			if (!this.closed) void this.refresh();
+			if (!this.closed) void this.read();
 		});
 		this.unsubscribe = this.source.subscribe?.(() => {
-			void this.refresh();
+			void this.read();
 		});
 	}
 
@@ -115,10 +117,21 @@ export class AgentTasksView {
 		this.unsubscribe = undefined;
 	}
 
-	/** Read the storage's live graph again; a call during a read joins it. */
+	/** Explicit refresh retries an unavailable attachment before reading its graph. */
 	refresh(): Promise<void> {
-		if (this.pending !== undefined) return this.pending;
-		const run = (async () => {
+		if (this.closed) return Promise.resolve();
+		this.source.refreshTasks(this.id);
+		return this.read();
+	}
+
+	private read(): Promise<void> {
+		if (this.closed) return Promise.resolve();
+		if (this.pending !== undefined) {
+			this.readAgain = true;
+			return this.pending;
+		}
+		this.readAgain = false;
+		const run = Promise.resolve().then(async () => {
 			try {
 				const frame = await this.source.tasks(this.id);
 				if (this.closed) return;
@@ -131,9 +144,10 @@ export class AgentTasksView {
 				this.renderedTaskIds = [];
 				this.error = caught instanceof Error ? caught.message : String(caught);
 			}
-		})();
+		});
 		this.pending = run.finally(() => {
 			this.pending = undefined;
+			if (this.readAgain && !this.closed) return this.read();
 		});
 		return this.pending;
 	}

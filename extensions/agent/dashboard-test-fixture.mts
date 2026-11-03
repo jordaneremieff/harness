@@ -103,6 +103,7 @@ export function source(rows: readonly AgentConversationSummary[] = [row()]): Age
 		list: async () => page(rows),
 		select() {},
 		refresh() {},
+		refreshTasks() {},
 		snapshot: async () => ({
 			entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "Check the task", timestamp: 0 }] }],
 			partial: false,

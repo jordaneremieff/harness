@@ -10,7 +10,7 @@ import { AgentManager } from "./manager.ts";
 import { acquireHost, connectHost, type HostConnection } from "./host-client.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import { createAgentObservationSource, type AgentObservationHost } from "./agent-observation.ts";
-import type { ObservationFrame } from "./live-frames.ts";
+import type { ObservationFrame, TasksFrame } from "./live-frames.ts";
 import { page, row, turn, deferred } from "./dashboard-test-fixture.mts";
 it("selects a manager spawn before storage exists and attaches to its real host", { timeout: 60000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "agent-startup-"));
@@ -204,12 +204,137 @@ it("refresh leaves a pending attachment alone and retries a declined attachment"
 	} finally { off(); }
 });
 
+function taskFrame(storageId: string, revision = 1): TasksFrame {
+	return {
+		scope: "tasks", storageId, revision, observedAt: new Date(revision).toISOString(),
+		tasks: [], labels: [], coverage: { complete: true, live: true },
+	};
+}
+function attachmentFixture() {
+	const f = fixture();
+	type Attach = {
+		id: string;
+		scope: "conversation" | "tasks";
+		listener: Parameters<AgentObservationHost["observeLive"]>[2];
+		signal: AbortSignal | undefined;
+		resolve: (release: (() => void) | undefined) => void;
+		reject: (error: Error) => void;
+	};
+	const attaches: Attach[] = [];
+	f.host.observeLive = (id, scope, listener, signal) => new Promise((resolve, reject) => {
+		attaches.push({ id, scope, listener, signal, resolve, reject });
+	});
+	return { ...f, attaches };
+}
+const taskStorage = "00000000-0000-4000-8000-000000000001";
+const otherTaskStorage = "00000000-0000-4000-8000-000000000002";
+for (const failure of ["decline", "reject", "disconnect"] as const) {
+	it(`Tasks recovers from ${failure} only through explicit refresh or live availability`, async () => {
+		const f = attachmentFixture();
+		const source = createAgentObservationSource(f.host);
+		let reads: Promise<TasksFrame> | undefined;
+		const off = source.subscribe(() => { reads = source.tasks(`${taskStorage}:1`); });
+		let releases = 0;
+		try {
+			await source.tasks(`${taskStorage}:1`);
+			source.refreshTasks(`${taskStorage}:2`);
+			assert.equal(f.attaches.length, 1, "pending refresh joins one storage attachment");
+			const first = f.attaches[0];
+			assert.equal(first.id, taskStorage);
+			assert.equal(first.scope, "tasks");
+			if (failure === "decline") first.resolve(undefined);
+			else if (failure === "reject") first.reject(new Error("observer unavailable"));
+			else {
+				first.listener(taskFrame(taskStorage), true, "live");
+				first.resolve(() => { releases++; });
+				await turn();
+				first.listener(undefined, false, "unavailable");
+			}
+			await turn();
+			assert.equal((await reads)?.coverage.live, false);
+			assert.equal((await source.tasks(`${taskStorage}:2`)).coverage.live, false);
+			assert.equal(f.attaches.length, 1, "subscription and repeated reads do not reconnect");
+			source.refreshTasks(otherTaskStorage);
+			assert.equal(f.attaches.length, 1, "refresh does not switch selection");
+			source.refreshTasks(`${taskStorage}:2`);
+			source.refreshTasks(`${taskStorage}:1`);
+			assert.equal(f.attaches.length, 2, "pending refresh does not multiply attachments");
+			assert.equal(first.signal?.aborted, true);
+			assert.equal(releases, failure === "disconnect" ? 1 : 0);
+			const retry = f.attaches[1];
+			retry.listener(taskFrame(taskStorage, 2), true, "live");
+			retry.resolve(() => { releases++; });
+			await turn();
+			assert.equal((await source.tasks(taskStorage)).revision, 2);
+			source.refreshTasks(taskStorage);
+			assert.equal(f.attaches.length, 2, "live refresh keeps its attachment");
+			retry.listener(undefined, false, "unavailable");
+			assert.equal((await source.tasks(taskStorage)).coverage.live, false);
+			retry.listener(taskFrame(taskStorage, 2), true, "live");
+			assert.equal((await source.tasks(taskStorage)).coverage.live, true, "a recovered observer restores the graph");
+			assert.equal(f.attaches.length, 2);
+		} finally { off(); }
+		assert.equal(releases, failure === "disconnect" ? 2 : 1);
+	});
+}
+it("Tasks keeps an unresolved attachment pending after an early unavailable notification", async () => {
+	const f = attachmentFixture();
+	const source = createAgentObservationSource(f.host);
+	const off = source.subscribe(() => {});
+	try {
+		await source.tasks(taskStorage);
+		f.attaches[0].listener(undefined, false, "unavailable");
+		source.refreshTasks(taskStorage);
+		assert.equal(f.attaches.length, 1);
+		f.attaches[0].resolve(() => {});
+		await turn();
+		source.refreshTasks(taskStorage);
+		assert.equal(f.attaches.length, 2);
+		f.attaches[1].resolve(undefined);
+		await turn();
+	} finally { off(); }
+});
+for (const end of ["close", "switch"] as const) {
+	it(`late Tasks callbacks and handles do not revive a selection after ${end}`, async () => {
+		const f = attachmentFixture();
+		const source = createAgentObservationSource(f.host);
+		const off = source.subscribe(() => {});
+		let notifications = 0;
+		const offNotifications = source.subscribe(() => { notifications++; });
+		let releases = 0;
+		await source.tasks(taskStorage);
+		const first = f.attaches[0];
+		if (end === "close") source.releaseTasks();
+		else {
+			await source.tasks(otherTaskStorage);
+			f.attaches[1].listener(taskFrame(otherTaskStorage, 2), true, "live");
+			f.attaches[1].resolve(() => { releases++; });
+		}
+		assert.equal(first.signal?.aborted, true);
+		notifications = 0;
+		first.listener(taskFrame(taskStorage, 99), true, "live");
+		first.resolve(() => { releases++; });
+		await turn();
+		assert.equal(releases, 1, "a late handle is disposed");
+		assert.equal(notifications, 0, "an aborted callback does not publish a frame");
+		source.refreshTasks(taskStorage);
+		assert.equal(f.attaches.length, end === "close" ? 1 : 2);
+		if (end === "switch") assert.equal((await source.tasks(otherTaskStorage)).revision, 2);
+		offNotifications();
+		off();
+		assert.equal(releases, end === "close" ? 1 : 2);
+	});
+}
 it("Tasks acquires one storage scope and releases it separately from conversation observation", async () => {
 	const f = fixture();
 	const source = createAgentObservationSource(f.host);
 	const off = source.subscribe(() => {});
 	source.select("00000000-0000-4000-8000-000000000001:1");
 	await source.tasks("00000000-0000-4000-8000-000000000001:1");
+	await turn();
+	source.select(undefined);
+	assert.ok(f.listeners.has("00000000-0000-4000-8000-000000000001:tasks"));
+	source.select("00000000-0000-4000-8000-000000000001:1");
 	await turn();
 	source.releaseTasks();
 	assert.ok(f.closed.includes("00000000-0000-4000-8000-000000000001:tasks"));
