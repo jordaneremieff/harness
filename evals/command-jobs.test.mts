@@ -19,7 +19,8 @@ import {
 	SettingsManager,
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import jobs, { JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "../extensions/jobs/index.ts";
+import { JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "../extensions/jobs/completion.ts";
+import jobs from "../extensions/jobs/index.ts";
 import policy from "../extensions/policy/index.ts";
 
 // Node's test runner isolates this file in its own process. Restore the environment before cleanup.

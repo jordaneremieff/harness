@@ -19,7 +19,8 @@ import {
 	SettingsManager,
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import jobs, { JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./index.ts";
+import { JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./completion.ts";
+import jobs from "./index.ts";
 import { JOB_LIMITS } from "./manager.ts";
 
 test("native codemode composes Bash and managed jobs in an ordinary session", { timeout: 30_000 }, async () => {

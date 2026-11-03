@@ -11,7 +11,8 @@ import {
 	type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import { compile, type Schema } from "@earendil-works/pi-schema";
-import registerJobs, { COMPLETION_LIMITS, JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./index.ts";
+import { COMPLETION_LIMITS, JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./completion.ts";
+import registerJobs from "./index.ts";
 import type { JobLogs, JobSnapshot } from "./manager.ts";
 
 interface Result {
@@ -39,6 +40,8 @@ interface SentMessage {
 class TestPi {
 	tools = new Map<string, Tool>();
 	sent: SentMessage[] = [];
+	emitted: Array<{ channel: string; data: unknown }> = [];
+	events = { emit: (channel: string, data: unknown) => this.emitted.push({ channel, data }) };
 	#handlers = new Map<string, (event: unknown) => Promise<void>>();
 	registerTool(tool: Tool) {
 		this.tools.set(tool.name, tool);
@@ -149,6 +152,11 @@ describe("Command Jobs adapter", () => {
 		const { pi, call } = setup();
 		try {
 			assert.deepEqual([...pi.tools.keys()], ["bash", "jobs"]);
+			assert.equal(pi.emitted.length, 1);
+			assert.equal(pi.emitted[0].channel, "durable:contribution");
+			const contribution = pi.emitted[0].data as { name: string; source: string };
+			assert.equal(contribution.name, "jobs");
+			assert.equal(contribution.source, new URL("./index.ts", import.meta.url).pathname);
 			const schema = pi.tool("bash").outputSchema;
 			assert.ok("anyOf" in schema && Array.isArray(schema.anyOf));
 			assert.deepEqual(schema.anyOf[0], createBashToolDefinition(root).outputSchema);

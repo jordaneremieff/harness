@@ -146,6 +146,32 @@ function fitUtf8Page(buffer: Buffer, offset: number, length: number): { length: 
 	return { length: size, text };
 }
 
+/** One bounded page of a job's retained tail, measured in original output bytes; shared by every job runtime. */
+export function pageLogs(id: string, buffer: Buffer, end: number, running: boolean, cursor = 0): JobLogs {
+	if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > end) throw new Error("Invalid log cursor");
+	const earliest = end - buffer.length;
+	const start = Math.max(cursor, earliest);
+	const offset = start - earliest;
+	const readable = running ? readableUtf8Length(buffer) : buffer.length;
+	const pendingBytes = buffer.length - readable;
+	let length = Math.max(0, Math.min(readable - offset, JOB_LIMITS.pageBytes));
+	length = lineBound(buffer, offset, length);
+	// Preserve complete UTF-8 characters across ordinary page boundaries.
+	if (offset + length < buffer.length) length = continuationBound(buffer, offset, length);
+	const page = fitUtf8Page(buffer, offset, length);
+	const next = start + page.length;
+	return {
+		id,
+		text: page.text,
+		earliest,
+		next,
+		end,
+		gap: cursor < earliest,
+		more: next < earliest + readable,
+		pendingBytes,
+	};
+}
+
 /** Owns process lifetimes and bounded output, without owning a shell implementation. */
 export class JobManager {
 	private readonly jobs = new Map<string, Job>();
@@ -238,29 +264,7 @@ export class JobManager {
 	}
 	logs(id: string, cursor = 0): JobLogs {
 		const job = this.get(id);
-		if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > job.end) throw new Error("Invalid log cursor");
-		const buffer = job.tail.read();
-		const earliest = job.end - buffer.length;
-		const start = Math.max(cursor, earliest);
-		const offset = start - earliest;
-		const readable = job.snapshot.status === "running" ? readableUtf8Length(buffer) : buffer.length;
-		const pendingBytes = buffer.length - readable;
-		let length = Math.max(0, Math.min(readable - offset, JOB_LIMITS.pageBytes));
-		length = lineBound(buffer, offset, length);
-		// Preserve complete UTF-8 characters across ordinary page boundaries.
-		if (offset + length < buffer.length) length = continuationBound(buffer, offset, length);
-		const page = fitUtf8Page(buffer, offset, length);
-		const next = start + page.length;
-		return {
-			id,
-			text: page.text,
-			earliest,
-			next,
-			end: job.end,
-			gap: cursor < earliest,
-			more: next < earliest + readable,
-			pendingBytes,
-		};
+		return pageLogs(id, job.tail.read(), job.end, job.snapshot.status === "running", cursor);
 	}
 	cancel(id: string): JobSnapshot {
 		const job = this.get(id);

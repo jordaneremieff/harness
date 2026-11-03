@@ -46,6 +46,39 @@ settles while the session is idle is appended to the transcript without
 starting a turn. The next prompt sees it in context. A later run clears that
 state, so completions during or after ordinary work continue it as usual.
 
+### Agent conversations on Pi Durable
+
+The extension also emits a Durable contribution through the package-level
+[contribution contract](../../docs/conventions/durable-contributions.md), so
+agent conversations get the same `background` option on the host's native
+`bash` tool and the same `jobs` tool. The contribution wraps the host's `bash`
+by name; launch therefore remains a `bash` call with the original command, and
+the policy contribution's native tool hook sees it before any job exists.
+
+Each accepted job is a conversation-owned background task (`jobs.run`) in the
+agent host process; the task ID is the job ID. Its input retains the command,
+because the task rather than the tool call runs it. The command runs through
+the conversation's execution environment with the same cwd and inherited
+environment as native `bash`. A running job task keeps the host alive, is
+excluded from ordinary idle waits, and survives a plain conversation abort;
+`jobs` cancel, or an abort that crosses background work, ends it.
+
+When the job succeeds, fails, or times out, the task admits one input to the
+owning conversation with the completion text above, placed as a
+`jobs.completion` entry whose data is `{ job, command, tail }`, and keyed by a
+request ID derived from the launching call, so a retry never admits it twice.
+A busy conversation receives it as a follow-up after its current run; an idle
+conversation starts a run from it. Cancellation settles the task `aborted` and
+admits nothing.
+
+Job status persists in the task record and survives host restarts; the output
+tail lives in the host process only. If the host stops while a job runs, the
+next host marks the task on restart and admits one completion with status
+`lost`: the command is never run again to recover its result, and `jobs` logs
+for that job are unavailable. Another conversation in the same storage cannot
+read or cancel the job; its requests fail with an unknown job ID. The running
+and retained limits apply per host process.
+
 ```json
 {"action":"list"}
 {"action":"status","id":"<job.id>"}
@@ -198,6 +231,13 @@ Run focused tests from the repository root:
 node --test extensions/jobs/*.test.mts evals/command-jobs.test.mts
 node scripts/extension-load-check.mts extensions/jobs/index.ts
 ```
+
+The Durable test opens a real `Harness` with the native `bash` tool, a Node
+execution environment, and the faux provider. It checks admission, independent
+foreground work during a job, the single completion input and its continuation
+run, log reads, quiet cancellation with the process gone, isolation between
+conversations, and a host restart that reports a lost job without rerunning
+its command.
 
 The manager tests cover bounded retention and active native process cleanup.
 The adapter tests cover foreground behavior, output-schema conformance,
