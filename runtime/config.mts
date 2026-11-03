@@ -19,6 +19,9 @@ export async function readDocument(path:string):Promise<DocumentSnapshot> {
     }finally{await file.close();}
   }catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return {digest:'missing',status:'missing'};throw new RuntimeError('config_unavailable','The configuration source is unavailable.');}
 }
+function documentStatus(target:'runtime'|'pi',source:DocumentSnapshot):DocumentSnapshot['status'] {
+  return source.status==='valid'&&target==='runtime'&&source.value?.version!==1?'invalid':source.status;
+}
 function validatePrivateOrigin(value:unknown) {
   const origin=text(value,'private origin');let url:URL;try{url=new URL(origin);}catch{throw new RuntimeError('invalid_config','The private origin is invalid.');}
   if(url.protocol!=='https:'||!url.hostname.endsWith('.ts.net')||url.hostname!==url.hostname.toLowerCase()||url.username||url.password||url.pathname!=='/'||url.search||url.hash||url.origin!==origin)throw new RuntimeError('invalid_config','Use an exact HTTPS ts.net origin.');
@@ -74,32 +77,33 @@ export class Configuration {
     this.harnessPath=resolve(agentDir,env.PI_HARNESS_FILE??'harness.json');this.piPath=join(agentDir,'settings.json');
   }
   async startup():Promise<{config:RuntimeConfig;valid:boolean}> {
-    const source=await readDocument(this.harnessPath).catch(()=>({digest:'unavailable',status:'invalid' as const}));
+    const source:DocumentSnapshot=await readDocument(this.harnessPath).catch(()=>({digest:'unavailable',status:'invalid' as const}));
     try {
-      if(source.status==='invalid'||source.value&&source.value.version!==1)throw new Error('invalid');
+      if(documentStatus('runtime',source)==='invalid')throw new Error('invalid');
       const section=source.value?.runtime??{};if(!object(section))throw new Error('invalid');
       const selected={...section,...runtimeEnvironment(this.env)};
       return {config:validateRuntimeConfig(selected),valid:true};
     }catch{return {config:{},valid:false};}
   }
   async inspect(target:'runtime'|'pi') {
-    const source=await readDocument(target==='runtime'?this.harnessPath:this.piPath);
+    const source=await readDocument(target==='runtime'?this.harnessPath:this.piPath),status=documentStatus(target,source);
+    if(status==='invalid')return {digest:source.digest,status,values:null};
     let values:RuntimeConfig|PiPreferences|undefined;
     try {
-      if(target==='runtime') {if(source.value&&source.value.version!==1)throw new Error('invalid');values=validateRuntimeConfig(source.value?.runtime??{});}
-      else if(source.status!=='invalid') {
+      if(target==='runtime')values=validateRuntimeConfig(source.value?.runtime??{});
+      else {
         const s=SettingsManager.create(this.cwd,this.agentDir,{projectTrusted:false});const raw=s.getGlobalSettings();
         values={defaultProvider:raw.defaultProvider,defaultModel:raw.defaultModel,defaultThinkingLevel:raw.defaultThinkingLevel,enabledModels:raw.enabledModels,extensions:s.getExtensionPaths(),skills:s.getSkillPaths(),prompts:s.getPromptTemplatePaths(),themes:s.getThemePaths(),autoCompaction:s.getCompactionEnabled(),autoRetry:s.getRetryEnabled()};
       }
     }catch{return {digest:source.digest,status:'invalid',values:null};}
-    return {digest:source.digest,status:source.status,values:values??null};
+    return {digest:source.digest,status,values:values??null};
   }
   /** Replace only an invalid document after explicit confirmation; retain its complete bytes privately. */
   async repair(target:'runtime'|'pi',values:unknown,expectedDigest:string) {
     const checked=target==='runtime'?validateRuntimeConfig(values):validatePiPreferences(values),path=target==='runtime'?this.harnessPath:this.piPath;
     const source=await readDocument(path);
     if(source.digest!==expectedDigest)throw new RuntimeError('stale_config','The configuration changed. Read it again.');
-    if(source.status!=='invalid'||!source.bytes)throw new RuntimeError('repair_refused','Repair replaces only a bounded invalid document. Use field changes for a valid document.');
+    if(documentStatus(target,source)!=='invalid'||!source.bytes)throw new RuntimeError('repair_refused','Repair replaces only a bounded invalid document. Use field changes for a valid envelope.');
     const backups=join(this.agentDir,'runtime','config-backups');await mkdir(backups,{recursive:true,mode:0o700});
     const backupId=`${target}-${source.digest}`,backup=await open(join(backups,`${backupId}.json`),'wx',0o600).catch(error=>{if((error as NodeJS.ErrnoException).code==='EEXIST')return undefined;throw error;});
     if(backup)try{await backup.writeFile(source.bytes);await backup.sync();}finally{await backup.close();}
@@ -107,14 +111,14 @@ export class Configuration {
     const temporary=join(dirname(path),`.runtime-repair-${randomUUID()}`),file=await open(temporary,'wx',0o600);
     try{await file.writeFile(`${JSON.stringify(replacement,null,2)}\n`);await file.sync();}finally{await file.close();}
     try{if((await readDocument(path)).digest!==expectedDigest)throw new RuntimeError('stale_config','The configuration changed.');await rename(temporary,path);}catch(error){await unlink(temporary).catch(()=>{});throw error;}
-    return {repaired:true,backupId,scope:'The invalid document was replaced with supported values. Other original bytes remain in the private backup.',snapshot:await this.inspect(target)};
+    return {repaired:true,backupId,scope:`The original document was replaced, not migrated. Other original settings were not copied. Complete original bytes remain in the private config-backups/${backupId}.json backup.`,snapshot:await this.inspect(target)};
   }
   async apply(target:'runtime'|'pi',values:unknown,expectedDigest:string|undefined) {
     const checked=target==='runtime'?validateRuntimeConfig(values):validatePiPreferences(values);
     if(!expectedDigest)throw new RuntimeError('stale_config','Read the configuration digest before a change.');
     const path=target==='runtime'?this.harnessPath:this.piPath,source=await readDocument(path);
     if(source.digest!==expectedDigest)throw new RuntimeError('stale_config','The configuration changed. Read it again.');
-    if(source.status==='invalid'||target==='runtime'&&source.value&&source.value.version!==1)throw new RuntimeError('invalid_config','The source is invalid. Restore a valid document before a field change.');
+    if(documentStatus(target,source)==='invalid')throw new RuntimeError('invalid_config','The source envelope is invalid. Use explicit document repair before a field change.');
     if(target==='runtime') {
       const value={...(source.value??{version:1}),runtime:checked};
       await mkdir(dirname(path),{recursive:true,mode:0o700});const temp=join(dirname(path),`.runtime-config-${randomUUID()}`);const file=await open(temp,'wx',0o600);
