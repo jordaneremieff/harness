@@ -93,6 +93,20 @@ function observeContention(t: TestContext) {
 	});
 	return contended.promise;
 }
+function countLockOpens(t: TestContext): () => number {
+	let count = 0;
+	const original = fsPromises.open;
+	const replacement = t.mock.method(fsPromises, "open", async (...args: Parameters<typeof fsPromises.open>) => {
+		if (String(args[0]).endsWith(lockName)) count++;
+		return original(...args);
+	});
+	syncBuiltinESMExports();
+	t.after(() => {
+		replacement.mock.restore();
+		syncBuiltinESMExports();
+	});
+	return () => count;
+}
 async function events(reg: RuleRegistry): Promise<RuleEvent[]> {
 	return (await readFile(reg.path, "utf8"))
 		.trim()
@@ -446,6 +460,55 @@ if (process.argv[2] === "--transaction-child") {
 			await reg.writeEvent(event);
 			await assertWinner(reg, event);
 		});
+		it("reads an existing store under a held lock without taking it", { timeout: 15000 }, async (t) => {
+			const dir = await directory(t);
+			await registry(dir, [row()]).setData(binding("kept"), null, audit);
+			const lock = join(dir, lockName);
+			await writeFile(lock, "held", { mode: 0o600 });
+			const held = await lstat(lock);
+			const lockOpens = countLockOpens(t);
+			const state = await registry(dir, [row()]).snapshot();
+			assert.equal(state.health.status, "ok");
+			assert.equal(state.data.get("synthetic")?.revision, binding("kept").revision);
+			assert.equal(lockOpens(), 0);
+			assert.equal((await lstat(lock)).ino, held.ino);
+			assert.equal(await readFile(lock, "utf8"), "held");
+		});
+		it("keeps an intentionally empty store empty under a held lock", { timeout: 15000 }, async (t) => {
+			const dir = await directory(t);
+			const reg = registry(dir, [row()]);
+			await writeFile(reg.path, "", { mode: 0o600 });
+			await writeFile(join(dir, lockName), "", { mode: 0o600 });
+			const lockOpens = countLockOpens(t);
+			const state = await reg.snapshot();
+			assert.equal(state.health.status, "ok");
+			assert.equal(state.records.size, 0);
+			assert.equal((await readFile(reg.path)).length, 0);
+			assert.equal(lockOpens(), 0);
+		});
+		for (const published of [true, false]) {
+			it(`${published ? "reads" : "degrades without"} a store published during a failed creation attempt`, async (t) => {
+				const dir = await directory(t);
+				const writer = registry(dir);
+				await writer.setData(binding("kept"), null, audit);
+				const bytes = await readFile(writer.path);
+				await rm(writer.path);
+				const reader = registry(dir);
+				(reader as unknown as Internals).transaction = async () => {
+					if (published) await writeFile(writer.path, bytes, { mode: 0o600 });
+					throw new Error("synthetic creation conflict");
+				};
+				const state = await reader.snapshot();
+				if (published) {
+					assert.equal(state.health.status, "ok");
+					assert.equal(state.data.get("synthetic")?.revision, binding("kept").revision);
+				} else {
+					assert.equal(state.health.status, "degraded");
+					assert.match(state.health.message ?? "", /synthetic creation conflict/);
+					await assert.rejects(lstat(writer.path), /ENOENT/);
+				}
+			});
+		}
 		it("retains a replaced lock and refuses a success acknowledgement", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const reg = registry(dir);

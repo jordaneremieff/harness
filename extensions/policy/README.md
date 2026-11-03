@@ -1302,8 +1302,11 @@ controls recheck the current revision or pending proposal before acknowledgment.
 Lock acquisition uses bounded retries and never reports an unapplied change as
 successful. Policy never removes a held lock based on its age. If a writer exits
 before cleanup, stop all policy writers before removing the retained lock, then
-restart affected sessions. Read-only snapshots do not acquire a transaction lock
-after initialization. Reload existing policy sessions after an upgrade before
+restart affected sessions. Snapshots of an existing store never acquire the
+transaction lock, so a held or orphaned lock does not hide intact rules from a
+new session or agent host. Only creating a missing store takes the lock and
+rechecks absence under it; if creation fails but another writer has published
+the store, the snapshot reads that store. Reload existing policy sessions after an upgrade before
 concurrent control writes so every writer uses the transaction boundary.
 A cleanup error rejects acknowledgment even if the event already reached the log.
 Inspect the current state before retrying that control.

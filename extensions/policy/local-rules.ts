@@ -1806,8 +1806,36 @@ export class RuleRegistry {
 		}
 	}
 
+	/** Whether the store file exists; directory failures keep their own classification. */
+	private async storePresent(): Promise<boolean> {
+		await checkExistingDirectory(this.dir);
+		try {
+			await lstat(this.path);
+			return true;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+			throw error;
+		}
+	}
+
+	/**
+	 * An existing store is read without the writer lock, so a held or orphaned lock
+	 * cannot hide intact rules from a new reader. Only creating an absent store takes
+	 * the lock; a store that another writer published while that attempt failed is
+	 * read rather than reported as unreadable.
+	 */
+	private async initializeStore(): Promise<void> {
+		if (await this.storePresent()) return;
+		try {
+			await this.transaction(() => this.seedAbsentStore());
+		} catch (error) {
+			if (await this.storePresent()) return;
+			throw error;
+		}
+	}
+
 	private ensureFirstUse(): Promise<void> {
-		this.firstUse ??= this.transaction(() => this.seedAbsentStore()).catch((error: unknown) => {
+		this.firstUse ??= this.initializeStore().catch((error: unknown) => {
 			this.degrade(error);
 		});
 		return this.firstUse;

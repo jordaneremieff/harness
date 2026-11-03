@@ -198,6 +198,8 @@ interface FixtureOptions {
 	mode?: string;
 	extension?: DurableModule.Extension;
 	block?: { name: string; started: () => void };
+	/** Prepare the rule store before the host creates the contribution. */
+	prepare?: (storeDir: string) => Promise<void>;
 }
 
 async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
@@ -232,6 +234,7 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 			},
 			context,
 		);
+		await options.prepare?.(storeDir);
 		let contribution = await createPolicyDurableExtension(hostFor(directory, harness));
 		if (options.block) contribution = blockOnce(contribution, options.block.name, options.block.started);
 		registry.install(contribution);
@@ -794,6 +797,37 @@ test("enforce mode completes a denied call and projects result guidance once", a
 		const day = localDate(new Date());
 		const summary = await readTelemetry(fixture.storeDir, day, day);
 		assert.equal(summary.rules.find((entry) => entry.id === "durable-deny-probe")?.deniedCalls, 1);
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("a new host enforces intact rules while another writer holds the store lock", async () => {
+	const counter = { executed: 0 };
+	const fixture = await openFixture({
+		mode: "enforce",
+		extension: probeExtension(counter),
+		prepare: async (storeDir) => {
+			await addRule(new RuleRegistry(storeDir), "held-lock-deny-probe", {
+				phase: "input",
+				when: { op: "eq", path: ["tool"], value: "probe" },
+				action: { kind: "deny" },
+				onUnavailable: "deny",
+			});
+			await writeFile(join(storeDir, ".rules-lock"), "held", { mode: 0o600 });
+		},
+	});
+	try {
+		await submit(
+			fixture,
+			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("stopped")],
+			"run the probe",
+		);
+		const result = (await toolResults(fixture.root, "probe")).at(-1);
+		assert.equal(result?.isError, true);
+		assert.match(textOf(result), /Rule held-lock-deny-probe\./);
+		assert.equal(counter.executed, 0);
+		assert.equal(await readFile(join(fixture.storeDir, ".rules-lock"), "utf8"), "held");
 	} finally {
 		await fixture.close();
 	}
