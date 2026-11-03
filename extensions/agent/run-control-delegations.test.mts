@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -152,6 +152,8 @@ async function holdUntilAbort(context: Context, release: Promise<void>): Promise
 
 async function placedFamily(t: { after(fn: () => Promise<void> | void): void }, options: { reused?: boolean; queued?: boolean; prompt?: string; interrupted?: boolean; invalid?: "target" | "request" | "missing" } = {}) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-place-control-")));
+	const area = join(root, "area"); mkdirSync(area);
+	const outcomes: native.ToolExecutionResult[] = [];
 	writeFileSync(join(root, "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: `${testModel.provider}/${testModel.id}` } }, preferences: { defaultPreset: "standard" } })));
 	const release = deferred(), targetStarted = deferred(), captured = [deferred(), deferred()];
 	const targetId = "placed-owner";
@@ -176,11 +178,12 @@ async function placedFamily(t: { after(fn: () => Promise<void> | void): void }, 
 	} }).create({ durable: native, storageId: fixtureStorageId, cwd: root, agentDir: root, onClose: () => {}, services: { modelRuntime: { getModel: () => testModel, getModels: () => [testModel] } } });
 	sourceRegistry.install({ ...contribution, tools: contribution.tools?.map(tool => tool.name !== "agent_place" ? tool : { ...tool, execute: async (args, api, context) => {
 		const result = await tool.execute(args, api, context);
+		outcomes.push(result);
 		captured[executions++]?.resolve();
 		await holdUntilAbort(context, release.promise);
 		return result;
 	} }) });
-	const sourceOptions = hostOptions(join(root, "source.sqlite"), await scriptedRuntime([toolCallMessage("agent_place", { area: root, prompt: options.prompt ?? "placed work" }), answerMessage()]), sourceRegistry, root);
+	const sourceOptions = hostOptions(join(root, "source.sqlite"), await scriptedRuntime([toolCallMessage("agent_place", { area, prompt: options.prompt ?? "placed work" }), answerMessage()]), sourceRegistry, root);
 	let source = await DurableHost.open(sourceOptions, BACKGROUND_CONTEXT);
 	const wireStop = () => source.setForeignStop((references, context) => stopForeignReferences((method, input) => { assert.ok(target); return target.request(method, input); }, references, context));
 	wireStop();
@@ -189,8 +192,8 @@ async function placedFamily(t: { after(fn: () => Promise<void> | void): void }, 
 	await captured[0].promise;
 	if (options.prompt !== "") await targetStarted.promise;
 	return {
-		get source() { return source; }, get target() { assert.ok(target); return target; }, calls: () => calls, input,
-		async reopen() { rebound = true; await source.close(); source = await DurableHost.open(sourceOptions, BACKGROUND_CONTEXT); wireStop(); await captured[1].promise; },
+		get source() { return source; }, get target() { assert.ok(target); return target; }, calls: () => calls, input, outcomes, area,
+		async reopen(removeArea = false) { rebound = true; await source.close(); if (removeArea) rmSync(area, { recursive: true }); source = await DurableHost.open(sourceOptions, BACKGROUND_CONTEXT); wireStop(); await captured[1].promise; },
 	};
 }
 
@@ -257,16 +260,23 @@ for (const invalid of [undefined, "target", "request", "missing"] as const) test
 	assert.equal(stopped.state, "partial");
 });
 
-test("confirmed place replay after reopen keeps its exact reference despite an area rebinding", { timeout: 15000 }, async t => {
+for (const removeArea of [false, true]) test(`confirmed place replay retains its successful response and Stop reference after ${removeArea ? "area removal" : "area rebinding"}`, { timeout: 15000 }, async t => {
 	const f = await placedFamily(t);
 	const before = await f.source.request("run-scope") as RunScope;
-	await f.reopen();
+	const targetBefore = await f.target.request("run-scope") as RunScope;
+	assert.notEqual(f.outcomes[0].isError, true);
+	assert.equal((f.outcomes[0].details as Record<string, unknown>).area, f.area);
+	await f.reopen(removeArea);
+	assert.deepEqual(f.outcomes[1], f.outcomes[0]);
 	const after = await f.source.request("run-scope") as RunScope;
 	assert.deepEqual(after.delegations, before.delegations);
 	assert.equal(after.coverage.complete, true);
 	assert.equal(f.calls(), 1);
 	const control = await f.source.harness.snapshot(agentRunControlDoc(native), f.source.root().id, String(after.delegations[0].createdBy), BACKGROUND_CONTEXT);
 	assert.deepEqual(control?.result, before.delegations[0].result);
+	assert.equal(control?.placeArea, f.area);
 	const stopped = await f.source.request("run-stop", { runId: after.runId }) as RunStop;
 	assert.equal(stopped.state, "stopped");
+	assert.equal(stopped.delegations[0].state, "stopped");
+	assert.equal((await f.target.harness.getTask(targetBefore.taskId as native.TaskId, BACKGROUND_CONTEXT))?.abortRequested, true);
 });

@@ -39,7 +39,7 @@ import { targetIdentity } from "./identity.ts";
 import { admittedResult, dispatchFacts, DispatchOutputSchema, type ResultReference } from "./result-reference.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import { CollaborationParams } from "./collaboration.ts";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { AgentCatalog } from "./catalog.ts";
 import { readFleetStatus, FleetSelectionProperties, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
 import { readEffortAwareness, formatEffortAwareness, nativeIntentSelf } from "./effort-awareness.ts";
@@ -705,11 +705,12 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (!state.recorded && live.run) { state.recorded = true; state.inputs = live.run.inputs.slice(0, 200); state.complete = live.run.inputs.length <= 200; }
 		return undefined;
 	}, context);
-	const retainDispatch = (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, result?: ResultReference | null, response?: Record<string, JsonValue>) => api.commit(async tx => {
+	const retainDispatch = (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, result?: ResultReference | null, response?: Record<string, JsonValue>, placeArea?: string) => api.commit(async tx => {
 		const state = await tx.doc(RunControl, api.conversationId, String(api.taskId), null);
 		state.dispatch = result === undefined ? "pending" : "confirmed";
 		if (result !== undefined) state.result = result;
 		if (response !== undefined) state.response = response;
+		if (placeArea !== undefined) state.placeArea = placeArea;
 		return undefined;
 	}, context);
 
@@ -719,28 +720,27 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const state = await tx.doc(RunControl, capture.api.conversationId, String(capture.api.taskId), null);
 		if (state.dispatch !== "confirmed") return undefined;
 		if (!state.response || !state.result) throw new Error("Confirmed place dispatch has no retained admission");
+		if (typeof state.placeArea !== "string" || !isAbsolute(state.placeArea)) throw new Error("Confirmed place dispatch has no retained canonical area");
 		dispatchFacts("place", params, state.response);
 		const reference = state.response.result as ResultReference;
 		if (reference.sessionId !== state.result.sessionId || reference.submissionId !== state.result.submissionId || reference.requestId !== state.result.requestId)
 			throw new Error("Retained place references disagree");
-		return JSON.parse(JSON.stringify(state.response)) as Record<string, JsonValue>;
+		return { area: state.placeArea, sessionId: reference.sessionId, result: JSON.parse(JSON.stringify(state.response)) as Record<string, JsonValue> };
 	}, capture.context);
-	const prepareDispatch = async (capture: DispatchCapture, method: AgentControlMethod, params: Readonly<Record<string, unknown>>) => {
-		await rememberRunInputs(capture.api, capture.context);
-		const retained = method === "place" ? await retainedPlace(capture, params) : undefined;
-		if (retained !== undefined) return retained;
-		await retainDispatch(capture.api, capture.context);
-		return undefined;
-	};
 	const dispatchValue = async (perform: AgentControlDispatch, method: AgentControlMethod, params: Readonly<Record<string, unknown>>, capture?: DispatchCapture): Promise<unknown> => {
 		const input = capture && isInputDispatch(method, params);
-		const retained = input ? await prepareDispatch(capture, method, params) : undefined;
-		if (retained !== undefined) return retained;
+		if (input) {
+			await rememberRunInputs(capture.api, capture.context);
+			await retainDispatch(capture.api, capture.context);
+		}
 		const value = await perform(method, params);
+		const placeArea = method === "place" ? params.area as string : undefined;
 		if (method === "submit" || method === "task-submit" || input && method === "place") dispatchFacts(method, params, value);
 		if (input) {
 			const facts = structuredObservation(DispatchOutputSchema, value) as { result?: ResultReference };
-			await retainDispatch(capture.api, capture.context, facts.result ?? null, method === "place" ? JSON.parse(JSON.stringify(value)) as Record<string, JsonValue> : undefined);
+			await retainDispatch(capture.api, capture.context, facts.result ?? null,
+				method === "place" ? JSON.parse(JSON.stringify(value)) as Record<string, JsonValue> : undefined,
+				placeArea);
 		}
 		return value;
 	};
@@ -1761,6 +1761,16 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		parameters: presetParams(PlaceParams),
 		replay: "safe",
 		execute: async (args: PlaceInput, api, context) => {
+			try {
+				const retained = await retainedPlace({ api, context }, { requestId: `place:${host.storageId}:${api.taskId}` });
+				if (retained !== undefined) return textResult(`The owner of ${retained.area} is ${retained.sessionId}.\n${JSON.stringify(retained.result)}`, {
+					...retained.result,
+					sessionId: retained.sessionId,
+					area: retained.area,
+				});
+			} catch (error) {
+				return errorResult(`Place replay failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
 			const agent = await api.agent(context);
 			const resolved = resolvePlaceArea(args.area ?? agent.cwd ?? host.cwd);
 			if (resolved.kind === "error") return errorResult(resolved.message);

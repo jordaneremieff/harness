@@ -9,6 +9,7 @@ export type RunControlState = {
 	dispatch?: "pending" | "confirmed";
 	result?: ResultReference | null;
 	response?: Record<string, JsonValue>;
+	placeArea?: string;
 };
 
 /** Native input and task links remain available after a generation settles. */
