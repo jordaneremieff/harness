@@ -139,7 +139,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 	pi.on("tool_result", async (event, ctx) => {
 		noteCwd = ctx.cwd;
 		const appended = notes.result({ name: event.toolName, input: event.input }, event.toolCallId,
-			event.parentToolCallId === undefined ? undefined : event.toolCallId.split("/")[0]);
+			event.parentToolCallId);
 		if (!appended.length) return;
 		return { content: [...event.content, ...appended.map((text) => ({ type: "text" as const, text }))],
 			structuredContent: event.structuredContent };

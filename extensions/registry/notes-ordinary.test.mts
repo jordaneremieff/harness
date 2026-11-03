@@ -58,16 +58,28 @@ test("ordinary note appends one part and preserves the original result carriers"
 		assert.equal((await sample.invoke("tool_result", event(sample.file, "third")))?.content?.length, 2);
 	} finally { await sample.close(); }
 });
-test("ordinary nested notes roll directly to the outermost result and clear at reset", async () => {
+test("ordinary nested notes follow immediate opaque parent IDs and clear at reset", async () => {
 	const sample = fixture();
 	try {
-		const nested = event(sample.file, "outer/1/1", "outer/1");
+		const rootId = "provider/root";
+		const nested = event(sample.file, `${rootId}/1/1`, `${rootId}/1`);
+		const original = structuredClone(nested);
 		assert.equal(await sample.invoke("tool_result", nested), undefined);
-		assert.equal(nested.content.length, 1);
-		const middle = { ...event("/unrelated", "outer/1", "outer"), toolName: "wrapper" } as ToolResultEvent;
+		assert.deepEqual(nested, original);
+		const splitId = { ...event("/unrelated", "provider"), toolName: "wrapper" } as ToolResultEvent;
+		assert.equal(await sample.invoke("tool_result", splitId), undefined);
+		const middle = { ...event("/unrelated", `${rootId}/1`, rootId), toolName: "wrapper" } as ToolResultEvent;
+		const middleOriginal = structuredClone(middle);
 		assert.equal(await sample.invoke("tool_result", middle), undefined);
-		const outer = { ...event("/unrelated", "outer"), toolName: "wrapper" } as ToolResultEvent;
-		assert.equal((await sample.invoke("tool_result", outer))?.content?.length, 2);
+		assert.deepEqual(middle, middleOriginal);
+		assert.equal(await sample.invoke("tool_result", splitId), undefined);
+		const outer = { ...event("/unrelated", rootId), toolName: "wrapper" } as ToolResultEvent;
+		const result = await sample.invoke("tool_result", outer);
+		assert.equal(result?.content?.length, 2);
+		assert.equal(result?.content?.[0], outer.content[0]);
+		assert.equal(result?.structuredContent, outer.structuredContent);
+		assert.match(result?.content?.[1]?.type === "text" ? result.content[1].text : "", /^\[registry\]/);
+		assert.equal(await sample.invoke("tool_result", event(sample.file, "duplicate")), undefined);
 		await sample.invoke("session_start");
 		await sample.invoke("tool_result", event(sample.file, "next/1", "next"));
 		await sample.invoke("session_start");
