@@ -1330,18 +1330,19 @@ it("wakes a source when its exact native recipient gains a catalogue record", { 
 	unlinkSync(manager.catalog.path(target.storageId));
 	manager.catalog.markRecoveryDue(source.storageId, false);
 	writeDeliveryWake(root, source.storageId, [`${target.storageId}:7`]);
-	assert.equal((await manager.recoverNamespace(new AbortController().signal)).attempted, 0);
+	await manager.registerPrimary(randomUUID(), fakePrimary(new AbortController().signal).client);
+	assert.deepEqual([...acquired], []);
 	writeFileSync(manager.catalog.path(target.storageId), JSON.stringify(target));
 	publishCatalogChange(manager.catalog.root, target.storageId);
 	await acquired.waitForCount(1, 5000);
 	assert.deepEqual([...acquired], [source.storageId]);
 });
 
-it("persists failed recipient availability across fresh managers and wakes once after a change", { timeout: 15000 }, async t => {
+it("persists failed recipient availability across fresh primary managers and wakes once after a change", { timeout: 15000 }, async t => {
 	const root = fixtureRoot(t), acquired: string[] = [];
 	let target!: CatalogRecord;
 	const fingerprint = () => createHash("sha256").update(JSON.stringify(hostMetadata(target, join(root, "package")))).digest("hex");
-	const options = managerOptions(root, { acquire: async metadata => {
+	const options = managerOptions(root, { createPrimary: primaryFactory().factory, acquire: async metadata => {
 		acquired.push(metadata.storageId);
 		writeDeliveryWake(root, metadata.storageId, [target.storageId], () => fingerprint());
 		return fakeConnection(metadata, async () => ({ workPending: false, deliveriesPending: true, deliveriesActive: false }));
@@ -1350,38 +1351,43 @@ it("persists failed recipient availability across fresh managers and wakes once 
 	const source = createRecord(first, root); target = createRecord(first, root);
 	first.catalog.markRecoveryDue(source.storageId, false);
 	writeDeliveryWake(root, source.storageId, [target.storageId], () => fingerprint());
-	assert.equal((await first.recoverNamespace(new AbortController().signal)).attempted, 0);
+	const register = (manager: AgentManager) => manager.registerPrimary(target.storageId, fakePrimary(new AbortController().signal).client);
+	await register(first);
+	assert.equal(acquired.length, 0);
 	await first.close();
 	const second = new AgentManager(options); t.after(() => second.close());
-	const signal = new AbortController().signal;
-	assert.equal((await second.recoverNamespace(signal)).attempted, 0);
+	await register(second);
 	assert.equal(acquired.length, 0);
 	target = { ...target, model: { ...target.model, modelId: "model-y" } };
 	writeFileSync(second.catalog.path(target.storageId), JSON.stringify(target));
-	assert.equal((await second.recoverNamespace(signal)).attempted, 1);
-	assert.equal((await second.recoverNamespace(signal)).attempted, 0);
+	await register(second);
+	assert.deepEqual(acquired, [source.storageId]);
+	await register(second);
+	assert.deepEqual(acquired, [source.storageId]);
 	await second.close();
 	const third = new AgentManager(options); t.after(() => third.close());
-	assert.equal((await third.recoverNamespace(new AbortController().signal)).attempted, 0);
+	await register(third);
 	assert.deepEqual(acquired, [source.storageId]);
 });
 
-it("does not repeat a parked wake for unchanged recipient availability", { timeout: 15000 }, async t => {
+it("does not repeat a parked wake for unchanged recipient availability at primary registration", { timeout: 15000 }, async t => {
 	const root = fixtureRoot(t), acquired: string[] = [];
-	const manager = new AgentManager(managerOptions(root, { acquire: async metadata => {
+	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory, acquire: async metadata => {
 		acquired.push(metadata.storageId);
+		writeDeliveryWake(root, metadata.storageId, [target.storageId], () => createHash("sha256").update(JSON.stringify(hostMetadata(target, join(root, "package")))).digest("hex"));
 		return fakeConnection(metadata, async () => ({ workPending: false, deliveriesPending: true, deliveriesActive: false }));
 	}, connect: noHost }));
 	t.after(() => manager.close());
 	const source = createRecord(manager, root), target = createRecord(manager, root);
 	manager.catalog.markRecoveryDue(source.storageId, false);
 	writeDeliveryWake(root, source.storageId, [target.storageId]);
-	const signal = new AbortController().signal;
-	assert.equal((await manager.recoverNamespace(signal)).attempted, 1);
-	assert.equal((await manager.recoverNamespace(signal)).attempted, 0);
+	const register = () => manager.registerPrimary(target.storageId, fakePrimary(new AbortController().signal).client);
+	await register();
+	await register();
 	assert.deepEqual(acquired, [source.storageId]);
 	manager.catalog.updateView(target.storageId, { updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } });
-	assert.equal((await manager.recoverNamespace(signal)).attempted, 0, "a view publication is not new host availability");
+	await register();
+	assert.deepEqual(acquired, [source.storageId], "a view publication is not new host availability");
 });
 
 it("refreshes an existing recovery link at another primary registration", { timeout: 15000 }, async (t) => {

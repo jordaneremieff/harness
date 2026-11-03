@@ -14,14 +14,6 @@ its creator, or replace request-local requester and reply routes. Closing a
 client releases its observations, not the native conversation or its admitted
 work.
 
-A managed namespace binds one catalogue root to its selected Agent source and
-Pi dependency installation. Runtime supervises an Agent-owned namespace recovery
-process independently of UI assets and provider availability. That process uses
-the existing catalogue recovery and exclusive host acquisition. It registers no
-ordinary primary and holds no second task index. New and retained namespaces
-keep their own source routes. See
-[native namespace creation and recovery](../agent-host-contract.md#native-namespace-creation-and-recovery).
-
 One independent process owns each Durable storage. It takes the exclusive writer
 claim before storage opens, and it alone resumes the native scheduler. A root
 agent uses the storage ID; its forks and same-directory agents use conversation

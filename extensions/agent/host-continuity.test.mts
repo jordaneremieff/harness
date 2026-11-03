@@ -108,7 +108,7 @@ it("retains native child work across ordinary caller exit and a fresh caller ins
 		assert.equal(reading.answerEntryId, retained.answerEntryId); assert.ok(JSON.stringify(reading).includes("RETAINED_X"));
 		await p2.wait((row) => row.kind === "prompt-done");
 		assert.equal(fixtureRows(tracePath).filter((row) => row.kind === "host-binding" && row.storageId === reference.sessionId).length, 1);
-		note("p2-retained-read", { reading, oldHostPid: original.pid });
+		note("result-inspection", { reading, oldHostPid: original.pid });
 		const closing = original.request("close");
 		await waitForHostRelease(metadata, { after: closing, signal: AbortSignal.timeout(10000) });
 		await original.close(); note("old-host-retired", { pid: original.pid });

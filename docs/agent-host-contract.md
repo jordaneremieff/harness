@@ -1,6 +1,6 @@
 # Agent host contract
 
-This document defines the current local consumer boundary for retained Durable agents. The Agent extension owns execution, storage, admission, and publication. It may change this contract. Consumers compare supported operation identities with each connected host and refuse mismatched operations; they do not require the extension to preserve older behavior.
+This document defines the current local boundary between the Agent host and its clients. The Agent extension owns execution, storage, admission, and publication. It may change this contract. Consumers compare supported operation identities with each connected host and refuse mismatched operations; they do not require the extension to preserve older behavior.
 
 Communication shapes and operation identities are defined by `extensions/agent/communication.ts`, `observation-schema.ts`, and `version-contract.ts`. Collaboration thread shapes are defined by `extensions/agent/collaboration.ts`. Historical line-number references use repository revision `4a423cf2a0a822638c09228c5a10a4df1d324e82`, except receipts, configure, task-submit, status and provider-block references, which use `0468691ac2c7bdf8a85d3aa8560f2e5d87dfce26`. These references do not establish the version loaded by a running host.
 
@@ -8,7 +8,7 @@ Paths are relative to the repository root. References describe implementation, n
 
 ## Scope and identity
 
-This is a same-user, machine-local interface. [Independent retained reads](#independent-retained-reads) use a one-shot process without a live host. Chord's public typed host runtime supplies live calls and state over a bounded Unix-socket `Link`. The [wire contract](#chord-wire-contract) defines the shared boundary for Agent and independent UI consumers. Payloads, catalog publications, operation identities, and retry policy remain harness contracts. The endpoint is a private directory and owner-only Unix socket, not remote authentication. Chord owns calls, cancellation, and state; the socket adapter owns framing, bounds, close, and initial identity admission.
+This is a same-user, machine-local interface. Chord's public typed host runtime supplies live calls and state over a bounded Unix-socket `Link`. The [wire contract](#chord-wire-contract) defines the boundary for Agent host clients. Payloads, catalog publications, operation identities, and retry policy remain harness contracts. The endpoint is a private directory and owner-only Unix socket, not remote authentication. Chord owns calls, cancellation, and state; the socket adapter owns framing, bounds, close, and initial identity admission.
 
 Use these terms consistently:
 
@@ -60,7 +60,7 @@ Every committed snapshot/frame entry and compact history/activity row contains o
 
 Unresolved means no visible verified association, not human authorship or a promise of future completion. Live progress rows without a committed ID omit this field. Task observation frames are unchanged.
 
-Snapshot, conversation observation and readable inspection share one owner reader. It captures a visible native tail before the read. Every index hit verifies the native submission, actual origin and target/companion records through bounded fork-aware exact-ID queries. Both records must remain visible at that tail. An older display page still uses the captured current view tail, not its `before` anchor, as the provenance cutoff. A fork before the companion never inherits later parent metadata. A visible inherited entry retains its original conversation ID in the communication target; that ID need not equal the selected fork's conversation ID. No UI or terminal lookup scans for adjacent text or guesses a sender.
+Snapshot, conversation observation and readable inspection share one owner reader. It captures a visible native tail before the read. Every index hit verifies the native submission, actual origin and target/companion records through bounded fork-aware exact-ID queries. Both records must remain visible at that tail. An older display page still uses the captured current view tail, not its `before` anchor, as the provenance cutoff. A fork before the companion never inherits later parent metadata. A visible inherited entry retains its original conversation ID in the communication target; that ID need not equal the selected fork's conversation ID. No client lookup scans for adjacent text or guesses a sender.
 
 The join handles at most 200 display entries. One eligible index hit needs at most one exact target read and one exact companion read, each limited to one record. Added views fit 65,536 serialized bytes per response in returned order; each ready view fits 32,768 bytes. Minimal markers remain reserved for later rows. Communication fits 24,576 bytes and body text fits 16,384 UTF-8 bytes. IDs, counts and times are safe integers; strings reject malformed Unicode and controls except ordinary body newline/tab. Missing optional fields remain absent.
 
@@ -148,7 +148,7 @@ Ordinary origin is `{kind: "ordinary-custom", customType: "agent.peer", renderEn
 
 Original content remains the source for Raw content and Copy with its actual existing coverage. A normalized card does not replace that content with a reconstructed body, duplicate the transport paragraph at rest, expose secrets through raw details, or change native admission. Preserve a validated communication value through repeated projection rather than treating it as another producer record.
 
-Sources: `extensions/agent/index.ts` ordinary primary registration; `extensions/agent/durable-delivery.ts` `boundedPeerText`, `sharedRowDetails`, `rowDetails`, `reportOptionalDetails`, and `receiptContinuationDetails`; `extensions/agent/durable-controls.ts` `DeliveryReceipt` and `DeliveryReport`; `extensions/agent/identity.ts` `canonicalIdentity`. These references define source fields and mapping, not a claim that an arbitrary running UI already consumes them.
+Sources: `extensions/agent/index.ts` ordinary primary registration; `extensions/agent/durable-delivery.ts` `boundedPeerText`, `sharedRowDetails`, `rowDetails`, `reportOptionalDetails`, and `receiptContinuationDetails`; `extensions/agent/durable-controls.ts` `DeliveryReceipt` and `DeliveryReport`; `extensions/agent/identity.ts` `canonicalIdentity`. These references define source fields and mapping, not a claim that an arbitrary running client already consumes them.
 
 ## Retained discovery and endpoint derivation
 
@@ -240,7 +240,7 @@ The package process entry is `extensions/agent/durable-runner.ts`. Invoke it wit
 node <trusted-harness-package>/extensions/agent/durable-runner.ts <metadata-JSON>
 ```
 
-The UI reads server-owned global `<agentDir>/settings.json`, using the server's public `getAgentDir()` resolution rather than the retained record or project settings. It requires exactly one explicit local source entry in `packages` or `extensions` ending in `/extensions/agent/index.ts`. An absolute entry resolves directly; `./` and `../` entries resolve relative to the global agent directory, as the installed package manager defines. That entry selects the adjacent `durable-runner.ts`, with canonical regular-file checks and validation of the owning `harness` package and its `pi.extensions` declaration. An absent, ambiguous, disabled, or unsupported source configuration refuses before spawn. The UI package's own Agent copy is not assumed to be the configured source. Neither browser input nor retained `packageDir` selects executable source. Source: installed coding-agent `dist/core/settings-manager.d.ts:Settings`, `dist/core/package-manager.js:resolveLocalExtensionSource,getBaseDirForScope`; the configured owner package's `pi.extensions` declaration. Construct metadata from the validated catalog record with exactly the host fields below; omit `createdAt`, `view`, `threads`, `recoveryDue`, and consumer diagnostics:
+Construct metadata from the validated catalogue record with exactly these host fields. Omit `createdAt`, `view`, `threads`, `recoveryDue`, and client diagnostics:
 
 ```text
 storageId, cwd, agentDir, packageDir, storagePath,
@@ -248,9 +248,7 @@ model: {provider, modelId}, thinkingLevel,
 name?, trust?, ownerId?, independent?: {inputDigest, projectTrusted}
 ```
 
-Replace `packageDir` with the installation selected by the server's configured `--pi` executable, not the retained installation or an unrelated ambient SDK import. An executable name resolves through the server's bounded PATH search; an absolute executable resolves directly. The supported shapes are the coding-agent package's `dist/bundle/cli.js` and the current managed `bin/pi` launcher beside `install/current-version`. The managed marker selects `install/releases/<version>/node_modules/@earendil-works/pi-coding-agent`; its bounded version must agree with the package manifest. Both shapes require the coding-agent package name, a valid version, its `bin.pi` declaration, and canonical CLI/package paths. Unknown wrappers or missing installation metadata refuse. If `PI_PACKAGE_DIR` is set, its canonical root must agree with that selected installation. Source: the installed coding-agent `package.json:bin`, `dist/config.js:getPackageDir`, and managed `bin/pi` launcher.
-
-Preserve `trust`, `ownerId`, and the complete `independent` object exactly. Explicit trust participates in the owner's normal trust resolver. If independent metadata exists, `independent.projectTrusted` supplies the prioritized resolver instead. An unresolved normal decision follows the retained owner chain, not the Primary displayed in the browser. Without trust-requiring project resources, normal resolution uses the saved decision, including false, or defaults to true when absent. Explicit trust retains priority. Do not replace absent trust with false, force true, fabricate an owner, or omit independent metadata. Source: `extensions/agent/durable-runtime.ts:55–79`; `durable-services.ts:553–564`; `trust-support.ts:73–109`; installed coding-agent `dist/core/resource-loader.js:352–366`.
+Preserve `trust`, `ownerId`, and the complete `independent` object exactly. Explicit trust participates in the owner's normal trust resolver. If independent metadata exists, `independent.projectTrusted` supplies the prioritized resolver instead. An unresolved normal decision follows the retained owner chain, not the observing primary. Without trust-requiring project resources, normal resolution uses the saved decision, including false, or defaults to true when absent. Explicit trust retains priority. Do not replace absent trust with false, force true, fabricate an owner, or omit independent metadata. Source: `extensions/agent/durable-runtime.ts:55–79`; `durable-services.ts:553–564`; `trust-support.ts:73–109`; installed coding-agent `dist/core/resource-loader.js:352–366`.
 
 Before dynamically loading host modules, the runner binds coding-agent, agent-core, AI, and TUI imports originating under the Agent source root to the selected installation. Durable, Codemode, MCP, Chord, and pi-schema remain dependencies of the configured owner checkout; the binding does not redirect every Pi package. Validate the catalog identity, exact database path under the configured durable catalog root, and existing canonical regular-file/directory paths before spawn. Source: `extensions/agent/{durable-runner,installation-binding,host-protocol}.ts`.
 
@@ -262,64 +260,15 @@ After the listener starts, the owner prints one line with this prefix and JSON r
 PI_AGENT_HOST_READY {"pid":positiveInteger,"socketPath":absolutePath,"contract":RuntimeContract}
 ```
 
-Read a bounded amount of output within a bounded deadline. A matching malformed line is a refusal, not ordinary output. Validate the spawned PID, the derived socket path, and the current operation descriptor. `serverId` is not a readiness field; derive it from metadata and verify it through the public Unix transport handshake. Then use the existing negotiated preparation and observation paths for the exact conversation. A usable composer requires a negotiated `task-submit` capability. Readiness alone proves neither a compatible connection nor a valid conversation. Source: `extensions/agent/host-protocol.ts:parseHostReadyLine`; `extensions/agent/host-process.ts:runHost`; `extensions/agent/host-client.ts:launchRunner`.
+Read a bounded amount of output within a bounded deadline. A matching malformed line is a refusal, not ordinary output. Validate the spawned PID, the derived socket path, and the current operation descriptor. `serverId` is not a readiness field; derive it from metadata and verify it through the public Unix transport handshake. Then use the existing negotiated preparation and observation paths for the exact conversation. Task input requires a negotiated `task-submit` capability. Readiness alone proves neither a compatible connection nor a valid conversation. Source: `extensions/agent/host-protocol.ts:parseHostReadyLine`; `extensions/agent/host-process.ts:runHost`; `extensions/agent/host-client.ts:launchRunner`.
 
-The host owns its lifetime independently of the UI. Runtime construction resumes unfinished conversations, tool work, and retained deliveries before the socket starts and before READY is emitted. A readiness, negotiation, or startup timeout does not prove that native work was never admitted. Source: `extensions/agent/durable-runtime.ts:324–350`; `durable-host.ts:353–362`; `host-process.ts:277–302,688–711`; owner-installed Durable `dist/harness/{harness,scheduler}.js:resume`. Retain an uncertain attempt while its child remains alive; offer an explicit connection check rather than automatic relaunch or task submission. Malformed readiness, socket mismatch, connection failure, browser loss, and UI shutdown never justify killing admitted or pre-existing work. UI shutdown cancels only its own readiness wait and closes its observations/transports. A confirmed exited child permits a new explicit attempt. The owner client's current cleanup implementation is not a consumer requirement or permission to interrupt work. Source: `extensions/agent/{durable-runner,host-process,durable-runtime}.ts`.
-
-## Saved context creation
-
-The browser's explicit `agent.convert` operation creates a new native root from
-an ordinary saved session. It never resumes or writes the ordinary file. Public
-primary discovery records at `<store>/.primaries/<id>.json` supply only declared
-identity, cwd, name and saved-file association. A name fallback requires matching
-the file header identity and canonical file path. Saved name declarations,
-including clears, remain authoritative. Discovery does not establish a live
-selected branch or idle state.
-
-The UI captures a complete unchanged file in current format version 3, bounded to 64 MiB,
-32 MiB per record and 65,536 records. Conversion's 4 KiB name check is only an
-outer byte bound. Native host metadata still limits names to 256 UTF-16 code
-units and rejects control characters (`host-protocol.ts`). A source name outside
-that existing native contract refuses; conversion never expands the limit or
-truncates the name. The worker has a 15-second capture deadline
-and a bounded heap. Invalid UTF-8, JSON, headers, entries, duplicate identities,
-missing parents, cycles, incomplete final records and changed input refuse.
-Public `parseSessionEntries` then `buildSessionProjection` selects the final
-persisted leaf; `convertToLlm` applies Pi's custom/bash/summary semantics. System
-entries, system prompts, tool definitions and ordinary runtime state do not enter
-the native initialization.
-
-The server selects `create-saved-context.ts` only from global configured Agent
-resources. Its internal process contract uses metadata with `protocol: 1`,
-server-owned roots and package directory, source identity, cwd, optional actual
-name and a stable request key. stdin contains only the projected message array,
-with a 64 MiB ceiling. stdout returns `protocol: 1`, `state`, `identity`, and
-`name`; a completed result names the new identity. A definite pre-admission
-refusal is rejected. Lost acknowledgment or failure after creation starts is
-uncertain, not an instruction to replay.
-
-The Agent helper uses existing preference selection, catalog deduplication,
-exclusive host admission and root profile/name initialization. It supplies no
-prompt. Initialization requires a fresh writer claim and an absent storage file;
-it never attaches to an existing root or overwrites its context. The runner checks
-storage absence inside the writer claim. A collision remains unconfirmed rather
-than acknowledging an empty or unrelated root. The detached runner accepts the
-bounded initial array through stdin;
-`ConversationInit` appends matching UserEntry, AssistantEntry and ToolResultEntry
-model messages in order. Original message timestamps, content and
-`argumentsError` remain intact. Tool-result entries have empty native diagnostics
-and no invented task receipts; original result details stay in the model message.
-The new root uses fresh execution and trust settings. Source queues, reports,
-role, live leaf and coordinator ownership are not transferred. Repeated UI
-requests retain the same operation key; uncertain creation is never replayed
-automatically. No ordinary owner endpoint or resource reload is a conversion
-prerequisite. The creating SDK must satisfy the current minimum Pi version.
+The host owns its lifetime independently of its clients. Runtime construction resumes unfinished conversations, tool work, and retained deliveries before the socket starts and before READY is emitted. A readiness, negotiation, or startup timeout does not prove that native work was never admitted. Source: `extensions/agent/durable-runtime.ts:324–350`; `durable-host.ts:353–362`; `host-process.ts:277–302,688–711`; owner-installed Durable `dist/harness/{harness,scheduler}.js:resume`. Retain an uncertain attempt while its child remains alive; offer an explicit connection check rather than automatic relaunch or task submission. Malformed readiness, socket mismatch, connection failure, client disconnection, and client shutdown never justify killing admitted or pre-existing work. Client shutdown cancels only its own readiness wait and closes its observations/transports. A confirmed exited child permits a new explicit attempt. The owner client's current cleanup implementation is not a consumer requirement or permission to interrupt work. Source: `extensions/agent/{durable-runner,host-process,durable-runtime}.ts`.
 
 ## Chord wire contract
 
 The live interface uses the published Chord `remote`, `method`, `createHost`,
 `Link`, and `Frame` contracts. The package-level transport entrypoint serves
-both Agent and UI; neither imports the other's private implementation. Its
+Agent clients without imports from another extension's private implementation. Its
 contract runtime values use these exact closed schemas:
 
 ```typescript
@@ -427,8 +376,8 @@ existing path. It binds a private unpublished name and publishes a hard link
 without replacement, so Node's own close cannot unlink a substituted public
 socket. Cleanup unlinks only the public socket whose device/inode it recorded.
 
-Both Agent and UI import `transport/index.ts`; neither imports another slice's
-transport implementation or supplies a second adapter. Its public factories
+Agent clients import `transport/index.ts`. They do not import another slice's
+transport implementation or supply a second adapter. Its public factories
 are `connectTransport`, `createTransportServer`, `createUnixLink`,
 `connectUnixLink`, and `listenUnixLinks`. The client exposes `request`,
 `subscribe`, `onClose`, `connected`, and `dispose`; `subscribe` returns a
@@ -450,8 +399,7 @@ streamed past without a record-size limit or general transcript validation. A ne
 until Pi flushes its first conversation. Older endpoints refuse the new channel;
 restart the primary and source hosts at their agreed safe boundaries. Their Endpoint methods are `info`,
 `deliver`, and `trustPrompt`, with the existing single payload in `params`
-and no host operation contract. Host operation identities and
-`retained-read/1.0.0` do not change merely because the wire changes. A version
+and no host operation contract. Host operation identities do not change merely because the wire changes. A version
 refusal contains an incompatible call; it is not a safe activation plan.
 
 ## Negotiation and request envelope
@@ -752,7 +700,7 @@ These are retained/read projections, not proof of operation completion outside t
 
 ## Collaboration threads
 
-A collaboration thread is a shared frame (purpose, authority, restrictions, acceptance, integrator), a member list, and an append-only exchange of numbered events. Each thread lives in the storage that created it, and its identity is `<storageId>/<32 lowercase hexadecimal characters>`. A storage-scoped list or read serves only that storage: there is no cross-storage native index. A live connection selects the storage; the [independent retained reader](#independent-retained-reads) selects it through a verified bare storage UUID and reads a private snapshot without starting a host. Cross-storage discovery uses catalog hints, then a consumer selects each storage for a full list or read.
+A collaboration thread is a shared frame (purpose, authority, restrictions, acceptance, integrator), a member list, and an append-only exchange of numbered events. Each thread lives in the storage that created it, and its identity is `<storageId>/<32 lowercase hexadecimal characters>`. A storage-scoped list or read serves only that storage: there is no cross-storage native index. The client selects the storage by its canonical identity. Cold reads use a private snapshot without starting a host. Cross-storage discovery uses catalog hints, then a consumer selects each storage for a full list or read.
 
 `collaboration-list` and `collaboration-read` are read-only, retry-safe, and have no `durable` identity (see [Current operation identities](#current-operation-identities)). Neither takes `sessionId` or `conversationId`; the connection selects the storage. They never start a model or write state. `collaboration-mutate` is not described here. Text fields are returned as stored, with no truncation except the 160-character `purpose` of a list summary.
 
@@ -938,23 +886,6 @@ stores it, together with a later commit or within about a second. Show live
 progress from observation frames, not from this feed.
 These are subscription-local invalidations, not catalog deltas or replay
 cursors. Release the handle and subscription on close.
-
-## Native namespace creation and recovery
-
-A managed namespace binds a catalogue root to one sealed Agent source and its Pi dependency installation. Runtime setup supplies these paths. A browser never selects an executable or rebinds a retained store. Existing ordinary roots keep their original source route. New namespaces remain outside the ordinary manager's configured catalogue, so an older manager cannot acquire them after their host retires.
-
-`extensions/agent/create-conversation.ts` accepts a JSON argument:
-
-```text
-{protocol:1,root,agentDir,packageDir,cwd,requestId,
- name?,model?,thinkingLevel?,preset?,existingSources?:[{root,sourceRoot,packageDir}]}
-```
-
-It creates an empty native root through `AgentManager`, with no fabricated primary role or project-trust override. Saved trust decisions retain their normal authority. Model and preset resolution use the selected machine document and the supplied installation. A completed receipt is `{protocol:1,state:"completed",identity,name,root,sourceRoot,packageDir}`. Rejected and uncertain receipts use the same state field. Identity is null when creation never established one. Runtime binds the complete creation request before invoking the helper and preserves an uncertain result instead of blindly repeating creation. The manager's native catalogue request key deduplicates the underlying creation.
-
-The optional `existingSources` inventory contains exact trusted root/source/installation routes, not copied profiles or tasks. Agent setup merges those immutable bindings into `<root>/native-sources.json`. Nested managers read the inventory from their namespace root. Handle resolution checks the current catalogue and the bounded selected roots, rejects ambiguous or unavailable ownership, and executes a retained target through its original source and dependencies. Native controls, exact-result waits, producer watches and public observations use the target's runner and dependency installation, not the caller's installation. An earlier source needs its existing public runner and host contracts, not a newly added helper file. An identity absent from the selected native catalogues requires a real registered ordinary-primary descriptor before ordinary routing is considered. Missing native metadata alone is never that proof. This inventory is deployment metadata. Native documents remain authoritative for profiles, requests, tasks and ownership.
-
-`extensions/agent/namespace-recovery.ts` accepts `{protocol:1,root,agentDir,packageDir,cwd,existingSources?}` as its JSON argument. A runtime supervisor starts it through Chord's `forkDriver` and `createHostManager`, with a per-namespace process lock. The child supports ready, status and shutdown control messages. Ready confirms the recovery owner, not completion of every recovery. Its bounded stdout report is `{protocol:1,type:"namespace-recovery",visited,attempted,complete,failures}`. The owner reuses `AgentManager` catalogue recovery and host-loss observation without an ordinary primary or a second task index. Parent disconnect and shutdown release its clients and observations, not admitted native work. Each retained namespace keeps its selected source and dependency installation during restoration.
 
 ## Operator admission and controls
 
@@ -1199,343 +1130,6 @@ owner-agreed transition; a new process must load one complete accepted runtime.
 Cold observation opens SQLite only on a disposable copy, not the retained source store.
 It does not authorize a live writer or a consumer restart.
 
-## Independent retained reads
-
-`extensions/agent/retained-read.ts` exposes `retained-read/1.0.0` outside a Pi
-session. It reads retained snapshot, inspection, collaboration, and Recents evidence
-without starting or resuming an agent. It is a separate executable, not a
-`durable-runner.ts` mode, Unix service, or live-host fallback. Consumers use this process contract rather
-than importing Agent implementation modules or parsing private SQLite shapes.
-
-### Recents facts
-
-`--contract recents` advertises only `operations.recents`, with request and
-response identity `recents/1.0.0`, inside `retained-read/1.0.0`. Each request
-supplies that exact operation identity and the reader's current Durable version.
-`method:"recents"` accepts a bare storage UUID and
-`params:{conversationIds:[1,2,...]}`. The batch contains unique positive integer
-IDs, bounded by `RECENTS_CONVERSATION_LIMIT` in `extensions/agent/recents.ts`.
-The result is `{items:[{conversationId,activity}]}` with exactly one item per
-requested conversation. Each activity contains
-`{creator,createdAt?,lastUserAt?,lastAnswerAt?,hasMessages?}`. Times are finite
-epoch milliseconds. `creator` is `operator`, `agent`, or `unknown`.
-
-The public pure `creationActor()` export owns retained root classification.
-Consumers do not interpret Agent caller identifiers. The current reader copies
-one retained snapshot per storage batch and classifies native conversation
-metadata before reading message activity. An explicit native task owner means
-`agent`. Otherwise, a fork marker and operator correction admission with the
-same request ID and child ID establish `operator`. A later operator input with
-a different request ID does not reclassify a plain fork or model-created child.
-Children never inherit root classification. Plain command creation, plain
-forks and ownerless roots without defining actor evidence remain `unknown`.
-No migration, guessed origin or additional origin store exists.
-
-Only confirmed operator conversations receive message-activity scans. Those
-scans exclude inherited entries from other conversations. Operator message
-time uses explicit retained admission origin. Answer time uses completed
-assistant text, not tool-call rounds or status. Unknown creation time stays
-absent rather than inheriting the root's time. A header-only conversation has
-`hasMessages:false`. Reading changes neither execution nor retained source data.
-
-The UI enriches the same cached rows asynchronously. Publication revisions
-trigger one bounded batch of published conversation IDs per storage, with
-concurrency and frequency bounded in `ui/agents/catalog.mts`. A storage has no
-parallel batch of its own. Sidebar paints do not start reads. A failed or
-pending read leaves the ordinary-session list and cached Agent rows available.
-
-### Invocation and descriptor
-
-Invoke without a shell:
-
-```text
-node <agent-extension-directory>/retained-read.ts --contract
-node <agent-extension-directory>/retained-read.ts --contract collaboration
-node <agent-extension-directory>/retained-read.ts --contract recents
-node <agent-extension-directory>/retained-read.ts
-```
-
-The backend chooses its current packaged reader independently of the target's
-execution source and starter. Existing hosts keep their execution source and
-package tuple. Browser input and retained `packageDir` never select the reader. The reader uses its own installed package graph.
-It does not load the retained target's package directory, cwd resources,
-settings, credentials, models, or extensions.
-
-`--contract` emits `{version,upstream:{codingAgent,durable},operations:{snapshot,inspect}}`
-without reading catalog or storage. `version` is exactly `retained-read/1.0.0`.
-The loaded reader derives upstream versions and both operation values from
-`HOST_CONTRACT`; the default descriptor still advertises no other operations.
-`--contract collaboration` emits the same envelope version and upstream fields,
-with only `operations:{"collaboration-list","collaboration-read"}`. Those are the
-existing operation contracts, each with request and response identity
-`<method>/1.0.0` and no `durable` member. This selector does not change the
-default descriptor or any live operation identity. A consumer must explicitly
-support the selected descriptor and payloads. See the
-[descriptor fixture](#fixture-retained-read-descriptor) for default negotiation.
-The runtime emits its own loaded versions and schema identities. Examples are
-neither a supported-version ceiling nor a substitute for checking the reader's
-supported contracts before a request.
-
-Default mode reads exactly one UTF-8 JSON request on stdin followed by EOF.
-The caller closes stdin and drains stdout/stderr concurrently. The reader emits
-exactly one JSON object plus newline on stdout. Stderr contains diagnostics,
-never protocol data. Success or descriptor exits 0; a structured read failure
-exits 1. Bootstrap/process failure without a valid envelope is a transport
-failure, not an empty history result. The caller owns this short-lived child;
-there is no server, socket, detached owner, watcher, or subscription.
-
-### Request and exact negotiation
-
-The closed request shape is:
-
-```text
-{
-  version: "retained-read/1.0.0", id: string, store: absolutePath,
-  sessionId: string,
-  method: "snapshot" | "inspect" | "collaboration-list" | "collaboration-read",
-  expected: {request: string, response: string, durable?: string},
-  params: object
-}
-```
-
-Every top-level field is required, including `params:{}` for a snapshot with
-no optional parameters. Unknown fields fail. History uses method `inspect`
-with `params.view:"history"`; there is no history alias.
-
-- `id` is nonempty, at most 256 UTF-16 code units, and contains no whitespace or
-  control characters. It correlates this process response only, not native
-  requestId, operationId, or submission ID.
-- `store` is an absolute filesystem path, at most 4096 code units, with no
-  control characters. It is the existing sessions root containing `durable/`,
-  not a database file path.
-- `sessionId` is a canonical lowercase storage UUID for root conversation 1,
-  or that UUID plus `:` and a canonical positive safe decimal conversation ID
-  greater than 1 for snapshot and inspect. Collaboration methods require the
-  bare storage UUID and return root `conversationId:1`; child targets fail.
-  Handles, names, root `:1`, leading zeros, and paths fail.
-- `expected` is the closed existing `OperationContract` shape. Its identity
-  strings are nonempty, at most 256 code units, with no ASCII spaces/control
-  characters; `durable`, when present, is a valid semantic-version string.
-
-The reader validates the envelope, expected operation, and parameter grammar
-before catalog or source-storage access. It parses `expected` with the existing
-operation parser and compares request, response, and optional Durable identity
-by exact equality against its selected `HOST_CONTRACT` operation. Snapshot and
-inspect require the matching Durable identity. Collaboration operations have
-no Durable identity, so an added `expected.durable` also fails. Consumers supply
-the identities of the payload they support; echoing an unknown descriptor does
-not establish compatibility. The descriptor does not replace the per-request
-check, including when the executable changes between invocations. Live-host
-negotiation remains separate and unchanged. See
-[current operation identities](#current-operation-identities) and the
-[snapshot request fixture](#fixture-retained-read-request).
-
-### Parameter grammar
-
-Only the top-level `sessionId` selects a target. Unknown parameter fields,
-including `sessionId`, `conversationId`, `cwd`, and `ownerId`, fail. The reader
-injects the verified identity internally after validation.
-
-Snapshot parameters:
-
-```ts
-{ before?: number; limit?: number; maxBytes?: number }
-```
-
-`before` is a positive safe integer; `limit` is an integer from 1 through 100;
-`maxBytes` is an integer from 1 through 1048576. Omitted values use existing
-snapshot defaults. This public limit is narrower than the live snapshot limit.
-Existing page selection, first-entry byte exception, coverage, and `nextBefore`
-semantics still apply; the process response has a separate hard byte bound.
-
-Inspect parameters:
-
-```ts
-{
-  view: "history" | "branch" | "activity" | "exact" | "search" | "result";
-  limit?: number;
-  cursor?: JsonObject;
-  entryId?: number;
-  fromId?: number;
-  offset?: number;
-  query?: string;
-  source?: "user" | "assistant" | "toolResult" | "summary" | "custom";
-  submissionId?: number;
-  requestId?: string;
-  operationId?: string;
-}
-```
-
-`view` is required. `limit` is an integer from 1 through 100.
-`entryId`, `fromId`, and `submissionId` are positive safe integers; `offset` is a
-nonnegative safe integer. Numbers are required, not decimal-string aliases.
-`cursor` is a JSON object with at most 4096 serialized UTF-8 bytes. Pass returned
-cursors unchanged to the same target/query. `query` is nonempty and at most 256
-code units. `requestId` and `operationId` are nonempty, at most 1024 code units,
-and contain no control characters; their contents are not normalized.
-
-Exact view requires `entryId`. Search requires `query`. `requestId` is legal
-only in result view. Result requires at least one of `requestId`, `submissionId`,
-or `operationId`. Matching combined selectors remain valid; the native reader
-rejects selectors for different submissions. Allowed parameters pass through
-the existing inspection parser and reader, with their existing per-view
-semantics and bounds. This boundary does not invent result lookup rules.
-
-Collaboration list parameters:
-
-```ts
-{ query?: string; cursor?: string; limit?: number }
-```
-
-`query` is nonblank and at most 256 UTF-16 code units. `cursor` is the canonical
-nonnegative safe decimal index offset, at most 16 code units; its current range
-is checked against the captured native index. `limit` is an integer from 1
-through 20, default 10. These are local [list semantics](#collaboration-list), not the opaque global
-hint-discovery cursor.
-
-Collaboration read parameters:
-
-```ts
-{ threadId: string; before?: number; limit?: number }
-```
-
-`threadId` uses the existing `<storage UUID>/<32 lowercase hexadecimal>` format.
-Its storage prefix must match the envelope's bare UUID before any catalog or
-source access. `before` is a positive safe integer no greater than the captured
-thread's `sequence + 1`. `limit` is an integer from 1 through 20, default 10.
-These are the existing [thread-page semantics](#collaboration-read), including
-the 48 KiB page bound and exact sequence continuation. No mutation method,
-identity override, or arbitrary storage path is accepted in either parameter
-object.
-
-### Response and failures
-
-A successful read has this closed wrapper:
-
-```text
-{
-  version: "retained-read/1.0.0", id: string, ok: true,
-  method: "snapshot" | "inspect" | "collaboration-list" | "collaboration-read",
-  sessionId: string,
-  storageId: string, conversationId: positiveSafeInteger, result: operationPayload
-}
-```
-
-`result` is the unchanged current [snapshot or inspect payload](#transcript-pages-and-inspection)
-or [collaboration list/page](#collaboration-threads), not a new transcript or
-thread format. Collaboration responses correlate the selected bare UUID with
-`storageId` and `conversationId:1`. Their documents are session-scoped, so these
-methods do not require a root-conversation record to exist. The bridge verifies
-every list summary's storage prefix and the read page's exact requested thread
-identity; a mismatched result returns `source_unreadable`. A retained thread's
-member and pending-notice counts describe the captured state, not live presence
-or delivery progress. Snapshot retains native entry/model values,
-communication metadata, inherited fork-origin IDs, pagination, and coverage.
-The wrapper adds target correlation. Inspect retains its closed output union,
-native optional timing fields, and matching sessionId/conversationId. A missing
-native result selector target is a successful `status:"unavailable"` inspection,
-not a process error or fabricated submission. Missing catalog or source database,
-a selected snapshot/inspect conversation, or an explicit thread instead returns
-`not_found`. An existing empty conversation returns its normal empty payload. See the
-[success fixture](#fixture-retained-read-success).
-
-A failure has only `{version,id,ok:false,error:{code,message,retryable}}`.
-`id` is the valid parsed process ID, or null if unavailable/malformed. Failure
-includes no method, target, or result fields. Messages are at most 2000 code
-units and omit stacks, credentials, retained content, and incidental private
-paths. Local typed failures determine codes rather than broad text matching.
-See the [failure fixture](#fixture-retained-read-error).
-
-| Code | Condition | retryable |
-|---|---|---|
-| invalid_request | Bad JSON, envelope, identity, parameters, unsupported method or CLI arguments | false |
-| incompatible | Envelope version or expected request/response/Durable identity mismatch | false |
-| not_found | Catalog, database, selected snapshot/inspect conversation, or explicitly requested thread absent | false |
-| source_changed | Source identities changed during capture; copied view discarded | true |
-| source_unreadable | Permissions, nonregular/symlink source, corrupt/unusable SQLite, unsupported nonempty rollback journal, malformed collaboration records, or missing indexed frame/event | false |
-| limit_exceeded | Request, source, or output byte bound exceeded | false |
-| timeout | Cooperative read deadline expired | true |
-| cancelled | SIGINT/SIGTERM or caller cancellation of this reader | false |
-| internal | Other reader failure | false |
-
-Collaboration reads map the source-owned `CollaborationReadError` codes
-`invalid_request`, `not_found`, and `source_unreadable` to these existing retained
-codes. They do not classify error messages with regular expressions. An explicit
-missing thread returns `not_found` with the fixed message
-`The retained thread does not exist.` Invalid `before` or local index cursors
-return `invalid_request`; malformed present records and missing indexed
-frames/events return `source_unreadable`. An absent index remains a valid empty
-indexed list, with no orphan-record scan or replacement index.
-
-`retryable` is advice, not an automatic process loop. A consumer keeps live-host
-incompatibility separate from a successful retained read.
-
-### Source isolation and lifecycle bounds
-
-The entire request is bounded to 65536 UTF-8 bytes. The serialized response is
-bounded to 16 MiB; oversized output returns `limit_exceeded`, never truncated
-JSON success. The main database plus WAL is bounded to 512 MiB. One 30-second
-**cooperative absolute deadline** starts when the CLI begins reading stdin and
-covers request collection, capture, open, query, and cleanup. The reader passes
-the same deadline through these stages; EOF does not reset it. This is not a
-hard wall-time interrupt. Copy chunks check cancellation and use a small bounded
-buffer, not a source-sized allocation. Synchronous SQLite `quick_check` and
-cleanup are not interruptible by a timer. The caller owns any optional hard
-process timeout. Forced termination leaves source unchanged but can leave
-private scratch.
-
-The reader resolves the canonical catalog record and its exact assigned database
-path. It does not accept arbitrary storage paths, cwd, or packageDir fields.
-It opens source main/WAL files only with read-only, no-follow filesystem handles
-and regular-file checks, never through SQLite. It rejects a nonempty rollback
-journal. It copies database and optional WAL to private scratch, without copying
-SHM. Before and after capture, it checks the full source identities, including
-initially absent WAL: existence, device, inode, size, mtimeNs, and ctimeNs. It
-compares file descriptors with current paths. Replacement, truncation, or other
-identity change discards the copy without a hidden retry.
-
-SQLite validation and delivery preparation operate only on the private copy.
-The public Session kernel prepares delivery documents without a scheduler, closes
-its Storage, and the capture owner reopens the same private copy. The final
-`Harness.open` uses `readOnly: true` with an empty registry/models configuration.
-It preserves committed running tasks, restart counts, checkpoints, ownership and
-abort fields. It refuses writes and scheduling, and reports no wake. Optional
-observation documents have explicit absent defaults; reads never create them or
-settle deliveries.
-The reader never resumes, submits, waits for idle, acquires a writer claim,
-initializes cwd services, or connects to/signals a live host. An absent or
-incompatible live host therefore does not gate reads. An independent writer
-that changes the capture returns `source_changed`, not live incompatibility.
-
-The guarantee is no reader-caused writes, creation, or deletion in source
-database/WAL/SHM/journal, catalog, claims, or retained entries/tasks/submissions.
-Only private scratch is writable. Ordinary filesystem access-time accounting
-and independent writer changes are outside this guarantee. On orderly success,
-failure, cancellation, and timeout, the reader closes its observation and raw
-handles and removes only its own scratch directory **before the response**.
-Forced process termination does not promise cleanup. Scratch never resides under
-the retained source store.
-
-Every invocation returns one retained snapshot, not `live:true`, resumable-host
-readiness, or fresh runtime state. Separate invocations see independently captured
-state. Existing page anchors/cursors retain their semantics; no cross-request
-snapshot lease or storage cache is introduced. The manager's existing bounded
-cold cache remains separate and reuses only stable source identities. Each manager
-owns its cache. Registered primaries, roster subscribers and the active namespace
-retain it; the final owner's departure releases it. A later owner acquires a fresh
-cache without cancelling prior disposal. Manager and standalone terminal closure
-await all disposal, including releases started by roster unsubscription. Cache
-operations share a serial queue across storage paths, including reads, eviction
-and disposal, so a borrowed snapshot stays open until its read ends.
-
-Defining sources: `extensions/agent/retained-read.ts`, `retained-errors.ts`,
-`snapshot-capture.ts`, `catalog.ts` (`read`), `durable-observation.ts`
-(`DurableObservation`, `readInspection`), and `version-contract.ts`
-(`HOST_CONTRACT`, `parseOperationContract`, `operationContractMismatch`).
-Installed Durable `dist/storage/sqlite/node.js` and `dist/harness/harness.js`
-define the private adapter/open behavior. These references describe source
-mechanisms and protocol requirements, not runtime acceptance.
-
 ## Synthetic contract examples
 
 These examples contain fabricated identities and data. They are valid-shape examples for consumer fixtures, not recorded sessions or evidence of execution. A fixture test must also test incompatible identities and malformed fields. Native-version-dependent fixtures use the consumer's supported `D` in their operation envelope.
@@ -1575,35 +1169,5 @@ These examples contain fabricated identities and data. They are valid-shape exam
 ```json
 {"ready":true,"value":{"revision":1}}
 ```
-
-### Fixture: retained-read-descriptor
-
-```json
-{"version":"retained-read/1.0.0","upstream":{"codingAgent":"1.5.0","durable":"1.5.0"},"operations":{"snapshot":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.5.0"},"inspect":{"request":"inspect/1.1.0","response":"671fa063aab1424eba635272c95977761450c735d34efd2def12a7de7689ff70","durable":"1.5.0"}}}
-```
-
-### Fixture: retained-read-request
-
-```json
-{"version":"retained-read/1.0.0","id":"retained-example","store":"/example/sessions","sessionId":"00000000-0000-4000-8000-000000000001:2","method":"snapshot","expected":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.5.0"},"params":{"limit":50,"maxBytes":65536}}
-```
-
-### Fixture: retained-read-success
-
-```json
-{"version":"retained-read/1.0.0","id":"retained-example","ok":true,"method":"snapshot","sessionId":"00000000-0000-4000-8000-000000000001:2","storageId":"00000000-0000-4000-8000-000000000001","conversationId":2,"result":{"entries":[],"partial":false,"revision":"empty","nextBefore":null,"coverage":{"complete":true,"entries":0,"bytes":0,"hiddenExcluded":0,"entryLimitReached":false,"byteLimitReached":false}}}
-```
-
-### Fixture: retained-read-error
-
-```json
-{"version":"retained-read/1.0.0","id":"retained-example","ok":false,"error":{"code":"source_changed","message":"Retained storage changed during capture. Retry the read.","retryable":true}}
-```
-
-Retained-read fixture shapes: `extensions/agent/retained-read.ts`; operation
-identities: `extensions/agent/version-contract.ts`. Synthetic paths and identities
-are examples, not retained sessions. Agent and UI fixture tests must read these documented
-fixtures independently, without imports from another slice's implementation
-or tests.
 
 Fixture shape sources: `extensions/agent/durable-host.ts:420-430`; `extensions/agent/durable-observation.ts:1133-1143`; `extensions/agent/catalog-view.ts:48-65`; `extensions/agent/host-process.ts:387-399`.

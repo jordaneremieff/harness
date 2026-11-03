@@ -6,8 +6,7 @@ import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { captureSnapshot } from "./snapshot-capture.ts";
-import { RetainedReadError } from "./retained-errors.ts";
+import { captureSnapshot, SnapshotCaptureError } from "./snapshot-capture.ts";
 
 function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "snapshot-capture-test-"));
@@ -28,7 +27,7 @@ function sourceState(path: string) {
 }
 
 const options = () => ({ maxSourceBytes: 512 * 1024 * 1024, deadline: Date.now() + 30000 });
-function code(expected: string) { return (error: unknown) => error instanceof RetainedReadError && error.code === expected; }
+function code(expected: string) { return (error: unknown) => error instanceof SnapshotCaptureError && error.code === expected; }
 
 it("captures uncheckpointed WAL without copying SHM or mutating any source identity", async (t) => {
 	const f = fixture(t);

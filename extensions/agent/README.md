@@ -408,107 +408,6 @@ automatic/system theme selection, or ordinary extension UI context. Related
 efforts and peer-thread dialogs require the ordinary extension surface and are
 unavailable here. No retained ordinary archive is converted or edited.
 
-## Independent retained reads
-
-Read Durable history and collaboration threads without starting an agent through
-the separate one-shot executable, not the terminal attachment or writer runner:
-
-```sh
-node extensions/agent/retained-read.ts --contract
-node extensions/agent/retained-read.ts --contract collaboration
-node extensions/agent/retained-read.ts --contract recents
-node extensions/agent/retained-read.ts < /example/retained-request.json
-```
-
-The final command uses a synthetic request-file path. Supply one UTF-8 JSON
-request followed by EOF. The
-[public retained-read contract](../../docs/agent-host-contract.md#independent-retained-reads)
-defines the exact `retained-read/1.0.0` envelope, operation agreement, parameter
-bounds, responses, and error codes. Its
-[request fixture](../../docs/agent-host-contract.md#fixture-retained-read-request)
-uses a synthetic sessions root and exact child identity.
-
-The explicit `--contract recents` selector exposes batched per-conversation
-creation and activity facts through `recents/1.0.0`. A bare storage target and
-`params:{conversationIds:[1,2,...]}` select published conversation IDs. One
-retained snapshot serves the whole bounded batch. The response is
-`{items:[{conversationId,activity}]}`.
-
-The public pure `creationActor()` export in `recents.ts` owns root classification.
-The reader classifies an explicit native task owner as agent creation. A fork
-marker joined to an operator correction admission by request ID and child ID
-establishes operator creation. A later operator input alone changes no creator.
-Missing plain-fork or command creation origin stays unknown. Children never
-inherit root origin or creation time. Message scans run only for confirmed
-operator conversations and exclude inherited entries from other conversations.
-The UI uses its current packaged reader, not a live host's sealed execution
-source. Existing hosts remain unchanged. The same cached rows receive bounded,
-asynchronous enrichment. Paints do not start reads. Reader failure or pending
-reads do not block ordinary sessions.
-
-The unchanged default `--contract` advertises only snapshot and inspect, with
-versions from this reader's installed packages. The explicit
-`--contract collaboration` selector advertises only `collaboration-list` and
-`collaboration-read` under the same `retained-read/1.0.0` envelope. Their existing
-operation identities have no `durable` member. Every read supplies a supported
-exact operation identity again; discovery does not replace negotiation. History
-is `method:"inspect"` with `params.view:"history"`, not a separate method.
-
-The canonical top-level `sessionId` selects a root or child for snapshot and
-inspect. Collaboration methods require a bare storage UUID, and a read's
-`threadId` prefix must match it before catalog or database access. Params never
-select another target. This surface accepts no handles or decimal-string
-numeric aliases; the local thread-list `cursor` is the existing canonical
-decimal index offset, not an alternate numeric parameter.
-
-`collaboration-list` accepts `query?`, `cursor?`, and `limit?`.
-`collaboration-read` accepts `threadId`, `before?`, and `limit?`.
-In both methods, `limit` is an integer from 1 through 20, default 10.
-A list query is nonblank and at most 256 UTF-16 units; its cursor is a safe
-canonical decimal offset of at most 16 units. A read's `before` is a positive
-safe event sequence within the captured thread boundary. Results retain the
-existing native list or thread-page shape, with root conversation 1 in the
-process wrapper. Closed threads remain
-readable. The reader adds no mutations, host startup, or alternate thread store.
-
-The caller owns the short-lived child, closes stdin, and drains stdout/stderr
-concurrently. Stdout contains one JSON object plus newline. Stderr is diagnostic
-only. Success/descriptor exits 0; a structured failure exits 1. Failure without
-a valid envelope is a transport failure, not empty history. A backend chooses
-the trusted executable; browser input and retained packageDir do not select it.
-Consumers use the documented process contract, not Agent imports or a private
-SQLite parser.
-
-The reader copies source database/WAL through read-only filesystem handles,
-validates source identity, and opens SQLite only on private scratch. It never
-resumes work, submits input, acquires a writer claim, loads cwd services, or
-connects to/signals a live host. It creates, changes, or deletes no source
-database, WAL, SHM, journal, catalog, claims, entries, tasks, or submissions.
-It closes its handles and removes its own scratch before an orderly success,
-failure, cancellation, or timeout response. OS access-time accounting and
-independent writer changes are outside the source guarantee.
-
-One 30-second cooperative absolute deadline starts when the CLI begins reading
-stdin. It covers request collection, capture, open, query, and cleanup; EOF does
-not reset it. This is not a hard wall-time interrupt. Synchronous SQLite checks
-and cleanup are not interruptible by a timer. The caller owns any optional hard
-process timeout; forced termination leaves source unchanged but can leave
-private scratch.
-
-An absent or incompatible live host does not block retained reads. Source
-changes during capture return `source_changed`; no hidden retry occurs.
-Missing catalog/database, a selected snapshot/inspect conversation, or an
-explicitly requested absent thread returns `not_found`. An existing empty
-conversation returns normal empty evidence; an absent collaboration index
-means an empty indexed list, not a
-search for orphaned frames. A malformed present index, a missing indexed frame,
-or an unavailable retained event returns `source_unreadable`, not empty history.
-These failures use source-owned typed codes, not message matching. A missing
-native result selector returns successful inspection with `status:"unavailable"`.
-Every read is one retained snapshot, not live state or resumable-host readiness.
-Separate invocations have no shared snapshot lease or cache. Cancellation ends only this
-reader, not independent native work.
-
 ## Dashboard and agent console
 
 The dashboard is one full-screen overlay. It starts in **Related** for the current
@@ -1048,7 +947,7 @@ Retained entries and usage documents keep provider metadata unchanged.
 
 The manager's stopped-agent reads use a cached public snapshot without services,
 model runtime, extension bootstrap, or task recovery. The manager owns its cache.
-Registered primaries, roster subscribers and the active namespace retain it. The
+Registered primaries and roster subscribers retain it. The
 last owner's departure seals the cache and drains borrowed reads before disposal.
 A later owner acquires a fresh cache. Manager and standalone terminal closure await
 all disposal, including releases started by roster unsubscription.
@@ -1063,10 +962,7 @@ the same copy for a read-only Harness. Native tasks retain their committed statu
 restart count, checkpoint, ownership and abort fields. Observation reads do not
 create optional documents or settle deliveries; attempted writes reject. An absent database
 has an empty in-memory internal observation that is not cached, so a later read
-sees database creation. The independent public reader instead returns
-`not_found` for an absent database and owns no cache. See
-[independent retained reads](#independent-retained-reads) for source-isolation
-and process guarantees.
+sees database creation.
 
 The command loads the terminal dashboard and its action dialogs only when you
 open the dashboard. Control commands and completion stay available before that
@@ -1288,7 +1184,7 @@ exclusion. Catalog, storage-scan, and display limits still apply. The operator
 can steer, abort, or reset a retained agent by canonical identity without routing
 through its creator.
 
-Browser Stop selects a native admitted-input group, not whichever generation is
+A client stop request selects a native admitted-input group, not whichever generation is
 current when the request arrives. It follows that group's generation handovers,
 withdraws its exact queued delegations, and preserves unrelated work in a shared
 agent. An answered child does not hide its surviving background descendants.
@@ -1302,13 +1198,6 @@ nonempty prompt text passes verbatim.
 Partial cancellation and unavailable ownership remain explicit. See the
 [public control contract](../../docs/agent-host-contract.md#run-scope-and-run-stop)
 for selectors, native ownership, cancellation races, and coverage limits.
-
-Managed browser namespaces use the same Agent manager and native storage. Setup
-binds each namespace to its selected Agent source and Pi installation, then runs
-an independent Agent recovery owner. The browser is a client, not the session
-scheduler. Existing profiles and handles stay in their owning namespace. The
-source-route inventory carries deployment paths, not copied profiles or task
-state. See [namespace creation and recovery](../../docs/agent-host-contract.md#native-namespace-creation-and-recovery).
 
 An answer settles a request; it does not represent a pause for later work.
 Use report mode for interim progress. Put the substantive result or exact
@@ -1597,8 +1486,7 @@ continuation. Each request captures a new private snapshot, so appended threads
 and changed query matches affect later pages. List completeness refers only to
 the captured index, not global discovery. Thread pages preserve exact event
 sequence continuation; member and pending-notice counts describe captured
-state, not live presence or delivery progress. The
-[independent retained reader](#independent-retained-reads) exposes these reads
+state, not live presence or delivery progress. Cold observation serves these reads
 without a live host.
 
 `create` needs `title`, `purpose`, `authority`, `source`, `restrictions`, and
@@ -1642,7 +1530,7 @@ pending intent and delivery error. Active delivery prevents retirement; a notice
 for a proven-dead ordinary primary remains pending without broadcast and does
 not by itself require a live source host. Source-host retirement or process loss
 does not delete the thread;
-retained reads stay available and a later mutation or recovery opens its owner.
+cold observation stays available and a later mutation or recovery opens its owner.
 This has the same process-crash, not power-loss, guarantee as other native
 state. A primary process restart can repeat a displayed notice after loss of
 its in-memory deduplication.
@@ -1741,7 +1629,7 @@ finished plan does not remain current. A settled model turn is not proof of
 integration completion, so the host does not infer that transition.
 
 Current-source readers discover native claims from catalogue views in their own
-sessions root and retained existing-source roots. The owning host publishes the
+sessions root. The owning host publishes the
 view through its coalesced native commit path; a commit is not immediate peer
 visibility. Host writer claims supply native liveness. Absent or dead writers do
 not appear; unknown ownership remains unknown. Readers running the unchanged
@@ -1749,7 +1637,7 @@ original Agent source read only ordinary `.primaries` descriptors and never see
 native claims. Updating one writer does not update another reader.
 
 The bounded view lists live efforts on this machine within the configured
-`PI_AGENT_SESSIONS_DIR` and its retained existing-source roots, including efforts
+`PI_AGENT_SESSIONS_DIR`, including efforts
 in other repositories. It shows
 purpose-level claims for those without a shared repository or cwd, and full
 intent for those with either shared location. Shared locations
@@ -1980,7 +1868,7 @@ with tokens and discovery but no stored client registration. The native owner
 honours `clientRegistration` (`auto`, `cimd`, `dcr`), explicit client credentials,
 client name, callback URL/port, scope, and the authorization-server metadata URL.
 Required sign-in returns guidance for `pi mcp login` or `/mcp` rather than opening
-a browser or an interactive agent prompt.
+an interactive sign-in prompt.
 
 `mcp-auth.ts` owns native credential updates in `<agentDir>/mcp-auth.json`.
 The key combines the server namespace and canonical URL. Native reads accept
@@ -2156,26 +2044,6 @@ A Durable 1.4 SQLite open upgrades schema 1 to schema 2 before the Harness opens
 Old binaries do not reopen that schema. Keep retained old consumers on intact
 old source and dependencies until their owner-agreed transition; a source update
 alone does not replace their loaded classes or authorize a store migration.
-
-## Saved ordinary context conversion
-
-The UI's **Convert to Durable** action creates a new independent native root with
-the saved session's actual name. It does not attach, resume, convert a store in
-place, transfer a coordinator role, or start another ordinary runtime. The source
-file remains unchanged. The context is Pi's public saved projection at the final
-persisted leaf, not an unpersisted live selection or in-flight work.
-
-`create-saved-context.ts` is an internal server-selected creation process. It uses
-normal preference resolution, catalog request deduplication, model validation,
-writer admission, and native root initialization. Projected messages cross the
-process boundary on bounded stdin. Matching native entry kinds preserve model
-content, timestamps, tool-call errors and order inside the creating commit. No
-prompt or input task submits the old transcript. The new root starts with fresh
-execution settings, no imported role and untrusted project resources.
-
-An uncertain result retains its candidate identity when available and never
-replays automatically. See [the public process contract](../../docs/agent-host-contract.md#saved-context-creation)
-for source limits, identity matching, exact output and refusal semantics.
 
 Native Codemode admits two workers per process by default, with a 256 MiB
 QuickJS heap limit per worker. `PI_CODEMODE_MAX_WORKERS` selects another positive
@@ -2702,7 +2570,7 @@ the same history, head markers included. The host coalesces those signals
 without a catalog write or a polling timer. Committed
 catalog notifications retain their separate source and consumers. A running
 host retains its loaded notification code until a supported idle host restart;
-a browser or backend release alone does not replace it.
+a client release alone does not replace it.
 
 An open live observation reconnects only to a live host. It never relaunches a
 lost host; it signals unavailable and leaves relaunch to bounded manager
@@ -2798,7 +2666,7 @@ exactly-once historical ledger exists. A crash after retention but before source
 acknowledgment still permits replay.
 Any primary registration runs the existing bounded scan of runnable recovery
 and wakes parked sources whose sidecar names that exact primary. Unrelated
-registration leaves those sources cold. Namespace and catalog-change scans also
+registration leaves those sources cold. Catalogue-change scans also
 wake a parked source when a named recipient has a native catalog record or a
 live compatible primary endpoint, and its current fingerprint differs from the
 source's recorded failure. This comparison survives manager restarts. A bounded

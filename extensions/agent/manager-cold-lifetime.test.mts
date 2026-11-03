@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,27 +36,27 @@ async function fixture(t: TestContext) {
 	return { manager, other, record, root, copies: () => readdirSync(scratch).filter((name) => name.startsWith("pi-durable-snapshot-")) };
 }
 
-test("namespace and roster owners share retention and release only after the final owner ends", { timeout: 15000 }, async (t) => {
+test("primary and roster owners share retention and release only after the final owner ends", { timeout: 15000 }, async (t) => {
 	const { manager, record, copies } = await fixture(t);
 	const first = new AbortController(), replacement = new AbortController();
-	await manager.recoverNamespace(first.signal);
+	await manager.registerPrimary(randomUUID(), { signal: first.signal, send: () => {} });
 	const off = manager.subscribeRoster(() => {});
 	await manager.snapshot(record.storageId);
 	const retained = copies();
 	assert.equal(retained.length, 1);
 	off();
 	await manager.snapshot(record.storageId);
-	assert.deepEqual(copies(), retained, "the namespace retains the roster's snapshot");
-	await manager.recoverNamespace(replacement.signal);
+	assert.deepEqual(copies(), retained, "the primary retains the roster's snapshot");
+	await manager.registerPrimary(randomUUID(), { signal: replacement.signal, send: () => {} });
 	first.abort();
 	await manager.snapshot(record.storageId);
-	assert.deepEqual(copies(), retained, "an old namespace cannot release its replacement");
+	assert.deepEqual(copies(), retained, "one primary cannot release another primary's snapshot");
 	const offRoster = manager.subscribeRoster(() => {});
 	replacement.abort();
 	await manager.snapshot(record.storageId);
-	assert.deepEqual(copies(), retained, "the roster retains the namespace's snapshot");
+	assert.deepEqual(copies(), retained, "the roster retains the primary's snapshot");
 	const active = new AbortController();
-	await manager.recoverNamespace(active.signal);
+	await manager.registerPrimary(randomUUID(), { signal: active.signal, send: () => {} });
 	offRoster();
 	const closed = deferred();
 	const original = DurableObservation.prototype.close;
@@ -64,13 +65,13 @@ test("namespace and roster owners share retention and release only after the fin
 	});
 	active.abort();
 	await closed.promise;
-	assert.deepEqual(copies(), [], "namespace abort disposes the final owner's private copy");
+	assert.deepEqual(copies(), [], "primary abort disposes the final owner's private copy");
 	await assert.rejects(manager.snapshot(record.storageId), /cache is closed/);
 	const later = new AbortController();
-	await manager.recoverNamespace(later.signal);
+	await manager.registerPrimary(randomUUID(), { signal: later.signal, send: () => {} });
 	assert.match(JSON.stringify(await manager.snapshot(record.storageId)), /retained cold history/);
 	await manager.close();
-	assert.deepEqual(copies(), [], "manager shutdown overrides an active namespace owner");
+	assert.deepEqual(copies(), [], "manager shutdown overrides an active primary owner");
 });
 
 test("terminal closure awaits roster disposal after borrowed reads and leaves another manager intact", { timeout: 15000 }, async (t) => {

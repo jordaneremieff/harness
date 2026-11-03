@@ -6,13 +6,11 @@ import { readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 import type { PrimaryInfo, PrimaryObservedPurpose, PrimaryRepositoryState } from "./primary-channel.ts";
 import type { Dirent } from "node:fs";
 import { AgentCatalog, type CatalogRecord } from "./catalog.ts";
-import { readExistingSources } from "./source-route.ts";
 import { hostPaths } from "./host-protocol.ts";
 import { observeClaim } from "./claims.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
 
 type EffortFacts = Pick<PrimaryInfo, "id" | "cwd" | "name" | "repository" | "repositoryState" | "startedAt" | "lastActivityAt" | "intentClaim" | "observedPurpose" | "hostname">;
-const MAX_NATIVE_ROOTS = 256;
 
 /** Session-written intent, never a verified host fact or a grant to its reader. */
 export type PrimaryIntentClaim = {
@@ -227,16 +225,9 @@ function visitNativeRecord(catalog: AgentCatalog, entry: Dirent, self: EffortPre
 		else nativeRow(record, id, metadata, self, page);
 	}
 }
-async function visitNativeRoots(sessionsRoot: string, self: EffortPresenceSelf, page: EffortPresencePage): Promise<void> {
-	let roots: string[];
-	try { roots = [...new Set([resolve(sessionsRoot), ...readExistingSources(sessionsRoot).map(route => route.root)])]; }
-	catch (error) { markPartial(page, (error as NodeJS.ErrnoException).code === "ENOTDIR" ? "directory-unreadable" : "native-roots-unavailable"); return; }
-	if (roots.length > MAX_NATIVE_ROOTS) markPartial(page, "root-limit");
-	for (const root of roots.slice(0, MAX_NATIVE_ROOTS)) {
-		if (page.coverage.visited >= page.limits.visits) { markPartial(page, "visit-limit"); break; }
-		const catalog = new AgentCatalog(root);
-		await visitDirectory(catalog.root, page, entry => visitNativeRecord(catalog, entry, self, page));
-	}
+async function visitNativeRoot(sessionsRoot: string, self: EffortPresenceSelf, page: EffortPresencePage): Promise<void> {
+	const catalog = new AgentCatalog(sessionsRoot);
+	await visitDirectory(catalog.root, page, entry => visitNativeRecord(catalog, entry, self, page));
 }
 
 /** Read-only presence page; ordinary records and native projections share all visit, result and byte caps. */
@@ -248,7 +239,7 @@ export async function readRelatedEfforts(sessionsRoot: string, self: EffortPrese
 	};
 	if (self.repositoryState === "unknown") markPartial(page, "repository-unknown");
 	await visitDirectory(join(resolve(sessionsRoot), ".primaries"), page, entry => visitEntry(sessionsRoot, self, page, entry));
-	if (page.coverage.visited < page.limits.visits) await visitNativeRoots(sessionsRoot, self, page);
+	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(sessionsRoot, self, page);
 	page.efforts.sort((a, b) => a.id.localeCompare(b.id));
 	return page;
 }

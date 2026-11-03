@@ -293,16 +293,6 @@ its grapheme-based limit with an extension-local counter. pi-schema treats
   native validation.
   Sources: `pi-durable/dist/harness/{generation,tool}.js`,
   `pi-ai/dist/utils/validation.js`, and `extensions/agent/provider-models.ts`.
-- Saved ordinary conversion uses a complete unchanged read-only snapshot and
-  public `parseSessionEntries`, `buildSessionProjection`, and `convertToLlm`.
-  The final persisted leaf supplies context, including compaction and context
-  edits. System and runtime state are excluded. A new native root receives
-  matching message entries inside `ConversationInit`; no input task replays the
-  transcript. The ordinary file and coordinator role remain unchanged.
-  Sources: `dist/core/{session-manager,messages}.js`,
-  `pi-durable/dist/harness/types.d.ts`, and
-  [saved context creation](agent-host-contract.md#saved-context-creation).
-
 External provider wrappers require their own current source and loaded-binding
 checks. The Pi package comparison does not verify a wrapper's treatment of
 messages, tool-result images, `argumentsError`, or identity and telemetry options.
@@ -1026,7 +1016,7 @@ by the Durable host. Sources: session-manager/runtime and Durable types/harness.
 | Resources, trust, configured providers, ordinary primary lifecycle | Public coding-agent services |
 | Detached storage processes, writer claims, exact controls and delivery | Agent extension |
 | Typed live calls and state over same-user sockets | Chord plus the package-level transport boundary |
-| Bounded retained inspection and independent retained-read executable | Agent extension's public consumer contract |
+| Bounded native inspection and cold snapshots | Agent extension's public consumer contract |
 | Doctrine and handover meaning | Owning corpus and Stash contracts; transport does not create authority |
 
 Cloudflare storage and image adapters are published options, not deployment
@@ -1049,7 +1039,7 @@ After each Pi upgrade and before a host-dependent decision:
   support it; a file comparison does not repeat runtime trials.
 - Review separate Durable and Chord release notes alongside coding-agent intake.
   Check output, callers, task ownership, storage failure, process transport,
-  retained-reader, and lifecycle boundaries at their owning layers.
+  observation, and lifecycle boundaries at their owning layers.
 - Reconcile shipped manifest resources, actual active routes, and stable slices.
   Other owners' unpublished work is not released adoption.
 - Keep release records and raw comparison evidence outside tracked repository

@@ -34,14 +34,13 @@ for (const runner of [undefined, failedReloadRunner]) it(`keeps an absent attach
 	} finally { if (fixture.cleanupAllowed) rmSync(fixture.root, { recursive: true }); }
 });
 
-for (const invalid of ["path", "mode", "missing-mode", "arguments", "context"] as const) it(`rejects fixed failed-reload ${invalid} before attachment`, async () => {
+for (const invalid of ["path", "mode", "missing-mode", "arguments"] as const) it(`rejects fixed failed-reload ${invalid} before attachment`, async () => {
 	const fixture = allocateOfflineFixture("offline-proof-"), target = metadata(fixture.root);
 	fixture.allow(target);
 	const options = {
 		runner: invalid === "path" ? join(fixture.root, "failed-reload-fixture.mts") : failedReloadRunner,
 		env: invalid === "missing-mode" ? {} : { DURABLE_TEST_MODE: invalid === "mode" ? "effect" : "answer" },
 		...(invalid === "arguments" ? { runnerArgs: ["extra"] } : {}),
-		...(invalid === "context" ? { initialMessages: [] } : {}),
 	};
 	await assert.rejects(fixture.generation().connect(target, options), /closed fixture mode|Failed reload fixture requires/u);
 	assert.throws(() => fixture.ordinaryRecipient("after-rejection"), /poisoned/u);

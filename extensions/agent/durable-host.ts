@@ -38,7 +38,7 @@ import type { Context } from "@earendil-works/chord";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { isInputKind } from "./input-entry.ts";
-import { AssistantEntry, UserEntry, ToolResultEntry, type Tx, Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
+import { Harness, SessionFailed, ROOT_CONVERSATION_ID, UsageDoc, DEFAULT_RETRY_POLICY, type AgentChange, type Conversation, type ConversationId, type EntryId, type HarnessInspection, type HarnessOptions, type ModelRef, type SubmissionId, type TaskGraph, type Storage } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { acknowledgeDeliveries, acknowledgeReports, AgentForkDoc, AgentMetaDoc, abortConversation, compactConversation, configureConversation, forkConversation, pendingDeliveries, readOutcome, reconcileDeliveries, recordReport, rewindConversation, submitConversation, undeliveredForOwner, waitForReceipts, type DeliveryOrigin, type DeliveryReceipt, type DurableConfigureParams, type DurableRunOutcome, type DurableSubmitParams, type DurableSubmitResult } from "./durable-controls.ts";
 import { durableIdentity, optionalParam, parseConversationSnapshotParams, parseInspectParams, readConversationList, readConversationSnapshotPage, readConversationStatus, readDashboard, readInspection, readReceipts, readUsage, requestBoolean, requestInteger, requestPositiveId, requestRequiredId, requestRequiredString, requestString, resolveSessionConversationId, type ConversationStatus, type DurableDashboardOptions, type DurableListParams, type DurableStatusOptions, type RequestParams } from "./durable-observation.ts";
@@ -80,8 +80,6 @@ export interface DurableHostOptions {
 	/** Root conversation metadata, applied when the root is created. */
 	readonly meta?: { readonly name?: string; readonly owner?: string };
 	readonly profileSeed?: ProfileSeed;
-	/** Read-only saved conversation context, appended only inside root creation. */
-	readonly initialMessages?: readonly import("./initial-context.ts").InitialMessage[];
 	/** Commands contributed to Durable agents, invoked by the `command` request. */
 	readonly commands?: readonly DurableHostCommand[] | ReadonlyMap<string, DurableHostCommand>;
 	/** The services bootstrap's contribution host, passed to each command's fourth argument. */
@@ -92,13 +90,6 @@ export interface DurableHostOptions {
 	readonly retryMaxAttempts?: number;
 	readonly onReport?: HarnessOptions["onReport"];
 	readonly requestRelease?: () => Promise<{ readonly retiring: boolean; readonly blockers: readonly string[] }>;
-}
-
-async function initializeSavedContext(tx: Tx, id: ConversationId, messages: readonly import("./initial-context.ts").InitialMessage[]): Promise<void> {
-	for (const message of messages) {
-		const kind = message.role === "user" ? UserEntry.kind : message.role === "assistant" ? AssistantEntry.kind : ToolResultEntry.kind;
-		await tx.appendEntry(id, { kind, model: [message], ...(message.role === "toolResult" ? { data: { diagnostics: [] } } : {}) });
-	}
 }
 
 /** A request arrived after close, or a long wait was interrupted by close. */
@@ -371,7 +362,6 @@ export class DurableHost {
 					if (options.meta?.name !== undefined) meta.name = options.meta.name;
 					if (options.meta?.owner !== undefined) meta.owner = options.meta.owner;
 					await initializeProfile(tx, conversationId, options.storageId, options.profileSeed);
-					await initializeSavedContext(tx, conversationId, options.initialMessages ?? []);
 				},
 			});
 			await reconcileProfiles(harness, options.storageId, context, report);

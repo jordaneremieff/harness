@@ -22,8 +22,8 @@ import type { ModelEvidenceCollector } from "./model-evidence.ts";
 import { createSession, AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type ConversationView, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type HarnessInspection, type LiveState, type RunFailure, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";
 import { captureSnapshot } from "./snapshot-capture.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationState, AgentConversationSummary, DashboardAutoRetry, DashboardCompactionFailure, DashboardHealth } from "./dashboard-types.ts";
-import { AgentForkDoc, AgentMetaDoc, settleDeliveries, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
-import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliveryStore, receiptAtInput, receiptForRequest, snapshotIntent } from "./delivery-store.ts";
+import { AgentMetaDoc, settleDeliveries, type AgentDeliveryState, type DeliveryReceipt } from "./durable-controls.ts";
+import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliveryStore } from "./delivery-store.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readAwaitFact } from "./await-observation.ts";
 import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, PROVIDER_BLOCK_ERROR, readProviderBlock, readInputProviderBlock, readInputRecovery, type ProviderBlockFact } from "./provider-block.ts";
@@ -31,7 +31,6 @@ import type { AwaitFact } from "./await-facts.ts";
 import type { CommunicationView } from "./communication.ts";
 import { captureCommunicationReader, type CapturedCommunicationReader } from "./communication-observation.ts";
 import { TASK_SENDER_ENTRY_KIND } from "./task-senders.ts";
-import type { RecentActivity, RecentConversations } from './recents.ts';
 
 /** Byte/unit bounds used by every projection in this module. */
 export const ENTRY_PREVIEW_UNITS = 1200;
@@ -2077,11 +2076,11 @@ export interface DurableObservationOptions {
 	readonly maxSourceBytes?: number;
 	/** Longest a snapshot backup may run before it fails. */
 	readonly backupTimeoutMs?: number;
-	/** Public retained reads distinguish missing sources from existing empty storage. */
+	/** Require a source file instead of an empty observation when requested. */
 	readonly requireSourceExists?: boolean;
 	/** Scratch must remain outside this retained sessions root, when supplied. */
 	readonly sourceRoot?: string;
-	/** Absolute cooperative deadline shared by the public reader, including stdin. */
+	/** Absolute cooperative deadline for snapshot capture. */
 	readonly deadline?: number;
 	/**
 	 * Writer-claim classification for dashboard rows. The caller composes this
@@ -2101,47 +2100,6 @@ export const SNAPSHOT_BACKUP_TIMEOUT_MS = 30_000;
 export type DurableSnapshotSource = { readonly backupFrom: string };
 
 const frozenObservations = new WeakSet<Harness>();
-
-async function operatorInputIds(harness:Harness,delivery:AgentDeliveryState|undefined,conversationIds:ReadonlySet<number>,context:Context,entries:readonly EntryRecord[]):Promise<Set<number>> {
-  const inputs=new Set<number>();
-  for(const entry of entries){if(!isInputKind(entry.kind))continue;const receipt=await receiptAtInput(harness,entry.conversationId,entry.id,context);if(receipt?.origin==='operator')inputs.add(entry.id);}
-  const unsettled=(delivery?.intents??[]).filter(intent=>conversationIds.has(intent.conversationId)&&intent.origin==='operator'&&(intent.submissionId===null||!delivery?.receipts[String(intent.submissionId)])).slice(-128);
-  for(const intent of unsettled){const submission=await harness.commit(tx=>tx.submissionByRequest(intent.conversationId,intent.requestId),context);if(submission?.type==='input'&&submission.entry!==undefined)inputs.add(submission.entry);}
-  return inputs;
-}
-function conversationCreators(ids:readonly number[],records:readonly (ConversationRecord|undefined)[],root:RecentActivity,forks:Readonly<Record<string,ConversationId>>,delivery:AgentDeliveryState|undefined):RecentConversations {
-  const operatorForks=new Set<number>();
-  for(const admission of [...delivery?.intents??[],...Object.values(delivery?.receipts??{})])if(admission.origin==='operator'&&forks[admission.requestId]===admission.conversationId)operatorForks.add(admission.conversationId);
-  return {items:ids.map((conversationId,index)=>{
-    const activity:RecentActivity=conversationId===1?{...root}:{creator:'unknown'};
-    if(records[index]?.owner)activity.creator='agent';
-    else if(conversationId!==1&&records[index]&&operatorForks.has(conversationId))activity.creator='operator';
-    return {conversationId,activity};
-  })};
-}
-function answerEntry(entry:EntryRecord):boolean {
-  return entry.kind==='pi.assistant'&&(entry.model??[]).some(message=>message.role==='assistant'&&['stop','length'].includes(message.stopReason)&&!!textOfMessage(message).trim()&&!message.content.some(part=>part.type==='toolCall'));
-}
-function recentEntryActivity(entries:readonly EntryRecord[],operatorInputs:ReadonlySet<number>):Omit<RecentActivity,'creator'|'createdAt'> {
-  let lastUserAt:number|undefined,lastAnswerAt:number|undefined;
-  for(const entry of entries){
-    const at=newestTimestamp(entry);if(at===undefined)continue;
-    if(entry.kind==='pi.user'&&operatorInputs.has(entry.id))lastUserAt=Math.max(lastUserAt??-Infinity,at);
-    if(answerEntry(entry))lastAnswerAt=Math.max(lastAnswerAt??-Infinity,at);
-  }
-  return {hasMessages:entries.some(entry=>isInputKind(entry.kind)||entry.kind==='pi.assistant'),...(lastUserAt===undefined?{}:{lastUserAt}),...(lastAnswerAt===undefined?{}:{lastAnswerAt})};
-}
-async function includeForkAdmissions(harness: Harness, ids: readonly number[], forks: Readonly<Record<string, number>>, delivery: AgentDeliveryState, context: Context): Promise<void> {
-	for (const [requestId, id] of Object.entries(forks)) {
-		if (!ids.includes(id) || delivery.intents.some((intent) => intent.conversationId === id && intent.requestId === requestId)) continue;
-		const intent = await snapshotIntent(harness, id, requestId, context);
-		if (intent) delivery.intents.push(intent);
-		else {
-			const receipt = await receiptForRequest(harness, id, requestId, context);
-			if (receipt) delivery.receipts[String(receipt.submissionId)] = receipt;
-		}
-	}
-}
 
 export class DurableObservation {
 	readonly harness: Harness;
@@ -2230,21 +2188,6 @@ export class DurableObservation {
 		return readInspection(this.harness, this.storageId, conversation, params, context, { owner: this.classifyOwner().owner });
 	}
 
-  /** Classify published conversations before reading activity in this one retained snapshot. */
-  async recentActivities(ids:readonly number[],root:RecentActivity,context:Context=BACKGROUND_CONTEXT):Promise<RecentConversations> {
-    const records=await this.harness.commit(tx=>Promise.all(ids.map(id=>tx.conversation(id as ConversationId))),context);
-    const forks=await this.harness.snapshot(AgentForkDoc,context),delivery=await snapshotDeliveryState(this.harness,context);
-    await includeForkAdmissions(this.harness, ids, forks?.forks ?? {}, delivery, context);
-    const result=conversationCreators(ids,records,root,forks?.forks??{},delivery);
-    for(const item of result.items){
-      if(item.activity.creator!=='operator')continue;
-      const conversation=await this.harness.conversation(item.conversationId as ConversationId,context);if(!conversation)continue;
-      const entries=(await activeEntries(conversation,context)).filter(entry=>entry.conversationId===item.conversationId);
-      const inputs=await operatorInputIds(this.harness,delivery,new Set([item.conversationId]),context,entries);
-      Object.assign(item.activity,recentEntryActivity(entries,inputs));
-    }
-    return result;
-  }
 	async receipts(ownerId?: string, context: Context = BACKGROUND_CONTEXT): Promise<readonly DeliveryReceipt[]> {
 		return readReceipts(this.harness, ownerId, context);
 	}

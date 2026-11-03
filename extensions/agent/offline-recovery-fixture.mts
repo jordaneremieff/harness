@@ -167,7 +167,7 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 		return sessionsRoot;
 	}
 	function validateFailedReloadOptions(options: HostLaunchOptions): void {
-		if (options.env?.DURABLE_TEST_MODE !== "answer" || options.runnerArgs?.length || options.initialMessages !== undefined) fail(new Error("Failed reload fixture requires answer mode without runner arguments or initial context"));
+		if (options.env?.DURABLE_TEST_MODE !== "answer" || options.runnerArgs?.length) fail(new Error("Failed reload fixture requires answer mode without runner arguments"));
 	}
 	function validateQueueSource(options: HostLaunchOptions): void {
 		if (options.runnerArgs?.length !== 2 || options.runnerArgs[0] !== `${dirname(fileURLToPath(import.meta.url))}/`) fail(new Error("Queue fixture source is not the fixed repository source"));
@@ -227,15 +227,15 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 		}
 		return { launch, before };
 	}
-	function isOwnedDeadRefusal(metadata: HostMetadata, options: HostLaunchOptions, connect: boolean, before: Captured | undefined, error: unknown): boolean {
-		if (!connect && options.initialMessages === undefined && before && error instanceof Error && error.message === DEAD_REFUSAL) {
+	function isOwnedDeadRefusal(metadata: HostMetadata, connect: boolean, before: Captured | undefined, error: unknown): boolean {
+		if (!connect && before && error instanceof Error && error.message === DEAD_REFUSAL) {
 			const current = snapshot(metadata);
 			if (equalIdentity(before, current) && before.bytes.equals(current.bytes) && gone(before.pid)) return true;
 		}
 		return false;
 	}
-	function isExpectedAttachAbsence(metadata: HostMetadata, options: HostLaunchOptions, connect: boolean, before: Captured | undefined, error: unknown): boolean {
-		if (!connect || options.initialMessages !== undefined || !(error instanceof Error) || error.message !== `no live durable host for ${metadata.storageId}`) return false;
+	function isExpectedAttachAbsence(metadata: HostMetadata, connect: boolean, before: Captured | undefined, error: unknown): boolean {
+		if (!connect || !(error instanceof Error) || error.message !== `no live durable host for ${metadata.storageId}`) return false;
 		metadataCheck(metadata);
 		const claimPath = hostPaths(metadata).claim;
 		descendant(claimPath);
@@ -265,7 +265,7 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 				let client: HostConnection;
 				try { client = await (connect ? connectHost : acquireHost)(metadata, launch); }
 				catch (error) {
-					if (isOwnedDeadRefusal(metadata, options, connect, before, error) || isExpectedAttachAbsence(metadata, options, connect, before, error)) { expectedRefusal = true; throw error; }
+					if (isOwnedDeadRefusal(metadata, connect, before, error) || isExpectedAttachAbsence(metadata, connect, before, error)) { expectedRefusal = true; throw error; }
 					return fail(error);
 				}
 				this.clients.add(client); this.writers.add(client.pid);

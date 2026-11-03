@@ -1,16 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import { test } from "node:test";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import { runtimeFixture, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { acquireHost, waitForHostRelease, type HostConnection } from "./host-client.ts";
-import { installSourceRoutes } from "./source-route.ts";
-
-const sourceRoot = dirname(dirname(fileURLToPath(new URL("./", import.meta.url))));
 const claim = (purpose: string) => ({ action: "publish", purpose, integration: "Run the authorised gate", authority: "Synthetic operator authority", scope: { paths: ["extensions/agent"], branches: ["feature/native-intent"], fullGate: true } });
 const observer = randomUUID();
 async function run(client: HostConnection, sessionId: string, input: unknown, requestId: string) {
@@ -61,15 +57,15 @@ async function close(client: HostConnection): Promise<void> {
 	await client.close();
 }
 
-test("native intent has a live writer, retained-root peer discovery, exact cwd, persistent clear and no unsolicited peer turn", { timeout: 60000 }, async t => {
+test("native intent has a live writer, catalogue peer discovery, exact cwd, persistent clear and no unsolicited peer turn", { timeout: 60000 }, async t => {
 	const cleanup: (() => void)[] = [];
 	const f = runtimeFixture({ after: fn => cleanup.push(fn) }, { withAgentExtension: true });
-	const create = (namespace: string) => {
-		const root = join(f.root, namespace), catalog = new AgentCatalog(root);
+	const create = () => {
+		const root = f.root, catalog = new AgentCatalog(root);
 		const record = catalog.create({ cwd: f.cwd, agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: f.metadata.model, thinkingLevel: "off", trust: true });
 		return { root, catalog, record, metadata: hostMetadata(record) };
 	};
-	const a = create("previous-managed"), b = create("current"), bControl = join(f.root, "peer-control");
+	const a = create(), b = create(), bControl = join(f.root, "peer-control");
 	mkdirSync(bControl);
 	const aEnv = { ...f.env("intent"), PI_AGENT_IDLE_MINUTES: "2" }, bEnv = { ...aEnv, DURABLE_TEST_DIR: bControl };
 	let aClient = await acquireHost(a.metadata, { env: aEnv });
@@ -94,10 +90,7 @@ test("native intent has a live writer, retained-root peer discovery, exact cwd, 
 	assert.equal(a.catalog.read(a.record.storageId).view?.intentClaims?.rows[child.identity]?.claim?.purpose, "Child gate plan");
 	const beforeDiscovery = await aClient.request("inspect", { sessionId: a.record.storageId, view: "history", limit: 50 }) as { entries: unknown[] };
 	assert.ok(Array.isArray(beforeDiscovery.entries));
-	let view = await awareness(bClient, bControl, "peer-without-route");
-	assert.equal(view.presence.efforts.some(row => row.id === a.record.storageId), false);
-	await installSourceRoutes(b.root, [{ root: a.root, sourceRoot, packageDir: f.metadata.packageDir }]);
-	view = await awareness(bClient, bControl, "peer-with-route");
+	let view = await awareness(bClient, bControl, "peer-discovery");
 	assert.deepEqual(view.presence.efforts.find(row => row.id === a.record.storageId)?.intentClaim, saved.claim, JSON.stringify(view));
 	assert.equal(view.presence.efforts.find(row => row.id === a.record.storageId)?.liveness, "live");
 	assert.equal(view.presence.efforts.find(row => row.id === child.identity)?.intentClaim?.purpose, "Child gate plan");

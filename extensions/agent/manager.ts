@@ -33,7 +33,6 @@ import type { AgentConversationPage, AgentConversationSummary, AgentPriorityPage
 import { emptyConversationSnapshot, type ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 
-import { callExistingSource, readExistingSources, sourceHostOptions, type ExistingSource } from "./source-route.ts";
 import { HOST_CONTRACT, MANAGER_CONTRACT, operationContractMismatch, type RuntimeContract } from "./version-contract.ts";
 import { collaborationIdentity, collaborationStorage, validateCollaborationTextLimits } from "./collaboration.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
@@ -86,7 +85,6 @@ export interface AgentManagerOptions {
 }
 interface PrimaryClient { sentWork?: Set<string>; retainSentWork?(sessionId: string): void; send(text: string, details: unknown, sourceId: string, requireRetained: boolean): void; status?(text: string | undefined): void; signal: AbortSignal; cwd?: string; sessionFile?: string; name?: string; observedInput?: string; observedInputComplete?: boolean; observedInputCanCapture?: boolean; model?: { provider: string; modelId: string }; thinkingLevel?: string; promptTrust?(cwd: string): Promise<ProjectTrustDecision | undefined> }
 type RecoveryOwner = { signal: AbortSignal };
-export type NamespaceRecoveryReport = { visited: number; attempted: number; complete: boolean; failures: Array<{ storageId: string; error: string }> };
 interface ConversationPage { items: Array<{ identity: string; name?: string; busy?: boolean; parent?: string }>; next?: unknown }
 interface ListCursor { storage?: string; catalog?: string; native?: unknown; query: string; cwd: string }
 interface ListRecordStep { record: CatalogRecord; catalog?: string }
@@ -191,7 +189,7 @@ export class AgentManager {
 	private coldReleased = false;
 	private coldRelease: Promise<void> = Promise.resolve();
 	private hasObservationOwners(): boolean {
-		return !this.shuttingDown && (this.primaries.size > 0 || this.rosterListeners.size > 0 || this.namespaceOwner !== undefined && !this.namespaceOwner.signal.aborted);
+		return !this.shuttingDown && (this.primaries.size > 0 || this.rosterListeners.size > 0);
 	}
 	private retainColdObservations(): void {
 		if (!this.hasObservationOwners() || !this.coldReleased) return;
@@ -261,9 +259,6 @@ export class AgentManager {
 	private readonly launchRows = new Map<string, AgentConversationSummary>();
 	private readonly recovering = new Set<string>();
 	private recoveryQueue: Promise<void> = Promise.resolve();
-	private namespaceOwner?: RecoveryOwner;
-	private namespaceScan?: Promise<NamespaceRecoveryReport>;
-	private namespaceRescan = false;
 	private catalogueScan?: Promise<void>;
 	private catalogueScanAgain = false;
 	private readonly wakeAttempts = new BoundedMap<ReadonlyMap<string, string>>(MAX_INVENTORY_PAGES * 20);
@@ -305,10 +300,8 @@ export class AgentManager {
 		}
 		if (!launch) this.attaching.add(record.storageId);
 		const acquire = launch ? this.options.acquire ?? acquireHost : this.options.connect ?? connectHost;
-		const route = this.existingTarget(record.storageId);
-		const metadata = hostMetadata(record, route?.packageDir ?? this.options.packageDir);
-		const options = route ? sourceHostOptions(route) : MANAGED_LINK;
-		const open = Promise.resolve().then(() => acquire(metadata, options))
+		const metadata = hostMetadata(record, this.options.packageDir);
+		const open = Promise.resolve().then(() => acquire(metadata, MANAGED_LINK))
 			.then((client) => this.adoptClient(record, client, primary))
 			.finally(() => { this.opening.delete(record.storageId); this.attaching.delete(record.storageId); });
 		this.opening.set(record.storageId, open);
@@ -379,34 +372,14 @@ export class AgentManager {
 			if (client) return this.observePeer(client, method, params);
 			if (primary?.signal.aborted) throw new Error("Agent primary released during observation");
 			if (this.options.observe) return this.options.observe(record, method, params);
-			const route = this.existingTarget(record.storageId);
-			if (route) return callExistingSource({ route, action: "control", method, input: params, caller: { id: "source-observation", cwd: record.cwd }, agentDir: record.agentDir, expected: HOST_CONTRACT.operations });
 			if (this.shuttingDown) throw new Error("Agent manager is closed");
 			return cold.observe(record, method, params);
 		})();
 	}
 
-	private existingTarget(selector: string): ExistingSource | undefined {
-		const routes = readExistingSources(this.options.root);
-		if (!routes.length) return undefined;
-		const matches: Array<ExistingSource | undefined> = [];
-		const find = (catalog: AgentCatalog, route?: ExistingSource) => {
-			if (route && !statSync(route.root).isDirectory()) throw new Error("An existing source namespace is unavailable");
-			try {
-				const id = selector.startsWith("@") ? handleStorageId(selector.slice(1), catalog.root) : storageIdOf(selector);
-				catalog.read(id); matches.push(route);
-			} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-		};
-		find(this.catalog);
-		for (const route of routes) find(new AgentCatalog(route.root), route);
-		if (matches.length > 1) throw new Error("The target has ambiguous ownership across source namespaces");
-		return matches[0];
-	}
-
 	/** Resolve one retained native target without guessing an ordinary primary or copying its catalog. */
 	nativeTarget(sessionId: string): CatalogRecord {
-		const route = this.existingTarget(sessionId);
-		return (route ? new AgentCatalog(route.root) : this.catalog).read(sessionId);
+		return this.catalog.read(sessionId);
 	}
 
 	/** The caller owns this manager and closes it after waits or subscriptions finish. */
@@ -415,8 +388,6 @@ export class AgentManager {
 	}
 
 	async resolveTarget(selector: string): Promise<string> {
-		const route = this.existingTarget(selector);
-		if (route) return await callExistingSource({ route, action: "resolve", input: { sessionId: selector }, caller: { id: "source-route", cwd: this.options.root }, agentDir: this.options.agentDir, expected: HOST_CONTRACT.operations }) as string;
 		if (!selector.startsWith("@")) return selector;
 		const id = handleStorageId(selector.slice(1), this.catalog.root);
 		const record = this.catalog.read(id);
@@ -525,8 +496,6 @@ export class AgentManager {
 	}
 
 	async spawn(input: AgentSpawnInput, caller: AgentCaller, onCreated?: (row: AgentConversationSummary) => void, beforeCreate?: (storageId: string) => void): Promise<unknown> {
-		const route = input.handle === undefined ? undefined : this.existingTarget(`@${handleSlug(input.handle)}`);
-		if (route) return callExistingSource({ route, action: "spawn", input: { ...input }, caller: { id: caller.id, cwd: caller.cwd }, agentDir: this.options.agentDir, expected: HOST_CONTRACT.operations });
 		if (input.handle !== undefined) return this.spawnHandled({ ...input, handle: input.handle }, caller, onCreated);
 		if (input.role !== undefined) profileText(input.role, "role");
 		const previous = input.requestId === undefined ? undefined : this.catalog.readRequest(caller.id, input.requestId);
@@ -972,27 +941,6 @@ export class AgentManager {
 		await this.scanRecovery(primary, ownerId);
 	}
 
-	/** Restore this source-bound catalogue without an ordinary primary or a new task index. */
-	recoverNamespace(signal: AbortSignal): Promise<NamespaceRecoveryReport> {
-		if (this.shuttingDown || signal.aborted) return Promise.reject(new Error("Namespace recovery is closed"));
-		if (this.namespaceOwner?.signal !== signal) {
-			this.namespaceOwner?.signal.removeEventListener("abort", this.observationOwnerEnded);
-			this.namespaceOwner = { signal };
-			signal.addEventListener("abort", this.observationOwnerEnded, { once: true });
-		}
-		this.retainColdObservations();
-		this.observeCatalogChanges();
-		if (this.namespaceScan) { this.namespaceRescan = true; return this.namespaceScan; }
-		this.namespaceRescan = false;
-		const pending = this.scanRecovery(this.namespaceOwner).finally(() => {
-			if (this.namespaceScan !== pending) return;
-			this.namespaceScan = undefined;
-			if (this.namespaceRescan && !this.shuttingDown && !signal.aborted) void this.recoverNamespace(signal).catch(error => this.failures.set("namespace", errorText(error)));
-		});
-		this.namespaceScan = pending;
-		return pending;
-	}
-
 	/** Availability changes, not source view publication, permit another parked wake. */
 	private recipientAvailability(identity: string): string | undefined {
 		try {
@@ -1034,10 +982,9 @@ export class AgentManager {
 		this.catalogueScan = (async () => {
 			do {
 				this.catalogueScanAgain = false;
-				const owner = this.namespaceOwner && !this.stopping(this.namespaceOwner) ? this.namespaceOwner : [...this.primaries.values()].find((primary) => !this.stopping(primary));
+				const owner = [...this.primaries.values()].find((primary) => !this.stopping(primary));
 				if (owner === undefined || this.stopping(owner)) return;
-				if (owner === this.namespaceOwner) await this.recoverNamespace(owner.signal);
-				else await this.scanRecovery(owner);
+				await this.scanRecovery(owner);
 			} while (this.catalogueScanAgain && !this.shuttingDown);
 		})().catch((error) => { this.failures.set("catalog-recovery", errorText(error)); }).finally(() => {
 			this.catalogueScan = undefined;
@@ -1045,7 +992,7 @@ export class AgentManager {
 		});
 	}
 
-	private async scanRecovery(owner: RecoveryOwner, registeringPrimary?: string): Promise<NamespaceRecoveryReport> {
+	private async scanRecovery(owner: RecoveryOwner, registeringPrimary?: string): Promise<void> {
 		const due: CatalogRecord[] = [];
 		const inventory = await this.inventory.read();
 		let visited = 0;
@@ -1058,7 +1005,6 @@ export class AgentManager {
 		}
 		if (!complete) this.failures.set("startup", "Startup recovery reached its inventory bound or unreadable metadata; use agent_list for the remaining storage");
 		await this.enqueueRecovery(due, owner);
-		return { visited, attempted: due.length, complete: complete && !this.stopping(owner), failures: [...this.recoveryErrors.entries].slice(0, 64).map(([storageId, error]) => ({ storageId, error })) };
 	}
 
 	/** Await only this registration's teardown, including endpoint removal before process replacement. */
@@ -1239,7 +1185,7 @@ export class AgentManager {
 	}
 
 	private hostLost(storageId: string): void {
-		const primary = this.namespaceOwner && !this.stopping(this.namespaceOwner) ? this.namespaceOwner : [...this.primaries.values()].find((candidate) => !this.stopping(candidate));
+		const primary = [...this.primaries.values()].find((candidate) => !this.stopping(candidate));
 		if (!primary || this.queuedRecovery.has(storageId)) return;
 		try {
 			const record = this.catalog.read(storageId);
@@ -1414,7 +1360,6 @@ export class AgentManager {
 		if (this.closing) return this.closing;
 		this.shuttingDown = true;
 		this.lifecycle.abort();
-		this.namespaceOwner?.signal.removeEventListener("abort", this.observationOwnerEnded);
 		this.rosterListeners.clear();
 		const primaries = [...this.primaries].map(([ownerId, primary]) => this.closePrimary(ownerId, primary.signal));
 		this.releaseClients();

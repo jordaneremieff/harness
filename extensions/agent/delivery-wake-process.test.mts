@@ -23,6 +23,13 @@ beforeEach(() => { cold = createColdObservationCache(); });
 afterEach(async () => { await cold.close(); });
 const observeDurableStorage: ReturnType<typeof createColdObservationCache>["observe"] = (...args) => cold.observe(...args);
 
+/** Keep recovery ownership separate from the recipient endpoints under test. */
+const observerChannel: typeof createPrimaryChannel = async options => ({
+	id: options.id, socketPath: "",
+	info: () => ({ id: options.id, cwd: options.cwd, pid: process.pid, hostname: "fixture", socketPath: "", startedAt: new Date().toISOString() }),
+	update: () => {}, publishIntent: () => {}, touch: () => {}, setObservedPurpose: () => {}, close: async () => {},
+});
+
 function fixture(t: TestContext, idleMinutes = "60", offlineRecovery = false) {
 	const cleanup: Array<() => void | Promise<void>> = [];
 	let guard: (() => Promise<void>) | undefined;
@@ -31,7 +38,7 @@ function fixture(t: TestContext, idleMinutes = "60", offlineRecovery = false) {
 	const offline = f.offline, generation = offline?.generation();
 	if (offline) guard = () => offline.teardown();
 	const env = { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: idleMinutes, PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root };
-	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, acquire: async (metadata, options) => {
+	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, createPrimary: observerChannel, acquire: async (metadata, options) => {
 		const client = generation ? await generation.acquire(metadata, { ...options, env }) : await acquireHost(metadata, { env });
 		trackHost(t, client.pid); connections.push(client); return client;
 	}, ...(generation ? { connect: (metadata: typeof f.metadata, options?: Parameters<typeof acquireHost>[1]) => generation.connect(metadata, { ...options, env }) } : {}) });
@@ -56,7 +63,7 @@ async function seed(f: ReturnType<typeof fixture>, recipient: string): Promise<v
 
 async function open(f: ReturnType<typeof fixture>): Promise<HostConnection> {
 	const controller = f.generation?.controller(new AbortController()) ?? new AbortController();
-	await f.manager.recoverNamespace(controller.signal);
+	await f.manager.registerPrimary(randomUUID(), { cwd: f.cwd, signal: controller.signal, send: () => {} });
 	await f.manager.control("attach", { sessionId: f.metadata.storageId }, { id: randomUUID(), cwd: f.cwd });
 	await f.connections.waitForCount(1);
 	const source = f.connections[0]; assert.ok(source);
@@ -72,7 +79,6 @@ for (const kind of ["parked", "terminal"] as const) for (const signal of ["SIGTE
 	assert.equal(existsSync(deliveryWakePath(f.root, f.metadata.storageId)), kind === "parked");
 	process.kill(source.pid, signal);
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(5000) });
-	assert.equal((await f.manager.recoverNamespace(new AbortController().signal)).attempted, 0);
 	await f.manager.registerPrimary(randomUUID(), { cwd: f.cwd, signal: new AbortController().signal, send: () => { assert.fail("an unavailable owner has no unrelated delivery"); } });
 	assert.equal(f.connections.length, 1);
 	assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, false);
@@ -84,7 +90,6 @@ for (const kind of ["parked", "terminal"] as const) it(`retires a ${kind}-only p
 	await open(f);
 	assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, false);
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(5000) });
-	assert.equal((await f.manager.recoverNamespace(new AbortController().signal)).attempted, 0);
 	await f.manager.registerPrimary(randomUUID(), { cwd: f.cwd, signal: new AbortController().signal, send: () => { assert.fail("a cold unavailable row does not deliver"); } });
 	assert.equal(f.connections.length, 1);
 	assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, false);
@@ -111,12 +116,12 @@ it("refuses online active-delivery relaunch after SIGKILL and resumes offline", 
 	const resumed = await offline.recover();
 	const receiver = await createPrimaryChannel(channelOptions);
 	f.cleanup(() => receiver.close());
-	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir,
+	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, createPrimary: observerChannel,
 		acquire: async (metadata, options) => { const client = await resumed.acquire(metadata, { ...options, env: f.env("answer") }); f.connections.push(client); return client; },
 		connect: (metadata, options) => resumed.connect(metadata, { ...options, env: f.env("answer") }),
 	});
 	resumed.manager(manager);
-	await manager.recoverNamespace(resumed.controller(new AbortController()).signal);
+	await manager.registerPrimary(randomUUID(), { cwd: f.cwd, signal: resumed.controller(new AbortController()).signal, send: () => {} });
 	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: randomUUID(), cwd: f.cwd });
 	await f.connections.waitForCount(2, 10000);
 	assert.notEqual(f.connections[1]?.pid, source.pid);
