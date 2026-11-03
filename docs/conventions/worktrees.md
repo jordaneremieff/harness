@@ -37,7 +37,7 @@ Keep working notes, plans, and task records outside the repository
 
 The pre-push hook refuses commits that carry a credential, private key,
 absolute personal home path, or retained session envelope signature. Install
-it once per clone:
+it in the effective hook directory for the selected worktree:
 
 ```bash
 npm run hooks
@@ -47,8 +47,12 @@ The hook runs `scripts/publication-scan.mts` over every commit the push sends.
 It names the commit, path, line, and rule, never the matched text. It is not a
 semantic classifier: review the outgoing diff for private context, task
 records, operator quotations, and generated reports before pushing. The
-installer replaces only a hook that carries its own marker. Scan a range by
-hand with `node scripts/publication-scan.mts origin/main..HEAD`.
+installer asks Git for the effective `pre-push` path, including `core.hooksPath`
+and worktree configuration, and reports that path. Relative hook paths resolve
+from the worktree root. The installer replaces only a hook that carries its own
+marker; it refuses an unmanaged shared hook. Repeat installation when the
+effective hook location changes. Scan a range by hand with
+`node scripts/publication-scan.mts origin/main..HEAD`.
 
 ## Checks
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -8,9 +8,12 @@ import { fileURLToPath } from "node:url";
 import { hookContent, installHook, pushRanges, scanRange, scanText } from "./publication-scan.mts";
 
 const script = fileURLToPath(new URL("./publication-scan.mts", import.meta.url));
+// Imported installer calls must use the same isolated Git configuration as fixture commits.
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_NOSYSTEM = "1";
 
 function repository(initialText = "plain\n"): { root: string; git: (...args: string[]) => string } {
-	const root = mkdtempSync(join(tmpdir(), "publication-scan-"));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "publication-scan-")));
 	const env = {
 		...process.env,
 		GIT_CONFIG_GLOBAL: "/dev/null",
@@ -118,6 +121,43 @@ test("type changes scan new blobs and skip gitlink objects", (t) => {
 	assert.deepEqual(scanRange(root, ["HEAD^..HEAD"]), []);
 });
 
+test("the installer uses relative and absolute effective hook directories", (t) => {
+	const { root, git } = repository();
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const nested = join(root, "nested");
+	mkdirSync(nested);
+	for (const hooks of ["custom hooks", join(root, "absolute hooks")]) {
+		git("config", "core.hooksPath", hooks);
+		const expected = git("rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push");
+		assert.equal(installHook(nested), expected);
+		assert.equal(readFileSync(expected, "utf8"), hookContent());
+		assert.equal(existsSync(join(root, ".git", "hooks", "pre-push")), false);
+		writeFileSync(expected, "#!/bin/sh\necho shared-owner\n");
+		assert.throws(() => installHook(root), /unmanaged hook/);
+		assert.equal(readFileSync(expected, "utf8"), "#!/bin/sh\necho shared-owner\n");
+	}
+});
+
+test("the installer resolves linked-worktree hook context without replacing shared hooks", (t) => {
+	const { root, git } = repository();
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const worktree = join(root, "linked");
+	git("worktree", "add", "-qb", "linked", worktree);
+	const shared = git("-C", worktree, "rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push");
+	assert.equal(installHook(worktree), shared);
+	writeFileSync(shared, "#!/bin/sh\necho shared-owner\n");
+	assert.throws(() => installHook(worktree), /unmanaged hook/);
+	git("config", "core.hooksPath", "local hooks");
+	const local = git("-C", worktree, "rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push");
+	assert.equal(installHook(worktree), local);
+	assert.equal(local, join(worktree, "local hooks", "pre-push"));
+	assert.equal(readFileSync(shared, "utf8"), "#!/bin/sh\necho shared-owner\n");
+	git("config", "extensions.worktreeConfig", "true");
+	git("-C", worktree, "config", "--worktree", "core.hooksPath", "worktree hooks");
+	assert.equal(installHook(worktree), join(worktree, "worktree hooks", "pre-push"));
+	assert.equal(installHook(root), join(root, "local hooks", "pre-push"));
+});
+
 test("pre-push input maps to ranges and the hook installs only over its own marker", (t) => {
 	assert.deepEqual(
 		pushRanges("refs/heads/main abc refs/heads/main def\nrefs/heads/x 111 refs/heads/x 0000000000\n"),
@@ -127,6 +167,7 @@ test("pre-push input maps to ranges and the hook installs only over its own mark
 	const { root } = repository();
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const path = installHook(root);
+	assert.equal(path, join(root, ".git", "hooks", "pre-push"));
 	assert.equal(readFileSync(path, "utf8"), hookContent());
 	assert.equal(installHook(root), path);
 	writeFileSync(path, "#!/bin/sh\necho mine\n");

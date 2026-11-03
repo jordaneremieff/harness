@@ -6,7 +6,7 @@
 
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const hookMarker = "# managed by scripts/publication-scan.mts";
@@ -85,9 +85,10 @@ export function hookContent(): string {
 }
 
 export function installHook(repoRoot: string): string {
-	const hooks = join(git(repoRoot, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim(), "hooks");
-	mkdirSync(hooks, { recursive: true });
-	const path = join(hooks, "pre-push");
+	// Non-bare pre-push hooks run from the worktree root, including relative hooksPath settings.
+	const worktree = git(repoRoot, ["rev-parse", "--show-toplevel"]).replace(/\n$/, "");
+	const path = git(worktree, ["rev-parse", "--path-format=absolute", "--git-path", "hooks/pre-push"]).replace(/\n$/, "");
+	mkdirSync(dirname(path), { recursive: true });
 	if (existsSync(path) && !readFileSync(path, "utf8").includes(hookMarker)) {
 		throw new Error(`Refusing to replace an unmanaged hook: ${path}`);
 	}
