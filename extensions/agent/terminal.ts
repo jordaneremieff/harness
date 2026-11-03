@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 
 const peers = new Set([
 	"@earendil-works/pi-coding-agent", "@earendil-works/pi-tui", "@earendil-works/pi-ai",
-	"@earendil-works/pi-agent-core", "typebox",
+	"@earendil-works/pi-agent-core",
 ]);
 
 /** The managed launcher is under <agent-home>/bin; its sibling install owns releases. */

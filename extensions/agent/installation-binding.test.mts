@@ -52,7 +52,7 @@ it("selects the declared peer packages and their subpaths only", () => {
 		assert.equal(isInstallationImport(name), true);
 		assert.equal(isInstallationImport(`${name}/value`), true);
 	}
-	for (const specifier of ["@earendil-works/pi-durable", "@earendil-works/pi-ai-extra", "typebox-extra", "./typebox", "node:fs"]) assert.equal(isInstallationImport(specifier), false, specifier);
+	for (const specifier of ["@earendil-works/pi-durable", "@earendil-works/pi-schema", "@earendil-works/pi-schema/formats", "@earendil-works/pi-ai-extra", "typebox", "typebox/value", "@sinclair/typebox", "typebox-extra", "./typebox", "node:fs"]) assert.equal(isInstallationImport(specifier), false, specifier);
 });
 
 it("resolves every peer import of bound source from the caller installation", async (t) => {
@@ -62,7 +62,7 @@ it("resolves every peer import of bound source from the caller installation", as
 	const source = join(root, "source");
 	const probe = join(source, "probe.mjs");
 	writeProbe(probe, source);
-	const specifiers = [...INSTALLATION_PACKAGES, "typebox/value", "@earendil-works/pi-ai/utils/validation"];
+	const specifiers = [...INSTALLATION_PACKAGES, "@earendil-works/pi-ai/utils/validation"];
 	const result = await runNode([probe, packageDir, ...specifiers], root);
 	assert.equal(result.code, 0, result.stderr);
 	const output = JSON.parse(result.stdout) as { version: string; resolved: Record<string, string> };
@@ -72,6 +72,26 @@ it("resolves every peer import of bound source from the caller installation", as
 	for (const [specifier, url] of Object.entries(output.resolved)) {
 		assert.ok(url.startsWith(`${pathToFileURL(installationModules).href}/`), `${specifier} resolves inside the installation: ${url}`);
 	}
+});
+
+it("keeps schema packages owned by the checkout inside the bound source", async (t) => {
+	const root = isolatedRoot(t);
+	const source = join(root, "source");
+	const probe = join(source, "probe.mjs");
+	const specifiers = ["typebox", "typebox/value", "@earendil-works/pi-schema", "@earendil-works/pi-schema/formats"];
+	const expected: Record<string, string> = {};
+	for (const name of ["typebox", "@earendil-works/pi-schema"]) {
+		const directory = join(source, "node_modules", name);
+		mkdirSync(directory, { recursive: true });
+		writeFileSync(join(directory, "package.json"), JSON.stringify({ name, type: "module", exports: { ".": "./index.js", "./value": "./index.js", "./formats": "./index.js" } }));
+		writeFileSync(join(directory, "index.js"), "export const checkout = true;\n");
+		for (const specifier of specifiers.filter((value) => value === name || value.startsWith(`${name}/`)))
+			expected[specifier] = pathToFileURL(join(directory, "index.js")).href;
+	}
+	writeProbe(probe, source);
+	const result = await runNode([probe, getPackageDir(), ...specifiers], root);
+	assert.equal(result.code, 0, result.stderr);
+	assert.deepEqual(JSON.parse(result.stdout).resolved, expected);
 });
 
 it("leaves peer imports from modules outside the bound source unchanged", async (t) => {

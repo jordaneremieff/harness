@@ -37,16 +37,17 @@ it("managed bootstrap finds the executable launcher without creating a symlink",
 	} finally { rmSync(home, { recursive: true, force: true }); }
 });
 
-it("public peer resolution keeps ESM import conditions and checkout Durable resolution", async () => {
+it("public peer resolution keeps ESM import conditions and checkout dependency resolution", async () => {
 	const root = mkdtempSync(join(tmpdir(), "agent-terminal-peers-"));
 	let hook: { deregister(): void } | undefined;
 	try {
 		release(root, "esm-only"); writeFileSync(join(root, "current-version"), "esm-only");
-		const durable = import.meta.resolve("@earendil-works/pi-durable");
+		const dependencies = ["@earendil-works/pi-durable", "@earendil-works/pi-schema", "@earendil-works/pi-schema/formats", "typebox", "typebox/value"];
+		const checkout = dependencies.map((specifier) => import.meta.resolve(specifier));
 		hook = installPeerResolver(managedRelease({ PI_MANAGED_INSTALL_ROOT: root }).anchor);
 		const peer = await import("@earendil-works/pi-coding-agent") as unknown as { selected: string };
 		assert.equal(peer.selected, "esm-only");
 		assert.equal(import.meta.resolve("@earendil-works/pi-coding-agent/public"), pathToFileURL(join(realpathSync(root), "releases", "esm-only", "node_modules", "@earendil-works", "pi-coding-agent", "index.mjs")).href);
-		assert.equal(import.meta.resolve("@earendil-works/pi-durable"), durable);
+		assert.deepEqual(dependencies.map((specifier) => import.meta.resolve(specifier)), checkout);
 	} finally { hook?.deregister(); rmSync(root, { recursive: true, force: true }); }
 });

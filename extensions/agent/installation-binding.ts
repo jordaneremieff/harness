@@ -27,7 +27,6 @@ export const INSTALLATION_PACKAGES: readonly string[] = Object.freeze([
 	"@earendil-works/pi-agent-core",
 	"@earendil-works/pi-ai",
 	"@earendil-works/pi-tui",
-	"typebox",
 ]);
 
 /** True for a bare specifier that names a peer package or one of its subpaths. */
