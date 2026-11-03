@@ -92,6 +92,17 @@ export function receipt(identity = STORAGE, requestId = "input-example"): JsonOb
 		result: { sessionId: identity, submissionId: 7, requestId },
 	};
 }
+function timerReply(input: JsonObject): JsonObject {
+	const identity = String(input.sessionId ?? STORAGE);
+	return { timerId: 11, conversationId: identity === STORAGE ? 1 : Number(identity.split(":")[1]), identity,
+		deadline: typeof input.deliverAt === "number" ? input.deliverAt : Date.parse(String(input.deliverAt)),
+		mode: input.mode ?? "followUp", origin: input.origin ?? "operator", scheduleId: input.scheduleId ?? "fixture-schedule",
+		deduped: false, disposition: "scheduled", status: "pending" };
+}
+function placeReply(input: JsonObject): JsonObject {
+	const resolved = { sessionId: CHILD, selection: configurationReply(CHILD).selection };
+	return input.prompt ? { ...resolved, ...receipt(CHILD, String(input.requestId ?? "fixture-place")) } : resolved;
+}
 export function activity(identity = STORAGE): JsonObject {
 	return { view: "activity", format: "compact", sessionId: identity,
 		conversationId: identity === STORAGE ? 1 : Number(identity.split(":")[1]), turns: [], nextCursor: null,
@@ -193,8 +204,8 @@ export async function descriptor(): Promise<JsonObject> {
 			"response": "spawn/2.0.0"
 		},
 		"place": {
-			"request": "place/2.0.0",
-			"response": "place/2.0.0"
+			"request": "place/2.1.0",
+			"response": "place/2.1.0"
 		},
 		"attach": {
 			"request": "attach/1.0.0",
@@ -263,7 +274,7 @@ export async function descriptor(): Promise<JsonObject> {
 		},
 		"timer-schedule": {
 			"request": "timer-schedule/1.1.0",
-			"response": "timer-schedule/1.0.0"
+			"response": "timer-schedule/2.0.0"
 		},
 		"timer-list": {
 			"request": "timer-list/1.0.0",
@@ -568,6 +579,10 @@ export class FakeHost {
 			}
 			case "task-submit":
 				return receipt(String(input.sessionId), String(input.requestId));
+			case "timer-schedule":
+				return timerReply(input);
+			case "place":
+				return placeReply(input);
 			case "abort":
 				return {
 					identity: input.sessionId ?? STORAGE,

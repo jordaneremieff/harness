@@ -188,14 +188,14 @@ export const supportedOperations: Readonly<Record<OperationName, OperationContra
 	command: contract("command", "1.1.0", "command/1.0.0", true),
 "profile-read":contract("profile-read","1.0.0","b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889"),
 "profile-update":contract("profile-update","1.0.0","7c805d143fae0d6a9fd373a4acb24fc080c94fa4b0787d447545e08714907eb4"),
-spawn:contract("spawn","2.0.0"),place:contract("place","2.0.0"),
+spawn:contract("spawn","2.0.0"),place:contract("place","2.1.0"),
 "compact":contract("compact","2.0.0","compact/2.0.0",true),
 "reset":contract("reset","1.0.0","reset/1.0.0",false),
 "fork":contract("fork","1.0.0","fork/1.0.0",true),
 "rewind":contract("rewind","1.1.0","rewind/1.0.0",true),
 "timer-list":contract("timer-list","1.0.0","timer-list/1.0.0",false),
 "timer-cancel":contract("timer-cancel","1.0.0","timer-cancel/1.0.0",false),
-"timer-schedule":contract("timer-schedule","1.1.0","timer-schedule/1.0.0",false),
+"timer-schedule":contract("timer-schedule","1.1.0","timer-schedule/2.0.0",false),
 "run-scope":contract("run-scope","1.0.0","run-scope/1.0.0",false),
 "run-stop":contract("run-stop","1.0.0","run-stop/1.0.0",false),
 "request-cancel":contract("request-cancel","1.0.0","request-cancel/1.0.0",false),
@@ -932,7 +932,7 @@ function nativeControlInput(member:NativeControlName,o:JsonObject):void {
  optional(o,["instructions","handoff","correction","message"],v=>string(v,65536,true));
  optional(o,["name"],v=>string(v,256));optional(o,["wait","selfOwned"],boolean);
  if(member==='profile-update'){string(o.expectedRevision,64);string(o.senderIdentity,512);optional(o,['role'],v=>string(v,2000,true));optional(o,['expertise'],v=>string(v,16384,true));}
- if(member==='spawn'||member==='place'){requireValue(o.senderIdentity===o.sessionId,'Native creation requires its captured sender');optional(o,['cwd','area'],v=>string(v,4096));optional(o,['prompt'],v=>string(v,65536));optional(o,['handle','preset','model','thinkingLevel','topic','role'],v=>string(v,2000));}
+ if(member==='spawn'||member==='place'){requireValue(o.senderIdentity===o.sessionId,'Native creation requires its captured sender');optional(o,['cwd','area'],v=>string(v,4096));optional(o,['prompt'],v=>string(v,65536,member==='place'));optional(o,['handle','preset','model','thinkingLevel','topic','role'],v=>string(v,2000));}
  if(member==="rewind"){ integer(o.entryId,1);string(o.correction,65536);requireValue(o.selfOwned===true&&o.origin==="operator","Operator rewind requires self ownership");}
  if(member==="timer-cancel")integer(o.timerId,1);
  if(member==="run-stop")integer(o.runId,1);

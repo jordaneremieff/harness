@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
-import { blockedResult, descriptor as fakeDescriptor } from "./fake-host.mts";
+import { blockedResult, CHILD, FakeHost, descriptor as fakeDescriptor } from "./fake-host.mts";
+import { HostLink } from "./client.mts";
 import {
 	assertOperation, ContractError, decodeDescriptor, decodeFrame, decodeInput, decodeOperatorInput,
 	decodePublication, decodeResponse, type JsonObject, type OperationName, supportedOperations,
@@ -60,12 +61,12 @@ function descriptor(): JsonObject {
       reset:{request:'reset/1.0.0',response:'reset/1.0.0'},fork:{request:'fork/1.0.0',response:'fork/1.0.0',durable:D},
       rewind:{request:'rewind/1.1.0',response:'rewind/1.0.0',durable:D},
       'timer-list':{request:'timer-list/1.0.0',response:'timer-list/1.0.0'},'timer-cancel':{request:'timer-cancel/1.0.0',response:'timer-cancel/1.0.0'},
-      'timer-schedule':{request:'timer-schedule/1.1.0',response:'timer-schedule/1.0.0'},
+      'timer-schedule':{request:'timer-schedule/1.1.0',response:'timer-schedule/2.0.0'},
       'run-scope':{request:'run-scope/1.0.0',response:'run-scope/1.0.0'},'run-stop':{request:'run-stop/1.0.0',response:'run-stop/1.0.0'},
       'request-cancel':{request:'request-cancel/1.0.0',response:'request-cancel/1.0.0'},
       'profile-read':{request:'profile-read/1.0.0',response:'b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889'},
       'profile-update':{request:'profile-update/1.0.0',response:'7c805d143fae0d6a9fd373a4acb24fc080c94fa4b0787d447545e08714907eb4'},
-      spawn:{request:'spawn/2.0.0',response:'spawn/2.0.0'},place:{request:'place/2.0.0',response:'place/2.0.0'},
+      spawn:{request:'spawn/2.0.0',response:'spawn/2.0.0'},place:{request:'place/2.1.0',response:'place/2.1.0'},
 		},
 	};
 }
@@ -103,6 +104,43 @@ test("literal consumer identities match the documented contract and reject super
 			? "d5921b17798451b298b92896cb9995c32df9402f2f4ddca7acc377639797a51f" : `${member}/1.0.0`;
 		refusal(() => assertOperation(decodeDescriptor(value), member), "incompatible");
 		assertOperation(decodeDescriptor(value), "task-submit");
+	}
+});
+
+test("timer and place consumers refuse superseded operation identities", () => {
+	for (const member of ["timer-schedule", "place"] as const) {
+		const value = descriptor();
+		(value.operations as JsonObject)[member] = member === "place"
+			? { request: "place/2.0.0", response: "place/2.0.0" }
+			: { request: "timer-schedule/1.1.0", response: "timer-schedule/1.0.0" };
+		refusal(() => assertOperation(decodeDescriptor(value), member), "incompatible");
+		assertOperation(decodeDescriptor(value), "task-submit");
+	}
+});
+
+test("the fake host returns current scheduled timer facts through the consumer", async t => {
+	const host = await FakeHost.start(); t.after(() => host.close());
+	const link = await HostLink.connect(host.endpoint); t.after(() => link.close());
+	const deliverAt = "2026-11-03T10:00:00.000Z";
+	const result = await link.request("timer-schedule", { sessionId: storageId, message: "later", deliverAt, ownerId: storageId,
+		origin: "operator", selfOwned: true, scheduleId: "fixture-timer", requestId: "fixture-timer-input" });
+	assert.deepEqual(result, { timerId: 11, conversationId: 1, identity: storageId, deadline: Date.parse(deliverAt), mode: "followUp",
+		origin: "operator", scheduleId: "fixture-timer", deduped: false, disposition: "scheduled", status: "pending" });
+	const retained = { ...result as JsonObject, deduped: true, disposition: "retained", status: "terminal", outcome: { status: "aborted" } };
+	assert.deepEqual(decodeResponse("timer-schedule", retained), retained);
+});
+
+test("the fake host distinguishes place resolution from exact prompted admission", async t => {
+	const host = await FakeHost.start(); t.after(() => host.close());
+	const link = await HostLink.connect(host.endpoint); t.after(() => link.close());
+	for (const prompt of [undefined, "", "  keep this prompt  "]) {
+		const result = await link.request("place", { sessionId: storageId, senderIdentity: storageId, requestId: "place-input",
+			...(prompt === undefined ? {} : { prompt }) }) as JsonObject;
+		assert.equal(result.sessionId, CHILD);
+		assert.ok(result.selection);
+		if (prompt) assert.deepEqual(result.result, { sessionId: CHILD, submissionId: 7, requestId: "place-input" });
+		else { assert.equal(result.result, undefined); assert.equal(result.submissionId, undefined); }
+		assert.equal(host.calls.at(-1)?.params?.prompt, prompt);
 	}
 });
 
