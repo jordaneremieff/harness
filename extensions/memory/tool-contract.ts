@@ -1,4 +1,4 @@
-import { Type } from "typebox";
+import { arr, bool, int, lit, nul, num, obj, opt, str, union } from "@earendil-works/pi-schema";
 import { REVISION_PATTERN } from "./history.ts";
 import { DIGEST, SLUG, type WriteReceipt } from "./store.ts";
 
@@ -9,122 +9,122 @@ import { DIGEST, SLUG, type WriteReceipt } from "./store.ts";
  * contract single-sourced.
  */
 
-const slug = () => Type.String({ pattern: SLUG.source, minLength: 1, maxLength: 120 });
-const digest = () => Type.String({ pattern: DIGEST.source });
-const reviewPolicy = () => Type.Union([Type.Literal("on-change"), Type.Literal("before-use")]);
-const reviewAfter = () => Type.Union([Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }), Type.Null()]);
-const reviewSources = () => Type.String({ minLength: 1, maxLength: 1500 });
-const reviewReason = () => Type.String({ minLength: 1, maxLength: 600 });
+const slug = () => str({ pattern: SLUG.source, minLength: 1, maxLength: 120 });
+const digest = () => str({ pattern: DIGEST.source });
+const reviewPolicy = () => union([lit("on-change"), lit("before-use")]);
+const reviewAfter = () => union([str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }), nul()]);
+const reviewSources = () => str({ minLength: 1, maxLength: 1500 });
+const reviewReason = () => str({ minLength: 1, maxLength: 600 });
 const query = () =>
-	Type.String({
+	str({
 		maxLength: 200,
 		description:
 			"Short keywords or quoted, case-insensitive literal fragments. Unquoted words match exact tokens, without stemming or camelCase splitting. Omit query to browse; blank strings refuse. Maximum 200 characters and 16 distinct terms.",
 	});
 
-export const memorySearchParameters = Type.Object({
-	query: Type.Optional(Type.Union([query(), Type.Array(query(), { minItems: 1, maxItems: 3 })])),
-	includeRetired: Type.Optional(Type.Boolean()),
-	limit: Type.Optional(
-		Type.Integer({
+export const memorySearchParameters = obj({
+	query: opt(union([query(), arr(query(), { minItems: 1, maxItems: 3 })])),
+	includeRetired: opt(bool()),
+	limit: opt(
+		int({
 			minimum: 1,
 			maximum: 512,
 			description:
 				"Query: 1–25, default 10. Browse: optional reducer, 1–512; default returns all cues that fit the byte bound.",
 		}),
 	),
-	cursor: Type.Optional(
-		Type.String({
+	cursor: opt(
+		str({
 			minLength: 1,
 			maxLength: 1024,
 			description: "Returned nextCursor; repeat query, including after an empty page.",
 		}),
 	),
-});
+}, { open: true });
 
-export const memoryReadParameters = Type.Object({
-	slug: Type.String({ minLength: 1, maxLength: 120, description: "Note slug, or README for the corpus contract." }),
-	digest: Type.Optional(digest()),
-	revision: Type.Optional(
-		Type.String({
+export const memoryReadParameters = obj({
+	slug: str({ minLength: 1, maxLength: 120, description: "Note slug, or README for the corpus contract." }),
+	digest: opt(digest()),
+	revision: opt(
+		str({
 			pattern: REVISION_PATTERN.source,
 			maxLength: 121,
 			description: "Exact revision ID from memory_history. Omit for the current note.",
 		}),
 	),
-	offset: Type.Optional(
-		Type.Integer({
+	offset: opt(
+		int({
 			minimum: 0,
 			maximum: 1000000000,
 			description: "Returned nextOffset; Unicode code points, not bytes.",
 		}),
 	),
-});
+}, { open: true });
 
-export const memoryHistoryParameters = Type.Object({
+export const memoryHistoryParameters = obj({
 	slug: slug(),
-	cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
-	limit: Type.Optional(
-		Type.Integer({ minimum: 1, maximum: 100, description: "Revisions examined per page; default 25." }),
+	cursor: opt(str({ minLength: 1, maxLength: 1024 })),
+	limit: opt(
+		int({ minimum: 1, maximum: 100, description: "Revisions examined per page; default 25." }),
 	),
-	plan: Type.Optional(
-		Type.Object({
-			capturedBefore: Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" }),
-			keepNewest: Type.Number({ minimum: 0, maximum: 16384, multipleOf: 1 }),
-		}),
+	plan: opt(
+		obj({
+			capturedBefore: str({ pattern: "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$" }),
+			keepNewest: num({ minimum: 0, maximum: 16384, multipleOf: 1 }),
+		}, { open: true }),
 	),
-});
+}, { open: true });
 
-export const memoryWriteParameters = Type.Object({
+export const memoryWriteParameters = obj({
 	slug: slug(),
-	title: Type.String({ minLength: 1, maxLength: 160 }),
-	tags: Type.Array(Type.String({ minLength: 1, maxLength: 80 }), { maxItems: 16, uniqueItems: true }),
-	summary: Type.String({ minLength: 1, maxLength: 4000 }),
-	details: Type.String({ minLength: 1, maxLength: 24000 }),
-	sources: Type.String({
+	title: str({ minLength: 1, maxLength: 160 }),
+	tags: arr(str({ minLength: 1, maxLength: 80 }), { maxItems: 16, uniqueItems: true }),
+	summary: str({ minLength: 1, maxLength: 4000 }),
+	details: str({ minLength: 1, maxLength: 24000 }),
+	sources: str({
 		minLength: 1,
 		maxLength: 8000,
 		description: "Source citations with dates, scope and evidence.",
 	}),
-	verified: Type.Boolean(),
-	reviewPolicy: Type.Optional(reviewPolicy()),
-	reviewAfter: Type.Optional(reviewAfter()),
-	expectedDigest: Type.Optional(digest()),
-	supersedes: Type.Optional(Type.Array(Type.Object({ slug: slug(), digest: digest() }), { maxItems: 16 })),
-});
+	verified: bool(),
+	reviewPolicy: opt(reviewPolicy()),
+	reviewAfter: opt(reviewAfter()),
+	expectedDigest: opt(digest()),
+	supersedes: opt(arr(obj({ slug: slug(), digest: digest() }, { open: true }), { maxItems: 16 })),
+}, { open: true });
 
-export const memoryEditParameters = Type.Object({
+export const memoryEditParameters = obj({
 	slug: slug(),
 	expectedDigest: digest(),
-	verified: Type.Boolean({ description: "Attest to the whole resulting note; false clears verified_date." }),
-	edits: Type.Array(
-		Type.Object({
-			oldText: Type.String({ minLength: 1, maxLength: 24000 }),
-			newText: Type.String({ maxLength: 24000, description: "Replacement text; empty deletes the matched text." }),
-		}),
+	verified: bool({ description: "Attest to the whole resulting note; false clears verified_date." }),
+	edits: arr(
+		obj({
+			oldText: str({ minLength: 1, maxLength: 24000 }),
+			newText: str({ maxLength: 24000, description: "Replacement text; empty deletes the matched text." }),
+		}, { open: true }),
 		{ minItems: 1, maxItems: 32 },
 	),
-});
+}, { open: true });
 
-export const memoryReviewParameters = Type.Object({
+export const memoryReviewParameters = obj({
 	slug: slug(),
 	expectedDigest: digest(),
-	outcome: Type.Union([Type.Literal("confirmed"), Type.Literal("unresolved")]),
+	outcome: union([lit("confirmed"), lit("unresolved")]),
 	sources: reviewSources(),
-	reason: Type.Optional(
-		Type.String({ minLength: 1, maxLength: 600, description: "Required only for unresolved; omit for confirmed." }),
+	reason: opt(
+		str({ minLength: 1, maxLength: 600, description: "Required only for unresolved; omit for confirmed." }),
 	),
-	reviewPolicy: Type.Optional(Type.Union([reviewPolicy(), Type.Null()])),
-	reviewAfter: Type.Optional(reviewAfter()),
-	reactivate: Type.Optional(Type.Literal(true)),
-});
+	reviewPolicy: opt(union([reviewPolicy(), nul()])),
+	reviewAfter: opt(reviewAfter()),
+	reactivate: opt(lit(true)),
+}, { open: true });
 
-export const memoryRetireParameters = Type.Object({
+export const memoryRetireParameters = obj({
 	slug: slug(),
 	expectedDigest: digest(),
 	reason: reviewReason(),
 	sources: reviewSources(),
-});
+}, { open: true });
 
 export const MEMORY_TOOL_DESCRIPTIONS = {
 	search:

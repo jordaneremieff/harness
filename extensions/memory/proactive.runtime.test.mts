@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import {
 	type AssistantMessage,
 	createAssistantMessageEventStream,
@@ -67,7 +67,7 @@ test("native provider receives notices only at admission and preserves old bytes
 						name: "fixture_step",
 						label: "Fixture",
 						description: "Queue controlled input.",
-						parameters: Type.Object({}),
+						parameters: obj({}, { open: true }),
 						async execute() {
 							assert.ok(session);
 							await session.prompt("I prefer durable plain words", { streamingBehavior: "steer" });

@@ -1,89 +1,89 @@
-import { Type } from "typebox";
+import { arr, bool, int, lit, nul, obj, opt, str, union } from "@earendil-works/pi-schema";
 
-const count = () => Type.Integer({ minimum: 0 });
-const digest = () => Type.String({ pattern: "^[a-f0-9]{64}$" });
-const date = () => Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" });
-const nullableDate = () => Type.Union([date(), Type.Null()]);
-const query = () => Type.String({ minLength: 1, maxLength: 200 });
-const cue = () => Type.Optional(Type.String({ maxLength: 240 }));
-const concern = Type.Union([
-	Type.Object(
-		{ date: date(), reason: Type.String({ maxLength: 600 }), sources: Type.String({ maxLength: 1500 }) },
+const count = () => int({ minimum: 0 });
+const digest = () => str({ pattern: "^[a-f0-9]{64}$" });
+const date = () => str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" });
+const nullableDate = () => union([date(), nul()]);
+const query = () => str({ minLength: 1, maxLength: 200 });
+const cue = () => opt(str({ maxLength: 240 }));
+const concern = union([
+	obj(
+		{ date: date(), reason: str({ maxLength: 600 }), sources: str({ maxLength: 1500 }) },
 		{
-			additionalProperties: false,
+			open: false,
 		},
 	),
-	Type.Null(),
+	nul(),
 ]);
-const matched = Type.Array(
-	Type.Object(
+const matched = arr(
+	obj(
 		{
-			term: Type.String(),
-			fields: Type.Array(
-				Type.Union([
-					Type.Literal("slug"),
-					Type.Literal("title"),
-					Type.Literal("tags"),
-					Type.Literal("frontmatter"),
-					Type.Literal("body"),
+			term: str(),
+			fields: arr(
+				union([
+					lit("slug"),
+					lit("title"),
+					lit("tags"),
+					lit("frontmatter"),
+					lit("body"),
 				]),
 				{ maxItems: 5 },
 			),
 		},
-		{ additionalProperties: false },
+		{ open: false },
 	),
 	{ maxItems: 16 },
 );
-const missing = Type.Array(Type.String(), { maxItems: 16 });
-const terms = Type.Array(
-	Type.Object(
+const missing = arr(str(), { maxItems: 16 });
+const terms = arr(
+	obj(
 		{
-			text: Type.String(),
-			kind: Type.Union([Type.Literal("word"), Type.Literal("compound"), Type.Literal("phrase")]),
+			text: str(),
+			kind: union([lit("word"), lit("compound"), lit("phrase")]),
 			notes: count(),
 		},
-		{ additionalProperties: false },
+		{ open: false },
 	),
 	{ maxItems: 16 },
 );
 
 /** The bounded public page, not the scanner's source buffers or ranking state. */
-export const memorySearchOutputSchema = Type.Object(
+export const memorySearchOutputSchema = obj(
 	{
-		ok: Type.Literal(true),
-		kind: Type.Literal("index"),
-		root: Type.String({ maxLength: 1024 }),
-		query: Type.Union([query(), Type.Array(query(), { minItems: 1, maxItems: 3 }), Type.Null()]),
-		includeRetired: Type.Boolean(),
+		ok: lit(true),
+		kind: lit("index"),
+		root: str({ maxLength: 1024 }),
+		query: union([query(), arr(query(), { minItems: 1, maxItems: 3 }), nul()]),
+		includeRetired: bool(),
 		excludedRetired: count(),
 		pageOffset: count(),
-		countScope: Type.Literal("source-window"),
-		coverage: Type.Object(
+		countScope: lit("source-window"),
+		coverage: obj(
 			{
 				traversedCandidates: count(),
 				totalCandidates: count(),
-				traversalComplete: Type.Boolean(),
-				frozenSnapshot: Type.Literal(false),
-				meaning: Type.String(),
+				traversalComplete: bool(),
+				frozenSnapshot: lit(false),
+				meaning: str(),
 			},
-			{ additionalProperties: false },
+			{ open: false },
 		),
-		pageSize: Type.Integer({ minimum: 1, maximum: 512 }),
+		pageSize: int({ minimum: 1, maximum: 512 }),
 		totalNotes: count(),
 		totalMatches: count(),
 		returned: count(),
-		hasMore: Type.Boolean(),
-		nextCursor: Type.Union([Type.String({ minLength: 1, maxLength: 1024 }), Type.Null()], {
+		hasMore: bool(),
+		nextCursor: union([str({ minLength: 1, maxLength: 1024 }), nul()], {
 			description:
 				"Repeat query and includeRetired with this cursor, including after empty pages. Null ends traversal.",
 		}),
-		corpusEmpty: Type.Union([Type.Boolean(), Type.Null()]),
-		scan: Type.Object(
+		corpusEmpty: union([bool(), nul()]),
+		scan: obj(
 			{
-				complete: Type.Boolean(),
+				complete: bool(),
 				visited: count(),
 				visitCap: count(),
-				inventoryComplete: Type.Literal(true),
+				inventoryComplete: lit(true),
 				inventoryDigest: digest(),
 				totalCandidates: count(),
 				windowStart: count(),
@@ -95,11 +95,11 @@ export const memorySearchOutputSchema = Type.Object(
 				issueCount: count(),
 				unavailableNotes: count(),
 				issuesShown: count(),
-				issues: Type.Array(
-					Type.Object(
-						{ code: Type.String(), message: Type.String({ maxLength: 240 }) },
+				issues: arr(
+					obj(
+						{ code: str(), message: str({ maxLength: 240 }) },
 						{
-							additionalProperties: false,
+							open: false,
 						},
 					),
 					{ maxItems: 20 },
@@ -107,99 +107,99 @@ export const memorySearchOutputSchema = Type.Object(
 				retiredNotes: count(),
 				excludedRetired: count(),
 			},
-			{ additionalProperties: false },
+			{ open: false },
 		),
-		notes: Type.Array(
-			Type.Object(
+		notes: arr(
+			obj(
 				{
-					slug: Type.String({ minLength: 1, maxLength: 120, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }),
-					title: Type.String({ maxLength: 160 }),
-					lifecycle: Type.Object(
+					slug: str({ minLength: 1, maxLength: 120, pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$" }),
+					title: str({ maxLength: 160 }),
+					lifecycle: obj(
 						{
-							status: Type.Union([
-								Type.Literal("active"),
-								Type.Literal("superseded"),
-								Type.Literal("retired"),
-								Type.Literal("unknown"),
+							status: union([
+								lit("active"),
+								lit("superseded"),
+								lit("retired"),
+								lit("unknown"),
 							]),
-							supersededBy: Type.Union([Type.String({ maxLength: 120 }), Type.Null()]),
+							supersededBy: union([str({ maxLength: 120 }), nul()]),
 							problem: cue(),
 						},
-						{ additionalProperties: false },
+						{ open: false },
 					),
-					freshness: Type.Object(
+					freshness: obj(
 						{
 							evaluatedOn: date(),
-							verified: Type.Union([Type.Boolean(), Type.Null()]),
+							verified: union([bool(), nul()]),
 							verifiedDate: nullableDate(),
-							policy: Type.Union([
-								Type.Literal("on-change"),
-								Type.Literal("before-use"),
-								Type.Literal("unclassified"),
-								Type.Literal("unknown"),
+							policy: union([
+								lit("on-change"),
+								lit("before-use"),
+								lit("unclassified"),
+								lit("unknown"),
 							]),
 							reviewAfter: nullableDate(),
-							deadline: Type.Union([
-								Type.Literal("due"),
-								Type.Literal("not-due"),
-								Type.Literal("unscheduled"),
-								Type.Literal("unknown"),
+							deadline: union([
+								lit("due"),
+								lit("not-due"),
+								lit("unscheduled"),
+								lit("unknown"),
 							]),
 							concern,
-							lastReview: Type.Union([
-								Type.Object(
-									{ date: date(), digest: digest(), sources: Type.String({ maxLength: 1500 }) },
+							lastReview: union([
+								obj(
+									{ date: date(), digest: digest(), sources: str({ maxLength: 1500 }) },
 									{
-										additionalProperties: false,
+										open: false,
 									},
 								),
-								Type.Null(),
+								nul(),
 							]),
 							retirement: concern,
-							problems: Type.Array(Type.String()),
+							problems: arr(str()),
 						},
-						{ additionalProperties: false },
+						{ open: false },
 					),
 					tags: cue(),
 					status: cue(),
 					supersedes: cue(),
 					superseded_by: cue(),
 					cueProblem: cue(),
-					digest: Type.Optional(digest()),
-					rank: Type.Optional(Type.Integer({ minimum: 1 })),
-					matched: Type.Optional(matched),
-					missing: Type.Optional(missing),
-					sourceMatch: Type.Optional(
-						Type.Union([
-							Type.Object(
+					digest: opt(digest()),
+					rank: opt(int({ minimum: 1 })),
+					matched: opt(matched),
+					missing: opt(missing),
+					sourceMatch: opt(
+						union([
+							obj(
 								{
 									offset: count(),
 									endOffset: count(),
 									excerptOffset: count(),
 									excerptEndOffset: count(),
-									excerpt: Type.String({ maxLength: 480 }),
+									excerpt: str({ maxLength: 480 }),
 								},
-								{ additionalProperties: false },
+								{ open: false },
 							),
-							Type.Null(),
+							nul(),
 						]),
 					),
-					formulations: Type.Optional(
-						Type.Array(
-							Type.Object(
+					formulations: opt(
+						arr(
+							obj(
 								{
 									query: query(),
-									rank: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+									rank: union([int({ minimum: 1 }), nul()]),
 									matched,
 									missing,
 								},
-								{ additionalProperties: false },
+								{ open: false },
 							),
 							{ minItems: 1, maxItems: 3 },
 						),
 					),
 				},
-				{ additionalProperties: false },
+				{ open: false },
 			),
 			{
 				maxItems: 512,
@@ -207,35 +207,35 @@ export const memorySearchOutputSchema = Type.Object(
 					"Cues have no digest or rank. Query hits include a source digest and window-local rank; neither establishes truth or freshness.",
 			},
 		),
-		search: Type.Optional(
-			Type.Object(
+		search: opt(
+			obj(
 				{
-					complete: Type.Boolean(),
+					complete: bool(),
 					notesSearched: count(),
 					unavailableNotes: count(),
 					maxSourceBytes: count(),
-					ranking: Type.Union([Type.Literal("lexical"), Type.Literal("best-rank-then-reciprocal-rank-fusion")]),
-					terms: Type.Optional(terms),
-					ignored: Type.Optional(Type.Array(Type.String())),
-					formulations: Type.Optional(
-						Type.Array(
-							Type.Object(
+					ranking: union([lit("lexical"), lit("best-rank-then-reciprocal-rank-fusion")]),
+					terms: opt(terms),
+					ignored: opt(arr(str())),
+					formulations: opt(
+						arr(
+							obj(
 								{
 									query: query(),
 									terms,
-									ignored: Type.Array(Type.String()),
+									ignored: arr(str()),
 								},
-								{ additionalProperties: false },
+								{ open: false },
 							),
 							{ minItems: 1, maxItems: 3 },
 						),
 					),
 					excludedRetired: count(),
 				},
-				{ additionalProperties: false },
+				{ open: false },
 			),
 		),
-		guidance: Type.Optional(Type.String()),
+		guidance: opt(str()),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
