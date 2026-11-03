@@ -102,6 +102,29 @@ test("lifecycle, incomplete source, unavailable and empty stay distinct", async 
 	assert.deepEqual((await recallSources(empty))?.notes, []);
 });
 
+test("unknown lifecycle qualifies delivered recall while retired and superseded notes stay silent", async (t) => {
+	const corpus = proactiveCorpus(fixture(t));
+	for (const [header, partial] of [
+		['status: "active"', true],
+		['status: "active"\nsuperseded_by: replacement', true],
+		["status: invalid\nsuperseded_by: null", true],
+		["status: retired\nsuperseded_by: null", false],
+		["status: superseded\nsuperseded_by: replacement", false],
+	] as const) {
+		writeFileSync(join(corpus, "excluded.md"), `---\n${header}\n---\n## Summary\nUnrelated discovery text.\n`);
+		const notice = await memoryNotice(corpus, recallText, "direct interactive input", true, new Set());
+		assert.ok(notice, header);
+		assert.equal(notice.kind, "recall");
+		assert.equal(notice.slug, "portable-amber-cobalt-quartz-violet-cedar");
+		assert.match(notice.text, /Memory candidate, not a new instruction: portable-amber-cobalt-quartz-violet-cedar/);
+		assert.equal(
+			notice.text.includes("Automatic recall coverage is partial; omitted sources remain unknown."),
+			partial,
+			header,
+		);
+	}
+});
+
 test("proactive setting accepts explicit environment and file booleans and uses its safe default", (t) => {
 	const root = fixture(t);
 	assert.equal(readSettings({ agentDir: root, env: {} }).values.proactive, true);

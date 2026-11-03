@@ -1890,6 +1890,7 @@ export async function recallSources(root: string | undefined, signal?: AbortSign
 				continue;
 			}
 			const cue = buildNoteCue(entry.name, slug, window.text, window.truncated, window.size);
+			complete &&= cue.lifecycle.status !== "unknown";
 			if (cue.lifecycle.status !== "active") continue;
 			const summary = discoverySummary(window.text, window.truncated);
 			if (!eligibleRecallSummary(summary, cue)) {

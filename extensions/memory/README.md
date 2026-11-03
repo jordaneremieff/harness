@@ -613,8 +613,9 @@ candidate notes, with at most 8 KiB per prefix and 4 MiB total prefix reads. A
 complete eligible header and Summary section must fit that prefix. It reads only
 the selected full note, up to 64 KiB, to bind the digest and current review state.
 A changed title, summary or lifecycle between discovery and selection abstains.
-Notices label partial coverage; omitted sources remain unknown. No background
-scan or stored index runs.
+Notices label partial coverage; omitted sources remain unknown. An unknown
+lifecycle makes coverage partial; known retired and superseded notes are deliberate
+exclusions that do not make coverage partial. No background scan or stored index runs.
 
 Ordinary delivery appends a non-context `memory_notice` session entry. Durable
 appends a non-context `memory.notice` entry. Both record slug, digest, kind and
