@@ -204,10 +204,10 @@ export class NativeMcpAuth {
 		return {
 			token: async () => {
 				if (this.closed) throw new Error("MCP authentication is closed");
-				await refreshing;
+				await refreshing?.catch(() => undefined);
 				const state = (await this.file.load(key, url))?.state;
 				if (state?.tokensExpireAt !== undefined && state.tokensExpireAt <= Date.now() + 30_000) {
-					await refresh(state.tokens?.access_token);
+					await refresh(state.tokens?.access_token).catch(() => undefined);
 					return (await this.file.load(key, url))?.state.tokens?.access_token;
 				}
 				return state?.tokens?.access_token;

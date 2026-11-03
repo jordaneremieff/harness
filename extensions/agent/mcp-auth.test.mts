@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import type { McpServerConfig } from "@earendil-works/pi-coding-agent";
-import type { McpFetch } from "@earendil-works/pi-mcp";
+import { StreamableHttpTransport, type McpFetch } from "@earendil-works/pi-mcp";
 import { McpOAuthAuthorizationRequiredError, McpOAuthProvider, type McpOAuthState, type AuthorizationServerMetadata } from "@earendil-works/pi-mcp/oauth";
 import { McpCredentialFileLock, NativeMcpAuth, type CredentialFileLock } from "./mcp-auth.ts";
 
@@ -36,6 +36,9 @@ function provider(owner: NativeMcpAuth, oauth?: Extract<McpServerConfig, { url: 
 	return owner.provider("docs", { url, oauth }, (value) => value);
 }
 function refreshFetch(t: TestContext, run: McpFetch) { t.mock.method(globalThis, "fetch", run); }
+function rejectedToken(token = "synthetic-old") {
+	return { token, serverUrl: new URL(url), fetch: globalThis.fetch, response: new Response(null, { status: 401 }) };
+}
 
 it("refreshes production CIMD state without registration or stored client information", async (t) => {
 	const f = fixture(t); let calls = 0;
@@ -106,7 +109,7 @@ for (const outcome of ["new sign-in", "logout", "invalid-grant loser"] as const)
 			ordinaryWrite(f.path, { ...(outcome === "logout" ? {} : { [key]: newer }), unrelated });
 			return outcome === "invalid-grant loser" ? Response.json({ error: "invalid_grant" }, { status: 400 }) : Response.json(rotated);
 		});
-		if (outcome === "logout") await assert.rejects(auth.token(), McpOAuthAuthorizationRequiredError);
+		if (outcome === "logout") await assert.rejects(auth.onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
 		else {
 			assert.equal(await auth.token(), newer.tokens.access_token);
 			assert.equal(await auth.token(), newer.tokens.access_token);
@@ -119,7 +122,7 @@ for (const outcome of ["new sign-in", "logout", "invalid-grant loser"] as const)
 it("does not fall back to a URL-only grant after committed canonical logout", async (t) => {
 	const f = fixture(t); const urlOnly = { ...grant(), tokens: { ...rotated, access_token: "synthetic-url-only" } };
 	refreshFetch(t, async () => { ordinaryWrite(f.path, { [url]: urlOnly }); return Response.json(rotated); });
-	await assert.rejects(provider(f.owner).token(), McpOAuthAuthorizationRequiredError);
+	await assert.rejects(provider(f.owner).onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
 	assert.deepEqual(f.read(), { [url]: urlOnly });
 });
 
@@ -189,7 +192,7 @@ for (const row of configurations) {
 			if (row.oauth?.clientSecret) assert.equal(body.get("client_secret"), row.oauth.clientSecret);
 			return Response.json(rotated);
 		});
-		if (row.error) await assert.rejects(provider(f.owner, row.oauth).token(), row.error);
+		if (row.error) await assert.rejects(provider(f.owner, row.oauth).onUnauthorized(rejectedToken()), row.error);
 		else assert.equal(await provider(f.owner, row.oauth).token(), rotated.access_token);
 		if (row.oauth?.authServerMetadataUrl) assert.ok(requests.includes(row.oauth.authServerMetadataUrl));
 	});
@@ -209,12 +212,32 @@ it("uses the challenge resource metadata and scope without an interactive redire
 	assert.equal(resourceSeen, true); assert.equal(scope, "challenged"); assert.equal(f.read()[key].tokens, undefined);
 });
 
+it("sends the stored token after a transient refresh failure and reports sign-in after a 401", async (t) => {
+	const f = fixture(t); let refreshes = 0; const sent: string[] = [];
+	refreshFetch(t, async (input, init) => {
+		if (String(input) === metadata.token_endpoint) {
+			refreshes++;
+			return Response.json({ error: refreshes === 1 ? "server_error" : "invalid_grant" }, { status: refreshes === 1 ? 503 : 400 });
+		}
+		assert.equal(String(input), url);
+		sent.push(new Headers(init?.headers).get("authorization") ?? "");
+		return new Response(null, { status: 401 });
+	});
+	const transport = new StreamableHttpTransport({ url, authProvider: provider(f.owner), openGetStream: false });
+	t.after(() => transport.close());
+	await transport.start();
+	await assert.rejects(transport.send({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }), McpOAuthAuthorizationRequiredError);
+	assert.deepEqual(sent, ["Bearer synthetic-old"]);
+	assert.equal(refreshes, 2); assert.equal(f.read()[key].tokens, undefined);
+});
+
 it("requires sign-in without a refresh token and for insufficient scope", async (t) => {
 	const state = grant(); assert.ok(state.tokens); delete state.tokens.refresh_token;
 	const f = fixture(t, state); let requests = 0;
 	refreshFetch(t, async () => { requests++; throw new Error("unexpected network"); });
 	const auth = provider(f.owner);
-	await assert.rejects(auth.token(), McpOAuthAuthorizationRequiredError);
+	assert.equal(await auth.token(), state.tokens.access_token);
+	await assert.rejects(auth.onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
 	await assert.rejects(auth.onUnauthorized({ token: state.tokens.access_token, serverUrl: new URL(url), fetch: globalThis.fetch, response: new Response(null, { status: 403, headers: { "www-authenticate": 'Bearer error="insufficient_scope"' } }) }), McpOAuthAuthorizationRequiredError);
 	assert.equal(requests, 0);
 });
