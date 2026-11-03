@@ -1,13 +1,17 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { LiveDoc, SystemEntry, UserEntry, type EntryRecord, type EntryId, type ConversationId, type LiveState, type SubmissionId } from "@earendil-works/pi-durable";
+import { createSession, Harness, LiveDoc, SystemEntry, UserEntry, type EntryRecord, type EntryId, type ConversationId, type LiveState, type SubmissionId } from "@earendil-works/pi-durable";
 import type { Message } from "@earendil-works/pi-ai";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DurableHost } from "./durable-host.ts";
+import { createTestRuntime, testModel } from "./test-runtime.mts";
+import { DeliveryArchiveDoc, DeliveryStoreDoc } from "./delivery-store.ts";
+import { completed } from "./durable-host-fixture.mts";
 import { settleDeliveries } from "./durable-controls.ts";
 import { PROVIDER_BLOCK_ERROR } from "./provider-block.ts";
 import { InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
@@ -135,6 +139,49 @@ it("preserves upstream absence for an interrupted tool execution", async (t) => 
 	assert.equal(Object.hasOwn(entryRow(result).toolResults?.[0] ?? {}, "durationMs"), false);
 });
 
+function retainedFingerprint(path: string) {
+	return ["", "-wal", "-shm", "-journal"].map((suffix) => {
+		const file = `${path}${suffix}`;
+		if (!existsSync(file)) return { suffix, absent: true };
+		const stat = lstatSync(file, { bigint: true });
+		return { suffix, hash: createHash("sha256").update(readFileSync(file)).digest("hex"), dev: stat.dev, ino: stat.ino, size: stat.size, mtime: stat.mtimeNs, ctime: stat.ctimeNs };
+	});
+}
+
+it("preserves committed running tasks without scheduler, model, tool, or source activity", async (t) => {
+	const storagePath = join(fixtureRoot(t), "running.sqlite");
+	const started = defer(), release = defer();
+	let modelCalls = 0, toolCalls = 0;
+	const models = await createTestRuntime();
+	const stream = () => { modelCalls++; return completed(modelCalls === 1 ? toolCallMessage("gate") : answerMessage()); };
+	models.registerNativeProvider({ id: testModel.provider, name: "Fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
+	const registry = fixtureRegistry([gateTool(release.promise, () => { toolCalls++; started.resolve(); })]);
+	const host = await DurableHost.open(hostOptions(storagePath, models, registry), BACKGROUND_CONTEXT);
+	t.after(async () => { release.resolve(); await host.close(); });
+	await host.submit({ message: "hold tool", requestId: "running-copy", ownerId: "reader", origin: "operator" });
+	await started.promise;
+	const source = await host.harness.commit((tx) => tx.scanTasks({}, 100), BACKGROUND_CONTEXT);
+	assert.ok(source.items.some((task) => task.state.status === "running"));
+	const before = retainedFingerprint(storagePath);
+	const observation = await DurableObservation.open({ backupFrom: storagePath, storageId: fixtureStorageId, models, registry }, BACKGROUND_CONTEXT);
+	try {
+		const copied = await observation.harness.commit((tx) => tx.scanTasks({}, 100), BACKGROUND_CONTEXT);
+		assert.deepEqual(copied, source, "status, restarts, checkpoint, owner and abort fields stay committed");
+		assert.deepEqual(observation.harness.wake(), { active: false });
+		assert.throws(() => observation.harness.resume(), /[Rr]ead.only/);
+		await assert.rejects(observation.harness.commit((tx) => tx.appendEntry(1 as ConversationId, { kind: "fixture.write", data: {} }), BACKGROUND_CONTEXT), /[Rr]ead.only/);
+		for (const method of ["status", "list", "snapshot", "dashboard", "receipts", "inspect"]) {
+			await observation.request(method, { sessionId: fixtureStorageId, ownerId: "reader", view: "activity" });
+		}
+		const status = await observation.status(1 as ConversationId);
+		for (const task of source.items) assert.equal(status?.tasks.find((row) => row.id === task.id)?.status, task.state.status);
+		assert.equal(modelCalls, 1);
+		assert.equal(toolCalls, 1);
+		assert.deepEqual(await observation.harness.commit((tx) => tx.scanTasks({}, 100), BACKGROUND_CONTEXT), source);
+	} finally { await observation.close(); }
+	assert.deepEqual(retainedFingerprint(storagePath), before);
+});
+
 it("reads a cold snapshot with the live request surface and no writer", async (t) => {
 	const storagePath = join(fixtureRoot(t), "run.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
@@ -199,6 +246,65 @@ it("reads a cold snapshot with the live request surface and no writer", async (t
 	assert.equal(after.items.length, 1);
 	await host.close();
 });
+
+for (const archive of [false, true]) {
+	it(`reads optional-document absence${archive ? " and prepares retained delivery only on the copy" : " without creating source documents"}`, async (t) => {
+		const storagePath = join(fixtureRoot(t), "optional.sqlite");
+		const models = await fixtureRuntime("answer"), registry = fixtureRegistry();
+		const source = await Harness.open(await openNodeSqliteStorage(storagePath), { models, registry }, BACKGROUND_CONTEXT);
+		await source.root(BACKGROUND_CONTEXT);
+		if (archive) await source.commit(async (tx) => {
+			(await tx.doc(DeliveryArchiveDoc)).reports.push({ sourceId: "report:retained", requestId: "retained", ownerId: "reader", senderIdentity: fixtureStorageId, message: "retained report", replyTo: null, acknowledged: false, createdAt: 1 });
+		}, BACKGROUND_CONTEXT);
+		assert.equal(await source.snapshot(DeliveryStoreDoc, BACKGROUND_CONTEXT), undefined);
+		await source.close(BACKGROUND_CONTEXT);
+		const before = retainedFingerprint(storagePath);
+		const observation = await observationFor(storagePath);
+		try {
+			for (const method of ["status", "list", "snapshot", "dashboard", "inspect"]) await observation.request(method, { ownerId: "reader", view: "history" });
+			const result = await observation.request("receipts", { ownerId: "reader" }) as { receipts: unknown[]; reports: unknown[]; pending: number };
+			assert.equal(result.reports.length, archive ? 1 : 0);
+			assert.deepEqual(result.receipts, []);
+			assert.equal(result.pending, 0);
+			assert.equal((await observation.harness.snapshot(DeliveryStoreDoc, BACKGROUND_CONTEXT))?.ready, true);
+			assert.equal(await observation.harness.snapshot(DeliveryArchiveDoc, BACKGROUND_CONTEXT), undefined);
+		} finally { await observation.close(); }
+		assert.deepEqual(retainedFingerprint(storagePath), before);
+	});
+}
+
+for (const stage of ["preparation", "close", "final-open"] as const) {
+	it(`releases private storage and directory after ${stage} failure without replacing the error`, async (t) => {
+		const root = fixtureRoot(t), sourceRoot = join(root, "source"), scratch = join(root, "scratch");
+		mkdirSync(sourceRoot); mkdirSync(scratch);
+		const storagePath = join(sourceRoot, "source.sqlite");
+		const source = await openNodeSqliteStorage(storagePath);
+		const kernel = createSession(source);
+		const sessionPrototype = Object.getPrototypeOf(kernel);
+		const storagePrototype = Object.getPrototypeOf(source);
+		await kernel.close(BACKGROUND_CONTEXT);
+		const before = retainedFingerprint(storagePath);
+		const failure = new Error(`synthetic ${stage}`);
+		const closed = new Set<unknown>();
+		const originalClose = storagePrototype.close;
+		const close = t.mock.method(storagePrototype, "close", async function (this: unknown, ...args: unknown[]) {
+			await originalClose.apply(this, args); closed.add(this);
+		});
+		const injected = stage === "final-open" ? t.mock.method(Harness, "open", async () => { throw failure; })
+			: t.mock.method(sessionPrototype, stage === "preparation" ? "commit" : "close", async () => { throw failure; });
+		const previous = process.env.TMPDIR;
+		process.env.TMPDIR = scratch;
+		try {
+			await assert.rejects(observationFor(storagePath), (error) => error === failure);
+			assert.deepEqual(readdirSync(scratch), []);
+			assert.equal(closed.size, stage === "final-open" ? 2 : 1);
+			assert.deepEqual(retainedFingerprint(storagePath), before);
+		} finally {
+			if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous;
+			injected.mock.restore(); close.mock.restore();
+		}
+	});
+}
 
 it("does not create state when a snapshot opens an empty storage", async (t) => {
 	const storagePath = join(fixtureRoot(t), "empty.sqlite");
@@ -309,12 +415,32 @@ it("continues history, search, and exact reads from a cold snapshot", async (t) 
 	}
 });
 
+it("does not settle an unfinished delivery receipt while observing a completed native input", async (t) => {
+	const storagePath = join(fixtureRoot(t), "unsettled-delivery.sqlite");
+	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
+	const submitted = await host.submit({ message: "native answer", requestId: "unsettled-delivery", ownerId: "reader", origin: "operator" });
+	await host.wait(submitted.submissionId, BACKGROUND_CONTEXT);
+	await host.close();
+	const before = retainedFingerprint(storagePath);
+	const observation = await observationFor(storagePath);
+	try {
+		const deliveries = await observation.request("receipts", { ownerId: "reader" }) as { receipts: unknown[]; pending: number };
+		assert.deepEqual(deliveries.receipts, []);
+		assert.equal(deliveries.pending, 1);
+		const result = await observation.request("inspect", { view: "result", submissionId: submitted.submissionId }) as { status: string; answer: string };
+		assert.equal(result.status, "done");
+		assert.equal(result.answer, "durable answer");
+	} finally { await observation.close(); }
+	assert.deepEqual(retainedFingerprint(storagePath), before);
+});
+
 it("includes receipts and reports in a cold snapshot and omits opaque provider fields", async (t) => {
 	const storagePath = join(fixtureRoot(t), "delivery.sqlite");
 	const host = await DurableHost.open(hostOptions(storagePath, await scriptedRuntime([redactedAnswerMessage("redacted answer"), answerMessage("owner answer")]), fixtureRegistry()), BACKGROUND_CONTEXT);
 	const submitted = await host.submit({ message: "deliver to owner", requestId: "deliver-1", ownerId: "owner-cold", origin: "operator" });
 	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
 	const report = (await host.request("report", { ownerId: "owner-cold", senderIdentity: "agent-cold", requestId: "rep-cold", message: "cold report" })) as { sourceId: string };
+	await host.request("receipts", { ownerId: "owner-cold" });
 	await host.close();
 
 	const observation = await observationFor(storagePath);
@@ -354,6 +480,7 @@ it("finds a retained result by operation ID in a cold snapshot", async (t) => {
 	const host = await DurableHost.open(hostOptions(storagePath, await fixtureRuntime("answer"), fixtureRegistry()), BACKGROUND_CONTEXT);
 	const submitted = await host.submit({ message: "operation prompt", requestId: "operation-1", ownerId: "owner-op", operationId: "op-cold-7", origin: "operator" });
 	assert.equal((await host.wait(submitted.submissionId, BACKGROUND_CONTEXT)).status, "done");
+	await host.request("receipts", { ownerId: "owner-op" });
 	await host.close();
 	const observation = await observationFor(storagePath);
 	try {

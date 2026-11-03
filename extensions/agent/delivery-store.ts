@@ -1,6 +1,6 @@
 /** Native keyed delivery records and bounded reference pages. Payloads have one retained owner. */
 import type { Context } from "@earendil-works/chord";
-import { defineDoc, defineDocFamily, type Harness, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, defineDocFamily, type Harness, type Session, type Tx } from "@earendil-works/pi-durable";
 import type { AgentDeliveryState, DeliveryIntent, DeliveryReceipt, DeliveryReport } from "./durable-controls.ts";
 
 export const DELIVERY_PAGE_SIZE = 64;
@@ -227,6 +227,29 @@ export async function writeDeliveryDraft(tx: Tx, state: AgentDeliveryState): Pro
 	}
 }
 
+async function snapshotListRows(session: Pick<Session, "snapshot">, state: AgentDeliveryState, name: string, context: Context): Promise<void> {
+	const list = await session.snapshot(DeliveryListDoc, name, context);
+	let id = list?.head ?? null;
+	while (id !== null) {
+		const page = await session.snapshot(DeliveryPageDoc, id, context);
+		if (!page) throw new Error("Delivery reference has no retained page");
+		for (const key of page.refs) {
+			const row = await session.snapshot(DeliveryRowDoc, key, context);
+			if (!row?.value) throw new Error("Delivery reference has no retained row");
+			includeDeliveryRow(state, row.kind, copy(row.value));
+		}
+		id = page.next;
+	}
+}
+
+/** Noncreating reads of one frozen copy; live writers use an atomic delivery draft. */
+export async function snapshotDeliveryState(session: Pick<Session, "snapshot">, context: Context, history = false, includeTerminal = true): Promise<AgentDeliveryState> {
+	const names = history ? ["all:intent", "all:receipt", "all:report"] : includeTerminal ? ["pending", "terminal"] : ["pending"];
+	const state: AgentDeliveryState = { intents: [], receipts: {}, reports: [] };
+	for (const name of names) await snapshotListRows(session, state, name, context);
+	return state;
+}
+
 export async function deliveryState(harness: Harness, context: Context, history = false, includeTerminal = true): Promise<AgentDeliveryState> {
 	await migrateDeliveryStore(harness, context);
 	return harness.commit((tx) => readDeliveryDraft(tx, history, undefined, includeTerminal), context);
@@ -403,7 +426,7 @@ async function validateMigrationCounts(tx: Tx, groups: readonly (readonly Row[])
 }
 
 /** Copy one bounded batch with its cursor. The original document remains authoritative until completion. */
-export async function migrateDeliveryStore(harness: Harness, context: Context, afterBatch?: () => void | Promise<void>): Promise<void> {
+export async function migrateDeliveryStore(harness: Pick<Session, "snapshot" | "commit">, context: Context, afterBatch?: () => void | Promise<void>): Promise<void> {
 	if ((await harness.snapshot(DeliveryStoreDoc, context))?.ready) return;
 	const archive = await harness.snapshot(DeliveryArchiveDoc, context);
 	const groups: readonly (readonly Row[])[] = archive ? [archive.intents, Object.values(archive.receipts), archive.reports] : [[], [], []];

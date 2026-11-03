@@ -154,7 +154,7 @@ function validatePrivateDatabase(target: string): void {
 
 async function cleanupFailedCapture(storage: Storage | undefined, directory: string | undefined): Promise<void> {
 	await storage?.close(BACKGROUND_CONTEXT).catch(() => {});
-	if (directory) await rm(directory, { recursive: true, force: true });
+	if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {});
 }
 
 function captureFailure(error: unknown): RetainedReadError {
@@ -164,7 +164,7 @@ function captureFailure(error: unknown): RetainedReadError {
 }
 
 /** Never opens the retained source through SQLite, even for an idle database. */
-export async function captureSnapshot(path: string, options: SnapshotCaptureOptions): Promise<{ storage: Storage; cleanup?: () => Promise<void>; absent?: boolean }> {
+export async function captureSnapshot(path: string, options: SnapshotCaptureOptions): Promise<{ storage: Storage; reopen: () => Promise<Storage>; cleanup?: () => Promise<void>; absent?: boolean }> {
 	const files: SourceFile[] = [];
 	let directory: string | undefined;
 	let storage: Storage | undefined;
@@ -174,7 +174,7 @@ export async function captureSnapshot(path: string, options: SnapshotCaptureOpti
 		const pair = await openSourcePair(path, files, options.maxSourceBytes);
 		if (pair === undefined) {
 			if (options.requireExists) throw new RetainedReadError("not_found");
-			return { storage: await openNodeSqliteStorage(":memory:"), absent: true };
+			return { storage: await openNodeSqliteStorage(":memory:"), reopen: () => openNodeSqliteStorage(":memory:"), absent: true };
 		}
 		directory = await createPrivateDirectory(path, options);
 		options.onDirectory?.(directory);
@@ -189,7 +189,7 @@ export async function captureSnapshot(path: string, options: SnapshotCaptureOpti
 		storage = await openNodeSqliteStorage(target);
 		check();
 		const ownedDirectory = directory;
-		return { storage, cleanup: () => rm(ownedDirectory, { recursive: true, force: true }) };
+		return { storage, reopen: () => openNodeSqliteStorage(target), cleanup: () => rm(ownedDirectory, { recursive: true, force: true }) };
 	} catch (error) {
 		await cleanupFailedCapture(storage, directory);
 		throw captureFailure(error);

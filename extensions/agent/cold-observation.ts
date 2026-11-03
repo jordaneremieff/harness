@@ -16,14 +16,14 @@
  * creation never retains an empty cache entry or fails that first empty read.
  * A changed identity disposes the snapshot and copies again. Results are
  * cached per exact method and serialized parameters under a byte and entry
- * bound. `closeColdObservations()` releases every retained snapshot; eviction
- * and invalidation dispose their own.
+ * bound. The manager owns the cache and awaits disposal when its last consumer
+ * leaves. Eviction and invalidation dispose their own snapshots.
  *
  * The snapshot never opens source files through SQLite or resumes a Harness.
  * Filesystem-only capture leaves source bytes and sidecars unchanged. Only a
  * stable source identity is eligible for reuse.
  *
- * All cache work for one path is serialized: an open, a read, eviction, and
+ * All cache work across every path is serialized: an open, a read, eviction, and
  * disposal never overlap, so a snapshot is never closed while borrowed and a
  * repeated result is never retained twice.
  */
@@ -81,26 +81,6 @@ export interface ColdObservationHooks {
 
 export interface ColdObservationOptions {
 	readonly hooks?: ColdObservationHooks;
-}
-
-export interface ColdObservationMetrics {
-	readonly opens: number;
-	readonly hits: number;
-	readonly misses: number;
-	readonly invalidations: number;
-	readonly evictions: number;
-	readonly storages: number;
-}
-
-const entries = new Map<string, ColdEntry>();
-const counters = { opens: 0, hits: 0, misses: 0, invalidations: 0, evictions: 0 };
-let cacheQueue: Promise<void> = Promise.resolve();
-
-/** Serialize every cache operation; selected deep reads are low volume and never borrow across a close. */
-function runExclusive<T>(action: () => Promise<T>): Promise<T> {
-	const result = cacheQueue.then(action, action);
-	cacheQueue = result.then(() => undefined, () => undefined);
-	return result;
 }
 
 function errnoCode(error: unknown): string | undefined {
@@ -188,136 +168,131 @@ export async function openColdObservationSnapshot(input: ColdOpenInput): Promise
 	};
 }
 
-/** Evict least-recently-used storages beyond the bound; the caller holds the cache queue. */
-async function evictToBound(): Promise<void> {
-	while (entries.size > MAX_STORAGES) {
-		const path = entries.keys().next().value;
-		if (path === undefined) return;
-		const entry = entries.get(path);
-		entries.delete(path);
-		counters.evictions += 1;
-		if (entry !== undefined) await entry.handle.close().catch(() => undefined);
-	}
+// The queue owns no handles and bounds copying across manager lifetimes.
+let cacheQueue: Promise<void> = Promise.resolve();
+function runExclusive<T>(action: () => Promise<T>): Promise<T> {
+	const result = cacheQueue.then(action, action);
+	cacheQueue = result.then(() => undefined, () => undefined);
+	return result;
 }
 
-/** Open one snapshot and retain it only when the source stayed stable across the copy. */
-async function openEntry(storagePath: string, storageId: string, claimPin: string, hooks: ColdObservationHooks | undefined, classifyOwner: () => ColdOwnerClassification): Promise<ColdEntry> {
-	const pre = sourceState(storagePath);
-	const existing = entries.get(storagePath);
-	if (existing !== undefined) {
-		entries.delete(storagePath);
-		counters.invalidations += 1;
-		await existing.handle.close().catch(() => undefined);
-	}
-	const handle = await (hooks?.open ?? openColdObservationSnapshot)({ storagePath, storageId, classifyOwner });
-	const post = sourceState(storagePath);
-	if (pre.db === "absent") {
-		counters.opens += 1;
-		return { key: pre.key, handle, results: new Map(), retainedBytes: 0, transient: true };
-	}
-	if (!stableAfterOpen(pre, post)) {
-		await handle.close().catch(() => undefined);
-		throw new Error(`cold source ${storagePath} changed during the snapshot copy; retry the read`);
-	}
-	const entry: ColdEntry = { key: `${post.key}|claim:${claimPin}`, handle, results: new Map(), retainedBytes: 0 };
-	entries.set(storagePath, entry);
-	counters.opens += 1;
-	await evictToBound();
-	return entry;
-}
+/** Bounded snapshots owned by one manager, with a process-wide serial borrowing queue. */
+export function createColdObservationCache() {
+	const entries = new Map<string, ColdEntry>();
+	let closed = false;
+	let closing: Promise<void> | undefined;
 
-/** Reuse one snapshot when the current source identity equals the identity captured after its open. */
-async function acquireEntry(storagePath: string, storageId: string, claimPin: string, hooks: ColdObservationHooks | undefined, classifyOwner: () => ColdOwnerClassification): Promise<ColdEntry> {
-	const existing = entries.get(storagePath);
-	const desired = `${sourceState(storagePath).key}|claim:${claimPin}`;
-	if (existing !== undefined && existing.key === desired) {
-		entries.delete(storagePath);
-		entries.set(storagePath, existing);
-		return existing;
-	}
-	return await openEntry(storagePath, storageId, claimPin, hooks, classifyOwner);
-}
-
-/** Read one cached result or run the request and cache its raw value. */
-async function readEntry(entry: ColdEntry, method: string, params: Record<string, unknown>): Promise<unknown> {
-	const key = resultKey(method, params);
-	const cached = entry.results.get(key);
-	if (cached !== undefined) {
-		counters.hits += 1;
-		entry.results.delete(key);
-		entry.results.set(key, cached);
-		return cached.value;
-	}
-	counters.misses += 1;
-	const value = await entry.handle.request(method, params);
-	const bytes = resultBytes(value);
-	const replaced = entry.results.get(key);
-	if (replaced !== undefined) entry.retainedBytes -= replaced.bytes;
-	entry.results.set(key, { value, bytes });
-	entry.retainedBytes += bytes;
-	while (entry.results.size > MAX_RESULTS_PER_STORAGE || entry.retainedBytes > MAX_RESULT_BYTES) {
-		const oldest = entry.results.keys().next().value;
-		if (oldest === undefined) break;
-		const removed = entry.results.get(oldest);
-		entry.results.delete(oldest);
-		if (removed !== undefined) entry.retainedBytes -= removed.bytes;
-	}
-	return value;
-}
-
-function statusShape(value: unknown, metadata: HostMetadata): unknown {
-	if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
-	return { ...(value as Record<string, unknown>), live: false, storageId: metadata.storageId };
-}
-
-/**
- * Read one cold method against the cached snapshot of `metadata.storagePath`.
- * The source identity is checked on every call; an unchanged source reuses the
- * snapshot and the exact result. A failed open retains no snapshot; a failed
- * request retains no result.
- */
-export async function observeColdStorage(metadata: HostMetadata, method: string, params: Record<string, unknown> = {}, options: ColdObservationOptions = {}): Promise<unknown> {
-	const storagePath = resolve(metadata.storagePath);
-	return await runExclusive(async () => {
-		const source = claimState(metadata);
-		const classifyOwner = (): ColdOwnerClassification => source.classification;
-		const entry = await acquireEntry(storagePath, metadata.storageId, source.pin, options.hooks, classifyOwner);
-		try {
-			const value = await readEntry(entry, method, { ...params, cwd: metadata.cwd });
-			return method === "status" ? statusShape(value, metadata) : value;
-		} finally {
-			if (entry.transient) await entry.handle.close().catch(() => undefined);
+	/** Evict least-recently-used storages beyond the bound; the caller holds the cache queue. */
+	async function evictToBound(): Promise<void> {
+		while (entries.size > MAX_STORAGES) {
+			const path = entries.keys().next().value;
+			if (path === undefined) return;
+			const entry = entries.get(path);
+			entries.delete(path);
+			if (entry !== undefined) await entry.handle.close().catch(() => undefined);
 		}
-	});
-}
+	}
 
-/** Dispose every retained snapshot inside the cache queue. */
-export async function closeColdObservations(): Promise<void> {
-	await runExclusive(async () => {
-		const retained = [...entries.values()];
-		entries.clear();
-		await Promise.all(retained.map((entry) => entry.handle.close().catch(() => undefined)));
-	});
-}
+	/** Open one snapshot and retain it only when the source stayed stable across the copy. */
+	async function openEntry(storagePath: string, storageId: string, claimPin: string, hooks: ColdObservationHooks | undefined, classifyOwner: () => ColdOwnerClassification): Promise<ColdEntry> {
+		const pre = sourceState(storagePath);
+		const existing = entries.get(storagePath);
+		if (existing !== undefined) {
+			entries.delete(storagePath);
+			await existing.handle.close().catch(() => undefined);
+		}
+		const handle = await (hooks?.open ?? openColdObservationSnapshot)({ storagePath, storageId, classifyOwner });
+		const post = sourceState(storagePath);
+		if (pre.db === "absent") {
+			return { key: pre.key, handle, results: new Map(), retainedBytes: 0, transient: true };
+		}
+		if (!stableAfterOpen(pre, post)) {
+			await handle.close().catch(() => undefined);
+			throw new Error(`cold source ${storagePath} changed during the snapshot copy; retry the read`);
+		}
+		const entry: ColdEntry = { key: `${post.key}|claim:${claimPin}`, handle, results: new Map(), retainedBytes: 0 };
+		entries.set(storagePath, entry);
+		await evictToBound();
+		return entry;
+	}
 
-/** Dispose one storage's retained snapshot inside the cache queue. */
-export async function disposeColdStorage(storagePath: string): Promise<void> {
-	const path = resolve(storagePath);
-	await runExclusive(async () => {
-		const entry = entries.get(path);
-		entries.delete(path);
-		if (entry !== undefined) await entry.handle.close().catch(() => undefined);
-	});
-}
+	/** Reuse one snapshot when the current source identity equals the identity captured after its open. */
+	async function acquireEntry(storagePath: string, storageId: string, claimPin: string, hooks: ColdObservationHooks | undefined, classifyOwner: () => ColdOwnerClassification): Promise<ColdEntry> {
+		const existing = entries.get(storagePath);
+		const desired = `${sourceState(storagePath).key}|claim:${claimPin}`;
+		if (existing !== undefined && existing.key === desired) {
+			entries.delete(storagePath);
+			entries.set(storagePath, existing);
+			return existing;
+		}
+		return await openEntry(storagePath, storageId, claimPin, hooks, classifyOwner);
+	}
 
-export function coldObservationMetrics(): ColdObservationMetrics {
-	return { ...counters, storages: entries.size };
-}
+	/** Read one cached result or run the request and cache its raw value. */
+	async function readEntry(entry: ColdEntry, method: string, params: Record<string, unknown>): Promise<unknown> {
+		const key = resultKey(method, params);
+		const cached = entry.results.get(key);
+		if (cached !== undefined) {
+			entry.results.delete(key);
+			entry.results.set(key, cached);
+			return cached.value;
+		}
+		const value = await entry.handle.request(method, params);
+		const bytes = resultBytes(value);
+		const replaced = entry.results.get(key);
+		if (replaced !== undefined) entry.retainedBytes -= replaced.bytes;
+		entry.results.set(key, { value, bytes });
+		entry.retainedBytes += bytes;
+		while (entry.results.size > MAX_RESULTS_PER_STORAGE || entry.retainedBytes > MAX_RESULT_BYTES) {
+			const oldest = entry.results.keys().next().value;
+			if (oldest === undefined) break;
+			const removed = entry.results.get(oldest);
+			entry.results.delete(oldest);
+			if (removed !== undefined) entry.retainedBytes -= removed.bytes;
+		}
+		return value;
+	}
 
-export function resetColdObservationMetrics(): void {
-	counters.opens = 0;
-	counters.hits = 0;
-	counters.misses = 0;
-	counters.invalidations = 0;
-	counters.evictions = 0;
+	function statusShape(value: unknown, metadata: HostMetadata): unknown {
+		if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+		return { ...(value as Record<string, unknown>), live: false, storageId: metadata.storageId };
+	}
+
+	/**
+	 * Read one cold method against the cached snapshot of `metadata.storagePath`.
+	 * The source identity is checked on every call; an unchanged source reuses the
+	 * snapshot and the exact result. A failed open retains no snapshot; a failed
+	 * request retains no result.
+	 */
+	async function observe(metadata: HostMetadata, method: string, params: Record<string, unknown> = {}, options: ColdObservationOptions = {}): Promise<unknown> {
+		if (closed) throw new Error("Cold observation cache is closed");
+		const storagePath = resolve(metadata.storagePath);
+		return await runExclusive(async () => {
+			const source = claimState(metadata);
+			const classifyOwner = (): ColdOwnerClassification => source.classification;
+			const entry = await acquireEntry(storagePath, metadata.storageId, source.pin, options.hooks, classifyOwner);
+			try {
+				const value = await readEntry(entry, method, { ...params, cwd: metadata.cwd });
+				return method === "status" ? statusShape(value, metadata) : value;
+			} finally {
+				if (entry.transient) await entry.handle.close().catch(() => undefined);
+			}
+		});
+	}
+
+	/** Dispose every retained snapshot inside the cache queue. */
+	async function clear(): Promise<void> {
+		await runExclusive(async () => {
+			const retained = [...entries.values()];
+			entries.clear();
+			await Promise.all(retained.map((entry) => entry.handle.close().catch(() => undefined)));
+		});
+	}
+
+	function close(): Promise<void> {
+		closed = true;
+		closing ??= clear();
+		return closing;
+	}
+	return { observe, close };
 }

@@ -1,16 +1,69 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import register from "./index.ts";
+import { DurableHost } from "./durable-host.ts";
+import { DurableObservation } from "./durable-observation.ts";
+import { fixtureRuntime, fixtureRegistry, hostOptions } from "./durable-host-fixture.mts";
 import { AgentManager } from "./manager.ts";
 import type { HostConnection } from "./host-client.ts";
 import { SENT_WORK_ENTRY } from "./session-work.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { matchesSchema } from "./schema-check.ts";
 import type { FleetStatus } from "./fleet-status.ts";
+
+test("ordinary shutdown preserves another primary and awaits final cold snapshot disposal", async (t) => {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "agent-cold-owners-")));
+	const root = join(base, "store"), scratch = join(base, "scratch");
+	mkdirSync(root); mkdirSync(scratch);
+	const saved = new Map(["PI_AGENT_SESSIONS_DIR", "PI_AGENT_DIR", "PI_HARNESS_FILE", "TMPDIR"].map((key) => [key, process.env[key]]));
+	process.env.PI_AGENT_SESSIONS_DIR = root; process.env.PI_AGENT_DIR = root;
+	process.env.PI_HARNESS_FILE = join(root, "harness.json"); process.env.TMPDIR = scratch;
+	writeFileSync(join(root, "harness.json"), "{}");
+	const manager = new AgentManager({ root, agentDir: root, packageDir: root,
+		connect: async () => { throw new Error("No live host"); }, acquire: async () => { throw new Error("Observation must not acquire a host"); },
+		createPrimary: async (options) => ({ id: options.id, socketPath: "unused", info: () => ({ id: options.id, cwd: root, hostname: "fixture", pid: process.pid, socketPath: "unused", startedAt: new Date().toISOString() }), update() {}, publishIntent() {}, touch() {}, setObservedPurpose() {}, close: async () => {} }),
+	});
+	const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, AgentManager> }>)[Symbol.for("pi.extension.agent.owners")];
+	owners.managers.set(root, manager);
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	t.after(async () => { release(); await manager.close(); owners.managers.delete(root); for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(base, { recursive: true, force: true }); });
+	const record = manager.catalog.create({ cwd: root, agentDir: root, packageDir: root, model: { provider: "fixture", modelId: "fixture" }, thinkingLevel: "off" });
+	const source = await DurableHost.open({ ...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry()), storageId: record.storageId });
+	await source.close();
+	const start = async () => {
+		const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
+		register({ events: { emit() {}, on: () => () => {} }, on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => { events.set(name, handler); }, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "off", appendEntry() {} } as unknown as ExtensionAPI);
+		const ctx = { cwd: root, sessionManager: SessionManager.create(root, join(root, "sessions")), ui: { setStatus() {} }, modelRegistry: { getAll: () => [] } } as unknown as ExtensionContext;
+		await events.get("session_start")?.({ reason: "resume" }, ctx);
+		return async () => { await events.get("session_shutdown")?.({}, ctx); };
+	};
+	const first = await start(), second = await start();
+	await manager.snapshot(record.storageId);
+	assert.equal(readdirSync(scratch).filter((name) => name.startsWith("pi-durable-snapshot-")).length, 1);
+	await first();
+	await manager.snapshot(record.storageId);
+	assert.equal(readdirSync(scratch).filter((name) => name.startsWith("pi-durable-snapshot-")).length, 1);
+	let started!: () => void;
+	const closing = new Promise<void>((resolve) => { started = resolve; });
+	const original = DurableObservation.prototype.close;
+	t.mock.method(DurableObservation.prototype, "close", async function (this: DurableObservation) { started(); await gate; await original.call(this); });
+	let settled = false;
+	const shutdown = second().then(() => { settled = true; });
+	await closing;
+	assert.equal(settled, false);
+	release(); await shutdown;
+	assert.deepEqual(readdirSync(scratch), []);
+	await assert.rejects(manager.snapshot(record.storageId), /cache is closed/);
+	const resumed = await start();
+	await manager.snapshot(record.storageId);
+	await resumed();
+	assert.deepEqual(readdirSync(scratch), []);
+});
 
 test("ordinary fleet calls forward exact selection and reject incompatible query shapes", async (t) => {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-fleet-selection-")));

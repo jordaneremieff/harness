@@ -25,7 +25,12 @@ export async function runNamespaceRecovery(metadata: string): Promise<void> {
 	const manager = new AgentManager(input);
 	let done!: () => void;
 	const ended = new Promise<void>(resolve => { done = resolve; });
-	const stop = () => { controller.abort(); manager.close(); control.report({ durableTasks: 0 }); done(); };
+	let stopping: Promise<void> | undefined;
+	const stop = () => {
+		controller.abort();
+		stopping ??= manager.close().catch(() => { process.stderr.write("Namespace observation cleanup failed.\n"); }).finally(() => { control.report({ durableTasks: 0 }); done(); });
+		return stopping;
+	};
 	control.onShutdown(stop);
 	process.once("SIGTERM", stop);
 	process.once("SIGINT", stop);

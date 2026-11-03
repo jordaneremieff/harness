@@ -111,6 +111,20 @@ export async function retainProviderBlock(tx: Tx, attempt: ProviderAttempt, erro
 	await associateProviderBlock(tx, attempt.inputs, block);
 	return block;
 }
+/** Frozen-copy observation never creates optional provider documents. */
+export async function snapshotProviderBlock(harness: Harness, conversationId: ConversationId, context: Context): Promise<ProviderBlockFact | undefined> {
+	const provider = await harness.snapshot(ProviderDoc, conversationId, context);
+	const state = provider === undefined ? undefined : await harness.snapshot(ProviderControlDoc, provider.sessionId, context);
+	return state?.block === undefined ? undefined : detached(state.block);
+}
+export async function snapshotInputProviderBlock(harness: Harness, submissionId: SubmissionId, context: Context): Promise<ProviderBlockFact | undefined> {
+	const state = await harness.snapshot(ProviderInputDoc, String(submissionId), context);
+	return state?.providerBlock === undefined ? undefined : detached(state.providerBlock);
+}
+export async function snapshotInputRecovery(harness: Harness, submissionId: SubmissionId, context: Context): Promise<string | undefined> {
+	return (await harness.snapshot(ProviderInputDoc, String(submissionId), context))?.recoveryOf;
+}
+
 export async function readProviderBlock(tx: Tx, conversationId: ConversationId): Promise<ProviderBlockFact | undefined> {
 	const provider = await tx.doc(ProviderDoc, conversationId);
 	const state = await tx.doc(ProviderControlDoc, provider.sessionId, null);

@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { it, type TestContext } from "node:test";
+import { it, beforeEach, afterEach, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { hostMetadata } from "./catalog.ts";
 
@@ -17,7 +17,11 @@ import { acquireHost, waitForHostRelease, type HostConnection } from "./host-cli
 import { AgentManager } from "./manager.ts";
 import { handleStorageId } from "./identity.ts";
 import { createPrimaryChannel } from "./primary-channel.ts";
-import { observeDurableStorage } from "./durable-runtime.ts";
+import { createColdObservationCache } from "./cold-observation.ts";
+let cold: ReturnType<typeof createColdObservationCache>;
+beforeEach(() => { cold = createColdObservationCache(); });
+afterEach(async () => { await cold.close(); });
+const observeDurableStorage: ReturnType<typeof createColdObservationCache>["observe"] = (...args) => cold.observe(...args);
 
 function fixture(t: TestContext, idleMinutes = "60", offlineRecovery = false) {
 	const cleanup: Array<() => void | Promise<void>> = [];

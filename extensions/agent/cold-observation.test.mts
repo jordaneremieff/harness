@@ -9,8 +9,22 @@ import { parseHostReadyLine } from "./host-protocol.ts";
 import { fileURLToPath } from "node:url";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRuntime, fixtureRegistry, hostOptions } from "./durable-host-fixture.mts";
-import { it } from "node:test";
-import { closeColdObservations, coldObservationMetrics, disposeColdStorage, observeColdStorage, openColdObservationSnapshot, resetColdObservationMetrics, type ColdObservationHooks } from "./cold-observation.ts";
+import { it, beforeEach, afterEach } from "node:test";
+import { createColdObservationCache, openColdObservationSnapshot, type ColdObservationHooks, type ColdObservationOptions } from "./cold-observation.ts";
+import type { HostMetadata } from "./host-protocol.ts";
+
+let cache: ReturnType<typeof createColdObservationCache>;
+let counts: { opens: number; reads: number; closes: number };
+beforeEach(() => { cache = createColdObservationCache(); counts = { opens: 0, reads: 0, closes: 0 }; });
+afterEach(async () => { await cache.close(); });
+async function closeColdObservations() { await cache.close(); cache = createColdObservationCache(); }
+async function observeColdStorage(metadata: HostMetadata, method: string, params: Record<string, unknown> = {}, options: ColdObservationOptions = {}): Promise<unknown> {
+	return cache.observe(metadata, method, params, { hooks: { open: async (input) => {
+		const handle = await (options.hooks?.open ?? openColdObservationSnapshot)(input);
+		counts.opens++;
+		return { request: async (method, params) => { counts.reads++; return handle.request(method, params); }, close: async () => { counts.closes++; await handle.close(); } };
+	} } });
+}
 import { runtimeFixture, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { acquireHost, connectHost } from "./host-client.ts";
 import { Type } from "typebox";
@@ -60,7 +74,7 @@ it("rereads an absent storage that appears during its empty observation open", a
 		assert.match(JSON.stringify(next), /after storage appeared/);
 	} finally {
 		await host?.close();
-		await disposeColdStorage(metadata.storagePath);
+		await cache.close();
 		rmSync(root, { recursive: true, force: true });
 	}
 });
@@ -180,26 +194,24 @@ it("keeps an owned process exit consumer pending until the child exits", async (
 
 it("reuses one snapshot and result for an unchanged source", async (t) => {
 	const { f } = await coldSource(t);
-	resetColdObservationMetrics();
 	let opens = 0;
 	const hooks = { open: async (input: { storagePath: string; storageId: string }) => { opens += 1; return openColdObservationSnapshot(input); } };
 	const first = await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId }, { hooks });
 	assert.equal(opens, 1);
-	assert.equal(coldObservationMetrics().opens, 1);
+	assert.equal(counts.opens, 1);
 	const second = await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId }, { hooks });
 	assert.deepEqual(second, first);
 	assert.equal(opens, 1, "the unchanged source was not copied again");
-	assert.equal(coldObservationMetrics().hits, 1);
+	assert.equal(counts.reads, 1);
 	await closeColdObservations();
 	const third = await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId }, { hooks });
 	assert.ok(third);
 	assert.equal(opens, 2, "dispose forces a fresh snapshot");
-	await disposeColdStorage(f.storagePath);
+	await cache.close();
 });
 
 it("rejects a snapshot whose database identity changed during the open", async (t) => {
 	const { f } = await coldSource(t);
-	resetColdObservationMetrics();
 	const hooks: ColdObservationHooks = {
 		open: async (input) => {
 			const handle = await openColdObservationSnapshot(input);
@@ -209,31 +221,29 @@ it("rejects a snapshot whose database identity changed during the open", async (
 		},
 	};
 	await assert.rejects(observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId }, { hooks }), /changed during the snapshot copy/u);
-	assert.equal(coldObservationMetrics().opens, 0, "an unstable snapshot is not retained");
+	assert.equal(counts.closes, 1, "an unstable snapshot is closed");
 	await closeColdObservations();
 });
 
 it("reuses a real fresh closed database across two cold reads", async (t) => {
 	const { f, exited } = await coldSource(t);
 	await exited;
-	resetColdObservationMetrics();
 	await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId });
-	assert.equal(coldObservationMetrics().opens, 1);
+	assert.equal(counts.opens, 1);
 	await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId });
-	assert.equal(coldObservationMetrics().opens, 1, "the second read reuses the closed database");
+	assert.equal(counts.opens, 1, "the second read reuses the closed database");
 	await closeColdObservations();
 });
 
 it("invalidates the snapshot when the database or WAL identity changes", async (t) => {
 	const { f } = await coldSource(t);
-	resetColdObservationMetrics();
 	await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId });
-	assert.equal(coldObservationMetrics().opens, 1);
+	assert.equal(counts.opens, 1);
 	const info = statSync(f.storagePath);
 	utimesSync(f.storagePath, new Date(), new Date(info.mtimeMs + 5000));
 	await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId });
-	assert.equal(coldObservationMetrics().opens, 2, "a changed database identity copies again");
-	assert.equal(coldObservationMetrics().invalidations, 1);
+	assert.equal(counts.opens, 2, "a changed database identity copies again");
+	assert.equal(counts.closes, 1);
 	// A real second run mutates the source; a fresh copy picks up the new entry.
 	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
 	try {
@@ -244,8 +254,8 @@ it("invalidates the snapshot when the database or WAL identity changes", async (
 		await primary.close().catch(() => undefined);
 	}
 	await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId });
-	assert.equal(coldObservationMetrics().opens, 3, "a changed database identity copies again");
-	assert.equal(coldObservationMetrics().invalidations, 2);
+	assert.equal(counts.opens, 3, "a changed database identity copies again");
+	assert.equal(counts.closes, 2);
 	const found = await observeColdStorage(f.metadata, "inspect", { view: "search", sessionId: f.metadata.storageId, query: "COLD_SECOND" }) as { matches: unknown[] };
 	assert.ok(found.matches.length >= 1, "the fresh snapshot contains the new entry");
 	await closeColdObservations();
@@ -271,11 +281,10 @@ it("leaves the source database and WAL unchanged", async (t) => {
 
 it("rejects a corrupt source without caching it", async (t) => {
 	const { f } = await coldSource(t);
-	resetColdObservationMetrics();
 	const corruptPath = join(f.root, "corrupt.sqlite");
 	writeFileSync(corruptPath, "not a sqlite database");
 	await assert.rejects(observeColdStorage({ ...f.metadata, storagePath: corruptPath }, "status", {}), (error: unknown) => error instanceof Error);
-	assert.equal(coldObservationMetrics().opens, 0, "a failed open is not retained");
+	assert.equal(counts.opens, 0, "a failed open is not retained");
 	const valid = await observeColdStorage(f.metadata, "status", { sessionId: f.metadata.storageId });
 	assert.ok(valid);
 	await closeColdObservations();
@@ -283,7 +292,6 @@ it("rejects a corrupt source without caching it", async (t) => {
 
 it("serializes parallel cold reads beyond the cache bound and rejects a changed source", { timeout: 10000 }, async (t) => {
 	await closeColdObservations();
-	resetColdObservationMetrics();
 	const f = runtimeFixture(t);
 	let retained = 0;
 	let active = 0;
@@ -315,11 +323,36 @@ it("serializes parallel cold reads beyond the cache bound and rejects a changed 
 		assert.equal(rejected?.status, "rejected");
 		if (rejected?.status === "rejected") assert.match(String(rejected.reason), /changed during the snapshot copy/u);
 		assert.equal(peak, 1);
-		assert.equal(coldObservationMetrics().storages, 8);
 		assert.equal(retained, 8);
-		assert.equal(coldObservationMetrics().evictions, 4);
+		assert.equal(counts.closes, 5, "four evictions and one unstable copy");
 	} finally { await closeColdObservations(); }
 	assert.equal(retained, 0);
+});
+
+it("drains a borrowed snapshot on close without closing another cache owner's snapshot", async (t) => {
+	const f = runtimeFixture(t);
+	writeFileSync(f.storagePath, "stable synthetic source");
+	const peer = createColdObservationCache();
+	t.after(() => peer.close());
+	let release!: () => void, started!: () => void;
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	const borrowed = new Promise<void>((resolve) => { started = resolve; });
+	let closes = 0, peerCloses = 0;
+	const hooks: ColdObservationHooks = { open: async () => ({ request: async () => { started(); await held; assert.equal(closes, 0); return "borrowed"; }, close: async () => { closes++; } }) };
+	const peerHooks: ColdObservationHooks = { open: async () => ({ request: async () => "peer", close: async () => { peerCloses++; } }) };
+	assert.equal(await peer.observe(f.metadata, "snapshot", {}, { hooks: peerHooks }), "peer");
+	const read = cache.observe(f.metadata, "snapshot", {}, { hooks });
+	await borrowed;
+	let settled = false;
+	const closing = cache.close().then(() => { settled = true; });
+	assert.equal(settled, false);
+	assert.equal(closes, 0);
+	release(); assert.equal(await read, "borrowed"); await closing;
+	assert.equal(closes, 1);
+	assert.equal(peerCloses, 0);
+	assert.equal(await peer.observe(f.metadata, "snapshot", {}, { hooks: peerHooks }), "peer");
+	await assert.rejects(cache.observe(f.metadata, "snapshot"), /cache is closed/);
+	await peer.close(); assert.equal(peerCloses, 1);
 });
 
 it("validates real retired storage status, every inspect view, snapshot and dashboard", async (t) => {

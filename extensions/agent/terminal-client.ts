@@ -40,6 +40,7 @@ export class TerminalController {
 	row?: AgentConversationSummary;
 	snapshot?: AgentConversationSnapshot & { nextBefore?: number | null };
 	private closed = false;
+	private closing?: Promise<void>;
 	private generation = 0;
 	private readonly histories = new Map<string, ConversationHistory>();
 	private readonly failedInputs = new Map<string, UnconfirmedTerminalInput[]>();
@@ -174,15 +175,16 @@ export class TerminalController {
 		this.snapshot = { ...snapshot, entries: history.entries(anchor), nextBefore: history.earlier() };
 		this.notify();
 	}
-	close(): void {
-		if (this.closed) return;
+	async close(): Promise<void> {
+		if (this.closed) return this.closing;
 		this.closed = true;
 		this.generation++;
 		this.off();
 		this.source.select(undefined);
 		this.source.releaseTasks();
 		this.listeners.clear();
-		this.manager.close();
+		this.closing = this.manager.close();
+		await this.closing;
 	}
 }
 
@@ -456,5 +458,5 @@ export async function runTerminal(args: string[]): Promise<void> {
 		else screen.openDashboard();
 		tui.addChild(screen); tui.setFocus(screen); tui.start();
 		await finished;
-	} finally { process.off("SIGINT", close); process.off("SIGTERM", close); screen.dispose(); controller.close(); tui.stop(); }
+	} finally { process.off("SIGINT", close); process.off("SIGTERM", close); screen.dispose(); try { await controller.close(); } finally { tui.stop(); } }
 }

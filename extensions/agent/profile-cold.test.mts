@@ -7,7 +7,6 @@ import { matchesSchema } from "./schema-check.ts";
 import { AgentManager } from "./manager.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRuntime, fixtureRegistry, hostOptions } from "./durable-host-fixture.mts";
-import { disposeColdStorage } from "./cold-observation.ts";
 import { AgentProfileSchema, type AgentProfile } from "./profile-schema.ts";
 import { hostPaths } from "./host-protocol.ts";
 
@@ -19,7 +18,7 @@ it("a cold profile read returns retained native expertise without host acquisiti
 		acquire: async () => { acquisitions++; throw new Error("a profile read must not start a host"); },
 	});
 	const record = manager.catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: root, model: { provider: "fixture", modelId: "fixture" }, thinkingLevel: "off" });
-	t.after(async () => { await manager.close(); await disposeColdStorage(record.storagePath); rmSync(root, { recursive: true, force: true }); });
+	t.after(async () => { await manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const host = await DurableHost.open({ ...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry(), root), storageId: record.storageId, profileSeed: { handle: "history", role: "Review decisions" } });
 	try {
 		const initial = await host.request("profile-read", { sessionId: record.storageId }) as AgentProfile;

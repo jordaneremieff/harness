@@ -27,7 +27,6 @@ import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-
 import { AgentCatalog, storageIdOf, validateDeliveryRecipient } from "./catalog.ts";
 import { boundCatalogView, withAttentionHints, withModelEvidence } from "./catalog-view.ts";
 import { projectCatalogAttention } from "./catalog-attention.ts";
-import { observeColdStorage } from "./cold-observation.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { HostRuntime } from "./host-process.ts";
 import { DurableHost, readTaskGraph } from "./durable-host.ts";
@@ -344,7 +343,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			if (method === "submit" && typeof params.senderIdentity === "string" && (params.replyTo !== undefined || client.runtimeContract.operations["task-submit"])) return await client.request("task-submit", { ...params, requester: params.senderIdentity }, { signal: context?.abortSignal });
 			if (method !== "attach") return await client.request(method, params, { signal: context?.abortSignal });
 			return await attachForeign(client, params, sessionId);
-		} finally { manager.close(); }
+		} finally { await manager.close(); }
 	}
 	async function collaborationObservation(method: string, params: Record<string, unknown>): Promise<unknown> {
 		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
@@ -381,7 +380,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			const subscribe = client.subscribeChanges?.bind(client);
 			if (subscribe === undefined) throw new Error("Producer host has no commit observation capability");
 			return await observeProducerAwait(sessionId, async () => await client.request("await-state", { sessionId, ...(params.results === undefined ? {} : { results: params.results }) }, { signal: context.abortSignal }) as import("./await-facts.ts").ProducerState, (changed) => subscribe(changed, context.abortSignal), publish, context, client.onClose.bind(client));
-		} finally { manager.close(); }
+		} finally { await manager.close(); }
 	}
 	const dispatchResolved = async (method: Parameters<AgentControlDispatch>[0], params: Record<string, unknown>, context: Context = BACKGROUND_CONTEXT): Promise<unknown> => {
 		if (method === "await-native") return nativeResult(host, params.result as ResultReference, context);
@@ -430,7 +429,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 				const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
 				const caller = { id: metadata.storageId, cwd: metadata.cwd };
 				try { return await stopForeignReferences((method, input) => manager.control(method, input, caller), references, context); }
-				finally { manager.close(); }
+				finally { await manager.close(); }
 			});
 			const requestRoutes = new RequestRouteState();
 			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(opened.harness)], hooks: [hook(GenerationTask, requestContextHooks(opened.harness, requestRoutes))] });
@@ -678,9 +677,4 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		return undefined;
 	};
 	return { request, requestRelease, get releaseRequested() { return releaseRequested; }, onReleaseRequested: (listener) => { releaseListeners.add(listener); return () => { releaseListeners.delete(listener); }; }, onQuiescent: (listener) => { quiescentListeners.add(listener); return () => { quiescentListeners.delete(listener); }; }, get shutdownRequired() { return reloadFailed || sessionFailed || (host.sessionEnded && host !== reloadClosingHost); }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, onObservationChange: (listener) => { observationListeners.add(listener); return () => { observationListeners.delete(listener); }; }, close: closeHost };
-}
-
-/** Cold inspection writes a bounded disposable SQLite snapshot; it never writes source content. */
-export async function observeDurableStorage(metadata: HostMetadata, method: string, params: Record<string, unknown>): Promise<unknown> {
-	return observeColdStorage(metadata, method, params);
 }

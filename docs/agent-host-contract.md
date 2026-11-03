@@ -1185,7 +1185,7 @@ Admission and answer delivery are separate. Native result inspection or retained
 
 ## No-start observation versus acquiring controls
 
-Catalog/presence reads, attach-only `connectHost`, and manager observational reads do not launch a host. Without a live host, the manager uses a bounded cold database/WAL capture for observation. This is not a wire operation and is not zero-cost filesystem work. A surviving live claim still subjects manager reads to live connection negotiation; the independent reader below does not use that route. Source: `extensions/agent/manager.ts` (`observationConnection`, `observeDurableStorage`); `extensions/agent/cold-observation.ts` (`openColdObservationSnapshot`); `extensions/agent/snapshot-capture.ts` (`captureSnapshot`).
+Catalog/presence reads, attach-only `connectHost`, and manager observational reads do not launch a host. Without a live host, the manager uses a bounded cold database/WAL capture for observation. This is not a wire operation and is not zero-cost filesystem work. A surviving live claim still subjects manager reads to live connection negotiation; the independent reader below does not use that route. Source: `extensions/agent/manager.ts` (`observationConnection`, `observe`); `extensions/agent/cold-observation.ts` (`openColdObservationSnapshot`); `extensions/agent/snapshot-capture.ts` (`captureSnapshot`).
 
 Acquiring controls resolve the retained record and acquire/start its owner. An explicit attach can resume unfinished work even with no new prompt. Low-level `snapshotHost()` acquires despite its name; do not use it as an attach-only helper. Native wire spawn requires a sender conversation in an already running host; there is no hostless spawn member available from a bare transport client. Fleet/effort composition and ordinary-primary intent publication are manager functions, not host members. Source: `extensions/agent/manager.ts:469-523,762-783,830-851`; `extensions/agent/host-client.ts:910-932`; `extensions/agent/durable-runtime.ts:411-438`.
 
@@ -1491,9 +1491,14 @@ initially absent WAL: existence, device, inode, size, mtimeNs, and ctimeNs. It
 compares file descriptors with current paths. Replacement, truncation, or other
 identity change discards the copy without a hidden retry.
 
-SQLite validation/recovery and paused `Harness.open` operate only on the private
-copy, with an empty registry/models configuration. Opening a paused Harness
-reconciles native task state in that copy; it is not live scheduler truth.
+SQLite validation and delivery preparation operate only on the private copy.
+The public Session kernel prepares delivery documents without a scheduler, closes
+its Storage, and the capture owner reopens the same private copy. The final
+`Harness.open` uses `readOnly: true` with an empty registry/models configuration.
+It preserves committed running tasks, restart counts, checkpoints, ownership and
+abort fields. It refuses writes and scheduling, and reports no wake. Optional
+observation documents have explicit absent defaults; reads never create them or
+settle deliveries.
 The reader never resumes, submits, waits for idle, acquires a writer claim,
 initializes cwd services, or connects to/signals a live host. An absent or
 incompatible live host therefore does not gate reads. An independent writer
@@ -1512,7 +1517,11 @@ Every invocation returns one retained snapshot, not `live:true`, resumable-host
 readiness, or fresh runtime state. Separate invocations see independently captured
 state. Existing page anchors/cursors retain their semantics; no cross-request
 snapshot lease or storage cache is introduced. The manager's existing bounded
-cold cache remains separate and reuses only stable source identities.
+cold cache remains separate and reuses only stable source identities. Each manager
+owns its cache; ordinary shutdown awaits disposal after the last primary leaves,
+and standalone terminal teardown awaits manager closure. Cache operations share a
+serial queue across storage paths, including reads, eviction and disposal, so a
+borrowed snapshot stays open until its read ends.
 
 Defining sources: `extensions/agent/retained-read.ts`, `retained-errors.ts`,
 `snapshot-capture.ts`, `catalog.ts` (`read`), `durable-observation.ts`

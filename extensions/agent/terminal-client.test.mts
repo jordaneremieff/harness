@@ -27,11 +27,24 @@ function fixture() {
 		snapshot: async () => snapshot(),
 		observeLive: async (id, _scope, listener) => { observers.set(id, listener); return () => { releases++; }; },
 		subscribeRoster: () => () => {},
-		close: () => { closes++; },
+		close: async () => { closes++; },
 	};
 	const controller = new TerminalController({ manager, caller: { id: "terminal", cwd: "/work" } });
 	return { controller, manager, calls, observers, setAdmission: (value: Promise<unknown>) => { admission = value; }, closes: () => closes, releases: () => releases };
 }
+
+it("terminal teardown awaits its manager and reuses the same close operation", async () => {
+	const f = fixture(), gate = deferred();
+	let closes = 0;
+	f.manager.close = async () => { closes++; await gate.promise; };
+	let settled = false;
+	const first = f.controller.close().then(() => { settled = true; });
+	const second = f.controller.close();
+	assert.equal(settled, false);
+	assert.equal(closes, 1);
+	gate.resolve(); await Promise.all([first, second]);
+	assert.equal(settled, true);
+});
 
 it("A-B-A retains target drafts, anchor and expansion, and fences late A frames", async () => {
 	const f = fixture();

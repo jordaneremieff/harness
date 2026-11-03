@@ -1024,12 +1024,19 @@ that diagnostic on one line. Provider-private parsing buffers stay omitted.
 Retained entries and usage documents keep provider metadata unchanged.
 
 The manager's stopped-agent reads use a cached public snapshot without services,
-model runtime, extension bootstrap, or Harness resume. The cache tracks database
-and WAL identity plus writer claim state. Changed or unstable source identity
-refuses reuse. Snapshot operations serialize to protect reads and eviction.
+model runtime, extension bootstrap, or task recovery. The manager owns its cache;
+ordinary shutdown awaits disposal after its last primary leaves, and standalone
+terminal teardown awaits manager closure. Another primary keeps its cache usable.
+The cache tracks database and WAL identity plus writer claim state. Changed or
+unstable source identity refuses reuse. All cache paths share a serial queue to
+protect borrowed snapshots from eviction and teardown.
 Filesystem-only capture never opens the source through SQLite and never creates
-source sidecars; an absent WAL must remain absent for reuse. SQLite recovery and
-paused Harness reconciliation mutate only the private copy. An absent database
+source sidecars; an absent WAL must remain absent for reuse. SQLite validation and
+delivery preparation use only the private copy. A public Session performs that
+preparation without a scheduler, then closes its Storage. The capture owner reopens
+the same copy for a read-only Harness. Native tasks retain their committed status,
+restart count, checkpoint, ownership and abort fields. Observation reads do not
+create optional documents or settle deliveries; attempted writes reject. An absent database
 has an empty in-memory internal observation that is not cached, so a later read
 sees database creation. The independent public reader instead returns
 `not_found` for an absent database and owns no cache. See

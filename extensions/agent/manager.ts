@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createColdObservationCache } from "./cold-observation.ts";
 import { nativeRecipientAvailability, readDeliveryWake } from "./delivery-wake.ts";
 import { launchIndependentCommand, type IndependentCommandInput, type IndependentCommandReceipt } from "./independent-launch.ts";
 import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
@@ -186,6 +187,14 @@ class BoundedMap<V> {
 /** A primary owns client connections, never a Durable scheduler or storage writer. */
 export class AgentManager {
 	readonly managerProtocol = MANAGER_PROTOCOL;
+	private coldObservations = createColdObservationCache();
+	private coldReleased = false;
+	private retainColdObservations(): void {
+		if (!this.coldReleased) return;
+		this.coldObservations = createColdObservationCache();
+		this.coldReleased = false;
+	}
+	private closing?: Promise<void>;
 	private toolCardRows: readonly AgentConversationSummary[] = [];
 
 	/** Latest roster facts already observed for the primary footer; this lookup performs no I/O. */
@@ -347,6 +356,7 @@ export class AgentManager {
 	}
 
 	private observe(record: CatalogRecord, method: string, params: Record<string, unknown>, primary?: PrimaryClient): Promise<unknown> {
+		const cold = this.coldObservations;
 		return (async () => {
 			if (this.shuttingDown) throw new Error("Agent manager is closed");
 			const client = await this.observationConnection(record, primary);
@@ -355,8 +365,8 @@ export class AgentManager {
 			if (this.options.observe) return this.options.observe(record, method, params);
 			const route = this.existingTarget(record.storageId);
 			if (route) return callExistingSource({ route, action: "control", method, input: params, caller: { id: "source-observation", cwd: record.cwd }, agentDir: record.agentDir, expected: HOST_CONTRACT.operations });
-			const { observeDurableStorage } = await import("./durable-runtime.ts");
-			return observeDurableStorage(record, method, params);
+			if (this.shuttingDown) throw new Error("Agent manager is closed");
+			return cold.observe(record, method, params);
 		})();
 	}
 
@@ -937,6 +947,7 @@ export class AgentManager {
 		this.primaryClosures.get(primary.signal)?.delete(ownerId);
 		this.primaryChannels.set(ownerId, channel);
 		this.primaries.set(ownerId, primary);
+		this.retainColdObservations();
 		primary.signal.addEventListener("abort", () => { void this.closePrimary(ownerId, primary.signal).catch(() => {}); }, { once: true });
 		try { this.observeCatalogChanges(); }
 		catch (error) { this.failures.set("catalog-observation", `Catalog updates are unavailable: ${errorText(error)}. Restart this Pi process.`); }
@@ -949,6 +960,7 @@ export class AgentManager {
 	recoverNamespace(signal: AbortSignal): Promise<NamespaceRecoveryReport> {
 		if (this.shuttingDown || signal.aborted) return Promise.reject(new Error("Namespace recovery is closed"));
 		this.namespaceOwner = { signal };
+		this.retainColdObservations();
 		this.observeCatalogChanges();
 		if (this.namespaceScan) { this.namespaceRescan = true; return this.namespaceScan; }
 		this.namespaceRescan = false;
@@ -1040,7 +1052,15 @@ export class AgentManager {
 		const channel = this.primaryChannels.get(ownerId);
 		this.primaries.delete(ownerId);
 		this.primaryChannels.delete(ownerId);
-		const closing = Promise.resolve().then(() => channel?.close()).catch((error) => {
+		const closing = Promise.resolve().then(async () => {
+			try { await channel?.close(); }
+			finally {
+				if (!this.primaries.size && (!this.namespaceOwner || this.namespaceOwner.signal.aborted)) {
+					this.coldReleased = true;
+					await this.coldObservations.close();
+				}
+			}
+		}).catch((error) => {
 			this.failures.set(`primary:${ownerId}`, errorText(error));
 			throw error;
 		}).finally(() => {
@@ -1375,14 +1395,17 @@ export class AgentManager {
 		for (const client of clients) void client.close();
 	}
 
-	close(): void {
+	close(): Promise<void> {
+		if (this.closing) return this.closing;
 		this.shuttingDown = true;
 		this.lifecycle.abort();
 		this.stopCatalogObservation?.();
 		this.stopCatalogObservation = undefined;
 		this.rosterListeners.clear();
-		for (const [ownerId, primary] of this.primaries) void this.closePrimary(ownerId, primary.signal).catch(() => {});
+		const primaries = [...this.primaries].map(([ownerId, primary]) => this.closePrimary(ownerId, primary.signal));
 		this.releaseClients();
+		this.closing = Promise.allSettled([...primaries, ...this.closingPrimaries.values()]).then(async () => { await this.coldObservations.close(); });
+		return this.closing;
 	}
 
 	connectedStorageIds(): string[] { return [...this.clients.keys()]; }

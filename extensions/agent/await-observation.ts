@@ -1,11 +1,15 @@
 /** Read and release only the selected native run; producer facts never recurse. */
-import { AgentDoc, InboxDoc, LiveDoc, type ConversationId, type TaskId, type SubmissionId, type Tx } from "@earendil-works/pi-durable";
+import { AgentDoc, InboxDoc, LiveDoc, type ConversationId, type TaskId, type SubmissionId, type Tx, type Harness } from "@earendil-works/pi-durable";
 import { AwaitDoc, referenceKey, releaseCohort, claimProviderRetryVisibility, olderProviderRetry, sameRetryResult, type AwaitState, type AwaitDeclaration } from "./awaited-results.ts";
 import { canonicalIdentity } from "./identity.ts";
 import type { AwaitFact, OwnAwaitFact, ProducerAwaitFact, ProducerRetry } from "./await-facts.ts";
 import type { ResultReference } from "./result-reference.ts";
 
+import type { Context } from "@earendil-works/chord";
+
 import { safeFactText } from "./primary-observation.ts";
+
+type AwaitReader = Tx | { readonly harness: Harness; readonly context: Context };
 
 async function retryInputMatches(tx: Tx, conversationId: ConversationId, result: ResultReference): Promise<boolean> {
 	if (result.requestId === undefined) return true;
@@ -38,18 +42,21 @@ const OWN_AWAIT_BYTE_LIMIT = 8000;
 const AWAIT_BYTE_LIMIT = 12000;
 
 /** Suppressed named check-ins and passive writes are not queued follow-up inputs. */
-export async function queuedAwaitInputCount(tx: Tx, conversationId: ConversationId, results: readonly ResultReference[]): Promise<number> {
-	const automatic = (await tx.doc(AwaitDoc)).provenance.filter((item) => item.conversationId === conversationId && item.classification === "automatic" && item.automaticKind === "checkIn" && results.some((result) => result.sessionId === item.sender && (result.requestId === undefined || result.requestId === item.producerRequestId)));
-	return (await tx.doc(InboxDoc, conversationId)).items.filter((item) => item.mode !== "write" && !automatic.some((checkIn) => checkIn.submissionId === item.id)).length;
+export async function queuedAwaitInputCount(tx: AwaitReader, conversationId: ConversationId, results: readonly ResultReference[]): Promise<number> {
+	const state = "harness" in tx ? await tx.harness.snapshot(AwaitDoc, tx.context) : await tx.doc(AwaitDoc);
+	const inbox = "harness" in tx ? await tx.harness.snapshot(InboxDoc, conversationId, tx.context) : await tx.doc(InboxDoc, conversationId);
+	const automatic = (state?.provenance ?? []).filter((item) => item.conversationId === conversationId && item.classification === "automatic" && item.automaticKind === "checkIn" && results.some((result) => result.sessionId === item.sender && (result.requestId === undefined || result.requestId === item.producerRequestId)));
+	return (inbox?.items ?? []).filter((item) => item.mode !== "write" && !automatic.some((checkIn) => checkIn.submissionId === item.id)).length;
 }
 
-async function activeDeclarations(tx: Tx, conversationId: ConversationId): Promise<AwaitDeclaration[]> {
-	const live = await tx.doc(LiveDoc, conversationId);
-	if (live.run === undefined) return [];
+async function activeDeclarations(tx: AwaitReader, conversationId: ConversationId): Promise<AwaitDeclaration[]> {
+	const live = "harness" in tx ? await tx.harness.snapshot(LiveDoc, conversationId, tx.context) : await tx.doc(LiveDoc, conversationId);
+	if (live?.run === undefined) return [];
 	const active: AwaitDeclaration[] = [];
-	for (const declaration of (await tx.doc(AwaitDoc)).declarations) {
+	const state = "harness" in tx ? await tx.harness.snapshot(AwaitDoc, tx.context) : await tx.doc(AwaitDoc);
+	for (const declaration of state?.declarations ?? []) {
 		if (declaration.conversationId !== conversationId || declaration.runId !== live.run.taskId || declaration.decision !== "awaiting") continue;
-		const task = await tx.task(declaration.taskId as TaskId);
+		const task = "harness" in tx ? await tx.harness.commit((read) => read.task(declaration.taskId as TaskId), tx.context) : await tx.task(declaration.taskId as TaskId);
 		if (task !== undefined && !task.abortRequested && task.state.status !== "terminal") active.push(declaration);
 	}
 	return active;
@@ -88,7 +95,7 @@ function partialObservationLoss(losses: { result: ResultReference; fact: Produce
 	return `${text.text}${text.truncated ? " [truncated]" : ""}`;
 }
 
-async function ownFact(tx: Tx, conversationId: ConversationId, active: AwaitDeclaration[]): Promise<{ own: OwnAwaitFact; producers: ProducerAwaitFact[] } | undefined> {
+async function ownFact(tx: AwaitReader, conversationId: ConversationId, active: AwaitDeclaration[]): Promise<{ own: OwnAwaitFact; producers: ProducerAwaitFact[] } | undefined> {
 	if (active.length === 0) return undefined;
 	const results = new Map<string, OwnAwaitFact["results"][number]>();
 	for (const declaration of active) for (const result of declaration.results) {
@@ -141,7 +148,8 @@ function mergedProducers(active: AwaitDeclaration[], results: OwnAwaitFact["resu
 	}).sort((left, right) => Number(right.execution !== undefined) - Number(left.execution !== undefined));
 }
 
-export async function readAwaitFact(tx: Tx, storageId: string, conversationId: ConversationId, heldInput?: SubmissionId): Promise<AwaitFact | undefined> {
+/** A frozen-copy reader uses snapshots; live consumers retain their atomic transaction. */
+export async function readAwaitFact(tx: AwaitReader, storageId: string, conversationId: ConversationId, heldInput?: SubmissionId): Promise<AwaitFact | undefined> {
 	const active = await activeDeclarations(tx, conversationId);
 	if (heldInput !== undefined && !active.some((declaration) => declaration.inputs.includes(heldInput))) return undefined;
 	const projected = await ownFact(tx, conversationId, active);

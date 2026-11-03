@@ -126,7 +126,7 @@ async function execute(call: RouteCall): Promise<unknown> {
 		if (call.action === "resolve") return await manager.resolveTarget(String(call.input.sessionId));
 		if (call.action === "spawn") return await manager.spawn(call.input, call.caller);
 		return await manager.control(call.method, call.input, call.caller);
-	} finally { manager.close(); }
+	} finally { await manager.close(); }
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	const call = process.argv.length === 2 ? readSourceCall(process.stdin) : Promise.reject(new Error("Source calls require private stdin"));

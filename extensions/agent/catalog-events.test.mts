@@ -4,7 +4,6 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { mutateCollaboration, projectCollaboration, type CollaborationPage } from "./collaboration.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fixture.mts";
-import { closeColdObservations } from "./cold-observation.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
@@ -223,7 +222,6 @@ it("notifies every manager for external rewrite and discard, then releases its r
 
 it("refreshes a real cold thread after external publication without acquiring a host or scheduling input", { timeout: 30000 }, async (t) => {
 	const f = fixture(t);
-	t.after(() => closeColdObservations());
 	const record = f.manager.catalog.create({ cwd: f.root, agentDir: f.root, packageDir: f.root, model: { provider: "test", modelId: "test" }, thinkingLevel: "off" });
 	const host = await DurableHost.open({ ...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry()), storageId: record.storageId }, BACKGROUND_CONTEXT);
 	let threadId: string;
