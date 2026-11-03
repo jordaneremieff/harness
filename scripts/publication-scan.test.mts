@@ -9,7 +9,7 @@ import { hookContent, installHook, pushRanges, scanRange, scanText } from "./pub
 
 const script = fileURLToPath(new URL("./publication-scan.mts", import.meta.url));
 
-function repository(): { root: string; git: (...args: string[]) => string } {
+function repository(initialText = "plain\n"): { root: string; git: (...args: string[]) => string } {
 	const root = mkdtempSync(join(tmpdir(), "publication-scan-"));
 	const env = {
 		...process.env,
@@ -21,9 +21,9 @@ function repository(): { root: string; git: (...args: string[]) => string } {
 		GIT_COMMITTER_EMAIL: "fixture@example.com",
 	};
 	const git = (...args: string[]) =>
-		execFileSync("git", args, { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+		execFileSync("git", ["commit", "merge"].includes(args[0]) ? ["-c", "core.hooksPath=/dev/null", ...args] : args, { cwd: root, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 	git("init", "-q", "-b", "main");
-	writeFileSync(join(root, "ok.txt"), "plain\n");
+	writeFileSync(join(root, "ok.txt"), initialText);
 	git("add", ".");
 	git("commit", "-q", "-m", "Initial");
 	return { root, git };
@@ -49,12 +49,73 @@ test("a range scan covers commit messages and changed blobs, and a clean range p
 	const findings = scanRange(root, [`${base}..HEAD`]);
 	assert.equal(findings.length, 2);
 	assert.match(findings[0], /commit message line 1: personal-path/);
-	assert.match(findings[1], /leak\.txt:1: credential/);
+	assert.match(findings[1], /"leak\.txt":1: credential/);
 	assert.ok(findings.every((finding) => !finding.includes("sk-ant") && !finding.includes("/home/person")));
 	assert.deepEqual(scanRange(root, [`${base}..${base}`]), []);
 	const refused = spawnSync(process.execPath, [script, `${base}..HEAD`], { cwd: root, encoding: "utf8" });
 	assert.equal(refused.status, 1);
 	assert.match(refused.stderr, /Publication refused/);
+});
+
+test("root commits scan both clean and flagged content", (t) => {
+	const clean = repository();
+	const flagged = repository(["/", "home/fixture/private\n"].join(""));
+	t.after(() => { rmSync(clean.root, { recursive: true, force: true }); rmSync(flagged.root, { recursive: true, force: true }); });
+	assert.deepEqual(scanRange(clean.root, ["HEAD"]), []);
+	const findings = scanRange(flagged.root, ["HEAD"]);
+	assert.equal(findings.length, 1);
+	assert.match(findings[0], /"ok\.txt":1: personal-path/);
+});
+
+test("merge resolutions scan each result path once across parents", (t) => {
+	const { root, git } = repository();
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const base = git("rev-parse", "HEAD");
+	git("checkout", "-qb", "other");
+	writeFileSync(join(root, "ok.txt"), "other\n");
+	git("commit", "-qam", "Other change");
+	git("checkout", "-q", "main");
+	writeFileSync(join(root, "ok.txt"), "main\n");
+	git("commit", "-qam", "Main change");
+	assert.throws(() => git("merge", "other"));
+	writeFileSync(join(root, "ok.txt"), "clean resolution\n");
+	git("add", "ok.txt");
+	git("commit", "-qm", "Resolve conflict");
+	assert.deepEqual(scanRange(root, [`${base}..HEAD`]), []);
+	writeFileSync(join(root, "ok.txt"), ["/", "home/fixture/private\n"].join(""));
+	git("commit", "--amend", "-qam", "Resolve conflict");
+	const findings = scanRange(root, [`${base}..HEAD`]);
+	assert.equal(findings.length, 1);
+	assert.match(findings[0], /"ok\.txt":1: personal-path/);
+});
+
+test("rename destinations and unusual paths use exact blob identities", (t) => {
+	const { root, git } = repository(["/", "home/fixture/private\n"].join(""));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const path = ':odd\n\t"name.txt';
+	git("mv", "--", "ok.txt", path);
+	git("-c", "diff.renames=true", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "Rename file");
+	const findings = scanRange(root, ["HEAD^..HEAD"]);
+	assert.equal(findings.length, 1);
+	assert.ok(findings[0].includes(`:${JSON.stringify(path)}:1: personal-path`));
+	assert.equal(findings[0].includes("\n"), false);
+});
+
+test("type changes scan new blobs and skip gitlink objects", (t) => {
+	const { root, git } = repository();
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const commit = git("rev-parse", "HEAD");
+	git("update-index", "--add", "--cacheinfo", `160000,${commit},link`);
+	git("commit", "-qm", "Add gitlink");
+	assert.deepEqual(scanRange(root, ["HEAD^..HEAD"]), []);
+	writeFileSync(join(root, "payload.txt"), ["/", "home/fixture/private\n"].join(""));
+	const blob = git("hash-object", "-w", "payload.txt");
+	git("update-index", "--cacheinfo", `100644,${blob},link`);
+	git("commit", "-qm", "Replace gitlink with text");
+	assert.equal(scanRange(root, ["HEAD^..HEAD"]).length, 1);
+	git("update-index", "--cacheinfo", `160000,${commit},link`);
+	git("commit", "-qm", "Replace text with gitlink");
+	assert.deepEqual(scanRange(root, ["HEAD^..HEAD"]), []);
 });
 
 test("pre-push input maps to ranges and the hook installs only over its own marker", (t) => {

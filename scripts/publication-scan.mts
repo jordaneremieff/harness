@@ -30,6 +30,18 @@ function git(cwd: string, args: string[], maxBuffer = 4_000_000): string {
 	return result.stdout;
 }
 
+function changedBlobs(cwd: string, commit: string): Map<string, string> {
+	// Compare merge results with every parent. Disabling rename detection treats
+	// rename destinations as additions; raw records distinguish blobs from gitlinks.
+	const changes = git(cwd, ["diff-tree", "--root", "-m", "--no-commit-id", "--raw", "--no-abbrev", "--no-renames", "-z", "-r", "--diff-filter=AMT", commit]).split("\0");
+	const blobs = new Map<string, string>();
+	for (let index = 0; index + 1 < changes.length; index += 2) {
+		const [, mode, , oid] = changes[index].split(" ");
+		if (mode !== "160000") blobs.set(changes[index + 1], oid);
+	}
+	return blobs;
+}
+
 /** Findings for every commit message and changed text blob selected by `revisions`; matched text is never reported. */
 export function scanRange(cwd: string, revisions: string[]): string[] {
 	const findings: string[] = [];
@@ -37,16 +49,13 @@ export function scanRange(cwd: string, revisions: string[]): string[] {
 	for (const commit of commits) {
 		const message = scanText(git(cwd, ["log", "-1", "--format=%B", commit]));
 		if (message) findings.push(`${commit.slice(0, 7)} commit message line ${message.line}: ${message.rule}`);
-		const paths = git(cwd, ["diff-tree", "--no-commit-id", "--name-only", "-r", "--diff-filter=AM", commit])
-			.split("\n")
-			.filter(Boolean);
-		for (const path of paths) {
-			const size = Number(git(cwd, ["cat-file", "-s", `${commit}:${path}`]).trim());
+		for (const [path, oid] of changedBlobs(cwd, commit)) {
+			const size = Number(git(cwd, ["cat-file", "-s", oid]).trim());
 			if (size > 1_000_000) continue;
-			const blob = git(cwd, ["cat-file", "blob", `${commit}:${path}`]);
+			const blob = git(cwd, ["cat-file", "blob", oid]);
 			if (blob.includes("\0")) continue;
 			const finding = scanText(blob);
-			if (finding) findings.push(`${commit.slice(0, 7)}:${path}:${finding.line}: ${finding.rule}`);
+			if (finding) findings.push(`${commit.slice(0, 7)}:${JSON.stringify(path)}:${finding.line}: ${finding.rule}`);
 		}
 	}
 	return findings;
