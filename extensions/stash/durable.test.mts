@@ -20,7 +20,7 @@ import { DISTILL_SYSTEM_PROMPT } from "./distill.ts";
 import { type StashDurableContribution, type StashDurableHost, stashDurableContribution } from "./durable.ts";
 import { captureHint, type DistillInput, type IndependentCommandInput, readDistillInput } from "./launch.ts";
 import { mergeRedactionReports, redactSecretsWithReport } from "./redact.ts";
-import { listStashes, readStash, writeStash } from "./store.ts";
+import { editStash, rotateStash, transitionStash, listStashes, readStash, writeStash } from "./store.ts";
 
 const context = BACKGROUND_CONTEXT;
 const oldHarnessFile = process.env.PI_HARNESS_FILE;
@@ -317,6 +317,75 @@ test("returns redaction notices and details through native mutation calls", { ti
 		summary: `Receipt context. ${token}`,
 		checkpoint: true,
 	});
+});
+
+test("freezes publication metadata before effects and reads memo winners before live inputs", async (t) => {
+	const h = await startHarness(t);
+	const tool = h.extension.tools?.find((tool) => tool.name === "stash_write");
+	assert.ok(tool);
+	const memos = new Map<string, JsonValue>();
+	let liveReads = 0;
+	const api = {
+		conversationId: Durable.ROOT_CONVERSATION_ID,
+		now: () => 1793682000100,
+		agent: async () => { liveReads++; return { cwd: h.workdir }; },
+		memo: async (name: string, ...args: unknown[]) => {
+			if (args.length === 2 && !memos.has(name)) memos.set(name, args[0] as JsonValue);
+			return memos.get(name);
+		},
+	};
+	const params = { title: "Frozen", summary: "Frozen source" };
+	await tool.execute(params, api as never, context);
+	assert.equal(liveReads, 1);
+	const [entry] = await listStashes(h.storeDir);
+	assert.equal(entry.meta.sessionId, h.host.storageId);
+	assert.equal(entry.meta.project, h.workdir);
+	process.env.PI_STASH_DIR = join(h.workdir, "changed-store");
+	api.agent = async () => { throw new Error("live metadata accessed on replay"); };
+	await tool.execute(params, api as never, context);
+	assert.equal((await listStashes(h.storeDir)).length, 1);
+	assert.equal((await listStashes(process.env.PI_STASH_DIR)).length, 0);
+	const pending = new Map<string, JsonValue>([["stash.write", { createdAtMs: 123 }]]);
+	await assert.rejects(tool.execute(params, { ...api, memo: async (name: string) => pending.get(name) } as never, context), /timestamp-only.*123/);
+	assert.equal(pending.size, 1);
+});
+
+test("records distinct root and child sources in native checkpoint artifacts", async (t) => {
+	const h = await startHarness(t);
+	const directory = join(h.workdir, "checkpoints");
+	process.env.PI_STASH_CHECKPOINT_DIR = directory;
+	t.after(() => { delete process.env.PI_STASH_CHECKPOINT_DIR; });
+	for (const [storageId, conversationId, expected] of [["root-a", 1, "root-a"], ["root-b", 1, "root-b"], ["root-b", 2, "root-b:2"]] as const) {
+		const extension = h.contribution.create({ ...h.host, storageId });
+		const tool = extension.tools?.find((tool) => tool.name === "stash_write");
+		assert.ok(tool);
+		const memos = new Map<string, unknown>();
+		await tool.execute({ title: expected, summary: "Source locator", checkpoint: true }, {
+			conversationId, now: () => 1793682000100, agent: async () => ({ cwd: h.workdir }),
+			memo: async (name: string, ...args: unknown[]) => {
+				if (args.length === 2 && !memos.has(name)) memos.set(name, args[0]);
+				return memos.get(name);
+			},
+		} as never, context);
+		assert.equal((await listStashes(directory)).find((entry) => entry.meta.title === expected)?.meta.sessionId, expected);
+	}
+});
+
+test("refuses a planless pending distillation without a new publication", async (t) => {
+	const h = await startHarness(t);
+	const task = h.extension.tasks?.find((task) => task.definition.name === "stash.distill");
+	assert.ok(task);
+	const receipts: Durable.JsonObject[] = [];
+	await task.definition.phases.write({
+		input: { storeDir: h.storeDir },
+		state: { checkpoint: { phase: "write", payload: { title: "Old", summary: "Old" }, createdAtMs: 123, redactions: redactSecretsWithReport("").report } },
+	} as never, {
+		signal: new AbortController().signal,
+		commit: async (change: (tx: unknown) => unknown) => change({ doc: async () => ({}), appendEntry: async (_id: unknown, entry: { data: Durable.JsonObject }) => { receipts.push(entry.data); } }),
+	} as never, context);
+	assert.equal(receipts[0]?.status, "failed");
+	assert.match(String(receipts[0]?.message), /Unsupported pending distillation.*123/);
+	assert.equal((await listStashes(h.storeDir)).length, 0);
 });
 
 test("declares an explicit replay class for every tool", async (t) => {
@@ -1125,7 +1194,16 @@ async function replayCase(
 		const before = await listStashes(storeDir, {});
 		assert.equal(before.length, 1, "the killed attempt reached its external effect");
 
-		const original = await readFile(before[0].path);
+		let retainedPath = before[0].path;
+		if (mode !== "complete") {
+			const read = await readStash(storeDir, before[0].meta.id);
+			assert.ok(read.ok);
+			const oldText = mode === "write" ? "Written before the process died." : "Captured before restart.";
+			await editStash(storeDir, read.id, { expectedDigest: read.digest, edits: [{ oldText, newText: "Revised after publication." }] });
+			await transitionStash(storeDir, read.id, { action: mode === "write" ? "activate" : "close", outcome: "Retained result" });
+			if (mode === "distill") retainedPath = (await rotateStash(storeDir, read.id)).archivePath;
+		}
+		const original = await readFile(retainedPath, "utf8");
 		const { harness, root, faux } = await recover(storagePath, storeDir, workdir, "after recovery");
 		try {
 			if (mode === "distill") {
@@ -1133,8 +1211,8 @@ async function replayCase(
 				assert.equal(tasks.items.length, 1);
 				const settled = await harness.waitForTask(tasks.items[0].id, context);
 				assert.equal(settled.state.outcome.status, "completed");
-				assert.equal((await listStashes(storeDir, {})).length, 1);
-				assert.deepEqual(await readFile(before[0].path), original);
+				assert.equal((await listStashes(storeDir, {})).length, 0);
+				assert.equal(await readFile(retainedPath, "utf8"), original);
 				assert.equal((await creationReceipt(root)).id, before[0].meta.id);
 				assert.equal(faux.state.callCount, 0, "committed generation is not repeated after recovery");
 				return;
@@ -1152,6 +1230,9 @@ async function replayCase(
 			if (mode === "write") {
 				assert.equal(target.isError, false, "the replay-safe write completes its result");
 				assert.match(target.text, /Stashed "Replay handover"/u);
+				assert.equal(after[0].meta.state, "active");
+				assert.equal(after[0].meta.sessionId, "stash-replay");
+				assert.equal(await readFile(retainedPath, "utf8"), original);
 			} else {
 				assert.equal(target.isError, true, "the unsafe mutation keeps an interrupted result");
 				assert.match(target.text, /interrupted/u);

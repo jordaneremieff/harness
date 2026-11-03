@@ -3,7 +3,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants, type Dirent, type Stats } from "node:fs";
 import { chmod, type FileHandle, link, lstat, mkdir, open, readdir, rename, unlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { readSettings, type Environment } from "./settings.ts";
 import {
 	isStashState,
@@ -199,28 +199,11 @@ async function cleanTemporary(path: string, published: boolean): Promise<void> {
 	}
 }
 
-/** Whether an existing name already holds exactly this serialized artifact. */
-async function reusePublished(path: string, serialized: string): Promise<boolean> {
-	try {
-		const existing = await readPrefix(path, MAX_STASH_BYTES);
-		return !existing.truncated && existing.text === serialized;
-	} catch (error) {
-		if (!hasCode(error, "ENOENT") && !hasCode(error, "ELOOP")) throw error;
-		return false;
-	}
-}
-
-/**
- * Publish a fully materialized artifact under the first free deterministic id.
- * With `reuseExisting`, a name already holding the exact bytes this call would
- * publish is that call's earlier attempt, so it is returned instead of a
- * suffixed duplicate; any other collision keeps the ordinary suffix scan.
- */
+/** Publish an ordinary artifact under the first free timestamp/title id. */
 async function publishStash(
 	dir: string,
 	input: StashInput,
 	now: Date,
-	reuseExisting: boolean,
 ): Promise<{ record: StashRecord; path: string; redactions: RedactionReport }> {
 	const scanned = redactPayloadWithReport(input);
 	input = scanned.payload;
@@ -239,7 +222,6 @@ async function publishStash(
 		const path = join(dir, `${id}.md`);
 		const temporary = join(dir, `.${id}.${randomUUID()}.tmp`);
 		if (await publishArtifact(temporary, path, serialized)) return { record, path, redactions: scanned.report };
-		if (reuseExisting && (await reusePublished(path, serialized))) return { record, path, redactions: scanned.report };
 	}
 	throw new Error(`could not allocate a unique stash id for ${baseId}`);
 }
@@ -250,21 +232,72 @@ export async function writeStash(
 	input: StashInput,
 	now: Date = new Date(),
 ): Promise<{ record: StashRecord; path: string; redactions: RedactionReport }> {
-	return publishStash(dir, input, now, false);
+	return publishStash(dir, input, now);
 }
 
-/**
- * Write like `writeStash`, but reuse a byte-identical artifact already
- * published under the candidate id. A durable tool rerun after process loss
- * calls this with the same input and timestamp, so it returns its earlier
- * artifact instead of allocating a suffixed duplicate.
- */
-export async function writeReplayableStash(
-	dir: string,
+/** Retain this complete plan before publication. Its unique filename owns replay identity. */
+export type StashPublication = {
+	version: 1;
+	operationId: string;
+	directory: string;
+	createdAtMs: number;
+	checkpoint: boolean;
+	serialized: string;
+	redactions: RedactionReport;
+	id: string;
+};
+
+export function planStashPublication(
+	directory: string,
 	input: StashInput,
 	now: Date = new Date(),
-): Promise<{ record: StashRecord; path: string; redactions: RedactionReport }> {
-	return publishStash(dir, input, now, true);
+	checkpoint = false,
+): StashPublication {
+	const scanned = redactPayloadWithReport(input);
+	const operationId = randomUUID();
+	const created = utcTimestamp(now);
+	const id = `${created}-${slugify(scanned.payload.title)}-${operationId}`;
+	const serialized = serializeArtifact(recordFor(id, created, scanned.payload));
+	const bytes = Buffer.byteLength(serialized, "utf8");
+	if (bytes > MAX_STASH_BYTES) throw new Error(`stash artifact is ${bytes} bytes; maximum is ${MAX_STASH_BYTES}`);
+	return { version: 1, operationId, directory: resolve(directory), createdAtMs: now.getTime(), checkpoint, serialized, redactions: scanned.report, id };
+}
+
+/** Reacquire by immutable filename, never by mutable artifact content. */
+export async function writeReplayableStash(
+	plan: StashPublication,
+): Promise<{ record: StashMeta; path: string; redactions: RedactionReport; archived: boolean }> {
+	if (plan.version !== 1 || !SAFE_STEM.test(plan.id) || !plan.id.endsWith(`-${plan.operationId}`))
+		throw new Error("Unsupported stash publication plan; no artifact was published.");
+	const dir = plan.directory;
+	await validateStore(dir, true);
+	const archiveDir = join(dir, ROTATED_STORE_NAME);
+	const archivedStore = await validateStore(archiveDir, false);
+	const paths = [...(archivedStore ? [join(archiveDir, `${plan.id}.md`)] : []), join(dir, `${plan.id}.md`)];
+	const reacquire = async () => {
+		for (const path of paths) {
+			try {
+				const prefix = await readPrefix(path, HEADER_SCAN_BYTES);
+				const parsed = parseFrontmatter(prefix.text);
+				if (headerUnclosed(prefix.text) || parsed.meta.id !== plan.id)
+					throw new Error(`Publication identity is unavailable at ${path}; no artifact was published.`);
+				return { record: normalizeMeta(`${plan.id}.md`, parsed.meta), path, redactions: plan.redactions, archived: path !== paths[paths.length - 1] };
+			} catch (error) {
+				if (!hasCode(error, "ENOENT")) throw error;
+			}
+		}
+		return undefined;
+	};
+	const existing = await reacquire();
+	if (existing) return existing;
+	const path = join(dir, `${plan.id}.md`);
+	const temporary = join(dir, `.${plan.id}.${randomUUID()}.tmp`);
+	if (await publishArtifact(temporary, path, plan.serialized)) {
+		return { record: normalizeMeta(`${plan.id}.md`, parseFrontmatter(plan.serialized).meta), path, redactions: plan.redactions, archived: false };
+	}
+	const winner = await reacquire();
+	if (winner) return winner;
+	throw new Error(`Publication identity disappeared at ${path}; no replacement was published.`);
 }
 
 interface ListOptions {

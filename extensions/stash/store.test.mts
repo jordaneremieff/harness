@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it, mock } from "node:test";
 import { parseFrontmatter } from "./format.ts";
-import { listStashes, readStash, resolveStoreDir, rotateStash, transitionStash, writeStash } from "./store.ts";
+import { editStash, planStashPublication, writeReplayableStash, listStashes, readStash, resolveStoreDir, rotateStash, transitionStash, writeStash } from "./store.ts";
 
 let dir: string;
 
@@ -29,6 +29,37 @@ describe("resolveStoreDir", () => {
 	});
 	it("resolves relative overrides against the host agentDir", () => {
 		assert.equal(resolveStoreDir({ PI_STASH_DIR: "relative" }, "/agent"), "/agent/relative");
+	});
+});
+
+describe("publication identity", () => {
+	it("retains edits, lifecycle and archive location without coalescing identical operations", async () => {
+		const directory = join(dir, "publication");
+		const input = { title: "Same title", summary: "Original body", sessionId: "source:2" };
+		const now = at("2026-11-03T05:00:00.100Z");
+		const plan = planStashPublication(directory, input, now);
+		const other = planStashPublication(directory, input, now);
+		const first = await writeReplayableStash(plan);
+		const second = await writeReplayableStash(other);
+		assert.notEqual(first.record.id, second.record.id);
+		const read = await readStash(directory, first.record.id);
+		assert.ok(read.ok);
+		await editStash(directory, first.record.id, { expectedDigest: read.digest, edits: [{ oldText: "Original body", newText: "Revised body" }] });
+		await transitionStash(directory, first.record.id, { action: "close", outcome: "Complete" });
+		const replay = await writeReplayableStash(plan);
+		assert.equal(replay.record.state, "closed");
+		assert.match(await readFile(replay.path, "utf8"), /Revised body/);
+		const rotated = await rotateStash(directory, first.record.id);
+		const archived = await writeReplayableStash(plan);
+		assert.equal(archived.path, rotated.archivePath);
+		assert.equal(archived.archived, true);
+		assert.equal((await listStashes(directory)).length, 1);
+	});
+	it("redacts the retained payload and refuses unsafe identity paths", async () => {
+		const token = "sk-abcdefgh" + "ijklmnop1234";
+		const plan = planStashPublication(join(dir, "plan"), { title: "Safe", summary: token, branch: token });
+		assert.ok(!JSON.stringify(plan).includes(token));
+		await assert.rejects(writeReplayableStash({ ...plan, id: "../escape" }), /Unsupported/);
 	});
 });
 

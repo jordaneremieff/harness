@@ -604,7 +604,7 @@ handover discovery. Each tool declares its replay class explicitly:
 
 | Tool | Replay | Why |
 |---|---|---|
-| `stash_write` | `safe` | The call records its creation timestamp in a durable memo before the effect, and writes through the store's replayable publication. A rerun with the same memo and input reuses its byte-identical artifact instead of allocating a suffixed duplicate. |
+| `stash_write` | `safe` | The call retains a complete redacted publication plan before the effect. Replay reacquires its unique filename in the store or archive without rewriting supported body or lifecycle changes. |
 | `stash_list` | `safe` | Read-only; a rerun repeats no external effect. |
 | `stash_read` | `safe` | Read-only; a rerun repeats no external effect. |
 | `stash_edit` | `unsafe` | Body publication is not automatically replayed after interruption. Read the current artifact before another attempt. |
@@ -623,6 +623,35 @@ sequential execution. An edit error does not always mean
 no write: lock cleanup can fail after publication. Read the current artifact
 before repair or retry; the [edit contract](#edit-a-saved-handover) owns revision
 checks and the cooperating-writer limit.
+
+### Publication identity and retained work
+
+The `stash.publication` tool memo freezes a random operation UUID, exact artifact
+ID, destination, creation time, checkpoint selection and redacted serialized
+payload before the atomic no-clobber write. Replay reads that memo before live
+workspace, branch or destination inputs. The UUID suffix of the filename is the
+identity carrier; ordinary writers retain their timestamp/title collision rules.
+Distinct native operations remain distinct even with identical content and time.
+The existing format and lifecycle readers accept these filenames unchanged.
+Replay checks the exact filename in the destination and its `.trash` archive,
+returns current metadata, and preserves later supported edits and state changes.
+Arbitrary external deletion or renaming that destroys this identity evidence is
+outside the recovery guarantee. There is no receipt database or content-equality
+identity inference.
+
+Native source locators use the host storage ID for a root and
+`<storageId>:<conversationId>` for a child, consistently in direct writes,
+checkpoints and `/stash new`. Ordinary session IDs stay unchanged. Historical
+numeric-only source locators are ambiguous; no storage identity is inferred.
+
+Retain intact source and dependencies for consumers with pending timestamp-only
+`stash.write` memos or planless distillation write checkpoints until they finish.
+New code refuses those ambiguous pending effects without a new external write;
+it does not enrich a write-once memo or guess identity from an old artifact.
+The refusal names the timestamp and known store (the original direct-write
+store was not retained). Completed artifacts remain readable. Do not run new
+pending publication plans under old code. Publication and host activation are
+separate acts; no operator-store migration occurs.
 
 ### Capacity guidance
 
@@ -679,9 +708,10 @@ admission with the same invocation ID returns that task; another invocation
 cannot replace its input. Generation and publication use the captured values,
 not the worker's live workspace or a model-selected destination.
 
-The task commits its validated payload and publication timestamp before the
-external write. The replayable writer reuses a byte-identical artifact after a
-restart between publication and receipt. The task stores its terminal outcome
+The task commits its complete redacted publication plan in the write checkpoint
+before the external write. The replayable writer reacquires the original
+identity after a restart between publication and receipt, including supported
+body changes, lifecycle changes and archive rotation. The task stores its terminal outcome
 in the document and a passive `stash.creation` entry with status and any artifact
 id, path, title, or failure message. It also retains the combined input, generated
 payload, and published metadata redaction report and safety notice. A completed

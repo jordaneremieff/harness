@@ -62,6 +62,8 @@ import { searchStashes } from "./search.ts";
 import {
 	editStash,
 	listStashes,
+	planStashPublication,
+	type StashPublication,
 	readStash,
 	resolveStash,
 	resolveStoreDir,
@@ -375,7 +377,11 @@ type CapturedCreation = { input?: Durable.JsonObject };
 
 type DistillTaskState =
 	| { phase: "generate"; attempt: number }
-	| { phase: "write"; payload: DistillPayload; redactions: RedactionReport; createdAtMs: number };
+	| { phase: "write"; plan?: StashPublication; payload: DistillPayload; redactions: RedactionReport; createdAtMs: number };
+
+function sourceLocator(host: StashDurableHost, conversationId: Durable.ConversationId): string {
+	return conversationId === host.durable.ROOT_CONVERSATION_ID ? host.storageId : `${host.storageId}:${conversationId}`;
+}
 
 // ─── Commands ───────────────────────────────────────────────────────────────
 
@@ -513,10 +519,7 @@ async function captureNativeCreation(
 	});
 	const agent = await call.conversation.agent(call.context);
 	const project = agent.cwd ?? call.host.cwd;
-	const sessionId =
-		call.conversation.id === call.host.durable.ROOT_CONVERSATION_ID
-			? call.host.storageId
-			: `${call.host.storageId}:${call.conversation.id}`;
+	const sessionId = sourceLocator(call.host, call.conversation.id);
 	const storeDir = resolve(project, binding.storeDir);
 	const branch = await captureBranch(project, call.context.abortSignal);
 	const capturedHint = captureHint(hint);
@@ -748,24 +751,24 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		parameters: WriteParams,
 		replay: "safe",
 		execute: async (params, api, context) => {
-			const agent = await api.agent(context);
-			const cwd = api.env?.cwd ?? agent.cwd ?? host.cwd;
-			const branch = await gitBranch(api.env, context);
-			const sessionId = String(api.conversationId);
-			const intent = await api.memo("stash.write", { createdAtMs: Date.now() }, context);
 			try {
-				const destination = params.checkpoint
-					? await checkpointDirectory(
-							readSettings({ agentDir: host.agentDir }).values.checkpointDir,
-							storeDir,
-						)
-					: storeDir;
-				const { record, path, redactions } = await writeReplayableStash(
-					destination,
-					{ ...params, project: cwd, branch, sessionId },
-					new Date(intent.createdAtMs),
-				);
-				if (params.checkpoint) {
+				let plan = await api.memo<StashPublication>("stash.publication", context);
+				const pending = await api.memo<{ createdAtMs: number }>("stash.write", context);
+				if (!plan && pending) throw new Error(`Unsupported pending timestamp-only publication (${pending.createdAtMs}); current store: ${storeDir}. Original destination and identity are unknown. Resume with its retained source; no artifact was published.`);
+				if (!plan) {
+					const agent = await api.agent(context);
+					const cwd = api.env?.cwd ?? agent.cwd ?? host.cwd;
+					const branch = await gitBranch(api.env, context);
+					const settings = readSettings({ agentDir: host.agentDir }).values;
+					const destination = params.checkpoint
+						? await checkpointDirectory(settings.checkpointDir, settings.dir)
+						: settings.dir;
+					plan = await api.memo("stash.publication", planStashPublication(
+						destination, { ...params, project: cwd, branch, sessionId: sourceLocator(host, api.conversationId) }, new Date(api.now()), params.checkpoint,
+					), context);
+				}
+				const { record, path, redactions, archived } = await writeReplayableStash(plan);
+				if (plan.checkpoint) {
 					return {
 						output: [
 							{
@@ -780,13 +783,12 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 					`Stashed "${safeLine(record.title)}" as ${record.id}`,
 					safeLine(path),
 					"",
-					"Resume in a new session:",
-					`  ${resumeCommand(record.id)}`,
+					...(archived ? ["The original artifact is archived; its current body and state are preserved."] : ["Resume in a new session:", `  ${resumeCommand(record.id)}`]),
 					...(redactions.count ? [redactionNotice(redactions)] : []),
 				].join("\n");
 				return {
 					output: [{ type: "text" as const, text }],
-					details: jsonDetails({ id: record.id, path, state: record.state, redactions }),
+					details: jsonDetails({ id: record.id, path, state: record.state, archived, redactions }),
 				};
 			} catch (error) {
 				throw new Error(`stash_write failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -966,15 +968,22 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 							}
 							return;
 						case "payload": {
-							const scanned = redactPayloadWithReport(parsed.payload);
+							const scanned = redactPayloadWithReport({ ...parsed.payload, project: task.input.project, branch: task.input.branch, sessionId: task.input.sessionId });
+							const redactions = mergeRedactionReports(task.input.redactions, scanned.report);
+							const notice = redactionNotice(redactions);
+							const plan = planStashPublication(task.input.storeDir, {
+								...scanned.payload,
+								summary: `${scanned.payload.summary}${notice ? `\n\n## Redaction notice\n\n${notice}` : ""}`,
+							}, new Date(runtime.now()));
 							await runtime.commit(
 								() => ({
 									status: "running",
 									checkpoint: {
 										phase: "write",
+										plan,
 										payload: scanned.payload,
-										redactions: scanned.report,
-										createdAtMs: runtime.now(),
+										redactions,
+										createdAtMs: plan.createdAtMs,
 									},
 								}),
 								context,
@@ -992,27 +1001,14 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 			},
 			write: async (task, runtime, context) => {
 				const state = task.state.checkpoint;
-				const publication = redactPayloadWithReport({
-					...state.payload,
-					project: task.input.project,
-					branch: task.input.branch,
-					sessionId: task.input.sessionId,
-				});
-				const redactions = mergeRedactionReports(task.input.redactions, state.redactions, publication.report);
+				const redactions = state.redactions;
 				try {
-					const notice = redactionNotice(redactions);
+					if (!state.plan) throw new Error(`Unsupported pending distillation publication at ${task.input.storeDir} (${state.createdAtMs}). Resume with its retained source; no artifact was published.`);
 					const {
 						record,
 						path,
 						redactions: published,
-					} = await writeReplayableStash(
-						task.input.storeDir,
-						{
-							...publication.payload,
-							summary: `${publication.payload.summary}${notice ? `\n\n## Redaction notice\n\n${notice}` : ""}`,
-						},
-						new Date(state.createdAtMs),
-					);
+					} = await writeReplayableStash(state.plan);
 					await finishDistill(runtime, context, {
 						status: "completed",
 						id: record.id,
