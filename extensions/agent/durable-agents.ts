@@ -268,6 +268,11 @@ function errorResult(text: string): Durable.ToolExecutionResult<ControlDetails> 
 	return { output: [{ type: "text", text }], isError: true };
 }
 
+function placeResult(sessionId: string, result: ControlDetails, area?: string): Durable.ToolExecutionResult<ControlDetails> {
+	const owner = area === undefined ? `The place owner is ${sessionId}.` : `The owner of ${area} is ${sessionId}.`;
+	return textResult(`${owner}\n${JSON.stringify(result)}`, { ...result, sessionId, ...(area === undefined ? {} : { area }) });
+}
+
 /** Control facts remain UI details and also become validated values for nested callers. */
 function structuredControl<P extends TSchema, D extends JsonValue>(
 	tool: Durable.ToolRegistration<P, D>,
@@ -720,12 +725,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const state = await capture.api.snapshot(RunControl, capture.api.conversationId, String(capture.api.taskId), capture.context);
 		if (state?.dispatch !== "confirmed") return undefined;
 		if (!state.response || !state.result) throw new Error("Confirmed place dispatch has no retained admission");
-		if (typeof state.placeArea !== "string" || !isAbsolute(state.placeArea)) throw new Error("Confirmed place dispatch has no retained canonical area");
+		const area = state.placeArea;
+		if (area !== undefined && (typeof area !== "string" || !isAbsolute(area))) throw new Error("Confirmed place dispatch has an invalid retained canonical area");
 		dispatchFacts("place", params, state.response);
 		const reference = state.response.result as ResultReference;
 		if (reference.sessionId !== state.result.sessionId || reference.submissionId !== state.result.submissionId || reference.requestId !== state.result.requestId)
 			throw new Error("Retained place references disagree");
-		return { area: state.placeArea, sessionId: reference.sessionId, result: JSON.parse(JSON.stringify(state.response)) as Record<string, JsonValue> };
+		return { area, sessionId: reference.sessionId, result: JSON.parse(JSON.stringify(state.response)) as Record<string, JsonValue> };
 	};
 	const dispatchValue = async (perform: AgentControlDispatch, method: AgentControlMethod, params: Readonly<Record<string, unknown>>, capture?: DispatchCapture): Promise<unknown> => {
 		const input = capture && isInputDispatch(method, params);
@@ -1763,11 +1769,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		execute: async (args: PlaceInput, api, context) => {
 			try {
 				const retained = await retainedPlace({ api, context }, { requestId: `place:${host.storageId}:${api.taskId}` });
-				if (retained !== undefined) return textResult(`The owner of ${retained.area} is ${retained.sessionId}.\n${JSON.stringify(retained.result)}`, {
-					...retained.result,
-					sessionId: retained.sessionId,
-					area: retained.area,
-				});
+				if (retained !== undefined) return placeResult(retained.sessionId, retained.result, retained.area);
 			} catch (error) {
 				return errorResult(`Place replay failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
@@ -1776,11 +1778,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			if (resolved.kind === "error") return errorResult(resolved.message);
 			const outcome = await dispatchPlace(api, resolved.area, args, context);
 			if (outcome.kind === "error") return errorResult(outcome.message);
-			return textResult(`The owner of ${resolved.area} is ${outcome.sessionId}.\n${JSON.stringify(outcome.result)}`, {
-				...outcome.result,
-				sessionId: outcome.sessionId,
-				area: resolved.area,
-			});
+			return placeResult(outcome.sessionId, outcome.result, resolved.area);
 		},
 	});
 

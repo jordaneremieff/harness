@@ -150,21 +150,34 @@ async function holdUntilAbort(context: Context, release: Promise<void>): Promise
 	});
 }
 
+async function placeDeadline<T>(promise: Promise<T>): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Place fixture deadline exceeded")), 5000); })]);
+	} finally { clearTimeout(timer); }
+}
+
 async function placedFamily(t: { after(fn: () => Promise<void> | void): void }, options: { reused?: boolean; queued?: boolean; prompt?: string; interrupted?: boolean; invalid?: "target" | "request" | "missing" } = {}) {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-place-control-")));
+	let source: DurableHost | undefined, target: DurableHost | undefined;
+	const release = deferred(), targetStarted = deferred(), captured = [deferred(), deferred()];
+	const releaseTimer = setTimeout(release.resolve, 10000);
+	t.after(async () => {
+		clearTimeout(releaseTimer); release.resolve();
+		try { await placeDeadline(source?.close() ?? Promise.resolve()); }
+		finally { try { await placeDeadline(target?.close() ?? Promise.resolve()); } finally { rmSync(root, { recursive: true, force: true }); } }
+	});
 	const area = join(root, "area"); mkdirSync(area);
 	const outcomes: native.ToolExecutionResult[] = [];
 	let placeTaskId: native.TaskId | undefined;
 	writeFileSync(join(root, "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: `${testModel.provider}/${testModel.id}` } }, preferences: { defaultPreset: "standard" } })));
-	const release = deferred(), targetStarted = deferred(), captured = [deferred(), deferred()];
 	const targetId = "placed-owner";
 	const targetRegistry = fixtureRegistry([gateTool(release.promise, targetStarted.resolve)]);
 	const targetOptions = { ...hostOptions(join(root, "target.sqlite"), await scriptedRuntime([toolCallMessage("gate"), answerMessage()]), targetRegistry, root), storageId: targetId };
-	let target: DurableHost | undefined;
 	let calls = 0, executions = 0;
 	let rebound = false;
 	if (options.reused || options.queued) target = await DurableHost.open(targetOptions, BACKGROUND_CONTEXT);
-	if (options.queued) { assert.ok(target); await target.submit({ message: "unrelated work", requestId: "unrelated" }); await targetStarted.promise; }
+	if (options.queued) { assert.ok(target); await target.submit({ message: "unrelated work", requestId: "unrelated" }); await placeDeadline(targetStarted.promise); }
 	const sourceRegistry = fixtureRegistry();
 	const contribution = createAgentContribution({ configureSettings: () => {}, source: new URL("./index.ts", import.meta.url).pathname, dispatch: async (method, params) => {
 		assert.equal(method, "place"); calls++;
@@ -186,17 +199,16 @@ async function placedFamily(t: { after(fn: () => Promise<void> | void): void }, 
 		return result;
 	} }) });
 	const sourceOptions = hostOptions(join(root, "source.sqlite"), await scriptedRuntime([toolCallMessage("agent_place", { area, prompt: options.prompt ?? "placed work" }), answerMessage()]), sourceRegistry, root);
-	let source = await DurableHost.open(sourceOptions, BACKGROUND_CONTEXT);
-	const wireStop = () => source.setForeignStop((references, context) => stopForeignReferences((method, input) => { assert.ok(target); return target.request(method, input); }, references, context));
+	source = await DurableHost.open(sourceOptions, BACKGROUND_CONTEXT);
+	const wireStop = () => { assert.ok(source); source.setForeignStop((references, context) => stopForeignReferences((method, input) => { assert.ok(target); return target.request(method, input); }, references, context)); };
 	wireStop();
-	t.after(async () => { release.resolve(); await source.close(); await target?.close(); rmSync(root, { recursive: true, force: true }); });
 	const input = await source.submit({ message: "place work", requestId: "place-source" });
-	await captured[0].promise;
-	if (options.prompt !== "") await targetStarted.promise;
+	await placeDeadline(captured[0].promise);
+	if (options.prompt !== "") await placeDeadline(targetStarted.promise);
 	return {
-		get source() { return source; }, get target() { assert.ok(target); return target; }, calls: () => calls, input, outcomes, area,
+		get source() { assert.ok(source); return source; }, get target() { assert.ok(target); return target; }, calls: () => calls, input, outcomes, area,
 		get taskId() { assert.ok(placeTaskId); return placeTaskId; },
-		async reopen(removeArea = false) { rebound = true; await source.close(); if (removeArea) rmSync(area, { recursive: true }); source = await DurableHost.open(sourceOptions, BACKGROUND_CONTEXT); wireStop(); await captured[1].promise; },
+		async reopen(removeArea = false) { rebound = true; assert.ok(source); await placeDeadline(source.close()); if (removeArea) rmSync(area, { recursive: true }); source = await DurableHost.open(sourceOptions, BACKGROUND_CONTEXT); wireStop(); await placeDeadline(captured[1].promise); },
 	};
 }
 
@@ -264,23 +276,54 @@ for (const invalid of [undefined, "target", "request", "missing"] as const) test
 	assert.equal(stopped.state, "partial");
 });
 
-for (const removeArea of [false, true]) test(`confirmed place replay retains its successful response and Stop reference after ${removeArea ? "area removal" : "area rebinding"}`, { timeout: 15000 }, async t => {
+for (const areaSource of ["capture", "absent"] as const) for (const removeArea of [false, true]) test(`confirmed place replay retains admission and Stop with area=${areaSource} after ${removeArea ? "directory removal" : "owner rebinding"}`, { timeout: 15000 }, async t => {
 	const f = await placedFamily(t);
 	const before = await f.source.request("run-scope") as RunScope;
 	const targetBefore = await f.target.request("run-scope") as RunScope;
 	assert.notEqual(f.outcomes[0].isError, true);
 	assert.equal((f.outcomes[0].details as Record<string, unknown>).area, f.area);
+	if (areaSource !== "capture") await f.source.harness.commit(async tx => {
+		const state = await tx.doc(agentRunControlDoc(native), f.source.root().id, String(f.taskId), null);
+		assert.equal(state.dispatch, "confirmed"); assert.ok(state.response);
+		delete state.placeArea;
+	}, BACKGROUND_CONTEXT);
+	const retained = await f.source.harness.snapshot(agentRunControlDoc(native), f.source.root().id, String(f.taskId), BACKGROUND_CONTEXT);
+	assert.ok(retained?.response);
 	await f.reopen(removeArea);
-	assert.deepEqual(f.outcomes[1], f.outcomes[0]);
+	if (areaSource === "capture") assert.deepEqual(f.outcomes[1], f.outcomes[0]);
+	else {
+		const heading = `The place owner is ${retained.result?.sessionId}.`;
+		assert.deepEqual(f.outcomes[1], { output: [{ type: "text", text: `${heading}\n${JSON.stringify(retained.response)}` }], details: retained.response });
+		assert.equal(Object.hasOwn(f.outcomes[1].details as object, "area"), false);
+		assert.equal(JSON.stringify(f.outcomes[1]).includes(f.area), false);
+	}
 	const after = await f.source.request("run-scope") as RunScope;
 	assert.deepEqual(after.delegations, before.delegations);
 	assert.equal(after.coverage.complete, true);
 	assert.equal(f.calls(), 1);
 	const control = await f.source.harness.snapshot(agentRunControlDoc(native), f.source.root().id, String(after.delegations[0].createdBy), BACKGROUND_CONTEXT);
 	assert.deepEqual(control?.result, before.delegations[0].result);
-	assert.equal(control?.placeArea, f.area);
+	assert.deepEqual(control, retained);
 	const stopped = await f.source.request("run-stop", { runId: after.runId }) as RunStop;
 	assert.equal(stopped.state, "stopped");
 	assert.equal(stopped.delegations[0].state, "stopped");
 	assert.equal((await f.target.harness.getTask(targetBefore.taskId as native.TaskId, BACKGROUND_CONTEXT))?.abortRequested, true);
+});
+
+for (const fault of ["area", "session", "submission", "request", "reference"] as const) test(`confirmed place replay refuses inconsistent ${fault} facts without new dispatch`, { timeout: 15000 }, async t => {
+	const f = await placedFamily(t);
+	await f.source.harness.commit(async tx => {
+		const state = await tx.doc(agentRunControlDoc(native), f.source.root().id, String(f.taskId), null);
+		assert.equal(state.dispatch, "confirmed"); assert.ok(state.response); assert.ok(state.result);
+		delete state.placeArea;
+		if (fault === "area") state.placeArea = "relative-area";
+		if (fault === "session") state.response.sessionId = "different-owner";
+		if (fault === "submission") state.response.submissionId = state.result.submissionId + 1;
+		if (fault === "request") (state.response.result as Record<string, unknown>).requestId = "different-request";
+		if (fault === "reference") state.result.submissionId++;
+	}, BACKGROUND_CONTEXT);
+	await f.reopen(true);
+	assert.equal(f.outcomes[1].isError, true);
+	assert.match(JSON.stringify(f.outcomes[1].output), /Place replay failed:/u);
+	assert.equal(f.calls(), 1);
 });
