@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { type TestContext, test } from "node:test";
 import {
 	fauxAssistantMessage,
@@ -290,9 +290,9 @@ test("a capacity continuation executes stash_write and saves a private checkpoin
 	const details = result.details;
 	assert.ok(details && typeof details === "object" && "checkpoint" in details && "path" in details);
 	assert.equal(details.checkpoint, true);
-	assert.equal("id" in details, false);
 	assert.ok(typeof details.path === "string");
 	const path = details.path;
+	assert.equal("id" in details && details.id, `checkpoint:${basename(path, ".md")}`);
 	assert.equal(dirname(path), checkpointDir);
 	assert.match(await readFile(path, "utf8"), /The checked decision remains fixed/);
 	assert.deepEqual(await listStashes(stashDir), []);

@@ -263,6 +263,7 @@ export function renderWriteResult(
 }
 
 export interface ListDisplayArgs {
+	collection?: string;
 	limit?: number;
 	tag?: string;
 	state?: string;
@@ -285,6 +286,7 @@ export function renderListCall(
 		qualifiers.push(`tag ${tag.text}`);
 		hint = hint || tag.clipped;
 	}
+	if (args?.collection === "checkpoints") qualifiers.push("provisional checkpoints");
 	if (typeof args?.state === "string" && args.state) qualifiers.push(`state ${args.state}`);
 	if (typeof args?.limit === "number") qualifiers.push(`limit ${args.limit}`);
 	if (typeof args?.cursor === "string" && args.cursor) hint = true;
@@ -326,7 +328,7 @@ function searchPageCard(
 			color,
 			line: `${countLabel(matches.length, "match", "matches")} · ${skipped} skipped · coverage ${complete ? "complete" : "partial"}`,
 		},
-		[tally, continuation].filter(Boolean).join(" · "),
+		[details.provisional === true ? "provisional checkpoints" : "", tally, continuation].filter(Boolean).join(" · "),
 		matches.length > 0,
 		textContent(result),
 		options,
@@ -349,8 +351,8 @@ function listingCard(
 	const tally = stateTally(states);
 	const second = details.truncated === true ? `${tally ? `${tally} · ` : ""}list truncated` : tally;
 	return resultCard(
-		{ color: count > 0 ? "success" : "muted", line: `${countLabel(count, "stash", "stashes")} listed` },
-		second,
+		{ color: count > 0 ? "success" : "muted", line: `${details.provisional === true ? countLabel(count, "checkpoint", "checkpoints") : countLabel(count, "stash", "stashes")} listed` },
+		details.provisional === true ? `provisional working material${second ? ` · ${second}` : ""}` : second,
 		count > 0,
 		textContent(result),
 		options,
@@ -386,6 +388,7 @@ export function renderListResult(
 }
 
 export interface ReadDisplayArgs {
+	collection?: string;
 	id: string;
 }
 
@@ -396,7 +399,7 @@ export function renderReadCall(
 ): Component {
 	const id = typeof args?.id === "string" ? previewMark(args.id, 72) : { text: "", clipped: false };
 	const subject = id.text || (context.argsComplete === false ? "" : "(id pending)");
-	return callCard("stash_read", subject, [], false, args, theme, context);
+	return callCard("stash_read", subject, args?.collection === "checkpoints" ? ["provisional checkpoint"] : [], false, args, theme, context);
 }
 
 /** The outcome row separates the returned page from the artifact that remains on disk. */
@@ -411,7 +414,7 @@ export function renderReadResult(
 	const details = record(result.details);
 	const text = textContent(result);
 	const meta = parseFrontmatter(text).meta;
-	const state = typeof meta.state === "string" ? previewMark(meta.state, 40).text : "";
+	const state = details.provisional === true ? "provisional checkpoint" : typeof meta.state === "string" ? previewMark(meta.state, 40).text : "";
 	const title = typeof meta.title === "string" ? previewMark(meta.title, 80).text : "";
 	const lines = typeof details.totalLines === "number" ? `${details.totalLines} lines` : "";
 	const truncated = details.truncated === true ? " · truncated, full artifact remains in the file" : "";

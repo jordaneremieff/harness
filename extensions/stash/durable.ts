@@ -30,6 +30,7 @@ import {
 	prepareDistillSource,
 } from "./distill.ts";
 import { resumeCommand } from "./format.ts";
+import { artifactId, collectionDirectory, collectionFilter, collectionId } from "./collection.ts";
 import {
 	STASH_COMPLETE_DESCRIPTION,
 	STASH_EDIT_DESCRIPTION,
@@ -657,10 +658,10 @@ async function searchListResult(
 	};
 }
 
-async function recentListResultFor(storeDir: string, params: ListToolParams) {
+async function recentListResultFor(storeDir: string, params: ListToolParams, signal?: AbortSignal) {
 	const limit = params.limit ?? 10;
-	const entries = await listStashes(storeDir, { limit, tag: params.tag, state: params.state });
-	const result = recentListResult(entries, limit, emptyListText(params.tag, params.state));
+	const entries = await listStashes(storeDir, { limit, tag: params.tag, state: params.state }, signal);
+	const result = recentListResult(entries, limit, emptyListText(params.tag, params.state), params.collection);
 	return {
 		output: result.content,
 		structuredOutput: jsonDetails(result.structuredContent),
@@ -712,6 +713,28 @@ export function stashDurableContribution(
 	};
 }
 
+async function publicationPlan(
+	host: StashDurableHost,
+	storeDir: string,
+	params: Static<typeof WriteParams>,
+	api: Durable.ToolExecutionApi<Durable.JsonObject>,
+	context: Context,
+): Promise<StashPublication> {
+	const plan = await api.memo<StashPublication>("stash.publication", context);
+	const pending = await api.memo<{ createdAtMs: number }>("stash.write", context);
+	if (plan) return plan;
+	if (pending) throw new Error(`Unsupported pending timestamp-only publication (${pending.createdAtMs}); current store: ${storeDir}. Original destination and identity are unknown. Resume with its retained source; no artifact was published.`);
+	const agent = await api.agent(context);
+	const cwd = api.env?.cwd ?? agent.cwd ?? host.cwd;
+	const branch = await gitBranch(api.env, context);
+	const destination = params.checkpoint
+		? await checkpointDirectory(readSettings({ agentDir: host.agentDir }).values.checkpointDir, storeDir)
+		: storeDir;
+	return api.memo("stash.publication", planStashPublication(
+		destination, { ...params, project: cwd, branch, sessionId: sourceLocator(host, api.conversationId) }, new Date(api.now()), params.checkpoint,
+	), context);
+}
+
 /** Build the native Durable extension for one session host. */
 export function createStashDurableExtension(host: StashDurableHost): Durable.Extension {
 	const storeDir = resolveStoreDir(process.env, host.agentDir);
@@ -752,31 +775,17 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		replay: "safe",
 		execute: async (params, api, context) => {
 			try {
-				let plan = await api.memo<StashPublication>("stash.publication", context);
-				const pending = await api.memo<{ createdAtMs: number }>("stash.write", context);
-				if (!plan && pending) throw new Error(`Unsupported pending timestamp-only publication (${pending.createdAtMs}); current store: ${storeDir}. Original destination and identity are unknown. Resume with its retained source; no artifact was published.`);
-				if (!plan) {
-					const agent = await api.agent(context);
-					const cwd = api.env?.cwd ?? agent.cwd ?? host.cwd;
-					const branch = await gitBranch(api.env, context);
-					const settings = readSettings({ agentDir: host.agentDir }).values;
-					const destination = params.checkpoint
-						? await checkpointDirectory(settings.checkpointDir, settings.dir)
-						: settings.dir;
-					plan = await api.memo("stash.publication", planStashPublication(
-						destination, { ...params, project: cwd, branch, sessionId: sourceLocator(host, api.conversationId) }, new Date(api.now()), params.checkpoint,
-					), context);
-				}
+				const plan = await publicationPlan(host, storeDir, params, api, context);
 				const { record, path, redactions, archived } = await writeReplayableStash(plan);
 				if (plan.checkpoint) {
 					return {
 						output: [
 							{
 								type: "text" as const,
-								text: `Saved working checkpoint "${safeLine(record.title)}".\n${safeLine(path)}\nRead this file to recover the synthesis. It is not listed by stash_list and has no /stash pickup shortcut.${redactions.count ? `\n${redactionNotice(redactions)}` : ""}`,
+								text: `Saved working checkpoint "${safeLine(record.title)}".\n${safeLine(path)}\nDiscover it with stash_list collection checkpoints, then stash_read with that collection and its checkpoint: identifier. It is provisional working material, not a handover pickup.${redactions.count ? `\n${redactionNotice(redactions)}` : ""}`,
 							},
 						],
-						details: { path, checkpoint: true, redactions },
+						details: { id: collectionId(record.id, "checkpoints"), path, checkpoint: true, redactions },
 					};
 				}
 				const text = [
@@ -804,11 +813,13 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		replay: "safe",
 		execute: async (params, _api, context) => {
 			try {
+				collectionFilter(params.collection, params.state);
+				const directory = await collectionDirectory(host.agentDir, params.collection, storeDir);
 				const query = params.query;
-				if (query !== undefined) return await searchListResult(storeDir, { ...params, query }, context.abortSignal);
+				if (query !== undefined) return await searchListResult(directory, { ...params, query }, context.abortSignal);
 				if (params.cursor !== undefined)
 					throw new Error("cursor requires query; repeat the original query and filters");
-				return await recentListResultFor(storeDir, params);
+				return await recentListResultFor(directory, params, context.abortSignal);
 			} catch (error) {
 				return listErrorResult(error, context.abortSignal);
 			}
@@ -820,10 +831,12 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		description: STASH_READ_DESCRIPTION,
 		parameters: ReadParams,
 		replay: "safe",
-		execute: async (params, _api, _context) => {
-			const result = await readStash(storeDir, params.id);
+		execute: async (params, _api, context) => {
+			const id = artifactId(params.id, params.collection);
+			const directory = await collectionDirectory(host.agentDir, params.collection, storeDir);
+			const result = await readStash(directory, id, context.abortSignal);
 			if ("error" in result) throw readFailure(result);
-			const read = readStashResult(result);
+			const read = readStashResult(result, params.collection);
 			return { output: read.content, details: jsonDetails(read.details) };
 		},
 	});

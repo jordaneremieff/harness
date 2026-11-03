@@ -54,6 +54,10 @@ describe("publication identity", () => {
 		assert.equal(archived.path, rotated.archivePath);
 		assert.equal(archived.archived, true);
 		assert.equal((await listStashes(directory)).length, 1);
+		await transitionStash(directory, second.record.id, { action: "close", outcome: "done ".repeat(3900) });
+		const expandedHeader = await writeReplayableStash(other);
+		assert.equal(expandedHeader.record.state, "closed");
+		assert.equal(expandedHeader.record.outcome?.length, 19499);
 	});
 	it("redacts the retained payload and refuses unsafe identity paths", async () => {
 		const token = "sk-abcdefgh" + "ijklmnop1234";

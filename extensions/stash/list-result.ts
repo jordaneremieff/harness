@@ -5,18 +5,25 @@ import { Type } from "typebox";
 /** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
 const StringEnum = <T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: values });
 import { STASH_STATES, stateLabel } from "./format.ts";
+import { CHECKPOINT_NOTICE, checkpointMetadata, collectionId, type StashCollection } from "./collection.ts";
 import { SEARCH_LIMITS } from "./search.ts";
 import type { StashEntry } from "./store.ts";
 import { boundedOutput, MAX_OUTPUT_BYTES, sanitizeTerminalText } from "./text.ts";
 
 const count = () => Type.Integer({ minimum: 0 });
-const state = StringEnum([...STASH_STATES, "unknown"]);
-const record = Type.Object({ id: Type.String(), title: Type.String(), state }, { additionalProperties: false });
+const state = StringEnum([...STASH_STATES, "unknown", "provisional"]);
+const provenance = {
+	source: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+	workspace: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+};
+const collection = StringEnum(["handovers", "checkpoints"] as const);
+const record = Type.Object({ id: Type.String(), title: Type.String(), state, ...provenance }, { additionalProperties: false });
 const searchMatch = Type.Object(
 	{
 		id: Type.String(),
 		title: Type.String(),
 		state,
+		...provenance,
 		field: Type.String(),
 		start: count(),
 		end: count(),
@@ -31,6 +38,8 @@ export const ListOutputSchema = Type.Union([
 	Type.Object(
 		{
 			kind: Type.Literal("recent"),
+			collection,
+			provisional: Type.Boolean(),
 			records: Type.Array(record, { maxItems: 50 }),
 			limit: Type.Integer({ minimum: 1, maximum: 50 }),
 			selectedCount: Type.Integer({ minimum: 0, maximum: 50 }),
@@ -51,6 +60,8 @@ export const ListOutputSchema = Type.Union([
 	),
 	Type.Object(
 		{
+			collection,
+			provisional: Type.Boolean(),
 			matches: Type.Array(searchMatch, { maxItems: SEARCH_LIMITS.matches }),
 			skipped: Type.Array(Type.Object({ id: Type.String(), reason: Type.String() }, { additionalProperties: false }), {
 				maxItems: SEARCH_LIMITS.candidates,
@@ -91,7 +102,9 @@ export const ListOutputSchema = Type.Union([
 export type RecentRecord = {
 	id: string;
 	title: string;
-	state: "open" | "active" | "closed" | "unknown";
+	state: "open" | "active" | "closed" | "unknown" | "provisional";
+	source?: string | null;
+	workspace?: string | null;
 };
 
 /** Empty-state prose for a filtered recent list; shared by both entrypoints. */
@@ -108,42 +121,50 @@ export function recentListResult(
 	entries: StashEntry[],
 	limit: number,
 	emptyText: string,
+	collection: StashCollection = "handovers",
 ): AgentToolResult<Record<string, unknown>> {
+	const notice = collection === "checkpoints" ? `${CHECKPOINT_NOTICE}\n` : "";
 	if (entries.length === 0)
 		return {
-			content: [{ type: "text", text: emptyText }],
-			details: { count: 0 },
-			structuredContent: recentListContent([], limit, 0, false),
+			content: [{ type: "text", text: `${notice}${emptyText}` }],
+			details: collection === "checkpoints" ? { count: 0, collection, provisional: true } : { count: 0 },
+			structuredContent: recentListContent([], limit, 0, false, collection),
 		};
-	const rows = entries.map(recentListRow);
+	const rows = entries.map((entry) => recentListRow(entry, collection));
+	if (rows[0] && notice) rows[0].text = notice + rows[0].text;
 	const bounded = boundedOutput(
 		rows.map((row) => row.text).join("\n"),
 		"Lower limit or filter by tag for a narrower list.",
 	);
 	return {
 		content: [{ type: "text", text: bounded.text }],
-		structuredContent: recentListContent(rows, limit, bounded.outputChars, bounded.truncated),
+		structuredContent: recentListContent(rows, limit, bounded.outputChars, bounded.truncated, collection),
 		details: {
 			count: entries.length,
-			ids: entries.map((entry) => entry.meta.id),
+			collection,
+			provisional: collection === "checkpoints",
+			ids: entries.map((entry) => collectionId(entry.meta.id, collection)),
 			states: entries.map((entry) =>
-				sanitizeTerminalText(stateLabel(entry.meta, entry.previewError !== undefined)).text.replace(/\n/g, "↵"),
+				collection === "checkpoints" ? "provisional" : sanitizeTerminalText(stateLabel(entry.meta, entry.previewError !== undefined)).text.replace(/\n/g, "↵"),
 			),
 			truncated: bounded.truncated,
 		},
 	};
 }
 
-function recentListRow(entry: StashEntry) {
+function recentListRow(entry: StashEntry, collection: StashCollection) {
 	const line = (value: string) => sanitizeTerminalText(value).text.replace(/\n/g, "↵");
 	const tags = entry.meta.tags.length > 0 ? ` [${entry.meta.tags.map(line).join(", ")}]` : "";
 	const title = line(entry.meta.title);
+	const id = collectionId(entry.meta.id, collection);
+	const provenance = collection === "checkpoints" ? checkpointMetadata(entry.meta) : undefined;
 	return {
-		text: `${entry.meta.id}\n  ${line(stateLabel(entry.meta, entry.previewError !== undefined))} · ${title}${tags}`,
+		text: `${id}\n  ${collection === "checkpoints" ? "provisional" : line(stateLabel(entry.meta, entry.previewError !== undefined))} · ${title}${tags}${collection === "checkpoints" ? `\n  Source: ${line(provenance?.source ?? "unknown")} · Workspace: ${line(provenance?.workspace ?? "unknown")}` : ""}`,
 		record: {
-			id: entry.meta.id,
+			id,
+			...provenance,
 			title,
-			state:
+			state: collection === "checkpoints" ? ("provisional" as const) :
 				entry.previewError !== undefined || entry.meta.invalidState !== undefined
 					? ("unknown" as const)
 					: entry.meta.state,
@@ -157,9 +178,12 @@ export function recentListContent(
 	limit: number,
 	visibleChars: number,
 	textTruncated: boolean,
+	collection: StashCollection = "handovers",
 ) {
 	const page = {
 		kind: "recent" as const,
+		collection,
+		provisional: collection === "checkpoints",
 		records: [] as RecentRecord[],
 		limit,
 		selectedCount: rows.length,

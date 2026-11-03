@@ -103,8 +103,9 @@ export async function openRegular(path: string): Promise<{ handle: FileHandle; i
 const hardenedStores = new Set<string>();
 
 /** Harden discovered artifacts through nonblocking, no-follow regular-file descriptors. */
-async function hardenArtifacts(dir: string, dirents: Dirent[]): Promise<void> {
+async function hardenArtifacts(dir: string, dirents: Dirent[], signal?: AbortSignal): Promise<void> {
 	for (const entry of artifactDirents(dirents)) {
+		checkReadSignal(signal);
 		try {
 			const { handle, info } = await openRegular(join(dir, entry.name));
 			try {
@@ -136,8 +137,10 @@ export async function validateStore(dir: string, create: boolean): Promise<Stats
 }
 
 /** Enforce directory privacy and sweep artifacts once, caching only a completed sweep. */
-async function secureStore(dir: string, create: boolean): Promise<Dirent[] | null> {
+async function secureStore(dir: string, create: boolean, signal?: AbortSignal): Promise<Dirent[] | null> {
+	checkReadSignal(signal);
 	if (!(await validateStore(dir, create))) return null;
+	checkReadSignal(signal);
 	let dirents: Dirent[];
 	try {
 		dirents = await readdir(dir, { withFileTypes: true });
@@ -145,8 +148,9 @@ async function secureStore(dir: string, create: boolean): Promise<Dirent[] | nul
 		if (!create && hasCode(error, "ENOENT")) return null;
 		throw error;
 	}
+	checkReadSignal(signal);
 	if (hardenedStores.has(dir)) return dirents;
-	await hardenArtifacts(dir, dirents);
+	await hardenArtifacts(dir, dirents, signal);
 	// Mark the store hardened only after a completed sweep so an interrupted one
 	// retries on the next touch.
 	hardenedStores.add(dir);
@@ -277,9 +281,9 @@ export async function writeReplayableStash(
 	const reacquire = async () => {
 		for (const path of paths) {
 			try {
-				const prefix = await readPrefix(path, HEADER_SCAN_BYTES);
-				const parsed = parseFrontmatter(prefix.text);
-				if (headerUnclosed(prefix.text) || parsed.meta.id !== plan.id)
+				const artifact = await readMutationSource(path, "readable");
+				const parsed = parseFrontmatter(artifact.content);
+				if (headerUnclosed(artifact.content) || parsed.meta.id !== plan.id)
 					throw new Error(`Publication identity is unavailable at ${path}; no artifact was published.`);
 				return { record: normalizeMeta(`${plan.id}.md`, parsed.meta), path, redactions: plan.redactions, archived: path !== paths[paths.length - 1] };
 			} catch (error) {
@@ -419,8 +423,8 @@ async function listingEntry(dir: string, name: string, options: ListOptions): Pr
 }
 
 /** List artifacts newest-first without allowing malformed files to hide their siblings. */
-export async function listStashes(dir: string, options: ListOptions = {}): Promise<StashEntry[]> {
-	const dirents = await secureStore(dir, false);
+export async function listStashes(dir: string, options: ListOptions = {}, signal?: AbortSignal): Promise<StashEntry[]> {
+	const dirents = await secureStore(dir, false, signal);
 	if (!dirents) return [];
 	const limit = Math.max(0, options.limit ?? 10);
 	if (limit === 0) return [];
@@ -432,7 +436,9 @@ export async function listStashes(dir: string, options: ListOptions = {}): Promi
 	const entries: StashEntry[] = [];
 
 	for (const name of names) {
+		checkReadSignal(signal);
 		const entry = await listingEntry(dir, name, options);
+		checkReadSignal(signal);
 		const { meta, previewError } = entry;
 		// An unreadable artifact has no readable tags, so an explicit tag filter
 		// cannot match it; it stays visible in unfiltered listings (the same rule
@@ -478,20 +484,21 @@ function locateArtifact(dir: string, dirents: Dirent[], idOrPrefix: string): Loc
 }
 
 /** Resolve a discovered regular artifact without loading its body or applying the read-size cap. */
-export async function resolveStash(dir: string, idOrPrefix: string): Promise<LocatedArtifact> {
-	const dirents = await secureStore(dir, false);
+export async function resolveStash(dir: string, idOrPrefix: string, signal?: AbortSignal): Promise<LocatedArtifact> {
+	const dirents = await secureStore(dir, false, signal);
 	if (!dirents) return { ok: false, error: `stash store not found: ${dir}` };
 	return locateArtifact(dir, dirents, idOrPrefix);
 }
 
 /** Read one regular artifact by exact id or unique id prefix. */
-export async function readStash(dir: string, idOrPrefix: string): Promise<ReadResult> {
-	const located = await resolveStash(dir, idOrPrefix);
+export async function readStash(dir: string, idOrPrefix: string, signal?: AbortSignal): Promise<ReadResult> {
+	const located = await resolveStash(dir, idOrPrefix, signal);
 	if ("error" in located) return located;
 	try {
-		const artifact = await readMutationSource(located.path, "readable");
+		const artifact = await readMutationSource(located.path, "readable", signal);
 		return { ...located, content: artifact.content, digest: artifact.digest };
 	} catch (error) {
+		checkReadSignal(signal);
 		return {
 			ok: false,
 			error: `failed to read ${located.path}: ${error instanceof Error ? error.message : String(error)}`,
@@ -544,9 +551,15 @@ function sameRevision(before: Stats, after: Stats): boolean {
 	);
 }
 
-async function readMutationSource(path: string, sizeKind = "mutable"): Promise<MutationSource> {
+function checkReadSignal(signal?: AbortSignal): void {
+	if (signal?.aborted) throw new Error("stash read cancelled");
+}
+
+async function readMutationSource(path: string, sizeKind = "mutable", signal?: AbortSignal): Promise<MutationSource> {
+	checkReadSignal(signal);
 	const { handle, info } = await openRegular(path);
 	try {
+		checkReadSignal(signal);
 		if ((info.mode & 0o7777) !== 0o600) await handle.chmod(0o600);
 		// Permission hardening changes ctime, so it precedes the consistency baseline.
 		const before = await handle.stat();
@@ -556,12 +569,15 @@ async function readMutationSource(path: string, sizeKind = "mutable"): Promise<M
 		const buffer = Buffer.alloc(MAX_STASH_BYTES + 1);
 		let offset = 0;
 		while (offset < buffer.length) {
+			checkReadSignal(signal);
 			const result = await handle.read(buffer, offset, buffer.length - offset, offset);
+			checkReadSignal(signal);
 			if (result.bytesRead === 0) break;
 			offset += result.bytesRead;
 		}
 		const after = await handle.stat();
 		const current = await lstat(path);
+		checkReadSignal(signal);
 		if (offset > MAX_STASH_BYTES || after.size > MAX_STASH_BYTES) {
 			throw new Error(`stash exceeds the maximum ${sizeKind} size of ${MAX_STASH_BYTES} bytes`);
 		}

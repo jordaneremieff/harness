@@ -137,6 +137,8 @@ test("native codemode consumes recent, search, empty and error objects without p
 	assert.equal(observed.length, 7);
 	assert.deepEqual(observed[0], {
 		kind: "recent",
+		collection: "handovers",
+		provisional: false,
 		records: [{ id: "one", title: "Open title", state: "open" }],
 		limit: 10,
 		selectedCount: 1,

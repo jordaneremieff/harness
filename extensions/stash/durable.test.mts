@@ -345,6 +345,27 @@ test("freezes publication metadata before effects and reads memo winners before 
 	await tool.execute(params, api as never, context);
 	assert.equal((await listStashes(h.storeDir)).length, 1);
 	assert.equal((await listStashes(process.env.PI_STASH_DIR)).length, 0);
+	memos.clear();
+	api.agent = async () => ({ cwd: h.workdir });
+	await tool.execute(params, api as never, context);
+	assert.equal((await listStashes(h.storeDir)).length, 2, "new operations retain the native handover store");
+	const list = h.extension.tools?.find((tool) => tool.name === "stash_list");
+	const read = h.extension.tools?.find((tool) => tool.name === "stash_read");
+	const complete = h.extension.tools?.find((tool) => tool.name === "stash_complete");
+	assert.ok(list && read && complete);
+	const page = await list.execute({}, {} as never, context);
+	assert.equal((page.structuredOutput as { records: unknown[] }).records.length, 2);
+	const found = await read.execute({ id: entry.meta.id }, {} as never, context);
+	assert.equal((found.details as { id: string }).id, entry.meta.id);
+	await complete.execute({ id: entry.meta.id, outcome: "Complete" }, {} as never, context);
+	assert.equal((await listStashes(h.storeDir)).find((value) => value.meta.id === entry.meta.id)?.meta.state, "closed");
+	process.env.PI_STASH_CHECKPOINT_DIR = h.storeDir;
+	try {
+		memos.clear();
+		await assert.rejects(tool.execute({ ...params, checkpoint: true }, api as never, context), /must differ/);
+		const refused = await list.execute({ collection: "checkpoints" }, {} as never, context);
+		assert.equal(refused.isError, true);
+	} finally { delete process.env.PI_STASH_CHECKPOINT_DIR; }
 	const pending = new Map<string, JsonValue>([["stash.write", { createdAtMs: 123 }]]);
 	await assert.rejects(tool.execute(params, { ...api, memo: async (name: string) => pending.get(name) } as never, context), /timestamp-only.*123/);
 	assert.equal(pending.size, 1);
@@ -376,7 +397,9 @@ test("refuses a planless pending distillation without a new publication", async 
 	const task = h.extension.tasks?.find((task) => task.definition.name === "stash.distill");
 	assert.ok(task);
 	const receipts: Durable.JsonObject[] = [];
-	await task.definition.phases.write({
+	const write = task.definition.phases.write;
+	assert.ok(typeof write === "function");
+	await write({
 		input: { storeDir: h.storeDir },
 		state: { checkpoint: { phase: "write", payload: { title: "Old", summary: "Old" }, createdAtMs: 123, redactions: redactSecretsWithReport("").report } },
 	} as never, {
@@ -385,6 +408,38 @@ test("refuses a planless pending distillation without a new publication", async 
 	} as never, context);
 	assert.equal(receipts[0]?.status, "failed");
 	assert.match(String(receipts[0]?.message), /Unsupported pending distillation.*123/);
+	assert.equal((await listStashes(h.storeDir)).length, 0);
+});
+
+test("discovers and reads native checkpoints by topic without lifecycle changes", async (t) => {
+	const h = await startHarness(t);
+	capacityOff(t);
+	process.env.PI_STASH_CHECKPOINT_DIR = join(h.workdir, "checkpoints");
+	t.after(() => { delete process.env.PI_STASH_CHECKPOINT_DIR; });
+	await answerWith(h.root, h.faux, [
+		fauxAssistantMessage(fauxToolCall("stash_write", { title: "Checkpoint", summary: "Orchid recovery evidence", checkpoint: true }), { stopReason: "toolUse" }),
+		fauxAssistantMessage(fauxToolCall("stash_list", { collection: "checkpoints", query: "Orchid" }), { stopReason: "toolUse" }),
+		fauxAssistantMessage("Found"),
+	], "Save and find the checkpoint.");
+	const listed = (await toolResults(h.root)).find((result) => result.name === "stash_list");
+	assert.ok(listed && !listed.isError);
+	const page = JSON.parse(listed.text) as { matches: { id: string; state: string; source: string; workspace: string }[]; provisional: boolean };
+	assert.equal(page.provisional, true);
+	assert.equal(page.matches.length, 1);
+	assert.equal(page.matches[0].source, h.host.storageId);
+	assert.equal(page.matches[0].workspace, h.workdir);
+	assert.equal(page.matches[0].state, "provisional");
+	const [entry] = await listStashes(process.env.PI_STASH_CHECKPOINT_DIR);
+	const original = await readFile(entry.path, "utf8");
+	await answerWith(h.root, h.faux, [
+		fauxAssistantMessage(fauxToolCall("stash_read", { collection: "checkpoints", id: page.matches[0].id }), { stopReason: "toolUse" }),
+		fauxAssistantMessage("Read"),
+	], "Read the checkpoint.");
+	const read = (await toolResults(h.root)).find((result) => result.name === "stash_read");
+	assert.ok(read && !read.isError);
+	assert.match(read.text, /Provisional working material/);
+	assert.match(read.text, /Artifact digest: [a-f0-9]{64}/);
+	assert.equal(await readFile(entry.path, "utf8"), original);
 	assert.equal((await listStashes(h.storeDir)).length, 0);
 });
 
@@ -1159,6 +1214,15 @@ async function recover(
 	return { harness, root, faux };
 }
 
+async function mutatePublication(storeDir: string, id: string, mode: "write" | "distill"): Promise<string> {
+	const read = await readStash(storeDir, id);
+	assert.ok(read.ok);
+	const oldText = mode === "write" ? "Written before the process died." : "Captured before restart.";
+	await editStash(storeDir, read.id, { expectedDigest: read.digest, edits: [{ oldText, newText: "Revised after publication." }] });
+	await transitionStash(storeDir, read.id, { action: mode === "write" ? "activate" : "close", outcome: "Retained result" });
+	return mode === "distill" ? (await rotateStash(storeDir, read.id)).archivePath : read.path;
+}
+
 async function replayCase(
 	t: { after(fn: () => void | Promise<void>): void },
 	mode: "write" | "complete" | "distill",
@@ -1194,15 +1258,7 @@ async function replayCase(
 		const before = await listStashes(storeDir, {});
 		assert.equal(before.length, 1, "the killed attempt reached its external effect");
 
-		let retainedPath = before[0].path;
-		if (mode !== "complete") {
-			const read = await readStash(storeDir, before[0].meta.id);
-			assert.ok(read.ok);
-			const oldText = mode === "write" ? "Written before the process died." : "Captured before restart.";
-			await editStash(storeDir, read.id, { expectedDigest: read.digest, edits: [{ oldText, newText: "Revised after publication." }] });
-			await transitionStash(storeDir, read.id, { action: mode === "write" ? "activate" : "close", outcome: "Retained result" });
-			if (mode === "distill") retainedPath = (await rotateStash(storeDir, read.id)).archivePath;
-		}
+		const retainedPath = mode === "complete" ? before[0].path : await mutatePublication(storeDir, before[0].meta.id, mode);
 		const original = await readFile(retainedPath, "utf8");
 		const { harness, root, faux } = await recover(storagePath, storeDir, workdir, "after recovery");
 		try {

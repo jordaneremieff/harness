@@ -1,5 +1,6 @@
-/** Bounded, read-only discovery over the flat handover store. */
+/** Bounded, read-only discovery over one explicit flat artifact collection. */
 import { createHash } from "node:crypto";
+import { CHECKPOINT_NOTICE, checkpointMetadata, collectionFilter, collectionId, type StashCollection } from "./collection.ts";
 import type { Dirent, Stats } from "node:fs";
 import { lstat, opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -20,10 +21,14 @@ const SAFE_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.md$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const CONSISTENCY =
 	"Membership is checked on each page. Bodies and filters are observations at each read, not a frozen snapshot. Repeat query and filters with nextCursor, even after an empty page. Skipped records prevent complete coverage. Read the selected stash before resuming; search does not activate it.";
+function consistency(collection: StashCollection): string {
+	return collection === "checkpoints" ? `${CHECKPOINT_NOTICE} ${CONSISTENCY}` : CONSISTENCY;
+}
 const REPRESENTATION =
 	"UTF-16 offsets in the full credential-redacted, terminal-escaped field; body uses parseFrontmatter's trimmed body. No normalization; Unicode simple case folding (JavaScript iu), not full folding.";
 
 export interface SearchOptions {
+	collection?: StashCollection;
 	query: string;
 	cursor?: string;
 	limit?: number;
@@ -38,6 +43,8 @@ interface Cursor {
 	skipped: number;
 }
 export interface SearchMatch {
+	source?: string | null;
+	workspace?: string | null;
 	id: string;
 	title: string;
 	state: string;
@@ -49,6 +56,8 @@ export interface SearchMatch {
 	excerpt: string;
 }
 export interface SearchPage {
+	collection: StashCollection;
+	provisional: boolean;
 	matches: SearchMatch[];
 	skipped: { id: string; reason: string }[];
 	coverage: {
@@ -76,6 +85,7 @@ function cancelled(signal?: AbortSignal): void {
 	if (signal?.aborted) throw new Error("stash_list cancelled");
 }
 function validateOptions(options: SearchOptions): void {
+	collectionFilter(options.collection, options.state);
 	if (
 		typeof options.query !== "string" ||
 		!options.query.trim() ||
@@ -312,7 +322,11 @@ function inspectCandidate(
 		if (hit)
 			return {
 				filtered: false,
-				match: { id: meta.id, title: shortTitle(safeField(meta.title)), state: meta.state, field, ...hit },
+				match: {
+					id: collectionId(meta.id, options.collection), title: shortTitle(safeField(meta.title)),
+					state: options.collection === "checkpoints" ? "provisional" : meta.state,
+					...(options.collection === "checkpoints" ? checkpointMetadata(meta) : {}), field, ...hit,
+				},
 			};
 	}
 	return { filtered: false };
@@ -352,7 +366,7 @@ async function consumeCandidate(
 		result = inspectCandidate(name, text, options, pattern);
 	} catch (error) {
 		cancelled(signal);
-		page.skipped.push({ id: safeField(name.slice(0, -3)), reason: skipReason(error) });
+		page.skipped.push({ id: collectionId(safeField(name.slice(0, -3)), options.collection), reason: skipReason(error) });
 		page.coverage.skippedTotal++;
 		page.coverage.next++;
 		return true;
@@ -377,7 +391,8 @@ export async function searchStashes(dir: string, options: SearchOptions, signal?
 	validateOptions(options);
 	const cursor = decodeCursor(options.cursor);
 	const found = await inventory(dir, signal);
-	const binding = digest([options.query, options.tag ?? null, options.state ?? null, found.identity]);
+	const collection = options.collection ?? "handovers";
+	const binding = digest([collection, options.query, options.tag ?? null, options.state ?? null, found.identity]);
 	if (
 		cursor &&
 		(cursor.binding !== binding || cursor.inventory !== found.hash || cursor.position >= found.names.length)
@@ -385,6 +400,8 @@ export async function searchStashes(dir: string, options: SearchOptions, signal?
 		throw new Error("search cursor no longer matches query, filters, store, or inventory; restart without cursor");
 	const from = cursor?.position ?? 0;
 	const page: SearchPage = {
+		collection,
+		provisional: collection === "checkpoints",
 		matches: [],
 		skipped: [],
 		coverage: {
@@ -401,7 +418,7 @@ export async function searchStashes(dir: string, options: SearchOptions, signal?
 			complete: false,
 		},
 		nextCursor: null,
-		consistency: CONSISTENCY,
+		consistency: consistency(collection),
 		representation: REPRESENTATION,
 	};
 	const budget = { bytes: 0 };

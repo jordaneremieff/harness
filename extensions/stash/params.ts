@@ -14,7 +14,7 @@ export const WriteParams = Type.Object({
 	checkpoint: Type.Optional(
 		Type.Boolean({
 			description:
-				"Save a working checkpoint in the configured checkpoint directory instead of a discoverable handover. Returns a file path, not a pickup id.",
+				"Save provisional working material in the configured checkpoint directory, discoverable with collection checkpoints. No handover pickup.",
 		}),
 	),
 	title: shortText("Short human title for the handover"),
@@ -36,7 +36,10 @@ export const WriteParams = Type.Object({
 
 const stateSchema = StringEnum(STASH_STATES, { description: "Lifecycle state: open, active, or closed" });
 
+const collectionSchema = Type.Optional(StringEnum(["handovers", "checkpoints"] as const, { description: "Collection to read. Default handovers; checkpoints are provisional working material in the current configured checkpoint directory." }));
+
 export const ListParams = Type.Object({
+	collection: collectionSchema,
 	limit: Type.Optional(Type.Integer({ description: "Max entries (default 10, max 50)", minimum: 1, maximum: 50 })),
 	tag: Type.Optional(Type.String({ description: "Only stashes carrying this tag", maxLength: 80 })),
 	state: Type.Optional(stateSchema),
@@ -59,11 +62,12 @@ export const ListParams = Type.Object({
 });
 
 export const ReadParams = Type.Object({
+	collection: collectionSchema,
 	id: Type.String({
-		description: "Stash id or unique id prefix (from stash_list)",
+		description: "Id from stash_list. Checkpoints require their checkpoint: prefix and collection checkpoints; handover ids remain unchanged.",
 		minLength: 1,
-		maxLength: 200,
-		pattern: "^[A-Za-z0-9._-]+$",
+		maxLength: 211,
+		pattern: "^(checkpoint:)?[A-Za-z0-9._-]+$",
 	}),
 });
 

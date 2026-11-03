@@ -15,6 +15,7 @@ import {
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { publishSettings, readSettings } from "./settings.ts";
+import { artifactId, collectionDirectory, collectionFilter, collectionId } from "./collection.ts";
 import {
 	CAPACITY_STATE,
 	capacityConfig,
@@ -617,10 +618,10 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 						content: [
 							{
 								type: "text" as const,
-								text: `Saved working checkpoint "${safeLine(record.title)}".\n${safeLine(path)}\nRead this file to recover the synthesis. It is not listed by stash_list and has no /stash pickup shortcut.${noticeSuffix(redactions)}`,
+								text: `Saved working checkpoint "${safeLine(record.title)}".\n${safeLine(path)}\nDiscover it with stash_list collection checkpoints, then stash_read with that collection and its checkpoint: identifier. It is provisional working material, not a handover pickup.${noticeSuffix(redactions)}`,
 							},
 						],
-						details: { path, checkpoint: true, redactions },
+						details: { id: collectionId(record.id, "checkpoints"), path, checkpoint: true, redactions },
 					};
 				}
 				const text =
@@ -655,8 +656,10 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 			const limit = params.limit ?? 10;
 			if (signal?.aborted) throw new Error("stash_list cancelled");
 			try {
+				collectionFilter(params.collection, params.state);
+				const directory = await collectionDirectory(getAgentDir(), params.collection);
 				if (params.query !== undefined) {
-					const page = await searchStashes(storeDir(), { ...params, query: params.query }, signal);
+					const page = await searchStashes(directory, { ...params, query: params.query }, signal);
 					return {
 						content: [{ type: "text" as const, text: JSON.stringify(page) }],
 						details: { ...page },
@@ -665,12 +668,12 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 				}
 				if (params.cursor !== undefined)
 					throw new Error("cursor requires query; repeat the original query and filters");
-				const entries = await listStashes(storeDir(), {
+				const entries = await listStashes(directory, {
 					limit,
 					tag: params.tag,
 					state: params.state,
-				});
-				return recentListResult(entries, limit, emptyListText(params.tag, params.state));
+				}, signal);
+				return recentListResult(entries, limit, emptyListText(params.tag, params.state), params.collection);
 			} catch (error) {
 				if (signal?.aborted) throw error;
 				const text = boundedOutput(error instanceof Error ? error.message : String(error)).text;
@@ -699,9 +702,11 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		renderResult: renderReadResult,
 		async execute(_toolCallId, params, signal) {
 			if (signal?.aborted) throw new Error("stash_read cancelled");
-			const result = await readStash(storeDir(), params.id);
+			const id = artifactId(params.id, params.collection);
+			const directory = await collectionDirectory(getAgentDir(), params.collection);
+			const result = await readStash(directory, id, signal);
 			if ("error" in result) throw readFailure(result);
-			return readStashResult(result);
+			return readStashResult(result, params.collection);
 		},
 	});
 

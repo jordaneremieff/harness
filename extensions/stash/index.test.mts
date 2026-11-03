@@ -424,11 +424,38 @@ describe("stash entrypoint", () => {
 			},
 		);
 		assert.equal(result.details.checkpoint, true);
-		assert.equal(result.details.id, undefined);
+		assert.match(String(result.details.id), /^checkpoint:/);
 		assert.ok(typeof result.details.path === "string");
 		assert.match(result.details.path, /checkpoints/);
 		assert.match(await readFile(result.details.path, "utf8"), /Decision and next step/);
 		assert.ok(!(await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.title === "Working synthesis"));
+		const original = await readFile(result.details.path, "utf8");
+		const page = await tools.get("stash_list").execute("search", { collection: "checkpoints", query: "Decision and next step" });
+		const found = JSON.parse(page.content[0].text) as { collection: string; provisional: boolean; matches: { id: string; state: string; source: string; workspace: string }[] };
+		assert.equal(found.collection, "checkpoints");
+		assert.equal(found.provisional, true);
+		assert.equal(found.matches.length, 1);
+		assert.equal(found.matches[0].state, "provisional");
+		assert.equal(found.matches[0].source, "checkpoint-owner");
+		assert.equal(found.matches[0].workspace, "/workspace");
+		const read = await tools.get("stash_read").execute("read", { collection: "checkpoints", id: found.matches[0].id });
+		assert.match(read.content[0].text, /Provisional working material/);
+		assert.match(String(read.details.digest), /^[a-f0-9]{64}$/);
+		assert.equal(read.details.provisional, true);
+		assert.equal(await readFile(result.details.path, "utf8"), original);
+		await assert.rejects(tools.get("stash_read").execute("wrong", { id: found.matches[0].id }), /requires collection checkpoints/);
+		await assert.rejects(tools.get("stash_read").execute("bare", { collection: "checkpoints", id: found.matches[0].id.slice(11) }), /require the checkpoint:/);
+		const lifecycle = await tools.get("stash_list").execute("state", { collection: "checkpoints", state: "open" });
+		assert.equal(lifecycle.isError, true);
+		await assert.rejects(tools.get("stash_complete").execute("complete", { id: found.matches[0].id, outcome: "No" }), /registered schema/);
+		const recent = await tools.get("stash_list").execute("recent", { collection: "checkpoints" });
+		assert.equal(recent.details.provisional, true);
+		assert.match(recent.content[0].text, /Source: checkpoint-owner/);
+		process.env.PI_STASH_CHECKPOINT_DIR = join(dir, "different-checkpoints");
+		try {
+			const changed = await tools.get("stash_list").execute("changed", { collection: "checkpoints", query: "Decision and next step" });
+			assert.equal((JSON.parse(changed.content[0].text) as { matches: unknown[] }).matches.length, 0);
+		} finally { delete process.env.PI_STASH_CHECKPOINT_DIR; }
 	});
 
 	it("honors the checkpoint destination and refuses the handover directory", async () => {
@@ -1663,6 +1690,8 @@ describe("stash_list content search", () => {
 		assert.deepEqual(result.details, { count: 0 });
 		assert.deepEqual(result.structuredContent, {
 			kind: "recent",
+			collection: "handovers",
+			provisional: false,
 			records: [],
 			limit: 10,
 			selectedCount: 0,

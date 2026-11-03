@@ -73,6 +73,33 @@ it("finds a sole older body match past 32KiB, preserves bytes and permits full r
 	if (read.ok) assert.equal(read.content, before.toString());
 });
 
+it("binds checkpoint continuations and identifiers to their collection", async () => {
+	await put("first", "orchid", 'title: "Checkpoint"\nstate: "open"\nsessionId: "source:2"\nproject: "/workspace"');
+	await put("second", "orchid");
+	const first = await searchStashes(root, { query: "orchid", collection: "checkpoints", limit: 1 });
+	assert.ok(first.nextCursor);
+	assert.equal(first.collection, "checkpoints");
+	assert.equal(first.provisional, true);
+	assert.match(first.matches[0].id, /^checkpoint:/);
+	assert.equal(first.matches[0].state, "provisional");
+	await assert.rejects(searchStashes(root, { query: "orchid", cursor: first.nextCursor }), /cursor no longer matches/);
+	const next = await searchStashes(root, { query: "orchid", collection: "checkpoints", cursor: first.nextCursor });
+	assert.equal(next.matches[0].source, "source:2");
+	assert.equal(next.matches[0].workspace, "/workspace");
+	assert.equal(next.coverage.complete, true);
+	await assert.rejects(searchStashes(root, { query: "orchid", collection: "checkpoints", state: "open" }), /omit state/);
+	const abort = new AbortController();
+	abort.abort();
+	await assert.rejects(searchStashes(root, { query: "orchid", collection: "checkpoints" }, abort.signal), /cancelled/);
+	await assert.rejects(readStash(root, "first", abort.signal), /cancelled/);
+	await assert.rejects(listStashes(root, {}, abort.signal), /cancelled/);
+	await symlink(join(root, "first.md"), join(root, "linked.md"));
+	const skipped = await searchStashes(root, { query: "orchid", collection: "checkpoints" });
+	assert.equal(skipped.skipped[0].id, "checkpoint:linked");
+	assert.equal(skipped.coverage.complete, false);
+	assert.equal(skipped.matches.length, 2);
+});
+
 it("returns empty pages with continuation at the candidate cap", async () => {
 	await put("000-old", "needle");
 	await Promise.all(Array.from({ length: SEARCH_LIMITS.candidates + 1 }, (_, n) => put(`new-${n}`, "unrelated")));

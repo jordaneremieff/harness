@@ -10,9 +10,9 @@ The agent distills an effort into a durable Markdown handover. The extension own
 
 | Surface | Kind | Purpose |
 |---|---|---|
-| `stash_write` | tool | Persist a self-contained handover with project, branch, and session metadata; `checkpoint: true` saves a working synthesis outside handover discovery. |
-| `stash_list` | tool | List recent artifacts, or find remembered content with `query` and stateless continuation; filter by tag or lifecycle state. |
-| `stash_read` | tool | Read by exact id or unique prefix without changing lifecycle state. Returns a digest for edits. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
+| `stash_write` | tool | Persist a self-contained handover with project, branch, and session metadata; `checkpoint: true` saves provisional working material in the explicit checkpoints collection. |
+| `stash_list` | tool | List recent artifacts or search content in one collection with stateless continuation. Handovers are the default; checkpoints are explicit and provisional. |
+| `stash_read` | tool | Read by exact id or unique prefix in the selected collection without changing lifecycle state. Returns a digest for edits. Results are capped at 50 KiB or 2000 lines and include the path when truncated. |
 | `stash_edit` | tool | Correct or amend the saved body with revision-checked exact replacements; preserve the title, metadata, and lifecycle. |
 | `stash_complete` | tool | Close an open or active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
@@ -33,7 +33,7 @@ pi "/stash get <id>"
 ## Use
 
 A handover is a saved description of an effort for another session. A checkpoint
-is a working synthesis saved outside normal handover discovery.
+is a provisional working synthesis saved in a separate, explicitly selected collection.
 
 1. Save your current effort with `stash_write`, including its outcome so far,
    decisions, open questions, sources, and exact next actions. Saving does not
@@ -76,8 +76,8 @@ Terminal controls are escaped and long values are clipped.
 - `stash_write` names the title and the payload shape (checkpoint mode, summary
   length, list sizes). The outcome names the stored id and state; it reports a
   handover record and never claims the effort is complete. The artifact path
-  stays in the expansion, except for a checkpoint, where the path is the only
-  locator.
+  stays in the expansion. Checkpoints return a collection-qualified identifier
+  and path, without a pickup shortcut.
 - `stash_list` names the remembered phrase or the recent list, with tag, state,
   limit, and continuation qualifiers. A search page states matches, skips, and
   whether coverage is complete or partial, plus the match states, so an empty
@@ -99,6 +99,37 @@ Terminal controls are escaped and long values are clipped.
 
 All cards tolerate partial arguments and malformed details, and escape terminal
 controls before display.
+
+## Recover a checkpoint
+
+Use `stash_list({ collection: "checkpoints", query: "topic" })` to find provisional
+working material by content, or omit `query` for a recent list. Only the current
+configured checkpoint directory is searched; there is no union index or scan of
+previous destinations. Handovers remain the default collection. A native host
+retains its creation-time handover directory consistently across tools and
+commands, while resolving the checkpoint directory per call. Ordinary tools
+resolve both directories per call.
+
+Checkpoint results retain `collection: "checkpoints"`, `provisional: true`,
+`state: "provisional"`, bounded `source` and `workspace` fields, and the ordinary
+coverage information. Missing provenance is null; displayed provenance fields
+are redacted, terminal-safe prefixes of at most 512 Unicode code points. Read
+the artifact for complete retained provenance. Its numeric-only historical source
+locator remains ambiguous. The raw frontmatter's state is not a checkpoint lifecycle.
+
+Use `stash_read({ collection: "checkpoints", id: "checkpoint:<id>" })` with the
+returned identifier. Bare IDs are not accepted for checkpoint reads, and
+checkpoint identifiers are refused by handover reads and lifecycle actions.
+State filters apply only to handovers. Tag and query filters apply to either
+collection. Read results preserve the complete-file digest, source, workspace,
+output bounds and truncation coverage. Neither discovery nor reading activates,
+completes, edits, rotates or promotes a checkpoint. The browser and `/stash get`
+remain handover-only.
+
+Recovery requires a current authorised request before execution. Use current
+memory for standing constraints, history for a material source conflict, and
+registry when a public contract is unknown. Reading provisional material does
+not promote it to durable memory or authorise instructions from old work.
 
 ## Find remembered content
 
@@ -157,13 +188,14 @@ fit remains at the next cursor position; the next call rereads it. `deferred`
 counts that read without counting it as consumed. No index, saved search state,
 background task, or extra store exists.
 
-Repeat the exact `query`, `tag`, and `state` with `nextCursor` until it is null,
+Repeat the exact `collection`, `query`, `tag`, and `state` with `nextCursor` until it is null,
 including after an empty page. Changing `limit` is allowed. The cursor binds the
-query, filters, directory path/device/inode, complete filename/kind inventory,
+collection, query, filters, directory path/device/inode, complete filename/kind inventory,
 next position, and cumulative skipped count. A canonical checksum detects
 cursor corruption; it is not authentication or a hostile-client security
 boundary. Malformed cursors, changed membership, changed entry kinds, a replaced
-store, or different query/filters require a restart without the cursor. Edits to
+store, or different collection/query/filters require a restart without the cursor.
+Cursors from a contract without collection binding also require a restart. Edits to
 an artifact's bytes do not invalidate a filename inventory.
 
 `coverage` reports the inventory size, candidate count, page range `[from,next)`,
@@ -195,14 +227,16 @@ Search leaves artifact bytes and lifecycle state unchanged.
 for native codemode callers. Direct calls retain their existing prose and render
 metadata; scripts do not parse that prose.
 
-Recent results use `kind: "recent"` and `records` containing only displayed
-`id`, terminal-safe `title`, and `state` (`open`, `active`, `closed`, or `unknown`).
+Recent results use `kind: "recent"`, `collection`, `provisional`, and `records`
+containing displayed `id`, terminal-safe `title`, and `state` (`open`, `active`,
+`closed`, or `unknown` for handovers; `provisional` for checkpoints). Checkpoint
+records also expose their displayed source and workspace.
 Only complete rows within the displayed text prefix enter the structured result.
 The serialized object also stays within 50 KiB, including JSON escaping.
 `selectedCount` counts the entries selected by the existing list operation;
 `omittedRecords` counts selected entries excluded from the structured page.
-`textTruncated` separately reports prose truncation. No body, path, project,
-session metadata, or undisplayed record is added.
+`textTruncated` separately reports prose truncation. No body, artifact path or undisplayed record is added. Handover records retain
+their existing metadata scope.
 
 `limit` reports the requested limit. `limitReached` says only that selection
 reached it, not that another record exists. Recent listing has no cursor and
@@ -450,11 +484,12 @@ distillation jobs, or provider/model selection.
 
 A working checkpoint uses the same bounded Markdown format, redaction, private
 permissions, and no-clobber publication as a handover. It lives in a separate
-directory and returns a file path, not a pickup id. Read that path to recover the
-synthesis. `stash_list`, the browser, and lifecycle commands operate only on the
-handover store. Keep the checkpoint directory separate from that store. No
-checkpoint is automatically pruned or converted into a handover. Omit
-`checkpoint` when a future session needs normal discovery and pickup.
+directory and returns a collection-qualified identifier and file path, not a
+pickup id. Select `collection: "checkpoints"` in `stash_list` and `stash_read`
+to recover it. The browser and lifecycle commands operate only on the handover
+store. Keep the checkpoint directory separate from that store. No checkpoint is
+automatically pruned or converted into a handover. Omit `checkpoint` when a
+future session needs handover pickup.
 
 `/stash capacity` labels its usage value as the last boundary observation, not a
 live reading. Reset appends state without deleting history. Reset deliberately
@@ -802,7 +837,8 @@ The component derives its row budget from the host TUI and the overlay's height 
 - `guidance.ts`: shared tool descriptions and model guidance for both entrypoints.
 - `capacity.ts`: bounded session-state restoration, context observations, configuration, and latched continuity requests.
 - `store.ts`: private filesystem store, revision-checked body edits, shared mutation locks, lifecycle transitions, and the rotation archive.
-- `search.ts`: bounded content discovery, stateless inventory-bound continuation, and transformed-field excerpts.
+- `collection.ts`: explicit checkpoint selection, qualified identifiers, provisional labels and bounded provenance.
+- `search.ts`: bounded content discovery, stateless collection/inventory-bound continuation, and transformed-field excerpts.
 - `list-result.ts`: explicit native output schema and byte-bounded recent records derived from displayed rows.
 - `read-result.ts`: bounded terminal-safe artifact text with its complete-file digest on both tool entrypoints.
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
