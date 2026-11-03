@@ -65,11 +65,11 @@ it("selects each agent field from injected environment, document, or default wit
 	};
 	const snapshot = readSettings({ agentDir, env });
 	assert.equal(snapshot.values.idleMinutes, 1.25);
-	assert.equal(snapshot.values.checkInMinutes, 30);
+	assert.equal(snapshot.values.checkInMinutes, 0);
 	assert.ok(snapshot.diagnostics.some((fact) => fact.field === "agent.checkInMinutes" && fact.source === "env"));
 	assert.equal(snapshot.records.find((record) => record.key === "checkInMinutes")?.status, "invalid");
 	assert.equal(resolveIdleMs(undefined, env, agentDir), 75000);
-	assert.equal(checkInMinutes(undefined, "model", agentDir, env), 30);
+	assert.equal(checkInMinutes(undefined, "model", agentDir, env), 0);
 	assert.equal(checkInMinutes(undefined, "model", agentDir, {}), 3);
 	assert.equal(checkInMinutes(undefined, "operator", agentDir, env), 0);
 	assert.equal(checkInMinutes(0, "model", agentDir, env), 0);

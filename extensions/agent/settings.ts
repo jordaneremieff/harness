@@ -22,8 +22,8 @@ export const settings = {
 		checkInMinutes: {
 			type: "number",
 			env: "PI_AGENT_CHECK_IN_MINUTES",
-			description: "Automatic owner check-in interval for model tasks in minutes; zero disables.",
-			default: 30,
+			description: "Automatic owner check-in interval for model tasks in minutes; zero, the default, arms none.",
+			default: 0,
 			min: 0,
 			max: 35791,
 		},

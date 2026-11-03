@@ -122,7 +122,7 @@ it("distinguishes normal follow-up timing from admitted await interaction", () =
 	assert.match(awaiting, /Explicit release also returns control on the original request/u);
 });
 
-it("describes retained delivery and automatic unfinished-task check-ins", () => {
+it("describes retained delivery and opt-in unfinished-task check-ins", () => {
 	const all = JSON.stringify(AGENT_CONTROL_GUIDANCE);
 	assert.doesNotMatch(all, /ordinary terminal response/u);
 	assert.doesNotMatch(all, /in-process settlement/u);
@@ -135,9 +135,10 @@ it("describes retained delivery and automatic unfinished-task check-ins", () => 
 	assert.match(all, /creating owner is provenance/u);
 	assert.match(all, /expectedRevision/u);
 	assert.match(all, /before relying on past findings/u);
-	assert.match(all, /automatic owner check-ins/u);
+	assert.match(all, /Results arrive without supervision turns/u);
+	assert.match(all, /agent\.checkInMinutes default is 0/u);
 	assert.match(all, /Check-ins wake a model owner, not an operator owner/u);
-	assert.match(all, /0 disables/u);
+	assert.doesNotMatch(all, /default 30/u);
 	assert.match(all, /not a finished result/u);
 });
 

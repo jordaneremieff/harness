@@ -91,7 +91,7 @@ const message = obj(
 	{ sessionId: id, message: str({ minLength: 1 }), replyTo: opt(id) },
 	{},
 );
-const checkIn = opt(num({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval in minutes while unanswered; 0 disables. Default: configured agent.checkInMinutes (30 unless overridden)." }));
+const checkIn = opt(num({ minimum: 0, maximum: 35791, description: "Owner check-in interval in minutes while unanswered. Default: configured agent.checkInMinutes, which is 0 (no check-ins) unless set; results arrive without them." }));
 const send = obj(
 	{
 		sessionId: id,

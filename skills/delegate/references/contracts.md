@@ -102,13 +102,15 @@ blocker, never a waiting note.
 
 ## Check-in intervals
 
-Model-origin tasks arm automatic owner check-ins at the configured interval.
-Each check-in costs the owner a model turn.
+A task arms owner check-ins only when `checkInMinutes` or the
+`agent.checkInMinutes` setting names an interval; the default is none, and the
+result still arrives through normal delivery. Each check-in costs the owner a
+model turn.
 
-- **Keep the default** for long builds, composed results, and anything you must
-  steer.
-- **Use 0** for short tasks, informational steers, and reports.
-- **Set longer** for long, self-contained work you trust to run.
+- **Leave it unset** for short tasks, informational steers, reports, and any
+  work whose result is the only event you need.
+- **Set an interval** for long work you must steer midway, or work where a
+  silent stall would cost more than the watchdog turns.
 
 A native agent waiting in `agent_await` reacts to input by origin. A report or
 followUp from an ordinary primary releases the wait; the agent applies it and

@@ -35,7 +35,7 @@ import { compile, obj } from "@earendil-works/pi-schema";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution, publishAgentControlDispatch } from "./durable-agents.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAgentExtension from "./index.ts";
-import { CheckInTask, CheckInDeadlineTask, checkInMinutes } from "./durable-checkins.ts";
+import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { ProfileDoc, readProfile } from "./profile.ts";
 import { readRequestContexts, recordRequestContext, REQUEST_CONTEXT_LIMIT, requestContextHooks, requestContextSection, type ActiveRequestContext } from "./request-context.ts";
@@ -740,7 +740,7 @@ it("releases failed admission provenance before preparation exhausts its bound",
 	assert.equal(providerCalls, 0);
 });
 
-for (const tool of ["agent_spawn", "agent_send"]) it(`${tool} returns an admitted exact result before the background answer and arms one default check-in`, async (t) => {
+for (const tool of ["agent_spawn", "agent_send"]) it(`${tool} returns an admitted exact result before the background answer and arms one configured check-in`, async (t) => {
 	const route = createRoute();
 	let finish!: (answer: AssistantMessage) => void;
 	const producer = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
@@ -752,7 +752,7 @@ for (const tool of ["agent_spawn", "agent_send"]) it(`${tool} returns an admitte
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
 	t.after(async () => { finish(fauxAssistantMessage("ANSWER-EXACT")); await harness.close(context); });
 	const existing = await harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model } }, context);
-	route.script.push({ tool, args: tool === "agent_spawn" ? { name: "exact-result", prompt: "CONTRACT: reply EXACT" } : { sessionId: `${storageId}:${existing.id}`, message: "CONTRACT: reply EXACT" } });
+	route.script.push({ tool, args: tool === "agent_spawn" ? { name: "exact-result", prompt: "CONTRACT: reply EXACT", checkInMinutes: 30 } : { sessionId: `${storageId}:${existing.id}`, message: "CONTRACT: reply EXACT", checkInMinutes: 30 } });
 	await say(root, "Dispatch background work");
 	const outcome = (await toolOutcomes(harness, root.id)).find((candidate) => candidate.name === tool);
 	assert.equal(outcome?.isError, false, outcome?.text);
@@ -766,6 +766,26 @@ for (const tool of ["agent_spawn", "agent_send"]) it(`${tool} returns an admitte
 	assert.ok(admitted?.status === "queued" || admitted?.status === "placed");
 	const checkIns = (await harness.inspect(context)).tasks.filter((task) => task.record.kind === CheckInTask.definition.name);
 	assert.equal(checkIns.length, 1, "the tool and Reporter share one admission marker");
+});
+
+it("arms no check-in for a model task that names no interval", async (t) => {
+	const route = createRoute();
+	let finish!: (answer: AssistantMessage) => void;
+	const producer = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
+	const models = createTestModels((...args) => {
+		const last = args[0].messages.findLast((message) => message.role !== "system");
+		return last?.role === "user" && messageText(last) === "CONTRACT: reply QUIET" ? producer : route.route(...args);
+	});
+	const { registry } = buildRegistry();
+	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, models);
+	t.after(async () => { finish(fauxAssistantMessage("ANSWER-QUIET")); await harness.close(context); });
+	route.script.push({ tool: "agent_spawn", args: { name: "quiet-result", prompt: "CONTRACT: reply QUIET" } });
+	await say(root, "Dispatch unsupervised work");
+	const outcome = (await toolOutcomes(harness, root.id)).find((candidate) => candidate.name === "agent_spawn");
+	assert.equal(outcome?.isError, false, outcome?.text);
+	assert.ok((outcome?.details as { result?: { submissionId: number } })?.result, "the task is admitted with an exact result reference");
+	const checkIns = (await harness.inspect(context)).tasks.filter((task) => task.record.kind === CheckInTask.definition.name);
+	assert.equal(checkIns.length, 0, "the default interval of zero arms no watchdog");
 });
 
 it("keeps the original input placed while one native await accepts two exact results without provider turns", { timeout: 30000 }, async (t) => {
@@ -1237,7 +1257,7 @@ for (const order of ["before", "during"] as const) it(`closes the named check-in
 	assert.equal((await userTexts(harness, root.id)).includes("NAMED RACE CHECK-IN"), false);
 });
 
-it("keeps default check-ins and native scheduled delivery token-idle during the original await", { timeout: 10000 }, async (t) => {
+it("keeps configured check-ins and native scheduled delivery token-idle during the original await", { timeout: 10000 }, async (t) => {
 	const epoch = Date.now(); t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: epoch });
 	let finish!: (message: AssistantMessage) => void; const held = new Promise<AssistantMessage>((resolve) => { finish = resolve; });
 	let callerCalls = 0;
@@ -1245,7 +1265,7 @@ it("keeps default check-ins and native scheduled delivery token-idle during the 
 		const last = request.messages.findLast((item) => item.role !== "system"); const text = messageText(last);
 		if (text === "CONTRACT: reply HELD") return held;
 		callerCalls++;
-		if (last?.role === "user" && text === "START DEFAULT") return fauxAssistantMessage([fauxToolCall("agent_spawn", { prompt: "CONTRACT: reply HELD" })], { stopReason: "toolUse" });
+		if (last?.role === "user" && text === "START DEFAULT") return fauxAssistantMessage([fauxToolCall("agent_spawn", { prompt: "CONTRACT: reply HELD", checkInMinutes: 30 })], { stopReason: "toolUse" });
 		if (last?.role === "toolResult" && last.toolName === "agent_spawn") {
 			const reference = JSON.parse(text.split("\nResult: ")[1].split("\n")[0]);
 			return fauxAssistantMessage([fauxToolCall("agent_await", { results: [reference] })], { stopReason: "toolUse" });
@@ -1257,11 +1277,11 @@ it("keeps default check-ins and native scheduled delivery token-idle during the 
 	t.after(async () => { finish(fauxAssistantMessage("RESULT")); await harness.close(context); });
 	await harness.commit(async (tx) => { await tx.doc(AwaitDoc); }, context);
 	const ready = waitForAwait(harness, (state) => state.declarations.some((item) => item.decision === "awaiting"));
-	const admission = await submitConversation(root, { message: "START DEFAULT", requestId: "original-default", ownerId: "requester", origin: "model", checkInMinutes: checkInMinutes(undefined, "model", testAgentDir, {}), senderIdentity: storageId }, context);
+	const admission = await submitConversation(root, { message: "START DEFAULT", requestId: "original-default", ownerId: "requester", origin: "model", checkInMinutes: 30, senderIdentity: storageId }, context);
 	await ready;
 	const original = await harness.submission(admission.submissionId, context); assert.ok(original);
 	const checks = (await harness.inspect(context)).tasks.filter((item) => item.record.kind === "agent.check-in");
-	assert.equal(checks.length, 2, "default spawn and original request both retain their check-ins");
+	assert.equal(checks.length, 2, "configured spawn and original request both retain their check-ins");
 	const interval = Math.max(...checks.map((item) => (item.record.input as { intervalMs: number }).intervalMs));
 	const reportsReady = waitForDeliveryFixture(harness, context, (state) => state.reports.length >= 2 ? true : undefined);
 	t.mock.timers.tick(interval); await reportsReady;

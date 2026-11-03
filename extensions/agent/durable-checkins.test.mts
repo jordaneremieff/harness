@@ -21,9 +21,9 @@ function settingsDirectory(t: { after(fn: () => void): void }): string {
  return directory;
 }
 
-it("applies the configured default only to model tool admissions and accepts zero", (t) => {
+it("arms no check-in by default and applies a configured interval only to model tool admissions", (t) => {
  const directory = settingsDirectory(t);
- assert.equal(checkInMinutes(undefined, "model", directory, {}), 30);
+ assert.equal(checkInMinutes(undefined, "model", directory, {}), 0);
  assert.equal(checkInMinutes(undefined, "operator", directory, {}), 0);
  assert.equal(checkInMinutes(undefined, "model", directory, { PI_AGENT_CHECK_IN_MINUTES: "7" }), 7);
  assert.equal(checkInMinutes(0, "model", directory, {}), 0);
@@ -34,7 +34,7 @@ it("applies the configured default only to model tool admissions and accepts zer
 for (const raw of ["", "  ", "bad", "-1", "Infinity", "35792"]) it(`uses the safe default for invalid environment interval ${JSON.stringify(raw)}`, (t) => {
  const directory = settingsDirectory(t);
  const env = { PI_AGENT_CHECK_IN_MINUTES: raw };
- assert.equal(checkInMinutes(undefined, "model", directory, env), 30);
+ assert.equal(checkInMinutes(undefined, "model", directory, env), 0);
  assert.equal(checkInMinutes(0, "model", directory, env), 0, "a per-call override does not use the default");
  assert.equal(checkInMinutes(undefined, "operator", directory, env), 0);
 });

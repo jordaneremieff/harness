@@ -69,9 +69,9 @@ An ordinary primary remains responsive and receives normal routed results.
 
 | Tool | Effect |
 |---|---|
-| `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. |
+| `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. |
 | `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries have no `agent_await` tool; they receive each answer through normal delivery. Waiting is a capability, not a staffing rule. |
-| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Unanswered model tool tasks get automatic owner check-ins; `checkInMinutes` sets the interval and 0 disables it. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
+| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; the result reports `live: false`. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
@@ -83,7 +83,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_rewind` | Fork before a mistaken entry and submit a correction. Files remain current. |
 | `agent_compact` | Run native compaction without stopping active work or withdrawing queued inputs. The summary applies at the next native boundary. Self-compaction uses its completed tool boundary. |
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
-| `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths; optional `checkInMinutes` overrides it and 0 disables it. |
+| `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths, none unless configured; optional `checkInMinutes` sets an interval. |
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
 | `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. |
@@ -2459,8 +2459,10 @@ existing form.
 
 Automatic owner check-ins do not depend on voluntary worker reports. Model
 `agent_spawn` and `agent_place` prompts and `agent_send` tasks use the effective
-`agent.checkInMinutes` setting (default 30); per-call `checkInMinutes` overrides
-it, including 0 to disable.
+`agent.checkInMinutes` setting; its default is 0, so a task arms a check-in only
+when the setting or the per-call `checkInMinutes` names a positive interval.
+Results, reports, and failures still arrive through normal delivery; a
+check-in is a watchdog for work that needs one, not the way results return.
 Operator admissions get no default. An admission creates no check-in when its
 owner resolves to the conversation that runs the work, even with a positive
 explicit interval. This applies to both origins and alternate root identity
@@ -3039,7 +3041,7 @@ facts. No new command is required.
 | Key | Environment | Type | Default | Constraints | Description |
 |---|---|---|---|---|---|
 | idleMinutes | `PI_AGENT_IDLE_MINUTES` | number | 5 | min 0; max 35791 | Idle host retirement interval in minutes; zero disables. |
-| checkInMinutes | `PI_AGENT_CHECK_IN_MINUTES` | number | 30 | min 0; max 35791 | Automatic owner check-in interval for model tasks in minutes; zero disables. |
+| checkInMinutes | `PI_AGENT_CHECK_IN_MINUTES` | number | 0 | min 0; max 35791 | Automatic owner check-in interval for model tasks in minutes; zero, the default, arms none. |
 | presets | `PI_AGENT_PRESETS` | json | {} | none | Named execution presets with exact model identities and optional creation fields. |
 | preferences | `PI_AGENT_PREFERENCES` | json | {} | none | Delegation preferences, default preset, exclusions, planning budgets, and reporting guidance. |
 <!-- harness:settings:end -->

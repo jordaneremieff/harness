@@ -339,7 +339,7 @@ function modelOf(value: string): Durable.ModelRef {
 
 const StringEnum = <const T extends readonly string[]>(values: T) => oneOf(values);
 
-const CheckInParams = opt(num({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval while unanswered, in minutes. Default configured agent.checkInMinutes (30 unless overridden); 0 disables." }));
+const CheckInParams = opt(num({ minimum: 0, maximum: 35791, description: "Owner check-in interval while unanswered, in minutes. Default configured agent.checkInMinutes, which is 0 (no check-ins) unless set; results arrive without them." }));
 
 const SpawnParams = obj(
 	{

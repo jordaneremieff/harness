@@ -180,8 +180,9 @@ Keep every returned result reference (`sessionId`, `submissionId`,
 `requestId`). A creation receipt, report, thread post, or name is not a result
 reference.
 
-Choose `checkInMinutes` per task: keep the default for long work you supervise;
-use 0 for short or informational tasks. Each check-in costs you a model turn.
+Results arrive without supervision turns; no check-in runs unless you ask for
+one. Set `checkInMinutes` only for long work that needs a watchdog, and read
+the check-in as a watchdog, not a result. Each check-in costs you a model turn.
 
 Batch independent dispatches in one codemode call when that helps. Read
 `references/codemode.md` for dispatch, thread, sweep, and digest recipes.
