@@ -148,6 +148,31 @@ describe("observation bounds", () => {
 		assert.equal(store.snapshot()?.overflowBytes, true);
 	});
 
+	it("keeps mixed UTF-8 records in order and trims only past the exact byte bound", () => {
+		const store = new ObservationStore();
+		const firstTool = '\\"漢';
+		const input = options({ selectedTools: [firstTool, ""] });
+		store.observe(input, 1);
+		const base = store.snapshot();
+		assert.ok(base);
+		const overhead = retainedBytes({ ...base, bytes: MAX_OBSERVED_BYTES });
+		for (let delta = -8; delta <= 8; delta += 1) {
+			const padding = "x".repeat(MAX_OBSERVED_BYTES - overhead + delta);
+			store.observe({ ...input, selectedTools: [firstTool, padding] }, 1);
+			const snapshot = store.snapshot();
+			assert.ok(snapshot);
+			assert.equal(snapshot.bytes, retainedBytes(snapshot));
+			assert.ok(snapshot.bytes <= MAX_OBSERVED_BYTES);
+			assert.deepEqual(snapshot.skills, base.skills);
+			assert.deepEqual(snapshot.selectedTools, [firstTool, padding]);
+			assert.equal(snapshot.overflowRecords, false);
+			assert.equal(snapshot.overflowBytes, delta > 0);
+			assert.equal(snapshot.recordCount, delta > 0 ? 3 : 4);
+			assert.deepEqual(snapshot.contextFilePaths, delta > 0 ? [] : base.contextFilePaths);
+			if (delta <= 0) assert.equal(snapshot.bytes, MAX_OBSERVED_BYTES + delta);
+		}
+	});
+
 	it("keeps the recorded byte count consistent with the bound it reports", () => {
 		const store = new ObservationStore();
 		store.observe(options(), 1);

@@ -46,6 +46,7 @@ interface ObserveState {
 	skills: ObservedSkill[];
 	selectedTools: string[];
 	contextFilePaths: string[];
+	admissionBytes: number;
 	overflowRecords: boolean;
 	overflowBytes: boolean;
 }
@@ -73,16 +74,22 @@ function buildObservation(state: ObserveState): ObservationSnapshot {
 }
 
 function admitRecord<T>(state: ObserveState, list: T[], item: T): boolean {
-	if (observeRecordCount(state) >= MAX_OBSERVED_RECORDS) {
+	const count = observeRecordCount(state);
+	if (count >= MAX_OBSERVED_RECORDS) {
+		// JSON true is one byte shorter than false.
+		if (!state.overflowRecords) state.admissionBytes -= 1;
 		state.overflowRecords = true;
 		return false;
 	}
-	list.push(item);
-	if (retainedBytes(buildObservation(state)) > MAX_OBSERVED_BYTES) {
-		list.pop();
+	// The base includes empty arrays and bytes: 0; charge each item, comma, and count digit once.
+	const addedBytes = retainedBytes(item) + (list.length > 0 ? 1 : 0) + String(count + 1).length - String(count).length;
+	if (state.admissionBytes + addedBytes > MAX_OBSERVED_BYTES) {
+		if (!state.overflowBytes) state.admissionBytes -= 1;
 		state.overflowBytes = true;
 		return false;
 	}
+	list.push(item);
+	state.admissionBytes += addedBytes;
 	return true;
 }
 
@@ -141,14 +148,17 @@ export class ObservationStore {
 			skills: [],
 			selectedTools: [],
 			contextFilePaths: [],
+			admissionBytes: 0,
 			overflowRecords: false,
 			overflowBytes: false,
 		};
 		// The observed cwd is unbounded input, so it is charged to the same budget
 		// as every other retained field before any record is admitted.
-		if (retainedBytes(buildObservation(state)) > MAX_OBSERVED_BYTES) {
+		state.admissionBytes = retainedBytes(buildObservation(state));
+		if (state.admissionBytes > MAX_OBSERVED_BYTES) {
 			state.cwd = "";
 			state.overflowBytes = true;
+			state.admissionBytes = retainedBytes(buildObservation(state));
 		}
 		admitObservedSkills(state);
 		admitSelectedTools(state);
