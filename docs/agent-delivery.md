@@ -189,7 +189,7 @@ a member's release is not consensus, permission, or proof of machine availabilit
 
 Before a full suite, read untargeted `agent_status`. A native coordinator declares
 its own claim rather than another session's claim. Declare the start of a full
-gate or promotion window in your own integration intent with `scope.fullGate`
+gate or main integration in your own integration intent with `scope.fullGate`
 set to `true`, and clear that claim on release. Run one full gate per machine at
 a time. Notify only efforts that requested the release; do not broadcast routine
 starts or releases to every related primary. Each direct model-origin notice
@@ -273,8 +273,10 @@ normal self-contained terminal response is a valid full-session result; do not
 impose an auxiliary worker's submission protocol. Keep concurrent edits
 disjoint. An owner's area follows the work, such as one behaviour with its
 implementation, tests, and documentation, not a file count. One coordinator
-serializes shared worktree synchronization, integration, promotion, push, and
-activation; that coordinator can also do substantive work.
+serializes branch integration, push, and activation; that coordinator can also
+do substantive work. Worker branches merge through plain Git under the
+[development workflow](conventions/worktrees.md); no sibling source
+synchronization or promotion command exists.
 
 Reuse a session when its retained expertise, context, and ownership serve the
 current task. Check its current operation and preserve the current requester and

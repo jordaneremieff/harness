@@ -60,7 +60,11 @@
   It does not reproduce the specification or its dictionary. Do not claim certified
   STE compliance.
 - Give each review finding one disposition: fixed, shown false with the source
-  named, or blocked with the unavailable layer named.
+  named, or blocked with the unavailable layer named. An investigation that the
+  operator scoped to recommendations records a confirmed finding as
+  "confirmed, correction specified, not implemented"; it never reports a
+  recommendation as fixed. Implementation work still owes the fixed, shown
+  false, or blocked disposition for every finding it adopts.
 - Verify claims about Pi or pi-tui behavior against the installed package sources
   before acting on them, including claims from reviewers and delegated agents.
 - Upstream Pi rebuilds its agent core as a durable harness ("AgentHarness", also

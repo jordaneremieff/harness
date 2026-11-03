@@ -786,17 +786,21 @@ have different recovery consequences.
 Retained hosts keep loaded code and their selected coding-agent installation.
 Idle retirement does not silently choose a new Pi install. Source and dependency
 updates form one activation unit: an `observeCommits()` or `watchDoc()`
-consumer requires the 1.5.0 Durable API, not a 1.4.0 dependency graph. Promotion synchronizes source into sibling
-worktrees, so source promotion alone can cross this boundary before any install.
-An isolated lockfile and source candidate does not establish live activation.
-The 1.5.0 transition requires both the task-migration decision for existing
-operator stores and an owner-agreed boundary for retained consumers. Before source or
-dependency activation, old consumers must remain on intact old bytes, finish,
-or stop/restart at an owner-agreed boundary. This includes all changed native
-contributions, not only the Agent host. Promotion-triggered sibling source
-synchronization is part of activation; compose checks in isolated trees before
-that boundary. A source-only update to a contribution creates version skew as
-surely as a dependency update. See the
+consumer requires the Durable API of the installed release, not an older
+dependency graph. A commit on `main` does not activate anything by itself:
+Pi loads each extension from the checkout its settings entry names, and a
+running process keeps the code it loaded. Activation is therefore a checkout
+that carries the accepted commit with its installed dependencies, the
+extension load checks, and the settings repoint described in the
+[development workflow](conventions/worktrees.md#pi-configuration). Before that
+repoint, retained consumers must remain on intact old bytes, finish, or
+stop/restart at an owner-agreed boundary. This includes all changed native
+contributions, not only the Agent host. A source-only update to a contribution
+creates version skew as surely as a dependency update: `version-contract.ts`
+compares per-operation identities, so a window loaded before the switch is
+refused for each operation whose identity changed until it restarts. A store migration is never implied
+by activation; it is a separate operator decision taken from concrete data.
+See the
 [host contract](agent-host-contract.md#no-start-observation-versus-acquiring-controls)
 and Agent README for the actual lifecycle controls.
 

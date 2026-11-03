@@ -43,7 +43,7 @@ explicit request for independent verification.
 
 Give each split task an integration destination and acceptance criteria. Keep
 file ownership disjoint during concurrent edits. Assign shared mutations such
-as worktree synchronization, dependency refresh, promotion, and publication to
+as branch integration, dependency refresh, and publication to
 one coordinator; a worker's local commit does not establish integration or
 release. Assign composition and verification to the session best placed to do
 them; the session that owes the operator the outcome remains accountable for

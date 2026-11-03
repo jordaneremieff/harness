@@ -241,8 +241,10 @@ not a TUI-parity claim. See [host lifetime](../../docs/agent-delivery.md#host-li
 for candidate reload and retained-process boundaries.
 
 The package root containing the loaded entrypoint is the evidence and worktree
-discovery root. Invocation cwd is context only. Required writes belong in the
-selected slices' dedicated worktrees.
+discovery root. Invocation cwd is context only. Writes follow the repository's
+[development workflow](../../docs/conventions/worktrees.md): work on `main`
+directly, or in a short-lived branch worktree when the change needs isolation
+from concurrent work. No slice-specific worktree is required.
 
 ## Durable agents
 
