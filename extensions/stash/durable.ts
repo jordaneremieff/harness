@@ -723,7 +723,7 @@ async function publicationPlan(
 	const plan = await api.memo<StashPublication>("stash.publication", context);
 	const pending = await api.memo<{ createdAtMs: number }>("stash.write", context);
 	if (plan) return plan;
-	if (pending) throw new Error(`Unsupported pending timestamp-only publication (${pending.createdAtMs}); current store: ${storeDir}. Original destination and identity are unknown. Resume with its retained source; no artifact was published.`);
+	if (pending) throw new Error(`Unsupported pending timestamp-only publication (${pending.createdAtMs}). This resumed attempt made no new publication. The earlier outcome, original destination and artifact identity are unknown. Inspect the retained result and original destination/archive before creating a new write. Reuse an existing artifact when its identity is established. This refusal settles the task; switching source does not resume it.`);
 	const agent = await api.agent(context);
 	const cwd = api.env?.cwd ?? agent.cwd ?? host.cwd;
 	const branch = await gitBranch(api.env, context);
@@ -1016,7 +1016,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 				const state = task.state.checkpoint;
 				const redactions = state.redactions;
 				try {
-					if (!state.plan) throw new Error(`Unsupported pending distillation publication at ${task.input.storeDir} (${state.createdAtMs}). Resume with its retained source; no artifact was published.`);
+					if (!state.plan) throw new Error(`Unsupported pending distillation publication at ${task.input.storeDir} (${state.createdAtMs}). This resumed attempt made no new publication. The earlier outcome and artifact identity are unknown. Inspect the retained result, captured destination ${task.input.storeDir} and its .trash archive before creating a new write. Reuse an existing artifact when its identity is established. This refusal settles the task; switching source does not resume it.`);
 					const {
 						record,
 						path,

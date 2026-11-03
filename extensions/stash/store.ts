@@ -277,7 +277,7 @@ async function reacquirePublication(plan: StashPublication) {
 			const artifact = await readMutationSource(candidate, "readable");
 			const parsed = parseFrontmatter(artifact.content);
 			if (headerUnclosed(artifact.content) || parsed.meta.id !== plan.id)
-				throw new Error(`Publication identity is unavailable at ${candidate}; no artifact was published.`);
+				throw new Error(`Publication identity is unavailable at ${candidate}. This attempt made no new publication; the earlier outcome is unknown. Inspect the retained result and both publication locations before creating a new write.`);
 			return { record: normalizeMeta(`${plan.id}.md`, parsed.meta), path: candidate, redactions: plan.redactions, archived: candidate !== path };
 		} catch (error) {
 			if (!hasCode(error, "ENOENT")) throw error;
@@ -291,7 +291,7 @@ export async function writeReplayableStash(
 	plan: StashPublication,
 ): Promise<{ record: StashMeta; path: string; redactions: RedactionReport; archived: boolean }> {
 	if (plan.version !== 1 || !SAFE_STEM.test(plan.id) || !plan.id.endsWith(`-${plan.operationId}`))
-		throw new Error("Unsupported stash publication plan; no artifact was published.");
+		throw new Error("Unsupported stash publication plan. This attempt made no new publication; the earlier outcome is unknown. Inspect the retained result and original destination/archive before creating a new write.");
 	const dir = plan.directory;
 	await validateStore(dir, true);
 	return withArtifactLock(dir, plan.id, undefined, async () => {

@@ -366,10 +366,47 @@ test("freezes publication metadata before effects and reads memo winners before 
 		const refused = await list.execute({ collection: "checkpoints" }, {} as never, context);
 		assert.equal(refused.isError, true);
 	} finally { delete process.env.PI_STASH_CHECKPOINT_DIR; }
-	const pending = new Map<string, JsonValue>([["stash.write", { createdAtMs: 123 }]]);
-	await assert.rejects(tool.execute(params, { ...api, memo: async (name: string) => pending.get(name) } as never, context), /timestamp-only.*123/);
-	assert.equal(pending.size, 1);
 });
+
+for (const prior of ["absent", "closed", "archived"] as const) {
+	test(`refuses a timestamp-only memo without claiming historical absence (${prior})`, async (t) => {
+		const h = await startHarness(t);
+		const tool = h.extension.tools?.find((tool) => tool.name === "stash_write");
+		assert.ok(tool);
+		const originalStore = join(h.workdir, "original-store");
+		const params = { title: "Old handover", summary: "Retained source." };
+		const createdAtMs = 1793682000100;
+		let retainedPath: string | undefined;
+		if (prior !== "absent") {
+			const written = await writeStash(originalStore, params, new Date(createdAtMs));
+			await transitionStash(originalStore, written.record.id, { action: "close", outcome: "Already finished" });
+			retainedPath = prior === "archived"
+				? (await rotateStash(originalStore, written.record.id)).archivePath
+				: written.path;
+		}
+		const original = retainedPath ? await readFile(retainedPath, "utf8") : undefined;
+		const pending = new Map<string, JsonValue>([["stash.write", { createdAtMs }]]);
+		await assert.rejects(tool.execute(params, {
+			memo: async (name: string) => pending.get(name),
+			agent: async () => { throw new Error("Ambiguous publication must not read new metadata"); },
+		} as never, context), (error: Error) => {
+			assert.match(error.message, /timestamp-only.*1793682000100/);
+			assert.match(error.message, /This resumed attempt made no new publication/);
+			assert.match(error.message, /earlier outcome, original destination and artifact identity are unknown/);
+			assert.match(error.message, /Inspect the retained result and original destination\/archive before creating a new write/);
+			assert.match(error.message, /Reuse an existing artifact when its identity is established/);
+			assert.match(error.message, /switching source does not resume it/);
+			assert.doesNotMatch(error.message, /no artifact was published|[Rr]un.*again|[Rr]esume with/);
+			assert.ok(!error.message.includes(h.storeDir));
+			return true;
+		});
+		assert.equal(pending.size, 1);
+		assert.equal((await listStashes(h.storeDir)).length, 0);
+		assert.equal((await listStashes(originalStore)).length, prior === "closed" ? 1 : 0);
+		if (retainedPath) assert.equal(await readFile(retainedPath, "utf8"), original);
+		if (prior === "archived") assert.equal((await readdir(join(originalStore, ".trash"))).length, 1);
+	});
+}
 
 test("records distinct root and child sources in native checkpoint artifacts", async (t) => {
 	const h = await startHarness(t);
@@ -392,24 +429,52 @@ test("records distinct root and child sources in native checkpoint artifacts", a
 	}
 });
 
-test("refuses a planless pending distillation without a new publication", async (t) => {
-	const h = await startHarness(t);
-	const task = h.extension.tasks?.find((task) => task.definition.name === "stash.distill");
-	assert.ok(task);
-	const receipts: Durable.JsonObject[] = [];
-	const write = task.definition.phases.write;
-	assert.ok(typeof write === "function");
-	await write({
-		input: { storeDir: h.storeDir },
-		state: { checkpoint: { phase: "write", payload: { title: "Old", summary: "Old" }, createdAtMs: 123, redactions: redactSecretsWithReport("").report } },
-	} as never, {
-		signal: new AbortController().signal,
-		commit: async (change: (tx: unknown) => unknown) => change({ doc: async () => ({}), appendEntry: async (_id: unknown, entry: { data: Durable.JsonObject }) => { receipts.push(entry.data); } }),
-	} as never, context);
-	assert.equal(receipts[0]?.status, "failed");
-	assert.match(String(receipts[0]?.message), /Unsupported pending distillation.*123/);
-	assert.equal((await listStashes(h.storeDir)).length, 0);
-});
+for (const prior of ["absent", "closed", "archived"] as const) {
+	test(`refuses planless distillation without claiming historical absence (${prior})`, async (t) => {
+		const h = await startHarness(t);
+		const task = h.extension.tasks?.find((task) => task.definition.name === "stash.distill");
+		assert.ok(task);
+		const payload = { title: "Old", summary: "Old" };
+		const createdAtMs = 1793682000100;
+		let retainedPath: string | undefined;
+		if (prior !== "absent") {
+			const written = await writeStash(h.storeDir, payload, new Date(createdAtMs));
+			await transitionStash(h.storeDir, written.record.id, { action: "close", outcome: "Already finished" });
+			retainedPath = prior === "archived"
+				? (await rotateStash(h.storeDir, written.record.id)).archivePath
+				: written.path;
+		}
+		const original = retainedPath ? await readFile(retainedPath, "utf8") : undefined;
+		const receipts: Durable.JsonObject[] = [];
+		const states: { status: string; outcome: { status: string } }[] = [];
+		const write = task.definition.phases.write;
+		assert.ok(typeof write === "function");
+		await write({
+			input: { storeDir: h.storeDir },
+			state: { checkpoint: { phase: "write", payload, createdAtMs, redactions: redactSecretsWithReport("").report } },
+		} as never, {
+			signal: new AbortController().signal,
+			commit: async (change: (tx: unknown) => Promise<typeof states[number]>) => {
+				states.push(await change({ doc: async () => ({}), appendEntry: async (_id: unknown, entry: { data: Durable.JsonObject }) => { receipts.push(entry.data); } }));
+			},
+		} as never, context);
+		assert.equal(receipts.length, 1);
+		assert.equal(receipts[0].status, "failed");
+		const message = String(receipts[0].message);
+		assert.match(message, /Unsupported pending distillation.*1793682000100/);
+		assert.match(message, /This resumed attempt made no new publication/);
+		assert.match(message, /earlier outcome and artifact identity are unknown/);
+		assert.ok(message.includes(`captured destination ${h.storeDir} and its .trash archive`));
+		assert.match(message, /Reuse an existing artifact when its identity is established/);
+		assert.match(message, /switching source does not resume it/);
+		assert.doesNotMatch(message, /no artifact was published|[Rr]un.*again|[Rr]esume with/);
+		assert.equal(states[0].status, "terminal");
+		assert.equal(states[0].outcome.status, "failed");
+		assert.equal((await listStashes(h.storeDir)).length, prior === "closed" ? 1 : 0);
+		if (retainedPath) assert.equal(await readFile(retainedPath, "utf8"), original);
+		if (prior === "archived") assert.equal((await readdir(join(h.storeDir, ".trash"))).length, 1);
+	});
+}
 
 test("discovers and reads native checkpoints by topic without lifecycle changes", async (t) => {
 	const h = await startHarness(t);

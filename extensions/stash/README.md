@@ -688,13 +688,23 @@ Native source locators use the host storage ID for a root and
 checkpoints and `/stash new`. Ordinary session IDs stay unchanged. Historical
 numeric-only source locators are ambiguous; no storage identity is inferred.
 
-Retain intact source and dependencies for consumers with pending timestamp-only
+Retain intact source and dependencies for still-pending consumers with timestamp-only
 `stash.write` memos or planless distillation write checkpoints until they finish.
 New code refuses those ambiguous pending effects without a new external write;
-it does not enrich a write-once memo or guess identity from an old artifact.
-The refusal names the timestamp and known store (the original direct-write
-store was not retained). Completed artifacts remain readable. Do not run new
-pending publication plans under old code. Publication and host activation are
+that establishes nothing about whether the earlier attempt published. It does not
+enrich a write-once memo or guess identity from an old artifact. The direct-write
+memo did not retain its destination or artifact identity; the currently configured
+store is not proof of the original destination. A planless distillation retains
+its captured destination, but not its publication identity. Refusals name only
+the timestamp and destination actually known.
+
+Inspect the retained result and original destination/archive before creating a
+new write. Reuse an existing artifact when its identity is established. A fresh
+invocation is a new operation, not recovery of the uncertain earlier effect.
+Once a refusal settles the tool or distillation task, switching to retained source
+does not resume that failed task. Retained-source recovery applies only while the
+original work remains pending. Completed artifacts remain readable. Do not run
+new pending publication plans under old code. Publication and host activation are
 separate acts; no operator-store migration occurs.
 
 ### Capacity guidance
