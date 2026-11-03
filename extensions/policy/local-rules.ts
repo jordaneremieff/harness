@@ -2264,6 +2264,10 @@ export function makeRuleAudit<TSurface extends Exclude<AuditSurface, "package" |
 	return audit as SessionRuleAudit & { surface: TSurface };
 }
 
+export function ruleAbsenceMessage(health: RuleStoreHealth, absence: string): string {
+	return health.status === "degraded" || health.incompleteFinalLine ? ruleStoreHealthLine(health) : absence;
+}
+
 export function ruleStoreHealthLine(health: RuleStoreHealth): string {
 	if (health.status === "degraded") return `registry health: degraded=true | ${health.message}`;
 	const conditions: string[] = [];

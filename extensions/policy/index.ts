@@ -16,7 +16,7 @@ import {
 	type PendingProposal,
 	proposalRevision,
 	RuleRegistry,
-	ruleStoreHealthLine,
+	ruleAbsenceMessage,
 	targetIdentity,
 	type RuleSnapshot,
 } from "./local-rules.ts";
@@ -323,9 +323,7 @@ async function policyShowVerb(
 	}
 	const shown = formatPolicyShow({ snapshot, fireSummary: await readFireSummary(env.dir) }, parts[0], scope(ctx));
 	if (shown) env.output(ctx, shown);
-	else if (snapshot.health.status === "degraded" || snapshot.health.incompleteFinalLine)
-		env.output(ctx, ruleStoreHealthLine(snapshot.health), true);
-	else env.output(ctx, `No rule or pending proposal named "${parts[0]}".`, true);
+	else env.output(ctx, ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named "${parts[0]}".`), true);
 }
 
 async function policyInspectVerb(

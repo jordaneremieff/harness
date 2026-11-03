@@ -65,7 +65,7 @@ import {
 	MAX_RULE_EVENT_BYTES,
 	proposalRevision,
 	RuleRegistry,
-	ruleStoreHealthLine,
+	ruleAbsenceMessage,
 	type RuleSnapshot,
 } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
@@ -1640,9 +1640,7 @@ class DurablePolicyRuntime {
 							{ ...snapshot, records: new Map([[record.id, record]]), pending: [] },
 							toolScope(scope, agent.model),
 						)
-					: snapshot.health.status === "degraded" || snapshot.health.incompleteFinalLine
-						? ruleStoreHealthLine(snapshot.health)
-						: `No rule or pending proposal named ${params.id}.`;
+					: ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named ${params.id}.`);
 			}
 			return formatRulesTool(snapshot, toolScope(scope, agent.model));
 		}

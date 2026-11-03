@@ -28,6 +28,7 @@ import {
 	type RuleRegistry,
 	type RuleSnapshot,
 	ruleStoreHealthLine,
+	ruleAbsenceMessage,
 	validateLocalCandidate,
 } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
@@ -832,9 +833,7 @@ async function rulesToolOutput(
 			if (pending.length) return pendingProposalOutput(pending[0]);
 			return record
 				? formatRulesTool({ ...snapshot, records: new Map([[record.id, record]]), pending: [] }, ctx)
-				: snapshot.health.status === "degraded" || snapshot.health.incompleteFinalLine
-					? line(ruleStoreHealthLine(snapshot.health))
-					: `No rule or pending proposal named ${line(params.id)}.`;
+				: line(ruleAbsenceMessage(snapshot.health, `No rule or pending proposal named ${line(params.id)}.`));
 		}
 		return formatRulesTool(snapshot, ctx);
 	}

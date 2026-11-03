@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { compile, lit, obj, type Static, str, union } from "@earendil-works/pi-schema";
 import { Type } from "typebox";
 import { normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
-import { MAX_RULE_EVENT_BYTES, makeRuleAudit, PolicyMutationCancelledError, proposalRevision, ruleStoreHealthLine, targetIdentity } from "./local-rules.ts";
+import { MAX_RULE_EVENT_BYTES, makeRuleAudit, PolicyMutationCancelledError, proposalRevision, ruleAbsenceMessage, targetIdentity } from "./local-rules.ts";
 import { contentRevision, effectiveEffect, effectiveState, type OperatorRuleAudit } from "./rule.ts";
 import type { PolicyToolContext, ToolDeps } from "./tools.ts";
 
@@ -145,11 +145,7 @@ async function inspectTarget(deps: ToolDeps, id: string, ctx: PolicyToolContext)
 	const snapshot = await deps.loadRegistry(ctx);
 	const record = snapshot.records.get(id);
 	const pending = snapshot.pending.find((entry) => entry.ruleId === id);
-	if (!record && !pending) {
-		if (snapshot.health.status === "degraded" || snapshot.health.incompleteFinalLine)
-			throw new Error(ruleStoreHealthLine(snapshot.health));
-		throw new Error(`No rule or proposal named ${id}`);
-	}
+	if (!record && !pending) throw new Error(ruleAbsenceMessage(snapshot.health, `No rule or proposal named ${id}`));
 	return record
 		? { record, revision: targetIdentity(record) }
 		: { proposal: pending, proposalRevision: pending ? proposalRevision(pending) : null };
