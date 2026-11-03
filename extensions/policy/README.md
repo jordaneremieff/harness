@@ -796,16 +796,18 @@ complete bounded candidate with `@earendil-works/pi-schema` `compile().check()`.
 It does not convert values, insert defaults, or remove properties. Missing
 schemas, unsafe copies, and thrown validation errors produce unavailable
 validation. The compiled schema cache is bounded. Internal data, recursive
-conditions, and closed control variants use pi-schema builders. Schemas shared
-with registered tool parameters remain TypeBox JSON Schema and use the same
-pi-schema validator. String limits count Unicode code points, including within
-shared schemas. Combining marks count separately; an astral character counts
-once. Closed objects still reject unknown fields. Existing policy error
-prefixes and field diagnostics remain; schema error details use pi-schema
-messages and JSON Pointer paths.
+conditions, closed control variants, and registered tool parameters use
+pi-schema builders and typed plain JSON Schema. Objects are closed unless
+explicitly open. Record schemas retain their key patterns and property-count
+bounds. Literal values use `const`; enumerated values use `enum` or unions of
+`const` schemas. The CLI subcommand also declares its string type for structural
+consumers. String limits count Unicode code points. Combining marks count
+separately; an astral character counts once. Policy error prefixes and field
+diagnostics remain; schema error details use pi-schema messages and JSON Pointer
+paths.
 
-Registered tool schemas use TypeBox declarations under the host's JSON Schema
-contract. Host argument validation performs Pi's standard coercion, including
+Registered tool schemas follow the host's JSON Schema contract.
+Host argument validation performs Pi's standard coercion, including
 wrapping a scalar CLI subcommand in an array. Policy's own admission and final
 candidate checks do not coerce. Policy does not provide
 arbitrary schema imports, dialect selection, strict schema-document admission,
