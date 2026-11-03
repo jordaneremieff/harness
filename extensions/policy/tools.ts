@@ -21,6 +21,7 @@ import {
 	MAX_RULE_EVENT_BYTES,
 	MAX_RULE_ID_LENGTH,
 	makeRuleAudit,
+	PolicyMutationCancelledError,
 	type LocalRuleCandidate,
 	type ProposalEvent,
 	proposalRevision,
@@ -793,16 +794,17 @@ export async function submitProposal(
 	registry: RuleRegistry,
 	params: PolicyProposeInput,
 	auditValue: AgentRuleAudit,
+	signal?: AbortSignal,
 ): Promise<ProposalEvent> {
 	if (params.operation === "add" || params.operation === "replace") {
 		const candidate = proposalCandidate(params);
 		return params.operation === "replace"
-			? await registry.proposeReplace(candidate, params.expectedRevision, params.reason, auditValue)
-			: await registry.proposeAdd(candidate, params.reason, auditValue);
+			? await registry.proposeReplace(candidate, params.expectedRevision, params.reason, auditValue, signal)
+			: await registry.proposeAdd(candidate, params.reason, auditValue, signal);
 	}
 	return params.operation === "retire"
-		? await registry.proposeRetire(params.id, params.reason, auditValue)
-		: await registry.proposeDisable(params.id, params.reason, auditValue);
+		? await registry.proposeRetire(params.id, params.reason, auditValue, signal)
+		: await registry.proposeDisable(params.id, params.reason, auditValue, signal);
 }
 
 /** The event byte bound owns this compact artifact, not the all-rules display cap. */
@@ -895,7 +897,7 @@ function registerApprovalTool(pi: Pick<ExtensionAPI, "registerTool">, deps: Tool
 		],
 		parameters: PolicyApproveParams,
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			if (signal?.aborted) throw new Error("policy_approve cancelled");
+			if (signal?.aborted) throw new PolicyMutationCancelledError();
 			if (!approvalValidator.check(params) || !params.authorization.trim())
 				throw new Error(
 					"policy_approve requires proposalId, proposalRevision, effect (steer, block, or exact), and a nonblank authorization explanation only",
@@ -906,7 +908,7 @@ function registerApprovalTool(pi: Pick<ExtensionAPI, "registerTool">, deps: Tool
 				throw new Error(
 					"No pending proposal with that ID. Inspect policy_rules; do not substitute another proposal for the approved one.",
 				);
-			if (signal?.aborted) throw new Error("policy_approve cancelled");
+			if (signal?.aborted) throw new PolicyMutationCancelledError();
 			const auditValue: OperatorRuleAudit = {
 				...makeRuleAudit(ctx, "agent-tool"),
 				surface: "approval-tool",
@@ -918,6 +920,7 @@ function registerApprovalTool(pi: Pick<ExtensionAPI, "registerTool">, deps: Tool
 				params.effect === "exact" ? undefined : params.effect,
 				auditValue,
 				params.proposalRevision,
+				signal,
 			);
 			const snapshot = await deps.loadRegistry(ctx);
 			const record = snapshot.records.get(proposal.ruleId);
@@ -951,11 +954,11 @@ export function registerRuleTools(
 		renderCall: (args, theme, context) => renderProposeCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderProposeResult(result, options, theme, context),
 		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
-			if (signal?.aborted) throw new Error("policy_propose cancelled");
+			if (signal?.aborted) throw new PolicyMutationCancelledError();
 			validateProposal(params);
 			await deps.loadRegistry(ctx);
 			const auditValue = makeRuleAudit(ctx, "agent-tool");
-			const event = await submitProposal(deps.registry, params, auditValue);
+			const event = await submitProposal(deps.registry, params, auditValue, signal);
 			await deps.loadRegistry(ctx);
 			return {
 				content: [

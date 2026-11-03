@@ -1311,6 +1311,13 @@ concurrent control writes so every writer uses the transaction boundary.
 A cleanup error rejects acknowledgment even if the event already reached the log.
 Inspect the current state before retrying that control.
 
+Tool cancellation reaches the mutation queue, lock retries, fresh read, and append
+preparation. Cancellation before the write leaves no event and does not degrade
+authority. After the write starts, the registry returns the committed result or
+the write error, never a cancellation that hides a possible commit. Inspect an
+uncertain write before retrying. Commands without a cancellation signal retain
+the same transaction behaviour.
+
 A registry absent before first use receives the starter seed. If the store disappears
 after initialization, authority becomes degraded and writes never recreate it.
 Restore the store and start a new policy session. An existing empty registry is a

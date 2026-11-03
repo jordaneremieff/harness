@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { NamedData } from "./data.ts";
-import { namedDataRevision, type RuleEvent, RuleRegistry } from "./local-rules.ts";
+import { namedDataRevision, PolicyMutationCancelledError, type RuleEvent, RuleRegistry } from "./local-rules.ts";
+import { constants } from "node:fs";
 import { type PackageDefinitionRow, packageRowRevision } from "./rule.ts";
 
 const audit = { surface: "command" as const, at: "2026-09-12T00:00:00.000Z", session: "synthetic", model: null };
@@ -92,6 +93,10 @@ function observeContention(t: TestContext) {
 		syncBuiltinESMExports();
 	});
 	return contended.promise;
+}
+function openPhase(args: Parameters<typeof fsPromises.open>): "lock" | "append" | "read" {
+	if (String(args[0]).endsWith(lockName)) return "lock";
+	return (Number(args[1]) & constants.O_APPEND) !== 0 ? "append" : "read";
 }
 function countLockOpens(t: TestContext): () => number {
 	let count = 0;
@@ -289,6 +294,111 @@ if (process.argv[2] === "--transaction-child") {
 				assert.equal(snapshot.records.size, 0);
 			}
 			assert.equal(await readFile(reg.path, "utf8"), "");
+		});
+		for (const boundary of ["lock-open", "lock-stat", "read-open", "read-stat", "read-read", "append-open", "append-stat", "append-chmod", "append-write"] as const) {
+			it(`honours cancellation at ${boundary} without hiding a committed event`, async (t) => {
+				const dir = await directory(t);
+				const reg = registry(dir);
+				await reg.snapshot();
+				const before = await readFile(reg.path, "utf8");
+				const controller = new AbortController();
+				const original = fsPromises.open;
+				const replacement = t.mock.method(fsPromises, "open", async (...args: Parameters<typeof fsPromises.open>) => {
+					const handle = await original(...args);
+					const phase = openPhase(args);
+					if (!boundary.startsWith(phase)) return handle;
+					if (boundary.endsWith("open")) {
+						controller.abort();
+						return handle;
+					}
+					const method = boundary.split("-")[1] as "stat" | "read" | "chmod" | "write";
+					const operation = handle[method].bind(handle);
+					t.mock.method(handle, method, async (...values: unknown[]) => {
+						const result = await (operation as (...values: unknown[]) => Promise<unknown>)(...values);
+						controller.abort();
+						return result;
+					});
+					return handle;
+				});
+				syncBuiltinESMExports();
+				t.after(() => { replacement.mock.restore(); syncBuiltinESMExports(); });
+				const mutation = reg.setData(binding("value"), null, audit, controller.signal);
+				if (boundary === "append-write") {
+					const event = await mutation;
+					assert.ok((await readFile(reg.path, "utf8")).includes(event.id));
+				} else {
+					await assert.rejects(mutation, PolicyMutationCancelledError);
+					assert.equal(await readFile(reg.path, "utf8"), before);
+				}
+				assert.equal(controller.signal.aborted, true);
+				await assert.rejects(lstat(join(dir, lockName)), /ENOENT/);
+				const snapshot = await reg.snapshot();
+				assert.equal(snapshot.health.status, "ok");
+				assert.equal(snapshot.health.incompleteFinalLine, undefined);
+			});
+		}
+		for (const failure of ["thrown", "short"] as const) {
+			it(`preserves a ${failure} write error when cancellation follows write start`, async (t) => {
+				const dir = await directory(t);
+				const reg = registry(dir);
+				await reg.snapshot();
+				const before = await readFile(reg.path, "utf8");
+				const controller = new AbortController();
+				const original = fsPromises.open;
+				const replacement = t.mock.method(fsPromises, "open", async (...args: Parameters<typeof fsPromises.open>) => {
+					const handle = await original(...args);
+					if (String(args[0]) === reg.path && (Number(args[1]) & constants.O_APPEND) !== 0) {
+						t.mock.method(handle, "write", async () => {
+							controller.abort();
+							if (failure === "thrown") throw new Error("synthetic uncertain write");
+							return { bytesWritten: 0, buffer: Buffer.alloc(0) };
+						});
+					}
+					return handle;
+				});
+				syncBuiltinESMExports();
+				t.after(() => { replacement.mock.restore(); syncBuiltinESMExports(); });
+				await assert.rejects(reg.setData(binding("value"), null, audit, controller.signal), failure === "thrown" ? /uncertain write/ : /write stopped/);
+				assert.equal(await readFile(reg.path, "utf8"), before);
+				await assert.rejects(lstat(join(dir, lockName)), /ENOENT/);
+			});
+		}
+		it("cancels a queued mutation without appending its event", async (t) => {
+			const dir = await directory(t);
+			const reg = registry(dir);
+			await reg.snapshot();
+			const gate = pause(reg, "append");
+			t.after(gate.release);
+			const first = reg.setData(binding("first"), null, audit);
+			await gate.entered;
+			const controller = new AbortController();
+			const queued = assert.rejects(reg.setData(binding("second"), null, audit, controller.signal), PolicyMutationCancelledError);
+			controller.abort();
+			gate.release();
+			const committed = await first;
+			await queued;
+			assert.equal((await events(reg)).length, 2);
+			assert.ok((await events(reg)).some((event) => "id" in event && event.id === committed.id));
+			await assert.rejects(lstat(join(dir, lockName)), /ENOENT/);
+			assert.equal((await reg.snapshot()).health.status, "ok");
+		});
+		it("cancels a contended writer without removing another writer's lock", async (t) => {
+			const dir = await directory(t);
+			const reg = registry(dir);
+			await reg.snapshot();
+			const before = await readFile(reg.path, "utf8");
+			const path = join(dir, lockName);
+			await writeFile(path, "owner", { mode: 0o600 });
+			const contended = observeContention(t);
+			const controller = new AbortController();
+			const cancelled = assert.rejects(reg.setData(binding("value"), null, audit, controller.signal), PolicyMutationCancelledError);
+			await contended;
+			controller.abort();
+			await cancelled;
+			assert.equal(await readFile(path, "utf8"), "owner");
+			await rm(path);
+			assert.equal(await readFile(reg.path, "utf8"), before);
+			assert.equal((await reg.snapshot()).health.status, "ok");
 		});
 		it("keeps same-instance data creation serialized", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);

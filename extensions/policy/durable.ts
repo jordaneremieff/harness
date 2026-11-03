@@ -61,6 +61,7 @@ import {
 import { cloneJson, snapshotData, UNKNOWN } from "./data.ts";
 import {
 	makeRuleAudit,
+	PolicyMutationCancelledError,
 	MAX_RULE_EVENT_BYTES,
 	proposalRevision,
 	RuleRegistry,
@@ -1663,13 +1664,13 @@ class DurablePolicyRuntime {
 		api: Durable.ToolExecutionApi,
 		context: Context,
 	): Promise<Durable.ToolExecutionResult> {
-		context.abortSignal?.throwIfAborted();
+		if (context.abortSignal?.aborted) throw new PolicyMutationCancelledError();
 		validateProposal(params);
 		const surface = this.toolSurface(api);
 		await this.snapshot();
 		const { agent } = await this.activeRules(surface, context);
 		const auditValue: AgentRuleAudit = makeRuleAudit(this.auditContext(surface.conversationId, agent), "agent-tool");
-		const event = await submitProposal(this.registry, params, auditValue);
+		const event = await submitProposal(this.registry, params, auditValue, context.abortSignal);
 		await this.snapshot();
 		const revision = proposalRevision(event);
 		const detail = {
@@ -1696,7 +1697,7 @@ class DurablePolicyRuntime {
 		api: Durable.ToolExecutionApi,
 		context: Context,
 	): Promise<Durable.ToolExecutionResult> {
-		context.abortSignal?.throwIfAborted();
+		if (context.abortSignal?.aborted) throw new PolicyMutationCancelledError();
 		if (!params.authorization.trim())
 			throw new Error(
 				"policy_approve requires proposalId, proposalRevision, effect (steer, block, or exact), and a nonblank authorization explanation only",
@@ -1708,7 +1709,7 @@ class DurablePolicyRuntime {
 			throw new Error(
 				"No pending proposal with that ID. Inspect policy_rules; do not substitute another proposal for the approved one.",
 			);
-		context.abortSignal?.throwIfAborted();
+		if (context.abortSignal?.aborted) throw new PolicyMutationCancelledError();
 		const { agent, scope } = await this.activeRules(surface, context);
 		const auditValue: OperatorRuleAudit = {
 			...makeRuleAudit(this.auditContext(surface.conversationId, agent), "agent-tool"),
@@ -1721,6 +1722,7 @@ class DurablePolicyRuntime {
 			params.effect === "exact" ? undefined : params.effect,
 			auditValue,
 			params.proposalRevision,
+			context.abortSignal,
 		);
 		const snapshot = await this.snapshot();
 		const record = snapshot.records.get(proposal.ruleId);
@@ -1747,7 +1749,7 @@ class DurablePolicyRuntime {
 		api: Durable.ToolExecutionApi,
 		context: Context,
 	): Promise<Durable.ToolExecutionResult> {
-		context.abortSignal?.throwIfAborted();
+		if (context.abortSignal?.aborted) throw new PolicyMutationCancelledError();
 		validateControl(params);
 		const surface = this.toolSurface(api);
 		if (params.operation !== "mode" && params.operation !== "telemetry") await this.snapshot();

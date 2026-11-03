@@ -1,12 +1,15 @@
 /** Deterministic approval contracts, not a natural-language intent classifier. */
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import fsPromises, { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import { constants } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { compile } from "@earendil-works/pi-schema";
 import {
+	PolicyMutationCancelledError,
 	type ProposalEvent,
 	proposalRevision,
 	reduceRuleEvents,
@@ -74,6 +77,36 @@ async function setup(t: TestContext, mode: PolicyMode = "enforce") {
 }
 
 describe("context-authorized policy approval tool", () => {
+	for (const name of ["policy_propose", "policy_approve", "policy_control"] as const) {
+		it(`cancels ${name} after append chmod without changing durable bytes`, async (t) => {
+			const f = await setup(t);
+			const pending = await f.submit();
+			const before = await f.bytes();
+			const controller = new AbortController();
+			const original = fsPromises.open;
+			const replacement = t.mock.method(fsPromises, "open", async (...args: Parameters<typeof fsPromises.open>) => {
+				const handle = await original(...args);
+				if (String(args[0]) === f.registry.path && (Number(args[1]) & constants.O_APPEND) !== 0) {
+					const chmod = handle.chmod.bind(handle);
+					t.mock.method(handle, "chmod", async (mode: Parameters<typeof handle.chmod>[0]) => {
+						await chmod(mode);
+						controller.abort();
+					});
+				}
+				return handle;
+			});
+			syncBuiltinESMExports();
+			t.after(() => { replacement.mock.restore(); syncBuiltinESMExports(); });
+			const input = name === "policy_propose" ? proposal("local.other") : name === "policy_approve" ? approval(pending) : {
+				operation: "reject", proposalId: pending.id, revision: proposalRevision(pending), authorization,
+			};
+			await assert.rejects(f.call(name, input, controller.signal), PolicyMutationCancelledError);
+			assert.equal(await f.bytes(), before);
+			await assert.rejects(lstat(join(f.dir, ".rules-lock")), /ENOENT/);
+			assert.equal((await f.registry.snapshot()).health.status, "ok");
+		});
+	}
+
 	for (const effect of ["steer", "block"] as const) {
 		it(`activates ${effect} with a durable honest audit and scoped pending lookup`, async (t) => {
 			const f = await setup(t);

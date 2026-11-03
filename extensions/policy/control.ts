@@ -4,7 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { compile, lit, obj, type Static, str, union } from "@earendil-works/pi-schema";
 import { Type } from "typebox";
 import { normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
-import { MAX_RULE_EVENT_BYTES, makeRuleAudit, proposalRevision, targetIdentity } from "./local-rules.ts";
+import { MAX_RULE_EVENT_BYTES, makeRuleAudit, PolicyMutationCancelledError, proposalRevision, targetIdentity } from "./local-rules.ts";
 import { contentRevision, effectiveEffect, effectiveState, type OperatorRuleAudit } from "./rule.ts";
 import type { PolicyToolContext, ToolDeps } from "./tools.ts";
 
@@ -186,7 +186,7 @@ export async function applyControl(
 	signal?: AbortSignal,
 ): Promise<unknown> {
 	if (params.operation === "action-approve" || params.operation === "action-reject") {
-		if (signal?.aborted) throw new Error("policy_control cancelled");
+		if (signal?.aborted) throw new PolicyMutationCancelledError();
 		if (!deps.actionControl) throw new Error("Exact-action controls are unavailable in this host");
 		return deps.actionControl(params, ctx);
 	}
@@ -206,22 +206,22 @@ async function applyRegularControl(
 		targetRevision: params.revision,
 	};
 	const checkCancelled = () => {
-		if (signal?.aborted) throw new Error("policy_control cancelled");
+		if (signal?.aborted) throw new PolicyMutationCancelledError();
 	};
 	checkCancelled();
-	if (params.operation === "reject") await deps.registry.decide(params.proposalId, "rejected", undefined, audit);
-	else if (params.operation === "disable") await deps.registry.disable(params.id, params.reason, audit);
-	else if (params.operation === "enable") await deps.registry.enable(params.id, params.reason, audit);
-	else if (params.operation === "retire") await deps.registry.retire(params.id, params.reason, audit);
-	else if (params.operation === "effect") await deps.registry.setEffect(params.id, params.effect, params.reason, audit);
-	else if (params.operation === "import") await deps.registry.importCatalog(params.selection, params.revision, audit);
-	else if (params.operation === "data-remove") await deps.registry.removeData(params.name, params.revision, audit);
+	if (params.operation === "reject") await deps.registry.decide(params.proposalId, "rejected", undefined, audit, undefined, signal);
+	else if (params.operation === "disable") await deps.registry.disable(params.id, params.reason, audit, undefined, signal);
+	else if (params.operation === "enable") await deps.registry.enable(params.id, params.reason, audit, undefined, signal);
+	else if (params.operation === "retire") await deps.registry.retire(params.id, params.reason, audit, undefined, signal);
+	else if (params.operation === "effect") await deps.registry.setEffect(params.id, params.effect, params.reason, audit, undefined, signal);
+	else if (params.operation === "import") await deps.registry.importCatalog(params.selection, params.revision, audit, signal);
+	else if (params.operation === "data-remove") await deps.registry.removeData(params.name, params.revision, audit, signal);
 	else if (params.operation === "data-set" || params.operation === "data-set-file") {
 		const artifact = await artifactFor(params, ctx);
 		if (contentRevision(artifact) !== params.revision)
 			throw new Error("data artifact revision changed; review the complete current artifact");
 		checkCancelled();
-		await deps.registry.setData(artifact.data, artifact.expectedRevision, audit);
+		await deps.registry.setData(artifact.data, artifact.expectedRevision, audit, signal);
 	} else if (params.operation === "reset") {
 		if (!deps.reset) throw new Error("Policy observation controls are unavailable in this host");
 		await deps.reset(params.id, params.reason, params.revision);
@@ -287,7 +287,7 @@ export function registerControlTool(pi: Pick<ExtensionAPI, "registerTool">, deps
 		],
 		parameters: PolicyControlParams,
 		async execute(_call, params, signal, _update, ctx) {
-			if (signal?.aborted) throw new Error("policy_control cancelled");
+			if (signal?.aborted) throw new PolicyMutationCancelledError();
 			validateControl(params);
 			if (params.operation !== "mode" && params.operation !== "telemetry") await deps.loadRegistry(ctx);
 			return controlResult(

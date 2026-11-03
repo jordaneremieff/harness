@@ -1343,12 +1343,25 @@ function parseEventLines(content: Buffer): ReadEventsResult {
 		: { events, eventLines };
 }
 
+export class PolicyMutationCancelledError extends Error {
+	constructor() {
+		super("Policy mutation cancelled before commit; no event was written.");
+		this.name = "PolicyMutationCancelledError";
+	}
+}
+
+function checkCancellation(signal?: AbortSignal): void {
+	if (signal?.aborted) throw new PolicyMutationCancelledError();
+}
+
 function missingStore(path: string): RuleFileError {
 	return new RuleFileError("file presence", `policy rule store disappeared: ${path}`, `restore the store at ${path}`);
 }
 
-async function readEvents(dir: string, path: string): Promise<ReadEventsResult> {
+async function readEvents(dir: string, path: string, signal?: AbortSignal): Promise<ReadEventsResult> {
+	checkCancellation(signal);
 	await checkExistingDirectory(dir);
+	checkCancellation(signal);
 	let handle: Awaited<ReturnType<typeof open>>;
 	try {
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
@@ -1363,7 +1376,9 @@ async function readEvents(dir: string, path: string): Promise<ReadEventsResult> 
 		);
 	}
 	try {
+		checkCancellation(signal);
 		const info = await handle.stat();
+		checkCancellation(signal);
 		privateFile(info, path);
 		if (info.size > MAX_REGISTRY_BYTES) {
 			throw new RuleFileError(
@@ -1376,6 +1391,7 @@ async function readEvents(dir: string, path: string): Promise<ReadEventsResult> 
 		let offset = 0;
 		while (offset < buffer.length) {
 			const result = await handle.read(buffer, offset, buffer.length - offset, offset);
+			checkCancellation(signal);
 			if (result.bytesRead === 0) break;
 			offset += result.bytesRead;
 		}
@@ -1677,19 +1693,22 @@ export class RuleRegistry {
 		return message;
 	}
 
-	private async readReduction(): Promise<{ reduction: RuleReduction; incompleteFinalLine?: number }> {
-		const read = await readEvents(this.dir, this.path);
+	private async readReduction(signal?: AbortSignal): Promise<{ reduction: RuleReduction; incompleteFinalLine?: number }> {
+		const read = await readEvents(this.dir, this.path, signal);
+		checkCancellation(signal);
 		return {
 			reduction: reduceRuleEvents(read.events, this.matcherAvailable, read.eventLines),
 			...(read.incompleteFinalLine ? { incompleteFinalLine: read.incompleteFinalLine } : {}),
 		};
 	}
 
-	private async append(eventValue: Exclude<RuleEvent, CatalogEvent>): Promise<void> {
+	private async append(eventValue: Exclude<RuleEvent, CatalogEvent>, signal?: AbortSignal): Promise<void> {
+		checkCancellation(signal);
 		const event = validateRuleEvent(eventValue);
 		assertWritableAuthority(event);
 		const serialized = serializeEvent(event);
 		await ensurePrivateDirectory(this.dir);
+		checkCancellation(signal);
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 		let handle: Awaited<ReturnType<typeof open>>;
 		try {
@@ -1700,12 +1719,16 @@ export class RuleRegistry {
 			throw error;
 		}
 		try {
+			checkCancellation(signal);
 			const info = await handle.stat();
+			checkCancellation(signal);
 			privateFile(info, this.path);
 			await handle.chmod(0o600);
+			checkCancellation(signal);
 			if (info.size + serialized.length > MAX_REGISTRY_BYTES) {
 				throw new Error(`policy rule store would exceed ${MAX_REGISTRY_BYTES} bytes`);
 			}
+			checkCancellation(signal);
 			const result = await handle.write(serialized, 0, serialized.length, null);
 			if (result.bytesWritten !== serialized.length) {
 				throw new Error(`policy rule event write stopped at ${result.bytesWritten} of ${serialized.length} bytes`);
@@ -1725,26 +1748,39 @@ export class RuleRegistry {
 	}
 
 	/** Acquire the exclusive transaction lock, or undefined when every attempt saw it held. */
-	private async acquireLock(path: string): Promise<Awaited<ReturnType<typeof open>> | undefined> {
+	private async acquireLock(path: string, signal?: AbortSignal): Promise<Awaited<ReturnType<typeof open>> | undefined> {
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 		for (let attempt = 0; attempt < LOCK_ATTEMPTS; attempt++) {
+			checkCancellation(signal);
 			try {
 				return await open(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | noFollow, 0o600);
 			} catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 				await this.inspectLock(path);
-				if (attempt + 1 < LOCK_ATTEMPTS) await delay(LOCK_RETRY_MS);
+				checkCancellation(signal);
+				if (attempt + 1 < LOCK_ATTEMPTS) {
+					try {
+						await delay(LOCK_RETRY_MS, undefined, { signal });
+					} catch (error) {
+						checkCancellation(signal);
+						throw error;
+					}
+					checkCancellation(signal);
+				}
 			}
 		}
 		return undefined;
 	}
 
 	/** Serialize reload, validation, and append across instances and processes. */
-	private async transaction<T>(action: () => Promise<T>): Promise<T> {
+	private async transaction<T>(action: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		checkCancellation(signal);
 		await checkExistingDirectory(this.dir);
+		checkCancellation(signal);
 		await ensurePrivateDirectory(this.dir);
+		checkCancellation(signal);
 		const path = join(this.dir, RULES_LOCK_FILE);
-		const handle = await this.acquireLock(path);
+		const handle = await this.acquireLock(path, signal);
 		if (!handle) {
 			throw new RuleFileError(
 				"transaction lock",
@@ -1762,6 +1798,7 @@ export class RuleRegistry {
 				await unlink(path);
 			};
 			try {
+				checkCancellation(signal);
 				return await action();
 			} finally {
 				await release();
@@ -1868,10 +1905,13 @@ export class RuleRegistry {
 
 	private async mutate<T>(
 		build: (reduction: RuleReduction) => { event: Exclude<RuleEvent, CatalogEvent>; result: T },
+		signal?: AbortSignal,
 	): Promise<T> {
+		checkCancellation(signal);
 		await this.ensureFirstUse();
-		const action = () => this.applyMutation(build);
-		const running = this.mutationTail.then(() => this.transaction(action));
+		checkCancellation(signal);
+		const action = () => this.applyMutation(build, signal);
+		const running = this.mutationTail.then(() => this.transaction(action, signal));
 		this.mutationTail = running.then(
 			() => undefined,
 			() => undefined,
@@ -1879,19 +1919,28 @@ export class RuleRegistry {
 		return running;
 	}
 
-	/** Validate one built event against the fresh reduction, then append it. */
-	private async applyMutation<T>(
-		build: (reduction: RuleReduction) => { event: Exclude<RuleEvent, CatalogEvent>; result: T },
-	): Promise<T> {
-		if (this.degradedHealth) throw new Error(this.degradedHealth.message);
+	private async readForMutation(signal?: AbortSignal): Promise<RuleReduction> {
 		let read: Awaited<ReturnType<RuleRegistry["readReduction"]>>;
 		try {
-			read = await this.readReduction();
+			read = await this.readReduction(signal);
+			checkCancellation(signal);
 		} catch (error) {
+			if (error instanceof PolicyMutationCancelledError) throw error;
 			throw new Error(this.degrade(error).message);
 		}
 		if (read.incompleteFinalLine) throw new Error(this.reportIncomplete(read.incompleteFinalLine));
-		const reduction = read.reduction;
+		return read.reduction;
+	}
+
+	/** Validate one built event against the fresh reduction, then append it. */
+	private async applyMutation<T>(
+		build: (reduction: RuleReduction) => { event: Exclude<RuleEvent, CatalogEvent>; result: T },
+		signal?: AbortSignal,
+	): Promise<T> {
+		checkCancellation(signal);
+		if (this.degradedHealth) throw new Error(this.degradedHealth.message);
+		const reduction = await this.readForMutation(signal);
+		checkCancellation(signal);
 		const built = build(reduction);
 		const event = validateRuleEvent(built.event) as Exclude<RuleEvent, CatalogEvent>;
 		assertWritableAuthority(event);
@@ -1908,7 +1957,7 @@ export class RuleRegistry {
 		)
 			throw new Error(`installed predicate "${event.candidate.matcher.key}" is unavailable`);
 		assertTransition(event, reduction);
-		await this.append(event);
+		await this.append(event, signal);
 		if (event.kind === "import") {
 			const committed = await this.readReduction();
 			if (
@@ -1952,21 +2001,21 @@ export class RuleRegistry {
 		};
 	}
 
-	importCatalog(selection: string, expectedRevision: string, audit: SessionRuleAudit): Promise<CatalogImportEvent> {
+	importCatalog(selection: string, expectedRevision: string, audit: SessionRuleAudit, signal?: AbortSignal): Promise<CatalogImportEvent> {
 		return this.mutate((reduction) => {
 			const plan = this.buildImport(selection, reduction.records);
 			if (plan.revision !== expectedRevision) throw new Error("import revision changed; inspect a fresh import plan");
 			const event: CatalogImportEvent = { kind: "import", id: randomUUID(), ...plan, audit };
 			return { event, result: event };
-		});
+		}, signal);
 	}
 
 	/** Strict public event writer used by sanctioned command, panel, and tool surfaces. */
-	writeEvent(event: Exclude<RuleEvent, CatalogEvent>): Promise<RuleEvent> {
-		return this.mutate(() => ({ event, result: event }));
+	writeEvent(event: Exclude<RuleEvent, CatalogEvent>, signal?: AbortSignal): Promise<RuleEvent> {
+		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
-	proposeAdd(candidateValue: LocalRuleCandidate, reason: string, audit: AgentRuleAudit): Promise<ProposalEvent> {
+	proposeAdd(candidateValue: LocalRuleCandidate, reason: string, audit: AgentRuleAudit, signal?: AbortSignal): Promise<ProposalEvent> {
 		const candidate = validateLocalCandidate(candidateValue);
 		const event: ProposalEvent = {
 			kind: "proposal",
@@ -1985,7 +2034,7 @@ export class RuleRegistry {
 			},
 			audit,
 		};
-		return this.mutate(() => ({ event, result: event }));
+		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
 	proposeReplace(
@@ -1993,6 +2042,7 @@ export class RuleRegistry {
 		expectedRevision: string,
 		reason: string,
 		audit: AgentRuleAudit,
+		signal?: AbortSignal,
 	): Promise<ProposalEvent> {
 		const { id: ruleId, ...candidate } = validateLocalCandidate(candidateValue);
 		const event: ProposalEvent = {
@@ -2005,7 +2055,7 @@ export class RuleRegistry {
 			reason,
 			audit,
 		};
-		return this.mutate(() => ({ event, result: event }));
+		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
 	/** Check the exact event size and current capacity before complete operator review. */
@@ -2030,7 +2080,7 @@ export class RuleRegistry {
 			throw new Error(`policy rule store would exceed ${MAX_REGISTRY_BYTES} bytes`);
 	}
 
-	async setData(data: NamedData, expectedRevision: string | null, audit: SessionRuleAudit): Promise<DataSetEvent> {
+	async setData(data: NamedData, expectedRevision: string | null, audit: SessionRuleAudit, signal?: AbortSignal): Promise<DataSetEvent> {
 		// Capture before the transaction waits so callers cannot alter approved data in flight.
 		const event = validateRuleEvent({
 			kind: "data",
@@ -2040,10 +2090,10 @@ export class RuleRegistry {
 			expectedRevision,
 			audit,
 		}) as DataSetEvent;
-		return this.mutate(() => ({ event, result: event }));
+		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
-	removeData(name: string, expectedRevision: string, audit: SessionRuleAudit): Promise<DataRemoveEvent> {
+	removeData(name: string, expectedRevision: string, audit: SessionRuleAudit, signal?: AbortSignal): Promise<DataRemoveEvent> {
 		const event: DataRemoveEvent = {
 			kind: "data",
 			id: randomUUID(),
@@ -2052,17 +2102,17 @@ export class RuleRegistry {
 			expectedRevision,
 			audit,
 		};
-		return this.mutate(() => ({ event, result: event }));
+		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
-	proposeRetire(ruleId: string, reason: string, audit: AgentRuleAudit): Promise<ProposalEvent> {
+	proposeRetire(ruleId: string, reason: string, audit: AgentRuleAudit, signal?: AbortSignal): Promise<ProposalEvent> {
 		const event: ProposalEvent = { kind: "proposal", id: randomUUID(), operation: "retire", ruleId, reason, audit };
-		return this.mutate(() => ({ event, result: event }));
+		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
-	proposeDisable(ruleId: string, reason: string, audit: AgentRuleAudit): Promise<ProposalEvent> {
+	proposeDisable(ruleId: string, reason: string, audit: AgentRuleAudit, signal?: AbortSignal): Promise<ProposalEvent> {
 		const event: ProposalEvent = { kind: "proposal", id: randomUUID(), operation: "disable", ruleId, reason, audit };
-		return this.mutate(() => ({ event, result: event }));
+		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
 	decide(
@@ -2071,14 +2121,15 @@ export class RuleRegistry {
 		effect: RuleEffect | undefined,
 		audit: SessionRuleAudit,
 		expectedProposalRevision?: string,
+		signal?: AbortSignal,
 	): Promise<DecisionEvent> {
 		const event: DecisionEvent = { kind: "decision", id: randomUUID(), proposalId, decision, audit };
 		if (effect !== undefined) event.effect = effect;
 		if (expectedProposalRevision !== undefined) event.proposalRevision = expectedProposalRevision;
-		return this.mutate(() => ({ event, result: event }));
+		return this.mutate(() => ({ event, result: event }), signal);
 	}
 
-	disable(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string): Promise<OverrideEvent> {
+	disable(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string, signal?: AbortSignal): Promise<OverrideEvent> {
 		return this.mutate((reduction) => {
 			const existing = reduction.records.get(ruleId);
 			assertTargetIdentity(existing, expectedIdentity);
@@ -2096,10 +2147,10 @@ export class RuleRegistry {
 				},
 			};
 			return { event, result: event };
-		});
+		}, signal);
 	}
 
-	enable(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string): Promise<OverrideEvent> {
+	enable(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string, signal?: AbortSignal): Promise<OverrideEvent> {
 		return this.mutate((reduction) => {
 			const existing = reduction.records.get(ruleId);
 			assertTargetIdentity(existing, expectedIdentity);
@@ -2125,7 +2176,7 @@ export class RuleRegistry {
 						audit,
 					};
 			return { event, result: event };
-		});
+		}, signal);
 	}
 
 	setEffect(
@@ -2134,6 +2185,7 @@ export class RuleRegistry {
 		reason: string,
 		audit: SessionRuleAudit,
 		expectedIdentity?: string,
+		signal?: AbortSignal,
 	): Promise<OverrideEvent> {
 		return this.mutate((reduction) => {
 			const existing = reduction.records.get(ruleId);
@@ -2154,10 +2206,10 @@ export class RuleRegistry {
 				},
 			};
 			return { event, result: event };
-		});
+		}, signal);
 	}
 
-	retire(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string): Promise<DefinitionEvent> {
+	retire(ruleId: string, reason: string, audit: SessionRuleAudit, expectedIdentity?: string, signal?: AbortSignal): Promise<DefinitionEvent> {
 		const event: DefinitionEvent = {
 			kind: "definition",
 			id: randomUUID(),
@@ -2169,7 +2221,7 @@ export class RuleRegistry {
 		return this.mutate((reduction) => {
 			assertTargetIdentity(reduction.records.get(ruleId), expectedIdentity);
 			return { event, result: event };
-		});
+		}, signal);
 	}
 }
 
