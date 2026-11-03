@@ -798,17 +798,24 @@ updates form one activation unit: an `observeCommits()` or `watchDoc()`
 consumer requires the Durable API of the installed release, not an older
 dependency graph. A commit on `main` does not activate anything by itself:
 Pi loads each extension from the checkout its settings entry names, and a
-running process keeps the code it loaded. Activation is therefore a checkout
-that carries the accepted commit with its installed dependencies, the
-extension load checks, and the settings repoint described in the
-[development workflow](conventions/worktrees.md#pi-configuration). Before that
-repoint, retained consumers must remain on intact old bytes, finish, or
-stop/restart at an owner-agreed boundary. This includes all changed native
-contributions, not only the Agent host. A source-only update to a contribution
-creates version skew as surely as a dependency update: `version-contract.ts`
-compares per-operation identities, so a window loaded before the switch is
-refused for each operation whose identity changed until it restarts. A store migration is never implied
-by activation; it is a separate operator decision taken from concrete data.
+running process keeps the code it loaded. Reload refreshes extension factories,
+not objects an extension retains at process scope (see
+[host lifetime](agent-delivery.md#host-lifetime)). The
+[development workflow](conventions/worktrees.md#pi-configuration) owns both
+routes below. Selecting a different checkout, such as a detached release checkout
+that carries the accepted commit with its installed dependencies, requires the
+extension load checks and a repoint of the settings entries. A source change
+inside a checkout that the settings already select needs no repoint; it
+follows the documented reload behaviour. In both cases retained consumers must
+remain on intact old bytes, finish, or stop/restart at an owner-agreed
+boundary, so an immutable checkout stays in place while processes still run
+from it. This includes all changed native contributions, not only the Agent
+host. A source-only update to a contribution creates version skew as surely as
+a dependency update: `version-contract.ts` compares per-operation identities,
+so a process loaded before the change is refused for each operation whose
+identity changed until it restarts. A store migration is never
+implied by activation; it is a separate operator decision taken from concrete
+data.
 See the
 [host contract](agent-host-contract.md#no-start-observation-versus-acquiring-controls)
 and Agent README for the actual lifecycle controls.
