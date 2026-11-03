@@ -39,6 +39,7 @@
  * at-most-once: a newly applied completion writes one record after its state
  * commit.
  */
+import { bool, lit, num, obj, str, type Schema, type Static } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { ActionApprovals, actionAuthority, type ActionBinding, type ActionControl, sameActionInput } from "./action-approval.ts";
@@ -46,7 +47,7 @@ import type { Context, JsonValue } from "@earendil-works/chord";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Message, ToolCall } from "@earendil-works/pi-ai";
-import { type Static, Type } from "typebox";
+
 import { authoringGuide, checkDraft, type DraftCheckContext } from "./authoring.ts";
 import { captureFor, ruleScopeMatches } from "./classify.ts";
 import { compileRule } from "./compiler.ts";
@@ -352,12 +353,12 @@ export async function createPolicyDurableExtension(host: PolicyDurableHost): Pro
 		parameters: PolicyRulesParams,
 		replay: "safe",
 		execute: (args, api, context) => runtime.executeRules(args, api, context),
-		structuredOutputSchema: Type.Object({
-			rules: Type.Number(),
-			pending: Type.Number(),
-			ruleStoreDegraded: Type.Boolean(),
-			ruleStorePath: Type.String(),
-		}),
+		structuredOutputSchema: obj({
+			rules: num(),
+			pending: num(),
+			ruleStoreDegraded: bool(),
+			ruleStorePath: str(),
+		}, { open: true }),
 	});
 	const proposeTool = defineTool({
 		name: "policy_propose",
@@ -365,13 +366,13 @@ export async function createPolicyDurableExtension(host: PolicyDurableHost): Pro
 		parameters: PolicyProposeParams,
 		replay: "unsafe",
 		execute: (args, api, context) => runtime.executePropose(args, api, context),
-		structuredOutputSchema: Type.Object({
-			proposalId: Type.String(),
-			proposalRevision: Type.String(),
-			state: Type.Literal("pending"),
-			operation: Type.String(),
-			ruleId: Type.String(),
-		}),
+		structuredOutputSchema: obj({
+			proposalId: str(),
+			proposalRevision: str(),
+			state: lit("pending"),
+			operation: str(),
+			ruleId: str(),
+		}, { open: true }),
 	});
 	const approveTool = defineTool({
 		name: "policy_approve",
@@ -379,22 +380,22 @@ export async function createPolicyDurableExtension(host: PolicyDurableHost): Pro
 		parameters: PolicyApproveParams,
 		replay: "unsafe",
 		execute: (args, api, context) => runtime.executeApprove(args, api, context),
-		structuredOutputSchema: Type.Object({
-			proposalId: Type.String(),
-			proposalRevision: Type.String(),
-			decision: Type.Literal("approved"),
-			operation: Type.String(),
-			ruleId: Type.String(),
-			ruleRevision: Type.String(),
-			state: Type.String(),
-			effect: Type.String(),
-			matcherAvailable: Type.Boolean(),
-			staleOverride: Type.Boolean(),
-			scope: Type.String(),
-			mode: Type.String(),
-			registryHealth: Type.String(),
-			boundary: Type.String(),
-		}),
+		structuredOutputSchema: obj({
+			proposalId: str(),
+			proposalRevision: str(),
+			decision: lit("approved"),
+			operation: str(),
+			ruleId: str(),
+			ruleRevision: str(),
+			state: str(),
+			effect: str(),
+			matcherAvailable: bool(),
+			staleOverride: bool(),
+			scope: str(),
+			mode: str(),
+			registryHealth: str(),
+			boundary: str(),
+		}, { open: true }),
 	});
 	const controlTool = defineTool({
 		name: "policy_control",
@@ -402,7 +403,7 @@ export async function createPolicyDurableExtension(host: PolicyDurableHost): Pro
 		parameters: PolicyControlParams,
 		replay: "unsafe",
 		execute: (args, api, context) => runtime.executeControl(args, api, context),
-		structuredOutputSchema: Type.Record(Type.String(), Type.Unknown()),
+		structuredOutputSchema: ({ type: "object", patternProperties: { "^.*$": {} } } as Schema<Record<string, unknown>>),
 	});
 
 	return defineExtension({
