@@ -19,7 +19,7 @@ import {
 	SettingsManager,
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import jobs from "../extensions/jobs/index.ts";
+import jobs, { JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "../extensions/jobs/index.ts";
 import policy from "../extensions/policy/index.ts";
 
 // Node's test runner isolates this file in its own process. Restore the environment before cleanup.
@@ -97,6 +97,11 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 			await delay(20);
 		}
 	}
+	const completions = () =>
+		session?.messages.flatMap((message) =>
+			message.role === "custom" && message.customType === JOB_COMPLETION_MESSAGE ? [message.details as JobCompletionDetails] : [],
+		) ?? [];
+	const runs: string[] = [];
 	try {
 		const modelRuntime = await ModelRuntime.create({
 			credentials: new InMemoryCredentialStore(),
@@ -119,14 +124,18 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 			extensionFactories: [
 				jobs,
 				policy,
-				(pi) =>
+				(pi) => {
 					pi.registerProvider(model.provider, {
 						api: model.api,
 						baseUrl: model.baseUrl,
 						apiKey: "synthetic-fixture-only",
 						models: [model],
 						streamSimple: stream,
-					}),
+					});
+					pi.on("before_agent_start", async (event) => {
+						runs.push(event.messageType);
+					});
+				},
 			],
 		});
 		await loader.reload();
@@ -162,8 +171,17 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 		const foreground = await call("bash", { command: "printf independent" });
 		assert.match(JSON.stringify(foreground.content), /independent/);
 		assert.equal((await data("jobs", { action: "status", id })).job.status, "running");
+		const runsBeforeRelease = runs.length;
 		writeFileSync(join(cwd, "release"), "");
-		await until(async () => (await data("jobs", { action: "status", id })).job.status !== "running");
+		// The settled job starts its own custom-message turn; no fixture prompt polls for it.
+		await until(async () => completions().some((entry) => entry.job.id === id) && session?.isIdle === true);
+		assert.deepEqual(runs.slice(runsBeforeRelease), ["custom"], "one completion turn starts from the settled job");
+		const delivered = completions().find((entry) => entry.job.id === id);
+		assert.ok(delivered);
+		assert.equal(delivered.job.status, "failed");
+		assert.equal(delivered.job.exitCode, 7);
+		assert.deepEqual(delivered.tail, { text: "started\nfinished", omitted: false, outputBytes: 17 });
+		assert.match(delivered.command, /^printf 'started\\n'; while/u);
 		const terminal = (await data("jobs", { action: "status", id })).job;
 		assert.equal(terminal.status, "failed");
 		assert.equal(terminal.exitCode, 7);
@@ -188,6 +206,8 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
 		assert.throws(() => process.kill(shutdownPid, 0), { code: "ESRCH" });
 		assert.equal((await data("jobs", { action: "status", id: owned.id })).job.status, "cancelled");
+		await delay(50);
+		assert.equal(completions().length, 1, "cancelled and shut-down jobs deliver no completion");
 		assert.deepEqual(errors, []);
 	} finally {
 		try {

@@ -1,8 +1,9 @@
 # Command Jobs
 
 Run a build, test suite, or noninteractive development server while the agent
-continues independent work. The extension adds `background` to the `bash` tool
-and registers `jobs` for status, logs, and cancellation.
+continues independent work. The extension adds `background` to the `bash` tool,
+registers `jobs` for status, logs, and cancellation, and delivers a finite job's
+completion back into the session so the agent continues without polling.
 
 ## Use
 
@@ -16,6 +17,35 @@ The result contains `job.id`. A `running` result means the manager accepted the
 command, not that the shell spawned successfully or a server is ready. Check
 status and application output before dependent work.
 
+### Completion delivery
+
+When a background job reaches `succeeded`, `failed`, or `timed_out`, the
+extension sends one custom message of type `jobs.completion` to the same
+session through Pi's `sendMessage()` with `deliverAs: "followUp"`. If the agent
+is still working, the message arrives after its current tool calls, like any
+follow-up. If the agent is idle, the message starts a new turn, so the work
+that launched the job continues when the job settles. One settled job produces
+exactly one message.
+
+The message text names the job ID, the outcome (exit code, timeout, or backend
+error), the elapsed time, a bounded control-free preview of the command (at
+most 200 characters), the total output byte count, and the last output lines
+(at most 40 lines from the last 4 KiB of the retained tail). It labels that
+excerpt as untrusted command output and says when earlier lines are omitted.
+`details` carries the same facts as `{ job, command, tail }`, where `tail` is
+`{ text, omitted, outputBytes }`; the raw text keeps terminal controls, the
+model-visible text drops them. Read the full retained tail with `jobs` logs.
+
+No message is sent for a job that ends `cancelled`: the caller requested that
+cancellation through `jobs`, or the session is shutting down. A service that
+never exits produces no completion; it still reports through `jobs`, and a
+crash delivers its `failed` outcome.
+
+An operator abort (Escape) is respected: after a run ends aborted, a job that
+settles while the session is idle is appended to the transcript without
+starting a turn. The next prompt sees it in context. A later run clears that
+state, so completions during or after ordinary work continue it as usual.
+
 ```json
 {"action":"list"}
 {"action":"status","id":"<job.id>"}
@@ -26,8 +56,9 @@ status and application output before dependent work.
 
 Pass these management requests to `jobs`. Use the returned `next` cursor for
 the next log page, rather than the illustrative cursor above. Read `more` to
-check whether another page is available. Continue independent work between
-checks; no recurring poll or completion-triggered model turn runs automatically.
+check whether another page is available. Use these requests for logs and
+cancellation while a job runs, not to poll for completion; the completion
+message above carries the outcome.
 
 Omit `background`, or set it to false, for ordinary foreground Bash behavior.
 Foreground output truncation, timeout errors, and nonzero-exit errors remain
@@ -170,9 +201,13 @@ node scripts/extension-load-check.mts extensions/jobs/index.ts
 
 The manager tests cover bounded retention and active native process cleanup.
 The adapter tests cover foreground behavior, output-schema conformance,
-contextual environment, shell settings, turn-abort ownership, and shutdown.
+contextual environment, shell settings, turn-abort ownership, shutdown, and
+completion delivery: one bounded message per finite job, none for
+cancellation or shutdown, and the quiet append after an aborted run.
 The colocated codemode test runs an ordinary Pi session with synthetic model
 calls and native codemode. It checks foreground success and nonzero results,
-job admission, management actions, bounded logs, errors, and shutdown. The
+job admission, management actions, bounded logs, errors, shutdown, and the
+completion message retained in the session. The
 package integration test drives Pi's actual session event boundary with synthetic model output and real local
-commands. It requires no model credentials or external network.
+commands, including the single custom-message turn that a settled job starts.
+It requires no model credentials or external network.

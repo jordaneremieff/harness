@@ -19,7 +19,7 @@ import {
 	SettingsManager,
 	type AgentSession,
 } from "@earendil-works/pi-coding-agent";
-import jobs from "./index.ts";
+import jobs, { JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./index.ts";
 import { JOB_LIMITS } from "./manager.ts";
 
 test("native codemode composes Bash and managed jobs in an ordinary session", { timeout: 30_000 }, async () => {
@@ -92,6 +92,19 @@ test("native codemode composes Bash and managed jobs in an ordinary session", { 
 		}
 		assert.fail("Job did not settle within bounded session observations");
 	}
+	/** A finite job's completion arrives as a custom message that starts its own turn; wait for that turn to settle. */
+	async function completed(id: string): Promise<JobCompletionDetails> {
+		assert.ok(session);
+		const deadline = Date.now() + 10_000;
+		for (;;) {
+			const message = session.messages.find(
+				(entry) => entry.role === "custom" && entry.customType === JOB_COMPLETION_MESSAGE && (entry.details as JobCompletionDetails).job.id === id,
+			);
+			if (message?.role === "custom" && session.isIdle) return message.details as JobCompletionDetails;
+			assert.ok(Date.now() < deadline, "the completion message starts and settles a turn before the deadline");
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+	}
 	try {
 		const modelRuntime = await ModelRuntime.create({
 			credentials: new InMemoryCredentialStore(),
@@ -161,6 +174,10 @@ test("native codemode composes Bash and managed jobs in an ordinary session", { 
 		const admitted = await script(`return await tools.bash({
 			command: ${JSON.stringify(`node -e 'process.stdout.write("x".repeat(${JOB_LIMITS.logBytes + 1000}))'`)}, background: true});`);
 		assert.equal(admitted.job.status, "running");
+		const delivered = await completed(admitted.job.id);
+		assert.equal(delivered.job.status, "succeeded");
+		assert.equal(delivered.tail.omitted, true, "a ring cut is reported as omitted output");
+		assert.equal(delivered.tail.outputBytes, JOB_LIMITS.logBytes + 1000);
 		assert.equal((await settled(admitted.job.id)).status, "succeeded");
 		const observed = await script(`
 			const id = ${JSON.stringify(admitted.job.id)};
