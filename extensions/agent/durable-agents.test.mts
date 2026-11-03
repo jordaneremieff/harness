@@ -622,6 +622,24 @@ it("preserves closed control objects, optional fields, enums and inspect cursors
 			assert.equal(schema.check({ ...input, extra: true }), false, name);
 			assert.equal(schema.check({ ...input, sessionId: "" }), false, name);
 		}
+		for (const [name, input] of [
+			["agent_spawn", {}],
+			["agent_place", {}],
+			["agent_configure", { sessionId: storageId }],
+		] as const) {
+			const schema = schemaFor(name);
+			assert.equal(schema.check(input), true, name);
+			assert.equal(schema.check({ ...input, preset: "standard" }), true, name);
+			assert.equal(schema.check({ ...input, preset: 7 }), false, name);
+			assert.equal(schema.check({ ...input, preset: "" }), false, name);
+			assert.equal(schema.check({ ...input, extra: true }), false, name);
+		}
+		const status = schemaFor("agent_status");
+		assert.equal(status.check({}), true);
+		assert.equal(status.check({ view: "fleet" }), true);
+		assert.equal(status.check({ view: "fleet", model: "sample/a", provider: "sample" }), true);
+		assert.equal(status.check({ view: "fleet", provider: 7 }), false);
+		assert.equal(status.check({ view: "fleet", model: "" }), false);
 		const inspect = schemaFor("agent_inspect");
 		assert.equal(inspect.check({ sessionId: storageId, view: "history", source: "toolResult", cursor: { position: 2, nested: { token: "page" } } }), true);
 		assert.equal(inspect.check({ sessionId: storageId, view: "unsupported" }), false);
