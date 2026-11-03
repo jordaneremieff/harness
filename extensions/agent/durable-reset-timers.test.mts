@@ -20,7 +20,7 @@ function stubControl(calls: ControlCall[]): (method: string, input: Record<strin
 			case "reset":
 				return { conversationId: 1, requestId: input.requestId, submissionId: 4, status: "queued", entryId: null, reason: null, deduped: false };
 			case "timer-schedule":
-				return { timerId: 7, conversationId: 1, identity: "storage-a", deadline: input.deliverAt, mode: input.mode, origin: input.origin, scheduleId: input.scheduleId, deduped: false };
+				return { timerId: 7, conversationId: 1, identity: "storage-a", deadline: input.deliverAt, mode: input.mode, origin: input.origin, scheduleId: input.scheduleId, deduped: false, disposition: "scheduled", status: "pending" };
 			case "timer-list":
 				return { timers: [{ timerId: 7, scheduleId: "s", conversationId: 1, identity: "storage-a", messagePreview: "later", deadline: Date.now() + 60000, mode: "followUp", origin: "operator", ownerId: "owner", requestId: "r", createdAt: Date.now(), status: "pending", firedAt: null, overdueMs: null, submissionId: null, settledAt: null, live: true }] };
 			case "timer-cancel":
@@ -42,6 +42,12 @@ it("passes the optional self-owned schedule flag only when the caller supplies i
 		assert.equal(calls.at(-1)?.input.selfOwned, selfOwned);
 		assert.equal(Object.hasOwn(calls.at(-1)?.input ?? {}, "selfOwned"), selfOwned !== undefined);
 	}
+});
+
+it("shows a retained terminal timer without claiming a new pending schedule", async () => {
+	const result = await scheduleAgentInput({ label: async () => "alpha", control: async () => ({ timerId: 7, disposition: "retained", status: "terminal", outcome: { status: "aborted" } }) }, { sessionId: "storage-a", message: "later", deliverAt: Date.now() });
+	assert.match(result.text, /Retained timer #7.*aborted.*No new timer/u);
+	assert.doesNotMatch(result.text, /Scheduled timer|host must run/u);
 });
 
 it("registers the separate reset tool and leaves timers to agent_status and agent_abort", async () => {

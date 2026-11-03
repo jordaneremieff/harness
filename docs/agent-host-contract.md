@@ -517,7 +517,7 @@ Overrides and remaining members:
 | submit | submit/1.3.0 | submit/1.1.0 | absent |
 | passive-submit | passive-submit/1.1.0 | passive-submit/1.0.0 | absent |
 | spawn | spawn/2.0.0 | spawn/2.0.0 | absent |
-| place | place/2.0.0 | place/2.0.0 | absent |
+| place | place/2.1.0 | place/2.1.0 | absent |
 | resolve-agent | resolve-agent/2.0.0 | resolve-agent/2.0.0 | absent |
 | receipts | receipts/1.1.0 | receipts/1.2.0 | D |
 | inspect | inspect/1.1.0 | H-inspect | D |
@@ -531,7 +531,7 @@ Overrides and remaining members:
 | request-cancel | request-cancel/1.0.0 | request-cancel/1.0.0 | absent |
 | configure | configure/1.3.0 | configure/1.3.0 | absent |
 | command | command/1.1.0 | command/1.0.0 | D |
-| timer-schedule | timer-schedule/1.1.0 | timer-schedule/1.0.0 | absent |
+| timer-schedule | timer-schedule/1.1.0 | timer-schedule/2.0.0 | absent |
 | dashboard | dashboard/1.0.0 | H-dashboard | absent |
 | snapshot | snapshot/1.0.0 | snapshot/2.0.0 | D |
 | observe-open | observe-open/1.0.0 | observe-open/2.0.0 | D |
@@ -1033,6 +1033,22 @@ timing or separate answers. Sources:
 `durable-agents.ts` (`Reporter`).
 
 The ordinary manager's `control("submit")` maps to `task-submit`; raw host `submit` is a different base operation. Match the documented wire member, not a manager method name. The standalone terminal uses operator origin and self-owned replyTo. Source: `extensions/agent/manager.ts:469-514`; `extensions/agent/terminal-client.ts:123-131`.
+
+### timer-schedule
+
+Params: `{sessionId,message,deliverAt,mode?,origin?,ownerId,scheduleId?,requestId?,checkInMinutes?,selfOwned?}`. The host normalises the absolute deadline, target identity, follow-up mode and check-in interval before admission. The result is `{timerId,conversationId,identity,deadline,mode,origin,scheduleId,deduped,disposition:"scheduled"|"retained",status,outcome?}`. `status` is the native task state: `pending`, `running`, `waiting`, `sleeping`, `completing` or `terminal`. A new schedule returns `scheduled` and `pending`. A repeated key returns `retained` with the original task's current state, not a new pending timer. When present, `outcome.status` is `completed`, `aborted`, `failed`, `faulted` or `orphaned`; `completed` carries the timer result including its admitted submission ID. Failed outcomes retain their native error; orphaned outcomes retain their reason.
+
+The session-scoped `agent.timer-schedule` document family stores only the schedule key's native task ID and payload fingerprint. The key and new native timer commit together. The fingerprint binds target, message, absolute deadline, mode, origin, owner, request ID, normalised check-in interval and request context, excluding creation time. Conflicting payload reuse refuses. Native task input and outcome remain authoritative. Listing pruning does not remove the keyed identity.
+
+A missing index entry triggers a storage-wide timer-kind task scan, including terminal tasks and other conversations. A unique retained match is adopted for that key only. Ambiguous or incomplete bounded lookup refuses admission. The scan bounds are `TIMER_LOOKUP_PAGE_SIZE` and `TIMER_LOOKUP_PAGE_LIMIT` in `durable-timers.ts`; there is no bulk backfill. Timer execution still uses native `sleepUntil`. Cancellation reads the native task even after listing pruning; an already admitted input reports `fired`, never prevented admission.
+
+### place
+
+The manager resolves the canonical area owner, creating it when absent. An absent or empty prompt resolves only; nonempty text passes verbatim. A prompted response carries `sessionId`, `submissionId` and an exact `result:{sessionId,submissionId,requestId}` for the stable place request ID, plus creation or reuse selection facts.
+
+Native `agent_place` captures its initiating inputs and pending dispatch before external admission. It validates the returned canonical target and exact request reference before confirmation. A confirmed replay returns the retained response without another area lookup or admission, even if the area binding changes. Unconfirmed admission contributes incomplete run-control coverage. Place ownership never makes the shared owner an exclusively owned child; selected-run Stop uses only its captured exact input references and protects unrelated work.
+
+Sources: `extensions/agent/durable-timers.ts`, `durable-agents.ts`, `run-control-state.ts`, `result-reference.ts`, and `manager.ts`.
 
 ### compact
 

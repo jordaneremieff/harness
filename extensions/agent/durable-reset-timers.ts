@@ -83,8 +83,12 @@ export async function scheduleAgentInput(deps: ResetTimerDeps, input: { readonly
 	})) as ScheduleTimerResult;
 	const label = await labelOf(deps, sessionId);
 	const kind = mode === "steer" ? "steering" : "follow-up";
+	if (result.disposition === "retained") return {
+		text: `Retained timer #${result.timerId} for “${label}” is ${result.outcome?.status ?? result.status}. No new timer was created.`,
+		sessionId,
+	};
 	return {
-		text: `Scheduled timer #${result.timerId} for “${label}” at ${localTime(result.deadline)} (${kind}${result.deduped ? ", already scheduled" : ""}). The storage host must run at the deadline.`,
+		text: `Scheduled timer #${result.timerId} for “${label}” at ${localTime(result.deadline)} (${kind}). The storage host must run at the deadline.`,
 		sessionId,
 	};
 }

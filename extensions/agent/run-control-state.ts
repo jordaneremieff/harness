@@ -1,4 +1,5 @@
 import type * as Native from "@earendil-works/pi-durable";
+import type { JsonValue } from "@earendil-works/chord";
 import type { ResultReference } from "./result-reference.ts";
 
 export type RunControlState = {
@@ -7,6 +8,7 @@ export type RunControlState = {
 	complete: boolean;
 	dispatch?: "pending" | "confirmed";
 	result?: ResultReference | null;
+	response?: Record<string, JsonValue>;
 };
 
 /** Native input and task links remain available after a generation settles. */

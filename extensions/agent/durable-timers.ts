@@ -19,10 +19,11 @@
  * version runs it, so the host creates tasks from this module while the agent
  * contribution registers the definition in the registry.
  */
+import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { inputEntry } from "./input-entry.ts";
 import { classifyAwaitInput, reconcileInputRelease } from "./awaited-results.ts";
-import { defineDoc, defineTask, type ConversationId, type Harness, type SubmissionRecord, type TaskId, type Tx } from "@earendil-works/pi-durable";
+import { defineDoc, defineDocFamily, defineTask, type ConversationId, type Cursor, type Harness, type SubmissionRecord, type TaskId, type TaskRecord, type TaskState, type TaskOutcome, type Tx } from "@earendil-works/pi-durable";
 import { linkDeliveryIntent, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
 import { reconcileProfile } from "./profile.ts";
 import { validateRequestContext, type RequestContext } from "./request-context.ts";
@@ -42,7 +43,7 @@ export type TimerStatus = "pending" | "fired" | "cancelled";
 
 /** Original task input of one scheduled input. */
 export type TimerInput = {
-	/** Caller-supplied schedule key; a retried schedule reuses the pending record. */
+	/** Caller-supplied schedule key retained independently of the bounded listing. */
 	readonly scheduleId: string;
 	/** Absolute deadline in epoch milliseconds. */
 	readonly deadline: number;
@@ -301,7 +302,7 @@ export const TimerTask = defineTask<TimerInput, TimerState, TimerResult>({
 });
 
 export interface ScheduleTimerParams {
-	/** Caller-supplied schedule key; a retried schedule reuses the pending record. */
+	/** Caller-supplied schedule key retained independently of the bounded listing. */
 	readonly scheduleId: string;
 	readonly deadline: number;
 	readonly conversationId: ConversationId;
@@ -317,6 +318,51 @@ export interface ScheduleTimerParams {
 	readonly requestContext?: RequestContext;
 }
 
+type NativeTimer = TaskRecord<TimerInput, TimerState, TimerResult>;
+
+/** Keyed identity only; native task input and outcome remain authoritative. */
+export const TimerScheduleDoc = defineDocFamily<{ timerId: number | null; fingerprint: string | null }, null>({
+	kind: "agent.timer-schedule", version: 1, scope: "session", family: true,
+	initial: () => ({ timerId: null, fingerprint: null }), checkpointWhen: () => true,
+});
+export const TIMER_LOOKUP_PAGE_SIZE = 128;
+export const TIMER_LOOKUP_PAGE_LIMIT = 16;
+
+function timerFingerprint(input: TimerInput | ScheduleTimerParams): string {
+	const route = input.requestContext;
+	return createHash("sha256").update(JSON.stringify([
+		input.conversationId, input.identity, input.message, input.deadline, input.mode,
+		input.origin, input.ownerId, input.requestId, input.checkInMinutes ?? 0,
+		route ? [route.requestId, route.requester, route.replyTo, route.origin] : null,
+	])).digest("hex");
+}
+
+async function findRetainedTimer(tx: Tx, scheduleId: string): Promise<NativeTimer | undefined> {
+	let cursor: Cursor | undefined;
+	let found: NativeTimer | undefined;
+	for (let index = 0; index < TIMER_LOOKUP_PAGE_LIMIT; index++) {
+		const page = await tx.scanTasks({ kind: TIMER_TASK_NAME }, TIMER_LOOKUP_PAGE_SIZE, cursor);
+		for (const task of page.items) {
+			if (task.input === null || typeof task.input !== "object" || Array.isArray(task.input) || task.input.scheduleId !== scheduleId) continue;
+			if (found) throw new Error(`Ambiguous timer schedule key ${scheduleId}: several retained tasks match`);
+			found = task as unknown as NativeTimer;
+		}
+		cursor = page.next;
+		if (!cursor) return found;
+	}
+	throw new Error(`Incomplete timer schedule lookup for ${scheduleId}; no input was scheduled`);
+}
+
+function retainedTimerResult(task: NativeTimer): ScheduleTimerResult {
+	const input = task.input;
+	return {
+		timerId: Number(task.id), conversationId: input.conversationId, identity: input.identity,
+		deadline: input.deadline, mode: input.mode, origin: input.origin, scheduleId: input.scheduleId,
+		deduped: true, disposition: "retained", status: task.state.status,
+		...(task.state.outcome === undefined ? {} : { outcome: task.state.outcome }),
+	};
+}
+
 export interface ScheduleTimerResult {
 	readonly timerId: number;
 	readonly conversationId: number;
@@ -326,13 +372,29 @@ export interface ScheduleTimerResult {
 	readonly origin: DeliveryOrigin;
 	readonly scheduleId: string;
 	readonly deduped: boolean;
+	readonly disposition: "scheduled" | "retained";
+	readonly status: TaskState<TimerState, TimerResult>["status"];
+	readonly outcome?: TaskOutcome<TimerResult>;
 }
 
-/**
- * Create one timer task and its mirror record in a single commit. A pending
- * record with the same schedule key returns the retained timer, so a retried
- * schedule call does not create a second timer.
- */
+async function resolveTimerSchedule(tx: Tx, params: ScheduleTimerParams) {
+	const index = await tx.doc(TimerScheduleDoc, params.scheduleId, null);
+	const fingerprint = timerFingerprint(params);
+	const existing = index.timerId === null
+		? await findRetainedTimer(tx, params.scheduleId)
+		: await tx.task(index.timerId as TaskId) as NativeTimer | undefined;
+	if (index.timerId !== null && (!existing || existing.kind !== TIMER_TASK_NAME || existing.input.scheduleId !== params.scheduleId))
+		throw new Error(`Timer schedule index for ${params.scheduleId} has no matching native task`);
+	if (existing !== undefined) {
+		if (timerFingerprint(existing.input) !== fingerprint || index.fingerprint !== null && index.fingerprint !== fingerprint)
+			throw new Error(`Conflicting timer schedule key ${params.scheduleId}`);
+		index.timerId = Number(existing.id);
+		index.fingerprint = fingerprint;
+	}
+	return { index, fingerprint, existing };
+}
+
+/** Claim the schedule key and create its task atomically, or return native retained state. */
 export async function scheduleTimer(harness: Harness, params: ScheduleTimerParams, context: Context): Promise<ScheduleTimerResult> {
 	parseDeliverAt(params.deadline);
 	if (params.requestContext !== undefined) {
@@ -341,20 +403,9 @@ export async function scheduleTimer(harness: Harness, params: ScheduleTimerParam
 		validateRequestContext(params.requestContext);
 	}
 	return harness.commit(async (tx) => {
+		const { index, fingerprint, existing } = await resolveTimerSchedule(tx, params);
+		if (existing !== undefined) return retainedTimerResult(existing);
 		const state = await tx.doc(AgentTimerDoc);
-		const existing = state.timers.find((record) => record.scheduleId === params.scheduleId && record.status === "pending");
-		if (existing !== undefined) {
-			return {
-				timerId: existing.timerId,
-				conversationId: existing.conversationId,
-				identity: existing.identity,
-				deadline: existing.deadline,
-				mode: existing.mode,
-				origin: existing.origin,
-				scheduleId: existing.scheduleId,
-				deduped: true,
-			};
-		}
 		const input: TimerInput = {
 			scheduleId: params.scheduleId,
 			deadline: params.deadline,
@@ -374,6 +425,8 @@ export async function scheduleTimer(harness: Harness, params: ScheduleTimerParam
 			conversationId: params.conversationId,
 			background: true,
 		});
+		index.timerId = Number(timerId);
+		index.fingerprint = fingerprint;
 		const record: TimerRecord = {
 			timerId: Number(timerId),
 			scheduleId: params.scheduleId,
@@ -403,6 +456,8 @@ export async function scheduleTimer(harness: Harness, params: ScheduleTimerParam
 			origin: record.origin,
 			scheduleId: record.scheduleId,
 			deduped: false,
+			disposition: "scheduled",
+			status: "pending",
 		};
 	}, context);
 }
@@ -502,8 +557,8 @@ export interface CancelTimerResult {
  * conversation's scheduled input.
  */
 export async function cancelTimer(harness: Harness, timerId: number, context: Context, conversationId?: ConversationId): Promise<CancelTimerResult> {
-	const record = (await harness.snapshot(AgentTimerDoc, context))?.timers.find((row) => row.timerId === timerId);
-	if (record === undefined) throw new Error(`timer ${timerId} is not retained in this storage`);
+	const record = await harness.getTask(timerId as TaskId, context);
+	if (record === undefined || record.kind !== TIMER_TASK_NAME) throw new Error(`timer ${timerId} is not retained in this storage`);
 	if (conversationId !== undefined && record.conversationId !== conversationId) throw new Error(`timer ${timerId} targets another conversation`);
 	const id = timerId as TaskId<never>;
 	const outcome = await harness.abortTask(id, context);

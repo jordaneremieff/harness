@@ -53,11 +53,11 @@ it("keeps roster coverage local without changing the published host status ident
 	assert.equal(contractRefusal("status", { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, status: { ...HOST_CONTRACT.operations.status, response: published } } }), undefined);
 });
 
-it("refuses self-owned rewind and timer requests in both contract directions without changing responses", () => {
+it("refuses mismatched self-owned rewind and timer request contracts in both directions", () => {
 	for (const method of ["rewind", "timer-schedule"]) {
 		const current = HOST_CONTRACT.operations[method];
 		assert.equal(current.request, `${method}/1.1.0`);
-		assert.equal(current.response, `${method}/1.0.0`);
+		assert.equal(current.response, method === "timer-schedule" ? "timer-schedule/2.0.0" : "rewind/1.0.0");
 		const old = { ...current, request: `${method}/1.0.0` };
 		const oldRuntime = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, [method]: old } };
 		assert.match(contractRefusal(method, oldRuntime)?.message ?? "", /request contract/u);

@@ -705,23 +705,42 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (!state.recorded && live.run) { state.recorded = true; state.inputs = live.run.inputs.slice(0, 200); state.complete = live.run.inputs.length <= 200; }
 		return undefined;
 	}, context);
-	const retainDispatch = (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, result?: ResultReference | null) => api.commit(async tx => {
+	const retainDispatch = (api: Durable.ToolExecutionApi<ControlDetails>, context: Context, result?: ResultReference | null, response?: Record<string, JsonValue>) => api.commit(async tx => {
 		const state = await tx.doc(RunControl, api.conversationId, String(api.taskId), null);
 		state.dispatch = result === undefined ? "pending" : "confirmed";
 		if (result !== undefined) state.result = result;
+		if (response !== undefined) state.response = response;
 		return undefined;
 	}, context);
 
 	type DispatchCapture = { api: Durable.ToolExecutionApi<ControlDetails>; context: Context };
-	const isInputDispatch = (method: AgentControlMethod, params: Readonly<Record<string, unknown>>) => method === "submit" || method === "task-submit" || method === "resolve-agent" && params.prompt !== undefined;
+	const isInputDispatch = (method: AgentControlMethod, params: Readonly<Record<string, unknown>>) => method === "submit" || method === "task-submit" || (method === "resolve-agent" || method === "place") && params.prompt !== undefined;
+	const retainedPlace = (capture: DispatchCapture, params: Readonly<Record<string, unknown>>) => capture.api.commit(async tx => {
+		const state = await tx.doc(RunControl, capture.api.conversationId, String(capture.api.taskId), null);
+		if (state.dispatch !== "confirmed") return undefined;
+		if (!state.response || !state.result) throw new Error("Confirmed place dispatch has no retained admission");
+		dispatchFacts("place", params, state.response);
+		const reference = state.response.result as ResultReference;
+		if (reference.sessionId !== state.result.sessionId || reference.submissionId !== state.result.submissionId || reference.requestId !== state.result.requestId)
+			throw new Error("Retained place references disagree");
+		return JSON.parse(JSON.stringify(state.response)) as Record<string, JsonValue>;
+	}, capture.context);
+	const prepareDispatch = async (capture: DispatchCapture, method: AgentControlMethod, params: Readonly<Record<string, unknown>>) => {
+		await rememberRunInputs(capture.api, capture.context);
+		const retained = method === "place" ? await retainedPlace(capture, params) : undefined;
+		if (retained !== undefined) return retained;
+		await retainDispatch(capture.api, capture.context);
+		return undefined;
+	};
 	const dispatchValue = async (perform: AgentControlDispatch, method: AgentControlMethod, params: Readonly<Record<string, unknown>>, capture?: DispatchCapture): Promise<unknown> => {
 		const input = capture && isInputDispatch(method, params);
-		if (input) await retainDispatch(capture.api, capture.context);
+		const retained = input ? await prepareDispatch(capture, method, params) : undefined;
+		if (retained !== undefined) return retained;
 		const value = await perform(method, params);
-		if (method === "submit" || method === "task-submit") dispatchFacts(method, params, value);
+		if (method === "submit" || method === "task-submit" || input && method === "place") dispatchFacts(method, params, value);
 		if (input) {
 			const facts = structuredObservation(DispatchOutputSchema, value) as { result?: ResultReference };
-			await retainDispatch(capture.api, capture.context, facts.result ?? null);
+			await retainDispatch(capture.api, capture.context, facts.result ?? null, method === "place" ? JSON.parse(JSON.stringify(value)) as Record<string, JsonValue> : undefined);
 		}
 		return value;
 	};
@@ -1244,7 +1263,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	/**
 	 * Schedule one delivery through the host control. The host creates a timer
 	 * task whose input fixes the deadline, message, mode, origin, and request
-	 * ID, so a replayed call reuses the pending timer and a crash after the
+	 * ID, so a replayed call reuses the retained timer and a crash after the
 	 * deadline admits the input at most once.
 	 */
 	const scheduleSend = async (
@@ -1703,8 +1722,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			),
 	});
 
-	/** Resolve or create the durable owner of an area and record any delivered prompt. */
-	/** Resolve the shared place owner of an area through the host dispatch. */
+	/** Resolve the shared area owner and retain exact prompted admission before returning. */
 	const dispatchPlace = async (
 		api: Durable.ToolExecutionApi<ControlDetails>,
 		area: string,
@@ -1714,16 +1732,16 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (dispatch === undefined) return { kind: "error", message: "agent_place needs the host dispatch callback." };
 		let result: unknown;
 		try {
-			result = await dispatch("place", {
+			result = await dispatchValue(dispatch, "place", {
 				area,
 				...defined(args, ["model", "thinkingLevel", "preset"]),
 				preferenceSnapshot: await preferenceSnapshot(api, context),
 				...(args.topic === undefined ? {} : { topic: args.topic }),
-				...(args.prompt === undefined ? {} : defined(args, ["prompt", "checkInMinutes"])),
+				...(args.prompt === undefined || args.prompt === "" ? {} : defined(args, ["prompt", "checkInMinutes"])),
 				origin: "model",
 				senderIdentity: identity(api.conversationId),
 				requestId: `place:${host.storageId}:${api.taskId}`,
-			});
+			}, { api, context });
 		} catch (error) {
 			return {
 				kind: "error",

@@ -323,6 +323,11 @@ async function nativeDispatchResult(holder: DispatchHolder, params: Readonly<Rec
 	return readOutcome(holder.harness, reference.submissionId as Durable.SubmissionId, callContext);
 }
 
+function dispatchedPlace(holder: DispatchHolder, params: Readonly<Record<string, unknown>>) {
+	const sessionId = holder.placeSessionId ?? "place-storage";
+	return { sessionId, ...(params.prompt === undefined ? {} : { submissionId: 1, requestId: params.requestId, result: { sessionId, submissionId: 1, requestId: params.requestId } }) };
+}
+
 function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentControlDispatch {
 	return async (method, params, callContext = context) => {
 		calls.push({ method, params: { ...params } });
@@ -343,8 +348,7 @@ function createDispatch(holder: DispatchHolder, calls: DispatchCalls): AgentCont
 			case "compact":
 				return { taskId: 7, status: "task" };
 			case "spawn": return dispatchedSpawn(holder, params);
-			case "place":
-				return { sessionId: holder.placeSessionId ?? "place-storage:1" };
+			case "place": return dispatchedPlace(holder, params);
 			case "command":
 				return { name: params.name, text: `command:${String(params.name)}`, conversationId: params.sessionId ?? null };
 			case "reset":
@@ -1282,7 +1286,7 @@ it("forwards native preset inputs and snapshots through handle, foreign, place, 
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	writeFileSync(join(agentDir, "harness.json"), JSON.stringify(machineConfig({ presets: { review: { model: "faux/faux-1", checkInMinutes: 2 } } })));
 	const seen: Array<{ method: string; params: Readonly<Record<string, unknown>> }> = [];
-	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts", dispatch: async (method, params) => { seen.push({ method, params }); return { sessionId: "foreign-storage", selection: { marker: "retained" } }; } }).create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
+	const extension = createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts", dispatch: async (method, params) => { seen.push({ method, params }); return { sessionId: "foreign-storage", selection: { marker: "retained" }, ...(method === "place" ? { submissionId: 1, result: { sessionId: "foreign-storage", submissionId: 1, requestId: params.requestId } } : {}) }; } }).create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir, services: testServices });
 	const registry = Durable.createRegistry(); registry.install(extension);
 	const route = createRoute();
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));

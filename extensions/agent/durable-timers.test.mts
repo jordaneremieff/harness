@@ -6,10 +6,10 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { ConversationId } from "@earendil-works/pi-durable";
+import type { ConversationId, TaskId } from "@earendil-works/pi-durable";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
-import { timerStatusRows, type ScheduleTimerResult, type TimerListRow } from "./durable-timers.ts";
+import { scheduleTimer, TimerTask, TimerScheduleDoc, TIMER_LOOKUP_PAGE_LIMIT, TIMER_LOOKUP_PAGE_SIZE, TIMER_SETTLED_RECORD_LIMIT, timerStatusRows, type TimerInput, type ScheduleTimerResult, type TimerListRow } from "./durable-timers.ts";
 
 interface TimerListPage {
 	readonly timers: TimerListRow[];
@@ -55,6 +55,15 @@ it("fires one scheduled input at its deadline and records the fired timer", { ti
 	assert.equal(row.live, false);
 	assert.equal(row.deadline, deadline, "the fired record keeps its original deadline");
 	assert.equal(row.submissionId, receipt.submissionId);
+	await f.reopen();
+	const repeated = await schedule(f, { message: "TIMER_ONE", deadline, scheduleId: "timer-one", requestId: "timer-one-delivery" });
+	assert.equal(repeated.timerId, scheduled.timerId);
+	assert.equal(repeated.disposition, "retained");
+	assert.equal(repeated.status, "terminal");
+	assert.equal(repeated.outcome?.status, "completed");
+	assert.equal(await f.searchCount("TIMER_ONE"), 1);
+	const cancelled = await f.host.request("timer-cancel", { timerId: scheduled.timerId }) as { status: string };
+	assert.equal(cancelled.status, "fired");
 	assert.ok(row.firedAt !== null && row.firedAt >= deadline, "the fire does not precede the deadline");
 	assert.ok((row.overdueMs ?? -1) >= 0, "the fire records its lateness");
 });
@@ -68,6 +77,14 @@ it("cancels a scheduled input before its deadline with no admission", { timeout:
 	const page = (await f.host.request("timer-list", { sessionId: f.storageId })) as TimerListPage;
 	const row = page.timers.find((timer) => timer.timerId === scheduled.timerId);
 	assert.equal(row?.status, "cancelled");
+	for (const reopen of [false, true]) {
+		if (reopen) await f.reopen();
+		const repeated = await schedule(f, { message: "CANCELLED_TIMER", deadline, scheduleId: "timer-cancel", requestId: "timer-cancel-delivery" });
+		assert.equal(repeated.timerId, scheduled.timerId);
+		assert.equal(repeated.disposition, "retained");
+		assert.equal(repeated.status, "terminal");
+		assert.equal(repeated.outcome?.status, "aborted");
+	}
 	// A sentinel scheduled after the cancelled deadline proves the cancelled input never fired.
 	const sentinelDeadline = deadline + 500;
 	await schedule(f, { message: "SENTINEL_TIMER", deadline: sentinelDeadline, scheduleId: "timer-sentinel", requestId: "timer-sentinel-delivery" });
@@ -206,4 +223,87 @@ it("records the admission origin that decides the answer notice wake", { timeout
 		const row = page.timers.find((timer) => timer.scheduleId === requestId);
 		assert.equal(row?.origin, requestId === "timer-operator" ? "operator" : "model");
 	}
+});
+
+function timerInput(f: Awaited<ReturnType<typeof scheduleFixture>>, key: string): TimerInput {
+	return { scheduleId: key, deadline: Date.now() + 60000, conversationId: 1, identity: f.storageId, message: key, mode: "followUp", origin: "operator", ownerId: f.ownerId, requestId: `${key}:delivery`, createdAt: Date.now() };
+}
+
+it("retains schedule identity after listing pruning and reopen", { timeout: 60000 }, async t => {
+	const f = await scheduleFixture(t, { agentExtension: true });
+	const input = { message: "PRUNED_TIMER", deadline: Date.now() - 1, scheduleId: "pruned-timer", requestId: "pruned-delivery" };
+	const first = await schedule(f, input);
+	await f.waitForReceipt(input.requestId);
+	for (let index = 0; index <= TIMER_SETTLED_RECORD_LIMIT; index++) {
+		const timer = await schedule(f, { message: "discard", deadline: Date.now() + 60000, scheduleId: `prune-${index}`, requestId: `prune-delivery-${index}` });
+		await f.host.request("timer-cancel", { timerId: timer.timerId });
+	}
+	const page = await f.host.request("timer-list") as TimerListPage;
+	assert.equal(page.timers.some(row => row.timerId === first.timerId), false);
+	await f.reopen();
+	const replay = await schedule(f, input);
+	assert.equal(replay.timerId, first.timerId);
+	assert.equal(replay.outcome?.status, "completed");
+	assert.equal(await f.searchCount(input.message), 1);
+	assert.equal((await f.host.request("timer-cancel", { timerId: first.timerId }) as { status: string }).status, "fired");
+});
+
+it("binds every semantic scheduling fact but not creation time or default check-ins", { timeout: 60000 }, async t => {
+	const f = await scheduleFixture(t, { agentExtension: true, resume: false });
+	const input = { ...timerInput(f, "bound-payload"), conversationId: 1 as ConversationId };
+	const first = await scheduleTimer(f.host.harness, input, BACKGROUND_CONTEXT);
+	assert.equal((await scheduleTimer(f.host.harness, { ...input, createdAt: input.createdAt + 1, checkInMinutes: 0 }, BACKGROUND_CONTEXT)).timerId, first.timerId);
+	for (const change of [
+		{ conversationId: 2 as ConversationId }, { identity: "other" }, { message: "changed" }, { deadline: input.deadline + 1 },
+		{ mode: "steer" as const }, { origin: "model" as const }, { ownerId: "other-owner" }, { requestId: "other-request" }, { checkInMinutes: 1 },
+		{ requestContext: { requestId: input.requestId, requester: "requester", replyTo: input.ownerId, origin: input.origin } },
+	]) await assert.rejects(scheduleTimer(f.host.harness, { ...input, ...change }, BACKGROUND_CONTEXT), /Conflicting timer schedule key/u);
+	assert.equal(await f.searchCount(input.message), 0);
+});
+
+for (const terminal of [false, true]) it(`adopts an unindexed native timer with terminal=${terminal} across storage and reopen`, { timeout: 60000 }, async t => {
+	const f = await scheduleFixture(t, { agentExtension: true, resume: !terminal });
+	const other = await f.host.harness.createConversation({ ownership: { kind: "ownerless" } }, BACKGROUND_CONTEXT);
+	const input = { ...timerInput(f, "unindexed"), conversationId: other.id, identity: f.host.identity(other.id) };
+	const taskId = await f.host.harness.commit(tx => tx.createTask(TimerTask, input, { conversationId: other.id, ownership: { kind: "conversation" }, background: true }), BACKGROUND_CONTEXT);
+	if (terminal) {
+		f.host.harness.resume();
+		await f.host.request("timer-cancel", { sessionId: input.identity, timerId: taskId });
+	}
+	await f.reopen();
+	await assert.rejects(scheduleTimer(f.host.harness, { ...input, conversationId: 1 as ConversationId, identity: f.storageId }, BACKGROUND_CONTEXT), /Conflicting/u);
+	assert.equal(await f.host.harness.snapshot(TimerScheduleDoc, input.scheduleId, BACKGROUND_CONTEXT), undefined);
+	const replay = await scheduleTimer(f.host.harness, input, BACKGROUND_CONTEXT);
+	assert.equal(replay.timerId, taskId);
+	assert.equal(replay.disposition, "retained");
+	if (terminal) assert.equal(replay.outcome?.status, "aborted");
+	assert.equal((await f.host.harness.snapshot(TimerScheduleDoc, input.scheduleId, BACKGROUND_CONTEXT))?.timerId, taskId);
+	await assert.rejects(scheduleTimer(f.host.harness, { ...input, conversationId: 1 as ConversationId, identity: f.storageId }, BACKGROUND_CONTEXT), /Conflicting/u);
+	assert.equal(await f.searchCount(input.message), 0);
+});
+
+it("refuses ambiguous unindexed timer history", { timeout: 60000 }, async t => {
+	const f = await scheduleFixture(t, { agentExtension: true, resume: false });
+	const input = { ...timerInput(f, "ambiguous"), conversationId: 1 as ConversationId };
+	await f.host.harness.commit(async tx => {
+		for (let index = 0; index < 2; index++) await tx.createTask(TimerTask, input, { conversationId: input.conversationId, ownership: { kind: "conversation" }, background: true });
+	}, BACKGROUND_CONTEXT);
+	await assert.rejects(scheduleTimer(f.host.harness, input, BACKGROUND_CONTEXT), /Ambiguous timer schedule key/u);
+	assert.equal(await f.searchCount(input.message), 0);
+});
+
+it("refuses incomplete history even when a matching timer appears before the bound", { timeout: 60000 }, async t => {
+	const f = await scheduleFixture(t, { agentExtension: true, resume: false });
+	const input = { ...timerInput(f, "incomplete"), conversationId: 1 as ConversationId };
+	let first: TaskId | undefined;
+	await f.host.harness.commit(async tx => {
+		for (let index = 0; index <= TIMER_LOOKUP_PAGE_LIMIT * TIMER_LOOKUP_PAGE_SIZE; index++) {
+			const id = await tx.createTask(TimerTask, { ...input, scheduleId: index === 0 ? input.scheduleId : `other-${index}` }, { conversationId: input.conversationId, ownership: { kind: "conversation" }, background: true });
+			first ??= id;
+		}
+	}, BACKGROUND_CONTEXT);
+	await assert.rejects(scheduleTimer(f.host.harness, input, BACKGROUND_CONTEXT), /Incomplete timer schedule lookup/u);
+	assert.ok(first);
+	assert.equal((await f.host.harness.snapshot(TimerScheduleDoc, input.scheduleId, BACKGROUND_CONTEXT)), undefined);
+	assert.equal(await f.searchCount(input.message), 0);
 });

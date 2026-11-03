@@ -26,7 +26,7 @@ async function addSharedInput(api: native.ToolExecutionApi): Promise<void> {
 		live.run.inputs.push(shared.id);
 	}, BACKGROUND_CONTEXT);
 }
-async function lineage(t: TestContext, foreign: boolean, newer: boolean, shared = false) {
+async function lineage(t: TestContext, foreign: boolean, newer: boolean, shared = false, tool = "agent_send") {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-run-lineage-")));
 	writeFileSync(join(root, "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: `${testModel.provider}/${testModel.id}` } }, preferences: { defaultPreset: "standard" } })));
 	const grandStarted = deferred(), newerStarted = deferred(), rootReady = deferred(), rootRelease = deferred(), release = deferred();
@@ -47,13 +47,13 @@ async function lineage(t: TestContext, foreign: boolean, newer: boolean, shared 
 	t.after(async () => { release.resolve(); rootRelease.resolve(); if (source !== target) await source.close(); await target.close(); rmSync(root, { recursive: true, force: true }); });
 	if (foreign) {
 		const dispatch: AgentControlDispatch = async (method, params) => {
-			assert.equal(method, "submit");
-			const admitted = await target.request(method, params) as { submissionId: number };
-			return { ...admitted, result: { sessionId: targetStorageId, submissionId: admitted.submissionId, requestId: params.requestId } };
+			assert.equal(method, tool === "agent_place" ? "place" : "submit");
+			const admitted = await target.request("submit", tool === "agent_place" ? { ...params, sessionId: targetStorageId, message: params.prompt, ownerId: fixtureStorageId } : params) as { submissionId: number };
+			return { ...admitted, sessionId: targetStorageId, result: { sessionId: targetStorageId, submissionId: admitted.submissionId, requestId: params.requestId } };
 		};
 		const sourceRegistry = fixtureRegistry(), sourceExtension = contribution(root, fixtureStorageId, dispatch);
-		sourceRegistry.install({ ...sourceExtension, tools: sourceExtension.tools?.map(tool => tool.name !== "agent_send" ? tool : { ...tool, execute: async (args, api, context) => { const result = await tool.execute(args, api, context); rootReady.resolve(); await rootRelease.promise; return result; } }) });
-		source = await DurableHost.open(hostOptions(join(root, "source.sqlite"), await scriptedRuntime([toolCallMessage("agent_send", { sessionId: targetStorageId, message: "child work", checkInMinutes: 0 }), answerMessage("root answered")]), sourceRegistry, root), BACKGROUND_CONTEXT);
+		sourceRegistry.install({ ...sourceExtension, tools: sourceExtension.tools?.map(definition => definition.name !== tool ? definition : { ...definition, execute: async (args, api, context) => { const result = await definition.execute(args, api, context); rootReady.resolve(); await rootRelease.promise; return result; } }) });
+		source = await DurableHost.open(hostOptions(join(root, "source.sqlite"), await scriptedRuntime([toolCallMessage(tool, tool === "agent_place" ? { area: root, prompt: "child work", checkInMinutes: 0 } : { sessionId: targetStorageId, message: "child work", checkInMinutes: 0 }), answerMessage("root answered")]), sourceRegistry, root), BACKGROUND_CONTEXT);
 		source.setForeignStop((references, context) => stopForeignReferences((method, input) => target.request(method, input), references, context));
 	}
 	const rootInput = await source.submit({ message: "root work", requestId: "root-work" });
@@ -88,4 +88,13 @@ for (const foreign of [false, true]) test(`Stop protects a shared answered ${for
 	const stopped = await source.request("run-stop", { runId: scope.runId }) as RunStop;
 	assert.equal(stopped.state, "partial");
 	assert.equal((await target.harness.getTask(grandTask, BACKGROUND_CONTEXT))?.abortRequested, false);
+});
+
+for (const shared of [false, true]) test(`Stop follows an answered place input with newer work and shared=${shared}`, { timeout: 10000 }, async t => {
+	const { source, target, scope, grandTask, newerTask } = await lineage(t, true, true, shared, "agent_place");
+	const stopped = await source.request("run-stop", { runId: scope.runId }) as RunStop;
+	assert.equal(stopped.state, shared ? "partial" : "stopped");
+	assert.equal((await target.harness.getTask(grandTask, BACKGROUND_CONTEXT))?.abortRequested, !shared);
+	assert.ok(newerTask);
+	assert.equal((await target.harness.getTask(newerTask, BACKGROUND_CONTEXT))?.abortRequested, false);
 });

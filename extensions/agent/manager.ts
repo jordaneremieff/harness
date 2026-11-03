@@ -681,6 +681,7 @@ export class AgentManager {
 	}
 
 	async place(input: AgentSpawnInput & { area?: string; topic?: string }, caller: AgentCaller): Promise<unknown> {
+		if (input.prompt === "") input = { ...input, prompt: undefined };
 		const area = realpathSync(resolve(caller.cwd, input.area ?? "."));
 		const result = await this.places.withArea(area, async (existing, admit) => {
 			if (existing) {

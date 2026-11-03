@@ -1240,6 +1240,12 @@ current when the request arrives. It follows that group's generation handovers,
 withdraws its exact queued delegations, and preserves unrelated work in a shared
 agent. An answered child does not hide its surviving background descendants.
 Stop follows their original input links without selecting a newer child group.
+Prompted `agent_place` also records its initiating input group and exact admitted
+result. Confirmed replay returns that retained response without another place
+lookup, even after the area binding changes. An interrupted confirmation leaves
+partial coverage. The area owner stays shared, not an exclusively owned child.
+An empty or absent prompt only resolves the owner and records no delegated input;
+nonempty prompt text passes verbatim.
 Partial cancellation and unavailable ownership remain explicit. See the
 [public control contract](../../docs/agent-host-contract.md#run-scope-and-run-stop)
 for selectors, native ownership, cancellation races, and coverage limits.
@@ -2432,13 +2438,24 @@ running tool.
 A scheduled input is a native `agent.timer` background task in the target's
 storage. Its input persists the absolute deadline, target conversation,
 message, mode, admission origin, and a deterministic request ID before it
-waits on Durable's task-context `sleep(until)`. Replay never recomputes the
+waits on Durable's `sleepUntil`. Replay never recomputes the
 deadline. On fire it admits the input once through request-ID deduplication,
 and the answer follows the notice and wake rule of its origin. A timer that
 was due while its host was down fires once after the host reopens and records
 that it ran overdue. A pending timer is live work, so the host does not retire
 while it waits. A timer fires only while its storage host runs; Pi starts no
 operating-system alarm, and a reset never cancels a timer.
+
+A keyed Durable document retains the native task ID and canonical payload
+fingerprint in the same commit as timer creation. It does not copy task outcomes.
+Reusing a schedule key returns that task's current native state after cancellation,
+firing, listing pruning or reopen. Changed target, content, deadline, mode, origin,
+recipient, request identity, check-in interval or request context refuses as a
+conflict. Creation timestamps do not affect identity. If the key has no index
+entry, a bounded storage-wide scan checks retained timer inputs first. A unique
+match is adopted; ambiguity or incomplete lookup refuses new admission. The
+bounded timer listing is not replay authority. Cancellation reads the native task
+and never reports prevention when its input already entered the conversation.
 
 A reset admits a native `pi.reset` write with an optional handoff message. It
 places at the next boundary when the conversation is busy, starts no model
@@ -2462,8 +2479,11 @@ The `rewind/1.1.0` and `timer-schedule/1.1.0` request contracts accept optional
 owner without changing the fork's creating owner. A scheduled input uses its
 target conversation as owner and reply recipient while retaining the caller as
 requester. Without the option, both operations retain caller-owned results.
-Their response identities remain at 1.0.0. Only these operations refuse requests
-between processes with different request contracts; restart the caller and host
+The rewind response identity is `rewind/1.0.0`. The timer response identity is
+`timer-schedule/2.0.0`: it distinguishes a new `scheduled` timer from a `retained`
+task and exposes native `status` and optional terminal `outcome`. Place uses
+`place/2.1.0` for empty-prompt resolution and exact prompted admission.
+These operations refuse mismatched process contracts; restart the caller and host
 to use them together. The manager passes the option through its existing control
 interface, so its retained identity does not change.
 

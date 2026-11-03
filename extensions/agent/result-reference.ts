@@ -59,10 +59,19 @@ export function admittedResult(sessionId: string, admission: unknown, requestId?
 	return { sessionId: canonical, submissionId: row.submissionId as number, ...(known === undefined ? {} : { requestId: known }) };
 }
 
+function placeFacts(params: Readonly<Record<string, unknown>>, row: Record<string, unknown>): Record<string, unknown> {
+	const reference = row.result as ResultReference | undefined;
+	if (!reference || typeof row.sessionId !== "string" || row.sessionId !== reference.sessionId || typeof params.requestId !== "string")
+		throw new Error("Place admission requires an exact result, canonical target and stable request identity");
+	admittedResult(row.sessionId, row, params.requestId);
+	return row;
+}
+
 /** Validate the native admission or the deliberately non-answer-bearing primary receipt. */
 export function dispatchFacts(method: string, params: Readonly<Record<string, unknown>>, value: unknown): Record<string, unknown> {
 	if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("Dispatch returned no admission");
 	const row = value as Record<string, unknown>;
+	if (method === "place") return placeFacts(params, row);
 	if (method !== "submit" && method !== "task-submit") return row;
 	if (method === "submit" && row.admitted === true && typeof row.sourceId === "string" && row.submissionId === undefined) {
 		if (row.result !== undefined) throw new Error("A primary message is not a native result");

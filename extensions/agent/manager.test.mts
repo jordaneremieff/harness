@@ -337,6 +337,26 @@ for (const operation of ["submit", "task-submit"] as const) for (const minutes o
 	assert.equal(submits[2]?.checkInMinutes, 0);
 });
 
+for (const prompt of [undefined, "", "  keep this prompt  "]) it(`normalises place prompt ${JSON.stringify(prompt)} identically for creation and reuse`, async t => {
+	const root = fixtureRoot(t);
+	const submits: Record<string, unknown>[] = [];
+	const manager = new AgentManager(managerOptions(root, { validateModel: () => {}, acquire: async metadata => fakeConnection(metadata, async (method, params) => {
+		if (method === "task-submit") { submits.push(params as Record<string, unknown>); return nativeAdmission(params, submits.length); }
+		return { busy: false };
+	}) }));
+	t.after(() => manager.close());
+	const caller = { id: "owner-1", cwd: root, model: { provider: "acme", modelId: "model-x" }, thinkingLevel: "off" };
+	for (const requestId of ["place-create", "place-reuse"]) {
+		const receipt = await manager.place({ area: root, prompt, requestId, origin: "model", checkInMinutes: 0 }, caller) as { sessionId: string; result?: { sessionId: string; submissionId: number; requestId: string } };
+		if (prompt) {
+			assert.equal(receipt.result?.sessionId, receipt.sessionId);
+			assert.equal(receipt.result?.requestId, requestId);
+			assert.equal(submits.at(-1)?.message, prompt);
+		} else assert.equal(receipt.result, undefined);
+	}
+	assert.equal(submits.length, prompt ? 2 : 0);
+});
+
 it("retains exact prompted handle references across creation and reuse", async (t) => {
 	const root = fixtureRoot(t);
 	const seen: Record<string, unknown>[] = [];
