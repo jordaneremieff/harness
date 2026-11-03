@@ -1,14 +1,14 @@
 /** Approved structured data and bounded, noncoercing JSON operations. */
+import { arr, bool, compile, int, lit, nul, num, obj, oneOf, opt, str, type JsonSchema, type Static, union } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
-import { arr, compile, int, lit, num, obj, oneOf, opt, type Static, str } from "@earendil-works/pi-schema";
-import { type TSchema, Type } from "typebox";
+
 
 export type Scalar = string | number | boolean | null;
 export type Truth = true | false | "unknown";
 export const UNKNOWN = Symbol("policy-unavailable");
 export const DATA_LIMITS = { bindings: 64, rows: 2048, bytes: 262144, depth: 32, nodes: 16384 } as const;
-export const ScalarSchema = Type.Union([Type.String({ maxLength: 4096 }), Type.Number(), Type.Boolean(), Type.Null()]);
-export const DataNameSchema = Type.String({
+export const ScalarSchema = union([str({ maxLength: 4096 }), num(), bool(), nul()]);
+export const DataNameSchema = str({
 	minLength: 1,
 	maxLength: 80,
 	pattern: "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
@@ -158,7 +158,7 @@ export const SCHEMA_CACHE_LIMIT = 64;
 const schemaValidators = new Map<string, ReturnType<typeof compile>>();
 
 /** Check a registered tool contract without conversion, property removal, or defaults. */
-export function checkToolSchema(schema: TSchema | undefined, value: unknown): Truth {
+export function checkToolSchema(schema: JsonSchema | undefined, value: unknown): Truth {
 	if (schema === undefined) return "unknown";
 	try {
 		const copied = cloneJson(schema);
