@@ -237,7 +237,9 @@ claims, disputes, or handoffs need it.
 Challenge the governing contracts, assertions, fixtures, mocks, omitted cases,
 and evidence limits. Repeating the author's commands alone does not establish
 independent review. Choose additional review or execution for the material
-error it can expose, not for a second pass label or a different agent.
+error it can expose, not for a second pass label or a different agent. Once
+the demonstrated findings are resolved and their repairs verified, stop: a
+reviewer's recommendation of another round is not a new requirement.
 
 Give each finding its repository-required disposition. Verify the repaired
 contract; select permanent regression protection for its future value against

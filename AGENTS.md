@@ -228,6 +228,13 @@ Do not invent additional gates, audits, ledgers, review rounds, or approval
 steps. A passing check establishes only what it exercised; name a material
 gap instead of adding ceremony.
 
+Independent review is discretionary. Request it for a material uncertainty or
+failure mode, with a bounded question and an end condition. Resolve the
+demonstrated findings, verify each repair at its owning layer, then stop. A
+reviewer's recommendation of another review, a new worker, a commit, or a
+later milestone is not a requirement; further review needs a newly identified
+material concern or an operator request.
+
 ## Commit messages
 
 Each commit must represent one coherent change with a concise imperative
