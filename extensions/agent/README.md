@@ -144,6 +144,10 @@ latest inventory scan once and each retained storage's latest view exclusions on
 Priority does not grant unlimited output when the priority set itself exceeds a
 limit. The reader opens no conversation database and starts no host.
 
+Fleet status and collaboration-awareness are distinct evidence views. Their
+readers use separate bounded `AgentCatalog.page()` discovery and retain their
+own coverage and evidence qualifications; they do not use the roster observation.
+
 Namespace notices carry bounded changed storage identities. The manager combines
 these with connected-host notices and refreshes only the affected record and
 claim facts. Concurrent changes accumulate; an unknown, identity-free or
@@ -157,8 +161,8 @@ and a cached page keeps the inventory observation time rather than its render ti
 
 Roster continuation uses the last priority, modification time, and identity,
 bound to the caller's ownership set and local active stores. Each page ranks the
-current shared observation. Activity or
-claim changes between pages can move records across this position; refresh the
+current shared observation. Activity or claim changes between pages can move
+records across this position; refresh the
 roster to rediscover them. Use `agent_list` for stable filename-based continuation.
 Exact-target attachment and controls read their own current evidence regardless
 of roster membership. Recovery still considers every source within its existing
