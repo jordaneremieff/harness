@@ -1,8 +1,8 @@
 /** Read-only draft checks use isolated instances of the production runtime. */
+import { arr, bool, compile, int, lit, obj, opt, str, type Schema, type Static, union, unknown } from "@earendil-works/pi-schema";
 import { readFile, stat } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type Static, Type } from "typebox";
-import { compile } from "@earendil-works/pi-schema";
+
 import { ruleScopeMatches } from "./classify.ts";
 import { snapshotData } from "./data.ts";
 import {
@@ -25,68 +25,70 @@ export const AUTHORING_LIMITS = {
 	guideBytes: 24576,
 	outputBytes: 24576,
 };
-const ResultSchema = Type.Object(
+const ResultSchema = obj(
 	{
-		isError: Type.Boolean(),
-		details: Type.Optional(Type.Unknown()),
-		content: Type.Optional(
-			Type.Array(
-				Type.Object(
-					{ type: Type.Literal("text"), text: Type.String({ maxLength: 65536 }) },
-					{ additionalProperties: false },
+		isError: bool(),
+		details: opt(unknown()),
+		content: opt(
+			arr(
+				obj(
+					{ type: lit("text"), text: str({ maxLength: 65536 }) },
+					{ open: false },
 				),
 				{ maxItems: 64 },
 			),
 		),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
-const ExpectedSchema = Type.Object(
+const ExpectedSchema = obj(
 	{
-		denied: Type.Optional(Type.Boolean()),
-		correctedInput: Type.Optional(Type.Boolean()),
-		resultError: Type.Optional(Type.Boolean()),
-		guidance: Type.Optional(Type.Boolean()),
+		denied: opt(bool()),
+		correctedInput: opt(bool()),
+		resultError: opt(bool()),
+		guidance: opt(bool()),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 const StepFields = {
-	at: Type.Integer({ minimum: 0, maximum: AUTHORING_LIMITS.milliseconds }),
-	turn: Type.Integer({ minimum: 0, maximum: AUTHORING_LIMITS.turns }),
-	expect: Type.Optional(ExpectedSchema),
+	at: int({ minimum: 0, maximum: AUTHORING_LIMITS.milliseconds }),
+	turn: int({ minimum: 0, maximum: AUTHORING_LIMITS.turns }),
+	expect: opt(ExpectedSchema),
 };
-export const DraftCasesSchema = Type.Array(
-	Type.Object(
+export const DraftCasesSchema = arr(
+	obj(
 		{
-			name: Type.String({ minLength: 1, maxLength: 100 }),
-			scope: Type.Optional(
-				Type.Object(
+			name: str({ minLength: 1, maxLength: 100 }),
+			scope: opt(
+				obj(
 					{
-						provider: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
-						model: Type.Optional(Type.String({ minLength: 3, maxLength: 200, pattern: "^[^/]+/.+" })),
-						cwd: Type.String({ minLength: 1, maxLength: 500, pattern: "^(?:/|[A-Za-z]:[\\\\/])" }),
+						provider: opt(str({ minLength: 1, maxLength: 200 })),
+						model: opt(str({ minLength: 3, maxLength: 200, pattern: "^[^/]+/.+" })),
+						cwd: str({ minLength: 1, maxLength: 500, pattern: "^(?:/|[A-Za-z]:[\\\\/])" }),
 					},
-					{ additionalProperties: false },
+					{ open: false },
 				),
 			),
-			steps: Type.Array(
-				Type.Union([
-					Type.Object(
+			steps: arr(
+				union([
+					obj(
 						{
-							kind: Type.Literal("call"),
+							kind: lit("call"),
 							...StepFields,
-							tool: Type.String({ minLength: 1, maxLength: 200 }),
-							input: Type.Record(Type.String(), Type.Unknown(), { maxProperties: 128 }),
-							result: Type.Optional(ResultSchema),
+							tool: str({ minLength: 1, maxLength: 200 }),
+							input: {
+								type: "object", patternProperties: { "^.*$": {} }, maxProperties: 128,
+							} as Schema<Record<string, unknown>>,
+							result: opt(ResultSchema),
 						},
-						{ additionalProperties: false },
+						{ open: false },
 					),
-					Type.Object({ kind: Type.Literal("context"), ...StepFields }, { additionalProperties: false }),
+					obj({ kind: lit("context"), ...StepFields }, { open: false }),
 				]),
 				{ minItems: 1, maxItems: AUTHORING_LIMITS.steps },
 			),
 		},
-		{ additionalProperties: false },
+		{ open: false },
 	),
 	{ maxItems: AUTHORING_LIMITS.cases },
 );

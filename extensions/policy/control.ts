@@ -1,28 +1,28 @@
 /** Context-authorized controls over the same registry and runtime as operator commands. */
+import { compile, lit, nul, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { compile, lit, obj, type Static, str, union } from "@earendil-works/pi-schema";
-import { Type } from "typebox";
+
 import { normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
 import { MAX_RULE_EVENT_BYTES, makeRuleAudit, PolicyMutationCancelledError, proposalRevision, ruleAbsenceMessage, targetIdentity } from "./local-rules.ts";
 import { contentRevision, effectiveEffect, effectiveState, type OperatorRuleAudit } from "./rule.ts";
 import type { PolicyToolContext, ToolDeps } from "./tools.ts";
 
-const Id = Type.String({ minLength: 1, maxLength: 80, pattern: "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$" });
-const Revision = Type.String({ pattern: "^[a-f0-9]{12}$" });
-const Authorization = Type.String({ minLength: 1, maxLength: 1000 });
-const Path = Type.String({ minLength: 1, maxLength: 4096 });
-const Selection = Type.Union([Id, Type.Literal("--all")]);
-const ActionId = Type.String({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" });
-const Artifact = Type.Object(
+const Id = str({ minLength: 1, maxLength: 80, pattern: "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$" });
+const Revision = str({ pattern: "^[a-f0-9]{12}$" });
+const Authorization = str({ minLength: 1, maxLength: 1000 });
+const Path = str({ minLength: 1, maxLength: 4096 });
+const Selection = union([Id, lit("--all")]);
+const ActionId = str({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" });
+const Artifact = obj(
 	{
-		data: Type.Record(Type.String(), Type.Unknown(), { maxProperties: 12 }),
-		expectedRevision: Type.Union([Revision, Type.Null()]),
+		data: { type: "object", patternProperties: { "^.*$": {} }, maxProperties: 12 } as Schema<Record<string, unknown>>,
+		expectedRevision: union([Revision, nul()]),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 const authority = { revision: { ...Revision }, authorization: { ...Authorization } };
-const reason = { reason: { ...Type.String({ minLength: 1, maxLength: 1000 }) } };
+const reason = { reason: { ...str({ minLength: 1, maxLength: 1000 }) } };
 const variants = [
 	obj({ operation: lit("actions") }),
 	obj({ operation: lit("action-inspect"), actionId: { ...ActionId } }),
@@ -52,46 +52,46 @@ const validator = compile(ControlContract);
 type Input = Static<typeof ControlContract>;
 
 /** Provider adapters retain object properties; execution enforces the closed operation variants. */
-export const PolicyControlParams = Type.Object(
+export const PolicyControlParams = obj(
 	{
-		operation: Type.Union([
-			Type.Literal("actions"),
-			Type.Literal("action-inspect"),
-			Type.Literal("action-approve"),
-			Type.Literal("action-reject"),
-			Type.Literal("inspect"),
-			Type.Literal("import-preview"),
-			Type.Literal("data-preview"),
-			Type.Literal("reset-preview"),
-			Type.Literal("mode"),
-			Type.Literal("telemetry"),
-			Type.Literal("reject"),
-			Type.Literal("disable"),
-			Type.Literal("enable"),
-			Type.Literal("retire"),
-			Type.Literal("effect"),
-			Type.Literal("reset"),
-			Type.Literal("import"),
-			Type.Literal("data-set"),
-			Type.Literal("data-set-file"),
-			Type.Literal("data-remove"),
+		operation: union([
+			lit("actions"),
+			lit("action-inspect"),
+			lit("action-approve"),
+			lit("action-reject"),
+			lit("inspect"),
+			lit("import-preview"),
+			lit("data-preview"),
+			lit("reset-preview"),
+			lit("mode"),
+			lit("telemetry"),
+			lit("reject"),
+			lit("disable"),
+			lit("enable"),
+			lit("retire"),
+			lit("effect"),
+			lit("reset"),
+			lit("import"),
+			lit("data-set"),
+			lit("data-set-file"),
+			lit("data-remove"),
 		]),
-		actionId: Type.Optional(ActionId),
-		id: Type.Optional(Selection),
-		selection: Type.Optional(Selection),
-		proposalId: Type.Optional(Type.String({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" })),
-		name: Type.Optional(Id),
-		revision: Type.Optional(Revision),
-		authorization: Type.Optional(Authorization),
-		reason: Type.Optional(reason.reason),
-		effect: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("block")])),
-		artifact: Type.Optional(Artifact),
-		path: Type.Optional(Path),
-		from: Type.Optional(Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
-		to: Type.Optional(Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
+		actionId: opt(ActionId),
+		id: opt(Selection),
+		selection: opt(Selection),
+		proposalId: opt(str({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" })),
+		name: opt(Id),
+		revision: opt(Revision),
+		authorization: opt(Authorization),
+		reason: opt(reason.reason),
+		effect: opt(union([lit("steer"), lit("block")])),
+		artifact: opt(Artifact),
+		path: opt(Path),
+		from: opt(str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
+		to: opt(str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
 	},
 	{
-		additionalProperties: false,
+		open: false,
 		description:
 			"Operation-specific fields only. Reads forbid authorization; mutations require revision and authorization. Execution validates the complete closed operation contract.",
 	},
@@ -286,7 +286,7 @@ export function registerControlTool(pi: Pick<ExtensionAPI, "registerTool">, deps
 			"Inspect the complete target before mutation. After a stale refusal, reassess the operator decision against fresh evidence; do not silently substitute a new proposal or revision. For large file data, read the complete named source when data-preview reports complete:false. Report actual state and mode, not presumed enforcement.",
 		],
 		parameters: PolicyControlParams,
-		async execute(_call, params, signal, _update, ctx) {
+		async execute(_call, params: Static<typeof PolicyControlParams>, signal, _update, ctx) {
 			if (signal?.aborted) throw new PolicyMutationCancelledError();
 			validateControl(params);
 			if (params.operation !== "mode" && params.operation !== "telemetry") await deps.loadRegistry(ctx);

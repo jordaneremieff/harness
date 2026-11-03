@@ -1,10 +1,10 @@
 /** Policy proposals, authorized activation, and read-only rule inspection. */
 
+import { arr, bool, compile, int, lit, obj, opt, str, type Schema, type Static, union, unknown } from "@earendil-works/pi-schema";
 import { resolve } from "node:path";
 import type { ActionControl } from "./action-approval.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { type Static, Type } from "typebox";
-import { compile } from "@earendil-works/pi-schema";
+
 import { authoringGuide, checkDraft, DraftCasesSchema, type ParsedDraft, validateDraftCases } from "./authoring.ts";
 import { ruleScopeVisibility } from "./classify.ts";
 import { registerControlTool } from "./control.ts";
@@ -47,277 +47,282 @@ import {
 	type RuleRecord,
 } from "./rule.ts";
 
-const StringEntry = Type.String({ minLength: 1, maxLength: MAX_LIST_ENTRY_LENGTH });
-const StringList = Type.Array(StringEntry, { maxItems: MAX_LIST_ENTRIES });
-const CommandList = Type.Array(Type.String({ minLength: 1, maxLength: MAX_COMMAND_LENGTH }), {
+const StringEntry = str({ minLength: 1, maxLength: MAX_LIST_ENTRY_LENGTH });
+const StringList = arr(StringEntry, { maxItems: MAX_LIST_ENTRIES });
+const CommandList = arr(str({ minLength: 1, maxLength: MAX_COMMAND_LENGTH }), {
 	maxItems: MAX_LIST_ENTRIES,
 });
-const ModelList = Type.Array(Type.String({ minLength: 3, maxLength: MAX_LIST_ENTRY_LENGTH, pattern: "^[^/]+/.+" }), {
+const ModelList = arr(str({ minLength: 3, maxLength: MAX_LIST_ENTRY_LENGTH, pattern: "^[^/]+/.+" }), {
 	maxItems: MAX_LIST_ENTRIES,
 });
-const IndexChoices = Type.Record(Type.String({ pattern: "^(0|[1-9][0-9]*)$" }), StringList);
+const IndexChoices: Schema<Record<string, string[]>> = {
+	type: "object",
+	patternProperties: { "^(0|[1-9][0-9]*)$": StringList },
+};
+const PushSubcommand: Schema<"push"> = { type: "string", const: "push" };
 
-const OperandsSchema = Type.Object(
+const OperandsSchema = obj(
 	{
-		min: Type.Optional(Type.Integer({ minimum: 0, maximum: 100_000 })),
-		max: Type.Optional(Type.Integer({ minimum: 0, maximum: 100_000 })),
-		any: Type.Optional(StringList),
-		at: Type.Optional(IndexChoices),
+		min: opt(int({ minimum: 0, maximum: 100_000 })),
+		max: opt(int({ minimum: 0, maximum: 100_000 })),
+		any: opt(StringList),
+		at: opt(IndexChoices),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 
-const PipeSchema = Type.Object(
+const PipeSchema = obj(
 	{
-		from: Type.Optional(Type.Boolean()),
-		to: Type.Optional(Type.Boolean()),
-		fromRedirect: Type.Optional(Type.Boolean()),
-		toRedirect: Type.Optional(Type.Boolean()),
-		next: Type.Optional(CommandList),
-		later: Type.Optional(CommandList),
+		from: opt(bool()),
+		to: opt(bool()),
+		fromRedirect: opt(bool()),
+		toRedirect: opt(bool()),
+		next: opt(CommandList),
+		later: opt(CommandList),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 
-const MatchSchema = Type.Object(
-	{
-		command: Type.String({ minLength: 1, maxLength: MAX_COMMAND_LENGTH }),
-		flags: Type.Optional(StringList),
-		anyFlags: Type.Optional(StringList),
-		absentFlags: Type.Optional(StringList),
-		operands: Type.Optional(OperandsSchema),
-		pipe: Type.Optional(PipeSchema),
-	},
-	{ additionalProperties: false },
-);
+const MatchFields = {
+	command: str({ minLength: 1, maxLength: MAX_COMMAND_LENGTH }),
+	flags: opt(StringList),
+	anyFlags: opt(StringList),
+	absentFlags: opt(StringList),
+	operands: opt(OperandsSchema),
+	pipe: opt(PipeSchema),
+};
+const MatchSchema = obj(MatchFields);
 
-const CliMatchSchema = Type.Object(
+const CliMatchSchema = obj(
 	{
-		...MatchSchema.properties,
-		command: Type.Literal("git"),
-		cli: Type.Object(
+		...MatchFields,
+		command: lit("git"),
+		cli: obj(
 			{
-				profile: Type.Literal("git"),
-				subcommand: Type.Array(Type.Literal("push"), { minItems: 1, maxItems: 1 }),
+				profile: lit("git"),
+				subcommand: arr(PushSubcommand, { minItems: 1, maxItems: 1 }),
 			},
-			{ additionalProperties: false },
+			{ open: false },
 		),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
-const UnavailableSchema = Type.Union([Type.Literal("skip"), Type.Literal("deny")]);
+const UnavailableSchema = union([lit("skip"), lit("deny")]);
 
-const SuggestionSchema = Type.Object(
+const SuggestionSchema = obj(
 	{
-		command: Type.String({ minLength: 1, maxLength: MAX_COMMAND_LENGTH }),
-		flags: Type.Optional(StringList),
+		command: str({ minLength: 1, maxLength: MAX_COMMAND_LENGTH }),
+		flags: opt(StringList),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 
-const ScopeSchema = Type.Object(
+const ScopeSchema = obj(
 	{
-		modelProviders: Type.Optional(StringList),
-		models: Type.Optional(ModelList),
-		cwdPrefixes: Type.Optional(
-			Type.Array(Type.String({ minLength: 1, maxLength: MAX_CWD_PREFIX_LENGTH, pattern: "^(?:/|[A-Za-z]:[\\\\/])" }), {
+		modelProviders: opt(StringList),
+		models: opt(ModelList),
+		cwdPrefixes: opt(
+			arr(str({ minLength: 1, maxLength: MAX_CWD_PREFIX_LENGTH, pattern: "^(?:/|[A-Za-z]:[\\\\/])" }), {
 				maxItems: MAX_LIST_ENTRIES,
 			}),
 		),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 
-const RuleIdSchema = Type.String({
+const RuleIdSchema = str({
 	minLength: 1,
 	maxLength: MAX_RULE_ID_LENGTH,
 	pattern: "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$",
 });
-const ReasonSchema = Type.String({ minLength: 1, maxLength: MAX_REASON_LENGTH });
-const RevisionSchema = Type.String({ pattern: "^[a-f0-9]{12}$" });
-const NoteSchema = Type.String({ minLength: 1, maxLength: MAX_NOTE_LENGTH });
-const PurposeSchema = Type.String({ minLength: 1, maxLength: MAX_PURPOSE_LENGTH });
-const AuthoritySchema = Type.Union([Type.Literal("exact"), Type.Literal("steer-or-block")]);
+const ReasonSchema = str({ minLength: 1, maxLength: MAX_REASON_LENGTH });
+const RevisionSchema = str({ pattern: "^[a-f0-9]{12}$" });
+const NoteSchema = str({ minLength: 1, maxLength: MAX_NOTE_LENGTH });
+const PurposeSchema = str({ minLength: 1, maxLength: MAX_PURPOSE_LENGTH });
+const AuthoritySchema = union([lit("exact"), lit("steer-or-block")]);
 const FactsProposal = {
 	purpose: PurposeSchema,
 	authority: AuthoritySchema,
-	applicability: Type.Optional(ProposalConditionSchema),
+	applicability: opt(ProposalConditionSchema),
 	id: RuleIdSchema,
 	reason: ReasonSchema,
 	note: NoteSchema,
-	language: Type.Literal("facts/v1"),
+	language: lit("facts/v1"),
 	program: ProposalProgramSchema,
-	scope: Type.Optional(ScopeSchema),
+	scope: opt(ScopeSchema),
 };
 
 const PredicateProposal = {
 	id: RuleIdSchema,
 	purpose: PurposeSchema,
 	authority: AuthoritySchema,
-	applicability: Type.Optional(ProposalConditionSchema),
+	applicability: opt(ProposalConditionSchema),
 	reason: ReasonSchema,
 	note: NoteSchema,
 	predicate: RuleIdSchema,
-	suggestion: Type.Optional(SuggestionSchema),
-	scope: Type.Optional(ScopeSchema),
+	suggestion: opt(SuggestionSchema),
+	scope: opt(ScopeSchema),
 };
 
 const CommandProposal = {
 	purpose: PurposeSchema,
 	authority: AuthoritySchema,
-	applicability: Type.Optional(ProposalConditionSchema),
+	applicability: opt(ProposalConditionSchema),
 	id: RuleIdSchema,
 	reason: ReasonSchema,
 	note: NoteSchema,
 	match: MatchSchema,
-	onUnavailable: Type.Optional(UnavailableSchema),
-	suggestion: Type.Optional(SuggestionSchema),
-	scope: Type.Optional(ScopeSchema),
+	onUnavailable: opt(UnavailableSchema),
+	suggestion: opt(SuggestionSchema),
+	scope: opt(ScopeSchema),
 };
 const CliProposal = { ...CommandProposal, match: CliMatchSchema, onUnavailable: UnavailableSchema };
 
-const PolicyProposalSchema = Type.Union(
-	[
-		Type.Object({ operation: Type.Literal("add"), ...PredicateProposal }, { additionalProperties: false }),
-		Type.Object(
-			{ operation: Type.Literal("replace"), ...PredicateProposal, expectedRevision: RevisionSchema },
-			{ additionalProperties: false },
-		),
-		Type.Object({ operation: Type.Literal("add"), ...FactsProposal }, { additionalProperties: false }),
-		Type.Object(
-			{ operation: Type.Literal("replace"), ...FactsProposal, expectedRevision: RevisionSchema },
-			{ additionalProperties: false },
-		),
-		Type.Object({ operation: Type.Literal("add"), ...CommandProposal }, { additionalProperties: false }),
-		Type.Object(
-			{ operation: Type.Literal("replace"), ...CommandProposal, expectedRevision: RevisionSchema },
-			{ additionalProperties: false },
-		),
-		Type.Object({ operation: Type.Literal("add"), ...CliProposal }, { additionalProperties: false }),
-		Type.Object(
-			{ operation: Type.Literal("replace"), ...CliProposal, expectedRevision: RevisionSchema },
-			{ additionalProperties: false },
-		),
-		Type.Object(
-			{
-				operation: Type.Literal("retire"),
-				id: RuleIdSchema,
-				reason: ReasonSchema,
-			},
-			{ additionalProperties: false },
-		),
-		Type.Object(
-			{
-				operation: Type.Literal("disable"),
-				id: RuleIdSchema,
-				reason: ReasonSchema,
-			},
-			{ additionalProperties: false },
-		),
-	],
-	{
-		type: "object",
-		// Shared field constraints supplement the closed operation variants.
-		properties: {
-			...FactsProposal,
-			...PredicateProposal,
-			...CommandProposal,
-			operation: Type.Union([Type.Literal("add"), Type.Literal("replace"), Type.Literal("retire"), Type.Literal("disable")]),
-			match: Type.Union([MatchSchema, CliMatchSchema]),
-			expectedRevision: RevisionSchema,
+const ProposalVariants = [
+	obj({ operation: lit("add"), ...PredicateProposal }, { open: false }),
+	obj(
+		{ operation: lit("replace"), ...PredicateProposal, expectedRevision: RevisionSchema },
+		{ open: false },
+	),
+	obj({ operation: lit("add"), ...FactsProposal }, { open: false }),
+	obj(
+		{ operation: lit("replace"), ...FactsProposal, expectedRevision: RevisionSchema },
+		{ open: false },
+	),
+	obj({ operation: lit("add"), ...CommandProposal }, { open: false }),
+	obj(
+		{ operation: lit("replace"), ...CommandProposal, expectedRevision: RevisionSchema },
+		{ open: false },
+	),
+	obj({ operation: lit("add"), ...CliProposal }, { open: false }),
+	obj(
+		{ operation: lit("replace"), ...CliProposal, expectedRevision: RevisionSchema },
+		{ open: false },
+	),
+	obj(
+		{
+			operation: lit("retire"),
+			id: RuleIdSchema,
+			reason: ReasonSchema,
 		},
-		required: ["operation", "id", "reason"],
-	},
-);
+		{ open: false },
+	),
+	obj(
+		{
+			operation: lit("disable"),
+			id: RuleIdSchema,
+			reason: ReasonSchema,
+		},
+		{ open: false },
+	),
+] as const;
+const PolicyProposalSchema = {
+	...union(ProposalVariants),
+	type: "object",
+	// Shared field constraints supplement the closed operation variants.
+	properties: obj({
+		...FactsProposal,
+		...PredicateProposal,
+		...CommandProposal,
+		operation: union([lit("add"), lit("replace"), lit("retire"), lit("disable")]),
+		match: union([MatchSchema, CliMatchSchema]),
+		expectedRevision: RevisionSchema,
+	}).properties,
+	required: ["operation", "id", "reason"],
+};
 
 /** Describe fields once; the closed operation variants govern admission during execution. */
-export const PolicyProposeParams = Type.Object(
+export const PolicyProposeParams = obj(
 	{
-		operation: Type.Union([
-			Type.Literal("add"),
-			Type.Literal("replace"),
-			Type.Literal("retire"),
-			Type.Literal("disable"),
+		operation: union([
+			lit("add"),
+			lit("replace"),
+			lit("retire"),
+			lit("disable"),
 		]),
 		id: RuleIdSchema,
 		reason: ReasonSchema,
-		purpose: Type.Optional(PurposeSchema),
-		authority: Type.Optional(AuthoritySchema),
-		note: Type.Optional(NoteSchema),
-		match: Type.Optional(Type.Union([MatchSchema, CliMatchSchema])),
-		predicate: Type.Optional(RuleIdSchema),
-		language: Type.Optional(Type.Literal("facts/v1")),
-		program: Type.Optional(ProposalProgramSchema),
-		applicability: Type.Optional({ ...ProposalConditionSchema, description: PROPOSAL_CONDITION_GRAMMAR }),
-		scope: Type.Optional(ScopeSchema),
-		suggestion: Type.Optional(SuggestionSchema),
-		expectedRevision: Type.Optional(RevisionSchema),
-		onUnavailable: Type.Optional(UnavailableSchema),
+		purpose: opt(PurposeSchema),
+		authority: opt(AuthoritySchema),
+		note: opt(NoteSchema),
+		match: opt(union([MatchSchema, CliMatchSchema])),
+		predicate: opt(RuleIdSchema),
+		language: opt(lit("facts/v1")),
+		program: opt(ProposalProgramSchema),
+		applicability: opt({ ...ProposalConditionSchema, description: PROPOSAL_CONDITION_GRAMMAR }),
+		scope: opt(ScopeSchema),
+		suggestion: opt(SuggestionSchema),
+		expectedRevision: opt(RevisionSchema),
+		onUnavailable: opt(UnavailableSchema),
 	},
 	{
-		additionalProperties: false,
+		open: false,
 		description:
 			"add/replace require purpose, authority, reason, note, and exactly one of match, predicate, or program with language=facts/v1. replace also requires expectedRevision; add forbids it. retire/disable accept only operation, id, and reason. match.cli requires explicit top-level onUnavailable; literal match defaults to skip. Only match accepts top-level onUnavailable. Only match/predicate accept suggestion. Only input guide/deny actions permit steer-or-block authority.",
 	},
 );
 
 const MAX_PREVIEW_CONTENT_BLOCKS = 64;
-const PreviewContentSchema = Type.Array(
-	Type.Object(
-		{ type: Type.Literal("text"), text: Type.String({ maxLength: MAX_RULE_EVENT_BYTES }) },
-		{ additionalProperties: false },
+const PreviewContentSchema = arr(
+	obj(
+		{ type: lit("text"), text: str({ maxLength: MAX_RULE_EVENT_BYTES }) },
+		{ open: false },
 	),
 	{ maxItems: MAX_PREVIEW_CONTENT_BLOCKS },
 );
 
-export const PolicyRulesParams = Type.Object(
+export const PolicyRulesParams = obj(
 	{
-		view: Type.Optional(
-			Type.Union([
-				Type.Literal("rules"), Type.Literal("catalog"), Type.Literal("capabilities"), Type.Literal("state"),
-				Type.Literal("health"), Type.Literal("explain"), Type.Literal("preview"), Type.Literal("data"),
-				Type.Literal("authoring"), Type.Literal("check"),
+		view: opt(
+			union([
+				lit("rules"), lit("catalog"), lit("capabilities"), lit("state"),
+				lit("health"), lit("explain"), lit("preview"), lit("data"),
+				lit("authoring"), lit("check"),
 			]),
 		),
-		id: Type.Optional(Type.String({ minLength: 1, maxLength: 261 })),
-		draft: Type.Optional(
-			Type.Record(Type.String(), Type.Unknown(), {
+		id: opt(str({ minLength: 1, maxLength: 261 })),
+		draft: opt(
+			{
+				type: "object",
+				patternProperties: { "^.*$": {} },
 				maxProperties: 16,
 				description:
 					"An existing policy_propose add/replace object, not a new rule format. Full proposal and candidate validation returns admission diagnostics. Read view=authoring for the check workflow.",
-			}),
+			} as Schema<Record<string, unknown>>,
 		),
-		effect: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("block")])),
-		cases: Type.Optional(DraftCasesSchema),
-		tool: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
-		input: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { maxProperties: 128 })),
-		result: Type.Optional(
-			Type.Object(
+		effect: opt(union([lit("steer"), lit("block")])),
+		cases: opt(DraftCasesSchema),
+		tool: opt(str({ minLength: 1, maxLength: 200 })),
+		input: opt({
+			type: "object", patternProperties: { "^.*$": {} }, maxProperties: 128,
+		} as Schema<Record<string, unknown>>),
+		result: opt(
+			obj(
 				{
-					isError: Type.Boolean(),
-					details: Type.Optional(Type.Unknown()),
-					content: Type.Optional(PreviewContentSchema),
+					isError: bool(),
+					details: opt(unknown()),
+					content: opt(PreviewContentSchema),
 				},
-				{ additionalProperties: false },
+				{ open: false },
 			),
 		),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 
-export const PolicyApproveParams = Type.Object(
+export const PolicyApproveParams = obj(
 	{
-		proposalId: Type.String({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" }),
+		proposalId: str({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" }),
 		proposalRevision: RevisionSchema,
-		effect: Type.Union([Type.Literal("steer"), Type.Literal("block"), Type.Literal("exact")]),
-		authorization: Type.String({
+		effect: union([lit("steer"), lit("block"), lit("exact")]),
+		authorization: str({
 			minLength: 1,
 			maxLength: MAX_REASON_LENGTH,
 			description:
 				"Explain the operator decision and context that authorize this exact proposal and effect, including faithfully carried authority. This records your judgment, not independent proof or new permission.",
 		}),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 const approvalValidator = compile(PolicyApproveParams);
 
@@ -756,13 +761,13 @@ function proposalAdmissionError(value: unknown): string {
 	const forms = ["match", "predicate", "program"].filter((key) => key in value);
 	if ((value.operation === "add" || value.operation === "replace") && forms.length !== 1)
 		return "match/predicate/program: add/replace require exactly one authoring form; program requires language=facts/v1";
-	const branch = PolicyProposalSchema.anyOf.find((entry) => {
-		const fields = entry.properties;
+	const branch = ProposalVariants.find((entry) => {
+		const fields = entry.properties as Record<string, Schema>;
 		if (fields.operation.const !== value.operation) return false;
 		if (value.operation === "retire" || value.operation === "disable") return true;
 		if (!(forms[0] in fields)) return false;
 		if ("match" in fields)
-			return "cli" in fields.match.properties === (isJsonObject(value.match) && "cli" in value.match);
+			return "cli" in (fields.match.properties as Record<string, Schema>) === (isJsonObject(value.match) && "cli" in value.match);
 		return true;
 	});
 	return compile(branch ?? PolicyProposalSchema)
@@ -897,7 +902,7 @@ function registerApprovalTool(pi: Pick<ExtensionAPI, "registerTool">, deps: Tool
 			"Inspect policy_rules with the rule ID or proposal ID if the pending artifact is not fully in context. After a stale-revision refusal, inspect the changed artifact and reassess the scope of approval; do not silently approve a different revision. Report the returned state and mode without equating approval with enforcement.",
 		],
 		parameters: PolicyApproveParams,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: Static<typeof PolicyApproveParams>, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new PolicyMutationCancelledError();
 			if (!approvalValidator.check(params) || !params.authorization.trim())
 				throw new Error(
@@ -954,7 +959,7 @@ export function registerRuleTools(
 		parameters: PolicyProposeParams,
 		renderCall: (args, theme, context) => renderProposeCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderProposeResult(result, options, theme, context),
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: Static<typeof PolicyProposeParams>, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new PolicyMutationCancelledError();
 			validateProposal(params);
 			await deps.loadRegistry(ctx);
@@ -995,7 +1000,7 @@ export function registerRuleTools(
 		parameters: PolicyRulesParams,
 		renderCall: (args, theme, context) => renderRulesCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderRulesResult(result, options, theme, context),
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: Static<typeof PolicyRulesParams>, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_rules cancelled");
 			validateInspectionParams(params);
 			const snapshot = await deps.loadRegistry(ctx);
