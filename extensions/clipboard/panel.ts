@@ -108,8 +108,8 @@ export class ClipboardPanel {
 		return computeLayout(this.deps.getMaxRows(), width);
 	}
 
-	private previewSource(): string[] {
-		const entry = this.filtered[this.selected];
+	private previewSource(entries: ClipboardEntry[]): string[] {
+		const entry = entries[this.selected];
 		if (!entry) return [];
 		const lines = entry.content.split("\n").map(safeLine);
 		if (entry.contentTruncated) lines.push("[preview truncated; restore uses the full archived entry]");
@@ -120,8 +120,8 @@ export class ClipboardPanel {
 		return Math.max(1, this.layout().previewRows);
 	}
 
-	private previewMaxScroll(): number {
-		return Math.max(0, this.previewSource().length - this.layout().previewRows);
+	private previewMaxScroll(entries: ClipboardEntry[], layout = this.layout()): number {
+		return Math.max(0, this.previewSource(entries).length - layout.previewRows);
 	}
 
 	private bump(): void {
@@ -135,7 +135,6 @@ export class ClipboardPanel {
 			if (matchesKey(data, "escape")) this.restoreController?.abort();
 			return;
 		}
-		const entries = this.filtered;
 		if (matchesKey(data, "escape")) {
 			this.onEscape();
 			return;
@@ -146,15 +145,15 @@ export class ClipboardPanel {
 			return;
 		}
 		if (matchesKey(data, "down")) {
-			this.onDown(entries.length);
+			this.onDown(this.filtered.length);
 			return;
 		}
 		if (matchesKey(data, "left")) {
-			this.onPreview(-1);
+			this.onPreview(-1, this.filtered);
 			return;
 		}
 		if (matchesKey(data, "right")) {
-			this.onPreview(1);
+			this.onPreview(1, this.filtered);
 			return;
 		}
 		if (matchesKey(data, "backspace")) {
@@ -162,7 +161,7 @@ export class ClipboardPanel {
 			return;
 		}
 		if (matchesKey(data, "enter")) {
-			this.onEnter(entries);
+			this.onEnter(this.filtered);
 			return;
 		}
 		this.handleTyped(data);
@@ -192,12 +191,12 @@ export class ClipboardPanel {
 		this.bump();
 	}
 
-	private onPreview(direction: number): void {
+	private onPreview(direction: number, entries: ClipboardEntry[]): void {
 		const page = this.previewPageSize();
 		this.previewScroll =
 			direction < 0
 				? Math.max(0, this.previewScroll - page)
-				: Math.min(this.previewMaxScroll(), this.previewScroll + page);
+				: Math.min(this.previewMaxScroll(entries), this.previewScroll + page);
 		this.bump();
 	}
 
@@ -257,8 +256,9 @@ export class ClipboardPanel {
 		if (this.cachedWidth === width && this.cachedRows === layout.total && this.cachedVersion === this.version) {
 			return this.cachedLines;
 		}
-		this.previewScroll = Math.min(this.previewScroll, this.previewMaxScroll());
-		const lines = this.buildLines(width, layout);
+		const entries = this.filtered;
+		this.previewScroll = Math.min(this.previewScroll, this.previewMaxScroll(entries, layout));
+		const lines = this.buildLines(width, layout, entries);
 		this.cachedWidth = width;
 		this.cachedRows = layout.total;
 		this.cachedVersion = this.version;
@@ -302,8 +302,7 @@ export class ClipboardPanel {
 		);
 	}
 
-	private buildLines(width: number, layout: Layout): string[] {
-		const entries = this.filtered;
+	private buildLines(width: number, layout: Layout, entries: ClipboardEntry[]): string[] {
 		const total = this.deps.entries.length;
 		const innerWidth = layout.framed ? Math.max(0, width - 2) : width;
 		if (layout.total === 1) return [this.footerLine(layout, width, innerWidth, " esc close")];
@@ -326,7 +325,7 @@ export class ClipboardPanel {
 		this.syncListScroll(layout);
 		lines.push(...this.listLines(layout, width, innerWidth, entries, total));
 		if (layout.separator) lines.push(this.rowLine(layout, width, innerWidth, "─".repeat(innerWidth), "borderMuted"));
-		lines.push(...this.previewLines(layout, width, innerWidth));
+		lines.push(...this.previewLines(layout, width, innerWidth, entries));
 		lines.push(this.footerLine(layout, width, innerWidth, this.hintLine(entries.length)));
 		return lines;
 	}
@@ -386,9 +385,9 @@ export class ClipboardPanel {
 		return lines;
 	}
 
-	private previewLines(layout: Layout, width: number, innerWidth: number): string[] {
+	private previewLines(layout: Layout, width: number, innerWidth: number, entries: ClipboardEntry[]): string[] {
 		const lines: string[] = [];
-		const source = this.previewSource();
+		const source = this.previewSource(entries);
 		const page = source.slice(this.previewScroll, this.previewScroll + layout.previewRows);
 		for (let index = 0; index < layout.previewRows; index++) {
 			let text = page[index] ?? "";

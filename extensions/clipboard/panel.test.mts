@@ -91,6 +91,56 @@ describe("ClipboardPanel", () => {
 		assert.deepEqual(calls.done, {});
 	});
 
+	it("filters once per fresh render and reads changed entries after invalidation", () => {
+		let passes = 0;
+		const entries = new Proxy(sampleEntries(), {
+			get(target, key, receiver) {
+				if (key === "filter") passes++;
+				return Reflect.get(target, key, receiver);
+			},
+		});
+		const { panel } = rig(entries);
+		panel.handleInput("x");
+		assert.equal(passes, 0);
+		const first = panel.render(72);
+		assert.equal(passes, 1);
+		assert.match(first.join("\n"), /0 of 3 match/);
+		assert.equal(panel.render(72), first);
+		assert.equal(passes, 1);
+		entries.push(makeEntry("extra copy"));
+		panel.invalidate();
+		assert.match(panel.render(72).join("\n"), /1 of 4 match/);
+		assert.equal(passes, 2);
+		panel.render(60);
+		assert.equal(passes, 3);
+	});
+
+	it("filters only in input branches that consume matching entries", async () => {
+		let passes = 0;
+		const entries = new Proxy(sampleEntries(), {
+			get(target, key, receiver) {
+				if (key === "filter") passes++;
+				return Reflect.get(target, key, receiver);
+			},
+		});
+		const { panel, calls } = rig(entries);
+		panel.handleInput("o");
+		panel.handleInput("\x1b[A");
+		panel.handleInput("\x7f");
+		panel.handleInput("o");
+		assert.equal(passes, 0);
+		panel.handleInput("\x1b[B");
+		assert.equal(passes, 1);
+		panel.handleInput("\x1b[D");
+		assert.equal(passes, 2);
+		panel.handleInput("\x1b[C");
+		assert.equal(passes, 3);
+		panel.handleInput("\r");
+		assert.equal(passes, 4);
+		await flush();
+		assert.equal(calls.restores[0]?.label, "long");
+	});
+
 	it("filters on Kitty CSI-u printable events", () => {
 		// A terminal with the Kitty keyboard protocol sends CSI-u for every key,
 		// so raw single-character handling loses all typed text there.
