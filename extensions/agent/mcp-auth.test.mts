@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import lockfile, { type LockOptions } from "proper-lockfile";
@@ -190,11 +191,128 @@ it("reports compromised refresh ownership without releasing a replacement lease"
 		compromise = options?.onCompromised;
 		return async () => { releases++; };
 	});
-	const result = await new McpRefreshLock(f.dir).withRefreshLock(key, async () => {
-		assert.ok(compromise); compromise(new Error("synthetic ownership loss")); return "completed";
+	const result = await new McpRefreshLock(f.dir).withRefreshLock(key, async (lease) => {
+		assert.equal(lease?.valid, true);
+		assert.ok(compromise); compromise(new Error("synthetic ownership loss"));
+		assert.equal(lease?.valid, false); return "completed";
 	});
 	assert.equal(result, "completed"); assert.equal(releases, 0);
 	assert.deepEqual(warning.mock.calls[0].arguments, ["MCP refresh lock ownership was lost; credential writes remain conditional", { code: "MCP_REFRESH_LOCK_COMPROMISED" }]);
+});
+
+async function within<T>(work: Promise<T>, label: string, ms = 3000): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([work, new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(() => reject(new Error(`Timed out: ${label}`)), ms);
+		})]);
+	} finally { clearTimeout(timer); }
+}
+
+function compromiseWarning(t: TestContext): Promise<void> {
+	const reported = deferred();
+	const listener = (warning: Error & { code?: string }) => {
+		if (warning.code === "MCP_REFRESH_LOCK_COMPROMISED") reported.resolve();
+	};
+	process.on("warning", listener);
+	t.after(() => { process.off("warning", listener); reported.resolve(); });
+	return within(reported.promise, "refresh compromise warning", 15_000).finally(() => process.off("warning", listener));
+}
+
+async function leaseFixture(t: TestContext, pause: "reread" | "metadata" | "token") {
+	const dir = mkdtempSync(join(tmpdir(), "mcp-lease-test-"));
+	const owners: NativeMcpAuth[] = [];
+	const reread = deferred(); const resumeRead = deferred();
+	const discovery = deferred(); const resumeDiscovery = deferred();
+	const token = deferred(); const resumeToken = deferred();
+	let exchanges = 0; const errors: unknown[] = [];
+	const server = createServer((request, response) => {
+		void (async () => {
+			response.setHeader("content-type", "application/json");
+			if (request.url?.startsWith("/.well-known/oauth-protected-resource")) { response.writeHead(404).end(); return; }
+			if (request.url === "/metadata") {
+				discovery.resolve(); await within(resumeDiscovery.promise, "metadata response", 15_000);
+				response.end(JSON.stringify(meta)); return;
+			}
+			assert.equal(request.url, "/token"); assert.equal(request.method, "POST");
+			request.resume();
+			if (++exchanges === 1) {
+				token.resolve(); await within(resumeToken.promise, "token response", 15_000);
+				response.end(JSON.stringify(rotated));
+			} else response.writeHead(400).end(JSON.stringify({ error: "invalid_grant" }));
+		})().catch((error) => { errors.push(error); response.writeHead(500).end(); });
+	});
+	t.after(async () => {
+		resumeRead.resolve(); resumeDiscovery.resolve(); resumeToken.resolve();
+		try { await within(Promise.allSettled(owners.map((owner) => owner.close())), "owner cleanup"); }
+		finally {
+			server.closeAllConnections();
+			await within(new Promise<void>((resolve) => server.close(() => resolve())), "server cleanup");
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	await within(new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve)), "server listen");
+	const address = server.address(); assert.ok(address && typeof address !== "string");
+	const base = `http://127.0.0.1:${address.port}`; const serverUrl = `${base}/mcp`;
+	const canonicalKey = `mcp__docs|${serverUrl}`;
+	const meta = { ...metadata, issuer: base, authorization_endpoint: `${base}/authorize`, token_endpoint: `${base}/token` };
+	const state = { ...grant(), serverUrl, discovery: { authorizationServerUrl: base, authorizationServerMetadata: meta } };
+	const unrelated = { ...grant(), serverUrl: "https://other.example.test/mcp" };
+	const path = join(dir, "mcp-auth.json"); writeFileSync(path, JSON.stringify({ [canonicalKey]: state, unrelated }));
+	const fileLock = new McpCredentialFileLock();
+	const gated: CredentialFileLock = { async withFileLock(path, fn) {
+		reread.resolve(); await within(resumeRead.promise, "credential reread", 15_000);
+		return fileLock.withFileLock(path, fn);
+	} };
+	const first = new NativeMcpAuth(dir, undefined, pause === "reread" ? gated : undefined); owners.push(first);
+	const second = new NativeMcpAuth(dir); owners.push(second);
+	function start(owner: NativeMcpAuth, metadataOverride = false) {
+		const auth = owner.provider("docs", { url: serverUrl, oauth: metadataOverride ? { authServerMetadataUrl: `${base}/metadata` } : undefined }, (value) => value);
+		return auth.onUnauthorized({ token: "synthetic-old", serverUrl: new URL(serverUrl), fetch: globalThis.fetch, response: new Response(null, { status: 401 }) })
+			.then(() => undefined, (error: unknown) => error);
+	}
+	const lockPath = join(dir, `mcp-auth-refresh-${createHash("sha256").update(canonicalKey).digest("hex").slice(0, 16)}.lock`);
+	return { first, second, start, lockPath, reread, resumeRead, discovery, resumeDiscovery, token, resumeToken,
+		read: () => JSON.parse(readFileSync(path, "utf8")), canonicalKey, state, unrelated,
+		verify: (expected = 1) => { assert.deepEqual(errors, []); assert.equal(exchanges, expected); } };
+}
+
+for (const pause of ["reread", "metadata"] as const) {
+	it(`sends no token request after reported lease loss during ${pause}`, { timeout: 22_000 }, async (t) => {
+		const f = await leaseFixture(t, pause);
+		const first = f.start(f.first, pause === "metadata");
+		await within((pause === "reread" ? f.reread : f.discovery).promise, "first owner pause");
+		const warning = compromiseWarning(t); rmSync(f.lockPath, { recursive: true });
+		const second = f.start(f.second); await within(f.token.promise, "replacement token request");
+		await warning;
+		f.resumeRead.resolve(); f.resumeDiscovery.resolve();
+		assert.match(String(await within(first, "lost owner completion")), /refresh lock ownership was lost/u);
+		assert.ok(existsSync(f.lockPath));
+		assert.deepEqual(f.read(), { [f.canonicalKey]: f.state, unrelated: f.unrelated });
+		f.resumeToken.resolve(); assert.equal(await within(second, "replacement completion"), undefined);
+		assert.equal(existsSync(f.lockPath), false); assert.deepEqual(f.read()[f.canonicalKey].tokens, rotated);
+		assert.deepEqual(f.read().unrelated, f.unrelated); f.verify();
+	});
+}
+
+it("persists an admitted rotation after reported lease loss and close", { timeout: 22_000 }, async (t) => {
+	const f = await leaseFixture(t, "token"); const attempt = f.start(f.first);
+	await within(f.token.promise, "admitted token request");
+	const warning = compromiseWarning(t); rmSync(f.lockPath, { recursive: true }); await warning;
+	let closed = false; const close = f.first.close().then(() => { closed = true; });
+	await Promise.resolve(); assert.equal(closed, false);
+	f.resumeToken.resolve(); assert.equal(await within(attempt, "admitted completion"), undefined);
+	await within(close, "close after persistence"); assert.equal(closed, true);
+	assert.deepEqual(f.read()[f.canonicalKey].tokens, rotated); assert.deepEqual(f.read().unrelated, f.unrelated); f.verify();
+});
+
+it("sends no token request after close during metadata discovery", { timeout: 8000 }, async (t) => {
+	const f = await leaseFixture(t, "metadata"); const attempt = f.start(f.first, true);
+	await within(f.discovery.promise, "metadata request"); const close = f.first.close();
+	f.resumeDiscovery.resolve();
+	assert.match(String(await within(attempt, "closed owner completion")), /authentication is closed/u);
+	await within(close, "closed owner drain"); f.verify(0);
+	assert.deepEqual(f.read(), { [f.canonicalKey]: f.state, unrelated: f.unrelated });
 });
 
 it("refuses a credential callback after reported ownership loss", async (t) => {

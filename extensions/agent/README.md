@@ -1981,8 +1981,14 @@ is the first 16 hex digits of SHA-256 over the server key. It uses a 20-second
 stale threshold and the same bounded retries. Healthy lock ownership serialises
 native and ordinary refresh exchanges for the same server key. The owner
 rereads credentials after acquisition and reuses a committed replacement instead
-of exchanging the old grant again. Lock compromise emits a warning; an admitted
-rotation still reaches conditional persistence under the separate file lock.
+of exchanging the old grant again. Lock compromise invalidates the owner's lease
+and emits a warning. An owner whose reported loss precedes its token request
+sends no token request and saves no staged sign-in state. The owner checks its
+lease and closure after reread and immediately before token dispatch, not merely
+on entry to the OAuth flow. An admitted rotation still reaches conditional
+persistence under the separate file lock, even after reported loss or close.
+Undetected loss is not excluded: proper-lockfile detects loss on its heartbeat,
+which defaults to half the stale period (10 seconds for the refresh lock).
 `RefreshLock.withRefreshLock(key, fn)` owns the exchange and persistence lifetime;
 `CredentialFileLock.withFileLock(path, fn)` owns short file mutations.
 After the remote exchange, a conditional save compares the server's starting
@@ -1996,8 +2002,8 @@ state; native conditional persistence does not make those operations transaction
 Each OAuth network request has a 15-second deadline. An initiating request's
 abort does not cancel an admitted refresh. Native close awaits in-flight refresh
 persistence, independently of its transport shutdown deadline. A refresh still
-waiting for ownership or the credential reread does not start an exchange after
-close.
+waiting for ownership, the credential reread or OAuth discovery does not send
+a token request after close.
 
 ## Runtime and identity
 

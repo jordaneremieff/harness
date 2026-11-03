@@ -16,12 +16,12 @@ import type { AuthorizationServerMetadata, McpOAuthState, McpOAuthStateStore, OA
 type HttpConfig = Extract<McpServerConfig, { url: string }>;
 type OAuthSettings = NonNullable<HttpConfig["oauth"]>;
 
-/**
- * Replacement seam for the compatible per-server proper-lockfile adapter, scoped to agentDir.
- * Its target is mcp-auth-refresh-<first 16 hex digits of sha256(key)> in that directory.
- */
+/** Reported ownership only; the lock heartbeat does not detect loss immediately. */
+export interface RefreshLease { readonly valid: boolean }
+
+/** Per-server refresh ownership, scoped to agentDir. An omitted lease from an injected lock is valid. */
 export interface RefreshLock {
-	withRefreshLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
+	withRefreshLock<T>(key: string, fn: (lease?: RefreshLease) => Promise<T>): Promise<T>;
 }
 
 /** Short synchronous credential mutations only. Never hold this lock over network I/O. */
@@ -35,7 +35,7 @@ export class McpRefreshLock implements RefreshLock {
 	private readonly agentDir: string;
 	constructor(agentDir: string) { this.agentDir = agentDir; }
 
-	async withRefreshLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+	async withRefreshLock<T>(key: string, fn: (lease?: RefreshLease) => Promise<T>): Promise<T> {
 		mkdirSync(this.agentDir, { recursive: true, mode: 0o700 });
 		const path = join(this.agentDir, `mcp-auth-refresh-${createHash("sha256").update(key).digest("hex").slice(0, 16)}`);
 		let compromised = false;
@@ -47,7 +47,7 @@ export class McpRefreshLock implements RefreshLock {
 				process.emitWarning("MCP refresh lock ownership was lost; credential writes remain conditional", { code: "MCP_REFRESH_LOCK_COMPROMISED" });
 			},
 		});
-		try { return await fn(); }
+		try { return await fn({ get valid() { return !compromised; } }); }
 		finally { if (!compromised) await release(); }
 	}
 }
@@ -177,8 +177,9 @@ export class NativeMcpAuth {
 		this.refreshLock = refreshLock;
 	}
 
-	private assertOpen(): void {
+	private assertAdmission(lease?: RefreshLease): void {
 		if (this.closed) throw new Error("MCP authentication is closed");
+		if (lease?.valid === false) throw new Error("MCP refresh lock ownership was lost");
 	}
 
 	provider(name: string, config: HttpConfig, resolveSecret: (value: string) => string | undefined): NativeMcpAuthProvider {
@@ -188,14 +189,14 @@ export class NativeMcpAuth {
 		const refresh = (rejected: string | undefined, fetch: McpFetch = globalThis.fetch, challenge?: OAuthChallenge): Promise<void> => {
 			if (this.closed) return Promise.reject(new Error("MCP authentication is closed"));
 			if (refreshing) return refreshing;
-			refreshing = this.refreshLock.withRefreshLock(key, async () => {
-				this.assertOpen();
+			refreshing = this.refreshLock.withRefreshLock(key, async (lease) => {
+				this.assertAdmission(lease);
 				const start = await this.file.load(key, url);
-				this.assertOpen();
+				this.assertAdmission(lease);
 				if (!start?.state.tokens?.access_token) throw new McpOAuthAuthorizationRequiredError();
 				if (start.state.tokens.access_token !== rejected) return;
 				if (!start.state.tokens.refresh_token) throw new McpOAuthAuthorizationRequiredError();
-				await this.exchange(key, url, start, config.oauth ?? {}, resolveSecret, fetch, challenge);
+				await this.exchange(key, url, start, config.oauth ?? {}, resolveSecret, fetch, challenge, lease);
 			}).finally(() => { if (refreshing) this.pending.delete(refreshing); refreshing = undefined; });
 			this.pending.add(refreshing);
 			return refreshing;
@@ -220,7 +221,16 @@ export class NativeMcpAuth {
 		};
 	}
 
-	private async exchange(key: string, url: string, start: StoredGrant, settings: OAuthSettings, resolveSecret: (value: string) => string | undefined, fetch: McpFetch, challenge?: OAuthChallenge): Promise<void> {
+	private async exchange(key: string, url: string, start: StoredGrant, settings: OAuthSettings, resolveSecret: (value: string) => string | undefined, fetch: McpFetch, challenge?: OAuthChallenge, lease?: RefreshLease): Promise<void> {
+		let admitted = false;
+		const request = boundedFetch(fetch);
+		const guardedFetch: McpFetch = (input, init) => {
+			if (init?.method === "POST" && init.body instanceof URLSearchParams && init.body.has("grant_type")) {
+				this.assertAdmission(lease);
+				admitted = true;
+			}
+			return request(input, init);
+		};
 		let staged = structuredClone(start.state);
 		const store: McpOAuthStateStore = { load: () => structuredClone(staged), save: (state) => { staged = structuredClone(state); } };
 		const redirect = redirectUrl(settings, start.state);
@@ -238,10 +248,12 @@ export class NativeMcpAuth {
 			const result = await authorizeMcp(provider, {
 				serverUrl: url, resourceMetadataUrl: challenge?.resourceMetadataUrl,
 				authorizationServerMetadataUrl: settings.authServerMetadataUrl === undefined ? undefined : new URL(settings.authServerMetadataUrl),
-				scope: challenge?.scope ?? settings.scope, fetch: boundedFetch(fetch),
+				scope: challenge?.scope ?? settings.scope, fetch: guardedFetch,
 			});
 			if (result === "REDIRECT") failure = new McpOAuthAuthorizationRequiredError();
 		} catch (error) { failure = error; }
+		// OAuth fallback stages sign-in state after generic fetch errors; refused admission must not save it.
+		if (!admitted) this.assertAdmission(lease);
 		const saved = await this.file.commit(key, url, start, staged);
 		if (!saved.replaced && failure !== undefined) throw failure;
 	}

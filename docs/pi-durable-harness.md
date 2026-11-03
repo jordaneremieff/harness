@@ -602,11 +602,16 @@ host capability. Current ordinary defining sources are
   per-server `proper-lockfile` target and 20-second stale threshold across
   processes. The owner rereads after acquisition and reuses a committed
   replacement. Credential-file locks use ordinary Pi's 10-second stale threshold.
-  Compromise emits a warning; conditional persistence still requires file
-  ownership. Ordinary sign-in/logout remain outside the refresh transaction;
+  Reported compromise invalidates the refresh lease and emits a warning. An
+  owner whose reported loss precedes token dispatch sends no token request and
+  saves no staged sign-in state. Checks follow reread and immediately precede
+  the token request. An admitted rotation still persists conditionally under
+  file ownership, even after reported loss or close. Undetected loss is not
+  excluded; the refresh heartbeat defaults to half the stale period (10 seconds).
+  Ordinary sign-in/logout remain outside the refresh transaction;
   a later ordinary stale whole-file save can still overwrite newer state.
   Native close awaits admitted refresh persistence and prevents an exchange
-  that still awaits ownership or credential reread.
+  that still awaits ownership, credential reread or OAuth discovery.
   Checked 2026-11-03 against coding-agent 1.5.0
   `dist/extensions/mcp/{config.d.ts,oauth.js}` and pi-mcp 1.5.0
   `dist/oauth/{provider,flow}.{d.ts,js}`. Native ownership and limits are defined
