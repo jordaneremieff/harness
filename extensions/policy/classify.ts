@@ -362,10 +362,6 @@ export function classify(tool: string, input: Record<string, unknown>): string[]
 	return matchRuleRecords(tool, captured, installedRecords(), { cwd: process.cwd() }).map((record) => record.id);
 }
 
-export function classifyCaptured(tool: string, captured: string): string[] {
-	return matchRuleRecords(tool, captured, installedRecords(), { cwd: process.cwd() }).map((record) => record.id);
-}
-
 /** Installed package guidance retained for callers that only have historical ids. */
 export function notesFor(tool: string, ruleIds: readonly string[]): string[] {
 	if (tool !== "bash") return [];
