@@ -2704,7 +2704,11 @@ opening finds pending native work or an incomplete delivery observation. Native
 commits, request completion and delivery-idle transitions reconcile the marker
 from the delivery driver's summary, without reconstructing pending payloads.
 The driver aggregates pending count, active routes and parked recipients across
-its complete bounded traversal. Unfinished pages, scheduled work, relevant
+its complete bounded traversal. Each classification carries the recipient facts
+sampled for that decision through retention and aggregation. Conflicting samples
+for one tracked parked recipient invalidate the pass, even if the final facts
+match an earlier sample. Completion and retirement still recheck current facts.
+Unfinished pages, scheduled work, relevant
 commits, external invalidation and failed passes keep recovery conservatively
 due and block retirement, even between pages when no delivery is in flight.
 The marker clears only after a fresh complete observation finds no native work

@@ -480,6 +480,7 @@ type EligibilityRow = {
 	readonly kind: "intent" | "receipt" | "report";
 	readonly row: DeliveryIntent | DeliveryReceipt | DeliveryReport;
 	readonly eligibility: DeliveryEligibility;
+	readonly recipientRevision: string;
 };
 
 interface EligibilityOptions {
@@ -523,8 +524,9 @@ export async function observeDeliveryEligibility(harness: Harness, options: Elig
 	const result: EligibilityRow[] = [];
 	const add = (kind: EligibilityRow["kind"], key: string, row: EligibilityRow["row"], originValid: boolean, intent?: DeliveryIntent) => {
 		const terminalReason = row.delivery?.state === "terminal" ? row.delivery.reason : undefined;
-		const eligibility = classifyDelivery({ ownerId: row.ownerId, originValid, terminalReason, fallbackFailure: options.fallbackFailures?.get(row.ownerId), ...recipientFacts(row.ownerId, options), ...(intent === undefined ? {} : { pendingIntent: true, missingSubmission: missing.has(`${intent.conversationId}:${intent.requestId}`) }) });
-		result.push({ key, kind, row, eligibility });
+		const recipient = recipientFacts(row.ownerId, options);
+		const eligibility = classifyDelivery({ ownerId: row.ownerId, originValid, terminalReason, fallbackFailure: options.fallbackFailures?.get(row.ownerId), ...recipient, ...(intent === undefined ? {} : { pendingIntent: true, missingSubmission: missing.has(`${intent.conversationId}:${intent.requestId}`) }) });
+		result.push({ key, kind, row, eligibility, recipientRevision: JSON.stringify(recipient) });
 	};
 	for (const intent of state.intents) {
 		if (intent.submissionId !== null && state.receipts[String(intent.submissionId)] !== undefined) continue;
@@ -1143,10 +1145,11 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			return;
 		}
 		if (item.eligibility.state !== "parked") return;
-		if (parked.has(identity) || parked.size < DELIVERY_WAKE_RECIPIENT_LIMIT) {
-			parked.set(identity, recipientRevision(identity));
-			parkedRows[identity] = (parkedRows[identity] ?? 0) + 1;
-		} else parkedOmitted++;
+		if (!parked.has(identity) && parked.size >= DELIVERY_WAKE_RECIPIENT_LIMIT) { parkedOmitted++; return; }
+		const revision = parked.get(identity);
+		if (revision !== undefined && revision !== item.recipientRevision) activityPending = true;
+		else parked.set(identity, item.recipientRevision);
+		parkedRows[identity] = (parkedRows[identity] ?? 0) + 1;
 	}
 	/** One bounded pending page per pass; complete native answer groups remain indivisible. */
 	const scan = async (): Promise<void> => {

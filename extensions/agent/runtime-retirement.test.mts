@@ -141,6 +141,53 @@ it("refuses release between bounded delivery pages", { timeout: 15000 }, async t
 	assert.deepEqual(await f.runtime.requestRelease(), { retiring: true, blockers: [] });
 });
 
+it("keeps recovery and release blocked when a recipient appears during eligibility retention", { timeout: 15000 }, async t => {
+	const f = await fixture(t), connected = deferred(), finishConnection = deferred();
+	let available = false;
+	const target = { ...f.catalog.read(f.metadata.storageId), storageId: f.ownerId };
+	const nativeTarget = AgentManager.prototype.nativeTarget;
+	t.mock.method(AgentManager.prototype, "nativeTarget", function (this: AgentManager, identity: string) {
+		if (identity === `${f.ownerId}:2` && available) return target;
+		return nativeTarget.call(this, identity);
+	});
+	t.mock.method(AgentManager.prototype, "connectNative", async () => {
+		connected.resolve();
+		await finishConnection.promise;
+		throw new Error("synthetic recipient refuses connection");
+	});
+	t.after(() => finishConnection.resolve());
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	await f.native.harness.commit(tx => storeDeliveryRow(tx, "report", { sourceId: "report:revision", requestId: "revision", ownerId: `${f.ownerId}:2`, senderIdentity: f.metadata.storageId,
+		message: "parked", replyTo: null, acknowledged: false, createdAt: 0, delivery: { state: "parked", reason: "native recipient has no catalog record" } }, true), BACKGROUND_CONTEXT);
+	const commit = f.native.harness.commit.bind(f.native.harness);
+	t.mock.method(f.native.harness, "commit", (callback: Parameters<typeof commit>[0], ...args: [Parameters<typeof commit>[1]]) => commit(async tx => {
+		const doc = tx.doc.bind(tx);
+		t.mock.method(tx, "doc", (...args: Parameters<typeof doc>) => {
+			if (Object.is(args[0], DeliveryRowDoc)) available = true;
+			return doc(...args);
+		});
+		return callback(tx);
+	}, ...args));
+	const passes = eventLog<void>();
+	const stop = f.runtime.onQuiescent?.(() => passes.push(undefined));
+	t.after(() => stop?.());
+	t.mock.timers.tick(0); await passes.waitForCount(1);
+	assert.equal(available, true);
+	const state = await f.runtime.request("recovery-state", {}, "changed-during-retention") as { deliveriesPending: boolean; deliveriesActive: boolean };
+	assert.equal(state.deliveriesPending, true);
+	assert.equal(state.deliveriesActive, true, "recovery must not accept stale parked eligibility");
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, true);
+	t.mock.timers.tick(0); await connected.promise;
+	try {
+		assert.ok(f.runtime.requestRelease);
+		const release = await f.runtime.requestRelease();
+		assert.equal(release.retiring, false);
+		assert.ok(release.blockers.some(text => text.includes("Delivery observation")));
+		assert.equal(await eligible(f.runtime), false);
+	} finally { finishConnection.resolve(); }
+	await passes.waitForCount(2);
+});
+
 it("publishes the native availability that failed before clearing recovery", { timeout: 15000 }, async t => {
 	const f = await fixture(t), parked = eventLog<void>();
 	const target = f.catalog.create({ cwd: join(f.root, "missing-target-directory"), agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: f.metadata.model, thinkingLevel: "off" });

@@ -2,7 +2,7 @@ import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryState as readRetainedDelivery, deliveryPendingCount, pendingDeliveryPage } from "./delivery-store.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import { DELIVERY_PAGE_SIZE, DeliveryRowDoc, storeDeliveryRow } from "./delivery-store.ts";
-import { DELIVERY_WAKE_RECIPIENT_LIMIT } from "./delivery-wake.ts";
+import { DELIVERY_WAKE_RECIPIENT_LIMIT, nativeRecipientAvailability } from "./delivery-wake.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { LiveDoc, type ConversationId, type EntryId, type SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { ThreadDeliveryDoc, type AgentDeliveryState, recordReport, richSubmitConversation, settleDeliveries, undeliveredReports } from "./durable-controls.ts";
-import { startDurableDelivery } from "./durable-delivery.ts";
+import { observeDeliveryEligibility, startDurableDelivery } from "./durable-delivery.ts";
 import { mutateCollaboration } from "./collaboration.ts";
 import { DurableHost, type RequestParams } from "./durable-host.ts";
 import { retainProviderRetryNotices } from "./provider-notices.ts";
@@ -2606,7 +2606,7 @@ for (const count of [130, DELIVERY_WAKE_RECIPIENT_LIMIT + 1]) it(`aggregates par
 	assert.equal(watcher.summary().fresh, false, "a scheduled pass does not prove eligibility");
 	t.mock.timers.tick(0); await idle.waitForCount(1);
 	assert.equal(snapshots.mock.calls.filter(call => Object.is(call.arguments[0], DeliveryRowDoc)).length, DELIVERY_PAGE_SIZE * 2);
-	assert.equal(recipientReads, DELIVERY_PAGE_SIZE * 3);
+	assert.equal(recipientReads, DELIVERY_PAGE_SIZE * 2);
 	assert.equal(watcher.busy, false);
 	assert.equal(watcher.summary().complete, false);
 	assert.equal(watcher.summary().fresh, false);
@@ -2628,6 +2628,64 @@ for (const count of [130, DELIVERY_WAKE_RECIPIENT_LIMIT + 1]) it(`aggregates par
 	assert.deepEqual(watcher.summary().parkedRecipients, summary.parkedRecipients, "invalidation preserves completed wake dependencies");
 	t.mock.timers.tick(0); await idle.waitForCount(pages + 1);
 	assert.deepEqual(watcher.summary().parkedRecipients, summary.parkedRecipients, "partial traversal preserves completed wake dependencies");
+});
+
+it("invalidates parked eligibility when the recipient appears during retention", { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t), path = join(root, "revision.sqlite"), source = await openHost(path, randomUUID(), root);
+	t.after(() => source.close());
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	const catalog = new AgentCatalog(root), metadata = sourceMetadata(root, source.storageId, path);
+	const target = catalog.create({ cwd: root, agentDir: metadata.agentDir, packageDir: metadata.packageDir, model: metadata.model, thinkingLevel: "off" });
+	const ownerId = `${target.storageId}:2`;
+	await source.harness.commit(tx => storeDeliveryRow(tx, "report", { sourceId: "report:revision", requestId: "revision", ownerId, senderIdentity: source.storageId,
+		message: "parked", replyTo: null, acknowledged: false, createdAt: 0, delivery: { state: "parked", reason: "native recipient has no catalog record" } }, true), BACKGROUND_CONTEXT);
+	let available = false;
+	const commit = source.harness.commit.bind(source.harness);
+	t.mock.method(source.harness, "commit", (callback: Parameters<typeof commit>[0], ...args: [Parameters<typeof commit>[1]]) => commit(async tx => {
+		const doc = tx.doc.bind(tx);
+		t.mock.method(tx, "doc", (...args: Parameters<typeof doc>) => {
+			if (Object.is(args[0], DeliveryRowDoc)) available = true;
+			return doc(...args);
+		});
+		return callback(tx);
+	}, ...args));
+	const readTarget = () => available ? target : undefined;
+	const idle = eventLog<void>();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const watcher = startDurableDelivery({ host: source, metadata, catalog, signal: new AbortController().signal, readTarget, onIdle: () => idle.push(undefined) });
+	t.after(() => watcher.close());
+	t.mock.timers.tick(0); await idle.waitForCount(1);
+	assert.equal(available, true, "retention crosses the recipient availability change");
+	assert.equal(watcher.summary(true).fresh, false, "a newer revision must not certify an older parked classification");
+	const current = await observeDeliveryEligibility(source.harness, { catalog, sessionsRoot: root, readTarget });
+	assert.equal(current[0]?.eligibility.state, "active");
+	assert.equal(current[0]?.eligibility.reason, "native recipient is available");
+});
+
+for (const count of [2, DELIVERY_PAGE_SIZE + 1]) it(`rejects conflicting recipient observations across ${count} parked rows`, { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t), path = join(root, "conflict.sqlite"), source = await openHost(path, randomUUID(), root);
+	t.after(() => source.close());
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	const catalog = new AgentCatalog(root), metadata = sourceMetadata(root, source.storageId, path);
+	const target = catalog.create({ cwd: root, agentDir: metadata.agentDir, packageDir: metadata.packageDir, model: metadata.model, thinkingLevel: "off" });
+	const ownerId = `${target.storageId}:2`, reason = "recipient unavailable";
+	await source.harness.commit(async tx => {
+		for (let index = 0; index < count; index++) await storeDeliveryRow(tx, "report", { sourceId: `report:conflict-${index}`, requestId: `conflict-${index}`, ownerId, senderIdentity: source.storageId,
+			message: "parked", replyTo: null, acknowledged: false, createdAt: 0, delivery: { state: "parked", reason } }, true);
+	}, BACKGROUND_CONTEXT);
+	let reads = 0;
+	const idle = eventLog<void>();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const watcher = startDurableDelivery({ host: source, metadata, catalog, signal: new AbortController().signal,
+		unavailableTargets: new Map([[target.storageId, { availability: nativeRecipientAvailability(target, metadata.packageDir), reason }]]),
+		readTarget: () => { if (++reads === count * 2) return target; throw new Error(reason); }, onIdle: () => idle.push(undefined) });
+	t.after(() => watcher.close());
+	const pages = Math.ceil(count / DELIVERY_PAGE_SIZE);
+	for (let page = 1; page <= pages; page++) { t.mock.timers.tick(0); await idle.waitForCount(page); }
+	assert.equal(watcher.summary(true).fresh, false, "conflicting samples invalidate the pass even when final validation matches the first sample");
+	for (let page = 1; page <= pages; page++) { t.mock.timers.tick(0); await idle.waitForCount(pages + page); }
+	assert.equal(watcher.summary(true).fresh, true, "a consistent follow-up pass completes");
+	assert.equal(watcher.summary().parkedRows[ownerId], count);
 });
 
 it("preserves wake dependencies after a delivery observation failure", { timeout: 15000 }, async t => {
