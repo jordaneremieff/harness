@@ -186,6 +186,8 @@ test("accepts tracked test files once a glob covers them", () => {
 import {
 	auditPillars,
 	auditSettings,
+	auditSchemaDependencies,
+	auditSchemaImports,
 	auditSliceImports,
 	checkSettingsReadme,
 	type Declaration,
@@ -244,6 +246,67 @@ for (const [name, form] of moduleForms) {
 		});
 	}
 }
+
+for (const [name, form] of moduleForms) {
+	test(`schema import guard: ${name}`, () => {
+		for (const specifier of ["typebox", "typebox/value", "@sinclair/typebox", "@sinclair/typebox/compiler"]) {
+			const failures = auditSchemaImports("/fixture", "/fixture/scripts/example.mts", form(JSON.stringify(specifier)));
+			assert.deepEqual(failures, [`scripts/example.mts: import "${specifier}" uses TypeBox; use @earendil-works/pi-schema`]);
+		}
+		for (const specifier of ["typebox-extra", "@sinclair/typebox-extra", "@earendil-works/pi-schema", "./typebox.ts"])
+			assert.deepEqual(auditSchemaImports("/fixture", "/fixture/scripts/example.mts", form(JSON.stringify(specifier))), []);
+	});
+}
+
+test("schema guard ignores inert strings and computed specifiers", () => {
+	assert.deepEqual(auditSchemaImports("/fixture", "/fixture/scripts/example.mts", `
+		// import "typebox";
+		const text = 'require("@sinclair/typebox")';
+		const name = "typebox";
+		import(name); require(name);
+	`), []);
+});
+
+test("schema guard rejects direct declarations in every dependency section", () => {
+	for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+		for (const name of ["typebox", "@sinclair/typebox"])
+			assert.deepEqual(auditSchemaDependencies({ [section]: { [name]: "*" } }), [
+				`package.json: ${section} declares "${name}"; use @earendil-works/pi-schema`,
+			]);
+		assert.deepEqual(auditSchemaDependencies({ [section]: { "typebox-extra": "*", "@sinclair/typebox-extra": "*", "@earendil-works/pi-schema": "*" } }), []);
+	}
+});
+
+test("schema guard reaches tracked source roots, discovered extension files and the root manifest", () => {
+	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
+	try {
+		const paths = ["extensions/example/schema.ts", "scripts/schema.mts", "prompts/schema.ts", "transport/schema.mts", "runtime/schema.ts", "ui/nested/schema.ts", "evals/schema.mts"];
+		for (const path of paths) {
+			mkdirSync(dirname(join(root, path)), { recursive: true });
+			writeFileSync(join(root, path), 'import type { Schema } from "typebox";\n');
+		}
+		writeFileSync(join(root, "package-lock.json"), JSON.stringify({ packages: { "node_modules/typebox": {} } }));
+		execFileSync("git", ["-c", "core.hooksPath=/dev/null", "add", "."], { cwd: root });
+		writeFileSync(join(root, "extensions/example/new.mts"), 'const load = () => import("@sinclair/typebox/value");\n');
+		const manifest = join(root, "package.json");
+		const original = readFileSync(manifest, "utf8");
+		writeFileSync(manifest, JSON.stringify({ ...JSON.parse(original), dependencies: { typebox: "*" } }));
+		const run = () => spawnSync(process.execPath, [join(root, "scripts/check-slices.mts")], { cwd: root, encoding: "utf8", timeout: 30_000, maxBuffer: 128_000 });
+		const rejected = run();
+		assert.equal(rejected.status, 1, rejected.stdout + rejected.stderr);
+		for (const path of [...paths, "extensions/example/new.mts"])
+			assert.ok(rejected.stderr.includes(`${path}: import`), rejected.stderr);
+		assert.match(rejected.stderr, /package\.json: dependencies declares "typebox"/);
+		assert.doesNotMatch(rejected.stderr, /package-lock\.json/);
+		for (const path of [...paths, "extensions/example/new.mts"])
+			writeFileSync(join(root, path), 'import "typebox-extra"; const text = "typebox";\n');
+		writeFileSync(manifest, original);
+		const accepted = run();
+		assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 const callForms = [
 	["parenthesized argument", (s: string) => `import((${s}));`],

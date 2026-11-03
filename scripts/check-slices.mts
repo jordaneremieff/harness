@@ -14,9 +14,14 @@
 //      returning;
 //   5. every tracked *.test.mts file is matched by at least one glob in the
 //      `test` script of package.json, so a slice that owns a new top-level
-//      directory cannot ship tests that `npm test` silently never runs.
+//      directory cannot ship tests that `npm test` silently never runs;
+//   6. owned TypeScript sources and direct dependency declarations do not use
+//      TypeBox. Pi's own transitive dependencies are outside this rule.
 //
 // Literal module specifiers are extracted with the TypeScript compiler API.
+// The import rules do not resolve computed specifiers or arbitrary loader aliases.
+// The schema rule covers tracked .ts/.mts files in the owned source roots and
+// discovered extension sources, not generated strings or dependency internals.
 //
 // Exit status: 0 when all rules hold, 1 listing every violation otherwise.
 
@@ -533,7 +538,7 @@ if (main) {
 	for (const violation of violations) fail(violation);
 }
 
-// --- rule 3: no hardcoded counts in tracked docs -----------------------
+// --- tracked source and documentation inventory -----------------------
 
 const tracked = main
 	? execFileSync("git", ["ls-files"], {
@@ -541,6 +546,55 @@ const tracked = main
 			encoding: "utf8",
 		})
 	: "";
+// --- rule 6: owned schemas use the native package ----------------------
+
+function typeboxPackage(specifier: string): boolean {
+	return ["typebox", "@sinclair/typebox"].some(
+		(name) => specifier === name || specifier.startsWith(`${name}/`),
+	);
+}
+
+export function auditSchemaImports(root: string, file: string, source: string): string[] {
+	const label = relative(root, file);
+	if (syntaxErrors(source).length) return [`${label}: TypeScript syntax errors prevent a complete schema import check`];
+	return literalSpecifiers(source)
+		.filter(typeboxPackage)
+		.map((specifier) => `${label}: import "${specifier}" uses TypeBox; use @earendil-works/pi-schema`);
+}
+
+export function auditSchemaDependencies(manifest: unknown): string[] {
+	if (!plainObject(manifest)) return [];
+	const violations: string[] = [];
+	for (const section of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+		const declarations = manifest[section];
+		if (!plainObject(declarations)) continue;
+		for (const name of ["typebox", "@sinclair/typebox"]) {
+			if (Object.hasOwn(declarations, name))
+				violations.push(`package.json: ${section} declares "${name}"; use @earendil-works/pi-schema`);
+		}
+	}
+	return violations;
+}
+
+if (main) {
+	const owned = new Set([
+		...tracked.split("\n"),
+		...sourceFiles.map((file) => relative(root, file).replaceAll("\\", "/")),
+	]);
+	for (const file of owned) {
+		if (!/^(extensions|scripts|prompts|transport|runtime|ui|evals)\/.*\.(ts|mts)$/.test(file)) continue;
+		const path = join(root, file);
+		if (!existsSync(path)) continue;
+		for (const violation of auditSchemaImports(root, path, readFileSync(path, "utf8"))) fail(violation);
+	}
+	const manifest = join(root, "package.json");
+	if (existsSync(manifest)) {
+		for (const violation of auditSchemaDependencies(JSON.parse(readFileSync(manifest, "utf8")))) fail(violation);
+	}
+}
+
+// --- rule 3: no hardcoded counts in tracked docs -----------------------
+
 const countPattern = /\b\d+\s+(test|tests|tool|tools|file|files)\b/g;
 for (const doc of tracked.split("\n")) {
 	if (!doc.endsWith(".md")) continue;
