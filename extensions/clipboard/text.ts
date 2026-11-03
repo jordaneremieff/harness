@@ -3,7 +3,7 @@
 export const MAX_OUTPUT_BYTES = 50 * 1024;
 export const MAX_OUTPUT_LINES = 2000;
 
-const BIDI_CONTROL = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/u;
+const BIDI_CONTROL = /\p{Bidi_Control}/u;
 
 interface SanitizedText {
 	text: string;
