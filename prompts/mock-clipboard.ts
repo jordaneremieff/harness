@@ -9,7 +9,7 @@
 // shapes a real clipboard copy reports so models react to the same surface.
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { obj, opt, str, type Static } from "@earendil-works/pi-schema";
 
 export type MockClipboardOutcome = "success" | "archive-warning" | "failure";
 
@@ -39,10 +39,10 @@ export function clipboardResultText(outcome: MockClipboardOutcome, content: stri
 	return base;
 }
 
-const CopyParams = Type.Object({
-	content: Type.String({ description: "Content to copy to the clipboard", maxLength: 8 * 1024 * 1024 }),
-	label: Type.Optional(Type.String({ description: "Brief label for what was copied", maxLength: 200 })),
-});
+const CopyParams = obj({
+	content: str({ description: "Content to copy to the clipboard", maxLength: 8 * 1024 * 1024 }),
+	label: opt(str({ description: "Brief label for what was copied", maxLength: 200 })),
+}, { open: true });
 
 export default function (pi: ExtensionAPI) {
 	pi.registerFlag(MOCK_CLIPBOARD_OUTCOME_FLAG, {
@@ -57,7 +57,7 @@ export default function (pi: ExtensionAPI) {
 			"Copy content to the clipboard; the copy is archived with its label. Report the outcome the tool returns.",
 		promptSnippet: "Copy content to the clipboard",
 		parameters: CopyParams,
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof CopyParams>, signal) {
 			if (signal?.aborted) throw new Error("clipboard_copy cancelled");
 			const outcome = readMockClipboardOutcome(pi.getFlag(MOCK_CLIPBOARD_OUTCOME_FLAG));
 			if (outcome === "failure") throw new Error(FAILURE_TEXT);

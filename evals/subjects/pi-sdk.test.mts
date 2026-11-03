@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 
 import type { Message, Model } from "@earendil-works/pi-ai";
 import type { TranscriptEvent } from "vitest-evals";
-import { Type } from "typebox";
+import { obj, str } from "@earendil-works/pi-schema";
 import type { EvaluationCase } from "../types.mts";
 import {
 	collectPiExecutionErrors,
@@ -365,7 +365,7 @@ describe("Pi evidence normalization", () => {
 		const tool = {
 			name: "inspect_file",
 			description: "Inspect a fixture file",
-			parameters: Type.Object({ path: Type.String() }),
+			parameters: obj({ path: str() }, { open: true }),
 			constrainedSampling: { type: "json_schema" as const, strict: "require" as const },
 		};
 		const messages: Message[] = [

@@ -344,8 +344,8 @@ test('only the named public transport entrypoint crosses the agent UI boundary',
   const agent = path.join(ui, 'agents', 'fixture.mts');
   const internal = path.join(transport, 'endpoint.ts');
   const files = new Map([[agent, analyze("import '../../transport/index.ts';", agent)],
-    [publicTransport, analyze("export * from './endpoint.ts';", publicTransport)], [internal, analyze("import '@earendil-works/chord'; import 'typebox';", internal)]]);
-  const runtime = new Set(['@earendil-works/chord', 'typebox']);
+    [publicTransport, analyze("export * from './endpoint.ts';", publicTransport)], [internal, analyze("import '@earendil-works/chord'; import '@earendil-works/pi-schema';", internal)]]);
+  const runtime = new Set(['@earendil-works/chord', '@earendil-works/pi-schema']);
   assert.deepEqual(check(files, runtime, new Set()), []);
   for (const specifier of ['../../transport/endpoint.ts', '../../transport/unix-link.ts', '../../transport', '../../transport/./index.ts']) {
     files.set(agent, analyze(`import ${JSON.stringify(specifier)};`, agent));
