@@ -75,14 +75,24 @@ async function main(): Promise<number> {
 	const root = await harness.root(context, {
 		agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: workdir },
 	});
-	if (mode === "distill") {
-		const link = fs.link;
-		fs.link = async (...args) => {
-			await link(...args);
-			if (dirname(String(args[1])) !== storeDir) return;
+	if (mode === "distill" || mode === "distill-locked") {
+		const pause = async () => {
 			process.stdout.write("READY\n");
 			await new Promise(() => {});
 		};
+		if (mode === "distill-locked") {
+			const link = fs.link;
+			fs.link = async (...args) => {
+				await link(...args);
+				if (dirname(String(args[1])) === storeDir) await pause();
+			};
+		} else {
+			const unlink = fs.unlink;
+			fs.unlink = async (...args) => {
+				await unlink(...args);
+				if (dirname(String(args[0])) === storeDir && String(args[0]).endsWith(".lock")) await pause();
+			};
+		}
 		syncBuiltinESMExports();
 		faux.setResponses([fauxAssistantMessage('{"title":"Replay handover","summary":"Captured before restart."}')]);
 		const command = contribution.commands?.[0];

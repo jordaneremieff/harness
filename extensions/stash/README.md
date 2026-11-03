@@ -311,7 +311,7 @@ Lifecycle gates are explicit:
 On a stale revision, read again and reassess the requested change. Do not
 substitute the new digest into an old plan without reviewing the new content.
 
-Editing, lifecycle transitions, and rotation share an exclusive private
+Replayable publication, editing, lifecycle transitions, and rotation share an exclusive private
 `.<exact-id>.lock` file inside the store. Contention fails immediately instead
 of queuing across processes. A crash can leave the lock file behind; no timer,
 lease, or automatic deletion claims that the writer is gone. The refusal names
@@ -668,8 +668,17 @@ workspace, branch or destination inputs. The UUID suffix of the filename is the
 identity carrier; ordinary writers retain their timestamp/title collision rules.
 Distinct native operations remain distinct even with identical content and time.
 The existing format and lifecycle readers accept these filenames unchanged.
-Replay checks the exact filename in the destination and its `.trash` archive,
-returns current metadata, and preserves later supported edits and state changes.
+Replay takes the same exact-ID filesystem lock as editing, lifecycle changes
+and rotation before it checks either location or publishes. The lock also covers
+first publication when the planned live artifact does not exist. Under the lock,
+replay checks archive-directory presence and the exact filename in the destination
+and its `.trash` archive, returns current metadata, and preserves later supported
+edits and state changes. Contention refuses immediately without a new publication.
+A crash after publication can leave the lock behind. The refusal names the planned
+identity, both artifact paths and the lock path; inspect and reuse that publication
+rather than create another write. Remove that exact lock only after confirming
+that no stash mutation remains active. A failed tool or distillation task does not
+resume automatically after lock removal.
 Arbitrary external deletion or renaming that destroys this identity evidence is
 outside the recovery guarantee. There is no receipt database or content-equality
 identity inference.

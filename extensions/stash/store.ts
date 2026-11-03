@@ -267,6 +267,25 @@ export function planStashPublication(
 	return { version: 1, operationId, directory: resolve(directory), createdAtMs: now.getTime(), checkpoint, serialized, redactions: scanned.report, id };
 }
 
+async function reacquirePublication(plan: StashPublication) {
+	const path = join(plan.directory, `${plan.id}.md`);
+	const archiveDir = join(plan.directory, ROTATED_STORE_NAME);
+	const archivedStore = await validateStore(archiveDir, false);
+	const paths = [...(archivedStore ? [join(archiveDir, `${plan.id}.md`)] : []), path];
+	for (const candidate of paths) {
+		try {
+			const artifact = await readMutationSource(candidate, "readable");
+			const parsed = parseFrontmatter(artifact.content);
+			if (headerUnclosed(artifact.content) || parsed.meta.id !== plan.id)
+				throw new Error(`Publication identity is unavailable at ${candidate}; no artifact was published.`);
+			return { record: normalizeMeta(`${plan.id}.md`, parsed.meta), path: candidate, redactions: plan.redactions, archived: candidate !== path };
+		} catch (error) {
+			if (!hasCode(error, "ENOENT")) throw error;
+		}
+	}
+	return undefined;
+}
+
 /** Reacquire by immutable filename, never by mutable artifact content. */
 export async function writeReplayableStash(
 	plan: StashPublication,
@@ -275,33 +294,18 @@ export async function writeReplayableStash(
 		throw new Error("Unsupported stash publication plan; no artifact was published.");
 	const dir = plan.directory;
 	await validateStore(dir, true);
-	const archiveDir = join(dir, ROTATED_STORE_NAME);
-	const archivedStore = await validateStore(archiveDir, false);
-	const paths = [...(archivedStore ? [join(archiveDir, `${plan.id}.md`)] : []), join(dir, `${plan.id}.md`)];
-	const reacquire = async () => {
-		for (const path of paths) {
-			try {
-				const artifact = await readMutationSource(path, "readable");
-				const parsed = parseFrontmatter(artifact.content);
-				if (headerUnclosed(artifact.content) || parsed.meta.id !== plan.id)
-					throw new Error(`Publication identity is unavailable at ${path}; no artifact was published.`);
-				return { record: normalizeMeta(`${plan.id}.md`, parsed.meta), path, redactions: plan.redactions, archived: path !== paths[paths.length - 1] };
-			} catch (error) {
-				if (!hasCode(error, "ENOENT")) throw error;
-			}
+	return withArtifactLock(dir, plan.id, undefined, async () => {
+		const path = join(dir, `${plan.id}.md`);
+		const existing = await reacquirePublication(plan);
+		if (existing) return existing;
+		const temporary = join(dir, `.${plan.id}.${randomUUID()}.tmp`);
+		if (await publishArtifact(temporary, path, plan.serialized)) {
+			return { record: normalizeMeta(`${plan.id}.md`, parseFrontmatter(plan.serialized).meta), path, redactions: plan.redactions, archived: false };
 		}
-		return undefined;
-	};
-	const existing = await reacquire();
-	if (existing) return existing;
-	const path = join(dir, `${plan.id}.md`);
-	const temporary = join(dir, `.${plan.id}.${randomUUID()}.tmp`);
-	if (await publishArtifact(temporary, path, plan.serialized)) {
-		return { record: normalizeMeta(`${plan.id}.md`, parseFrontmatter(plan.serialized).meta), path, redactions: plan.redactions, archived: false };
-	}
-	const winner = await reacquire();
-	if (winner) return winner;
-	throw new Error(`Publication identity disappeared at ${path}; no replacement was published.`);
+		const winner = await reacquirePublication(plan);
+		if (winner) return winner;
+		throw new Error(`Publication identity disappeared at ${path}; no replacement was published.`);
+	}, `stash ${plan.id} is busy; mutation lock exists at ${join(dir, `.${plan.id}.lock`)}. This attempt made no new publication; an earlier attempt may have published. Inspect ${join(dir, `${plan.id}.md`)} and ${join(dir, ROTATED_STORE_NAME, `${plan.id}.md`)} for this identity. An artifact with this identity is this operation's publication; reuse it instead of creating a new write. Remove this exact lock only after confirming no stash mutation remains active. This refusal does not schedule another attempt.`);
 }
 
 interface ListOptions {
@@ -607,7 +611,7 @@ function checkMutationSignal(signal?: AbortSignal): void {
 	if (signal?.aborted) throw new Error("stash mutation cancelled");
 }
 
-/** Shared cross-process exclusion for edits, lifecycle changes, and rotation. */
+/** Resolve a live artifact before entering the shared exact-ID exclusion boundary. */
 async function withArtifactMutation<T>(
 	dir: string,
 	idOrPrefix: string,
@@ -620,15 +624,26 @@ async function withArtifactMutation<T>(
 		const candidates = located.candidates?.length ? ` Candidates: ${located.candidates.join(", ")}.` : "";
 		throw new Error(`${located.error}.${candidates}`);
 	}
+	return withArtifactLock(dir, located.id, signal, () => change(located));
+}
+
+/** Exclude cooperating mutations even when the planned artifact is not live yet. */
+async function withArtifactLock<T>(
+	dir: string,
+	id: string,
+	signal: AbortSignal | undefined,
+	change: () => Promise<T>,
+	busyMessage?: string,
+): Promise<T> {
 	checkMutationSignal(signal);
-	const lockPath = join(dir, `.${located.id}.lock`);
+	const lockPath = join(dir, `.${id}.lock`);
 	let lock: FileHandle;
 	try {
 		lock = await open(lockPath, "wx", 0o600);
 	} catch (error) {
 		if (hasCode(error, "EEXIST")) {
 			throw new Error(
-				`stash ${located.id} is busy; mutation lock exists at ${lockPath}. Retry after the mutation ends. If its process stopped, remove this exact lock only after confirming no mutation remains active.`,
+				busyMessage ?? `stash ${id} is busy; mutation lock exists at ${lockPath}. Retry after the mutation ends. If its process stopped, remove this exact lock only after confirming no mutation remains active.`,
 			);
 		}
 		throw error;
@@ -639,7 +654,7 @@ async function withArtifactMutation<T>(
 	try {
 		await lock.chmod(0o600);
 		checkMutationSignal(signal);
-		result = await change(located);
+		result = await change();
 		completed = true;
 	} catch (error) {
 		failure = error;

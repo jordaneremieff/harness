@@ -1225,7 +1225,7 @@ async function mutatePublication(storeDir: string, id: string, mode: "write" | "
 
 async function replayCase(
 	t: { after(fn: () => void | Promise<void>): void },
-	mode: "write" | "complete" | "distill",
+	mode: "write" | "complete" | "distill" | "distill-locked",
 ): Promise<void> {
 	const rootDir = await mkdtemp(join(tmpdir(), `stash-replay-${mode}-`));
 	t.after(async () => {
@@ -1258,14 +1258,28 @@ async function replayCase(
 		const before = await listStashes(storeDir, {});
 		assert.equal(before.length, 1, "the killed attempt reached its external effect");
 
-		const retainedPath = mode === "complete" ? before[0].path : await mutatePublication(storeDir, before[0].meta.id, mode);
+		const retainedPath = mode === "complete" || mode === "distill-locked" ? before[0].path : await mutatePublication(storeDir, before[0].meta.id, mode);
 		const original = await readFile(retainedPath, "utf8");
 		const { harness, root, faux } = await recover(storagePath, storeDir, workdir, "after recovery");
 		try {
-			if (mode === "distill") {
+			if (mode === "distill" || mode === "distill-locked") {
 				const tasks = await harness.commit((tx) => tx.scanTasks({ kind: "stash.distill" }, 10), context);
 				assert.equal(tasks.items.length, 1);
 				const settled = await harness.waitForTask(tasks.items[0].id, context);
+				if (mode === "distill-locked") {
+					assert.equal(settled.state.outcome.status, "failed");
+					const receipt = await creationReceipt(root);
+					assert.match(String(receipt.message), /is busy.*This attempt made no new publication.*earlier attempt may have published/);
+					assert.ok(String(receipt.message).includes(retainedPath));
+					assert.ok(String(receipt.message).includes(join(storeDir, ".trash", `${before[0].meta.id}.md`)));
+					assert.match(String(receipt.message), /reuse it instead of creating a new write/);
+					assert.ok(String(receipt.message).includes(before[0].meta.id));
+					assert.equal(await readFile(retainedPath, "utf8"), original);
+					assert.equal((await listStashes(storeDir)).length, 1);
+					assert.equal(await readFile(join(storeDir, `.${before[0].meta.id}.lock`), "utf8"), "");
+					assert.equal(faux.state.callCount, 0);
+					return;
+				}
 				assert.equal(settled.state.outcome.status, "completed");
 				assert.equal((await listStashes(storeDir, {})).length, 0);
 				assert.equal(await readFile(retainedPath, "utf8"), original);
@@ -1312,6 +1326,10 @@ test("replays native creation after publication without a duplicate artifact or 
 	timeout: 60000,
 }, async (t) => {
 	await replayCase(t, "distill");
+});
+
+test("refuses native publication recovery when a crashed writer retains the identity lock", { timeout: 60000 }, async (t) => {
+	await replayCase(t, "distill-locked");
 });
 
 test("replays a safe stash_write without a duplicate artifact", { timeout: 60000 }, async (t) => {

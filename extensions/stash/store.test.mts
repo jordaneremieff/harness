@@ -20,6 +20,12 @@ after(async () => {
 
 const at = (iso: string) => new Date(iso);
 
+function barrier() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((ready) => { resolve = ready; });
+	return { promise, resolve };
+}
+
 describe("resolveStoreDir", () => {
 	it("prefers PI_STASH_DIR", () => {
 		assert.equal(resolveStoreDir({ PI_STASH_DIR: "/x/stash" } as NodeJS.ProcessEnv, "/agent"), "/x/stash");
@@ -59,6 +65,133 @@ describe("publication identity", () => {
 		assert.equal(expandedHeader.record.state, "closed");
 		assert.equal(expandedHeader.record.outcome?.length, 19499);
 	});
+	for (const archiveExists of [false, true]) {
+		it(`excludes rotation after replay observes archive absence (directory present: ${archiveExists})`, { timeout: 5000 }, async (t) => {
+			const directory = join(dir, `replay-absence-${archiveExists}`);
+			const plan = planStashPublication(directory, { title: "Retained", summary: "Original" });
+			const first = await writeReplayableStash(plan);
+			await transitionStash(directory, plan.id, { action: "close", outcome: "Finished" });
+			const retained = await readFile(first.path, "utf8");
+			const archiveDir = join(directory, ".trash");
+			const archivePath = join(archiveDir, `${plan.id}.md`);
+			if (archiveExists) await mkdir(archiveDir);
+			const reached = barrier();
+			const resume = barrier();
+			const method = archiveExists ? "open" : "lstat";
+			const target = archiveExists ? archivePath : archiveDir;
+			const original = fs[method];
+			let paused = false;
+			t.mock.method(fs, method, async (...args: Parameters<typeof original>) => {
+				try { return await Reflect.apply(original, fs, args); }
+				catch (error) {
+					if (args[0] === target && !paused) {
+						paused = true;
+						reached.resolve();
+						await resume.promise;
+					}
+					throw error;
+				}
+			});
+			syncBuiltinESMExports();
+			const replay = writeReplayableStash(plan);
+			try {
+				await reached.promise;
+				await assert.rejects(rotateStash(directory, plan.id), /is busy.*Retry after the mutation ends/);
+			} finally {
+				resume.resolve();
+				await replay;
+				t.mock.restoreAll();
+				syncBuiltinESMExports();
+			}
+			assert.equal((await replay).record.state, "closed");
+			await rotateStash(directory, plan.id);
+			const recovered = await writeReplayableStash(plan);
+			assert.equal(recovered.archived, true);
+			assert.equal(recovered.record.state, "closed");
+			assert.equal(await readFile(archivePath, "utf8"), retained);
+			assert.equal((await listStashes(directory)).length, 0);
+			assert.deepEqual((await readdir(archiveDir)).filter((name) => name.endsWith(".md")), [`${plan.id}.md`]);
+		});
+	}
+
+	it("rechecks an archive created by rotation before replay acquires its lock", { timeout: 5000 }, async (t) => {
+		const directory = join(dir, "rotation-before-replay-lock");
+		const plan = planStashPublication(directory, { title: "Retained", summary: "Original" });
+		const first = await writeReplayableStash(plan);
+		await transitionStash(directory, plan.id, { action: "close", outcome: "Finished" });
+		const retained = await readFile(first.path, "utf8");
+		const reached = barrier();
+		const resume = barrier();
+		const original = fs.open;
+		let paused = false;
+		t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+			if (args[0] === join(directory, `.${plan.id}.lock`) && !paused) {
+				paused = true;
+				reached.resolve();
+				await resume.promise;
+			}
+			return original(...args);
+		});
+		syncBuiltinESMExports();
+		const replay = writeReplayableStash(plan);
+		try {
+			await reached.promise;
+			await rotateStash(directory, plan.id);
+		} finally {
+			resume.resolve();
+			await replay;
+			t.mock.restoreAll();
+			syncBuiltinESMExports();
+		}
+		const recovered = await replay;
+		assert.equal(recovered.archived, true);
+		assert.equal(recovered.record.state, "closed");
+		assert.equal(await readFile(recovered.path, "utf8"), retained);
+		assert.equal((await listStashes(directory)).length, 0);
+	});
+
+	it("refuses a contending first publication without replacing its lock or allocating another identity", { timeout: 5000 }, async (t) => {
+		const directory = join(dir, "contending-publication");
+		const plan = planStashPublication(directory, { title: "Retained", summary: "Original" });
+		const reached = barrier();
+		const resume = barrier();
+		const original = fs.link;
+		const path = join(directory, `${plan.id}.md`);
+		t.mock.method(fs, "link", async (...args: Parameters<typeof fs.link>) => {
+			if (args[1] === path) {
+				reached.resolve();
+				await resume.promise;
+			}
+			return original(...args);
+		});
+		syncBuiltinESMExports();
+		const first = writeReplayableStash(plan);
+		try {
+			await reached.promise;
+			const lockPath = join(directory, `.${plan.id}.lock`);
+			const lock = await stat(lockPath);
+			await assert.rejects(writeReplayableStash(plan), (error: Error) => {
+				assert.ok(error.message.includes(plan.id));
+				assert.match(error.message, /is busy.*This attempt made no new publication.*earlier attempt may have published/);
+				assert.ok(error.message.includes(path));
+				assert.ok(error.message.includes(join(directory, ".trash", `${plan.id}.md`)));
+				assert.match(error.message, /reuse it instead of creating a new write/);
+				return true;
+			});
+			assert.equal((await stat(lockPath)).ino, lock.ino);
+			assert.equal((await listStashes(directory)).length, 0);
+			const other = planStashPublication(directory, { title: "Retained", summary: "Original" });
+			assert.notEqual((await writeReplayableStash(other)).record.id, plan.id);
+		} finally {
+			resume.resolve();
+			await first;
+			t.mock.restoreAll();
+			syncBuiltinESMExports();
+		}
+		assert.equal((await writeReplayableStash(plan)).record.id, plan.id);
+		assert.equal((await listStashes(directory)).length, 2);
+	});
+
 	it("redacts the retained payload and refuses unsafe identity paths", async () => {
 		const token = "sk-abcdefgh" + "ijklmnop1234";
 		const plan = planStashPublication(join(dir, "plan"), { title: "Safe", summary: token, branch: token });
