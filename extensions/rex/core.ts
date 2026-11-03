@@ -71,6 +71,7 @@ export type RexRequest =
 			action?: string;
 	  })
 	| (RequestBase & { op: "owned"; recordId?: string; phase?: OwnershipRecord["phase"]; offset?: number; limit?: number })
+	| { op: "observe"; recordId?: string; phase?: OwnershipRecord["phase"]; offset?: number; limit?: number; timeoutMs?: number; maxBytes?: number }
 	| (RequestBase & {
 			op: "reconcile";
 			recordId?: string;
@@ -189,6 +190,7 @@ export class RexCore {
 
 	private async dispatch(request: RexRequest, context: RexCallContext): Promise<RexResult> {
 		if (request.op === "owned") return this.owned(request, context);
+		if (request.op === "observe") return this.observeOwned(request, context);
 		if (request.op === "reconcile" || request.op === "cleanup") return this.manage(request, context);
 		if (request.op === "native" && request.kind !== "catalog" && [request.query, request.offset, request.limit].some((value) => value !== undefined)) throw new Error("query, offset and limit apply only to native catalog discovery.");
 		const server = await this.selectServer(request.target, context);
@@ -233,6 +235,7 @@ export class RexCore {
 		context: RexCallContext,
 		timeoutMs = 15000,
 	): Promise<CliResult> {
+		context.signal?.throwIfAborted();
 		return this.transport.run([...this.prefix(server), ...args], {
 			cwd: context.cwd,
 			signal: context.signal,
@@ -327,6 +330,7 @@ export class RexCore {
 		return Math.min(16384, Math.floor(this.maxOutputBytes / 4));
 	}
 	private async selectServer(intent: TargetIntent | undefined, context: RexCallContext): Promise<ServerRef> {
+		context.signal?.throwIfAborted();
 		const selection = intent?.server ?? this.options.server ?? this.env.REX_SERVER;
 		if (selection !== undefined && !boundedText(selection, 4096)) throw new Error("Rex server selector is invalid.");
 		const data = object(await this.json(["whoami", "--json"], selection, context));
@@ -851,10 +855,8 @@ export class RexCore {
 
 	private async owned(request: Extract<RexRequest, { op: "owned" }>, context: RexCallContext): Promise<RexResult> {
 		const state = validateOwnershipState(await this.options.store.read(context.ownerId), this.maxRecords);
-		if (request.recordId !== undefined && !boundedText(request.recordId, 1024)) throw new Error("Select a complete retained record ID.");
-		if (request.phase !== undefined && !["pending", "confirmed", "unknown", "closed", "released"].includes(request.phase)) throw new Error("Select a stored ownership phase.");
 		const own = state.records.filter((record) => record.ownerId === context.ownerId);
-		const selected = own.filter((record) => (request.recordId === undefined || record.callId === request.recordId) && (request.phase === undefined || record.phase === request.phase));
+		const selected = selectRecords(own, request);
 		const page = recordPage(selected, request);
 		return {
 			...result(true, "owned", undefined, {
@@ -865,6 +867,83 @@ export class RexCore {
 			records: recordRefs(page.records),
 			coverage: pageCoverage(page, page.records.length),
 		};
+	}
+
+	private async observeOwned(request: Extract<RexRequest, { op: "observe" }>, context: RexCallContext): Promise<RexResult> {
+		const { timeoutMs, capped } = this.deadline(request.timeoutMs, "observation duration");
+		const maxBytes = boundedInteger(request.maxBytes ?? this.defaultCaptureBytes(), 256, 16384, "observation tail bytes");
+		const timer = new AbortController();
+		const signal = context.signal ? AbortSignal.any([context.signal, timer.signal]) : timer.signal;
+		const deadline = setTimeout(() => timer.abort(), timeoutMs);
+		const scoped = { ...context, signal };
+		const budget = { remaining: this.maxOutputBytes };
+		try {
+			const state = validateOwnershipState(await this.options.store.read(context.ownerId), this.maxRecords);
+			const selected = selectRecords(state.records.filter((record) => record.ownerId === context.ownerId), request);
+			const page = recordPage(selected, request);
+			const reports: WorkReport[] = [];
+			for (const record of page.records) reports.push(await this.observeWorkRecord(record, scoped, maxBytes, budget));
+			const complete = !signal.aborted && reports.every((report) => report.complete);
+			const response: RexResult = {
+				...result(complete, complete ? "observed" : context.signal?.aborted ? "observation_cancelled" : signal.aborted ? "observation_timeout" : "observation_incomplete", undefined, { reports }),
+				records: recordRefs(page.records),
+				coverage: {
+					...pageCoverage(page, reports.length),
+					truncated: !complete || page.records.length < page.total || reports.some((report) => report.observations.some((entry) => entry.capture && captureTruncated(entry.capture))),
+					note: "Read-only independent snapshots, not an atomic view. Stored phase is unchanged. Child state describes only the direct child; status and output do not establish task success. Cancellation stops observation only. Field bytes share the configured output budget; unavailable fields remain explicit. Use exact recordId or a smaller page for partial reports.",
+				},
+			};
+			return capped ? this.cappedDeadline(response, request.timeoutMs) : response;
+		} finally { clearTimeout(deadline); }
+	}
+
+	private async observeWorkRecord(record: OwnershipRecord, context: RexCallContext, maxBytes: number, budget: ObservationBudget): Promise<WorkReport> {
+		const report: WorkReport = { recordId: record.callId, phase: record.phase, observedAt: new Date().toISOString(), complete: false, observations: [] };
+		if (record.resources.length === 0) {
+			report.error = "No acknowledged resource IDs. The retained claim remains unresolved; no absence or completion is established.";
+			return report;
+		}
+		let server: ServerRef;
+		try { server = await this.recordServer(record, context); }
+		catch (error) {
+			report.error = observationError(error, context);
+			report.observations = record.resources.map((resource) => unavailableWork(resource, observationError(error, context)));
+			return report;
+		}
+		for (const resource of record.resources) report.observations.push(await this.observeWorkResource(resource, server, context, maxBytes, budget));
+		report.complete = report.observations.every((entry) => entry.presence === "absent" || entry.presence === "present" && !entry.processError && !entry.statusError && !entry.captureError && entry.childState !== "unknown");
+		return report;
+	}
+
+	private async observeWorkResource(resource: ResourceRef, server: ServerRef, context: RexCallContext, maxBytes: number, budget: ObservationBudget): Promise<WorkObservation> {
+		const presence = await this.observeResource(resource, server, context);
+		if (presence.error) presence.error = boundedDiagnosticText(presence.error, 512);
+		if (presence.presence !== "present") return { ...unavailableWork(resource, presence.error ?? "The exact resource is absent."), ...presence };
+		const target: ResolvedTarget = { server, source: "explicit", ...presence.resource };
+		const observation: WorkObservation = { ...presence, observedAt: new Date().toISOString(), childState: "unavailable" };
+		try {
+			observation.process = await this.observationField(() => this.block("process", {}, target, context), budget, context);
+			const process = object(observation.process);
+			observation.childState = Number.isInteger(object(process.child).pid) ? "running" : Number.isInteger(object(process.last_exit).exit_code) ? "exited" : "unknown";
+		} catch (error) { observation.processError = observationError(error, context); }
+		try { observation.status = await this.observationField(() => this.block("program_status", {}, target, context), budget, context); }
+		catch (error) { observation.statusError = observationError(error, context); }
+		try {
+			const tailBytes = Math.min(maxBytes, this.defaultCaptureBytes(), budget.remaining - 128);
+			if (tailBytes < 256) throw new Error("The observation byte budget has no room for a bounded tail.");
+			observation.capture = await this.observationField(() => this.capture(target, context, tailBytes), budget, context, tailBytes + 128);
+		} catch (error) { observation.captureError = observationError(error, context); }
+		return observation;
+	}
+
+	private async observationField<T>(read: () => Promise<T>, budget: ObservationBudget, context: RexCallContext, fieldLimit = 16384): Promise<T> {
+		context.signal?.throwIfAborted();
+		if (budget.remaining <= 0) throw new Error("The observation byte budget is exhausted.");
+		const value = await read();
+		const bytes = jsonBytes(value);
+		if (bytes > Math.min(fieldLimit, budget.remaining)) throw new Error("The observation field exceeds the remaining byte budget; its data is unavailable in this page.");
+		budget.remaining -= bytes;
+		return value;
 	}
 
 	private async manage(
@@ -1193,6 +1272,35 @@ export class RexCore {
 	}
 }
 
+interface ObservationBudget { remaining: number }
+interface WorkObservation extends ResourceObservation {
+	observedAt: string;
+	childState: "running" | "exited" | "unknown" | "unavailable";
+	processError?: string;
+	status?: unknown;
+	statusError?: string;
+	capture?: Capture;
+	captureError?: string;
+}
+interface WorkReport {
+	recordId: string;
+	phase: OwnershipRecord["phase"];
+	observedAt: string;
+	complete: boolean;
+	observations: WorkObservation[];
+	error?: string;
+}
+function observationError(error: unknown, context: RexCallContext): string {
+	return boundedDiagnosticText(context.signal?.aborted ? "The observation stopped before this read completed." : errorText(error), 512);
+}
+function unavailableWork(resource: ResourceRef, error: string): WorkObservation {
+	return { resource, presence: "unknown", observedAt: new Date().toISOString(), childState: "unavailable", error };
+}
+function selectRecords(records: OwnershipRecord[], request: { recordId?: string; phase?: OwnershipRecord["phase"] }): OwnershipRecord[] {
+	if (request.recordId !== undefined && !boundedText(request.recordId, 1024)) throw new Error("Select a complete retained record ID.");
+	if (request.phase !== undefined && !["pending", "confirmed", "unknown", "closed", "released"].includes(request.phase)) throw new Error("Select a stored ownership phase.");
+	return records.filter((record) => (request.recordId === undefined || record.callId === request.recordId) && (request.phase === undefined || record.phase === request.phase));
+}
 interface ResourceObservation {
 	resource: ResourceRef;
 	presence: "present" | "absent" | "unknown";

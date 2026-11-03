@@ -80,6 +80,7 @@ function canonicalLines(name: string, value: Record<string, unknown>, options: T
 		...authorityQualifications(name, request, value),
 		...omissionLines(coverage, data),
 		...countLines(coverage, data),
+		...ownedObservationLines(name, request, data, options.expanded),
 		...resultDetails(value, effects, coverage, data, options.expanded),
 	];
 }
@@ -104,10 +105,29 @@ function terminalQualifications(name: string, request: Record<string, unknown>, 
 
 function authorityQualifications(name: string, request: Record<string, unknown>, value: Record<string, unknown>): Line[] {
 	const lines: Line[] = [];
-	if (name === "rex_owned" && request.op === "owned") lines.push(line("Stored phase is not live presence or cleanup permission.", "muted"));
+	if (name === "rex_owned" && ["owned", "observe"].includes(String(request.op))) lines.push(line("Stored phase is not live presence or cleanup permission.", "muted"));
+	if (name === "rex_owned" && request.op === "observe") lines.push(line("Observation does not stop work or establish task success.", "muted"));
 	if (name === "rex_status") lines.push(line("Reported status is not permission or task acceptance.", "muted"));
 	if (name === "rex_native" && ["api", "lua", "action"].includes(String(request.kind)) && value.ok) lines.push(line("CLI success is not inner application success.", "muted"));
 	return lines;
+}
+
+function ownedObservationLines(name: string, request: Record<string, unknown>, data: Record<string, unknown>, expanded: boolean): Line[] {
+	if (name !== "rex_owned" || request.op !== "observe" || expanded || !Array.isArray(data.reports)) return [];
+	return data.reports.flatMap((value) => {
+		const report = object(value);
+		const observations = Array.isArray(report.observations) ? report.observations : [];
+		const observation = object(observations[0]);
+		const exit = object(object(observation.process).last_exit).exit_code;
+		const facts = [string(observation.presence), string(observation.childState) ? `child ${observation.childState}` : undefined, typeof exit === "number" ? `exit ${exit}` : undefined].filter(Boolean).join(" · ");
+		const lines = [line(`${report.recordId} · stored ${report.phase} · ${facts || "unresolved"}`, "toolOutput")];
+		const error = report.error ?? observation.error ?? observation.processError ?? observation.statusError ?? observation.captureError;
+		if (typeof error === "string") lines.push(line(error, "muted", true));
+		const capture = string(object(observation.capture).content);
+		if (capture) lines.push(line(capture.trimEnd().split("\n").at(-1) ?? "", "toolOutput", true));
+		if (observations.length > 1) lines.push(line(`${observations.length - 1} more resource observations in the complete result.`, "muted"));
+		return lines;
+	});
 }
 
 function omissionLines(coverage: Record<string, unknown>, data: Record<string, unknown>): Line[] {

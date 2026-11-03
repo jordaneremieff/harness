@@ -26,6 +26,7 @@ function resultValues(entries: readonly Durable.EntryRecord[]): RexResult[] {
 }
 
 function mockResult(request: RexRequest, callId: string): RexResult {
+	if (request.op === "observe") return { ...ok({ reports: [{ recordId: "retained-call", phase: "unknown", complete: true, observedAt: "2026-01-01T00:00:00.000Z", observations: [{ presence: "present", childState: "exited", process: { last_exit: { exit_code: 7 } }, capture: { content: "final output", start: 0, end: 12, total: 12 } }] }] }), outcome: "observed" };
 	if (request.op === "inspect" && request.view === "status") return { ...ok({ payload: "s".repeat(200000) }), outcome: "snapshot", target, coverage: { bounded: true, note: "Native status source qualification." } };
 	if (request.op === "input") return {
 		...ok({ payload: "x".repeat(80000) }), outcome: "input_delivered", target,
@@ -80,6 +81,7 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		registry.install(extension);
 		let nested: Durable.NestedToolExecutionResult | undefined;
 		let invalidCleanup: Durable.NestedToolExecutionResult | undefined;
+		let observedWork: Durable.NestedToolExecutionResult | undefined;
 		let concurrentRecords = 0;
 		registry.install(Durable.defineExtension({ name: "test-caller", tools: [Durable.defineTool({
 			name: "test_nested", description: "Exercise concurrent commits and the native structured error channel.", parameters: Type.Object({}), replay: "safe",
@@ -91,6 +93,7 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 				assert.ok(created.every((result) => !result.isError), JSON.stringify(created));
 				const owned = await api.executeTool("rex_owned", { op: "owned" }, context);
 				concurrentRecords = ((owned.structuredOutput as unknown as RexResult).data as { records: unknown[] }).records.length;
+				observedWork = await api.executeTool("rex_owned", { op: "observe", recordId: "retained-call", maxBytes: 256 }, context);
 				invalidCleanup = await api.executeTool("rex_owned", { op: "cleanup" }, context);
 				nested = await api.executeTool("rex_native", { op: "native", kind: "lua", code: "fail" }, context);
 				return { output: [{ type: "text", text: "Nested results inspected." }] };
@@ -145,6 +148,13 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		assert.ok(nestedCall?.role === "toolResult", "the model-issued nested caller returned a result");
 		assert.equal(nestedCall.isError, false, JSON.stringify(nestedCall));
 		assert.equal(concurrentRecords, 3, "concurrent native updates preserve both new pending records");
+		assert.ok(observedWork);
+		assert.equal(observedWork.isError, false);
+		const observed = observedWork.structuredOutput as unknown as RexResult;
+		assert.equal(observed.outcome, "observed");
+		assert.equal(observed.effects.state, "none");
+		assert.equal(JSON.stringify(observed), JSON.stringify(mockResult({ op: "observe" }, "unused")));
+		assert.ok(executed.includes("observe"));
 		assert.ok(nested);
 		assert.equal(nested.isError, true);
 		assert.equal((nested.structuredOutput as unknown as RexResult).outcome, "script_failed");

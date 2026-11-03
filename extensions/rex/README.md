@@ -14,7 +14,7 @@ It does not replace Bash, Jobs, Agent, Policy, Rex configuration or Rex's skill.
 | `rex_terminal` | `create`, `inspect`, `input` | Establish persistent sessions, windows or splits, optionally shown to the operator; inspect structure, the most recent output, process or program status; deliver application text and keys. |
 | `rex_wait` | `wait` | Observe direct child exit with its exit status and most recent output, literal text in the most recent output, or a reported status. Combine bounded live events with current snapshots. |
 | `rex_native` | `native` | Retrieve the installed method catalogue or one method's schema; call an API, execute Lua or invoke an existing action. |
-| `rex_owned` | `owned`, `reconcile`, `cleanup` | Revisit this caller's effects and resources, inspect current state after interruption, close only recorded owned blocks, or forget closed records. |
+| `rex_owned` | `owned`, `observe`, `reconcile`, `cleanup` | Read stored claims or current child evidence and output for selected claims; reconcile uncertainty, close only recorded owned blocks, or forget closed records. |
 | `rex_status` | `snapshot`, `bind`, `unbind` | Inspect cooperating programs' reports beside actual current host activity. Optionally retain one verified inspection target per caller. |
 
 Each request includes a visible `op`. Native execution also exposes `kind`,
@@ -268,6 +268,60 @@ Use `owned` and `reconcile` after uncertainty. `owned` accepts an optional exact
 `{"op":"owned","recordId":"<full retained call ID>"}` retrieves one claim without
 contacting Rex or changing storage. An absent ID returns an empty page, not an error.
 A stored phase establishes neither current presence nor cleanup permission.
+
+### Observe retained work
+
+`{"op":"observe","recordId":"<full retained call ID>"}` reads current evidence
+for that claim. Omit `recordId` to observe a page, with the same `phase`, `offset`
+and `limit` filters as `owned`. An absent or foreign record ID returns an empty
+page. Observation selects the retained server and exact resource IDs; it rejects
+a `target` override rather than observe a different resource under the old claim.
+
+Each `data.reports` entry retains the exact `recordId` and unchanged stored
+`phase`, an `observedAt` timestamp, `complete`, and resource `observations`:
+
+- `presence` is `present`, `absent` or `unknown`, from exact-ID resolution on the
+  retained server instance. A changed or unavailable server is unknown, not absent.
+- `childState` is `running` when the process snapshot identifies a direct child,
+  `exited` when it reports `last_exit.exit_code`, `unknown` when neither fact is
+  available, or `unavailable` when the read cannot complete. The `process` field
+  carries the source snapshot, including exit evidence. A nonzero exit is a
+  successful observation, not an observation error. Use `shell: "none"` when the
+  launched command's own exit matters, rather than a shell or login wrapper.
+- `status` contains untrusted program-status readback. `capture` contains the
+  bounded recent output with raw-byte offsets. Neither establishes task success.
+- `processError`, `statusError` and `captureError` identify unavailable fields
+  without removing successful fields. A resource-level `error` explains absent
+  or unknown presence; process, status and capture are unavailable in that case.
+  A report-level `error` explains unresolved claims or server-read failure.
+
+A record with no acknowledged resources remains unresolved, including a pending
+claim. Observation never resolves that claim or changes its phase. It performs
+no ownership writes, resource creation, application input, waits for child exit,
+cleanup or automatic polling. `complete` means that the requested current
+observations succeeded, not that the work completed. The page returns `observed`
+when every report is complete, `observation_incomplete` for partial evidence,
+`observation_timeout` for its deadline or `observation_cancelled` for caller
+cancellation. Completed fields survive interruption; remaining resources report
+unknown/unavailable. Reports on one unavailable server do not suppress the other
+reports. Timestamps identify independent reads, not an atomic snapshot.
+
+The page accepts at most four records and uses one overall observation deadline:
+`timeoutMs` defaults to the lower of 30 seconds and `rex.maxWaitMs`. A request
+above that configured cap uses the cap and reports it. Native reads run
+sequentially, with at most one CLI process active for the observation. Cancellation
+stops those reads, not retained terminal programs; CLI shutdown retains the
+transport's bounded drain. Use an exact record to retry partial evidence.
+
+`maxBytes` requests JSON-encoded bytes per tail (256–16384). The core reduces it
+to its configured default capture cap and the remaining page budget. Process,
+status and capture fields share `rex.maxOutputBytes` across the page; each process
+or status field also has a 16 KiB limit. Oversized fields become explicit errors,
+not clipped JSON or successful empty values. The aggregate result bound still
+covers references, metadata and diagnostics. When that bound omits bulk data,
+follow its exact-record or smaller-page guidance. No observer state persists.
+
+### Reconcile and clean up
 
 These record lists accept `offset` and a bounded `limit`; coverage describes the
 filtered list for `owned` and distinguishes fetched-page counts from references

@@ -96,6 +96,20 @@ test("result summaries preserve native, stored-phase and status meaning without 
 	assert.doesNotMatch(partial, /no effects|UNKNOWN EFFECTS|\u001b/);
 });
 
+test("owned observation cards separate stored phase, current child evidence and partial errors", () => {
+	const value = fixture({ outcome: "observation_incomplete", ok: false, effects: { state: "none" }, data: { reports: [
+		{ recordId: "retained-call", phase: "confirmed", observations: [{ presence: "present", childState: "exited", process: { last_exit: { exit_code: 7 } }, capture: { content: "early output\nFINAL-MARKER" }, statusError: "Status unavailable." }] },
+		{ recordId: "pending-call", phase: "pending", observations: [], error: "No acknowledged resource IDs." },
+	] } });
+	const rows = render("rex_owned", value, { op: "observe" }).join("\n");
+	assert.match(rows, /retained-call · stored confirmed · present · child exited · exit 7/);
+	assert.match(rows, /pending-call · stored pending · unresolved/);
+	assert.match(rows, /FINAL-MARKER/);
+	assert.match(rows, /Status unavailable/);
+	assert.match(rows, /Observation does not stop work or establish task success/);
+	assert.match(rows, /Stored phase is not live presence/);
+});
+
 test("cards use the host-injected expansion key and invent no mouse fallback when it is unbound or absent", () => {
 	expandKey = "ctrl+g";
 	assert.match(render("rex_terminal", fixture(), { op: "input" }).join("\n"), /ctrl\+g to expand/);

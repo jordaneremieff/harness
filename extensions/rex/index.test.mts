@@ -97,6 +97,34 @@ test("the final ordinary adapter bounds status composition into one canonical re
 	} finally { await handlers.get("session_shutdown")?.(); }
 });
 
+test("ordinary owned observation preserves the shared request and canonical read-only evidence", async () => {
+	const tools = new Map<string, ToolDefinition<TSchema>>();
+	const handlers = new Map<string, () => unknown>();
+	let writes = 0;
+	const pi = {
+		events: createEventBus(),
+		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
+		registerTool: (tool: ToolDefinition<TSchema>) => tools.set(tool.name, tool), appendEntry: () => { writes++; },
+	} as unknown as ExtensionAPI;
+	const request = { op: "observe", recordId: "retained-call", maxBytes: 256 };
+	const expected: RexResult = { ok: true, outcome: "observed", effects: { state: "none" }, coverage: { bounded: true }, data: { reports: [{ recordId: "retained-call", phase: "unknown", complete: true, observedAt: "2026-01-01T00:00:00.000Z", observations: [{ presence: "present", childState: "exited", process: { last_exit: { exit_code: 7 } }, capture: { content: "final output", start: 0, end: 12, total: 12 } }] }] } };
+	registerRex(pi, { createCore: () => ({ dispose: () => {}, execute: async (received, call) => {
+		assert.equal(received, request);
+		assert.equal(call.ownerId, "ordinary:observation-session");
+		return expected;
+	} }) });
+	const ctx = { cwd: "/test", isIdle: () => true, sessionManager: { getSessionId: () => "observation-session", getEntries: () => [], getSessionFile: () => undefined } } as unknown as ExtensionToolContext;
+	try {
+		const tool = tools.get("rex_owned");
+		assert.ok(tool);
+		const response = await tool.execute("observe", request, undefined, undefined, ctx);
+		assert.equal(response.isError, false);
+		assert.equal(JSON.stringify(response.structuredContent), JSON.stringify(expected));
+		assert.equal(response.content.filter((part) => part.type === "text").map((part) => part.text).join(""), JSON.stringify(expected));
+		assert.equal(writes, 0);
+	} finally { await handlers.get("session_shutdown")?.(); }
+});
+
 test("ordinary registration publishes only identical display references and cleans up requests on reload", async () => {
 	type Publication = { version: number; tools: Array<Pick<ToolDefinition<TSchema>, "name" | "renderCall" | "renderResult" | "renderShell">> };
 	const tools = new Map<string, ToolDefinition<TSchema>>();

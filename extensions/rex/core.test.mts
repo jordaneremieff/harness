@@ -944,6 +944,193 @@ test("owned lookup filters this owner's stored claims before pagination without 
 	assert.deepEqual(f.store.state, before);
 });
 
+function workProcess(index: number) {
+	return index === 0 ? { child: { pid: 42 }, last_exit: null } : { last_exit: { exit_code: index === 2 ? 7 : 0 } };
+}
+
+type WorkReports = { reports: Array<{ recordId: string; phase: string; observedAt: string; complete: boolean; error?: string; observations: Array<{ resource: { blockId?: string }; presence: string; childState: string; observedAt: string; process?: { child?: { pid: number }; last_exit: { exit_code: number } | null }; processError?: string; status?: unknown; statusError?: string; capture?: { content: string }; captureError?: string; error?: string }> }> };
+
+async function workFixture(maxOutputBytes = 32768) {
+	const f = fixture({ maxOutputBytes, maxWaitMs: 1000 });
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const original = f.store.state.records[0];
+	assert.ok(original);
+	const ids = Array.from({ length: 5 }, (_, index) => `block:33333333-3333-4333-8333-33333333333${index}`);
+	f.store.state.records = ids.map((blockId, index) => ({ ...original, callId: `work-${index}`, resources: [{ kind: "block", sessionId: session, blockId }] }));
+	f.transport.calls.length = 0;
+	f.transport.handler = (method, data) => {
+		if (method === "target.resolve" && (data.kinds as string[])[0] === "block") {
+			const id = (data.queries as string[])[0];
+			return reply({ results: [{ status: id === ids[3] ? "not_found" : "resolved", target: { kind: "block", block_id: id, session_id: session, window_id: window } }] });
+		}
+		const index = ids.indexOf(String(data.block_id));
+		if (method === "com.superlogical.terminal.process") return reply(workProcess(index));
+		if (method === "com.superlogical.terminal.program_status") return reply({ records: [{ state: "done", title: "not completion evidence" }] });
+		if (method === "com.superlogical.terminal.format") return index === 4 ? { ...reply({}), outcome: "timeout", exitCode: null } : reply({ content: `work-${index}-tail`, total: 11, eof: true });
+		return undefined;
+	};
+	f.store.update = async () => { throw new Error("Observation must not write ownership."); };
+	return { ...f, ids };
+}
+
+test("owned observation distinguishes running, exited and absent work without changing claims", async () => {
+	const f = await workFixture();
+	const before = JSON.stringify(f.store.state);
+	const response = await f.core.execute({ op: "observe" }, context);
+	assert.equal(response.ok, true);
+	assert.equal(response.outcome, "observed");
+	assert.equal(response.effects.state, "none");
+	assert.equal(response.coverage.totalRecords, 5);
+	assert.equal(response.coverage.returnedRecords, 4);
+	assert.equal(response.coverage.nextOffset, 4);
+	const { reports } = response.data as WorkReports;
+	assert.deepEqual(reports.map((report) => report.observations[0]?.childState), ["running", "exited", "exited", "unavailable"]);
+	assert.equal(reports[3]?.observations[0]?.presence, "absent");
+	for (const [index, report] of reports.entries()) {
+		assert.equal(report.recordId, `work-${index}`);
+		assert.equal(report.phase, "confirmed");
+		assert.ok(Number.isFinite(Date.parse(report.observedAt)));
+		const observed = report.observations[0];
+		assert.equal(observed?.resource.blockId, f.ids[index]);
+		assert.ok(Number.isFinite(Date.parse(observed?.observedAt ?? "")));
+		if (index === 3) continue;
+		const selected = { ...target, block: f.ids[index] };
+		const process = await f.core.execute({ op: "inspect", view: "process", target: selected }, context);
+		const status = await f.core.execute({ op: "inspect", view: "status", target: selected }, context);
+		const capture = await f.core.execute({ op: "inspect", view: "capture", target: selected }, context);
+		assert.equal(JSON.stringify(observed?.process), JSON.stringify(process.data));
+		assert.equal(JSON.stringify(observed?.status), JSON.stringify(status.data));
+		assert.equal(JSON.stringify(observed?.capture), JSON.stringify(capture.data));
+		if (index > 0) {
+			const waited = await f.core.execute({ op: "wait", condition: "child_exit", target: selected }, context);
+			assert.equal(waited.outcome, index === 1 ? "child_completed" : "child_failed");
+			assert.equal(observed?.process?.last_exit?.exit_code, index === 1 ? 0 : 7);
+		}
+	}
+	assert.equal(JSON.stringify(f.store.state), before);
+	const allowed = new Set(["target.resolve", "com.superlogical.terminal.process", "com.superlogical.terminal.program_status", "com.superlogical.terminal.format"]);
+	assert.ok(f.transport.calls.every((call) => call.method ? allowed.has(call.method) : call.args.includes("whoami")));
+});
+
+test("owned observation preserves partial evidence and unresolved stored phases", async () => {
+	const f = await workFixture();
+	const failedOutput = await f.core.execute({ op: "observe", recordId: "work-4" }, context);
+	assert.equal(failedOutput.outcome, "observation_incomplete");
+	const observed = (failedOutput.data as WorkReports).reports[0]?.observations[0];
+	assert.equal(observed?.presence, "present");
+	assert.equal(observed?.childState, "exited");
+	assert.equal(observed?.process?.last_exit?.exit_code, 0);
+	assert.ok(observed?.status);
+	assert.match(observed?.captureError ?? "", /timeout/);
+	const first = f.store.state.records[0];
+	assert.ok(first);
+	first.phase = "pending";
+	first.resources = [];
+	f.transport.calls.length = 0;
+	const pending = await f.core.execute({ op: "observe", recordId: "work-0", phase: "pending" }, context);
+	assert.equal(pending.ok, false);
+	assert.equal((pending.data as WorkReports).reports[0]?.phase, "pending");
+	assert.match((pending.data as WorkReports).reports[0]?.error ?? "", /No acknowledged resource IDs/);
+	assert.equal(f.transport.calls.length, 0);
+	for (const recordId of ["missing", "work", "foreign"]) {
+		const empty = await f.core.execute({ op: "observe", recordId }, context);
+		assert.equal(empty.ok, true);
+		assert.equal(empty.coverage.returnedRecords, 0);
+	}
+});
+
+test("unavailable and changed servers stay unknown without erasing other observations", async () => {
+	for (const failure of ["unavailable", "changed"] as const) {
+		const f = await workFixture();
+		const first = f.store.state.records[0];
+		assert.ok(first);
+		first.server = { ...first.server, endpoint: "unix:///unavailable" };
+		const run = f.transport.run.bind(f.transport);
+		f.transport.run = (args, call) => args.includes("unix:///unavailable")
+			? Promise.resolve(failure === "unavailable" ? { ...reply({}), outcome: "spawn_error", exitCode: null, error: "server unavailable" } : reply({ endpoint: "unix:///unavailable", host_id: "changed", instance_id: "new-instance" }))
+			: run(args, call);
+		const response = await f.core.execute({ op: "observe", limit: 2 }, context);
+		assert.equal(response.outcome, "observation_incomplete");
+		const { reports } = response.data as WorkReports;
+		assert.equal(reports[0]?.observations[0]?.presence, "unknown");
+		assert.ok(reports[0]?.error);
+		assert.equal(reports[1]?.observations[0]?.childState, "exited");
+		assert.equal(reports[1]?.observations[0]?.capture?.content, "work-1-tail");
+	}
+});
+
+test("observation bounds pages and shared field bytes with explicit per-field omissions", async () => {
+	const f = await workFixture(4096);
+	const handler = f.transport.handler;
+	f.transport.handler = (method, data, call) => method === "com.superlogical.terminal.program_status" ? reply({ records: [{ msg: "x".repeat(5000) }] }) : handler?.(method, data, call);
+	const response = await f.core.execute({ op: "observe", limit: 2, maxBytes: 256 }, context);
+	assert.equal(response.ok, false);
+	assert.equal(response.coverage.truncated, true);
+	assert.equal(response.coverage.returnedRecords, 2);
+	assert.equal(response.coverage.nextOffset, 2);
+	assert.ok(Buffer.byteLength(JSON.stringify(response)) <= resultByteLimit(4096));
+	for (const report of (response.data as WorkReports).reports) {
+		assert.ok(report.observations[0]?.process);
+		assert.match(report.observations[0]?.statusError ?? "", /byte budget/);
+		assert.ok(report.observations[0]?.capture?.content.endsWith("tail"));
+	}
+	let fieldBytes = 0;
+	f.transport.handler = (method, data, call) => {
+		if (method === "com.superlogical.terminal.program_status") return reply({ records: [] });
+		if (method === "com.superlogical.terminal.format") {
+			const max = Number((data.args as { max_bytes: number }).max_bytes);
+			return reply({ content: `${"x".repeat(max - 8)}READY`, total: max - 3, eof: true });
+		}
+		return handler?.(method, data, call);
+	};
+	const shared = await f.core.execute({ op: "observe", limit: 4 }, context);
+	for (const report of (shared.data as WorkReports).reports) for (const entry of report.observations) {
+		for (const field of [entry.process, entry.status, entry.capture]) if (field !== undefined) fieldBytes += Buffer.byteLength(JSON.stringify(field));
+	}
+	assert.ok(fieldBytes <= 4096);
+	assert.ok((shared.data as WorkReports).reports[0]?.observations[0]?.capture?.content.endsWith("READY"));
+	assert.equal((await f.core.execute({ op: "observe", limit: 5 }, context)).ok, false);
+	assert.equal((await f.core.execute({ op: "observe", maxBytes: 255 }, context)).ok, false);
+	const next = await f.core.execute({ op: "observe", offset: response.coverage.nextOffset, limit: 1 }, context);
+	assert.equal(next.records?.[0]?.recordId, "work-2");
+});
+
+test("observation cancellation and one capped page deadline stop reads, not terminal work", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	for (const stop of ["cancel", "deadline"] as const) {
+		const f = await workFixture();
+		const before = JSON.stringify(f.store.state);
+		const handler = f.transport.handler;
+		let entered!: () => void;
+		const started = new Promise<void>((resolve) => { entered = resolve; });
+		let active = 0;
+		let maximum = 0;
+		f.transport.handler = (method, data, call) => {
+			if (method !== "com.superlogical.terminal.process") return handler?.(method, data, call);
+			active++;
+			maximum = Math.max(maximum, active);
+			entered();
+			return new Promise((resolve) => call.signal?.addEventListener("abort", () => { active--; resolve({ ...reply({}), outcome: "cancelled", exitCode: null }); }, { once: true }));
+		};
+		const controller = new AbortController();
+		const pending = f.core.execute({ op: "observe", timeoutMs: 300000 }, { ...context, signal: controller.signal });
+		await started;
+		assert.deepEqual(f.transport.calls.filter((call) => call.method).map((call) => call.method), ["target.resolve", "com.superlogical.terminal.process"], "no other native read overlaps the blocked process read");
+		const count = f.transport.calls.length;
+		if (stop === "cancel") controller.abort(); else t.mock.timers.tick(1000);
+		const response = await pending;
+		assert.equal(response.outcome, stop === "cancel" ? "observation_cancelled" : "observation_timeout");
+		assert.match(response.coverage.note ?? "", /configured 1000 ms cap/);
+		assert.equal(maximum, 1);
+		assert.equal(active, 0);
+		assert.equal(f.transport.calls.length, count, "no later native read starts after interruption");
+		assert.equal((response.data as WorkReports).reports.length, 4);
+		assert.equal((response.data as WorkReports).reports[1]?.observations[0]?.presence, "unknown");
+		assert.equal(JSON.stringify(f.store.state), before);
+		assert.equal(f.transport.calls.some((call) => call.method === "block.close" || call.method?.endsWith(".write")), false);
+	}
+});
+
 test("owned filtered continuation uses filtered offsets after aggregate reference omission", async () => {
 	const f = fixture({ maxOutputBytes: 4096 });
 	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
