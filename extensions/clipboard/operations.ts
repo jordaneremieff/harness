@@ -1,6 +1,6 @@
 /** Shared clipboard tool contract and operations behind the ordinary and Durable entrypoints. */
 
-import { Type } from "typebox";
+import { int, obj, opt, str } from "@earendil-works/pi-schema";
 import { pbCopy, pbPaste } from "./pb.ts";
 import { SEARCH_LIMITS, type SearchPage, searchEntries } from "./search.ts";
 import { appendEntry, type ClipboardEntry, makeEntry, readEntries } from "./store.ts";
@@ -47,66 +47,66 @@ export const CLIPBOARD_GUIDANCE = [
 	...LIST_GUIDELINES,
 ].join("\n");
 
-export const CopyParams = Type.Object({
-	content: Type.String({ description: "Content to copy to the clipboard", maxLength: 8 * 1024 * 1024 }),
-	label: Type.Optional(Type.String({ description: "Brief label for what was copied", maxLength: 200 })),
-});
+export const CopyParams = obj({
+	content: str({ description: "Content to copy to the clipboard", maxLength: 8 * 1024 * 1024 }),
+	label: opt(str({ description: "Brief label for what was copied", maxLength: 200 })),
+}, { open: true });
 
-export const PasteParams = Type.Object({
-	offset: Type.Optional(Type.Integer({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
-	max_chars: Type.Optional(
-		Type.Integer({
+export const PasteParams = obj({
+	offset: opt(int({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
+	max_chars: opt(
+		int({
 			description: `Maximum Unicode characters in this page (default and max ${PAGE_CHARS})`,
 			minimum: 1,
 			maximum: PAGE_CHARS,
 			default: PAGE_CHARS,
 		}),
 	),
-});
+}, { open: true });
 
-export const ListParams = Type.Object({
-	limit: Type.Optional(
-		Type.Integer({ description: "Max entries (default 10, max 50)", minimum: 1, maximum: 50, default: 10 }),
+export const ListParams = obj({
+	limit: opt(
+		int({ description: "Max entries (default 10, max 50)", minimum: 1, maximum: 50, default: 10 }),
 	),
-	date: Type.Optional(Type.String({ description: "YYYY-MM-DD local date", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
-	query: Type.Optional(
-		Type.String({
+	date: opt(str({ description: "YYYY-MM-DD local date", pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
+	query: opt(
+		str({
 			description: "Case-sensitive literal text in the full content or label; nonblank, at most 256 UTF-16 units",
 			minLength: 1,
 			maxLength: SEARCH_LIMITS.queryChars,
 		}),
 	),
-	cursor: Type.Optional(
-		Type.String({
+	cursor: opt(
+		str({
 			description: "Opaque query continuation. Repeat the same query and date; archive changes require a restart.",
 			minLength: 1,
 			maxLength: SEARCH_LIMITS.cursorChars,
 		}),
 	),
-});
+}, { open: true });
 
-export const GetParams = Type.Object({
-	id: Type.String({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
-	date: Type.Optional(
-		Type.String({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+export const GetParams = obj({
+	id: str({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
+	date: opt(
+		str({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
 	),
-	offset: Type.Optional(Type.Integer({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
-	max_chars: Type.Optional(
-		Type.Integer({
+	offset: opt(int({ description: "Unicode-character offset (default 0)", minimum: 0, default: 0 })),
+	max_chars: opt(
+		int({
 			description: `Maximum Unicode characters in this page (default and max ${PAGE_CHARS})`,
 			minimum: 1,
 			maximum: PAGE_CHARS,
 			default: PAGE_CHARS,
 		}),
 	),
-});
+}, { open: true });
 
-export const RestoreParams = Type.Object({
-	id: Type.String({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
-	date: Type.Optional(
-		Type.String({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
+export const RestoreParams = obj({
+	id: str({ description: "Stable entry id from clipboard_list", minLength: 1, maxLength: 200 }),
+	date: opt(
+		str({ description: "YYYY-MM-DD local date to narrow the scan", pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
 	),
-});
+}, { open: true });
 
 interface Page {
 	text: string;

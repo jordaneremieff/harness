@@ -1,5 +1,6 @@
 /** macOS clipboard tools, stable history retrieval, and the /clipboard overlay. */
 
+import type { Static } from "@earendil-works/pi-schema";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, type ToolDefinition, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { publishSettings } from "./settings.ts";
@@ -117,7 +118,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: CopyParams,
 		renderCall: (args, theme, context) => renderCopyCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderCopyResult(result, options, theme, context),
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof CopyParams>, signal) {
 			return clipboardCopy(storeDir(), params, signal);
 		},
 	});
@@ -130,7 +131,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: PasteParams,
 		renderCall: (args, theme, context) => renderPasteCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderPasteResult(result, options, theme, context),
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof PasteParams>, signal) {
 			return clipboardPaste(params, signal);
 		},
 	});
@@ -144,7 +145,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: ListParams,
 		renderCall: (args, theme, context) => renderListCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderListResult(result, options, theme, context),
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof ListParams>, signal) {
 			return clipboardList(storeDir(), params, signal);
 		},
 	});
@@ -157,7 +158,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: GetParams,
 		renderCall: (args, theme, context) => renderGetCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderGetResult(result, options, theme, context),
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof GetParams>, signal) {
 			return clipboardGet(storeDir(), params, signal);
 		},
 	});
@@ -170,7 +171,7 @@ export default function (pi: ExtensionAPI) {
 		parameters: RestoreParams,
 		renderCall: (args, theme, context) => renderRestoreCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderRestoreResult(result, options, theme, context),
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof RestoreParams>, signal) {
 			return clipboardRestore(storeDir(), params, signal);
 		},
 	});
