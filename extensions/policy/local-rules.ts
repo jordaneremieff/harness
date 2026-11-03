@@ -1343,6 +1343,10 @@ function parseEventLines(content: Buffer): ReadEventsResult {
 		: { events, eventLines };
 }
 
+function missingStore(path: string): RuleFileError {
+	return new RuleFileError("file presence", `policy rule store disappeared: ${path}`, `restore the store at ${path}`);
+}
+
 async function readEvents(dir: string, path: string): Promise<ReadEventsResult> {
 	await checkExistingDirectory(dir);
 	let handle: Awaited<ReturnType<typeof open>>;
@@ -1350,7 +1354,7 @@ async function readEvents(dir: string, path: string): Promise<ReadEventsResult> 
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 		handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | noFollow);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { events: [], eventLines: [] };
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") throw missingStore(path);
 		const reason = error instanceof Error ? error.message : String(error);
 		throw new RuleFileError(
 			"file access",
@@ -1687,11 +1691,14 @@ export class RuleRegistry {
 		const serialized = serializeEvent(event);
 		await ensurePrivateDirectory(this.dir);
 		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-		const handle = await open(
-			this.path,
-			constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NONBLOCK | noFollow,
-			0o600,
-		);
+		let handle: Awaited<ReturnType<typeof open>>;
+		try {
+			handle = await open(this.path, constants.O_WRONLY | constants.O_APPEND | constants.O_NONBLOCK | noFollow);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT")
+				throw new Error(this.degrade(missingStore(this.path)).message);
+			throw error;
+		}
 		try {
 			const info = await handle.stat();
 			privateFile(info, this.path);

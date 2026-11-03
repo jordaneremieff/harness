@@ -250,6 +250,46 @@ if (process.argv[2] === "--transaction-child") {
 } else {
 	// Each case owns its deadline, including its child process setup and lock retries.
 	describe("rule registry transactions", () => {
+		it("latches missing authority after a healthy snapshot without reseeding", async (t) => {
+			const dir = await directory(t);
+			const reg = registry(dir, [row()]);
+			assert.equal((await reg.snapshot()).health.status, "ok");
+			await rm(reg.path);
+			const missing = await reg.snapshot();
+			assert.equal(missing.health.status, "degraded");
+			assert.equal(missing.records.size, 0);
+			assert.match(missing.health.message ?? "", /restore the store.*start a new policy session/);
+			await assert.rejects(reg.setData(binding("value"), null, audit), /store disappeared/);
+			await assert.rejects(lstat(reg.path), /ENOENT/);
+			await writeFile(reg.path, "", { mode: 0o600 });
+			assert.equal((await reg.snapshot()).health.status, "degraded");
+		});
+		it("refuses to recreate a store removed between reduction and append", async (t) => {
+			const dir = await directory(t);
+			const reg = registry(dir);
+			await reg.snapshot();
+			const gate = pause(reg, "append");
+			t.after(gate.release);
+			const refused = assert.rejects(reg.setData(binding("value"), null, audit), /store disappeared/);
+			await gate.entered;
+			await rm(reg.path);
+			gate.release();
+			await refused;
+			assert.equal((await reg.snapshot()).health.status, "degraded");
+			await assert.rejects(lstat(reg.path), /ENOENT/);
+			await assert.rejects(lstat(join(dir, lockName)), /ENOENT/);
+		});
+		it("keeps a present zero-byte store healthy after initialisation", async (t) => {
+			const dir = await directory(t);
+			const reg = registry(dir, [row()]);
+			await writeFile(reg.path, "", { mode: 0o600 });
+			for (let attempt = 0; attempt < 2; attempt++) {
+				const snapshot = await reg.snapshot();
+				assert.equal(snapshot.health.status, "ok");
+				assert.equal(snapshot.records.size, 0);
+			}
+			assert.equal(await readFile(reg.path, "utf8"), "");
+		});
 		it("keeps same-instance data creation serialized", { timeout: 15000 }, async (t) => {
 			const dir = await directory(t);
 			const reg = registry(dir);

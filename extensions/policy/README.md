@@ -1311,7 +1311,9 @@ concurrent control writes so every writer uses the transaction boundary.
 A cleanup error rejects acknowledgment even if the event already reached the log.
 Inspect the current state before retrying that control.
 
-A missing registry receives the starter seed. An existing empty registry is a
+A registry absent before first use receives the starter seed. If the store disappears
+after initialization, authority becomes degraded and writes never recreate it.
+Restore the store and start a new policy session. An existing empty registry is a
 healthy empty catalog. An incomplete final line is reported as an append
 in flight, skipped during reduction, and blocks writes until resolved. A malformed
 complete line, invalid filesystem property, exceeded bound, or reduction invariant
