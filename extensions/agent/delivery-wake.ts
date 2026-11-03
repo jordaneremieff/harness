@@ -62,21 +62,23 @@ export function readDeliveryWake(sessionsRoot: string, storageId: string): Deliv
 	return value as DeliveryWake;
 }
 
-function boundedWake(identities: readonly string[], lastFailed: (identity: string) => string | null): DeliveryWake {
+function boundedWake(identities: readonly string[], lastFailed: (identity: string) => string | null, omitted: number, rowsPerRecipient: Readonly<Record<string, number>>): DeliveryWake {
 	const unique = [...new Set(identities)].sort();
+	let remaining = omitted + unique.reduce((count, identity) => count + (rowsPerRecipient[identity] ?? 1), 0);
 	const recipients: string[] = [], failedAvailability: Record<string, string | null> = {};
 	for (const identity of unique.slice(0, DELIVERY_WAKE_RECIPIENT_LIMIT)) {
 		storageIdOf(identity);
 		const next = [...recipients, identity], failed = { ...failedAvailability, [identity]: lastFailed(identity) };
-		if (Buffer.byteLength(JSON.stringify({ format: FORMAT, recipients: next, failedAvailability: failed, omitted: unique.length - next.length })) + 1 > MAX_BYTES) continue;
+		if (Buffer.byteLength(JSON.stringify({ format: FORMAT, recipients: next, failedAvailability: failed, omitted: remaining - (rowsPerRecipient[identity] ?? 1) })) + 1 > MAX_BYTES) continue;
 		recipients.push(identity);
 		failedAvailability[identity] = failed[identity];
+		remaining -= rowsPerRecipient[identity] ?? 1;
 	}
-	return { format: FORMAT, recipients, failedAvailability, omitted: unique.length - recipients.length };
+	return { format: FORMAT, recipients, failedAvailability, omitted: remaining };
 }
 
 /** Only the source storage's exclusive writer publishes or removes this projection. */
-export function writeDeliveryWake(sessionsRoot: string, storageId: string, identities: readonly string[], lastFailed: (identity: string) => string | null = () => null): { changed: boolean; omitted: number } {
+export function writeDeliveryWake(sessionsRoot: string, storageId: string, identities: readonly string[], lastFailed: (identity: string) => string | null = () => null, omitted = 0, rowsPerRecipient: Readonly<Record<string, number>> = {}): { changed: boolean; omitted: number } {
 	const path = deliveryWakePath(sessionsRoot, storageId);
 	if (identities.length === 0) {
 		try { unlinkSync(path); }
@@ -84,7 +86,7 @@ export function writeDeliveryWake(sessionsRoot: string, storageId: string, ident
 		publishCatalogChange(join(sessionsRoot, "durable"));
 		return { changed: true, omitted: 0 };
 	}
-	const value = boundedWake(identities, lastFailed);
+	const value = boundedWake(identities, lastFailed, omitted, rowsPerRecipient);
 	const text = `${JSON.stringify(value)}\n`;
 	if (readWakeText(path) === text) return { changed: false, omitted: value.omitted };
 	mkdirSync(join(sessionsRoot, ".delivery-wake"), { recursive: true, mode: 0o700 });

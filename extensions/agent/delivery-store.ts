@@ -279,12 +279,12 @@ async function includePendingRow(harness: Harness, context: Context, state: Agen
 }
 
 /** One current page per scheduler turn; a removed continuation restarts from the live head. */
-export async function pendingDeliveryPage(harness: Harness, context: Context, cursor?: string, kind?: Kind): Promise<{ state: AgentDeliveryState; next: string | null }> {
+export async function pendingDeliveryPage(harness: Harness, context: Context, cursor?: string, kind?: Kind): Promise<{ state: AgentDeliveryState; keys: readonly string[]; next: string | null }> {
 	const { id, page } = await pendingReferencePage(harness, context, cursor, kind);
 	const state: AgentDeliveryState = { intents: [], receipts: {}, reports: [] };
-	if (!page || id === null) return { state, next: null };
+	if (!page || id === null) return { state, keys: [], next: null };
 	for (const key of page.refs) await includePendingRow(harness, context, state, key, id, kind);
-	return { state, next: page.next };
+	return { state, keys: [...page.refs], next: page.next };
 }
 
 /** Completion checks remain current work regardless of routing eligibility. */

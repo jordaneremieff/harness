@@ -209,8 +209,13 @@ for (const state of ["parked", "terminal"] as const) it(`lets tryRetire seal an 
 	try {
 		const idle = eventLog<void>();
 		const stop = runtime.onQuiescent?.(() => idle.push(undefined));
-		await idle.waitForCount(1); stop?.();
-		const recovery = await runtime.request("recovery-state", {}, randomUUID()) as { deliveriesActive: boolean; deliveriesPending: boolean };
+		let recovery: { deliveriesActive: boolean; deliveriesPending: boolean };
+		for (let pass = 1; ; pass++) {
+			await idle.waitForCount(pass);
+			recovery = await runtime.request("recovery-state", {}, randomUUID()) as typeof recovery;
+			if (!recovery.deliveriesActive) break;
+		}
+		stop?.();
 		assert.equal(recovery.deliveriesPending, true);
 		assert.equal(recovery.deliveriesActive, false);
 		assert.equal(await runtime.tryRetire?.(() => true), true);

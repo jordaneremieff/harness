@@ -2686,16 +2686,24 @@ makes one bounded attach attempt and reports when no readiness event is
 available.
 
 The host sets a top-level `recoveryDue` marker before it admits work, and when
-opening finds pending native work or active delivery. Native commits, request
-completion and delivery-idle transitions reconcile the marker. The marker clears
-as soon as no native work or active delivery remains, before idle retirement.
-An in-progress admission preserves the marker through its pre-input gap. Marker
-writes occur only when its value changes. Parked and terminal rows never keep it
-true. Before clearing the marker, the source writer atomically publishes its
+opening finds pending native work or an incomplete delivery observation. Native
+commits, request completion and delivery-idle transitions reconcile the marker
+from the delivery driver's summary, without reconstructing pending payloads.
+The driver aggregates pending count, active routes and parked recipients across
+its complete bounded traversal. Unfinished pages, scheduled work, relevant
+commits, external invalidation and failed passes keep recovery conservatively
+due and block retirement, even between pages when no delivery is in flight.
+The marker clears only after a fresh complete observation finds no native work
+or active delivery. An in-progress admission preserves the marker through its
+pre-input gap. Marker writes occur only when its value changes. Parked and
+terminal rows alone do not keep it true. Before clearing the marker, the source
+writer atomically publishes its
 parked recipients in `sessionsRoot/.delivery-wake/<storageId>.json`. Each source
 owns one file outside the catalog directory. The file contains a bounded set of
-exact recipient identities and an `omitted` count; omitted rows remain retained
-and require explicit acquisition. `failedAvailability` records each recipient's
+exact recipient identities and an `omitted` count of excluded parked rows;
+omitted rows remain retained and require explicit acquisition. Partial and
+failed passes preserve the previous complete wake projection rather than
+replace it with one page. `failedAvailability` records each recipient's
 last failed native launch fingerprint, or null when no available target was
 attempted. A fingerprint hashes launch metadata and the caller's Pi installation.
 An unchanged recipient set and unchanged fingerprints cause no write. The writer
@@ -2739,10 +2747,13 @@ wake a parked source when a named recipient has a native catalog record or a
 live compatible primary endpoint, and its current fingerprint differs from the
 source's recorded failure. This comparison survives manager restarts. A bounded
 manager cache only coalesces attempts before the source records their outcome.
-Explicit acquisition also reopens retained rows. A recovery-state read refreshes
-delivery when the exact recipient is active,
-even if the source host is still up. A recorded fallback copy never repeats.
-Only active routes retry and block retirement. No row expiry or new catalog scan
+Explicit acquisition also reopens retained rows. Recovery-state and final
+retirement checks validate the summary's bounded recipient facts against current
+native availability and primary endpoints. Changed facts schedule the existing
+driver and refuse retirement until it completes, even if the source has no new
+native commit. Unrelated status completions do not read delivery payloads or
+recipient facts. A recorded fallback copy never repeats. Active routes retry;
+incomplete or stale observations also block retirement. No row expiry or new catalog scan
 bound is introduced. A final marker check also runs during clean close. Clean retirement
 closes cached manager and peer delivery links without a recovery acquisition or
 crash-budget charge. Native shutdown releases the writer claim before the

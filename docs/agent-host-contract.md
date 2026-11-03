@@ -509,6 +509,16 @@ close attach report acknowledge abort release reset
 
 `release` aborts the target, places eligible queued writes, and requests host retirement with blockers reported.
 
+The inner retirement check does not cancel work. Its delivery facts come from the
+existing bounded source driver, not a second ledger traversal. The
+`recovery-state` response keeps `deliveriesActive` true while delivery observation
+is incomplete, dirty, failed or scheduled, as well as while a route remains
+active. A complete pass aggregates parked wake dependencies across all pages.
+Recovery and retirement recheck bounded recipient availability; changed facts
+resume the driver and block retirement until a fresh pass completes. Final
+retirement also checks native work, active requests, in-flight delivery and the
+unchanged admission generation before it seals admission.
+
 Overrides and remaining members:
 
 | Member | Request | Response | Durable |

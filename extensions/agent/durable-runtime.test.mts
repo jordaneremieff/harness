@@ -648,11 +648,21 @@ it("publishes a bounded catalog view and clears recovery due on a clean close", 
 		const receipt = await waitForReceipt(primary, f.ownerId, submitted.submissionId);
 		assert.equal(receipt.status, "done");
 		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "the admitted request marked recovery due");
-		await primary.request("acknowledge", { ownerId: f.ownerId, submissionIds: [submitted.submissionId] });
+		assert.ok(primary.subscribeChanges);
+		const observations = eventLog<void>();
+		const stop = await primary.subscribeChanges(() => observations.push(undefined));
+		try {
+			await primary.request("acknowledge", { ownerId: f.ownerId, submissionIds: [submitted.submissionId] });
+			for (let index = 1; ; index++) {
+				const state = await primary.request("recovery-state", {}) as { deliveriesActive: boolean };
+				if (!state.deliveriesActive) break;
+				await observations.waitForCount(index);
+			}
+		} finally { stop(); }
 	} finally {
 		await primary.close().catch(() => {});
 	}
-	// SIGTERM inside the coalescing window: the clean close must flush the last view.
+	// Clean close still flushes the final view after delivery observation completes.
 	process.kill(pid, "SIGTERM");
 	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 	const view = catalog.read(f.metadata.storageId).view;

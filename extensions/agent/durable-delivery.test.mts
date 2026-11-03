@@ -1,7 +1,8 @@
 import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryState as readRetainedDelivery, deliveryPendingCount, pendingDeliveryPage } from "./delivery-store.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
-import { storeDeliveryRow } from "./delivery-store.ts";
+import { DELIVERY_PAGE_SIZE, DeliveryRowDoc, storeDeliveryRow } from "./delivery-store.ts";
+import { DELIVERY_WAKE_RECIPIENT_LIMIT } from "./delivery-wake.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -10,7 +11,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { LiveDoc, type ConversationId, type SubmissionId } from "@earendil-works/pi-durable";
+import { LiveDoc, type ConversationId, type EntryId, type SubmissionId } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { ThreadDeliveryDoc, type AgentDeliveryState, recordReport, richSubmitConversation, settleDeliveries, undeliveredReports } from "./durable-controls.ts";
 import { startDurableDelivery } from "./durable-delivery.ts";
@@ -2576,6 +2577,82 @@ for (const evidence of ["name", "purpose", "identity", "dead"] as const) it(`car
 	assert.equal(details.thinkingLevel, named ? "high" : undefined);
 	assert.equal(calls.mock.calls.some((call) => call.arguments[0] === "status" && call.arguments[1]?.sessionId === senderIdentity), false);
 	assert.deepEqual(errors, []);
+});
+
+for (const count of [130, DELIVERY_WAKE_RECIPIENT_LIMIT + 1]) it(`aggregates parked recipients across bounded pages with ${count} rows`, { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t), path = join(root, "summary.sqlite"), source = await openHost(path, randomUUID(), root);
+	t.after(() => source.close());
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	const recipients = Array.from({ length: count }, (_, index) => `${randomUUID()}:${index + 2}`);
+	await source.harness.commit(async tx => {
+		for (const [index, ownerId] of recipients.entries()) {
+			const delivery = { state: "parked" as const, reason: "native recipient has no catalog record" };
+			if (count > DELIVERY_WAKE_RECIPIENT_LIMIT && index >= count - 2) {
+				await storeDeliveryRow(tx, "receipt", { submissionId: index as SubmissionId, requestId: `summary-${index}`, ownerId, conversationId: 1 as ConversationId,
+					operationId: null, origin: "model", status: "done", entryId: null, answerEntryId: 1 as EntryId, answer: "shared answer", reason: null, acknowledged: false, delivery }, true);
+			} else await storeDeliveryRow(tx, "report", {
+				sourceId: `report:summary-${index}`, requestId: `summary-${index}`, ownerId, senderIdentity: source.storageId,
+				message: "parked payload", replyTo: null, acknowledged: false, createdAt: 0, delivery,
+			}, true);
+		}
+	}, BACKGROUND_CONTEXT);
+	const snapshots = t.mock.method(source.harness, "snapshot");
+	let recipientReads = 0;
+	const idle = eventLog<void>();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog: new AgentCatalog(root),
+		signal: new AbortController().signal, readTarget: () => { recipientReads++; return undefined; }, onIdle: () => idle.push(undefined) });
+	t.after(() => watcher.close());
+	assert.equal(watcher.summary().fresh, false, "a scheduled pass does not prove eligibility");
+	t.mock.timers.tick(0); await idle.waitForCount(1);
+	assert.equal(snapshots.mock.calls.filter(call => Object.is(call.arguments[0], DeliveryRowDoc)).length, DELIVERY_PAGE_SIZE * 2);
+	assert.equal(recipientReads, DELIVERY_PAGE_SIZE * 3);
+	assert.equal(watcher.busy, false);
+	assert.equal(watcher.summary().complete, false);
+	assert.equal(watcher.summary().fresh, false);
+	const pages = Math.ceil(count / DELIVERY_PAGE_SIZE);
+	for (let page = 2; page <= pages; page++) { t.mock.timers.tick(0); await idle.waitForCount(page); }
+	const summary = watcher.summary();
+	assert.equal(summary.complete, true);
+	assert.equal(summary.fresh, true);
+	assert.equal(summary.pendingCount, count);
+	assert.deepEqual([...summary.parkedRecipients].sort(), recipients.slice(0, DELIVERY_WAKE_RECIPIENT_LIMIT).sort());
+	assert.equal(summary.parkedOmitted, Math.max(0, count - DELIVERY_WAKE_RECIPIENT_LIMIT));
+	const before = recipientReads;
+	watcher.summary(); watcher.summary();
+	assert.equal(recipientReads, before, "cached summary reads do not recheck recipients");
+	watcher.summary(true);
+	assert.equal(watcher.summary().fresh, true, "unchanged recipient facts preserve complete evidence");
+	watcher.refresh();
+	assert.equal(watcher.summary().fresh, false);
+	assert.deepEqual(watcher.summary().parkedRecipients, summary.parkedRecipients, "invalidation preserves completed wake dependencies");
+	t.mock.timers.tick(0); await idle.waitForCount(pages + 1);
+	assert.deepEqual(watcher.summary().parkedRecipients, summary.parkedRecipients, "partial traversal preserves completed wake dependencies");
+});
+
+it("preserves wake dependencies after a delivery observation failure", { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t), path = join(root, "failed-summary.sqlite"), source = await openHost(path, randomUUID(), root);
+	t.after(() => source.close());
+	await settleDeliveries(source.harness, BACKGROUND_CONTEXT);
+	const ownerId = `${randomUUID()}:2`;
+	await source.harness.commit(tx => storeDeliveryRow(tx, "report", { sourceId: "report:failure", requestId: "failure", ownerId, senderIdentity: source.storageId,
+		message: "parked", replyTo: null, acknowledged: false, createdAt: 0, delivery: { state: "parked", reason: "native recipient has no catalog record" } }, true), BACKGROUND_CONTEXT);
+	const idle = eventLog<void>();
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const watcher = startDurableDelivery({ host: source, metadata: sourceMetadata(root, source.storageId, path), catalog: new AgentCatalog(root), signal: new AbortController().signal, onIdle: () => idle.push(undefined) });
+	t.after(() => watcher.close());
+	t.mock.timers.tick(0); await idle.waitForCount(1);
+	assert.equal(watcher.summary().fresh, true);
+	const snapshot = source.harness.snapshot.bind(source.harness);
+	t.mock.method(source.harness, "snapshot", (...args: Parameters<typeof snapshot>) => {
+		if (Object.is(args[0], DeliveryRowDoc)) throw new Error("row read refused");
+		return snapshot(...args);
+	});
+	watcher.refresh();
+	t.mock.timers.tick(0); await idle.waitForCount(2);
+	assert.equal(watcher.summary().fresh, false);
+	assert.match(watcher.summary().blocker ?? "", /row read refused/u);
+	assert.deepEqual(watcher.summary().parkedRecipients, [ownerId]);
 });
 
 it("delivers a reused agent's report and final answer to its explicit recipient, not its creator", { timeout: 10000 }, async (t) => {

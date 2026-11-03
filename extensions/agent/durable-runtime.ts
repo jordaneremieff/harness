@@ -24,7 +24,7 @@ import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/conte
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
-import { AgentCatalog, type CatalogRecord, storageIdOf, validateDeliveryRecipient } from "./catalog.ts";
+import { AgentCatalog, storageIdOf, validateDeliveryRecipient } from "./catalog.ts";
 import { boundCatalogView, withAttentionHints, withModelEvidence } from "./catalog-view.ts";
 import { projectCatalogAttention } from "./catalog-attention.ts";
 import { observeColdStorage } from "./cold-observation.ts";
@@ -39,7 +39,7 @@ import { projectConversationIntents } from "./durable-controls.ts";
 import { deliveryPendingCount } from "./delivery-store.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { AgentManager } from "./manager.ts";
-import { observeDeliveryEligibility, startDurableDelivery, type NativeTargetFailure } from "./durable-delivery.ts";
+import { startDurableDelivery, type DurableDelivery, type NativeTargetFailure } from "./durable-delivery.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
 import { connectPrimaryChannel, readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 
@@ -137,7 +137,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	let unsubscribeClose: (() => void) | undefined;
 	const catalog = new AgentCatalog(dirname(dirname(metadata.storagePath)));
 	const unavailableDeliveryTargets = new Map<string, NativeTargetFailure>();
-	let readDeliveryTarget: ((identity: string) => CatalogRecord | undefined) | undefined;
+	let deliveries: DurableDelivery;
 	let publishTimer: ReturnType<typeof setTimeout> | undefined;
 	let publishPromise: Promise<void> | undefined;
 	let publishingView = false;
@@ -150,9 +150,9 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	async function tryRetire(seal: () => boolean): Promise<boolean> {
 		if (runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy) return false;
 		const generation = activityGeneration;
-		const state = await recoveryState();
+		const state = await recoveryState(true);
 		if (state.workPending || state.deliveriesActive || !host.isIdle()) { cancelRequestedRelease(); return false; }
-		if (generation !== activityGeneration || runtimeUnavailable() || reloading || activeRequests > 0 || deliveries.busy || !seal()) return false;
+		if (generation !== activityGeneration || runtimeUnavailable() || reloading || activeRequests > 0 || !deliveries.summary(true).fresh || !seal()) return false;
 		deliveries.sealAdmission();
 		retirementSealed = true;
 		return true;
@@ -169,15 +169,17 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	}
 
 	/** Native work plus pending delivery state used by the marker and transient monitors. */
-	async function recoveryState(): Promise<{ readonly workPending: boolean; readonly deliveriesPending: boolean; readonly deliveriesActive: boolean }> {
+	async function recoveryState(validateRecipients = false): Promise<{ readonly workPending: boolean; readonly deliveriesPending: boolean; readonly deliveriesActive: boolean }> {
 		const generation = activityGeneration;
 		const idle = await host.refreshIdle();
-		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets, packageDir: metadata.packageDir, activeOnly: true });
-		const deliveriesActive = rows.some((row) => row.eligibility.state === "active");
-		const pending = await deliveriesPending();
+		const summary = deliveries?.summary(validateRecipients);
+		const deliveriesActive = summary === undefined || !summary.fresh || summary.active;
+		const pending = summary?.fresh ? summary.pendingCount > 0 : await deliveriesPending();
 		if (generation === activityGeneration) {
-			const wake = writeDeliveryWake(dirname(dirname(metadata.storagePath)), metadata.storageId, rows.filter((row) => row.eligibility.state === "parked").map((row) => row.row.ownerId), recipient => unavailableDeliveryTargets.get(storageIdOf(recipient))?.availability ?? null);
-			if (wake.changed && wake.omitted > 0) host.reportDeliveryError(new Error(`parked: delivery wake metadata omits ${wake.omitted} recipients at its bound; retained rows require explicit acquisition`));
+			if (summary?.fresh) {
+				const wake = writeDeliveryWake(dirname(dirname(metadata.storagePath)), metadata.storageId, summary.parkedRecipients, recipient => unavailableDeliveryTargets.get(storageIdOf(recipient))?.availability ?? null, summary.parkedOmitted, summary.parkedRows);
+				if (wake.changed && wake.omitted > 0) host.reportDeliveryError(new Error(`parked: delivery wake metadata omits ${wake.omitted} recipient rows at its bound; retained rows require explicit acquisition`));
+			}
 			markRecoveryDue(activeAdmissions > 0 || !idle || deliveriesActive);
 		} else recoveryDirty = true;
 		return { workPending: !idle, deliveriesPending: pending, deliveriesActive };
@@ -219,6 +221,13 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		for (const listener of releaseListeners) listener(false);
 	}
 
+	function deliveryReleaseBlockers(): string[] {
+		const summary = deliveries.summary();
+		const blockers = summary.fresh ? [] : [summary.blocker ?? "Delivery observation has not completed"];
+		if (summary.active) blockers.push(...summary.activeRecipients.map(identity => `Active delivery to ${identity}`));
+		return blockers;
+	}
+
 	/** Release never cancels native tasks or removes retained delivery rows. */
 	async function requestRelease(): Promise<{ retiring: boolean; blockers: string[] }> {
 		if (runtimeUnavailable() || reloading) return { retiring: false, blockers: ["The runtime is closed or reload is in progress"] };
@@ -227,10 +236,9 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		if (hasOtherActiveRequests()) blockers.push("Another active request uses this storage");
 		const native = await nativeReleaseBlockers();
 		blockers.push(...native);
-		const state = await recoveryState();
+		const state = await recoveryState(true);
 		if (state.workPending && native.length === 0) blockers.push("Native work remains in this storage");
-		const rows = await observeDeliveryEligibility(host.harness, { catalog, sessionsRoot: dirname(dirname(metadata.storagePath)), storageId: metadata.storageId, readTarget: readDeliveryTarget, unavailableTargets: unavailableDeliveryTargets, packageDir: metadata.packageDir, activeOnly: true });
-		blockers.push(...rows.filter((row) => row.eligibility.state === "active").map((row) => `Active delivery to ${row.row.ownerId}`));
+		blockers.push(...deliveryReleaseBlockers());
 		if (generation !== activityGeneration) blockers.push("Native state changed during the release check; retry the request");
 		if (blockers.length > 0) return { retiring: false, blockers: [...new Set(blockers)] };
 		markRecoveryDue(false);
@@ -464,7 +472,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 	const delivery = () => {
 		const sessionsRoot = dirname(dirname(metadata.storagePath));
 		const targets = new AgentManager({ root: sessionsRoot, agentDir: metadata.agentDir, packageDir: metadata.packageDir });
-		readDeliveryTarget = (identity) => {
+		const readDeliveryTarget = (identity: string) => {
 			try { return targets.nativeTarget(identity); }
 			catch (error) {
 				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
@@ -477,7 +485,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 			onError: (error) => { process.stderr.write(`Agent delivery: ${error.message}\n`); },
 		});
 	};
-	let deliveries = delivery();
+	deliveries = delivery();
 	recoveryReady = true;
 	scheduleRecoveryMarker();
 
@@ -610,9 +618,7 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		const params = controlParams(input);
 		validateControlRecipient(method, params);
 		if (method === "recovery-state") {
-			const state = await recoveryState();
-			if (state.deliveriesActive) deliveries.refresh();
-			return state;
+			return recoveryState(true);
 		}
 		if (ADMITTING_METHODS.has(method)) markRecoveryDue(true);
 		switch (method) {

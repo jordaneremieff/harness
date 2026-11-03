@@ -1,5 +1,5 @@
 import { onStoredCommit } from "./commit-observation.ts";
-import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
+import { DeliveryRowDoc, storeDeliveryRow, deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
@@ -54,8 +54,21 @@ async function fixture(t: TestContext) {
 	const record = catalog.read(metadata.storageId);
 	writeFileSync(catalog.path(metadata.storageId), JSON.stringify({ ...record, ownerId }), { mode: 0o600 });
 	runtime = await createDurableRuntime(metadata);
+	await deliverySettled(runtime);
 	assert.equal(typeof runtime.tryRetire, "function");
 	return { ...f, metadata, ownerId, runtime, native, registry, catalog };
+}
+
+async function deliverySettled(runtime: Awaited<ReturnType<typeof createDurableRuntime>>): Promise<void> {
+	const passes = eventLog<void>();
+	const stop = runtime.onQuiescent?.(() => passes.push(undefined));
+	try {
+		for (let index = 1; ; index++) {
+			const state = await runtime.request("recovery-state", {}, `settled-${index}`) as { deliveriesActive: boolean };
+			if (!state.deliveriesActive) return;
+			await passes.waitForCount(index);
+		}
+	} finally { stop?.(); }
 }
 
 async function eligible(runtime: Awaited<ReturnType<typeof createDurableRuntime>>): Promise<boolean> {
@@ -77,6 +90,57 @@ function markerChanges(t: TestContext, f: Awaited<ReturnType<typeof fixture>>) {
 	return changed;
 }
 
+it("does not reread delivery payloads or recipients after an unrelated status completion", { timeout: 15000 }, async t => {
+	const f = await fixture(t);
+	await f.native.harness.commit(async tx => {
+		for (let index = 0; index < 130; index++) await storeDeliveryRow(tx, "report", {
+			sourceId: `report:parked-${index}`, requestId: `parked-${index}`, ownerId: `${f.ownerId}:${index + 2}`,
+			senderIdentity: f.metadata.storageId, message: "retained payload".repeat(100), replyTo: null, acknowledged: false, createdAt: 0,
+			delivery: { state: "parked", reason: "native recipient has no catalog record" },
+		}, true);
+	}, BACKGROUND_CONTEXT);
+	await deliverySettled(f.runtime);
+	let rows = 0;
+	const snapshot = f.native.harness.snapshot.bind(f.native.harness);
+	t.mock.method(f.native.harness, "snapshot", (...args: Parameters<typeof snapshot>) => { if (Object.is(args[0], DeliveryRowDoc)) rows++; return snapshot(...args); });
+	const commit = f.native.harness.commit.bind(f.native.harness);
+	t.mock.method(f.native.harness, "commit", (callback: Parameters<typeof commit>[0], ...args: [Parameters<typeof commit>[1]]) => commit(async tx => {
+		const doc = tx.doc.bind(tx);
+		t.mock.method(tx, "doc", (...args: Parameters<typeof doc>) => { if (Object.is(args[0], DeliveryRowDoc)) rows++; return doc(...args); });
+		return callback(tx);
+	}, ...args));
+	const recipients = t.mock.method(AgentManager.prototype, "nativeTarget");
+	await f.runtime.request("status", {}, "unrelated-status");
+	await new Promise<void>(setImmediate);
+	assert.equal(rows, 0);
+	assert.equal(recipients.mock.callCount(), 0);
+});
+
+it("refuses release between bounded delivery pages", { timeout: 15000 }, async t => {
+	const f = await fixture(t);
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	await f.native.harness.commit(async tx => {
+		for (let index = 0; index < 65; index++) await storeDeliveryRow(tx, "report", {
+			sourceId: `report:page-${index}`, requestId: `page-${index}`, ownerId: `${f.ownerId}:2`, senderIdentity: f.metadata.storageId,
+			message: "parked", replyTo: null, acknowledged: false, createdAt: 0, delivery: { state: "parked", reason: "native recipient has no catalog record" },
+		}, true);
+	}, BACKGROUND_CONTEXT);
+	const passes = eventLog<void>();
+	const stop = f.runtime.onQuiescent?.(() => passes.push(undefined));
+	t.after(() => stop?.());
+	t.mock.timers.tick(0);
+	await passes.waitForCount(1);
+	assert.ok(f.runtime.requestRelease);
+	const release = await f.runtime.requestRelease();
+	assert.equal(release.retiring, false);
+	assert.ok(release.blockers.some(text => text.includes("Delivery observation")));
+	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, true);
+	assert.equal(await eligible(f.runtime), false);
+	t.mock.timers.tick(0);
+	await passes.waitForCount(2);
+	assert.deepEqual(await f.runtime.requestRelease(), { retiring: true, blockers: [] });
+});
+
 it("publishes the native availability that failed before clearing recovery", { timeout: 15000 }, async t => {
 	const f = await fixture(t), parked = eventLog<void>();
 	const target = f.catalog.create({ cwd: join(f.root, "missing-target-directory"), agentDir: f.agentDir, packageDir: f.metadata.packageDir, model: f.metadata.model, thinkingLevel: "off" });
@@ -84,6 +148,7 @@ it("publishes the native availability that failed before clearing recovery", { t
 	t.mock.method(f.native, "reportDeliveryError", (error?: Error) => { report(error); if (error?.message.includes("native host cannot start")) parked.push(undefined); });
 	await f.runtime.request("report", { ownerId: target.storageId, senderIdentity: f.metadata.storageId, message: "retain until target changes" }, "failed-native-availability");
 	await parked.waitForCount(1, 5000);
+	await deliverySettled(f.runtime);
 	await f.runtime.request("recovery-state", {}, "publish-failed-availability");
 	const wake = readDeliveryWake(f.root, f.metadata.storageId) as { failedAvailability?: Readonly<Record<string, string | null>> } | undefined;
 	const expected = createHash("sha256").update(JSON.stringify(hostMetadata(target, f.metadata.packageDir))).digest("hex");
@@ -131,7 +196,7 @@ for (const recipient of ["absent", "malformed"] as const) it(`keeps recovery due
 		(deliveryFixtureState).reports.push({ sourceId: "report:cold", requestId: "cold", ownerId: recipient === "absent" ? f.ownerId : "12345678", senderIdentity: f.metadata.storageId, message: "retained", replyTo: null, acknowledged: false, createdAt: Date.now() });
 	}), BACKGROUND_CONTEXT);
 	await errors.waitForCount(1);
-	await new Promise<void>(setImmediate);
+	await deliverySettled(f.runtime);
 	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
 	assert.equal((await readRetainedDelivery(f.native.harness, BACKGROUND_CONTEXT, true))?.reports[0]?.delivery?.state, recipient === "absent" ? "parked" : "terminal");
 });
@@ -363,6 +428,7 @@ it("keeps a native future timer alive even when the root has no submission", { t
 	const timer = await f.runtime.request("timer-schedule", { message: "later", deliverAt: Date.now() + 3600000, origin: "operator", ownerId: f.ownerId }, "timer") as { timerId: number };
 	assert.equal(await eligible(f.runtime), false);
 	await f.runtime.request("timer-cancel", { timerId: timer.timerId }, "cancel");
+	await deliverySettled(f.runtime);
 	assert.equal(await eligible(f.runtime), true);
 });
 
@@ -381,6 +447,7 @@ it("keeps another conversation's native work and owner check-in task alive", { t
 	await f.native.wait(active.submissionId, BACKGROUND_CONTEXT);
 	await f.native.harness.waitForIdle(BACKGROUND_CONTEXT);
 	await f.runtime.request("acknowledge", { ownerId: f.ownerId, submissionIds: [active.submissionId] }, "ack-child");
+	await deliverySettled(f.runtime);
 	assert.equal(await eligible(f.runtime), true);
 });
 
@@ -395,6 +462,7 @@ for (const kind of ["intent", "missing-receipt", "receipt", "report"] as const) 
 		if (kind === "report") state.reports.push({ sourceId: "report:pending", requestId: "pending", ownerId: f.ownerId, senderIdentity: f.metadata.storageId, message: "pending", replyTo: null, acknowledged: false, createdAt: Date.now() });
 	}), BACKGROUND_CONTEXT);
 	assert.equal(await f.native.refreshIdle(), true, "delivery rows alone are not native tasks");
+	if (kind !== "intent") await deliverySettled(f.runtime);
 	assert.equal(await eligible(f.runtime), kind !== "intent", "only the pending unlinked admission prevents retirement");
 	await f.native.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => {
 		const state = deliveryFixtureState;
@@ -403,6 +471,7 @@ for (const kind of ["intent", "missing-receipt", "receipt", "report"] as const) 
 		if (receipt) state.receipts["999"] = { ...receipt, acknowledged: true };
 		state.reports.splice(0);
 	}), BACKGROUND_CONTEXT);
+	await deliverySettled(f.runtime);
 	assert.equal(await eligible(f.runtime), true);
 });
 
@@ -421,6 +490,7 @@ for (const kind of ["receipt", "report"] as const) it(`retires with a dead-owner
 		state.reports.splice(0);
 		state.receipts["999"] = { submissionId: 999 as SubmissionId, requestId: "pending", ownerId: f.ownerId, conversationId: 1 as ConversationId, operationId: null, origin: "model", status: "done", entryId: null, answerEntryId: 999 as EntryId, answer: "answer", reason: null, acknowledged: false };
 	}), BACKGROUND_CONTEXT);
+	await deliverySettled(f.runtime);
 	const state = await f.runtime.request("recovery-state", {}, "state") as { workPending: boolean; deliveriesPending: boolean; deliveriesActive: boolean };
 	assert.deepEqual(state, { workPending: false, deliveriesPending: true, deliveriesActive: false });
 	assert.equal(await eligible(f.runtime), true);
@@ -467,6 +537,7 @@ it("keeps cached dead-owner delivery cold after clean retirement and wakes at ex
 	let returning = false;
 	let acquisitions = 0;
 	let reopened: Awaited<ReturnType<typeof runHost>> | undefined;
+	let reopenedRuntime: Awaited<ReturnType<typeof createDurableRuntime>> | undefined;
 	t.after(() => reopened?.close());
 	const lost = eventLog<void>();
 	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, acquire: async (metadata) => {
@@ -474,6 +545,7 @@ it("keeps cached dead-owner delivery cold after clean retirement and wakes at ex
 		if (acquisitions > 1) {
 			assert.ok(returning, "clean retirement must not acquire a recovery host");
 			const runtime = await createDurableRuntime(metadata);
+			reopenedRuntime = runtime;
 			reopened = await runHost(() => runtime, { metadata, idleMs: 0, announceReady: () => {} });
 		}
 		const client = await connectHost(metadata, { retryAttempts: 0 });
@@ -509,6 +581,8 @@ it("keeps cached dead-owner delivery cold after clean retirement and wakes at ex
 	await delivered.waitForCount(1);
 	assert.equal(acquisitions, 2, "exact owner registration reopens only its retained row");
 	assert.equal(fallback.length, 1);
+	assert.ok(reopenedRuntime);
+	await deliverySettled(reopenedRuntime);
 	await reopened?.close();
 	await lost.waitForCount(2);
 	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
@@ -530,6 +604,7 @@ it("rechecks a commit and an admission at asynchronous retirement boundaries", {
 	assert.equal(await retiring, false, "the prior native idle snapshot does not seal a changed runtime");
 	const timers = await f.runtime.request("timer-list", {}, "timers") as { timers: Array<{ timerId: number }> };
 	await f.runtime.request("timer-cancel", { timerId: timers.timers[0].timerId }, "cancel-raced");
+	await deliverySettled(f.runtime);
 	assert.equal(await eligible(f.runtime), true);
 	assert.ok(f.runtime.tryRetire);
 	assert.equal(await f.runtime.tryRetire(() => true), true);
@@ -555,8 +630,10 @@ it("keeps a host-local foreign control alive across retirement", { timeout: 1500
 		assert.equal(f.runtime.isIdle(), false);
 		assert.equal(await eligible(f.runtime), false);
 	} finally { release.resolve(); await report; }
+	await deliverySettled(f.runtime);
 	assert.equal(await eligible(f.runtime), true, "the report to an absent primary is parked and does not block retirement");
 	await f.native.harness.commit(async (tx) => editDeliveryFixture(tx, async (deliveryFixtureState) => { const state = deliveryFixtureState; state.reports.splice(0); }), BACKGROUND_CONTEXT);
+	await deliverySettled(f.runtime);
 	assert.equal(await eligible(f.runtime), true);
 });
 
@@ -848,6 +925,7 @@ it("retains final costs, drops manager caches without recovery, serves cold read
 	const submitted = await f.native.submit({ message: "second answer", requestId: "cost-second", conversationId: fork.conversationId });
 	await f.native.wait(submitted.submissionId, BACKGROUND_CONTEXT);
 	await f.native.harness.waitForIdle(BACKGROUND_CONTEXT);
+	await deliverySettled(f.runtime);
 	assert.equal(await eligible(f.runtime), true);
 	const rows = await f.native.request("dashboard", {}) as Array<{ cost: number }>;
 	const total = rows.reduce((sum, row) => sum + row.cost, 0);
@@ -885,6 +963,7 @@ it("retains final costs, drops manager caches without recovery, serves cold read
 	await notices.waitForCount(1);
 	// Delivery acknowledgement commits after the primary accepts the notice.
 	await reopenedRuntime.request("acknowledge", { ownerId: observer, submissionIds: [later.submissionId] }, "later-ack");
+	await deliverySettled(reopenedRuntime);
 	await reopened.close();
 	const after = await manager.dashboardPage();
 	assert.ok(after.rows.reduce((sum, row) => sum + row.cost, 0) > total);

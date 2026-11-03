@@ -45,6 +45,21 @@ it("bounds exact recipients and records every omitted identity", t => {
 	assert.equal(wake?.recipients.length, DELIVERY_WAKE_RECIPIENT_LIMIT);
 	assert.equal(wake?.omitted, 2);
 	assert.deepEqual(wake?.recipients, owners.sort().slice(0, DELIVERY_WAKE_RECIPIENT_LIMIT));
+	const bounded = owners.slice(0, DELIVERY_WAKE_RECIPIENT_LIMIT);
+	assert.deepEqual(writeDeliveryWake(path, source, bounded, () => null, 2), { changed: false, omitted: 2 });
+	assert.equal(readDeliveryWake(path, source)?.omitted, 2, "the driver supplies omissions from the whole traversal");
+});
+
+it("counts excluded parked rows at the wake byte bound", t => {
+	const path = root(t), source = randomUUID();
+	const owners = Array.from({ length: DELIVERY_WAKE_RECIPIENT_LIMIT }, () => `${randomUUID()}:9007199254740991`);
+	const counts = Object.fromEntries(owners.map(identity => [identity, 2]));
+	const result = writeDeliveryWake(path, source, owners, () => "a".repeat(64), 3, counts);
+	const wake = readDeliveryWake(path, source);
+	assert.ok(wake);
+	assert.ok(wake.recipients.length < DELIVERY_WAKE_RECIPIENT_LIMIT);
+	assert.equal(result.omitted, 3 + 2 * (owners.length - wake.recipients.length));
+	assert.equal(wake.omitted, result.omitted);
 });
 
 it("keeps sidecars outside current catalogue scans and schema", async t => {

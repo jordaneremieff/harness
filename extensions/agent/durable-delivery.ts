@@ -45,13 +45,13 @@ import {
 	providerRetryReportSettled,
 } from "./durable-controls.ts";
 import type { DurableHost } from "./durable-host.ts";
-import { checkInFallback, currentCheckInReport, deliveryState, pendingDeliveryPage, reloadDeliveryRows, terminalDeliveryState, retainedIntent, retainedReceipt, retainedReport, storeDeliveryRow } from "./delivery-store.ts";
+import { checkInFallback, currentCheckInReport, deliveryPendingCount, deliveryState, intentKey, receiptKey as storedReceiptKey, reportKey, pendingDeliveryPage, reloadDeliveryRows, terminalDeliveryState, retainedIntent, retainedReceipt, retainedReport, storeDeliveryRow } from "./delivery-store.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
 import { acquireHost, type HostConnection } from "./host-client.ts";
 import { HostError, hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { observeClaim } from "./claims.ts";
 import { isChordError } from "@earendil-works/chord";
-import { nativeRecipientAvailability } from "./delivery-wake.ts";
+import { DELIVERY_WAKE_RECIPIENT_LIMIT, nativeRecipientAvailability } from "./delivery-wake.ts";
 import {
 	connectPrimaryChannel,
 	primaryEndpointIncompatibleError,
@@ -131,8 +131,23 @@ export interface DurableDeliveryOptions {
 	readonly unavailableTargets?: Map<string, NativeTargetFailure>;
 }
 
+export interface DeliverySummary {
+	readonly pendingCount: number;
+	readonly active: boolean;
+	readonly complete: boolean;
+	readonly fresh: boolean;
+	readonly blocker?: string;
+	readonly parkedRecipients: readonly string[];
+	readonly parkedRows: Readonly<Record<string, number>>;
+	/** Pending parked rows whose recipient did not fit the bounded set. */
+	readonly parkedOmitted: number;
+	readonly activeRecipients: readonly string[];
+}
+
 export interface DurableDelivery {
 	readonly busy: boolean;
+	/** No payload reads. Relevant endpoint checks are reserved for recovery and retirement. */
+	summary(validateRecipients?: boolean): DeliverySummary;
 	/** Request a scan after a recovery acquisition or endpoint registration, without polling. */
 	refresh(): void;
 	/** Stop new delivery effects synchronously; close still owns link and in-flight cleanup. */
@@ -591,6 +606,37 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let eligibility = new Map<string, DeliveryEligibility>();
 	const retryOwners = new Set<string>();
 	let routingFailed = false;
+	let completed: DeliverySummary = { pendingCount: 0, active: false, complete: false, fresh: false, blocker: "Delivery observation has not completed", parkedRecipients: [], parkedRows: {}, parkedOmitted: 0, activeRecipients: [] };
+	let observationFailure: string | undefined;
+	let invalidated = true;
+	let parked = new Map<string, string>();
+	let parkedOmitted = 0;
+	let parkedRows: Record<string, number> = {};
+	let active = false;
+	let activeRecipients = new Set<string>();
+	let completedRecipients = new Map<string, string>();
+
+	function recipientRevision(identity: string): string {
+		return JSON.stringify(recipientFacts(identity, eligibilityOptions));
+	}
+	function recipientsChanged(recipients: ReadonlyMap<string, string>): boolean {
+		for (const [identity, revision] of recipients) if (recipientRevision(identity) !== revision) return true;
+		return false;
+	}
+	function observationBlocker(): string | undefined {
+		if (observationFailure) return observationFailure;
+		if (traversing) return "Delivery observation has unfinished pages";
+		if (invalidated) return "Delivery observation requires a fresh pass";
+		if (running || inFlight !== undefined) return "Delivery effects are in flight";
+		if (timer !== undefined || dirty) return "Delivery observation is scheduled";
+		return undefined;
+	}
+	function summary(validateRecipients = false): DeliverySummary {
+		if (validateRecipients && !invalidated && recipientsChanged(completedRecipients)) schedule(0, true);
+		const blocker = observationBlocker();
+		return { ...completed, active: completed.active || active, activeRecipients: [...new Set([...completed.activeRecipients, ...activeRecipients])].slice(0, DELIVERY_WAKE_RECIPIENT_LIMIT),
+			complete: completed.complete && !traversing, fresh: completed.complete && blocker === undefined, ...(blocker === undefined ? {} : { blocker }) };
+	}
 
 	/** Report one routing failure. The host keeps the latest failure in its status. */
 	const fail = (error: unknown): void => {
@@ -1071,12 +1117,37 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	let automaticCursor: string | null | undefined;
 	let traversing = false;
 	let traversalFailure: Error | undefined;
-	const finishTraversal = (): void => {
+	const finishTraversal = async (): Promise<void> => {
 		if (pendingCursor !== null || automaticCursor !== null) return;
+		const pendingCount = await deliveryPendingCount(host.harness, BACKGROUND_CONTEXT);
+		if (recipientsChanged(parked)) activityPending = true;
 		traversing = false;
 		if (activityPending) dirty = true;
 		if (traversalFailure !== undefined) throw traversalFailure;
+		if (activityPending) return;
+		completed = { pendingCount, active, complete: true, fresh: true, parkedRecipients: [...parked.keys()], parkedRows, parkedOmitted, activeRecipients: [...activeRecipients] };
+		completedRecipients = parked;
+		invalidated = false;
+		observationFailure = undefined;
 	};
+	function rowKey(item: EligibilityRow): string {
+		if (item.kind === "receipt") return storedReceiptKey((item.row as DeliveryReceipt).submissionId);
+		if (item.kind === "intent") { const intent = item.row as DeliveryIntent; return intentKey(intent.conversationId, intent.requestId); }
+		return reportKey(item.row.ownerId, (item.row as DeliveryReport).sourceId);
+	}
+	function includeSummaryRow(item: EligibilityRow): void {
+		const identity = item.row.ownerId;
+		if (item.eligibility.state === "active") {
+			active = true;
+			if (activeRecipients.size < DELIVERY_WAKE_RECIPIENT_LIMIT) activeRecipients.add(identity);
+			return;
+		}
+		if (item.eligibility.state !== "parked") return;
+		if (parked.has(identity) || parked.size < DELIVERY_WAKE_RECIPIENT_LIMIT) {
+			parked.set(identity, recipientRevision(identity));
+			parkedRows[identity] = (parkedRows[identity] ?? 0) + 1;
+		} else parkedOmitted++;
+	}
 	/** One bounded pending page per pass; complete native answer groups remain indivisible. */
 	const scan = async (): Promise<void> => {
 		if (!traversing) {
@@ -1088,9 +1159,14 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 			fallbackFailures.clear();
 			retryOwners.clear();
 			traversalFailure = undefined;
+			parked = new Map();
+			parkedOmitted = 0;
+			parkedRows = {};
+			active = false;
+			activeRecipients = new Set();
 		}
 		automaticCursor = await settleDeliveries(host.harness, BACKGROUND_CONTEXT, automaticCursor);
-		const page = pendingCursor === null ? { state: { intents: [], receipts: {}, reports: [] } as AgentDeliveryState, next: null }
+		const page = pendingCursor === null ? { state: { intents: [], receipts: {}, reports: [] } as AgentDeliveryState, keys: [], next: null }
 			: await pendingDeliveryPage(host.harness, BACKGROUND_CONTEXT, pendingCursor);
 		pendingCursor = page.next;
 		if (pendingCursor !== null || automaticCursor !== null) dirty = true;
@@ -1105,11 +1181,13 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		const current = await reloadDeliveryRows(host.harness, state, BACKGROUND_CONTEXT);
 		const after = await observeDeliveryEligibility(host.harness, eligibilityOptions, current);
 		await retainEligibility(host.harness, after);
+		const keys = new Set(page.keys);
+		after.filter(item => keys.has(rowKey(item))).forEach(includeSummaryRow);
 		const terminal = await observeDeliveryEligibility(host.harness, eligibilityOptions, await terminalDeliveryState(host.harness, BACKGROUND_CONTEXT));
 		const diagnostic = deliveryEligibilityError([...terminal, ...after]);
 		if (diagnostic !== undefined) fail(diagnostic);
 		if (failure !== undefined && after.some((item) => retryOwners.has(item.row.ownerId) && item.eligibility.state === "active")) traversalFailure ??= failure;
-		finishTraversal();
+		await finishTraversal();
 	};
 
 	const run = async (): Promise<void> => {
@@ -1123,6 +1201,8 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 				nextRetryDelayMs = Math.min(retryDelayMs, MAX_RETRY_DELAY_MS);
 			}
 		} catch (error) {
+			observationFailure = `Delivery observation failed: ${asError(error).message}`;
+			invalidated = true;
 			fail(error);
 			traversing = false;
 			pendingCursor = undefined;
@@ -1142,7 +1222,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	/** New activity preempts backoff; commits during a pass coalesce into one follow-up. */
 	function schedule(delayMs: number, activity = false): void {
 		if (closed || signal.aborted) return;
-		if (activity) activityPending = true;
+		if (activity) { activityPending = true; invalidated = true; }
 		if (running) {
 			dirty = true;
 			return;
@@ -1195,8 +1275,10 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 	}
 
 	signal.addEventListener("abort", onAbort, { once: true });
-	const observation = host.harness.observeCommits({ advance: () => schedule(0, true), end: () => {} });
+	const observation = host.harness.observeCommits({ advance: (publication) => {
+		if (publication.changes.some(change => change.type === "submission" || change.type === "task" || ((change.type === "document" || change.type === "document.copy") && change.record.kind.startsWith("agent.delivery")))) schedule(0, true);
+	}, end: () => {} });
 	unsubscribe = () => observation.detach();
 	if (!signal.aborted) schedule(0);
-	return { get busy() { return running || inFlight !== undefined; }, refresh: () => { unavailableTargets.clear(); schedule(0, true); }, sealAdmission, close };
+	return { get busy() { return running || inFlight !== undefined; }, summary, refresh: () => { unavailableTargets.clear(); schedule(0, true); }, sealAdmission, close };
 }
