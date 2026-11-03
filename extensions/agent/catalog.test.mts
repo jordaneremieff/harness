@@ -7,6 +7,7 @@ import {
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -72,6 +73,70 @@ it("shares raw record and claim reads while preserving caller-specific prioritie
 	assert.equal(first.facts.get(records[0].storageId)?.record.recoveryDue, undefined, "an earlier observation remains unchanged");
 });
 
+it("checks file stamps on every read and observes only changed records without notices", async (t) => {
+	const { catalog, input } = fixture(t);
+	const records = Array.from({ length: 3 }, () => catalog.create(input));
+	const observation = new CatalogObservation(catalog);
+	const reads = t.mock.method(catalog, "observeRecord");
+	const claims = t.mock.method(catalog, "observeClaim");
+	const stats = t.mock.method(catalog, "recordStamp");
+	const listings = t.mock.method(catalog, "identities");
+	const first = await observation.read();
+	assert.equal(reads.mock.callCount(), 3, "initial discovery opens three records");
+	assert.equal(claims.mock.callCount(), 3);
+	assert.equal(stats.mock.callCount(), 3);
+	assert.equal(listings.mock.callCount(), 1);
+	await observation.read();
+	assert.equal(reads.mock.callCount(), 3, "unchanged facts open no records");
+	assert.equal(claims.mock.callCount(), 3, "unchanged facts also reuse claim observations");
+	assert.equal(stats.mock.callCount(), 6, "each read validates every known file");
+
+	const firstPath = catalog.path(records[0].storageId);
+	const original = statSync(firstPath);
+	writeFileSync(firstPath, JSON.stringify({ ...records[0], name: "A longer retained name" }));
+	utimesSync(firstPath, original.atime, original.mtime);
+	assert.equal(statSync(firstPath).ino, original.ino);
+	assert.equal((await observation.read()).facts.get(records[0].storageId)?.record.name, "A longer retained name");
+	assert.equal(reads.mock.callCount(), 4, "a size change opens one record and one claim");
+	assert.equal(stats.mock.callCount(), 9);
+	assert.equal(claims.mock.callCount(), 4);
+
+	const secondPath = catalog.path(records[1].storageId);
+	const replaced = statSync(secondPath);
+	const temporary = join(catalog.root, "replacement.tmp");
+	writeFileSync(temporary, readFileSync(secondPath));
+	utimesSync(temporary, replaced.atime, replaced.mtime);
+	renameSync(temporary, secondPath);
+	assert.notEqual(statSync(secondPath).ino, replaced.ino);
+	await observation.read();
+	assert.equal(reads.mock.callCount(), 5, "replacement opens one record and one claim despite unchanged bytes and size");
+	assert.equal(stats.mock.callCount(), 12);
+	assert.equal(claims.mock.callCount(), 5);
+
+	utimesSync(catalog.path(records[2].storageId), 1, 1);
+	const modified = await observation.read();
+	assert.equal(modified.facts.get(records[2].storageId)?.modifiedAt, 1000);
+	assert.equal(reads.mock.callCount(), 6, "a timestamp change opens one record and one claim");
+	assert.equal(stats.mock.callCount(), 15);
+	assert.equal(claims.mock.callCount(), 6);
+	assert.equal(modified.observedAt, first.observedAt, "file validation does not refresh unchanged claim observations");
+
+	unlinkSync(firstPath);
+	const added = catalog.create(input);
+	const current = await observation.read();
+	assert.equal(current.facts.has(records[0].storageId), false);
+	assert.ok(current.facts.has(added.storageId));
+	assert.equal(reads.mock.callCount(), 7, "creation opens one record and one claim; deletion opens neither");
+	assert.equal(stats.mock.callCount(), 18);
+	assert.equal(listings.mock.callCount(), 6);
+	assert.equal(claims.mock.callCount(), 7);
+	observation.invalidate([added.storageId]);
+	await observation.read();
+	assert.equal(reads.mock.callCount(), 7, "a claim-only notice does not reopen an unchanged record");
+	assert.equal(claims.mock.callCount(), 8);
+	assert.equal(stats.mock.callCount(), 21);
+});
+
 it("reconciles missed notices, unreadable records, deletions and silent writer death on demand", async (t) => {
 	const { catalog, input } = fixture(t);
 	let now = Date.now();
@@ -113,14 +178,14 @@ it("retains dirty identities during observation and retries a failed reconciliat
 	const first = catalog.create(input);
 	const observation = new CatalogObservation(catalog);
 	await observation.read();
-	const read = catalog.observeRecord.bind(catalog);
+	const read = catalog.observeClaim.bind(catalog);
 	let release!: () => void;
 	const held = new Promise<void>((resolve) => { release = resolve; });
 	let entered!: () => void;
 	const started = new Promise<void>((resolve) => { entered = resolve; });
-	t.mock.method(catalog, "observeRecord", async (id: string) => {
-		if (id === first.storageId) { entered(); await held; }
-		return read(id);
+	t.mock.method(catalog, "observeClaim", async (record: typeof first) => {
+		if (record.storageId === first.storageId) { entered(); await held; }
+		return read(record);
 	});
 	observation.invalidate([first.storageId]);
 	const pending = observation.read();
@@ -142,12 +207,15 @@ it("falls back to complete observation for unknown or overflowing identity chang
 	const observation = new CatalogObservation(catalog);
 	await observation.read();
 	const reads = t.mock.method(catalog, "observeRecord");
+	const claims = t.mock.method(catalog, "observeClaim");
 	for (const record of records) observation.invalidate([record.storageId]);
 	await observation.read();
-	assert.equal(reads.mock.callCount(), records.length);
+	assert.equal(reads.mock.callCount(), 0, "unchanged record files need no payload read");
+	assert.equal(claims.mock.callCount(), records.length);
 	observation.invalidate();
 	await observation.read();
-	assert.equal(reads.mock.callCount(), records.length * 2);
+	assert.equal(reads.mock.callCount(), 0);
+	assert.equal(claims.mock.callCount(), records.length * 2);
 });
 
 it("keeps creation records within the host metadata envelope and 32768-byte bound", (t) => {

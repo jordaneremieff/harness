@@ -12,6 +12,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 	linkSync,
+	type Stats,
 } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -149,7 +150,12 @@ function priorityCursor(cursor: string | undefined, binding: string): PriorityKe
 	} catch { throw new Error("Invalid roster cursor or caller changed; restart the roster"); }
 }
 
+function fileStamp(info: Stats): string {
+	return JSON.stringify([info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs]);
+}
+
 export interface CatalogFact {
+	fileStamp: string;
 	record: CatalogRecord;
 	modifiedAt: number;
 	claim: ClaimObservation;
@@ -192,8 +198,8 @@ export class CatalogObservation {
 
 	read(): Promise<CatalogInventory> {
 		if (this.pending) return this.pending;
-		// The dashboard's existing reconciliation demand also refreshes silent claim deaths
-		// and missed notices. Footer and status requests share the same age boundary.
+		// The dashboard's existing reconciliation demand refreshes silent claim deaths.
+		// Footer and status requests share the same claim-age boundary.
 		if (Date.now() - this.reconciledAt >= 2000) this.full = true;
 		this.pending = this.refresh().finally(() => { this.pending = undefined; });
 		return this.pending;
@@ -204,12 +210,12 @@ export class CatalogObservation {
 			do {
 				const full = this.full;
 				this.full = false;
-				const changed = [...this.dirty];
+				const changed = new Set(this.dirty);
 				this.dirty.clear();
 				const started = Date.now();
-				const identities = full ? await this.catalog.identities() : changed;
-				const facts = full ? new Map<string, CatalogFact | null>() : new Map(this.facts);
-				for (const id of identities) await this.refreshRecord(facts, id);
+				const identities = await this.catalog.identities();
+				const facts = new Map<string, CatalogFact | null>();
+				for (const id of identities) await this.refreshRecord(facts, id, full || changed.has(id));
 				this.facts = facts;
 				if (full) { this.reconciledAt = started; this.observedAt = new Date(started).toISOString(); }
 			} while (this.full || this.dirty.size);
@@ -217,8 +223,13 @@ export class CatalogObservation {
 		} catch (error) { this.full = true; throw error; }
 	}
 
-	private async refreshRecord(facts: Map<string, CatalogFact | null>, id: string): Promise<void> {
-		try { facts.set(id, await this.catalog.observeRecord(id)); }
+	private async refreshRecord(facts: Map<string, CatalogFact | null>, id: string, dirty: boolean): Promise<void> {
+		try {
+			const stamp = this.catalog.recordStamp(id);
+			const previous = this.facts.get(id);
+			if (previous?.fileStamp !== stamp) facts.set(id, await this.catalog.observeRecord(id));
+			else facts.set(id, dirty ? { ...previous, claim: await this.catalog.observeClaim(previous.record), observedAt: new Date().toISOString() } : previous);
+		}
 		catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "ENOENT") facts.delete(id);
 			else facts.set(id, null);
@@ -370,7 +381,7 @@ export class AgentCatalog {
 	}
 	read(identity: string): CatalogRecord { return this.readWithTime(identity).record; }
 
-	private readWithTime(identity: string): { record: CatalogRecord; modifiedAt: number } {
+	private readWithTime(identity: string): { record: CatalogRecord; modifiedAt: number; fileStamp: string } {
 		const storageId = storageIdOf(identity);
 		const fd = openSync(this.path(storageId), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 		try {
@@ -391,7 +402,7 @@ export class AgentCatalog {
 			if (cached?.text === text) {
 				validatedRecords.delete(path);
 				validatedRecords.set(path, cached);
-				return { record: structuredClone(cached.record), modifiedAt: info.mtimeMs };
+				return { record: structuredClone(cached.record), modifiedAt: info.mtimeMs, fileStamp: fileStamp(info) };
 			}
 			validatedRecords.delete(path);
 			const value: unknown = JSON.parse(text);
@@ -415,7 +426,7 @@ export class AgentCatalog {
 			if (record.recoveryDue !== undefined && typeof record.recoveryDue !== "boolean")
 				throw new Error("Agent metadata has an invalid recovery marker");
 			cacheValidatedRecord(path, text, record);
-			return { record, modifiedAt: info.mtimeMs };
+			return { record, modifiedAt: info.mtimeMs, fileStamp: fileStamp(info) };
 		} finally {
 			closeSync(fd);
 		}
@@ -426,11 +437,23 @@ export class AgentCatalog {
 		return (await directoryEntries(this.root)).filter((entry) => entry.name.endsWith(".json") && UUID.test(entry.name.slice(0, -5))).map((entry) => entry.name.slice(0, -5));
 	}
 
+	/** Check a catalog pathname without opening its payload or following a symlink. */
+	recordStamp(storageId: string): string {
+		const info = lstatSync(this.path(storageId));
+		if (!info.isFile() || info.size > MAX_RECORD_BYTES) throw new Error("Agent metadata exceeds its bound or is not a regular file");
+		return fileStamp(info);
+	}
+
 	/** The single record/claim read seam for raw inventory observations. */
 	async observeRecord(storageId: string): Promise<CatalogFact> {
 		const value = this.readWithTime(storageId);
-		const paths = hostPaths(value.record);
-		return { ...value, claim: await observeClaimAsync(paths.claim, paths.identity), observedAt: new Date().toISOString() };
+		return { ...value, claim: await this.observeClaim(value.record), observedAt: new Date().toISOString() };
+	}
+
+	/** Claim freshness is independent of an unchanged catalog payload. */
+	async observeClaim(record: CatalogRecord): Promise<ClaimObservation> {
+		const paths = hostPaths(record);
+		return observeClaimAsync(paths.claim, paths.identity);
 	}
 
 	/** Standalone callers observe once; manager consumers share their owned observation. */

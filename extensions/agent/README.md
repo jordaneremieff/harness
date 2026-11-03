@@ -148,12 +148,19 @@ Fleet status and collaboration-awareness are distinct evidence views. Their
 readers use separate bounded `AgentCatalog.page()` discovery and retain their
 own coverage and evidence qualifications; they do not use the roster observation.
 
+Each shared read lists the current directory snapshot and checks record file
+stamps without following symlinks. Device, inode, size, modification time and
+change time identify replacements and updates. Only changed or unreadable records
+need payload reads; unchanged records retain their facts. A read after final host
+publication therefore sees the retained costs without waiting for its notice.
+The opened file supplies the retained stamp, not an earlier pathname check.
+
 Namespace notices carry bounded changed storage identities. The manager combines
-these with connected-host notices and refreshes only the affected record and
-claim facts. Concurrent changes accumulate; an unknown, identity-free or
-oversized notice invalidates the whole namespace. The next read also reconciles
-all source identities and claims when the last full observation is two seconds
-old. The dashboard's existing reconciliation demand uses this same owner; no
+these with connected-host notices and refreshes the affected claim facts.
+Concurrent changes accumulate; an unknown, identity-free or oversized notice
+invalidates claims across the namespace. The next read also refreshes all claims
+when the last full observation is two seconds old, without reopening unchanged
+record payloads. The dashboard's existing reconciliation demand uses this same owner; no
 extra polling service or persistent catalog copy exists. Reconciliation discovers
 missed publications, deletions, unreadable records and silent process death.
 Rows label claim observation time. A cached claim is not a fresh liveness check,
