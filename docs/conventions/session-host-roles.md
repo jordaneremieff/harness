@@ -8,12 +8,11 @@ Unix transport. A private 0700 directory and an owner-only 0600 socket
 provide local filesystem admission; no token crosses that boundary. The exact
 expected Chord hello name identifies the target, not the peer's user identity. That channel returns peer messages and answers project-trust
 prompts. The [Agent host contract](../agent-host-contract.md#chord-wire-contract)
-defines the shared typed Endpoint and Feed for terminal and browser consumers.
-
-An operator also uses a native conversation directly through a browser. That
-selection does not create a new instruction role, change its creator, or replace
-request-local requester and reply routes. Closing the browser releases its
-client observations, not the native conversation or its admitted work.
+defines the shared typed Endpoint and Feed for its clients. A client that
+observes a native conversation does not create a new instruction role, change
+its creator, or replace request-local requester and reply routes. Closing a
+client releases its observations, not the native conversation or its admitted
+work.
 
 A managed namespace binds one catalogue root to its selected Agent source and
 Pi dependency installation. Runtime supervises an Agent-owned namespace recovery
@@ -33,7 +32,7 @@ ancestry describe provenance, not result dependencies or current request routes.
 Native awaited results retain the original request; the ordinary primary stays
 responsive. Semantic awaiting facts are separate from native task state.
 The selected-run release returns partial results without dispatch or producer
-cancellation; a real abort still stops the original request. Browser Stop uses
+cancellation; a real abort still stops the original request. A run stop uses
 native admitted-input identities across generation handovers, with an exact-input
 guard for independently shared delegated work. Original admitted inputs still
 identify surviving descendants after an intermediate agent answers. Newer unrelated

@@ -134,21 +134,11 @@ contracts and published package metadata:
   `resume()` and calls that run tasks reject. Ordinary inspection without this
   option does not give equivalent write protection.
 
-The public management adapter in `runtime/evolution.mts` composes current
-worktree and Pi commands. `runtime/upstream.mts` reports its own loaded Pi
-version separately from the published review baseline. It resolves that baseline
-from the common ancestor of main and its configured upstream, not a dirty file
-or an unpublished coverage declaration. `evolution.status` uses local evidence.
-`upstream.status` also checks the two fixed npm publication endpoints with bounded
-reads and reports unavailable metadata explicitly. Neither operation fetches
-remote Git refs, performs cumulative intake, or writes the declaration.
-
 Complete release intake remains with [Evo](../extensions/evo/README.md#release-intake).
 The targeted checks above establish only those contracts. They leave cumulative
 coverage unchanged until the coordinator accepts and publishes the complete
 release interval. The [development workflow](conventions/worktrees.md) owns
-checks and publication hygiene; the runtime adds no scheduler, release ledger or
-parallel task store.
+checks and publication hygiene.
 
 ## Pi 1.5 host transition contracts
 
@@ -319,8 +309,8 @@ messages, tool-result images, `argumentsError`, or identity and telemetry option
 No wrapper implementation belongs in this repository.
 
 The release review declaration, not these source contracts, records cumulative
-acceptance. Static checks do not establish released UI behavior, loaded
-dependency replacement, or successful conversion. Resource registry replacement
+acceptance. Static checks do not establish loaded dependency replacement or
+successful conversion. Resource registry replacement
 alone does not replace cached package modules.
 
 ## Runtime adoption and distribution
@@ -352,7 +342,7 @@ factories. SDK hosts explicitly supply the factories they need, including
 Sources: `dist/main.js`, `dist/extensions/index.js`, `dist/index.js`,
 `docs/sdk.md`, and `examples/sdk/14-codemode-mcp.ts`.
 
-The Agent and browser client's live-consumer contract uses the package-level
+The Agent client's live-consumer contract uses the package-level
 [Chord transport contract](agent-host-contract.md#chord-wire-contract), not
 removed Pi Client/Server services. A same-user Unix socket remains necessary for
 independent detached hosts and reconnect. Chord owns typed calls and state;
@@ -1037,7 +1027,6 @@ by the Durable host. Sources: session-manager/runtime and Durable types/harness.
 | Detached storage processes, writer claims, exact controls and delivery | Agent extension |
 | Typed live calls and state over same-user sockets | Chord plus the package-level transport boundary |
 | Bounded retained inspection and independent retained-read executable | Agent extension's public consumer contract |
-| Browser access | UI consumes the public transport and retained-read contracts, not Agent-private source |
 | Doctrine and handover meaning | Owning corpus and Stash contracts; transport does not create authority |
 
 Cloudflare storage and image adapters are published options, not deployment

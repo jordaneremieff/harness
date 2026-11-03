@@ -280,7 +280,7 @@ test("schema guard rejects direct declarations in every dependency section", () 
 test("schema guard reaches tracked source roots, discovered extension files and the root manifest", () => {
 	const root = testGlobFixtureRoot(["extensions/*/*.test.mts", "feature/*.test.mts"]);
 	try {
-		const paths = ["extensions/example/schema.ts", "scripts/schema.mts", "prompts/schema.ts", "transport/schema.mts", "runtime/schema.ts", "ui/nested/schema.ts", "evals/schema.mts"];
+		const paths = ["extensions/example/schema.ts", "scripts/schema.mts", "prompts/schema.ts", "transport/schema.mts", "evals/schema.mts"];
 		for (const path of paths) {
 			mkdirSync(dirname(join(root, path)), { recursive: true });
 			writeFileSync(join(root, path), 'import type { Schema } from "typebox";\n');

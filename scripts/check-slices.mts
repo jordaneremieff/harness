@@ -583,7 +583,7 @@ if (main) {
 		...sourceFiles.map((file) => relative(root, file).replaceAll("\\", "/")),
 	]);
 	for (const file of owned) {
-		if (!/^(extensions|scripts|prompts|transport|runtime|ui|evals)\/.*\.(ts|mts)$/.test(file)) continue;
+		if (!/^(extensions|scripts|prompts|transport|evals)\/.*\.(ts|mts)$/.test(file)) continue;
 		const path = join(root, file);
 		if (!existsSync(path)) continue;
 		for (const violation of auditSchemaImports(root, path, readFileSync(path, "utf8"))) fail(violation);

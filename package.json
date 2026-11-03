@@ -12,17 +12,12 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=4 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"ui/*/*.test.mts\" \"transport/*.test.mts\" \"runtime/*.test.mts\"",
+    "test": "node --test --test-concurrency=4 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"transport/*.test.mts\"",
     "test:coverage": "npm test -- --experimental-test-coverage",
     "evals": "node evals/cli.mts",
     "lint": "biome lint --error-on-warnings .",
     "format": "biome format --error-on-warnings .",
-    "typecheck": "tsc -p . && tsc -p ui/tsconfig.json && tsc -p ui/web/tsconfig.json --noEmit",
-    "ui": "npm run ui:build && node ui/server/main.mts --open",
-    "ui:build": "tsc -p ui/web/tsconfig.json",
-    "ui:typecheck": "tsc -p ui/tsconfig.json && tsc -p ui/web/tsconfig.json --noEmit",
-    "ui:start": "node ui/server/main.mts",
-    "runtime": "node runtime/cli.mts",
+    "typecheck": "tsc -p .",
     "check": "node scripts/check-slices.mts",
     "hooks": "node scripts/publication-scan.mts --install",
     "warmup:jiti": "pi --help --offline --extension extensions/brave/index.ts --extension extensions/statusline/index.ts --extension extensions/clipboard/index.ts --extension extensions/stash/index.ts"

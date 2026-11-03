@@ -31,16 +31,12 @@
 			"extensions/**/*.mts",
 			"prompts/*.eval.mts",
 			"prompts/*.test.mts",
-			"runtime/**/*.mts",
 			"scripts/**/*.mts",
 			"settings/**/*.ts",
 			"settings/**/*.mts",
 			"skills/**/*.mts",
 			"transport/**/*.ts",
-			"transport/**/*.mts",
-			"ui/**/*.ts",
-			"ui/**/*.mts",
-			"!ui/dist"
+			"transport/**/*.mts"
 		]
 	},
 	"formatter": {
