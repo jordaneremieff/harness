@@ -660,6 +660,7 @@ function publicContentPart(part: NonNullable<NonNullable<LiveState["generation"]
 	};
 	return {
 		type: part.type, id: part.id, name: part.name, arguments: part.arguments,
+		...(part.argumentsError === undefined ? {} : { argumentsError: part.argumentsError }),
 		...(part.thoughtSignature === undefined ? {} : { thoughtSignature: part.thoughtSignature }),
 		...(part.namespace === undefined ? {} : { namespace: part.namespace }),
 	};
@@ -672,7 +673,10 @@ function publicUsage(usage: Usage): Usage {
 		...(usage.cacheWrite1h === undefined ? {} : { cacheWrite1h: usage.cacheWrite1h }),
 		...(usage.reasoning === undefined ? {} : { reasoning: usage.reasoning }),
 		totalTokens: usage.totalTokens,
-		cost: { input: usage.cost.input, output: usage.cost.output, cacheRead: usage.cost.cacheRead, cacheWrite: usage.cost.cacheWrite, total: usage.cost.total },
+		cost: {
+			input: usage.cost.input, output: usage.cost.output, cacheRead: usage.cost.cacheRead, cacheWrite: usage.cost.cacheWrite, total: usage.cost.total,
+			...(usage.cost.totalFromProvider === undefined ? {} : { totalFromProvider: usage.cost.totalFromProvider }),
+		},
 	};
 }
 

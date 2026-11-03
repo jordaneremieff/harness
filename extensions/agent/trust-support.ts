@@ -2,10 +2,11 @@
  * trust-support: shared project-trust resolution for the Durable host and the
  * primary session that owns it.
  *
- * The host resolves trust in the public order: an explicit decision, configured
- * `project_trust` handlers, the saved public store, the `defaultProjectTrust`
- * setting, then one routed ask to the primary session. The host refuses only
- * when no primary answer arrives. A handler or answer with `remember` writes the
+ * An explicit decision wins. Without trust-requiring project resources, the host
+ * uses the saved decision or defaults to true. Otherwise it resolves trust from
+ * configured `project_trust` handlers, the saved public store, the
+ * `defaultProjectTrust` setting, then one routed ask to the primary session.
+ * An unanswered ask refuses. A handler or answer with `remember` writes the
  * public store, so the decision survives restarts. The primary side maps its UI
  * selection through `promptProjectTrust`; the host receives the answer through
  * `askPrimary` and persists it. This module carries no transport, session, or
@@ -78,7 +79,7 @@ export function createProjectTrustResolver(options: ProjectTrustResolverOptions)
 			trustStore.set(cwd, trusted);
 			return trusted;
 		}
-		if (!requiresTrust(cwd)) return true;
+		if (!requiresTrust(cwd)) return trustStore.get(cwd) ?? true;
 		const decided = await handlerDecision(cwd, extensionsResult, trustStore, report);
 		if (decided !== undefined) return decided;
 		const stored = trustStore.get(cwd);

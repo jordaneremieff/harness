@@ -5,8 +5,27 @@ import { stripVTControlCharacters } from "node:util";
 import { initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Text, type TUI } from "@earendil-works/pi-tui";
 import { AgentConversation, renderableEntries } from "./dashboard-conversation.ts";
+import { answerMessage } from "./durable-host-fixture.mts";
 
 initTheme("dark");
+
+for (const width of [40, 80, 120]) it(`shows malformed arguments on one terminal call-card line at width=${width}`, () => {
+	const call = { type: "toolCall" as const, id: "malformed", name: "lookup", arguments: {}, argumentsError: "Expected an object\nReceived [1]" };
+	const message = { ...answerMessage(), content: [call] };
+	const before = structuredClone(message);
+	const conversation = new AgentConversation([], "/work", { requestRender() {} } as TUI, false, false, undefined, undefined, () => ({
+		renderCall: () => new Text("lookup call"),
+	}));
+	conversation.update(buildLiveEntries({ generation: { attempt: 1, message } }, []));
+	const lines = conversation.render(width).lines.map(stripVTControlCharacters);
+	assert.equal(lines.filter((line) => line.includes("Arguments error:")).length, 1);
+	assert.match(lines.join("\n"), /lookup call/u);
+	assert.ok(lines.every((line) => !line.includes("\n")));
+	assert.deepEqual(message, before);
+	conversation.update(buildLiveEntries({ generation: { attempt: 1, message: { ...message, content: [{ type: "toolCall", id: call.id, name: call.name, arguments: {} }] } } }, []));
+	assert.doesNotMatch(stripVTControlCharacters(conversation.render(width).lines.join("\n")), /Arguments error:/u);
+	conversation.update([]);
+});
 
 it("forwards live tool details into the result message even before output arrives", () => {
 	const details = { progress: { phase: "working", value: 1 } };

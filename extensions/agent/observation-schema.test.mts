@@ -8,6 +8,8 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { LiveDoc, UsageDoc, type ConversationId, type EntryId, type SubmissionId, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
+import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
+import { LiveObservationService } from "./live-observation.ts";
 import { AgentManager } from "./manager.ts";
 import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, NativeListOutputSchema, StatusOutputSchema, StatusToolOutputSchema, nativeStructuredObservation, structuredObservation } from "./observation-schema.ts";
 import { page as rosterPage } from "./dashboard-test-fixture.mts";
@@ -117,26 +119,44 @@ it("validates native response duration and optional task lifecycle timestamps", 
 	}
 });
 
-for (const withGeneration of [false, true]) it(`projects nested summary usage with generation message=${withGeneration}`, async (t) => {
+for (const totalFromProvider of [undefined, false, true]) for (const withGeneration of [false, true]) it(`projects public usage and diagnostics with provenance=${totalFromProvider}, generation=${withGeneration}`, async (t) => {
 	const { host } = await openRun(t);
-	const usage = { ...answerMessage().usage, reasoning: 0, cacheWrite1h: 0, cost: { ...answerMessage().usage.cost, totalFromProvider: false } };
+	const usage: Usage = { ...answerMessage().usage, reasoning: 0, cacheWrite1h: 0, cost: { ...answerMessage().usage.cost, ...(totalFromProvider === undefined ? {} : { totalFromProvider }) } };
+	const call = { type: "toolCall" as const, id: "malformed", name: "lookup", arguments: {}, argumentsError: "Expected a JSON object: [1]" };
+	const message: AssistantMessage = { ...answerMessage(), content: [call], usage };
 	const nested = { callId: "outer/child", name: "evidence", taskId: 2, parentCallId: "outer", parentTaskId: 1, arguments: {}, status: "done", summary: { isError: false, durationMs: 0, usage } };
 	const raw = {
 		nestedTools: [nested, { ...nested, callId: "outer/pending", taskId: 3, status: "pending", summary: undefined }, { ...nested, callId: "outer/unmetered", taskId: 4, summary: { isError: true, error: "Tool failed" } }],
 		tools: [{ callId: "outer", name: "codemode", taskId: 1, status: "running", details: { usage } }],
-		...(withGeneration ? { generation: { attempt: 1, message: { ...answerMessage(), usage } } } : {}),
+		...(withGeneration ? { generation: { attempt: 1, message: { ...message, content: [{ ...call, partialJson: "private parser buffer" }] } } } : {}),
 	};
-	await host.harness.commit(async (tx) => { Object.assign(await tx.doc(LiveDoc, host.root().id), JSON.parse(JSON.stringify(raw))); }, BACKGROUND_CONTEXT);
+	await host.harness.commit(async (tx) => {
+		Object.assign(await tx.doc(LiveDoc, host.root().id), JSON.parse(JSON.stringify(raw)));
+		Object.assign(await tx.doc(UsageDoc, host.root().id), { models: { fixture: usage }, tools: { fixture: usage } });
+	}, BACKGROUND_CONTEXT);
 	const before = await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT);
 	const status = await host.request("status", { sessionId: fixtureStorageId }) as { conversation: { live: typeof raw } };
 	structuredObservation(LiveStateSchema, status.conversation.live);
 	structuredObservation(StatusOutputSchema, status);
-	const { totalFromProvider: _metadata, ...cost } = usage.cost;
-	assert.deepEqual(status.conversation.live.nestedTools[0].summary, { ...nested.summary, usage: { ...usage, cost } });
+	assert.deepEqual(status.conversation.live.nestedTools[0].summary, nested.summary);
 	assert.deepEqual(status.conversation.live.nestedTools.slice(1), JSON.parse(JSON.stringify(raw.nestedTools.slice(1))));
 	assert.deepEqual(status.conversation.live.tools, raw.tools);
 	assert.equal(Object.hasOwn(status.conversation.live, "generation"), withGeneration);
-	if (withGeneration) assert.deepEqual(status.conversation.live.generation?.message.usage, { ...usage, cost });
+	if (withGeneration) assert.deepEqual(status.conversation.live.generation?.message, message);
+	const service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, BACKGROUND_CONTEXT);
+	try {
+		const frame = await service.open("public-fields", { scope: "conversation", conversationId: host.root().id });
+		assert.equal(frame.scope, "conversation");
+		if (frame.scope !== "conversation") throw new Error("Expected a conversation frame");
+		assert.deepEqual(frame.status.live, status.conversation.live);
+		assert.deepEqual(frame.status.usage, { models: { fixture: usage }, tools: { fixture: usage } });
+		const liveMessage = frame.live.find((entry) => entry.id === "live:generation")?.model?.[0];
+		assert.deepEqual(liveMessage, withGeneration ? message : undefined);
+		assert.doesNotMatch(JSON.stringify(frame), /private parser buffer|partialJson/u);
+		structuredObservation(ConversationStatusSchema, frame.status);
+	} finally {
+		await service.closeAll();
+	}
 	assert.deepEqual(await host.harness.snapshot(LiveDoc, host.root().id, BACKGROUND_CONTEXT), before);
 });
 
@@ -162,16 +182,14 @@ it("projects provider usage metadata after an incomplete tool response and a rej
 		structuredObservation(ConversationStatusSchema, status.conversation);
 		structuredObservation(StatusOutputSchema, status);
 		structuredObservation(StatusToolOutputSchema, status);
-		assert.equal(Object.hasOwn(status.conversation.usage.models[key].cost, "totalFromProvider"), false);
+		assert.equal(status.conversation.usage.models[key].cost.totalFromProvider, false);
 		assert.equal(status.conversation.usage.models[key].reasoning, 0);
 		assert.equal(status.conversation.usage.models[key].cacheWrite1h, 0);
-		const { totalFromProvider: _metadata, ...cost } = raw.models[key].cost as typeof usage.cost;
-		assert.deepEqual(status.conversation.usage.models[key], { ...raw.models[key], cost });
-		const { totalFromProvider: _toolMetadata, ...toolCost } = usage.cost;
-		assert.deepEqual(status.conversation.usage.tools.fixture, { ...usage, cost: toolCost });
+		assert.deepEqual(status.conversation.usage.models[key], raw.models[key]);
+		assert.deepEqual(status.conversation.usage.tools.fixture, usage);
 		if (withLiveMessage) {
 			assert.deepEqual(status.conversation.live.generation?.message?.content, incomplete.content);
-			assert.equal(Object.hasOwn(status.conversation.live.generation?.message?.usage.cost ?? {}, "totalFromProvider"), false);
+			assert.equal(status.conversation.live.generation?.message?.usage.cost.totalFromProvider, false);
 		}
 	}
 	const result = await host.request("inspect", { view: "result", submissionId: second.submissionId });

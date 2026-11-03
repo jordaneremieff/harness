@@ -6,7 +6,7 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext, type StreamOptions } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { ProjectTrustStore, createReadToolDefinition, getPackageDir } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, createReadToolDefinition, getPackageDir, hasTrustRequiringProjectResources } from "@earendil-works/pi-coding-agent";
 import { createDurableServices, LOAD_FAILURE_MAX_CHARS } from "./durable-services.ts";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { promptProjectTrust } from "./trust-support.ts";
@@ -435,6 +435,29 @@ it("resolves project trust from saved decisions and the default setting", async 
 	const fallback = await createDurableServices(base);
 	assert.equal(fallback.settings.steeringMode, "all");
 	await fallback.close();
+});
+
+for (const requiresTrust of [false, true]) it(`preserves saved trust and explicit decisions with project resources=${requiresTrust}`, async (t) => {
+	const f = fixture(t, requiresTrust ? { projectSettings: { steeringMode: "all" } } : {});
+	writeFileSync(join(f.cwd, "AGENTS.md"), "Project instructions\n");
+	assert.equal(hasTrustRequiringProjectResources(f.cwd), requiresTrust);
+	const store = new ProjectTrustStore(f.agentDir);
+	const asked: string[] = [];
+	for (const saved of [null, false, true]) for (const trusted of [undefined, false, true]) {
+		store.set(f.cwd, saved);
+		const services = await createDurableServices({
+			cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-decisions", extensionPaths: [f.silentPath], trustStore: store,
+			...(trusted === undefined ? {} : { trusted }),
+			askPrimary: async (cwd) => { asked.push(cwd); return { trusted: false }; },
+		});
+		try {
+			assert.equal(services.services.settingsManager.isProjectTrusted(), trusted ?? saved ?? !requiresTrust);
+			assert.equal(store.get(f.cwd), trusted ?? saved);
+		} finally {
+			await services.close();
+		}
+	}
+	assert.deepEqual(asked, requiresTrust ? [f.cwd] : []);
 });
 
 it("persists a project_trust handler decision through the public store", async (t) => {

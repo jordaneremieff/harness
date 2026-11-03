@@ -161,7 +161,9 @@ destination. Existing agent discovery, inspection, and cancellation controls
 expose the independent root and its native evidence.
 
 Each admission reads fresh Pi settings at the requested cwd after normal project
-trust resolution. Startup prefers a saved default inside the resolved
+trust resolution. Without trust-requiring project resources, a saved refusal
+still applies; only an absent saved decision defaults to trust. Explicit trust
+retains priority. Startup prefers a saved default inside the resolved
 `enabledModels` scope, then its first available scoped model. With no scope, Pi's
 public SDK supplies its normal model fallback. Thinking uses the selected scope
 suffix, per-model setting, default setting, then Pi's built-in default and
@@ -987,9 +989,13 @@ payloads, and redacted thinking stay omitted with markers and counts on raw
 reads. Observation and task outcomes grant no control or acceptance authority.
 
 Status, live message projections, nested tool summaries, and result inspection
-expose only the public usage counters and cost fields. Nested summaries follow
-this rule even without a generation message. Retained entries and usage documents
-keep provider metadata unchanged.
+expose only the public usage counters and cost fields, including optional boolean
+`cost.totalFromProvider`. Absent or false denotes an estimate; true denotes a
+provider-reported total. These projections preserve native totals without local
+aggregation. Nested summaries follow this rule even without a generation message.
+Tool calls retain optional string `argumentsError`; the terminal call card shows
+that diagnostic on one line. Provider-private parsing buffers stay omitted.
+Retained entries and usage documents keep provider metadata unchanged.
 
 The manager's stopped-agent reads use a cached public snapshot without services,
 model runtime, extension bootstrap, or Harness resume. The cache tracks database

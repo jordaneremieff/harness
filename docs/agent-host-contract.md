@@ -250,7 +250,7 @@ name?, trust?, ownerId?, independent?: {inputDigest, projectTrusted}
 
 Replace `packageDir` with the installation selected by the server's configured `--pi` executable, not the retained installation or an unrelated ambient SDK import. An executable name resolves through the server's bounded PATH search; an absolute executable resolves directly. The supported shapes are the coding-agent package's `dist/bundle/cli.js` and the current managed `bin/pi` launcher beside `install/current-version`. The managed marker selects `install/releases/<version>/node_modules/@earendil-works/pi-coding-agent`; its bounded version must agree with the package manifest. Both shapes require the coding-agent package name, a valid version, its `bin.pi` declaration, and canonical CLI/package paths. Unknown wrappers or missing installation metadata refuse. If `PI_PACKAGE_DIR` is set, its canonical root must agree with that selected installation. Source: the installed coding-agent `package.json:bin`, `dist/config.js:getPackageDir`, and managed `bin/pi` launcher.
 
-Preserve `trust`, `ownerId`, and the complete `independent` object exactly. Explicit trust participates in the owner's normal trust resolver. If independent metadata exists, `independent.projectTrusted` supplies the prioritized resolver instead. An unresolved normal decision follows the retained owner chain, not the Primary displayed in the browser. Do not replace absent trust with false, force true, fabricate an owner, or omit independent metadata. Source: `extensions/agent/durable-runtime.ts:55–79`; `durable-services.ts:553–564`; `trust-support.ts:73–109`; installed coding-agent `dist/core/resource-loader.js:352–366`.
+Preserve `trust`, `ownerId`, and the complete `independent` object exactly. Explicit trust participates in the owner's normal trust resolver. If independent metadata exists, `independent.projectTrusted` supplies the prioritized resolver instead. An unresolved normal decision follows the retained owner chain, not the Primary displayed in the browser. Without trust-requiring project resources, normal resolution uses the saved decision, including false, or defaults to true when absent. Explicit trust retains priority. Do not replace absent trust with false, force true, fabricate an owner, or omit independent metadata. Source: `extensions/agent/durable-runtime.ts:55–79`; `durable-services.ts:553–564`; `trust-support.ts:73–109`; installed coding-agent `dist/core/resource-loader.js:352–366`.
 
 Before dynamically loading host modules, the runner binds coding-agent, agent-core, ai, tui, and typebox imports originating under the Agent source root to the selected installation. Durable, Codemode, MCP, and Chord remain dependencies of the configured owner checkout; the binding does not redirect every Pi package. Validate the catalog identity, exact database path under the configured durable catalog root, and existing canonical regular-file/directory paths before spawn. Source: `extensions/agent/{durable-runner,installation-binding,host-protocol}.ts`.
 
@@ -545,8 +545,8 @@ Overrides and remaining members:
 Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema, not a hash of a response instance. The current schema-derived identities are:
 
 ```text
-H-inspect       f1009d22633112866c6c6b83c4734512f00c6aa4767daf07644074f932633f0a
-H-status        4eb8753a974ad2769e07ec49df2add0e027554a02c13f0a2aaef304f5562ad87
+H-inspect       aba481516e3990199b5fe0890c68092c78ae894744013ace60514dd456e62ace
+H-status        136b65669deaff617066d01a40f88fed246da2a46d3743b5c67ce5e6026f91a6
 H-list          76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600
 H-dashboard     f3e8abe67fe550c8708e5e7c19322401fb1c951e797f3ee3c667f709d5befc9e
 H-profile-read  b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889
@@ -889,7 +889,13 @@ A conversation frame is:
 `entries` are committed visible entries from the native conversation watch: a window over the conversation's fork-aware history in entry ID order, with head markers such as compaction summaries where they were written. The window holds at most the frame entry bound plus its own margin; when it does not start the transcript, `coverage.complete` is `false` and `nextBefore` continues older through `snapshot` with `before`. A frame never describes its window as complete history. `live` is in-progress assistant/tool output from that watch. The host shows streamed partials and running tool output as soon as Durable adopts them; Durable stores them later (deferred progress), so a crash can lose up to about a second of streamed content. Live IDs include `live:generation` and `live:tool:<callId>`. They must not become committed history. The frame is coalesced current state, not an append-only event stream. Revision ordering applies within the current observation lifetime; a new connection/token starts a new baseline. Source: `extensions/agent/live-frames.ts:15-30,74-140`; `extensions/agent/host-client.ts:697-741`.
 
 `ConversationStatus` includes `{conversationId,identity,busy,lastText,live,inbox,agent,tasks,submissions}` and optional `name`, `owner`, `firstMessage`, `forkSource`, `ownerTaskId`, `awaiting`, `cwd`, `lastTextRole`, `usage`, `timers`, `providerBlock`. `agent` carries `{model?:{provider,modelId},thinkingLevel,extensions:string[],tools:string[],cwd?,instructions?}`. Tasks carry `{id,kind,status,background,owner?,abortRequested}`; submissions carry `{id,type:"input"|"write"|"continue",status,requestId?,entryId?,answerEntryId?,reason?}`; a `continue` submission has no entry. Native `live`, `inbox`, usage, and task statuses belong to the exact declared
-Durable representation. `live.nestedTools` has real task IDs, parent call/task
+Durable representation. Tool calls in status and live frames preserve optional
+string `argumentsError`; terminal call cards show the diagnostic on one line.
+Usage preserves optional boolean `cost.totalFromProvider` in model totals, tool
+totals, generation messages, and nested summaries. Absent or false denotes an
+estimate; true denotes a provider-reported total. Projections do not aggregate
+usage or forward provider-private parsing buffers. Native aggregation remains
+upstream-owned. `live.nestedTools` has real task IDs, parent call/task
 IDs, arguments, progress, and optional terminal summaries. `live.compactionFailure`
 contains its task ID, `trigger`, and error, not a fabricated timestamp.
 `live.runFailure` records why the newest run ended without an answer, including

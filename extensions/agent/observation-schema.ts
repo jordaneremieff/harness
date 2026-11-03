@@ -50,7 +50,7 @@ export const JsonValueSchema: TSchema = Type.Cyclic(
 const jsonObject = Type.Record(string, JsonValueSchema);
 const cursorSchema = jsonObject;
 
-const modelCost = object({ input: number, output: number, cacheRead: number, cacheWrite: number, total: number });
+const modelCost = object({ input: number, output: number, cacheRead: number, cacheWrite: number, total: number, totalFromProvider: Type.Optional(boolean) });
 export const UsageSchema = object({
 	input: number,
 	output: number,

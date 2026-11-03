@@ -10,7 +10,7 @@ import {
 	getMarkdownTheme,
 	type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
-import { Text, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import type { AgentReadingState } from "./dashboard-state.ts";
@@ -64,7 +64,12 @@ export interface ConversationDocument {
 /** Pi has no expansion getter; observe its public setter without replacing native click behavior. */
 class ReadingToolComponent extends ToolExecutionComponent {
 	choice = false;
+	argumentsError?: string;
 	onInvalidate?: () => void;
+	override render(width: number): string[] {
+		const lines = super.render(width);
+		return this.argumentsError === undefined ? lines : [...lines, truncateToWidth(`Arguments error: ${cleanDashboardText(this.argumentsError).replace(/\s+/gu, " ")}`, width)];
+	}
 	override invalidate(): void {
 		super.invalidate();
 		this.onInvalidate?.();
@@ -316,6 +321,7 @@ export class AgentConversation {
 		if (cached?.signature === signature) return cached.component;
 		const retained = cached?.component ?? this.matchedTool(part.name, part.id);
 		const component = retained ?? this.tool(part.name, part.id, part.arguments);
+		component.argumentsError = part.argumentsError;
 		if (retained) {
 			component.updateArgs(part.arguments);
 			this.rendered.delete(component);
