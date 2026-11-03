@@ -165,15 +165,26 @@ need not stop.
 
 `inspect` with `view: "capture"` (and the capture inside `view: "summary"`)
 returns the end of the terminal's screen and retained scrollback, up to
-`maxBytes` as Rex measures JSON-encoded text. Rex itself returns the first part
-of long output; when the output exceeds the bound, the extension reads the last
-`maxBytes` through the same result's continuation and drops a partial leading
-line. The data reports `content`, the byte `total` of the whole output, and the
+`maxBytes` including JSON string quotes. Rex's `max_bytes` measures encoded
+content without those quotes, so each request reserves their two bytes.
+Rex itself returns the first part of long output. The extension uses that
+snapshot's continuation ID and searches only its final bounded byte window
+for the earliest suffix that reaches EOF within the request budget. The search
+takes one read when the initial suffix fits, otherwise a bounded binary search.
+It never scans from the beginning to find a tail.
+
+An arbitrary byte offset can start inside a UTF-8 character. Rex replaces those
+leading continuation bytes in JSON and exposes no raw next-position field.
+The extension therefore uses EOF and the snapshot total to establish the raw
+range, not decoded text length to advance a cursor. It removes only the leading
+replacement bytes established by that range; genuine replacement characters
+remain. Inconsistent continuation identity, totals or text fail the capture.
+The data reports `content`, the byte `total` of the whole output, and the
 `start` and `end` byte offsets the content covers. Local trimming selects whole
-Unicode characters by their actual JSON-encoded byte cost, so escaped text does
-not discard a fitting final marker. Continuation reads are bounded even when
-JSON escaping expands the output. `coverage.truncated` is true
-when earlier output was left out or the end was not reached. The beginning of
+Unicode characters by their actual JSON-encoded byte cost and drops a partial
+leading line when later nonblank lines remain. Escaped text does not discard a
+fitting final marker. `coverage.truncated` is true when earlier output was left
+out or the end was not reached. The beginning of
 long output remains reachable through `rex_native` with the `format` and
 `blob_read` block methods.
 

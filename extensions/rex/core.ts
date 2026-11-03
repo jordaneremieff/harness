@@ -141,10 +141,6 @@ export interface Capture {
 	start: number;
 	end: number;
 }
-/** Continuation reads that assemble a tail when the first bounded reply stops short of the end. */
-// JSON escapes use at most six bytes per raw ASCII byte, plus string quotes.
-const TAIL_READS = 8;
-
 export class RexCore {
 	private readonly transport: RexTransport;
 	private readonly env: Readonly<Record<string, string | undefined>>;
@@ -287,33 +283,38 @@ export class RexCore {
 			context,
 		);
 	}
-	/**
-	 * Read the most recent output up to `maxBytes` (JSON-encoded, as Rex measures it). Rex
-	 * returns the first part of long output, so when output exceeds the bound the end is read
-	 * through the same result's continuation ID from the last `maxBytes` of the whole output.
-	 */
+	/** Read a bounded suffix of one format snapshot without treating replacement text as raw-byte progress. */
 	private async capture(target: ResolvedTarget, context: RexCallContext, maxBytes: number): Promise<Capture> {
+		// Rex's content budget excludes the enclosing JSON string quotes.
+		const pageBytes = maxBytes - 2;
 		const first = object(
-			await this.block("format", { format: "text", trim: true, unwrap: true, max_bytes: maxBytes }, target, context),
+			await this.block("format", { format: "text", trim: true, unwrap: true, max_bytes: pageBytes }, target, context),
 		);
 		const content = typeof first.content === "string" ? first.content : "";
 		const total = typeof first.total === "number" ? first.total : Buffer.byteLength(content);
+		if (!Number.isSafeInteger(total) || total < 0) throw new Error("Rex returned an invalid capture byte total.");
 		if (typeof first.id !== "number" || first.eof === true) return { content, total, start: 0, end: total };
-		let offset = Math.max(0, total - maxBytes);
-		const parts: string[] = [];
-		let eof = false;
-		for (let reads = 0; reads < TAIL_READS && !eof; reads++) {
+		let low = Math.max(0, total - pageBytes);
+		let high = total;
+		let offset = low;
+		let suffix: string | undefined;
+		// EOF anchors the raw end even when an arbitrary starting byte becomes replacement text.
+		// Search only the final pageBytes raw bytes: at most 1 + ceil(log2(pageBytes)) reads.
+		while (low < high) {
 			const part = object(
-				await this.block("blob_read", { id: first.id, offset, max_bytes: maxBytes }, target, context),
+				await this.block("blob_read", { id: first.id, offset, max_bytes: pageBytes }, target, context),
 			);
-			const data = typeof part.data === "string" ? part.data : "";
-			eof = part.eof === true;
-			if (data.length === 0) break;
-			parts.push(data);
-			offset += Buffer.byteLength(data);
+			if (part.id !== first.id || part.total !== total || typeof part.data !== "string" || typeof part.eof !== "boolean")
+				throw new Error("Rex returned an inconsistent capture continuation.");
+			if (part.eof) {
+				suffix = completeUtf8Suffix(part.data, total - offset);
+				high = offset;
+			} else low = offset + 1;
+			offset = Math.floor((low + high) / 2);
 		}
-		const tail = tailText(parts.join(""), maxBytes);
-		return { content: tail, total, start: offset - Buffer.byteLength(tail), end: offset };
+		if (suffix === undefined) throw new Error("Rex continuation did not reach the snapshot end.");
+		const tail = tailText(suffix, maxBytes, high > 0);
+		return { content: tail, total, start: total - Buffer.byteLength(tail), end: total };
 	}
 	/** Best-effort recent output beside a completion result; a capture failure never hides the exit. */
 	private async captureOutput(
@@ -1386,8 +1387,16 @@ function boundedDiagnosticText(value: string, maxBytes: number): string {
 	return unicodePrefix(value, low) + marker;
 }
 
+/** An EOF reply fixes the raw range; each replaced leading continuation byte adds two decoded bytes. */
+function completeUtf8Suffix(text: string, rawBytes: number): string {
+	const replaced = (Buffer.byteLength(text) - rawBytes) / 2;
+	if (!Number.isInteger(replaced) || replaced < 0 || replaced > 3 || !text.startsWith("\ufffd".repeat(replaced)))
+		throw new Error("Rex capture text does not match its raw EOF range.");
+	return text.slice(replaced);
+}
+
 /** The end of `text` whose JSON encoding fits `maxBytes`, starting at a line boundary when one exists. */
-function tailText(text: string, maxBytes: number): string {
+function tailText(text: string, maxBytes: number, partialStart = false): string {
 	let start = text.length;
 	let bytes = 2; // JSON string quotes.
 	while (start > 0) {
@@ -1404,7 +1413,7 @@ function tailText(text: string, maxBytes: number): string {
 	}
 	const value = text.slice(start);
 	const newline = value.indexOf("\n");
-	return start > 0 && newline >= 0 && value.slice(newline + 1).trim().length > 0 ? value.slice(newline + 1) : value;
+	return (start > 0 || partialStart) && newline >= 0 && value.slice(newline + 1).trim().length > 0 ? value.slice(newline + 1) : value;
 }
 function captureTruncated(capture: Capture): boolean {
 	return capture.start > 0 || capture.end < capture.total;
