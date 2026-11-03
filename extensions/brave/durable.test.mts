@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { Duplex } from "node:stream";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models, ToolResultMessage } from "@earendil-works/pi-ai";
@@ -229,7 +229,7 @@ describe("brave durable contribution", () => {
 					Durable.defineTool({
 						name: "inspect_web_results",
 						description: "Inspect nested web results",
-						parameters: Type.Object({}),
+						parameters: obj({}, { open: true }),
 						execute: async (_args, api, context) => {
 							const results = await Promise.all([
 								api.executeTool("web_search", searchArgs, context),

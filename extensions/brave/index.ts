@@ -1,5 +1,6 @@
 /** Stateless web search and bounded public-page reading. */
 
+import type { Static } from "@earendil-works/pi-schema";
 import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, getAgentDir, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { publishSettings } from "./settings.ts";
@@ -44,7 +45,7 @@ export default function registerBraveSearch(pi: ExtensionAPI) {
 		parameters: BRAVE_WEB_READ_PARAMETERS,
 		renderCall: (args, theme, context) => renderReadCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderReadResult(result, options, theme, context),
-		async execute(_toolCallId, params, signal): Promise<WebReadResult> {
+		async execute(_toolCallId, params: Static<typeof BRAVE_WEB_READ_PARAMETERS>, signal): Promise<WebReadResult> {
 			return readWebPage(params, signal);
 		},
 	});
@@ -57,7 +58,7 @@ export default function registerBraveSearch(pi: ExtensionAPI) {
 		parameters: BRAVE_WEB_SEARCH_PARAMETERS,
 		renderCall: (args, theme, context) => renderSearchCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderSearchResult(result, options, theme, context),
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof BRAVE_WEB_SEARCH_PARAMETERS>, signal) {
 			return runWebSearch(params, signal, { agentDir });
 		},
 	});

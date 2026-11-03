@@ -434,7 +434,7 @@ The extension carries no extension-local package manifest. It imports the
 harness package's dependencies: `htmlparser2` (declared in the repository root
 `package.json` dependencies and used by `page-text.ts` for static HTML parsing)
 plus Pi's `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`, and
-`typebox` through the existing peer dependencies. DNS, HTTP/HTTPS, net, TLS,
+`@earendil-works/pi-schema` through the existing peer dependencies. DNS, HTTP/HTTPS, net, TLS,
 crypto, timers, and text decoding use Node built-ins.
 
 ## Verification

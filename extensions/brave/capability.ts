@@ -1,13 +1,13 @@
 /** Shared brave tool surface: schemas, model-facing text, and web_search execution. */
 
-import { Type } from "typebox";
+import { bool, int, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import { type BraveClientOptions, searchBraveWeb, type BraveWebSearchRequest } from "./client.ts";
 import { formatSearchResults } from "./format.ts";
 import { PAGE_LINK_LIMITS } from "./page-links.ts";
 
 /** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
-const StringEnum = <T extends readonly string[]>(values: T, options?: { description?: string; default?: T[number] }) =>
-	Type.Unsafe<T[number]>({
+const StringEnum = <T extends readonly string[]>(values: T, options?: { description?: string; default?: T[number] }): Schema<T[number]> =>
+	({
 		type: "string",
 		enum: values,
 		...(options?.description ? { description: options.description } : {}),
@@ -16,105 +16,105 @@ const StringEnum = <T extends readonly string[]>(values: T, options?: { descript
 
 const FreshnessPattern = "^(pd|pw|pm|py|\\d{4}-\\d{2}-\\d{2}to\\d{4}-\\d{2}-\\d{2})$";
 
-export const BRAVE_WEB_SEARCH_PARAMETERS = Type.Object(
+export const BRAVE_WEB_SEARCH_PARAMETERS = obj(
 	{
-		query: Type.String({
+		query: str({
 			description:
 				"Search query (maximum 400 characters). Supports Brave search operators such as site: and filetype:.",
 			minLength: 1,
 			maxLength: 400,
 		}),
-		count: Type.Optional(
-			Type.Integer({
+		count: opt(
+			int({
 				description: "Web results per page (default 10, maximum 20)",
 				minimum: 1,
 				maximum: 20,
 				default: 10,
 			}),
 		),
-		offset: Type.Optional(
-			Type.Integer({
+		offset: opt(
+			int({
 				description: "Zero-based result page to skip (default 0, maximum 9)",
 				minimum: 0,
 				maximum: 9,
 				default: 0,
 			}),
 		),
-		country: Type.Optional(
-			Type.String({ description: "Two-letter result country code, for example AU or US", pattern: "^[A-Za-z]{2}$" }),
+		country: opt(
+			str({ description: "Two-letter result country code, for example AU or US", pattern: "^[A-Za-z]{2}$" }),
 		),
-		search_lang: Type.Optional(
-			Type.String({
+		search_lang: opt(
+			str({
 				description: "Result language code, for example en or de",
 				minLength: 2,
 				maxLength: 10,
 				pattern: "^[A-Za-z][A-Za-z-]+$",
 			}),
 		),
-		freshness: Type.Optional(
-			Type.String({
+		freshness: opt(
+			str({
 				description: "Page-age filter: pd, pw, pm, py, or YYYY-MM-DDtoYYYY-MM-DD",
 				pattern: FreshnessPattern,
 			}),
 		),
-		safesearch: Type.Optional(
+		safesearch: opt(
 			StringEnum(["off", "moderate", "strict"] as const, {
 				description: "Adult-content filtering (default moderate)",
 				default: "moderate",
 			}),
 		),
-		extra_snippets: Type.Optional(
-			Type.Boolean({
+		extra_snippets: opt(
+			bool({
 				description: "Include up to five additional excerpts per result (default false)",
 				default: false,
 			}),
 		),
-		spellcheck: Type.Optional(
-			Type.Boolean({ description: "Allow Brave to correct the query (default true)", default: true }),
+		spellcheck: opt(
+			bool({ description: "Allow Brave to correct the query (default true)", default: true }),
 		),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 
-export const BRAVE_WEB_READ_PARAMETERS = Type.Object(
+export const BRAVE_WEB_READ_PARAMETERS = obj(
 	{
-		url: Type.String({
+		url: str({
 			description: "Public HTTP(S) URL, without credentials; default ports only",
 			minLength: 1,
 			maxLength: 4096,
 		}),
-		view: Type.Optional(
+		view: opt(
 			StringEnum(["text", "links"] as const, {
 				description:
 					"Output view: text (default) or text/html anchor links. Links view refuses XHTML. Link destinations are not fetched.",
 			}),
 		),
-		find: Type.Optional(
-			Type.String({
+		find: opt(
+			str({
 				description:
 					"Optional case-sensitive literal in normalized retained text or, with view: links, retained labels only. Nonblank, single-line, at most 200 UTF-16 code units; no controls or unpaired surrogates. No regex, case folding, or query normalization. Repeat find for continuation.",
 				minLength: 1,
 				maxLength: 200,
 			}),
 		),
-		excerpt_offset: Type.Optional(
-			Type.Integer({
+		excerpt_offset: opt(
+			int({
 				description:
 					"Zero-based snapshot excerpt index (default 0), also with find. Use returned nextOffset; nonzero offsets require expected_source_id.",
 				minimum: 0,
 				maximum: 131072,
 			}),
 		),
-		link_offset: Type.Optional(
-			Type.Integer({
+		link_offset: opt(
+			int({
 				description:
 					"Zero-based retained link index (default 0), only with view: links. Use returned nextOffset; nonzero offsets require the links expected_source_id. Do not supply excerpt_offset.",
 				minimum: 0,
 				maximum: PAGE_LINK_LIMITS.records,
 			}),
 		),
-		expected_source_id: Type.Optional(
-			Type.String({
+		expected_source_id: opt(
+			str({
 				description:
 					"Source ID from the same view's previous response. Required for nonzero excerpt_offset or link_offset; refuses changed source. Text and link identities are not interchangeable.",
 				minLength: 16,
@@ -122,15 +122,15 @@ export const BRAVE_WEB_READ_PARAMETERS = Type.Object(
 				pattern: "^[a-f0-9]{16}$",
 			}),
 		),
-		max_bytes: Type.Optional(
-			Type.Integer({
+		max_bytes: opt(
+			int({
 				description: "Excerpt or complete-link record byte budget (default 16000, maximum 24000)",
 				minimum: 1000,
 				maximum: 24000,
 			}),
 		),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 
 export const BRAVE_WEB_READ_DESCRIPTION =
