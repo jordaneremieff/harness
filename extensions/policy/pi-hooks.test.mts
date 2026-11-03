@@ -1,4 +1,5 @@
 /** Controlled real Pi dispatcher tests. No provider, credential, or external tool executes. */
+import { bool, int, obj, opt, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -9,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentEvent, AgentTurnContext } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, SessionBoundaryDraft, TurnEndEvent } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+
 import { CombinedAutocompleteProvider } from "@earendil-works/pi-tui";
 import { PACKAGE_CATALOG } from "./catalog.ts";
 import { proposalRevision, RuleRegistry } from "./local-rules.ts";
@@ -45,14 +46,14 @@ const usage = {
 };
 const observe = { op: "exists" as const, path: ["outcome"] };
 const audit = { session: "controlled", model: null, at: new Date().toISOString() };
-const inputSchema = Type.Object(
+const inputSchema = obj(
 	{
-		old: Type.Optional(Type.String()),
-		name: Type.Optional(Type.String()),
-		order: Type.Optional(Type.Integer()),
-		fail: Type.Optional(Type.Boolean()),
+		old: opt(str()),
+		name: opt(str()),
+		order: opt(int()),
+		fail: opt(bool()),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 type ControlledTool = {
 	name: string;
@@ -598,7 +599,7 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				{
 					name: "bash",
 					description: "inert shell fixture",
-					parameters: Type.Object({ command: Type.String() }),
+					parameters: obj({ command: str() }, { open: true }),
 					execute: async () => {
 						assert.match(JSON.stringify(f.requestContexts[0]), /Shell contract snapshot/);
 						executions++;
@@ -822,11 +823,11 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				{
 					name: "gateway",
 					description: "controlled envelope",
-					parameters: Type.Object({
-						server: Type.Optional(Type.String()),
-						operation: Type.String(),
-						arguments: Type.String(),
-					}),
+					parameters: obj({
+						server: opt(str()),
+						operation: str(),
+						arguments: str(),
+					}, { open: true }),
 					execute: async (_id, args) => {
 						received.push({ ...args });
 						return { content: [{ type: "text", text: "received" }], details: {} };
@@ -933,7 +934,7 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				{
 					name: "sample",
 					description: "controlled",
-					parameters: Type.Object({ name: Type.String() }, { additionalProperties: false }),
+					parameters: obj({ name: str() }, { open: false }),
 					execute: async () => {
 						executions++;
 						return { content: [{ type: "text", text: "ok" }], details: {} };
@@ -970,7 +971,7 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				{
 					name: "sample",
 					description: "controlled",
-					parameters: Type.Object({}),
+					parameters: obj({}, { open: true }),
 					execute: async () => ({ content: [{ type: "text", text: "ok" }], details: {} }),
 				},
 			]);
@@ -1010,7 +1011,7 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				{
 					name: "sample",
 					description: "controlled",
-					parameters: Type.Object({}),
+					parameters: obj({}, { open: true }),
 					execute: async () => assert.fail("Denied tool must not execute"),
 				},
 			]);

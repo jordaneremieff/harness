@@ -1,14 +1,15 @@
+import { type Static, bool, int, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+
 import { DEFAULT_LIMITS } from "./catalog.ts";
 import registerPolicy from "./index.ts";
 
 const stringEnum = <const T extends readonly string[]>(values: T) =>
-	Type.Unsafe<T[number]>({ type: "string", enum: [...values] });
+	({ type: "string", enum: [...values] } as Schema<T[number]>);
 
 export const PRODUCT_TOOLS = [
 	"policy_product_request",
@@ -33,6 +34,46 @@ function structuredOutcome(scenario: string): { text: string; details: Record<st
 	if (scenario === "wrong-code") details.code = "OTHER";
 	return { text: `STRUCTURED: ${JSON.stringify(details)}`, details };
 }
+const RequestParams = obj(
+	{ scenario: stringEnum(["valid", "mutated-schema"]), count: int({ minimum: 1, maximum: 8 }) },
+	{ open: false },
+);
+const ResultParams = obj(
+	{
+		scenario: stringEnum([
+			"declared-error",
+			"success",
+			"missing-status",
+			"missing-code",
+			"wrong-code",
+			"words-only",
+			"backend-error",
+		]),
+	},
+	{ open: false },
+);
+const RecoverParams = obj(
+	{
+		path: stringEnum(["primary", "alternate"]),
+		attempt: int({ minimum: 1, maximum: DEFAULT_LIMITS.errorCount + 1 }),
+	},
+	{ open: false },
+);
+const VolumeParams = obj(
+	{
+		bytes: int({ minimum: 0, maximum: Math.ceil(DEFAULT_LIMITS.outputBytes / 2) }),
+		compact: opt(bool()),
+	},
+	{ open: false },
+);
+const PillarsParams = obj(
+	{
+		resource: opt(stringEnum([...PRODUCT_PILLARS_RESOURCES])),
+		draft: opt(str({ maxLength: 8192 })),
+	},
+	{ open: false },
+);
+
 /** The fixture supplies inert tools and seeds no data, rules, or proposals. */
 export function registerProductFixture(pi: ExtensionAPI): void {
 	const dir = join(tmpdir(), `policy-product-eval-${randomUUID()}`);
@@ -64,11 +105,8 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 		name: "policy_product_request",
 		label: "Inert request",
 		description: "Attempt the exact requested scenario and count. No external actions occur.",
-		parameters: Type.Object(
-			{ scenario: stringEnum(["valid", "mutated-schema"]), count: Type.Integer({ minimum: 1, maximum: 8 }) },
-			{ additionalProperties: false },
-		),
-		async execute(_id, args) {
+		parameters: RequestParams,
+		async execute(_id, args: Static<typeof RequestParams>) {
 			executions++;
 			if (!Number.isInteger(args.count)) throw new Error("BACKEND INVALID COUNT");
 			return result(`REQUEST RECEIPT: ${args.count}`);
@@ -80,21 +118,8 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 			label: "Inert structured result",
 			description:
 				"Return synthetic structured evidence. No package rule asserts or corrects these results. No external actions occur.",
-			parameters: Type.Object(
-				{
-					scenario: stringEnum([
-						"declared-error",
-						"success",
-						"missing-status",
-						"missing-code",
-						"wrong-code",
-						"words-only",
-						"backend-error",
-					]),
-				},
-				{ additionalProperties: false },
-			),
-			async execute(_id, args) {
+			parameters: ResultParams,
+			async execute(_id, args: Static<typeof ResultParams>) {
 				executions++;
 				if (args.scenario === "backend-error") throw new Error("BACKEND UNAVAILABLE");
 				const outcome = structuredOutcome(args.scenario);
@@ -105,14 +130,8 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 		name: "policy_product_recover",
 		label: "Inert receipt lookup",
 		description: "Try primary for a synthetic receipt. Alternate uses a different inert path and returns a receipt.",
-		parameters: Type.Object(
-			{
-				path: stringEnum(["primary", "alternate"]),
-				attempt: Type.Integer({ minimum: 1, maximum: DEFAULT_LIMITS.errorCount + 1 }),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(_id, args) {
+		parameters: RecoverParams,
+		async execute(_id, args: Static<typeof RecoverParams>) {
 			executions++;
 			if (args.path === "primary") throw new Error("PRIMARY PATH UNAVAILABLE");
 			return result("ALTERNATE RECEIPT: DEMO-9");
@@ -123,14 +142,8 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 		label: "Inert bounded data",
 		description:
 			"Return an exact bounded number of synthetic ASCII bytes. Compact returns the useful summary instead. Each result is at most half the package output limit.",
-		parameters: Type.Object(
-			{
-				bytes: Type.Integer({ minimum: 0, maximum: Math.ceil(DEFAULT_LIMITS.outputBytes / 2) }),
-				compact: Type.Optional(Type.Boolean()),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(_id, args) {
+		parameters: VolumeParams,
+		async execute(_id, args: Static<typeof VolumeParams>) {
 			executions++;
 			return result(args.compact ? "COMPACT: 2 items" : "x".repeat(args.bytes));
 		},
@@ -141,14 +154,8 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 		label: "Synthetic Pillars corpus",
 		description:
 			"Return the repository's actual Pillars corpus text for one resource: an entry, the inventory, or governance. A draft submission returns a byte receipt and executes nothing; an empty draft is refused. No external actions occur.",
-		parameters: Type.Object(
-			{
-				resource: Type.Optional(stringEnum([...PRODUCT_PILLARS_RESOURCES])),
-				draft: Type.Optional(Type.String({ maxLength: 8192 })),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(_id, args) {
+		parameters: PillarsParams,
+		async execute(_id, args: Static<typeof PillarsParams>) {
 			executions++;
 			if (args.draft !== undefined) {
 				if (args.draft.length === 0) throw new Error("DRAFT REFUSED: EMPTY");
@@ -170,7 +177,7 @@ export function registerProductFixture(pi: ExtensionAPI): void {
 		name: "policy_product_count",
 		label: "Inert execution count",
 		description: "Return the number of business tool executions, excluding this inspection.",
-		parameters: Type.Object({}, { additionalProperties: false }),
+		parameters: obj({}, { open: false }),
 		async execute() {
 			return result(`EXECUTIONS=${executions}`);
 		},

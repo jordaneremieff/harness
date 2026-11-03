@@ -1,9 +1,10 @@
+import { type Static, int, obj, opt, str } from "@earendil-works/pi-schema";
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+
 import type { NamedData } from "./data.ts";
 import registerPolicy from "./index.ts";
 import { namedDataRevision, proposalRevision, RuleRegistry } from "./local-rules.ts";
@@ -293,6 +294,26 @@ async function seed(dir: string): Promise<void> {
 	}
 }
 
+const ShellParams = obj({ command: str({ maxLength: 4096 }) }, { open: false });
+const CallParams = obj(
+	{
+		scenario: str({ maxLength: 40 }),
+		attempt: opt(int({ minimum: 1, maximum: 3 })),
+		oldRoom: opt(str({ maxLength: 128 })),
+		room: opt(str({ maxLength: 128 })),
+	},
+	{ open: false },
+);
+const CodecParams = obj(
+	{
+		server: opt(str({ maxLength: 80 })),
+		operation: str({ maxLength: 80 }),
+		arguments: str({ maxLength: 4096 }),
+	},
+	{ open: false },
+);
+const BindingParams = obj({ value: str({ maxLength: 128 }) }, { open: false });
+
 /** Engine coverage uses synthetic recipes, not evidence of package-default outcomes. */
 export default function policyEvalFixture(pi: ExtensionAPI): void {
 	// No directory exists until session_start, after the runner resolves its model and credentials.
@@ -331,8 +352,8 @@ export default function policyEvalFixture(pi: ExtensionAPI): void {
 		label: "Inert shell request",
 		description:
 			"Echo the exact command as synthetic data. This fixture never starts a shell, Git, a subprocess, or a network request.",
-		parameters: Type.Object({ command: Type.String({ maxLength: 4096 }) }, { additionalProperties: false }),
-		async execute(_id, args) {
+		parameters: ShellParams,
+		async execute(_id, args: Static<typeof ShellParams>) {
 			calls++;
 			return result(`INERT COMMAND:${args.command}`);
 		},
@@ -342,16 +363,8 @@ export default function policyEvalFixture(pi: ExtensionAPI): void {
 		label: "Synthetic policy operation",
 		description:
 			"Run an inert synthetic operation. Use exactly the scenario and arguments requested. Recover returns a receipt; summary returns compact data. No external actions occur.",
-		parameters: Type.Object(
-			{
-				scenario: Type.String({ maxLength: 40 }),
-				attempt: Type.Optional(Type.Integer({ minimum: 1, maximum: 3 })),
-				oldRoom: Type.Optional(Type.String({ maxLength: 128 })),
-				room: Type.Optional(Type.String({ maxLength: 128 })),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(_id, args) {
+		parameters: CallParams,
+		async execute(_id, args: Static<typeof CallParams>) {
 			calls++;
 			if (args.scenario === "retry") throw new Error("NO RECEIPT");
 			const outcome = callOutcomes[args.scenario];
@@ -368,15 +381,8 @@ export default function policyEvalFixture(pi: ExtensionAPI): void {
 		name: "policy_eval_codec",
 		label: "Synthetic encoded operation",
 		description: "Run an inert encoded operation. Supply the exact requested operation and JSON argument string.",
-		parameters: Type.Object(
-			{
-				server: Type.Optional(Type.String({ maxLength: 80 })),
-				operation: Type.String({ maxLength: 80 }),
-				arguments: Type.String({ maxLength: 4096 }),
-			},
-			{ additionalProperties: false },
-		),
-		async execute(_id, args) {
+		parameters: CodecParams,
+		async execute(_id, args: Static<typeof CodecParams>) {
 			calls++;
 			if (args.server !== "primary") return result(`UNTOUCHED:${JSON.stringify(args)}`);
 			let inner: unknown;
@@ -395,8 +401,8 @@ export default function policyEvalFixture(pi: ExtensionAPI): void {
 			name,
 			label: "Synthetic binding operation",
 			description: "Echo a synthetic value without external effects.",
-			parameters: Type.Object({ value: Type.String({ maxLength: 128 }) }, { additionalProperties: false }),
-			async execute(_id, args) {
+			parameters: BindingParams,
+			async execute(_id, args: Static<typeof BindingParams>) {
 				calls++;
 				return result(`EXECUTED:${args.value}`);
 			},
@@ -406,7 +412,7 @@ export default function policyEvalFixture(pi: ExtensionAPI): void {
 		label: "Synthetic execution count",
 		description:
 			"Read the number of synthetic business tool invocations. Inspection and previews do not increment this counter.",
-		parameters: Type.Object({}, { additionalProperties: false }),
+		parameters: obj({}, { open: false }),
 		async execute() {
 			return result(`COUNT=${calls}`);
 		},

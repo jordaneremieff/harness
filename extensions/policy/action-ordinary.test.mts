@@ -1,4 +1,5 @@
 /** Actual SDK sessions with a synthetic provider and local, observable write tools. */
+import { obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import * as sdk from "@earendil-works/pi-coding-agent";
 import * as ai from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+
 import policy from "./index.ts";
 import { RuleRegistry, proposalRevision } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
@@ -33,7 +34,7 @@ async function fixture(
 		mode?: string;
 		hostMode?: "json" | "rpc";
 		extra?: FactsProgram[];
-		schema?: import("typebox").TSchema;
+		schema?: Schema;
 	} = {},
 ) {
 	const root = await mkdtemp(join(tmpdir(), "policy-action-ordinary-"));
@@ -81,7 +82,7 @@ async function fixture(
 				label: name,
 				description: "A harmless local messaging write.",
 				parameters:
-					options.schema ?? Type.Object({ room: Type.String(), text: Type.String() }, { additionalProperties: false }),
+					options.schema ?? obj({ room: str(), text: str() }, { open: false }),
 				execute: async (_id, input) => {
 					writes.push({ tool: name, arguments: structuredClone(input), frozen: Object.isFrozen(input) });
 					return { content: [{ type: "text", text: "saved locally" }], details: { count: writes.length } };
@@ -364,9 +365,9 @@ test("ordinary policy correction refuses an unproved exact-execution identity", 
 	};
 	const f = await fixture({
 		extra: [correction],
-		schema: Type.Object(
-			{ room: Type.String(), old: Type.Optional(Type.String()), text: Type.Optional(Type.String()) },
-			{ additionalProperties: false },
+		schema: obj(
+			{ room: str(), old: opt(str()), text: opt(str()) },
+			{ open: false },
 		),
 	});
 	try {

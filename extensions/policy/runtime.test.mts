@@ -1,10 +1,11 @@
+import { obj, opt, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+
 import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
 import type { NamedData } from "./data.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
@@ -64,9 +65,9 @@ it("binds reset revisions to runtime instance, exact selector, and current perio
 function fixture(
 	programs: RuleRecord[],
 	mode: PolicyMode = "enforce",
-	schema: unknown = Type.Object(
-		{ old: Type.Optional(Type.String()), name: Type.Optional(Type.String()) },
-		{ additionalProperties: false },
+	schema: unknown = obj(
+		{ old: opt(str()), name: opt(str()) },
+		{ open: false },
 	),
 	fail = false,
 	directory = "/unused",
@@ -265,7 +266,7 @@ describe("command-specific refusal guidance", () => {
 			record.definition.note = "Use your selected reader.";
 			record.definition.suggestion = { command: "reader", flags: ["--plain"] };
 			const before = structuredClone(record);
-			const f = fixture([record], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+			const f = fixture([record], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 			t.after(() => f.writer.close());
 			const denied = await f.call("read-call", { command });
 			assert.ok(denied);
@@ -289,7 +290,7 @@ describe("compact command inspection", () => {
 				staleOverride: false,
 			}),
 		);
-		const f = fixture(records, "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		const f = fixture(records, "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		for (const command of ["rg -n -m 12 'x' dir/", "cd /x && rg -n 'a' index.ts | head; echo done"]) {
 			const preview = (await f.runtime.inspect("preview", { tool: "bash", input: { command } }, f.ctx)) as {
@@ -307,7 +308,7 @@ describe("compact command inspection", () => {
 	});
 
 	it("names the matched nested segment without unrelated command text", async (t) => {
-		const f = fixture([shellRule()], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		const f = fixture([shellRule()], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		const denied = await f.call("nested", {
 			command: "printf safe && echo ready | wc -c; printf '%s' $(cat notes.md)",
@@ -326,7 +327,7 @@ describe("compact command inspection", () => {
 		const blocker = rule("restriction", {
 			phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "skip",
 		});
-		const f = fixture([guide, blocker], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		const f = fixture([guide, blocker], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		const denied = await f.call("mixed", { command: "cat notes.md" });
 		assert.equal(denied?.reason, "[policy] Rule restriction.");
@@ -337,7 +338,7 @@ describe("compact command inspection", () => {
 			...shellRule(),
 			matcher: { kind: "declarative", language: "command-shape/v1", spec: { command: "scan" } },
 		};
-		const f = fixture([blocker], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		const f = fixture([blocker], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		const denied = await f.call("bounded", {
 			command: `echo unrelated; scan --token sample-private-value ${"界".repeat(500)}`,
@@ -373,7 +374,7 @@ function correctedBash(blocker: RuleRecord, mode: PolicyMode = "enforce", target
 	const f = fixture(
 		[correction, blocker],
 		mode,
-		Type.Object({ command: Type.String() }, { additionalProperties: false }),
+		obj({ command: str() }, { open: false }),
 		false,
 		"/unused",
 		"bash",
@@ -396,7 +397,7 @@ async function completed(f: ReturnType<typeof fixture>, id: string, error: boole
 
 describe("pre-call shell guidance", () => {
 	const shellFixture = (mode: PolicyMode = "enforce") =>
-		fixture([shellRule()], mode, Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		fixture([shellRule()], mode, obj({ command: str() }, { open: true }), false, "/unused", "bash");
 	it("projects once before tools, without consuming rule guidance state", async () => {
 		const f = shellFixture();
 		const before = await f.views();
@@ -739,7 +740,7 @@ describe("effective command checks", () => {
 		const f = fixture(
 			[shellRule("steer")],
 			"enforce",
-			Type.Object({ command: Type.String() }),
+			obj({ command: str() }, { open: true }),
 			false,
 			"/unused",
 			"bash",
@@ -880,7 +881,7 @@ describe("normalized execution plans", () => {
 		for (const active of [true, false, "unknown"] as const) {
 			const record = shellRule("steer");
 			record.definition.applicability = { op: "eq", path: ["context", "tools", "read", "active"], value: true };
-			const f = fixture([record], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+			const f = fixture([record], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 			if (active === "unknown")
 				f.pi.getAllTools = () => {
 					throw new Error("Catalog unavailable");
@@ -929,7 +930,7 @@ describe("normalized execution plans", () => {
 	});
 	it("invalidates admitted effects when an operator changes the effective action on the same record object", async () => {
 		const record = shellRule("steer");
-		const f = fixture([record], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+		const f = fixture([record], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		await f.call("changed-action", { command: "cat notes.md" });
 		const before = (await f.views())[0].generation;
 		record.override = {
@@ -980,7 +981,7 @@ describe("recorded call explanations", () => {
 			onUnavailable: "deny",
 			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] }, anyFlags: ["--force", "-f"] },
 		};
-		const f = fixture([commandRule], "enforce", Type.Object({ command: Type.String() }), false, dir, "bash");
+		const f = fixture([commandRule], "enforce", obj({ command: str() }, { open: true }), false, dir, "bash");
 		const input = { command: "git push $FLAGS" };
 		type Evaluation = { truth: string; unavailableReasons: string[] };
 		const preview = (await f.runtime.inspect("preview", { tool: "bash", input }, f.ctx)) as {
@@ -1013,7 +1014,7 @@ describe("recorded call explanations", () => {
 				}),
 			],
 			"observe",
-			Type.Object({}),
+			obj({}, { open: true }),
 			false,
 			dir,
 		);
@@ -1062,7 +1063,7 @@ describe("input transactions and modes", () => {
 				onUnavailable: "deny",
 				spec: { command: "git", cli: { profile: "git", subcommand: ["push"] }, anyFlags: ["--force"] },
 			};
-			const f = fixture([commandRule], "enforce", Type.Object({ command: Type.String() }), false, "/unused", "bash");
+			const f = fixture([commandRule], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 			const denial = await f.call("oversize", { command: `git push ${"x".repeat(300000)}` });
 			assert.equal(denial?.block === true, effect === "block");
 			await f.writer.close();
@@ -1107,7 +1108,7 @@ describe("input transactions and modes", () => {
 			],
 			[rename()],
 		]) {
-			const f = fixture(records, "enforce", Type.Object({ old: Type.String() }, { additionalProperties: false }));
+			const f = fixture(records, "enforce", obj({ old: str() }, { open: false }));
 			const input = { old: "x" };
 			assert.equal((await f.call("a", input))?.block, true);
 			assert.deepEqual(input, { old: "x" });

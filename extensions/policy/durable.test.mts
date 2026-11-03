@@ -7,6 +7,7 @@
  * declared replay classes through real interruption and reopen, and the native
  * hook mapping for deny, guide, and observation decisions.
  */
+import { compile, int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -21,11 +22,14 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import * as DurableModule from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { Type } from "typebox";
+
 import { createPolicyDurableExtension, durableResultDisposition, type PolicyDurableHost } from "./durable.ts";
 import { makeRuleAudit, proposalRevision, RuleRegistry } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
 import { localDate } from "./store.ts";
+import { PolicyProposeParams, PolicyRulesParams, validateProposal } from "./tools.ts";
+import { PolicyControlParams } from "./control.ts";
+import { DraftCasesSchema } from "./authoring.ts";
 import { readTelemetry } from "./telemetry.ts";
 
 const context = BACKGROUND_CONTEXT;
@@ -146,7 +150,7 @@ function probeExtension(counter: { executed: number }): DurableModule.Extension 
 			DurableModule.defineTool({
 				name: "probe",
 				description: "A probe tool for durable policy tests",
-				parameters: Type.Object({}),
+				parameters: obj({}, { open: true }),
 				execute: async () => {
 					counter.executed += 1;
 					return { output: [{ type: "text", text: "probe ran" }] };
@@ -444,7 +448,7 @@ test("nested tools-only and deferred calls receive schema-validated policy corre
 	const tools = ["tools_only", "deferred_probe"].map((name) => DurableModule.defineTool({
 		name,
 		description: "Return a corrected fixture value",
-		parameters: Type.Object({ old: Type.Optional(Type.String()), value: Type.Optional(Type.String()) }, { additionalProperties: false }),
+		parameters: obj({ old: opt(str()), value: opt(str()) }, { open: false }),
 		...(name === "tools_only" ? { callers: ["tools"] as const } : { deferred: true as const }),
 		execute: async (args) => {
 			assert.ok(typeof args.value === "string");
@@ -486,7 +490,7 @@ test("the shell contract card reaches a model when bash is callable only", async
 		name: "nested-shell",
 		tools: [DurableModule.defineTool({
 			name: "bash", description: "A nonexecuting shell fixture", callers: ["tools"],
-			parameters: Type.Object({ command: Type.String() }),
+			parameters: obj({ command: str() }, { open: true }),
 			execute: async () => ({ output: [{ type: "text", text: "fixture only" }] }),
 		})],
 	}) });
@@ -515,13 +519,13 @@ test("native result.content rules preserve structured values and mark nested err
 		tools: [DurableModule.defineTool({
 			name: "structured_probe",
 			description: "Return separate output and structured data",
-			parameters: Type.Object({}),
-			structuredOutputSchema: Type.Object({ value: Type.Number() }),
+			parameters: obj({}, { open: true }),
+			structuredOutputSchema: obj({ value: num() }, { open: true }),
 			execute: async () => ({ output: [{ type: "text", text: "review this result" }], structuredOutput: { value: 7 }, details: { label: "fixture" } }),
 		}), DurableModule.defineTool({
 			name: "nested_probe",
 			description: "Read a nested result at the public API",
-			parameters: Type.Object({}),
+			parameters: obj({}, { open: true }),
 			execute: async (_args, api, callContext) => {
 				const result = await api.executeTool("structured_probe", {}, callContext);
 				assert.equal(result.isError, true);
@@ -562,7 +566,7 @@ test("native telemetry preserves the full call interval from the input memo", as
 	const fixture = await openFixture({ extension: DurableModule.defineExtension({
 		name: "clock-probe",
 		tools: [DurableModule.defineTool({
-			name: "clock_probe", description: "Advance a controlled clock", parameters: Type.Object({}),
+			name: "clock_probe", description: "Advance a controlled clock", parameters: obj({}, { open: true }),
 			execute: async () => {
 				now += 500;
 				return { output: [{ type: "text", text: "clock advanced" }] };
@@ -586,6 +590,41 @@ test("native telemetry preserves the full call interval from the input memo", as
 		assert.equal(record?.durationMs, 750);
 		assert.equal(record?.at, new Date(start).toISOString());
 	} finally { await fixture.close(); }
+});
+
+test("policy parameter schemas preserve optional CLI fields and bounded record keywords", () => {
+	const proposal = compile(JSON.parse(JSON.stringify(PolicyProposeParams)));
+	const input = {
+		operation: "add", id: "local.push", purpose: "Protect updates.", authority: "exact",
+		reason: "Preserve explicit approval.", note: "Inspect the push.", onUnavailable: "deny",
+		match: { command: "git", cli: { profile: "git", subcommand: ["push"] } },
+	};
+	assert.equal(proposal.check(input), true);
+	assert.doesNotThrow(() => validateProposal(input));
+	assert.equal(proposal.check({ ...input, extra: true }), false);
+	assert.equal(proposal.check({ ...input, match: { ...input.match, flags: [1] } }), false);
+	const indexed = (at: unknown) => ({ ...input, match: { ...input.match, operands: { at } } });
+	assert.equal(proposal.check(indexed({ "0": ["origin"] })), true);
+	assert.equal(proposal.check(indexed({ "0": [1] })), false);
+	// The key pattern constrains matched values; unmatched keys remain open at transport admission.
+	assert.equal(proposal.check(indexed({ other: 1 })), true);
+	assert.throws(() => validateProposal(indexed({ "0": [1] })));
+
+	const entries = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, index) => [`k${index}`, index]));
+	const rules = compile(JSON.parse(JSON.stringify(PolicyRulesParams)));
+	assert.equal(rules.check({ draft: entries(16), input: entries(128) }), true);
+	assert.equal(rules.check({ draft: entries(17) }), false);
+	assert.equal(rules.check({ input: entries(129) }), false);
+	assert.equal(rules.check({ input: [] }), false);
+	const control = compile(JSON.parse(JSON.stringify(PolicyControlParams)));
+	const artifact = (data: unknown) => ({ operation: "data-preview", artifact: { data, expectedRevision: null } });
+	assert.equal(control.check(artifact(entries(12))), true);
+	assert.equal(control.check(artifact(entries(13))), false);
+	assert.equal(control.check({ operation: "mode", extra: true }), false);
+	const cases = compile(JSON.parse(JSON.stringify(DraftCasesSchema)));
+	const checkCase = (input: unknown) => [{ name: "bounded", steps: [{ kind: "call", at: 0, turn: 0, tool: "probe", input }] }];
+	assert.equal(cases.check(checkCase(entries(128))), true);
+	assert.equal(cases.check(checkCase(entries(129))), false);
 });
 
 test("every tool declares its replay class explicitly", async () => {
@@ -614,6 +653,20 @@ test("every tool declares its replay class explicitly", async () => {
 		assert.ok(rulesSchema);
 		assert.equal(rulesSchema.structuredContent, undefined);
 		assert.ok(rulesSchema.rules);
+		for (const entry of fixture.registry.snapshot().tools()) {
+			const schema = entry.tool.structuredOutputSchema;
+			assert.ok(schema);
+			const check = compile(schema);
+			if (entry.tool.name === "policy_rules") {
+				assert.equal(check.check({ rules: 0, pending: 0, ruleStoreDegraded: false, ruleStorePath: "rules.jsonl", extra: true }), true);
+				assert.equal(check.check({ rules: 0 }), false);
+			}
+			if (entry.tool.name === "policy_control") {
+				assert.deepEqual(schema, { type: "object", patternProperties: { "^.*$": {} } });
+				assert.equal(check.check({ arbitrary: { nested: true } }), true);
+				assert.equal(check.check([]), false);
+			}
+		}
 	} finally {
 		await fixture.close();
 	}
@@ -746,7 +799,7 @@ test("native read redirects preserve rule guidance and append concrete calls", a
 		tools: ["bash", "read"].map((name) => DurableModule.defineTool({
 			name,
 			description: "A synthetic reader probe.",
-			parameters: Type.Object({ command: Type.Optional(Type.String()) }),
+			parameters: obj({ command: opt(str()) }, { open: true }),
 			execute: async () => { executed++; return { output: [{ type: "text", text: "unexpected execution" }] }; },
 		})),
 	});
@@ -863,7 +916,7 @@ for (const scenario of ["tool_unavailable", "invalid_arguments", "blocked"] as c
 			tools: [DurableModule.defineTool({
 				name: "host_probe",
 				description: "A strictly typed local probe.",
-				parameters: Type.Object({ count: Type.Integer() }, { additionalProperties: false }),
+				parameters: obj({ count: int() }, { open: false }),
 				execute: async () => { executed++; return { output: [] }; },
 			})],
 			hooks: scenario === "blocked" ? [DurableModule.hook(DurableModule.ToolTask, {

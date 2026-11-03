@@ -1,3 +1,4 @@
+import { type Static, bool, num, obj, opt } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -7,7 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { Context, ToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionFactory, ToolResultEvent } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+
 import type { RuleSnapshot } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
 import type { FactsProgram } from "./program.ts";
@@ -65,6 +66,8 @@ function guidance(state?: FactsProgram["state"], value = guide): RuleRecord {
 		...(state ? { state } : {}),
 	});
 }
+
+const SampleParams = obj({ fail: opt(bool()) }, { open: true });
 
 async function fixture(
 	options: {
@@ -131,11 +134,11 @@ async function fixture(
 				name,
 				label: name,
 				description: "Return controlled data.",
-				parameters: Type.Object({ fail: Type.Optional(Type.Boolean()) }),
+				parameters: SampleParams,
 				...(name === "sample_structured"
-					? { outputSchema: Type.Object({ value: Type.Number(), failed: Type.Boolean() }) }
+					? { outputSchema: obj({ value: num(), failed: bool() }, { open: true }) }
 					: {}),
-				async execute(_id, input) {
+				async execute(_id, input: Static<typeof SampleParams>) {
 					const value = { value: 7, failed: input.fail === true };
 					return {
 						content: [{ type: "text", text: "sample result" }],

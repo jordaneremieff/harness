@@ -1,4 +1,5 @@
 /** Native task hooks with local side effects and no provider credentials. */
+import { obj, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import * as Durable from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { Type } from "typebox";
+
 import { createPolicyDurableExtension, type PolicyDurableHost } from "./durable.ts";
 import { RuleRegistry, proposalRevision } from "./local-rules.ts";
 import { normalizeDataArtifact } from "./data-import.ts";
@@ -117,7 +118,7 @@ async function fixture(
 					deferred: options.deferred ? true : undefined,
 					parameters:
 						options.schema ??
-						Type.Object({ room: Type.String(), text: Type.String() }, { additionalProperties: false }),
+						obj({ room: str(), text: str() }, { open: false }),
 					...(options.prepare ? { prepareArguments: options.prepare } : {}),
 					execute: async (args, api, ctx) => {
 						writes.push({ tool: name, arguments: structuredClone(args) });
