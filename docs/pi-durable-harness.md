@@ -218,8 +218,9 @@ adopts them as one host transition with no compatibility path for 1.4.0:
 
 ### Native schema package
 
-Checked on 2026-11-02. `@earendil-works/pi-schema` 1.5.0 is published on npm
-and installed in this checkout. It supplies plain JSON Schema builders (`str`,
+Checked on 2026-11-03 against the installed packages.
+`@earendil-works/pi-schema` 1.5.0 is installed in this checkout. It supplies
+plain JSON Schema builders (`str`,
 `num`, `int`, `bool`, `nul`, `unknown`, `lit`, `oneOf`, `obj`, `opt`, `arr`,
 `tuple`, `map`, `union`, `nullable`, `bytes`), a `Static` type, and
 `compile(schema, options)`, which validates JSON Schema drafts 2020-12 and 7
@@ -227,33 +228,43 @@ without code generation. A `Validator` supplies `check` and `errors` with JSON
 Pointer paths; `{ coerce: true }` adds `coerce` and `parse`. Format checks are
 in the optional `./formats` export. The package has no runtime dependencies.
 AI, agent-core, Durable, and Chord depend on it. Sources:
-`pi-schema/{package.json,README.md,dist/builders.d.ts}`.
+`pi-schema/{package.json,README.md,dist/builders.d.ts}` and
+`{pi-ai,pi-agent-core,pi-durable,chord}/package.json`.
 
-The harness adopts it with one rule:
+All harness-owned schemas use pi-schema, including ordinary tool `parameters`
+and `outputSchema`, native tools, stored artifacts, host protocols, policy data,
+profiles, tests and fixtures. Use public builders and `Static`, `Schema` and
+`JsonSchema`; use typed plain JSON Schema for constructs the builders do not
+express. TypeBox remains only as Pi's own dependency, not a harness dependency
+or schema-authoring API. No facade, dual implementation or pre-1.5 fallback
+belongs in the harness.
 
-- Tool parameter schemas passed to `pi.registerTool` (`parameters` and
-  `outputSchema`) stay TypeBox, imported from `typebox`. The host's
-  `ToolDefinition` types parameters with TypeBox `Static`
-  (`dist/core/extensions/types.d.ts` imports `Static` and `TSchema` from
-  `typebox`). pi-schema's `Schema` brand is a type-level symbol that TypeBox
-  `Static` does not see, so a pi-schema builder types its arguments as
-  `unknown` there (`pi-schema/dist/builders.d.ts`, `Schema` and `Static`).
-  The published AI root no longer exports TypeBox, and its `StringEnum`
-  returns a pi-schema `Schema`; extensions build string enums with TypeBox.
-- Validation of JSON that is not a tool parameter (settings, stored artifacts,
-  host protocol payloads, policy data, profiles) uses pi-schema `compile()`.
-  A schema shared with a tool parameter stays TypeBox and is compiled with
-  pi-schema, because TypeBox schemas are JSON Schema.
-- No compatibility paths, dual readers, or version branches serve the 1.4.0
-  host.
+Ordinary `ToolDefinition` still imports `Static` and `TSchema` from `typebox`
+(`dist/core/extensions/types.d.ts`). Its parameter constraint accepts pi-schema
+objects, but TypeBox `Static` infers `unknown` for them. Explicitly type each
+ordinary `execute` parameter with pi-schema `Static<typeof Params>`. Renderers
+receive `unknown` and use guards for raw or partial arguments; they do not cast
+those arguments to validated input. The host owns argument coercion and
+validation. Module-owned validators use `compile()` for their own data boundaries.
 
-Adopt per consumer rather than replace names mechanically. Input type
-inference, recursive references, diagnostic paths and messages, unknown-property
-rules (`obj` is closed unless `{ open: true }`), and string-bound units affect
-suitability. pi-schema bounds strings by code points; the Pillars draft
-contract uses TypeBox graphemes. Keep explicit grapheme contracts intact
-instead of silently changing their accepted text. pi-schema treats `format` as
-an annotation unless the formats entry is supplied.
+The published AI root no longer exports TypeBox. Its `./compat` export remains
+public, and Pi's extension loader maps both names to an extension view that
+supplies TypeBox `Type`, `Static`, `TSchema` and `StringEnum`. That upstream view
+does not change the harness authoring rule. Sources:
+`pi-ai/{package.json,dist/index.d.ts}` and
+`dist/core/extensions/{loader.js,pi-ai-extension-view.d.ts,types.d.ts}`.
+
+Preserve each consumer's accepted values, required fields, validation ownership
+and structural requirements. `obj()` is closed unless `{ open: true }`; retain
+`opt()` wrappers when composing property maps. `lit()` emits `const`, and
+`oneOf()` emits `enum`, without an explicit type. Provider-facing string enums
+that require `type: "string"` use typed plain JSON Schema. Records with pattern
+or property-count keywords and recursive references also use typed plain JSON
+Schema. Report real identity changes rather than preserve obsolete hashes.
+
+pi-schema string bounds count code points. The Pillars draft boundary preserves
+its grapheme-based limit with an extension-local counter. pi-schema treats
+`format` as an annotation unless the formats entry is supplied.
 
 ## Native host integration contracts
 
@@ -330,8 +341,9 @@ Source: `dist/core/extensions/loader.js`.
 A peer declaration alone does not supply one of those dependencies.
 Package-manager production installs omit development and automatic peer
 installation; current mechanisms are in `dist/core/package-manager.js`.
-The host's installation binding redirects only its declared Pi peers and
-TypeBox (`extensions/agent/installation-binding.ts`).
+The host's installation binding redirects only its declared Pi peers:
+coding-agent, agent-core, AI and TUI. pi-schema stays checkout-owned; TypeBox
+is not a bound package (`extensions/agent/installation-binding.ts`).
 
 CLI startup supplies codemode, tool-search, MCP, and llama.cpp built-in
 factories. SDK hosts explicitly supply the factories they need, including

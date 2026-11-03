@@ -128,7 +128,8 @@ The harness is a Pi package. `package.json` declares the resources under the
   peer ranges are wildcards; the lockfile records the versions used for
   repository checks.
 - Pi's extension loader binds the core AI, agent, coding-agent, TUI,
-  and TypeBox imports to its running installation. Chord, Pi Durable,
+  and upstream TypeBox imports to its running installation. Harness-owned
+  schemas use pi-schema instead of TypeBox. Chord, Pi Durable, pi-schema,
   Codemode, and MCP resolve through declared runtime dependencies. A peer
   declaration alone does not establish loader binding. The [session host roles](conventions/session-host-roles.md)
   distinguish the ordinary primary from independent Durable storage hosts;

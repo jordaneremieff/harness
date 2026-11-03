@@ -212,7 +212,9 @@ surface. A model answer or an idle root does not prove publication succeeded.
   `hook`, `defineDoc`, `defineTask`, `configure`, entry and task tokens) from
   `host.durable`. Import the package only for types. Active extensions load from
   separate worktrees whose dependency trees hold separate copies of the package.
-- Import `typebox` and `@earendil-works/pi-ai` as an ordinary extension does.
+- Import schema builders and types from `@earendil-works/pi-schema`, which the
+  checkout owns. Import `@earendil-works/pi-ai` through the selected Pi installation
+  as an ordinary extension does.
 - `create()` uses no ordinary session API: no `ExtensionContext`,
   `SessionManager`, `pi.sendMessage()`, or ordinary events. Domain functions
   inside the slice may serve both entrypoints.

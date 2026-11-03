@@ -2027,11 +2027,11 @@ a token request after close.
   attachment does not restart it.
 - The host process binds the extension's imports of the repository's peer
   packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`,
-  `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, and `typebox`, with their
+  `@earendil-works/pi-ai`, and `@earendil-works/pi-tui`, with their
   subpaths) to that caller installation before it loads any host module. A host
   therefore runs the same Pi packages as its caller, and the checkout's own
-  `node_modules` does not need to contain them. Installed dependencies such as
-  Pi Durable keep their ordinary resolution. A host whose installation cannot
+  `node_modules` does not need to contain them. Checkout-owned dependencies such as
+  Pi Durable and pi-schema keep their ordinary resolution. A host whose installation cannot
   supply a peer package exits before it takes the writer claim.
 - Each storage has one writer claim. The process takes it before it opens
   SQLite or resumes the Durable scheduler. Every existing claim refuses a second
@@ -2120,12 +2120,14 @@ entries, documents, compaction, and outcomes. The extension owns process
 exclusivity, discovery, controls, delivery, and presentation. It does not run an
 ordinary `AgentSession` behind a Durable transcript.
 
-The package declares Pi Durable, Codemode, MCP, and Chord as runtime dependencies.
+The package declares Pi Durable, Codemode, MCP, Chord, and pi-schema as runtime dependencies.
 Core coding-agent services come from the primary's selected public Pi package
 entrypoint. The host requires Pi and Durable 1.5: it observes stored commits
 with `observeCommits()`, reads the task graph and conversation windows through
 watches and synchronous observers, and validates stored and protocol JSON with
-`@earendil-works/pi-schema`. Tool parameter and output schemas stay TypeBox.
+`@earendil-works/pi-schema`. Ordinary and native tool parameter and output schemas
+use the same package. Ordinary `execute` arguments use its `Static` type explicitly;
+renderers use `unknown` with guards for raw or partial arguments.
 Work that host crashes cut off at Durable's restart limit ends with a terminal
 outcome (`runFailure`, `compactionFailure`, or a tool error result); the host
 does not park or retry it. A model request in flight when a host died counts as

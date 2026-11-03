@@ -252,7 +252,7 @@ Replace `packageDir` with the installation selected by the server's configured `
 
 Preserve `trust`, `ownerId`, and the complete `independent` object exactly. Explicit trust participates in the owner's normal trust resolver. If independent metadata exists, `independent.projectTrusted` supplies the prioritized resolver instead. An unresolved normal decision follows the retained owner chain, not the Primary displayed in the browser. Without trust-requiring project resources, normal resolution uses the saved decision, including false, or defaults to true when absent. Explicit trust retains priority. Do not replace absent trust with false, force true, fabricate an owner, or omit independent metadata. Source: `extensions/agent/durable-runtime.ts:55–79`; `durable-services.ts:553–564`; `trust-support.ts:73–109`; installed coding-agent `dist/core/resource-loader.js:352–366`.
 
-Before dynamically loading host modules, the runner binds coding-agent, agent-core, ai, tui, and typebox imports originating under the Agent source root to the selected installation. Durable, Codemode, MCP, and Chord remain dependencies of the configured owner checkout; the binding does not redirect every Pi package. Validate the catalog identity, exact database path under the configured durable catalog root, and existing canonical regular-file/directory paths before spawn. Source: `extensions/agent/{durable-runner,installation-binding,host-protocol}.ts`.
+Before dynamically loading host modules, the runner binds coding-agent, agent-core, AI, and TUI imports originating under the Agent source root to the selected installation. Durable, Codemode, MCP, Chord, and pi-schema remain dependencies of the configured owner checkout; the binding does not redirect every Pi package. Validate the catalog identity, exact database path under the configured durable catalog root, and existing canonical regular-file/directory paths before spawn. Source: `extensions/agent/{durable-runner,installation-binding,host-protocol}.ts`.
 
 A live same-host writer claim requires attach and negotiation without a spawn. Unknown and proven-dead claims refuse acquisition. Launch one detached runner only for an absent claim, with ignored stdin and drained stdout/stderr. Orphan-claim recovery requires all relevant writers and launchers stopped before offline removal; online PID, token or inode checks do not authorise removal. The runner, not the consumer, acquires and releases its writer claim. Consumers never remove, rewrite, or lock claims. Concurrent starts for one storage join the same attempt; repeated request IDs retain the same outcome. If another process wins the claim, its live ownership remains authoritative and the consumer attaches to that owner. It never signals the competing owner. Source: `extensions/agent/{claims,host-process,host-client}.ts`.
 
@@ -324,32 +324,30 @@ contract runtime values use these exact closed schemas:
 
 ```typescript
 import { hostFamily, method, remote } from "@earendil-works/chord";
-import { Type } from "typebox";
+import { bool, lit, obj, opt, str, union, unknown } from "@earendil-works/pi-schema";
 
 const Endpoint = remote("pi.agent.endpoint", {
   version: 1, host: hostFamily("pi.agent:", "serverId"),
-  input: Type.Object({ serverId: Type.String() }, { additionalProperties: false }),
+  input: obj({ serverId: str() }),
   variants: { default: { methods: {
-    request: method(Type.Object({
-      method: Type.String({ minLength: 1, maxLength: 128 }),
-      params: Type.Optional(Type.Unknown()),
-      requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })),
-      contract: Type.Optional(Type.Unknown()),
-    }, { additionalProperties: false }),
-    Type.Object({ value: Type.Optional(Type.Unknown()) }, { additionalProperties: false })),
+    request: method(obj({
+      method: str({ minLength: 1, maxLength: 128 }),
+      params: opt(unknown()),
+      requestId: opt(str({ minLength: 1, maxLength: 128 })),
+      contract: opt(unknown()),
+    }), obj({ value: opt(unknown()) })),
   } } },
 });
 
 const Feed = remote("pi.agent.feed", {
   version: 1, host: hostFamily("pi.agent:", "serverId"),
-  input: Type.Object({
-    serverId: Type.String(),
-    kind: Type.Union([Type.Literal("changes"), Type.Literal("observation")]),
-    token: Type.Optional(Type.String()),
-  }, { additionalProperties: false }),
+  input: obj({
+    serverId: str(),
+    kind: union([lit("changes"), lit("observation")]),
+    token: opt(str()),
+  }),
   variants: { default: { state: {
-    value: Type.Object({ ready: Type.Boolean(), value: Type.Optional(Type.Unknown()) },
-      { additionalProperties: false }),
+    value: obj({ ready: bool(), value: opt(unknown()) }),
   } } },
 });
 ```
