@@ -1,7 +1,7 @@
 /** Child writer that stops with retained tool work and queued input. */
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { defineTool } from "@earendil-works/pi-durable";
 import { DurableHost } from "./durable-host.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
@@ -10,7 +10,7 @@ import { completed, fixtureProvider, fixtureRegistry, hostOptions, toolCallMessa
 async function main(): Promise<void> {
 	const [storagePath, storageId, effectsPath] = process.argv.slice(2);
 	const tool = defineTool({
-		name: "retained-gate", description: "Block with retained work.", parameters: Type.Object({}),
+		name: "retained-gate", description: "Block with retained work.", parameters: obj({}, { open: true }),
 		execute: async () => {
 			appendFileSync(effectsPath, "tool\n");
 			process.stdout.write("TOOL\n");

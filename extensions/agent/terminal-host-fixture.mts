@@ -7,7 +7,7 @@ import type { Api, Model, StreamOptions, TranscriptContext } from "@earendil-wor
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { defineTool, ProviderDoc, type ConversationId, type SubmissionId } from "@earendil-works/pi-durable";
 import * as Durable from "@earendil-works/pi-durable";
-import { Type } from "typebox";
+import { str, obj } from "@earendil-works/pi-schema";
 import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { boundCatalogView } from "./catalog-view.ts";
 import { DurableHost, type DurableCommandHost } from "./durable-host.ts";
@@ -112,7 +112,7 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 			const tool = defineTool({
 				name: "terminal-gate",
 				description: "Wait for an explicit test release.",
-				parameters: Type.Object({ marker: Type.String() }),
+				parameters: obj({ marker: str() }, { open: true }),
 				replay: "unsafe",
 				async execute(args, api, context) {
 					const gate = gates.get(args.marker);

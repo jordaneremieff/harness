@@ -45,7 +45,7 @@ function wrapperSource(scenario: PrimaryScenario, indexPath: string): string {
 		: "";
 	const after = scenario === "abort-after" ? '\t\t\tpi.on("turn_end", (_event, ctx) => { ctx.abort(); });' : "";
 	return `import register from ${JSON.stringify(indexPath)};
-import { Type } from "typebox";
+import { obj } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@earendil-works/pi-schema")))};
 export default function (pi) {
 ${before}
 ${priorDrafts}
@@ -55,7 +55,7 @@ ${collision}
 		name: "batch_evidence",
 		label: "Batch evidence",
 		description: "Return sibling evidence",
-		parameters: Type.Object({}),
+		parameters: obj({}, { open: true }),
 		async execute() {
 ${after}
 			return { content: [{ type: "text", text: "SIBLING_EVIDENCE" }] };

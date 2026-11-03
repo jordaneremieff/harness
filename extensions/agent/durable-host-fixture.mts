@@ -10,7 +10,7 @@ import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessage, type Models } from "@earendil-works/pi-ai";
 import { createRegistry, defineExtension, defineTool, type JsonObject, type Registry, type ToolRegistration } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { DurableHost, type DurableHostOptions } from "./durable-host.ts";
 
@@ -71,7 +71,7 @@ export function slowEffectTool(sideEffectPath: string, rerunPath?: string, hang 
 	return defineTool({
 		name: "slow-effect",
 		description: "Record one external effect, then block.",
-		parameters: Type.Object({}),
+		parameters: obj({}, { open: true }),
 		execute: async () => {
 			appendFileSync(sideEffectPath, "effect\n");
 			if (rerunPath !== undefined) appendFileSync(rerunPath, "rerun\n");
@@ -87,7 +87,7 @@ export function gateTool(release: Promise<void>, onStarted?: () => void): ToolRe
 	return defineTool({
 		name: "gate",
 		description: "Wait for the test to release the gate.",
-		parameters: Type.Object({}),
+		parameters: obj({}, { open: true }),
 		execute: async (_args, _api, context) => {
 			onStarted?.();
 			await new Promise<void>((resolve) => {
@@ -105,7 +105,7 @@ export function hangingTool(onStarted?: () => void): ToolRegistration {
 	return defineTool({
 		name: "hang",
 		description: "Block until aborted.",
-		parameters: Type.Object({}),
+		parameters: obj({}, { open: true }),
 		execute: async () => {
 			onStarted?.();
 			await new Promise<void>(() => {});
@@ -148,7 +148,7 @@ export function failingTool(): ToolRegistration {
 	return defineTool({
 		name: "failing-tool",
 		description: "Always fails.",
-		parameters: Type.Object({}),
+		parameters: obj({}, { open: true }),
 		execute: async () => {
 			throw new Error("intentional failure");
 		},

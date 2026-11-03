@@ -29,7 +29,7 @@ const USAGE = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2
 export function executionExtensionSource(): string {
 	return `import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { Type } from "typebox";
+import { str, opt, obj } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@earendil-works/pi-schema")))};
 
 export default function (pi) {
 	pi.events.emit("durable:contribution", {
@@ -41,7 +41,7 @@ export default function (pi) {
 			const guarded = durable.defineTool({
 				name: "guarded",
 				description: "Record an external effect that policy may block.",
-				parameters: Type.Object({ marker: Type.Optional(Type.String()) }),
+				parameters: obj({ marker: opt(str()) }, { open: true }),
 				replay: "unsafe",
 				async execute(args) {
 					if (typeof state().guardedPath === "string") appendFileSync(state().guardedPath, \`\${args.marker ?? "effect"}\\n\`);
@@ -52,18 +52,18 @@ export default function (pi) {
 				...durable.defineTool({
 					name: "structured",
 					description: "Return one structured answer.",
-					parameters: Type.Object({}),
+					parameters: obj({}, { open: true }),
 					replay: "safe",
 					async execute() {
 						return { structuredOutput: { answer: "42" } };
 					},
 				}),
-				structuredOutputSchema: Type.Object({ answer: Type.String() }),
+				structuredOutputSchema: obj({ answer: str() }, { open: true }),
 			};
 			const slow = durable.defineTool({
 				name: "slow-effect",
 				description: "Record an external effect, then wait for the process to end.",
-				parameters: Type.Object({}),
+				parameters: obj({}, { open: true }),
 				replay: "unsafe",
 				async execute() {
 					const current = state();
@@ -79,7 +79,7 @@ export default function (pi) {
 			const hanging = durable.defineTool({
 				name: "hanging",
 				description: "Wait until the call is aborted.",
-				parameters: Type.Object({}),
+				parameters: obj({}, { open: true }),
 				replay: "unsafe",
 				async execute(_args, _api, context) {
 					const current = state();

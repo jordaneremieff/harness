@@ -33,7 +33,7 @@ import { publishFixtureMarker } from "./signal.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type TranscriptContext } from "@earendil-works/pi-ai";
 import { getPackageDir, ModelRuntime, VERSION, type AgentSessionServices, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { str, obj } from "@earendil-works/pi-schema";
 
 const providerId = "durable-runtime-fixture";
 const modelId = "fixture-model";
@@ -295,7 +295,7 @@ export default function registerDurableRuntimeFixture(pi: ExtensionAPI): void {
 					host.durable.defineTool({
 						name: "fixture-effect",
 						description: "Append one external effect, then block until the process dies.",
-						parameters: Type.Object({ tag: Type.String() }),
+						parameters: obj({ tag: str() }, { open: true }),
 						replay: "unsafe",
 						execute: async (args) => {
 							appendFileSync(join(controlDir(), "effect.txt"), `${args.tag}\n`);

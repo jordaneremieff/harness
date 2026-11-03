@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createAssistantMessageEventStream, type AssistantMessage, type ToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import { getPackageDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { publishFixtureMarker } from "./signal.ts";
 
 const model = { provider: "durable-runtime-fixture", id: "fixture-model", name: "Continuity fixture", api: "openai-completions" as const, baseUrl: "https://invalid.test", reasoning: false, input: ["text" as const], contextWindow: 128000, maxTokens: 4096, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
@@ -51,7 +51,7 @@ export default function register(pi: ExtensionAPI) {
 		create(host: { durable: typeof Durable; storageId: string }): Durable.Extension {
 			record("host-binding", { storageId: host.storageId });
 			return host.durable.defineExtension({ name: "fixture.continuity", tools: [host.durable.defineTool({
-				name: "continuity-gate", description: "Wait for a socket acknowledgment.", parameters: Type.Object({}), replay: "unsafe",
+				name: "continuity-gate", description: "Wait for a socket acknowledgment.", parameters: obj({}, { open: true }), replay: "unsafe",
 				async execute(_args, api, context) {
 					record("tool-enter", { taskId: api.taskId, conversationId: api.conversationId });
 					const abort = () => record("tool-abort"); context.abortSignal?.addEventListener("abort", abort, { once: true });
