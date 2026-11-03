@@ -515,9 +515,12 @@ existing bounded source driver, not a second ledger traversal. The
 is incomplete, dirty, failed or scheduled, as well as while a route remains
 active. A complete pass aggregates parked wake dependencies across all pages.
 Recovery and retirement recheck bounded recipient availability; changed facts
-resume the driver and block retirement until a fresh pass completes. Final
-retirement also checks native work, active requests, in-flight delivery and the
-unchanged admission generation before it seals admission.
+resume the driver and block retirement until a fresh pass completes. A `release`
+request waits up to 10 seconds for a pass the driver has scheduled but not
+started; unfinished pages, in-flight effects and a failed observation refuse
+at once with the blocker named. Final retirement also checks native work,
+active requests, in-flight delivery and the unchanged admission generation
+before it seals admission.
 
 Overrides and remaining members:
 

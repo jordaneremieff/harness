@@ -64,6 +64,8 @@ import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-du
 const ADMITTING_METHODS: ReadonlySet<string> = new Set(["task-submit", "profile-update", "resolve-agent", "submit", "report", "rewind", "command", "compact", "spawn", "place", "reset", "timer-schedule", "collaboration-mutate", "passive-submit"]);
 /** Coalesce a burst of native commits into one catalog view publication. */
 const PUBLISH_COALESCE_MS = 250;
+/** A release decision waits this long for the delivery driver's scheduled pass before it refuses on a stale summary. */
+const RELEASE_OBSERVATION_WAIT_MS = 10_000;
 
 async function bootstrap(metadata: HostMetadata, controller: AbortController, execution: boolean, options: Pick<CreateDurableServicesOptions, "modelRuntime"> = {}): Promise<DurableServices> {
 	const independent = metadata.independent;
@@ -227,9 +229,25 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		return blockers;
 	}
 
-	/** Release never cancels native tasks or removes retained delivery rows. */
-	async function requestRelease(): Promise<{ retiring: boolean; blockers: string[] }> {
-		if (runtimeUnavailable() || reloading) return { retiring: false, blockers: ["The runtime is closed or reload is in progress"] };
+	/** A pass the driver has not started yet; unfinished pages, in-flight effects and failures refuse at once. */
+	function deliveryPassPending(): boolean {
+		const blocker = deliveries.summary().blocker;
+		return blocker === "Delivery observation requires a fresh pass" || blocker === "Delivery observation is scheduled";
+	}
+
+	/** The driver already owns the next pass; a release waits for a pass it has not started instead of refusing on a stale summary. */
+	async function awaitDeliveryObservation(): Promise<void> {
+		deliveries.summary(true);
+		if (!deliveryPassPending()) return;
+		await new Promise<void>((resolve) => {
+			const finish = (): void => { clearTimeout(timer); quiescentListeners.delete(listener); resolve(); };
+			const listener = (): void => { if (!deliveryPassPending()) finish(); };
+			const timer = setTimeout(finish, RELEASE_OBSERVATION_WAIT_MS);
+			quiescentListeners.add(listener);
+		});
+	}
+
+	async function releaseBlockers(): Promise<string[]> {
 		const generation = activityGeneration;
 		const blockers: string[] = [];
 		if (hasOtherActiveRequests()) blockers.push("Another active request uses this storage");
@@ -239,7 +257,16 @@ export async function createDurableRuntime(metadata: HostMetadata, { initialMess
 		if (state.workPending && native.length === 0) blockers.push("Native work remains in this storage");
 		blockers.push(...deliveryReleaseBlockers());
 		if (generation !== activityGeneration) blockers.push("Native state changed during the release check; retry the request");
-		if (blockers.length > 0) return { retiring: false, blockers: [...new Set(blockers)] };
+		return [...new Set(blockers)];
+	}
+
+	/** Release never cancels native tasks or removes retained delivery rows. */
+	async function requestRelease(): Promise<{ retiring: boolean; blockers: string[] }> {
+		if (runtimeUnavailable() || reloading) return { retiring: false, blockers: ["The runtime is closed or reload is in progress"] };
+		await awaitDeliveryObservation();
+		if (runtimeUnavailable() || reloading) return { retiring: false, blockers: ["The runtime is closed or reload is in progress"] };
+		const blockers = await releaseBlockers();
+		if (blockers.length > 0) return { retiring: false, blockers };
 		markRecoveryDue(false);
 		releaseRequested = true;
 		for (const listener of releaseListeners) listener(true);
