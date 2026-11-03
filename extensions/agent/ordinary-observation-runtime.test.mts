@@ -1,3 +1,4 @@
+import { str, unknown, map, obj, type Schema } from "@earendil-works/pi-schema";
 import { deliveryState as readRetainedDelivery } from "./delivery-store.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -8,7 +9,6 @@ import { fileURLToPath } from "node:url";
 import { awaitWithContext, BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { getPackageDir } from "@earendil-works/pi-coding-agent";
 import { AssistantEntry, ROOT_CONVERSATION_ID, ToolTask, defineExtension, defineTool, type JsonObject, type NestedToolExecutionResult, type Registry, type RegistryReader } from "@earendil-works/pi-durable";
-import { Type, type TSchema } from "typebox";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 
 import { DurableHost } from "./durable-host.ts";
@@ -59,7 +59,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	const driver = defineTool({
 		name: "observation_driver",
 		description: "Read one native tool result through its program channel",
-		parameters: Type.Object({ name: Type.String(), args: Type.Record(Type.String(), Type.Unknown()) }),
+		parameters: obj({ name: str(), args: map(unknown()) }, { open: true }),
 		execute: async (args, api, context) => {
 			nestedResult = await api.executeTool(args.name, args.args as JsonObject, context);
 			return {};
@@ -105,7 +105,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	for (const [name, view] of [["agent_status", "status"], ["agent_inspect", "activity"], ["agent_inspect", "history"]] as const) {
 		const result = await invoke(name, { sessionId: ordinaryId, ...(name === "agent_inspect" ? { view } : {}) });
 		assert.equal(result.isError, false, JSON.stringify(result));
-		const schema = (tools.find((tool) => tool.name === name) as { structuredOutputSchema?: TSchema } | undefined)?.structuredOutputSchema;
+		const schema = (tools.find((tool) => tool.name === name) as { structuredOutputSchema?: Schema } | undefined)?.structuredOutputSchema;
 		assert.ok(schema);
 		const observed = structuredObservation(schema, result.structuredOutput) as OrdinaryPrimaryObservation;
 		assert.equal(observed.kind, "ordinary-primary");

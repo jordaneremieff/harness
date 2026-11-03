@@ -1,15 +1,15 @@
+import type { Schema } from "@earendil-works/pi-schema";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
 import { matchesSchema } from "./schema-check.ts";
 import register from "./index.ts";
 import { parseInspectParams } from "./durable-observation.ts";
 import { AGENT_CONTROL_TOOL_NAMES, AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
 import { StatusToolOutputSchema, InspectToolOutputSchema } from "./observation-schema.ts";
 
-interface ToolDeclaration { name: string; parameters: TSchema; outputSchema?: TSchema; promptSnippet?: string; promptGuidelines?: string[] }
+interface ToolDeclaration { name: string; parameters: Schema; outputSchema?: Schema; promptSnippet?: string; promptGuidelines?: string[] }
 function declarations(): Map<string, ToolDeclaration> {
 	const tools = new Map<string, ToolDeclaration>();
 	register({

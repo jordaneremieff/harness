@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage, createRegistry } from "@earendil-works/pi-durable";
-import { Value } from "typebox/value";
+import { compile } from "@earendil-works/pi-schema";
 import { AgentMetaDoc, recordAdmissionMeta, publishConversationIntent, projectConversationIntents, type NativeIntentMetadata } from "./durable-controls.ts";
 import { AgentConversationSummarySchema } from "./observation-schema.ts";
 import type { CatalogAttentionHints } from "./catalog-attention.ts";
@@ -35,12 +35,13 @@ function row(id: string, overrides: Partial<CatalogViewRow> = {}): CatalogViewRo
 
 it("keeps catalogue row validation equal to the schema for malformed field values", () => {
 	const base = row("root");
+	const validator = compile(AgentConversationSummarySchema);
 	const fields = [...Object.keys(base), "name", "latestReply", "currentTool", "model", "toolCalls", "durationMs"];
 	const values = [undefined, null, false, true, -1, 0, Number.NaN, Number.POSITIVE_INFINITY, "", "text", [], {}, { name: "read", argument: "file" }];
 	for (const field of fields) for (const value of values) {
 		const candidate = { ...base, [field]: value };
 		const view = { updatedAt: "2026-01-01T00:00:00.000Z", rows: [candidate], coverage: { complete: true, omitted: 0 } };
-		assert.equal(isCatalogView(view), Value.Check(AgentConversationSummarySchema, candidate), `${field}: ${String(value)}`);
+		assert.equal(isCatalogView(view), validator.check(candidate) && (typeof value !== "number" || Number.isFinite(value)), `${field}: ${String(value)}`);
 	}
 });
 
@@ -186,7 +187,7 @@ it("publishes attention as top-level hints without changing native rows", () => 
 	const view = withAttentionHints(base, hints);
 	assert.deepEqual(view.attention, hints);
 	assert.deepEqual(view.rows, base.rows);
-	assert.ok(view.rows.every((candidate) => Value.Check(AgentConversationSummarySchema, candidate)));
+	assert.ok(view.rows.every(compile(AgentConversationSummarySchema).check));
 	assert.deepEqual(parseCatalogView(JSON.parse(JSON.stringify(view))), view);
 	assert.deepEqual(withAttentionHints(view, { rows: [], coverage: { complete: true, omitted: 0 } }).attention?.rows, []);
 });

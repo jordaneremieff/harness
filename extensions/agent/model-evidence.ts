@@ -1,36 +1,36 @@
+import { str, num, int, bool, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 import type { EntryRecord, UsageState } from "@earendil-works/pi-durable";
-import { Type, type Static } from "typebox";
 import type { CatalogViewRow } from "./catalog-view.ts";
 
 export const MODEL_EVIDENCE_BUDGET_BYTES = 4 * 1024;
 export const USAGE_SAMPLE_LIMIT = 128;
 export const USAGE_ENTRY_LIMIT = 4096;
 export const USAGE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-const count = Type.Integer({ minimum: 0 });
-const text = Type.String({ minLength: 1 });
-const cost = Type.Number({ minimum: 0 });
-const object = <T extends Record<string, import("typebox").TSchema>>(fields: T) => Type.Object(fields, { additionalProperties: false });
-export const ModelCostEvidenceSchema = object({ model: text, reportedCost: cost, lastResponseAt: Type.Optional(cost) });
-export const ModelFailureSchema = object({ provider: text, modelId: text, at: cost, conversationId: text, entryId: count, message: text });
-export const ModelWarningSchema = object({
+const count = int({ minimum: 0 });
+const text = str({ minLength: 1 });
+const cost = num({ minimum: 0 });
+export const ModelCostEvidenceSchema = obj({ model: text, reportedCost: cost, lastResponseAt: opt(cost) });
+export const ModelFailureSchema = obj({ provider: text, modelId: text, at: cost, conversationId: text, entryId: count, message: text });
+export const ModelWarningSchema = obj({
 	conversationId: text,
-	model: Type.Optional(object({ provider: text, modelId: text, thinkingLevel: text })),
+	model: opt(obj({ provider: text, modelId: text, thinkingLevel: text })),
 	observedAt: text,
-	kind: Type.Union([Type.Literal("error"), Type.Literal("lastError"), Type.Literal("autoRetry")]),
+	kind: union([lit("error"), lit("lastError"), lit("autoRetry")]),
 	message: text,
 });
-export const UsageSampleSchema = object({ model: text, at: cost, tokens: cost, reportedCost: cost });
-export const UsageSamplingSchema = object({
-	observedAt: text, samples: Type.Array(UsageSampleSchema, { maxItems: USAGE_SAMPLE_LIMIT }),
+export const UsageSampleSchema = obj({ model: text, at: cost, tokens: cost, reportedCost: cost });
+export const UsageSamplingSchema = obj({
+	observedAt: text, samples: arr(UsageSampleSchema, { maxItems: USAGE_SAMPLE_LIMIT }),
 	entriesVisited: count, entriesOmitted: count, messagesOmitted: count, invalidSamples: count, omittedSamples: count,
 });
 export type UsageSample = Static<typeof UsageSampleSchema>;
-export const ModelEvidenceSchema = object({
-	models: Type.Array(ModelCostEvidenceSchema), failures: Type.Array(ModelFailureSchema), warnings: Type.Array(ModelWarningSchema),
+export const ModelEvidenceProperties = {
+	models: arr(ModelCostEvidenceSchema), failures: arr(ModelFailureSchema), warnings: arr(ModelWarningSchema),
 	toolReportedCost: cost,
-	sampling: Type.Optional(UsageSamplingSchema),
-	coverage: object({ conversationsVisited: count, conversationsComplete: Type.Boolean(), unavailableUsage: count, incompleteHistory: count, omittedModels: count, omittedFailures: count, omittedWarnings: count }),
-});
+	sampling: opt(UsageSamplingSchema),
+	coverage: obj({ conversationsVisited: count, conversationsComplete: bool(), unavailableUsage: count, incompleteHistory: count, omittedModels: count, omittedFailures: count, omittedWarnings: count }),
+};
+export const ModelEvidenceSchema = obj(ModelEvidenceProperties);
 export type ModelEvidence = Static<typeof ModelEvidenceSchema>;
 export type ModelFailure = Static<typeof ModelFailureSchema>;
 export type ModelWarning = Static<typeof ModelWarningSchema>;

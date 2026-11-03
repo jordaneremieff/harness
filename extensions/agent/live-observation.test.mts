@@ -1,3 +1,4 @@
+import { obj } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,7 +7,6 @@ import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessageEventStream, type Models } from "@earendil-works/pi-ai";
 import { defineTool, LiveDoc, type ConversationId, type LiveState, type WatchHandle } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureProvider, fixtureRegistry, fixtureStorageId, hostOptions, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { LiveObservationService } from "./live-observation.ts";
@@ -335,7 +335,7 @@ it("projects the live task graph with owner edges and conversation labels", { ti
 	const streamer = defineTool({
 		name: "streamer",
 		description: "Publish running output, then wait for the test.",
-		parameters: Type.Object({}),
+		parameters: obj({}, { open: true }),
 		execute: async (_args, api) => {
 			api.output("running line\n");
 			started.resolve();

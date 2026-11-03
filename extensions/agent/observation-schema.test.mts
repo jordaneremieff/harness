@@ -1,3 +1,8 @@
+import { compile, num, str, opt, obj, type Schema } from "@earendil-works/pi-schema";
+import { matchesSchema, schemaErrors } from "./schema-check.ts";
+import { AgentPreferencesSchema, validPreferences, validPresets } from "./preference-schema.ts";
+import { AwaitOutputSchema } from "./awaited-results.ts";
+import { DispatchOutputSchema } from "./result-reference.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -7,7 +12,6 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { LiveDoc, UsageDoc, type ConversationId, type EntryId, type SubmissionId, type ToolExecutionResult } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { LiveObservationService } from "./live-observation.ts";
 import { AgentManager } from "./manager.ts";
@@ -20,8 +24,61 @@ import { readConversationList, readConversationStatus, readDashboard, readInspec
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureRegistry, fixtureStorageId, hostOptions, scriptedRuntime } from "./durable-host-fixture.mts";
 
+it("composed inspection validates recursive JSON payloads without unknown leaves", () => {
+	const validator = compile(InspectOutputSchema);
+	const value = { view: "branch", sessionId: "storage", conversationId: 1, entries: [], nextCursor: { nested: [null, true, 3, { values: ["text", { leaf: false }] }] }, order: "newestFirst", detail: "retained branch" };
+	assert.equal(validator.check(value), true);
+	assert.equal(validator.check({ ...value, nextCursor: { "line\nbreak": { leaf: [null, true] } } }), true);
+	for (const leaf of [undefined, () => "not JSON"]) {
+		assert.equal(validator.check({ ...value, nextCursor: { nested: [{ values: ["text", { leaf }] }] } }), false);
+		assert.equal(validator.check({ ...value, nextCursor: { "line\nbreak": { leaf } } }), false);
+	}
+});
+
+it("composed list schemas retain optional fields and reject unknown fields", () => {
+	const native = { conversationId: 1, identity: "storage", busy: false };
+	const row = { ...native, sessionId: "storage", storageId: "storage", cwd: "/work" };
+	assert.equal(compile(ListRowSchema).check(row), true);
+	assert.equal(compile(ListRowSchema).check({ ...row, extra: true }), false);
+	assert.equal(compile(NativeListOutputSchema).check({ items: [native], next: null }), true);
+	const listed = { rows: [{ ...row, handle: null, role: null, profile: null, profileCoverage: "unknown" }], nextCursor: null, coverage: { complete: true, storagesVisited: 1, unavailable: [], profileHints: { complete: false, unknownStorages: 1, omitted: 0 } }, observedAt: "now", authority: "retained" };
+	assert.equal(compile(ProfiledListOutputSchema).check(listed), true);
+	assert.equal(compile(ProfiledListOutputSchema).check({ ...listed, rows: [{ ...listed.rows[0], busy: undefined }] }), false);
+});
+
+it("preference records preserve key patterns, property limits and optional values", () => {
+	const presets = Object.fromEntries(Array.from({ length: 64 }, (_, index) => [`preset-${index}`, { model: "test/model" }]));
+	assert.equal(validPresets(presets), true);
+	assert.equal(validPresets({ ...presets, extra: { model: "test/model" } }), false);
+	assert.equal(validPresets({ "bad/key": { model: "test/model" } }), false);
+	assert.equal(validPresets({ valid: { model: "test/model", unknown: true } }), false);
+	const budgets = Object.fromEntries(Array.from({ length: 64 }, (_, index) => [`test/model-${index}`, 1]));
+	assert.equal(validPreferences({ contextBudgetTokens: budgets }), true);
+	assert.equal(validPreferences({ contextBudgetTokens: { ...budgets, "test/extra": 1 } }), false);
+	assert.equal(validPreferences({ contextBudgetTokens: { invalid: 1 } }), false);
+	assert.equal(validPreferences({ contextBudgetTokens: { "test/model": 0 } }), false);
+	assert.equal(compile(AgentPreferencesSchema).check({ version: 1, presets: {} }), true);
+});
+
+it("open dispatch facts and await queue snapshots retain additional fields", () => {
+	assert.equal(compile(DispatchOutputSchema).check({ admitted: true }), true);
+	assert.equal(compile(AwaitOutputSchema).check({ decision: "settled", results: [], unresolved: [], originalInputs: [], queuedInputCount: 0, queueSnapshot: { source: "committed InboxDoc", conversationId: 1, runId: 1, extra: true } }), true);
+});
+
+it("schema checks reject non-finite numbers recursively and bound diagnostic output", () => {
+	const schema = obj({ value: num() });
+	for (const value of [NaN, Infinity, -Infinity]) {
+		assert.equal(matchesSchema(schema, { value }), false);
+		assert.equal(matchesSchema(InspectOutputSchema, { view: "branch", sessionId: "storage", conversationId: 1, entries: [], nextCursor: { nested: [{ value }] }, order: "newestFirst", detail: "branch" }), false);
+	}
+	assert.equal(matchesSchema(schema, { value: 0 }), true);
+	const errors = schemaErrors(obj({ first: str(), second: str() }), { first: 1, second: 2 }, 1);
+	assert.equal(errors.length, 1);
+	assert.match(errors[0], /^\/first /u);
+});
+
 it("native observations separate model text from validated structured output without changing ordinary values", () => {
-	const schema = Type.Object({ result: Type.String(), optional: Type.Optional(Type.String()) }, { additionalProperties: false });
+	const schema = obj({ result: str(), optional: opt(str()) });
 	const input = { result: "retained observation", optional: undefined };
 	const ordinary = structuredObservation(schema, input);
 	const native = nativeStructuredObservation(schema, input, "Observation for the model");
@@ -36,7 +93,7 @@ it("native observations separate model text from validated structured output wit
 });
 
 it("native observations reject malformed values with the ordinary schema diagnostics", () => {
-	const schema = Type.Object({ result: Type.String() }, { additionalProperties: false });
+	const schema = obj({ result: str() });
 	for (const value of [{ result: 7 }, { result: "valid", unexpected: true }, undefined]) {
 		assert.throws(() => nativeStructuredObservation(schema, value, "Invalid observation"), /Observation output does not match its schema:/u);
 	}
@@ -59,9 +116,9 @@ it("activity parent metadata binds the operation response identity without inven
 	}
 	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
 	assert.equal(HOST_CONTRACT.operations.inspect.response, hash(InspectOutputSchema));
-	const withoutParents = structuredClone(InspectOutputSchema);
-	const member = withoutParents.anyOf.find((schema) => (schema as typeof ActivityOutputSchema).properties?.view?.const === "activity") as typeof ActivityOutputSchema | undefined;
-	assert.ok(member);
+	const withoutParents = structuredClone(InspectOutputSchema) as { anyOf: Array<{ properties?: { view?: { const?: string }; metadata: { properties: { runningTools: { items: { properties: Record<string, Schema> } } } } } }> };
+	const member = withoutParents.anyOf.find((schema) => schema.properties?.view?.const === "activity");
+	assert.ok(member?.properties);
 	for (const field of ["taskId", "parentToolCallId", "parentTaskId"]) Reflect.deleteProperty(member.properties.metadata.properties.runningTools.items.properties, field);
 	assert.notEqual(hash(withoutParents), HOST_CONTRACT.operations.inspect.response);
 });
@@ -76,7 +133,7 @@ it("live observations validate native nested slots and retained compaction failu
 	assert.throws(() => structuredObservation(LiveStateSchema, { compactionFailure: { ...failure, reason: "invalid" } }), /reason/u);
 	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
 	assert.equal(HOST_CONTRACT.operations.status.response, hash(StatusOutputSchema));
-	const withoutNested = structuredClone(LiveStateSchema);
+	const withoutNested = structuredClone(LiveStateSchema) as { properties: Record<string, Schema> };
 	Reflect.deleteProperty(withoutNested.properties, "nestedTools");
 	Reflect.deleteProperty(withoutNested.properties, "compactionFailure");
 	assert.notEqual(hash(withoutNested), hash(LiveStateSchema));
@@ -315,15 +372,15 @@ it("recovery health accepts retained failures without timestamps and timed compa
 		const summary = { ...row, health: { compactionFailure: failure } };
 		assert.deepEqual(nativeStructuredObservation(AgentConversationSummarySchema, summary, "Recovery health").structuredOutput, summary);
 		const activity = { ...metadata, compactionFailure: failure };
-		assert.deepEqual(structuredObservation(ActivityOutputSchema.properties.metadata, activity), activity);
+		assert.deepEqual(structuredObservation((ActivityOutputSchema.properties as { metadata: Schema }).metadata, activity), activity);
 		const overview = { ...buildStatusOverview(rosterPage([row]), [], []), sessions: [summary] };
 		structuredObservation(StatusToolOutputSchema, overview);
 	}
 	assert.throws(() => structuredObservation(AgentConversationSummarySchema, { ...row, health: { compactionFailure: { ...retained, at: 7 } } }), /\/health\/compactionFailure\/at/u);
-	assert.throws(() => structuredObservation(ActivityOutputSchema.properties.metadata, { ...metadata, compactionFailure: { ...retained, at: 7 } }), /\/compactionFailure\/at/u);
+	assert.throws(() => structuredObservation((ActivityOutputSchema.properties as { metadata: Schema }).metadata, { ...metadata, compactionFailure: { ...retained, at: 7 } }), /\/compactionFailure\/at/u);
 	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
 	assert.equal(HOST_CONTRACT.operations.dashboard.response, hash(AgentConversationSummarySchema));
-	const requiredTimestamp = structuredClone(AgentConversationSummarySchema);
+	const requiredTimestamp = structuredClone(AgentConversationSummarySchema) as { properties: { health: { properties: { compactionFailure: { required?: string[] } } } } };
 	const required: string[] | undefined = requiredTimestamp.properties.health.properties.compactionFailure.required;
 	assert.ok(required);
 	required.push("at");

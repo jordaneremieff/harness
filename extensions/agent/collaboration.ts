@@ -1,7 +1,7 @@
+import { str, int, lit, union, arr, opt, obj } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { defineDoc, defineDocFamily, ROOT_CONVERSATION_ID, type Harness, type Session, type Tx } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
 import { ThreadDeliveryDoc, type DeliveryReport } from "./durable-controls.ts";
 import { storeDeliveryRow } from "./delivery-store.ts";
 
@@ -10,29 +10,29 @@ const MAX_MEMBERS = 64;
 const MAX_PAGE_BYTES = 48 * 1024;
 const ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}(?::[1-9][0-9]*)?$/u;
 const THREAD_ID = /^([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/([a-f0-9]{32})$/u;
-const textSchema = (maxLength: number) => Type.String({ minLength: 1, maxLength });
+const textSchema = (maxLength: number) => str({ minLength: 1, maxLength });
 
-export const CollaborationParams = Type.Object({
-	action: Type.Union(["create", "list", "read", "join", "leave", "post", "revise", "close"].map((value) => Type.Literal(value))),
-	sessionId: Type.Optional(textSchema(256)),
-	threadId: Type.Optional(textSchema(128)),
-	title: Type.Optional(textSchema(160)),
-	purpose: Type.Optional(textSchema(4000)),
-	authority: Type.Optional(textSchema(4000)),
-	source: Type.Optional(textSchema(2000)),
-	restrictions: Type.Optional(textSchema(4000)),
-	acceptance: Type.Optional(textSchema(4000)),
-	integrator: Type.Optional(textSchema(256)),
-	contribution: Type.Optional(Type.String({ minLength: 1, description: "At most 256 characters. Write longer content to a file and post its path. The handler enforces this cap with that remedy." })),
-	message: Type.Optional(Type.String({ minLength: 1, description: "At most 8,000 characters. Write longer content to a file and post its path. The handler enforces this cap with that remedy." })),
-	kind: Type.Optional(Type.Union([Type.Literal("contribution"), Type.Literal("carried-authority") ])),
-	replyTo: Type.Optional(Type.Integer({ minimum: 1 })),
-	notify: Type.Optional(Type.Array(textSchema(256), { maxItems: 16, uniqueItems: true })),
-	query: Type.Optional(textSchema(256)),
-	cursor: Type.Optional(textSchema(2048)),
-	before: Type.Optional(Type.Integer({ minimum: 1 })),
-	limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
-}, { additionalProperties: false });
+export const CollaborationParams = obj({
+	action: union(["create", "list", "read", "join", "leave", "post", "revise", "close"].map((value) => lit(value))),
+	sessionId: opt(textSchema(256)),
+	threadId: opt(textSchema(128)),
+	title: opt(textSchema(160)),
+	purpose: opt(textSchema(4000)),
+	authority: opt(textSchema(4000)),
+	source: opt(textSchema(2000)),
+	restrictions: opt(textSchema(4000)),
+	acceptance: opt(textSchema(4000)),
+	integrator: opt(textSchema(256)),
+	contribution: opt(str({ minLength: 1, description: "At most 256 characters. Write longer content to a file and post its path. The handler enforces this cap with that remedy." })),
+	message: opt(str({ minLength: 1, description: "At most 8,000 characters. Write longer content to a file and post its path. The handler enforces this cap with that remedy." })),
+	kind: opt(union([lit("contribution"), lit("carried-authority") ])),
+	replyTo: opt(int({ minimum: 1 })),
+	notify: opt(arr(textSchema(256), { maxItems: 16, uniqueItems: true })),
+	query: opt(textSchema(256)),
+	cursor: opt(textSchema(2048)),
+	before: opt(int({ minimum: 1 })),
+	limit: opt(int({ minimum: 1, maximum: 20 })),
+});
 
 export type CollaborationMember = { identity: string; contribution: string; joinedAt: number };
 export type CollaborationFrame = {

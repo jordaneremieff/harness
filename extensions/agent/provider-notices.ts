@@ -1,8 +1,8 @@
+import { int, opt, obj } from "@earendil-works/pi-schema";
 /** Native retry observations use the existing report ledger and exact request routes. */
 import { createHash } from "node:crypto";
 import { AgentDoc, LiveDoc, DEFAULT_RETRY_POLICY, defineDoc, type Harness, type ConversationId, type SubmissionId, type TaskId, type Tx, type Cursor, type LiveState, type CommitPublication, type HarnessOptions } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Type } from "typebox";
 import { ProducerAwaitFactSchema } from "./await-facts.ts";
 import { safeFactText } from "./primary-observation.ts";
 import type { ResultReference } from "./result-reference.ts";
@@ -14,7 +14,7 @@ import { canonicalIdentity } from "./identity.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
 import { onStoredCommit } from "./commit-observation.ts";
 
-export const ProviderRetryNoticeSchema = Type.Object({ requesterSubmissionId: Type.Optional(Type.Integer({ minimum: 1 })), fact: ProducerAwaitFactSchema }, { additionalProperties: false });
+export const ProviderRetryNoticeSchema = obj({ requesterSubmissionId: opt(int({ minimum: 1 })), fact: ProducerAwaitFactSchema });
 
 /** Semantic revision and exact result identities survive fresh observations and source reopen. */
 export function providerNoticeRequestId(ownerId: string, notice: ProviderRetryNotice): string {

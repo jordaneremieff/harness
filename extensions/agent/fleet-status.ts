@@ -1,11 +1,11 @@
+import { str, num, int, bool, nul, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 /** Machine-local observations from bounded catalog publications, without host or transcript reads. */
-import { Type, type Static } from "typebox";
 import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
 import type { CatalogView, CatalogViewRow } from "./catalog-view.ts";
 import {
 	compareFailures,
 	evidenceText,
-	ModelEvidenceSchema,
+	ModelEvidenceProperties,
 	ModelFailureSchema,
 	ModelWarningSchema,
 	type ModelEvidence,
@@ -21,25 +21,23 @@ const MAX_PAGES = 16;
 const MODEL_LIMIT = 12;
 const FAILURE_LIMIT = 4;
 const WARNING_LIMIT = 4;
-const count = Type.Integer({ minimum: 0 });
-const text = Type.String({ minLength: 1 });
-const cost = Type.Union([Type.Number({ minimum: 0 }), Type.Null()]);
-const object = <T extends Record<string, import("typebox").TSchema>>(fields: T) =>
-	Type.Object(fields, { additionalProperties: false });
-const UsageTotalSchema = object({ tokens: Type.Number({ minimum: 0 }), reportedCost: Type.Number({ minimum: 0 }), responses: count });
-const UsageWindowsSchema = object({ last5h: UsageTotalSchema, last7d: UsageTotalSchema });
-const FleetModelSchema = object({
+const count = int({ minimum: 0 });
+const text = str({ minLength: 1 });
+const cost = union([num({ minimum: 0 }), nul()]);
+const UsageTotalSchema = obj({ tokens: num({ minimum: 0 }), reportedCost: num({ minimum: 0 }), responses: count });
+const UsageWindowsSchema = obj({ last5h: UsageTotalSchema, last7d: UsageTotalSchema });
+const FleetModelSchema = obj({
 	model: text,
 	reportedCost: cost,
-	lastResponseAt: Type.Optional(Type.Number({ minimum: 0 })),
-	currentSelections: Type.Array(object({ thinkingLevel: text, count })),
+	lastResponseAt: opt(num({ minimum: 0 })),
+	currentSelections: arr(obj({ thinkingLevel: text, count })),
 	activeConversations: count,
-	usage: Type.Optional(UsageWindowsSchema),
+	usage: opt(UsageWindowsSchema),
 });
 
 export const FleetSelectionProperties = {
-	model: Type.Optional(Type.String({ minLength: 1, maxLength: 512, description: "Exact provider/model identity; only with view: fleet. Combines with provider by intersection." })),
-	provider: Type.Optional(Type.String({ minLength: 1, maxLength: 200, description: "Exact provider identity; only with view: fleet. No provider health or quota query." })),
+	model: opt(str({ minLength: 1, maxLength: 512, description: "Exact provider/model identity; only with view: fleet. Combines with provider by intersection." })),
+	provider: opt(str({ minLength: 1, maxLength: 200, description: "Exact provider identity; only with view: fleet. No provider health or quota query." })),
 };
 export interface FleetSelection { readonly model?: string; readonly provider?: string }
 
@@ -82,53 +80,53 @@ export interface FleetEffortScope {
 	readonly callerUsage?: { readonly reportedCost: number; readonly partial: boolean };
 }
 
-export const FleetStatusSchema = object({
-	view: Type.Literal("fleet"),
+export const FleetStatusSchema = obj({
+	view: lit("fleet"),
 	observedAt: text,
-	selection: Type.Optional(object({
-		filter: Type.Union([Type.Literal("model"), Type.Literal("provider"), Type.Literal("model-and-provider")]),
-		scope: Type.Literal("models-providers-failures-warnings"),
-		globalScope: Type.Literal("source-coverage-usageCoverage-conversations-toolReportedCost-effort"),
-		outcome: Type.Union([Type.Literal("matched"), Type.Literal("no-match")]),
-		matched: object({ models: count, failures: count, warnings: count }),
+	selection: opt(obj({
+		filter: union([lit("model"), lit("provider"), lit("model-and-provider")]),
+		scope: lit("models-providers-failures-warnings"),
+		globalScope: lit("source-coverage-usageCoverage-conversations-toolReportedCost-effort"),
+		outcome: union([lit("matched"), lit("no-match")]),
+		matched: obj({ models: count, failures: count, warnings: count }),
 	})),
-	models: Type.Array(FleetModelSchema, { maxItems: MODEL_LIMIT }),
-	providers: Type.Array(object({ provider: text, usage: UsageWindowsSchema }), { maxItems: MODEL_LIMIT }),
-	usageCoverage: object({
-		status: Type.Literal("partial"), unknownStorages: count, publications: count,
-		oldestPublicationAt: Type.Union([text, Type.Null()]), newestPublicationAt: Type.Union([text, Type.Null()]),
+	models: arr(FleetModelSchema, { maxItems: MODEL_LIMIT }),
+	providers: arr(obj({ provider: text, usage: UsageWindowsSchema }), { maxItems: MODEL_LIMIT }),
+	usageCoverage: obj({
+		status: lit("partial"), unknownStorages: count, publications: count,
+		oldestPublicationAt: union([text, nul()]), newestPublicationAt: union([text, nul()]),
 		sampledResponses: count, oldestSampleAt: cost, newestSampleAt: cost,
 		entriesVisited: count, entriesOmitted: count, messagesOmitted: count, invalidSamples: count, omittedSamples: count,
 	}),
-	effort: object({
-		status: Type.Union([Type.Literal("partial"), Type.Literal("observed"), Type.Literal("unavailable")]),
-		scope: Type.Literal("caller-and-direct-created-lifetime"),
-		membership: Type.Union([Type.Literal("creation-records"), Type.Literal("catalog-owner"), Type.Literal("unknown")]),
+	effort: obj({
+		status: union([lit("partial"), lit("observed"), lit("unavailable")]),
+		scope: lit("caller-and-direct-created-lifetime"),
+		membership: union([lit("creation-records"), lit("catalog-owner"), lit("unknown")]),
 		members: count, observedMembers: count, missingMembers: count, partialMembers: count, omittedMembers: count,
 		reportedCost: cost,
 	}),
-	conversations: object({ observed: count, active: count, unknownModel: count }),
+	conversations: obj({ observed: count, active: count, unknownModel: count }),
 	toolReportedCost: cost,
-	failures: Type.Array(ModelFailureSchema, { maxItems: FAILURE_LIMIT }),
-	warnings: Type.Array(ModelWarningSchema, { maxItems: WARNING_LIMIT }),
-	coverage: object({
-		catalog: object({
+	failures: arr(ModelFailureSchema, { maxItems: FAILURE_LIMIT }),
+	warnings: arr(ModelWarningSchema, { maxItems: WARNING_LIMIT }),
+	coverage: obj({
+		catalog: obj({
 			pages: count, records: count, visited: count, skipped: count,
-			complete: Type.Boolean(), hasMore: Type.Boolean(), scanLimitReached: Type.Boolean(),
-			maxPages: Type.Literal(MAX_PAGES), pageLimit: Type.Literal(PAGE_LIMIT),
+			complete: bool(), hasMore: bool(), scanLimitReached: bool(),
+			maxPages: lit(MAX_PAGES), pageLimit: lit(PAGE_LIMIT),
 		}),
 		unknownEvidenceStorages: count,
 		unknownOperationalStorages: count,
 		incompleteOperationalStorages: count,
 		omittedOperationalRows: count,
-		evidence: ModelEvidenceSchema.properties.coverage,
-		output: object({
+		evidence: ModelEvidenceProperties.coverage,
+		output: obj({
 			omittedModels: count, omittedProviders: count, omittedFailures: count, omittedWarnings: count,
 			omittedSelections: count, omittedActiveConversations: count,
-			byteLimitReached: Type.Boolean(),
+			byteLimitReached: bool(),
 		}),
 	}),
-	notes: Type.Array(text),
+	notes: arr(text),
 });
 export type FleetStatus = Static<typeof FleetStatusSchema>;
 type FleetModel = FleetStatus["models"][number];

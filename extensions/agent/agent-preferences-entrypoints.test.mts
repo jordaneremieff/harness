@@ -1,3 +1,4 @@
+import type { Schema } from "@earendil-works/pi-schema";
 import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -11,7 +12,6 @@ delete process.env.PI_HARNESS_FILE;
 after(() => { if (preferenceOverride !== undefined) process.env.PI_HARNESS_FILE = preferenceOverride; });
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesSchema } from "./schema-check.ts";
-import type { TSchema } from "typebox";
 import registerAgentExtension from "./index.ts";
 import { AgentManager } from "./manager.ts";
 import type { ExecutionSelection, PreferenceSnapshot } from "./agent-preferences.ts";
@@ -27,7 +27,7 @@ import { acquireHost, waitForHostRelease } from "./host-client.ts";
 import { runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 
-type RegisteredTool = { name: string; parameters: TSchema; execute(id: string, input: Record<string, unknown>, signal: undefined, update: undefined, ctx: ExtensionContext): Promise<unknown> };
+type RegisteredTool = { name: string; parameters: Schema; execute(id: string, input: Record<string, unknown>, signal: undefined, update: undefined, ctx: ExtensionContext): Promise<unknown> };
 
 it("ordinary and native callers share machine preferences and receive advisory substitution guidance",  async (t) => {
 	const directory = realpathSync(mkdtempSync(join(tmpdir(), "ordinary-presets-")));

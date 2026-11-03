@@ -1,4 +1,4 @@
-import { Type, type Static } from "typebox";
+import { str, int, bool, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 import { matchesSchema } from "./schema-check.ts";
 
 export const COMMUNICATION_BODY_BYTES = 16_384;
@@ -7,42 +7,41 @@ export const COMMUNICATION_READY_BYTES = 32_768;
 export const COMMUNICATION_PAGE_BYTES = 65_536;
 export const COMMUNICATION_PAGE_ENTRIES = 200;
 
-const positive = Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
-const count = Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
-const object = <T extends Record<string, import("typebox").TSchema>>(properties: T) => Type.Object(properties, { additionalProperties: false });
-const bounded = (maximum: number, minimum = 1) => Type.String({ minLength: minimum, maxLength: maximum });
+const positive = int({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER });
+const count = int({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER });
+const bounded = (maximum: number, minimum = 1) => str({ minLength: minimum, maxLength: maximum });
 export const STORAGE_ID_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$";
 const identityPattern = `${STORAGE_ID_PATTERN.slice(0, -1)}(?::[1-9][0-9]*)?$`;
-const identity = Type.String({ minLength: 1, maxLength: 256, pattern: identityPattern });
-const storageId = Type.String({ minLength: 36, maxLength: 36, pattern: STORAGE_ID_PATTERN });
-const entryId = Type.String({ minLength: 1, maxLength: 16, pattern: "^[1-9][0-9]*$" });
+const identity = str({ minLength: 1, maxLength: 256, pattern: identityPattern });
+const storageId = str({ minLength: 36, maxLength: 36, pattern: STORAGE_ID_PATTERN });
+const entryId = str({ minLength: 1, maxLength: 16, pattern: "^[1-9][0-9]*$" });
 const sourceId = bounded(1_024);
-export const CommunicationBodySchema = object({ text: bounded(COMMUNICATION_BODY_BYTES, 0), complete: Type.Boolean(), redacted: Type.Boolean() });
-export const CommunicationSenderSchema = object({ identity, name: Type.Optional(bounded(160, 0)), kind: Type.Optional(Type.Union([Type.Literal("agent"), Type.Literal("session")])) });
-export const CommunicationReferenceSchema = object({ submissionId: positive, requestId: Type.Optional(sourceId), entryId: Type.Optional(entryId), answerEntryId: Type.Optional(entryId) });
-const common = { format: Type.Literal("agent.communication/1"), sender: CommunicationSenderSchema, body: CommunicationBodySchema, recordedAt: count };
-export const CommunicationSchema = Type.Union([
-	object({ ...common, kind: Type.Literal("notice"), metadata: object({ threadId: bounded(256), event: Type.Optional(positive), frameRevision: Type.Optional(positive), eventKind: Type.Optional(bounded(64, 0)), title: Type.Optional(bounded(160, 0)), passive: Type.Optional(Type.Boolean()) }) }),
-	object({ ...common, kind: Type.Literal("report"), metadata: object({ sourceId, requestId: sourceId, replyTo: Type.Optional(identity) }) }),
-	object({ ...common, kind: Type.Literal("result"), metadata: object({ status: Type.Union([Type.Literal("done"), Type.Literal("unanswered")]), references: Type.Array(CommunicationReferenceSchema, { minItems: 1, maxItems: 16 }), omittedReferences: count, reason: Type.Optional(bounded(1_024, 0)) }) }),
-	object({ ...common, kind: Type.Literal("check-in"), metadata: object({ sourceId, producerRequestId: sourceId, elapsedMs: count, origin: Type.Union([Type.Literal("operator"), Type.Literal("model")]) }) }),
+export const CommunicationBodySchema = obj({ text: bounded(COMMUNICATION_BODY_BYTES, 0), complete: bool(), redacted: bool() });
+export const CommunicationSenderSchema = obj({ identity, name: opt(bounded(160, 0)), kind: opt(union([lit("agent"), lit("session")])) });
+export const CommunicationReferenceSchema = obj({ submissionId: positive, requestId: opt(sourceId), entryId: opt(entryId), answerEntryId: opt(entryId) });
+const common = { format: lit("agent.communication/1"), sender: CommunicationSenderSchema, body: CommunicationBodySchema, recordedAt: count };
+export const CommunicationSchema = union([
+	obj({ ...common, kind: lit("notice"), metadata: obj({ threadId: bounded(256), event: opt(positive), frameRevision: opt(positive), eventKind: opt(bounded(64, 0)), title: opt(bounded(160, 0)), passive: opt(bool()) }) }),
+	obj({ ...common, kind: lit("report"), metadata: obj({ sourceId, requestId: sourceId, replyTo: opt(identity) }) }),
+	obj({ ...common, kind: lit("result"), metadata: obj({ status: union([lit("done"), lit("unanswered")]), references: arr(CommunicationReferenceSchema, { minItems: 1, maxItems: 16 }), omittedReferences: count, reason: opt(bounded(1_024, 0)) }) }),
+	obj({ ...common, kind: lit("check-in"), metadata: obj({ sourceId, producerRequestId: sourceId, elapsedMs: count, origin: union([lit("operator"), lit("model")]) }) }),
 ]);
 export type Communication = Static<typeof CommunicationSchema>;
-export const CommunicationInputLinkSchema = object({ mode: Type.Literal("input"), storageId, conversationId: positive, entryId, submissionId: positive, requestId: sourceId });
-export const CommunicationPassiveLinkSchema = object({ mode: Type.Literal("passive"), storageId, conversationId: positive, entryId, requestId: sourceId });
-export const CommunicationLinkSchema = Type.Union([CommunicationInputLinkSchema, CommunicationPassiveLinkSchema]);
+export const CommunicationInputLinkSchema = obj({ mode: lit("input"), storageId, conversationId: positive, entryId, submissionId: positive, requestId: sourceId });
+export const CommunicationPassiveLinkSchema = obj({ mode: lit("passive"), storageId, conversationId: positive, entryId, requestId: sourceId });
+export const CommunicationLinkSchema = union([CommunicationInputLinkSchema, CommunicationPassiveLinkSchema]);
 export type CommunicationInputLink = Static<typeof CommunicationInputLinkSchema>;
 export type CommunicationPassiveLink = Static<typeof CommunicationPassiveLinkSchema>;
 export type CommunicationLink = Static<typeof CommunicationLinkSchema>;
-export const CommunicationViewSchema = Type.Union([
-	object({ state: Type.Literal("ready"), recordEntryId: entryId, target: CommunicationLinkSchema, value: CommunicationSchema }),
-	object({ state: Type.Literal("unresolved") }),
-	object({ state: Type.Literal("unavailable"), reason: Type.Union([Type.Literal("limit"), Type.Literal("invalid")]) }),
+export const CommunicationViewSchema = union([
+	obj({ state: lit("ready"), recordEntryId: entryId, target: CommunicationLinkSchema, value: CommunicationSchema }),
+	obj({ state: lit("unresolved") }),
+	obj({ state: lit("unavailable"), reason: union([lit("limit"), lit("invalid")]) }),
 ]);
 export type CommunicationView = Static<typeof CommunicationViewSchema>;
-export const CommunicationCompanionSchema = object({ format: Type.Literal("agent.communication-link/1"), target: CommunicationInputLinkSchema, value: CommunicationSchema });
+export const CommunicationCompanionSchema = obj({ format: lit("agent.communication-link/1"), target: CommunicationInputLinkSchema, value: CommunicationSchema });
 export type CommunicationCompanion = Static<typeof CommunicationCompanionSchema>;
-export const CommunicationPassiveSchema = object({ format: Type.Literal("agent.communication-passive/1"), requestId: sourceId, value: CommunicationSchema });
+export const CommunicationPassiveSchema = obj({ format: lit("agent.communication-passive/1"), requestId: sourceId, value: CommunicationSchema });
 export type CommunicationPassive = Static<typeof CommunicationPassiveSchema>;
 
 /** Canonical identity checks never resolve a handle or change a supplied author. */

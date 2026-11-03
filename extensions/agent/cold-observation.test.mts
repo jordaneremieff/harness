@@ -1,3 +1,4 @@
+import { str, int, bool, nul, union, arr, opt, obj } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -27,23 +28,22 @@ async function observeColdStorage(metadata: HostMetadata, method: string, params
 }
 import { runtimeFixture, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { acquireHost, connectHost } from "./host-client.ts";
-import { Type } from "typebox";
 import { CommunicationViewSchema } from "./communication.ts";
 import { hostPaths } from "./host-protocol.ts";
-import { AgentConversationSummarySchema, ConversationStatusSchema, DurableInventorySchema, InspectOutputSchema, JsonValueSchema, ListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { AgentConversationSummarySchema, ConversationStatusSchema, DurableInventorySchema, InspectOutputSchema, JsonValueSchema, NativeListRowSchema, StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 
 /** Snapshot envelope consumed by the dashboard; native messages remain opaque JSON. */
-const SnapshotPageSchema = Type.Object({
-	entries: Type.Array(Type.Object({
-		id: Type.String(), kind: Type.String(), communication: CommunicationViewSchema, head: Type.Optional(Type.String()),
-		model: Type.Optional(Type.Array(JsonValueSchema)), data: Type.Optional(JsonValueSchema),
-	}, { additionalProperties: false })),
-	partial: Type.Boolean(), revision: Type.String(), nextBefore: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
-	coverage: Type.Object({
-		complete: Type.Boolean(), entries: Type.Integer({ minimum: 0 }), bytes: Type.Integer({ minimum: 0 }),
-		hiddenExcluded: Type.Integer({ minimum: 0 }), entryLimitReached: Type.Boolean(), byteLimitReached: Type.Boolean(),
-	}, { additionalProperties: false }),
-}, { additionalProperties: false });
+const SnapshotPageSchema = obj({
+	entries: arr(obj({
+		id: str(), kind: str(), communication: CommunicationViewSchema, head: opt(str()),
+		model: opt(arr(JsonValueSchema)), data: opt(JsonValueSchema),
+	})),
+	partial: bool(), revision: str(), nextBefore: union([int({ minimum: 1 }), nul()]),
+	coverage: obj({
+		complete: bool(), entries: int({ minimum: 0 }), bytes: int({ minimum: 0 }),
+		hiddenExcluded: int({ minimum: 0 }), entryLimitReached: bool(), byteLimitReached: bool(),
+	}),
+});
 
 it("rereads an absent storage that appears during its empty observation open", async () => {
 	const root = mkdtempSync(join(tmpdir(), "cold-absent-"));
@@ -381,7 +381,7 @@ it("validates real retired storage status, every inspect view, snapshot and dash
 	for (const value of [history, branch, search, activity, exact, result]) structuredObservation(InspectOutputSchema, value);
 	const listed = await observeColdStorage(f.metadata, "list", {}) as { items: unknown[] };
 	assert.ok(Array.isArray(listed.items));
-	for (const row of listed.items) structuredObservation(Type.Omit(ListRowSchema, ["sessionId", "storageId", "cwd"]), row);
+	for (const row of listed.items) structuredObservation(NativeListRowSchema, row);
 	const status = await observeColdStorage(f.metadata, "status", { sessionId }) as { conversation?: unknown; live?: boolean; storageId?: string };
 	structuredObservation(StatusOutputSchema, status);
 	assert.equal(status.live, false);
@@ -400,7 +400,7 @@ it("validates real retired storage status, every inspect view, snapshot and dash
 	const snapshot = await observeColdStorage(f.metadata, "snapshot", { sessionId });
 	structuredObservation(SnapshotPageSchema, snapshot);
 	const dashboard = await observeColdStorage(f.metadata, "dashboard", {});
-	structuredObservation(Type.Array(AgentConversationSummarySchema), dashboard);
+	structuredObservation(arr(AgentConversationSummarySchema), dashboard);
 	const after = statSync(f.storagePath, { bigint: true });
 	assert.equal(after.ino, before.ino);
 	assert.equal(after.size, before.size);

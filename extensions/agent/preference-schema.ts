@@ -1,45 +1,41 @@
-import { Type, type Static } from "typebox";
+import { str, num, int, bool, lit, union, arr, opt, obj, type Schema, type Static } from "@earendil-works/pi-schema";
 import { matchesSchema } from "./schema-check.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 
-export const name = Type.String({ minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" });
-const model = Type.String({ minLength: 3, maxLength: 512, pattern: "^[^/\\s]+/[^\\s]+$" });
-const provider = Type.String({ minLength: 1, maxLength: 256, pattern: "^[^/\\s]+$" });
-const thinking = Type.Union(THINKING_LEVELS.map((level) => Type.Literal(level)));
-export const presetSchema = Type.Object(
-	{
+export const name = str({ minLength: 1, maxLength: 64, pattern: "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$" });
+const model = str({ minLength: 3, maxLength: 512, pattern: "^[^/\\s]+/[^\\s]+$" });
+const provider = str({ minLength: 1, maxLength: 256, pattern: "^[^/\\s]+$" });
+const thinking = union(THINKING_LEVELS.map((level) => lit(level)));
+export const presetProperties = {
 		model,
-		thinkingLevel: Type.Optional(thinking),
-		role: Type.Optional(Type.String({ maxLength: 2000 })),
-		checkInMinutes: Type.Optional(Type.Number({ minimum: 0, maximum: 35791 })),
-		notes: Type.Optional(Type.String({ maxLength: 2000 })),
-	},
-	{ additionalProperties: false },
-);
-export const preferenceSchema = Type.Object(
+		thinkingLevel: opt(thinking),
+		role: opt(str({ maxLength: 2000 })),
+		checkInMinutes: opt(num({ minimum: 0, maximum: 35791 })),
+		notes: opt(str({ maxLength: 2000 })),
+	};
+export const presetSchema = obj(presetProperties);
+export const preferenceSchema = obj(
 	{
-		defaultPreset: Type.Optional(name),
-		enforceRoster: Type.Optional(Type.Boolean()),
-		excludedModels: Type.Optional(Type.Array(model, { maxItems: 64, uniqueItems: true })),
-		excludedProviders: Type.Optional(Type.Array(provider, { maxItems: 64, uniqueItems: true })),
-		contextBudgetTokens: Type.Optional(
-			Type.Record(model, Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }), {
-				maxProperties: 64,
-				additionalProperties: false,
-			}),
+		defaultPreset: opt(name),
+		enforceRoster: opt(bool()),
+		excludedModels: opt(arr(model, { maxItems: 64, uniqueItems: true })),
+		excludedProviders: opt(arr(provider, { maxItems: 64, uniqueItems: true })),
+		contextBudgetTokens: opt(
+			{ type: "object", patternProperties: { [model.pattern as string]: int({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }) }, maxProperties: 64, additionalProperties: false } as Schema<Record<string, number>>,
 		),
-		quotaSubstitutionOrder: Type.Optional(Type.Array(name, { maxItems: 64, uniqueItems: true })),
-		reportingNotes: Type.Optional(Type.String({ maxLength: 4000 })),
+		quotaSubstitutionOrder: opt(arr(name, { maxItems: 64, uniqueItems: true })),
+		reportingNotes: opt(str({ maxLength: 4000 })),
 	},
-	{ additionalProperties: false },
 );
-export const AgentPreferencesSchema = Type.Object(
+const presetsSchema: Schema<Record<string, Static<typeof presetSchema>>> = {
+	type: "object", patternProperties: { [name.pattern as string]: presetSchema }, maxProperties: 64, additionalProperties: false,
+};
+export const AgentPreferencesSchema = obj(
 	{
-		version: Type.Literal(1),
-		presets: Type.Record(name, presetSchema, { maxProperties: 64, additionalProperties: false }),
-		preferences: Type.Optional(preferenceSchema),
+		version: lit(1),
+		presets: presetsSchema,
+		preferences: opt(preferenceSchema),
 	},
-	{ additionalProperties: false },
 );
 export type AgentPreferences = Static<typeof AgentPreferencesSchema>;
 
@@ -58,7 +54,7 @@ export type DelegationPreferences = Static<typeof preferenceSchema>;
 export type ExecutionPresets = AgentPreferences["presets"];
 export function validPresets(value: unknown): value is ExecutionPresets {
 	return (
-		matchesSchema(AgentPreferencesSchema.properties.presets, value) &&
+		matchesSchema(presetsSchema, value) &&
 		wellFormed(value) &&
 		Object.keys(value).every((key) => matchesSchema(name, key))
 	);

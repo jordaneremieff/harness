@@ -141,7 +141,7 @@ it("retains every coordinator field on live rows with short Unicode-safe text ex
 	const { rosterOrder: _rank, ...published } = row;
 	assert.deepEqual(
 		Object.keys(published).sort(),
-		Object.keys(AgentConversationSummarySchema.properties).sort(),
+		Object.keys(AgentConversationSummarySchema.properties as Record<string, object>).sort(),
 		"the fixture populates every roster coordinator field",
 	);
 	const result = buildStatusOverview(page([row]), [], []);
@@ -621,7 +621,7 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 	};
 	for (const [fixture, schema] of [
 		[conversation, ConversationStatusSchema],
-		[conversation.providerBlock, ConversationStatusSchema.properties.providerBlock],
+		[conversation.providerBlock, (ConversationStatusSchema.properties as { providerBlock: object }).providerBlock],
 		[conversation.live, LiveStateSchema],
 		[conversation.inbox, InboxStateSchema],
 		[conversation.usage, UsageStateSchema],
@@ -631,7 +631,7 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 	] as const) {
 		assert.deepEqual(
 			Object.keys(fixture).sort(),
-			Object.keys(schema.properties).sort(),
+			Object.keys((schema as { properties: Record<string, object> }).properties).sort(),
 			"the fixture populates every declared coordinator field",
 		);
 		assert.deepEqual(structuredObservation(schema, fixture), fixture);

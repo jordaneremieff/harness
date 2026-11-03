@@ -1,6 +1,6 @@
+import { str, int, bool, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 /** Native await ownership, exact outcomes, and control-provenance release. */
 import { createHash } from "node:crypto";
-import { Type, type Static } from "typebox";
 import { defineDoc, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
 import { canonicalIdentity } from "./identity.ts";
 import { prepareCommunication } from "./communication-retention.ts";
@@ -8,33 +8,33 @@ import { ResultReferenceSchema, type ResultReference } from "./result-reference.
 import { ProducerAwaitFactSchema, type ProducerAwaitFact, type ProducerRetry } from "./await-facts.ts";
 import { ProviderBlockFactSchema, type ProviderBlockFact, type ProviderRetryNotice } from "./provider-block.ts";
 
-export const AwaitParams = Type.Object({
-	results: Type.Array(ResultReferenceSchema, { minItems: 1, maxItems: 16, uniqueItems: true }),
-	releaseOnProviderRetry: Type.Optional(Type.Object({ minAttempt: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })) }, { additionalProperties: false })),
-}, { additionalProperties: false });
+export const AwaitParams = obj({
+	results: arr(ResultReferenceSchema, { minItems: 1, maxItems: 16, uniqueItems: true }),
+	releaseOnProviderRetry: opt(obj({ minAttempt: opt(int({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })) })),
+});
 export type AwaitInput = Static<typeof AwaitParams>;
-export const AwaitOutcomeSchema = Type.Object({
+export const AwaitOutcomeSchema = obj({
 	result: ResultReferenceSchema,
-	status: Type.Union([Type.Literal("done"), Type.Literal("unanswered"), Type.Literal("unavailable")]),
-	answer: Type.Optional(Type.String({ maxLength: 16000 })),
-	answerEntryId: Type.Optional(Type.Integer({ minimum: 1 })),
-	entryId: Type.Optional(Type.Integer({ minimum: 1 })),
-	reason: Type.Optional(Type.String()),
-	providerBlock: Type.Optional(ProviderBlockFactSchema),
-	truncated: Type.Optional(Type.Boolean()),
-	excerpt: Type.Optional(Type.Boolean()),
-	continuation: Type.Optional(Type.Object({ tool: Type.Literal("agent_inspect"), sessionId: Type.String({ minLength: 1, maxLength: 256 }), view: Type.Literal("exact"), entryId: Type.Integer({ minimum: 1 }), offset: Type.Literal(0) }, { additionalProperties: false })),
-}, { additionalProperties: false });
-export const AwaitOutputSchema = Type.Object({
-	decision: Type.Union([Type.Literal("awaiting"), Type.Literal("settled"), Type.Literal("released"), Type.Literal("failed")]),
-	results: Type.Array(AwaitOutcomeSchema, { maxItems: 16 }),
-	unresolved: Type.Array(ResultReferenceSchema, { maxItems: 16 }),
-	originalInputs: Type.Array(Type.Integer({ minimum: 1 })),
-	queuedInputCount: Type.Integer({ minimum: 0 }),
-	queueSnapshot: Type.Object({ source: Type.Literal("committed InboxDoc"), conversationId: Type.Integer({ minimum: 1 }), runId: Type.Integer({ minimum: 1 }) }),
-	releaseReason: Type.Optional(Type.String()),
-	producerRetries: Type.Optional(Type.Array(ProducerAwaitFactSchema, { maxItems: 16 })),
-}, { additionalProperties: false });
+	status: union([lit("done"), lit("unanswered"), lit("unavailable")]),
+	answer: opt(str({ maxLength: 16000 })),
+	answerEntryId: opt(int({ minimum: 1 })),
+	entryId: opt(int({ minimum: 1 })),
+	reason: opt(str()),
+	providerBlock: opt(ProviderBlockFactSchema),
+	truncated: opt(bool()),
+	excerpt: opt(bool()),
+	continuation: opt(obj({ tool: lit("agent_inspect"), sessionId: str({ minLength: 1, maxLength: 256 }), view: lit("exact"), entryId: int({ minimum: 1 }), offset: lit(0) })),
+});
+export const AwaitOutputSchema = obj({
+	decision: union([lit("awaiting"), lit("settled"), lit("released"), lit("failed")]),
+	results: arr(AwaitOutcomeSchema, { maxItems: 16 }),
+	unresolved: arr(ResultReferenceSchema, { maxItems: 16 }),
+	originalInputs: arr(int({ minimum: 1 })),
+	queuedInputCount: int({ minimum: 0 }),
+	queueSnapshot: obj({ source: lit("committed InboxDoc"), conversationId: int({ minimum: 1 }), runId: int({ minimum: 1 }) }, { open: true }),
+	releaseReason: opt(str()),
+	producerRetries: opt(arr(ProducerAwaitFactSchema, { maxItems: 16 })),
+});
 export type AwaitOutcome = { result: ResultReference; status: "done" | "unanswered" | "unavailable"; answer?: string; answerEntryId?: number; entryId?: number; reason?: string; providerBlock?: ProviderBlockFact; truncated?: boolean; excerpt?: boolean; continuation?: { tool: "agent_inspect"; sessionId: string; view: "exact"; entryId: number; offset: 0 } };
 export type AwaitDecision = "awaiting" | "settled" | "released" | "failed";
 export type AwaitDeclaration = { taskId: number; callId: string; conversationId: number; runId: number; cohort: number[]; inputs: number[]; results: ResultReference[]; outcomes: AwaitOutcome[]; decision: AwaitDecision; releaseReason?: string; deliveries?: AwaitDelivery[]; producers?: ProducerAwaitFact[]; releaseOnProviderRetry?: AwaitInput["releaseOnProviderRetry"]; producerRetries?: ProducerAwaitFact[] };

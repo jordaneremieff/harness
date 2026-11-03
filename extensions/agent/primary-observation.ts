@@ -1,8 +1,8 @@
+import { str, int, bool, nul, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 import { constants } from "node:fs";
 import { open, lstat, type FileHandle } from "node:fs/promises";
 import { hostname } from "node:os";
 import { isAbsolute } from "node:path";
-import { Type, type Static } from "typebox";
 import type { PrimaryInfo } from "./primary-channel.ts";
 
 /** Independent limits apply before parsing, text scanning, and serialization. */
@@ -11,36 +11,36 @@ export const PRIMARY_OBSERVATION_LIMITS = {
 	parentVisits: 256, items: 20, textSlots: 128, textScanBytes: 32 * 1024,
 	textBytes: 2048, outputBytes: 24 * 1024,
 } as const;
-const closed = { additionalProperties: false } as const;
-const ViewSchema = Type.Union([Type.Literal("status"), Type.Literal("activity"), Type.Literal("history")]);
-const LocatorSchema = Type.Object({ id: Type.String(), parentId: Type.Union([Type.String(), Type.Null()]), timestamp: Type.String(), byteOffset: Type.Integer({ minimum: 0 }) }, closed);
-const PinSchema = Type.Object({ dev: Type.String(), ino: Type.String(), size: Type.Integer({ minimum: 0 }), mtimeNs: Type.String(), ctimeNs: Type.String() }, closed);
-const CursorSchema = Type.Object({ version: Type.Literal(1), sessionId: Type.String(), path: Type.String(), pin: PinSchema, headId: Type.String(), nextId: Type.String(), view: ViewSchema }, closed);
-const EntrySchema = Type.Object({
-	...LocatorSchema.properties, kind: Type.String(), role: Type.Optional(Type.String()), text: Type.Optional(Type.String()),
-	toolNames: Type.Optional(Type.Array(Type.String(), { maxItems: 16 })), isError: Type.Optional(Type.Boolean()),
-	error: Type.Optional(Type.String()), stopReason: Type.Optional(Type.String()),
-	targetId: Type.Optional(Type.String()), firstKeptEntryId: Type.Optional(Type.String()), fromId: Type.Optional(Type.String()),
-}, closed);
-const IntentSchema = Type.Object({
-	purpose: Type.String(), integration: Type.String(), authority: Type.String(), updatedAt: Type.String(),
-	contactThread: Type.Optional(Type.String()),
-	scope: Type.Object({ paths: Type.Array(Type.String()), branches: Type.Array(Type.String()), fullGate: Type.Optional(Type.Boolean()) }, closed),
-}, closed);
-export const OrdinaryPrimaryObservationSchema = Type.Object({
-	kind: Type.Literal("ordinary-primary"), view: ViewSchema, sessionId: Type.String(), observedAt: Type.String(),
-	presence: Type.Object({
-		basis: Type.Literal("endpoint-record"), cwd: Type.String(), name: Type.Optional(Type.String()),
-		model: Type.Optional(Type.Object({ provider: Type.String(), modelId: Type.String() }, closed)),
-		intentClaim: Type.Optional(IntentSchema), lastActivityAt: Type.Optional(Type.String()),
-		process: Type.Object({ pid: Type.Integer(), hostname: Type.String(), state: Type.Union([Type.Literal("live"), Type.Literal("dead"), Type.Literal("unknown")]), basis: Type.Literal("local-pid-probe"), attribution: Type.Literal("process-existence-not-session-progress") }, closed),
-	}, closed),
-	unknown: Type.Object({ idle: Type.Literal("unknown"), selectedLeaf: Type.Literal("unknown"), timers: Type.Literal("unknown"), tasks: Type.Literal("unknown"), unretainedActivity: Type.Literal("unknown") }, closed),
-	source: Type.Object({ path: Type.Optional(Type.String()), pin: Type.Optional(PinSchema), ancestry: Type.Literal("latest-retained-ancestry"), head: Type.Optional(LocatorSchema), latestKnown: Type.Boolean() }, closed),
-	entries: Type.Array(EntrySchema, { maxItems: PRIMARY_OBSERVATION_LIMITS.items }),
-	coverage: Type.Object({ complete: Type.Boolean(), reasons: Type.Array(Type.String()), bytesRead: Type.Integer(), linesVisited: Type.Integer(), parentVisits: Type.Integer(), textScanBytes: Type.Integer(), omissions: Type.Object({ credentials: Type.Integer(), fields: Type.Integer(), text: Type.Integer() }, closed) }, closed),
-	nextCursor: Type.Optional(CursorSchema),
-}, closed);
+const ViewSchema = union([lit("status"), lit("activity"), lit("history")]);
+const locatorProperties = { id: str(), parentId: union([str(), nul()]), timestamp: str(), byteOffset: int({ minimum: 0 }) };
+const LocatorSchema = obj(locatorProperties);
+const PinSchema = obj({ dev: str(), ino: str(), size: int({ minimum: 0 }), mtimeNs: str(), ctimeNs: str() });
+const CursorSchema = obj({ version: lit(1), sessionId: str(), path: str(), pin: PinSchema, headId: str(), nextId: str(), view: ViewSchema });
+const EntrySchema = obj({
+	...locatorProperties, kind: str(), role: opt(str()), text: opt(str()),
+	toolNames: opt(arr(str(), { maxItems: 16 })), isError: opt(bool()),
+	error: opt(str()), stopReason: opt(str()),
+	targetId: opt(str()), firstKeptEntryId: opt(str()), fromId: opt(str()),
+});
+const IntentSchema = obj({
+	purpose: str(), integration: str(), authority: str(), updatedAt: str(),
+	contactThread: opt(str()),
+	scope: obj({ paths: arr(str()), branches: arr(str()), fullGate: opt(bool()) }),
+});
+export const OrdinaryPrimaryObservationSchema = obj({
+	kind: lit("ordinary-primary"), view: ViewSchema, sessionId: str(), observedAt: str(),
+	presence: obj({
+		basis: lit("endpoint-record"), cwd: str(), name: opt(str()),
+		model: opt(obj({ provider: str(), modelId: str() })),
+		intentClaim: opt(IntentSchema), lastActivityAt: opt(str()),
+		process: obj({ pid: int(), hostname: str(), state: union([lit("live"), lit("dead"), lit("unknown")]), basis: lit("local-pid-probe"), attribution: lit("process-existence-not-session-progress") }),
+	}),
+	unknown: obj({ idle: lit("unknown"), selectedLeaf: lit("unknown"), timers: lit("unknown"), tasks: lit("unknown"), unretainedActivity: lit("unknown") }),
+	source: obj({ path: opt(str()), pin: opt(PinSchema), ancestry: lit("latest-retained-ancestry"), head: opt(LocatorSchema), latestKnown: bool() }),
+	entries: arr(EntrySchema, { maxItems: PRIMARY_OBSERVATION_LIMITS.items }),
+	coverage: obj({ complete: bool(), reasons: arr(str()), bytesRead: int(), linesVisited: int(), parentVisits: int(), textScanBytes: int(), omissions: obj({ credentials: int(), fields: int(), text: int() }) }),
+	nextCursor: opt(CursorSchema),
+});
 export type OrdinaryPrimaryObservation = Static<typeof OrdinaryPrimaryObservationSchema>;
 type Entry = Static<typeof EntrySchema>;
 type Cursor = Static<typeof CursorSchema>;

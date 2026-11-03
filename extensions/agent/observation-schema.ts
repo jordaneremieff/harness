@@ -1,5 +1,6 @@
+import { str, num, int, bool, nul, lit, union, arr, opt, obj, nullable, map, type Static, type Schema } from "@earendil-works/pi-schema";
 /**
- * Exact TypeBox schemas for the native Durable observation surface.
+ * Exact JSON schemas for the native Durable observation surface.
  *
  * These describe the current JSON that `DurableHost`/`DurableObservation` return
  * and that `AgentManager` aggregates for the primary tools. The primary tools
@@ -16,7 +17,6 @@
  */
 import type { JsonValue } from "@earendil-works/chord";
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
-import { Type, type Static, type TSchema } from "typebox";
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { FleetStatusSchema } from "./fleet-status.ts";
 import { OrdinaryPrimaryObservationSchema } from "./primary-observation.ts";
@@ -26,268 +26,270 @@ import { CommunicationViewSchema } from "./communication.ts";
 import { AwaitFactSchema } from "./await-facts.ts";
 import { ProviderBlockFactSchema } from "./provider-block.ts";
 
-const object = <T extends Record<string, TSchema>>(properties: T) => Type.Object(properties, { additionalProperties: false });
-const string = Type.String();
-const boolean = Type.Boolean();
-const number = Type.Number();
-const count = Type.Integer({ minimum: 0 });
-const id = Type.Integer({ minimum: 1 });
-const literal = <V extends string | number | boolean>(value: V) => Type.Literal(value);
-const union = <T extends readonly TSchema[]>(schemas: T) => Type.Union(schemas as unknown as [TSchema, ...TSchema[]]);
-const nullable = <T extends TSchema>(schema: T) => Type.Union([schema, Type.Null()]);
+const string = str();
+const boolean = bool();
+const number = num();
+const count = int({ minimum: 0 });
+const id = int({ minimum: 1 });
 const nullableText = nullable(string);
 const nullableCount = nullable(count);
 const thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-const thinkingLevel = union(thinkingLevels.map((level) => literal(level)));
+const thinkingLevel = union(thinkingLevels.map((level) => lit(level)));
 const stopReasons = ["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"] as const;
 const textRoles = ["user", "assistant", "toolResult", "system"] as const;
 
 /** Exact JSON value; no arbitrary unknown leaves. */
-export const JsonValueSchema: TSchema = Type.Cyclic(
-	{ Json: union([Type.Null(), boolean, number, string, Type.Array(Type.Ref("Json")), Type.Record(string, Type.Ref("Json"))]) },
-	"Json",
-);
-const jsonObject = Type.Record(string, JsonValueSchema);
+export const JsonValueSchema: Schema<JsonValue> = {
+	$defs: { Json: { $id: "Json", anyOf: [nul(), boolean, number, string, arr({ $ref: "Json" }), map({ $ref: "Json" })] } },
+	$ref: "Json",
+};
+const jsonObject = map(JsonValueSchema);
 const cursorSchema = jsonObject;
 
-const modelCost = object({ input: number, output: number, cacheRead: number, cacheWrite: number, total: number, totalFromProvider: Type.Optional(boolean) });
-export const UsageSchema = object({
+const modelCost = obj({ input: number, output: number, cacheRead: number, cacheWrite: number, total: number, totalFromProvider: opt(boolean) });
+export const UsageSchema = obj({
 	input: number,
 	output: number,
 	cacheRead: number,
 	cacheWrite: number,
-	cacheWrite1h: Type.Optional(number),
-	reasoning: Type.Optional(number),
+	cacheWrite1h: opt(number),
+	reasoning: opt(number),
 	totalTokens: number,
 	cost: modelCost,
 });
-export const UsageStateSchema = object({ models: Type.Record(string, UsageSchema), tools: Type.Record(string, UsageSchema) });
+export const UsageStateSchema = obj({ models: map(UsageSchema), tools: map(UsageSchema) });
 
-const textContent = object({ type: literal("text"), text: string, textSignature: Type.Optional(string) });
-const imageContent = object({ type: literal("image"), data: string, mimeType: string });
-const thinkingContent = object({ type: literal("thinking"), thinking: string, thinkingSignature: Type.Optional(string), redacted: Type.Optional(boolean) });
-const toolCallContent = object({ type: literal("toolCall"), id: string, name: string, arguments: jsonObject, argumentsError: Type.Optional(string), thoughtSignature: Type.Optional(string), namespace: Type.Optional(string) });
-const userInputContent = union([string, Type.Array(union([textContent, imageContent]))]);
+const textContent = obj({ type: lit("text"), text: string, textSignature: opt(string) });
+const imageContent = obj({ type: lit("image"), data: string, mimeType: string });
+const thinkingContent = obj({ type: lit("thinking"), thinking: string, thinkingSignature: opt(string), redacted: opt(boolean) });
+const toolCallContent = obj({ type: lit("toolCall"), id: string, name: string, arguments: jsonObject, argumentsError: opt(string), thoughtSignature: opt(string), namespace: opt(string) });
+const userInputContent = union([string, arr(union([textContent, imageContent]))]);
 
-const diagnosticError = object({ name: Type.Optional(string), message: string, stack: Type.Optional(string), code: Type.Optional(union([string, number])) });
-const assistantDiagnostic = object({ type: string, timestamp: number, error: Type.Optional(diagnosticError), details: Type.Optional(jsonObject) });
-const deferredHandle = object({ provider: string, modelId: string, api: string, id: string, expiresAt: Type.Optional(number), pollAfterMs: Type.Optional(number), data: Type.Optional(JsonValueSchema) });
-export const AssistantMessageSchema = object({
-	role: literal("assistant"),
-	content: Type.Array(union([textContent, thinkingContent, toolCallContent])),
+const diagnosticError = obj({ name: opt(string), message: string, stack: opt(string), code: opt(union([string, number])) });
+const assistantDiagnostic = obj({ type: string, timestamp: number, error: opt(diagnosticError), details: opt(jsonObject) });
+const deferredHandle = obj({ provider: string, modelId: string, api: string, id: string, expiresAt: opt(number), pollAfterMs: opt(number), data: opt(JsonValueSchema) });
+export const AssistantMessageSchema = obj({
+	role: lit("assistant"),
+	content: arr(union([textContent, thinkingContent, toolCallContent])),
 	api: string,
 	provider: string,
 	model: string,
-	responseModel: Type.Optional(string),
-	responseId: Type.Optional(string),
-	providerThinkingLevel: Type.Optional(string),
-	thinkingLevel: Type.Optional(thinkingLevel),
-	diagnostics: Type.Optional(Type.Array(assistantDiagnostic)),
+	responseModel: opt(string),
+	responseId: opt(string),
+	providerThinkingLevel: opt(string),
+	thinkingLevel: opt(thinkingLevel),
+	diagnostics: opt(arr(assistantDiagnostic)),
 	usage: UsageSchema,
-	stopReason: union(stopReasons.map((reason) => literal(reason))),
-	deferred: Type.Optional(deferredHandle),
-	errorMessage: Type.Optional(string),
-	rawStopReason: Type.Optional(string),
-	endTurn: Type.Optional(boolean),
+	stopReason: union(stopReasons.map((reason) => lit(reason))),
+	deferred: opt(deferredHandle),
+	errorMessage: opt(string),
+	rawStopReason: opt(string),
+	endTurn: opt(boolean),
 	timestamp: number,
-	durationMs: Type.Optional(count),
+	durationMs: opt(count),
 });
 
-const toolDiagnostic = object({ severity: union([literal("info"), literal("warn"), literal("error")]), message: string, code: Type.Optional(string) });
-const toolSlot = object({
+const toolDiagnostic = obj({ severity: union([lit("info"), lit("warn"), lit("error")]), message: string, code: opt(string) });
+const toolSlot = obj({
 	callId: string,
 	name: string,
-	taskId: Type.Optional(id),
-	unoffered: Type.Optional(literal(true)),
-	status: union([literal("pending"), literal("running"), literal("done")]),
-	output: Type.Optional(string),
-	droppedBytes: Type.Optional(count),
-	droppedLines: Type.Optional(count),
-	details: Type.Optional(JsonValueSchema),
-	diagnostics: Type.Optional(Type.Array(toolDiagnostic)),
-	entry: Type.Optional(id),
+	taskId: opt(id),
+	unoffered: opt(lit(true)),
+	status: union([lit("pending"), lit("running"), lit("done")]),
+	output: opt(string),
+	droppedBytes: opt(count),
+	droppedLines: opt(count),
+	details: opt(JsonValueSchema),
+	diagnostics: opt(arr(toolDiagnostic)),
+	entry: opt(id),
 });
-const nestedToolSlot = object({
+const nestedToolSlot = obj({
 	callId: string,
 	name: string,
 	taskId: id,
 	parentCallId: string,
 	parentTaskId: id,
 	arguments: jsonObject,
-	status: union([literal("pending"), literal("running"), literal("done")]),
-	output: Type.Optional(string),
-	droppedBytes: Type.Optional(count),
-	droppedLines: Type.Optional(count),
-	details: Type.Optional(JsonValueSchema),
-	diagnostics: Type.Optional(Type.Array(toolDiagnostic)),
-	summary: Type.Optional(object({ isError: boolean, durationMs: Type.Optional(number), usage: Type.Optional(UsageSchema), error: Type.Optional(string) })),
+	status: union([lit("pending"), lit("running"), lit("done")]),
+	output: opt(string),
+	droppedBytes: opt(count),
+	droppedLines: opt(count),
+	details: opt(JsonValueSchema),
+	diagnostics: opt(arr(toolDiagnostic)),
+	summary: opt(obj({ isError: boolean, durationMs: opt(number), usage: opt(UsageSchema), error: opt(string) })),
 });
-const compactionTrigger = union([literal("manual"), literal("threshold"), literal("overflow")]);
+const compactionTrigger = union([lit("manual"), lit("threshold"), lit("overflow")]);
 const runFailureReasons = ["model_error", "no_model", "aborted", "reset", "faulted", "orphaned", "interrupted", "restart_limit", "nothing_to_answer", "turn_limit"] as const;
-const compactionStatus = object({
+const compactionStatus = obj({
 	taskId: id,
 	trigger: compactionTrigger,
 	blocking: boolean,
 	attempt: count,
-	retry: Type.Optional(object({ at: number, error: string })),
+	retry: opt(obj({ at: number, error: string })),
 });
-export const LiveStateSchema = object({
-	run: Type.Optional(object({ taskId: id, inputs: Type.Array(id), turns: count, first: Type.Optional(id), afterRun: Type.Optional(object({ tasks: Type.Optional(Type.Array(id)) })) })),
-	generation: Type.Optional(
-		object({
+export const LiveStateSchema = obj({
+	run: opt(obj({ taskId: id, inputs: arr(id), turns: count, first: opt(id), afterRun: opt(obj({ tasks: opt(arr(id)) })) })),
+	generation: opt(
+		obj({
 			attempt: count,
-			message: Type.Optional(AssistantMessageSchema),
-			retry: Type.Optional(object({ at: number, error: string })),
-			deferred: Type.Optional(object({ pollAt: number })),
+			message: opt(AssistantMessageSchema),
+			retry: opt(obj({ at: number, error: string })),
+			deferred: opt(obj({ pollAt: number })),
 		}),
 	),
-	tools: Type.Optional(Type.Array(toolSlot)),
-	nestedTools: Type.Optional(Type.Array(nestedToolSlot)),
-	compactions: Type.Optional(Type.Array(compactionStatus)),
-	compactionFailure: Type.Optional(object({ taskId: id, trigger: compactionTrigger, error: string })),
-	runFailure: Type.Optional(object({ taskId: id, inputs: Type.Array(id), reason: union(runFailureReasons.map((reason) => literal(reason))), detail: Type.Optional(string), first: Type.Optional(id) })),
+	tools: opt(arr(toolSlot)),
+	nestedTools: opt(arr(nestedToolSlot)),
+	compactions: opt(arr(compactionStatus)),
+	compactionFailure: opt(obj({ taskId: id, trigger: compactionTrigger, error: string })),
+	runFailure: opt(obj({ taskId: id, inputs: arr(id), reason: union(runFailureReasons.map((reason) => lit(reason))), detail: opt(string), first: opt(id) })),
 });
 
 const inboxItem = union([
-	object({ id, mode: union([literal("steer"), literal("followUp")]), content: userInputContent, entry: Type.Optional(jsonObject) }),
-	object({ id, mode: literal("write"), entry: jsonObject }),
+	obj({ id, mode: union([lit("steer"), lit("followUp")]), content: userInputContent, entry: opt(jsonObject) }),
+	obj({ id, mode: lit("write"), entry: jsonObject }),
 ]);
-export const InboxStateSchema = object({ items: Type.Array(inboxItem) });
+export const InboxStateSchema = obj({ items: arr(inboxItem) });
 
 /** One pending scheduled input as reported by status. */
-const timerStatusRow = object({
+const timerStatusRow = obj({
 	id,
 	target: string,
 	deadline: number,
-	mode: union([literal("followUp"), literal("steer")]),
-	status: union([literal("pending"), literal("unsettled")]),
+	mode: union([lit("followUp"), lit("steer")]),
+	status: union([lit("pending"), lit("unsettled")]),
 	overdue: boolean,
 });
 
 /** One conversation's observation status, as returned by every status variant. */
-export const ConversationStatusSchema = object({
-	providerBlock: Type.Optional(ProviderBlockFactSchema),
+export const ConversationStatusSchema = obj({
+	providerBlock: opt(ProviderBlockFactSchema),
 	conversationId: id,
 	identity: string,
-	name: Type.Optional(string),
-	owner: Type.Optional(string),
-	firstMessage: Type.Optional(string),
+	name: opt(string),
+	owner: opt(string),
+	firstMessage: opt(string),
 	busy: boolean,
-	cwd: Type.Optional(string),
+	cwd: opt(string),
 	lastText: nullableText,
-	lastTextRole: Type.Optional(union(textRoles.map((role) => literal(role)))),
+	lastTextRole: opt(union(textRoles.map((role) => lit(role)))),
 	live: nullable(LiveStateSchema),
 	inbox: nullable(InboxStateSchema),
-	usage: Type.Optional(UsageStateSchema),
-	agent: object({
-		model: Type.Optional(object({ provider: string, modelId: string })),
+	usage: opt(UsageStateSchema),
+	agent: obj({
+		model: opt(obj({ provider: string, modelId: string })),
 		thinkingLevel,
-		extensions: Type.Array(string),
-		tools: Type.Array(string),
-		cwd: Type.Optional(string),
-		instructions: Type.Optional(string),
+		extensions: arr(string),
+		tools: arr(string),
+		cwd: opt(string),
+		instructions: opt(string),
 	}),
-	tasks: Type.Array(
-		object({
+	tasks: arr(
+		obj({
 			id,
 			kind: string,
-			status: union([literal("running"), literal("pending"), literal("waiting"), literal("sleeping"), literal("completing"), literal("blocked")]),
+			status: union([lit("running"), lit("pending"), lit("waiting"), lit("sleeping"), lit("completing"), lit("blocked")]),
 			background: boolean,
-			owner: Type.Optional(id),
+			owner: opt(id),
 			abortRequested: boolean,
-			startedAt: Type.Optional(number),
-			endedAt: Type.Optional(number),
+			startedAt: opt(number),
+			endedAt: opt(number),
 		}),
 	),
-	submissions: Type.Array(
-		object({
+	submissions: arr(
+		obj({
 			id,
-			type: union([literal("input"), literal("write"), literal("continue")]),
-			status: union([literal("queued"), literal("placed"), literal("done"), literal("unanswered")]),
-			requestId: Type.Optional(string),
-			entryId: Type.Optional(id),
-			answerEntryId: Type.Optional(id),
-			reason: Type.Optional(string),
+			type: union([lit("input"), lit("write"), lit("continue")]),
+			status: union([lit("queued"), lit("placed"), lit("done"), lit("unanswered")]),
+			requestId: opt(string),
+			entryId: opt(id),
+			answerEntryId: opt(id),
+			reason: opt(string),
 		}),
 	),
 	/** Bounded pending scheduled inputs, nearest deadline first. */
-	timers: Type.Optional(Type.Array(timerStatusRow)),
-	awaiting: Type.Optional(AwaitFactSchema),
-	forkSource: Type.Optional(object({ conversationId: id, at: id })),
-	ownerTaskId: Type.Optional(id),
+	timers: opt(arr(timerStatusRow)),
+	awaiting: opt(AwaitFactSchema),
+	forkSource: opt(obj({ conversationId: id, at: id })),
+	ownerTaskId: opt(id),
 });
 
-const compactionFailure = object({ trigger: compactionTrigger, errorMessage: Type.Optional(string), at: Type.Optional(string) });
-const autoRetry = object({ attempt: count, maxAttempts: count, delayMs: count, errorMessage: string });
-const dashboardHealth = object({ lastError: Type.Optional(string), compactionFailure: Type.Optional(compactionFailure), autoRetry: Type.Optional(autoRetry) });
+const compactionFailure = obj({ trigger: compactionTrigger, errorMessage: opt(string), at: opt(string) });
+const autoRetry = obj({ attempt: count, maxAttempts: count, delayMs: count, errorMessage: string });
+const dashboardHealth = obj({ lastError: opt(string), compactionFailure: opt(compactionFailure), autoRetry: opt(autoRetry) });
 
 /** One dashboard roster row, including host startup and unavailable storage. */
-export const AgentConversationSummarySchema = object({
+export const AgentConversationSummarySchema = obj({
 	id: string,
 	storageId: string,
-	name: Type.Optional(string),
-	firstMessage: Type.Optional(string),
+	name: opt(string),
+	firstMessage: opt(string),
 	cwd: string,
-	model: Type.Optional(object({ provider: string, modelId: string, thinkingLevel: string })),
+	model: opt(obj({ provider: string, modelId: string, thinkingLevel: string })),
 	modifiedAt: number,
-	owner: union([literal("here"), literal("unavailable"), literal("unknown")]),
-	ownerLabel: Type.Optional(string),
-	state: union([literal("starting"), literal("working"), literal("idle"), literal("done"), literal("failed"), literal("stopped"), literal("interrupted"), literal("new"), literal("unavailable")]),
+	owner: union([lit("here"), lit("unavailable"), lit("unknown")]),
+	ownerLabel: opt(string),
+	state: union([lit("starting"), lit("working"), lit("idle"), lit("done"), lit("failed"), lit("stopped"), lit("interrupted"), lit("new"), lit("unavailable")]),
 	cost: number,
 	partial: boolean,
-	latestReply: Type.Optional(string),
-	error: Type.Optional(string),
-	toolCalls: Type.Optional(count),
-	currentTool: Type.Optional(object({ name: string, argument: string })),
-	durationMs: Type.Optional(number),
-	health: Type.Optional(dashboardHealth),
-	awaiting: Type.Optional(AwaitFactSchema),
+	latestReply: opt(string),
+	error: opt(string),
+	toolCalls: opt(count),
+	currentTool: opt(obj({ name: string, argument: string })),
+	durationMs: opt(number),
+	health: opt(dashboardHealth),
+	awaiting: opt(AwaitFactSchema),
 });
 
 /** What one session host installed, as reported by status. */
-export const DurableInventorySchema = object({
-	contributions: Type.Array(object({ name: string, source: string, commands: Type.Array(object({ name: string, description: string })) })),
-	ordinaryOnly: Type.Array(string),
+export const DurableInventorySchema = obj({
+	contributions: arr(obj({ name: string, source: string, commands: arr(obj({ name: string, description: string })) })),
+	ordinaryOnly: arr(string),
 	/** Present only when at least one configured extension failed to load. */
-	failed: Type.Optional(Type.Array(object({ path: string, error: string }))),
+	failed: opt(arr(obj({ path: string, error: string }))),
 });
 
 /** One manager list row: the native summary plus its catalog and external identity. */
-export const ListRowSchema = object({
+export const ListRowProperties = {
 	conversationId: id,
 	identity: string,
-	name: Type.Optional(string),
-	owner: Type.Optional(string),
-	firstMessage: Type.Optional(string),
+	name: opt(string),
+	owner: opt(string),
+	firstMessage: opt(string),
 	busy: boolean,
-	forkSource: Type.Optional(object({ conversationId: id, at: id })),
-	ownerTaskId: Type.Optional(id),
+	forkSource: opt(obj({ conversationId: id, at: id })),
+	ownerTaskId: opt(id),
 	sessionId: string,
 	storageId: string,
 	cwd: string,
-});
+};
+export const ListRowSchema = obj(ListRowProperties);
+
+const { sessionId: _sessionId, storageId: _storageId, cwd: _cwd, ...nativeListRowProperties } = ListRowProperties;
+export const NativeListRowSchema = obj(nativeListRowProperties);
 
 /** The host list page contains native summaries, before the manager adds catalog fields. */
-export const NativeListOutputSchema = object({
-	items: Type.Array(Type.Omit(ListRowSchema, ["sessionId", "storageId", "cwd"], { additionalProperties: false })),
+export const NativeListOutputSchema = obj({
+	items: arr(NativeListRowSchema),
 	next: nullable(cursorSchema),
 });
 
 /** `agent_list` output: the manager's bounded catalog scan over native list rows. */
-export const ListOutputSchema = object({
-	rows: Type.Array(ListRowSchema),
+export const ListCoverageProperties = {
+	complete: boolean,
+	storagesVisited: count,
+	unavailable: arr(obj({ storageId: string, reason: string })),
+};
+export const ListOutputProperties = {
+	rows: arr(ListRowSchema),
 	nextCursor: nullableText,
-	coverage: object({
-		complete: boolean,
-		storagesVisited: count,
-		unavailable: Type.Array(object({ storageId: string, reason: string })),
-	}),
+	coverage: obj(ListCoverageProperties),
 	observedAt: string,
 	authority: string,
-});
+};
+export const ListOutputSchema = obj(ListOutputProperties);
 export type ListOutput = Static<typeof ListOutputSchema>;
 
-const catalogPriorityCoverage = object({ candidates: count, inspected: count, unreadable: count, unknownClaims: count, returned: count, remaining: count, priorityRemaining: count,
+const catalogPriorityCoverage = obj({ candidates: count, inspected: count, unreadable: count, unknownClaims: count, returned: count, remaining: count, priorityRemaining: count,
 	remainingRows: count, priorityRemainingRows: count, recordByteLimit: count, claimByteLimit: count, outputLimit: count });
 
 /**
@@ -302,74 +304,80 @@ const catalogPriorityCoverage = object({ candidates: count, inspected: count, un
  * A conversation status carries `timers`: its bounded pending scheduled inputs,
  * nearest deadline first, with `overdue` set when the deadline has passed.
  */
-export const StatusOutputSchema = union([
-	object({
-		sessions: Type.Array(AgentConversationSummarySchema),
-		primaries: Type.Array(
-			object({
+const statusOverviewCoverage = { complete: boolean, storagesVisited: count, skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: nul(), reasons: arr(string) };
+const statusProperties = [
+	{
+		sessions: arr(AgentConversationSummarySchema),
+		primaries: arr(
+			obj({
 				sessionId: string,
 				cwd: string,
-				name: Type.Optional(string),
-				model: Type.Optional(object({ provider: string, modelId: string })),
-				thinkingLevel: Type.Optional(thinkingLevel),
+				name: opt(string),
+				model: opt(obj({ provider: string, modelId: string })),
+				thinkingLevel: opt(thinkingLevel),
 			}),
 		),
-		failures: Type.Array(object({ storageId: string, error: string })),
-		summary: object({
-			sessions: object({ observed: count, working: count, attention: count, quiet: count, summarizedQuiet: count }),
-			primaries: object({ observed: count, summarized: count }),
-			failures: object({ observed: count, summarized: count }),
+		failures: arr(obj({ storageId: string, error: string })),
+		summary: obj({
+			sessions: obj({ observed: count, working: count, attention: count, quiet: count, summarizedQuiet: count }),
+			primaries: obj({ observed: count, summarized: count }),
+			failures: obj({ observed: count, summarized: count }),
 		}),
-		coverage: object({ complete: boolean, storagesVisited: count, skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: Type.Null(), reasons: Type.Array(string) }),
+		coverage: obj(statusOverviewCoverage),
 		observedAt: string,
 		discovery: string,
-	}),
-	object({ conversation: ConversationStatusSchema, inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: Type.Optional(string) }),
-	object({ conversation: ConversationStatusSchema, live: literal(false), storageId: string, deliveryError: Type.Optional(string) }),
-	object({ conversations: Type.Array(ConversationStatusSchema), inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: Type.Optional(string) }),
-	object({ conversations: Type.Array(ConversationStatusSchema), live: literal(false), storageId: string, deliveryError: Type.Optional(string) }),
-	object({ conversation: ConversationStatusSchema }),
+	},
+	{ conversation: ConversationStatusSchema, inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: opt(string) },
+	{ conversation: ConversationStatusSchema, live: lit(false), storageId: string, deliveryError: opt(string) },
+	{ conversations: arr(ConversationStatusSchema), inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: opt(string) },
+	{ conversations: arr(ConversationStatusSchema), live: lit(false), storageId: string, deliveryError: opt(string) },
+	{ conversation: ConversationStatusSchema }
+] as const;
+export const StatusOutputSchema = union([
+	obj(statusProperties[0]), obj(statusProperties[1]), obj(statusProperties[2]),
+	obj(statusProperties[3]), obj(statusProperties[4]), obj(statusProperties[5]),
 ]);
 export type StatusOutput = Static<typeof StatusOutputSchema>;
 
 /** Tool-only local observations extend status without changing the host response contract. */
-const ToolStatusSchema = Type.Union(StatusOutputSchema.anyOf.map((schema) => {
-	const properties = (schema as TSchema & { properties: Record<string, TSchema> }).properties;
-	const overviewCoverage = "sessions" in properties ? (properties.coverage as TSchema & { properties: Record<string, TSchema> }).properties : undefined;
-	return object({ ...properties, awareness: Type.Optional(EffortAwarenessSchema),
-		...(overviewCoverage ? { coverage: object({ ...overviewCoverage, inventory: catalogPriorityCoverage, omittedPriorityRows: count, omittedPriorityRecords: count }) } : {}),
-		...("conversations" in properties ? { createdAgents: Type.Optional(CreatedAgentsSchema) } : {}),
-	});
-}));
+const awarenessProperties = { awareness: opt(EffortAwarenessSchema) };
+const ToolStatusSchema = union([
+	obj({ ...statusProperties[0], ...awarenessProperties, coverage: obj({ ...statusOverviewCoverage, inventory: catalogPriorityCoverage, omittedPriorityRows: count, omittedPriorityRecords: count }) }),
+	obj({ ...statusProperties[1], ...awarenessProperties }),
+	obj({ ...statusProperties[2], ...awarenessProperties }),
+	obj({ ...statusProperties[3], ...awarenessProperties, createdAgents: opt(CreatedAgentsSchema) }),
+	obj({ ...statusProperties[4], ...awarenessProperties, createdAgents: opt(CreatedAgentsSchema) }),
+	obj({ ...statusProperties[5], ...awarenessProperties }),
+]);
 export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema, OrdinaryPrimaryObservationSchema]);
 
-const entrySource = union([literal("user"), literal("assistant"), literal("toolResult"), literal("summary"), literal("custom")]);
-const messageRole = union([literal("system"), literal("user"), literal("assistant"), literal("toolResult")]);
-const omissions = object({ providerSignatures: count, imagePayloads: count, redactedThinking: count });
+const entrySource = union([lit("user"), lit("assistant"), lit("toolResult"), lit("summary"), lit("custom")]);
+const messageRole = union([lit("system"), lit("user"), lit("assistant"), lit("toolResult")]);
+const omissions = obj({ providerSignatures: count, imagePayloads: count, redactedThinking: count });
 
 const entryRowFields = {
 	id,
 	kind: string,
 	source: entrySource,
-	role: Type.Optional(messageRole),
+	role: opt(messageRole),
 	text: string,
 	truncated: boolean,
-	omissions: Type.Optional(omissions),
+	omissions: opt(omissions),
 };
-const rawEntryRow = object({
+const rawEntryRow = obj({
 	...entryRowFields,
-	preview: Type.Optional(object({ text: string, truncated: boolean })),
+	preview: opt(obj({ text: string, truncated: boolean })),
 	nextOffset: nullableCount,
 });
 /** Explicit compact semantics, including text-only entries. */
-export const CompactEntryRowSchema = object({
+export const CompactEntryRowSchema = obj({
 	...entryRowFields,
 	communication: CommunicationViewSchema,
-	format: literal("compact"),
-	nextOffset: Type.Null(),
-	toolCalls: Type.Optional(Type.Array(object({ callId: Type.Optional(string), name: string, arguments: string, truncated: boolean }), { maxItems: 8 })),
-	toolResults: Type.Optional(Type.Array(object({ callId: Type.Optional(string), name: string, text: string, isError: boolean, truncated: boolean, durationMs: Type.Optional(count) }), { maxItems: 8 })),
-	omittedParts: Type.Optional(count),
+	format: lit("compact"),
+	nextOffset: nul(),
+	toolCalls: opt(arr(obj({ callId: opt(string), name: string, arguments: string, truncated: boolean }), { maxItems: 8 })),
+	toolResults: opt(arr(obj({ callId: opt(string), name: string, text: string, isError: boolean, truncated: boolean, durationMs: opt(count) }), { maxItems: 8 })),
+	omittedParts: opt(count),
 });
 export const DurableEntryRowSchema = union([CompactEntryRowSchema, rawEntryRow]);
 
@@ -377,29 +385,29 @@ const historyFields = {
 	sessionId: string,
 	conversationId: id,
 	nextCursor: nullable(cursorSchema),
-	order: literal("newestFirst"),
+	order: lit("newestFirst"),
 	detail: string,
 };
 /** Compact history has a page discriminator even when no entries exist; branch stays raw. */
 export const HistoryOutputSchema = union([
-	object({ ...historyFields, view: literal("history"), format: literal("compact"), entries: Type.Array(CompactEntryRowSchema) }),
-	object({ ...historyFields, view: literal("branch"), entries: Type.Array(rawEntryRow) }),
+	obj({ ...historyFields, view: lit("history"), format: lit("compact"), entries: arr(CompactEntryRowSchema) }),
+	obj({ ...historyFields, view: lit("branch"), entries: arr(rawEntryRow) }),
 ]);
 
-const searchMatch = object({ entryId: id, kind: string, source: entrySource, matchOffset: count, excerpt: string, excerptText: string, truncated: boolean });
-const searchCursor = object({ cursor: nullable(cursorSchema), skip: count, scannedBytes: count });
-export const SearchOutputSchema = object({
-	view: literal("search"),
+const searchMatch = obj({ entryId: id, kind: string, source: entrySource, matchOffset: count, excerpt: string, excerptText: string, truncated: boolean });
+const searchCursor = obj({ cursor: nullable(cursorSchema), skip: count, scannedBytes: count });
+export const SearchOutputSchema = obj({
+	view: lit("search"),
 	sessionId: string,
 	conversationId: id,
-	matches: Type.Array(searchMatch),
+	matches: arr(searchMatch),
 	nextCursor: nullable(searchCursor),
-	coverage: object({ scannedEntries: count, scannedBytes: count, complete: boolean }),
+	coverage: obj({ scannedEntries: count, scannedBytes: count, complete: boolean }),
 	detail: string,
 });
 
-export const ExactOutputSchema = object({
-	view: literal("exact"),
+export const ExactOutputSchema = obj({
+	view: lit("exact"),
 	sessionId: string,
 	conversationId: id,
 	entryId: id,
@@ -407,38 +415,38 @@ export const ExactOutputSchema = object({
 	text: string,
 	nextOffset: nullableCount,
 	truncated: boolean,
-	omissions: Type.Optional(omissions),
+	omissions: opt(omissions),
 });
 
-const runningTool = object({
+const runningTool = obj({
 	toolCallId: string,
 	name: string,
-	taskId: Type.Optional(id),
-	parentToolCallId: Type.Optional(string),
-	parentTaskId: Type.Optional(id),
-	issuedAt: Type.Optional(string),
-	elapsedMs: Type.Optional(count),
-	elapsedFrom: Type.Optional(literal("tool-call-entry")),
+	taskId: opt(id),
+	parentToolCallId: opt(string),
+	parentTaskId: opt(id),
+	issuedAt: opt(string),
+	elapsedMs: opt(count),
+	elapsedFrom: opt(lit("tool-call-entry")),
 });
-export const ActivityOutputSchema = object({
-	view: literal("activity"),
-	format: literal("compact"),
+export const ActivityOutputSchema = obj({
+	view: lit("activity"),
+	format: lit("compact"),
 	sessionId: string,
 	conversationId: id,
-	turns: Type.Array(object({ entries: Type.Array(CompactEntryRowSchema) })),
+	turns: arr(obj({ entries: arr(CompactEntryRowSchema) })),
 	nextCursor: nullable(cursorSchema),
-	metadata: object({
-		owner: union([literal("here"), literal("unavailable"), literal("unknown")]),
+	metadata: obj({
+		owner: union([lit("here"), lit("unavailable"), lit("unknown")]),
 		live: boolean,
 		operation: nullable(id),
-		runningTools: Type.Array(runningTool),
+		runningTools: arr(runningTool),
 		pending: nullableCount,
-		streamedText: Type.Optional(string),
-		lastError: Type.Optional(string),
-		compactionFailure: Type.Optional(compactionFailure),
-		autoRetry: Type.Optional(autoRetry),
+		streamedText: opt(string),
+		lastError: opt(string),
+		compactionFailure: opt(compactionFailure),
+		autoRetry: opt(autoRetry),
 	}),
-	coverage: object({
+	coverage: obj({
 		scannedEntries: count,
 		scannedBytes: count,
 		complete: boolean,
@@ -452,31 +460,31 @@ export const ActivityOutputSchema = object({
 	detail: string,
 });
 
-const RetainedResultOutputSchema = object({
-	providerBlock: Type.Optional(ProviderBlockFactSchema),
-	recoveryOf: Type.Optional(string),
-	view: literal("result"),
+const RetainedResultOutputSchema = obj({
+	providerBlock: opt(ProviderBlockFactSchema),
+	recoveryOf: opt(string),
+	view: lit("result"),
 	sessionId: string,
 	conversationId: id,
 	submissionId: id,
-	status: union([literal("queued"), literal("placed"), literal("done"), literal("unanswered")]),
-	requestId: Type.Optional(string),
-	operationId: Type.Optional(string),
-	entryId: Type.Optional(id),
-	answerEntryId: Type.Optional(id),
-	reason: Type.Optional(string),
-	answer: Type.Optional(string),
+	status: union([lit("queued"), lit("placed"), lit("done"), lit("unanswered")]),
+	requestId: opt(string),
+	operationId: opt(string),
+	entryId: opt(id),
+	answerEntryId: opt(id),
+	reason: opt(string),
+	answer: opt(string),
 	usage: UsageStateSchema,
 });
 
-export const ResultOutputSchema = union([RetainedResultOutputSchema, object({
-	view: literal("result"),
+export const ResultOutputSchema = union([RetainedResultOutputSchema, obj({
+	view: lit("result"),
 	sessionId: string,
 	conversationId: id,
-	status: literal("unavailable"),
-	requestId: Type.Optional(string),
-	submissionId: Type.Optional(id),
-	operationId: Type.Optional(string),
+	status: lit("unavailable"),
+	requestId: opt(string),
+	submissionId: opt(id),
+	operationId: opt(string),
 	reason: string,
 	usage: UsageStateSchema,
 })]);
@@ -488,7 +496,7 @@ export type InspectOutput = Static<typeof InspectOutputSchema>;
 export const InspectToolOutputSchema = union([InspectOutputSchema, OrdinaryPrimaryObservationSchema]);
 
 /** The schema for one observation method, shared by ordinary and native tool declarations. */
-export function observationSchema(method: "list" | "status" | "inspect"): TSchema {
+export function observationSchema(method: "list" | "status" | "inspect"): Schema {
 	switch (method) {
 		case "list":
 			return ListOutputSchema;
@@ -500,9 +508,9 @@ export function observationSchema(method: "list" | "status" | "inspect"): TSchem
 }
 
 /** Select the structurally relevant union member for an actionable error path. */
-type DiagnosticBranch = TSchema & { anyOf?: TSchema[]; properties?: Record<string, TSchema>; required?: string[] };
+type DiagnosticBranch = Schema & { anyOf?: Schema[]; properties?: Record<string, Schema>; required?: string[] };
 
-function diagnosticSchema(schema: TSchema, value: unknown): TSchema {
+function diagnosticSchema(schema: object, value: unknown): object {
 	const branch = schema as DiagnosticBranch;
 	if (!Array.isArray(branch.anyOf) || value === null || typeof value !== "object" || Array.isArray(value)) return schema;
 	const record = value as Record<string, unknown>;
@@ -514,15 +522,15 @@ function diagnosticSchema(schema: TSchema, value: unknown): TSchema {
 function diagnosticScore(schema: DiagnosticBranch, record: Record<string, unknown>): number {
 	let score = 0;
 	for (const key of schema.required ?? []) score += Object.hasOwn(record, key) ? 2 : -2;
-	for (const [key, property] of Object.entries(schema.properties as Record<string, TSchema>)) {
+	for (const [key, property] of Object.entries(schema.properties as Record<string, Schema>)) {
 		if (!Object.hasOwn(record, key)) continue;
-		score += Object.hasOwn(property, "const") ? record[key] === (property as TSchema & { const?: unknown }).const ? 100 : -100 : 1;
+		score += Object.hasOwn(property, "const") ? record[key] === (property as Schema & { const?: unknown }).const ? 100 : -100 : 1;
 	}
 	return score;
 }
 
 /** JSON-round-trip and validate an observation, with schema paths on mismatch. */
-export function structuredObservation<T extends TSchema>(schema: T, value: unknown): Static<T> {
+export function structuredObservation<T extends object>(schema: T, value: unknown): Static<T> {
 	const parsed: unknown = JSON.parse(JSON.stringify(value ?? null));
 	if (!matchesSchema(schema, parsed)) {
 		const detail = schemaErrors(diagnosticSchema(schema, parsed), parsed, 5);
@@ -532,7 +540,7 @@ export function structuredObservation<T extends TSchema>(schema: T, value: unkno
 }
 
 /** Keep model text and validated program output on the native result's separate channels. */
-export function nativeStructuredObservation<T extends TSchema>(schema: T, value: unknown, text: string): ToolExecutionResult & { readonly structuredOutput: Static<T> } {
+export function nativeStructuredObservation<T extends object>(schema: T, value: unknown, text: string): ToolExecutionResult & { readonly structuredOutput: Static<T> } {
 	return {
 		output: [{ type: "text", text }],
 		structuredOutput: structuredObservation(schema, value) as Static<T> & JsonValue,

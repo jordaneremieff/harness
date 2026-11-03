@@ -1,24 +1,24 @@
-import { Type } from "typebox";
-import { ListOutputSchema, ListRowSchema } from "./observation-schema.ts";
+import { str, num, int, bool, nul, lit, union, arr, obj } from "@earendil-works/pi-schema";
+import { ListOutputProperties, ListRowProperties, ListCoverageProperties } from "./observation-schema.ts";
 import type { ProfileHints } from "./profile-schema.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 
-const nullableText = Type.Union([Type.String(), Type.Null()]);
-const ProfiledListRowSchema = Type.Object({
-	...ListRowSchema.properties,
+const nullableText = union([str(), nul()]);
+const ProfiledListRowSchema = obj({
+	...ListRowProperties,
 	handle: nullableText, role: nullableText,
-	profile: Type.Union([Type.Object({ revision: Type.String(), hasExpertise: Type.Boolean(), updatedAt: Type.Union([Type.Number(), Type.Null()]), source: Type.Literal("retained") }, { additionalProperties: false }), Type.Null()]),
-	profileCoverage: Type.Union([Type.Literal("retained"), Type.Literal("unknown")]),
-}, { additionalProperties: false });
+	profile: union([obj({ revision: str(), hasExpertise: bool(), updatedAt: union([num(), nul()]), source: lit("retained") }), nul()]),
+	profileCoverage: union([lit("retained"), lit("unknown")]),
+});
 /** Frontend composite; the base host list operation keeps its independent schema. */
-export const ProfiledListOutputSchema = Type.Object({
-	...ListOutputSchema.properties,
-	rows: Type.Array(ProfiledListRowSchema),
-	coverage: Type.Object({
-		...ListOutputSchema.properties.coverage.properties,
-		profileHints: Type.Object({ complete: Type.Boolean(), unknownStorages: Type.Integer({ minimum: 0 }), omitted: Type.Integer({ minimum: 0 }) }, { additionalProperties: false }),
-	}, { additionalProperties: false }),
-}, { additionalProperties: false });
+export const ProfiledListOutputSchema = obj({
+	...ListOutputProperties,
+	rows: arr(ProfiledListRowSchema),
+	coverage: obj({
+		...ListCoverageProperties,
+		profileHints: obj({ complete: bool(), unknownStorages: int({ minimum: 0 }), omitted: int({ minimum: 0 }) }),
+	}),
+});
 
 /** Retained profile hints enrich frontend rows, never the base host wire schema. */
 export function composeListRow<T extends { identity: string; name?: string; firstMessage?: string }>(

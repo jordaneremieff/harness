@@ -1,17 +1,17 @@
-import { Type, type Static } from "typebox";
+import { str, int, opt, obj, type Static } from "@earendil-works/pi-schema";
 import { canonicalIdentity } from "./identity.ts";
 import { ROOT_CONVERSATION_ID, type ConversationId } from "@earendil-works/pi-durable";
 
 /** Exact admitted native input. Creation and message routing are not results. */
-export const ResultReferenceSchema = Type.Object({
-	sessionId: Type.String({ minLength: 1, maxLength: 256, pattern: "^[^\\s@]+$" }),
-	submissionId: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
-	requestId: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
-}, { additionalProperties: false });
+export const ResultReferenceSchema = obj({
+	sessionId: str({ minLength: 1, maxLength: 256, pattern: "^[^\\s@]+$" }),
+	submissionId: int({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
+	requestId: opt(str({ minLength: 1, maxLength: 1024 })),
+});
 export type ResultReference = Static<typeof ResultReferenceSchema>;
 
 /** Dispatch facts remain additive; only result names an admitted answer input. */
-export const DispatchOutputSchema = Type.Object({ result: Type.Optional(ResultReferenceSchema) }, { additionalProperties: true });
+export const DispatchOutputSchema = obj({ result: opt(ResultReferenceSchema) }, { open: true });
 
 function producerIdentity(sessionId: string): { canonical: string; conversationId?: number } {
 	if (!sessionId || sessionId.length > 256 || /[\s@]/u.test(sessionId)) throw new Error("Result identity must be canonical");

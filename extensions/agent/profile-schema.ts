@@ -1,34 +1,34 @@
-import { Type, type Static } from "typebox";
+import { str, num, int, bool, nul, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 import { HANDLE_PATTERN } from "./identity.ts";
 
-const nullableText = Type.Union([Type.String(), Type.Null()]);
-const nullableTime = Type.Union([Type.Number(), Type.Null()]);
-export const ProfileParams = Type.Object({
-	sessionId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
-	action: Type.Union([Type.Literal("read"), Type.Literal("update")]),
-	expectedRevision: Type.Optional(Type.String({ pattern: "^[a-f0-9]{64}$" })),
-	role: Type.Optional(Type.String({ maxLength: 2000 })),
-	expertise: Type.Optional(Type.String({ maxLength: 16384 })),
-}, { additionalProperties: false });
-export const HandleSchema = Type.String({ pattern: HANDLE_PATTERN, maxLength: 64 });
-export const ProfileHintSchema = Type.Object({
-	identity: Type.String(), handle: nullableText, role: Type.String(), revision: Type.String(), hasExpertise: Type.Boolean(), updatedAt: nullableTime,
-}, { additionalProperties: false });
-export const ProfileHintsSchema = Type.Object({
-	rows: Type.Array(ProfileHintSchema), coverage: Type.Object({ complete: Type.Boolean(), omitted: Type.Integer({ minimum: 0 }) }, { additionalProperties: false }),
-}, { additionalProperties: false });
+const nullableText = union([str(), nul()]);
+const nullableTime = union([num(), nul()]);
+export const ProfileParams = obj({
+	sessionId: opt(str({ minLength: 1, maxLength: 256 })),
+	action: union([lit("read"), lit("update")]),
+	expectedRevision: opt(str({ pattern: "^[a-f0-9]{64}$" })),
+	role: opt(str({ maxLength: 2000 })),
+	expertise: opt(str({ maxLength: 16384 })),
+});
+export const HandleSchema = str({ pattern: HANDLE_PATTERN, maxLength: 64 });
+export const ProfileHintSchema = obj({
+	identity: str(), handle: nullableText, role: str(), revision: str(), hasExpertise: bool(), updatedAt: nullableTime,
+});
+export const ProfileHintsSchema = obj({
+	rows: arr(ProfileHintSchema), coverage: obj({ complete: bool(), omitted: int({ minimum: 0 }) }),
+});
 export type ProfileHint = Static<typeof ProfileHintSchema>;
 export type ProfileHints = Static<typeof ProfileHintsSchema>;
-export const AgentProfileSchema = Type.Object({
-	identity: Type.String(), handle: nullableText, name: nullableText, role: Type.String(), expertise: Type.String(), revision: Type.String(),
+export const AgentProfileSchema = obj({
+	identity: str(), handle: nullableText, name: nullableText, role: str(), expertise: str(), revision: str(),
 	updatedAt: nullableTime, updatedBy: nullableText, creator: nullableText,
-	model: Type.Union([Type.Object({ provider: Type.String(), modelId: Type.String() }, { additionalProperties: false }), Type.Null()]),
-	thinkingLevel: nullableText, cwd: nullableText, live: Type.Boolean(),
-	requestsOmitted: Type.Optional(Type.Integer({ minimum: 0 })),
-	requests: Type.Array(Type.Object({ requestId: Type.String(), requester: Type.String(), replyTo: Type.String(), origin: Type.Union([Type.Literal("operator"), Type.Literal("model")]), status: Type.Union([Type.Literal("admitting"), Type.Literal("queued"), Type.Literal("placed")]) }, { additionalProperties: false })),
-}, { additionalProperties: false });
+	model: union([obj({ provider: str(), modelId: str() }), nul()]),
+	thinkingLevel: nullableText, cwd: nullableText, live: bool(),
+	requestsOmitted: opt(int({ minimum: 0 })),
+	requests: arr(obj({ requestId: str(), requester: str(), replyTo: str(), origin: union([lit("operator"), lit("model")]), status: union([lit("admitting"), lit("queued"), lit("placed")]) })),
+});
 export type AgentProfile = Static<typeof AgentProfileSchema>;
-export const ProfileUpdateSchema = Type.Object({
-	outcome: Type.Union([Type.Literal("applied"), Type.Literal("conflict")]), deduped: Type.Boolean(), profile: AgentProfileSchema,
-}, { additionalProperties: false });
-export const ProfileOutputSchema = Type.Union([AgentProfileSchema, ProfileUpdateSchema]);
+export const ProfileUpdateSchema = obj({
+	outcome: union([lit("applied"), lit("conflict")]), deduped: bool(), profile: AgentProfileSchema,
+});
+export const ProfileOutputSchema = union([AgentProfileSchema, ProfileUpdateSchema]);

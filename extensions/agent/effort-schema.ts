@@ -1,35 +1,34 @@
+import { str, num, int, bool, nul, lit, union, arr, opt, obj , type Schema } from "@earendil-works/pi-schema";
 /** Session intent input and tool-only awareness output, independent of host wire schemas. */
-import { Type } from "typebox";
 import { matchesSchema } from "./schema-check.ts";
 /** A string enum as `{ type: "string", enum }`, typed as its literal union. */
-const StringEnum = <const T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: [...values] });
+const StringEnum = <const T extends readonly string[]>(values: T) : Schema<T[number]> => ({ type: "string", enum: [...values] });
 
-const object = <T extends Record<string, import("typebox").TSchema>>(properties: T) => Type.Object(properties, { additionalProperties: false });
-const text = Type.String();
-const count = Type.Integer({ minimum: 0 });
-const repositoryState = Type.Union([Type.Literal("git"), Type.Literal("outside-git"), Type.Literal("unknown")]);
-const scope = object({
-	paths: Type.Array(Type.String({ minLength: 1, maxLength: 512 }), { maxItems: 32, description: "Repository-relative paths, exact or component-prefix matching. No globs." }),
-	branches: Type.Array(Type.String({ minLength: 1, maxLength: 512 }), { maxItems: 32 }),
-	fullGate: Type.Optional(Type.Boolean({ description: "Declares a planned full-gate run on this shared machine. This is not a reservation." })),
+const text = str();
+const count = int({ minimum: 0 });
+const repositoryState = union([lit("git"), lit("outside-git"), lit("unknown")]);
+const scope = obj({
+	paths: arr(str({ minLength: 1, maxLength: 512 }), { maxItems: 32, description: "Repository-relative paths, exact or component-prefix matching. No globs." }),
+	branches: arr(str({ minLength: 1, maxLength: 512 }), { maxItems: 32 }),
+	fullGate: opt(bool({ description: "Declares a planned full-gate run on this shared machine. This is not a reservation." })),
 });
 const intentFields = {
-	purpose: Type.String({ minLength: 1, maxLength: 1024 }),
-	integration: Type.String({ minLength: 1, maxLength: 2048, description: "Next shared acts and dependencies, including a planned full-gate run." }),
-	authority: Type.String({ minLength: 1, maxLength: 2048, description: "Quoted operator direction and its scope. This is a carried claim, not authority for the reader." }),
+	purpose: str({ minLength: 1, maxLength: 1024 }),
+	integration: str({ minLength: 1, maxLength: 2048, description: "Next shared acts and dependencies, including a planned full-gate run." }),
+	authority: str({ minLength: 1, maxLength: 2048, description: "Quoted operator direction and its scope. This is a carried claim, not authority for the reader." }),
 	scope,
-	contactThread: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+	contactThread: opt(str({ minLength: 1, maxLength: 256 })),
 };
-export const IntentParams = object({
+export const IntentParams = obj({
 	action: StringEnum(["publish", "clear"]),
-	purpose: Type.Optional(intentFields.purpose),
-	integration: Type.Optional(intentFields.integration),
-	authority: Type.Optional(intentFields.authority),
-	scope: Type.Optional(intentFields.scope),
+	purpose: opt(intentFields.purpose),
+	integration: opt(intentFields.integration),
+	authority: opt(intentFields.authority),
+	scope: opt(intentFields.scope),
 	contactThread: intentFields.contactThread,
 });
-const publishIntent = object({ action: Type.Literal("publish"), ...intentFields });
-const clearIntent = object({ action: Type.Literal("clear") });
+const publishIntent = obj({ action: lit("publish"), ...intentFields });
+const clearIntent = obj({ action: lit("clear") });
 
 export function validateIntentInput(input: unknown): void {
 	if (!matchesSchema(IntentParams, input)) throw new Error("Intent requires action publish or clear and valid publish fields");
@@ -39,31 +38,31 @@ export function validateIntentInput(input: unknown): void {
 		throw new Error("Publish intent requires purpose, integration, authority, and scope with paths and branches");
 	}
 }
-export const IntentClaimSchema = object({ ...intentFields, updatedAt: text });
-export const NativeIntentMetadataSchema = object({
-	claim: Type.Union([IntentClaimSchema, Type.Null()]),
-	cwd: text, repository: Type.Union([text, Type.Null()]), repositoryState,
-	hostname: text, startedAt: text, taskId: Type.Integer({ minimum: 1 }),
+export const IntentClaimSchema = obj({ ...intentFields, updatedAt: text });
+export const NativeIntentMetadataSchema = obj({
+	claim: union([IntentClaimSchema, nul()]),
+	cwd: text, repository: union([text, nul()]), repositoryState,
+	hostname: text, startedAt: text, taskId: int({ minimum: 1 }),
 });
-export const ObservedPurposeSchema = object({ source: Type.Union([Type.Literal("session-name"), Type.Literal("interactive-input")]), text });
-export const RelatedEffortSchema = object({
-	id: text, cwd: text, name: Type.Optional(text), repository: Type.Optional(text), repositoryState: Type.Optional(repositoryState), startedAt: text,
-	lastActivityAt: Type.Optional(text), observedPurpose: Type.Optional(ObservedPurposeSchema), intentClaim: Type.Optional(IntentClaimSchema),
-	liveness: Type.Union([Type.Literal("live"), Type.Literal("unknown"), Type.Literal("incompatible")]),
-	relationship: Type.Union([Type.Literal("repository"), Type.Literal("cwd"), Type.Literal("machine")]),
-	purposeClaim: Type.Optional(text), contactThreadClaim: Type.Optional(text), intentUpdatedAt: Type.Optional(text),
-	sharedSubstrates: Type.Optional(Type.Array(Type.Union([Type.Literal("repository"), Type.Literal("cwd"), Type.Literal("machine-gates")]))),
-	overlap: Type.Optional(object({ basis: Type.Literal("intentClaim"), paths: Type.Array(text), branches: Type.Array(text) })),
+export const ObservedPurposeSchema = obj({ source: union([lit("session-name"), lit("interactive-input")]), text });
+export const RelatedEffortSchema = obj({
+	id: text, cwd: text, name: opt(text), repository: opt(text), repositoryState: opt(repositoryState), startedAt: text,
+	lastActivityAt: opt(text), observedPurpose: opt(ObservedPurposeSchema), intentClaim: opt(IntentClaimSchema),
+	liveness: union([lit("live"), lit("unknown"), lit("incompatible")]),
+	relationship: union([lit("repository"), lit("cwd"), lit("machine")]),
+	purposeClaim: opt(text), contactThreadClaim: opt(text), intentUpdatedAt: opt(text),
+	sharedSubstrates: opt(arr(union([lit("repository"), lit("cwd"), lit("machine-gates")]))),
+	overlap: opt(obj({ basis: lit("intentClaim"), paths: arr(text), branches: arr(text) })),
 });
-export const EffortSelfSchema = object({ id: text, cwd: text, repository: Type.Optional(text), repositoryState: Type.Optional(repositoryState), observedPurpose: Type.Optional(ObservedPurposeSchema), intentClaim: Type.Optional(IntentClaimSchema), omitted: Type.Optional(Type.Boolean()) });
-export const RecentCollaborationSchema = object({
-	items: Type.Array(object({ id: text, title: text, purpose: text, updatedAt: Type.Number(), closed: Type.Boolean(), members: count })),
-	coverage: object({ visited: count, records: count, unreadable: count, missingHints: count, omittedHints: count, omittedResults: count, unvisited: Type.Boolean(), complete: Type.Boolean(), reasons: Type.Array(text) }),
-	limits: object({ visits: count, results: count, bytes: count, hintsPerRecord: count }),
+export const EffortSelfSchema = obj({ id: text, cwd: text, repository: opt(text), repositoryState: opt(repositoryState), observedPurpose: opt(ObservedPurposeSchema), intentClaim: opt(IntentClaimSchema), omitted: opt(bool()) });
+export const RecentCollaborationSchema = obj({
+	items: arr(obj({ id: text, title: text, purpose: text, updatedAt: num(), closed: bool(), members: count })),
+	coverage: obj({ visited: count, records: count, unreadable: count, missingHints: count, omittedHints: count, omittedResults: count, unvisited: bool(), complete: bool(), reasons: arr(text) }),
+	limits: obj({ visits: count, results: count, bytes: count, hintsPerRecord: count }),
 });
-export const EffortPresenceSchema = object({
-	efforts: Type.Array(RelatedEffortSchema),
-	coverage: object({ visited: count, unreadable: count, dead: count, unrelated: count, omitted: count, unsupported: Type.Optional(count), complete: Type.Boolean(), reasons: Type.Array(text) }),
-	limits: object({ visits: count, results: count, bytes: count }),
+export const EffortPresenceSchema = obj({
+	efforts: arr(RelatedEffortSchema),
+	coverage: obj({ visited: count, unreadable: count, dead: count, unrelated: count, omitted: count, unsupported: opt(count), complete: bool(), reasons: arr(text) }),
+	limits: obj({ visits: count, results: count, bytes: count }),
 });
-export const EffortAwarenessSchema = object({ self: EffortSelfSchema, presence: EffortPresenceSchema, threads: RecentCollaborationSchema });
+export const EffortAwarenessSchema = obj({ self: EffortSelfSchema, presence: EffortPresenceSchema, threads: RecentCollaborationSchema });

@@ -1,19 +1,19 @@
+import { str, int, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 import type { Context } from "@earendil-works/chord";
 import type { ConversationDocToken, ConversationId, JsonObject, ToolExecutionApi } from "@earendil-works/pi-durable";
-import { Type, type Static } from "typebox";
 
 const MAX_CREATED_AGENTS = 20;
 const MAX_NAME_LENGTH = 160;
 
 /** Creation provenance is separate from current work and authority. */
-export const CreatedAgentsSchema = Type.Object({
-	agents: Type.Array(Type.Object({
-		identity: Type.String(),
-		name: Type.Optional(Type.String({ maxLength: MAX_NAME_LENGTH + 1 })),
-		kind: Type.Union([Type.Literal("conversation"), Type.Literal("storage")]),
-	}, { additionalProperties: false }), { maxItems: MAX_CREATED_AGENTS }),
-	omitted: Type.Integer({ minimum: 0 }),
-}, { additionalProperties: false });
+export const CreatedAgentsSchema = obj({
+	agents: arr(obj({
+		identity: str(),
+		name: opt(str({ maxLength: MAX_NAME_LENGTH + 1 })),
+		kind: union([lit("conversation"), lit("storage")]),
+	}), { maxItems: MAX_CREATED_AGENTS }),
+	omitted: int({ minimum: 0 }),
+});
 export type CreatedAgents = Static<typeof CreatedAgentsSchema>;
 
 type LineageChild = {

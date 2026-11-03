@@ -1,19 +1,19 @@
+import { str, num, nul, lit, union, arr, opt, obj } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { getSupportedThinkingLevels, type Api, type Model } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
 import { matchesSchema } from "./schema-check.ts";
 import { THINKING_LEVELS, configurationModel } from "./configuration.ts";
 
 import { readSettings, type Environment, type Source } from "./settings.ts";
-import { name, presetSchema, AgentPreferencesSchema, validPresets, validPreferences, type AgentPreferences, type ExecutionPreset } from "./preference-schema.ts";
+import { name, presetProperties, AgentPreferencesSchema, validPresets, validPreferences, type AgentPreferences, type ExecutionPreset } from "./preference-schema.ts";
 export type { AgentPreferences } from "./preference-schema.ts";
 export function presetParameter(snapshot: PreferenceSnapshot) {
-	return Type.Optional({ ...name, description: `Delegate with a named execution preset. Omit model and preset for the machine default on creation. Explicit fields override the preset. ${presetInventory(snapshot)}` });
+	return opt({ ...name, description: `Delegate with a named execution preset. Omit model and preset for the machine default on creation. Explicit fields override the preset. ${presetInventory(snapshot)}` });
 }
-export const PresetParameter = Type.Optional({ ...name, description: "Delegate with a named execution preset. Omit model and preset for the machine default on creation; explicit fields override the preset." });
-const model = presetSchema.properties.model;
-const thinking = Type.Union(THINKING_LEVELS.map((level) => Type.Literal(level)));
+export const PresetParameter = opt({ ...name, description: "Delegate with a named execution preset. Omit model and preset for the machine default on creation; explicit fields override the preset." });
+const model = presetProperties.model;
+const thinking = union(THINKING_LEVELS.map((level) => lit(level)));
 export type PreferenceCatalog = {
 	getModel(provider: string, modelId: string): Model<Api> | undefined;
 	getModels?(): readonly Model<Api>[];
@@ -35,19 +35,20 @@ export type ExecutionSelection = {
 	thinking?: { requested: string; effective: string };
 };
 
-const selectionSchema = Type.Object({
-	inputDigest: Type.String({ pattern: "^[a-f0-9]{64}$" }),
-	source: Type.Object({ path: Type.String({ maxLength: 4096 }), digest: Type.Union([Type.String({ pattern: "^[a-f0-9]{64}$" }), Type.Null()]), observedAt: Type.String({ maxLength: 64 }), status: Type.Union([Type.Literal("loaded"), Type.Literal("missing"), Type.Literal("invalid"), Type.Literal("unavailable")]) }, { additionalProperties: false }),
-	preset: Type.Optional(name),
-	presetNames: Type.Array(name, { maxItems: 64, uniqueItems: true }),
-	values: Type.Object({ model: Type.Optional(model), thinkingLevel: Type.Optional(thinking), role: Type.Optional(Type.String({ maxLength: 2000 })), checkInMinutes: Type.Optional(Type.Number({ minimum: 0, maximum: 35791 })) }, { additionalProperties: false }),
-	origins: Type.Object(Object.fromEntries(["model", "thinkingLevel", "role", "checkInMinutes"].map((field) => [field, Type.Optional(Type.Union([Type.Literal("explicit"), Type.Literal("preset"), Type.Literal("defaultPreset"), Type.Literal("retained"), Type.Literal("default")]))])), { additionalProperties: false }),
-	unapplied: Type.Array(Type.String({ maxLength: 32 }), { maxItems: 4 }),
-	diagnostics: Type.Array(Type.Object({ field: Type.String({ maxLength: 600 }), message: Type.String({ maxLength: 1200 }) }, { additionalProperties: false }), { maxItems: 512 }),
-	thinking: Type.Optional(Type.Object({ requested: Type.String({ maxLength: 16 }), effective: Type.String({ maxLength: 16 }) }, { additionalProperties: false })),
-}, { additionalProperties: false });
+const selectionProperties = {
+	inputDigest: str({ pattern: "^[a-f0-9]{64}$" }),
+	source: obj({ path: str({ maxLength: 4096 }), digest: union([str({ pattern: "^[a-f0-9]{64}$" }), nul()]), observedAt: str({ maxLength: 64 }), status: union([lit("loaded"), lit("missing"), lit("invalid"), lit("unavailable")]) }),
+	preset: opt(name),
+	presetNames: arr(name, { maxItems: 64, uniqueItems: true }),
+	values: obj({ model: opt(model), thinkingLevel: opt(thinking), role: opt(str({ maxLength: 2000 })), checkInMinutes: opt(num({ minimum: 0, maximum: 35791 })) }),
+	origins: obj(Object.fromEntries(["model", "thinkingLevel", "role", "checkInMinutes"].map((field) => [field, opt(union([lit("explicit"), lit("preset"), lit("defaultPreset"), lit("retained"), lit("default")]))]))),
+	unapplied: arr(str({ maxLength: 32 }), { maxItems: 4 }),
+	diagnostics: arr(obj({ field: str({ maxLength: 600 }), message: str({ maxLength: 1200 }) }), { maxItems: 512 }),
+	thinking: opt(obj({ requested: str({ maxLength: 16 }), effective: str({ maxLength: 16 }) })),
+};
+const selectionSchema = obj(selectionProperties);
 
-const snapshotSchema = Type.Object({ source: selectionSchema.properties.source, document: Type.Optional(AgentPreferencesSchema), diagnostics: selectionSchema.properties.diagnostics }, { additionalProperties: false });
+const snapshotSchema = obj({ source: selectionProperties.source, document: opt(AgentPreferencesSchema), diagnostics: selectionProperties.diagnostics });
 
 export function parsePreferenceSnapshot(value: unknown): PreferenceSnapshot {
 	if (!matchesSchema(snapshotSchema, value)) throw new Error("Invalid machine preference snapshot");

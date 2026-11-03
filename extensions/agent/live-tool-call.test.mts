@@ -1,3 +1,4 @@
+import { str, obj } from "@earendil-works/pi-schema";
 import { machineConfig } from "./settings-fixture.mts";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -8,7 +9,6 @@ import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, getCurrentSystemPrompt, type AssistantMessage, type ToolCall, type ToolResultMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import * as Durable from "@earendil-works/pi-durable";
-import { Type } from "typebox";
 import { createAgentContribution, type AgentControlDispatch } from "./durable-agents.ts";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, completed, fixtureRegistry, fixtureStorageId, hostOptions, toolCallMessage } from "./durable-host-fixture.mts";
@@ -74,7 +74,7 @@ it("observes a provider's live tool call through native status, frames, and comp
 		return events;
 	};
 	models.registerNativeProvider({ id: testModel.provider, name: "Live tool fixture", getModels: () => [testModel], auth: { apiKey: { name: "Test", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream: streamSimple, streamSimple });
-	const registry = fixtureRegistry([Durable.defineTool({ name: "probe", description: "Read fixture arguments", parameters: Type.Object({ path: Type.String(), partialArgs: Type.String() }), execute: async () => { executions++; return { output: [{ type: "text", text: "Read" }] }; } })]);
+	const registry = fixtureRegistry([Durable.defineTool({ name: "probe", description: "Read fixture arguments", parameters: obj({ path: str(), partialArgs: str() }, { open: true }), execute: async () => { executions++; return { output: [{ type: "text", text: "Read" }] }; } })]);
 	const dispatch: AgentControlDispatch = async (method, params) => {
 		assert.ok(host);
 		const value = await host.request(method, params, context);

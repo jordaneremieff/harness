@@ -1,19 +1,19 @@
+import { str, int, bool, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 /** Bounded semantic wait facts, separate from native task scheduling state. */
-import { Type, type Static } from "typebox";
 import { ResultReferenceSchema } from "./result-reference.ts";
 import { safeFactText } from "./primary-observation.ts";
 
-export const ProducerRetrySchema = Type.Object({
-	state: Type.Literal("provider-retry"),
-	runId: Type.Integer({ minimum: 1 }),
-	results: Type.Array(ResultReferenceSchema, { minItems: 1, maxItems: 16 }),
-	model: Type.Optional(Type.Object({ provider: Type.String({ maxLength: 256 }), modelId: Type.String({ maxLength: 256 }) }, { additionalProperties: false })),
-	attempt: Type.Integer({ minimum: 1 }),
-	maxAttempts: Type.Optional(Type.Integer({ minimum: 1 })),
-	nextRetryAt: Type.Integer({ minimum: 0, maximum: 8640000000000000 }),
-	error: Type.String({ maxLength: 512 }),
-	errorTruncated: Type.Boolean(),
-}, { additionalProperties: false });
+export const ProducerRetrySchema = obj({
+	state: lit("provider-retry"),
+	runId: int({ minimum: 1 }),
+	results: arr(ResultReferenceSchema, { minItems: 1, maxItems: 16 }),
+	model: opt(obj({ provider: str({ maxLength: 256 }), modelId: str({ maxLength: 256 }) })),
+	attempt: int({ minimum: 1 }),
+	maxAttempts: opt(int({ minimum: 1 })),
+	nextRetryAt: int({ minimum: 0, maximum: 8640000000000000 }),
+	error: str({ maxLength: 512 }),
+	errorTruncated: bool(),
+});
 export type ProducerRetry = Static<typeof ProducerRetrySchema>;
 export type ProducerState = { awaiting?: OwnAwaitFact; execution?: ProducerRetry };
 
@@ -22,31 +22,32 @@ export function retryFactLines(retry: ProducerRetry): string[] {
 	return retry.results.map((result) => `${result.sessionId} · submission ${result.submissionId}${result.requestId === undefined ? "" : ` · request ${safeFactText(result.requestId, 160).text}`} · pending · provider retry · ${retry.model === undefined ? "model unknown" : `${retry.model.provider}/${retry.model.modelId}`} · attempt ${retry.attempt}${retry.maxAttempts === undefined ? " (ceiling unknown)" : `/${retry.maxAttempts}`} · next retry ${new Date(retry.nextRetryAt).toISOString()} · provider error: ${safeFactText(retry.error).text}${retry.errorTruncated ? " [truncated]" : ""}`);
 }
 
-export const OwnAwaitFactSchema = Type.Object({
-	runId: Type.Integer({ minimum: 1 }),
-	heldInputs: Type.Array(Type.Integer({ minimum: 1 }), { maxItems: 16 }),
-	results: Type.Array(Type.Object({ result: ResultReferenceSchema, status: Type.Union([Type.Literal("pending"), Type.Literal("done"), Type.Literal("unanswered"), Type.Literal("unavailable")]), reason: Type.Optional(Type.String({ maxLength: 512 })), answerEntryId: Type.Optional(Type.Integer({ minimum: 1 })) }, { additionalProperties: false }), { maxItems: 16 }),
-	queuedInputCount: Type.Integer({ minimum: 0 }),
-	queueSnapshot: Type.Literal("committed InboxDoc"),
-	omitted: Type.Object({ heldInputs: Type.Integer({ minimum: 0 }), results: Type.Integer({ minimum: 0 }) }, { additionalProperties: false }),
-}, { additionalProperties: false });
+const ownAwaitProperties = {
+	runId: int({ minimum: 1 }),
+	heldInputs: arr(int({ minimum: 1 }), { maxItems: 16 }),
+	results: arr(obj({ result: ResultReferenceSchema, status: union([lit("pending"), lit("done"), lit("unanswered"), lit("unavailable")]), reason: opt(str({ maxLength: 512 })), answerEntryId: opt(int({ minimum: 1 })) }), { maxItems: 16 }),
+	queuedInputCount: int({ minimum: 0 }),
+	queueSnapshot: lit("committed InboxDoc"),
+	omitted: obj({ heldInputs: int({ minimum: 0 }), results: int({ minimum: 0 }) }),
+};
+export const OwnAwaitFactSchema = obj(ownAwaitProperties);
 export type OwnAwaitFact = Static<typeof OwnAwaitFactSchema>;
-export const ProducerAwaitFactSchema = Type.Object({
-	sessionId: Type.String({ minLength: 1, maxLength: 256 }),
-	observedAt: Type.Integer({ minimum: 0 }),
-	source: Type.Literal("producer await-state"),
-	awaiting: Type.Optional(OwnAwaitFactSchema),
-	execution: Type.Optional(ProducerRetrySchema),
-	unavailable: Type.Optional(Type.String({ maxLength: 512 })),
-}, { additionalProperties: false });
+export const ProducerAwaitFactSchema = obj({
+	sessionId: str({ minLength: 1, maxLength: 256 }),
+	observedAt: int({ minimum: 0 }),
+	source: lit("producer await-state"),
+	awaiting: opt(OwnAwaitFactSchema),
+	execution: opt(ProducerRetrySchema),
+	unavailable: opt(str({ maxLength: 512 })),
+});
 export type ProducerAwaitFact = Static<typeof ProducerAwaitFactSchema>;
-export const AwaitFactSchema = Type.Object({
-	...OwnAwaitFactSchema.properties,
-	producers: Type.Array(ProducerAwaitFactSchema, { maxItems: 16 }),
-	omittedProducers: Type.Integer({ minimum: 0 }),
-	likelyCycle: Type.Array(Type.String({ maxLength: 256 }), { maxItems: 16 }),
-	coverage: Type.Literal("one hop; remote graph incomplete"),
-}, { additionalProperties: false });
+export const AwaitFactSchema = obj({
+	...ownAwaitProperties,
+	producers: arr(ProducerAwaitFactSchema, { maxItems: 16 }),
+	omittedProducers: int({ minimum: 0 }),
+	likelyCycle: arr(str({ maxLength: 256 }), { maxItems: 16 }),
+	coverage: lit("one hop; remote graph incomplete"),
+});
 export type AwaitFact = Static<typeof AwaitFactSchema>;
 
 /** Full retained identities and explicit coverage, not a scheduler-state label. */

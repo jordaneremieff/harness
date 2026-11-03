@@ -1,6 +1,6 @@
+import { str, int, bool, lit, union, arr, obj, type Static } from "@earendil-works/pi-schema";
 /** Retained provider-limit evidence and explicit recovery, independent of native submission settlement. */
 import { createHash } from "node:crypto";
-import { Type, type Static } from "typebox";
 import { AgentDoc, LiveDoc, ProviderDoc, defineDocFamily, configure, type ConversationId, type SubmissionId, type Tx, type ModelRef, type AgentChange, type Harness, type Cursor } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import type { DeferredHandle, Api, Model } from "@earendil-works/pi-ai";
@@ -14,16 +14,15 @@ import { safeProviderError } from "./primary-observation.ts";
 
 export const PROVIDER_BLOCK_ERROR = "Agent host: quota exceeded; explicit recovery required.";
 export const STALE_PROVIDER_ERROR = "Agent host: request superseded by explicit model configuration.";
-const closed = { additionalProperties: false } as const;
-export const ProviderBlockFactSchema = Type.Object({
-	blockId: Type.String({ minLength: 1, maxLength: 128 }),
-	conversationId: Type.Integer({ minimum: 1 }), providerSessionId: Type.String({ minLength: 1, maxLength: 256 }),
-	epoch: Type.Integer({ minimum: 0 }),
-	model: Type.Object({ provider: Type.String({ maxLength: 256 }), modelId: Type.String({ maxLength: 256 }) }, closed),
-	error: Type.String({ maxLength: 4096 }), errorRedacted: Type.Boolean(), errorTruncated: Type.Boolean(),
-	source: Type.Union([Type.Literal("provider"), Type.Literal("host-block")]), timestamp: Type.Integer({ minimum: 0 }),
-	originalResults: Type.Array(ResultReferenceSchema, { maxItems: 16 }), omittedOriginalResults: Type.Integer({ minimum: 0 }),
-}, closed);
+export const ProviderBlockFactSchema = obj({
+	blockId: str({ minLength: 1, maxLength: 128 }),
+	conversationId: int({ minimum: 1 }), providerSessionId: str({ minLength: 1, maxLength: 256 }),
+	epoch: int({ minimum: 0 }),
+	model: obj({ provider: str({ maxLength: 256 }), modelId: str({ maxLength: 256 }) }),
+	error: str({ maxLength: 4096 }), errorRedacted: bool(), errorTruncated: bool(),
+	source: union([lit("provider"), lit("host-block")]), timestamp: int({ minimum: 0 }),
+	originalResults: arr(ResultReferenceSchema, { maxItems: 16 }), omittedOriginalResults: int({ minimum: 0 }),
+});
 export type ProviderBlockFact = Static<typeof ProviderBlockFactSchema>;
 export type ProviderControlState = { conversationId?: number; epoch: number; block?: ProviderBlockFact; recoveredFrom?: string };
 // Chord documents are proxies; JSON detachment preserves their public JSON values.

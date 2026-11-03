@@ -1,17 +1,9 @@
-/**
- * Validation of TypeBox-built JSON Schemas through pi-schema.
- *
- * Tool parameter and output schemas stay TypeBox because Pi's tool contract
- * types them that way; the same schemas validate stored and host-protocol data
- * here. TypeBox schemas are JSON Schema, so pi-schema compiles them as they are.
- * Each schema compiles once.
- */
-import { compile, type Validator } from "@earendil-works/pi-schema";
-import type { Static, TSchema } from "typebox";
+/** Object-keyed validation of stored data and host-protocol JSON Schemas. */
+import { compile, type Static, type Validator } from "@earendil-works/pi-schema";
 
-const validators = new WeakMap<TSchema, Validator<unknown>>();
+const validators = new WeakMap<object, Validator<unknown>>();
 
-function validator(schema: TSchema): Validator<unknown> {
+function validator(schema: object): Validator<unknown> {
 	let compiled = validators.get(schema);
 	if (compiled === undefined) {
 		compiled = compile(schema);
@@ -31,12 +23,12 @@ function finiteNumbers(value: unknown): boolean {
 	return Object.values(value).every(finiteNumbers);
 }
 
-/** Whether `value` matches `schema`; narrows to the schema's TypeBox static type. */
-export function matchesSchema<T extends TSchema>(schema: T, value: unknown): value is Static<T> {
+/** Whether `value` matches `schema` and contains only finite JSON numbers. */
+export function matchesSchema<T extends object>(schema: T, value: unknown): value is Static<T> {
 	return validator(schema).check(value) && finiteNumbers(value);
 }
 
 /** The first `limit` mismatches as `<path> <message>`, with `/` for the root. */
-export function schemaErrors(schema: TSchema, value: unknown, limit: number): string[] {
+export function schemaErrors(schema: object, value: unknown, limit: number): string[] {
 	return validator(schema).errors(value).slice(0, limit).map((error) => `${error.path === "" ? "/" : error.path} ${error.message}`);
 }
