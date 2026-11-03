@@ -20,7 +20,6 @@ import type {
 	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { Static, TSchema } from "typebox";
 import { compile } from "@earendil-works/pi-schema";
 import type { StashPanel, StashPanelResult, PanelTheme } from "./panel.ts";
 
@@ -122,13 +121,12 @@ export function captureShortcut(shortcut: Parameters<ExtensionAPI["registerShort
 	};
 }
 
-export function captureTool<P extends TSchema, D, S>(tool: ToolDefinition<P, D, S>) {
+export function captureTool<P extends object, D, S>(tool: ToolDefinition<P, D, S>) {
 	return {
 		name: tool.name,
 		outputSchema: tool.outputSchema,
 		execute: async (id: string, params: unknown, signal?: AbortSignal, _update?: undefined, ctx?: TestContext) => {
 			assert.ok(compile(tool.parameters).check(params), "tool arguments satisfy the registered schema");
-			const checked = params as Static<P>;
 			const toolContext = {
 				...hostContext(ctx),
 				tools: [],
@@ -136,7 +134,7 @@ export function captureTool<P extends TSchema, D, S>(tool: ToolDefinition<P, D, 
 					throw new Error("Unexpected nested tool call");
 				},
 			} satisfies ExtensionToolContext;
-			const result = await tool.execute(id, checked, signal, undefined, toolContext);
+			const result = await tool.execute(id, params as Parameters<typeof tool.execute>[1], signal, undefined, toolContext);
 			if (tool.outputSchema)
 				assert.ok(
 					compile(tool.outputSchema).check(result.structuredContent),

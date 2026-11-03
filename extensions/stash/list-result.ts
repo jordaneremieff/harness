@@ -1,72 +1,72 @@
 /** Native structured results for bounded stash discovery. */
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { arr, bool, int, lit, nul, obj, opt, str, type Schema, union } from "@earendil-works/pi-schema";
 
 /** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
-const StringEnum = <T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: values });
+const StringEnum = <T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: values });
 import { STASH_STATES, stateLabel } from "./format.ts";
 import { CHECKPOINT_NOTICE, checkpointMetadata, collectionId, type StashCollection } from "./collection.ts";
 import { SEARCH_LIMITS } from "./search.ts";
 import type { StashEntry } from "./store.ts";
 import { boundedOutput, MAX_OUTPUT_BYTES, sanitizeTerminalText } from "./text.ts";
 
-const count = () => Type.Integer({ minimum: 0 });
+const count = () => int({ minimum: 0 });
 const state = StringEnum([...STASH_STATES, "unknown", "provisional"]);
 const provenance = {
-	source: Type.Optional(Type.Union([Type.String(), Type.Null()])),
-	workspace: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+	source: opt(union([str(), nul()])),
+	workspace: opt(union([str(), nul()])),
 };
 const collection = StringEnum(["handovers", "checkpoints"] as const);
-const record = Type.Object({ id: Type.String(), title: Type.String(), state, ...provenance }, { additionalProperties: false });
-const searchMatch = Type.Object(
+const record = obj({ id: str(), title: str(), state, ...provenance }, { open: false });
+const searchMatch = obj(
 	{
-		id: Type.String(),
-		title: Type.String(),
+		id: str(),
+		title: str(),
 		state,
 		...provenance,
-		field: Type.String(),
+		field: str(),
 		start: count(),
 		end: count(),
 		excerptStart: count(),
 		excerptEnd: count(),
-		excerpt: Type.String(),
+		excerpt: str(),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 
-export const ListOutputSchema = Type.Union([
-	Type.Object(
+export const ListOutputSchema = union([
+	obj(
 		{
-			kind: Type.Literal("recent"),
+			kind: lit("recent"),
 			collection,
-			provisional: Type.Boolean(),
-			records: Type.Array(record, { maxItems: 50 }),
-			limit: Type.Integer({ minimum: 1, maximum: 50 }),
-			selectedCount: Type.Integer({ minimum: 0, maximum: 50 }),
-			omittedRecords: Type.Integer({ minimum: 0, maximum: 50 }),
-			textTruncated: Type.Boolean(),
-			limitReached: Type.Boolean({
+			provisional: bool(),
+			records: arr(record, { maxItems: 50 }),
+			limit: int({ minimum: 1, maximum: 50 }),
+			selectedCount: int({ minimum: 0, maximum: 50 }),
+			omittedRecords: int({ minimum: 0, maximum: 50 }),
+			textTruncated: bool(),
+			limitReached: bool({
 				description: "Selection reached the requested limit; not proof that more records exist.",
 			}),
-			nextCursor: Type.Null({ description: "Recent listing has no continuation cursor." }),
-			coverage: Type.Object(
+			nextCursor: nul({ description: "Recent listing has no continuation cursor." }),
+			coverage: obj(
 				{
-					complete: Type.Null({ description: "Recent listing does not measure store-wide coverage, even when empty." }),
+					complete: nul({ description: "Recent listing does not measure store-wide coverage, even when empty." }),
 				},
-				{ additionalProperties: false },
+				{ open: false },
 			),
 		},
-		{ additionalProperties: false },
+		{ open: false },
 	),
-	Type.Object(
+	obj(
 		{
 			collection,
-			provisional: Type.Boolean(),
-			matches: Type.Array(searchMatch, { maxItems: SEARCH_LIMITS.matches }),
-			skipped: Type.Array(Type.Object({ id: Type.String(), reason: Type.String() }, { additionalProperties: false }), {
+			provisional: bool(),
+			matches: arr(searchMatch, { maxItems: SEARCH_LIMITS.matches }),
+			skipped: arr(obj({ id: str(), reason: str() }, { open: false }), {
 				maxItems: SEARCH_LIMITS.candidates,
 			}),
-			coverage: Type.Object(
+			coverage: obj(
 				{
 					directoryEntries: count(),
 					candidates: count(),
@@ -78,24 +78,24 @@ export const ListOutputSchema = Type.Union([
 					filtered: count(),
 					deferred: count(),
 					skippedTotal: count(),
-					complete: Type.Boolean(),
+					complete: bool(),
 				},
-				{ additionalProperties: false },
+				{ open: false },
 			),
-			nextCursor: Type.Union([Type.String({ maxLength: 1024 }), Type.Null()]),
-			consistency: Type.String(),
-			representation: Type.String(),
+			nextCursor: union([str({ maxLength: 1024 }), nul()]),
+			consistency: str(),
+			representation: str(),
 		},
-		{ additionalProperties: false },
+		{ open: false },
 	),
-	Type.Object(
+	obj(
 		{
-			kind: Type.Literal("error"),
-			error: Type.String({ maxLength: 2048 }),
-			coverage: Type.Object({ complete: Type.Literal(false) }, { additionalProperties: false }),
-			nextCursor: Type.Null(),
+			kind: lit("error"),
+			error: str({ maxLength: 2048 }),
+			coverage: obj({ complete: lit(false) }, { open: false }),
+			nextCursor: nul(),
 		},
-		{ additionalProperties: false },
+		{ open: false },
 	),
 ]);
 

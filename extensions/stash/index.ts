@@ -1,5 +1,6 @@
 /** Session continuity tools plus the interactive /stash pickup workflow. */
 
+import type { Static } from "@earendil-works/pi-schema";
 import { toolDisplayPublisher } from "./tool-display.ts";
 import { randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
@@ -596,7 +597,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		parameters: WriteParams,
 		renderCall: renderWriteCall,
 		renderResult: renderWriteResult,
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params: Static<typeof WriteParams>, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("stash_write cancelled");
 			const branch = await currentBranch(pi, ctx.cwd, signal);
 			if (signal?.aborted) throw new Error("stash_write cancelled");
@@ -652,7 +653,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		outputSchema: ListOutputSchema,
 		renderCall: renderListCall,
 		renderResult: renderListResult,
-		async execute(_toolCallId, params, signal): Promise<AgentToolResult<Record<string, unknown>>> {
+		async execute(_toolCallId, params: Static<typeof ListParams>, signal): Promise<AgentToolResult<Record<string, unknown>>> {
 			const limit = params.limit ?? 10;
 			if (signal?.aborted) throw new Error("stash_list cancelled");
 			try {
@@ -700,7 +701,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		parameters: ReadParams,
 		renderCall: renderReadCall,
 		renderResult: renderReadResult,
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof ReadParams>, signal) {
 			if (signal?.aborted) throw new Error("stash_read cancelled");
 			const id = artifactId(params.id, params.collection);
 			const directory = await collectionDirectory(getAgentDir(), params.collection);
@@ -720,7 +721,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		parameters: EditParams,
 		renderCall: renderEditCall,
 		renderResult: renderEditResult,
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof EditParams>, signal) {
 			const result = await withStashTarget(params.id, signal, (dir, targetId) =>
 				editStash(dir, targetId, params, signal),
 			);
@@ -758,7 +759,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		parameters: CompleteParams,
 		renderCall: renderCompleteCall,
 		renderResult: renderCompleteResult,
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof CompleteParams>, signal) {
 			const transitioned = await changeLifecycle(params.id, { action: "close", outcome: params.outcome }, signal);
 			return {
 				content: [
@@ -789,7 +790,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		parameters: RotateParams,
 		renderCall: renderRotateCall,
 		renderResult: renderRotateResult,
-		async execute(_toolCallId, params, signal) {
+		async execute(_toolCallId, params: Static<typeof RotateParams>, signal) {
 			const rotated = await rotateLifecycle(params.id, signal);
 			return {
 				content: [{ type: "text" as const, text: `Rotated stash ${rotated.id} to the stash archive.` }],

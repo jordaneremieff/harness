@@ -193,10 +193,11 @@ function countLabel(n: number, singular: string, plural: string): string {
 
 /** The request row names what will be stashed and the payload's shape. */
 export function renderWriteCall(
-	args: Partial<WriteDisplayArgs> | null | undefined,
+	input: unknown,
 	theme: Theme,
 	context: CallContext,
 ): Component {
+	const args = record(input);
 	const title = typeof args?.title === "string" ? previewMark(args.title, 64).text : "";
 	const subject = title || (context.argsComplete === false ? "" : "(untitled)");
 	const qualifiers: string[] = [];
@@ -212,7 +213,7 @@ export function renderWriteCall(
 		];
 		for (const [n, singular, plural] of counts) if (n > 0) qualifiers.push(countLabel(n, singular, plural));
 	}
-	return callCard("stash_write", subject, qualifiers, true, args, theme, context);
+	return callCard("stash_write", subject, qualifiers, true, input, theme, context);
 }
 
 /** A write receipt names the stored artifact; it never states the effort is complete. */
@@ -273,10 +274,11 @@ export interface ListDisplayArgs {
 
 /** The subject is the remembered phrase when searching, otherwise the recent list. */
 export function renderListCall(
-	args: Partial<ListDisplayArgs> | null | undefined,
+	input: unknown,
 	theme: Theme,
 	context: CallContext,
 ): Component {
+	const args = record(input);
 	const query = typeof args?.query === "string" ? previewMark(args.query, 64) : { text: "", clipped: false };
 	const subject = query.text ? `"${query.text}"` : "recent";
 	const qualifiers: string[] = [];
@@ -290,7 +292,7 @@ export function renderListCall(
 	if (typeof args?.state === "string" && args.state) qualifiers.push(`state ${args.state}`);
 	if (typeof args?.limit === "number") qualifiers.push(`limit ${args.limit}`);
 	if (typeof args?.cursor === "string" && args.cursor) hint = true;
-	return callCard("stash_list", subject, qualifiers, hint, args, theme, context);
+	return callCard("stash_list", subject, qualifiers, hint, input, theme, context);
 }
 
 /** Count the match states the search page already reports. */
@@ -393,13 +395,14 @@ export interface ReadDisplayArgs {
 }
 
 export function renderReadCall(
-	args: Partial<ReadDisplayArgs> | null | undefined,
+	input: unknown,
 	theme: Theme,
 	context: CallContext,
 ): Component {
+	const args = record(input);
 	const id = typeof args?.id === "string" ? previewMark(args.id, 72) : { text: "", clipped: false };
 	const subject = id.text || (context.argsComplete === false ? "" : "(id pending)");
-	return callCard("stash_read", subject, args?.collection === "checkpoints" ? ["provisional checkpoint"] : [], false, args, theme, context);
+	return callCard("stash_read", subject, args?.collection === "checkpoints" ? ["provisional checkpoint"] : [], false, input, theme, context);
 }
 
 /** The outcome row separates the returned page from the artifact that remains on disk. */
@@ -442,17 +445,18 @@ export interface EditDisplayArgs {
 }
 
 export function renderEditCall(
-	args: Partial<EditDisplayArgs> | null | undefined,
+	input: unknown,
 	theme: Theme,
 	context: CallContext,
 ): Component {
+	const args = record(input);
 	const id = typeof args?.id === "string" ? previewMark(args.id, 72).text : "";
 	const qualifiers: string[] = [];
 	if (Array.isArray(args?.edits)) {
 		qualifiers.push(`${args.edits.length} replacement${args.edits.length === 1 ? "" : "s"}`);
 	}
 	if (args?.allowActive === true) qualifiers.push("active edit acknowledged");
-	return callCard("stash_edit", id, qualifiers, true, args, theme, context);
+	return callCard("stash_edit", id, qualifiers, true, input, theme, context);
 }
 
 export function renderEditResult(
@@ -483,10 +487,11 @@ export interface CompleteDisplayArgs {
 }
 
 export function renderCompleteCall(
-	args: Partial<CompleteDisplayArgs> | null | undefined,
+	input: unknown,
 	theme: Theme,
 	context: CallContext,
 ): Component {
+	const args = record(input);
 	const id = typeof args?.id === "string" ? previewMark(args.id, 72) : { text: "", clipped: false };
 	const subject = id.text || (context.argsComplete === false ? "" : "(id pending)");
 	const qualifiers: string[] = [];
@@ -496,7 +501,7 @@ export function renderCompleteCall(
 		qualifiers.push(`outcome: ${outcome.text}`);
 		hint = outcome.clipped;
 	}
-	return callCard("stash_complete", subject, qualifiers, hint, args, theme, context);
+	return callCard("stash_complete", subject, qualifiers, hint, input, theme, context);
 }
 
 /** Closing records the terminal outcome; the artifact itself is retained. */
@@ -524,13 +529,14 @@ export interface RotateDisplayArgs {
 }
 
 export function renderRotateCall(
-	args: Partial<RotateDisplayArgs> | null | undefined,
+	input: unknown,
 	theme: Theme,
 	context: CallContext,
 ): Component {
+	const args = record(input);
 	const id = typeof args?.id === "string" ? previewMark(args.id, 72) : { text: "", clipped: false };
 	const subject = id.text || (context.argsComplete === false ? "" : "(id pending)");
-	return callCard("stash_rotate", subject, [], false, args, theme, context);
+	return callCard("stash_rotate", subject, [], false, input, theme, context);
 }
 
 /** Rotation archives the artifact; the file stays recoverable in the store's trash. */
