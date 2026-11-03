@@ -1969,25 +1969,35 @@ a browser or an interactive agent prompt.
 `mcp-auth.ts` owns native credential updates in `<agentDir>/mcp-auth.json`.
 The key combines the server namespace and canonical URL. Native reads accept
 Pi's URL-only entry without taking it over; ordinary Pi owns that takeover.
-A short directory lock at `mcp-auth.json.lock` protects file reads and conditional
-writes, never network I/O. A lock wait fails after 25 seconds without running an
-unlocked callback. A stale directory is reclaimed only after 30 seconds without
-an mtime update and a second check of the same directory identity and mtime.
+A short `proper-lockfile` lock on `mcp-auth.json` protects file reads and
+conditional writes, never network I/O. The package creates `mcp-auth.json.lock`
+and uses ordinary Pi's 10-second stale threshold. Acquisition retries at
+100-millisecond intervals, up to 250 retries, then fails without an unlocked
+callback.
 
-Automatic refresh is serialised across native instances in one process;
-cross-process serialisation with ordinary Pi awaits the compatible lock.
-`RefreshLock.withRefreshLock(key, fn)` is the seam for that lock;
+Automatic refresh shares ordinary Pi's cross-process `proper-lockfile` lock.
+Its target is `mcp-auth-refresh-<hash>` in the agent directory, where the hash
+is the first 16 hex digits of SHA-256 over the server key. It uses a 20-second
+stale threshold and the same bounded retries. Healthy lock ownership serialises
+native and ordinary refresh exchanges for the same server key. The owner
+rereads credentials after acquisition and reuses a committed replacement instead
+of exchanging the old grant again. Lock compromise emits a warning; an admitted
+rotation still reaches conditional persistence under the separate file lock.
+`RefreshLock.withRefreshLock(key, fn)` owns the exchange and persistence lifetime;
 `CredentialFileLock.withFileLock(path, fn)` owns short file mutations.
 After the remote exchange, a conditional save compares the server's starting
 state with its current state under the file lock. A newer committed grant with
 different tokens wins and is used instead of the native result. A committed
 logout stays absent and requires sign-in. Other concurrent state changes fail
-without a write. This protects native updates, not a global transaction across
-ordinary sign-ins that later save an older whole-file snapshot.
+without a write. Ordinary sign-in and logout do not share the refresh transaction.
+A later ordinary save of an older whole-file snapshot can still overwrite newer
+state; native conditional persistence does not make those operations transactional.
 
 Each OAuth network request has a 15-second deadline. An initiating request's
 abort does not cancel an admitted refresh. Native close awaits in-flight refresh
-persistence, independently of its transport shutdown deadline.
+persistence, independently of its transport shutdown deadline. A refresh still
+waiting for ownership or the credential reread does not start an exchange after
+close.
 
 ## Runtime and identity
 

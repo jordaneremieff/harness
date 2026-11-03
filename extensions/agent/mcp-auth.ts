@@ -1,12 +1,13 @@
 /**
  * Native MCP OAuth state shares ordinary Pi's credential file, not its interactive sign-in.
- * Automatic refresh is serialised across native instances in one process; cross-process
- * serialisation with ordinary Pi awaits the compatible proper-lockfile refresh lock.
+ * Automatic refresh shares ordinary Pi's cross-process lock; short credential-file locks
+ * protect conditional persistence independently of the remote exchange.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync, type Stats } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import lockfile from "proper-lockfile";
 import type { McpServerConfig } from "@earendil-works/pi-coding-agent";
 import type { AuthProvider, McpFetch } from "@earendil-works/pi-mcp";
 import { authorizeMcp, McpOAuthAuthorizationRequiredError, McpOAuthProvider, parseWwwAuthenticate } from "@earendil-works/pi-mcp/oauth";
@@ -28,57 +29,49 @@ export interface CredentialFileLock {
 	withFileLock<T>(path: string, fn: () => T): Promise<T>;
 }
 
-const refreshes = new Map<string, Promise<unknown>>();
-const processRefreshLock: RefreshLock = {
-	async withRefreshLock(key, fn) {
-		const previous = refreshes.get(key);
-		const next = (previous ?? Promise.resolve()).catch(() => undefined).then(fn);
-		refreshes.set(key, next);
-		try { return await next; }
-		finally { if (refreshes.get(key) === next) refreshes.delete(key); }
-	},
-};
+const lockRetries = { retries: 250, factor: 1, minTimeout: 100, maxTimeout: 100 };
+
+export class McpRefreshLock implements RefreshLock {
+	private readonly agentDir: string;
+	constructor(agentDir: string) { this.agentDir = agentDir; }
+
+	async withRefreshLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+		mkdirSync(this.agentDir, { recursive: true, mode: 0o700 });
+		const path = join(this.agentDir, `mcp-auth-refresh-${createHash("sha256").update(key).digest("hex").slice(0, 16)}`);
+		let compromised = false;
+		const release = await lockfile.lock(path, {
+			realpath: false, stale: 20_000, retries: lockRetries,
+			onCompromised: () => {
+				compromised = true;
+				// An admitted rotation still needs conditional persistence under the separate file lock.
+				process.emitWarning("MCP refresh lock ownership was lost; credential writes remain conditional", { code: "MCP_REFRESH_LOCK_COMPROMISED" });
+			},
+		});
+		try { return await fn(); }
+		finally { if (!compromised) await release(); }
+	}
+}
 
 function missing(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
-/**
- * Ordinary Pi uses the same directory with proper-lockfile. Mutations here are synchronous
- * and short. Reclaim only after 30 seconds without renewal, then recheck inode and mtime.
- * A wait timeout fails closed. This is not a renewable network/refresh lock.
- */
+/** Ordinary Pi's credential target and default stale threshold; never run network I/O here. */
 export class McpCredentialFileLock implements CredentialFileLock {
 	async withFileLock<T>(path: string, fn: () => T): Promise<T> {
 		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-		const lockPath = `${path}.lock`;
-		const deadline = Date.now() + 25_000;
-		while (!this.acquire(lockPath)) {
-			if (Date.now() >= deadline) throw new Error(`Timed out waiting for MCP credential lock ${lockPath}`);
-			await new Promise<void>((done) => setTimeout(done, 100));
-		}
-		const held = statSync(lockPath);
-		try { return fn(); }
-		finally { this.release(lockPath, held); }
-	}
-
-	private release(path: string, held: Stats): void {
+		let compromised: Error | undefined;
+		const release = await lockfile.lock(path, {
+			realpath: false, retries: lockRetries,
+			onCompromised: (error) => {
+				compromised = error;
+				process.emitWarning("MCP credential lock ownership was lost", { code: "MCP_CREDENTIAL_LOCK_COMPROMISED" });
+			},
+		});
 		try {
-			const current = statSync(path);
-			if (current.dev === held.dev && current.ino === held.ino && current.mtimeMs === held.mtimeMs) rmdirSync(path);
-		} catch (error) { if (!missing(error)) throw error; }
-	}
-
-	private acquire(path: string): boolean {
-		try { mkdirSync(path); return true; }
-		catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
-		try {
-			const before = statSync(path);
-			if (Date.now() - before.mtimeMs <= 30_000) return false;
-			const current = statSync(path);
-			if (current.dev === before.dev && current.ino === before.ino && current.mtimeMs === before.mtimeMs) rmdirSync(path);
-		} catch (error) { if (!missing(error)) throw error; }
-		return false;
+			if (compromised) throw compromised;
+			return fn();
+		} finally { if (!compromised) await release(); }
 	}
 }
 
@@ -179,9 +172,13 @@ export class NativeMcpAuth {
 
 	private readonly refreshLock: RefreshLock;
 
-	constructor(agentDir: string, refreshLock: RefreshLock = processRefreshLock, fileLock: CredentialFileLock = new McpCredentialFileLock()) {
+	constructor(agentDir: string, refreshLock: RefreshLock = new McpRefreshLock(agentDir), fileLock: CredentialFileLock = new McpCredentialFileLock()) {
 		this.file = new CredentialFile(resolve(agentDir, "mcp-auth.json"), fileLock);
 		this.refreshLock = refreshLock;
+	}
+
+	private assertOpen(): void {
+		if (this.closed) throw new Error("MCP authentication is closed");
 	}
 
 	provider(name: string, config: HttpConfig, resolveSecret: (value: string) => string | undefined): NativeMcpAuthProvider {
@@ -192,7 +189,9 @@ export class NativeMcpAuth {
 			if (this.closed) return Promise.reject(new Error("MCP authentication is closed"));
 			if (refreshing) return refreshing;
 			refreshing = this.refreshLock.withRefreshLock(key, async () => {
+				this.assertOpen();
 				const start = await this.file.load(key, url);
+				this.assertOpen();
 				if (!start?.state.tokens?.access_token) throw new McpOAuthAuthorizationRequiredError();
 				if (start.state.tokens.access_token !== rejected) return;
 				if (!start.state.tokens.refresh_token) throw new McpOAuthAuthorizationRequiredError();

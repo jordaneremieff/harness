@@ -598,9 +598,15 @@ host capability. Current ordinary defining sources are
   Native refresh honours these settings and the configured metadata URL. Stored
   credentials are keyed by server identity and URL. Native conditional writes
   preserve newer committed tokens and committed logout. Short file locks never
-  cover network exchange. Automatic refresh is serialised across native
-  instances in one process; cross-process serialisation with ordinary Pi awaits
-  the compatible lock. Native close awaits refresh persistence.
+  cover network exchange. Native and ordinary automatic refresh share the
+  per-server `proper-lockfile` target and 20-second stale threshold across
+  processes. The owner rereads after acquisition and reuses a committed
+  replacement. Credential-file locks use ordinary Pi's 10-second stale threshold.
+  Compromise emits a warning; conditional persistence still requires file
+  ownership. Ordinary sign-in/logout remain outside the refresh transaction;
+  a later ordinary stale whole-file save can still overwrite newer state.
+  Native close awaits admitted refresh persistence and prevents an exchange
+  that still awaits ownership or credential reread.
   Checked 2026-11-03 against coding-agent 1.5.0
   `dist/extensions/mcp/{config.d.ts,oauth.js}` and pi-mcp 1.5.0
   `dist/oauth/{provider,flow}.{d.ts,js}`. Native ownership and limits are defined
