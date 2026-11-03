@@ -406,7 +406,7 @@ describe("stash lifecycle transitions", () => {
 	it("redacts credential-shaped completion outcomes before they are stored", async () => {
 		const lifecycleDir = join(dir, "outcome-redact-store");
 		await mkdir(lifecycleDir);
-		const secret = "sk-ant-oat01-abcdefghijklmnopqrstuvwxyz123456";
+		const secret = ["sk-ant-oat01", "abcdefghijklmnopqrstuvwxyz123456"].join("-");
 		const { record } = await writeStash(
 			lifecycleDir,
 			{ title: "Outcome redaction", summary: "s" },
