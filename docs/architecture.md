@@ -22,9 +22,13 @@ through Git. Install the lockfile's development dependencies with `npm ci` in
 the checkout.
 
 For extension development, disable the package's extension resources in
-`pi config` and use the persistent worktree entrypoints. Follow the
-[worktree convention](conventions/worktrees.md) for synchronization,
-activation, checks, and publication.
+`pi config` and route each extension explicitly in Pi settings to the
+`extensions/<name>/index.ts` entrypoint of the checkout it should load: the main
+checkout, a branch worktree, or a detached checkout of an accepted commit with
+its own installed dependencies. Follow the
+[development workflow](conventions/worktrees.md) for branches, checks, and
+publication, and [storage host retirement](pi-durable-harness.md#storage-host-retirement)
+before switching a route that running processes load.
 
 ### Other machines
 

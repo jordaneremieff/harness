@@ -810,8 +810,8 @@ consumer requires the Durable API of the installed release, not an older
 dependency graph. A commit on `main` does not activate anything by itself:
 Pi loads each extension from the checkout its settings entry names, and a
 running process keeps the code it loaded. Reload refreshes extension factories,
-not objects an extension retains at process scope (see
-[host lifetime](agent-delivery.md#host-lifetime)). The
+not objects an extension retains at process scope (see the candidate
+verification rules below). The
 [development workflow](conventions/worktrees.md#pi-configuration) owns both
 routes below. Selecting a different checkout, such as a detached release checkout
 that carries the accepted commit with its installed dependencies, requires the
@@ -830,6 +830,22 @@ data.
 See the
 [host contract](agent-host-contract.md#no-start-observation-versus-acquiring-controls)
 and Agent README for the actual lifecycle controls.
+
+Pi caches extension factories by path within a process's current cwd and cache
+generation, so a fresh SDK session in an existing process does not ensure
+refreshed extension code. An already-loaded resource loader clears that cache
+on reload. Sources: `dist/core/extensions/loader.js` (`clearExtensionCache`,
+`useExtensionCacheCwd`) and `dist/core/resource-loader.js` (`reload`), checked
+at 1.5.0 on 2026-11-03. Before live verification of a changed extension, use
+the intended idle session's native reload, then read back actual behaviour
+through the registered public surface; updated descriptions or schemas do not
+establish changed execution. Reload refreshes factories and registration, not
+objects that extensions retain at process scope: compatible agent managers and
+existing workers keep their class methods and closures from creation. If
+retained owners still execute methods from creation, verify the candidate in a
+fresh native host process that loads its code; another session in the same
+process does not establish that boundary. Do not reload or interrupt unrelated
+owned sessions.
 
 ### Process contracts and peer threads
 

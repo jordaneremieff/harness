@@ -25,8 +25,9 @@ Use `agent_list` when discovery is needed, not as a substitute for resolving the
 known handle. Do not mine discovery previews as historical evidence.
 Resolve without a prompt,
 then check the returned identity, stored role, selected model, and current
-operation before sending the task. Use the canonical identity or `@handle`, not
-a bare display name, as the target.
+operation before sending the task. An existing handle does not establish
+suitability, availability, or compliance with a requested model. Use the
+canonical identity or `@handle`, not a bare display name, as the target.
 
 On first creation, give the expert this short charter, with the reference path
 resolved under the current harness package root:
@@ -155,9 +156,10 @@ institutional memory merely to make retrieval convenient.
 
 Read the current profile with `agent_profile` before relying on its expertise.
 The expert is expected to update its own sourced expertise during read-only
-source research; this leaves historical records unchanged. Do not forbid profile
-writes merely because the source task is read-only. An explicit restriction on
-profile changes still binds.
+source research; this leaves historical records unchanged. A read-only source
+task does not by itself forbid tasking the expert or retaining its sourced
+expertise. Do not forbid profile writes merely because the source task is
+read-only. An explicit restriction on tasking or profile changes still binds.
 Update it through the same public control with `expectedRevision` after a useful
 finding or correction. A revision conflict requires a fresh read and deliberate
 merge, not an unconditional overwrite. The role is a short charter; expertise is

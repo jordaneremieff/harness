@@ -25,24 +25,11 @@ active, provisional, and merely proposed capabilities; a source file or resource
 listing does not establish usable behavior.
 
 When a bounded history question informs orientation, use the standing
-[session-history expert](session-history.md). Resolve it with `agent_spawn` and
-`handle: "session-history"`, without a prompt. Check that its stored role covers
-the question, its selected model meets the request, and its current operation
-permits the work. Then task `@session-history` with `agent_send` and
-`mode: "followUp"`. Supply the question, source window, and task-specific
-restrictions instead of another corpus brief. Creation supplies a short role
-and a reachable corpus-reference pointer, not a fixed team. An existing handle
-does not establish suitability, availability, or compliance with a requested
-model. Follow the reference for creation defaults and any required independent
-work, not a fresh-miner default.
-
-The expert does the current research; historical subjects supply its evidence.
-The reference owns that distinction, public source access, expected profile
-updates, and corrections. A read-only source task does not by itself forbid
-tasking the expert or retaining its sourced expertise. Preserve any explicit
-restriction on those acts. History is a source for the current purpose, not a
-mandatory phase of every run. The coordinator retains judgment and integration
-ownership.
+[session-history expert](session-history.md) and follow that reference to
+resolve, check, and task it. Supply the current question, source window, and
+restrictions instead of another corpus brief. History is a source for the
+current purpose, not a mandatory phase of every run. The coordinator retains
+judgment and integration ownership.
 
 Read only enough to form a useful purpose and identify the uncertainty that
 decides the next act. Broaden a read for a named gap, not an exhaustive inventory.
@@ -159,15 +146,9 @@ create unsolicited transcript messages. Endpoint records and local roster
 refresh still expose the current view. This excludes automatic effort notices,
 not direct messages, check-ins, or peer-thread notices.
 
-Current-source readers see native claims only after the owning host publishes
-its coalesced catalogue view. Discovery includes the reader's sessions root and
-retained existing-source roots, with liveness from the host writer claim. Readers
-running the unchanged original Agent source inspect only ordinary `.primaries`
-descriptors and never see native claims. Do not assume that a new writer updates
-an existing reader. Scan limits apply across ordinary and native records;
-cut-off scans report partial coverage and unsupported producers count separately
-from omitted claims. Retained claims keep their full authority and scope; byte
-pressure omits a whole claim instead of shortening those fields.
+When a missing or partial related-effort view affects a shared act, read the
+Agent [effort and intent contract](../extensions/agent/README.md#efforts-presence-and-intent)
+for claim visibility, discovery roots, and scan coverage.
 
 Use `agent_send` for direct contact with a live effort primary. The operator
 also sends direct messages from `/agent`'s Related efforts view. A delivery receipt
@@ -290,78 +271,20 @@ in that session while its task is open.
 
 ## Accept the outcome, not just the changes
 
-Answer-bearing agent dispatch returns `result: { sessionId, submissionId,
-requestId? }` only after native input admission. Keep that exact reference,
-including a known request ID. Creation ancestry, names, reports, timer IDs,
-thread posts, and ordinary-primary messages do not identify native results.
-The reference identifies work, not its completion or acceptance. Local dispatch
-and its background Reporter share the admitted native request; an ordinary
-primary still receives normal asynchronous results.
+Keep the exact result reference that each answer-bearing dispatch returns. The
+reference identifies admitted work, not its completion or acceptance. Creation
+receipts, names, reports, timer IDs, thread posts, and ordinary-primary messages
+do not identify native results. A final answer settles the original request
+once. Never answer with a waiting note and depend on a later manual report to
+complete that commitment.
 
-When a native agent's original answer depends on peer results, dispatch them in
-the background and call `agent_await` once with their exact references. The
-original request stays open without model calls merely to wait. A failed or
-aborted dependency returns a typed non-success outcome; unavailable observation
-is a separate outcome, not an invented remote failure. A final answer settles
-the original request once. Never answer with a waiting note and depend on a
-later manual report to complete that commitment.
-
-For retry-sensitive work, opt in with
-`agent_await({results, releaseOnProviderRetry: {minAttempt: 2}})`. An empty option
-object uses attempt 1; omission keeps the normal wait. A current retry for an
-exact awaited input releases the tool round with partial outcomes, unresolved
-references, and `producerRetries`. Release does not cancel producers or prove a
-quota wall. Inspect the facts before an authorized model substitution.
-
-Before dispatch, `agent_status({view: "fleet"})` exposes recent sampled usage
-per model/provider and lifetime caller-plus-direct-created effort cost. Its
-rolling windows are labeled partial lower bounds, not complete usage or
-remaining quota. Check publication times and omissions. Neither storage usage
-nor these effort totals is the current request's own spend.
-
-Explicit input or an awaited agent's report releases the wait with partial
-results and puts that input at the same request's post-tools boundary. Apply it
-and await unresolved references again as needed. Real abort stops the original
-request without canceling independent peer work. Late named results remain
-retained without an automatic model restart. A new explicit request still reads
-them. Automatic named-result
-check-ins are suppressed at the awaiting recipient; other check-ins and timers
-stay queued follow-ups. Requester check-ins remain active. The result states its
-committed queued-input snapshot; queued follow-ups retain their normal later
-runs.
-
-Normal result delivery is independent of `agent_await`. At return, the tool
-withdraws only still-queued delivery inputs wholly covered by returned results,
-using their actual receipt or Reporter request IDs. Coverage includes every
-receipt in the shared-answer group, even for other recipients. A partially covered group
-stays queued; already-placed inputs remain untouched. Late or placed copies can
-appear and cost an additional model turn. No recipient consumption ledger or
-exactly-once contextual-delivery guarantee applies. Original-request replay is
-not an interruption. Durable outcomes survive safe replay. Capped answers
-include exact entry continuations with native inspection offsets. Normal
-delivered receipt excerpts also include a `Full answer` continuation; ordinary
-primary details retain its structured form. Follow `agent_inspect` and each
-`nextOffset` to read the complete retained answer.
-
-Await is native-only. Ordinary primaries remain responsive and refuse blocking
-wait calls. Foreign results require a normal reply route to this recipient;
-other recipients' receipts remain untouched. Local admission refuses self-waits
-and cycles inside one storage. Cross-storage cycles are not automatically
-refused or solved by the local check. Creation provenance never grants a result
-dependency or cancellation authority.
-
-Status, the dashboard, and existing check-ins expose bounded `awaiting` facts,
-separate from native task state. They name held requests, result outcomes,
-queued inputs excluding writes and suppressed check-ins, and one-hop producer
-waits. Each producer fact carries source and observation time. Known mutual
-waits show a likely cycle; missing remote graph coverage is not refusal.
-Existing commit notifications refresh facts without recursive observation.
-Bounds report omissions. The dashboard Release await action checks the selected
-live run, returns partial results on that original request, admits no new input,
-and leaves producers active. Real abort still stops the original request.
-
-Creation records appear as `createdAgents.agents`; adapted fork ancestry appears
-as `forkSource`. Neither identifies a result dependency or a current requester.
+Before a native agent waits on peer results, read the Agent
+[result and await contract](../extensions/agent/README.md#await-exact-peer-results).
+Read it again when a wait returns early, a producer retries, or result delivery
+changes the next act. It owns the current provider-retry release default,
+partial outcomes, input release, covered-delivery withdrawal, answer
+continuations, and cycle limits. Apply the contract you read, not a remembered
+default.
 
 Prompt admission, idle state, provider completion, and task acceptance are
 different facts. After an execution unit settles, inspect its real changes and
@@ -440,30 +363,12 @@ changed work, or stop superseded work with its public control. A saved handover
 does not transfer process ownership. Use durable execution only when its public
 contract covers the needed lifetime and the operator's authority permits it.
 
-A result addressed to an ordinary primary with a dead endpoint remains pending
-for that session ID. Other live primaries receive only labeled informational
-copies, not ownership of the result. The source records each accepted copy so
-host reopens do not repeat it. A live owner that shares the answer still receives
-its normal notice and wake intent. Delivery is at-least-once: a crash after
-receiver acceptance but before the retained checkpoint can repeat a notice, and
-receiver deduplication is process-local.
-
-Keep delivery acknowledgment separate from task acceptance. Informational
-copies never acknowledge the original owner's row. The delivery worker
-acknowledges each accepted normal-owner route independently, even when another
-route fails. Inspect the requested outcome before accepting the task.
-
-Parked and terminal rows wait in durable storage, not a permanently live host.
-The recovery marker clears when no native work or active delivery remains,
-before the idle retirement interval. The source writer publishes its parked
-recipients in a bounded wake sidecar before it clears the marker. Exact primary
-registration wakes only matching parked sources; unrelated registration leaves
-them cold. Existing namespace and catalog-change scans also wake sources whose
-named native or compatible primary recipient becomes available. Explicit
-acquisition retries retained rows outside automatic discovery bounds. Rows have
-no expiry. Catalog scan limits bound automatic recovery reach, not retained-row
-lifetime. Only reachable active recipients retry transient failures. See [Agent recovery and delivery](../extensions/agent/README.md#recovery-and-delivery)
-for route distinctions, stale check-in pruning, and current process contracts.
+Keep delivery acknowledgment separate from task acceptance. Inspect the
+requested outcome before accepting the task. When a result's route, a dead or
+parked recipient, or a repeated notice affects the next act, read
+[Agent recovery and delivery](../extensions/agent/README.md#recovery-and-delivery)
+for route distinctions, retention, wake behaviour, and the at-least-once
+delivery contract.
 
 ## Deliver and report
 
@@ -515,33 +420,12 @@ work.
 
 ## Host lifetime
 
-Evo dispatches one user message through Pi's extension API with `followUp`
-delivery. The host starts an idle turn or queues the message after active work;
-Evo does not inspect idle state first or steer existing work. Pi disables command
-and prompt-template expansion for that injected message.
-
-The extension API returns void. Command return therefore does not establish
-completion of the injected turn. An ordinary SDK host must retain the session
-through message admission and settled execution, and expose asynchronous errors.
-The mode flag alone does not decide that lifetime. TUI, RPC, and retained
-headless ordinary sessions use the same invocation. A single-shot CLI that exits
-on command return does not satisfy the lifetime contract merely because its mode
-is `print` or `json`.
-
-Pi caches extension factories by path within a process's current cwd and cache
-generation. A fresh SDK session in an existing process therefore does not ensure
-refreshed extension code. Before live candidate verification, use the intended
-idle session's native reload: an already-loaded resource loader clears the
-factory cache on reload. This refreshes factories and registration, not objects
-that extensions deliberately retain at process scope. Compatible agent managers
-and existing workers retain their class methods and closures from creation.
-
-Read back actual candidate behavior through the registered public surface after
-reload. Updated descriptions or schemas do not establish changed execution. If
-retained owners still execute methods from creation, verify the candidate in a
-fresh native host process that loads its code. Another session in the same
-process does not establish that boundary. Do not reload or interrupt unrelated
-owned sessions.
+Evo's [modes and lifetime](../extensions/evo/README.md#modes-and-lifetime) define
+how the command reaches a session and why command return does not establish
+completion. Before live verification of a changed extension, and before an
+activation that reaches running processes, follow
+[storage host retirement](pi-durable-harness.md#storage-host-retirement) for
+reload, retained owners, fresh host processes, and safe source selection.
 
 See [Evo](../extensions/evo/README.md), [worktrees](conventions/worktrees.md), and
 [Pi host contracts](pi-durable-harness.md) for invocation, delivery, and runtime

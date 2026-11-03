@@ -25,7 +25,9 @@ When review coverage matches the running host, it infers a useful purpose withou
 asking the operator for a topic. Current capabilities and plausible uses suffice to start; incident history,
 populated stores, and proof of a defect are not prerequisites. The coordinator
 loads the harness skill, repository instructions, and delivery workflow before
-selection or governed work.
+selection or governed work. The workflow links detailed mechanism references,
+such as session history, result waits, delivery recovery, and host refresh; the
+coordinator reads each one when the run uses that mechanism.
 
 The complete trailing input is an optional run direction, not a subcommand. It
 appears before orientation in the request. Its focus (targets, subjects,
@@ -131,8 +133,9 @@ The command itself never writes the marker.
 ## Session-history expertise
 
 When orientation needs earlier operator directions or session evidence, the
-kickoff directs the coordinator to resolve and task `@session-history` through
-the [delivery workflow](../../docs/agent-delivery.md#orient-to-the-operators-work).
+kickoff directs the coordinator to task `@session-history` as the
+[corpus reference](../../docs/session-history.md) directs, under the
+[delivery workflow](../../docs/agent-delivery.md#orient-to-the-operators-work).
 The coordinator supplies the current question and restrictions instead of
 repeating the corpus brief. Relevant expertise supports reuse; unrelated work,
 independent judgment, or conflicting ownership can require a fresh session.
@@ -235,9 +238,11 @@ store.
 
 The extension API returns void. Command return proves neither admission nor
 completion; the host must retain the session through asynchronous preflight and
-settled execution and expose asynchronous errors. A single-shot CLI that disposes
-on command return does not satisfy this contract. A headless ordinary session is
-not a TUI-parity claim. See [host lifetime](../../docs/agent-delivery.md#host-lifetime)
+settled execution and expose asynchronous errors. The mode flag alone does not
+decide that lifetime. A single-shot CLI that disposes on command return does not
+satisfy this contract, even in `print` or `json` mode. A headless ordinary
+session is not a TUI-parity claim. See
+[storage host retirement](../../docs/pi-durable-harness.md#storage-host-retirement)
 for candidate reload and retained-process boundaries.
 
 The package root containing the loaded entrypoint is the evidence and worktree
