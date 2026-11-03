@@ -372,7 +372,11 @@ if (process.argv[2] === "--transaction-child") {
 			const first = reg.setData(binding("first"), null, audit);
 			await gate.entered;
 			const controller = new AbortController();
+			const queue = reg as unknown as { mutationTail: Promise<void> };
+			const firstTail = queue.mutationTail;
 			const queued = assert.rejects(reg.setData(binding("second"), null, audit, controller.signal), PolicyMutationCancelledError);
+			await Promise.resolve();
+			assert.notEqual(queue.mutationTail, firstTail, "the second mutation reached the queue");
 			controller.abort();
 			gate.release();
 			const committed = await first;
