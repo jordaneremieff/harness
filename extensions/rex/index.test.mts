@@ -1,17 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createEventBus, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
+import type { Schema } from "@earendil-works/pi-schema";
 import { registerRex } from "./index.ts";
 import { resultByteLimit, type RexResult } from "./core.ts";
 
 test("ordinary shutdown drains owned calls before reload replaces live-call state", async () => {
-	const tools = new Map<string, ToolDefinition<TSchema>>();
+	const tools = new Map<string, ToolDefinition<Schema>>();
 	const handlers = new Map<string, () => unknown>();
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<TSchema>) => tools.set(tool.name, tool),
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
 		appendEntry: () => {},
 	} as unknown as ExtensionAPI;
 	let signal: AbortSignal | undefined;
@@ -62,12 +62,12 @@ test("ordinary shutdown drains owned calls before reload replaces live-call stat
 });
 
 test("the final ordinary adapter bounds status composition into one canonical result", async () => {
-	const tools = new Map<string, ToolDefinition<TSchema>>();
+	const tools = new Map<string, ToolDefinition<Schema>>();
 	const handlers = new Map<string, () => unknown>();
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<TSchema>) => tools.set(tool.name, tool), appendEntry: () => {},
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), appendEntry: () => {},
 	} as unknown as ExtensionAPI;
 	const server = { endpoint: "unix:///test-rex", hostId: "host", instanceId: "instance", selection: "test" };
 	const resource = { kind: "block" as const, sessionId: "session:00000000-0000-0000-0000-000000000001", blockId: "block:00000000-0000-0000-0000-000000000002" };
@@ -98,13 +98,13 @@ test("the final ordinary adapter bounds status composition into one canonical re
 });
 
 test("ordinary owned observation preserves the shared request and canonical read-only evidence", async () => {
-	const tools = new Map<string, ToolDefinition<TSchema>>();
+	const tools = new Map<string, ToolDefinition<Schema>>();
 	const handlers = new Map<string, () => unknown>();
 	let writes = 0;
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<TSchema>) => tools.set(tool.name, tool), appendEntry: () => { writes++; },
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), appendEntry: () => { writes++; },
 	} as unknown as ExtensionAPI;
 	const request = { op: "observe", recordId: "retained-call", maxBytes: 256 };
 	const expected: RexResult = { ok: true, outcome: "observed", effects: { state: "none" }, coverage: { bounded: true }, data: { reports: [{ recordId: "retained-call", phase: "unknown", complete: true, observedAt: "2026-01-01T00:00:00.000Z", observations: [{ presence: "present", childState: "exited", process: { last_exit: { exit_code: 7 } }, capture: { content: "final output", start: 0, end: 12, total: 12 } }] }] } };
@@ -126,13 +126,13 @@ test("ordinary owned observation preserves the shared request and canonical read
 });
 
 test("ordinary registration publishes only identical display references and cleans up requests on reload", async () => {
-	type Publication = { version: number; tools: Array<Pick<ToolDefinition<TSchema>, "name" | "renderCall" | "renderResult" | "renderShell">> };
-	const tools = new Map<string, ToolDefinition<TSchema>>();
+	type Publication = { version: number; tools: Array<Pick<ToolDefinition<Schema>, "name" | "renderCall" | "renderResult" | "renderShell">> };
+	const tools = new Map<string, ToolDefinition<Schema>>();
 	const handlers = new Map<string, () => unknown>();
 	const events = createEventBus();
 	const publications: Publication[] = [];
 	events.on("harness:tool-display:publish", (value) => { publications.push(value as Publication); });
-	const pi = { events, on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); }, registerTool: (tool: ToolDefinition<TSchema>) => tools.set(tool.name, tool), appendEntry: () => {} } as unknown as ExtensionAPI;
+	const pi = { events, on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); }, registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), appendEntry: () => {} } as unknown as ExtensionAPI;
 	let executions = 0;
 	const options = { createCore: () => { executions++; throw new Error("Display requests must not execute tools."); } };
 	registerRex(pi, options);

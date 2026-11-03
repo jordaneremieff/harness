@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { convertTools, resolveGoogleFunctionCallingMode, supportsGoogleStrictToolSampling } from "@earendil-works/pi-ai/api/google-shared";
 import { createEditToolDefinition, createReadToolDefinition, createWriteToolDefinition, createEventBus, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
+import { compile, type Schema } from "@earendil-works/pi-schema";
 import { registerRex } from "./index.ts";
-import { requestVariants, toolSpecs, validateRequest } from "./schema.ts";
+import { requestVariants, ResultSchema, toolSpecs, validateRequest } from "./schema.ts";
 import type { RexResult } from "./core.ts";
 
 const strictBuiltins = [createReadToolDefinition("/test"), createEditToolDefinition("/test"), createWriteToolDefinition("/test")];
@@ -40,7 +40,10 @@ test("every provider declaration is a plain object root even when a strict built
 test("the provider declaration accepts exactly the union of its operation shapes", () => {
 	for (const spec of toolSpecs) {
 		const declared = Object.keys(spec.parameters.properties);
-		const shapes = requestVariants[spec.name].flatMap((shape) => Object.keys(shape.properties));
+		const shapes = requestVariants[spec.name].flatMap((shape) => {
+			assert.ok(shape.properties && typeof shape.properties === "object");
+			return Object.keys(shape.properties);
+		});
 		assert.deepEqual(new Set(declared), new Set(shapes), spec.name);
 	}
 	const owned = toolSpecs.find((spec) => spec.name === "rex_owned");
@@ -74,6 +77,9 @@ test("runtime validation enforces each operation shape", () => {
 		["rex_status", { op: "bind", target: { server: "unix:///rex", session, block: "block:00000000-0000-0000-0000-000000000002" } }],
 	];
 	for (const [tool, args] of accepted) {
+		const declaration = toolSpecs.find((spec) => spec.name === tool);
+		assert.ok(declaration);
+		assert.equal(compile(declaration.parameters).check(args), true, `${tool} provider declaration accepts ${JSON.stringify(args)}`);
 		const validated = validateRequest(tool, args);
 		assert.equal(validated.ok, true, `${tool} ${JSON.stringify(args)} ${(validated as { error?: string }).error ?? ""}`);
 		if (validated.ok) assert.equal(validated.request, args, "validation returns the same arguments, so policy saw exactly what executes");
@@ -137,14 +143,30 @@ test("runtime validation enforces each operation shape", () => {
 	}
 });
 
+test("result validation keeps the envelope closed and nested result objects open", () => {
+	const validate = compile(ResultSchema);
+	const result = {
+		ok: true, outcome: "observed",
+		records: [{ recordId: "call", server: {}, resources: [], extra: "record metadata" }],
+		effects: { state: "none", extra: "effect metadata" },
+		coverage: { bounded: true, extra: "coverage metadata" },
+	};
+	assert.equal(validate.check(result), true);
+	assert.equal(validate.check({ ...result, extra: true }), false);
+	assert.equal(validate.check({ ...result, effects: { state: "other" } }), false);
+	assert.equal(validate.check({ ...result, coverage: { bounded: false } }), false);
+	assert.equal(validate.check({ ...result, coverage: { bounded: true, omittedRecordRefs: -1 } }), false);
+	assert.equal(validate.check({ ...result, coverage: { bounded: true, truncatedFields: ["unknown"] } }), false);
+});
+
 test("ordinary tools reject invalid requests before any core, ownership or status access", async () => {
-	const tools = new Map<string, ToolDefinition<TSchema>>();
+	const tools = new Map<string, ToolDefinition<Schema>>();
 	const handlers = new Map<string, () => unknown>();
 	const appended: unknown[] = [];
 	const pi = {
 		events: createEventBus(),
 		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
-		registerTool: (tool: ToolDefinition<TSchema>) => tools.set(tool.name, tool),
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
 		appendEntry: (type: string, data: unknown) => appended.push({ type, data }),
 	} as unknown as ExtensionAPI;
 	let cores = 0;

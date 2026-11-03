@@ -1,6 +1,5 @@
 import type { Context, JsonValue } from "@earendil-works/chord";
 import type * as Durable from "@earendil-works/pi-durable";
-import type { TSchema } from "typebox";
 import { boundResult, resultByteLimit, RexCore, type RexCallContext, type RexRequest, type RexResult } from "./core.ts";
 import { liveCalls, resultChannels, type RexAdapterOptions } from "./config.ts";
 import { initialOwnershipState, validateOwnershipState, type OwnershipState, type OwnershipStore } from "./ownership.ts";
@@ -109,7 +108,7 @@ export function rexContribution(source: string, bus: SettingsBus, stopFactoryPub
 			return durable.defineExtension({
 				name: "rex",
 				sections: [durable.section("rex", () => REX_GUIDANCE)],
-				tools: toolSpecs.map((spec) => durable.defineTool<TSchema, Durable.JsonObject>({
+				tools: toolSpecs.map((spec) => durable.defineTool({
 					name: spec.name, description: spec.description, parameters: spec.parameters,
 					replay: "unsafe", structuredOutputSchema: ResultSchema,
 					outputLimits: { maxBytes: resultByteLimit(settings.maxOutputBytes), maxLines: 2000, retain: "head" },

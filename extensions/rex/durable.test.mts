@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
@@ -84,7 +84,7 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		let observedWork: Durable.NestedToolExecutionResult | undefined;
 		let concurrentRecords = 0;
 		registry.install(Durable.defineExtension({ name: "test-caller", tools: [Durable.defineTool({
-			name: "test_nested", description: "Exercise concurrent commits and the native structured error channel.", parameters: Type.Object({}), replay: "safe",
+			name: "test_nested", description: "Exercise concurrent commits and the native structured error channel.", parameters: obj({}, { open: true }), replay: "safe",
 			execute: async (_args, api, context) => {
 				const created = await Promise.all([
 					api.executeTool("rex_terminal", { op: "create", kind: "session", label: "parallel-one" }, context),

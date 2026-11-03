@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { getAgentDir, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
+import type { Schema, Static } from "@earendil-works/pi-schema";
 import { boundResult, resultByteLimit, RexCore, type RexRequest } from "./core.ts";
 import { liveCalls, ordinaryOwner, ordinaryOwnershipStore, ordinaryStatusStore, resultChannels, serialiseOwners, type RexAdapterOptions } from "./config.ts";
 import { rexContribution } from "./durable.ts";
@@ -22,15 +22,15 @@ export function registerRex(pi: ExtensionAPI, options: RexAdapterOptions = {}): 
 		try { for (const core of active) core.dispose(); }
 		finally { await invocations.drain(); }
 	};
-	const tools: ToolDefinition<TSchema>[] = [];
+	const tools: ToolDefinition<Schema>[] = [];
 	for (const spec of toolSpecs) {
-		const tool: ToolDefinition<TSchema> = {
+		const tool: ToolDefinition<typeof spec.parameters> = {
 			...createRexToolDisplay(spec.name),
 			name: spec.name, label: spec.label, description: spec.description,
 			parameters: spec.parameters, outputSchema: ResultSchema,
 			promptSnippet: spec.description,
 			promptGuidelines: spec.name === "rex_environment" ? [REX_GUIDANCE] : undefined,
-			execute: async (callId, args, signal, _onUpdate, ctx) => {
+			execute: async (callId, args: Static<typeof spec.parameters>, signal, _onUpdate, ctx) => {
 				const validated = validateRequest(spec.name, args);
 				if (!validated.ok) return resultChannels(validated);
 				const ownerId = ordinaryOwner(ctx);
@@ -48,7 +48,7 @@ export function registerRex(pi: ExtensionAPI, options: RexAdapterOptions = {}): 
 			},
 		};
 		tools.push(tool);
-		pi.registerTool<TSchema>(tool);
+		pi.registerTool(tool);
 	}
 	const stopDisplay = publishRexToolDisplay(pi.events, tools);
 	pi.on("session_start", async () => { await stopCalls(); lifetime = new AbortController(); });
