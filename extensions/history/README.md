@@ -191,9 +191,10 @@ rendered image blocks and no duplicate source payload in tool `details`.
 
 ## Bounds and lifecycle
 
-`reading.ts` owns the hard bounds in `LIMITS`; the ordinary and Durable
-entrypoints share those primitives. Tool schemas and descriptions expose
-their defaults and maxima. The controls bound independent resources:
+`reading.ts` owns the shared hard bounds in `LIMITS`; the ordinary and Durable
+entrypoints share those primitives. `durable.ts` also bounds physical search
+candidates. Tool schemas and descriptions expose their defaults and maxima.
+The controls bound independent resources:
 
 - Search entry visits through `getEntry`, text-slot visits, source UTF-8 bytes,
   matches, and individual excerpts.
@@ -221,8 +222,9 @@ path as its source. The [agent extension](../agent/README.md) owns contribution
 discovery and host installation. The contribution takes every pi-durable runtime
 value from the host's module.
 
-The native form registers the same tool names with the same argument names
-and bounds. Both declare `replay: "safe"`: each call reads committed entries
+The native form registers the same tool names and shared bounds, with a
+physical search cursor and an additional candidate bound. Both declare
+`replay: "safe"`: each call reads committed entries
 only and repeats no external effect, so a rerun after process loss returns the
 same bounded page for the same pinned position. The native extension also
 installs one prompt section with the usage guidance, because Durable renders
@@ -247,6 +249,21 @@ Semantic differences from the ordinary tools, all named in the tool results:
   only when the calling conversation's fork-aware ancestry contains it, and
   reports `membership: "checked_visible"`. The ordinary tools read the current
   session without a branch-membership check.
+- **Search cursors use physical positions, not text-slot indexes.** Copy the
+  returned `position` (`message` and `block`) with `fromId` and `offset`.
+  `block: -1` selects the message content field, array indexes select content
+  blocks, and the content-array length selects the message error field (zero
+  for string or absent content). Each call counts examined message content
+  fields, all content blocks including skipped non-text/redacted blocks, and
+  error fields in `candidatesVisited`. The physical-candidate cap is independent
+  of the text-slot, entry, byte, match and output caps; `candidate_limit` returns
+  the next physical position. Cancellation is checked at each candidate. Resume
+  starts directly at that position without enumerating earlier messages or
+  blocks. A supplied retired `slot` coordinate is explicitly refused with a
+  restart instruction, even when zero. Restart without `slot`, `position` or
+  `offset`; an offset without a physical position is also refused. Ordinary
+  cursors remain unchanged. These bounds apply to extension traversal, not
+  upstream storage decoding of complete entry records.
 - **Search selects Durable source kinds.** `filter.source` `user`, `summary`,
   and `toolResult` select `pi.user`, `pi.compaction`, and `pi.tool-result`
   entries. Search text is the committed model messages
@@ -294,6 +311,9 @@ utility or model choice quality. The Durable regression runs the contribution
 in a real Harness over `MemoryStorage` with pi-ai's faux provider, drives a
 model-issued call for each tool, checks the declared replay class and
 schema-less output, and compares repeated pinned pages across growing entries.
+Proxy-counted native fixtures verify bounded candidate work, direct resume after
+large text/non-text prefixes, cancellation within skipped content, and physical
+cursor composition with filters, Unicode, query overlap and output limits.
 Native codemode regressions use the public pi-durable codemode extension and a
 QuickJS sandbox against the same in-memory Harness. They check JSON text
 strings, exact escapes, read continuations, manifests, and rejection of

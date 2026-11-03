@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context, withAbortSignal } from "@earendil-works/chord/context";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
@@ -18,15 +18,20 @@ interface SearchMatch {
 	entry: { id: number; kind: string };
 	pointer: string;
 	excerpt: string;
+	offset: number;
+	endOffset: number;
 }
 interface SearchResult {
 	status: string;
 	visited: number;
+	slotsVisited: number;
+	candidatesVisited: number;
+	scannedBytes: number;
 	currentLeafId: number | null;
 	startId: number | null;
 	matches: SearchMatch[];
 	excluded?: number;
-	next: { sessionId: string; fromId: number; slot: number; offset: number } | null;
+	next: { sessionId: string; fromId: number; position: { message: number; block: number }; offset: number } | null;
 }
 interface ReadItem {
 	pointer?: string;
@@ -85,6 +90,216 @@ async function openHarness(storageId: string, extraExtensions: Durable.Extension
 	return { context, extension, faux, harness, listed, resultText, root, say, toolResults, userText };
 }
 
+async function nativeSearch(entries: Durable.EntryRecord[], context: Context = BACKGROUND_CONTEXT) {
+	const extension = await durableContribution(SOURCE).create({
+		durable: Durable,
+		services: undefined as unknown as AgentSessionServices,
+		cwd: ".",
+		agentDir: ".",
+		storageId: "synthetic",
+		signal: new AbortController().signal,
+		inventory: { contributions: [], ordinaryOnly: [] },
+	});
+	const tool = extension.tools?.find((item) => item.name === "history_search");
+	assert.ok(tool);
+	const tx = {
+		scanEntries: async (query: Durable.EntryQuery, limit: number) => ({
+			items: entries.filter((entry) => query.maxEntryId === undefined || entry.id <= query.maxEntryId).slice(0, limit),
+		}),
+	} as unknown as Durable.Tx;
+	const api = {
+		conversationId: 1,
+		commit: async (fn: (tx: Durable.Tx) => Promise<unknown>) => fn(tx),
+	} as unknown as Durable.ToolExecutionApi;
+	return async (args: Record<string, unknown> = {}) => {
+		const result = await tool.execute(args, api, context);
+		const output = result.output as { type: string; text: string }[];
+		assert.equal(output.length, 1);
+		assert.equal(output[0].type, "text");
+		assert.ok(
+			Buffer.byteLength(JSON.stringify({ content: output, details: result.details })) <=
+				((args.maxOutputBytes as number | undefined) ?? 24576),
+		);
+		return JSON.parse(output[0].text) as SearchResult;
+	};
+}
+
+function nativeEntry(model: unknown[], id = 1, kind = "pi.tool-result"): Durable.EntryRecord {
+	return { id, conversationId: 1, kind, model } as unknown as Durable.EntryRecord;
+}
+
+test("native text traversal counts bounded work and resumes without a prefix scan", async () => {
+	let typeVisits = 0;
+	const block = new Proxy(
+		{ type: "text", text: "x" },
+		{
+			getOwnPropertyDescriptor(target, key) {
+				if (key === "type") typeVisits++;
+				return Reflect.getOwnPropertyDescriptor(target, key);
+			},
+		},
+	);
+	const search = await nativeSearch([nativeEntry([{ content: Array(10000).fill(block) }])]);
+	const first = await search({ query: "absent" });
+	assert.equal(first.status, "slot_limit");
+	assert.equal(first.slotsVisited, 512);
+	assert.equal(first.candidatesVisited, 513);
+	assert.equal(first.scannedBytes, 512);
+	assert.equal(typeVisits, 512);
+	assert.equal(first.next?.position.block, 512);
+	assert.equal(first.next?.position.message, 0);
+	const second = await search({ query: "absent", ...first.next });
+	assert.equal(second.status, "slot_limit");
+	assert.equal(second.candidatesVisited, 512);
+	assert.equal(typeVisits, 1024);
+	assert.equal(second.next?.position.block, 1024);
+});
+
+test("native non-text blocks and empty messages consume physical work without repeated prefixes", async () => {
+	let typeVisits = 0;
+	let minimumBlock = 0;
+	const content = Array.from(
+		{ length: 10000 },
+		(_, index) =>
+			new Proxy(
+				{ type: "image", data: "excluded" },
+				{
+					getOwnPropertyDescriptor(target, key) {
+						if (key === "type") {
+							assert.ok(index >= minimumBlock, "completed prefixes stay unread");
+							typeVisits++;
+						}
+						return Reflect.getOwnPropertyDescriptor(target, key);
+					},
+				},
+			),
+	);
+	const search = await nativeSearch([
+		nativeEntry([{ content: [...content, { type: "text", text: "target" }], errorMessage: "target error" }]),
+	]);
+	let cursor: Record<string, unknown> = {};
+	const pointers: string[] = [];
+	for (let calls = 0; calls < 12; calls++) {
+		const before = typeVisits;
+		const result = await search({ query: "target", ...cursor });
+		assert.ok(typeVisits - before <= 1024);
+		assert.ok(result.candidatesVisited <= 1024);
+		pointers.push(...result.matches.map((match) => match.pointer));
+		if (result.next === null) {
+			assert.equal(result.status, "ancestry_exhausted");
+			break;
+		}
+		assert.equal(result.status, "candidate_limit");
+		assert.equal(result.candidatesVisited, 1024);
+		assert.equal(result.slotsVisited, 0);
+		assert.equal(result.scannedBytes, 0);
+		minimumBlock = result.next.position.block;
+		cursor = result.next;
+	}
+	assert.equal(typeVisits, 10000);
+	assert.deepEqual(pointers, ["/model/0/content/10000/text", "/model/0/errorMessage"]);
+	const emptyMessages = await nativeSearch([nativeEntry(Array.from({ length: 10000 }, () => ({})))]);
+	const empty = await emptyMessages({ query: "absent" });
+	assert.equal(empty.status, "candidate_limit");
+	assert.equal(empty.candidatesVisited, 1024);
+	assert.equal(empty.slotsVisited, 0);
+	assert.equal(empty.next?.position.message, 512);
+});
+
+test("native traversal observes cancellation inside skipped content", async () => {
+	const controller = new AbortController();
+	let visits = 0;
+	const block = new Proxy(
+		{ type: "image" },
+		{
+			getOwnPropertyDescriptor(target, key) {
+				if (key === "type" && ++visits === 37) controller.abort();
+				return Reflect.getOwnPropertyDescriptor(target, key);
+			},
+		},
+	);
+	const search = await nativeSearch(
+		[nativeEntry([{ content: Array(10000).fill(block) }])],
+		withAbortSignal(controller.signal, BACKGROUND_CONTEXT),
+	);
+	await assert.rejects(search({ query: "absent" }), /abort/i);
+	assert.equal(visits, 37);
+});
+
+test("native physical cursors preserve pointers, filters, overlap, Unicode and output bounds", async () => {
+	const text = `${"x".repeat(2047)}🧭λ${"🧭λ".repeat(35)}`;
+	const query = "🧭λ";
+	const search = await nativeSearch([
+		nativeEntry([{ content: Array(10000).fill({ type: "text", text: "excluded" }) }], 2, "pi.assistant"),
+		nativeEntry(
+			[
+				{
+					content: [
+						{ type: "image" },
+						{ type: "thinking", redacted: true, thinking: query },
+						{ type: "thinking", thinking: text },
+					],
+				},
+				{ content: text, errorMessage: text },
+			],
+			1,
+			"pi.user",
+		),
+	]);
+	const actual: string[] = [];
+	let cursor: Record<string, unknown> = {};
+	let complete = false;
+	for (let calls = 0; calls < 100; calls++) {
+		const result = await search({
+			query,
+			filter: { source: "user" },
+			maxScanBytes: 2048,
+			maxMatches: 7,
+			maxOutputBytes: 4096,
+			...cursor,
+		});
+		assert.ok(result.candidatesVisited <= 1024);
+		assert.ok(result.slotsVisited <= 512);
+		assert.ok(result.scannedBytes <= 2048);
+		if (calls === 0) assert.equal(result.excluded, 1);
+		for (const match of result.matches) {
+			assert.equal(text.slice(match.offset, match.endOffset), query);
+			actual.push(`${match.pointer}:${match.offset}`);
+		}
+		if (result.next === null) {
+			complete = true;
+			break;
+		}
+		assert.notEqual(JSON.stringify(result.next), JSON.stringify(cursor));
+		cursor = result.next;
+	}
+	assert.ok(complete);
+	const expected: string[] = [];
+	for (const pointer of ["/model/0/content/2/thinking", "/model/1/content", "/model/1/errorMessage"]) {
+		for (let offset = text.indexOf(query); offset !== -1; offset = text.indexOf(query, offset + 1))
+			expected.push(`${pointer}:${offset}`);
+	}
+	assert.deepEqual(actual, expected);
+});
+
+test("native search refuses retired text-slot cursors and incomplete physical continuations", async () => {
+	const search = await nativeSearch([nativeEntry([{ content: "😀target" }])]);
+	for (const slot of [0, 512])
+		await assert.rejects(search({ query: "target", fromId: 1, slot, offset: 0 }), /retired.*Start a new search/);
+	await assert.rejects(search({ query: "target", fromId: 1, offset: 2 }), /physical position/);
+	await assert.rejects(search({ query: "target", position: { message: 0, block: -1 } }), /requires fromId/);
+	await assert.rejects(
+		search({ query: "target", fromId: 1, position: { message: 0, block: -1 }, offset: 1 }),
+		/Unicode boundary/,
+	);
+	await assert.rejects(
+		search({ query: "target", fromId: 1, position: { message: 0, block: 3 } }),
+		/physical candidate/,
+	);
+	const listed = await search({ maxMatches: 1 });
+	assert.equal(listed.candidatesVisited, 0);
+});
+
 test("history contribution serves model-issued search and read calls over the real Harness", async (t) => {
 	const { context, extension, faux, harness, listed, resultText, root, say, toolResults, userText } =
 		await openHarness("history-durable-test");
@@ -118,7 +333,7 @@ test("history contribution serves model-issued search and read calls over the re
 		const continuation = {
 			query: "release",
 			fromId: firstPage.next.fromId,
-			slot: firstPage.next.slot,
+			position: firstPage.next.position,
 			offset: firstPage.next.offset,
 			maxMatches: 1,
 			sessionId: firstPage.next.sessionId,
