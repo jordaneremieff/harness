@@ -141,7 +141,8 @@ export interface Capture {
 	end: number;
 }
 /** Continuation reads that assemble a tail when the first bounded reply stops short of the end. */
-const TAIL_READS = 4;
+// JSON escapes use at most six bytes per raw ASCII byte, plus string quotes.
+const TAIL_READS = 8;
 
 export class RexCore {
 	private readonly transport: RexTransport;
@@ -1282,16 +1283,23 @@ function boundedDiagnosticText(value: string, maxBytes: number): string {
 
 /** The end of `text` whose JSON encoding fits `maxBytes`, starting at a line boundary when one exists. */
 function tailText(text: string, maxBytes: number): string {
-	let value = text;
-	let trimmed = false;
-	while (value.length > 0 && jsonBytes(value) > maxBytes) {
-		let start = jsonBytes(value) - maxBytes;
-		if (start < value.length && value.charCodeAt(start) >= 0xdc00 && value.charCodeAt(start) <= 0xdfff) start++;
-		value = value.slice(start);
-		trimmed = true;
+	let start = text.length;
+	let bytes = 2; // JSON string quotes.
+	while (start > 0) {
+		let previous = start - 1;
+		const unit = text.charCodeAt(previous);
+		if (unit >= 0xdc00 && unit <= 0xdfff && previous > 0) {
+			const lead = text.charCodeAt(previous - 1);
+			if (lead >= 0xd800 && lead <= 0xdbff) previous--;
+		}
+		const cost = jsonBytes(text.slice(previous, start)) - 2;
+		if (bytes + cost > maxBytes) break;
+		bytes += cost;
+		start = previous;
 	}
+	const value = text.slice(start);
 	const newline = value.indexOf("\n");
-	return trimmed && newline >= 0 && newline < value.length - 1 ? value.slice(newline + 1) : value;
+	return start > 0 && newline >= 0 && value.slice(newline + 1).trim().length > 0 ? value.slice(newline + 1) : value;
 }
 function captureTruncated(capture: Capture): boolean {
 	return capture.start > 0 || capture.end < capture.total;

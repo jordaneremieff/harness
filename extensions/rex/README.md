@@ -169,7 +169,10 @@ returns the end of the terminal's screen and retained scrollback, up to
 of long output; when the output exceeds the bound, the extension reads the last
 `maxBytes` through the same result's continuation and drops a partial leading
 line. The data reports `content`, the byte `total` of the whole output, and the
-`start` and `end` byte offsets the content covers. `coverage.truncated` is true
+`start` and `end` byte offsets the content covers. Local trimming selects whole
+Unicode characters by their actual JSON-encoded byte cost, so escaped text does
+not discard a fitting final marker. Continuation reads are bounded even when
+JSON escaping expands the output. `coverage.truncated` is true
 when earlier output was left out or the end was not reached. The beginning of
 long output remains reachable through `rex_native` with the `format` and
 `blob_read` block methods.

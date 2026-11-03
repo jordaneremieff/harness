@@ -469,9 +469,11 @@ function longOutputFixture(lines: string[], maxBytes: number) {
 	const f = fixture({ maxOutputBytes: maxBytes * 4 });
 	const whole = Buffer.from(lines.join("\n"));
 	const part = (offset: number) => {
-		let end = Math.min(whole.length, offset + Math.floor(maxBytes * 0.9));
-		while (end < whole.length && ((whole[end] ?? 0) & 0xc0) === 0x80) end++;
-		return { data: whole.subarray(offset, end).toString(), eof: end >= whole.length };
+		let end = Math.min(whole.length, offset + maxBytes);
+		while (end > offset && (end < whole.length && ((whole[end] ?? 0) & 0xc0) === 0x80 || Buffer.byteLength(JSON.stringify(whole.subarray(offset, end).toString())) > maxBytes)) end--;
+		const data = whole.subarray(offset, end).toString();
+		assert.ok(Buffer.byteLength(JSON.stringify(data)) <= maxBytes);
+		return { data, eof: end >= whole.length };
 	};
 	f.transport.handler = (method, data) => {
 		const args = data.args as Record<string, number>;
@@ -505,7 +507,7 @@ test("capture returns the most recent output when scrollback exceeds the bound",
 	assert.equal(data.start, f.whole.length - Buffer.byteLength(data.content));
 	assert.equal(response.coverage.truncated, true);
 	const reads = f.transport.calls.filter((call) => call.method === "com.superlogical.terminal.blob_read");
-	assert.ok(reads.length >= 2 && reads.length <= 4, `continuation reads: ${reads.length}`);
+	assert.ok(reads.length >= 2 && reads.length <= 8, `continuation reads: ${reads.length}`);
 	assert.equal((reads[0]?.data.args as Record<string, number> | undefined)?.offset, f.whole.length - 4096);
 });
 
@@ -535,6 +537,35 @@ test("text readiness matches a marker printed after more output than one bounded
 	assert.equal(response.coverage.truncated, true);
 	const summary = await f.core.execute({ op: "inspect", view: "summary", target }, context);
 	assert.ok(((summary.data as { capture: { content: string } }).capture.content).endsWith("Local: http://localhost:5173/"));
+});
+
+test("escaped and astral tails preserve fitting markers, encoded bounds and raw offsets across consumers", async () => {
+	for (const prefix of ["\\".repeat(5000), '\\"'.repeat(2500), "😀".repeat(1250) + "abc", "\u0001".repeat(5000)]) {
+		const f = longOutputFixture([prefix + "READY"], 1024);
+		const handler = f.transport.handler;
+		f.transport.handler = (method, data, call) => method === "com.superlogical.terminal.process"
+			? reply({ last_exit: { exit_code: 0 } }) : handler?.(method, data, call);
+		const captured = await f.core.execute({ op: "inspect", view: "capture", target }, context);
+		const data = captured.data as { content: string; start: number; end: number; total: number };
+		assert.equal(captured.ok, true);
+		assert.ok(data.content.endsWith("READY"));
+		assert.ok(!data.content.includes("\ufffd"));
+		assert.ok(Buffer.byteLength(JSON.stringify(data.content)) <= 1024);
+		assert.equal(data.end, f.whole.length);
+		assert.equal(data.total, f.whole.length);
+		assert.equal(data.start, data.total - Buffer.byteLength(data.content));
+		assert.equal(captured.coverage.truncated, true);
+		assert.equal((await f.core.execute({ op: "wait", condition: "text", text: "READY", target }, context)).outcome, "condition_observed");
+		const completed = await f.core.execute({ op: "wait", condition: "child_exit", target }, context);
+		assert.equal(completed.outcome, "child_completed");
+		assert.ok((completed.data as { capture: { content: string } }).capture.content.endsWith("READY"));
+	}
+});
+
+test("tail line alignment preserves a fitting final marker before blank terminal rows", async () => {
+	const f = longOutputFixture(["\\".repeat(5000) + "READY", "", ""], 1024);
+	const response = await f.core.execute({ op: "wait", condition: "text", text: "READY", target }, context);
+	assert.equal(response.outcome, "condition_observed");
 });
 
 test("child exit results carry the most recent output and survive a capture failure", async () => {
