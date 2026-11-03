@@ -11,6 +11,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { AgentManager } from "./manager.ts";
+import { catalogChange, publishCatalogChange, subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
 import { eventLog, waitForProcessExit } from "./host-fixture.mts";
 
 /** Failure reports name the failed wait and carry bounded publisher evidence. */
@@ -106,6 +107,52 @@ function fixture(t: { after(fn: () => void | Promise<void>): void }) {
 	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
 	return { root, manager, acquisitions: () => acquisitions };
 }
+
+it("accumulates concurrent identity notices and makes unknown or overflowing changes namespace-wide", async (t) => {
+	const f = fixture(t);
+	const notices = eventLog<CatalogChange>();
+	const off = subscribeCatalogChanges(f.manager.catalog.root, (change) => notices.push(change), (error) => { throw error; });
+	t.after(off);
+	const identities = Array.from({ length: 12 }, () => randomUUID());
+	for (const id of identities) publishCatalogChange(f.manager.catalog.root, id);
+	await notices.waitFor((events) => events.some((event) => !event) || identities.every((id) => events.some((event) => event?.includes(id))));
+	assert.ok(notices.some((event) => !event) || identities.every((id) => notices.some((event) => event?.includes(id))));
+	assert.equal(catalogChange(["unknown"]), undefined);
+	assert.equal(catalogChange([]), undefined);
+	const count = notices.length;
+	for (let index = 0; index < 70; index++) publishCatalogChange(f.manager.catalog.root, randomUUID());
+	await notices.waitFor((events) => events.slice(count).some((event) => event === undefined));
+	const genericCount = notices.length;
+	publishCatalogChange(f.manager.catalog.root);
+	publishCatalogChange(f.manager.catalog.root, identities[0]);
+	await notices.waitFor((events) => events.slice(genericCount).some((event) => event === undefined));
+});
+
+it("shares footer and roster reads and rereads only the published storage", async (t) => {
+	const f = fixture(t);
+	const ownerId = randomUUID();
+	const statuses = eventLog<string>();
+	const records = Array.from({ length: 8 }, () => f.manager.catalog.create({ cwd: f.root, agentDir: f.root, packageDir: f.root, model: { provider: "test", modelId: "test" }, thinkingLevel: "off", ownerId }));
+	const publish = (id: string, name: string) => f.manager.catalog.updateView(id, { updatedAt: new Date().toISOString(), rows: [{ id, storageId: id, name, cwd: f.root, modifiedAt: 1, owner: "unknown", state: "idle", cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } });
+	for (const record of records) publish(record.storageId, "Initial");
+	const notices = eventLog<CatalogChange>();
+	const off = subscribeCatalogChanges(f.manager.catalog.root, (change) => notices.push(change), (error) => { throw error; });
+	t.after(off);
+	publishCatalogChange(f.manager.catalog.root);
+	await notices.waitFor((events) => events.some((event) => event === undefined));
+	const primary = new AbortController();
+	await f.manager.registerPrimary(ownerId, { cwd: f.root, signal: primary.signal, send: () => {}, status: () => { statuses.push(f.manager.observedToolCardRows().map((row) => row.name).join(",")); } });
+	const reads = t.mock.method(f.manager.catalog, "observeRecord");
+	await Promise.all([f.manager.dashboardPage({ ownerId }), f.manager.dashboardPage({ ownerId: "another" }), f.manager.sessionFigures(ownerId)]);
+	assert.equal(reads.mock.callCount(), 0, "footer facts also serve both caller-specific roster views");
+	publish(records[0].storageId, "Updated");
+	await statuses.waitFor((events) => events.some((value) => value.includes("Updated")));
+	const page = await f.manager.dashboardPage({ ownerId });
+	assert.equal(page.rows.find((row) => row.storageId === records[0].storageId)?.name, "Updated");
+	assert.ok(reads.mock.callCount() > 0);
+	assert.ok(reads.mock.calls.every((call) => call.arguments[0] === records[0].storageId), "known publication opens no unchanged record or claim");
+	assert.equal(f.acquisitions(), 0);
+});
 
 it("receives immediate external creates after subscription without a watcher warm-up", { timeout: 30000 }, async (t) => {
 	const f = fixture(t);

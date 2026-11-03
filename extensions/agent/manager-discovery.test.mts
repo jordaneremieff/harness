@@ -135,15 +135,13 @@ it("ranks caller ownership and concurrent publication across the full initial da
 	utimesSync(writer.path(owned.storageId), 1, 1);
 	const corrupt = f.create();
 	writeFileSync(writer.path(corrupt.storageId), "{");
-	const originalPage = f.manager.catalog.priorityPage.bind(f.manager.catalog);
+	const originalIdentities = f.manager.catalog.identities.bind(f.manager.catalog);
 	let publication = false;
-	t.mock.method(f.manager.catalog, "priorityPage", async (options: Parameters<AgentCatalog["priorityPage"]>[0]) => {
-		assert.deepEqual(options.ownerIds, ["caller"]);
-		assert.ok(existing.length > options.limit);
-		const scan = originalPage(options);
+	t.mock.method(f.manager.catalog, "identities", async () => {
+		const scan = await originalIdentities();
 		publish(published, "Concurrent publication", 10_000);
 		publication = true;
-		return await scan;
+		return scan;
 	});
 	const result = await f.manager.dashboardPage({ ownerId: "caller" });
 	assert.equal(publication, true);

@@ -126,9 +126,11 @@ fresh scan. Removed records are absent. Complete catalog coverage means the end
 of that page's sorted directory listing was reached, not that all pages observed
 one instant. Cross-storage thread discovery uses the same catalog continuations.
 
-Dashboard, footer, and no-target status use a separate priority read. Each read
-lists the initial catalog names, inspects every catalog candidate once, and ranks
-live hosts and records created by the caller before other records. Catalog file
+Dashboard, footer, and the no-target status roster share one manager-owned raw
+inventory observation. Initial discovery lists catalog names and reads each
+candidate's record and writer claim once. Each caller ranks those same facts
+with its own ownership set and manager-local launch/recovery facts. Live claims,
+caller-created records and local active stores come first. Catalog file
 modification time orders each group, with identity as the tie-breaker. Creation
 time is immutable; file modification time reflects published views and recovery
 marker changes. It describes metadata recency, not proof of current work.
@@ -142,10 +144,25 @@ latest inventory scan once and each retained storage's latest view exclusions on
 Priority does not grant unlimited output when the priority set itself exceeds a
 limit. The reader opens no conversation database and starts no host.
 
+Namespace notices carry bounded changed storage identities. The manager combines
+these with connected-host notices and refreshes only the affected record and
+claim facts. Concurrent changes accumulate; an unknown, identity-free or
+oversized notice invalidates the whole namespace. The next read also reconciles
+all source identities and claims when the last full observation is two seconds
+old. The dashboard's existing reconciliation demand uses this same owner; no
+extra polling service or persistent catalog copy exists. Reconciliation discovers
+missed publications, deletions, unreadable records and silent process death.
+Rows label claim observation time. A cached claim is not a fresh liveness check,
+and a cached page keeps the inventory observation time rather than its render time.
+
 Roster continuation uses the last priority, modification time, and identity,
-bound to the caller. Each page ranks a fresh catalog snapshot. Activity or claim
-changes between pages can move records across this position; refresh the roster
-to rediscover them. Use `agent_list` for stable filename-based continuation.
+bound to the caller's ownership set and local active stores. Each page ranks the
+current shared observation. Activity or
+claim changes between pages can move records across this position; refresh the
+roster to rediscover them. Use `agent_list` for stable filename-based continuation.
+Exact-target attachment and controls read their own current evidence regardless
+of roster membership. Recovery still considers every source within its existing
+bound: availability of one recipient can wake a parked delivery in another store.
 
 Agent hosts have process lifetimes independent of the primary. There is no
 separate detach operation or detached-run registry.

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
 	existsSync,
 	mkdirSync,
@@ -16,7 +17,7 @@ import {
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
-import { AgentCatalog, hostMetadata, storageIdOf } from "./catalog.ts";
+import { AgentCatalog, CatalogObservation, projectCatalogPriority, hostMetadata, storageIdOf } from "./catalog.ts";
 import { boundCatalogView, type CatalogViewRow } from "./catalog-view.ts";
 import { hostPaths } from "./host-protocol.ts";
 
@@ -35,6 +36,119 @@ function fixture(t: { after(fn: () => void): void }) {
 		},
 	};
 }
+
+it("shares raw record and claim reads while preserving caller-specific priorities and cursors", async (t) => {
+	const { catalog, input } = fixture(t);
+	const records = [catalog.create({ ...input, ownerId: "first" }), catalog.create({ ...input, ownerId: "second" }), catalog.create(input)];
+	const observation = new CatalogObservation(catalog);
+	const reads = t.mock.method(catalog, "observeRecord");
+	const [first, shared] = await Promise.all([observation.read(), observation.read()]);
+	assert.equal(first, shared);
+	assert.equal(reads.mock.callCount(), records.length, "each fact opens one record and one claim");
+	const a = projectCatalogPriority(first, { ownerIds: ["first"], limit: 1 });
+	const b = projectCatalogPriority(first, { ownerIds: ["second"], limit: 1 });
+	assert.equal(a.items[0].record.storageId, records[0].storageId);
+	assert.equal(b.items[0].record.storageId, records[1].storageId);
+	const active = projectCatalogPriority(first, { activeStorageIds: [records[2].storageId], limit: 1 });
+	assert.equal(active.items[0].record.storageId, records[2].storageId);
+	assert.ok(active.nextCursor);
+	const activeCursor = active.nextCursor;
+	assert.throws(() => projectCatalogPriority(first, { cursor: activeCursor, limit: 1 }), /caller changed/u);
+	assert.ok(a.nextCursor);
+	const cursor = a.nextCursor;
+	assert.throws(() => projectCatalogPriority(first, { ownerIds: ["second"], cursor, limit: 1 }), /caller changed/u);
+	assert.notEqual(projectCatalogPriority(first, { ownerIds: ["first"], cursor: a.nextCursor, limit: 1 }).items[0].record.storageId, records[0].storageId);
+	assert.equal((await observation.read()).observedAt, first.observedAt);
+	assert.equal(reads.mock.callCount(), records.length, "projection and cached reads open neither records nor claims");
+	catalog.markRecoveryDue(records[0].storageId, true);
+	catalog.markRecoveryDue(records[1].storageId, true);
+	observation.invalidate([records[0].storageId]);
+	observation.invalidate([records[1].storageId]);
+	const changed = await observation.read();
+	assert.equal(reads.mock.callCount(), records.length + 2);
+	assert.equal(changed.facts.get(records[0].storageId)?.record.recoveryDue, true);
+	assert.equal(changed.facts.get(records[1].storageId)?.record.recoveryDue, true);
+	assert.equal(changed.observedAt, first.observedAt, "targeted updates do not claim a new whole-inventory observation");
+	assert.equal(first.facts.get(records[0].storageId)?.record.recoveryDue, undefined, "an earlier observation remains unchanged");
+});
+
+it("reconciles missed notices, unreadable records, deletions and silent writer death on demand", async (t) => {
+	const { catalog, input } = fixture(t);
+	let now = Date.now();
+	t.mock.method(Date, "now", () => now);
+	const child = spawn(process.execPath, ["-e", "process.send('ready'); process.on('message', () => process.exit(0))"], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+	t.after(() => { child.kill(); });
+	await once(child, "message");
+	assert.ok(child.pid);
+	const live = catalog.create(input);
+	const removed = catalog.create(input);
+	const corrupt = catalog.create(input);
+	writeClaim(live, child.pid);
+	const observation = new CatalogObservation(catalog);
+	const first = await observation.read();
+	assert.equal(first.facts.get(live.storageId)?.claim.kind, "live");
+	const exited = once(child, "exit");
+	child.send("exit");
+	await exited;
+	unlinkSync(catalog.path(removed.storageId));
+	writeFileSync(catalog.path(corrupt.storageId), "invalid");
+	const added = catalog.create(input);
+	now += 2000;
+	const current = await observation.read();
+	assert.equal(current.facts.get(live.storageId)?.claim.kind, "dead");
+	assert.equal(current.facts.has(removed.storageId), false);
+	assert.equal(current.facts.get(corrupt.storageId), null);
+	assert.equal(current.facts.get(added.storageId)?.record.storageId, added.storageId);
+	assert.notEqual(current.observedAt, first.observedAt);
+	writeFileSync(catalog.path(corrupt.storageId), JSON.stringify(corrupt));
+	observation.invalidate([corrupt.storageId]);
+	assert.ok((await observation.read()).facts.get(corrupt.storageId));
+	unlinkSync(catalog.path(added.storageId));
+	observation.invalidate([added.storageId]);
+	assert.equal((await observation.read()).facts.has(added.storageId), false);
+});
+
+it("retains dirty identities during observation and retries a failed reconciliation", async (t) => {
+	const { catalog, input } = fixture(t);
+	const first = catalog.create(input);
+	const observation = new CatalogObservation(catalog);
+	await observation.read();
+	const read = catalog.observeRecord.bind(catalog);
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => { release = resolve; });
+	let entered!: () => void;
+	const started = new Promise<void>((resolve) => { entered = resolve; });
+	t.mock.method(catalog, "observeRecord", async (id: string) => {
+		if (id === first.storageId) { entered(); await held; }
+		return read(id);
+	});
+	observation.invalidate([first.storageId]);
+	const pending = observation.read();
+	await started;
+	const second = catalog.create(input);
+	observation.invalidate([second.storageId]);
+	release();
+	assert.ok((await pending).facts.has(second.storageId));
+	const identities = t.mock.method(catalog, "identities", async () => { throw new Error("directory unavailable"); }, { times: 1 });
+	observation.invalidate();
+	await assert.rejects(observation.read(), /directory unavailable/u);
+	assert.equal(identities.mock.callCount(), 1);
+	assert.ok((await observation.read()).facts.has(second.storageId));
+});
+
+it("falls back to complete observation for unknown or overflowing identity changes", async (t) => {
+	const { catalog, input } = fixture(t);
+	const records = Array.from({ length: 65 }, () => catalog.create(input));
+	const observation = new CatalogObservation(catalog);
+	await observation.read();
+	const reads = t.mock.method(catalog, "observeRecord");
+	for (const record of records) observation.invalidate([record.storageId]);
+	await observation.read();
+	assert.equal(reads.mock.callCount(), records.length);
+	observation.invalidate();
+	await observation.read();
+	assert.equal(reads.mock.callCount(), records.length * 2);
+});
 
 it("keeps creation records within the host metadata envelope and 32768-byte bound", (t) => {
 	const { catalog, input } = fixture(t);

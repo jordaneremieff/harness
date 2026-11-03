@@ -12,8 +12,8 @@ import { composeListRow, matchesListRow, enrichDashboardRow } from "./profile-di
 import { checkInMinutes } from "./durable-checkins.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { AgentCatalog, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
-import { subscribeCatalogChanges } from "./catalog-events.ts";
+import { AgentCatalog, CatalogObservation, projectCatalogPriority, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
+import { subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
 import { sessionFigures } from "./footer.ts";
 import { sentWorkIdentity } from "./session-work.ts";
 import { buildStatusOverview } from "./status-overview.ts";
@@ -196,15 +196,19 @@ export class AgentManager {
 	private stopCatalogObservation?: () => void;
 	private observeCatalogChanges(): void {
 		if (this.stopCatalogObservation) return;
-		const changed = () => {
-			void this.refreshFooter().catch((error) => this.failures.set("footer", errorText(error)));
-			this.recoverCatalogueChanges();
-		};
+		const changed = (change: CatalogChange) => this.catalogChanged(change);
 		this.stopCatalogObservation = subscribeCatalogChanges(this.catalog.root, changed, (error) => {
 			this.failures.set("catalog-observation", `Catalog updates are unavailable: ${error.message}. Restart this Pi process.`);
-			changed();
+			changed(undefined);
 		});
+		this.inventory.invalidate();
 		this.failures.delete("catalog-observation");
+	}
+	private catalogChanged(change: CatalogChange): void {
+		this.inventory.invalidate(change);
+		void this.refreshFooter().catch((error) => this.failures.set("footer", errorText(error)));
+		// A changed recipient can wake a parked delivery in any source storage.
+		this.recoverCatalogueChanges();
 	}
 	private releaseCatalogObservation(): void {
 		if (this.primaries.size || this.rosterListeners.size || this.namespaceOwner && !this.namespaceOwner.signal.aborted) return;
@@ -223,6 +227,7 @@ export class AgentManager {
 	}
 	private rosterChanged(): void { for (const listener of this.rosterListeners) listener(); }
 	readonly catalog: AgentCatalog;
+	private readonly inventory: CatalogObservation;
 	readonly places: PlaceBook;
 	private readonly options: AgentManagerOptions;
 	private readonly clients = new Map<string, HostConnection>();
@@ -257,6 +262,7 @@ export class AgentManager {
 	constructor(options: AgentManagerOptions) {
 		this.options = options;
 		this.catalog = new AgentCatalog(options.root);
+		this.inventory = new CatalogObservation(this.catalog);
 		this.places = new PlaceBook(join(options.root, "durable"));
 		this.delivered = new BoundedMap(options.deliveredLimit ?? DEFAULT_DELIVERED_LIMIT);
 		this.failures = new BoundedMap(options.failureLimit ?? DEFAULT_FAILURE_LIMIT);
@@ -771,12 +777,14 @@ export class AgentManager {
 
 	async dashboardPage(input: { cursor?: string; ownerId?: string } = {}): Promise<AgentPriorityPage> {
 		const rows: AgentPrioritySummary[] = [];
-		const page = await this.catalog.priorityPage({ cursor: input.cursor, ownerIds: input.ownerId ? [input.ownerId] : [...this.primaries.keys()], limit: MAX_INVENTORY_PAGES * 20 });
+		const inventory = await this.inventory.read();
+		const activeStorageIds = [...new Set([...this.launchRows.keys(), ...this.opening.keys(), ...this.recovering])];
+		const page = projectCatalogPriority(inventory, { cursor: input.cursor, ownerIds: input.ownerId ? [input.ownerId] : [...this.primaries.keys()], activeStorageIds, limit: MAX_INVENTORY_PAGES * 20 });
 		const coverage = { complete: page.nextCursor === null && page.coverage.unreadable === 0 && page.coverage.unknownClaims === 0, storagesVisited: page.coverage.inspected,
 			skipped: page.coverage.unreadable, omitted: 0, nextCursor: page.nextCursor, inventory: page.coverage,
 			projections: {} as Record<string, { skipped: number; omitted: number }> };
-		for (const { record, modifiedAt, priority, claim } of page.items) {
-			const projection = await this.catalogRows(record, claim);
+		for (const { record, modifiedAt, priority, claim, observedAt } of page.items) {
+			const projection = await this.catalogRows(record, claim, observedAt);
 			coverage.skipped += projection.skipped;
 			coverage.omitted += projection.omitted;
 			coverage.projections[record.storageId] = { skipped: projection.skipped, omitted: projection.omitted };
@@ -789,7 +797,7 @@ export class AgentManager {
 		return { rows, coverage, observedAt: page.observedAt };
 	}
 
-	private async catalogRows(record: CatalogRecord, observedClaim: ClaimObservation): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number }> {
+	private async catalogRows(record: CatalogRecord, observedClaim: ClaimObservation, observedAt: string): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number }> {
 		const starting = this.launchRows.get(record.storageId);
 		const view = record.view;
 		if (starting) {
@@ -805,7 +813,7 @@ export class AgentManager {
 		const rows = view.rows.map((source) => {
 			const row = { ...source } as AgentConversationSummary;
 			row.owner = claimOwner(claim);
-			row.ownerLabel = `Host metadata at ${view.updatedAt}${claim.kind === "unknown" ? `; ${claim.error}` : ""}`;
+			row.ownerLabel = `Host metadata at ${view.updatedAt}; claim observed at ${observedAt}${claim.kind === "unknown" ? `; ${claim.error}` : ""}`;
 			if (claim.kind !== "live" && row.state === "working") row.state = "interrupted";
 			if (claim.kind !== "live") row.currentTool = undefined;
 			return enrichDashboardRow(row, view.profiles);
@@ -1007,18 +1015,18 @@ export class AgentManager {
 
 	private async scanRecovery(owner: RecoveryOwner, registeringPrimary?: string): Promise<NamespaceRecoveryReport> {
 		const due: CatalogRecord[] = [];
-		let cursor: string | undefined, visited = 0;
-		for (let pageIndex = 0; pageIndex < MAX_INVENTORY_PAGES; pageIndex++) {
-			if (this.stopping(owner)) break;
-			const page = await this.catalog.page({ cursor, limit: 20 });
-			visited += page.records.length;
-			due.push(...page.records.filter(record => this.recoveryCandidate(record, registeringPrimary)));
-			cursor = page.nextCursor ?? undefined;
-			if (!cursor) break;
+		const inventory = await this.inventory.read();
+		let visited = 0;
+		let complete = true;
+		for (const fact of inventory.facts.values()) {
+			if (this.stopping(owner) || visited >= MAX_INVENTORY_PAGES * 20) { complete = false; break; }
+			if (!fact) { complete = false; continue; }
+			visited++;
+			if (this.recoveryCandidate(fact.record, registeringPrimary)) due.push(fact.record);
 		}
-		if (cursor) this.failures.set("startup", "Startup recovery reached its inventory bound; use agent_list for the remaining storage");
+		if (!complete) this.failures.set("startup", "Startup recovery reached its inventory bound or unreadable metadata; use agent_list for the remaining storage");
 		await this.enqueueRecovery(due, owner);
-		return { visited, attempted: due.length, complete: !cursor && !this.stopping(owner), failures: [...this.recoveryErrors.entries].slice(0, 64).map(([storageId, error]) => ({ storageId, error })) };
+		return { visited, attempted: due.length, complete: complete && !this.stopping(owner), failures: [...this.recoveryErrors.entries].slice(0, 64).map(([storageId, error]) => ({ storageId, error })) };
 	}
 
 	/** Await only this registration's teardown, including endpoint removal before process replacement. */
@@ -1288,11 +1296,11 @@ export class AgentManager {
 			this.subscriptions.delete(storageId);
 			this.failures.delete(`changes:${storageId}`);
 			this.hostLost(storageId);
-			void this.refreshFooter();
+			this.catalogChanged([storageId]);
 		});
 		if (!client.subscribeChanges) return;
 		const unsubscribe = await client.subscribeChanges(() => {
-			void this.refreshFooter();
+			this.catalogChanged([storageId]);
 		}, this.lifecycle.signal);
 		if (client.closed) unsubscribe();
 		else this.subscriptions.set(storageId, unsubscribe);
@@ -1335,10 +1343,7 @@ export class AgentManager {
 	}
 
 	private figuresForRows(ownerId: string, rows: readonly AgentConversationSummary[]): string {
-		return sessionFigures(rows, ownerId, (storageId) => {
-			try { return this.catalog.read(storageId).ownerId; }
-			catch { return undefined; }
-		}, this.primaries.get(ownerId)?.sentWork);
+		return sessionFigures(rows, ownerId, (storageId) => this.inventory.ownerId(storageId), this.primaries.get(ownerId)?.sentWork);
 	}
 
 	private async refreshFooter(): Promise<void> {

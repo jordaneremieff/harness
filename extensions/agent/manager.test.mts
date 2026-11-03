@@ -1332,7 +1332,7 @@ it("wakes a source when its exact native recipient gains a catalogue record", { 
 	writeDeliveryWake(root, source.storageId, [`${target.storageId}:7`]);
 	assert.equal((await manager.recoverNamespace(new AbortController().signal)).attempted, 0);
 	writeFileSync(manager.catalog.path(target.storageId), JSON.stringify(target));
-	publishCatalogChange(manager.catalog.root);
+	publishCatalogChange(manager.catalog.root, target.storageId);
 	await acquired.waitForCount(1, 5000);
 	assert.deepEqual([...acquired], [source.storageId]);
 });

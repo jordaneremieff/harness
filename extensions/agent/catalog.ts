@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { publishCatalogChange } from "./catalog-events.ts";
+import { catalogChange, publishCatalogChange, type CatalogChange } from "./catalog-events.ts";
 import {
 	closeSync,
 	constants,
@@ -128,6 +128,7 @@ export interface CatalogPriorityRecord {
 	modifiedAt: number;
 	priority: boolean;
 	claim: ClaimObservation;
+	observedAt: string;
 }
 interface PriorityKey { priority: boolean; modifiedAt: number; storageId: string }
 function comparePriority(left: PriorityKey, right: PriorityKey): number {
@@ -146,6 +147,115 @@ function priorityCursor(cursor: string | undefined, binding: string): PriorityKe
 			!Number.isFinite(value.after.modifiedAt) || !UUID.test(value.after.storageId)) throw new Error();
 		return value.after;
 	} catch { throw new Error("Invalid roster cursor or caller changed; restart the roster"); }
+}
+
+export interface CatalogFact {
+	record: CatalogRecord;
+	modifiedAt: number;
+	claim: ClaimObservation;
+	observedAt: string;
+}
+export interface CatalogInventory {
+	/** Null means an identified source was unreadable, not absent. */
+	facts: ReadonlyMap<string, CatalogFact | null>;
+	/** Oldest retained observation; projecting a page does not advance freshness. */
+	observedAt: string;
+}
+interface CatalogPriorityOptions { ownerIds?: readonly string[]; activeStorageIds?: readonly string[]; cursor?: string; limit: number }
+interface CatalogPriorityPage {
+	items: CatalogPriorityRecord[];
+	coverage: CatalogPriorityCoverage;
+	nextCursor: string | null;
+	observedAt: string;
+}
+
+/** One manager's derived inventory, reconciled on demand rather than by another timer. */
+export class CatalogObservation {
+	private facts = new Map<string, CatalogFact | null>();
+	private dirty = new Set<string>();
+	private full = true;
+	private reconciledAt = 0;
+	private observedAt = "";
+	private pending?: Promise<CatalogInventory>;
+	private readonly catalog: AgentCatalog;
+	constructor(catalog: AgentCatalog) { this.catalog = catalog; }
+
+	invalidate(change?: CatalogChange): void {
+		const identities = catalogChange(change);
+		if (!identities) { this.full = true; this.dirty.clear(); return; }
+		if (this.full) return;
+		for (const id of identities) this.dirty.add(id);
+		if (!catalogChange([...this.dirty])) { this.full = true; this.dirty.clear(); }
+	}
+
+	ownerId(storageId: string): string | undefined { return this.facts.get(storageId)?.record.ownerId; }
+
+	read(): Promise<CatalogInventory> {
+		if (this.pending) return this.pending;
+		// The dashboard's existing reconciliation demand also refreshes silent claim deaths
+		// and missed notices. Footer and status requests share the same age boundary.
+		if (Date.now() - this.reconciledAt >= 2000) this.full = true;
+		this.pending = this.refresh().finally(() => { this.pending = undefined; });
+		return this.pending;
+	}
+
+	private async refresh(): Promise<CatalogInventory> {
+		try {
+			do {
+				const full = this.full;
+				this.full = false;
+				const changed = [...this.dirty];
+				this.dirty.clear();
+				const started = Date.now();
+				const identities = full ? await this.catalog.identities() : changed;
+				const facts = full ? new Map<string, CatalogFact | null>() : new Map(this.facts);
+				for (const id of identities) await this.refreshRecord(facts, id);
+				this.facts = facts;
+				if (full) { this.reconciledAt = started; this.observedAt = new Date(started).toISOString(); }
+			} while (this.full || this.dirty.size);
+			return { facts: this.facts, observedAt: this.observedAt };
+		} catch (error) { this.full = true; throw error; }
+	}
+
+	private async refreshRecord(facts: Map<string, CatalogFact | null>, id: string): Promise<void> {
+		try { facts.set(id, await this.catalog.observeRecord(id)); }
+		catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") facts.delete(id);
+			else facts.set(id, null);
+		}
+	}
+}
+
+/** Rank raw facts for this caller only; continuations bind the caller's ownership set. */
+export function projectCatalogPriority(inventory: CatalogInventory, options: CatalogPriorityOptions): CatalogPriorityPage {
+	checkPriorityLimit(options.limit);
+	const ownerIds = options.ownerIds ?? [];
+	const activeStorageIds = options.activeStorageIds ?? [];
+	const binding = JSON.stringify([[...ownerIds].sort(), [...activeStorageIds].sort()]);
+	const after = priorityCursor(options.cursor, binding);
+	const coverage: CatalogPriorityCoverage = { candidates: inventory.facts.size, inspected: inventory.facts.size, unreadable: 0, unknownClaims: 0, returned: 0, remaining: 0, priorityRemaining: 0, remainingRows: 0, priorityRemainingRows: 0,
+		recordByteLimit: MAX_RECORD_BYTES, claimByteLimit: CLAIM_BYTES, outputLimit: options.limit };
+	const items: CatalogPriorityRecord[] = [];
+	for (const fact of inventory.facts.values()) {
+		if (!fact) { coverage.unreadable++; continue; }
+		const { record, modifiedAt, claim } = fact;
+		coverage.unknownClaims += Number(claim.kind === "unknown");
+		const priority = claim.kind === "live" || ownerIds.includes(record.ownerId ?? "") || activeStorageIds.includes(record.storageId);
+		if (after && comparePriority({ priority, modifiedAt, storageId: record.storageId }, after) <= 0) continue;
+		items.push({ record, modifiedAt, priority, claim, observedAt: fact.observedAt });
+	}
+	items.sort((left, right) => comparePriority({ ...left, storageId: left.record.storageId }, { ...right, storageId: right.record.storageId }));
+	const selected = items.slice(0, options.limit);
+	coverage.returned = selected.length;
+	coverage.remaining = items.length - selected.length;
+	const remaining = items.slice(selected.length);
+	coverage.priorityRemaining = remaining.filter((item) => item.priority).length;
+	const rowCount = (item: CatalogPriorityRecord) => !item.record.view || item.record.view.unavailable ? 1 : item.record.view.rows.length;
+	coverage.remainingRows = remaining.reduce((total, item) => total + rowCount(item), 0);
+	coverage.priorityRemainingRows = remaining.filter((item) => item.priority).reduce((total, item) => total + rowCount(item), 0);
+	const last = selected.at(-1);
+	const nextCursor = coverage.remaining && last ? Buffer.from(JSON.stringify({ binding, after: { priority: last.priority, modifiedAt: last.modifiedAt, storageId: last.record.storageId } })).toString("base64url") : null;
+	return { items: selected, coverage, nextCursor, observedAt: inventory.observedAt };
 }
 
 /** Result of one catalog create: the retained record and whether this call created it. */
@@ -199,7 +309,7 @@ export class AgentCatalog {
 				return { record: this.read(storageId), created: false };
 			}
 		} finally { unlinkSync(prepared); }
-		publishCatalogChange(this.root);
+		publishCatalogChange(this.root, storageId);
 		return { record, created: true };
 	}
 
@@ -225,7 +335,7 @@ export class AgentCatalog {
 				throw new Error("Spawn request ID already belongs to different agent configuration");
 			return { record: previous, created: false };
 		}
-		publishCatalogChange(this.root);
+		publishCatalogChange(this.root, storageId);
 		return { record, created: true };
 	}
 
@@ -247,7 +357,7 @@ export class AgentCatalog {
 		const current = lstatSync(path, { throwIfNoEntry: false });
 		if (current === undefined || current.dev !== before.dev || current.ino !== before.ino) return "record-changed";
 		unlinkSync(path);
-		publishCatalogChange(this.root);
+		publishCatalogChange(this.root, record.storageId);
 		return "removed";
 	}
 	/** Read the storage already assigned to one creation request, without resolving defaults again. */
@@ -311,47 +421,21 @@ export class AgentCatalog {
 		}
 	}
 
-	/**
-	 * Scan the initial catalog snapshot completely before selecting a bounded
-	 * priority page. Individual record and claim reads remain byte-bounded.
-	 * This live ordering is independent of filename-based discovery cursors.
-	 */
-	async priorityPage(options: { ownerIds?: readonly string[]; cursor?: string; limit: number }): Promise<{
-		items: CatalogPriorityRecord[]; coverage: CatalogPriorityCoverage; nextCursor: string | null; observedAt: string;
-	}> {
-		checkPriorityLimit(options.limit);
-		const ownerIds = options.ownerIds ?? [];
-		const binding = JSON.stringify([...ownerIds].sort());
-		const after = priorityCursor(options.cursor, binding);
-		const entries = (await directoryEntries(this.root)).filter((entry) => entry.name.endsWith(".json") && UUID.test(entry.name.slice(0, -5)));
-		const coverage: CatalogPriorityCoverage = { candidates: entries.length, inspected: 0, unreadable: 0, unknownClaims: 0, returned: 0, remaining: 0, priorityRemaining: 0, remainingRows: 0, priorityRemainingRows: 0,
-			recordByteLimit: MAX_RECORD_BYTES, claimByteLimit: CLAIM_BYTES, outputLimit: options.limit };
-		const items: CatalogPriorityRecord[] = [];
-		for (const entry of entries) {
-			coverage.inspected++;
-			try {
-				if (!entry.isFile()) throw new Error("Catalog record is not a regular file");
-				const { record, modifiedAt } = this.readWithTime(entry.name.slice(0, -5));
-				const paths = hostPaths(record);
-				const claim = await observeClaimAsync(paths.claim, paths.identity);
-				coverage.unknownClaims += Number(claim.kind === "unknown");
-				const priority = claim.kind === "live" || ownerIds.includes(record.ownerId ?? "");
-				if (after && comparePriority({ priority, modifiedAt, storageId: record.storageId }, after) <= 0) continue;
-				items.push({ record, modifiedAt, priority, claim });
-			} catch { coverage.unreadable++; }
-		}
-		items.sort((left, right) => comparePriority({ ...left, storageId: left.record.storageId }, { ...right, storageId: right.record.storageId }));
-		const selected = items.slice(0, options.limit);
-		coverage.returned = selected.length;
-		coverage.remaining = items.length - selected.length;
-		const remaining = items.slice(selected.length);
-		coverage.priorityRemaining = remaining.filter((item) => item.priority).length;
-		const rowCount = (item: CatalogPriorityRecord) => !item.record.view || item.record.view.unavailable ? 1 : item.record.view.rows.length;
-		coverage.remainingRows = remaining.reduce((total, item) => total + rowCount(item), 0);
-		coverage.priorityRemainingRows = remaining.filter((item) => item.priority).reduce((total, item) => total + rowCount(item), 0);
-		const last = selected.at(-1);
-		const nextCursor = coverage.remaining && last ? Buffer.from(JSON.stringify({ binding, after: { priority: last.priority, modifiedAt: last.modifiedAt, storageId: last.record.storageId } })).toString("base64url") : null;
-		return { items: selected, coverage, nextCursor, observedAt: new Date().toISOString() };
+	/** Capture source identities before byte-bounded record and claim observation. */
+	async identities(): Promise<string[]> {
+		return (await directoryEntries(this.root)).filter((entry) => entry.name.endsWith(".json") && UUID.test(entry.name.slice(0, -5))).map((entry) => entry.name.slice(0, -5));
+	}
+
+	/** The single record/claim read seam for raw inventory observations. */
+	async observeRecord(storageId: string): Promise<CatalogFact> {
+		const value = this.readWithTime(storageId);
+		const paths = hostPaths(value.record);
+		return { ...value, claim: await observeClaimAsync(paths.claim, paths.identity), observedAt: new Date().toISOString() };
+	}
+
+	/** Standalone callers observe once; manager consumers share their owned observation. */
+	async priorityPage(options: CatalogPriorityOptions): Promise<CatalogPriorityPage> {
+		return projectCatalogPriority(await new CatalogObservation(this).read(), options);
 	}
 
 	/**
@@ -415,7 +499,7 @@ export class AgentCatalog {
 			}
 			throw error;
 		}
-		publishCatalogChange(this.root);
+		publishCatalogChange(this.root, record.storageId);
 		return record;
 	}
 

@@ -7,7 +7,22 @@ import { join } from "node:path";
 import { createConnection, createServer, type Socket } from "node:net";
 
 const FORMAT = "pi.agent.catalog-observer/1";
-const NOTICE = "pi.agent.catalog-changed/1\n";
+const NOTICE_FORMAT = "pi.agent.catalog-changed/1";
+const NOTICE_BYTES = 4096;
+export const MAX_CHANGED_STORAGE_IDS = 64;
+/** Undefined means the whole namespace is dirty, including unknown or overflowing notices. */
+export type CatalogChange = readonly string[] | undefined;
+
+export function catalogChange(value: unknown): CatalogChange {
+	if (!Array.isArray(value) || value.length === 0 || value.length > MAX_CHANGED_STORAGE_IDS || value.some((id) => typeof id !== "string" || !UUID.test(id))) return undefined;
+	return [...new Set(value as string[])];
+}
+function noticeChange(text: string): CatalogChange {
+	try {
+		const value = JSON.parse(text);
+		return value?.format === NOTICE_FORMAT ? catalogChange(value.storageIds) : undefined;
+	} catch { return undefined; }
+}
 const RECORD_BYTES = 1024;
 const VISITS = 256;
 const RECIPIENTS = 32;
@@ -51,7 +66,7 @@ function readObserver(path: string): ObserverFile | undefined {
 }
 
 /** Bind before advertising, so an immediate external publication has a receiver. */
-export function subscribeCatalogChanges(root: string, listener: () => void, onError: (error: Error) => void): () => void {
+export function subscribeCatalogChanges(root: string, listener: (change: CatalogChange) => void, onError: (error: Error) => void): () => void {
 	const id = randomUUID();
 	const dir = directory(root);
 	mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -67,10 +82,10 @@ export function subscribeCatalogChanges(root: string, listener: () => void, onEr
 		socket.on("close", () => sockets.delete(socket));
 		let text = "";
 		socket.on("data", (bytes: Buffer) => {
-			if (text.length + bytes.length > NOTICE.length) { socket.destroy(); return; }
+			if (Buffer.byteLength(text) + bytes.length > NOTICE_BYTES) { if (!closed) listener(undefined); socket.destroy(); return; }
 			text += bytes.toString("utf8");
 		});
-		socket.on("end", () => { if (!closed && text === NOTICE) listener(); });
+		socket.on("end", () => { if (!closed) listener(noticeChange(text)); });
 	});
 	const close = (): void => {
 		if (closed) return;
@@ -103,19 +118,19 @@ export function subscribeCatalogChanges(root: string, listener: () => void, onEr
 	return close;
 }
 
-function send(socketPath: string): Promise<void> {
+function send(socketPath: string, notice: string): Promise<void> {
 	return new Promise((resolve) => {
 		const socket = createConnection(socketPath);
 		const finish = (): void => { socket.destroy(); resolve(); };
 		socket.setTimeout(DEADLINE_MS, finish);
 		socket.on("error", finish);
 		socket.on("close", () => resolve());
-		socket.on("connect", () => socket.end(NOTICE));
+		socket.on("connect", () => socket.end(notice));
 	});
 }
 
 /** A publication never waits for observation and never changes a conversation payload. */
-async function broadcast(root: string): Promise<void> {
+async function broadcast(root: string, change: CatalogChange): Promise<void> {
 	let handle: Awaited<ReturnType<typeof opendir>>;
 	try { handle = await opendir(directory(root)); } catch { return; }
 	const recipients: string[] = [];
@@ -129,19 +144,31 @@ async function broadcast(root: string): Promise<void> {
 		}
 		if (visited >= VISITS || recipients.length >= RECIPIENTS) break;
 	}
-	await Promise.all(recipients.map(send));
+	const notice = `${JSON.stringify({ format: NOTICE_FORMAT, ...(change ? { storageIds: change } : {}) })}\n`;
+	await Promise.all(recipients.map((recipient) => send(recipient, notice)));
 }
 
-const publishing = new Map<string, { again: boolean }>();
-/** Coalesce overlapping publications; another write requests another pass, not a timed retry. */
-export function publishCatalogChange(root: string): void {
+const publishing = new Map<string, { again: boolean; change: CatalogChange }>();
+/** Coalesce overlapping publications without dropping identities from concurrent writers. */
+export function publishCatalogChange(root: string, storageId?: string): void {
+	const change = catalogChange(storageId === undefined ? undefined : [storageId]);
 	const pending = publishing.get(root);
-	if (pending) { pending.again = true; return; }
-	const state = { again: false };
+	if (pending) {
+		if (!pending.again) pending.change = change;
+		else if (!pending.change || !change) pending.change = undefined;
+		else pending.change = catalogChange([...pending.change, ...change]);
+		pending.again = true;
+		return;
+	}
+	const state = { again: false, change };
 	publishing.set(root, state);
 	void (async () => {
 		try {
-			do { state.again = false; await broadcast(root); } while (state.again);
+			do {
+				const batch = state.change;
+				state.again = false;
+				await broadcast(root, batch);
+			} while (state.again);
 		} finally { publishing.delete(root); }
 	})().catch(() => undefined);
 }
