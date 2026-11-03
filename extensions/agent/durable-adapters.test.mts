@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import * as Durable from "@earendil-works/pi-durable";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { createAgentContribution } from "./durable-agents.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { waitForReceipts } from "./durable-controls.ts";
@@ -35,7 +35,7 @@ it("native fleet calls select local published models and reject filters outside 
 	assert.equal(matchesSchema(status.parameters, { view: "fleet", model: "sample/a", provider: "sample" }), true);
 	const results: Durable.NestedToolExecutionResult[] = [];
 	registry.install(Durable.defineExtension({ name: "fleet-query-probe", tools: [Durable.defineTool({
-		name: "fleet-probe", description: "Read selected fleet evidence.", parameters: Type.Object({}),
+		name: "fleet-probe", description: "Read selected fleet evidence.", parameters: obj({}, { open: true }),
 		execute: async (_args, api, callContext) => {
 			const inputs: Durable.JsonObject[] = [{ view: "fleet", model: "sample/a", provider: "sample" }, { model: "sample/a" }, { view: "fleet", sessionId: "target", model: "sample/a" }, { view: "fleet", model: "broken" }];
 			for (const args of inputs) results.push(await api.executeTool("agent_status", args, callContext));
@@ -67,7 +67,7 @@ it("returns schema control values through native nested calls with tagged tasks 
 	const results: Durable.NestedToolExecutionResult[] = [];
 	const inputs: Durable.ToolTaskInput[] = [];
 	registry.install(Durable.defineExtension({ name: "native-controls-probe", tools: [Durable.defineTool({
-		name: "nested-probe", description: "Check nested controls.", parameters: Type.Object({}),
+		name: "nested-probe", description: "Check nested controls.", parameters: obj({}, { open: true }),
 		execute: async (_args, api, callContext) => {
 			for (const [name, args] of [["agent_list", {}], ["agent_command", { sessionId: "native-controls", name: "echo" }], ["agent_status", { sessionId: "missing" }]] as const) {
 				const result = await api.executeTool(name, args, callContext);
@@ -122,7 +122,7 @@ it("places a display-only write during a busy tool without changing model contex
 	t.after(() => release.resolve());
 	const registry = Durable.createRegistry();
 	registry.install(Durable.defineExtension({ name: "display-write-probe", tools: [Durable.defineTool({
-		name: "hold", description: "Hold one busy tool.", parameters: Type.Object({}),
+		name: "hold", description: "Hold one busy tool.", parameters: obj({}, { open: true }),
 		execute: async () => { entered.resolve(); await release.promise; return { output: [{ type: "text", text: "released" }] }; },
 	})] }));
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models: await scriptedRuntime([toolCallMessage("hold", {}), answerMessage()]), registry }, context);

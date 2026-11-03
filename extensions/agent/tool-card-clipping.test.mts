@@ -7,7 +7,7 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { CustomMessageComponent, defineTool, initTheme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { createAgentToolCards, renderAgentPeerMessage, type AgentCardContext } from "./tool-cards.ts";
 import { fixtures, fixtureResult, rows } from "./tool-card-fixture.mts";
 
@@ -22,7 +22,7 @@ const output = `Result ${"界é🙂".repeat(60)}`;
 
 function nativeRow(name = "agent_collaborate", value: unknown = args): ToolExecutionComponent {
 	const card = createAgentToolCards(() => rows)[name];
-	const tool = defineTool({ name, label: name, description: "Renderer fixture", parameters: Type.Object({}), ...card, async execute() { throw new Error("Renderer fixtures must not execute."); } });
+	const tool = defineTool({ name, label: name, description: "Renderer fixture", parameters: obj({}, { open: true }), ...card, async execute() { throw new Error("Renderer fixtures must not execute."); } });
 	const component = new ToolExecutionComponent(name, "fixture", value as Record<string, unknown>, undefined, tool, ui, ".");
 	component.setArgsComplete();
 	component.markExecutionStarted();

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { Type } from "typebox";
+import { str, bool, obj } from "@earendil-works/pi-schema";
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { Harness, MemoryStorage, LiveDoc, UsageDoc, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
@@ -254,7 +254,7 @@ it("ignores undeclared structured results and rejects their error text", { timeo
 		builtinExtensions: (host) => [host.durable.defineExtension({
 			name: "fixture.text-only",
 			tools: [host.durable.defineTool({
-				name: "text_only", description: "Return text without an output schema.", parameters: Type.Object({ fail: Type.Boolean() }), replay: "safe",
+				name: "text_only", description: "Return text without an output schema.", parameters: obj({ fail: bool() }, { open: true }), replay: "safe",
 				execute: async ({ fail }) => ({ output: [{ type: "text" as const, text: fail ? "text error" : "text value" }], isError: fail, details: { structuredContent: { ignored: true } } }),
 			})],
 		})],
@@ -433,10 +433,10 @@ it("keeps a data-bearing native tool error as a codemode result", { timeout: 300
 			name: "fixture.data-error",
 			tools: [{
 				...host.durable.defineTool({
-					name: "data_error", description: "Return an error with structured data.", parameters: Type.Object({}), replay: "safe",
+					name: "data_error", description: "Return an error with structured data.", parameters: obj({}, { open: true }), replay: "safe",
 					execute: async () => ({ output: [{ type: "text" as const, text: "target is busy" }], isError: true, structuredOutput: failure, diagnostics: [{ severity: "error" as const, message: "target is busy" }] }),
 				}),
-				structuredOutputSchema: Type.Object({ outcome: Type.String(), error: Type.String() }),
+				structuredOutputSchema: obj({ outcome: str(), error: str() }, { open: true }),
 			}],
 		})],
 	});
@@ -619,7 +619,7 @@ it("records nested calls in native live slots and preserves hook parent identity
 	const f = await executionFixture(t, {
 		code: 'return await tools.step({ value: "first" });',
 		builtinExtensions: (host) => [host.durable.defineExtension({ name: "fixture.progress", tools: [host.durable.defineTool({
-			name: "step", description: "Hold an owned nested call.", parameters: Type.Object({ value: Type.String() }), replay: "safe",
+			name: "step", description: "Hold an owned nested call.", parameters: obj({ value: str() }, { open: true }), replay: "safe",
 			execute: async (_args, api) => { nestedTask = api.taskId; entered.resolve(); await release.promise; return { output: [{ type: "text" as const, text: "done" }] }; },
 		})], hooks: [host.durable.hook(host.durable.ToolTask, { beforeTool(call) {
 			if (call.name === "step") parent = call.parent;
@@ -670,7 +670,7 @@ it("rejects malformed structured output before the script receives a success val
 	const f = await executionFixture(t, {
 		code: 'try { return { value: await tools.malformed({}) }; } catch (error) { return { error: error.message }; }',
 		builtinExtensions: (host) => [host.durable.defineExtension({ name: "fixture.malformed", tools: [host.durable.defineTool({
-			name: "malformed", description: "Return an invalid structured value.", parameters: Type.Object({}), structuredOutputSchema: Type.Object({ answer: Type.String() }),
+			name: "malformed", description: "Return an invalid structured value.", parameters: obj({}, { open: true }), structuredOutputSchema: obj({ answer: str() }, { open: true }),
 			execute: async () => ({ output: [{ type: "text" as const, text: "not a success" }], structuredOutput: { answer: 42 } }),
 		})] })],
 	});

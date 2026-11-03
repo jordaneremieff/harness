@@ -8,7 +8,7 @@ import { getPackageDir, SettingsManager } from "@earendil-works/pi-coding-agent"
 import { awaitWithContext, BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type TranscriptContext } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, type Registry, type SubmissionId } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
+import { str, obj } from "@earendil-works/pi-schema";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { DurableHost } from "./durable-host.ts";
 import { completed, toolCallMessage } from "./durable-host-fixture.mts";
@@ -216,7 +216,7 @@ test("selected native Agent retains delegation ownership across generation hando
 		stream, streamSimple: stream,
 	});
 	const gate = defineTool({
-		name: "selection_gate", description: "Hold one fixture generation.", parameters: Type.Object({ role: Type.String() }),
+		name: "selection_gate", description: "Hold one fixture generation.", parameters: obj({ role: str() }, { open: true }),
 		execute: async (args, _api, callContext) => {
 			(args.role === "root" ? rootGate : childGate).resolve();
 			await new Promise<void>(done => {

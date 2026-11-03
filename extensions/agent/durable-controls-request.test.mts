@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { AgentDoc, LiveDoc, Harness, MemoryStorage, createRegistry, defineExtension, defineTool, type CommitPublication, type ConversationId, type SubmissionId, type TaskId } from "@earendil-works/pi-durable";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { AwaitDoc, AWAIT_PROVENANCE_LIMIT } from "./awaited-results.ts";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { AgentMetaDoc, forkConversation, rewindConversation, readOutcome, recordDeliveryIntent, recordReport, reconcileDeliveries, richSubmitConversation, settleDeliveries, submitConversation, writeConversationName } from "./durable-controls.ts";
@@ -38,7 +38,7 @@ async function fixture(t: TestContext, timers = false) {
 it("admits dispatch and steer after long native runs place more inputs than the storage provenance bound", { timeout: 30_000 }, async (t) => {
 	type Gate = { release: () => void };
 	const gates = new Map<ConversationId, Gate>(), arrivals = new Map<ConversationId, (gate: Gate) => void>();
-	const checkpoint = defineTool({ name: "checkpoint", description: "Hold one native tool boundary.", parameters: Type.Object({}), execute: async (_args, api, ctx) => {
+	const checkpoint = defineTool({ name: "checkpoint", description: "Hold one native tool boundary.", parameters: obj({}, { open: true }), execute: async (_args, api, ctx) => {
 		let release!: () => void;
 		const held = new Promise<void>((resolve) => { release = resolve; });
 		const gate = { release };

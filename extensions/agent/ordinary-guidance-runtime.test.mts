@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { createAssistantMessageEventStream, getCurrentSystemMessage, getCurrentSystemPrompt, type AssistantMessage, type TranscriptContext } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, getPackageDir, type AgentSession, type BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import register from "./index.ts";
 import { AgentManager } from "./manager.ts";
 import { connectPrimaryChannel } from "./primary-channel.ts";
@@ -94,7 +94,7 @@ async function guidanceFixture(t: TestContext, holdStartup = false) {
 		extensionFactories: [(pi) => {
 			register(pi);
 			pi.registerTool({
-				name: "guidance_evidence", label: "Guidance evidence", description: "Return evidence for the peer result", parameters: Type.Object({}),
+				name: "guidance_evidence", label: "Guidance evidence", description: "Return evidence for the peer result", parameters: obj({}, { open: true }),
 				async execute() { toolCalls++; return { content: [{ type: "text", text: "PEER_TOOL_EVIDENCE" }], details: {} }; },
 			});
 			pi.on("before_agent_start", async (event) => {

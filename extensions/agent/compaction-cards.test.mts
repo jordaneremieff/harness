@@ -6,7 +6,7 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { defineTool, initTheme, ToolExecutionComponent, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolDefinition, type Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import register from "./index.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness, Conversation } from "@earendil-works/pi-durable";
@@ -33,7 +33,7 @@ it("captures self context once at execution and keeps it stable through native r
 	assert.equal(reads, 1);
 	usage.tokens = 44000;
 	usage.percent = 91.7;
-	const tool = defineTool({ name: "agent_compact", label: "Compact", description: "Native row fixture", parameters: Type.Object({}), renderCall: registered.renderCall, renderResult: registered.renderResult, async execute() { throw new Error("The row does not execute a tool."); } });
+	const tool = defineTool({ name: "agent_compact", label: "Compact", description: "Native row fixture", parameters: obj({}, { open: true }), renderCall: registered.renderCall, renderResult: registered.renderResult, async execute() { throw new Error("The row does not execute a tool."); } });
 	const row = new ToolExecutionComponent("agent_compact", "compact-call", args, undefined, tool, { requestRender() {} } as unknown as TUI, ".");
 	row.setArgsComplete();
 	row.markExecutionStarted();

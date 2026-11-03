@@ -31,7 +31,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { Type } from "typebox";
+import { compile, obj } from "@earendil-works/pi-schema";
 import { type AgentContributionHost, type AgentControlDispatch, createAgentContribution, publishAgentControlDispatch } from "./durable-agents.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerAgentExtension from "./index.ts";
@@ -388,7 +388,7 @@ const siblingExtension = Durable.defineExtension({
 		Durable.defineTool({
 			name: "sibling-probe",
 			description: "Return a fixed marker.",
-			parameters: Type.Object({}),
+			parameters: obj({}, { open: true }),
 			replay: "safe",
 			execute: async () => ({ output: [{ type: "text" as const, text: "SIBLING-OK" }] }),
 		}),
@@ -599,6 +599,35 @@ it("saves an explicit handle-less creation role and documents it in both schemas
 	const child = await harness.conversation(childId, context);
 	assert.ok(child);
 	assert.match((await child.agent(context)).instructions ?? "", /Your role: Review source/u);
+});
+
+it("preserves closed control objects, optional fields, enums and inspect cursors", () => {
+	const { extension } = buildRegistry();
+	const ordinary: Array<{ name: string; parameters: object }> = [];
+	registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	for (const tools of [ordinary, extension.tools ?? []]) {
+		const schemaFor = (name: string) => {
+			const tool = tools.find((candidate) => candidate.name === name);
+			assert.ok(tool, name);
+			return compile(tool.parameters);
+		};
+		for (const [name, input] of [
+			["agent_steer", { sessionId: storageId, message: "Continue" }],
+			["agent_reset", { sessionId: storageId }],
+			["agent_command", { sessionId: storageId, name: "reload" }],
+			["agent_inspect", { sessionId: storageId }],
+		] as const) {
+			const schema = schemaFor(name);
+			assert.equal(schema.check(input), true, name);
+			assert.equal(schema.check({ ...input, extra: true }), false, name);
+			assert.equal(schema.check({ ...input, sessionId: "" }), false, name);
+		}
+		const inspect = schemaFor("agent_inspect");
+		assert.equal(inspect.check({ sessionId: storageId, view: "history", source: "toolResult", cursor: { position: 2, nested: { token: "page" } } }), true);
+		assert.equal(inspect.check({ sessionId: storageId, view: "unsupported" }), false);
+		assert.equal(inspect.check({ sessionId: storageId, cursor: "page" }), false);
+		assert.equal(inspect.check({ sessionId: storageId, offset: -1 }), false);
+	}
 });
 
 it("accepts every shared thinking level in native spawn, configure, and attach schemas", () => {

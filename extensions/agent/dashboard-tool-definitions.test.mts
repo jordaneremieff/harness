@@ -10,7 +10,7 @@ import {
 	type ExtensionAPI, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings, type TUI } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { captureCodemodeRenderers, createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import { createAgentToolCards } from "./tool-cards.ts";
 
@@ -64,7 +64,7 @@ it("keeps display definitions inert and native or shared presentation intact", a
 
 it("uses Pi standard named-argument calls and ten logical output lines for unknown tools", () => {
 	const definition = createDashboardToolDefinitions(cwd)("unregistered_tool");
-	const native: ToolDefinition = { name: definition.name, label: definition.name, description: "Display", parameters: Type.Object({}), execute: async () => { throw new Error("inert"); } };
+	const native: ToolDefinition = { name: definition.name, label: definition.name, description: "Display", parameters: obj({}, { open: true }), execute: async () => { throw new Error("inert"); } };
 	for (const width of [30, 80, 120]) for (const expanded of [false, true]) {
 		const pair = [definition, native].map((display) => {
 			const tool = new ToolExecutionComponent(display.name, "call", { topic: "named argument", count: 2 }, { showImages: false }, display, tui, cwd);

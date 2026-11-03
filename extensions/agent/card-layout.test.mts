@@ -7,7 +7,7 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { CustomMessageComponent, defineTool, initTheme, ToolExecutionComponent, type ExtensionAPI, type ToolDefinition, type Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { createAgentToolCards, renderAgentPeerMessage, renderPeerNoticeCard } from "./tool-cards.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import register from "./index.ts";
@@ -33,7 +33,7 @@ function registeredTools(): Map<string, ToolDefinition> {
 
 function nativeTool(name: string, args: Record<string, unknown>, details: unknown, rows: AgentConversationSummary[] = [row], registered?: ToolDefinition) {
 	const card = createAgentToolCards(() => rows)[name];
-	const tool = registered ?? defineTool({ name, label: name, description: "Native layout fixture", parameters: Type.Object({}), renderCall: card.renderCall, renderResult: card.renderResult, async execute() { throw Error("The fixture does not execute tools."); } });
+	const tool = registered ?? defineTool({ name, label: name, description: "Native layout fixture", parameters: obj({}, { open: true }), renderCall: card.renderCall, renderResult: card.renderResult, async execute() { throw Error("The fixture does not execute tools."); } });
 	const component = new ToolExecutionComponent(name, `call-${name}`, args, undefined, tool, { requestRender() {} } as unknown as TUI, ".");
 	component.setArgsComplete(); component.markExecutionStarted();
 	component.updateResult({ content: [{ type: "text", text: JSON.stringify(details, null, 2) }], details, isError: false });

@@ -7,7 +7,7 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { defineTool, initTheme, ToolExecutionComponent, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { createAgentToolCards } from "./tool-cards.ts";
 import { fixtures, fixtureResult, rows, targetId, forkId } from "./tool-card-fixture.mts";
 
@@ -29,7 +29,7 @@ for (const [name, fixture] of Object.entries(fixtures)) it(`${name} uses the ins
 	const calls: NativeContext[] = [];
 	const results: NativeContext[] = [];
 	const tool = defineTool({
-		name, label: name, description: "Renderer fixture", parameters: Type.Object({}),
+		name, label: name, description: "Renderer fixture", parameters: obj({}, { open: true }),
 		renderCall(args, theme, context) { calls.push(context); return card.renderCall(args, theme, context); },
 		renderResult(result, options, theme, context) { results.push(context); return card.renderResult(result, options, theme, context); },
 		async execute() { throw new Error("Renderer fixtures must not execute."); },
@@ -72,7 +72,7 @@ for (const [name, fixture] of Object.entries(fixtures)) it(`${name} uses the ins
 
 function nativeRow(name: string, args: Record<string, unknown>, details: unknown, lookupRows = rows): ToolExecutionComponent {
 	const card = createAgentToolCards(() => lookupRows)[name];
-	const tool = defineTool({ name, label: name, description: "Renderer fixture", parameters: Type.Object({}), ...card, async execute() { throw new Error("Renderer fixtures must not execute."); } });
+	const tool = defineTool({ name, label: name, description: "Renderer fixture", parameters: obj({}, { open: true }), ...card, async execute() { throw new Error("Renderer fixtures must not execute."); } });
 	const component = new ToolExecutionComponent(name, "fixture", args, undefined, tool, { requestRender() {} } as unknown as TUI, ".");
 	component.setArgsComplete();
 	component.markExecutionStarted();
