@@ -716,9 +716,9 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 
 	type DispatchCapture = { api: Durable.ToolExecutionApi<ControlDetails>; context: Context };
 	const isInputDispatch = (method: AgentControlMethod, params: Readonly<Record<string, unknown>>) => method === "submit" || method === "task-submit" || (method === "resolve-agent" || method === "place") && params.prompt !== undefined;
-	const retainedPlace = (capture: DispatchCapture, params: Readonly<Record<string, unknown>>) => capture.api.commit(async tx => {
-		const state = await tx.doc(RunControl, capture.api.conversationId, String(capture.api.taskId), null);
-		if (state.dispatch !== "confirmed") return undefined;
+	const retainedPlace = async (capture: DispatchCapture, params: Readonly<Record<string, unknown>>) => {
+		const state = await capture.api.snapshot(RunControl, capture.api.conversationId, String(capture.api.taskId), capture.context);
+		if (state?.dispatch !== "confirmed") return undefined;
 		if (!state.response || !state.result) throw new Error("Confirmed place dispatch has no retained admission");
 		if (typeof state.placeArea !== "string" || !isAbsolute(state.placeArea)) throw new Error("Confirmed place dispatch has no retained canonical area");
 		dispatchFacts("place", params, state.response);
@@ -726,7 +726,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		if (reference.sessionId !== state.result.sessionId || reference.submissionId !== state.result.submissionId || reference.requestId !== state.result.requestId)
 			throw new Error("Retained place references disagree");
 		return { area: state.placeArea, sessionId: reference.sessionId, result: JSON.parse(JSON.stringify(state.response)) as Record<string, JsonValue> };
-	}, capture.context);
+	};
 	const dispatchValue = async (perform: AgentControlDispatch, method: AgentControlMethod, params: Readonly<Record<string, unknown>>, capture?: DispatchCapture): Promise<unknown> => {
 		const input = capture && isInputDispatch(method, params);
 		if (input) {

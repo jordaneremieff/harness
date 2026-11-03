@@ -154,6 +154,7 @@ async function placedFamily(t: { after(fn: () => Promise<void> | void): void }, 
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-place-control-")));
 	const area = join(root, "area"); mkdirSync(area);
 	const outcomes: native.ToolExecutionResult[] = [];
+	let placeTaskId: native.TaskId | undefined;
 	writeFileSync(join(root, "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: `${testModel.provider}/${testModel.id}` } }, preferences: { defaultPreset: "standard" } })));
 	const release = deferred(), targetStarted = deferred(), captured = [deferred(), deferred()];
 	const targetId = "placed-owner";
@@ -177,6 +178,7 @@ async function placedFamily(t: { after(fn: () => Promise<void> | void): void }, 
 		return { ...admitted, sessionId: options.invalid === "target" ? "wrong-owner" : targetId, result: { sessionId: targetId, submissionId: admitted.submissionId, requestId: options.invalid === "request" ? "wrong-request" : params.requestId } };
 	} }).create({ durable: native, storageId: fixtureStorageId, cwd: root, agentDir: root, onClose: () => {}, services: { modelRuntime: { getModel: () => testModel, getModels: () => [testModel] } } });
 	sourceRegistry.install({ ...contribution, tools: contribution.tools?.map(tool => tool.name !== "agent_place" ? tool : { ...tool, execute: async (args, api, context) => {
+		placeTaskId = api.taskId;
 		const result = await tool.execute(args, api, context);
 		outcomes.push(result);
 		captured[executions++]?.resolve();
@@ -193,6 +195,7 @@ async function placedFamily(t: { after(fn: () => Promise<void> | void): void }, 
 	if (options.prompt !== "") await targetStarted.promise;
 	return {
 		get source() { return source; }, get target() { assert.ok(target); return target; }, calls: () => calls, input, outcomes, area,
+		get taskId() { assert.ok(placeTaskId); return placeTaskId; },
 		async reopen(removeArea = false) { rebound = true; await source.close(); if (removeArea) rmSync(area, { recursive: true }); source = await DurableHost.open(sourceOptions, BACKGROUND_CONTEXT); wireStop(); await captured[1].promise; },
 	};
 }
@@ -243,6 +246,7 @@ test("Stop reports partial coverage when unrelated input shares a placed owner's
 
 for (const reused of [false, true]) test(`empty-prompt place resolves a ${reused ? "reused" : "created"} owner without delegation`, { timeout: 15000 }, async t => {
 	const f = await placedFamily(t, { reused, prompt: "" });
+	assert.equal(await f.source.harness.snapshot(agentRunControlDoc(native), f.source.root().id, String(f.taskId), BACKGROUND_CONTEXT), undefined);
 	const scope = await f.source.request("run-scope") as RunScope;
 	assert.equal(scope.coverage.complete, true);
 	assert.deepEqual(scope.delegations, []);
