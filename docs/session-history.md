@@ -144,6 +144,14 @@ replacement links. A verified flag or recent write date is not proof of current
 external behavior. Recheck original sources for load-bearing claims when needed.
 Notes do not supply a new grant.
 
+Working checkpoints that sessions saved with `stash_write` and `checkpoint: true`
+are discoverable by topic through `stash_list` and `stash_read` with
+`collection: "checkpoints"`. Treat them like other working artifacts: provisional
+leads with a source locator and workspace, not durable memory, a handover, or
+authority to resume old work. Use current memory for standing constraints,
+history for a material source conflict, and the registry when a public contract
+is unknown.
+
 Use prior mining reports, extracts, and tables as leads and coverage maps. Check
 their origin, columns, cutoff, source locators, and limitations before use. A
 report's claimed coverage is not coverage personally inspected in this task.
