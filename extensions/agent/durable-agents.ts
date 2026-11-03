@@ -49,8 +49,7 @@ import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { inputEntry } from "./input-entry.ts";
-import { str, int, bool, unknown, opt, obj, union, map, oneOf, type Static } from "@earendil-works/pi-schema";
-import { Type, type Static as TypeStatic } from "typebox";
+import { str, num, int, bool, lit, unknown, opt, obj, union, map, oneOf, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines } from "./control-guidance.ts";
@@ -275,9 +274,9 @@ function placeResult(sessionId: string, result: ControlDetails, area?: string): 
 }
 
 /** Control facts remain UI details and also become validated values for nested callers. */
-function structuredControl<P extends object, D extends JsonValue>(
+function structuredControl<P extends Schema, D extends JsonValue>(
 	tool: Durable.ToolRegistration<P, D>,
-	schema: object,
+	schema: Schema,
 ): Durable.ToolRegistration<P, D> {
 	return {
 		...tool,
@@ -338,59 +337,59 @@ function modelOf(value: string): Durable.ModelRef {
 
 // ─── Parameter schemas ──────────────────────────────────────────────────────
 
-const StringEnum = <T extends readonly string[]>(values: T) => Type.Union(values.map((value) => Type.Literal(value)));
+const StringEnum = <const T extends readonly string[]>(values: T) => oneOf(values);
 
-const CheckInParams = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval while unanswered, in minutes. Default configured agent.checkInMinutes (30 unless overridden); 0 disables." }));
+const CheckInParams = opt(num({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval while unanswered, in minutes. Default configured agent.checkInMinutes (30 unless overridden); 0 disables." }));
 
-const SpawnParams = Type.Object(
+const SpawnParams = obj(
 	{
-		handle: Type.Optional(HandleSchema),
+		handle: opt(HandleSchema),
 		preset: PresetParameter,
-		role: Type.Optional(Type.String({
+		role: opt(str({
 			maxLength: 2000,
 			description: "Durable role text saved on the new agent's profile, with or without a handle. Reuse does not change the role.",
 		})),
-		prompt: Type.Optional(
-			Type.String({ description: "Initial assignment for the agent. Without one the agent stays idle." }),
+		prompt: opt(
+			str({ description: "Initial assignment for the agent. Without one the agent stays idle." }),
 		),
-		name: Type.Optional(Type.String({ description: "Display name for the agent. Names may repeat." })),
-		cwd: Type.Optional(
-			Type.String({ description: "Working directory for the agent. Default: inherited from the creating conversation." }),
+		name: opt(str({ description: "Display name for the agent. Names may repeat." })),
+		cwd: opt(
+			str({ description: "Working directory for the agent. Default: inherited from the creating conversation." }),
 		),
-		model: Type.Optional(
-			Type.String({ minLength: 3, description: MODEL_SELECTION_GUIDANCE }),
+		model: opt(
+			str({ minLength: 3, description: MODEL_SELECTION_GUIDANCE }),
 		),
-		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
+		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
 		checkInMinutes: CheckInParams,
 	},
-	{ additionalProperties: false },
+	{},
 );
 
-const SendParams = Type.Object(
+const SendParams = obj(
 	{
-		sessionId: Type.String({
+		sessionId: str({
 			minLength: 1,
 			description: "External identity: storage id for the root, storageId:conversationId otherwise.",
 		}),
-		message: Type.String({ minLength: 1 }),
-		replyTo: Type.Optional(
-			Type.String({
+		message: str({ minLength: 1 }),
+		replyTo: opt(
+			str({
 				minLength: 1,
 				description: "Conversation that receives the answer; default: the calling conversation.",
 			}),
 		),
-		deliverAt: Type.Optional(
-			Type.String({
+		deliverAt: opt(
+			str({
 				minLength: 1,
 				description: "Absolute ISO 8601 date-time; schedule the input instead of admitting it now.",
 			}),
 		),
-		mode: Type.Optional(
+		mode: opt(
 			StringEnum(["followUp", "steer", "report"]),
 		),
 		checkInMinutes: CheckInParams,
 	},
-	{ additionalProperties: false },
+	{},
 );
 
 const SteerParams = obj(
@@ -447,17 +446,17 @@ const RewindParams = obj(
 	{},
 );
 
-const ConfigureParams = Type.Object(
+const ConfigureParams = obj(
 	{
 		preset: PresetParameter,
-		sessionId: Type.String({ minLength: 1 }),
-		name: Type.Optional(Type.String({ description: "Owner-visible name; stored by the session host." })),
-		model: Type.Optional(
-			Type.String({ minLength: 3, description: MODEL_SELECTION_GUIDANCE }),
+		sessionId: str({ minLength: 1 }),
+		name: opt(str({ description: "Owner-visible name; stored by the session host." })),
+		model: opt(
+			str({ minLength: 3, description: MODEL_SELECTION_GUIDANCE }),
 		),
-		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
+		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
 const CompactParams = obj(
@@ -477,15 +476,15 @@ const CommandParams = obj(
 	{},
 );
 
-const StatusParams = Type.Object(
+const StatusParams = obj(
 	{
-		view: Type.Optional(Type.Literal("fleet", { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })),
+		view: opt(lit("fleet", { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })),
 		...FleetSelectionProperties,
-		sessionId: Type.Optional(
-			Type.String({ minLength: 1, description: "Default: the calling conversation; omit for the storage overview." }),
+		sessionId: opt(
+			str({ minLength: 1, description: "Default: the calling conversation; omit for the storage overview." }),
 		),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
 const ListParams = obj(
@@ -540,19 +539,19 @@ const AttachParams = obj(
 	{},
 );
 
-const PlaceParams = Type.Object(
+const PlaceParams = obj(
 	{
 		preset: PresetParameter,
-		model: Type.Optional(Type.String({ minLength: 3, description: MODEL_SELECTION_GUIDANCE })),
-		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
-		area: Type.Optional(
-			Type.String({ description: "Directory the owner covers. Default: the calling conversation's cwd." }),
+		model: opt(str({ minLength: 3, description: MODEL_SELECTION_GUIDANCE })),
+		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
+		area: opt(
+			str({ description: "Directory the owner covers. Default: the calling conversation's cwd." }),
 		),
-		topic: Type.Optional(Type.String({ description: "What the owner is for; stored as its name." })),
-		prompt: Type.Optional(Type.String({ description: "Work to deliver to the owner." })),
+		topic: opt(str({ description: "What the owner is for; stored as its name." })),
+		prompt: opt(str({ description: "Work to deliver to the owner." })),
 		checkInMinutes: CheckInParams,
 	},
-	{ additionalProperties: false },
+	{},
 );
 
 const ResetParams = obj(
@@ -568,20 +567,20 @@ const ResetParams = obj(
 	{},
 );
 
-type SpawnInput = TypeStatic<typeof SpawnParams>;
-type SendInput = TypeStatic<typeof SendParams>;
+type SpawnInput = Static<typeof SpawnParams>;
+type SendInput = Static<typeof SendParams>;
 type SteerInput = Static<typeof SteerParams>;
 type AbortInput = Static<typeof AbortParams>;
 type ForkInput = Static<typeof ForkParams>;
 type RewindInput = Static<typeof RewindParams>;
-type ConfigureInput = TypeStatic<typeof ConfigureParams>;
+type ConfigureInput = Static<typeof ConfigureParams>;
 type CompactInput = Static<typeof CompactParams>;
 type CommandInput = Static<typeof CommandParams>;
-type StatusInput = TypeStatic<typeof StatusParams>;
+type StatusInput = Static<typeof StatusParams>;
 type ListInput = Static<typeof ListParams>;
 type InspectInput = Static<typeof InspectParams>;
 type AttachInput = Static<typeof AttachParams>;
-type PlaceInput = TypeStatic<typeof PlaceParams>;
+type PlaceInput = Static<typeof PlaceParams>;
 type ResetInput = Static<typeof ResetParams>;
 
 // ─── Extension ──────────────────────────────────────────────────────────────
@@ -624,7 +623,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const durable = host.durable;
 	const dispatch = options.dispatch;
 	const registrationPreferences = readAgentPreferences(host.agentDir, host.services.modelRuntime);
-	const presetParams = <T extends typeof SpawnParams | typeof ConfigureParams | typeof PlaceParams>(params: T): T => ({ ...params, properties: { ...params.properties, preset: presetParameter(registrationPreferences) } });
+	const presetParams = <T extends typeof SpawnParams | typeof ConfigureParams | typeof PlaceParams>(params: T): T => ({ ...params, properties: { ...(params.properties as Record<string, Schema>), preset: presetParameter(registrationPreferences).schema } });
 	const preferenceSnapshot = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context): Promise<PreferenceSnapshot> => {
 		const retained = await api.memo("agent-preferences", context);
 		if (retained !== undefined) return retained as unknown as PreferenceSnapshot;
