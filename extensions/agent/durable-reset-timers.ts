@@ -17,7 +17,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { str, opt, obj, type Static } from "@earendil-works/pi-schema";
 import type { AgentCommandAction } from "./command.ts";
 import { AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
 import { parseDeliverAt, type CancelTimerResult, type ScheduleTimerResult, type TimerListRow, type TimerMode } from "./durable-timers.ts";
@@ -184,16 +184,17 @@ function toolResult(value: { readonly text: string }): { content: Array<{ type: 
 /** Model-facing primary control for reset. Timer listing lives in `agent_status`; timer cancellation uses `agent_abort` with a `timerId`. */
 export function registerResetTimerTools(pi: ExtensionAPI, bind: (ctx: ExtensionContext) => ResetTimerDeps, card: AgentToolCard = createAgentToolCards().agent_reset): void {
 	const guidance = AGENT_CONTROL_GUIDANCE.agent_reset;
+	const paramsSchema = obj({ sessionId: str({ minLength: 1, maxLength: 256 }), handoff: opt(str()) });
 	pi.registerTool({
 		name: "agent_reset",
 		renderCall: card.renderCall,
 		renderResult: card.renderResult,
 		label: "Agent Reset",
 		description: "Reset one agent's active context with an optional handoff. History, identity, files, settings, and timers stay. The write places at the next native boundary while the agent is busy and starts no model turn.",
-		parameters: Type.Object({ sessionId: Type.String({ minLength: 1, maxLength: 256 }), handoff: Type.Optional(Type.String()) }, { additionalProperties: false }),
+		parameters: paramsSchema,
 		...(guidance.snippet === undefined ? {} : { promptSnippet: guidance.snippet }),
 		...(guidance.guidelines === undefined ? {} : { promptGuidelines: [...guidance.guidelines] }),
-		async execute(_callId, params, _signal, _update, ctx) {
+		async execute(_callId, params: Static<typeof paramsSchema>, _signal, _update, ctx) {
 			return toolResult(await resetAgentContext(bind(ctx), { sessionId: params.sessionId, ...(params.handoff === undefined ? {} : { handoff: params.handoff }) }));
 		},
 	});

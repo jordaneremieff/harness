@@ -21,7 +21,8 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
-import { Type, type TSchema, type TObject } from "typebox";
+import { str, int, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
+import { Type, type TObject } from "typebox";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { CollaborationParams } from "./collaboration.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
@@ -73,9 +74,9 @@ export function agentRestartHosts(): RestartHosts {
 		identity: JSON.stringify([...owners.managers].map(([root, manager]) => [root, manager.connectedStorageIds()])),
 	};
 }
-/** A string enum as `{ type: "string", enum }`, typed as its literal union. */
-const StringEnum = <const T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: [...values] });
-const id = Type.String({ minLength: 1, maxLength: 256 });
+/** Provider tool declarations retain an explicit string type. */
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const id = str({ minLength: 1, maxLength: 256 });
 const maybeTrust = Type.Optional(Type.Boolean());
 const abort = Type.Object(
 	{
@@ -87,9 +88,9 @@ const abort = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-const message = Type.Object(
-	{ sessionId: id, message: Type.String({ minLength: 1 }), replyTo: Type.Optional(id) },
-	{ additionalProperties: false },
+const message = obj(
+	{ sessionId: id, message: str({ minLength: 1 }), replyTo: opt(id) },
+	{},
 );
 const checkIn = Type.Optional(Type.Number({ minimum: 0, maximum: 35791, description: "Automatic owner check-in interval in minutes while unanswered; 0 disables. Default: configured agent.checkInMinutes (30 unless overridden)." }));
 const send = Type.Object(
@@ -123,34 +124,34 @@ const spawn = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-const nativeEntryId = Type.Integer({ minimum: 1 });
-const inspect = Type.Object(
+const nativeEntryId = int({ minimum: 1 });
+const inspect = obj(
 	{
 		sessionId: id,
-		view: Type.Optional(StringEnum(["history", "activity", "branch", "search", "exact", "result"])),
-		cursor: Type.Optional(
-			Type.Record(Type.String(), Type.Unknown(), {
+		view: opt(StringEnum(["history", "activity", "branch", "search", "exact", "result"])),
+		cursor: opt(
+			map(unknown(), {
 				description: "Opaque native cursor. Pass the returned next object unchanged.",
 			}),
 		),
-		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 200 })),
-		entryId: Type.Optional(nativeEntryId),
-		fromId: Type.Optional(nativeEntryId),
-		offset: Type.Optional(Type.Integer({ minimum: 0 })),
-		query: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
-		source: Type.Optional(StringEnum(["user", "assistant", "toolResult", "summary", "custom"])),
-		submissionId: Type.Optional(nativeEntryId),
-		operationId: Type.Optional(id),
+		limit: opt(int({ minimum: 1, maximum: 200 })),
+		entryId: opt(nativeEntryId),
+		fromId: opt(nativeEntryId),
+		offset: opt(int({ minimum: 0 })),
+		query: opt(str({ minLength: 1, maxLength: 256 })),
+		source: opt(StringEnum(["user", "assistant", "toolResult", "summary", "custom"])),
+		submissionId: opt(nativeEntryId),
+		operationId: opt(id),
 	},
-	{ additionalProperties: false },
+	{},
 );
-const compact = Type.Object(
+const compact = obj(
 	{
 		sessionId: id,
-		instructions: Type.Optional(Type.String()),
-		summary: Type.Optional(Type.String({ minLength: 1, maxLength: MAX_CONTINUITY_SUMMARY })),
+		instructions: opt(str()),
+		summary: opt(str({ minLength: 1, maxLength: MAX_CONTINUITY_SUMMARY })),
 	},
-	{ additionalProperties: false },
+	{},
 );
 const configure = Type.Object(
 	{
@@ -163,7 +164,7 @@ const configure = Type.Object(
 	},
 	{ additionalProperties: false },
 );
-const result = (value: unknown, schema?: TSchema): AgentToolResult<unknown> => ({
+const result = (value: unknown, schema?: object): AgentToolResult<unknown> => ({
 	...((value as { outcome?: string } | null)?.outcome === "failed" ? { isError: true } : {}),
 	content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, (value as { view?: string } | null)?.view === "fleet" ? undefined : 2) }],
 	details: value,
@@ -177,7 +178,7 @@ function releaseCommandMessage(value: unknown, label: string): string {
 	return `${message}${writes}`;
 }
 
-const observationSchemas: Partial<Record<AgentControlToolName, TSchema>> = {
+const observationSchemas: Partial<Record<AgentControlToolName, object>> = {
 	agent_spawn: DispatchOutputSchema,
 	agent_send: DispatchOutputSchema,
 	agent_steer: DispatchOutputSchema,
@@ -278,7 +279,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	const register = (
 		name: AgentControlToolName,
 		description: string,
-		parameters: TSchema,
+		parameters: object,
 		execute: (input: Record<string, unknown>, ctx: ExtensionContext, callId: string, admissionCaller?: AgentCaller) => Promise<unknown>,
 		modelOnly = false,
 	): void => {
@@ -292,10 +293,10 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			promptSnippet: guidance.snippet,
 			promptGuidelines: [...(guidance.guidelines ?? [])],
 			parameters: presetAware ? { ...parameters, properties: { ...(parameters as TObject).properties, preset: presetParameter(snapshot) } } : parameters,
-			outputSchema: schema ?? Type.Unknown(),
+			outputSchema: schema ?? unknown(),
 			...(modelOnly ? { exposure: "model-only" as const } : {}),
-			async execute(callId, input, _signal, _update, ctx) {
-				let admitted = input as Record<string, unknown>;
+			async execute(callId, input: Record<string, unknown>, _signal, _update, ctx) {
+				let admitted = input;
 				let admissionCaller: AgentCaller | undefined;
 				if (presetAware) {
 					refreshPreferences(ctx);
@@ -322,8 +323,8 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		promptGuidelines: [...(AGENT_CONTROL_GUIDANCE.agent_intent.guidelines ?? [])],
 		description: "Publish or clear this ordinary primary session's purpose, integration intent, scope, carried operator direction, and contact thread. Intent is a session claim, not verified authority or a lock. Returns the published endpoint and bounded related efforts. No model wake. Publish at kickoff and before promotion; update or clear intent when integration completes. Use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
 		parameters: IntentParams,
-		outputSchema: Type.Unknown(),
-		async execute(_callId, input, _signal, _update, ctx) {
+		outputSchema: unknown(),
+		async execute(_callId, input: Static<typeof IntentParams>, _signal, _update, ctx) {
 			validateIntentInput(input);
 			const { action, ...fields } = input;
 			return result(await getManager().publishIntent(ctx.sessionManager.getSessionId(), action === "clear" ? undefined : fields as Omit<PrimaryIntentClaim, "updatedAt">));
@@ -350,14 +351,14 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	register(
 		"agent_list",
 		"Discover Durable agent identities and names without a writer. Repeat the query and cursor to continue bounded results.",
-		Type.Object(
+		obj(
 			{
-				query: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
-				cwd: Type.Optional(Type.String()),
-				limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
-				cursor: Type.Optional(Type.String({ maxLength: 2048 })),
+				query: opt(str({ minLength: 1, maxLength: 256 })),
+				cwd: opt(str()),
+				limit: opt(int({ minimum: 1, maximum: 20 })),
+				cursor: opt(str({ maxLength: 2048 })),
 			},
-			{ additionalProperties: false },
+			{},
 		),
 		(input) => getManager().list(input),
 	);
@@ -459,9 +460,9 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	register(
 		"agent_command",
 		"Invoke a native contribution command, reload registrations, or fork to a tree entry through its Durable owner.",
-		Type.Object(
-			{ sessionId: id, name: Type.String({ minLength: 1 }), args: Type.Optional(Type.String()) },
-			{ additionalProperties: false },
+		obj(
+			{ sessionId: id, name: str({ minLength: 1 }), args: opt(str()) },
+			{},
 		),
 		(input, ctx) => control("command", input, ctx),
 	);

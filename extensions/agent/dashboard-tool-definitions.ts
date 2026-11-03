@@ -12,7 +12,7 @@ import {
 	type ToolDefinition,
 	type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { createAgentToolCards } from "./tool-cards.ts";
 import type { ToolDisplayLookup } from "./tool-display.ts";
 
@@ -76,7 +76,7 @@ export function createDashboardToolDefinitions(cwd: string, toolDisplay?: ToolDi
 		const presentation = (native.has(name) ? builtin : name === "codemode" ? renderers : Object.hasOwn(agents, name) ? agents[name] : toolDisplay?.(name)) as ToolRenderers | undefined;
 		return {
 			name, label: builtin?.label ?? name, description: builtin?.description ?? "Retained tool display",
-			parameters: builtin?.parameters ?? Type.Object({}),
+			parameters: builtin?.parameters ?? obj({}, { open: true }),
 			...presentationFields(presentation),
 			execute: cannotExecute,
 		};
