@@ -297,13 +297,14 @@ async function readArchiveEntries(dir: string, file: string, state: ReadState): 
 function collectLine(line: string, state: ReadState): "done" | "continue" {
 	try {
 		const entry = normalizeEntry(JSON.parse(line), state.contentChars);
-		if (!entry || state.seenIds.has(entry.id)) return "continue";
-		state.seenIds.add(entry.id);
+		if (!entry) return "continue";
 		if (state.lookupId !== undefined) {
 			if (entry.id !== state.lookupId) return "continue";
 			state.entries.push(entry);
 			return "done";
 		}
+		if (state.seenIds.has(entry.id)) return "continue";
+		state.seenIds.add(entry.id);
 		state.entries.push(entry);
 		return state.entries.length >= state.requestedLimit ? "done" : "continue";
 	} catch {

@@ -179,6 +179,28 @@ describe("appendEntry + readEntries", () => {
 		assert.equal(resolved[0].content, target.content);
 	});
 
+	it("retains no unrelated ids during an absent exact-id lookup", async (t) => {
+		const lookupDir = await mkdtemp(join(dir, "absent-id-store-"));
+		const date = "2026-07-21";
+		const records = Array.from({ length: 512 }, (_, index) =>
+			makeEntry("unrelated content", undefined, new Date(`${date}T10:00:00Z`), `unrelated-${index}`),
+		);
+		await writeFile(join(lookupDir, `${date}.jsonl`), records.map((entry) => JSON.stringify(entry)).join("\n"));
+		const originalAdd = Set.prototype.add;
+		let retainedIds = 0;
+		const add = t.mock.method(Set.prototype, "add", function (this: Set<unknown>, value: unknown) {
+			if (typeof value === "string" && value.startsWith("unrelated-")) retainedIds++;
+			return originalAdd.call(this, value);
+		});
+		try {
+			assert.deepEqual(await readEntries(lookupDir, { id: "absent-id" }), []);
+			assert.equal(retainedIds, 0);
+		} finally {
+			add.mock.restore();
+		}
+		assert.equal((await readEntries(lookupDir)).length, records.length);
+	});
+
 	it("keeps only the newest record for a duplicate id", async () => {
 		const duplicateDir = join(dir, "duplicate-id-store");
 		const duplicateId = "11111111-1111-4111-8111-111111111111";
