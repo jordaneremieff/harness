@@ -589,13 +589,22 @@ host capability. Current ordinary defining sources are
 - Trusted same-name project selections override only enabled/exposure fields
   of a global server. Full project definitions remain replacements; untrusted
   files stay unread. Native startup uses the same project-trust boundary.
-- HTTP provider authentication and OAuth options stay upstream responsibilities.
-  Issuer mismatch fails, including a supplied issuer without discoverable
-  metadata. Sign-in accepts only `http:` and `https:` metadata and authorization
-  URLs. `oauth.clientRegistration` defaults to `auto` (a Client ID Metadata
-  Document when supported, otherwise dynamic registration), with `dcr` and
-  `cimd` modes. Stored credentials are keyed by server identity and URL. Native
-  agents consume stored credentials; ordinary Pi owns interactive sign-in.
+- The native auth owner uses public `McpOAuthProvider` and `authorizeMcp` APIs
+  for protocol behaviour; ordinary Pi owns interactive sign-in. Issuer mismatch
+  fails, including a supplied issuer without discoverable metadata. Sign-in
+  accepts only `http:` and `https:` metadata and authorization URLs.
+  `oauth.clientRegistration` defaults to `auto` (a Client ID Metadata Document
+  when supported, otherwise dynamic registration), with `dcr` and `cimd` modes.
+  Native refresh honours these settings and the configured metadata URL. Stored
+  credentials are keyed by server identity and URL. Native conditional writes
+  preserve newer committed tokens and committed logout. Short file locks never
+  cover network exchange. Automatic refresh is serialised across native
+  instances in one process; cross-process serialisation with ordinary Pi awaits
+  the compatible lock. Native close awaits refresh persistence.
+  Checked 2026-11-03 against coding-agent 1.5.0
+  `dist/extensions/mcp/{config.d.ts,oauth.js}` and pi-mcp 1.5.0
+  `dist/oauth/{provider,flow}.{d.ts,js}`. Native ownership and limits are defined
+  in `extensions/agent/mcp-auth.ts` and the Agent README.
 
 These are source contracts, not fresh external-service or OAuth trials. Native
 MCP adaptation must separately preserve registration, caller visibility,

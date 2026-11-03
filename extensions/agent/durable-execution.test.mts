@@ -2,7 +2,7 @@ import { onStoredCommit } from "./commit-observation.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
@@ -18,7 +18,8 @@ import { CodemodeWorkerQueue, QueuedCodemodeSandbox } from "./codemode-admission
 import type { CreatedAgents } from "./agent-lineage.ts";
 import type { readEffortAwareness } from "./effort-awareness.ts";
 import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
-import { createDurableExecution, loadMcpConfig } from "./durable-execution.ts";
+import { createDurableExecution, loadMcpConfig, type DurableExecutionHost } from "./durable-execution.ts";
+import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
 import { answerRuntime, codemodeStream, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, streamRuntime, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension } from "./durable-execution-fixture.mts";
 import { createDurableServices } from "./durable-services.ts";
 import type { DurableHost } from "./durable-host.ts";
@@ -922,20 +923,94 @@ it("hides one project tool and discards the global toolExposure map", { timeout:
 	assert.ok(output.info.tools.every((name) => name !== "mcp__dev_docs__list_topics"));
 });
 
-it("uses stored CIMD OAuth state through a project selection override", { timeout: 30000 }, async (t) => {
+function cimdGrant(serverUrl: string): McpOAuthState {
+	return { serverUrl, tokens: { access_token: "synthetic-expired", refresh_token: "synthetic-refresh", token_type: "Bearer" }, tokensExpireAt: 1,
+		discovery: { authorizationServerUrl: "https://auth.example.test", authorizationServerMetadata: {
+			issuer: "https://auth.example.test", authorization_endpoint: "https://auth.example.test/authorize", token_endpoint: "https://auth.example.test/token",
+			response_types_supported: ["code"], client_id_metadata_document_supported: true, token_endpoint_auth_methods_supported: ["none"], authorization_response_iss_parameter_supported: true,
+		} } };
+}
+
+it("refreshes production CIMD state through a project selection override", { timeout: 30000 }, async (t) => {
 	const token = `synthetic-${randomUUID()}`;
 	const server = await httpMcpServer(token);
 	t.after(() => server.close());
+	const fetch = globalThis.fetch; let refreshes = 0;
+	t.mock.method(globalThis, "fetch", async (input: string | URL, init?: RequestInit) => {
+		if (String(input) !== "https://auth.example.test/token") return fetch(input, init);
+		refreshes++;
+		assert.equal(new URLSearchParams(String(init?.body)).get("client_id"), "https://pi.dev/oauth/client.json");
+		return Response.json({ access_token: token, refresh_token: "synthetic-rotated", token_type: "Bearer", expires_in: 3600 });
+	});
+	const key = `mcp__remote_docs|${server.url}`;
 	const f = await executionFixture(t, {
 		code: `return (await tools.mcp__remote_docs__echo({ value: "selected" })).content[0].text;`,
 		mcpServers: { "remote-docs": { url: server.url, exposure: "direct", oauth: { clientRegistration: "cimd" } } },
 		projectMcpServers: { "remote-docs": { exposure: "codemode" } },
-		mcpAuth: { [`mcp__remote_docs|${server.url}`]: { serverUrl: server.url, clientInformation: { client_id: "https://pi.dev/oauth/client.json" }, tokens: { access_token: token, token_type: "Bearer" } } },
+		mcpAuth: { [key]: cimdGrant(server.url) },
 	});
 	const result = await f.submit("Use the project's authenticated documentation tools.");
 	assert.equal(toolResultBody(result.toolResults.at(-1)), "echo selected");
 	assert.deepEqual(declaredTools(f.requests[0]).filter((name) => name.startsWith("mcp__")), []);
+	assert.equal(refreshes, 1);
+	const state = JSON.parse(readFileSync(join(f.agentDir, "mcp-auth.json"), "utf8"))[key];
+	assert.equal(state.tokens.access_token, token); assert.equal(state.tokens.refresh_token, "synthetic-rotated");
+	assert.equal(state.clientInformation, undefined);
 });
+
+it("shares one rotating grant between two native executions", { timeout: 30000 }, async (t) => {
+	const token = `synthetic-${randomUUID()}`; const server = await httpMcpServer(token); t.after(() => server.close());
+	let host!: DurableExecutionHost;
+	const f = await executionFixture(t, { builtinExtensions: (value) => { host = value; return []; } });
+	const key = `mcp__remote_docs|${server.url}`;
+	writeFileSync(join(f.agentDir, "mcp.json"), JSON.stringify({ mcpServers: { "remote-docs": { url: server.url, exposure: "direct" } } }));
+	writeFileSync(join(f.agentDir, "mcp-auth.json"), JSON.stringify({ [key]: cimdGrant(server.url) }));
+	const entered = deferred(); const release = deferred(); t.after(release.resolve);
+	const fetch = globalThis.fetch; let refreshes = 0;
+	t.mock.method(globalThis, "fetch", async (input: string | URL, init?: RequestInit) => {
+		if (String(input) !== "https://auth.example.test/token") return fetch(input, init);
+		refreshes++; entered.resolve(); await release.promise;
+		return refreshes === 1 ? Response.json({ access_token: token, refresh_token: "synthetic-rotated", token_type: "Bearer", expires_in: 3600 }) : Response.json({ error: "invalid_grant" }, { status: 400 });
+	});
+	const first = createDurableExecution(host); const second = createDurableExecution(host);
+	t.after(async () => { await Promise.all([first.close(), second.close()]); });
+	await entered.promise; release.resolve(); await Promise.all([first.ready, second.ready]);
+	for (const execution of [first, second]) assert.ok(execution.extensions.some((extension) => extension.tools?.some((tool) => tool.name === "mcp__remote_docs__echo")));
+	assert.equal(refreshes, 1);
+	assert.equal(JSON.parse(readFileSync(join(f.agentDir, "mcp-auth.json"), "utf8"))[key].tokens.refresh_token, "synthetic-rotated");
+});
+
+it("awaits refresh persistence on native execution close", { timeout: 30000 }, async (t) => {
+	let host!: DurableExecutionHost;
+	const f = await executionFixture(t, { builtinExtensions: (value) => { host = value; return []; } });
+	const url = "https://mcp.example.test/mcp"; const key = `mcp__docs|${url}`;
+	const path = join(f.agentDir, "mcp-auth.json");
+	writeFileSync(join(f.agentDir, "mcp.json"), JSON.stringify({ mcpServers: { docs: { url, exposure: "direct" } } }));
+	writeFileSync(path, JSON.stringify({ [key]: cimdGrant(url) }));
+	const answered = deferred();
+	t.mock.method(globalThis, "fetch", async (input: string | URL) => {
+		assert.equal(String(input), "https://auth.example.test/token");
+		mkdirSync(`${path}.lock`); answered.resolve();
+		return Response.json({ access_token: "synthetic-new", refresh_token: "synthetic-rotated", token_type: "Bearer", expires_in: 3600 });
+	});
+	const execution = createDurableExecution(host); t.after(() => execution.close());
+	await answered.promise;
+	let closed = false; const closing = execution.close().then(() => { closed = true; });
+	await Promise.resolve(); assert.equal(closed, false);
+	rmdirSync(`${path}.lock`); await closing;
+	assert.equal(JSON.parse(readFileSync(path, "utf8"))[key].tokens.refresh_token, "synthetic-rotated");
+});
+
+for (const clientRegistration of ["auto", "cimd", "dcr", "unsupported", ["cimd"], null]) {
+	it(`validates the native OAuth registration setting ${JSON.stringify(clientRegistration)}`, (t) => {
+		const f = mcpConfigFixture(t, { docs: { url: "https://example.com/mcp", oauth: { clientRegistration } } }, {});
+		const loaded = loadMcpConfig({ agentDir: f.agentDir, cwd: f.cwd, projectTrusted: true });
+		const valid = typeof clientRegistration === "string" && ["auto", "cimd", "dcr"].includes(clientRegistration);
+		assert.equal(loaded.servers.length, valid ? 1 : 0);
+		if (valid) assert.deepEqual(loaded.errors, []);
+		else assert.match(loaded.errors.join("\n"), /oauth.clientRegistration/u);
+	});
+}
 
 it("rejects auth in a trusted project's mcp.json", () => {
 	const root = mkdtempSync(join(tmpdir(), "durable-execution-auth-"));

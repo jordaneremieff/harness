@@ -1,10 +1,10 @@
 /** Native code mode and tool search with configured MCP transports and resource tools. */
 import { execSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord";
@@ -14,15 +14,16 @@ import { createCodemodeExtension, createCodemodeTool, type CodemodeNamespace } f
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import type { AuthProvider, CallToolResult, ContentBlock, ListResourcesResult, ReadResourceResult, Resource, ResourceTemplate, Tool as McpTool } from "@earendil-works/pi-mcp";
 import { JSON_RPC_ERROR_CODES, McpClient, McpError, StdioTransport, StreamableHttpTransport, toLlmContent } from "@earendil-works/pi-mcp";
-import type { McpOAuthState, McpOAuthStateStore } from "@earendil-works/pi-mcp/oauth";
-import { adaptOAuthProvider, McpOAuthAuthorizationRequiredError, McpOAuthProvider } from "@earendil-works/pi-mcp/oauth";
-import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
+import { McpOAuthAuthorizationRequiredError } from "@earendil-works/pi-mcp/oauth";
+import type { AgentSessionServices, LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } from "@earendil-works/pi-coding-agent";
+export type { LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { TSchema } from "typebox";
 import { QueuedCodemodeSandbox } from "./codemode-admission.ts";
 import { guardStdio, McpGuardian } from "./mcp-guardian.ts";
+import { NativeMcpAuth } from "./mcp-auth.ts";
 
 // ─── Public contract ────────────────────────────────────────────────────────
 
@@ -83,49 +84,6 @@ type ToolResultContent = readonly (TextContent | ImageContent)[];
 
 // ─── MCP configuration ──────────────────────────────────────────────────────
 
-export type McpExposure = "codemode" | "deferred" | "direct" | "hidden";
-
-export interface McpServerConfig {
-	readonly type?: "stdio" | "http" | "streamable-http";
-	readonly command?: string;
-	readonly args?: readonly string[];
-	readonly env?: Readonly<Record<string, string>>;
-	readonly cwd?: string;
-	readonly url?: string;
-	readonly headers?: Readonly<Record<string, string>>;
-	readonly enabled?: boolean;
-	readonly exposure?: McpExposure;
-	readonly toolExposure?: Readonly<Record<string, McpExposure>>;
-	readonly timeout?: number;
-	readonly description?: string;
-	/** Send the token of a configured Pi login provider. Global config only. */
-	readonly auth?: { readonly provider: string };
-	readonly oauth?: {
-		readonly clientId?: string;
-		readonly clientSecret?: string;
-		readonly callbackPort?: number;
-		readonly callbackUrl?: string;
-		readonly scope?: string;
-		readonly clientName?: string;
-		readonly authServerMetadataUrl?: string;
-	};
-}
-
-export interface McpServerEntry {
-	readonly name: string;
-	readonly config: McpServerConfig;
-	/** File that defined the connection and authentication. */
-	readonly source: string;
-	/** Trusted project file that overrides tool selection, without replacing the connection. */
-	readonly override?: string;
-}
-
-export interface LoadedMcpConfig {
-	readonly servers: readonly McpServerEntry[];
-	readonly autoEnableCodemode?: boolean;
-	readonly errors: readonly string[];
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -168,6 +126,9 @@ function validateAuthFields(name: string, value: Record<string, unknown>, scope:
 }
 
 function validateOAuthFields(name: string, oauth: Record<string, unknown>): true | string {
+	if (oauth.clientRegistration !== undefined && oauth.clientRegistration !== "auto" && oauth.clientRegistration !== "cimd" && oauth.clientRegistration !== "dcr") {
+		return `server "${name}": oauth.clientRegistration must be auto, cimd, or dcr`;
+	}
 	for (const key of ["clientId", "clientSecret", "scope", "clientName"] as const) {
 		if (oauth[key] !== undefined && typeof oauth[key] !== "string") return `server "${name}": oauth.${key} must be a string`;
 	}
@@ -552,113 +513,17 @@ function resolveHeaders(headers: Readonly<Record<string, string>> | undefined): 
 	return Object.keys(resolved).length > 0 ? resolved : undefined;
 }
 
-const MCP_AUTH_LOCK_STALE_MS = 20_000;
-const MCP_AUTH_LOCK_WAIT_MS = 25_000;
-const MCP_AUTH_LOCK_RETRY_MS = 100;
-
-/** Per-server OAuth state in `mcp-auth.json`, shared with the ordinary MCP commands and `/mcp`. */
-class McpAuthFileStore {
-	private readonly path: string;
-
-	constructor(path: string) {
-		this.path = path;
-	}
-
-	/** State of one server, keyed like the ordinary store so sign-ins are shared in both directions. */
-	forServer(name: string, serverUrl: string): McpOAuthStateStore {
-		const key = `${mcpNamespace(name)}|${serverUrl}`;
-		return {
-			load: () => this.withLock(async () => this.readStates()[key]),
-			save: (state) => this.withLock(async () => {
-				const states = this.readStates();
-				states[key] = state;
-				this.writeStates(states);
-			}),
-		};
-	}
-
-	private lockPath(): string {
-		return `${this.path}.lock`;
-	}
-
-	private readStates(): Record<string, McpOAuthState> {
-		if (!existsSync(this.path)) return {};
-		const parsed: unknown = JSON.parse(readFileSync(this.path, "utf8"));
-		return isRecord(parsed) ? (parsed as Record<string, McpOAuthState>) : {};
-	}
-
-	private writeStates(states: Record<string, McpOAuthState>): void {
-		mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-		const temporary = `${this.path}.${process.pid}.tmp`;
-		writeFileSync(temporary, `${JSON.stringify(states, null, 2)}\n`, { mode: 0o600 });
-		renameSync(temporary, this.path);
-	}
-
-	/** Serialize read-modify-write across processes; a stale lock from a killed process is reclaimed. */
-	private async withLock<T>(run: () => T | Promise<T>): Promise<T> {
-		const started = Date.now();
-		let held = this.tryAcquireLock();
-		while (!held) {
-			if (Date.now() - started > MCP_AUTH_LOCK_WAIT_MS) break;
-			await new Promise((resolve) => setTimeout(resolve, MCP_AUTH_LOCK_RETRY_MS));
-			held = this.tryAcquireLock();
-		}
-		try {
-			return await run();
-		} finally {
-			if (held) this.releaseLock();
-		}
-	}
-
-	private tryAcquireLock(): boolean {
-		try {
-			mkdirSync(this.lockPath());
-			return true;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-			try {
-				if (Date.now() - statSync(this.lockPath()).mtimeMs > MCP_AUTH_LOCK_STALE_MS) rmdirSync(this.lockPath());
-			} catch {
-				// Another process already released it.
-			}
-			return false;
-		}
-	}
-
-	private releaseLock(): void {
-		try {
-			rmdirSync(this.lockPath());
-		} catch {
-			// Another process reclaimed the stale lock first.
-		}
-	}
-}
-
 /** Build the transport auth for one server from its configured provider or stored OAuth tokens. */
-function createServerAuthProvider(entry: McpServerEntry, store: McpAuthFileStore, modelRuntime: DurableExecutionHost["services"]["modelRuntime"]): AuthProvider | undefined {
+function createServerAuthProvider(entry: McpServerEntry, auth: NativeMcpAuth, modelRuntime: DurableExecutionHost["services"]["modelRuntime"]): AuthProvider | undefined {
 	const { config, name } = entry;
+	if (!("url" in config)) return undefined;
 	if (config.auth !== undefined) {
 		const provider = config.auth.provider;
 		return { token: async () => (await modelRuntime.getAuth(provider))?.auth.apiKey };
 	}
-	if (typeof config.url !== "string") return undefined;
 	const headers = resolveHeaders(config.headers);
 	if (headers !== undefined && Object.keys(headers).some((header) => header.toLowerCase() === "authorization")) return undefined;
-	const serverUrl = new URL(config.url).href;
-	const oauth = config.oauth;
-	const clientSecret = oauth?.clientSecret === undefined ? undefined : resolveConfigValue(oauth.clientSecret);
-	// Sign-in runs through `pi mcp login` or `/mcp`; this provider sends stored tokens and refreshes them.
-	return adaptOAuthProvider(
-		new McpOAuthProvider({
-			serverUrl,
-			redirectUrl: oauth?.callbackUrl ?? "http://127.0.0.1/callback",
-			clientMetadata: { client_name: oauth?.clientName ?? "pi" },
-			...(oauth?.clientId === undefined ? {} : { clientId: oauth.clientId }),
-			...(clientSecret === undefined ? {} : { clientSecret }),
-			store: store.forServer(name, serverUrl),
-			onRedirect: () => undefined,
-		}),
-	);
+	return auth.provider(name, config, resolveConfigValue);
 }
 
 /** A transport error the model can act on, naming the server and how to sign in. */
@@ -671,7 +536,7 @@ function mcpTransportError(server: McpServerEntry, error: unknown): Error {
 
 function createTransport(entry: McpServerEntry, cwd: string, authProvider: AuthProvider | undefined) {
 	const { config, name } = entry;
-	if (typeof config.url === "string") {
+	if ("url" in config) {
 		return new StreamableHttpTransport({ url: config.url, headers: resolveHeaders(config.headers), ...(authProvider === undefined ? {} : { authProvider }) });
 	}
 	if (typeof config.command !== "string") throw new Error(`MCP server "${name}" defines neither url nor command`);
@@ -967,6 +832,7 @@ class DurableExecutionRuntime implements DurableExecution {
 	private readonly resourceTools: NestedTool[];
 	private readonly servers: McpServerConnection[] = [];
 	private readonly guardian: McpGuardian;
+	private readonly auth: NativeMcpAuth;
 	private readonly sandbox = new CodemodeSandbox({ acquireWorker: () => { throw new Error("Codemode calls require queued worker admission."); } });
 	private readonly queuedSandboxes = new Set<QueuedCodemodeSandbox>();
 	private readonly readyTimeoutMs: number;
@@ -980,12 +846,12 @@ class DurableExecutionRuntime implements DurableExecution {
 		this.readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
 		this.resourceTools = this.defineResourceTools();
 		const activation = computeActivation(host);
-		const authStore = new McpAuthFileStore(join(host.agentDir, "mcp-auth.json"));
+		this.auth = new NativeMcpAuth(host.agentDir);
 		this.extensions = this.buildExtensions(activation);
 		if (host.signal.aborted) void this.close();
 		else host.signal.addEventListener("abort", this.closeOnHostAbort, { once: true });
 		for (const server of host.signal.aborted ? [] : activation.servers) {
-			this.servers.push(new McpServerConnection(server, host.cwd, () => this.rebuildMcpTools(), createServerAuthProvider(server, authStore, host.services.modelRuntime), this.guardian));
+			this.servers.push(new McpServerConnection(server, host.cwd, () => this.rebuildMcpTools(), createServerAuthProvider(server, this.auth, host.services.modelRuntime), this.guardian));
 		}
 		this.rebuildMcpTools();
 		this.ready = this.waitForDirectServers();
@@ -1062,6 +928,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		this.host.signal.removeEventListener("abort", this.closeOnHostAbort);
 		const pending = new Set(this.servers.map((server) => server.entry.name));
 		const closing = Promise.all([this.sandbox.close(), ...[...this.queuedSandboxes].map((sandbox) => sandbox.close()), ...this.servers.map(async (server) => { await server.close(); pending.delete(server.entry.name); })]);
+		const authSettled = this.auth.close();
 		this.closePromise = new Promise<void>((resolve, reject) => {
 			const deadline = setTimeout(() => {
 				this.host.services.diagnostics.push({ type: "warning", message: `MCP shutdown timed out: ${[...pending].join(", ")}` });
@@ -1069,7 +936,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				resolve();
 			}, 5000);
 			void closing.then(() => { clearTimeout(deadline); this.guardian.close(); resolve(); }, (error: unknown) => { clearTimeout(deadline); this.guardian.close(); reject(error); });
-		});
+		}).finally(() => authSettled);
 		return this.closePromise;
 	}
 
