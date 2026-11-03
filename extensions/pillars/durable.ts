@@ -16,7 +16,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ToolCall } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+import { int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, type AccessPage, parseAccess } from "./access.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import type { Stage } from "./capacity.ts";
@@ -296,26 +296,26 @@ export function pillarsDurableContribution(
 				);
 			}
 
-			const parameters = Type.Object(
+			const parameters = obj(
 				{
-					resource: Type.Optional(
-						Type.String({
+					resource: opt(
+						str({
 							maxLength: 64,
 							description: "Resource identifier from the inventory; defaults to inventory",
 						}),
 					),
-					offset: Type.Optional(
-						Type.Integer({ minimum: 0, maximum: 1048576, description: "UTF-8 byte offset from nextOffset" }),
+					offset: opt(
+						int({ minimum: 0, maximum: 1048576, description: "UTF-8 byte offset from nextOffset" }),
 					),
-					referenceBodyDigest: Type.Optional(
-						Type.String({
+					referenceBodyDigest: opt(
+						str({
 							pattern: "^[a-f0-9]{64}$",
 							description: "Required for continuation; prevents mixing source revisions",
 						}),
 					),
-					draft: Type.Optional(DraftSchema),
+					draft: opt(DraftSchema),
 				},
-				{ additionalProperties: false },
+				{ open: false },
 			);
 
 			return defineExtension({
@@ -365,13 +365,13 @@ export function pillarsDurableContribution(
 						...defineTool({
 							name: "pillars_usage",
 							description: TOOL_DESCRIPTION,
-							parameters: Type.Object(
+							parameters: obj(
 								{
-									view: Type.Optional(Type.Unsafe<"overview" | "revisions">({ type: "string", enum: ["overview", "revisions"] })),
-									windowDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 30 })),
-									cursor: Type.Optional(Type.String({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$" })),
+									view: opt(oneOf(["overview", "revisions"])),
+									windowDays: opt(int({ minimum: 1, maximum: 30 })),
+									cursor: opt(str({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$" })),
 								},
-								{ additionalProperties: false },
+								{ open: false },
 							),
 							replay: "safe",
 							prepareArguments(input) {

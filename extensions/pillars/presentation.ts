@@ -5,7 +5,7 @@ import {
 	type ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
-import type { AccessError, AccessPage, AccessRequest } from "./access.ts";
+import type { AccessError, AccessPage } from "./access.ts";
 import type { Response } from "./readback.ts";
 
 export interface UsageRequest {
@@ -48,7 +48,7 @@ function expandedAccessText(page: AccessPage, theme: Theme): string {
 
 /** Terminal rendering for the `pillars` tool: compact by default, full source text when expanded. */
 export function accessRenderers(): {
-	renderCall(args: (AccessRequest & { draft?: string }) | undefined, theme: Theme): Text;
+	renderCall(args: unknown, theme: Theme): Text;
 	renderResult(
 		result: AgentToolResult<AccessPage | AccessError | undefined>,
 		options: ToolRenderResultOptions,
@@ -57,10 +57,11 @@ export function accessRenderers(): {
 	): Text;
 } {
 	return {
-		renderCall(args, theme) {
+		renderCall(input, theme) {
+			const args = input !== null && typeof input === "object" ? input as Record<string, unknown> : undefined;
 			let text = theme.fg("toolTitle", theme.bold("pillars "));
-			text += theme.fg("accent", args?.resource ?? "inventory");
-			if (args?.offset !== undefined) text += theme.fg("dim", ` (offset ${args.offset})`);
+			text += theme.fg("accent", typeof args?.resource === "string" ? args.resource : "inventory");
+			if (typeof args?.offset === "number") text += theme.fg("dim", ` (offset ${args.offset})`);
 			if (args?.draft !== undefined) text += theme.fg("dim", " (agent draft assessment)");
 			return new Text(text, 0, 0);
 		},
@@ -80,7 +81,7 @@ export function accessRenderers(): {
 
 /** Terminal rendering for the `pillars_usage` tool: compact by default, the evidence page when expanded. */
 export function usageRenderers(): {
-	renderCall(args: UsageRequest | undefined, theme: Theme): Text;
+	renderCall(args: unknown, theme: Theme): Text;
 	renderResult(
 		result: AgentToolResult<Response | undefined>,
 		options: ToolRenderResultOptions,
@@ -89,11 +90,12 @@ export function usageRenderers(): {
 	): Text;
 } {
 	return {
-		renderCall(args, theme) {
+		renderCall(input, theme) {
+			const args = input !== null && typeof input === "object" ? input as Record<string, unknown> : undefined;
 			let text = theme.fg("toolTitle", theme.bold("pillars_usage"));
 			const parts: string[] = [];
-			if (args?.view !== undefined) parts.push(args.view);
-			if (args?.windowDays !== undefined) parts.push(`${args.windowDays} days`);
+			if (typeof args?.view === "string") parts.push(args.view);
+			if (typeof args?.windowDays === "number") parts.push(`${args.windowDays} days`);
 			if (args?.cursor !== undefined) parts.push("continuation");
 			if (parts.length > 0) text += theme.fg("dim", ` (${parts.join(", ")})`);
 			return new Text(text, 0, 0);

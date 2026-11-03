@@ -5,11 +5,11 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { FauxResponseStep } from "@earendil-works/pi-ai";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { compile } from "@earendil-works/pi-schema";
 import { access } from "./access.ts";
 import { utcDay } from "./collector.ts";
-import { draftAssessment, MAX_DRAFT_CHARACTERS } from "./draft.ts";
+import { draftAssessment, DraftInputError, DraftSchema, MAX_DRAFT_CHARACTERS, splitDraft } from "./draft.ts";
 import { PillarsStore } from "./store.ts";
 
 const hostRoot = process.env.PI_PILLARS_TEST_HOST_ROOT;
@@ -27,6 +27,48 @@ function text(message: { content: unknown }): string {
 	assert.ok(Array.isArray(message.content));
 	return message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
 }
+
+test("draft limits preserve combined units without Unicode grapheme segmentation", () => {
+	const cases = [
+		{ name: "combining marks", unit: "e\u0301\u1ab0\u1dc0\ufe20", count: 1 },
+		{ name: "variation selectors", unit: "✈\ufe0f", count: 1 },
+		{ name: "joiner family", unit: "👩‍👩‍👧‍👦", count: 1 },
+		{ name: "flag pair", unit: "🇦🇺", count: 1 },
+		{ name: "skin tone", unit: "👍🏽", count: 2 },
+		{ name: "CRLF", unit: "\r\n", count: 2 },
+		{ name: "precomposed Hangul", unit: "가", count: 1 },
+		{ name: "conjoining jamo", unit: "가", count: 2 },
+	];
+	for (const { name, unit, count } of cases) {
+		const prefix = unit.repeat(Math.floor((MAX_DRAFT_CHARACTERS - 2) / count));
+		const below = `${prefix}x`;
+		const at = `${below}x`;
+		const above = `${at}x`;
+		for (const draft of [below, at]) {
+			assert.equal(compile(DraftSchema).check(draft), true, name);
+			assert.deepEqual(splitDraft({ draft, resource: "inventory" }), { draft, source: { resource: "inventory" } }, name);
+		}
+		assert.throws(() => splitDraft({ draft: above }), (error: unknown) => {
+			assert.ok(error instanceof DraftInputError, name);
+			assert.match(error.message, /character limit exceeded/);
+			assert.match(error.message, /Measured 8193 characters/);
+			assert.ok(error.message.includes(`${Buffer.byteLength(above, "utf8")} UTF-8 bytes`), name);
+			return true;
+		});
+	}
+	for (const draft of ["\ud800", "\udc00", `${"a".repeat(MAX_DRAFT_CHARACTERS)}\ud800`]) {
+		assert.throws(() => splitDraft({ draft }), (error: unknown) => {
+			assert.ok(error instanceof DraftInputError);
+			assert.match(error.message, /malformed Unicode: unpaired surrogate/);
+			assert.ok(error.message.includes(`Measured ${draft.length} characters`));
+			assert.ok(error.message.includes(`${Buffer.byteLength(draft, "utf8")} UTF-8 bytes`));
+			assert.doesNotMatch(error.message, /character limit exceeded/);
+			return true;
+		});
+	}
+	assert.throws(() => splitDraft({ draft: " ".repeat(MAX_DRAFT_CHARACTERS + 1) }), /blank text.*Measured 8193 characters/);
+	assert.throws(() => splitDraft({ draft: "\r\n" }), /blank text.*Measured 2 characters/);
+});
 
 test("native draft assessment follows source results without a context transform or extra turn", { timeout: 30000 }, async (t) => {
 	const root = await realpath(await mkdtemp(join(tmpdir(), "pillars-draft-test-")));
@@ -56,7 +98,7 @@ test("native draft assessment follows source results without a context transform
 				noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 				additionalExtensionPaths: [entry],
 				extensionFactories: [(pi) => {
-					pi.registerTool({ name: "fixture_echo", label: "Fixture echo", description: "Return synthetic data.", parameters: Type.Object({}),
+					pi.registerTool({ name: "fixture_echo", label: "Fixture echo", description: "Return synthetic data.", parameters: obj({}, { open: true }),
 						async execute() { return { content: [{ type: "text", text: "Other result." }], details: undefined }; },
 					});
 				}],
@@ -115,7 +157,7 @@ test("native draft assessment follows source results without a context transform
 					const result = JSON.parse(error.message);
 					assert.equal(result.schema, "pillars-source-error");
 					assert.equal(result.code, "invalid_input");
-					assert.match(result.message, /8192 characters \(TypeBox grapheme clusters\)/);
+					assert.match(result.message, /8192 characters \(base code points with attached marks, selectors, joiner sequences and paired flag indicators\)/);
 					if (draft === " \n") assert.match(result.message, /blank text/);
 					if (draft === "\ud800") assert.match(result.message, /malformed Unicode: unpaired surrogate/);
 					assert.doesNotMatch(result.message, /private|731905|do not echo/);
@@ -160,7 +202,7 @@ test("native draft assessment follows source results without a context transform
 			assert.match(text(message), /agent-authored DATA/);
 			assert.doesNotMatch(text(message), /operator invoked/);
 		});
-		await t.test("host validation preserves combined-character drafts at the grapheme limit", async () => {
+		await t.test("host validation preserves combined-character drafts at the character limit", async () => {
 			const draft = "e\u0301".repeat(MAX_DRAFT_CHARACTERS);
 			const before = assessments().length;
 			const done = responses(ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "principle-example", draft }, { id: "combined-draft" })), (context) => {

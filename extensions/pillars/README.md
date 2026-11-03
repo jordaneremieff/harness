@@ -121,7 +121,7 @@ field. For source and usage fields, numbers and booleans are shown directly. Arb
 strings and unsupported field names are described by type and length, not echoed;
 object and array contents are withheld. Draft validation names the failed
 condition: non-string value, blank text, malformed Unicode, or excessive character
-count. String diagnostics report the TypeBox grapheme count and UTF-8 byte size,
+count. String diagnostics report the combined-character count and UTF-8 byte size,
 never the draft text. The source tool echoes only a known identifier with its
 `.md` suffix.
 These rules prevent control characters, paths, credentials, and arbitrary input
@@ -168,13 +168,20 @@ The tool's description and prompt guidance ask the agent to submit a concrete
 proposal before a consequential decision, action, or answer without waiting for
 an operator cue. Routine execution and exact-output tasks need no added ceremony.
 Omitting `draft` keeps source-only behavior. A draft must be a nonblank,
-well-formed Unicode string of at most 8192 characters, counted as TypeBox grapheme
-clusters. Preparation and execution enforce this limit in ordinary and Durable
-sessions; there is no separate UTF-8 byte limit. Pi validates JSON Schema string
-lengths as code points, not grapheme clusters. The draft schema therefore declares
+well-formed Unicode string of at most 8192 combined characters. Each unit starts
+with one code point and absorbs following marks in U+0300–U+036F,
+U+1AB0–U+1AFF, U+1DC0–U+1DFF and U+FE20–U+FE2F, plus variation selectors
+in U+FE00–U+FE0F. A following U+200D joins the next code point and its attached
+marks or selectors; this repeats for further joiners. If the unit starts with
+U+1F1E6–U+1F1FF, it also absorbs one next unconsumed code point in that range.
+This is not full Unicode grapheme segmentation: skin-tone modifiers, CR and LF,
+and conjoining Hangul jamo each count separately. Preparation and execution
+enforce this limit in ordinary and Durable sessions; there is no separate UTF-8
+byte limit. Pi validates JSON Schema string lengths as code points.
+The draft schema therefore declares
 only a nonempty string, with no maximum length or regular-expression pattern.
 This lets combined-character drafts reach the handler without a stricter host
-limit. The handler rejects blank text, malformed Unicode, and excessive grapheme
+limit. The handler rejects blank text, malformed Unicode, and excessive character
 counts with specific diagnostics. This keeps provider-facing schemas simple and prevents
 schema-pattern errors from replacing the handler's messages. The extension preserves
 its text exactly and rejects invalid input without echoing it.

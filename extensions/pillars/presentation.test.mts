@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { defineTool, getMarkdownTheme, initTheme, type Theme, ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Markdown, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { obj, opt, str } from "@earendil-works/pi-schema";
 import type { AccessPage } from "./access.ts";
 import { emptyShard, zero } from "./capacity.ts";
 import { accessRenderers, usageMarkdown, usageRenderers } from "./presentation.ts";
@@ -236,7 +236,7 @@ test("the host tool row renders collapsed by default and toggles with setExpande
 		name: "pillars",
 		label: "Pillars",
 		description: "Read Pillars source.",
-		parameters: Type.Object({ resource: Type.Optional(Type.String()) }),
+		parameters: obj({ resource: opt(str()) }, { open: true }),
 		...accessRenderers(),
 		async execute() {
 			throw new Error("Renderer fixtures must not execute.");

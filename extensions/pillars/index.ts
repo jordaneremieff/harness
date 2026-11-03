@@ -11,7 +11,7 @@ import {
 	VERSION,
 } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
-import { Type } from "typebox";
+import { int, obj, oneOf, opt, str, type Static } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, parseAccess } from "./access.ts";
 import { InputError } from "./input.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
@@ -24,6 +24,34 @@ import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidenc
 import { accessRenderers, usageMarkdown, usageRenderers } from "./presentation.ts";
 import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
+
+const PillarsParameters = obj(
+	{
+		resource: opt(
+			str({ maxLength: 64, description: "Resource identifier from the inventory; defaults to inventory" }),
+		),
+		offset: opt(
+			int({ minimum: 0, maximum: 1048576, description: "UTF-8 byte offset from nextOffset" }),
+		),
+		referenceBodyDigest: opt(
+			str({
+				pattern: "^[a-f0-9]{64}$",
+				description: "Required for continuation; prevents mixing source revisions",
+			}),
+		),
+		draft: opt(DraftSchema),
+	},
+	{ open: false },
+);
+
+const PillarsUsageParameters = obj(
+	{
+		view: opt(oneOf(["overview", "revisions"])),
+		windowDays: opt(int({ minimum: 1, maximum: 30 })),
+		cursor: opt(str({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$" })),
+	},
+	{ open: false },
+);
 
 export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions = { agentDir: getAgentDir() }): void {
 	const { registerTool, publish } = toolDisplayPublisher(pi);
@@ -170,24 +198,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			'Read resource:"governance" before applying any corpus entry.',
 			DRAFT_GUIDANCE,
 		],
-		parameters: Type.Object(
-			{
-				resource: Type.Optional(
-					Type.String({ maxLength: 64, description: "Resource identifier from the inventory; defaults to inventory" }),
-				),
-				offset: Type.Optional(
-					Type.Integer({ minimum: 0, maximum: 1048576, description: "UTF-8 byte offset from nextOffset" }),
-				),
-				referenceBodyDigest: Type.Optional(
-					Type.String({
-						pattern: "^[a-f0-9]{64}$",
-						description: "Required for continuation; prevents mixing source revisions",
-					}),
-				),
-				draft: Type.Optional(DraftSchema),
-			},
-			{ additionalProperties: false },
-		),
+		parameters: PillarsParameters,
 		...accessRenderers(),
 		prepareArguments(input) {
 			try {
@@ -199,7 +210,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 				throw new Error(JSON.stringify({ schema: "pillars-source-error", code: "invalid_input", message: error.message }));
 			}
 		},
-		async execute(id, args, signal) {
+		async execute(id, args: Static<typeof PillarsParameters>, signal) {
 			let input: ReturnType<typeof splitDraft>;
 			try { input = splitDraft(args); }
 			catch (error) {
@@ -221,14 +232,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		name: "pillars_usage",
 		label: "Pillars access evidence",
 		description: TOOL_DESCRIPTION,
-		parameters: Type.Object(
-			{
-				view: Type.Optional(Type.Unsafe<"overview" | "revisions">({ type: "string", enum: ["overview", "revisions"] })),
-				windowDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 30 })),
-				cursor: Type.Optional(Type.String({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$" })),
-			},
-			{ additionalProperties: false },
-		),
+		parameters: PillarsUsageParameters,
 		...usageRenderers(),
 		prepareArguments(input) {
 			try { return parseRequest(input); }
@@ -237,7 +241,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 				throw new Error(JSON.stringify(errorResponse("invalid_input", error.message)));
 			}
 		},
-		async execute(_id, args, signal) {
+		async execute(_id, args: Static<typeof PillarsUsageParameters>, signal) {
 			const result = await reader.read(args, signal);
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 		},

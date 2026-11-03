@@ -1,32 +1,61 @@
-import { Type } from "typebox";
-import { Value } from "typebox/value";
+import { str } from "@earendil-works/pi-schema";
 import { CORRECTION_TASK, JUDGMENT_AUTHORITY } from "./commands.ts";
 
 export const MAX_DRAFT_CHARACTERS = 8192;
-/** JSON Schema lengths count code points; the handler enforces the grapheme limit. */
-export const DraftSchema = Type.String({
+const CHARACTER_UNIT = "base code points with attached marks, selectors, joiner sequences and paired flag indicators";
+/** JSON Schema lengths count code points; the handler enforces the combined-character limit. */
+export const DraftSchema = str({
 	minLength: 1,
-	description: "Concrete agent-authored proposal to assess after this source read. At most 8192 characters (TypeBox grapheme clusters), enforced by the extension. The handler rejects blank text and malformed Unicode with specific errors. Retained in native history, not private scratch.",
+	description: `Concrete agent-authored proposal to assess after this source read. At most 8192 characters (${CHARACTER_UNIT}), enforced by the extension. The handler rejects blank text and malformed Unicode with specific errors. Retained in native history, not private scratch.`,
 });
 export const DRAFT_GUIDANCE =
-	"Before a consequential decision, action, or answer, include your concrete proposal as draft to check it before delivery; do not wait for an operator cue. A successful source read delivers an assessment task after the tool results for you to apply in the ordinary continuation. Preserve routine execution and exact-output tasks without added ceremony. The optional draft accepts at most 8192 characters (TypeBox grapheme clusters) and stays in native history, not private scratch. Source JSON remains unchanged.";
+	`Before a consequential decision, action, or answer, include your concrete proposal as draft to check it before delivery; do not wait for an operator cue. A successful source read delivers an assessment task after the tool results for you to apply in the ordinary continuation. Preserve routine execution and exact-output tasks without added ceremony. The optional draft accepts at most 8192 characters (${CHARACTER_UNIT}) and stays in native history, not private scratch. Source JSON remains unchanged.`;
 
 export class DraftInputError extends Error {
 	constructor(condition: string, size?: { characters: number; bytes: number }) {
-		super(`draft: ${condition}.${size ? ` Measured ${size.characters} characters (TypeBox grapheme clusters), ${size.bytes} UTF-8 bytes.` : ""} Use a nonblank, well-formed Unicode string of at most ${MAX_DRAFT_CHARACTERS} characters (TypeBox grapheme clusters), or omit draft for source access only. Draft contents are withheld.`);
+		super(`draft: ${condition}.${size ? ` Measured ${size.characters} characters (${CHARACTER_UNIT}), ${size.bytes} UTF-8 bytes.` : ""} Use a nonblank, well-formed Unicode string of at most ${MAX_DRAFT_CHARACTERS} characters (${CHARACTER_UNIT}), or omit draft for source access only. Draft contents are withheld.`);
 	}
 }
 
-/** Preserve TypeBox's grapheme unit independently of the host's JSON Schema validator. */
-function characterCount(value: string): number {
-	let low = 0;
-	let high = value.length;
-	while (low < high) {
-		const middle = Math.floor((low + high) / 2);
-		if (Value.Check(Type.String({ maxLength: middle }), value)) high = middle;
-		else low = middle + 1;
+function attached(point: number): boolean {
+	return (point >= 0x0300 && point <= 0x036f) ||
+		(point >= 0x1ab0 && point <= 0x1aff) ||
+		(point >= 0x1dc0 && point <= 0x1dff) ||
+		(point >= 0xfe20 && point <= 0xfe2f) ||
+		(point >= 0xfe00 && point <= 0xfe0f);
+}
+
+function attachedEnd(value: string, index: number): number {
+	let point = value.codePointAt(index);
+	while (point !== undefined && attached(point)) {
+		index += point > 0xffff ? 2 : 1;
+		point = value.codePointAt(index);
 	}
-	return low;
+	return index;
+}
+
+/** This bounded rule is not full Unicode grapheme segmentation; skin tones remain separate. */
+function characterCount(value: string): number {
+	let count = 0;
+	let index = 0;
+	const width = (point: number) => point > 0xffff ? 2 : 1;
+	const flag = (point: number) => point >= 0x1f1e6 && point <= 0x1f1ff;
+	while (index < value.length) {
+		const first = value.codePointAt(index);
+		if (first === undefined) break;
+		index += width(first);
+		for (;;) {
+			index = attachedEnd(value, index);
+			if (value.codePointAt(index) !== 0x200d) break;
+			const joined = value.codePointAt(index + 1);
+			if (joined === undefined) break;
+			index += 1 + width(joined);
+		}
+		const next = value.codePointAt(index);
+		if (flag(first) && next !== undefined && flag(next)) index += 2;
+		count++;
+	}
+	return count;
 }
 
 export function splitDraft(input: unknown): { source: unknown; draft?: string } {

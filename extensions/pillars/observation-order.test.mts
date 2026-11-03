@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
+import { obj } from "@earendil-works/pi-schema";
 import { Collector } from "./collector.ts";
 import pillarsExtension from "./index.ts";
 import { Deduplicator } from "./observation.ts";
@@ -28,7 +28,7 @@ function observationHost(ctx: ContextFields): Emit {
 			name: "pillars",
 			exposure: "direct",
 			description: "Synthetic source tool",
-			parameters: Type.Object({}),
+			parameters: obj({}, { open: true }),
 			sourceInfo: {
 				path: fileURLToPath(new URL("./index.ts", import.meta.url)),
 				source: "synthetic",
