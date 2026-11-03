@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import fsPromises, { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import fsPromises, { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -96,6 +96,55 @@ async function events(dir: string): Promise<RuleEvent[]> {
 async function importRows(reg: RuleRegistry, selection = "--all") {
 	return reg.importCatalog(selection, (await reg.planImport(selection)).revision, sessionAudit());
 }
+
+describe("byte-identified rule reductions", () => {
+	it("refreshes availability and isolates nested records, pending proposals, and data", async (t) => {
+		const dir = await directory(t);
+		let available = true;
+		const reg = new RuleRegistry(dir, { catalog: [row("sample.rule")], matcherAvailable: () => available, onNotice: assert.fail });
+		await reg.proposeAdd(candidate(), "Bound output.", agent);
+		const data = { name: "sample", kind: "table" as const, source: "test", capturedAt: 1, rows: [{ key: "key", value: "original" }] };
+		await reg.setData({ ...data, revision: namedDataRevision(data) }, null, sessionAudit());
+		const original = await reg.snapshot();
+		const returned = await reg.snapshot();
+		const record = returned.records.get("sample.rule");
+		assert.ok(record);
+		record.definition.note = "changed by caller";
+		returned.records.clear();
+		const pending = returned.pending[0];
+		assert.ok(pending.candidate?.suggestion);
+		pending.candidate.suggestion.flags?.push("--changed");
+		returned.pending.length = 0;
+		const binding = returned.data.get("sample");
+		assert.ok(binding?.kind === "table");
+		binding.rows[0].value = "changed by caller";
+		returned.data.clear();
+		assert.deepEqual(await reg.snapshot(), original);
+		available = false;
+		assert.equal((await reg.snapshot()).records.get("sample.rule")?.matcherAvailable, false);
+		available = true;
+		assert.equal((await reg.snapshot()).records.get("sample.rule")?.matcherAvailable, true);
+	});
+	it("replays changed bytes even when size and timestamps stay the same", async (t) => {
+		const dir = await directory(t);
+		const reg = registry(dir, [row("sample.rule", "First note.")]);
+		await reg.snapshot();
+		const before = await stat(reg.path);
+		const changed = `${JSON.stringify(catalog(row("sample.rule", "Other note.")))}\n`;
+		assert.equal(Buffer.byteLength(changed), before.size);
+		await writeFile(reg.path, changed);
+		await utimes(reg.path, before.atime, before.mtime);
+		assert.equal((await reg.snapshot()).records.get("sample.rule")?.definition.note, "Other note.");
+	});
+	it("checks private file permissions again for identical cached bytes", async (t) => {
+		const dir = await directory(t);
+		const reg = registry(dir, [row("sample.rule")]);
+		await reg.snapshot();
+		await reg.snapshot();
+		await chmod(reg.path, 0o644);
+		assert.equal((await reg.snapshot()).health.status, "degraded");
+	});
+});
 
 describe("strict rule events", () => {
 	it("validates closed candidates, ids, scope, reasons, and guidance bytes", () => {

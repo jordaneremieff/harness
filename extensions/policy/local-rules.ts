@@ -1358,7 +1358,7 @@ function missingStore(path: string): RuleFileError {
 	return new RuleFileError("file presence", `policy rule store disappeared: ${path}`, `restore the store at ${path}`);
 }
 
-async function readEvents(dir: string, path: string, signal?: AbortSignal): Promise<ReadEventsResult> {
+async function readStoreBytes(dir: string, path: string, signal?: AbortSignal): Promise<Buffer> {
 	checkCancellation(signal);
 	await checkExistingDirectory(dir);
 	checkCancellation(signal);
@@ -1395,7 +1395,7 @@ async function readEvents(dir: string, path: string, signal?: AbortSignal): Prom
 			if (result.bytesRead === 0) break;
 			offset += result.bytesRead;
 		}
-		return parseEventLines(buffer.subarray(0, offset));
+		return buffer.subarray(0, offset);
 	} finally {
 		await handle.close();
 	}
@@ -1626,6 +1626,11 @@ export class RuleRegistry {
 	private mutationTail: Promise<void> = Promise.resolve();
 	private degradedHealth: RuleStoreHealth | undefined;
 	private incompleteReported = false;
+	private cachedReduction: {
+		readonly bytes: Buffer;
+		readonly reduction: RuleReduction;
+		readonly incompleteFinalLine?: number;
+	} | undefined;
 
 	constructor(dir: string, options: RuleRegistryOptions = {}) {
 		this.dir = dir;
@@ -1658,6 +1663,7 @@ export class RuleRegistry {
 	/** Record the first failure as degraded health and return the stored health. */
 	private degrade(error: unknown): RuleStoreHealth {
 		if (this.degradedHealth) return this.degradedHealth;
+		this.cachedReduction = undefined;
 		const reason = error instanceof Error ? error.message : String(error);
 		const line = error instanceof RuleLineError ? error.line : undefined;
 		const property = line === undefined ? (error instanceof RuleFileError ? error.property : "file access") : undefined;
@@ -1694,11 +1700,23 @@ export class RuleRegistry {
 	}
 
 	private async readReduction(signal?: AbortSignal): Promise<{ reduction: RuleReduction; incompleteFinalLine?: number }> {
-		const read = await readEvents(this.dir, this.path, signal);
+		const bytes = await readStoreBytes(this.dir, this.path, signal);
 		checkCancellation(signal);
+		if (!this.cachedReduction?.bytes.equals(bytes)) {
+			this.cachedReduction = undefined;
+			const read = parseEventLines(bytes);
+			this.cachedReduction = {
+				bytes,
+				reduction: reduceRuleEvents(read.events, () => false, read.eventLines),
+				...(read.incompleteFinalLine ? { incompleteFinalLine: read.incompleteFinalLine } : {}),
+			};
+		}
+		const cached = this.cachedReduction;
+		const reduction = clone(cached.reduction);
+		for (const [id, record] of reduction.records) reduction.records.set(id, refreshDerived(record, this.matcherAvailable));
 		return {
-			reduction: reduceRuleEvents(read.events, this.matcherAvailable, read.eventLines),
-			...(read.incompleteFinalLine ? { incompleteFinalLine: read.incompleteFinalLine } : {}),
+			reduction,
+			...(cached.incompleteFinalLine ? { incompleteFinalLine: cached.incompleteFinalLine } : {}),
 		};
 	}
 

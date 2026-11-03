@@ -1283,7 +1283,12 @@ The private log contains closed current-shape events:
 - operator-approved data set/remove events with expected revisions.
 
 The log defines the stored catalog. Bundled definitions never overlay it during
-reads or reloads. Existing disabled overrides survive replacement and explicit
+reads or reloads. Each registry instance retains only its latest captured bytes
+and reduced state. Every snapshot rereads and checks the file; only byte-identical
+content reuses the reduction. Returned records, proposals, and data are isolated
+copies, and predicate availability is derived again for each snapshot. File
+metadata and elapsed time never establish unchanged authority.
+Existing disabled overrides survive replacement and explicit
 import. Import target identities prevent stale changes; concurrent capacity
 conflicts do not corrupt the catalog or partially apply an import. There is no
 old-format decoder, migration reader, second built-in store, or parallel dispatch
