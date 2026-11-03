@@ -322,6 +322,21 @@ The composer caption uses the selected native conversation's actual name from
 attach status and live observations. Name clears remove stale captions; an
 unnamed target uses its exact identity, not an invented name.
 
+The same command shows an agent in any terminal pane beside the main
+conversation, so the operator can watch its work and type to it directly. In a
+Rex window, for example:
+
+```sh
+rex run --label "agent @handle" -c <package root> -- node extensions/agent/terminal.ts --session @handle
+```
+
+The pane shows the agent's live transcript, composer, and status block. Text
+typed there is admitted to the same native conversation as any other input, and
+closing the pane closes only that terminal, not the agent's work. A pane started
+without an interactive shell can lack the managed `pi` launcher on `PATH`; the
+entry then resolves the install under Pi's agent directory, so the command needs
+no environment variable.
+
 Without `--session`, the terminal reads the last attached identity from
 `terminal-target.json` under `PI_AGENT_SESSIONS_DIR`, or its default store root.
 With no remembered target, it opens the dashboard. This file remembers only the
@@ -381,8 +396,9 @@ caller-owned reply routes.
 
 The standalone attachment supports explicit shipped `dark` and `light` themes.
 It resolves public Pi packages from the managed install selected by
-`PI_MANAGED_INSTALL_ROOT`, or the managed `pi` launcher on `PATH`, and rereads
-`current-version` on each process start. Agent/Durable runtime dependencies stay
+`PI_MANAGED_INSTALL_ROOT`, then the managed `pi` launcher on `PATH`, then the
+install under Pi's agent directory (`PI_CODING_AGENT_DIR`, otherwise
+`~/.pi/agent`), and rereads `current-version` on each process start. Agent/Durable runtime dependencies stay
 checkout-local. It uses the existing `PI_AGENT_DIR` and `PI_AGENT_SESSIONS_DIR`
 configuration.
 
@@ -3034,7 +3050,7 @@ facts. No new command is required.
 | Variable | Meaning |
 |---|---|
 | `PI_AGENT_DIR` | Pi configuration directory, otherwise public `getAgentDir()`. |
-| `PI_MANAGED_INSTALL_ROOT` | Standalone terminal managed-install directory. Otherwise locate the managed `pi` launcher on `PATH`; read its install directory's `current-version` afresh. |
+| `PI_MANAGED_INSTALL_ROOT` | Standalone terminal managed-install directory. Otherwise locate the managed `pi` launcher on `PATH`, then the install under Pi's agent directory (`PI_CODING_AGENT_DIR` or `~/.pi/agent`); read its `current-version` afresh. |
 | `PI_AGENT_SESSIONS_DIR` | Agent store root, otherwise `<agentDir>/agent-sessions`. |
 
 <!-- harness:settings:start -->

@@ -53,6 +53,7 @@ answers win over this table.
 | Change busy work | `agent_steer` or `agent_send` `mode: "steer"` | Reaches the agent at its next tool boundary | Steer never interrupts a running tool | `#controls` |
 | Stop work | `agent_abort` | Stops current work; retained evidence stays | An ordinary abort does not reach background agents; `background: true` does | `#agent-collaboration-and-placement` |
 | Read what an agent did | `agent_inspect` | `activity`, `history`, `search`, `result` by submission, `exact` for full entries | Ordinary primaries expose only bounded latest-retained ancestry | `#independent-retained-reads` |
+| The operator wants to watch an agent or talk to it in their own terminal | the standalone terminal in a pane: `rex run --label "agent @slug" -c <package root> -- node extensions/agent/terminal.ts --session @slug`, through the Rex tools or CLI | The pane shows the agent's live console; text typed there is admitted like any other input; the agent keeps running when the pane closes | A console inside the primary's dashboard is not a pane the operator asked to see; the entry resolves the managed Pi install itself, so pass no environment variable | `#standalone-terminal-attachment` |
 | A mistaken decision | `agent_rewind` | Forks before the entry and submits the correction | Files remain current; repair them separately | `#controls` |
 | Side exploration | `agent_fork` | Idle fork with its own identity and an empty profile | A fork inherits no intent claim | `#controls` |
 

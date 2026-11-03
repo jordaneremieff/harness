@@ -33,7 +33,21 @@ it("managed bootstrap finds the executable launcher without creating a symlink",
 		release(root, "current"); mkdirSync(bin); writeFileSync(join(root, "current-version"), "current");
 		writeFileSync(join(bin, "pi"), "#!/bin/sh\nexit 0\n"); chmodSync(join(bin, "pi"), 0o700);
 		assert.equal(managedRelease({ PATH: [join(home, "absent"), bin].join(delimiter) }).root, realpathSync(root));
-		assert.throws(() => managedRelease({ PATH: join(home, "absent") }), /launcher not found/);
+		assert.throws(() => managedRelease({ PATH: join(home, "absent"), HOME: join(home, "absent") }), /install not found/);
+	} finally { rmSync(home, { recursive: true, force: true }); }
+});
+
+it("managed bootstrap falls back to the install under Pi's agent directory when PATH lacks the launcher", () => {
+	const home = mkdtempSync(join(tmpdir(), "agent-terminal-agent-dir-"));
+	try {
+		const defaultRoot = join(home, ".pi", "agent", "install");
+		release(defaultRoot, "current"); writeFileSync(join(defaultRoot, "current-version"), "current");
+		assert.equal(managedRelease({ PATH: join(home, "absent"), HOME: home }).root, realpathSync(defaultRoot));
+		const configuredRoot = join(home, "elsewhere", "install");
+		release(configuredRoot, "current"); writeFileSync(join(configuredRoot, "current-version"), "current");
+		assert.equal(managedRelease({ PATH: join(home, "absent"), HOME: home, PI_CODING_AGENT_DIR: join(home, "elsewhere") }).root, realpathSync(configuredRoot));
+		assert.equal(managedRelease({ PATH: join(home, "absent"), HOME: home, PI_CODING_AGENT_DIR: "~/elsewhere" }).root, realpathSync(configuredRoot));
+		assert.throws(() => managedRelease({ PATH: join(home, "absent"), HOME: home, PI_CODING_AGENT_DIR: join(home, "missing") }), /install not found/);
 	} finally { rmSync(home, { recursive: true, force: true }); }
 });
 
