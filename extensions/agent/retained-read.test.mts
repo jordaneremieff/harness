@@ -26,7 +26,7 @@ import { RetainedReadError } from "./retained-errors.ts";
 
 // Fixed consumer expectations, not a contract discovered and echoed into a request.
 const snapshotContract = { request: "snapshot/1.0.0", response: "snapshot/2.0.0", durable: HOST_CONTRACT.upstream.durable };
-const inspectContract = { request: "inspect/1.1.0", response: "aba481516e3990199b5fe0890c68092c78ae894744013ace60514dd456e62ace", durable: HOST_CONTRACT.upstream.durable };
+const inspectContract = { request: "inspect/1.1.0", response: "671fa063aab1424eba635272c95977761450c735d34efd2def12a7de7689ff70", durable: HOST_CONTRACT.upstream.durable };
 const storageId = "00000000-0000-4000-8000-000000000001";
 const cli = fileURLToPath(new URL("./retained-read.ts", import.meta.url));
 

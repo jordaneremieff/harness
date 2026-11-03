@@ -43,9 +43,9 @@ function descriptor(): JsonObject {
 	return {
 		format: "pi.agent.contract/1", release: "1.0.0", upstream: { codingAgent: "1.2.0", durable: D },
 		requires: { codingAgent: "1.2.0", durable: "1.2.0" }, operations: {
-			dashboard: { request: "dashboard/1.0.0", response: "f3e8abe67fe550c8708e5e7c19322401fb1c951e797f3ee3c667f709d5befc9e" },
+			dashboard: { request: "dashboard/1.0.0", response: "9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04" },
 			snapshot: { request: "snapshot/1.0.0", response: "snapshot/2.0.0", durable: D },
-			inspect: { request: "inspect/1.1.0", response: "aba481516e3990199b5fe0890c68092c78ae894744013ace60514dd456e62ace", durable: D },
+			inspect: { request: "inspect/1.1.0", response: "671fa063aab1424eba635272c95977761450c735d34efd2def12a7de7689ff70", durable: D },
 			"observe-open": { request: "observe-open/1.0.0", response: "observe-open/2.0.0", durable: D },
 			"observe-frame": { request: "observe-frame/1.0.0", response: "observe-frame/2.0.0", durable: D },
 			"observe-close": { request: "observe-close/1.0.0", response: "observe-close/1.0.0" },
@@ -55,7 +55,7 @@ function descriptor(): JsonObject {
 			configure: { request: "configure/1.3.0", response: "configure/1.3.0" },
 			"collaboration-list": { request: "collaboration-list/1.0.0", response: "collaboration-list/1.0.0" },
 			"collaboration-read": { request: "collaboration-read/1.0.0", response: "collaboration-read/1.0.0" },
-			status: { request: "status/1.0.0", response: "136b65669deaff617066d01a40f88fed246da2a46d3743b5c67ce5e6026f91a6", durable: D },
+			status: { request: "status/1.0.0", response: "9ca1713e8665258c5891d8fb82774e10c130d6848f8c7d2b8c38ef56d2b223e9", durable: D },
 			command: { request: "command/1.1.0", response: "command/1.0.0", durable: D },
       compact:{request:'compact/2.0.0',response:'compact/2.0.0',durable:D},
       reset:{request:'reset/1.0.0',response:'reset/1.0.0'},fork:{request:'fork/1.0.0',response:'fork/1.0.0',durable:D},
@@ -64,8 +64,8 @@ function descriptor(): JsonObject {
       'timer-schedule':{request:'timer-schedule/1.1.0',response:'timer-schedule/2.0.0'},
       'run-scope':{request:'run-scope/1.0.0',response:'run-scope/1.0.0'},'run-stop':{request:'run-stop/1.0.0',response:'run-stop/1.0.0'},
       'request-cancel':{request:'request-cancel/1.0.0',response:'request-cancel/1.0.0'},
-      'profile-read':{request:'profile-read/1.0.0',response:'b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889'},
-      'profile-update':{request:'profile-update/1.0.0',response:'7c805d143fae0d6a9fd373a4acb24fc080c94fa4b0787d447545e08714907eb4'},
+      'profile-read':{request:'profile-read/1.0.0',response:'396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b'},
+      'profile-update':{request:'profile-update/1.0.0',response:'8eb14a948f9d42366d9d4eb211d498563693d48806495032fe28f22ca66d942f'},
       spawn:{request:'spawn/2.0.0',response:'spawn/2.0.0'},place:{request:'place/2.1.0',response:'place/2.1.0'},
 		},
 	};
@@ -176,7 +176,7 @@ test("operation mutations refuse only the affected operation", () => {
 test("inspect requires the supplied schema identity and current fake host operations", async () => {
 	const remote = decodeDescriptor(await fakeDescriptor());
 	for (const member of ["snapshot", "observe-open", "observe-frame", "inspect"] as const) assertOperation(remote, member);
-	assert.equal(assertOperation(remote, "inspect").response, "aba481516e3990199b5fe0890c68092c78ae894744013ace60514dd456e62ace");
+	assert.equal(assertOperation(remote, "inspect").response, "671fa063aab1424eba635272c95977761450c735d34efd2def12a7de7689ff70");
 	for (const response of ["3df10ec4515f4d6f8db33d0f63666d8ca68f5458143e69d088a80534483bb863", "inspect/2.0.0"]) {
 		const changed = descriptor(); ((changed.operations as JsonObject).inspect as JsonObject).response = response;
 		refusal(() => assertOperation(decodeDescriptor(changed), "inspect"), "incompatible");

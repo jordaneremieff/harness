@@ -226,17 +226,17 @@ export async function descriptor(): Promise<JsonObject> {
 		},
 		"inspect": {
 			"request": "inspect/1.1.0",
-			"response": "aba481516e3990199b5fe0890c68092c78ae894744013ace60514dd456e62ace",
+			"response": "671fa063aab1424eba635272c95977761450c735d34efd2def12a7de7689ff70",
 			"durable": durable
 		},
 		"status": {
 			"request": "status/1.0.0",
-			"response": "136b65669deaff617066d01a40f88fed246da2a46d3743b5c67ce5e6026f91a6",
+			"response": "9ca1713e8665258c5891d8fb82774e10c130d6848f8c7d2b8c38ef56d2b223e9",
 			"durable": durable
 		},
 		"list": {
 			"request": "list/1.0.0",
-			"response": "76e932a0749fd72c9aef6b90635d061e455f84fb57f7f9bd102034cf28887600"
+			"response": "1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6"
 		},
 		"fork": {
 			"request": "fork/1.0.0",
@@ -286,7 +286,7 @@ export async function descriptor(): Promise<JsonObject> {
 		},
 		"dashboard": {
 			"request": "dashboard/1.0.0",
-			"response": "f3e8abe67fe550c8708e5e7c19322401fb1c951e797f3ee3c667f709d5befc9e"
+			"response": "9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04"
 		},
 		"snapshot": {
 			"request": "snapshot/1.0.0",
@@ -325,15 +325,15 @@ export async function descriptor(): Promise<JsonObject> {
 		},
 		"profile-read": {
 			"request": "profile-read/1.0.0",
-			"response": "b78d87440ae527566e0f13603e638dfa057aaa87f2985521e32b9c859baa1889"
+			"response": "396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b"
 		},
 		"profile-update": {
 			"request": "profile-update/1.0.0",
-			"response": "7c805d143fae0d6a9fd373a4acb24fc080c94fa4b0787d447545e08714907eb4"
+			"response": "8eb14a948f9d42366d9d4eb211d498563693d48806495032fe28f22ca66d942f"
 		},
 		"profile-list": {
 			"request": "profile-list/1.0.0",
-			"response": "0eb5c60290d491535a1dd158e5d5ed4432eb8f89fe26a496a395e08b58ff4db4"
+			"response": "99b00a455cf50a2a24de4a0f9e328a12e775caa9c5031becbef462e06e65a7cf"
 		},
 		"resolve-agent": {
 			"request": "resolve-agent/2.0.0",
