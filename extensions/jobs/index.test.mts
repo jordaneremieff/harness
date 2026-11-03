@@ -10,8 +10,7 @@ import {
 	type ExtensionContext,
 	type ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
-import type { TSchema } from "typebox";
-import { compile } from "@earendil-works/pi-schema";
+import { compile, type Schema } from "@earendil-works/pi-schema";
 import registerJobs from "./index.ts";
 import type { JobLogs, JobSnapshot } from "./manager.ts";
 
@@ -23,7 +22,7 @@ interface Result {
 }
 interface Tool {
 	name: string;
-	outputSchema: TSchema;
+	outputSchema: Schema;
 	parameters: { properties: Record<string, unknown>; additionalProperties?: boolean };
 	execute(
 		id: string,
@@ -128,6 +127,16 @@ describe("Command Jobs adapter", () => {
 			assert.deepEqual(schema.anyOf[0], createBashToolDefinition(root).outputSchema);
 			assert.deepEqual(Object.keys(pi.tool("jobs").parameters.properties), ["action", "id", "cursor"]);
 			assert.equal(pi.tool("jobs").parameters.additionalProperties, false);
+			const output = compile(pi.tool("jobs").outputSchema);
+			const listed = { id: "fixture", status: "running", startedAt: 0, cancellationRequested: false };
+			assert.equal(output.check({ jobs: [listed] }), true, "unfinished job fields remain optional");
+			assert.equal(output.check({ jobs: [{ ...listed, extra: true }] }), true, "job records remain open");
+			for (const key of Object.keys(listed)) {
+				const incomplete: Record<string, unknown> = { ...listed };
+				delete incomplete[key];
+				assert.equal(output.check({ jobs: [incomplete] }), false, `${key} remains required`);
+			}
+			assert.equal(output.check({ jobs: [{ ...listed, endedAt: "invalid" }] }), false);
 			assert.deepEqual((await call("jobs", { action: "list" })).details, { jobs: [] });
 			await assert.rejects(call("jobs", { action: "status" }), /requires a job id/);
 			await assert.rejects(call("jobs", { action: "list", id: "x" }), /no id or cursor/);

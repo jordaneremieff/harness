@@ -8,63 +8,73 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { Type, type Static } from "typebox";
+import { arr, bool, int, nul, num, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { JOB_LIMITS, JobManager, type JobSnapshot } from "./manager.ts";
 
 /** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
-const StringEnum = <T extends readonly string[]>(values: T) => Type.Unsafe<T[number]>({ type: "string", enum: values });
+const StringEnum = <T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: values });
 
-const BashParameters = Type.Object({
-	command: Type.String({ description: "Shell command to execute", minLength: 1, maxLength: 32_768 }),
-	timeout: Type.Optional(
-		Type.Number({ description: "Timeout in seconds; no default timeout", exclusiveMinimum: 0, maximum: 2_147_483.647 }),
+const BashParameters = obj({
+	command: str({ description: "Shell command to execute", minLength: 1, maxLength: 32_768 }),
+	timeout: opt(
+		num({ description: "Timeout in seconds; no default timeout", exclusiveMinimum: 0, maximum: 2_147_483.647 }),
 	),
-	background: Type.Optional(
-		Type.Boolean({ description: "Return a managed job ID without waiting for command completion" }),
+	background: opt(
+		bool({ description: "Return a managed job ID without waiting for command completion" }),
 	),
-});
+}, { open: true });
 
-const JobsParameters = Type.Object(
+const JobsParameters = obj(
 	{
 		action: StringEnum(["list", "status", "logs", "cancel"] as const),
-		id: Type.Optional(
-			Type.String({ description: "Job ID returned by bash with background:true", minLength: 1, maxLength: 100 }),
+		id: opt(
+			str({ description: "Job ID returned by bash with background:true", minLength: 1, maxLength: 100 }),
 		),
-		cursor: Type.Optional(
-			Type.Integer({
+		cursor: opt(
+			int({
 				description: "Byte cursor from a previous logs result; default starts at retained output",
 				minimum: 0,
 				maximum: Number.MAX_SAFE_INTEGER,
 			}),
 		),
 	},
-	{ additionalProperties: false },
+	{ open: false },
 );
 
-const JobSchema = Type.Object({
-	id: Type.String(),
+const jobProperties = {
+	id: str(),
 	status: StringEnum(["running", "succeeded", "failed", "cancelled", "timed_out"] as const),
-	startedAt: Type.Number(),
-	endedAt: Type.Optional(Type.Number()),
-	exitCode: Type.Optional(Type.Union([Type.Integer(), Type.Null()])),
-	error: Type.Optional(Type.String({ maxLength: JOB_LIMITS.errorBytes })),
-	cancellationRequested: Type.Boolean(),
-	timeoutSeconds: Type.Optional(Type.Number()),
-});
-const JobResultSchema = Type.Object({ job: JobSchema });
-const JobsOutputSchema = Type.Union([
-	Type.Object({ jobs: Type.Array(Type.Omit(JobSchema, ["error"]), { maxItems: JOB_LIMITS.retained }) }),
+	startedAt: num(),
+	endedAt: opt(num()),
+	exitCode: opt(union([int(), nul()])),
+	error: opt(str({ maxLength: JOB_LIMITS.errorBytes })),
+	cancellationRequested: bool(),
+	timeoutSeconds: opt(num()),
+};
+const JobSchema = obj(jobProperties, { open: true });
+const JobListItemSchema = obj({
+	id: jobProperties.id,
+	status: jobProperties.status,
+	startedAt: jobProperties.startedAt,
+	endedAt: jobProperties.endedAt,
+	exitCode: jobProperties.exitCode,
+	cancellationRequested: jobProperties.cancellationRequested,
+	timeoutSeconds: jobProperties.timeoutSeconds,
+}, { open: true });
+const JobResultSchema = obj({ job: JobSchema }, { open: true });
+const JobsOutputSchema = union([
+	obj({ jobs: arr(JobListItemSchema, { maxItems: JOB_LIMITS.retained }) }, { open: true }),
 	JobResultSchema,
-	Type.Object({
-		id: Type.String(),
-		text: Type.String({ maxLength: JOB_LIMITS.pageBytes }),
-		earliest: Type.Integer(),
-		next: Type.Integer(),
-		end: Type.Integer(),
-		gap: Type.Boolean(),
-		more: Type.Boolean(),
-		pendingBytes: Type.Integer(),
-	}),
+	obj({
+		id: str(),
+		text: str({ maxLength: JOB_LIMITS.pageBytes }),
+		earliest: int(),
+		next: int(),
+		end: int(),
+		gap: bool(),
+		more: bool(),
+		pendingBytes: int(),
+	}, { open: true }),
 ]);
 
 function shellOptions(ctx: ExtensionContext): BashToolOptions {
@@ -107,8 +117,8 @@ export default function registerJobs(pi: ExtensionAPI) {
 			"A background bash job survives a turn abort, not session shutdown. Start dev servers in the foreground of their shell; no stdin or interactive terminal is available.",
 		],
 		parameters: BashParameters,
-		outputSchema: Type.Union([native.outputSchema, JobResultSchema]),
-		async execute(id, params, signal, onUpdate, ctx) {
+		outputSchema: { anyOf: [native.outputSchema, JobResultSchema] } satisfies Schema,
+		async execute(id, params: Static<typeof BashParameters>, signal, onUpdate, ctx) {
 			signal?.throwIfAborted();
 			const options = shellOptions(ctx);
 			if (!params.background) {
@@ -145,7 +155,7 @@ export default function registerJobs(pi: ExtensionAPI) {
 		promptSnippet: "Retrieve managed command status and bounded logs, or cancel a job",
 		parameters: JobsParameters,
 		outputSchema: JobsOutputSchema,
-		async execute(_id, params, signal) {
+		async execute(_id, params: Static<typeof JobsParameters>, signal) {
 			signal?.throwIfAborted();
 			if (params.action === "list") {
 				if (params.id !== undefined || params.cursor !== undefined) throw new Error("list accepts no id or cursor.");
