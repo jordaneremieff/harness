@@ -202,7 +202,8 @@ export interface SearchDisplayArgs {
 }
 
 /** The subject is the literal query, or the bounded listing when the query is omitted. */
-export function renderSearchCall(args: Partial<SearchDisplayArgs> | null | undefined, theme: Theme, context: CallContext): Component {
+export function renderSearchCall(input: unknown, theme: Theme, context: CallContext): Component {
+	const args = input !== null && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : undefined;
 	const query = typeof args?.query === "string" ? previewMark(args.query, 64) : { text: "", clipped: false };
 	const subject = query.text ? `"${query.text}"` : "listing";
 	const qualifiers: string[] = [];
@@ -220,7 +221,7 @@ export function renderSearchCall(args: Partial<SearchDisplayArgs> | null | undef
 	if (args?.maxVisits !== undefined || args?.maxScanBytes !== undefined || args?.maxMatches !== undefined || args?.maxOutputBytes !== undefined) {
 		hint = true;
 	}
-	return callCard("history_search", subject, qualifiers, hint, args, theme, context);
+	return callCard("history_search", subject, qualifiers, hint, input, theme, context);
 }
 
 const SEARCH_STATUS: Record<string, string> = {
@@ -304,7 +305,8 @@ export interface ReadDisplayArgs {
 	maxOutputBytes?: number;
 }
 
-export function renderReadCall(args: Partial<ReadDisplayArgs> | null | undefined, theme: Theme, context: CallContext): Component {
+export function renderReadCall(input: unknown, theme: Theme, context: CallContext): Component {
+	const args = input !== null && typeof input === "object" && !Array.isArray(input) ? input as Record<string, unknown> : undefined;
 	const entryId = typeof args?.entryId === "string" ? previewMark(args.entryId, 72) : { text: "", clipped: false };
 	const subject = entryId.text || (context.argsComplete === false ? "" : "(entry pending)");
 	const qualifiers: string[] = [];
@@ -316,7 +318,7 @@ export function renderReadCall(args: Partial<ReadDisplayArgs> | null | undefined
 	}
 	if (typeof args?.offset === "number" && args.offset > 0) qualifiers.push(`offset ${args.offset}`);
 	if (args?.maxBytes !== undefined || args?.maxItems !== undefined || args?.maxOutputBytes !== undefined) hint = true;
-	return callCard("history_read", subject, qualifiers, hint, args, theme, context);
+	return callCard("history_read", subject, qualifiers, hint, input, theme, context);
 }
 
 const READ_STATUS: Record<string, string> = {
