@@ -346,8 +346,11 @@ a current-state inspection attempt. It does not undo effects or prove their abse
 A released record is eligible for explicit forgetting without replay.
 
 `cleanup` requires a retained record ID owned by this caller and the same server
-instance. It closes exact owned blocks, not unrelated blocks in their parent
-session. Empty parent sessions/windows are not automatically closed. Unknown
+instance. Its preflight resolves each exact retained session/block ID without
+fetching the block's full API description. An absent, ambiguous or unavailable
+target stops cleanup before effect admission; reconcile the record before retrying.
+It closes exact owned blocks, not unrelated blocks in their parent session.
+Empty parent sessions/windows are not automatically closed. Unknown
 cleanup outcomes require inspection before another close. `forget: true` removes
 a closed record. Ownership storage is bounded; a full store rejects new effects
 before execution rather than silently discarding open claims. Regular effect

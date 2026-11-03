@@ -243,6 +243,58 @@ test("the reserved ownership slot permits cleanup at the creation capacity", asy
 	);
 });
 
+test("cleanup uses exact presence without fetching oversized block descriptions", async () => {
+	const f = fixture({ maxOutputBytes: 4096 });
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	f.transport.handler = (method, _data, call) => {
+		if (method !== "session.describe_block") return undefined;
+		const description = reply({ api: { description: "x".repeat(60000) } });
+		assert.ok(Buffer.byteLength(description.stdout) > call.maxOutputBytes);
+		return { ...description, outcome: "output_limit", truncated: true };
+	};
+	const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
+	assert.equal(response.ok, true);
+	assert.equal(response.effects.recordId, "close");
+	assert.equal(f.transport.calls.some((call) => call.method === "session.describe_block"), false);
+	assert.deepEqual(f.transport.calls.filter((call) => call.method === "target.resolve").map((call) => call.data),
+		[{ kinds: ["block"], queries: [block], scope: { session } }]);
+	assert.deepEqual(f.transport.calls.filter((call) => call.method === "block.close").map((call) => call.data),
+		[{ session_id: session, block_id: block }]);
+});
+
+test("cleanup refuses absent, ambiguous, unavailable and mismatched exact targets before effect admission", async () => {
+	for (const observed of [
+		reply({ results: [{ status: "not_found" }] }),
+		reply({ results: [{ status: "ambiguous" }] }),
+		{ ...reply({}), outcome: "timeout" as const, exitCode: null },
+		reply({ results: [{ status: "resolved", target: { block_id: block, session_id: otherSession } }] }),
+		reply({ results: [{ status: "resolved", target: { block_id: "block:55555555-5555-4555-8555-555555555555", session_id: session } }] }),
+	]) {
+		const f = fixture();
+		await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+		f.transport.handler = (method) => method === "target.resolve" ? observed : undefined;
+		const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
+		assert.equal(response.ok, false);
+		assert.equal(response.effects.state, "none");
+		assert.equal(f.store.state.records.length, 1);
+		assert.equal(f.store.state.records[0]?.phase, "confirmed");
+		assert.equal(f.transport.calls.some((call) => call.method === "block.close"), false);
+	}
+});
+
+test("cleanup refuses a changed server instance before target lookup or closure", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => args.includes("whoami")
+		? Promise.resolve(reply({ endpoint: "unix:///launch", host_id: "launch-host", instance_id: "replacement" })) : run(args, call);
+	const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
+	assert.equal(response.ok, false);
+	assert.match(response.error ?? "", /server identity changed/);
+	assert.equal(response.effects.state, "none");
+	assert.equal(f.transport.calls.some((call) => call.method === "target.resolve" || call.method === "block.close"), false);
+});
+
 test("copied claims do not transfer cleanup rights and repeated cleanup does not race unknown effects", async () => {
 	const f = fixture();
 	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
@@ -390,9 +442,9 @@ test("cleanup refuses ownership state that changes after resource preflight", as
   const f = fixture();
   await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
   f.transport.handler = async (method) => {
-    if (method !== "session.describe_block") return undefined;
+    if (method !== "target.resolve") return undefined;
     await f.store.update("owner", (state) => changeOwnership(state, "create", { note: "The claim changed during preflight." }));
-    return reply({ block: { block_id: block } });
+    return resolveReply({ kinds: ["block"] });
   };
   const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
   assert.equal(response.ok, false);

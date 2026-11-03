@@ -1212,12 +1212,9 @@ export class RexCore {
 		if (record.phase === "closed") return result(true, "already_closed", target, { recordId: record.callId });
 		validateCleanupRecord(record);
 		for (const resource of record.resources) {
-			await this.api(
-				"session.describe_block",
-				{ session_id: resource.sessionId, block_id: resource.blockId },
-				server,
-				context,
-			);
+			const observation = await this.observeResource(resource, server, context);
+			if (observation.presence !== "present")
+				throw new Error(observation.error ?? "The exact owned block is absent. Reconcile the record before cleanup.");
 		}
 		const pending = pendingRecord(request, target, context);
 		await this.options.store.update(context.ownerId, (state) => {
