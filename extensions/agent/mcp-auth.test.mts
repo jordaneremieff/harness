@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import type { McpServerConfig } from "@earendil-works/pi-coding-agent";
 import type { McpFetch } from "@earendil-works/pi-mcp";
-import { McpOAuthAuthorizationRequiredError, type McpOAuthState, type AuthorizationServerMetadata } from "@earendil-works/pi-mcp/oauth";
+import { McpOAuthAuthorizationRequiredError, McpOAuthProvider, type McpOAuthState, type AuthorizationServerMetadata } from "@earendil-works/pi-mcp/oauth";
 import { McpCredentialFileLock, NativeMcpAuth, type CredentialFileLock } from "./mcp-auth.ts";
 
 const url = "https://mcp.example.test/mcp";
@@ -59,6 +59,36 @@ it("shares refresh ownership between native owners and reuses the replacement to
 	assert.equal(calls, 1); assert.deepEqual(f.read()[key].tokens, rotated);
 });
 
+it("discards a losing refresh's token invalidation and reuses the committed rotation", { timeout: 5000 }, async (t) => {
+	const firstEntered = deferred(); const secondEntered = deferred();
+	const releaseWinner = deferred(); const releaseLoser = deferred();
+	t.after(() => { releaseWinner.resolve(); releaseLoser.resolve(); });
+	const f = fixture(t);
+	// Separate processes lack a shared refresh lock; this seam admits that overlap without changing file ownership.
+	const other = new NativeMcpAuth(f.dir, { withRefreshLock: (_key, fn) => fn() });
+	t.after(() => other.close());
+	const invalidation = t.mock.method(McpOAuthProvider.prototype, "invalidateCredentials");
+	let calls = 0;
+	refreshFetch(t, async (_input, init) => {
+		assert.equal(new URLSearchParams(String(init?.body)).get("refresh_token"), "synthetic-original");
+		if (++calls === 1) {
+			firstEntered.resolve(); await releaseWinner.promise; return Response.json(rotated);
+		}
+		secondEntered.resolve(); await releaseLoser.promise;
+		return Response.json({ error: "invalid_grant" }, { status: 400 });
+	});
+	const winner = provider(f.owner); const loser = provider(other);
+	const first = winner.token(); await firstEntered.promise;
+	const second = loser.token(); await secondEntered.promise;
+	releaseWinner.resolve(); assert.equal(await first, rotated.access_token);
+	const saved = f.read(); assert.deepEqual(saved[key].tokens, rotated);
+	releaseLoser.resolve(); assert.equal(await second, rotated.access_token);
+	assert.deepEqual(invalidation.mock.calls.map((call) => call.arguments), [["tokens"]]);
+	assert.deepEqual(f.read(), saved);
+	assert.equal(await loser.token(), rotated.access_token);
+	assert.equal(calls, 2); assert.deepEqual(f.read(), saved);
+});
+
 /** Ordinary Pi's store is private. This writer reproduces its directory lock and whole-file save protocol. */
 function ordinaryWrite(path: string, states: Record<string, McpOAuthState>): void {
 	mkdirSync(`${path}.lock`);
@@ -70,12 +100,18 @@ for (const outcome of ["new sign-in", "logout", "invalid-grant loser"] as const)
 	it(`preserves an ordinary writer's ${outcome} during native refresh`, async (t) => {
 		const f = fixture(t); const newer = { ...grant(), tokens: { ...rotated, access_token: "synthetic-sign-in" }, tokensExpireAt: Date.now() + 3600000 };
 		const unrelated = { ...grant(), serverUrl: "https://other.example.test/mcp" };
+		const auth = provider(f.owner); let calls = 0;
 		refreshFetch(t, async () => {
+			calls++;
 			ordinaryWrite(f.path, { ...(outcome === "logout" ? {} : { [key]: newer }), unrelated });
 			return outcome === "invalid-grant loser" ? Response.json({ error: "invalid_grant" }, { status: 400 }) : Response.json(rotated);
 		});
-		if (outcome === "logout") await assert.rejects(provider(f.owner).token(), McpOAuthAuthorizationRequiredError);
-		else assert.equal(await provider(f.owner).token(), newer.tokens.access_token);
+		if (outcome === "logout") await assert.rejects(auth.token(), McpOAuthAuthorizationRequiredError);
+		else {
+			assert.equal(await auth.token(), newer.tokens.access_token);
+			assert.equal(await auth.token(), newer.tokens.access_token);
+		}
+		assert.equal(calls, 1);
 		assert.deepEqual(f.read(), { ...(outcome === "logout" ? {} : { [key]: newer }), unrelated });
 	});
 }
