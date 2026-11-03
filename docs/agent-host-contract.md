@@ -1576,7 +1576,7 @@ These examples contain fabricated identities and data. They are valid-shape exam
 ### Fixture: retained-read-descriptor
 
 ```json
-{"version":"retained-read/1.0.0","upstream":{"codingAgent":"1.5.0","durable":"1.5.0"},"operations":{"snapshot":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.5.0"},"inspect":{"request":"inspect/1.1.0","response":"f1009d22633112866c6c6b83c4734512f00c6aa4767daf07644074f932633f0a","durable":"1.5.0"}}}
+{"version":"retained-read/1.0.0","upstream":{"codingAgent":"1.5.0","durable":"1.5.0"},"operations":{"snapshot":{"request":"snapshot/1.0.0","response":"snapshot/2.0.0","durable":"1.5.0"},"inspect":{"request":"inspect/1.1.0","response":"aba481516e3990199b5fe0890c68092c78ae894744013ace60514dd456e62ace","durable":"1.5.0"}}}
 ```
 
 ### Fixture: retained-read-request

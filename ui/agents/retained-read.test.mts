@@ -15,7 +15,7 @@ const durableVersion: string = JSON.parse(await readFile(durablePackage, 'utf8')
 // Literal operation identities stay independent of the producer and supportedOperations.
 const descriptor = {version:"retained-read/1.0.0",upstream:{codingAgent:"1.2.0",durable:durableVersion},operations:{
   snapshot:{request:"snapshot/1.0.0",response:"snapshot/2.0.0",durable:durableVersion},
-  inspect:{request:"inspect/1.1.0",response:"f1009d22633112866c6c6b83c4734512f00c6aa4767daf07644074f932633f0a",durable:durableVersion}}};
+  inspect:{request:"inspect/1.1.0",response:"aba481516e3990199b5fe0890c68092c78ae894744013ace60514dd456e62ace",durable:durableVersion}}};
 const empty = {entries:[],partial:false,revision:"empty",nextBefore:null,
   coverage:{complete:true,entries:0,bytes:0,hiddenExcluded:0,entryLimitReached:false,byteLimitReached:false}};
 const history = {view:"history",sessionId:CHILD,conversationId:2,format:"compact",order:"newestFirst",entries:[],nextCursor:null,detail:""};

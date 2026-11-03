@@ -226,12 +226,12 @@ export async function descriptor(): Promise<JsonObject> {
 		},
 		"inspect": {
 			"request": "inspect/1.1.0",
-			"response": "f1009d22633112866c6c6b83c4734512f00c6aa4767daf07644074f932633f0a",
+			"response": "aba481516e3990199b5fe0890c68092c78ae894744013ace60514dd456e62ace",
 			"durable": durable
 		},
 		"status": {
 			"request": "status/1.0.0",
-			"response": "4eb8753a974ad2769e07ec49df2add0e027554a02c13f0a2aaef304f5562ad87",
+			"response": "136b65669deaff617066d01a40f88fed246da2a46d3743b5c67ce5e6026f91a6",
 			"durable": durable
 		},
 		"list": {
