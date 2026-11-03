@@ -361,6 +361,65 @@ test("durable registry answers model-issued queries from native Durable facts", 
 	}
 });
 
+test("native resource pages resume after clock changes and reject substantive source changes", async (t) => {
+	const { faux, models, services } = fixture();
+	let clock = 1800000000000;
+	t.mock.method(Date, "now", () => clock);
+	const loader = services.resourceLoader;
+	assert.ok(loader);
+	const skills = loader.getSkills().skills.map((skill) => ({ ...skill }));
+	const prompts = loader.getPrompts().prompts.map((prompt) => ({ ...prompt }));
+	const files = loader.getAgentsFiles().agentsFiles.map((file) => ({ ...file }));
+	skills.push({ ...skills[0], name: "second-skill", sourceInfo: { ...SKILL_SOURCE, path: join(ROOT, "second", "SKILL.md") } });
+	prompts.push({ ...prompts[0], name: "second-prompt", sourceInfo: { ...PROMPT_SOURCE, path: join(ROOT, "prompts", "second.md") } });
+	files.push({ path: join(CWD, "SECOND.md"), content: "private context" });
+	const nativeServices = { ...services, resourceLoader: { ...loader, getSkills: () => ({ skills }), getPrompts: () => ({ prompts }),
+		getAgentsFiles: () => ({ agentsFiles: files }) } };
+	const contribution = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(nativeServices));
+	const extension = { ...contribution, tools: [...(contribution.tools ?? []), Durable.defineTool({
+		name: "second_tool", description: "A second registered tool", parameters: Type.Object({}),
+		execute: async () => ({ output: [] }),
+	})] };
+	const { harness, root } = await open(models, extension);
+	let sequence = 0;
+	const query = async (params: { kind?: string; limit?: number; cursor?: string }) => {
+		const id = `page-${++sequence}`;
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("registry", params, { id })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("Inspected."),
+		]);
+		const settled = await (await root.submit({ type: "input", content: "Inspect the next page." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		assert.equal(settled.status, "done");
+		const result = toolResult((await root.context(BACKGROUND_CONTEXT)).messages, id);
+		assert.equal(result.isError, false, textOf(result));
+		assert.ok(compile(RegistryOutputSchema).check(objectOf(result.details)));
+		return result;
+	};
+	try {
+		for (const kind of ["tool", "skill", "prompt", "context_file"] as const) {
+			const first = await query({ kind, limit: 1 });
+			const cursor = objectOf(first.details).cursor;
+			assert.ok(typeof cursor === "string");
+			assert.equal(recordsOf(first)[0].at, clock);
+			clock += 1000;
+			const next = await query({ cursor });
+			assert.equal(objectOf(next.details).outcome, "ok", kind);
+			assert.equal(objectOf(next.details).offset, 1);
+			assert.equal(recordsOf(next)[0].at, clock);
+			assert.notEqual(recordsOf(next)[0].name, recordsOf(first)[0].name);
+			if (kind === "skill") {
+				assert.equal(objectOf(recordsOf(next)[0].modelInvocable).at, clock);
+				assert.equal(objectOf(recordsOf(next)[0].baseDir).at, clock);
+			}
+			if (kind === "context_file") files[0].path = join(CWD, "CHANGED.md");
+			else skills[0].disableModelInvocation = !skills[0].disableModelInvocation;
+			assert.equal(objectOf((await query({ cursor })).details).outcome, "stale_cursor", kind);
+		}
+	} finally {
+		await harness.close(BACKGROUND_CONTEXT);
+	}
+});
+
 test("Durable model pages carry present, absent, and unreadable settings evidence", async () => {
 	for (const state of ["available", "absent", "unavailable"] as const) {
 		const { faux, models, services } = fixture();

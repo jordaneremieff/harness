@@ -106,6 +106,28 @@ describe("Pi adapter", () => {
 		const restarted = await tool.execute("lookup", {}, undefined, undefined, context);
 		assert.equal(restarted.details?.observed, false);
 	});
+	it("retains the ordinary observation time until the next prompt-input event", async (t) => {
+		const { tool, handlers } = fixture();
+		let clock = 1000;
+		t.mock.method(Date, "now", () => clock);
+		const options = { cwd: "/fixtures", contextFiles: [{ path: "/fixtures/AGENTS.md", content: "private context" }],
+			skills: [{ name: "example", filePath: sourceInfo.path, baseDir: "/fixtures", sourceInfo }] };
+		await handlerFor(handlers, "before_agent_start")({ systemPromptOptions: options });
+		clock = 2000;
+		const result = await tool.execute("skill", { kind: "skill" }, undefined, undefined, context);
+		assert.ok(result.details);
+		const skill = (result.details.records as { at: number; modelInvocable: { at: number }; baseDir: { at: number } }[])[0];
+		assert.equal(skill.at, 2000);
+		assert.equal(skill.modelInvocable.at, 1000);
+		assert.equal(skill.baseDir.at, 1000);
+		const paths = await tool.execute("paths", { kind: "context_file" }, undefined, undefined, context);
+		assert.ok(paths.details);
+		assert.equal((paths.details.records as { at: number }[])[0].at, 1000);
+		await handlerFor(handlers, "before_agent_start")({ systemPromptOptions: options });
+		const refreshed = await tool.execute("paths", { kind: "context_file" }, undefined, undefined, context);
+		assert.ok(refreshed.details);
+		assert.equal((refreshed.details.records as { at: number }[])[0].at, 2000);
+	});
 	it("invalidates a cursor across both reset and fresh extension instances", async () => {
 		const first = fixture();
 		const result = await first.tool.execute("lookup", { kind: "tool", limit: 1 }, undefined, undefined, context);

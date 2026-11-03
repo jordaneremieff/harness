@@ -557,9 +557,11 @@ to mutate them after that validation.
   observations. A namespace change means a change to the fields a record shows:
   `name`, `aliases`, `description`, or whether non-empty `instructions` exist.
   Editing the instruction text does not move a cursor, because no page shows that text.
-  Read timestamps alone do not invalidate model
-  pages. If one required registry accessor fails, results preserve independently
-  available matching registration evidence and report an incomplete inventory.
+  Read and observation timestamps alone do not invalidate pages. Skill
+  eligibility, base-directory values, their evidence kinds, and context-path
+  coverage still invalidate continuations when they change. If one required registry
+  accessor fails, results preserve independently available matching registration
+  evidence and report an incomplete inventory.
   Its displayed count and `total` describe only known matches, never the complete
   inventory. Incomplete inventories have no cursor; narrow `kind` to an available
   resource class for normal paging.

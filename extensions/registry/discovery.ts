@@ -55,14 +55,19 @@ function discoveryFingerprint(
 	unavailable: boolean,
 	partial: boolean,
 	models: ModelSnapshot | undefined,
+	observation: ObservationSnapshot | null,
 ): string {
 	return createHash("sha256")
 		.update(
 			JSON.stringify({
-				// Model read time changes on each request; context observation time marks its source snapshot.
-				records: modelQuery ? records.map(({ at: _at, ...record }) => record) : records,
+				// Read and observation times stay in output, separate from source identity.
+				records: records.map(({ at: _at, ...record }) => record),
 				unavailable,
 				partial,
+				contextCoverage: modelQuery ? undefined : {
+					overflowRecords: observation?.overflowRecords,
+					overflowBytes: observation?.overflowBytes,
+				},
 				scopeConfigured: models?.scopeConfigured,
 				scopeOrder: models?.scopeOrder ?? null,
 				settingsScope: models?.settingsScope === undefined ? null
@@ -226,7 +231,7 @@ export function discoveryPage(request: DiscoveryRequest) {
 	const partial = discoveryPartial(models, observation, modelQuery) ||
 		Boolean(query.health && models?.records.some((record) => record.selected && record.configuredAuth === null));
 	const all = discoveryRecords(models, observation, modelQuery);
-	const fingerprint = discoveryFingerprint(all, modelQuery, unavailable, partial, models);
+	const fingerprint = discoveryFingerprint(all, modelQuery, unavailable, partial, models, observation);
 	const stale = request.expectedFingerprint !== undefined && request.expectedFingerprint !== fingerprint;
 	const candidates = query.health ? catalogHealth(models).map((record) => ({ ...record })) : all;
 	const matched = all.filter((record) => matchesDiscovery(record, query));

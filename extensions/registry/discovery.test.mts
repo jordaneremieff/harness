@@ -312,7 +312,7 @@ describe("metadata and tool detail", () => {
 });
 
 describe("observed context paths", () => {
-	it("returns timestamps and paths, never context content, and invalidates observations", async () => {
+	it("resumes across observation timestamps, retains fresh times, and rejects changed paths or coverage", async () => {
 		const store = new ObservationStore();
 		const options = { cwd: "/fixtures", contextFiles: [{ path: "/fixtures/A.md", content: "secret-context" }, { path: "/fixtures/B.md", content: "secret-context" }] };
 		store.observe(options, 1);
@@ -324,6 +324,19 @@ describe("observed context paths", () => {
 		assert.doesNotMatch(JSON.stringify(first), /secret-context|sourceInfo/);
 		assert.equal((await run({ cursor: first.details.cursor as string }, snapshot)).outcome, "ok");
 		store.observe(options, 2); snapshot.observation = store.snapshot();
+		const next = await run({ cursor: first.details.cursor as string }, snapshot);
+		assert.equal(next.outcome, "ok");
+		assert.equal(records(next)[0].path, "/fixtures/B.md");
+		assert.equal(records(next)[0].at, 2);
+		assert.equal(next.details.observedAt, 2);
+		assert.ok(snapshot.observation);
+		for (const flag of ["overflowBytes", "overflowRecords"] as const) {
+			snapshot.observation[flag] = true;
+			assert.equal((await run({ cursor: first.details.cursor as string }, snapshot)).outcome, "stale_cursor");
+			snapshot.observation[flag] = false;
+		}
+		store.observe({ ...options, contextFiles: [{ path: "/fixtures/C.md", content: "secret-context" }] }, 2);
+		snapshot.observation = store.snapshot();
 		assert.equal((await run({ cursor: first.details.cursor as string }, snapshot)).outcome, "stale_cursor");
 	});
 	it("never treats absent or overflowed observation as established absence", async () => {

@@ -154,6 +154,28 @@ describe("fingerprint and paging", () => {
 		assert.notEqual(fingerprintRecords([...base, record({ name: "second" })]), start);
 	});
 
+	it("ignores explicit evidence times but retains attested values, evidence, and schema fields named at", () => {
+		const skill = record({ modelInvocable: { value: true, evidence: "observation", at: 1 },
+			baseDir: { value: "/skills/example", evidence: "observation", at: 1 } });
+		const { modelInvocable, baseDir } = skill;
+		assert.ok(modelInvocable && baseDir);
+		const start = fingerprintRecords([skill]);
+		assert.equal(fingerprintRecords([{ ...skill, at: 2, modelInvocable: { ...modelInvocable, at: 2 },
+			baseDir: { ...baseDir, at: 2 } }]), start);
+		for (const metadata of [
+			{ modelInvocable: { ...modelInvocable, value: false } },
+			{ modelInvocable: { ...modelInvocable, evidence: "file_content" as const } },
+			{ baseDir: { ...baseDir, value: "/skills/other" } },
+			{ baseDir: { ...baseDir, evidence: "file_content" as const } },
+			{ modelInvocable: undefined },
+			{ baseDir: undefined },
+		]) assert.notEqual(fingerprintRecords([{ ...skill, ...metadata }]), start);
+		const tool = record({ kind: "tool", parameters: { type: "object", properties: { at: { const: 1 } } } });
+		assert.notEqual(fingerprintRecords([tool]), fingerprintRecords([
+			{ ...tool, parameters: { type: "object", properties: { at: { const: 2 } } } },
+		]));
+	});
+
 	it("is order-independent for the same set", () => {
 		const a = [record({ name: "a" }), record({ name: "b" })];
 		assert.equal(fingerprintRecords(a), fingerprintRecords([...a].reverse()));

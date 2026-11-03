@@ -208,8 +208,13 @@ export function selectRecords(records: ResourceRecord[], query: Query): Resource
 export function fingerprintRecords(records: ResourceRecord[]): string {
 	const hash = createHash("sha256");
 	for (const record of [...records].sort(compareRecords)) {
-		const { at: _at, ...metadata } = record;
-		hash.update(JSON.stringify(metadata));
+		const { at: _at, modelInvocable, baseDir, ...metadata } = record;
+		hash.update(JSON.stringify({
+			...metadata,
+			// Attestation times describe freshness, not the identity of the evidence.
+			...(modelInvocable === undefined ? {} : { modelInvocable: { value: modelInvocable.value, evidence: modelInvocable.evidence } }),
+			...(baseDir === undefined ? {} : { baseDir: { value: baseDir.value, evidence: baseDir.evidence } }),
+		}));
 		hash.update(record.kind);
 		hash.update("\u0000");
 		hash.update(record.name);
