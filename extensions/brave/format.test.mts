@@ -57,6 +57,31 @@ describe("Brave Search result formatting", () => {
 		assert.match(formatted.text, /safe \[31m title/);
 	});
 
+	it("replaces every Unicode bidi control with a space before whitespace collapse", () => {
+		const controls = "\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069";
+		for (const control of controls) {
+			const field = `left${control} ${control}right`;
+			const formatted = formatSearchResults(
+				response({
+					originalQuery: field,
+					alteredQuery: field,
+					results: [{ title: field, url: field, description: field, age: field, extraSnippets: [field] }],
+				}),
+				{ query: field },
+			);
+			assert.doesNotMatch(formatted.text, /\p{Bidi_Control}/u);
+			assert.match(formatted.text, /corrected query "left right" \(requested "left right"\)/);
+			assert.match(formatted.text, /1\. left right/);
+			assert.match(formatted.text, /URL: left right/);
+			assert.match(formatted.text, /Published: left right/);
+			assert.match(formatted.text, /Snippet: left right/);
+			assert.match(formatted.text, /- left right/);
+			const uncorrected = formatSearchResults(response({ originalQuery: field }), { query: field });
+			assert.match(uncorrected.text, /results for "left right"/);
+			assert.doesNotMatch(uncorrected.text, /\p{Bidi_Control}/u);
+		}
+	});
+
 	it("returns an explicit empty result", () => {
 		const formatted = formatSearchResults(response(), { query: "nothing" });
 		assert.match(formatted.text, /No web results found/);
