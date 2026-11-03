@@ -1031,9 +1031,11 @@ that diagnostic on one line. Provider-private parsing buffers stay omitted.
 Retained entries and usage documents keep provider metadata unchanged.
 
 The manager's stopped-agent reads use a cached public snapshot without services,
-model runtime, extension bootstrap, or task recovery. The manager owns its cache;
-ordinary shutdown awaits disposal after its last primary leaves, and standalone
-terminal teardown awaits manager closure. Another primary keeps its cache usable.
+model runtime, extension bootstrap, or task recovery. The manager owns its cache.
+Registered primaries, roster subscribers and the active namespace retain it. The
+last owner's departure seals the cache and drains borrowed reads before disposal.
+A later owner acquires a fresh cache. Manager and standalone terminal closure await
+all disposal, including releases started by roster unsubscription.
 The cache tracks database and WAL identity plus writer claim state. Changed or
 unstable source identity refuses reuse. All cache paths share a serial queue to
 protect borrowed snapshots from eviction and teardown.

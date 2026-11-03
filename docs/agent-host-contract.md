@@ -1523,10 +1523,12 @@ readiness, or fresh runtime state. Separate invocations see independently captur
 state. Existing page anchors/cursors retain their semantics; no cross-request
 snapshot lease or storage cache is introduced. The manager's existing bounded
 cold cache remains separate and reuses only stable source identities. Each manager
-owns its cache; ordinary shutdown awaits disposal after the last primary leaves,
-and standalone terminal teardown awaits manager closure. Cache operations share a
-serial queue across storage paths, including reads, eviction and disposal, so a
-borrowed snapshot stays open until its read ends.
+owns its cache. Registered primaries, roster subscribers and the active namespace
+retain it; the final owner's departure releases it. A later owner acquires a fresh
+cache without cancelling prior disposal. Manager and standalone terminal closure
+await all disposal, including releases started by roster unsubscription. Cache
+operations share a serial queue across storage paths, including reads, eviction
+and disposal, so a borrowed snapshot stays open until its read ends.
 
 Defining sources: `extensions/agent/retained-read.ts`, `retained-errors.ts`,
 `snapshot-capture.ts`, `catalog.ts` (`read`), `durable-observation.ts`

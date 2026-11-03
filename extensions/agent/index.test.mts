@@ -15,9 +15,9 @@ import { HOST_CONTRACT } from "./version-contract.ts";
 import { matchesSchema } from "./schema-check.ts";
 import type { FleetStatus } from "./fleet-status.ts";
 
-test("ordinary shutdown preserves another primary and awaits final cold snapshot disposal", async (t) => {
-	const base = realpathSync(mkdtempSync(join(tmpdir(), "agent-cold-owners-")));
-	const root = join(base, "store"), scratch = join(base, "scratch");
+test("ordinary shutdown preserves primary and roster owners and awaits final cold snapshot disposal", async (t) => {
+	const base = realpathSync(mkdtempSync(join(tmpdir(), "co-")));
+	const root = join(base, "store"), scratch = join(base, "t");
 	mkdirSync(root); mkdirSync(scratch);
 	const saved = new Map(["PI_AGENT_SESSIONS_DIR", "PI_AGENT_DIR", "PI_HARNESS_FILE", "TMPDIR"].map((key) => [key, process.env[key]]));
 	process.env.PI_AGENT_SESSIONS_DIR = root; process.env.PI_AGENT_DIR = root;
@@ -34,6 +34,8 @@ test("ordinary shutdown preserves another primary and awaits final cold snapshot
 	t.after(async () => { release(); await manager.close(); owners.managers.delete(root); for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(base, { recursive: true, force: true }); });
 	const record = manager.catalog.create({ cwd: root, agentDir: root, packageDir: root, model: { provider: "fixture", modelId: "fixture" }, thinkingLevel: "off" });
 	const source = await DurableHost.open({ ...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry()), storageId: record.storageId });
+	const input = await source.submit({ message: "retained dashboard history", requestId: "history", origin: "operator" });
+	await source.wait(input.submissionId);
 	await source.close();
 	const start = async () => {
 		const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
@@ -48,17 +50,30 @@ test("ordinary shutdown preserves another primary and awaits final cold snapshot
 	await first();
 	await manager.snapshot(record.storageId);
 	assert.equal(readdirSync(scratch).filter((name) => name.startsWith("pi-durable-snapshot-")).length, 1);
+	const offRoster = manager.subscribeRoster(() => {});
+	await second();
+	const selected = await manager.snapshot(record.storageId, { limit: 1 });
+	assert.equal(selected.entries.length, 1);
+	assert.ok(selected.nextBefore);
+	const history = await manager.snapshot(record.storageId, { before: selected.nextBefore });
+	assert.match(JSON.stringify(history), /retained dashboard history/);
 	let started!: () => void;
 	const closing = new Promise<void>((resolve) => { started = resolve; });
 	const original = DurableObservation.prototype.close;
 	t.mock.method(DurableObservation.prototype, "close", async function (this: DurableObservation) { started(); await gate; await original.call(this); });
-	let settled = false;
-	const shutdown = second().then(() => { settled = true; });
+	offRoster();
 	await closing;
-	assert.equal(settled, false);
-	release(); await shutdown;
-	assert.deepEqual(readdirSync(scratch), []);
+	assert.equal(readdirSync(scratch).filter((name) => name.startsWith("pi-durable-snapshot-")).length, 1);
 	await assert.rejects(manager.snapshot(record.storageId), /cache is closed/);
+	const offLaterRoster = manager.subscribeRoster(() => {});
+	let settled = false;
+	const reacquired = manager.snapshot(record.storageId).then((value) => { settled = true; return value; });
+	assert.equal(settled, false);
+	release();
+	assert.match(JSON.stringify(await reacquired), /retained dashboard history/);
+	offRoster();
+	assert.match(JSON.stringify(await manager.snapshot(record.storageId)), /retained dashboard history/, "old disposal is idempotent after reacquisition");
+	offLaterRoster();
 	const resumed = await start();
 	await manager.snapshot(record.storageId);
 	await resumed();

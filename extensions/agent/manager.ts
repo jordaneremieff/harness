@@ -189,8 +189,12 @@ export class AgentManager {
 	readonly managerProtocol = MANAGER_PROTOCOL;
 	private coldObservations = createColdObservationCache();
 	private coldReleased = false;
+	private coldRelease: Promise<void> = Promise.resolve();
+	private hasObservationOwners(): boolean {
+		return !this.shuttingDown && (this.primaries.size > 0 || this.rosterListeners.size > 0 || this.namespaceOwner !== undefined && !this.namespaceOwner.signal.aborted);
+	}
 	private retainColdObservations(): void {
-		if (!this.coldReleased) return;
+		if (!this.hasObservationOwners() || !this.coldReleased) return;
 		this.coldObservations = createColdObservationCache();
 		this.coldReleased = false;
 	}
@@ -219,19 +223,31 @@ export class AgentManager {
 		// A changed recipient can wake a parked delivery in any source storage.
 		this.recoverCatalogueChanges();
 	}
-	private releaseCatalogObservation(): void {
-		if (this.primaries.size || this.rosterListeners.size || this.namespaceOwner && !this.namespaceOwner.signal.aborted) return;
+	private releaseObservation(): Promise<void> {
+		if (this.hasObservationOwners()) return this.coldRelease;
 		this.stopCatalogObservation?.();
 		this.stopCatalogObservation = undefined;
 		this.failures.delete("catalog-observation");
+		if (!this.coldReleased) {
+			this.coldReleased = true;
+			this.coldRelease = Promise.all([this.coldRelease, this.coldObservations.close()]).then(() => undefined);
+		}
+		return this.coldRelease;
 	}
+	private readonly observationOwnerEnded = (): void => {
+		void this.releaseObservation().catch((error) => this.failures.set("cold-observation", errorText(error)));
+	};
 	subscribeRoster(listener: () => void): () => void {
 		if (this.shuttingDown) throw new Error("Agent manager is closed");
 		this.observeCatalogChanges();
 		this.rosterListeners.add(listener);
+		this.retainColdObservations();
+		let subscribed = true;
 		return () => {
+			if (!subscribed) return;
+			subscribed = false;
 			this.rosterListeners.delete(listener);
-			this.releaseCatalogObservation();
+			this.observationOwnerEnded();
 		};
 	}
 	private rosterChanged(): void { for (const listener of this.rosterListeners) listener(); }
@@ -959,7 +975,11 @@ export class AgentManager {
 	/** Restore this source-bound catalogue without an ordinary primary or a new task index. */
 	recoverNamespace(signal: AbortSignal): Promise<NamespaceRecoveryReport> {
 		if (this.shuttingDown || signal.aborted) return Promise.reject(new Error("Namespace recovery is closed"));
-		this.namespaceOwner = { signal };
+		if (this.namespaceOwner?.signal !== signal) {
+			this.namespaceOwner?.signal.removeEventListener("abort", this.observationOwnerEnded);
+			this.namespaceOwner = { signal };
+			signal.addEventListener("abort", this.observationOwnerEnded, { once: true });
+		}
 		this.retainColdObservations();
 		this.observeCatalogChanges();
 		if (this.namespaceScan) { this.namespaceRescan = true; return this.namespaceScan; }
@@ -1054,12 +1074,7 @@ export class AgentManager {
 		this.primaryChannels.delete(ownerId);
 		const closing = Promise.resolve().then(async () => {
 			try { await channel?.close(); }
-			finally {
-				if (!this.primaries.size && (!this.namespaceOwner || this.namespaceOwner.signal.aborted)) {
-					this.coldReleased = true;
-					await this.coldObservations.close();
-				}
-			}
+			finally { await this.releaseObservation(); }
 		}).catch((error) => {
 			this.failures.set(`primary:${ownerId}`, errorText(error));
 			throw error;
@@ -1073,7 +1088,7 @@ export class AgentManager {
 		try { primary.status?.(undefined); }
 		catch (error) { this.failures.set(`primary-status:${ownerId}`, errorText(error)); }
 		if (!this.primaries.size) this.releaseClients();
-		this.releaseCatalogObservation();
+		this.observationOwnerEnded();
 		await closing;
 	}
 
@@ -1399,12 +1414,12 @@ export class AgentManager {
 		if (this.closing) return this.closing;
 		this.shuttingDown = true;
 		this.lifecycle.abort();
-		this.stopCatalogObservation?.();
-		this.stopCatalogObservation = undefined;
+		this.namespaceOwner?.signal.removeEventListener("abort", this.observationOwnerEnded);
 		this.rosterListeners.clear();
 		const primaries = [...this.primaries].map(([ownerId, primary]) => this.closePrimary(ownerId, primary.signal));
 		this.releaseClients();
-		this.closing = Promise.allSettled([...primaries, ...this.closingPrimaries.values()]).then(async () => { await this.coldObservations.close(); });
+		const observations = this.releaseObservation();
+		this.closing = Promise.allSettled([...primaries, ...this.closingPrimaries.values()]).then(() => observations);
 		return this.closing;
 	}
 
