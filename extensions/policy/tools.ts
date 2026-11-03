@@ -832,7 +832,9 @@ async function rulesToolOutput(
 			if (pending.length) return pendingProposalOutput(pending[0]);
 			return record
 				? formatRulesTool({ ...snapshot, records: new Map([[record.id, record]]), pending: [] }, ctx)
-				: `No rule or pending proposal named ${line(params.id)}.`;
+				: snapshot.health.status === "degraded" || snapshot.health.incompleteFinalLine
+					? line(ruleStoreHealthLine(snapshot.health))
+					: `No rule or pending proposal named ${line(params.id)}.`;
 		}
 		return formatRulesTool(snapshot, ctx);
 	}

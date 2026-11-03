@@ -323,6 +323,28 @@ test("native tools use host-relative document settings and environment precedenc
 	}
 });
 
+for (const state of ["healthy", "degraded", "incomplete"] as const) {
+	test(`native exact lookup carries ${state} authority in model-visible text`, async () => {
+		const fixture = await openFixture();
+		try {
+			await fixture.policy.snapshot();
+			if (state !== "healthy") await writeFile(join(fixture.storeDir, "rules.jsonl"), state === "degraded" ? "invalid\n" : "{", { mode: 0o600 });
+			await submit(fixture, [
+				fauxAssistantMessage(fauxToolCall("policy_rules", { id: "missing.rule" }), { stopReason: "toolUse" }),
+				fauxAssistantMessage("inspected"),
+			], "inspect exact rule");
+			const result = (await toolResults(fixture.root, "policy_rules")).at(-1);
+			assert.ok(result);
+			const text = textOf(result);
+			if (state === "healthy") assert.equal(text, "No rule or pending proposal named missing.rule.");
+			else {
+				assert.doesNotMatch(text, /No rule or pending proposal/);
+				assert.match(text, state === "degraded" ? /registry health: degraded=true/ : /append in flight/);
+			}
+		} finally { await fixture.close(); }
+	});
+}
+
 test("every policy tool answers a model-issued call", async () => {
 	const fixture = await openFixture();
 	try {

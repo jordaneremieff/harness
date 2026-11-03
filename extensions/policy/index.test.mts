@@ -183,6 +183,22 @@ async function callTool(tool: RegisteredTool, params: unknown, ctx: unknown): Pr
 }
 
 describe("registration and lazy catalog use", () => {
+	for (const state of ["healthy", "degraded", "incomplete"] as const) {
+		it(`reports ${state} authority instead of false command lookup absence`, async () => {
+			const { dir, pi, notifications, ctx } = await setup();
+			await pi.command().handler("show missing.rule", ctx as never);
+			if (state !== "healthy") await writeFile(join(dir, RULES_FILE), state === "degraded" ? "invalid\n" : "{", { mode: 0o600 });
+			notifications.length = 0;
+			await pi.command().handler("show missing.rule", ctx as never);
+			const message = notifications.at(-1)?.message ?? "";
+			if (state === "healthy") assert.match(message, /No rule or pending proposal/);
+			else {
+				assert.doesNotMatch(message, /No rule or pending proposal/);
+				assert.match(message, state === "degraded" ? /registry health: degraded=true/ : /append in flight/);
+			}
+		});
+	}
+
 	it("registers only the unified tools and performs no rule-store I/O at session startup", async () => {
 		const { dir, pi, ctx } = await setup();
 		assert.deepEqual([...pi.tools.keys()].sort(), [

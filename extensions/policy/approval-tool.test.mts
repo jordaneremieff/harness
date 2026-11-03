@@ -1,6 +1,6 @@
 /** Deterministic approval contracts, not a natural-language intent classifier. */
 import assert from "node:assert/strict";
-import fsPromises, { lstat, mkdtemp, readFile, rm } from "node:fs/promises";
+import fsPromises, { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -77,6 +77,25 @@ async function setup(t: TestContext, mode: PolicyMode = "enforce") {
 }
 
 describe("context-authorized policy approval tool", () => {
+	for (const state of ["healthy", "degraded", "incomplete"] as const) {
+		it(`reports ${state} authority in exact lookup text`, async (t) => {
+			const f = await setup(t);
+			await f.registry.snapshot();
+			if (state !== "healthy") await writeFile(f.registry.path, state === "degraded" ? "invalid\n" : "{", { mode: 0o600 });
+			const result = await f.call("policy_rules", { id: "missing.rule" });
+			const content = result.content[0];
+			assert.equal(content.type, "text");
+			if (content.type !== "text") return;
+			if (state === "healthy") assert.equal(content.text, "No rule or pending proposal named missing.rule.");
+			else {
+				assert.doesNotMatch(content.text, /No rule or pending proposal/);
+				assert.match(content.text, state === "degraded" ? /registry health: degraded=true/ : /append in flight/);
+			}
+			if (state === "healthy") await assert.rejects(f.call("policy_control", { operation: "inspect", id: "missing.rule" }), /No rule or proposal/);
+			else await assert.rejects(f.call("policy_control", { operation: "inspect", id: "missing.rule" }), state === "degraded" ? /registry health: degraded=true/ : /append in flight/);
+		});
+	}
+
 	for (const name of ["policy_propose", "policy_approve", "policy_control"] as const) {
 		it(`cancels ${name} after append chmod without changing durable bytes`, async (t) => {
 			const f = await setup(t);

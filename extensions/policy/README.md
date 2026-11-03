@@ -964,6 +964,10 @@ including CLI selection, flag clauses, and unavailable behavior.
 Optional `id` narrows supported views. The rules view accepts a rule ID or pending
 proposal ID, including a new rule that has no active record yet. It returns the
 complete pending candidate and proposal revision without an all-rules listing.
+An unmatched exact lookup reports store health instead of absence when authority
+is degraded or an incomplete final line limits the snapshot. Healthy absence
+retains its concise response. The command and control inspections use the same
+health boundary.
 `policy_propose` also includes the revision in model-visible text, so nested
 callers do not depend on renderer-only details. Explain accepts a rule id,
 or `call:<call-id>` for bounded current-session recorded decisions, including
