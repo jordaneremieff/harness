@@ -552,7 +552,7 @@ test("collaboration preserves the use path and accepts observed task improvement
 		],
 		["disjoint edits", /Keep concurrent edits disjoint/],
 		["coherent ownership", /owner's area follows the work, such as one behaviour with its implementation, tests, and documentation, not a file count/],
-		["working coordinator", /One coordinator serializes shared worktree synchronization, integration, promotion, push, and activation; that coordinator can also do substantive work/],
+		["working coordinator", /One coordinator serializes branch integration, push, and activation; that coordinator can also do substantive work/],
 		[
 			"settlement is not acceptance",
 			/Prompt admission, idle state, provider completion, and task acceptance are different facts/,
