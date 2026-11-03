@@ -99,6 +99,8 @@ it("dashboard reconciliation and roster events reuse the scanned page for sessio
 	t.after(() => { manager.close(); rmSync(root, { recursive: true, force: true }); });
 	const record = manager.catalog.create({ cwd: root, agentDir: join(root, "agent"), packageDir: join(root, "package"), model: { provider: "test", modelId: "model" }, thinkingLevel: "high", ownerId: "primary" });
 	const published = page([row(record.storageId, { storageId: record.storageId })]);
+	// Session figures read ownership from the manager's observed inventory, so observe the record once before the page is stubbed.
+	await manager.dashboardPage();
 	let reads = 0;
 	t.mock.method(manager, "dashboardPage", async () => { reads++; return published; });
 	const observed = source(published.rows);
