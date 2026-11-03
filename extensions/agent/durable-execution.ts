@@ -20,7 +20,7 @@ export type { LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } fr
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
-import type { TSchema } from "typebox";
+import { obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import { QueuedCodemodeSandbox } from "./codemode-admission.ts";
 import { guardStdio, McpGuardian } from "./mcp-guardian.ts";
 import { NativeMcpAuth } from "./mcp-auth.ts";
@@ -356,7 +356,7 @@ export function createMcpToolName(server: string, tool: string, isTaken: (name: 
 }
 
 /** The `CallToolResult` output schema every MCP tool declares to scripts. */
-function createMcpResultSchema(structuredContentSchema: CodemodeJsonSchema | undefined): CodemodeJsonSchema {
+function createMcpResultSchema(structuredContentSchema: CodemodeJsonSchema | undefined): Schema {
 	return {
 		type: "object",
 		properties: {
@@ -492,9 +492,9 @@ async function mcpModelContent(result: CallToolResult): Promise<ToolResultConten
 }
 
 /** MCP input schemas must be objects; some providers reject object schemas without properties. */
-function toParameters(schema: unknown): TSchema {
+function toParameters(schema: unknown): Schema {
 	const object = isRecord(schema) ? schema : {};
-	return { ...object, type: object.type ?? "object", ...(object.properties === undefined ? { properties: {} } : {}) } as TSchema;
+	return { ...object, type: object.type ?? "object", ...(object.properties === undefined ? { properties: {} } : {}) };
 }
 
 function expandHome(value: string): string {
@@ -730,28 +730,19 @@ class McpServerConnection {
 // ─── MCP resource tools ─────────────────────────────────────────────────────
 
 /** The three resource tools, using the names established by common MCP hosts. */
-const RESOURCE_LIST_PARAMETERS: TSchema = {
-	type: "object",
-	properties: {
-		server: { type: "string", description: "MCP server name. Omit to list every server with resources." },
-		cursor: { type: "string", description: "Opaque cursor from a previous call with the same server; omit for the first page." },
-	},
-	additionalProperties: false,
-} as TSchema;
+const RESOURCE_LIST_PARAMETERS = obj({
+	server: opt(str({ description: "MCP server name. Omit to list every server with resources." })),
+	cursor: opt(str({ description: "Opaque cursor from a previous call with the same server; omit for the first page." })),
+});
 
-const RESOURCE_READ_PARAMETERS: TSchema = {
-	type: "object",
-	properties: {
-		server: { type: "string", description: "MCP server name exactly as configured." },
-		uri: { type: "string", description: "Resource URI returned by list_mcp_resources." },
-	},
-	required: ["server", "uri"],
-	additionalProperties: false,
-} as TSchema;
+const RESOURCE_READ_PARAMETERS = obj({
+	server: str({ description: "MCP server name exactly as configured." }),
+	uri: str({ description: "Resource URI returned by list_mcp_resources." }),
+});
 
-const RESOURCE_LIST_OUTPUT_SCHEMA: CodemodeJsonSchema = { type: "object", properties: { server: { type: "string" }, resources: { type: "array", items: { type: "object" } }, nextCursor: { type: "string" }, errors: { type: "array", items: { type: "object" } } }, required: ["resources"] };
-const RESOURCE_TEMPLATES_OUTPUT_SCHEMA: CodemodeJsonSchema = { type: "object", properties: { server: { type: "string" }, resourceTemplates: { type: "array", items: { type: "object" } }, nextCursor: { type: "string" }, errors: { type: "array", items: { type: "object" } } }, required: ["resourceTemplates"] };
-const RESOURCE_READ_OUTPUT_SCHEMA: CodemodeJsonSchema = { type: "object", properties: { server: { type: "string" }, uri: { type: "string" }, contents: { type: "array", items: { type: "object" } } }, required: ["server", "uri", "contents"] };
+const RESOURCE_LIST_OUTPUT_SCHEMA: Schema = { type: "object", properties: { server: { type: "string" }, resources: { type: "array", items: { type: "object" } }, nextCursor: { type: "string" }, errors: { type: "array", items: { type: "object" } } }, required: ["resources"] };
+const RESOURCE_TEMPLATES_OUTPUT_SCHEMA: Schema = { type: "object", properties: { server: { type: "string" }, resourceTemplates: { type: "array", items: { type: "object" } }, nextCursor: { type: "string" }, errors: { type: "array", items: { type: "object" } } }, required: ["resourceTemplates"] };
+const RESOURCE_READ_OUTPUT_SCHEMA: Schema = { type: "object", properties: { server: { type: "string" }, uri: { type: "string" }, contents: { type: "array", items: { type: "object" } } }, required: ["server", "uri", "contents"] };
 
 /** MCP App resources are user interfaces for hosts that render them. */
 function isMcpAppResource(item: { uri?: string; uriTemplate?: string; mimeType?: string }): boolean {
@@ -975,7 +966,7 @@ class DurableExecutionRuntime implements DurableExecution {
 
 	private defineMcpTool(server: McpServerConnection, tool: McpTool, name: string, exposure: McpExposure): NestedTool {
 		return { name, description: tool.description?.trim() || tool.title || `MCP tool ${tool.name} from server ${server.entry.name}`,
-			parameters: toParameters(tool.inputSchema), structuredOutputSchema: createMcpResultSchema(tool.outputSchema as CodemodeJsonSchema | undefined) as TSchema,
+			parameters: toParameters(tool.inputSchema), structuredOutputSchema: createMcpResultSchema(tool.outputSchema as CodemodeJsonSchema | undefined),
 			replay: "unsafe", ...(exposure === "direct" ? {} : { deferred: true }),
 			execute: async (args, _api, context) => convertMcpResult(server.entry.name, tool.name, await server.callTool(tool.name, args as Record<string, unknown>, { signal: context.abortSignal })),
 		};
@@ -1018,7 +1009,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				description:
 					"Show the resources the connected MCP servers publish. A resource can be a file, a schema, or other context a model can use; prefer it over a web search. Omit `server` to list every server, or name one server with a cursor for one page.",
 				parameters: RESOURCE_LIST_PARAMETERS,
-				structuredOutputSchema: RESOURCE_LIST_OUTPUT_SCHEMA as TSchema,
+				structuredOutputSchema: RESOURCE_LIST_OUTPUT_SCHEMA,
 				replay: "safe",
 				execute: (args, _api, context) => this.listResourceTool(LIST_MCP_RESOURCES_TOOL, "resources", args as Record<string, unknown>, context),
 			},
@@ -1027,7 +1018,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				description:
 					"Show the parameterized resource templates the connected MCP servers publish. Prefer a template over a web search when it covers the data you need.",
 				parameters: RESOURCE_LIST_PARAMETERS,
-				structuredOutputSchema: RESOURCE_TEMPLATES_OUTPUT_SCHEMA as TSchema,
+				structuredOutputSchema: RESOURCE_TEMPLATES_OUTPUT_SCHEMA,
 				replay: "safe",
 				execute: (args, _api, context) => this.listResourceTool(LIST_MCP_RESOURCE_TEMPLATES_TOOL, "resourceTemplates", args as Record<string, unknown>, context),
 			},
@@ -1035,7 +1026,7 @@ class DurableExecutionRuntime implements DurableExecution {
 				name: READ_MCP_RESOURCE_TOOL,
 				description: "Read one resource by server name and URI, as returned by `list_mcp_resources`.",
 				parameters: RESOURCE_READ_PARAMETERS,
-				structuredOutputSchema: RESOURCE_READ_OUTPUT_SCHEMA as TSchema,
+				structuredOutputSchema: RESOURCE_READ_OUTPUT_SCHEMA,
 				replay: "safe",
 				execute: (args, _api, context) => this.readResourceTool(args as Record<string, unknown>, context),
 			},

@@ -49,7 +49,8 @@ import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { inputEntry } from "./input-entry.ts";
-import { type Static, type TSchema, Type } from "typebox";
+import { str, int, bool, unknown, opt, obj, union, map, oneOf, type Static } from "@earendil-works/pi-schema";
+import { Type, type Static as TypeStatic } from "typebox";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines } from "./control-guidance.ts";
@@ -274,9 +275,9 @@ function placeResult(sessionId: string, result: ControlDetails, area?: string): 
 }
 
 /** Control facts remain UI details and also become validated values for nested callers. */
-function structuredControl<P extends TSchema, D extends JsonValue>(
+function structuredControl<P extends object, D extends JsonValue>(
 	tool: Durable.ToolRegistration<P, D>,
-	schema: TSchema,
+	schema: object,
 ): Durable.ToolRegistration<P, D> {
 	return {
 		...tool,
@@ -392,58 +393,58 @@ const SendParams = Type.Object(
 	{ additionalProperties: false },
 );
 
-const SteerParams = Type.Object(
+const SteerParams = obj(
 	{
-		sessionId: Type.String({
+		sessionId: str({
 			minLength: 1,
 			description: "External identity: storage id for the root, storageId:conversationId otherwise.",
 		}),
-		message: Type.String({ minLength: 1 }),
-		replyTo: Type.Optional(
-			Type.String({
+		message: str({ minLength: 1 }),
+		replyTo: opt(
+			str({
 				minLength: 1,
 				description: "Conversation that receives the answer; default: the calling conversation.",
 			}),
 		),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
-const AbortParams = Type.Object(
+const AbortParams = obj(
 	{
-		sessionId: Type.String({ minLength: 1 }),
-		background: Type.Optional(
-			Type.Boolean({ description: "Also stop background work such as anchors and reporters." }),
+		sessionId: str({ minLength: 1 }),
+		background: opt(
+			bool({ description: "Also stop background work such as anchors and reporters." }),
 		),
-		timerId: Type.Optional(
-			Type.Integer({ minimum: 1, description: "Timer ID from agent_status; cancels only that scheduled input." }),
+		timerId: opt(
+			int({ minimum: 1, description: "Timer ID from agent_status; cancels only that scheduled input." }),
 		),
-		release: Type.Optional(Type.Boolean({ description: "Request host retirement after abort." })),
+		release: opt(bool({ description: "Request host retirement after abort." })),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
-const ForkParams = Type.Object(
+const ForkParams = obj(
 	{
-		sessionId: Type.String({ minLength: 1 }),
-		entryId: Type.Optional(Type.String({ description: "Fork point; default: the newest visible entry." })),
-		name: Type.Optional(Type.String()),
-		prompt: Type.Optional(Type.String()),
+		sessionId: str({ minLength: 1 }),
+		entryId: opt(str({ description: "Fork point; default: the newest visible entry." })),
+		name: opt(str()),
+		prompt: opt(str()),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
-const RewindParams = Type.Object(
+const RewindParams = obj(
 	{
-		sessionId: Type.String({ minLength: 1, description: "Conversation that took the wrong turn." }),
-		entryId: Type.String({
+		sessionId: str({ minLength: 1, description: "Conversation that took the wrong turn." }),
+		entryId: str({
 			minLength: 1,
 			description: "Entry that carries the wrong decision. It and everything after it are dropped.",
 		}),
-		correction: Type.String({ minLength: 1 }),
-		name: Type.Optional(Type.String()),
+		correction: str({ minLength: 1 }),
+		name: opt(str()),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
 const ConfigureParams = Type.Object(
@@ -459,21 +460,21 @@ const ConfigureParams = Type.Object(
 	{ additionalProperties: false },
 );
 
-const CompactParams = Type.Object(
+const CompactParams = obj(
 	{
-		sessionId: Type.Optional(Type.String({ minLength: 1, description: "Default: the calling conversation." })),
-		instructions: Type.Optional(Type.String()),
+		sessionId: opt(str({ minLength: 1, description: "Default: the calling conversation." })),
+		instructions: opt(str()),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
-const CommandParams = Type.Object(
+const CommandParams = obj(
 	{
-		sessionId: Type.String({ minLength: 1 }),
-		name: Type.String({ minLength: 1 }),
-		args: Type.Optional(Type.String()),
+		sessionId: str({ minLength: 1 }),
+		name: str({ minLength: 1 }),
+		args: opt(str()),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
 const StatusParams = Type.Object(
@@ -487,56 +488,56 @@ const StatusParams = Type.Object(
 	{ additionalProperties: false },
 );
 
-const ListParams = Type.Object(
+const ListParams = obj(
 	{
-		query: Type.Optional(
-			Type.String({
+		query: opt(
+			str({
 				minLength: 1,
 				maxLength: 256,
 				description: "Case-insensitive literal in stored ID, cwd, name, or first user text.",
 			}),
 		),
-		cwd: Type.Optional(
-			Type.String({ minLength: 1, maxLength: 4096, description: "Exact absolute working directory filter." }),
+		cwd: opt(
+			str({ minLength: 1, maxLength: 4096, description: "Exact absolute working directory filter." }),
 		),
-		limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
-		cursor: Type.Optional(Type.String({ minLength: 1, maxLength: 1024 })),
+		limit: opt(int({ minimum: 1, maximum: 20 })),
+		cursor: opt(str({ minLength: 1, maxLength: 1024 })),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
 /** A positive native record ID in the number or numeric-string form the host accepts. */
-const PositiveId = Type.Union([Type.Integer({ minimum: 1 }), Type.String({ pattern: "^[0-9]+$" })]);
+const PositiveId = union([int({ minimum: 1 }), str({ pattern: "^[0-9]+$" })]);
 
-const InspectParams = Type.Object(
+const InspectParams = obj(
 	{
-		sessionId: Type.Optional(Type.String({ minLength: 1, description: "Default: the calling conversation." })),
-		view: Type.Optional(StringEnum(["activity", "history", "branch", "search", "exact", "result"])),
-		limit: Type.Optional(Type.Integer({ minimum: 1 })),
-		cursor: Type.Optional(
-			Type.Record(Type.String(), Type.Unknown(), {
+		sessionId: opt(str({ minLength: 1, description: "Default: the calling conversation." })),
+		view: opt(oneOf(["activity", "history", "branch", "search", "exact", "result"])),
+		limit: opt(int({ minimum: 1 })),
+		cursor: opt(
+			map(unknown(), {
 				description: "Opaque cursor object returned as next by a previous inspect page.",
 			}),
 		),
-		entryId: Type.Optional(PositiveId),
-		fromId: Type.Optional(PositiveId),
-		offset: Type.Optional(Type.Integer({ minimum: 0 })),
-		query: Type.Optional(Type.String({ minLength: 1 })),
-		source: Type.Optional(StringEnum(["user", "assistant", "toolResult", "summary", "custom"])),
-		submissionId: Type.Optional(PositiveId),
-		requestId: Type.Optional(Type.String({ minLength: 1, description: "Native request ID within the selected conversation; result view only." })),
-		operationId: Type.Optional(Type.String({ minLength: 1 })),
+		entryId: opt(PositiveId),
+		fromId: opt(PositiveId),
+		offset: opt(int({ minimum: 0 })),
+		query: opt(str({ minLength: 1 })),
+		source: opt(oneOf(["user", "assistant", "toolResult", "summary", "custom"])),
+		submissionId: opt(PositiveId),
+		requestId: opt(str({ minLength: 1, description: "Native request ID within the selected conversation; result view only." })),
+		operationId: opt(str({ minLength: 1 })),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
-const AttachParams = Type.Object(
+const AttachParams = obj(
 	{
-		sessionId: Type.String({ minLength: 1 }),
-		model: Type.Optional(Type.String({ minLength: 3 })),
-		thinkingLevel: Type.Optional(StringEnum(THINKING_LEVELS)),
+		sessionId: str({ minLength: 1 }),
+		model: opt(str({ minLength: 3 })),
+		thinkingLevel: opt(oneOf(THINKING_LEVELS)),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
 const PlaceParams = Type.Object(
@@ -554,33 +555,33 @@ const PlaceParams = Type.Object(
 	{ additionalProperties: false },
 );
 
-const ResetParams = Type.Object(
+const ResetParams = obj(
 	{
-		sessionId: Type.String({
+		sessionId: str({
 			minLength: 1,
 			description: "Conversation to reset: storage id for the root, storageId:conversationId otherwise.",
 		}),
-		handoff: Type.Optional(
-			Type.String({ description: "Operator-authored text for the new context; absent starts it without a message." }),
+		handoff: opt(
+			str({ description: "Operator-authored text for the new context; absent starts it without a message." }),
 		),
 	},
-	{ additionalProperties: false },
+	{},
 );
 
-type SpawnInput = Static<typeof SpawnParams>;
-type SendInput = Static<typeof SendParams>;
+type SpawnInput = TypeStatic<typeof SpawnParams>;
+type SendInput = TypeStatic<typeof SendParams>;
 type SteerInput = Static<typeof SteerParams>;
 type AbortInput = Static<typeof AbortParams>;
 type ForkInput = Static<typeof ForkParams>;
 type RewindInput = Static<typeof RewindParams>;
-type ConfigureInput = Static<typeof ConfigureParams>;
+type ConfigureInput = TypeStatic<typeof ConfigureParams>;
 type CompactInput = Static<typeof CompactParams>;
 type CommandInput = Static<typeof CommandParams>;
-type StatusInput = Static<typeof StatusParams>;
+type StatusInput = TypeStatic<typeof StatusParams>;
 type ListInput = Static<typeof ListParams>;
 type InspectInput = Static<typeof InspectParams>;
 type AttachInput = Static<typeof AttachParams>;
-type PlaceInput = Static<typeof PlaceParams>;
+type PlaceInput = TypeStatic<typeof PlaceParams>;
 type ResetInput = Static<typeof ResetParams>;
 
 // ─── Extension ──────────────────────────────────────────────────────────────
