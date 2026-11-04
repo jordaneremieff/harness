@@ -120,16 +120,44 @@ describe("clipboard operator panel module", () => {
 		assert.ok(Array.isArray(lines));
 	});
 
-	it("reports a failed initial read instead of showing an empty history", async () => {
+	it("shows a pending and then failed initial read in the panel itself, never an empty history, and Refresh retries", async () => {
 		const notices: string[] = [];
+		let fail = true;
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const run = command();
 		const instance = operatorPanel().open({
 			target: { id: "c" }, theme, tui: { requestRender() {} }, rows: () => 20,
-			request: async () => { throw new Error("archive unreadable"); },
+			request: async (data) => {
+				await gate;
+				if (fail) throw new Error("archive unreadable");
+				return await (run(data) as Promise<{ text: string; data?: JsonValue }>);
+			},
 			dialogs: { notify: (text) => { notices.push(text); } },
 			close() {},
 		});
+		const draw = () => instance.render(60).map(stripVTControlCharacters);
+		let lines = draw();
+		assert.ok(lines.some((line) => line.includes("Recent \u00b7 reading")), lines.join("\n"));
+		assert.ok(lines.some((line) => line.includes("Reading clipboard history")));
+		assert.ok(!lines.some((line) => /Recent 0|No clipboard history matches/.test(line)), "a pending read is not an empty archive");
+		release();
 		await flush(); await flush();
+		lines = draw();
+		assert.ok(lines.some((line) => line.includes("Recent \u00b7 read failed")), lines.join("\n"));
+		assert.ok(lines.some((line) => /Could not read clipboard history: archive unreadable/.test(line)), "the failure shows in the mounted panel");
+		assert.ok(!lines.some((line) => /Recent 0|No clipboard history matches/.test(line)));
 		assert.ok(notices.some((text) => /archive unreadable/.test(text)));
+		fail = false;
+		const refreshRow = lines.findIndex((line) => line.includes("[Refresh]"));
+		assert.ok(refreshRow >= 0, "Refresh stays reachable after the failure");
+		const x = lines[refreshRow].indexOf("[Refresh]") + 1;
+		instance.handleMouse({ type: "click", button: "left", x, y: refreshRow, width: 60, height: lines.length, screenX: x, screenY: refreshRow, clickCount: 1 } as never);
+		assert.ok(draw().some((line) => line.includes("Recent \u00b7 reading")), "a retry after a failure shows the read again");
+		for (let round = 0; round < 200 && !draw().some((line) => /Recent [1-9]/.test(line)); round++) await new Promise((resolve) => setTimeout(resolve, 5));
+		lines = draw();
+		assert.ok(lines.some((line) => /Recent [1-9]/.test(line)) && lines.some((line) => line.includes("other")), lines.join("\n"));
+		assert.ok(lines.some((line) => line.includes("[Close]")), "Close stays reachable");
 		instance.dispose();
 	});
 });

@@ -288,6 +288,13 @@ Restore is the only effect, and only the labelled control sends it. A
 malformed request is an error, never an empty history; a malformed answer is
 reported by the browser as a read failure.
 
+In the attached browser the Recent list starts as `Recent · reading` with
+`Reading clipboard history…` in the list until the host answers. A failed read
+shows `Recent · read failed` and `Could not read clipboard history: <reason>.
+Refresh retries.` in the list itself, never `Recent 0` or an empty history, and
+the same message goes to the terminal's notice row. Refresh and Close stay
+usable; a Refresh after a failure shows the reading state again.
+
 ## Tool cards
 
 Each tool draws a compact TUI card. A collapsed card never shows copied, pasted, or

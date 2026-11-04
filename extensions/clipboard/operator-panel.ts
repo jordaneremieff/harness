@@ -73,9 +73,14 @@ function open(host: OperatorPanelHost): OperatorPanelInstance {
 	});
 	// The list is loaded through the same route as Refresh, so an unreadable store shows as a read failure, not an empty history.
 	const first = new AbortController();
+	panel.beginRecentRead();
 	void ask({ op: "recent" }, first.signal).then(
 		(answer) => { if (!disposed && answer.op === "recent") panel.replaceEntries(answer.entries, answer.hasMore); },
-		(error) => { if (!disposed) host.dialogs.notify(`Could not read clipboard history: ${error instanceof Error ? error.message : String(error)}`, "error"); },
+		(error) => {
+			if (disposed) return;
+			panel.failRecentRead(error);
+			host.dialogs.notify(`Could not read clipboard history: ${error instanceof Error ? error.message : String(error)}`, "error");
+		},
 	);
 	return {
 		render: (width) => panel.render(width),

@@ -121,6 +121,8 @@ export class ClipboardPanel {
 	private readonly handlers: Record<Action, () => void>;
 	private recent: ClipboardEntry[];
 	private recentMore: boolean;
+	/** A Recent list read through the host is pending or failed until it answers; an empty answer is a real empty archive. */
+	private recentRead: { state: "ready" } | { state: "pending" } | { state: "failed"; error: string } = { state: "ready" };
 	private scope: Scope = "recent";
 	private query = "";
 	private searchedQuery = "";
@@ -349,22 +351,43 @@ export class ClipboardPanel {
 		}
 		if (!this.deps.onRecent || this.busy) return;
 		const { generation, controller } = this.startRead();
+		if (this.recentRead.state === "failed") this.beginRecentRead();
 		try {
 			const page = await this.deps.onRecent(controller.signal);
 			if (this.isCurrent(generation, controller)) this.replaceEntries(page.entries, page.hasMore);
 		} catch (error) {
 			if (!controller.signal.aborted) {
 				this.flash = `Refresh failed: ${error instanceof Error ? error.message : String(error)}`;
+				this.failRecentRead(error);
 			}
 		} finally {
 			this.finishRead(generation);
 		}
 	}
 
+	/** The Recent heading: the read state while a read is pending or failed, otherwise the count. */
+	private recentText(): string {
+		if (this.recentRead.state === "pending") return "Recent \u00b7 reading";
+		if (this.recentRead.state === "failed") return "Recent \u00b7 read failed";
+		return `Recent ${this.entries().length}${this.recentMore ? "+" : ""}`;
+	}
+
+	/** The Recent list is being read; until the answer arrives the list is not an empty archive. */
+	beginRecentRead(): void {
+		this.recentRead = { state: "pending" };
+		this.changed();
+	}
+	/** The Recent read failed; the list shows the failure until a Refresh answers. */
+	failRecentRead(error: unknown): void {
+		this.recentRead = { state: "failed", error: error instanceof Error ? error.message : String(error) };
+		this.changed();
+	}
+
 	/** Replaces the Recent entries from the host and resets hit geometry. */
 	replaceEntries(entries: ClipboardEntry[], hasMore = false): void {
 		this.recent = entries;
 		this.recentMore = hasMore;
+		this.recentRead = { state: "ready" };
 		this.keepSelectionVisible();
 		this.changed();
 	}
@@ -579,8 +602,7 @@ export class ClipboardPanel {
 	}
 
 	private headerLines(inner: number): string[] {
-		const count = this.scope === "recent" ? this.entries().length : this.archive.length;
-		const scopeText = this.scope === "recent" ? `Recent ${count}${this.recentMore ? "+" : ""}` : `Search archive ${count}`;
+		const scopeText = this.scope === "recent" ? this.recentText() : `Search archive ${this.archive.length}`;
 		return [
 			this.row(`Clipboard history · ${scopeText}${this.busy ? " · Read in progress" : ""}`, inner, "accent"),
 			this.controlRow(1, inner, [
@@ -648,6 +670,8 @@ export class ClipboardPanel {
 		}
 		if (index !== 0) return "";
 		if (this.scope === "archive") return "No matches on this page. Check coverage and Continue.";
+		if (this.recentRead.state === "pending") return "Reading clipboard history\u2026";
+		if (this.recentRead.state === "failed") return `Could not read clipboard history: ${single(this.recentRead.error)}. Refresh retries.`;
 		return "No clipboard history matches.";
 	}
 
