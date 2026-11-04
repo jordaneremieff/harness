@@ -9,7 +9,7 @@ import { buildDistillPrompt } from "./distill.ts";
 import registerStash from "./index.ts";
 import { type IndependentCommandInput, type IndependentCommandLaunch, readDistillInput } from "./launch.ts";
 import type { PanelTheme, StashPanelResult } from "./panel.ts";
-import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
+import { listStashes, readStash, rotateStash, transitionStash, writeStash } from "./store.ts";
 import {
 	type CustomOptions,
 	captureCommand,
@@ -1814,6 +1814,107 @@ describe("unknown and unread lifecycle states", () => {
 		assert.match(sent[0].content, /Thursday landed the migration/);
 		assert.match(sent[0].content, /BROWSER_NOTE_BODY/);
 		assert.ok((await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === record.id));
+	});
+
+	it("returns to the browser without activation or delivery when the note dialog is cancelled", async () => {
+		const { record } = await writeStash(
+			dir,
+			{ title: "Cancelled note target", summary: "CANCELLED_NOTE_BODY" },
+			new Date("2027-07-26T10:00:00Z"),
+		);
+		const { commands, sent } = registry();
+		let opens = 0;
+		const ctx: TestContext = {
+			mode: "tui",
+			hasUI: true,
+			isIdle: () => true,
+			cwd: "/workspace",
+			ui: {
+				notify: () => {},
+				input: async () => undefined,
+				custom: async (factory) => {
+					opens += 1;
+					return new Promise((resolve) => {
+						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
+						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput(opens === 1 ? "a" : "\x1b"));
+					});
+				},
+			},
+		};
+		await commands.get("stash").handler("", ctx);
+		assert.equal(opens, 2, "the browser reopened after the cancelled dialog");
+		assert.equal(sent.length, 0, "nothing was delivered");
+		assert.ok((await listStashes(dir, { state: "open" })).some((entry) => entry.meta.id === record.id), "the stash stays open");
+	});
+
+	it("treats an explicitly empty note as one plain pickup", async () => {
+		const { record } = await writeStash(
+			dir,
+			{ title: "Empty note target", summary: "EMPTY_NOTE_BODY" },
+			new Date("2027-07-26T10:00:00Z"),
+		);
+		const { commands, sent } = registry();
+		const ctx: TestContext = {
+			mode: "tui",
+			hasUI: true,
+			isIdle: () => true,
+			cwd: "/workspace",
+			ui: {
+				notify: () => {},
+				input: async () => "",
+				custom: async (factory) => {
+					return new Promise((resolve) => {
+						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
+						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput("a"));
+					});
+				},
+			},
+		};
+		await commands.get("stash").handler("", ctx);
+		assert.equal(sent.length, 1);
+		assert.doesNotMatch(sent[0].content, /Operator amendment/);
+		assert.match(sent[0].content, /EMPTY_NOTE_BODY/);
+		assert.ok((await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === record.id));
+	});
+
+	it("routes Enter on a closed stash to the actions dialog instead of a failing pickup", async () => {
+		const { record } = await writeStash(
+			dir,
+			{ title: "Closed pickup target", summary: "CLOSED_BODY" },
+			new Date("2027-07-28T10:00:00Z"),
+		);
+		await transitionStash(dir, record.id, { action: "activate" });
+		await transitionStash(dir, record.id, { action: "close", outcome: "done" });
+		const { commands, sent } = registry();
+		const selects: string[] = [];
+		let opens = 0;
+		const ctx: TestContext = {
+			mode: "tui",
+			hasUI: true,
+			isIdle: () => true,
+			cwd: "/workspace",
+			ui: {
+				notify: () => {},
+				select: async (title: string, choices: string[]) => {
+					selects.push(`${title}: ${choices.join("|")}`);
+					return "Back";
+				},
+				custom: async (factory) => {
+					opens += 1;
+					return new Promise((resolve) => {
+						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
+						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput(opens === 1 ? "\r" : "\x1b"));
+					});
+				},
+			},
+		};
+		await commands.get("stash").handler("", ctx);
+		assert.equal(selects.length, 1, "the actions dialog opened for the closed stash");
+		assert.match(selects[0], /Reopen\|Rotate \(archive\)\|Back/, "the dialog offers the explicit reopen, not a pickup");
+		assert.equal(opens, 2, "Back returns to the browser");
+		assert.equal(sent.length, 0, "no pickup was attempted");
+		assert.ok((await listStashes(dir, { state: "closed" })).some((entry) => entry.meta.id === record.id));
+		await rotateStash(dir, record.id);
 	});
 
 	it("releases an active stash from the browser actions dialog", async () => {

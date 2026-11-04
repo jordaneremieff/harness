@@ -470,23 +470,30 @@ async function closeFromBrowser(ctx: ExtensionContext, id: string): Promise<void
 	}
 }
 
+/**
+ * The `a` path: collect the amendment in the host, then pick up with it.
+ * Pi's input dialog resolves undefined on cancel; that returns to the browser
+ * without activation or delivery. A submitted empty answer is a deliberate
+ * plain pickup.
+ */
+async function notedPickup(ctx: ExtensionContext, id: string, fail: (message: string) => void): Promise<BrowserAction> {
+	try {
+		const answer = await ctx.ui.input("Operator note for this pickup (empty for none):");
+		if (answer === undefined) return { kind: "continue" };
+		return { kind: "pickup", id, note: answer.trim() || undefined };
+	} catch (error) {
+		fail(safeLine(error instanceof Error ? error.message : String(error)));
+		return { kind: "stop" };
+	}
+}
+
 async function browserAction(
 	ctx: ExtensionContext,
 	result: StashPanelResult | undefined,
 	fail: (message: string) => void,
 ): Promise<BrowserAction> {
 	if (result?.selected) return { kind: "pickup", id: result.selected.meta.id };
-	if (result?.note) {
-		// The `a` path: collect the amendment in the host, then pick up with it.
-		// An empty answer degrades to a plain pickup, never a dead end.
-		try {
-			const answer = await ctx.ui.input("Operator note for this pickup (empty for none):");
-			return { kind: "pickup", id: result.note.meta.id, note: answer?.trim() || undefined };
-		} catch (error) {
-			fail(safeLine(error instanceof Error ? error.message : String(error)));
-			return { kind: "stop" };
-		}
-	}
+	if (result?.note) return notedPickup(ctx, result.note.meta.id, fail);
 	if (result?.complete) {
 		try {
 			await closeFromBrowser(ctx, result.complete.meta.id);

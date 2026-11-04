@@ -377,6 +377,11 @@ export class StashPanel {
 		return entry !== undefined && entry.meta.invalidState === undefined && entry.previewError === undefined;
 	}
 
+	/** The store refuses to activate a closed stash; it needs an explicit reopen from the actions dialog first. */
+	private pickable(entry: StashEntry | undefined): entry is StashEntry {
+		return this.actionable(entry) && entry.meta.state !== "closed";
+	}
+
 	private moveSelection(delta: number): void {
 		const entries = this.filtered;
 		this.selected = Math.max(0, Math.min(Math.max(0, entries.length - 1), this.selected + delta));
@@ -415,7 +420,8 @@ export class StashPanel {
 
 	private pickCurrent(): void {
 		const selected = this.current();
-		if (this.actionable(selected)) this.finish({ selected });
+		if (this.pickable(selected)) this.finish({ selected });
+		else if (this.actionable(selected)) this.finish({ manage: selected });
 	}
 
 	private handleHelpInput(raw: string, data: string): void {
@@ -481,29 +487,33 @@ export class StashPanel {
 	}
 
 	private handleEntryInput(raw: string, data: string): void {
-		if (matchesKey(raw, "enter")) {
-			this.pickCurrent();
-			return;
-		}
-		if (matchesKey(raw, "tab")) {
-			const selected = this.current();
-			if (this.actionable(selected)) this.finish({ manage: selected });
-			return;
-		}
-		if (data === "o") {
-			const selected = this.current();
-			if (this.actionable(selected) && selected.meta.state === "active") this.finish({ complete: selected });
-			return;
-		}
-		if (data === "a") {
-			const selected = this.current();
-			if (this.actionable(selected)) this.finish({ note: selected });
-			return;
-		}
-		if (data === "c") {
-			const selected = this.current();
-			if (selected) this.copy(selected);
-		}
+		if (matchesKey(raw, "enter")) this.pickCurrent();
+		else if (matchesKey(raw, "tab")) this.manageCurrent();
+		else if (data === "o") this.completeCurrent();
+		else if (data === "a") this.noteCurrent();
+		else if (data === "c") this.copyCurrent();
+	}
+
+	private manageCurrent(): void {
+		const selected = this.current();
+		if (this.actionable(selected)) this.finish({ manage: selected });
+	}
+
+	private completeCurrent(): void {
+		const selected = this.current();
+		if (this.actionable(selected) && selected.meta.state === "active") this.finish({ complete: selected });
+	}
+
+	/** A closed entry has no pickup to annotate; its route is the actions dialog. */
+	private noteCurrent(): void {
+		const selected = this.current();
+		if (this.pickable(selected)) this.finish({ note: selected });
+		else if (this.actionable(selected)) this.finish({ manage: selected });
+	}
+
+	private copyCurrent(): void {
+		const selected = this.current();
+		if (selected) this.copy(selected);
 	}
 
 	private topBorder(width: number, position: string): string {
@@ -546,8 +556,10 @@ export class StashPanel {
 		const selected = this.current();
 		const actionable = this.actionable(selected);
 		const parts = [this.keyPair("↑↓", "select"), this.keyPair("b/spc", "page"), this.keyPair("/", "filter")];
-		if (actionable) {
+		if (this.pickable(selected)) {
 			parts.push(this.keyPair("tab", "actions"), this.keyPair("enter", "pick"), this.keyPair("a", "note"));
+		} else if (actionable) {
+			parts.push(this.keyPair("enter/tab", "actions (closed: reopen first)"));
 		} else {
 			parts.push(this.keyPair("enter/tab", "no actions"));
 		}
