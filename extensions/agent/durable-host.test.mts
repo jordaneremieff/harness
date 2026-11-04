@@ -574,9 +574,11 @@ it("runs a contributed command with its host bindings", async (t) => {
 				description: "Echo arguments",
 				run: async (call) => {
 					assert.equal(call.harness, opened?.harness, "the command call carries the open Harness");
-					return `${call.args}:${call.host.storageId}:${call.conversation.id}:${call.invocationId}`;
+					if (call.data !== undefined) return { text: `structured for ${call.origin ?? "unstated"}`, data: { echoed: call.data, origin: call.origin ?? null } };
+					return `${call.args}:${call.host.storageId}:${call.conversation.id}:${call.invocationId}${call.origin ? `:${call.origin}` : ""}`;
 				},
 			},
+			{ name: "silent", description: "Answers without text", run: async () => ({ text: 1 } as unknown as string) },
 		],
 	};
 	const host = await DurableHost.open(options, BACKGROUND_CONTEXT);
@@ -585,8 +587,16 @@ it("runs a contributed command with its host bindings", async (t) => {
 		const result = (await host.request("command", { name: "echo", args: "hello", invocationId: "inv-1" })) as { name: string; text: string };
 		assert.equal(result.name, "echo");
 		assert.equal(result.text, `hello:contribution-storage:${String(host.root().id)}:inv-1`);
+		assert.equal("data" in result, false, "a text answer carries no data field");
 		await assert.rejects(host.request("command", { name: "echo", args: "hello" }), /invocationId/u);
 		await assert.rejects(host.request("command", { name: "missing", invocationId: "inv-2" }), /not registered/u);
+		const operator = (await host.request("command", { name: "echo", args: "hello", invocationId: "inv-3", origin: "operator" })) as { text: string };
+		assert.equal(operator.text, `hello:contribution-storage:${String(host.root().id)}:inv-3:operator`, "a stated origin reaches the command");
+		await assert.rejects(host.request("command", { name: "echo", invocationId: "inv-4", origin: "panel" }), /origin must be operator or model/u);
+		const structured = (await host.request("command", { name: "echo", invocationId: "inv-5", origin: "model", data: { op: "recent", limit: 2 } })) as { text: string; data?: unknown };
+		assert.equal(structured.text, "structured for model");
+		assert.deepEqual(structured.data, { echoed: { op: "recent", limit: 2 }, origin: "model" });
+		await assert.rejects(host.request("command", { name: "silent", invocationId: "inv-6" }), /returned no text/u);
 	} finally {
 		await host.close();
 	}

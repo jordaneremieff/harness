@@ -13,6 +13,9 @@ import { TerminalProgramStatus } from "./terminal-status.ts";
 import { ModelChoicesSchema } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { loadDisplayModules, noDisplayModules, type DisplayModules } from "./display-modules.ts";
+import { loadPanelModules, noPanelModules, type PanelModules } from "./panel-modules.ts";
+import { PanelScreen } from "./terminal-panel.ts";
+import type { JsonValue } from "@earendil-works/chord";
 import { ConversationHistory } from "./conversation-view.ts";
 import type { AgentConversationSummary, AgentConversationSnapshot } from "./dashboard-types.ts";
 import { fitLine } from "./dashboard-layout.ts";
@@ -74,6 +77,8 @@ export class TerminalController {
 	private readonly importModule?: TerminalControllerOptions["importModule"];
 	/** Owner renderers advertised by the attached host. Replaced as a unit when the source changes. */
 	display: DisplayModules = noDisplayModules;
+	/** Owner browsers advertised by the attached host. Replaced as a unit when the source changes. */
+	panels: PanelModules = noPanelModules;
 	private displayLoading?: Promise<void>;
 	/** Identity changes with the attached source, so views holding an older lookup rebuild their cards. */
 	get toolDisplay() { return this.display.lookup; }
@@ -157,14 +162,27 @@ export class TerminalController {
 		this.source.select(id);
 		this.remember?.(id);
 		this.display = noDisplayModules;
+		this.panels = noPanelModules;
 		this.modelCatalog = new Map();
-		this.displayLoading = Promise.all([this.loadDisplay(id), this.loadModels(id)]).then(([display, models]) => {
+		this.displayLoading = Promise.all([this.loadModules(id), this.loadModels(id)]).then(([modules, models]) => {
 			if (this.closed || generation !== this.generation) return;
-			this.display = display;
+			this.display = modules.display;
+			this.panels = modules.panels;
 			this.modelCatalog = models;
 			this.notify();
 		});
 		this.notify();
+	}
+	/**
+	 * One owner request through the panel's bound command. The target is the attachment captured when
+	 * the panel opened: a later attachment change refuses the request instead of redirecting it.
+	 */
+	async panelRequest(target: string, command: string, data: JsonValue): Promise<{ text: string; data?: JsonValue }> {
+		if (this.closed) throw new Error("Terminal is closed");
+		if (this.target !== target) throw new Error("The attached conversation changed; the browser request was not sent");
+		const answer = await this.manager.control("command", { sessionId: target, name: command, data, origin: "operator", invocationId: randomUUID() }, this.caller) as { text?: unknown; data?: JsonValue };
+		if (typeof answer?.text !== "string") throw new Error("The host answered without command text");
+		return { text: answer.text, ...(answer.data === undefined ? {} : { data: answer.data }) };
 	}
 	/** Resolves when the current attachment's owner renderers are loaded or refused. */
 	displaySettled(): Promise<void> { return this.displayLoading ?? Promise.resolve(); }
@@ -177,14 +195,15 @@ export class TerminalController {
 		} catch { /* The footer shows the model identifier without a context window. */ }
 		return catalog;
 	}
-	/** The attached host is live here, so its status carries the admitted inventory. Failure leaves standard cards. */
-	private async loadDisplay(id: string): Promise<DisplayModules> {
+	/** The attached host is live here, so its status carries the admitted inventory. Failure leaves standard cards and no browsers. */
+	private async loadModules(id: string): Promise<{ display: DisplayModules; panels: PanelModules }> {
 		try {
 			const status = await this.manager.control("status", { sessionId: id }, this.caller) as { inventory?: unknown };
-			if (status?.inventory === undefined) return { lookup: noDisplayModules.lookup, diagnostics: ["Host status carried no inventory; standard tool cards are used."] };
-			return await loadDisplayModules(status.inventory, this.importModule);
+			if (status?.inventory === undefined) return { display: { lookup: noDisplayModules.lookup, diagnostics: ["Host status carried no inventory; standard tool cards are used."] }, panels: noPanelModules };
+			const [display, panels] = await Promise.all([loadDisplayModules(status.inventory, this.importModule), loadPanelModules(status.inventory, this.importModule)]);
+			return { display, panels };
 		} catch (error) {
-			return { lookup: noDisplayModules.lookup, diagnostics: [`Display modules unavailable (${String(error instanceof Error ? error.message : error).slice(0, 120)}); standard tool cards are used.`] };
+			return { display: { lookup: noDisplayModules.lookup, diagnostics: [`Display modules unavailable (${String(error instanceof Error ? error.message : error).slice(0, 120)}); standard tool cards are used.`] }, panels: noPanelModules };
 		}
 	}
 	setDraft(text: string): void { if (this.draftState) updateDraft(this.draftState, text); }
@@ -284,6 +303,8 @@ export class TerminalScreen implements Component {
 	private console?: AgentConsole;
 	private dashboard?: AgentDashboard;
 	private dashboardSource?: AgentObservationSource;
+	/** One owner browser mounted over the conversation, bound to the attachment it opened on. */
+	private panel?: { screen: PanelScreen; target: string };
 	private notice = "";
 	private displayNotice = "";
 	private readonly navigationInput = new Input({ prompt: "Command: " });
@@ -318,6 +339,7 @@ export class TerminalScreen implements Component {
 	private changed(): void {
 		if (this.disposed) return;
 		const row = this.controller.row;
+		if (this.panel && this.panel.target !== this.controller.target) this.closePanel("The attached conversation changed; the browser was closed.");
 		if (row && this.console?.row.id !== row.id) {
 			this.console?.save(); this.console?.dispose();
 			this.console = new AgentConsole(row, agentState(this.controller.state, row.id), this.tui, this.theme, this.keys,
@@ -362,10 +384,11 @@ export class TerminalScreen implements Component {
 		else if (words[0] === "enter" && words.length === 2) await this.enter(words[1]);
 		else if (words[0] === "back" && words.length === 1) await this.back();
 		else if (words[0] === "latest" && words.length === 1) this.latest();
+		else if (words[0] === "browse" && words.length <= 2) { if (words[1]) this.openPanel(words[1]); else await this.chooseBrowser(); }
 		else if (words[0] === "recover" && words.length === 1) {
 			const revision = this.controller.selectionRevision;
 			try { await this.recover(); } catch (error) { if (revision === this.controller.selectionRevision) this.notice = String(error); }
-		} else this.notice = "Use /agent, /agent enter <identity|@handle>, /agent back, /agent latest, or /agent recover";
+		} else this.notice = "Use /agent, /agent enter <identity|@handle>, /agent back, /agent latest, /agent browse [name], or /agent recover";
 	}
 	private async recover(): Promise<void> {
 		const id = this.controller.target;
@@ -431,9 +454,48 @@ export class TerminalScreen implements Component {
 		this.console?.conversation.invalidate();
 		this.tui.requestRender();
 	}
+	/** Offer the attached host's browsers; an unavailable one explains itself instead of opening. */
+	private async chooseBrowser(): Promise<void> {
+		const panels = this.controller.panels.panels;
+		if (!panels.length) { this.notice = "No browsers are advertised by this conversation's host."; this.tui.requestRender(); return; }
+		const revision = this.controller.selectionRevision;
+		const picked = await this.dialogs.select("Browsers", panels.map((panel) => ({ value: panel.contribution, label: panel.title, description: panel.unavailable ? `browser unavailable here: ${panel.unavailable}` : `${panel.contribution} browser` })));
+		if (picked === undefined || revision !== this.controller.selectionRevision) return;
+		this.openPanel(picked);
+	}
+	openPanel(contribution: string): void {
+		const target = this.controller.target;
+		const panel = this.controller.panels.panels.find((candidate) => candidate.contribution === contribution);
+		if (!target || !panel) { this.notice = `No browser named ${contribution} is available here.`; this.tui.requestRender(); return; }
+		if (!panel.module) { this.notice = `${panel.title}: browser unavailable here (${panel.unavailable ?? "module not loaded"})`; this.tui.requestRender(); return; }
+		if (this.panel) this.closePanel();
+		this.console?.save();
+		const command = panel.command;
+		const screen = new PanelScreen({
+			module: panel.module, title: panel.title, target: { id: target, ...(this.controller.row?.name ? { name: this.controller.row.name } : {}) },
+			tui: this.tui, theme: this.theme, dialogs: this.dialogs,
+			request: (data) => this.controller.panelRequest(target, command, data),
+			onClose: () => this.closePanel(),
+			detach: () => this.done(),
+		});
+		this.panel = { screen, target };
+		this.notice = "";
+		this.tui.requestRender();
+	}
+	private closePanel(reason = ""): void {
+		const panel = this.panel;
+		if (!panel) return;
+		this.panel = undefined;
+		panel.screen.dispose();
+		if (reason) this.notice = reason;
+		this.console?.conversation.invalidate();
+		this.resetHits();
+		this.tui.requestRender();
+	}
 	handleInput(data: string): void {
 		if (matchesKey(data, "ctrl+d") && (!this.console || this.console.composer.isEmpty()) && !this.dashboard) { this.done(); return; }
 		if (this.dashboard) { this.dashboard.handleInput(data); return; }
+		if (this.panel) { this.panel.screen.handleInput(data); this.tui.requestRender(); return; }
 		const console = this.console;
 		if (!console) {
 			if (matchesKey(data, "escape")) this.openDashboard();
@@ -476,10 +538,12 @@ export class TerminalScreen implements Component {
 		this.console?.conversation.invalidate();
 		this.tui.requestRender();
 	}
-	/** Dashboard, Back and Latest are footer controls; Detach is the way out and always stays. */
+	/** Dashboard, Browsers, Back and Latest are footer controls; Detach is the way out and always stays. */
 	private footerActions(): ScreenAction[] {
+		const panels = this.controller.panels.panels;
 		return [
 			{ id: "dashboard", label: "Dashboard", main: true, run: () => this.openDashboard() },
+			{ id: "browsers", label: "Browsers", main: panels.length > 0, description: "Open an owner browser over this conversation", disabled: panels.length ? undefined : "No browsers are advertised by this conversation's host", run: () => { void this.chooseBrowser(); } },
 			{ id: "back", label: "Back", main: true, disabled: this.controller.previous ? undefined : "No previous conversation", run: () => { void this.back(); } },
 			{ id: "latest", label: "Latest", main: true, disabled: this.console ? undefined : "No conversation is attached", run: () => this.latest() },
 		];
@@ -494,6 +558,7 @@ export class TerminalScreen implements Component {
 	render(width: number): string[] {
 		this.resetHits();
 		if (this.dashboard && !this.dashboardHidden) return this.dashboard.render(width);
+		if (this.panel) return this.panel.screen.render(width);
 		const height = this.tui.terminal.rows;
 		this.hits.reset(width, height);
 		const footer = this.footerLine(width, height);
@@ -533,6 +598,7 @@ export class TerminalScreen implements Component {
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.dashboard && !this.dashboardHidden) return this.dashboard.handleMouse(event);
+		if (this.panel) { const result = this.panel.screen.handleMouse(event); if (result?.handled) this.tui.requestRender(); return result; }
 		const control = this.hits.handle(event);
 		if (control) return control;
 		return this.transcriptMouse(event) ?? this.composerMouse(event);
@@ -550,8 +616,8 @@ export class TerminalScreen implements Component {
 		if (!this.console || event.y < this.composerY || event.y >= this.composerY + this.composerHeight) return undefined;
 		return this.console.composer.handleMouse({ ...event, y: event.y - this.composerY, height: this.composerHeight });
 	}
-	invalidate(): void { this.resetHits(); this.footer.invalidate(); this.console?.conversation.invalidate(); this.console?.composer.invalidate(); this.dashboard?.invalidate(); }
-	dispose(): void { this.disposed = true; this.programStatus?.dispose(); for (const cancel of [...this.openDialogs]) cancel(); this.closeDashboard(); this.console?.save(); this.console?.dispose(); this.branches.dispose(); this.off(); }
+	invalidate(): void { this.resetHits(); this.footer.invalidate(); this.console?.conversation.invalidate(); this.console?.composer.invalidate(); this.dashboard?.invalidate(); this.panel?.screen.invalidate(); }
+	dispose(): void { this.disposed = true; this.programStatus?.dispose(); for (const cancel of [...this.openDialogs]) cancel(); this.closePanel(); this.closeDashboard(); this.console?.save(); this.console?.dispose(); this.branches.dispose(); this.off(); }
 }
 
 export function parseTerminalArgs(args: string[]): { session?: string; selectedTheme: "dark" | "light" } {

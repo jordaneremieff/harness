@@ -875,16 +875,20 @@ export class DurableHost {
 		if (!command) throw new Error(`durable command ${name} is not registered`);
 		const conversation = await this.target(params, context);
 		if (this.contributionHost === undefined) throw new Error("no contribution host is bound to this durable host");
-		const text = await command.run({
+		const origin = this.originParam(params);
+		const answer = await command.run({
 			args: requestString(params, "args") ?? "",
 			...(params?.data === undefined ? {} : { data: params.data as import("@earendil-works/chord").JsonValue }),
+			...(origin === undefined ? {} : { origin }),
 			conversation,
 			context,
 			host: this.contributionHost,
 			invocationId: requestRequiredString(params, "invocationId"),
 			harness: this.harness,
 		});
-		return { name, conversationId: conversation.id, identity: this.identity(conversation.id), text };
+		const result = typeof answer === "string" ? { text: answer } : answer;
+		if (typeof result?.text !== "string") throw new Error(`durable command ${name} returned no text`);
+		return { name, conversationId: conversation.id, identity: this.identity(conversation.id), text: result.text, ...(result.data === undefined ? {} : { data: result.data }) };
 	}
 
 	/**

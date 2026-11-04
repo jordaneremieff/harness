@@ -53,12 +53,14 @@ import {
 import { createProjectTrustResolver, type ProjectTrustDecision } from "./trust-support.ts";
 import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
-import { readDisplayDescriptor, resolveDisplayEntry, type DisplayDescriptor } from "./display-descriptor.ts";
+import { readDisplayDescriptor, readPanelDescriptor, resolveDisplayEntry, resolvePanelEntry, type DisplayDescriptor, type PanelDescriptor } from "./display-descriptor.ts";
 
 /** One command invocation as the host dispatches it. */
 export interface DurableCommandCall {
 	readonly args: string;
 	readonly data?: JsonValue;
+	/** Who stated the invocation, when the caller said so. Audit context, never approval. */
+	readonly origin?: "operator" | "model";
 	readonly conversation: Durable.Conversation;
 	/** The host's open Harness, for task-level control such as `abortTask()`. */
 	readonly harness: Durable.Harness;
@@ -73,12 +75,18 @@ export interface DurableCommandCall {
 	readonly invocationId: string;
 }
 
+/** A command answer: bounded text for every caller, plus owner JSON for a structured caller. */
+export interface DurableCommandResult {
+	readonly text: string;
+	readonly data?: JsonValue;
+}
+
 /** Commands that agent controls invoke by name against one conversation. */
 export interface DurableCommand {
 	readonly name: string;
 	readonly description: string;
-	/** Run against one conversation. The result text returns to the caller. */
-	run(call: DurableCommandCall): Promise<string>;
+	/** Run against one conversation. The result text returns to the caller; `data` answers a structured request. */
+	run(call: DurableCommandCall): Promise<string | DurableCommandResult>;
 }
 
 /** One native Durable form emitted by a configured extension factory. */
@@ -90,6 +98,8 @@ export interface DurableContribution {
 	readonly commands?: readonly DurableCommand[];
 	/** Presentation-only module the attached terminal imports locally; see docs/conventions/tool-display.md. */
 	readonly display?: DisplayDescriptor;
+	/** Interactive browser module the attached terminal imports locally; see docs/conventions/operator-panels.md. */
+	readonly panel?: PanelDescriptor;
 }
 
 /** Session host passed to every contribution `create()` call. */
@@ -132,6 +142,8 @@ export interface DurableInventory {
 		readonly commands: readonly { readonly name: string; readonly description: string }[];
 		/** Present only for an admitted contribution whose display entry resolved inside its owner directory. */
 		readonly display?: DisplayDescriptor;
+		/** Present only when the panel entry resolved inside its owner directory and its command belongs to this contribution. */
+		readonly panel?: PanelDescriptor;
 	}[];
 	/** Resolved paths of configured extensions that emitted no contribution. */
 	readonly ordinaryOnly: readonly string[];
@@ -356,19 +368,40 @@ function readContribution(data: unknown, existing: readonly DurableContribution[
 		try { display = readDisplayDescriptor(record.display); }
 		catch (error) { issues.push(new Error(`durable contribution "${name}" display descriptor refused: ${error instanceof Error ? error.message : String(error)}`)); }
 	}
-	return { name, source, create: record.create as DurableContribution["create"], ...(commands === undefined ? {} : { commands }), ...(display === undefined ? {} : { display }) };
+	let panel: PanelDescriptor | undefined;
+	if (record.panel !== undefined) {
+		try {
+			panel = readPanelDescriptor(record.panel);
+			if (!(commands ?? []).some((command) => command.name === panel?.command)) throw new Error(`command ${panel.command} is not a command of this contribution`);
+		} catch (error) {
+			panel = undefined;
+			issues.push(new Error(`durable contribution "${name}" panel descriptor refused: ${error instanceof Error ? error.message : String(error)}`));
+		}
+	}
+	return { name, source, create: record.create as DurableContribution["create"], ...(commands === undefined ? {} : { commands }), ...(display === undefined ? {} : { display }), ...(panel === undefined ? {} : { panel }) };
 }
 
 /** Advertise a descriptor only when its entry resolves to a file inside the admitted owner's directory. */
 function admitDisplays(contributions: readonly DurableContribution[], report: (error: unknown) => void): DurableContribution[] {
 	return contributions.map((contribution) => {
-		if (contribution.display === undefined) return contribution;
-		try { resolveDisplayEntry(contribution.source, contribution.display); return contribution; }
-		catch (error) {
-			report(new Error(`durable contribution "${contribution.name}" display entry refused: ${error instanceof Error ? error.message : String(error)}`));
-			const { display: _refused, ...admitted } = contribution;
-			return admitted;
+		let admitted = contribution;
+		if (admitted.display !== undefined) {
+			try { resolveDisplayEntry(admitted.source, admitted.display); }
+			catch (error) {
+				report(new Error(`durable contribution "${contribution.name}" display entry refused: ${error instanceof Error ? error.message : String(error)}`));
+				const { display: _refused, ...rest } = admitted;
+				admitted = rest;
+			}
 		}
+		if (admitted.panel !== undefined) {
+			try { resolvePanelEntry(admitted.source, admitted.panel); }
+			catch (error) {
+				report(new Error(`durable contribution "${contribution.name}" panel entry refused: ${error instanceof Error ? error.message : String(error)}`));
+				const { panel: _refused, ...rest } = admitted;
+				admitted = rest;
+			}
+		}
+		return admitted;
 	});
 }
 
@@ -488,6 +521,7 @@ function buildInventory(contributions: readonly DurableContribution[], loadedPat
 			source: contribution.source,
 			commands: (contribution.commands ?? []).map((command) => ({ name: command.name, description: command.description })),
 			...(contribution.display === undefined ? {} : { display: contribution.display }),
+			...(contribution.panel === undefined ? {} : { panel: contribution.panel }),
 		})),
 		ordinaryOnly: loadedPaths.filter((path) => !emitted.has(path)),
 		// The member appears only when something failed, like `timers` appears only when one waits.

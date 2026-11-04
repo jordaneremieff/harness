@@ -1618,6 +1618,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 				sessionId: args.sessionId,
 				name: args.name,
 				invocationId: `task:${api.taskId}`,
+				origin: "model",
 				...defined(args, ["args"]),
 			}),
 	});

@@ -463,7 +463,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			{ sessionId: id, name: str({ minLength: 1 }), args: opt(str()) },
 			{},
 		),
-		(input, ctx) => control("command", input, ctx),
+		(input, ctx) => control("command", { ...input, origin: "model" }, ctx),
 	);
 	register(
 		"agent_place",
@@ -746,7 +746,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 			confirm: "This invokes a command with the selected owner's authority.",
 			args: [{ name: "session", complete: "session" }, { name: "name" }, { name: "args", rest: true, optional: true }],
 			run: async ([sessionId, name, ...args], ctx) => {
-				const result = (await control("command", { sessionId, name, args: args.join(" ") }, ctx)) as {
+				const result = (await control("command", { sessionId, name, args: args.join(" "), origin: "operator" }, ctx)) as {
 					reloaded?: boolean;
 					text?: string;
 				};

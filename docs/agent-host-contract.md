@@ -489,7 +489,7 @@ Overrides and remaining members:
 | run-stop | run-stop/1.0.0 | run-stop/1.0.0 | absent |
 | request-cancel | request-cancel/1.0.0 | request-cancel/1.0.0 | absent |
 | configure | configure/1.3.0 | configure/1.3.0 | absent |
-| command | command/1.1.0 | command/1.0.0 | D |
+| command | command/1.2.0 | command/1.1.0 | D |
 | timer-schedule | timer-schedule/1.1.0 | timer-schedule/2.0.0 | absent |
 | dashboard | dashboard/1.0.0 | H-dashboard | absent |
 | snapshot | snapshot/1.0.0 | snapshot/2.0.0 | D |
@@ -505,7 +505,7 @@ Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema
 
 ```text
 H-inspect       671fa063aab1424eba635272c95977761450c735d34efd2def12a7de7689ff70
-H-status        53fba66dedcca53c2e07f5a7744b74a3d60cfc47ba9bb08dae672b0db7d3388a
+H-status        a41cd066d24faf50cd6357c1e18c7e25b6071bebf92a2187193b04b8407d8c0c
 H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
 H-dashboard     9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04
 H-profile-read  396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b
@@ -1078,7 +1078,7 @@ HostInventory = {
 }
 ```
 
-`contributions[].name` is the contribution that supplies its commands, and `source` is where it was loaded from. A contribution may carry `display`, `{ version: 1, entry, export: "toolDisplay" }`, which names a presentation-only module that an attached terminal imports locally; the host advertises it only after `entry` resolves to a file inside the directory of the admitted `source`, and the field is absent otherwise. See `docs/conventions/tool-display.md`. `ordinaryOnly` names extensions that load but add no host command. The response identity is the schema hash `H-status`, so a consumer checks the operation identity above and the shape it uses, and refuses a reply whose `inventory` has a field outside this shape. The inventory belongs to the loaded runtime: a host reload replaces it, so a cached copy is valid only for the connection it was read on. Adding `display` changed `H-status`, so a host and a client from different releases refuse each other's `status` through the existing operation-identity check; no reader accepts the previous shape. Source: `extensions/agent/observation-schema.ts:243-249,317-320`; `extensions/agent/durable-runtime.ts:508`.
+`contributions[].name` is the contribution that supplies its commands, and `source` is where it was loaded from. A contribution may carry `display`, `{ version: 1, entry, export: "toolDisplay" }`, which names a presentation-only module that an attached terminal imports locally; the host advertises it only after `entry` resolves to a file inside the directory of the admitted `source`, and the field is absent otherwise. See `docs/conventions/tool-display.md`. A contribution may also carry `panel`, `{ version: 1, entry, export: "operatorPanel", command }`, which names an interactive browser module for the attached terminal and the contribution's own command that serves its requests; the host advertises it only after `entry` resolves inside the owner directory and `command` names one of that contribution's commands. See `docs/conventions/operator-panels.md`. `ordinaryOnly` names extensions that load but add no host command. The response identity is the schema hash `H-status`, so a consumer checks the operation identity above and the shape it uses, and refuses a reply whose `inventory` has a field outside this shape. The inventory belongs to the loaded runtime: a host reload replaces it, so a cached copy is valid only for the connection it was read on. Adding `display`, and later `panel`, changed `H-status`, so a host and a client from different releases refuse each other's `status` through the existing operation-identity check; no reader accepts the previous shape. Source: `extensions/agent/observation-schema.ts:243-249,317-320`; `extensions/agent/durable-runtime.ts:508`.
 
 ### Model choices
 
@@ -1086,9 +1086,9 @@ HostInventory = {
 
 ### command
 
-Params: `{sessionId, name:string, args?:string, invocationId:string, data?:JsonValue}`. `name` is a command in the host inventory. `args` is the text after the name and defaults to empty. `invocationId` is required by the host and is correlation only: it is not an idempotency key, so reusing it does not make the host skip a second run (the runtime fills a missing one from the wire request ID). The host runs the command against the target conversation and answers after the command returns.
+Params: `{sessionId, name:string, args?:string, invocationId:string, data?:JsonValue, origin?:"operator"|"model"}`. `name` is a command in the host inventory. `args` is the text after the name and defaults to empty. `invocationId` is required by the host and is correlation only: it is not an idempotency key, so reusing it does not make the host skip a second run (the runtime fills a missing one from the wire request ID). `data` is structured input the owning contribution validates; `origin` states who invoked the command and reaches the command as audit context, never as approval. The host runs the command against the target conversation and answers after the command returns.
 
-Result: `{name:string, conversationId:number, identity:string, text:string}`. `text` is whatever the command returned and has no host bound below the transport frame bound, so a consumer that shows it bounds it itself.
+Result: `{name:string, conversationId:number, identity:string, text:string, data?:JsonValue}`. `text` is whatever the command returned and has no host bound below the transport frame bound, so a consumer that shows it bounds it itself. `data` is present only when the command answered a structured request; its shape belongs to the owning contribution.
 
 Two names are reserved for the host's own use and are never contribution commands: `tree` (a fork at a native entry) and `reload` (a runtime reload that needs an idle storage and closed observers). A consumer that lists or runs commands leaves them out. A name the host has not registered fails with `durable command <name> is not registered`; a command that throws fails with the thrown message. Both are definite answers from the host.
 

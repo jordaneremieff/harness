@@ -43,7 +43,7 @@ for (const method of ["run-scope", "run-stop", "request-cancel"]) operations[met
 operations.submit = { request: "submit/1.3.0", response: "submit/1.1.0" };
 operations["passive-submit"] = { request: "passive-submit/1.1.0", response: "passive-submit/1.0.0" };
 for (const method of ["snapshot", "observe-open", "observe-frame"]) operations[method] = { ...operations[method], response: `${method}/2.0.0` };
-operations.command = { request: "command/1.1.0", response: "command/1.0.0" };
+operations.command = { request: "command/1.2.0", response: "command/1.1.0" };
 for (const method of ["rewind", "timer-schedule"]) operations[method] = { ...operations[method], request: `${method}/1.1.0` };
 operations["timer-schedule"] = { ...operations["timer-schedule"], response: "timer-schedule/2.0.0" };
 operations.place = { request: "place/2.1.0", response: "place/2.1.0" };

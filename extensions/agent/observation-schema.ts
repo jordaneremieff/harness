@@ -247,6 +247,7 @@ export const DurableInventorySchema = obj({
 		source: string,
 		commands: arr(obj({ name: string, description: string })),
 		display: opt(obj({ version: lit(1), entry: string, export: lit("toolDisplay") })),
+		panel: opt(obj({ version: lit(1), entry: string, export: lit("operatorPanel"), command: string })),
 	})),
 	ordinaryOnly: arr(string),
 	/** Present only when at least one configured extension failed to load. */
