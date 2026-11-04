@@ -3,6 +3,11 @@
 The ordinary extension publishes its registered tool renderers at factory load and
 on versioned requests through the [tool display contract](../../docs/conventions/tool-display.md).
 The payload contains only tool names and renderer fields, never execution functions.
+Those records come from `display.ts`, a presentation-only module over
+`presentation.ts`; the Durable contribution advertises it as its display
+descriptor (`{ version: 1, entry: "./display.ts", export: "toolDisplay" }`) so
+the standalone Agent terminal renders Pillars cards locally. Importing it
+registers nothing and emits nothing.
 
 The extension makes the Pillars corpus directly accessible to agents and the
 operator. The `pillars` tool is the single consultation surface: it reads current
@@ -146,8 +151,16 @@ Operator commands:
 ```
 
 `/pillars` displays command help, examples, and the actual inventory.
-`/pillars help` shows just the guide, even if the corpus is unavailable;
-`/pillars browse` shows just the inventory. Argument autocomplete offers actions
+`/pillars help` shows just the guide, even if the corpus is unavailable.
+In the terminal UI, `/pillars` and `/pillars browse` open a read-only reader:
+a selectable inventory of every catalogued source with its canonical title,
+type, and index statement quoted from the inventory, and a scrollable body view
+that shows the exact resource and reference digest of the page it read, with a
+More control that follows the continuation under that digest. Rows select by
+click or arrow keys; Open, More, Back, and Close are visible controls; the
+wheel scrolls the pane. Nothing in the reader starts a check, derivation, or
+review, and nothing writes to the corpus. Outside the terminal UI, or when the
+inventory cannot be read, `browse` falls back to the Markdown inventory text. Argument autocomplete offers actions
 with descriptions and current resource identifiers after `read `. It does not
 complete free-text hints or invent continuation values. Source output uses Pi's
 Markdown renderer in the terminal. Help, browse, read, and access-evidence

@@ -3,6 +3,7 @@ import test from "node:test";
 import { createEventBus, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Schema } from "@earendil-works/pi-schema";
 import { registerRex } from "./index.ts";
+import { toolDisplay } from "./display.ts";
 import { resultByteLimit, type RexResult } from "./core.ts";
 
 test("ordinary shutdown drains owned calls before reload replaces live-call state", async () => {
@@ -167,7 +168,9 @@ test("ordinary registration publishes only identical display references and clea
 		assert.equal(publications.length, 3);
 		events.emit("harness:tool-display:request", { version: 1 });
 		assert.equal(publications.length, 4, "reload has one current request listener");
-		assert.notEqual(publications[3]?.tools[0]?.renderCall, initial.tools[0]?.renderCall);
+		// The pure display module owns one record set: reload republishes the same renderer references.
+		assert.equal(publications[3]?.tools[0]?.renderCall, initial.tools[0]?.renderCall);
+		assert.equal(publications[3]?.tools[0]?.renderCall, toolDisplay().tools[0]?.renderCall);
 		assert.equal(publications[3]?.tools[0]?.renderCall, tools.values().next().value?.renderCall);
 		assert.equal(executions, 0);
 	} finally { await handlers.get("session_shutdown")?.(); }

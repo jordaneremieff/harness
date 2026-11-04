@@ -83,8 +83,11 @@ channel.
 
 ## Ordinary tool cards
 
-Ordinary Pi cards show the action and known target facts separately, followed by
-an outcome and effect state. Full IDs wrap when needed rather than receive fixed
+Ordinary Pi cards lead with the operation subject and its resolved human label
+when the result carries one, then the actual observed state or effect, and keep
+exact server, block, and ownership identity for the expanded view. `rex_status`
+leads with host activity, the program states reported inside the payload, and
+the caller's binding. Full IDs wrap when needed rather than receive fixed
 short forms. Pi's default tool shell supplies padding, background and expansion.
 The expansion hint uses your configured Pi key, read through the `keyText`
 function that the host passes in the tool render context. An unbound key, or a
@@ -114,6 +117,11 @@ The factory publishes the same registered renderer references through the public
 factory setup, answers versioned requests and removes its request listener at
 shutdown. Consumers receive display fields only, never tool execution functions
 or schemas. Pi also owns subscription invalidation when it replaces the runtime.
+The records come from `display.ts`, a presentation-only module over
+`presentation.ts`; the Durable contribution advertises it as its display
+descriptor (`{ version: 1, entry: "./display.ts", export: "toolDisplay" }`) so
+the standalone Agent terminal renders Rex cards locally. Importing it registers
+nothing, emits nothing, and touches no terminal.
 
 ## Select the right work
 

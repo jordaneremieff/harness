@@ -19,6 +19,8 @@ export interface DurableContributionHost {
 export interface DurableContribution {
 	readonly name: string;
 	readonly source: string;
+	/** Presentation-only module the standalone Agent terminal imports locally; see docs/conventions/tool-display.md. */
+	readonly display?: { readonly version: 1; readonly entry: string; readonly export: string };
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 }
 type OwnedDocument = { ownerId: string; state: JsonValue };
@@ -92,6 +94,7 @@ async function hostActivity(host: DurableContributionHost, api: Durable.ToolExec
 export function rexContribution(source: string, bus: SettingsBus, stopFactoryPublisher: () => void, options: RexAdapterOptions = {}): DurableContribution {
 	return {
 		name: "rex", source,
+		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
 		create(host) {
 			stopFactoryPublisher();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));

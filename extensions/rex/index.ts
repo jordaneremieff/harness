@@ -4,7 +4,8 @@ import type { Schema, Static } from "@earendil-works/pi-schema";
 import { boundResult, resultByteLimit, RexCore, type RexRequest } from "./core.ts";
 import { liveCalls, ordinaryOwner, ordinaryOwnershipStore, ordinaryStatusStore, resultChannels, serialiseOwners, type RexAdapterOptions } from "./config.ts";
 import { rexContribution } from "./durable.ts";
-import { createRexToolDisplay, publishRexToolDisplay } from "./display.ts";
+import { toolDisplay } from "./display.ts";
+import { publishRexToolDisplay } from "./presentation.ts";
 import { publishSettings, readSettings } from "./settings.ts";
 import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequest } from "./schema.ts";
 import { rexStatus, type RexExecutor } from "./status.ts";
@@ -23,9 +24,11 @@ export function registerRex(pi: ExtensionAPI, options: RexAdapterOptions = {}): 
 		finally { await invocations.drain(); }
 	};
 	const tools: ToolDefinition<Schema>[] = [];
+	// One record set: the registration spreads the same renderer records the pure display module returns.
+	const displayRecords = new Map(toolDisplay().tools.map((record) => [record.name, record]));
 	for (const spec of toolSpecs) {
 		const tool: ToolDefinition<typeof spec.parameters> = {
-			...createRexToolDisplay(spec.name),
+			...(displayRecords.get(spec.name) ?? {}),
 			name: spec.name, label: spec.label, description: spec.description,
 			parameters: spec.parameters, outputSchema: ResultSchema,
 			promptSnippet: spec.description,

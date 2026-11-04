@@ -13,15 +13,17 @@ import {
 import { Markdown } from "@earendil-works/pi-tui";
 import { int, obj, oneOf, opt, str, type Static } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, parseAccess } from "./access.ts";
+import { browserEntries, PillarsBrowser } from "./browser.ts";
 import { InputError } from "./input.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import { Collector, utcDay } from "./collector.ts";
 import { COMMAND_HELP, commandCompletions, judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
 import { DRAFT_GUIDANCE, DraftInputError, draftAssessment, DraftSchema, splitDraft } from "./draft.ts";
+import { toolDisplay } from "./display.ts";
 import { pillarsDurableContribution } from "./durable.ts";
 import { exportLocal, parseCommand } from "./export.ts";
 import { accessEvidence, Deduplicator, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
-import { accessRenderers, usageMarkdown, usageRenderers } from "./presentation.ts";
+import { usageMarkdown } from "./presentation.ts";
 import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
 
@@ -54,7 +56,9 @@ const PillarsUsageParameters = obj(
 );
 
 export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions = { agentDir: getAgentDir() }): void {
-	const { registerTool, publish } = toolDisplayPublisher(pi);
+	const displayPublisher = toolDisplayPublisher(pi);
+	// One record set: the registrations spread the same renderer records the pure display module returns.
+	const displayRecords = new Map(toolDisplay().tools.map((record) => [record.name, record]));
 	let catalog: Catalog | undefined;
 	let collector: Collector | undefined;
 	const snapshot = readSettings(options);
@@ -102,6 +106,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	});
 	pi.on("session_shutdown", async () => {
 		stopSettings();
+		displayPublisher.stop();
 		if (enabled) await collector?.shutdown();
 		reader.clear();
 		delivered.clear();
@@ -188,7 +193,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	pi.on("tool_result", async (event, ctx) => {
 		await observe(event, ctx, "tool_result");
 	});
-	registerTool({
+	pi.registerTool({
 		name: "pillars",
 		label: "Pillars",
 		description: `${ACCESS_DESCRIPTION} ${DRAFT_GUIDANCE}`,
@@ -199,7 +204,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			DRAFT_GUIDANCE,
 		],
 		parameters: PillarsParameters,
-		...accessRenderers(),
+		...displayRecords.get("pillars"),
 		prepareArguments(input) {
 			try {
 				const { source, draft } = splitDraft(input);
@@ -228,12 +233,12 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
 		},
 	});
-	registerTool({
+	pi.registerTool({
 		name: "pillars_usage",
 		label: "Pillars access evidence",
 		description: TOOL_DESCRIPTION,
 		parameters: PillarsUsageParameters,
-		...usageRenderers(),
+		...displayRecords.get("pillars_usage"),
 		prepareArguments(input) {
 			try { return parseRequest(input); }
 			catch (error) {
@@ -299,6 +304,40 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		}
 		display(usageMarkdown(await reader.read({ view: parsed.kind, windowDays: parsed.windowDays }, ctx.signal)), ctx);
 	}
+	/** Open the read-only TUI reader; it returns false when only the text route applies. */
+	async function openBrowser(ctx: ExtensionContext): Promise<boolean> {
+		if (!ctx.hasUI || typeof ctx.ui.custom !== "function" || !catalog) return false;
+		const read = (request: Parameters<typeof access>[1], signal?: AbortSignal) => access(catalog, request, signal);
+		const entries = await browserEntries(catalog, read, ctx.signal).catch(() => undefined);
+		if (entries === undefined) return false;
+		ctx.ui.custom(
+			(tui, _theme, _keybindings, done) =>
+				new PillarsBrowser({
+				entries,
+				read,
+				size: () => ({ columns: tui.terminal.columns, rows: tui.terminal.rows }),
+				requestRender: () => tui.requestRender(),
+				close: () => done(undefined),
+				signal: ctx.signal,
+			}),
+			{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" } },
+		);
+		return true;
+	}
+	/** Browse opens the reader when a TUI is present; every other input keeps its text route. */
+	async function route(input: string, ctx: ExtensionContext): Promise<void> {
+		const browse = !input || input === "browse";
+		if (browse && (await openBrowser(ctx))) return;
+		if (browse || input.startsWith("read ")) {
+			await readSource(input, ctx);
+			return;
+		}
+		if (input.startsWith("next ")) {
+			display(usageMarkdown(await reader.read({ cursor: input.slice(5) }, ctx.signal)), ctx);
+			return;
+		}
+		await usageOrExport(input, ctx);
+	}
 	pi.registerCommand("pillars", {
 		description:
 			"Check alignment and continue the corrected work, derive candidates, review guidance, or browse Pillars. Use /pillars for help; judgment actions accept an optional hint.",
@@ -322,15 +361,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			}
 			await discover(ctx.signal);
 			try {
-				if (!input || input === "browse" || input.startsWith("read ")) {
-					await readSource(input, ctx);
-					return;
-				}
-				if (input.startsWith("next ")) {
-					display(usageMarkdown(await reader.read({ cursor: input.slice(5) }, ctx.signal)), ctx);
-					return;
-				}
-				await usageOrExport(input, ctx);
+				await route(input, ctx);
 			} catch {
 				display(
 					`The Pillars command did not complete. Check the command syntax and source or export availability.\n\n${COMMAND_HELP}`,
@@ -339,5 +370,5 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 			}
 		},
 	});
-	publish();
+	displayPublisher.publish();
 }

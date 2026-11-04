@@ -31,6 +31,8 @@ import { PillarsStore } from "./store.ts";
 export interface DurableContribution {
 	readonly name: string;
 	readonly source: string;
+	/** Presentation-only module the standalone Agent terminal imports locally; see docs/conventions/tool-display.md. */
+	readonly display?: { readonly version: 1; readonly entry: string; readonly export: string };
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 	readonly commands?: readonly DurableCommand[];
 }
@@ -131,6 +133,7 @@ export function pillarsDurableContribution(
 	return {
 		name: "pillars",
 		source,
+		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
 		commands: [pillarsCommand],
 		async create(host) {
 			const { GenerationTask, ToolTask, defineExtension, defineTool, hook, section } = host.durable;

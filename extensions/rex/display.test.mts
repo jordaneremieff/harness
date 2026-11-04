@@ -4,7 +4,7 @@ import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { resultChannels } from "./config.ts";
 import type { RexResult } from "./core.ts";
-import { createRexToolDisplay } from "./display.ts";
+import { createRexToolDisplay } from "./presentation.ts";
 
 const block = "block:33333333-3333-4333-8333-333333333333";
 const server = { endpoint: "unix:///test-rex", hostId: "host", instanceId: "instance", selection: "test" };
@@ -108,6 +108,36 @@ test("owned observation cards separate stored phase, current child evidence and 
 	assert.match(rows, /Status unavailable/);
 	assert.match(rows, /Observation does not stop work or establish task success/);
 	assert.match(rows, /Stored phase is not live presence/);
+});
+
+test("collapsed cards lead with observed facts: status host activity, reported states, binding, subject label, and wait deadline", () => {
+	const binding = { ownerId: "owner", verifiedAt: "2026-11-04T00:00:00.000Z", target: { server, source: "explicit" as const, sessionId: "session:33333333-3333-4333-8333-333333333333", blockId: block } };
+	const status = render("rex_status", fixture({
+		outcome: "snapshot",
+		data: {
+			hostActivity: { host: "durable", state: "idle", observedAt: "2026-11-04T00:00:00.000Z", source: "Harness.inspect() current conversation tasks", omittedTasks: 70, note: "No live task does not prove completion." },
+			reportedStatus: { blocks: [{ block_id: block, status: { state: "working", app: "pi" } }] },
+			binding,
+			terminalProjection: "projection limit",
+		},
+	}), { op: "snapshot" }).join("\n");
+	assert.match(status, /Host durable · idle/);
+	assert.match(status, /tasks outside snapshot/);
+	assert.match(status, /Reported: working/);
+	assert.ok(status.includes(`Binding: ${block} · verified 2026-11-04`));
+	assert.match(status, /Reported status is not permission or task acceptance/);
+	const unbound = render("rex_status", fixture({ outcome: "host_status", data: { hostActivity: { host: "ordinary", state: "active", observedAt: "2026-11-04T00:00:00.000Z", source: "ExtensionContext.isIdle()", note: "" } } }), { op: "snapshot" }).join("\n");
+	assert.match(unbound, /Host ordinary · active/);
+	assert.match(unbound, /Binding: none/);
+	const wait = render("rex_wait", fixture({ outcome: "observed" }), { op: "wait", condition: "text", timeoutMs: 25000 }).join("\n");
+	assert.match(wait, /deadline 25000 ms/);
+	const created = render("rex_terminal", fixture({ outcome: "created", data: { label: "build pane" } }), { op: "create", kind: "session", label: "build pane" }).join("\n");
+	assert.match(created, /build pane/);
+	assert.match(render("rex_terminal", fixture(), { op: "input" }).join("\n"), /explicit target/);
+	for (const width of [24, 72]) {
+		const rows = createRexToolDisplay("rex_status").renderResult(resultChannels(fixture({ outcome: "snapshot", data: { hostActivity: { host: "durable", state: "idle", observedAt: "x", source: "y", note: "z" }, reportedStatus: { blocks: [{ status: { state: "working" } }] }, binding, terminalProjection: "" } })), { expanded: false, isPartial: false }, theme, { args: { op: "snapshot" }, isError: false }).render(width);
+		for (const row of rows) assert.ok(visibleWidth(row) <= width, JSON.stringify(row));
+	}
 });
 
 test("cards use the host-injected expansion key and invent no mouse fallback when it is unbound or absent", () => {
