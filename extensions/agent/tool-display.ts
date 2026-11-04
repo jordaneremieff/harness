@@ -34,6 +34,19 @@ function display(value: unknown): ToolDisplayPublication["tools"][number] | unde
 	};
 }
 
+/** Checked presentation records from one pure display module. Execution fields are never read. */
+export function presentationRecords(value: unknown): ReadonlyMap<string, ToolRenderers> | undefined {
+	if (!record(value) || value.version !== 1 || !Array.isArray(value.tools)) return undefined;
+	const renderers = new Map<string, ToolRenderers>();
+	for (const item of value.tools) {
+		const tool = display(item);
+		if (!tool) continue;
+		const { name, ...presentation } = tool;
+		renderers.set(name, Object.freeze(presentation));
+	}
+	return renderers;
+}
+
 /** Pi owns subscription cleanup; the registry belongs to this factory invocation only. */
 export function collectToolDisplay(events: ExtensionAPI["events"]): ToolDisplayLookup {
 	const renderers = new Map<string, ToolRenderers>();

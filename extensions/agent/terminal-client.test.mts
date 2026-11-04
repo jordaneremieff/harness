@@ -134,13 +134,13 @@ it("restart reads the last target without persisting native conversation state",
 	assert.throws(() => parseTerminalArgs(["--session"]), /incomplete/);
 });
 
-function screenFixture(controller: TerminalController) {
+function screenFixture(controller: TerminalController, publishStatus?: (status: import("@earendil-works/pi-tui").ProgramStatus) => void) {
 	const renderWaiters: Array<{ ready?: () => boolean; resolve(): void }> = [];
 	const terminal = { rows: 24, columns: 80 };
 	const overlays: Array<Component & Focusable> = [];
 	const tui = { terminal, requestRender() { for (const waiter of renderWaiters.splice(0)) { if (!waiter.ready || waiter.ready()) waiter.resolve(); else renderWaiters.push(waiter); } }, showOverlay(component: Component & Focusable) { overlays.push(component); component.focused = true; tui.requestRender(); return { hide() { tui.requestRender(); } }; } } as unknown as TUI;
 	let done = 0;
-	return { screen: new TerminalScreen(tui, theme, terminalKeys(), controller, () => { done++; }), done: () => done, terminal, overlays, afterRender: (ready?: () => boolean) => ready?.() ? Promise.resolve() : new Promise<void>((resolve) => renderWaiters.push({ ready, resolve })) };
+	return { screen: new TerminalScreen(tui, theme, terminalKeys(), controller, () => { done++; }, publishStatus), done: () => done, terminal, overlays, afterRender: (ready?: () => boolean) => ready?.() ? Promise.resolve() : new Promise<void>((resolve) => renderWaiters.push({ ready, resolve })) };
 }
 
 it("the main console is full-width; /agent and Escape return without a work control", async () => {
@@ -150,7 +150,8 @@ it("the main console is full-width; /agent and Escape return without a work cont
 	screen.handleInput("\x1b");
 	assert.ok(screen.render(80).map(stripVTControlCharacters).some((line) => line.includes("Agents")));
 	screen.handleInput("\x1b");
-	assert.ok(screen.render(80).map(stripVTControlCharacters).some((line) => line.includes("Shared input")));
+	assert.ok(screen.render(80).map(stripVTControlCharacters).some((line) => line.includes("Dashboard")));
+	assert.ok(screen.render(80).map(stripVTControlCharacters).some((line) => line.includes("Detach")));
 	assert.equal(f.controller.draftState?.draft, "kept");
 	assert.equal(f.controller.target, "a");
 	assert.equal(f.calls.some((call) => call.method === "abort" || call.method === "submit"), false);

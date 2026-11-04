@@ -242,7 +242,12 @@ export const AgentConversationSummarySchema = obj({
 
 /** What one session host installed, as reported by status. */
 export const DurableInventorySchema = obj({
-	contributions: arr(obj({ name: string, source: string, commands: arr(obj({ name: string, description: string })) })),
+	contributions: arr(obj({
+		name: string,
+		source: string,
+		commands: arr(obj({ name: string, description: string })),
+		display: opt(obj({ version: lit(1), entry: string, export: lit("toolDisplay") })),
+	})),
 	ordinaryOnly: arr(string),
 	/** Present only when at least one configured extension failed to load. */
 	failed: opt(arr(obj({ path: string, error: string }))),

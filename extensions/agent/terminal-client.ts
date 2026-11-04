@@ -2,12 +2,14 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DefaultResourceLoader, SettingsManager, getAgentDir, getPackageDir, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { Input, KeybindingsManager, ProcessTerminal, TuiAltScreen, TUI_KEYBINDINGS, setKeybindings, matchesKey, type Component, type Focusable, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Input, KeybindingsManager, ProcessTerminal, TuiAltScreen, TUI_KEYBINDINGS, setKeybindings, matchesKey, type Component, type Focusable, type ProgramStatus, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { AgentManager, type AgentCaller } from "./manager.ts";
 import { createAgentObservationSource, type AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
 import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
 import { agentState, createDashboardState, notifyAgentState, updateDraft, type DashboardState } from "./dashboard-state.ts";
+import type { AgentModelInfo } from "./agent-footer.ts";
+import { TerminalProgramStatus } from "./terminal-status.ts";
 import { ConversationHistory } from "./conversation-view.ts";
 import type { AgentConversationSummary, AgentConversationSnapshot } from "./dashboard-types.ts";
 import { fitLine } from "./dashboard-layout.ts";
@@ -19,6 +21,19 @@ export function terminalAdmission(receipt: unknown, id: string, mode: "steer" | 
 	const reference = admittedResult(id, receipt);
 	const deduped = (receipt as { deduped?: boolean }).deduped === true;
 	return `Input ${deduped ? "already admitted" : "admitted"} for ${reference.sessionId} (submission ${reference.submissionId}; requested ${mode === "followUp" ? "follow-up" : "steer"})`;
+}
+
+function observedUsageCost(usage: { models?: Record<string, { cost?: { total?: number } }>; tools?: Record<string, { cost?: { total?: number } }> } | undefined): { cost: number; partial: boolean } | undefined {
+	if (!usage) return undefined;
+	let cost = 0;
+	for (const bucket of [usage.models, usage.tools]) {
+		for (const item of Object.values(bucket ?? {})) {
+			const total = item?.cost?.total;
+			if (typeof total !== "number" || !Number.isFinite(total) || total < 0) return { cost: Number.NaN, partial: true };
+			cost += total;
+		}
+	}
+	return { cost, partial: false };
 }
 
 export type TerminalManager = Pick<AgentManager, "resolveTarget" | "control" | "snapshot" | "dashboardPage" | "observeLive" | "subscribeRoster" | "close"> & Partial<Pick<AgentManager, "collaborate">>;
@@ -64,6 +79,17 @@ export class TerminalController {
 	get selectionRevision(): number { return this.generation; }
 	get availability() { return this.target ? this.source.availability(this.target) : undefined; }
 	get draftState() { return this.target ? agentState(this.state, this.target) : undefined; }
+	modelInfo?: AgentModelInfo;
+	private modelIdentity?: string;
+	setModelInfo(identity: string, info: AgentModelInfo | undefined): void {
+		this.modelIdentity = identity;
+		this.modelInfo = info;
+		this.notify();
+	}
+	currentModelInfo(): AgentModelInfo | undefined {
+		const model = this.row?.model;
+		return model && this.modelInfo && this.modelIdentity === `${model.provider}/${model.modelId}` ? this.modelInfo : undefined;
+	}
 	private notify(): void { if (!this.closed) for (const listener of this.listeners) listener(); }
 	subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
 	private history(id: string): ConversationHistory {
@@ -74,12 +100,15 @@ export class TerminalController {
 	private frameChanged(): void {
 		const frame = this.frame;
 		const row = this.row;
-		if (frame && row && this.target && this.availability?.state === "live") {
+		const live = this.availability?.state === "live";
+		if (frame && row && this.target && live) {
+			const observed = observedUsageCost(frame.status.usage);
 			this.row = { ...row, name: frame.status.name, awaiting: frame.status.awaiting,
 				state: frame.status.busy ? "working" : "idle",
+				...(observed ? { cost: observed.cost, partial: observed.partial } : {}),
 				model: frame.status.agent.model ? { ...frame.status.agent.model, thinkingLevel: frame.status.agent.thinkingLevel } : row.model };
 			this.setSnapshot({ entries: frame.entries, partial: !frame.coverage.complete, revision: `r${frame.revision}`, nextBefore: frame.nextBefore });
-		}
+		} else if (row && this.target && this.availability?.state === "unavailable") this.row = { ...row, partial: true };
 		this.notify();
 	}
 	private setSnapshot(snapshot: AgentConversationSnapshot & { nextBefore?: number | null }): void {
@@ -219,6 +248,11 @@ export class TerminalScreen implements Component {
 	private dashboardHidden = false;
 	private composerY = 0;
 	private composerHeight = 0;
+	private readonly programStatus?: TerminalProgramStatus;
+	private actionHits: Array<{ id: string; x: number; width: number }> = [];
+	private actionY = -1;
+	private boundaryY = -1;
+	private transcript = { y: 0, height: 0, width: 0 };
 	private readonly off: () => void;
 	private readonly branches: AgentBranchCache;
 	private readonly dialogs = new Set<() => void>();
@@ -228,8 +262,9 @@ export class TerminalScreen implements Component {
 	private readonly keys: KeybindingsManager;
 	readonly controller: TerminalController;
 	private readonly done: () => void;
-	constructor(tui: TUI, theme: Theme, keys: KeybindingsManager, controller: TerminalController, done: () => void) {
+	constructor(tui: TUI, theme: Theme, keys: KeybindingsManager, controller: TerminalController, done: () => void, publishStatus?: (status: ProgramStatus) => void) {
 		this.tui = tui; this.theme = theme; this.keys = keys; this.controller = controller; this.done = done;
+		if (publishStatus) this.programStatus = new TerminalProgramStatus(publishStatus);
 		this.navigationInput.onSubmit = (text) => { this.navigationInput.setValue(""); void this.submit(text); };
 		this.branches = new AgentBranchCache(readAgentBranch, () => this.tui.requestRender());
 		this.off = controller.subscribe(() => this.changed());
@@ -250,7 +285,17 @@ export class TerminalScreen implements Component {
 			this.console.observeUsage(this.controller.snapshot?.entries ?? [], this.controller.frame?.status.usage);
 			this.branches.refresh(row.cwd, `${row.id}:${this.controller.snapshot?.entries.at(-1)?.id ?? "empty"}`);
 		}
+		this.projectStatus();
 		this.tui.requestRender();
+	}
+	private projectStatus(): void {
+		this.programStatus?.update({
+			target: this.controller.target,
+			revision: this.controller.selectionRevision,
+			live: this.controller.availability?.state === "live",
+			busy: this.controller.row?.state === "working",
+			interaction: this.dialogs.size > 0,
+		});
 	}
 	private async submit(text: string): Promise<void> {
 		const words = text.trim().split(/\s+/);
@@ -265,11 +310,12 @@ export class TerminalScreen implements Component {
 	private async agentCommand(words: string[]): Promise<void> {
 		if (words.length === 0) this.openDashboard();
 		else if (words[0] === "enter" && words.length === 2) await this.enter(words[1]);
-		else if (words[0] === "back" && words.length === 1 && this.controller.previous) await this.enter(this.controller.previous);
+		else if (words[0] === "back" && words.length === 1) await this.runAction("back");
+		else if (words[0] === "latest" && words.length === 1) this.runAction("latest");
 		else if (words[0] === "recover" && words.length === 1) {
 			const revision = this.controller.selectionRevision;
 			try { await this.recover(); } catch (error) { if (revision === this.controller.selectionRevision) this.notice = String(error); }
-		} else this.notice = "Use /agent, /agent enter <identity|@handle>, /agent back, or /agent recover";
+		} else this.notice = "Use /agent, /agent enter <identity|@handle>, /agent back, /agent latest, or /agent recover";
 	}
 	private async recover(): Promise<void> {
 		const id = this.controller.target;
@@ -334,9 +380,10 @@ export class TerminalScreen implements Component {
 			input.setValue(initial);
 			let handle: { hide(): void } | undefined;
 			let settled = false;
-			const finish = (answer?: string) => { if (settled) return; settled = true; this.dialogs.delete(cancel); handle?.hide(); resolveAnswer(answer); this.tui.requestRender(); };
+			const finish = (answer?: string) => { if (settled) return; settled = true; this.dialogs.delete(cancel); this.projectStatus(); handle?.hide(); resolveAnswer(answer); this.tui.requestRender(); };
 			const cancel = () => finish();
 			this.dialogs.add(cancel);
+			this.projectStatus();
 			input.onSubmit = (value) => finish(value);
 			const component: Component & Focusable = {
 				get focused() { return input.focused; },
@@ -388,32 +435,120 @@ export class TerminalScreen implements Component {
 		}
 		console.composer.handleInput(data); this.tui.requestRender();
 	}
+	private resetHits(): void {
+		this.actionHits = [];
+		this.actionY = -1;
+		this.boundaryY = -1;
+		this.transcript = { y: 0, height: 0, width: 0 };
+	}
+	private actionLine(width: number, y: number): string {
+		const labels = [
+			{ id: "dashboard", label: "Dashboard" },
+			{ id: "back", label: "Back" },
+			{ id: "latest", label: "Latest" },
+			{ id: "detach", label: "Detach" },
+		];
+		const reserved = labels.at(-1)!.label.length;
+		let x = 0;
+		const shown: typeof labels = [];
+		for (const item of labels.slice(0, -1)) {
+			const next = x + item.label.length + (shown.length ? 3 : 0);
+			if (next + 3 + reserved > width) break;
+			shown.push(item);
+			x = next;
+		}
+		const detach = labels.at(-1)!;
+		if (shown.length) x += 3;
+		shown.push(detach);
+		this.actionY = y;
+		this.actionHits = shown.map((item, index) => {
+			const start = shown.slice(0, index).reduce((total, prior) => total + prior.label.length + 3, 0);
+			return { id: item.id, x: start, width: Math.min(item.label.length, Math.max(0, width - start)) };
+		});
+		return fitLine(this.theme.fg("muted", shown.map((item) => item.label).join(" · ")), width);
+	}
+	private async runAction(id: string): Promise<void> {
+		if (id === "dashboard") this.openDashboard();
+		else if (id === "back") {
+			if (this.controller.previous) await this.enter(this.controller.previous);
+			else this.notice = "No previous conversation";
+		} else if (id === "latest") {
+			const state = this.controller.draftState;
+			if (state) {
+				state.view.follow = true;
+				state.view.anchor = undefined;
+				this.console?.conversation.invalidate();
+			}
+		} else if (id === "detach") this.done();
+		this.tui.requestRender();
+	}
+	private loadEarlier(): void {
+		const revision = this.controller.selectionRevision;
+		void this.controller.earlier().catch((error) => { if (revision === this.controller.selectionRevision) this.notice = String(error); this.tui.requestRender(); });
+	}
 	render(width: number): string[] {
+		this.resetHits();
 		if (this.dashboard && !this.dashboardHidden) return this.dashboard.render(width);
 		const height = this.tui.terminal.rows;
 		const console = this.console;
+		const actions = this.actionLine(width, height - 1);
 		if (!console) {
 			this.navigationInput.focused = true;
-			return [fitLine("No conversation. /agent opens the dashboard; /agent enter <target> attaches.", width), ...Array<string>(Math.max(0, height - 3)).fill(""), ...this.navigationInput.render(width), fitLine(this.notice || "Ctrl+D detaches", width)].slice(0, height);
+			return [fitLine("No conversation. /agent opens the dashboard; /agent enter <target> attaches.", width), ...Array<string>(Math.max(0, height - 3)).fill(""), ...this.navigationInput.render(width), actions].slice(0, height);
 		}
-		if (width < 60 || height < 20) return Array.from({ length: height }, (_, i) => fitLine(i === 0 ? "Resize to use this conversation. Esc opens Agents." : "", width));
+		if (width < 60 || height < 20) {
+			const lines = Array.from({ length: height }, (_, i) => fitLine(i === 0 ? "Resize to use this conversation. Esc opens Agents." : "", width));
+			lines[height - 1] = actions;
+			return lines;
+		}
 		console.composer.focused = true;
 		console.composer.setViewportRows(Math.max(5, Math.min(10, Math.floor(height / 3))));
 		const editor = console.composer.render(width, console.row.name?.trim() ? console.row.name : console.row.id, console.messageMode(), console.state.receipt);
-		const status = console.statusLines(width, undefined, this.branches.get(console.row.cwd));
-		const body = console.conversation.render(width, Math.max(1, height - editor.length - status.length - 1));
-		this.composerY = body.length; this.composerHeight = editor.length;
-		return [...body, ...editor, ...status, fitLine(console.warning || this.notice || "Shared input · /agent dashboard · /agent enter <target> · /agent back · Ctrl+D detaches", width)].slice(0, height);
+		const status = console.statusLines(width, this.controller.currentModelInfo(), this.branches.get(console.row.cwd));
+		const boundary = this.controller.snapshot?.nextBefore ? "Earlier history" : "";
+		const notice = console.warning || this.notice;
+		const reserved = editor.length + status.length + 1 + (notice ? 1 : 0) + (boundary ? 1 : 0);
+		const bodyHeight = Math.max(1, height - reserved);
+		const body = console.conversation.render(width, bodyHeight);
+		this.transcript = { y: boundary ? 1 : 0, height: body.length, width };
+		this.boundaryY = boundary ? 0 : -1;
+		this.composerY = (boundary ? 1 : 0) + body.length;
+		this.composerHeight = editor.length;
+		const lines = [
+			...(boundary ? [fitLine(this.theme.fg("muted", boundary), width)] : []),
+			...body, ...editor, ...status,
+			...(notice ? [fitLine(notice, width)] : []),
+			actions,
+		];
+		while (lines.length < height) lines.splice(lines.length - 1, 0, "");
+		return lines.slice(0, height);
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (this.dashboard) return this.dashboard.handleMouse(event);
-		if (event.type === "wheel" && this.console) { this.console.conversation.page(event.wheelDelta ?? 0); return { handled: true }; }
+		if (this.dashboard && !this.dashboardHidden) return this.dashboard.handleMouse(event);
+		if (event.y === this.actionY && (event.type === "click" || event.type === "press")) {
+			const hit = this.actionHits.find((item) => event.x >= item.x && event.x < item.x + item.width);
+			if (hit) { void this.runAction(hit.id); return { handled: true }; }
+		}
+		if (event.y === this.boundaryY) {
+			if (event.type === "click" || event.type === "press") this.loadEarlier();
+			return { handled: true };
+		}
+		const transcript = this.transcript;
+		if (this.console && transcript.height > 0 && event.y >= transcript.y && event.y < transcript.y + transcript.height) {
+			if (event.type === "wheel") {
+				const delta = event.wheelDelta ?? 0;
+				if (delta < 0 && this.console.conversation.atTop()) this.loadEarlier();
+				else this.console.conversation.page(delta);
+				return { handled: true };
+			}
+			return this.console.conversation.handleMouse({ ...event, y: event.y - transcript.y, width: transcript.width, height: transcript.height });
+		}
 		if (this.console && event.y >= this.composerY && event.y < this.composerY + this.composerHeight)
 			return this.console.composer.handleMouse({ ...event, y: event.y - this.composerY, height: this.composerHeight });
 		return undefined;
 	}
-	invalidate(): void { this.console?.conversation.invalidate(); this.console?.composer.invalidate(); this.dashboard?.invalidate(); }
-	dispose(): void { this.disposed = true; for (const cancel of this.dialogs) cancel(); this.closeDashboard(); this.console?.save(); this.console?.dispose(); this.branches.dispose(); this.off(); }
+	invalidate(): void { this.resetHits(); this.console?.conversation.invalidate(); this.console?.composer.invalidate(); this.dashboard?.invalidate(); }
+	dispose(): void { this.disposed = true; this.programStatus?.dispose(); for (const cancel of this.dialogs) cancel(); this.closeDashboard(); this.console?.save(); this.console?.dispose(); this.branches.dispose(); this.off(); }
 }
 
 export function parseTerminalArgs(args: string[]): { session?: string; selectedTheme: "dark" | "light" } {
@@ -449,7 +584,7 @@ export async function runTerminal(args: string[]): Promise<void> {
 	const tui = new TuiAltScreen(terminal);
 	let finish!: () => void;
 	const finished = new Promise<void>((resolveDone) => { finish = resolveDone; });
-	const screen = new TerminalScreen(tui, theme, keys, controller, finish);
+	const screen = new TerminalScreen(tui, theme, keys, controller, finish, (status) => terminal.setProgramStatus(status));
 	const close = () => finish();
 	process.once("SIGINT", close); process.once("SIGTERM", close);
 	try {
