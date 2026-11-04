@@ -248,13 +248,17 @@ finite union in `panel-protocol.ts` and answers `{ text, data }`:
 | Request | Effect |
 |---|---|
 | `load`, `refresh` | The registry snapshot (and fire summary, recent activity, and the bound conversation's scope for `load`); Map-backed values travel as entry arrays. |
-| `inspect` (`state`, `explain`, `data`) | The same bounded inspection text as the native `policy_rules` views, against the bound conversation's observation state. |
+| `inspect` (`state`, `explain`) | The same bounded inspection text as the native `policy_rules` views, against the bound conversation's observation state. |
 | `approve`, `reject` | `registry.decide` with the proposal revision the operator read and a `panel` audit for the bound conversation; a changed revision refuses. |
 | `lifecycle` (`disable`, `enable`, `retire`), `effect` | The same registry controls as the ordinary panel, bound to the target identity the operator saw; a changed definition refuses. |
 | `reset-revision`, `reset` | Persist the synced observation periods, return their revision, then start a new period only under that revision. |
+| `data` (`args`: `list`, `show <name>`, `set <JSON>`, `set-file <JSON>`, `remove <name> <revision>`) | The owner's data command, prepared against the bound conversation's cwd (set-file paths resolve there). Reads answer with their text. A change answers first with its complete review and the exact approval arguments, and changes nothing; the panel sends those arguments only after the operator reads every page and chooses the effect-labelled final action (`Set policy data`, `Remove policy data`). Applying rechecks the binding revision, rereads the file, and requires the same artifact revision; a change in between refuses and changes nothing. Every change carries a `panel` audit. |
 
-Data imports and bindings stay with `policy_control`; the attached panel lists
-data only. Approval remains distinct from session enforcement on both routes.
+In the attached panel, Read data lists the bindings and Data actions offers the
+same list, show, set, set-file and remove as `/policy data`: set and set-file
+open the terminal's multiline editor, and a set without `expectedRevision` binds
+to the revision shown. Approval remains distinct from session enforcement on
+both routes. The `o` key opens the actions menu in both panels.
 
 Semantic differences from the ordinary runtime:
 

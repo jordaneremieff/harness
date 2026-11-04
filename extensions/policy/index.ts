@@ -10,6 +10,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import { createPolicyDurableExtension, policyPanelCommand, type PolicyDurableContribution } from "./durable.ts";
+import { chooseDataArguments } from "./data-arguments.ts";
 import {
 	candidatePermitsEffectChoice,
 	makeRuleAudit,
@@ -528,56 +529,13 @@ async function policyImportVerb(
 	env.output(ctx, text);
 }
 
-function supplyDataRevision(json: string, snapshot: RuleSnapshot): string {
-	const supplied: unknown = JSON.parse(json);
-	if (
-		!supplied ||
-		typeof supplied !== "object" ||
-		Array.isArray(supplied) ||
-		Object.hasOwn(supplied, "expectedRevision")
-	)
-		return json;
-	const value = supplied as Record<string, unknown>;
-	const data = value.data as { name?: unknown } | undefined;
-	if (!data || typeof data.name !== "string") return json;
-	return JSON.stringify({ ...value, expectedRevision: snapshot.data.get(data.name)?.revision ?? null });
-}
-
-async function dataEditor(
-	ctx: ExtensionContext,
-	action: string,
-	snapshot: RuleSnapshot,
-): Promise<string | undefined> {
-	const json = await ctx.ui.editor(
-		action === "set" ? "Data JSON: data (current target revision is supplied)" : "Data file JSON: path",
-		"",
-	);
-	if (!json?.trim()) return undefined;
-	return `${action} ${action === "set" ? supplyDataRevision(json, snapshot) : json}`;
-}
-
 async function dataArguments(
 	ctx: ExtensionContext,
 	supplied: string,
 	snapshot: RuleSnapshot,
 ): Promise<string | undefined> {
 	if (ctx.mode !== "tui" || !ctx.hasUI) return supplied;
-	const args = supplied || (await ctx.ui.select("Policy data action", ["list", "show", "set", "set-file", "remove"]));
-	if (!args) return undefined;
-	if (args === "set" || args === "set-file") return dataEditor(ctx, args, snapshot);
-	const tokens = args.split(/\s+/);
-	if (tokens[0] !== "show" && tokens[0] !== "remove") return args;
-	if (!tokens[1]) {
-		const name = await ctx.ui.select("Select policy data", [...snapshot.data.keys()]);
-		if (!name) return undefined;
-		tokens.push(name);
-	}
-	if (tokens[0] === "remove" && tokens.length === 2) {
-		const binding = snapshot.data.get(tokens[1]);
-		if (!binding) throw new Error(`No policy data named ${tokens[1]}.`);
-		tokens.push(binding.revision);
-	}
-	return tokens.join(" ");
+	return chooseDataArguments({ select: (title, options) => ctx.ui.select(title, [...options]), editor: (title, initial) => ctx.ui.editor(title, initial) }, supplied, snapshot);
 }
 
 async function policyDataVerb(

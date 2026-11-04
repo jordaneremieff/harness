@@ -12,13 +12,23 @@ import type { RuleMatchContext, RuleRecord } from "./rule.ts";
 export type PolicyPanelRequest =
 	| { op: "load" }
 	| { op: "refresh" }
-	| { op: "inspect"; view: "state" | "explain" | "data"; id?: string }
+	| { op: "inspect"; view: "state" | "explain"; id?: string }
 	| { op: "approve"; proposalId: string; effect?: "steer" | "block"; revision?: string }
 	| { op: "reject"; proposalId: string; revision?: string }
 	| { op: "lifecycle"; verb: "disable" | "enable" | "retire"; id: string; reason: string; expectedIdentity?: string }
 	| { op: "effect"; id: string; effect: "steer" | "block"; reason: string; expectedIdentity?: string }
 	| { op: "reset-revision"; id: string }
-	| { op: "reset"; id: string; reason: string; revision: string };
+	| { op: "reset"; id: string; reason: string; revision: string }
+	/** One owner data command (list, show, set, set-file, remove); a change first answers with its review. */
+	| { op: "data"; args: string };
+
+/** A data change the host prepared but did not apply: the operator reads `text`, and approving sends `approval`. */
+export interface DataReview {
+	title: string;
+	text: string;
+	approval: string;
+	action: string;
+}
 
 export interface SerializedSnapshot {
 	records: Array<[string, RuleRecord]>;
@@ -37,7 +47,8 @@ export type PolicyPanelAnswer =
 	| { op: "load"; snapshot: SerializedSnapshot; fireSummary: SerializedFireSummary; activity: ActivityReadResult; scope: RuleMatchContext }
 	| { op: "refresh"; snapshot: SerializedSnapshot }
 	| { op: "inspect"; text: string; snapshot: SerializedSnapshot }
-	| { op: "approve" | "reject" | "lifecycle" | "effect" | "reset"; outcome: string; snapshot: SerializedSnapshot }
+	| { op: "approve" | "reject" | "lifecycle" | "effect" | "reset" | "data"; outcome: string; snapshot: SerializedSnapshot }
+	| { op: "data"; review: DataReview; snapshot: SerializedSnapshot }
 	| { op: "reset-revision"; revision: string };
 
 const MAX_REASON = 1000;
@@ -52,7 +63,7 @@ const readers: Record<string, (value: Record<string, unknown>) => PolicyPanelReq
 	load: () => ({ op: "load" }),
 	refresh: () => ({ op: "refresh" }),
 	inspect(value) {
-		if (value.view !== "state" && value.view !== "explain" && value.view !== "data") throw new Error("policy inspect needs the view state, explain, or data");
+		if (value.view !== "state" && value.view !== "explain") throw new Error("policy inspect needs the view state or explain");
 		if (value.view === "explain" && !identity(value.id)) throw new Error("policy explain needs a rule or call id");
 		return { op: "inspect", view: value.view, ...(value.id === undefined ? {} : { id: String(value.id) }) };
 	},
@@ -81,7 +92,13 @@ const readers: Record<string, (value: Record<string, unknown>) => PolicyPanelReq
 		if ((!identity(value.id) && value.id !== "--all") || !reason(value.reason) || !optionalRevision(value.revision) || value.revision === undefined) throw new Error("policy reset needs a rule id or --all, a bounded reason, and the inspected revision");
 		return { op: "reset", id: String(value.id), reason: value.reason, revision: value.revision };
 	},
+	data(value) {
+		const verb = typeof value.args === "string" ? value.args.trim().split(/\s+/u)[0] : undefined;
+		if (typeof value.args !== "string" || !verb || !DATA_VERBS.has(verb)) throw new Error("policy data needs list, show, set, set-file, or remove arguments");
+		return { op: "data", args: value.args };
+	},
 };
+const DATA_VERBS = new Set(["list", "show", "set", "set-file", "remove"]);
 
 /** Reject anything outside the finite request union before the native runtime runs. */
 export function readPanelRequest(value: unknown): PolicyPanelRequest {
@@ -115,6 +132,16 @@ function serializedFires(value: unknown): value is SerializedFireSummary {
 	return record(value) && Array.isArray(value.fires) && Array.isArray(value.firesByModel) && typeof value.partial === "boolean";
 }
 
+function readDataReview(review: Record<string, unknown>): DataReview {
+	if (typeof review.title !== "string" || typeof review.text !== "string" || typeof review.approval !== "string" || typeof review.action !== "string") throw new Error("the host answered an unreadable data review");
+	return { title: review.title, text: review.text, approval: review.approval, action: review.action };
+}
+
+function readLoadAnswer(value: Record<string, unknown>, snapshot: SerializedSnapshot): PolicyPanelAnswer {
+	if (!serializedFires(value.fireSummary) || !record(value.activity) || !Array.isArray(value.activity.records) || !record(value.scope) || typeof value.scope.cwd !== "string") throw new Error("the host answered an unreadable policy view");
+	return { op: "load", snapshot, fireSummary: value.fireSummary, activity: value.activity as unknown as ActivityReadResult, scope: value.scope as unknown as RuleMatchContext };
+}
+
 /** A malformed answer is an error the panel shows, never an empty registry. */
 export function readPanelAnswer(request: PolicyPanelRequest, value: unknown): PolicyPanelAnswer {
 	if (!record(value) || value.op !== request.op) throw new Error("the host answered a different policy request");
@@ -123,15 +150,13 @@ export function readPanelAnswer(request: PolicyPanelRequest, value: unknown): Po
 		return { op: "reset-revision", revision: value.revision };
 	}
 	if (!serializedSnapshot(value.snapshot)) throw new Error("the host answered an unreadable policy snapshot");
-	if (request.op === "load") {
-		if (!serializedFires(value.fireSummary) || !record(value.activity) || !Array.isArray(value.activity.records) || !record(value.scope) || typeof value.scope.cwd !== "string") throw new Error("the host answered an unreadable policy view");
-		return { op: "load", snapshot: value.snapshot, fireSummary: value.fireSummary, activity: value.activity as unknown as ActivityReadResult, scope: value.scope as unknown as RuleMatchContext };
-	}
+	if (request.op === "load") return readLoadAnswer(value, value.snapshot);
 	if (request.op === "refresh") return { op: "refresh", snapshot: value.snapshot };
 	if (request.op === "inspect") {
 		if (typeof value.text !== "string") throw new Error("the host answered an unreadable inspection");
 		return { op: "inspect", text: value.text, snapshot: value.snapshot };
 	}
+	if (request.op === "data" && record(value.review)) return { op: "data", review: readDataReview(value.review), snapshot: value.snapshot };
 	if (typeof value.outcome !== "string") throw new Error("the host answered an unreadable policy outcome");
 	return { op: request.op, outcome: value.outcome, snapshot: value.snapshot };
 }

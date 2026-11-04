@@ -46,6 +46,7 @@ function hostFixture(answers: Partial<Record<string, (request: Record<string, un
 		dialogs: {
 			select: async (_title, choices) => choices[0]?.value,
 			input: async () => inputs.shift(),
+			editor: async () => undefined,
 			notify: (text) => { notices.push(text); },
 		},
 		close: () => { closed++; },

@@ -134,6 +134,7 @@ import {
 	PolicyProposeParams,
 	PolicyRulesParams,
 	pendingProposalOutput,
+	prepareDataCommand,
 	submitProposal,
 	type ToolDeps,
 	validateInspectionParams,
@@ -215,13 +216,18 @@ export const policyPanelCommand: PolicyDurableCommand = {
 		if (call.data === undefined) return runtime.summaryText();
 		const request = readPanelRequest(call.data);
 		const answer = await runtime.panelRequest(request, call.conversation, call.context);
-		const text = "outcome" in answer ? answer.outcome
-			: answer.op === "inspect" ? `inspected ${"view" in request ? request.view : ""}`
-			: answer.op === "reset-revision" ? `reset revision ${answer.revision}`
-			: `${answer.snapshot.records.length} rules, ${answer.snapshot.pending.length} pending proposals`;
-		return { text, data: JSON.parse(JSON.stringify(answer)) as JsonValue };
+		return { text: panelAnswerText(request, answer), data: JSON.parse(JSON.stringify(answer)) as JsonValue };
 	},
 };
+
+/** The bounded text a panel answer gives a caller that reads only text. */
+function panelAnswerText(request: PolicyPanelRequest, answer: PolicyPanelAnswer): string {
+	if ("outcome" in answer) return answer.outcome;
+	if ("review" in answer) return `${answer.review.title}: review the complete artifact; nothing changed`;
+	if (answer.op === "inspect") return `inspected ${"view" in request ? request.view : ""}`;
+	if (answer.op === "reset-revision") return `reset revision ${answer.revision}`;
+	return `${answer.snapshot.records.length} rules, ${answer.snapshot.pending.length} pending proposals`;
+}
 
 /** What the agent session host installs, complete before the first `create()`. */
 export interface PolicyDurableInventory {
@@ -1887,7 +1893,25 @@ class DurablePolicyRuntime {
 			case "reset":
 				await this.resetObservation(request.id, request.reason, request.revision, surface, context);
 				return settled("Started a new policy observation period.", "reset");
+			case "data":
+				return this.panelData(request.args, audit, agent.cwd ?? this.cwd);
 		}
+	}
+
+	/**
+	 * One owner data command for the attached panel, resolved against the bound conversation's cwd.
+	 * A change answers with its complete review unless the arguments already carry its exact approval;
+	 * applying then rechecks the binding revision, the reread file, and the artifact revision.
+	 */
+	private async panelData(args: string, audit: ReturnType<typeof makeRuleAudit<"panel">>, cwd: string): Promise<PolicyPanelAnswer> {
+		const prepared = await prepareDataCommand(this.registry, args, audit, cwd);
+		if ("text" in prepared) return { op: "data", outcome: prepared.text, snapshot: serializeSnapshot(await this.snapshot()) };
+		if (prepared.approved) {
+			const outcome = await prepared.apply();
+			return { op: "data", outcome, snapshot: serializeSnapshot(await this.snapshot()) };
+		}
+		const action = prepared.title === "Remove policy data" ? "Remove policy data" : "Set policy data";
+		return { op: "data", review: { title: prepared.title, text: prepared.review, approval: prepared.approval, action }, snapshot: serializeSnapshot(await this.snapshot()) };
 	}
 
 	private deps(surface: PolicySurface, context: Context): ToolDeps {

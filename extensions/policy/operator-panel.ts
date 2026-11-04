@@ -8,6 +8,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { chooseDataArguments } from "./data-arguments.ts";
 import { proposalRevision, targetIdentity, type RuleSnapshot } from "./local-rules.ts";
 import { PolicyApprovalPanel, PolicyPanel, type PanelActionResult, type PolicyPanelControl, type PolicyPanelData } from "./panel.ts";
 import { deserializeFireSummary, deserializeSnapshot, readPanelAnswer, type PolicyPanelRequest } from "./panel-protocol.ts";
@@ -25,6 +26,8 @@ export interface OperatorPanelHost {
 	readonly dialogs: {
 		select(title: string, choices: readonly { value: string; label: string; description?: string }[]): Promise<string | undefined>;
 		input(title: string, options?: { initial?: string; placeholder?: string }): Promise<string | undefined>;
+		/** The terminal's multiline editor; data set and set-file write their JSON here. */
+		editor(title: string, initial?: string): Promise<string | undefined>;
 		notify(text: string, type?: "info" | "warning" | "error"): void;
 	};
 	close(): void;
@@ -46,14 +49,40 @@ interface Mounted {
 	dispose(): void;
 }
 
+type Confirm = (title: string, artifact: string, actionLabel?: string) => Promise<boolean>;
+
+/**
+ * Data actions over the host route. The operator chooses and edits the arguments here; the host
+ * parses, checks and prepares them, and a change comes back as its complete review. Approving
+ * sends the exact approval the host returned, so only the reviewed artifact can be applied.
+ */
+function dataActions(host: OperatorPanelHost, ask: (request: PolicyPanelRequest) => Promise<ReturnType<typeof readPanelAnswer>>, confirm: Confirm) {
+	return async (snapshot: RuleSnapshot): Promise<PanelActionResult> => {
+		const args = await chooseDataArguments({
+			select: (title, options) => host.dialogs.select(title, options.map((value) => ({ value, label: value }))),
+			editor: (title, initial) => host.dialogs.editor(title, initial),
+		}, "", snapshot);
+		if (args === undefined) return { snapshot, outcome: "Policy data action canceled." };
+		const first = await ask({ op: "data", args });
+		if (first.op !== "data") throw new Error("unexpected answer");
+		if ("outcome" in first) return { snapshot: deserializeSnapshot(first.snapshot), outcome: first.outcome };
+		if (!(await confirm(first.review.title, first.review.text, first.review.action)))
+			return { snapshot: deserializeSnapshot(first.snapshot), outcome: "Policy data change canceled. No data changed." };
+		const applied = await ask({ op: "data", args: first.review.approval });
+		if (applied.op !== "data" || !("outcome" in applied)) throw new Error("The host did not apply the approved data change; no data changed.");
+		return { snapshot: deserializeSnapshot(applied.snapshot), outcome: applied.outcome };
+	};
+}
+
 /** Mutations and inspections over the host route; results carry the refreshed snapshot. */
-function routedActions(host: OperatorPanelHost, ask: (request: PolicyPanelRequest) => Promise<ReturnType<typeof readPanelAnswer>>) {
+function routedActions(host: OperatorPanelHost, ask: (request: PolicyPanelRequest) => Promise<ReturnType<typeof readPanelAnswer>>, confirm: Confirm) {
+	const data = dataActions(host, ask, confirm);
 	const settled = async (request: PolicyPanelRequest): Promise<PanelActionResult> => {
 		const answer = await ask(request);
 		if (!("outcome" in answer)) throw new Error("unexpected answer");
 		return { snapshot: deserializeSnapshot(answer.snapshot), outcome: answer.outcome };
 	};
-	const inspected = async (view: "state" | "explain" | "data", id?: string): Promise<PanelActionResult> => {
+	const inspected = async (view: "state" | "explain", id?: string): Promise<PanelActionResult> => {
 		const answer = await ask({ op: "inspect", view, ...(id === undefined ? {} : { id }) });
 		if (answer.op !== "inspect") throw new Error("unexpected answer");
 		return { snapshot: deserializeSnapshot(answer.snapshot), outcome: answer.text };
@@ -75,9 +104,14 @@ function routedActions(host: OperatorPanelHost, ask: (request: PolicyPanelReques
 		const reason = await reasonFor("set the effect of", id);
 		return reason ? settled({ op: "effect", id, effect, reason, ...(expectedIdentity === undefined ? {} : { expectedIdentity }) }) : cancelled(snapshot);
 	};
+	const listData = async (): Promise<PanelActionResult> => {
+		const answer = await ask({ op: "data", args: "list" });
+		if (answer.op !== "data" || !("outcome" in answer)) throw new Error("unexpected answer");
+		return { snapshot: deserializeSnapshot(answer.snapshot), outcome: answer.outcome };
+	};
 	const readers: Partial<Record<PolicyPanelControl, () => Promise<PanelActionResult>>> = {
 		state: () => inspected("state"),
-		data: () => inspected("data"),
+		data: listData,
 	};
 	const lifecycle = async (verb: "disable" | "enable" | "retire", id: string, snapshot: RuleSnapshot): Promise<PanelActionResult> => {
 		const expectedIdentity = targetIdentity(snapshot.records.get(id)) ?? undefined;
@@ -95,7 +129,7 @@ function routedActions(host: OperatorPanelHost, ask: (request: PolicyPanelReques
 	const control = async (action: PolicyPanelControl, id: string | undefined, snapshot: RuleSnapshot): Promise<PanelActionResult> => {
 		const reader = readers[action];
 		if (reader) return reader();
-		if (action === "data-actions") return { snapshot, outcome: "Data imports and bindings run through policy_control in the conversation; this browser lists them only." };
+		if (action === "data-actions") return data(snapshot);
 		const run = targeted[action];
 		if (!run) throw new Error(`Unsupported panel control: ${action}`);
 		if (!id) throw new Error("Select a rule or recorded call first.");
@@ -127,7 +161,7 @@ function open(host: OperatorPanelHost): OperatorPanelInstance {
 		const reader = new PolicyApprovalPanel({ title, artifact, actionLabel, tui: host.tui, getMaxRows: () => host.rows(), done: (approved) => { current = previous; host.tui.requestRender(); resolve(approved); } });
 		mount(reader);
 	});
-	const actions = routedActions(host, ask);
+	const actions = routedActions(host, ask, confirm);
 	void ask({ op: "load" }, loading.signal).then(
 		(answer) => {
 			if (disposed || answer.op !== "load") return;

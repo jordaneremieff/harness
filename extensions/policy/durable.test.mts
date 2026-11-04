@@ -26,6 +26,7 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createPolicyDurableExtension, durableResultDisposition, policyPanelCommand, type PolicyDurableHost } from "./durable.ts";
 import { makeRuleAudit, proposalRevision, RuleRegistry, targetIdentity } from "./local-rules.ts";
 import { deserializeSnapshot, readPanelAnswer } from "./panel-protocol.ts";
+import { operatorPanel, type OperatorPanelHost } from "./operator-panel.ts";
 import type { FactsProgram } from "./program.ts";
 import { localDate } from "./store.ts";
 import { PolicyProposeParams, PolicyRulesParams, validateProposal } from "./tools.ts";
@@ -34,6 +35,7 @@ import { DraftCasesSchema } from "./authoring.ts";
 import { readTelemetry } from "./telemetry.ts";
 
 const context = BACKGROUND_CONTEXT;
+const plainTheme = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as OperatorPanelHost["theme"];
 const MODEL = { provider: "faux", modelId: "faux-1" } as const;
 
 test("host diagnostics distinguish rejected calls from uncertain execution and tool errors", () => {
@@ -1270,6 +1272,102 @@ test("the policy command serves the attached panel: reads, an effect-labelled ap
 		const reset = readPanelAnswer({ op: "reset", id: "--all", reason: "panel", revision: revision.revision }, await answer({ op: "reset", id: "--all", reason: "panel", revision: revision.revision }));
 		assert.ok(reset.op === "reset" && /new policy observation period/.test(reset.outcome));
 		await assert.rejects(call({ op: "steal" }), /not supported/);
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("the attached panel's Data actions set, set-file and remove through the owner route with reviews and stale refusals", async () => {
+	const fixture = await openFixture();
+	try {
+		const host = hostFor(fixture.directory, fixture.harness);
+		await createPolicyDurableExtension(host);
+		const notices: string[] = [];
+		const selections: string[] = [];
+		const editors: string[] = [];
+		let rendered: () => string[] = () => [];
+		let beforeApply: (() => Promise<void>) | undefined;
+		const panelHost: OperatorPanelHost = {
+			target: { id: String(fixture.root.id) }, theme: plainTheme, tui: { requestRender() {} }, rows: () => 24,
+			request: async (data) => {
+				if ((data as { op?: string; args?: string }).op === "data" && / exact$|approveRevision/.test(String((data as { args?: string }).args)) && beforeApply) { const run = beforeApply; beforeApply = undefined; await run(); }
+				return await policyPanelCommand.run({ args: "", data: data as never, origin: "operator", conversation: fixture.root, context, host, invocationId: "panel-data" }) as { text: string; data?: never };
+			},
+			dialogs: {
+				select: async (title, choices) => { const pick = selections.shift(); assert.ok(pick === undefined || choices.some((choice) => choice.value === pick), `${title}: ${pick}`); return pick; },
+				input: async () => undefined,
+				editor: async () => editors.shift(),
+				notify: (text) => { notices.push(text); },
+			},
+			close() {},
+		};
+		/** Owner reads touch the store, so waits poll the rendered panel against a deadline instead of counting turns. */
+		const until = async (ready: () => boolean | Promise<boolean>, what: string) => {
+			for (let step = 0; step < 500; step++) { if (await ready()) return; await new Promise((resolve) => setTimeout(resolve, 10)); }
+			assert.fail(`${what} within 5 s:\n${rendered().join("\n")}`);
+		};
+		const shows = (pattern: RegExp) => () => rendered().some((line) => pattern.test(line));
+		const instance = operatorPanel().open(panelHost);
+		rendered = () => instance.render(110).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+		await until(shows(/\[Actions\]/), "the registry loads");
+		const approveOnReader = async (label: RegExp) => {
+			for (let page = 0; page < 40 && !shows(label)(); page++) instance.handleInput(" ");
+			assert.ok(shows(label)(), rendered().join("\n"));
+			instance.handleInput("a");
+		};
+		instance.handleInput("t");
+		await until(shows(/"bindings"/), "Read data lists the bindings");
+		selections.push("Data actions", "set");
+		editors.push(JSON.stringify({ data: { name: "panel-table", kind: "table", rows: [{ key: "alias", value: "canonical" }] } }));
+		instance.handleInput("o");
+		await until(shows(/Approve policy data/), "the complete review shows before any change");
+		assert.equal((await fixture.policy.snapshot()).data.size, 0, "nothing changed before approval");
+		await approveOnReader(/\[Set policy data\]/);
+		await until(shows(/panel-table uses revision/), "the approved change applies");
+		const bound = (await fixture.policy.snapshot()).data.get("panel-table");
+		assert.ok(bound, "approval applied the reviewed artifact");
+		assert.equal(bound.source, "operator");
+
+		selections.push("Data actions", "set");
+		editors.push(JSON.stringify({ data: { name: "panel-table", kind: "table", rows: [{ key: "alias", value: "changed" }] } }));
+		beforeApply = async () => {
+			const current = (await fixture.policy.snapshot()).data.get("panel-table");
+			assert.ok(current);
+			const raced = { ...current, rows: [{ key: "alias", value: "raced" }] };
+			const { namedDataRevision } = await import("./local-rules.ts");
+			raced.revision = namedDataRevision(raced as never);
+			await fixture.policy.setData(raced as never, current.revision, makeRuleAudit({ sessionManager: { getSessionId: () => "other" }, model: null }, "command"));
+		};
+		instance.handleInput("o");
+		await until(shows(/Approve policy data/), "the second review shows");
+		await approveOnReader(/\[Set policy data\]/);
+		await until(shows(/revision changed|refused/i), "a binding changed after the review refuses");
+		assert.equal((await fixture.policy.snapshot()).data.get("panel-table")?.rows[0]?.value, "raced", "the stale approval changed nothing");
+
+		const file = join(fixture.directory, "panel-data.json");
+		const current = (await fixture.policy.snapshot()).data.get("panel-table");
+		assert.ok(current);
+		await writeFile(file, JSON.stringify({ data: { name: "panel-file", kind: "table", source: "file", capturedAt: 1, rows: [{ key: "k", value: "v" }] }, expectedRevision: null }));
+		selections.push("Data actions", "set-file");
+		editors.push(JSON.stringify({ path: "panel-data.json" }));
+		instance.handleInput("o");
+		await until(shows(/Approve policy data/), "the file review shows");
+		await approveOnReader(/\[Set policy data\]/);
+		await until(async () => Boolean((await fixture.policy.snapshot()).data.get("panel-file")), "set-file resolves the path against the bound conversation's cwd and applies");
+
+		selections.push("Data actions", "remove", "panel-file");
+		instance.handleInput("o");
+		await until(shows(/Remove policy data/), "the removal review shows");
+		await approveOnReader(/\[Remove policy data\]/);
+		await until(async () => (await fixture.policy.snapshot()).data.get("panel-file") === undefined, "remove applies the reviewed binding revision");
+
+		selections.push("Data actions", "list");
+		instance.handleInput("o");
+		await until(shows(/panel-table/), "list shows the remaining binding");
+		const events = (await readFile(join(fixture.directory, "policy", "rules.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as { kind?: string; audit?: { surface?: string } });
+		const surfaces = events.filter((event) => event.kind === "data").map((event) => event.audit?.surface);
+		assert.deepEqual(surfaces, ["panel", "command", "panel", "panel"], "the panel's set, set-file and remove carry the panel audit; the raced write keeps its own");
+		instance.dispose();
 	} finally {
 		await fixture.close();
 	}

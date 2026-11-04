@@ -1504,8 +1504,9 @@ export class PolicyPanel {
 
 	private consumeActionKey(data: string): boolean {
 		if (data === "o") {
+			// The menu binds to the panel version it opened on; a repaint bump here would discard the choice.
 			void this.actions();
-			return true;
+			return false;
 		}
 		if (this.view === "proposals" && this.consumeProposalKey(data)) return true;
 		if (this.view === "rules" && this.consumeRuleKey(data)) return true;

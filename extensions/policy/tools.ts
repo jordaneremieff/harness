@@ -550,6 +550,44 @@ export function formatDataView(snapshot: RuleSnapshot, name?: string): string {
 	});
 }
 
+/**
+ * One data change as the operator reviews it: the complete review, the exact arguments that apply
+ * this reviewed artifact and nothing else, and the apply step. `approved` is true when the supplied
+ * arguments already carried that exact approval.
+ */
+export interface PreparedDataChange {
+	readonly title: "Approve policy data" | "Remove policy data";
+	readonly review: string;
+	readonly approval: string;
+	readonly approved: boolean;
+	/** The text a declined review returns; it carries the exact approval command. */
+	readonly declined: string;
+	apply(): Promise<string>;
+}
+
+/**
+ * Parse and check one data command without changing anything: reads answer with text, changes with
+ * their review. Every refusal (stale binding revision, changed file, bounds) happens here or in apply.
+ */
+export async function prepareDataCommand(
+	registry: RuleRegistry,
+	args: string,
+	auditValue: OperatorRuleAudit,
+	cwd: string = process.cwd(),
+): Promise<{ readonly text: string } | PreparedDataChange> {
+	if (auditValue.surface !== "command" && auditValue.surface !== "panel")
+		throw new Error("data controls require an operator surface");
+	if (Buffer.byteLength(args, "utf8") > MAX_RULE_EVENT_BYTES) throw new Error("data command exceeds byte bound");
+	const command = args.trim().match(/^(\S+)(?:\s+([\s\S]*))?$/);
+	const verb = command?.[1] ?? "list";
+	const tail = command?.[2]?.trim() ?? "";
+	if (verb === "list" || verb === "show") return { text: await dataListShow(registry, verb, tail) };
+	if (verb === "set-file") return dataSetFile(registry, tail, auditValue, cwd);
+	if (verb === "set") return dataSet(registry, tail, auditValue);
+	if (verb === "remove") return dataRemove(registry, tail, auditValue);
+	throw new Error("Use /policy data list|show <name>|set <JSON>|set-file <JSON>|remove <name> <revision>.");
+}
+
 /** Commands supply operator authority; model tools never call this mutation surface. */
 export async function policyDataCommand(
 	registry: RuleRegistry,
@@ -558,17 +596,10 @@ export async function policyDataCommand(
 	confirm: (title: string, message: string) => Promise<boolean>,
 	cwd: string = process.cwd(),
 ): Promise<string> {
-	if (auditValue.surface !== "command" && auditValue.surface !== "panel")
-		throw new Error("data controls require an operator surface");
-	if (Buffer.byteLength(args, "utf8") > MAX_RULE_EVENT_BYTES) throw new Error("data command exceeds byte bound");
-	const command = args.trim().match(/^(\S+)(?:\s+([\s\S]*))?$/);
-	const verb = command?.[1] ?? "list";
-	const tail = command?.[2]?.trim() ?? "";
-	if (verb === "list" || verb === "show") return dataListShow(registry, verb, tail);
-	if (verb === "set-file") return dataSetFile(registry, tail, auditValue, confirm, cwd);
-	if (verb === "set") return dataSet(registry, tail, auditValue, confirm);
-	if (verb === "remove") return dataRemove(registry, tail, auditValue, confirm);
-	throw new Error("Use /policy data list|show <name>|set <JSON>|set-file <JSON>|remove <name> <revision>.");
+	const prepared = await prepareDataCommand(registry, args, auditValue, cwd);
+	if ("text" in prepared) return prepared.text;
+	if (!prepared.approved && !(await confirm(prepared.title, prepared.review))) return prepared.declined;
+	return prepared.apply();
 }
 
 async function dataListShow(registry: RuleRegistry, verb: string, tail: string): Promise<string> {
@@ -581,9 +612,8 @@ async function dataSetFile(
 	registry: RuleRegistry,
 	tail: string,
 	auditValue: OperatorRuleAudit,
-	confirm: (title: string, message: string) => Promise<boolean>,
 	cwd: string,
-): Promise<string> {
+): Promise<PreparedDataChange> {
 	const value: unknown = JSON.parse(tail);
 	validateBoundedJson(value);
 	if (!isJsonObject(value)) throw new Error("set-file requires an object");
@@ -601,20 +631,26 @@ async function dataSetFile(
 	if (value.approveRevision !== undefined && value.approveRevision !== approveRevision)
 		throw new Error("data approval requires the exact complete artifact revision");
 	const review = dataReview(artifact, approveRevision);
-	const approvalText = dataFileApprovalText(path, approveRevision);
+	const declined = dataFileApprovalText(path, approveRevision);
 	await registry.preflightData(artifact.data, artifact.expectedRevision, auditValue);
-	const approved = value.approveRevision === approveRevision || (await confirm("Approve policy data", review));
-	if (!approved) return approvalText;
-	await registry.setData(artifact.data, artifact.expectedRevision, auditValue);
-	return `Policy data ${artifact.data.name} uses revision ${artifact.data.revision}.`;
+	return {
+		title: "Approve policy data",
+		review,
+		approval: `set-file ${JSON.stringify({ path, approveRevision })}`,
+		approved: value.approveRevision === approveRevision,
+		declined,
+		apply: async () => {
+			await registry.setData(artifact.data, artifact.expectedRevision, auditValue);
+			return `Policy data ${artifact.data.name} uses revision ${artifact.data.revision}.`;
+		},
+	};
 }
 
 async function dataSet(
 	registry: RuleRegistry,
 	tail: string,
 	auditValue: OperatorRuleAudit,
-	confirm: (title: string, message: string) => Promise<boolean>,
-): Promise<string> {
+): Promise<PreparedDataChange> {
 	const value: unknown = JSON.parse(tail);
 	validateBoundedJson(value);
 	if (!isJsonObject(value)) throw new Error("data set requires an object");
@@ -649,30 +685,41 @@ async function dataSet(
 	if (value.approveRevision !== undefined && value.approveRevision !== approveRevision)
 		throw new Error("data approval requires the exact complete artifact revision");
 	await registry.preflightData(data, artifact.expectedRevision, auditValue);
-	const approved =
-		value.approveRevision === approveRevision ||
-		(await confirm("Approve policy data", dataReview(artifact, approveRevision)));
-	if (!approved) return `Policy data change canceled. No data changed.\nExact approval command:\n${approvalCommand}`;
-	await registry.setData(data, value.expectedRevision as string | null, auditValue);
-	return `Policy data ${data.name} uses revision ${revision}.`;
+	return {
+		title: "Approve policy data",
+		review: dataReview(artifact, approveRevision),
+		approval: `set ${approvalJson}`,
+		approved: value.approveRevision === approveRevision,
+		declined: `Policy data change canceled. No data changed.\nExact approval command:\n${approvalCommand}`,
+		apply: async () => {
+			await registry.setData(data, value.expectedRevision as string | null, auditValue);
+			return `Policy data ${data.name} uses revision ${revision}.`;
+		},
+	};
 }
 
 async function dataRemove(
 	registry: RuleRegistry,
 	tail: string,
 	auditValue: OperatorRuleAudit,
-	confirm: (title: string, message: string) => Promise<boolean>,
-): Promise<string> {
+): Promise<PreparedDataChange> {
 	const parts = tail.split(/\s+/);
 	if ((parts.length !== 2 && (parts.length !== 3 || parts[2] !== "exact")) || !/^[a-f0-9]{12}$/.test(parts[1]))
 		throw new Error("data remove requires name, current revision, and optional exact");
 	const snapshot = await registry.snapshot();
 	const data = snapshot.data.get(parts[0]);
 	if (!data || data.revision !== parts[1]) throw new Error("data binding absent or revision changed");
-	if (parts[2] !== "exact" && !(await confirm("Remove policy data", JSON.stringify(data, null, 2))))
-		return `Policy data change canceled. No data changed.\nExact approval command: /policy data remove ${parts[0]} ${parts[1]} exact`;
-	await registry.removeData(parts[0], parts[1], auditValue);
-	return `Policy data ${parts[0]} was removed.`;
+	return {
+		title: "Remove policy data",
+		review: JSON.stringify(data, null, 2),
+		approval: `remove ${parts[0]} ${parts[1]} exact`,
+		approved: parts[2] === "exact",
+		declined: `Policy data change canceled. No data changed.\nExact approval command: /policy data remove ${parts[0]} ${parts[1]} exact`,
+		apply: async () => {
+			await registry.removeData(parts[0], parts[1], auditValue);
+			return `Policy data ${parts[0]} was removed.`;
+		},
+	};
 }
 
 export function formatCatalog(registry: RuleRegistry, id?: string): string {
