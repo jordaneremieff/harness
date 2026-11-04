@@ -246,7 +246,7 @@ for (const [width, height] of [
 			f.ui.handleInput("\r");
 			const screen = f.ui.render(width).join("\n");
 			assert.match(screen, /0 matches of 1 loaded/);
-			assert.match(screen, /esc clear find/);
+			assert.match(screen, /Esc clear find/);
 			assert.doesNotMatch(screen, /enter (new agent|or n starts)/);
 			f.ui.handleInput("\r");
 			assert.equal(f.ui.navigation.screen, "roster");
@@ -501,7 +501,7 @@ it("the dashboard opens on the roster and Esc returns without a primary mutation
 	await turn();
 	assert.equal(f.ui.navigation.screen, "roster");
 	assert.match(f.ui.render(80).join("\n"), /storage:1/);
-	f.ui.handleInput("x");
+	f.ui.handleInput("z");
 	assert.match(f.ui.render(80).join("\n"), /Tab to write/);
 	f.ui.handleInput("\x1b");
 	assert.equal(f.counts().closes, 1);

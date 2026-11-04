@@ -8,7 +8,8 @@ import {
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
+import { DashboardMouse } from "./dashboard-mouse.ts";
+import { ActionInventory, type ScreenAction } from "./action-inventory.ts";
 import { dashboardTime } from "./dashboard-time.ts";
 import { stripVTControlCharacters } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -138,6 +139,7 @@ interface CollaborationViewOptions {
 export class CollaborationView {
 	private readonly mouse = new DashboardMouse();
 	private mouseScreen?: string;
+	private readonly inventory = new ActionInventory(() => this.actions(), (reason) => { this.notice = reason; });
 	private timeLines = new Set<number>();
 	private bodyLineCount = 0;
 	private list?: Discovery;
@@ -363,17 +365,6 @@ export class CollaborationView {
 			for (const listener of listeners.get(this.options.state) ?? []) listener();
 		}
 	}
-	private back(): void {
-		if (this.screen === "members") this.screen = "thread";
-		else if (this.screen === "notify") this.screen = "compose";
-		else if (this.screen === "compose") this.screen = "thread";
-		else if (this.screen === "thread") {
-			this.screen = "list";
-			this.generation++;
-			void this.refresh();
-		} else if (this.scope) this.setScope();
-		else this.options.onBack();
-	}
 	private composeInput(data: string): void {
 		if (matchesKey(data, "tab")) {
 			this.screen = "notify";
@@ -409,10 +400,56 @@ export class CollaborationView {
 	}
 	private listInput(data: string): void {
 		this.moveList(data);
-		if (matchesKey(data, "enter")) this.choose();
-		if (data === "v" && this.options.related) { this.all = !this.all; this.index = 0; }
-		if (data === "s" && this.options.selectedAgent()) this.setScope(this.options.selectedAgent());
-		if (data === "r") void this.refresh();
+	}
+	/** Every action of the current screen. Footer, menu, shortcuts and pointer all dispatch these records. */
+	private actions(): ScreenAction[] {
+		const scroll = Math.max(1, this.options.tui.terminal.rows - 8);
+		const reading = (delta: number) => () => { this.offset += delta; this.follow = false; };
+		const closed = !this.page || this.page.thread.closed ? "This thread is closed or not loaded" : undefined;
+		if (this.screen === "compose") return [
+			{ id: "post", label: "Post", keys: ["enter"], main: true, run: () => this.composer.handleInput("\r") },
+			{ id: "notify", label: "Notify peers", keys: ["tab"], main: true, run: () => { this.screen = "notify"; this.memberIndex = 0; } },
+			{ id: "newline", label: "Newline", keys: ["ctrl+j"], main: true, run: () => this.composer.handleInput("\n") },
+		];
+		if (this.screen === "notify") return [
+			{ id: "toggle", label: "Toggle peer", keys: ["enter", " "], main: true, disabled: this.page?.thread.members.length ? undefined : "This thread has no peers", run: () => this.toggleMember() },
+			{ id: "write", label: "Write", keys: ["tab"], main: true, run: () => { this.screen = "compose"; } },
+		];
+		if (this.screen === "members") return [
+			{ id: "open", label: "Open conversation", keys: ["enter"], main: true, disabled: this.page?.thread.members.length ? undefined : "This thread has no peers", run: () => { const member = this.page?.thread.members[this.memberIndex]; if (member) this.options.openParticipant?.(member.identity); } },
+		];
+		if (this.screen === "list") return [
+			{ id: "read", label: "Read", keys: ["enter"], main: true, disabled: this.choices().length ? undefined : "No thread is listed", run: () => this.choose() },
+			{ id: "refresh", label: "Refresh", keys: ["r"], main: true, run: () => { void this.refresh(); } },
+			{ id: "view", label: this.all ? "Related threads" : "All threads", keys: ["v"], main: true, disabled: this.options.related ? undefined : "Relationships are unavailable here", run: () => { this.all = !this.all; this.index = 0; } },
+			{ id: "storage", label: "Selected agent's storage", keys: ["s"], disabled: this.options.selectedAgent() ? undefined : "Select an agent first", run: () => this.setScope(this.options.selectedAgent()) },
+		];
+		return [
+			{ id: "peers", label: "Peers", keys: ["m"], main: true, run: () => { this.screen = "members"; this.memberIndex = 0; } },
+			{ id: "post", label: "Post", keys: ["p"], main: true, disabled: closed, run: () => this.beginPost(false) },
+			{ id: "notify", label: "Post and notify", keys: ["n"], main: true, disabled: closed, run: () => this.beginPost(true) },
+			{ id: "earlier", label: "Earlier", keys: ["b"], main: true, disabled: this.page?.nextBefore ? undefined : "No earlier page is loaded", run: () => this.earlier() },
+			{ id: "latest", label: "Latest", keys: ["r"], main: true, run: () => this.latest() },
+			{ id: "time", label: this.options.exactTime() ? "Relative time" : "Date and time", keys: ["i"], run: () => this.options.toggleTime() },
+			{ id: "frame", label: "Frame", keys: ["f"], run: () => { this.offset = 0; this.follow = false; } },
+			{ id: "exchange", label: "Exchange", keys: ["e"], run: () => { this.offset = Number.MAX_SAFE_INTEGER; this.follow = true; } },
+			{ id: "up", label: "Read up", keys: ["pageUp"], run: reading(-scroll) },
+			{ id: "down", label: "Read down", keys: ["pageDown"], run: reading(scroll) },
+		];
+	}
+	private back(): void {
+		if (this.screen === "members") this.screen = "thread";
+		else if (this.screen === "notify") this.screen = "compose";
+		else if (this.screen === "compose") this.screen = "thread";
+		else if (this.screen === "thread") {
+			this.screen = "list";
+			this.generation++;
+			void this.refresh();
+		} else if (this.scope) this.setScope();
+		else this.options.onBack();
+	}
+	private backAction(): ScreenAction {
+		return { id: "back", label: "Back", keys: ["escape"], run: () => this.back() };
 	}
 	private beginPost(notify: boolean): void {
 		if (!this.page || this.page.thread.closed) return;
@@ -442,33 +479,9 @@ export class CollaborationView {
 		void this.refresh();
 	}
 	private threadInput(data: string): void {
-		const actions: Record<string, () => void> = {
-			m: () => { this.screen = "members"; this.memberIndex = 0; },
-			p: () => this.beginPost(false),
-			n: () => this.beginPost(true),
-			r: () => this.latest(),
-			b: () => this.earlier(),
-			i: () => {
-				this.options.toggleTime();
-			},
-			f: () => {
-				this.offset = 0;
-				this.follow = false;
-			},
-			e: () => {
-				this.offset = Number.MAX_SAFE_INTEGER;
-				this.follow = true;
-			},
-		};
-		if (actions[data]) {
-			actions[data]();
-			return;
-		}
 		const changes = {
 			up: -1,
 			down: 1,
-			pageUp: -Math.max(1, this.options.tui.terminal.rows - 8),
-			pageDown: Math.max(1, this.options.tui.terminal.rows - 8),
 		};
 		for (const [key, delta] of Object.entries(changes))
 			if (matchesKey(data, key as "up")) {
@@ -485,8 +498,17 @@ export class CollaborationView {
 		}
 	}
 	handleInput(data: string): void {
+		if (this.inventory.open) {
+			this.inventory.handleInput(data);
+			this.options.redraw();
+			return;
+		}
 		if (matchesKey(data, "escape")) {
 			this.back();
+			return;
+		}
+		if (this.inventory.handleInput(data, this.screen === "compose")) {
+			this.options.redraw();
 			return;
 		}
 		const routes = {
@@ -686,26 +708,6 @@ export class CollaborationView {
 		if (!coverage) return `${scope} · Coverage unknown`;
 		return `${scope} · ${coverage.complete ? "Complete" : "Partial"} · ${coverage.omitted} omitted · ${coverage.unavailable ?? 0} unavailable`;
 	}
-	private hints(): string[] {
-		const hints = {
-			list: ["↑↓ select", "Enter read", ...(this.options.related ? [this.all ? "v related" : "v all"] : []), "s selected storage", "r refresh"],
-			members: ["↑↓ select", "Enter open", "PgUp/PgDn select"],
-			notify: ["↑↓ select", "Space/Enter toggle", "Tab write"],
-			compose: ["Enter post", "Tab notify", "Ctrl+J newline"],
-			thread: [
-				"PgUp/PgDn read",
-				"m peers",
-				"p post",
-				"n notify",
-				this.options.exactTime() ? "i relative time" : "i date and time",
-				"b earlier",
-				"e exchange",
-				"f frame",
-				"r latest",
-			],
-		};
-		return hints[this.screen];
-	}
 	private heading(width: number): string {
 		let position = "";
 		if (this.screen === "list") {
@@ -727,6 +729,8 @@ export class CollaborationView {
 		return dashboardRule(label, width, this.options.theme);
 	}
 	render(width: number, height: number): string[] {
+		this.mouseScreen = this.screen;
+		if (this.inventory.open) return this.inventory.render(width, height, "Agents > Threads", this.screen, this.options.theme);
 		if (this.screen === "compose" && this.composer.getText() !== this.draft()?.text)
 			this.composer.setText(this.draft()?.text ?? "");
 		this.composer.focused = this.screen === "compose";
@@ -773,25 +777,18 @@ export class CollaborationView {
 			...editor,
 			this.notice,
 			...(!reading ? [""] : []),
-			mouseHints(
-				this.mouse,
-				height - 1,
-				this.hints(),
-				"Esc back",
-				width,
-				(data) => this.handleInput(data),
-				this.options.theme,
-			),
+			this.inventory.footer(this.mouse, height - 1, width, this.backAction(), this.options.theme, this.screen !== "compose"),
 		].map((line) => fitLine(line, width));
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.disposed || this.mouseScreen !== this.screen) return;
-		const result = this.mouse.handle(event);
+		const result = this.inventory.open ? this.inventory.handleMouse(event) : this.mouse.handle(event);
 		if (result?.handled) this.options.redraw();
 		return result;
 	}
 	invalidate(): void {
 		this.mouse.reset();
+		this.inventory.invalidate();
 		this.composer.invalidate();
 	}
 	dispose(): void {

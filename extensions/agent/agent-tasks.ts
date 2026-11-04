@@ -198,6 +198,8 @@ export class AgentTasksView {
 		return false;
 	}
 
+	/** Open the selected task's conversation, or ask which of several to open. */
+	open(): void { this.selectCurrent(); }
 	private selectCurrent(): void {
 		const selected = this.selected();
 		if (selected === undefined) {

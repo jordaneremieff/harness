@@ -1,6 +1,4 @@
 import type { TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { fitHints } from "./dashboard-layout.ts";
-import type { Theme } from "@earendil-works/pi-coding-agent";
 
 interface Region {
 	x: number;
@@ -94,86 +92,4 @@ export class DashboardMouse {
 		const region = this.regionFor(event, wheel);
 		return region ? this.activate(region, event, wheel, delta) : undefined;
 	}
-}
-const inputs: Record<string, string> = {
-	enter: "\r",
-	tab: "\t",
-	esc: "\x1b",
-	space: " ",
-	"ctrl+j": "\x1b[106;5u",
-	"ctrl+o": "\x0f",
-	"ctrl+t": "\x14",
-	pgup: "\x1b[5~",
-	pgdn: "\x1b[6~",
-};
-function addHint(
-	mouse: DashboardMouse,
-	y: number,
-	hint: string,
-	x: number,
-	visible: number,
-	input: (data: string) => void,
-): void {
-	const keys = hint.split(" ", 1)[0];
-	if (keys === "↑↓" || keys === "←→") {
-		mouse.add({
-			x,
-			y,
-			width: 1,
-			height: 1,
-			click: () => {
-				input(keys === "↑↓" ? "\x1b[A" : "\x1b[D");
-			},
-		});
-		mouse.add({
-			x: x + 1,
-			y,
-			width: 1,
-			height: 1,
-			click: () => {
-				input(keys === "↑↓" ? "\x1b[B" : "\x1b[C");
-			},
-		});
-		return;
-	}
-	if (keys.includes("/") && keys !== "/") {
-		let start = x;
-		for (const key of keys.split("/")) {
-			const data = inputs[key];
-			if (data)
-				mouse.add({
-					x: start,
-					y,
-					width: key.length,
-					height: 1,
-					click: () => {
-						input(data);
-					},
-				});
-			start += key.length + 1;
-		}
-		return;
-	}
-	const data = inputs[keys] ?? (keys.length === 1 ? keys : undefined);
-	if (data)
-		mouse.add({
-			x,
-			y,
-			width: visible,
-			height: 1,
-			click: () => {
-				input(data);
-			},
-		});
-}
-export function mouseHints(
-	mouse: DashboardMouse,
-	y: number,
-	items: readonly string[],
-	back: string,
-	width: number,
-	input: (data: string) => void,
-	theme?: Theme,
-): string {
-	return fitHints(items, back, width, (hint, x, visible) => addHint(mouse, y, hint, x, visible, input), theme);
 }

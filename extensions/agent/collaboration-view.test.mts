@@ -127,7 +127,7 @@ for (const [width, height] of [
 			assert.equal(lines.length, height);
 			assert.ok(lines.every((line) => !/[\r\n]/.test(line) && visibleWidth(line) <= width));
 			assert.match(lines[0] ?? "", /Threads > First Second/);
-			assert.match(lines.at(-1) ?? "", /esc back/);
+			assert.match(lines.at(-1) ?? "", /Esc back/);
 			return lines;
 		};
 		try {
@@ -170,7 +170,7 @@ for (const [width, height] of [
 			assert.match(f.ui.render(width)[0] ?? "", /^╭─ Agents > Threads/);
 			assert.match(f.ui.render(width)[0] ?? "", /Frame 2 ╮$/);
 			assert.match(text(f, width), /Lines \d+–\d+ of \d+ loaded/);
-			assert.match(f.ui.render(width).at(-1) ?? "", /^pgup\/pgdn read.*p post.*esc back/);
+			assert.match(f.ui.render(width).at(-1) ?? "", /p post.*x more · Esc back/);
 			assert.ok(f.ui.render(width).every((line) => visibleWidth(line) <= width));
 		} finally {
 			f.ui.dispose();
@@ -209,12 +209,13 @@ it("i toggles relative and absolute times without a read and retains the choice 
 		await open(f);
 		f.ui.handleInput("e");
 		assert.match(text(f), /Time: \d+d ago/);
-		assert.match(text(f), /i date and time/);
+		const menu = () => { f.ui.handleInput("x"); const shown = text(f); f.ui.handleInput("\x1b"); return shown; };
+		assert.match(menu(), /Date and time/);
 		const reads = f.calls.length;
 		f.ui.handleInput("i");
 		assert.ok(text(f).includes(dashboardTime(2, true)));
 		assert.doesNotMatch(text(f), /\(local\)|\.003Z/);
-		assert.match(text(f), /i relative time/);
+		assert.match(menu(), /Relative time/);
 		f.ui.handleInput("i");
 		assert.match(text(f), /Time: \d+d ago/);
 		assert.doesNotMatch(text(f), /Time: \d{4}-\d{2}-\d{2}T/);
@@ -364,15 +365,17 @@ it("mouse follows thread rows, timestamps, notify choices and hints without cons
 		mouse(stamp);
 		assert.equal(f.state.exactTime, true);
 		assert.equal(f.calls.length, before);
-		mouse("i relative time");
+		mouse("x more");
+		mouse("Relative time");
+		mouse("Enter choose");
 		assert.equal(f.state.exactTime, false);
-		mouse("n notify");
+		mouse("n post and notify");
 		mouse("[ ] Reviewer");
 		assert.deepEqual(f.state.threads?.drafts.get(threadId)?.notify, ["two"]);
-		mouse("tab write");
+		mouse("Tab write");
 		f.ui.handleInput("draft");
 		assert.equal(f.state.threads?.drafts.get(threadId)?.text, "draft");
-		mouse("esc back");
+		mouse("Esc back");
 		assert.equal(f.state.threads?.drafts.get(threadId)?.text, "draft");
 		mouse("Time: ", { type: "wheel", wheelDelta: -5 });
 		assert.match(text(f), /Purpose: Choose a usable contract/);

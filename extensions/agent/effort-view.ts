@@ -6,7 +6,8 @@ import type { RelatedEffort, PrimaryIntentClaim } from "./effort-presence.ts";
 import type { DashboardResult } from "./dashboard.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
-import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
+import { DashboardMouse } from "./dashboard-mouse.ts";
+import { ActionInventory, type ScreenAction } from "./action-inventory.ts";
 import { dashboardHeading, dashboardSelection, fitLine } from "./dashboard-layout.ts";
 import { dashboardTime } from "./dashboard-time.ts";
 import { memberDeclarationLines, threadPage, type Collaborate } from "./collaboration-view.ts";
@@ -29,6 +30,9 @@ interface EffortViewOptions {
 /** Presence and thread hints follow pane entry and roster notices, never an age timer. */
 export class EffortView {
 	private readonly mouse = new DashboardMouse();
+	private readonly inventory = new ActionInventory(() => this.actions(), (reason) => { this.notice = reason; });
+	/** First visible row of each list. Wheel scrolling moves these; selection and the message recipient stay put. */
+	private listStart: { efforts?: number; threads?: number } = {};
 	private readonly composer: AgentComposer;
 	private view?: EffortAwareness;
 	private selected?: string;
@@ -80,6 +84,7 @@ export class EffortView {
 		if (id === (this.selectedThread ?? this.selected) && thread === Boolean(this.selectedThread)) return;
 		this.selectedThread = thread ? id : undefined;
 		if (!thread) this.selected = id;
+		this.listStart = {};
 		this.offset = 0;
 		this.clearSelectionReads();
 		void this.readContact();
@@ -238,21 +243,37 @@ export class EffortView {
 		this.notice = notice ?? "";
 		if (!notice) { this.active = false; this.clearSelectionReads(); }
 	}
+	/** Every action of this view. Footer, menu, shortcuts and pointer all dispatch these records. */
+	private actions(): ScreenAction[] {
+		if (this.composing) return [
+			{ id: "send", label: "Send", keys: ["enter"], main: true, run: () => this.composer.handleInput("\r") },
+			{ id: "newline", label: "Newline", keys: ["ctrl+j"], main: true, run: () => this.composer.handleInput("\n") },
+		];
+		const row = this.row();
+		const messageBlocked = this.selectedThread || row?.liveness !== "live" || !this.options.messageEffort ? "Direct messages need a live compatible effort" : undefined;
+		const observeBlocked = this.selectedThread ? "Select an effort, not a thread" : !this.selected ? "No effort is selected" : undefined;
+		const contactBlocked = this.selectedThread || this.contactId() ? undefined : "No contact thread claim";
+		return [
+			{ id: "contact", label: "Open thread", keys: ["enter"], main: true, disabled: contactBlocked, run: () => this.contact() },
+			{ id: "message", label: "Message", keys: ["m", "tab"], main: true, disabled: messageBlocked, run: () => this.message() },
+			{ id: "observe", label: "Observe", keys: ["o"], main: true, disabled: observeBlocked, run: () => { void this.observe(); } },
+			{ id: "threads", label: "Threads", keys: ["t"], main: true, run: () => this.openThreads() },
+			{ id: "scan", label: this.scanOpen ? "Hide scan" : "Scan details", keys: ["c"], run: () => this.toggleScan() },
+			{ id: "time", label: this.exactTime ? "Relative times" : "Exact times", keys: ["i"], run: () => { this.exactTime = !this.exactTime; } },
+			{ id: "previous", label: "Previous", keys: ["up"], run: () => this.move(-1) },
+			{ id: "next", label: "Next", keys: ["down"], run: () => this.move(1) },
+			{ id: "read-up", label: "Read up", keys: ["pageUp"], run: () => { this.offset = Math.max(0, this.offset - 5); } },
+			{ id: "read-down", label: "Read down", keys: ["pageDown"], run: () => { this.offset += 5; } },
+		];
+	}
+	private backAction(): ScreenAction { return { id: "back", label: "Back", keys: ["escape"], run: () => this.back() }; }
 	handleInput(data: string): void {
-		if (matchesKey(data, "escape")) this.back();
-		else if (this.composing) this.composer.handleInput(data);
-		else if (matchesKey(data, "up") || matchesKey(data, "down")) this.move(matchesKey(data, "up") ? -1 : 1);
-		else if (matchesKey(data, "enter")) this.contact();
-		else if (data === "t") this.openThreads();
-		else if (data === "o") void this.observe();
-		else if (data === "i") this.exactTime = !this.exactTime;
-		else if (data === "c") this.toggleScan();
-		else if (data === "m" || matchesKey(data, "tab")) this.message();
-		else if (matchesKey(data, "pageDown")) this.offset += 5;
-		else if (matchesKey(data, "pageUp")) this.offset = Math.max(0, this.offset - 5);
+		if (this.inventory.open) this.inventory.handleInput(data);
+		else if (matchesKey(data, "escape")) this.back();
+		else if (!this.inventory.handleInput(data, this.composing) && this.composing) this.composer.handleInput(data);
 		this.options.redraw();
 	}
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined { return this.mouse.handle(event); }
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined { return this.inventory.open ? this.inventory.handleMouse(event) : this.mouse.handle(event); }
 	private time(value: string | number): string {
 		const at = new Date(value).getTime();
 		return Number.isFinite(at) ? dashboardTime(at, this.exactTime, this.observedAt) : "unknown (invalid time)";
@@ -350,12 +371,23 @@ export class EffortView {
 		if (self.intentClaim) return `Your purpose claim: ${plain(self.intentClaim.purpose)}`;
 		return self.observedPurpose ? `Your observed purpose (${self.observedPurpose.source}): ${plain(self.observedPurpose.text)}` : "Your effort: no observed purpose or purpose claim";
 	}
+	/** The visible window of one list: the wheel offset when set, otherwise the window that shows the selection. */
+	private windowStart(kind: "efforts" | "threads", natural: number, total: number, count: number): number {
+		return Math.min(Math.max(0, total - count), Math.max(0, this.listStart[kind] ?? natural));
+	}
+	private scrollWindow(kind: "efforts" | "threads", delta: number, natural: number, total: number, count: number): void {
+		this.listStart[kind] = Math.min(Math.max(0, total - count), Math.max(0, this.windowStart(kind, natural, total, count) + delta));
+		this.options.redraw();
+	}
 	private rows(width: number, y: number): string[] {
 		const efforts = this.view?.presence.efforts ?? [];
 		const count = this.composing ? 1 : 2;
 		const index = Math.max(0, efforts.findIndex((row) => row.id === this.selected));
 		const lines = [this.options.theme.fg("muted", `Efforts · ${Math.min(count, efforts.length)}/${efforts.length} loaded rows visible`)];
-		for (const row of efforts.slice(Math.max(0, index - count + 1), Math.max(0, index - count + 1) + count)) {
+		const naturalStart = Math.max(0, index - count + 1);
+		const effortStart = this.windowStart("efforts", naturalStart, efforts.length, count);
+		this.mouse.add({ x: 0, y, width, height: 1 + count, wheel: (delta) => this.scrollWindow("efforts", delta, naturalStart, efforts.length, count) });
+		for (const row of efforts.slice(effortStart, effortStart + count)) {
 			this.mouse.add({ x: 0, y: y + lines.length, width, height: 1, click: () => { if (!this.composing) { this.select(row.id); } } });
 			const chosen = !this.selectedThread && row.id === this.selected;
 			lines.push(dashboardSelection(`${chosen ? "›" : " "} ${plain(row.name || row.id)} · ${row.liveness}`, width, chosen, this.options.theme));
@@ -364,7 +396,10 @@ export class EffortView {
 		lines.push(this.options.theme.fg("muted", `Active threads · ${this.composing ? 0 : Math.min(2, threads.length)}/${threads.length} loaded · newest covered first`));
 		if (!this.composing) {
 			const threadIndex = Math.max(0, threads.findIndex((row) => row.id === this.selectedThread));
-			for (const thread of threads.slice(Math.max(0, threadIndex - 1), Math.max(0, threadIndex - 1) + 2)) {
+			const naturalThreads = Math.max(0, threadIndex - 1);
+			const threadStart = this.windowStart("threads", naturalThreads, threads.length, 2);
+			this.mouse.add({ x: 0, y: y + lines.length - 1, width, height: 3, wheel: (delta) => this.scrollWindow("threads", delta, naturalThreads, threads.length, 2) });
+			for (const thread of threads.slice(threadStart, threadStart + 2)) {
 				this.mouse.add({ x: 0, y: y + lines.length, width, height: 1, click: () => { this.select(thread.id, true); this.contact(); } });
 				lines.push(dashboardSelection(`${thread.id === this.selectedThread ? "›" : " "} ${plain(thread.title)} · ${this.time(thread.updatedAt)}`, width, thread.id === this.selectedThread, this.options.theme));
 			}
@@ -405,8 +440,10 @@ export class EffortView {
 		const threads = this.threads();
 		const count = Math.max(1, Math.floor((height - 3) / 6));
 		const index = Math.max(0, efforts.findIndex((row) => row.id === this.selected));
-		const start = Math.max(0, Math.min(index - count + 1, efforts.length - count));
+		const naturalStart = Math.max(0, Math.min(index - count + 1, efforts.length - count));
+		const start = this.windowStart("efforts", naturalStart, efforts.length, count);
 		const visible = efforts.slice(start, start + count);
+		this.mouse.add({ x: 0, y, width, height: 1 + visible.length * 3, wheel: (delta) => this.scrollWindow("efforts", delta, naturalStart, efforts.length, count) });
 		const lines = [theme.fg("muted", `Efforts · ${visible.length}/${efforts.length} loaded`)];
 		for (const row of visible) {
 			const chosen = !this.selectedThread && row.id === (this.composing ? this.target : this.selected);
@@ -423,8 +460,10 @@ export class EffortView {
 		lines.push("");
 		const threadCount = Math.max(0, Math.floor((height - lines.length - 1) / 2));
 		const threadIndex = Math.max(0, threads.findIndex((row) => row.id === this.selectedThread));
-		const threadStart = Math.max(0, Math.min(threadIndex - threadCount + 1, threads.length - threadCount));
+		const naturalThreads = Math.max(0, Math.min(threadIndex - threadCount + 1, threads.length - threadCount));
+		const threadStart = this.windowStart("threads", naturalThreads, threads.length, threadCount);
 		const visibleThreads = threads.slice(threadStart, threadStart + threadCount);
+		this.mouse.add({ x: 0, y: y + lines.length, width, height: 1 + visibleThreads.length * 2, wheel: (delta) => this.scrollWindow("threads", delta, naturalThreads, threads.length, threadCount) });
 		lines.push(theme.fg("muted", `Active threads · ${visibleThreads.length}/${threads.length} loaded`));
 		for (const thread of visibleThreads) {
 			this.mouse.add({ x: 0, y: y + lines.length, width, height: 2, click: () => {
@@ -465,12 +504,12 @@ export class EffortView {
 		if (footer.length && !this.composing) this.mouse.add({ x, y: 2 + bodyHeight + editor.length, width: rightWidth, height: 1, click: () => this.toggleScan() });
 		const right = [...body, ...editor, ...footer];
 		const panes = Array.from({ length: paneHeight }, (_, index) => fitLine(list[index] ?? "", listWidth) + theme.fg("borderMuted", " │ ") + fitLine(right[index] ?? "", rightWidth));
-		const hints = this.composing ? ["Enter send", "Ctrl+J newline"] : ["↑↓ select", "Enter thread", "o observe", "m message", "c scan", "i time", "t threads", "PgUp/PgDn read"];
-		return [dashboardHeading("Agents > Related efforts", "", width, theme), theme.fg("muted", this.selfLine()), ...panes, plain(this.notice), mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data), theme)].map((line) => fitLine(line, width));
+		return [dashboardHeading("Agents > Related efforts", "", width, theme), theme.fg("muted", this.selfLine()), ...panes, plain(this.notice), this.inventory.footer(this.mouse, height - 1, width, this.backAction(), theme, !this.composing)].map((line) => fitLine(line, width));
 	}
 	render(width: number, height: number): string[] {
 		this.mouse.reset(width, height);
 		this.composer.focused = this.composing;
+		if (width >= 60 && height >= 20 && this.inventory.open) return this.inventory.render(width, height, "Agents > Related efforts", "efforts", this.options.theme);
 		if (width < 60 || height < 20) return Array.from({ length: height }, (_, index) => fitLine(index ? "" : "Resize to use Related efforts. Esc back.", width));
 		if (width >= 100) return this.renderWide(width, height);
 		const rows = this.rows(width, 2);
@@ -484,9 +523,8 @@ export class EffortView {
 		const editorY = 2 + rows.length + bodyHeight;
 		if (this.composing) this.mouse.add({ x: 0, y: editorY, width, height: editor.length, click: (event) => this.composer.handleMouse(event) });
 		if (footer.length && !this.composing) this.mouse.add({ x: 0, y: editorY + editor.length, width, height: 1, click: () => this.toggleScan() });
-		const hints = this.composing ? ["Enter send", "Ctrl+J newline"] : ["↑↓ select", "Enter thread", "o observe", "m message", "c scan", "i time", "t threads", "PgUp/PgDn read"];
-		return [dashboardHeading("Agents > Related efforts", "", width, this.options.theme), this.selfLine(), ...rows, ...body, ...editor, ...footer, plain(this.notice), mouseHints(this.mouse, height - 1, hints, "Esc back", width, (data) => this.handleInput(data), this.options.theme)].slice(0, height).map((line) => fitLine(line, width));
+		return [dashboardHeading("Agents > Related efforts", "", width, this.options.theme), this.selfLine(), ...rows, ...body, ...editor, ...footer, plain(this.notice), this.inventory.footer(this.mouse, height - 1, width, this.backAction(), this.options.theme, !this.composing)].slice(0, height).map((line) => fitLine(line, width));
 	}
-	invalidate(): void { this.mouse.reset(); this.composer.invalidate(); }
+	invalidate(): void { this.mouse.reset(); this.inventory.invalidate(); this.composer.invalidate(); }
 	dispose(): void { this.disposed = true; this.active = false; this.clearSelectionReads(); this.mouse.reset(); }
 }

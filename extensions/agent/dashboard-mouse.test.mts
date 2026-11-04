@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { Text, isKittyProtocolActive, setKittyProtocolActive, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { AgentComposer } from "./agent-composer.ts";
-import { DashboardMouse, mouseHints } from "./dashboard-mouse.ts";
+import { DashboardMouse } from "./dashboard-mouse.ts";
 import { fixture, keys, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
@@ -81,48 +81,6 @@ it("mouse regions leave selection gestures, modifiers, invalid cells and stale l
 	mouse.reset();
 	assert.equal(mouse.handle(event(3, 3, 80, 24)), undefined);
 });
-it("hint hit areas include only visible hints and split paired keys", () => {
-	const mouse = new DashboardMouse();
-	const calls: string[] = [];
-	mouse.reset(80, 24);
-	const line = mouseHints(mouse, 23, ["↑↓ select", "PgUp/PgDn read", "enter choose"], "esc back", 80, (key) =>
-		calls.push(key),
-	);
-	for (const text of ["↑", "↓", "pgup", "pgdn", "enter", "esc"]) mouse.handle(event(line.indexOf(text), 23, 80, 24));
-	assert.deepEqual(calls, ["\x1b[A", "\x1b[B", "\x1b[5~", "\x1b[6~", "\r", "\x1b"]);
-	mouse.reset(20, 24);
-	const clipped = mouseHints(mouse, 23, ["enter choose", "r refresh"], "esc back", 20, (key) => calls.push(key));
-	assert.doesNotMatch(clipped, /refresh/);
-	assert.equal(mouse.handle(event(19, 23, 20, 24)), undefined);
-});
-it("the Ctrl+J hint inserts a native newline without submission in either terminal protocol", () => {
-	const previous = isKittyProtocolActive();
-	try {
-		for (const active of [false, true]) {
-			setKittyProtocolActive(active);
-			const sent: string[] = [];
-			const composer = new AgentComposer({
-				tui: { terminal: { rows: 24, columns: 80 }, requestRender() {} } as unknown as TUI,
-				theme,
-				keys,
-				onSubmit: (text) => sent.push(text),
-				onEscape() {},
-			});
-			const mouse = new DashboardMouse();
-			mouse.reset(80, 24);
-			const line = mouseHints(mouse, 23, ["Ctrl+J newline"], "esc back", 80, (data) => composer.handleInput(data));
-			composer.handleInput("First");
-			assert.equal(mouse.handle(event(line.indexOf("ctrl+j"), 23, 80, 24))?.handled, true);
-			assert.deepEqual(sent, []);
-			composer.handleInput("Second");
-			assert.equal(composer.getText(), "First\nSecond");
-			composer.handleInput("\r");
-			assert.deepEqual(sent, ["First\nSecond"]);
-		}
-	} finally {
-		setKittyProtocolActive(previous);
-	}
-});
 it("action clicks select before execution and help wheel preserves the native back path", async () => {
 	const actions: string[] = [];
 	const f = fixture(140, 24, source([row("one", { state: "idle" })]), {
@@ -141,7 +99,7 @@ it("action clicks select before execution and help wheel preserves the native ba
 		click("a actions");
 		click("Configure");
 		assert.deepEqual(actions, []);
-		click("enter choose");
+		click("Enter choose");
 		await turn();
 		assert.deepEqual(actions, ["configure"]);
 		f.ui.handleInput("\x1b");
@@ -149,7 +107,7 @@ it("action clicks select before execution and help wheel preserves the native ba
 		const before = lines().join("\n");
 		f.ui.handleMouse(event(5, 5, 140, 24, { type: "wheel", wheelDelta: 5 }));
 		assert.notEqual(lines().join("\n"), before);
-		click("esc back");
+		click("Esc back");
 		assert.equal(f.ui.navigation.screen, "roster");
 	} finally {
 		f.ui.dispose();
@@ -174,7 +132,7 @@ it("the Actions wheel reaches Details after scrolling past the last action", asy
 		const p = point(lines(), "Configure");
 		assert.equal(f.ui.handleMouse(event(p.x, p.y, 140, 24, { type: "wheel", wheelDelta: 100 }))?.handled, true);
 		assert.deepEqual(actions, []);
-		click("enter choose");
+		click("Enter choose");
 		await turn();
 		assert.deepEqual(actions, ["status"]);
 	} finally {
@@ -207,7 +165,7 @@ for (const width of [80, 140]) {
 			assert.ok(lines().join("\n").includes(new Date(0).toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })));
 			f.ui.handleInput("i");
 			assert.equal(f.state.exactTime, false);
-			click("enter open");
+			click("Enter open");
 			assert.equal(f.ui.navigation.screen, "console");
 			f.ui.handleInput("\x1b");
 			lines();
@@ -270,18 +228,6 @@ for (const width of [80, 140]) {
 		}
 	});
 }
-
-it("lowercase hints retain click actions for every named key", () => {
-	const mouse = new DashboardMouse();
-	const calls: string[] = [];
-	mouse.reset(200, 24);
-	const line = mouseHints(mouse, 23, ["Enter open", "Tab message", "Space toggle", "Ctrl+J newline", "Ctrl+O tools", "Ctrl+T thinking", "PgUp/PgDn read"], "Esc back", 200, (key) => calls.push(key));
-	assert.equal(line, line.toLowerCase());
-	for (const key of ["enter", "tab", "space", "ctrl+j", "ctrl+o", "ctrl+t", "pgup", "pgdn", "esc"]) {
-		assert.equal(mouse.handle(event(line.indexOf(key), 23, 200, 24))?.handled, true, key);
-	}
-	assert.deepEqual(calls, ["\r", "\t", " ", "\x1b[106;5u", "\x0f", "\x14", "\x1b[5~", "\x1b[6~", "\x1b"]);
-});
 
 for (const width of [80, 140]) {
 	it(`flat roster block clicks select the correct agent at ${width}`, async () => {

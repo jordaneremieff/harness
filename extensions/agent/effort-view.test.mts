@@ -167,8 +167,8 @@ it("keyboard and mouse contact entry read the existing Threads view without list
 			await turn(); f.ui.handleInput("b"); await turn();
 			if (mouse) {
 				const lines = f.ui.render(100);
-				const y = lines.findIndex((line) => line.includes("enter thread"));
-				f.ui.handleMouse(click(lines[y].indexOf("enter thread"), y, 100, 30));
+				const y = lines.findIndex((line) => line.includes("Enter open thread"));
+				f.ui.handleMouse(click(lines[y].indexOf("Enter open thread"), y, 100, 30));
 			} else f.ui.handleInput("\r");
 			await turn();
 			assert.deepEqual(calls, [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/thread" }]);
@@ -306,7 +306,7 @@ it("multiline effort drafts keep the send receipt and escape hint inside the nar
 		for (let index = 0; index < 20; index++) { f.ui.handleInput("Draft line"); f.ui.handleInput("\x1b[106;5u"); }
 		const lines = f.ui.render(60);
 		assert.equal(lines.length, 20);
-		assert.match(lines[19], /esc back/);
+		assert.match(lines[19], /Esc back/);
 		assert.match(lines.join("\n"), /Operator message to effort/);
 		assert.match(lines.join("\n"), /Draft line/);
 		assert.ok(lines.every((line) => visibleWidth(line) <= 60));
@@ -649,4 +649,81 @@ it("roster notices coalesce contact reads into one active read and one latest re
 		assert.match(f.ui.render(100).join("\n"), /LATEST_DECLARATION/);
 		await turn(); assert.equal(reads, 2);
 	} finally { pending.resolve(contactPage()); f.ui.dispose(); }
+});
+
+function crowd(count: number): EffortPresencePage {
+	const page = efforts();
+	page.efforts = Array.from({ length: count }, (_, index) => ({
+		id: `effort-${index}`, cwd: "/work", name: `Effort ${index}`, startedAt: "2026-10-04T00:00:00.000Z",
+		liveness: index === 0 ? "live" as const : "unknown" as const, relationship: "repository" as const,
+		...(index === 0 ? { intentClaim: { purpose: "First", integration: "None", authority: "Brief", scope: { paths: [], branches: [], fullGate: false }, updatedAt: "2026-10-04T01:00:00.000Z" } } : {}),
+	}));
+	return page;
+}
+function wheel(x: number, y: number, width: number, height: number, wheelDelta: number): TuiMouseEvent {
+	return { ...click(x, y, width, height), type: "wheel", wheelDelta };
+}
+
+for (const width of [60, 100]) {
+	it(`wheel over the effort list scrolls only that list and never changes the selection or recipient at ${width}`, async () => {
+		const messages: string[] = [];
+		const f = fixture(width, 30, source(), {
+			efforts: async () => awareness(crowd(12)),
+			messageEffort: async (id) => { messages.push(id); return { text: "Operator message admitted" }; },
+		});
+		try {
+			await turn();
+			f.ui.handleInput("b");
+			await turn();
+			const draw = () => stripVTControlCharacters(f.ui.render(width).join("\n"));
+			assert.match(draw(), /Effort 0/);
+			f.ui.handleInput("m");
+			f.ui.handleInput("hello");
+			const lines = f.ui.render(width).map(stripVTControlCharacters);
+			const y = lines.findIndex((line) => line.includes("Effort 0"));
+			assert.ok(y >= 0);
+			f.ui.handleMouse(wheel(2, y, width, 30, 3));
+			const scrolled = draw();
+			assert.doesNotMatch(scrolled, /› Effort 0/);
+			assert.match(scrolled, /Message target|Operator message to effort-0/);
+			f.ui.handleInput("\r");
+			await turn();
+			assert.deepEqual(messages, ["effort-0"], "the recipient captured when the message started is unchanged by scrolling");
+		} finally { f.ui.dispose(); }
+	});
+}
+
+it("an effort row click after the list scrolled selects the row under the pointer", async () => {
+	const f = fixture(100, 30, source(), { efforts: async () => awareness(crowd(12)) });
+	try {
+		await turn();
+		f.ui.handleInput("b");
+		await turn();
+		const before = f.ui.render(100).map(stripVTControlCharacters);
+		const y = before.findIndex((line) => line.includes("Effort 0"));
+		f.ui.handleMouse(wheel(2, y, 100, 30, 4));
+		const after = f.ui.render(100).map(stripVTControlCharacters);
+		const row = after.findIndex((line) => /Effort [1-9]/.test(line));
+		assert.ok(row >= 0);
+		const label = /Effort \d+/.exec(after[row] ?? "")?.[0];
+		f.ui.handleMouse(click(2, row, 100, 30));
+		assert.match(f.ui.render(100).map(stripVTControlCharacters).join("\n"), new RegExp(`› ${label}`));
+	} finally { f.ui.dispose(); }
+});
+
+it("the footer menu lists every Related efforts action and a disabled message names its reason", async () => {
+	const f = setup(60, 20);
+	try {
+		await turn();
+		f.ui.handleInput("b");
+		await turn();
+		assert.match(f.ui.render(60).at(-1) ?? "", /x more · Esc back/);
+		f.ui.handleInput("x");
+		const menu = f.ui.render(60).map(stripVTControlCharacters).join("\n");
+		for (const label of ["Open thread", "Message", "Observe", "Threads", "Scan details", "Exact times"]) assert.match(menu, new RegExp(label), label);
+		f.ui.handleInput("\x1b");
+		f.ui.handleInput("\x1b[B");
+		f.ui.handleInput("m");
+		assert.match(f.ui.render(60).join("\n"), /Direct messages need a live compatible effort/);
+	} finally { f.ui.dispose(); }
 });
