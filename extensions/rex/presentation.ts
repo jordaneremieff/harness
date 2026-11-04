@@ -48,7 +48,7 @@ function callHeader(name: string, request: Record<string, unknown>): Line[] {
 	const lines = [line(`${name}${action ? ` · ${action}` : ""}`, "toolTitle")];
 	const facts = [string(request.label), string(request.method), string(request.action),
 		string(request.phase) ? `phase ${request.phase}` : undefined,
-		string(request.recordId) ? `record ${request.recordId}` : undefined,
+		string(request.recordId) ? "one record" : undefined,
 		string(request.query) ? `query ${JSON.stringify(request.query)}` : undefined].filter(Boolean).join(" · ");
 	if (facts) lines.push(line(facts, "muted"));
 	return lines;
@@ -154,7 +154,7 @@ function statusSummaryLines(name: string, data: Record<string, unknown>): Line[]
 	if (states.length) lines.push(line(`Reported: ${[...new Set(states)].join(", ")}`, "toolOutput"));
 	const binding = object(data.binding);
 	const bound = object(binding.target);
-	lines.push(line(binding.target ? `Binding: ${string(bound.blockId) ?? "target"} · verified ${string(binding.verifiedAt) ?? "unknown time"}` : "Binding: none", "muted"));
+	lines.push(line(binding.target ? `Binding: ${string(bound.blockId) ? "block" : "target"} bound` : "Binding: none", "muted"));
 	return lines;
 }
 
@@ -181,20 +181,23 @@ function authorityQualifications(name: string, request: Record<string, unknown>,
 
 function ownedObservationLines(name: string, request: Record<string, unknown>, data: Record<string, unknown>, expanded: boolean): Line[] {
 	if (name !== "rex_owned" || request.op !== "observe" || expanded || !Array.isArray(data.reports)) return [];
-	return data.reports.flatMap((value) => {
-		const report = object(value);
-		const observations = Array.isArray(report.observations) ? report.observations : [];
-		const observation = object(observations[0]);
-		const exit = object(object(observation.process).last_exit).exit_code;
-		const facts = [string(observation.presence), string(observation.childState) ? `child ${observation.childState}` : undefined, typeof exit === "number" ? `exit ${exit}` : undefined].filter(Boolean).join(" · ");
-		const lines = [line(`${report.recordId} · stored ${report.phase} · ${facts || "unresolved"}`, "toolOutput")];
-		const error = report.error ?? observation.error ?? observation.processError ?? observation.statusError ?? observation.captureError;
-		if (typeof error === "string") lines.push(line(error, "muted", true));
-		const capture = string(object(observation.capture).content);
-		if (capture) lines.push(line(capture.trimEnd().split("\n").at(-1) ?? "", "toolOutput", true));
-		if (observations.length > 1) lines.push(line(`${observations.length - 1} more resource observations in the complete result.`, "muted"));
-		return lines;
-	});
+	const count = data.reports.length;
+	return data.reports.flatMap((value, index) => reportLines(object(value), count > 1 ? `#${index + 1} · ` : ""));
+}
+
+/** One owned record as the collapsed card shows it: stored phase and current child evidence, without its identity. */
+function reportLines(report: Record<string, unknown>, prefix: string): Line[] {
+	const observations = Array.isArray(report.observations) ? report.observations : [];
+	const observation = object(observations[0]);
+	const exit = object(object(observation.process).last_exit).exit_code;
+	const facts = [string(observation.presence), string(observation.childState) ? `child ${observation.childState}` : undefined, typeof exit === "number" ? `exit ${exit}` : undefined].filter(Boolean).join(" · ");
+	const lines = [line(`${prefix}stored ${report.phase} · ${facts || "unresolved"}`, "toolOutput")];
+	const error = report.error ?? observation.error ?? observation.processError ?? observation.statusError ?? observation.captureError;
+	if (typeof error === "string") lines.push(line(error, "muted", true));
+	const capture = string(object(observation.capture).content);
+	if (capture) lines.push(line(capture.trimEnd().split("\n").at(-1) ?? "", "toolOutput", true));
+	if (observations.length > 1) lines.push(line(`${observations.length - 1} more resource observations in the complete result.`, "muted"));
+	return lines;
 }
 
 function omissionLines(coverage: Record<string, unknown>, data: Record<string, unknown>): Line[] {
@@ -232,10 +235,34 @@ function resultDetails(value: Record<string, unknown>, effects: Record<string, u
 	const target = targetText(value.target);
 	if (target) lines.push(line(`target ${target}`, "muted"));
 	if (string(effects.recordId)) lines.push(line(`record ${effects.recordId}`, "muted"));
+	lines.push(...identityDetails(data));
 	const state = effects.state;
 	lines.push(line(state === "unknown" ? "effects UNKNOWN" : state === "confirmed" ? "effects confirmed" : "no effects", state === "unknown" ? "warning" : "muted"));
 	lines.push(line(""), ...jsonLines(value));
 	return lines;
+}
+
+/** The exact bound target, its verification time and owner. */
+function bindingDetail(data: Record<string, unknown>): Line[] {
+	const binding = object(data.binding);
+	if (!binding.target) return [];
+	const owner = string(binding.ownerId) ? ` · owner ${binding.ownerId}` : "";
+	return [line(`binding ${targetText(object(binding.target)) || "target"} · verified ${string(binding.verifiedAt) ?? "unknown time"}${owner}`, "muted")];
+}
+
+/** Each observed record identity, numbered as in the collapsed rows when there is more than one. */
+function recordDetails(data: Record<string, unknown>): Line[] {
+	if (!Array.isArray(data.reports)) return [];
+	const numbered = data.reports.length > 1;
+	return data.reports.flatMap((value, index) => {
+		const id = string(object(value).recordId);
+		return id ? [line(`${numbered ? `#${index + 1} ` : ""}record ${id}`, "muted")] : [];
+	});
+}
+
+/** Exact binding and owned-record identities that the collapsed lines summarise. */
+function identityDetails(data: Record<string, unknown>): Line[] {
+	return [...bindingDetail(data), ...recordDetails(data)];
 }
 
 function object(value: unknown): Record<string, unknown> {

@@ -90,10 +90,14 @@ one, otherwise the plain resource kind (`new session`, `block`, `window`,
 `observation`, `status`), never an identifier. `UNKNOWN EFFECTS` stays on that
 line; a confirmed or absent effect is routine and waits in Details. `rex_status`
 then leads with host activity, the program states reported inside the payload,
-and the caller's binding. The expanded view adds a Details block with the exact
-target (block, window, session or client identity, target source and server
-endpoint), the effect record and the effect state before the complete bounded
-result. Full IDs wrap when needed rather than receive fixed short forms. Pi's default tool shell supplies padding, background and expansion.
+and whether the caller is bound (`Binding: block bound` or `Binding: none`).
+`rex_owned observe` rows lead with the stored phase and the current child
+evidence (`#1 · stored confirmed · present · child exited · exit 7`), numbered
+when there is more than one; a call that names a record says `one record`. The
+expanded view adds a Details block with the exact target (block, window, session
+or client identity, target source and server endpoint), the effect record, the
+bound target with its verification time and owner, each observed record
+identity, and the effect state before the complete bounded result. Full IDs wrap when needed rather than receive fixed short forms. Pi's default tool shell supplies padding, background and expansion.
 The expansion hint uses your configured Pi key, read through the `keyText`
 function that the host passes in the tool render context. An unbound key, or a
 render context without keybinding hints, produces no hint and no invented mouse

@@ -110,8 +110,12 @@ test("owned observation cards separate stored phase, current child evidence and 
 		{ recordId: "pending-call", phase: "pending", observations: [], error: "No acknowledged resource IDs." },
 	] } });
 	const rows = render("rex_owned", value, { op: "observe" }).join("\n");
-	assert.match(rows, /retained-call · stored confirmed · present · child exited · exit 7/);
-	assert.match(rows, /pending-call · stored pending · unresolved/);
+	assert.match(rows, /#1 · stored confirmed · present · child exited · exit 7/);
+	assert.match(rows, /#2 · stored pending · unresolved/);
+	assert.doesNotMatch(rows, /retained-call|pending-call/, "record identities wait in Details");
+	const expandedRows = render("rex_owned", value, { op: "observe" }, true).join("\n");
+	assert.match(expandedRows, /#1 record retained-call/);
+	assert.match(expandedRows, /#2 record pending-call/);
 	assert.match(rows, /FINAL-MARKER/);
 	assert.match(rows, /Status unavailable/);
 	assert.match(rows, /Observation does not stop work or establish task success/);
@@ -132,9 +136,17 @@ test("collapsed cards lead with observed facts: status host activity, reported s
 	assert.match(status, /Host durable · idle/);
 	assert.match(status, /tasks outside snapshot/);
 	assert.match(status, /Reported: working/);
-	assert.ok(status.includes(`Binding: ${block} · verified 2026-11-04`));
+	assert.match(status, /Binding: block bound/);
+	assert.ok(!status.includes(block) && !status.includes("2026-11-04T00:00:00.000Z"), "the bound block identity and verification time wait in Details");
 	assert.match(status, /Reported status is not permission or task acceptance/);
 	const unbound = render("rex_status", fixture({ outcome: "host_status", data: { hostActivity: { host: "ordinary", state: "active", observedAt: "2026-11-04T00:00:00.000Z", source: "ExtensionContext.isIdle()", note: "" } } }), { op: "snapshot" }).join("\n");
+	const statusDetails = render("rex_status", fixture({ outcome: "snapshot", data: { hostActivity: { host: "durable", state: "idle", observedAt: "x", source: "y", note: "z" }, binding, terminalProjection: "" } }), { op: "snapshot" }, true, 240).join("\n");
+	assert.ok(statusDetails.includes(`binding ${block} · explicit target · ${server.endpoint} · verified 2026-11-04T00:00:00.000Z · owner owner`), statusDetails);
+	const call = createRexToolDisplay("rex_owned").renderCall({ op: "reconcile", recordId: "exact-record-identity" }, theme, { expanded: false, isPartial: false }).render(120).join("\n");
+	assert.match(call, /rex_owned · reconcile/);
+	assert.match(call, /one record/);
+	assert.doesNotMatch(call, /exact-record-identity/, "a supplied record identity is not a collapsed call fact");
+	assert.match(createRexToolDisplay("rex_owned").renderCall({ op: "reconcile", recordId: "exact-record-identity" }, theme, { expanded: true, isPartial: false }).render(120).join("\n"), /exact-record-identity/);
 	assert.match(unbound, /Host ordinary · active/);
 	assert.match(unbound, /Binding: none/);
 	const wait = render("rex_wait", fixture({ outcome: "observed" }), { op: "wait", condition: "text", timeoutMs: 25000 }).join("\n");
