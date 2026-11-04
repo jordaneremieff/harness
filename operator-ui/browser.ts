@@ -1,0 +1,326 @@
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { matchesKey, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { TextField } from "./field.ts";
+import { HitMap } from "./hits.ts";
+import { ListView } from "./list.ts";
+import { Reader, type ReaderContent } from "./reader.ts";
+import { fitLine, plainLine, visibleWidth } from "./text.ts";
+import type { Action, OperatorView, ViewHost } from "./view.ts";
+
+/** Below this width the detail moves to its own view, opened with Enter. */
+export const SPLIT_MIN_WIDTH = 90;
+
+export interface Scope {
+	readonly id: string;
+	readonly label: string;
+}
+
+export interface BrowserOptions<T> {
+	readonly title: string;
+	readonly host: ViewHost;
+	key(item: T): string;
+	line(item: T, width: number, theme: Theme): string;
+	/** Detail content for the selected item; a placeholder while its read runs. Paint performs no read. */
+	detail(item: T | undefined): ReaderContent;
+	/** Identity of the detail content; the reading position stays while it is unchanged. */
+	detailKey?(item: T): string;
+	/** Actions for the selected item, re-read at every render and every invocation. */
+	actions(item: T | undefined): readonly Action[];
+	readonly scopes?: readonly Scope[];
+	/** The active scope, read at every render. */
+	scope?(): string | undefined;
+	onScope?(id: string): void;
+	readonly search?: {
+		readonly label?: string;
+		readonly placeholder?: string | (() => string);
+		readonly value?: string;
+		change(query: string): void;
+		/** Enter in the field, for searches that run only on request. Without it Enter moves to the list. */
+		submit?(query: string): void;
+	};
+	/** Loading, coverage, stale or error state, shown under the search row. */
+	status?(): string | undefined;
+	/** Shown when the list is empty, distinct from loading and failure. */
+	empty?(): string;
+	onSelect?(item: T | undefined): void;
+}
+
+type Region = "search" | "scopes" | "list" | "detail";
+
+/** A detail of one item as its own view, for narrow windows. */
+class DetailView<T> implements OperatorView {
+	readonly title: string;
+	focused = false;
+	private readonly reader = new Reader();
+	private readonly hits = new HitMap();
+	private readonly browser: Browser<T>;
+	private readonly item: T;
+	constructor(browser: Browser<T>, item: T, title: string) {
+		this.browser = browser;
+		this.item = item;
+		this.title = title;
+	}
+	render(width: number, height: number): string[] {
+		this.hits.begin(width, height);
+		this.reader.focused = this.focused;
+		this.reader.setContent(this.browser.detailOf(this.item), this.browser.detailKeyOf(this.item));
+		return this.reader.render(width, height, this.browser.theme, this.hits, 0, 0);
+	}
+	handleInput(data: string): boolean {
+		return this.reader.handleInput(data);
+	}
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		return this.hits.handle(event);
+	}
+	actions(): readonly Action[] {
+		return this.browser.actionsOf(this.item);
+	}
+}
+
+/**
+ * Search, scopes, a list and a detail reader as one view. Selecting a row never runs an effect;
+ * Enter opens the detail (focus at wide widths, a nested view at narrow widths); actions run only
+ * from their labelled controls. Query, scope, selection and reading position stay with the view.
+ */
+export class Browser<T> implements OperatorView {
+	readonly title: string;
+	focused = false;
+	private readonly options: BrowserOptions<T>;
+	private readonly list: ListView<T>;
+	private readonly reader = new Reader();
+	private readonly search?: TextField;
+	private readonly hits = new HitMap();
+	private region: Region;
+	private split = true;
+	private areas = { top: 0, listWidth: 0, height: 0 };
+
+	constructor(options: BrowserOptions<T>) {
+		this.options = options;
+		this.title = options.title;
+		this.list = new ListView<T>({
+			key: options.key,
+			line: options.line,
+			onSelect: (item) => options.onSelect?.(item),
+			onOpen: (item) => this.open(item),
+		});
+		if (options.search) this.search = new TextField(options.search.label ?? "Search", options.search.value ?? "", (value) => options.search?.change(value));
+		this.region = "list";
+	}
+
+	get theme(): Theme {
+		return this.options.host.theme;
+	}
+
+	get selected(): T | undefined {
+		return this.list.selected;
+	}
+
+	get query(): string {
+		return this.search?.value ?? "";
+	}
+
+	setItems(items: readonly T[], prefer?: string): void {
+		this.list.setItems(items, prefer);
+	}
+
+	select(key: string | undefined): void {
+		this.list.select(key);
+	}
+
+	detailOf(item: T): ReaderContent {
+		return this.options.detail(item);
+	}
+
+	detailKeyOf(item: T): string {
+		return this.options.detailKey?.(item) ?? this.options.key(item);
+	}
+
+	actionsOf(item: T | undefined): readonly Action[] {
+		return this.options.actions(item);
+	}
+
+	actions(): readonly Action[] {
+		return this.options.actions(this.list.selected);
+	}
+
+	private open(item: T): void {
+		if (this.split) {
+			this.region = "detail";
+			return;
+		}
+		const title = plainLine(this.options.line(item, 60, this.theme)).slice(0, 48);
+		this.options.host.push(() => new DetailView(this, item, title || "Detail"));
+	}
+
+	private regions(): Region[] {
+		const order: Region[] = [];
+		if (this.search) order.push("search");
+		if (this.options.scopes?.length) order.push("scopes");
+		order.push("list");
+		if (this.split) order.push("detail");
+		return order;
+	}
+
+	focusNext(backward: boolean): boolean {
+		const order = this.regions();
+		const next = order.indexOf(this.region) + (backward ? -1 : 1);
+		if (next < 0 || next >= order.length) return false;
+		this.region = order[next] ?? this.region;
+		return true;
+	}
+
+	focusEdge(backward: boolean): void {
+		const order = this.regions();
+		this.region = (backward ? order.at(-1) : order.includes("list") ? "list" : order[0]) ?? "list";
+	}
+
+	/** Escape clears an active search edit; otherwise the frame leaves this view. */
+	escape(): boolean {
+		if (this.region === "search" && this.search?.value) {
+			this.search.value = "";
+			this.options.search?.change("");
+			return true;
+		}
+		return false;
+	}
+
+	private switchScope(delta: number): void {
+		const scopes = this.options.scopes ?? [];
+		const index = scopes.findIndex((scope) => scope.id === this.options.scope?.());
+		const next = scopes[Math.max(0, Math.min(scopes.length - 1, index + delta))];
+		if (next && next.id !== this.options.scope?.()) this.options.onScope?.(next.id);
+	}
+
+	handleInput(data: string): boolean {
+		if (this.region === "search") return this.searchInput(data);
+		if (this.region === "scopes") return this.scopeInput(data);
+		if (this.region === "detail") return this.reader.handleInput(data);
+		if (this.list.handleInput(data)) return true;
+		// Typing over the list writes into the visible search field.
+		if (this.search && data.length === 1 && data >= " " && data !== "\u007f") {
+			this.region = "search";
+			return this.search.handleInput(data);
+		}
+		return false;
+	}
+
+	private searchInput(data: string): boolean {
+		if (this.search && matchesKey(data, "enter")) this.options.search?.submit?.(this.search.value);
+		if (!this.search || matchesKey(data, "down") || matchesKey(data, "enter")) {
+			this.region = "list";
+			return true;
+		}
+		return this.search.handleInput(data);
+	}
+
+	/** Put the query in the visible field, for example when an owner restores retained state. */
+	setQuery(query: string): void {
+		if (this.search) this.search.value = query;
+	}
+
+	private scopeInput(data: string): boolean {
+		if (matchesKey(data, "left") || matchesKey(data, "right")) {
+			this.switchScope(matchesKey(data, "left") ? -1 : 1);
+			return true;
+		}
+		if (matchesKey(data, "down") || matchesKey(data, "enter")) {
+			this.region = "list";
+			return true;
+		}
+		return false;
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const { top, listWidth, height } = this.areas;
+		if (event.type === "click" && event.y >= top && event.y < top + height) this.region = event.x < listWidth || !this.split ? "list" : "detail";
+		return this.hits.handle(event);
+	}
+
+	private placeholder(): string {
+		const value = this.options.search?.placeholder;
+		return (typeof value === "function" ? value() : value) ?? "type to search";
+	}
+
+	private renderHeader(width: number, theme: Theme): string {
+		const scopes = this.options.scopes ?? [];
+		const scopeText = scopes.map((scope) => {
+			const active = scope.id === this.options.scope?.();
+			const label = ` ${plainLine(scope.label)} `;
+			const styled = active ? theme.bold(theme.fg("accent", label)) : theme.fg("muted", label);
+			return this.focused && this.region === "scopes" && active ? theme.bg("selectedBg", styled) : styled;
+		});
+		const scopeWidth = scopes.reduce((total, scope) => total + visibleWidth(` ${plainLine(scope.label)} `) + 1, 0);
+		const room = Math.max(10, width - scopeWidth - 1);
+		if (this.search) {
+			this.search.focused = this.focused && this.region === "search";
+			this.hits.add({
+				x: 0,
+				y: 0,
+				width: room,
+				height: 1,
+				click: (event) => {
+					this.region = "search";
+					return { ...this.search?.handleMouse(event, 8), handled: true, focus: true };
+				},
+			});
+		}
+		let x = room + 1;
+		scopes.forEach((scope) => {
+			const w = visibleWidth(` ${plainLine(scope.label)} `);
+			this.hits.add({ x, y: 0, width: w, height: 1, click: () => this.options.onScope?.(scope.id) });
+			x += w + 1;
+		});
+		const left = this.search ? this.search.render(room, theme, 8, this.placeholder()) : fitLine(theme.bold(plainLine(this.title)), room);
+		return `${fitLine(left, room)} ${scopeText.join(" ")}`;
+	}
+
+	render(width: number, height: number): string[] {
+		const theme = this.theme;
+		this.hits.begin(width, height);
+		this.split = width >= SPLIT_MIN_WIDTH;
+		if (!this.split && this.region === "detail") this.region = "list";
+		this.list.focused = this.focused && this.region === "list";
+		this.reader.focused = this.focused && this.region === "detail";
+		const lines = [fitLine(this.renderHeader(width, theme), width)];
+		const status = this.options.status?.();
+		lines.push(fitLine(status ? theme.fg("muted", plainLine(status)) : "", width));
+		const bodyHeight = Math.max(1, height - lines.length);
+		const listWidth = this.split ? Math.max(30, Math.min(64, Math.floor(width * 0.42))) : width;
+		this.areas = { top: lines.length, listWidth, height: bodyHeight };
+		const listLines = this.renderList(listWidth, bodyHeight, lines.length, width, height, theme);
+		if (!this.split) return [...lines, ...listLines];
+		return [...lines, ...this.renderSplit(listLines, listWidth, bodyHeight, lines.length, width, height, theme)];
+	}
+
+	private renderList(listWidth: number, bodyHeight: number, top: number, width: number, height: number, theme: Theme): string[] {
+		this.hits.add({ x: 0, y: top, width: listWidth, height: bodyHeight, click: () => ({ handled: true, focus: true }) });
+		if (this.list.length === 0) {
+			const empty = this.options.empty?.() ?? "Nothing here.";
+			return Array.from({ length: bodyHeight }, (_, row) => fitLine(row === 0 ? theme.fg("muted", plainLine(empty)) : "", listWidth));
+		}
+		const listHits = new HitMap();
+		listHits.begin(width, height);
+		const lines = this.list.render(listWidth, bodyHeight, theme, listHits, 0, top);
+		this.hits.include(listHits, 0, 0);
+		return lines;
+	}
+
+	private renderSplit(listLines: readonly string[], listWidth: number, bodyHeight: number, top: number, width: number, height: number, theme: Theme): string[] {
+		const lines: string[] = [];
+		const detailWidth = Math.max(1, width - listWidth - 1);
+		const selected = this.list.selected;
+		this.reader.setContent(this.options.detail(selected), selected === undefined ? undefined : this.detailKeyOf(selected));
+		const readerHits = new HitMap();
+		readerHits.begin(width, height);
+		const detail = this.reader.render(detailWidth, bodyHeight, theme, readerHits, listWidth + 1, top);
+		this.hits.add({ x: listWidth + 1, y: top, width: detailWidth, height: bodyHeight, click: () => ({ handled: true, focus: true }) });
+		this.hits.include(readerHits, 0, 0);
+		const divider = theme.fg(this.focused && this.region === "detail" ? "accent" : "borderMuted", "│");
+		for (let row = 0; row < bodyHeight; row++) lines.push(`${fitLine(listLines[row] ?? "", listWidth)}${divider}${fitLine(detail[row] ?? "", detailWidth)}`);
+		return lines;
+	}
+
+	invalidate(): void {
+		this.hits.clear();
+	}
+}

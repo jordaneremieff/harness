@@ -29,6 +29,8 @@
 			"evals/**/*.mts",
 			"extensions/**/*.ts",
 			"extensions/**/*.mts",
+			"operator-ui/**/*.ts",
+			"operator-ui/**/*.mts",
 			"prompts/*.eval.mts",
 			"prompts/*.test.mts",
 			"scripts/**/*.mts",

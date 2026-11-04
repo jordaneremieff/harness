@@ -198,6 +198,9 @@ export function literalSpecifiers(source: string): string[] {
 	return specifiers;
 }
 
+/** Slices whose operator views use the package-level presentation entry. */
+const OPERATOR_UI_CONSUMERS = new Set(["agent", "clipboard", "pillars", "policy", "stash", "statusline"]);
+
 function publicImport(
 	root: string,
 	file: string,
@@ -207,8 +210,25 @@ function publicImport(
 ): boolean {
 	return (
 		(sliceName === "agent" && target === join(root, "transport", "index.ts")) ||
+		(OPERATOR_UI_CONSUMERS.has(sliceName) && target === join(root, "operator-ui", "index.ts")) ||
 		evaluationImport(root, file, sliceDir, target)
 	);
+}
+
+/**
+ * The shared presentation module imports only its own files, Node built-ins and packages. It never
+ * reaches into an extension, so no owner's private implementation or output format leaks into it.
+ */
+export function auditOperatorUiImports(root: string, file: string, source: string): string[] {
+	const rel = relative(root, file);
+	if (syntaxErrors(source).length) return [`${rel}: TypeScript syntax errors prevent a complete import check`];
+	const moduleDir = join(root, "operator-ui");
+	return literalSpecifiers(source).flatMap((specifier) => {
+		if (specifier.startsWith("/")) return [`${rel}: absolute import "${specifier}"`];
+		if (!specifier.startsWith("./") && !specifier.startsWith("../")) return [];
+		const target = relative(moduleDir, resolve(dirname(file), specifier));
+		return target.startsWith("..") ? [`${rel}: import "${specifier}" escapes operator-ui`] : [];
+	});
 }
 
 function evaluationImport(root: string, file: string, sliceDir: string, target: string | undefined): boolean {
@@ -250,6 +270,12 @@ export function auditSliceImports(root: string, file: string, source: string): s
 
 for (const file of sourceFiles) {
 	for (const violation of auditSliceImports(root, file, readFileSync(file, "utf8"))) fail(violation);
+}
+const operatorUiDir = join(root, "operator-ui");
+for (const entry of main && existsSync(operatorUiDir) ? readdirSync(operatorUiDir, { withFileTypes: true }) : []) {
+	if (!entry.isFile() || !/\.(ts|mts)$/.test(entry.name)) continue;
+	const file = join(operatorUiDir, entry.name);
+	for (const violation of auditOperatorUiImports(root, file, readFileSync(file, "utf8"))) fail(violation);
 }
 
 // --- configuration declaration and documentation contract -------------
@@ -583,7 +609,7 @@ if (main) {
 		...sourceFiles.map((file) => relative(root, file).replaceAll("\\", "/")),
 	]);
 	for (const file of owned) {
-		if (!/^(extensions|scripts|prompts|transport|evals)\/.*\.(ts|mts)$/.test(file)) continue;
+		if (!/^(extensions|scripts|prompts|transport|operator-ui|evals)\/.*\.(ts|mts)$/.test(file)) continue;
 		const path = join(root, file);
 		if (!existsSync(path)) continue;
 		for (const violation of auditSchemaImports(root, path, readFileSync(path, "utf8"))) fail(violation);
