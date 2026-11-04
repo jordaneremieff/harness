@@ -100,13 +100,13 @@ it("the mouse opens Related efforts and message hints without agent-control leak
 	try {
 		await turn();
 		const lines = f.ui.render(100);
-		const y = lines.findIndex((line) => line.includes("b efforts"));
+		const y = lines.findIndex((line) => line.includes("Efforts"));
 		assert.ok(y >= 0);
-		assert.equal(f.ui.handleMouse(click(lines[y].indexOf("b efforts"), y, 100, 30))?.handled, true);
+		assert.equal(f.ui.handleMouse(click(lines[y].indexOf("Efforts"), y, 100, 30))?.handled, true);
 		await turn();
 		const pane = f.ui.render(100);
-		const messageY = pane.findIndex((line) => line.includes("m message"));
-		f.ui.handleMouse(click(pane[messageY].indexOf("m message"), messageY, 100, 30));
+		const messageY = pane.findIndex((line) => line.includes("· Message"));
+		f.ui.handleMouse(click(pane[messageY].indexOf("Message"), messageY, 100, 30));
 		for (const text of ["/agent abort", "n", "a", "t", "b"]) f.ui.handleInput(text);
 		f.ui.handleInput("\r");
 		await turn();
@@ -167,14 +167,33 @@ it("keyboard and mouse contact entry read the existing Threads view without list
 			await turn(); f.ui.handleInput("b"); await turn();
 			if (mouse) {
 				const lines = f.ui.render(100);
-				const y = lines.findIndex((line) => line.includes("Enter open thread"));
-				f.ui.handleMouse(click(lines[y].indexOf("Enter open thread"), y, 100, 30));
+				const y = lines.findIndex((line) => line.includes("Open thread"));
+				f.ui.handleMouse(click(lines[y].indexOf("Open thread"), y, 100, 30));
 			} else f.ui.handleInput("\r");
 			await turn();
 			assert.deepEqual(calls, [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/thread" }]);
 			assert.match(f.ui.render(100).join("\n"), /Contact exchange/);
 		} finally { f.ui.dispose(); }
 	}
+});
+it("Back from a contact thread returns to Related efforts with its selection and draft", async () => {
+	const f = fixture(100, 30, source(), { efforts: async () => awareness(), collaborate: async () => contactPage(), messageEffort: async () => ({ text: "admitted" }) });
+	try {
+		await turn(); f.ui.handleInput("b"); await turn();
+		assert.equal(f.ui.navigation.screen, "efforts");
+		f.ui.handleInput("m"); f.ui.handleInput("Draft for later"); f.ui.handleInput("\x1b");
+		f.ui.handleInput("\r"); await turn();
+		assert.equal(f.ui.navigation.screen, "threads");
+		assert.match(f.ui.render(100).join("\n"), /Contact exchange/);
+		f.ui.handleInput("\x1b"); await turn();
+		assert.equal(f.ui.navigation.screen, "efforts", "the thread was opened from Related efforts, not the list");
+		assert.match(f.ui.render(100).join("\n"), /Agents > Related efforts/);
+		f.ui.handleInput("m");
+		assert.match(f.ui.render(100).join("\n"), /Draft for later/);
+		f.ui.handleInput("\x1b");
+		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.navigation.screen, "roster");
+	} finally { f.ui.dispose(); }
 });
 it("the command adapter binds effort reads and operator messages to the unchanged primary context", async () => {
 	let dashboard: AgentDashboard | undefined;
@@ -306,7 +325,7 @@ it("multiline effort drafts keep the send receipt and escape hint inside the nar
 		for (let index = 0; index < 20; index++) { f.ui.handleInput("Draft line"); f.ui.handleInput("\x1b[106;5u"); }
 		const lines = f.ui.render(60);
 		assert.equal(lines.length, 20);
-		assert.match(lines[19], /Esc back/);
+		assert.match(lines[19], /Back \(Esc\)/);
 		assert.match(lines.join("\n"), /Operator message to effort/);
 		assert.match(lines.join("\n"), /Draft line/);
 		assert.ok(lines.every((line) => visibleWidth(line) <= 60));
@@ -500,9 +519,9 @@ it("explicit effort observation fires no message or agent control and keeps sele
 		await turn(); f.ui.handleInput("b"); await turn();
 		assert.deepEqual(reads, []);
 		const lines = f.ui.render(100);
-		const y = lines.findIndex((line) => line.includes("o observe"));
+		const y = lines.findIndex((line) => line.includes("Observe"));
 		assert.ok(y >= 0);
-		f.ui.handleMouse(click(lines[y].indexOf("o observe"), y, 100, 32));
+		f.ui.handleMouse(click(lines[y].indexOf("Observe"), y, 100, 32));
 		f.ui.handleInput("o");
 		assert.deepEqual(reads, ["effort"]);
 		assert.match(f.ui.render(100).join("\n"), /Read-only observation/);
@@ -715,7 +734,7 @@ it("the footer menu lists every Related efforts action and a disabled message na
 		await turn();
 		f.ui.handleInput("b");
 		await turn();
-		assert.match(f.ui.render(60).at(-1) ?? "", /x more · Esc back/);
+		assert.match(f.ui.render(60).at(-1) ?? "", /More \(x\) · Back \(Esc\)/);
 		f.ui.handleInput("x");
 		const menu = f.ui.render(60).map(stripVTControlCharacters).join("\n");
 		for (const label of ["Open thread", "Message", "Observe", "Threads", "Scan details", "Exact times"]) assert.match(menu, new RegExp(label), label);

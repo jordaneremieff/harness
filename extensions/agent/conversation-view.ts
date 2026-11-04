@@ -5,6 +5,7 @@ import { ScrollView } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry, AgentConversationSnapshot } from "./dashboard-types.ts";
 import type { AgentReadingState } from "./dashboard-state.ts";
 import { AgentConversation, type ConversationDocument, renderableEntries } from "./dashboard-conversation.ts";
+import type { AgentCardLookup } from "./tool-cards.ts";
 
 const ENTRY_LIMIT = 800;
 const BYTE_LIMIT = 4 * 1024 * 1024;
@@ -179,14 +180,22 @@ export class ConversationView {
 	private toolDisplay?: (name: string) => ToolRenderers | undefined;
 	private viewport?: { width: number; height: number; top: number };
 	private readonly tui: TUI;
+	private readonly rows?: AgentCardLookup;
 	readonly state: AgentReadingState;
-	constructor(tui: TUI, state: AgentReadingState) {
+	/** `rows` is the already-observed roster that agent cards consult for target names and configuration. */
+	constructor(tui: TUI, state: AgentReadingState, rows?: AgentCardLookup) {
 		this.tui = tui;
 		this.state = state;
+		this.rows = rows;
 		this.scroll = new ScrollView(
 			{ render: () => [], invalidate: () => {} },
 			{ follow: "end", scrollbar: "hidden", overscroll: "contain" },
 		);
+	}
+	/** Observed roster facts changed; agent cards repaint with the current lookup. */
+	refreshCards(): void {
+		this.transcript?.refreshCards();
+		this.viewport = undefined;
 	}
 	/** A different lookup rebuilds the transcript, so no card keeps a renderer from a previous source. */
 	setToolDisplay(lookup: ((name: string) => ToolRenderers | undefined) | undefined): void {
@@ -227,7 +236,7 @@ export class ConversationView {
 		const merged = [...committed, ...this.liveEntries(committed, live, ids)];
 		if (!this.transcript || this.cwd !== cwd) {
 			this.transcript?.dispose();
-			this.transcript = new AgentConversation(merged, cwd, this.tui, this.state.expanded, this.state.showThinking, undefined, this.state, this.toolDisplay);
+			this.transcript = new AgentConversation(merged, cwd, this.tui, this.state.expanded, this.state.showThinking, undefined, this.state, this.toolDisplay, this.rows);
 			this.cwd = cwd;
 			this.expanded = this.state.expanded;
 			this.showThinking = this.state.showThinking;

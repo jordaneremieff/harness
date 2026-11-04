@@ -233,14 +233,14 @@ export interface TerminalDialogHost {
 	readonly tui: TUI;
 	readonly theme: Theme;
 	readonly keys: KeybindingsManager;
-	/** Marks one local interaction as open and returns its release. The cancel function closes it. */
-	track(cancel: () => void): () => void;
+	/** Marks one local interaction as open and returns its release. The cancel function closes it; `title` names the dialog. */
+	track(cancel: () => void, title?: string): () => void;
 	notify(text: string): void;
 }
 
 /** Standalone implementation of the dialog adapter, shown as overlays in the attached terminal. */
 export function terminalDialogs(host: TerminalDialogHost): AgentDialogs {
-	function open<T>(make: (finish: (value: T | undefined) => void) => Component & Focusable, cancelled: T | undefined = undefined): Promise<T | undefined> {
+	function open<T>(title: string, make: (finish: (value: T | undefined) => void) => Component & Focusable, cancelled: T | undefined = undefined): Promise<T | undefined> {
 		return new Promise((resolve) => {
 			let settled = false;
 			let handle: { hide(): void } | undefined;
@@ -253,17 +253,17 @@ export function terminalDialogs(host: TerminalDialogHost): AgentDialogs {
 				resolve(value);
 				host.tui.requestRender();
 			};
-			release = host.track(() => finish(cancelled));
+			release = host.track(() => finish(cancelled), title.split("\n")[0]);
 			handle = host.tui.showOverlay(make(finish), { width: "90%", maxHeight: "90%", anchor: "center" });
 		});
 	}
 	return {
 		filtersChoices: true,
-		select: (title, choices, selected) => open<string>((finish) => new ChoiceDialog(host.tui, host.theme, title, choices, selected, finish)),
-		confirm: async (title, description, action) => (await open<string>((finish) => new ChoiceDialog(host.tui, host.theme, `${title}\n${description}`, [{ value: "cancel", label: "Cancel" }, { value: "apply", label: action }], "cancel", finish))) === "apply",
-		input: (title: string, options?: InputOptions) => open<string>((finish) => new LineDialog(host.tui, host.theme, title, options?.initial ?? "", finish)),
-		editor: (title, initial = "") => open<string>((finish) => new EditorDialog(host.tui, host.theme, title, initial, finish)),
-		read: async (title, text) => { await open<true>((finish) => new ReaderDialog(host.tui, host.theme, title, text, () => finish(true))); },
+		select: (title, choices, selected) => open<string>(title, (finish) => new ChoiceDialog(host.tui, host.theme, title, choices, selected, finish)),
+		confirm: async (title, description, action) => (await open<string>(title, (finish) => new ChoiceDialog(host.tui, host.theme, `${title}\n${description}`, [{ value: "cancel", label: "Cancel" }, { value: "apply", label: action }], "cancel", finish))) === "apply",
+		input: (title: string, options?: InputOptions) => open<string>(title, (finish) => new LineDialog(host.tui, host.theme, title, options?.initial ?? "", finish)),
+		editor: (title, initial = "") => open<string>(title, (finish) => new EditorDialog(host.tui, host.theme, title, initial, finish)),
+		read: async (title, text) => { await open<true>(title, (finish) => new ReaderDialog(host.tui, host.theme, title, text, () => finish(true))); },
 		notify: (text) => host.notify(text),
 	};
 }

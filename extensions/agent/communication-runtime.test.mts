@@ -21,7 +21,9 @@ import type { ConversationFrame } from "./live-frames.ts";
 import { parseCommunicationView, type Communication } from "./communication.ts";
 import { InspectOutputSchema } from "./observation-schema.ts";
 import { readInspection, readConversationSnapshotPage } from "./durable-observation.ts";
-import { communicationText } from "./dashboard-conversation.ts";
+import { renderCommunicationCard } from "./tool-cards.ts";
+import { theme } from "./dashboard-test-fixture.mts";
+import { stripVTControlCharacters } from "node:util";
 
 const ROOT = 1 as ConversationId;
 const sender = "7f7f7f7f-1111-4222-8333-444444444444";
@@ -154,7 +156,8 @@ it("preserves user model bytes and keeps communication out of input metadata", a
 		if (view?.state !== "ready") throw new Error("Communication did not bind");
 		assert.equal(view.value.recordedAt, 17);
 		assert.equal(view.target.mode, "input");
-		assert.match(communicationText(view.value), /report from Peer.*Source body/su);
+		const card = stripVTControlCharacters(renderCommunicationCard(view.value, theme, { expanded: false, keyText: () => "ctrl+o" }).render(80).join("\n"));
+		assert.match(card, /\[agent\] Report \u00b7 request source.*from Peer.*Partial body.*Source body/su);
 		const history = await readInspection(host.harness, storageId, conversation, { view: "history" }, BACKGROUND_CONTEXT) as { entries: { id: number; kind: string; communication: unknown }[] };
 		assert.equal(matchesSchema(InspectOutputSchema, history), true);
 		assert.equal(history.entries.some((entry) => entry.kind === "agent.communication"), false);

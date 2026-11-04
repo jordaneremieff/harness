@@ -30,12 +30,31 @@ function inventory(actions: () => ScreenAction[], refused: string[] = []) {
 it("the footer always keeps the menu control and the way out, dropping main actions from the end", () => {
 	const make = () => ["alpha", "bravo", "charlie", "delta"].map((id): ScreenAction => ({ id, label: id, keys: [id[0] ?? ""], main: true, run() {} }));
 	const f = inventory(make);
-	assert.match(f.footer(80), /a alpha · b bravo · c charlie · d delta · x more · Esc close/);
-	const narrow = f.footer(30);
-	assert.match(narrow, /x more · Esc close/);
-	assert.doesNotMatch(narrow, /delta/);
-	assert.ok(narrow.trimEnd().length <= 30);
-	assert.doesNotMatch(f.footer(40, false), /x more/);
+	assert.match(f.footer(80), /^alpha · bravo · charlie · delta │ More \(x\) · Close \(Esc\)/);
+	const narrow = f.footer(28);
+	assert.match(narrow, /^More \(x\) · Close \(Esc\)/);
+	assert.doesNotMatch(narrow, /delta|│/);
+	assert.ok(narrow.trimEnd().length <= 28);
+	assert.doesNotMatch(f.footer(40, false), /More/);
+});
+
+it("destinations stay in the footer at every width, after the item actions and before the menu", () => {
+	const ran: string[] = [];
+	const f = inventory(() => [
+		{ id: "open", label: "Open", keys: ["enter"], main: true, run: () => ran.push("open") },
+		{ id: "message", label: "Message", keys: ["m"], main: true, run: () => ran.push("message") },
+		{ id: "threads", label: "Threads", keys: ["t"], main: true, navigation: true, run: () => ran.push("threads") },
+		{ id: "efforts", label: "Efforts", keys: ["b"], main: true, navigation: true, run: () => ran.push("efforts") },
+	]);
+	assert.match(f.footer(80), /^Open · Message │ Threads · Efforts · More \(x\) · Close \(Esc\)/);
+	const narrow = f.footer(44);
+	assert.match(narrow, /^Threads · Efforts · More \(x\) · Close \(Esc\)/, "item actions drop before destinations");
+	assert.ok(narrow.trimEnd().length <= 44);
+	const footer = f.footer(80);
+	f.mouse.handle(click(footer.indexOf("Efforts"), 23, 80, 24));
+	f.footer(80);
+	f.mouse.handle(click(footer.indexOf("Message"), 23, 80, 24));
+	assert.deepEqual(ran, ["efforts", "message"]);
 });
 
 it("pointer and keyboard dispatch the same action record and a disabled action explains itself", () => {
@@ -46,11 +65,11 @@ it("pointer and keyboard dispatch the same action record and a disabled action e
 		{ id: "blocked", label: "Blocked", keys: ["k"], main: true, disabled: "Select an agent first", run: () => ran.push("blocked") },
 	], refused);
 	const footer = f.footer(80);
-	f.mouse.handle(click(footer.indexOf("g go"), 23, 80, 24));
+	f.mouse.handle(click(footer.indexOf("Go"), 23, 80, 24));
 	assert.equal(f.subject.handleInput("g"), true);
 	assert.deepEqual(ran, ["go", "go"]);
 	f.footer(80);
-	f.mouse.handle(click(footer.indexOf("k blocked"), 23, 80, 24));
+	f.mouse.handle(click(footer.indexOf("Blocked"), 23, 80, 24));
 	assert.equal(f.subject.handleInput("k"), true);
 	assert.deepEqual(ran, ["go", "go"]);
 	assert.deepEqual(refused, ["Select an agent first", "Select an agent first"]);
@@ -63,7 +82,7 @@ it("a click on a stale footer runs the action as it is now, never the replaced o
 	const f = inventory(() => [{ id: label, label, keys: ["g"], main: true, run: () => ran.push(label) }]);
 	const footer = f.footer(80);
 	label = "two";
-	f.mouse.handle(click(footer.indexOf("g one"), 23, 80, 24));
+	f.mouse.handle(click(footer.indexOf("one"), 23, 80, 24));
 	assert.deepEqual(ran, [], "the action that was drawn no longer exists");
 });
 
@@ -104,28 +123,30 @@ for (const [width, height] of [[60, 20], [80, 24], [164, 44]] as const) {
 		const ran: string[] = [];
 		const f = fixture(width, height, source([row("one", { state: "idle" })]), {
 			action: async (name) => { ran.push(name); return undefined; },
+			collaborate: async () => ({ items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } }),
+			efforts: async () => { throw new Error("Related efforts are not read by the footer"); },
 		});
 		const lines = () => plain(f.ui.render(width));
 		const press = (needle: string) => { const p = locate(lines(), needle); return f.ui.handleMouse(click(p.x, p.y, width, height)); };
 		try {
 			await turn();
 			const footer = lines().at(-1) ?? "";
-			assert.match(footer, /x more/);
-			assert.match(footer, /Esc close/);
-			press("x more");
+			assert.match(footer, /Threads · Efforts · New agent · More \(x\) · Close \(Esc\)/, "destinations stay visible at every supported width");
+			assert.doesNotMatch(footer, /Enter open|t threads|x more/, "controls read as labels, not shortcuts");
+			press("More (x)");
 			const menu = lines().join("\n");
-			for (const label of ["Open", "Message", "Actions", "Threads", "Efforts", "New agent", "Tasks", "Find", "Help", "Exact times"]) assert.match(menu, new RegExp(label), label);
+			for (const label of ["Open · Enter", "Message", "Actions", "Threads · t", "Efforts · b", "New agent", "Tasks", "Find", "Help", "Exact times"]) assert.match(menu, new RegExp(label), label);
 			assert.ok(plain(f.ui.render(width)).length === height);
 			press("Find");
-			press("Enter choose");
+			press("Choose (Enter)");
 			assert.equal(f.ui.navigation.screen, "find");
-			assert.match(lines().at(-1) ?? "", /Esc cancel find/);
+			assert.match(lines().at(-1) ?? "", /Cancel find \(Esc\)/);
 			f.ui.handleInput("\x1b");
-			press("x more");
+			press("More (x)");
 			press("Tasks");
-			press("Enter choose");
+			press("Choose (Enter)");
 			assert.equal(f.ui.navigation.screen, "tasks");
-			assert.match(lines().at(-1) ?? "", /Esc back/);
+			assert.match(lines().at(-1) ?? "", /Back \(Esc\)/);
 			f.ui.handleInput("\x1b");
 			assert.equal(f.ui.navigation.screen, "roster");
 			assert.deepEqual(ran, []);

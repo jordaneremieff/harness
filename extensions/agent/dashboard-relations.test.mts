@@ -156,9 +156,10 @@ for (const [width, height] of [[80, 24], [140, 45]]) it(`Related, All, thread, p
 		f.ui.handleInput("t"); await turn();
 		assert.match(shown(f), /Related threads/);
 		f.ui.handleInput("\r"); await turn();
-		assert.match(shown(f), /Purpose: Read the useful result/);
-		f.ui.handleInput("e");
 		assert.match(shown(f), /Exchange message 20/);
+		f.ui.handleInput("c");
+		assert.match(shown(f), /Purpose: Read the useful result/);
+		f.ui.handleInput("\x1b");
 		f.ui.handleInput("m");
 		f.ui.handleInput("\x1b[B");
 		f.ui.handleInput("\r"); await turn();
@@ -249,7 +250,7 @@ it("empty and failed relation evidence keep All and Threads reachable", async ()
 	try {
 		await turn();
 		assert.match(shown(f), /No related agents/);
-		assert.match(shown(f), /v all/);
+		assert.match(shown(f), /All agents/);
 		f.ui.handleInput("v");
 		assert.equal(f.state.selected, other);
 		f.ui.handleInput("t"); await turn();

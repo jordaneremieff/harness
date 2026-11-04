@@ -11,7 +11,8 @@ export type DashboardScreen =
 	| "help"
 	| "tasks"
 	| "result"
-	| "threads";
+	| "threads"
+	| "efforts";
 export interface AgentReadingState {
 	follow: boolean;
 	scroll: number;

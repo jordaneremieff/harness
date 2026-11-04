@@ -146,7 +146,17 @@ function screenFixture(controller: TerminalController, publishStatus?: (status: 
 	const overlays: Array<Component & Focusable> = [];
 	const tui = { terminal, requestRender() { for (const waiter of renderWaiters.splice(0)) { if (!waiter.ready || waiter.ready()) waiter.resolve(); else renderWaiters.push(waiter); } }, showOverlay(component: Component & Focusable) { overlays.push(component); component.focused = true; tui.requestRender(); return { hide() { tui.requestRender(); } }; } } as unknown as TUI;
 	let done = 0;
-	return { screen: new TerminalScreen(tui, theme, terminalKeys(), controller, () => { done++; }, publishStatus), done: () => done, terminal, overlays, afterRender: (ready?: () => boolean) => ready?.() ? Promise.resolve() : new Promise<void>((resolve) => renderWaiters.push({ ready, resolve })) };
+	/** A render condition that no paint satisfies fails within the deadline instead of hanging the run. */
+	const afterRender = (ready?: () => boolean, deadlineMs = 5000) => ready?.() ? Promise.resolve() : new Promise<void>((resolve, reject) => {
+		const waiter = { ready, resolve: () => { clearTimeout(timer); resolve(); } };
+		const timer = setTimeout(() => {
+			const index = renderWaiters.indexOf(waiter);
+			if (index >= 0) renderWaiters.splice(index, 1);
+			reject(new Error(`No render satisfied the awaited condition within ${deadlineMs} ms`));
+		}, deadlineMs);
+		renderWaiters.push(waiter);
+	});
+	return { screen: new TerminalScreen(tui, theme, terminalKeys(), controller, () => { done++; }, publishStatus), done: () => done, terminal, overlays, afterRender };
 }
 
 it("the main console is full-width; /agent and Escape return without a work control", async () => {
@@ -365,7 +375,7 @@ it("dashboard sends display the same native admission facts", async () => {
 	const f = fixture(); await f.controller.attach("a");
 	f.setAdmission(Promise.resolve({ submissionId: 73, identity: "a", deduped: true }));
 	const { screen, afterRender } = screenFixture(f.controller);
-	const roster = afterRender(() => screen.render(140).map(stripVTControlCharacters).join("\n").includes("Tab message"));
+	const roster = afterRender(() => screen.render(140).map(stripVTControlCharacters).join("\n").includes("Open \u00b7 Message"));
 	screen.openDashboard(); await roster;
 	screen.handleInput("m");
 	f.controller.setDraft("from dashboard");
@@ -490,7 +500,7 @@ it("late admission keeps a mode-only edit in the main console and dashboard", as
 	const started = deferred(); const control = f.manager.control;
 	f.manager.control = async (method, input, caller) => { if (method === "submit") started.resolve(); return control(method, input, caller); };
 	const { screen, afterRender } = screenFixture(f.controller);
-	const roster = afterRender(() => screen.render(140).map(stripVTControlCharacters).join("\n").includes("Tab message"));
+	const roster = afterRender(() => screen.render(140).map(stripVTControlCharacters).join("\n").includes("Open \u00b7 Message"));
 	screen.openDashboard(); await roster; screen.handleInput("m");
 	f.controller.setDraft("dashboard text"); screen.handleInput("\r"); await started.promise;
 	f.controller.setMode("followUp");
@@ -679,7 +689,7 @@ it("an open terminal dialog reports a question and its closing restores the live
 	const { screen, overlays } = screenFixture(f.controller, (status) => output.push(status));
 	f.controller.setDraft("/agent recover"); screen.handleInput("\r");
 	assert.ok(overlays.length > 0);
-	assert.deepEqual(output.at(-1), { state: "blocked", app: "pi-agent", kind: "question", message: "Answer the terminal dialog" });
+	assert.deepEqual(output.at(-1), { state: "blocked", app: "pi-agent", kind: "question", message: "Answer: Unconfirmed inputs for a" }, "the dialog title names the question");
 	overlays.at(-1)?.handleInput?.("\x1b");
 	assert.notEqual(output.at(-1)?.state, "blocked");
 	assert.doesNotMatch(JSON.stringify(output), /original/);
@@ -714,7 +724,7 @@ it("visible Dashboard, Back, Latest and Detach controls act on the attached conv
 	const { screen, done, terminal } = screenFixture(f.controller);
 	const draw = () => screen.render(80).map(stripVTControlCharacters);
 	const press = (needle: string) => { const p = find(draw(), needle); return screen.handleMouse(mouseAt(p.x, p.y, 80, terminal.rows)); };
-	assert.match(draw().at(-1) ?? "", /Dashboard · Back · Latest · Detach/);
+	assert.match(draw().at(-1) ?? "", /Dashboard · Back · Latest │ Detach \(Esc\)/);
 	press("Back");
 	assert.match(draw().join("\n"), /No previous conversation/);
 	const state = f.controller.draftState; assert.ok(state);

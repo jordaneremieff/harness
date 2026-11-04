@@ -127,7 +127,7 @@ for (const [width, height] of [
 			assert.equal(lines.length, height);
 			assert.ok(lines.every((line) => !/[\r\n]/.test(line) && visibleWidth(line) <= width));
 			assert.match(lines[0] ?? "", /Threads > First Second/);
-			assert.match(lines.at(-1) ?? "", /Esc back/);
+			assert.match(lines.at(-1) ?? "", /Back \(Esc\)/);
 			return lines;
 		};
 		try {
@@ -136,11 +136,9 @@ for (const [width, height] of [
 			const first = initial.findIndex((line) => line.trim() === "First");
 			assert.ok(first > 0);
 			assert.equal(initial[first + 1]?.trim(), "Second");
-			f.ui.handleInput("e");
-			const exchange = render();
-			const body = exchange.findIndex((line) => line.trim() === "Body first");
-			assert.ok(body > 0);
-			assert.equal(exchange[body + 1]?.trim(), "Body second");
+			const body = initial.findIndex((line) => line.trim() === "Body first");
+			assert.ok(body > first, "the exchange follows the compact head");
+			assert.equal(initial[body + 1]?.trim(), "Body second");
 			f.ui.handleInput("p");
 			f.ui.handleInput("\x1b[200~Draft first\nDraft second\x1b[201~");
 			const composed = render();
@@ -152,26 +150,40 @@ for (const [width, height] of [
 			f.ui.dispose();
 		}
 	});
-	it(`Threads shows governing context, peers and chronological exchange within ${width} columns`, async () => {
+	it(`Threads opens on the exchange with a compact head and keeps the frame behind Context within ${width} columns`, async () => {
 		const f = setup(width, height);
 		try {
 			await open(f);
-			assert.match(text(f, width), /Purpose: Choose a usable contract/);
-			assert.match(text(f, width), /Carried authority \(claim\): Operator directs the work/);
-			assert.match(text(f, width), /Restrictions: No live store writes/);
-			assert.match(text(f, width), /Acceptance: Exercise the selected contract/);
-			f.ui.handleInput("e");
 			const shown = text(f, width);
+			assert.match(shown, /Open · 2 peers · updated \d+d ago · Frame revision 2/);
+			assert.match(shown, /Purpose: Choose a usable contract/);
+			assert.doesNotMatch(shown, /Carried authority|Restrictions:|Acceptance:|Member declarations/, "frame detail waits behind Context");
 			assert.match(shown, /Reviewer \[two\]/);
 			assert.ok(shown.indexOf("#2") < shown.indexOf("#3"));
 			assert.match(shown, /Source: Source brief/);
+			assert.match(shown, /Preserve the operator restriction/, "the latest message is visible on opening");
 			assert.match(shown, /Notification intents pending: 1/);
 			assert.equal(f.ui.render(width).length, height);
 			assert.match(f.ui.render(width)[0] ?? "", /^╭─ Agents > Threads/);
 			assert.match(f.ui.render(width)[0] ?? "", /Frame 2 ╮$/);
 			assert.match(text(f, width), /Lines \d+–\d+ of \d+ loaded/);
-			assert.match(f.ui.render(width).at(-1) ?? "", /p post.*x more · Esc back/);
+			assert.match(f.ui.render(width).at(-1) ?? "", /Reply · Post · Post and notify · Peers · Context.*More \(x\) · Back \(Esc\)/);
 			assert.ok(f.ui.render(width).every((line) => visibleWidth(line) <= width));
+			f.ui.handleInput("c");
+			const context = text(f, width);
+			assert.match(f.ui.render(width)[0] ?? "", /Boundary review > Context/);
+			assert.match(context, /Carried authority \(claim\): Operator directs the work/);
+			assert.match(context, /Authority source: Source brief/);
+			assert.match(context, /Restrictions: No live store writes/);
+			assert.match(context, /Acceptance: Exercise the selected contract/);
+			assert.match(context, /Integrator: Designer/);
+			assert.match(context, /Member declarations, not agreement/);
+			assert.match(context, /Designer \[one\]: Design/);
+			assert.match(context, /attributed claims, not proof of authority/);
+			assert.doesNotMatch(context, /Challenge the proposed boundary/);
+			f.ui.handleInput("\x1b");
+			assert.match(text(f, width), /Challenge the proposed boundary/);
+			assert.doesNotMatch(f.ui.render(width)[0] ?? "", /Context/);
 		} finally {
 			f.ui.dispose();
 		}
@@ -190,7 +202,6 @@ it("Threads shows absolute local dates without seconds or a suffix", async () =>
 		const f = setup(width, height, async (input) => (input.action === "list" ? list() : current));
 		try {
 			await open(f);
-			f.ui.handleInput("e");
 			f.ui.handleInput("i");
 			const shown = text(f, width);
 			assert.match(shown, /Time: Oct 3, 2026, 12:04 AM/);
@@ -207,7 +218,6 @@ it("i toggles relative and absolute times without a read and retains the choice 
 	const f = setup();
 	try {
 		await open(f);
-		f.ui.handleInput("e");
 		assert.match(text(f), /Time: \d+d ago/);
 		const menu = () => { f.ui.handleInput("x"); const shown = text(f); f.ui.handleInput("\x1b"); return shown; };
 		assert.match(menu(), /Date and time/);
@@ -240,7 +250,6 @@ it("i toggles relative and absolute times without a read and retains the choice 
 			await turn();
 			reopened.ui.handleInput("\r");
 			await turn();
-			reopened.ui.handleInput("e");
 			const shown = stripVTControlCharacters(reopened.ui.render(100).join("\n"));
 			assert.ok(shown.includes(dashboardTime(2, true)));
 			assert.equal(f.state.exactTime, true);
@@ -250,7 +259,6 @@ it("i toggles relative and absolute times without a read and retains the choice 
 		const fresh = setup();
 		try {
 			await open(fresh);
-			fresh.ui.handleInput("e");
 			assert.match(text(fresh), /Time: \d+d ago/);
 			assert.equal(fresh.state.exactTime, false);
 		} finally {
@@ -352,7 +360,6 @@ it("mouse follows thread rows, timestamps, notify choices and hints without cons
 		await turn();
 		mouse("Boundary review");
 		await turn();
-		f.ui.handleInput("e");
 		assert.match(text(f), /Time: \d+d ago/);
 		const before = f.calls.length;
 		mouse("Time: forged message label");
@@ -365,17 +372,17 @@ it("mouse follows thread rows, timestamps, notify choices and hints without cons
 		mouse(stamp);
 		assert.equal(f.state.exactTime, true);
 		assert.equal(f.calls.length, before);
-		mouse("x more");
+		mouse("More (x)");
 		mouse("Relative time");
-		mouse("Enter choose");
+		mouse("Choose (Enter)");
 		assert.equal(f.state.exactTime, false);
-		mouse("n post and notify");
+		mouse("Post and notify");
 		mouse("[ ] Reviewer");
 		assert.deepEqual(f.state.threads?.drafts.get(threadId)?.notify, ["two"]);
-		mouse("Tab write");
+		mouse("Write");
 		f.ui.handleInput("draft");
 		assert.equal(f.state.threads?.drafts.get(threadId)?.text, "draft");
-		mouse("Esc back");
+		mouse("Back (Esc)");
 		assert.equal(f.state.threads?.drafts.get(threadId)?.text, "draft");
 		mouse("Time: ", { type: "wheel", wheelDelta: -5 });
 		assert.match(text(f), /Purpose: Choose a usable contract/);
@@ -687,12 +694,11 @@ for (const field of ["pending", "sequence"]) {
 	});
 }
 
-it("automatic thread refresh follows the exchange tail but preserves a deliberate frame read", async () => {
+it("automatic thread refresh follows the exchange tail but preserves a deliberate earlier read", async () => {
 	let current = page();
 	const f = setup(100, 30, async (input) => (input.action === "list" ? list() : current));
 	try {
 		await open(f);
-		f.ui.handleInput("e");
 		f.ui.render(100);
 		assert.ok(current.events[0]);
 		const incoming = {
@@ -705,7 +711,7 @@ it("automatic thread refresh follows the exchange tail but preserves a deliberat
 		f.notify();
 		await turn();
 		assert.match(text(f), /NEW_LIVE_TAIL/);
-		f.ui.handleInput("f");
+		f.ui.handleInput("\x1b[H");
 		current = {
 			...current,
 			events: [...current.events, { ...incoming, sequence: 5, at: 5, message: "LATER_LIVE_TAIL" }],
@@ -714,6 +720,80 @@ it("automatic thread refresh follows the exchange tail but preserves a deliberat
 		await turn();
 		assert.match(text(f), /Purpose: Choose a usable contract/);
 		assert.doesNotMatch(text(f), /LATER_LIVE_TAIL/);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("a revisited thread restores its reading position while a new thread opens on the latest events", async () => {
+	const current = page();
+	assert.ok(current.events[0]);
+	current.events[0].message = `TOP_OF_EXCHANGE\n${Array.from({ length: 40 }, () => "Earlier detail").join("\n")}`;
+	const f = setup(100, 30, async (input) => (input.action === "list" ? list() : current));
+	try {
+		await open(f);
+		assert.match(text(f), /Preserve the operator restriction/);
+		assert.doesNotMatch(text(f), /TOP_OF_EXCHANGE/);
+		f.ui.handleInput("\x1b[H");
+		assert.match(text(f), /TOP_OF_EXCHANGE/);
+		f.ui.handleInput("\x1b");
+		await turn();
+		assert.match(f.ui.render(100)[0] ?? "", /Agents > Threads \u2500/);
+		f.ui.handleInput("\r");
+		await turn();
+		assert.match(text(f), /TOP_OF_EXCHANGE/, "the position of the earlier read is restored");
+		assert.doesNotMatch(text(f), /Preserve the operator restriction/);
+		assert.equal(f.state.threads?.positions?.get(threadId)?.follow, false);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("Reply chooses an event, composes with replyTo and clears the target after the retained post", async () => {
+	const f = setup();
+	try {
+		await open(f);
+		f.ui.handleInput("\r");
+		assert.match(f.ui.render(100)[0] ?? "", /Boundary review > Reply/);
+		const picker = text(f);
+		assert.ok(picker.indexOf("#3 \u00b7 Designer") < picker.indexOf("#2 \u00b7 Reviewer"), "newest event first");
+		assert.match(picker, /\u203a #3 \u00b7 Designer \u00b7 carried-authority/);
+		f.ui.handleInput("\x1b[B");
+		f.ui.handleInput("\r");
+		assert.equal(f.state.threads?.drafts.get(threadId)?.replyTo, 2);
+		assert.match(text(f), /Reply to #2 in Boundary review/);
+		assert.match(text(f), /Reply to #2/);
+		f.ui.handleInput("Answer");
+		f.ui.handleInput("\r");
+		await turn();
+		const post = f.calls.find((input) => input.action === "post");
+		assert.equal(post?.replyTo, 2);
+		assert.equal(post?.message, "Answer");
+		assert.equal(f.state.threads?.drafts.get(threadId)?.replyTo, undefined);
+		f.ui.handleInput("p");
+		assert.match(text(f), /Post to Boundary review/);
+		assert.doesNotMatch(text(f), /Reply to #2 in/);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("wheel over the thread list scrolls the list without moving the selection", async () => {
+	const items = Array.from({ length: 20 }, (_, index) => ({ id: `storage/thread-${index}`, title: `Thread ${index}`, purpose: `Purpose ${index}`, updatedAt: 1, closed: false, members: 1 }));
+	const f = setup(100, 24, async (input) => (input.action === "list" ? { ...list(), items } : page()));
+	const wheel = (delta: number) => f.ui.handleMouse({ ...cellEvent(f, "Thread "), type: "wheel", wheelDelta: delta, width: 100, height: 24 });
+	try {
+		await turn();
+		f.ui.handleInput("t");
+		await turn();
+		assert.match(text(f), /\u203a Open \u00b7 Thread 0 /);
+		wheel(6);
+		const scrolled = text(f);
+		assert.doesNotMatch(scrolled, /Thread 0 /, "the selected row left the viewport");
+		assert.match(scrolled, /Thread 1[0-9]/);
+		assert.match(f.ui.render(100)[0] ?? "", /1\/20/, "selection unchanged");
+		f.ui.handleInput("\x1b[B");
+		assert.match(text(f), /\u203a Open \u00b7 Thread 1 /, "an explicit selection change reveals the selected row");
 	} finally {
 		f.ui.dispose();
 	}
@@ -741,6 +821,7 @@ it("member declarations replace on a fresh read without a revision time or agree
 	const f = setup(100, 48, async (input) => input.action === "list" ? list() : structuredClone(current));
 	try {
 		await open(f);
+		f.ui.handleInput("c");
 		const initial = text(f);
 		assert.match(initial, /Member declarations, not agreement/);
 		assert.match(initial, /Designer \[one\]: Policy gate released/);
@@ -753,9 +834,9 @@ it("member declarations replace on a fresh read without a revision time or agree
 		assert.match(text(f), /Renewed hold/);
 		assert.doesNotMatch(text(f), /Policy gate released/);
 		assert.equal(current.thread.members[0].joinedAt, 1);
-		f.ui.handleInput("e");
+		f.ui.handleInput("\x1b");
 		assert.match(text(f), /Source: Source brief/);
-		assert.match(text(f), /b earlier/);
+		assert.match(text(f), /Earlier events available/);
 		assert.ok(f.calls.every((input) => input.action === "read" || input.action === "list"));
 	} finally { f.ui.dispose(); }
 });
@@ -765,6 +846,7 @@ it("bounded member declarations stay truthful and width-safe in the thread frame
 	const f = setup(80, 24, async (input) => input.action === "list" ? list() : current);
 	try {
 		await open(f);
+		f.ui.handleInput("c");
 		let shown = "";
 		for (let i = 0; i < 12; i++) {
 			const lines = f.ui.render(80);

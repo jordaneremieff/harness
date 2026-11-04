@@ -12,7 +12,9 @@ import { ProviderBlockFactSchema, providerBlockText } from "./provider-block.ts"
 import { matchesSchema } from "./schema-check.ts";
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, type KeybindingHints } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Spacer, Text, truncateToWidth, type Component } from "@earendil-works/pi-tui";
+import { Box, Markdown, Spacer, Text, truncateToWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { dashboardTime } from "./dashboard-time.ts";
+import type { Communication } from "./communication.ts";
 
 export type AgentCardLookup = () => readonly AgentConversationSummary[];
 
@@ -92,6 +94,8 @@ interface CardSections {
 	readonly label?: string;
 	readonly metadata?: readonly string[];
 	readonly body?: readonly (string | Component)[];
+	/** Peer cards build and show these lines only while expanded, globally or by a click on the card. */
+	readonly details?: () => readonly (string | Component)[];
 	readonly outcome?: readonly string[];
 	readonly hint?: string;
 	readonly previewLines?: number;
@@ -121,23 +125,69 @@ function cardLayout(sections: CardSections, theme: Theme, options: CardLayoutOpt
 		return component;
 	}
 	const box = new Box(options.peerPadding, 1, (line) => theme.bg("customMessageBg", line.replace(/\x1b\[(?:0|49)?m/g, (reset) => reset + theme.getBgAnsi("customMessageBg"))));
-	const body = {
-		render(width: number) {
-			const lines = content.flatMap((part) => typeof part === "string" ? new Text(part, 0, 0).render(width) : part.render(width));
-			const limit = options.expanded ? lines.length : sections.previewLines ?? lines.length;
-			const hidden = Math.max(0, lines.length - limit);
-			return [...header.map((line) => clipCardLine(line, width)), ...(header.length ? [""] : []), ...lines.slice(0, limit), ...(sections.outcome ?? []), ...(hidden || sections.hint ? [clipCardLine(theme.fg("muted", sections.hint || expansionHint(options.keys)), width)] : [])];
-		},
-		invalidate() { for (const part of content) if (typeof part !== "string") part.invalidate(); },
-	};
+	const body = new PeerCardBody(header, content, sections, theme, options);
 	box.addChild(body);
 	return box;
 }
 
-function expansionHint(keys: Pick<KeybindingHints, "keyText"> | undefined): string {
+/**
+ * The peer card body: a preview with its disclosure hint, or the complete body and details. A plain
+ * click on the header or the hint toggles this card alone; Pi's global expansion rebuilds the card and
+ * resets that local choice. Modified clicks, multi-clicks and body clicks pass through for selection.
+ */
+class PeerCardBody implements Component {
+	private expanded: boolean;
+	private layout?: { width: number; header: number; hint?: number; collapsible: boolean };
+	private details?: readonly (string | Component)[];
+	private readonly header: readonly string[];
+	private readonly content: readonly (string | Component)[];
+	private readonly sections: CardSections;
+	private readonly theme: Theme;
+	private readonly options: CardLayoutOptions;
+	constructor(header: readonly string[], content: readonly (string | Component)[], sections: CardSections, theme: Theme, options: CardLayoutOptions) {
+		this.header = header;
+		this.content = content;
+		this.sections = sections;
+		this.theme = theme;
+		this.options = options;
+		this.expanded = options.expanded;
+	}
+	render(width: number): string[] {
+		const lines = this.content.flatMap((part) => typeof part === "string" ? new Text(part, 0, 0).render(width) : part.render(width));
+		const limit = this.expanded ? lines.length : this.sections.previewLines ?? lines.length;
+		const hidden = Math.max(0, lines.length - limit);
+		if (this.expanded && this.details === undefined) this.details = this.sections.details?.() ?? [];
+		const shownDetails = this.expanded ? (this.details ?? []).flatMap((part) => typeof part === "string" ? new Text(part, 0, 0).render(width) : part.render(width)) : [];
+		const collapsible = hidden > 0 || this.sections.details !== undefined;
+		const hint = this.sections.hint ? this.sections.hint : !this.expanded && collapsible ? expansionHint(this.options.keys, true) : "";
+		const rows = [...this.header.map((line) => clipCardLine(line, width)), ...(this.header.length ? [""] : []), ...lines.slice(0, limit), ...shownDetails, ...(this.sections.outcome ?? [])];
+		this.layout = { width, header: this.header.length, hint: hint ? rows.length : undefined, collapsible };
+		return hint ? [...rows, clipCardLine(this.theme.fg("muted", hint), width)] : rows;
+	}
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const layout = this.layout;
+		if (!layout || layout.width !== event.width) return undefined;
+		if (event.type !== "click" || event.button !== "left" || event.shift || event.alt || event.ctrl || (event.clickCount ?? 1) !== 1) return undefined;
+		const onHeader = event.y >= 0 && event.y < layout.header;
+		const onHint = layout.hint !== undefined && event.y === layout.hint;
+		if (!layout.collapsible || (!onHeader && !onHint)) return undefined;
+		this.expanded = !this.expanded;
+		this.invalidate();
+		return { handled: true };
+	}
+	invalidate(): void {
+		this.layout = undefined;
+		for (const part of this.content) if (typeof part !== "string") part.invalidate();
+		for (const part of this.details ?? []) if (typeof part !== "string") part.invalidate();
+	}
+}
+
+function expansionHint(keys: Pick<KeybindingHints, "keyText"> | undefined, pointer = false): string {
 	const key = keys?.keyText("app.tools.expand");
+	if (pointer) return key ? `... (click or ${key} to expand)` : "... (click to expand)";
 	return key ? `... (${key} to expand)` : "... (expand for full details)";
 }
+
 
 /** Calls own the hint before execution; results own it after execution starts. */
 function cardHint(context: AgentCardContext, part: "call" | "result", _subject: string): string {
@@ -1178,15 +1228,75 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 	if (reason) body.push(theme.fg("text", displayPreview(reason, 240)));
 	const checkIn = details.checkIn === undefined ? undefined : record(details.checkIn);
 	body.push(noticeBody(checkIn === undefined ? (typeof details.operatorMessage === "string" ? details.operatorMessage : operatorNoticeBody(content)) : boundedSource(text(details.message)), theme));
-	if (options.expanded) {
-		body.push(new Spacer(1), theme.fg("muted", theme.bold("Source details")));
-		for (const line of peerConfiguration(details)) body.push(theme.fg("muted", line));
-		for (const line of peerScalarFields(details)) body.push(theme.fg("muted", line));
-		body.push(theme.fg("muted", checkIn === undefined ? "Reported result · not operator authority or task acceptance" : "Check-in · task not finished · not operator authority or task acceptance"));
-		body.push(theme.fg("dim", "/agent opens the dashboard"));
-	}
+	const sourceDetails = (): (string | Component)[] => [
+		new Spacer(1),
+		theme.fg("muted", theme.bold("Source details")),
+		...peerConfiguration(details).map((line) => theme.fg("muted", line)),
+		...peerScalarFields(details).map((line) => theme.fg("muted", line)),
+		theme.fg("muted", checkIn === undefined ? "Reported result · not operator authority or task acceptance" : "Check-in · task not finished · not operator authority or task acceptance"),
+		theme.fg("dim", "/agent opens the dashboard"),
+	];
 	const subject = details.threadId !== undefined ? text(details.threadTitle) || text(details.threadId) : peerLabel(details);
-	return cardLayout({ title: `[agent] ${label}`, label: subject, metadata: peerMetadata(details), body, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options });
+	return cardLayout({ title: `[agent] ${label}`, label: subject, metadata: peerMetadata(details), body, details: sourceDetails, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options });
+};
+
+/** Retained communication kinds in operator words. */
+function communicationKind(value: Communication): string {
+	switch (value.kind) {
+		case "notice": return value.metadata.passive ? "Thread notice" : "Thread notice · attention";
+		case "report": return "Report";
+		case "result": return value.metadata.status === "done" ? "Result" : "Result unanswered";
+		case "check-in": return "Check-in";
+	}
+}
+
+/** Which thread or work the communication belongs to, in one bounded line. */
+function communicationSubject(value: Communication): string {
+	switch (value.kind) {
+		case "notice": return `${value.metadata.title || value.metadata.threadId}${value.metadata.event === undefined ? "" : ` · event #${value.metadata.event}`}`;
+		case "report": return `request ${displayPreview(value.metadata.requestId, 48)}`;
+		case "result": return `${value.metadata.references.length + value.metadata.omittedReferences} referenced submissions`;
+		case "check-in": return `${checkInElapsed(value.metadata.elapsedMs) || "elapsed unknown"} · ${value.metadata.origin} origin`;
+	}
+}
+
+/** Exact identities and retained metadata for the expanded card. Nothing here is live configuration. */
+function communicationDetails(value: Communication, theme: Theme): () => (string | Component)[] {
+	return () => communicationDetailLines(value, theme);
+}
+function communicationDetailLines(value: Communication, theme: Theme): (string | Component)[] {
+	const lines = [`Sender identity: ${displayIdentity(value.sender.identity)}${value.sender.kind ? ` (${value.sender.kind})` : ""}`, `Recorded: ${new Date(value.recordedAt).toISOString()}`];
+	for (const [key, item] of Object.entries(value.metadata)) {
+		if (item === undefined) continue;
+		lines.push(`${key}: ${displayPreview(typeof item === "string" ? item : JSON.stringify(item), 240)}`);
+	}
+	lines.push("Retained communication · not operator authority or task acceptance · the authoring model is not retained");
+	return [new Spacer(1), theme.fg("muted", theme.bold("Source details")), ...lines.map((line) => theme.fg("muted", line))];
+}
+
+/**
+ * Card for one retained communication (report, notice, result or check-in). The compact view answers
+ * who, what kind, which thread or work and when; the body, exact identities and metadata open on disclosure.
+ */
+export function renderCommunicationCard(value: Communication, theme: Theme, options: { expanded: boolean; outputPad?: number } & Pick<KeybindingHints, "keyText">): Component {
+	const body: (string | Component)[] = [];
+	if (!value.body.complete) body.push(theme.fg("warning", "Partial body"));
+	if (value.body.redacted) body.push(theme.fg("warning", "Redacted body"));
+	if (value.kind === "result" && value.metadata.reason) body.push(theme.fg("text", displayPreview(value.metadata.reason, 240)));
+	body.push(noticeBody(value.body.text, theme));
+	const sender = value.sender.name ? displayPreview(value.sender.name, 80) : displayIdentity(value.sender.identity);
+	return cardLayout(
+		{ title: `[agent] ${communicationKind(value)}`, label: communicationSubject(value), metadata: [`from ${sender}`, dashboardTime(value.recordedAt, true)], body, details: communicationDetails(value, theme), previewLines: NOTICE_PREVIEW_LINES },
+		theme,
+		{ expanded: options.expanded, peerPadding: options.outputPad ?? 0, keys: options },
+	);
+}
+
+/** Custom-message renderer for a retained communication carried in `details`. */
+export const renderAgentCommunicationMessage: MessageRenderer = (message, options, theme) => {
+	const value = message.details as Communication | undefined;
+	if (!value || typeof value !== "object" || value.format !== "agent.communication/1") return undefined;
+	return renderCommunicationCard(value, theme, { expanded: options.expanded, outputPad: options.outputPad, keyText: options.keyText });
 };
 
 // --- Factory ---------------------------------------------------------------------

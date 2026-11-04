@@ -201,6 +201,8 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 	},
 });
 const asText = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value, null, 2));
+/** Ordinary destination announcement for the footer menu (docs/conventions/operator-panels.md). */
+const DESTINATIONS = { version: 1, destinations: [{ id: "agents", label: "Agents", command: { name: "agent" } }] } as const;
 
 function admitExecutionInput(pi: ExtensionAPI, ctx: ExtensionContext, name: string, callId: string, input: Record<string, unknown>): { admitted: Record<string, unknown>; admissionCaller: AgentCaller } {
 	const admissionCaller = caller(ctx, pi);
@@ -844,6 +846,11 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		(id) => getManager().status(id),
 	);
 	pi.registerCommand("agent", command);
+	const publishDestinations = () => pi.events.emit("harness:operator-destination:publish", DESTINATIONS);
+	pi.events.on("harness:operator-destination:request", (request) => {
+		if (typeof request === "object" && request !== null && "version" in request && request.version === 1) publishDestinations();
+	});
+	publishDestinations();
 	pi.registerShortcut("ctrl+alt+g", {
 		description: "Open the agent dashboard",
 		handler: (ctx) => command.openDashboard(ctx),

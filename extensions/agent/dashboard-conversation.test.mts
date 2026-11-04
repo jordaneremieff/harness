@@ -109,6 +109,21 @@ it("renders native await references and release outcomes through display-only ag
 	assert.ok(new AgentConversation(entries, "/work", tui, false, false).render(35).lines.every((line) => visibleWidth(line) <= 35));
 });
 
+it("agent cards name their targets from the observed roster and repaint when those facts change", () => {
+	const identity = "01a106df-0000-4000-8000-000000000001";
+	let rows: AgentConversationSummary[] = [{ id: identity, storageId: identity, name: "Named target", cwd: "/work", modifiedAt: 0, owner: "here", state: "idle", cost: 0, partial: false, model: { provider: "provider", modelId: "model", thinkingLevel: "high" } }];
+	const entries = [assistant("call", [{ type: "toolCall", id: "send-call", name: "agent_send", arguments: { sessionId: identity, message: "Task text" } }])];
+	const conversation = new AgentConversation(entries, "/work", tui, false, false, undefined, undefined, undefined, () => rows);
+	assert.match(screen(conversation, 120), /Named target/u);
+	assert.match(screen(conversation, 120), /provider\/model/u);
+	rows = [{ ...rows[0], name: "Renamed target", model: { provider: "provider", modelId: "other-model", thinkingLevel: "low" } }];
+	conversation.refreshCards();
+	assert.match(screen(conversation, 120), /Renamed target/u);
+	assert.match(screen(conversation, 120), /provider\/other-model/u);
+	assert.doesNotMatch(screen(conversation, 120), /Named target/u);
+	assert.doesNotMatch(screen(new AgentConversation(entries, "/work", tui, false, false), 120), /Named target|provider\/model/u, "without observed rows the card shows only the retained identity");
+});
+
 it("uses native built-in tools, generic unknown tools and unmatched results without execution", () => {
 	const entries: AgentConversationEntry[] = [
 		assistant("a", [
@@ -424,6 +439,35 @@ it("retains whole-card and pending-card choices through result arrival and chang
 	assert.ok(conversation.handleMouse(click(80, document.lines.length, 1)));
 	assert.equal(state.toolExpanded.get("outer"), false);
 	assert.doesNotMatch(screen(conversation), /row 12/u);
+});
+
+it("retained communications render as Agent cards with click disclosure and no live model facts", () => {
+	const sender = "7f7f7f7f-1111-4222-8333-444444444444";
+	const body = `Opening line of the report. ${"Useful detail follows. ".repeat(40)}FINAL_BODY`;
+	const entry: AgentConversationEntry = {
+		id: "9", kind: "pi.user", model: [{ role: "user", content: body, timestamp: 1 }],
+		communication: { state: "ready", recordEntryId: "9", target: { mode: "input", storageId: sender, conversationId: 1, entryId: "9", submissionId: 3, requestId: "source" }, value: { format: "agent.communication/1", kind: "report", sender: { identity: sender, name: "Peer name" }, body: { text: body, complete: false, redacted: false }, recordedAt: 1_700_000_000_000, metadata: { sourceId: "report:source", requestId: "source", replyTo: sender } } },
+	};
+	const conversation = new AgentConversation([entry], "/work", tui, false, false);
+	let document = conversation.render(80);
+	const text = () => stripVTControlCharacters(conversation.render(80).lines.join("\n"));
+	assert.match(text(), /\[agent\] Report \u00b7 request source/u);
+	assert.match(text(), /from Peer name/u);
+	assert.match(text(), /Partial body/u);
+	assert.match(text(), /\(click or ctrl\+o to expand\)|\(click to expand\)/u);
+	assert.doesNotMatch(text(), /FINAL_BODY|Sender identity|1700000000000|provider|model/u);
+	const hint = document.lines.findIndex((line) => /\(click/u.test(stripVTControlCharacters(line)));
+	assert.ok(hint > 0);
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, hint)));
+	document = conversation.render(80);
+	assert.match(text(), /FINAL_BODY/u);
+	assert.match(text(), /Sender identity: 7f7f7f7f-1111-4222-8333-444444444444/u);
+	assert.match(text(), /requestId: source/u);
+	assert.match(text(), /authoring model is not retained/u);
+	conversation.setExpanded(true);
+	assert.match(text(), /FINAL_BODY/u);
+	conversation.setExpanded(false);
+	assert.doesNotMatch(text(), /FINAL_BODY/u, "a global change owns the card again");
 });
 
 it("native thinking clicks retain choices only on the actual assistant instance", () => {

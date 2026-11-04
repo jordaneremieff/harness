@@ -4,6 +4,7 @@ import type { AgentConversationSummary, AgentConversationEntry } from "./dashboa
 import { updateDraft, subscribeAgentState, type AgentDraftState } from "./dashboard-state.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { ConversationView } from "./conversation-view.ts";
+import type { AgentCardLookup } from "./tool-cards.ts";
 import { agentStatusLines, type AgentModelInfo, type DelegatedFigures } from "./agent-footer.ts";
 import type { UsageState } from "@earendil-works/pi-durable";
 import { contextTokens } from "./agent-usage.ts";
@@ -31,6 +32,7 @@ export class AgentConsole {
 		keys: KeybindingsManager,
 		submit: (text: string) => void,
 		onBack: () => void,
+		rows?: AgentCardLookup,
 	) {
 		this.theme = theme;
 		this.state = state;
@@ -48,7 +50,7 @@ export class AgentConsole {
 		this.composer.setText(state.draft);
 		for (const text of state.history) this.composer.addToHistory(text);
 		this.historyCount = state.history.length;
-		this.conversation = new ConversationView(tui, state.view);
+		this.conversation = new ConversationView(tui, state.view, rows);
 		this.unsubscribe = subscribeAgentState(state, () => {
 			if (this.composer.getText() !== state.draft) this.composer.setText(state.draft);
 			for (const text of state.history.slice(this.historyCount)) this.composer.addToHistory(text);

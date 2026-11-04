@@ -95,10 +95,10 @@ it("action clicks select before execution and help wheel preserves the native ba
 	};
 	try {
 		await turn();
-		click("a actions");
+		click("Actions");
 		click("Configure");
 		assert.deepEqual(actions, []);
-		click("Enter choose");
+		click("Choose │");
 		await turn();
 		assert.deepEqual(actions, ["configure"]);
 		f.ui.handleInput("\x1b");
@@ -106,7 +106,7 @@ it("action clicks select before execution and help wheel preserves the native ba
 		const before = lines().join("\n");
 		f.ui.handleMouse(event(5, 5, 140, 24, { type: "wheel", wheelDelta: 5 }));
 		assert.notEqual(lines().join("\n"), before);
-		click("Esc back");
+		click("Back (Esc)");
 		assert.equal(f.ui.navigation.screen, "roster");
 	} finally {
 		f.ui.dispose();
@@ -127,11 +127,11 @@ it("the Actions wheel reaches Details after scrolling past the last action", asy
 	};
 	try {
 		await turn();
-		click("a actions");
+		click("Actions");
 		const p = point(lines(), "Configure");
 		assert.equal(f.ui.handleMouse(event(p.x, p.y, 140, 24, { type: "wheel", wheelDelta: 100 }))?.handled, true);
 		assert.deepEqual(actions, []);
-		click("Enter choose");
+		click("Choose │");
 		await turn();
 		assert.deepEqual(actions, ["status"]);
 	} finally {
@@ -164,7 +164,7 @@ for (const width of [80, 140]) {
 			assert.ok(lines().join("\n").includes(new Date(0).toLocaleString("en-US", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true })));
 			f.ui.handleInput("i");
 			assert.equal(f.state.exactTime, false);
-			click("Enter open");
+			click("Open ·");
 			assert.equal(f.ui.navigation.screen, "console");
 			f.ui.handleInput("\x1b");
 			lines();

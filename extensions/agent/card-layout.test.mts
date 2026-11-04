@@ -238,7 +238,7 @@ it("native peer notices keep three visual body lines and one hint only when text
 			const preview = collapsed.slice(first + 3, -1);
 			assert.equal(preview.length, 4, JSON.stringify({ facts, width, preview }));
 			assert.match(preview[0] ?? "", /Opening finding/u);
-			assert.equal(preview.filter((line) => /to expand|expand for full/u.test(line)).length, 1);
+			assert.equal(preview.filter((line) => /\(click/u.test(line)).length, 1);
 			assert.doesNotMatch(preview.slice(0, 3).join("\n"), /FINAL_BODY/u);
 			assert.ok(component.render(width).every((line) => visibleWidth(line) <= width));
 			component.setExpanded(true);
@@ -252,9 +252,43 @@ it("native peer notices keep three visual body lines and one hint only when text
 	for (const content of ["Only one body line", "First line\nSecond line\nThird line"]) {
 		const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content, details: { kind: "report", senderIdentity: identity } };
 		const component = new CustomMessageComponent(message, renderAgentPeerMessage);
-		assert.doesNotMatch(text(component, 160), /to expand|expand for full/u);
+		assert.equal((text(component, 160).match(/\(click or ctrl\+o to expand\)/gu) ?? []).length, 1, "hidden source details keep a disclosure hint even when the whole body is visible");
 		assert.match(text(component, 160), new RegExp(content.split("\n").at(-1) ?? ""));
+		component.setExpanded(true);
+		assert.doesNotMatch(text(component, 160), /\(click/u);
+		assert.match(text(component, 160), /Source details/u);
 	}
+});
+
+it("a plain click on the header or hint discloses one peer card locally and global expansion resets it", (t) => {
+	noticeKeys(t);
+	const content = `Opening finding. ${"Useful detail follows. ".repeat(40)}FINAL_BODY`;
+	const message = { role: "custom" as const, customType: "agent.peer", display: true, timestamp: 0, content, details: { kind: "report", senderIdentity: identity, ...model } };
+	const component = new CustomMessageComponent(message, renderAgentPeerMessage);
+	const width = 80;
+	const lines = () => clean(component, width);
+	const click = (y: number, patch: Record<string, unknown> = {}) => component.handleMouse({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height: lines().length, shift: false, alt: false, ctrl: false, clickCount: 1, ...patch } as never);
+	const hintRow = () => lines().findIndex((line) => /\(click or ctrl\+o to expand\)/u.test(line));
+	assert.ok(hintRow() > 0);
+	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY|Source details/u);
+	const bodyRow = lines().findIndex((line) => /Opening finding/u.test(line));
+	assert.equal(click(bodyRow), undefined, "body clicks stay available for selection");
+	assert.equal(click(hintRow(), { shift: true }), undefined, "modified clicks pass through");
+	assert.equal(click(hintRow(), { clickCount: 2 }), undefined, "double clicks pass through");
+	assert.equal(click(hintRow())?.handled, true);
+	assert.match(lines().join("\n"), /FINAL_BODY/u);
+	assert.match(lines().join("\n"), /Source details/u);
+	assert.doesNotMatch(lines().join("\n"), /\(click/u);
+	const headerRow = lines().findIndex((line) => /\[agent\]/u.test(line));
+	assert.equal(click(headerRow)?.handled, true, "the header collapses the card again");
+	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY|Source details/u);
+	assert.ok(hintRow() > 0);
+	click(hintRow());
+	assert.match(lines().join("\n"), /FINAL_BODY/u);
+	component.setExpanded(true);
+	component.setExpanded(false);
+	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY/u, "global expansion owns the card again after a rebuild");
+	assert.deepEqual(message.details, { kind: "report", senderIdentity: identity, ...model }, "disclosure changes no retained content");
 });
 
 it("peer Markdown and wrapped reasons share the total visual preview bound", (t) => {
@@ -274,7 +308,7 @@ it("peer Markdown and wrapped reasons share the total visual preview bound", (t)
 			const preview = lines.slice(first + 2, -1);
 			assert.equal(preview.length, 4);
 			assert.deepEqual(preview.slice(0, 3), clean(expanded, width).slice(first + 2, first + 5));
-			assert.match(preview.at(-1) ?? "", /to expand|expand for full/u);
+			assert.match(preview.at(-1) ?? "", /\(click/u);
 			assert.doesNotMatch(preview.slice(0, 3).join("\n"), /FINAL_BODY/u);
 		}
 		assert.match(text(expanded), /FINAL_BODY/u);
@@ -298,7 +332,7 @@ it("thread notice headers show the subject before known sender and secondary fac
 		const lines = clean(card, 240);
 		assert.deepEqual(lines.slice(1, header.length + 1), header);
 		assert.equal(lines[header.length + 1], "");
-		assert.doesNotMatch(lines.join("\n"), /Model:|Provider:|unknown|unavailable|to expand|expand for full/u);
+		assert.doesNotMatch(lines.join("\n"), /Model:|Provider:|unknown|unavailable/u);
 		for (const label of ["Parser contract", "Parser review", "provider/model"]) {
 			assert.ok((lines.join("\n").match(new RegExp(label, "gu")) ?? []).length <= 1, label);
 		}
@@ -317,7 +351,7 @@ it("peer kind, subject and normal body use text while metadata and hints remain 
 	for (const value of ["[agent] thread notice", " · Parser contract"]) assert.ok(colors.some((entry) => entry.color === "text" && entry.value === value), value);
 	assert.ok(colors.some(({ color, value }) => color === "text" && value.includes("First body line")));
 	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "from Parser review · provider/model · xhigh"));
-	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "... (ctrl+o to expand)"));
+	assert.ok(colors.some(({ color, value }) => color === "muted" && value === "... (click or ctrl+o to expand)"));
 	assert.equal(colors.some(({ color }) => ["accent", "customMessageLabel", "customMessageText", "dim"].includes(color)), false);
 	colors.length = 0;
 	const failure = renderPeerNoticeCard({ content: "Failure body", details: { status: "failed", reason: "Diagnostic reason" } }, spy, false, cardKeys);
@@ -337,12 +371,12 @@ it("peer width clips use one ellipsis while wide headers and expanded details re
 	assert.ok(wide.includes(threadId));
 	assert.ok(wide.includes(`from ${identity}`));
 	assert.ok(wide.includes(`provider/${details.modelId}`));
-	assert.equal((wide.match(/\.\.\. \(ctrl\+o to expand\)/gu) ?? []).length, 1);
+	assert.equal((wide.match(/\.\.\. \(click or ctrl\+o to expand\)/gu) ?? []).length, 1);
 	assert.doesNotMatch(wide, /…/u);
 	const narrow = clean(card, 20);
 	assert.match(narrow[1] ?? "", /…$/u);
 	assert.match(narrow[2] ?? "", /…$/u);
-	assert.match(narrow.at(-2) ?? "", /^\.\.\. \(ctrl\+o.*…$/u);
+	assert.match(narrow.at(-2) ?? "", /^\.\.\. \(click.*…$/u);
 	assert.doesNotMatch(narrow.slice(1, 3).join("\n"), /\.\.\./u);
 	assert.ok(card.render(20).every((line) => visibleWidth(line) <= 20));
 	assert.ok(text(expanded, 400).includes(`threadId: ${threadId}`));

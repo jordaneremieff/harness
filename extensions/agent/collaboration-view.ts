@@ -2,6 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { KeybindingsManager } from "@earendil-works/pi-tui";
 import {
 	matchesKey,
+	truncateToWidth,
 	wrapTextWithAnsi,
 	visibleWidth,
 	type TUI,
@@ -20,15 +21,22 @@ import type { RelatedWork } from "./dashboard-relations.ts";
 
 export type Collaborate = (input: Record<string, unknown>) => Promise<unknown>;
 type Discovery = CollaborationList & { sources?: Array<{ sessionId: string; omitted: number; unavailable: boolean }> };
+/** Where a thread was last read; a revisit restores it instead of the latest events. */
+export interface ThreadPosition {
+	offset: number;
+	follow: boolean;
+	before?: number;
+}
 export interface CollaborationViewState {
 	selected?: string;
 	drafts: Map<
 		string,
-		{ text: string; revision: number; notify: string[]; pending: boolean; request?: { id: string; content: string } }
+		{ text: string; revision: number; notify: string[]; pending: boolean; replyTo?: number; request?: { id: string; content: string } }
 	>;
+	positions?: Map<string, ThreadPosition>;
 }
 export function createCollaborationViewState(): CollaborationViewState {
-	return { drafts: new Map() };
+	return { drafts: new Map(), positions: new Map() };
 }
 const listeners = new WeakMap<CollaborationViewState, Set<() => void>>();
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object";
@@ -135,6 +143,7 @@ interface CollaborationViewOptions {
 	redraw(): void;
 	onBack(): void;
 }
+type Screen = "list" | "thread" | "context" | "reply" | "members" | "compose" | "notify";
 /** Reads are bounded pages; roster notifications supply refresh, never a private timer. */
 export class CollaborationView {
 	private readonly mouse = new DashboardMouse();
@@ -144,13 +153,21 @@ export class CollaborationView {
 	private bodyLineCount = 0;
 	private list?: Discovery;
 	private page?: CollaborationPage;
-	private screen: "list" | "thread" | "members" | "compose" | "notify" = "list";
+	private screen: Screen = "list";
 	private all = false;
 	private index = 0;
+	/** First visible line of the thread list. Wheel movement changes it; selection does not follow. */
+	private listScroll = 0;
+	/** The next list paint brings the selected row into view after an explicit selection change. */
+	private listReveal = true;
 	private memberIndex = 0;
+	private replyIndex = 0;
 	private offset = 0;
-	private follow = false;
+	private contextOffset = 0;
+	private follow = true;
 	private before?: number;
+	/** A thread opened from outside the list returns there on Back, not to the list. */
+	private direct = false;
 	private scope?: string;
 	private generation = 0;
 	private pending = false;
@@ -195,17 +212,29 @@ export class CollaborationView {
 		}
 		return draft;
 	}
+	private positions(): Map<string, ThreadPosition> {
+		return (this.options.state.positions ??= new Map());
+	}
 	open(): void {
 		this.screen = "list";
+		this.direct = false;
 		void this.refresh();
 	}
 	openContact(threadId: string): void {
+		this.direct = true;
+		this.enterThread(threadId);
+	}
+	/** A thread opens on its latest events, or on the position it was last read at. */
+	private enterThread(threadId: string): void {
+		const position = this.positions().get(threadId);
 		this.options.state.selected = threadId;
 		this.screen = "thread";
 		this.page = undefined;
-		this.before = undefined;
-		this.offset = 0;
-		this.follow = false;
+		this.before = position?.before;
+		this.offset = position?.offset ?? Number.MAX_SAFE_INTEGER;
+		this.follow = position?.follow ?? true;
+		this.contextOffset = 0;
+		this.replyIndex = 0;
 		this.generation++;
 		void this.refresh();
 	}
@@ -281,7 +310,7 @@ export class CollaborationView {
 		const items = related ? related.threads : this.list?.items ?? [];
 		return [
 			...items.map((item) => ({
-				label: `${item.closed ? "Closed" : "Open"} · ${plain(item.title)} · ${item.members} peers\n${plain(item.purpose)}`,
+				label: `${item.closed ? "Closed" : "Open"} · ${plain(item.title)} · ${item.members} peers · ${this.eventTime(item.updatedAt)}\n${plain(item.purpose)}`,
 				thread: item.id,
 			})),
 			...(related ? [] : this.list?.sources ?? []).map((item) => ({
@@ -302,19 +331,15 @@ export class CollaborationView {
 			return;
 		}
 		if (!choice?.thread) return;
-		this.options.state.selected = choice.thread;
-		this.screen = "thread";
-		this.page = undefined;
-		this.before = undefined;
-		this.offset = 0;
-		this.follow = false;
-		this.generation++;
-		void this.refresh();
+		this.direct = false;
+		this.enterThread(choice.thread);
 	}
 	private setScope(scope?: string): void {
 		this.scope = scope;
 		this.list = undefined;
 		this.index = 0;
+		this.listScroll = 0;
+		this.listReveal = true;
 		this.generation++;
 		void this.refresh();
 	}
@@ -328,7 +353,8 @@ export class CollaborationView {
 		const threadId = this.options.state.selected;
 		if (!draft || !threadId || draft.pending) return;
 		const revision = draft.revision;
-		const content = JSON.stringify([revision, message, draft.notify]);
+		const replyTo = draft.replyTo;
+		const content = JSON.stringify([revision, message, draft.notify, replyTo ?? null]);
 		if (draft.request?.content !== content) draft.request = { id: randomUUID(), content };
 		draft.pending = true;
 		this.notice = "Retain post…";
@@ -339,6 +365,7 @@ export class CollaborationView {
 				threadId,
 				message,
 				notify: [...draft.notify],
+				...(replyTo ? { replyTo } : {}),
 				origin: "operator",
 				requestId: draft.request.id,
 			});
@@ -347,6 +374,7 @@ export class CollaborationView {
 			if (draft.revision === revision) {
 				draft.text = "";
 				draft.notify = [];
+				draft.replyTo = undefined;
 				draft.revision++;
 			}
 			if (!this.disposed && threadId === this.options.state.selected) {
@@ -393,22 +421,32 @@ export class CollaborationView {
 	private moveList(data: string): void {
 		const step = Math.max(1, this.options.tui.terminal.rows - 8);
 		const deltas = { up: -1, down: 1, pageUp: -step, pageDown: step };
+		const before = this.index;
 		for (const [key, delta] of Object.entries(deltas))
 			if (matchesKey(data, key as "up")) this.index = Math.max(0, Math.min(this.choices().length - 1, this.index + delta));
 		if (matchesKey(data, "home")) this.index = 0;
 		if (matchesKey(data, "end")) this.index = Math.max(0, this.choices().length - 1);
+		if (this.index !== before) this.listReveal = true;
 	}
 	private listInput(data: string): void {
 		this.moveList(data);
 	}
 	/** Every action of the current screen. Footer, menu, shortcuts and pointer all dispatch these records. */
 	private actions(): ScreenAction[] {
-		const byScreen = { compose: () => this.composeActions(), notify: () => this.notifyActions(), members: () => this.memberActions(), list: () => this.listActions(), thread: () => this.threadActions() };
+		const byScreen: Record<Screen, () => ScreenAction[]> = {
+			compose: () => this.composeActions(),
+			notify: () => this.notifyActions(),
+			members: () => this.memberActions(),
+			list: () => this.listActions(),
+			thread: () => this.threadActions(),
+			context: () => this.contextActions(),
+			reply: () => this.replyActions(),
+		};
 		return byScreen[this.screen]();
 	}
 	private composeActions(): ScreenAction[] {
 		return [
-			{ id: "post", label: "Post", keys: ["enter"], main: true, run: () => this.composer.handleInput("\r") },
+			{ id: "post", label: this.draft()?.replyTo ? "Post reply" : "Post", keys: ["enter"], main: true, run: () => this.composer.handleInput("\r") },
 			{ id: "notify", label: "Notify peers", keys: ["tab"], main: true, run: () => { this.screen = "notify"; this.memberIndex = 0; } },
 			{ id: "newline", label: "Newline", keys: ["ctrl+j"], main: true, run: () => this.composer.handleInput("\n") },
 		];
@@ -427,32 +465,58 @@ export class CollaborationView {
 		return [
 			{ id: "read", label: "Read", keys: ["enter"], main: true, disabled: this.choices().length ? undefined : "No thread is listed", run: () => this.choose() },
 			{ id: "refresh", label: "Refresh", keys: ["r"], main: true, run: () => { void this.refresh(); } },
-			{ id: "view", label: this.all ? "Related threads" : "All threads", keys: ["v"], main: true, disabled: this.options.related ? undefined : "Relationships are unavailable here", run: () => { this.all = !this.all; this.index = 0; } },
+			{ id: "view", label: this.all ? "Related threads" : "All threads", keys: ["v"], main: true, disabled: this.options.related ? undefined : "Relationships are unavailable here", run: () => { this.all = !this.all; this.index = 0; this.listScroll = 0; this.listReveal = true; } },
 			{ id: "storage", label: "Selected agent's storage", keys: ["s"], disabled: this.options.selectedAgent() ? undefined : "Select an agent first", run: () => this.setScope(this.options.selectedAgent()) },
+			{ id: "time", label: this.options.exactTime() ? "Relative time" : "Date and time", keys: ["i"], run: () => this.options.toggleTime() },
+		];
+	}
+	private readingActions(scroll: (delta: number) => void): ScreenAction[] {
+		const step = Math.max(1, this.options.tui.terminal.rows - 8);
+		return [
+			{ id: "up", label: "Read up", keys: ["pageUp"], run: () => scroll(-step) },
+			{ id: "down", label: "Read down", keys: ["pageDown"], run: () => scroll(step) },
 		];
 	}
 	private threadActions(): ScreenAction[] {
-		const scroll = Math.max(1, this.options.tui.terminal.rows - 8);
-		const reading = (delta: number) => () => { this.offset += delta; this.follow = false; };
 		const closed = !this.page || this.page.thread.closed ? "This thread is closed or not loaded" : undefined;
+		const noEvents = this.page?.events.length ? undefined : "No events are loaded";
 		return [
-			{ id: "peers", label: "Peers", keys: ["m"], main: true, run: () => { this.screen = "members"; this.memberIndex = 0; } },
+			{ id: "reply", label: "Reply", keys: ["enter"], main: true, description: "Answer one event of the exchange", disabled: closed ?? noEvents, run: () => { this.replyIndex = 0; this.screen = "reply"; } },
 			{ id: "post", label: "Post", keys: ["p"], main: true, disabled: closed, run: () => this.beginPost(false) },
 			{ id: "notify", label: "Post and notify", keys: ["n"], main: true, disabled: closed, run: () => this.beginPost(true) },
+			{ id: "peers", label: "Peers", keys: ["m"], main: true, run: () => { this.screen = "members"; this.memberIndex = 0; } },
+			{ id: "context", label: "Context", keys: ["c"], main: true, description: "Frame, sources, restrictions and declarations", disabled: this.page ? undefined : "Thread page not loaded", run: () => { this.contextOffset = 0; this.screen = "context"; } },
 			{ id: "earlier", label: "Earlier", keys: ["b"], main: true, disabled: this.page?.nextBefore ? undefined : "No earlier page is loaded", run: () => this.earlier() },
 			{ id: "latest", label: "Latest", keys: ["r"], main: true, run: () => this.latest() },
 			{ id: "time", label: this.options.exactTime() ? "Relative time" : "Date and time", keys: ["i"], run: () => this.options.toggleTime() },
-			{ id: "frame", label: "Frame", keys: ["f"], run: () => { this.offset = 0; this.follow = false; } },
-			{ id: "exchange", label: "Exchange", keys: ["e"], run: () => { this.offset = Number.MAX_SAFE_INTEGER; this.follow = true; } },
-			{ id: "up", label: "Read up", keys: ["pageUp"], run: reading(-scroll) },
-			{ id: "down", label: "Read down", keys: ["pageDown"], run: reading(scroll) },
+			...this.readingActions((delta) => { this.offset += delta; this.follow = false; }),
+		];
+	}
+	private contextActions(): ScreenAction[] {
+		return [
+			{ id: "peers", label: "Peers", keys: ["m"], main: true, run: () => { this.screen = "members"; this.memberIndex = 0; } },
+			{ id: "time", label: this.options.exactTime() ? "Relative time" : "Date and time", keys: ["i"], run: () => this.options.toggleTime() },
+			...this.readingActions((delta) => { this.contextOffset = Math.max(0, this.contextOffset + delta); }),
+		];
+	}
+	private replyActions(): ScreenAction[] {
+		const events = this.page?.events.length ?? 0;
+		return [
+			{ id: "choose", label: "Reply to event", keys: ["enter"], main: true, disabled: events ? undefined : "No events are loaded", run: () => this.chooseReply() },
+			{ id: "previous", label: "Previous", keys: ["up"], run: () => { this.replyIndex = Math.max(0, this.replyIndex - 1); } },
+			{ id: "next", label: "Next", keys: ["down"], run: () => { this.replyIndex = Math.min(Math.max(0, events - 1), this.replyIndex + 1); } },
 		];
 	}
 	private back(): void {
 		if (this.screen === "members") this.screen = "thread";
 		else if (this.screen === "notify") this.screen = "compose";
-		else if (this.screen === "compose") this.screen = "thread";
+		else if (this.screen === "compose" || this.screen === "context" || this.screen === "reply") this.screen = "thread";
 		else if (this.screen === "thread") {
+			if (this.direct) {
+				this.direct = false;
+				this.options.onBack();
+				return;
+			}
 			this.screen = "list";
 			this.generation++;
 			void this.refresh();
@@ -462,17 +526,30 @@ export class CollaborationView {
 	private backAction(): ScreenAction {
 		return { id: "back", label: "Back", keys: ["escape"], run: () => this.back() };
 	}
+	/** A plain post answers nobody in particular; Reply chooses the event first. */
 	private beginPost(notify: boolean): void {
 		if (!this.page || this.page.thread.closed) return;
-		if (!notify) {
-			const draft = this.draft();
-			if (draft?.notify.length) {
-				draft.notify = [];
-				draft.revision++;
-			}
+		const draft = this.draft();
+		if (draft && (draft.replyTo !== undefined || (!notify && draft.notify.length))) {
+			draft.replyTo = undefined;
+			if (!notify) draft.notify = [];
+			draft.revision++;
 		}
 		this.compose();
 		if (notify) this.screen = "notify";
+	}
+	private replyChoices(): CollaborationPage["events"] {
+		return (this.page?.events ?? []).toReversed();
+	}
+	private chooseReply(): void {
+		const event = this.replyChoices()[this.replyIndex];
+		const draft = this.draft();
+		if (!event || !draft || !this.page || this.page.thread.closed) return;
+		if (draft.replyTo !== event.sequence) {
+			draft.replyTo = event.sequence;
+			draft.revision++;
+		}
+		this.compose();
 	}
 	private latest(): void {
 		this.before = undefined;
@@ -508,6 +585,21 @@ export class CollaborationView {
 			this.follow = true;
 		}
 	}
+	private contextInput(data: string): void {
+		if (matchesKey(data, "up")) this.contextOffset = Math.max(0, this.contextOffset - 1);
+		if (matchesKey(data, "down")) this.contextOffset++;
+		if (matchesKey(data, "home")) this.contextOffset = 0;
+		if (matchesKey(data, "end")) this.contextOffset = Number.MAX_SAFE_INTEGER;
+	}
+	private replyInput(data: string): void {
+		const count = this.replyChoices().length;
+		const step = Math.max(1, Math.floor((this.options.tui.terminal.rows - 7) / 2));
+		if (matchesKey(data, "pageUp")) this.replyIndex -= step;
+		if (matchesKey(data, "pageDown")) this.replyIndex += step;
+		if (matchesKey(data, "home")) this.replyIndex = 0;
+		if (matchesKey(data, "end")) this.replyIndex = count - 1;
+		this.replyIndex = Math.max(0, Math.min(Math.max(0, count - 1), this.replyIndex));
+	}
 	handleInput(data: string): void {
 		if (this.inventory.open) {
 			this.inventory.handleInput(data);
@@ -522,12 +614,14 @@ export class CollaborationView {
 			this.options.redraw();
 			return;
 		}
-		const routes = {
+		const routes: Record<Screen, () => void> = {
 			members: () => this.membersInput(data),
 			compose: () => this.composeInput(data),
 			notify: () => this.notifyInput(data),
 			list: () => this.listInput(data),
 			thread: () => this.threadInput(data),
+			context: () => this.contextInput(data),
+			reply: () => this.replyInput(data),
 		};
 		routes[this.screen]();
 	}
@@ -552,58 +646,74 @@ export class CollaborationView {
 	private field(label: string, value: string): string {
 		return this.options.theme.fg("muted", `${label}: `) + plain(value);
 	}
-	private threadLines(): string[] {
+	private stateLine(): string {
+		const t = this.page?.thread;
+		if (!t) return "";
+		return `${t.closed ? "Closed" : "Open"} · ${t.members.length} peers · updated ${this.eventTime(t.updatedAt)} · Frame revision ${t.revision}`;
+	}
+	/** The compact head and the retained exchange. The frame and declarations read through Context. */
+	private threadLines(width: number): string[] {
 		const page = this.page;
 		if (!page) return ["Read thread…"];
 		const t = page.thread;
+		const accent = (text: string) => this.options.theme.bold(this.options.theme.fg("accent", text));
+		const muted = (text: string) => this.options.theme.fg("muted", text);
 		const lines = [
+			accent(plain(t.title)),
+			muted(this.stateLine()),
+			truncateToWidth(this.field("Purpose", t.purpose.replace(/\s+/g, " ").trim()), Math.max(1, width)),
+			"",
+			accent("Exchange (chronological)"),
+			...(this.before ? [muted("Earlier page. Latest returns to the newest events.")] : []),
+		];
+		this.timeLines.clear();
+		this.timeLines.add(1);
+		for (const event of page.events) {
+			lines.push(
+				muted(`#${event.sequence} · ${this.nameFor(event.sender)} [${event.sender}] · ${event.origin} · ${plain(event.kind)} · frame ${event.revision}`),
+			);
+			this.timeLines.add(lines.length);
+			lines.push(muted(`Time: ${this.eventTime(event.at)}${event.replyTo ? ` · Reply to #${event.replyTo}` : ""}`));
+			if (event.source) lines.push(this.field("Source", event.source));
+			lines.push(plain(event.message));
+			if (event.notify.length) lines.push(this.field("Notify", event.notify.map((id) => this.nameFor(id)).join(", ")));
+			lines.push("");
+		}
+		if (!page.events.length) lines.push(muted("No events in this page."));
+		lines.push(muted(`${page.coverage.complete ? "Page complete" : "Page bounded"}${page.nextBefore ? " · Earlier events available" : " · Start of the retained exchange"}`));
+		return lines;
+	}
+	/** Every stored frame field and declaration, as attributed claims. */
+	private contextLines(): string[] {
+		const page = this.page;
+		if (!page) return ["Read thread…"];
+		const t = page.thread;
+		this.timeLines.clear();
+		this.timeLines.add(1);
+		return [
 			this.options.theme.bold(this.options.theme.fg("accent", plain(t.title))),
-			this.options.theme.fg("muted", `${t.closed ? "Closed" : "Open"} · Frame revision ${t.revision}`),
+			this.options.theme.fg("muted", `${t.closed ? "Closed" : "Open"} · Frame revision ${t.revision} · created ${this.eventTime(t.createdAt)} · updated ${this.eventTime(t.updatedAt)}`),
 			this.field("Purpose", t.purpose),
 			this.field("Carried authority (claim)", t.authority),
 			this.field("Authority source", t.source),
 			this.field("Restrictions", t.restrictions),
 			this.field("Acceptance", t.acceptance),
 			this.field("Integrator", this.nameFor(t.integrator)),
+			this.field("Creator", this.nameFor(t.creator)),
 			"",
 			...memberDeclarationLines(t, (id) => this.nameFor(id)),
-			"Membership dates do not date declaration changes. e reads the retained exchange; b reads earlier events.",
-			"",
-			this.options.theme.bold(this.options.theme.fg("accent", "Exchange (chronological)")),
-			...(this.before ? ["Earlier page. r reads latest."] : []),
+			"Membership dates do not date declaration changes. The exchange retains their source events.",
 		];
-		this.timeLines.clear();
-		for (const event of page.events) {
-			lines.push(
-				this.options.theme.fg(
-					"muted",
-					`#${event.sequence} · ${this.nameFor(event.sender)} [${event.sender}] · ${event.origin} · ${plain(event.kind)} · frame ${event.revision}`,
-				),
-			);
-			this.timeLines.add(lines.length);
-			lines.push(
-				this.options.theme.fg(
-					"muted",
-					`Time: ${this.eventTime(event.at)}${event.replyTo ? ` · Reply to #${event.replyTo}` : ""}`,
-				),
-			);
-			if (event.source) lines.push(this.field("Source", event.source));
-			lines.push(plain(event.message));
-			if (event.notify.length) lines.push(this.field("Notify", event.notify.map((id) => this.nameFor(id)).join(", ")));
-			lines.push("");
-		}
-		lines.push(
-			`Notification intents pending: ${page.pending} · ${page.coverage.complete ? "Page complete" : "Page bounded"}${page.nextBefore ? " · b reads earlier" : ""}`,
-		);
-		return lines;
 	}
 	private listLines(width: number, height: number): string[] {
 		const choices = this.choices();
 		this.index = Math.min(this.index, Math.max(0, choices.length - 1));
-		if (!choices.length)
+		if (!choices.length) {
+			this.listScroll = 0;
 			return [
-				this.pending ? "Read thread discovery…" : this.options.related && !this.all && !this.scope ? "No related threads in loaded evidence. v shows All threads; s reads selected storage." : "No threads in this page. Coverage below does not prove absence.",
+				this.pending ? "Read thread discovery…" : this.options.related && !this.all && !this.scope ? "No related threads in loaded evidence. All threads and Selected agent's storage widen the read." : "No threads in this page. Coverage below does not prove absence.",
 			];
+		}
 		const blocks = choices.map((choice, index) =>
 			wrapTextWithAnsi(`${index === this.index ? "›" : " "} ${choice.label}`, width).map((line, row) =>
 				row === 0
@@ -611,8 +721,16 @@ export class CollaborationView {
 					: this.options.theme.fg("muted", line),
 			),
 		);
-		const selectedLine = blocks.slice(0, this.index).reduce((total, block) => total + block.length, 0);
-		const start = Math.max(0, selectedLine - Math.floor(height / 3));
+		const total = blocks.reduce((sum, block) => sum + block.length, 0);
+		if (this.listReveal) {
+			const selectedLine = blocks.slice(0, this.index).reduce((sum, block) => sum + block.length, 0);
+			const selectedEnd = selectedLine + (blocks[this.index]?.length ?? 1);
+			if (selectedLine < this.listScroll) this.listScroll = selectedLine;
+			else if (selectedEnd > this.listScroll + height) this.listScroll = selectedEnd - height;
+			this.listReveal = false;
+		}
+		this.listScroll = Math.max(0, Math.min(this.listScroll, Math.max(0, total - height)));
+		const start = this.listScroll;
 		let line = 0;
 		for (let index = 0; index < blocks.length; index++) {
 			const block = blocks[index];
@@ -647,6 +765,23 @@ export class CollaborationView {
 			return [dashboardSelection(label, width, index === this.memberIndex, this.options.theme), this.options.theme.fg("muted", `  ${plain(member.contribution) || "No contribution declared"}`)];
 		});
 	}
+	/** Loaded events, newest first. A second click or Enter on the selected event starts the reply. */
+	private replyLines(width: number, height: number): string[] {
+		const events = this.replyChoices();
+		if (!events.length) return ["No events are loaded. Post starts the exchange."];
+		this.replyIndex = Math.max(0, Math.min(events.length - 1, this.replyIndex));
+		const start = Math.max(0, this.replyIndex - Math.max(0, Math.floor((height - 1) / 2)));
+		return events.slice(start).flatMap((event, offset) => {
+			const index = start + offset;
+			const label = `${index === this.replyIndex ? "›" : " "} #${event.sequence} · ${this.nameFor(event.sender)} · ${plain(event.kind)} · ${this.eventTime(event.at)}${event.replyTo ? ` · reply to #${event.replyTo}` : ""}`;
+			this.mouse.add({ x: 0, y: 2 + offset * 2, width, height: 2, click: () => {
+				if (index === this.replyIndex) this.chooseReply();
+				else this.replyIndex = index;
+			} });
+			const excerpt = plain(event.message).split("\n").find((line) => line.trim()) ?? "";
+			return [dashboardSelection(truncateToWidth(label, width), width, index === this.replyIndex, this.options.theme), this.options.theme.fg("muted", truncateToWidth(`  ${excerpt.trim()}`, width))];
+		});
+	}
 	private notifyLines(height: number): string[] {
 		const members = this.page?.thread.members ?? [];
 		const lines = members.map((member, index) =>
@@ -671,12 +806,10 @@ export class CollaborationView {
 			});
 		return ["Select peers to notify. Each selected peer receives a steer. No automatic reply.", ...lines.slice(start)];
 	}
-	private bodyLines(width: number, height: number): string[] {
-		if (this.screen === "members") return this.memberLines(width, height);
-		if (this.screen === "list") return this.listLines(width, height);
-		if (this.screen === "notify") return this.notifyLines(height);
+	/** Wrapped reading lines with time toggles on the recorded time lines. */
+	private readingLines(source: string[], width: number): string[] {
 		let line = 0;
-		const lines = this.threadLines().flatMap((text, index) => {
+		return source.flatMap((text, index) => {
 			const wrapped = wrapTextWithAnsi(text, width);
 			if (this.timeLines.has(index)) {
 				const first = line;
@@ -693,23 +826,44 @@ export class CollaborationView {
 			line += wrapped.length;
 			return wrapped;
 		});
+	}
+	private bodyLines(width: number, height: number): string[] {
+		if (this.screen === "members") return this.memberLines(width, height);
+		if (this.screen === "list") return this.listLines(width, height);
+		if (this.screen === "notify") return this.notifyLines(height);
+		if (this.screen === "reply") return this.replyLines(width, height);
+		if (this.screen === "context") {
+			const lines = this.readingLines(this.contextLines(), width);
+			this.bodyLineCount = lines.length;
+			this.contextOffset = Math.max(0, Math.min(this.contextOffset, Math.max(0, lines.length - height)));
+			this.mouse.shiftY(-this.contextOffset, 2, 2 + height);
+			return lines.slice(this.contextOffset);
+		}
+		const lines = this.readingLines(this.threadLines(width), width);
 		this.bodyLineCount = lines.length;
+		if (!this.page) return lines;
 		this.offset = this.follow
 			? Math.max(0, lines.length - height)
 			: Math.max(0, Math.min(this.offset, Math.max(0, lines.length - height)));
-		const offset = this.offset;
-		this.mouse.shiftY(-offset, 2, 2 + height);
-		return lines.slice(offset);
+		const id = this.options.state.selected;
+		if (id) this.positions().set(id, { offset: this.offset, follow: this.follow, before: this.before });
+		this.mouse.shiftY(-this.offset, 2, 2 + height);
+		return lines.slice(this.offset);
 	}
 	private status(): string {
+		if (this.screen === "list") return this.listStatus();
 		if (this.screen === "members") return "Participants · Enter opens a conversation · Esc returns to the thread";
-		if (this.screen !== "list")
-			return `${this.draft()?.pending ? "Post pending" : "Post wakes nobody by default"} · Notify: ${
-				this.draft()
-					?.notify.map((id) => this.nameFor(id))
-					.join(", ") || "nobody"
-			}`;
-		return this.listStatus();
+		if (this.screen === "context") return "Frame fields and declarations are attributed claims, not proof of authority or agreement";
+		if (this.screen === "reply") return "Choose the event to answer. The reply keeps the thread's draft and recipient rules";
+		if (this.screen === "thread") {
+			const page = this.page;
+			if (!page) return "Read thread…";
+			return `${page.events.length} loaded events · Notification intents pending: ${page.pending}${this.before ? " · Earlier page" : ""}`;
+		}
+		const draft = this.draft();
+		return `${draft?.pending ? "Post pending" : "Post wakes nobody by default"} · Notify: ${
+			draft?.notify.map((id) => this.nameFor(id)).join(", ") || "nobody"
+		}${draft?.replyTo ? ` · Reply to #${draft.replyTo}` : ""}`;
 	}
 	private listStatus(): string {
 		const coverage = this.list?.coverage;
@@ -727,15 +881,19 @@ export class CollaborationView {
 		} else if (this.screen === "notify" || this.screen === "members") {
 			const count = this.page?.thread.members.length ?? 0;
 			position = `${count ? this.memberIndex + 1 : 0}/${count} peers`;
+		} else if (this.screen === "reply") {
+			const count = this.page?.events.length ?? 0;
+			position = `${count ? this.replyIndex + 1 : 0}/${count} events`;
 		} else if (this.page) position = `Frame ${this.page.thread.revision}`;
-		const title =
-			this.screen === "list" || !this.page ? "Agents > Threads" : `Agents > Threads > ${plain(this.page.thread.title)}`;
+		const base = this.screen === "list" || !this.page ? "Agents > Threads" : `Agents > Threads > ${plain(this.page.thread.title)}`;
+		const title = this.screen === "context" ? `${base} > Context` : this.screen === "reply" ? `${base} > Reply` : base;
 		return dashboardHeading(title, position, width, this.options.theme);
 	}
 	private boundary(width: number, height: number): string {
-		const last = Math.min(this.bodyLineCount, this.offset + height);
+		const offset = this.screen === "context" ? this.contextOffset : this.offset;
+		const last = Math.min(this.bodyLineCount, offset + height);
 		const label = this.page
-			? `Lines ${Math.min(this.offset + 1, this.bodyLineCount)}–${last} of ${this.bodyLineCount} loaded${last === this.bodyLineCount ? " · End of loaded page" : ""}`
+			? `Lines ${Math.min(offset + 1, this.bodyLineCount)}–${last} of ${this.bodyLineCount} loaded${last === this.bodyLineCount ? " · End of loaded page" : ""}`
 			: "Thread page not loaded";
 		return dashboardRule(label, width, this.options.theme);
 	}
@@ -745,11 +903,13 @@ export class CollaborationView {
 		if (this.screen === "compose" && this.composer.getText() !== this.draft()?.text)
 			this.composer.setText(this.draft()?.text ?? "");
 		this.composer.focused = this.screen === "compose";
+		const title = plain(this.page?.thread.title ?? "thread");
+		const replyTo = this.draft()?.replyTo;
 		const editor =
 			this.screen === "compose"
-				? this.composer.render(width, `Post to ${plain(this.page?.thread.title ?? "thread")} · Enter posts`)
+				? this.composer.render(width, replyTo ? `Reply to #${replyTo} in ${title}` : `Post to ${title}`)
 				: [];
-		const reading = this.screen === "thread" || this.screen === "compose";
+		const reading = this.screen === "thread" || this.screen === "compose" || this.screen === "context";
 		this.mouse.reset(width, height);
 		this.mouseScreen = this.screen;
 		const bodyHeight = Math.max(1, height - (reading ? 6 : 5) - editor.length);
@@ -763,8 +923,10 @@ export class CollaborationView {
 				if (this.screen === "thread" || this.screen === "compose") {
 					this.follow = false;
 					this.offset = Math.max(0, this.offset + delta);
-				} else if (this.screen === "list")
-					this.index = Math.max(0, Math.min(this.choices().length - 1, this.index + delta));
+				} else if (this.screen === "context") this.contextOffset = Math.max(0, this.contextOffset + delta);
+				else if (this.screen === "list") this.listScroll = Math.max(0, this.listScroll + delta);
+				else if (this.screen === "reply")
+					this.replyIndex = Math.max(0, Math.min(this.replyChoices().length - 1, this.replyIndex + delta));
 				else if (this.screen === "notify" || this.screen === "members")
 					this.memberIndex = Math.max(
 						0,

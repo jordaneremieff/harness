@@ -246,7 +246,7 @@ for (const [width, height] of [
 			f.ui.handleInput("\r");
 			const screen = f.ui.render(width).join("\n");
 			assert.match(screen, /0 matches of 1 loaded/);
-			assert.match(screen, /Esc clear find/);
+			assert.match(screen, /Clear find \(Esc\)/);
 			assert.doesNotMatch(screen, /enter (new agent|or n starts)/);
 			f.ui.handleInput("\r");
 			assert.equal(f.ui.navigation.screen, "roster");

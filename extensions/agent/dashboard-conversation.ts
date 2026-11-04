@@ -16,6 +16,9 @@ import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts"
 import type { AgentReadingState } from "./dashboard-state.ts";
 import { awaitFactLines, type AwaitFact } from "./await-facts.ts";
 import { parseCommunicationView, type Communication } from "./communication.ts";
+import { createAgentToolCards, renderAgentCommunicationMessage, type AgentCardLookup } from "./tool-cards.ts";
+
+const agentCardNames = new Set(Object.keys(createAgentToolCards()));
 
 export function cleanDashboardText(text: string): string {
 	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
@@ -43,14 +46,6 @@ function displayObject(value: object, depth: number): unknown {
 			.filter(([key]) => !["signature", "thinkingSignature", "textSignature"].includes(key))
 			.map(([key, item]) => [key, displayValue(item, depth + 1)]),
 	);
-}
-
-/** Display-only source facts; the original entry remains available through exact inspection. */
-export function communicationText(value: Communication): string {
-	const sender = value.sender.name === undefined ? value.sender.identity : `${value.sender.name} (${value.sender.identity})`;
-	const body = cleanDashboardText(value.body.text);
-	const flags = [value.body.complete ? "" : "[Partial body]", value.body.redacted || body !== value.body.text ? "[Redacted body]" : ""].filter(Boolean).join(" ");
-	return `${value.kind} from ${sender}\n${body}${flags === "" ? "" : `\n${flags}`}\nRecorded ${value.recordedAt}\n${JSON.stringify(value.metadata)}`;
 }
 
 export interface ConversationBlock {
@@ -176,6 +171,8 @@ export class AgentConversation {
 	private readonly definitions: ReturnType<typeof createDashboardToolDefinitions>;
 	private readonly reading: Pick<AgentReadingState, "toolExpanded">;
 	private readonly tools = new Map<string, ReadingToolComponent>();
+	/** Agent cards read observed roster facts at paint; a roster change refreshes only these. */
+	private readonly agentCards = new Set<ReadingToolComponent>();
 	private readonly cwd: string;
 	private readonly tui: TUI;
 	private expanded: boolean;
@@ -191,13 +188,14 @@ export class AgentConversation {
 		renderCustom?: (entry: AgentConversationEntry) => Component | undefined,
 		reading?: Pick<AgentReadingState, "toolExpanded">,
 		toolDisplay?: (name: string) => ToolRenderers | undefined,
+		rows?: AgentCardLookup,
 	) {
 		this.cwd = cwd;
 		this.tui = tui;
 		this.expanded = expanded;
 		this.showThinking = showThinking;
 		this.renderCustom = renderCustom;
-		this.definitions = createDashboardToolDefinitions(cwd, toolDisplay);
+		this.definitions = createDashboardToolDefinitions(cwd, toolDisplay, rows);
 		this.reading = reading ?? { toolExpanded: new Map() };
 		this.update(entries);
 	}
@@ -252,6 +250,10 @@ export class AgentConversation {
 		this.rendered.clear();
 		this.heights.clear();
 	}
+	/** Observed roster facts changed: agent cards repaint through their renderers with the current lookup. */
+	refreshCards(): void {
+		for (const component of this.agentCards) component.invalidate();
+	}
 	setShowThinking(show: boolean): void {
 		this.showThinking = show;
 		for (const component of this.assistants.values()) component.setHideThinkingBlock(!show);
@@ -279,6 +281,7 @@ export class AgentConversation {
 	}
 	private pruneComponents(): void {
 		const retained = new Set(this.blocks.map((block) => block.component));
+		for (const component of this.agentCards) if (!retained.has(component)) this.agentCards.delete(component);
 		for (const component of this.rendered.keys()) if (!retained.has(component)) this.rendered.delete(component);
 		for (const component of this.heights.keys()) if (!retained.has(component)) this.heights.delete(component);
 		for (const [id, card] of this.callCards) if (!retained.has(card.component)) this.callCards.delete(id);
@@ -334,7 +337,7 @@ export class AgentConversation {
 		try {
 			const communication = parseCommunicationView(source.communication);
 			if (communication?.state === "ready") {
-				this.blocks.push({ id: source.id, component: new Text(cleanDashboardText(communicationText(communication.value)), 1, 1) });
+				this.blocks.push({ id: source.id, component: this.communicationCard(communication.value) });
 				return;
 			}
 			if (communication?.state === "unavailable") this.blocks.push({ id: `${source.id}:communication`, component: new Text(`[Communication metadata unavailable: ${communication.reason}]`, 1, 0) });
@@ -366,6 +369,20 @@ export class AgentConversation {
 			this.blocks.push({ id: source.id, component: new Text("[Message unavailable: invalid stored content]", 1, 1) });
 		}
 	}
+	/** The structured communication reaches the Agent card as the message details; the text is a fallback only. */
+	private communicationCard(value: Communication): Component {
+		const message = {
+			role: "custom" as const,
+			customType: "agent.communication",
+			content: cleanDashboardText(value.body.text),
+			display: true,
+			details: value,
+			timestamp: value.recordedAt,
+		};
+		const component = new CustomMessageComponent(message, renderAgentCommunicationMessage, getMarkdownTheme(), 0);
+		component.setExpanded(this.expanded);
+		return component;
+	}
 	/** Native compaction entries keep their wrapped summary text under a distinct label. */
 	private appendCompaction(entry: AgentConversationEntry): void {
 		const text = (entry.model ?? [])
@@ -387,6 +404,7 @@ export class AgentConversation {
 		const definition = this.definitions(name, known);
 		const tool = new ReadingToolComponent(name, id, args, { showImages: false }, definition, this.tui, this.cwd);
 		tool.onInvalidate = () => { this.rendered.delete(tool); this.heights.delete(tool); };
+		if (agentCardNames.has(name)) this.agentCards.add(tool);
 		tool.setExpanded(this.reading.toolExpanded.get(id) ?? this.expanded);
 		return tool;
 	}
@@ -614,6 +632,9 @@ export class AgentConversation {
 			const dispatched = component.handleMouse(local);
 			if (!dispatched?.handled) return;
 			item = { id, line, targetOffset: dispatched.target.originY - (local.screenY - local.y) };
+		} else if (component instanceof CustomMessageComponent) {
+			if (!component.handleMouse(local)?.handled) return;
+			item = { id, line };
 		}
 		if (!item) return;
 		this.rendered.delete(component);

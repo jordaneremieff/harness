@@ -18,10 +18,18 @@ export interface ScreenAction {
 	keys?: readonly string[];
 	/** Offered as a footer control while it fits. Actions without it live in the menu. */
 	main?: boolean;
+	/**
+	 * A destination rather than an action on the selected item. Destinations stay in the footer at every
+	 * supported width, in their own group after the item actions.
+	 */
+	navigation?: boolean;
 	run(): void;
 }
 
 const MENU_KEY = "x";
+/** Separates the fixed group (destinations, menu, way out) from the item actions. Same width as the item separator. */
+const GROUP_SEPARATOR = " │ ";
+const MENU_FOOTER = { choose: "Choose (Enter)", back: "Back (Esc)" } as const;
 const keyMatches = (data: string, key: string) => key.length === 1 ? data === key : matchesKey(data, key as "enter");
 const keyLabel = (key: string) => key === "enter" ? "Enter" : key === "tab" ? "Tab" : key === "escape" ? "Esc" : key.replace(/^ctrl\+/u, "Ctrl+");
 
@@ -85,35 +93,36 @@ export class ActionInventory {
 		owner.add({ x, y, width, height: 1, click: () => { this.mouse.reset(); run(); } });
 	}
 	/**
-	 * One footer row: the main actions that fit, then the menu, then the way out. The menu control and the
-	 * way out always stay; main actions drop from the end first.
+	 * One footer row: the main item actions that fit, then the fixed group: destinations, the menu and the
+	 * way out. Controls read as labels; the menu lists every shortcut. The fixed group always stays; item
+	 * actions drop from the end first.
 	 */
 	footer(owner: DashboardMouse, y: number, width: number, back: ScreenAction, theme: Theme, menu = true, lead = ""): string {
-		const named = (action: ScreenAction) => {
-			const key = action.keys?.[0];
-			return key ? `${keyLabel(key)} ${action.label.toLowerCase()}` : action.label;
-		};
+		const actions = this.provide();
 		const tail: Array<{ text: string; run: () => void }> = [
-			...(menu ? [{ text: `${MENU_KEY} more`, run: () => this.show() }] : []),
-			{ text: named(back), run: () => this.perform(back) },
+			...actions.filter((item) => item.navigation).map((action) => ({ text: action.label, run: () => this.invoke(action.id) })),
+			...(menu ? [{ text: `More (${MENU_KEY})`, run: () => this.show() }] : []),
+			{ text: `${back.label} (Esc)`, run: () => this.perform(back) },
 		];
 		const start = lead ? visibleWidth(lead) + 3 : 0;
 		const fixed = start + tail.reduce((total, item) => total + visibleWidth(item.text) + 3, 0);
 		const parts: Array<{ text: string; run: () => void }> = [];
 		let used = fixed;
-		for (const action of this.provide().filter((item) => item.main)) {
-			const text = named(action);
+		for (const action of actions.filter((item) => item.main && !item.navigation)) {
+			const text = action.label;
 			if (used + visibleWidth(text) > width) break;
 			parts.push({ text, run: () => this.invoke(action.id) });
 			used += visibleWidth(text) + 3;
 		}
+		const groupAt = parts.length;
 		parts.push(...tail);
 		let x = start;
 		for (const part of parts) {
 			this.control(owner, x, y, Math.max(0, Math.min(visibleWidth(part.text), width - x)), part.run);
 			x += visibleWidth(part.text) + 3;
 		}
-		return fitLine(theme.fg("muted", [...(lead ? [lead] : []), ...parts.map((part) => part.text)].join(" · ")), width);
+		const row = parts.map((part, index) => `${index === 0 ? "" : index === groupAt && groupAt > 0 ? GROUP_SEPARATOR : " · "}${part.text}`).join("");
+		return fitLine(theme.fg("muted", lead ? `${lead} · ${row}` : row), width);
 	}
 	/** The complete menu as a screen body. Selecting a row only highlights it; Enter or Choose runs it. */
 	render(width: number, height: number, title: string, context: string, theme: Theme): string[] {
@@ -140,10 +149,10 @@ export class ActionInventory {
 		const chosen = actions[this.index];
 		const detail = wrapTextWithAnsi(this.notice || chosen?.disabled || "", Math.max(1, width)).slice(0, 1);
 		const footerY = height - 1;
-		this.control(this.mouse, 0, footerY, 12, () => { if (chosen) this.invoke(chosen.id); });
-		this.control(this.mouse, 15, footerY, 8, () => this.close());
+		this.control(this.mouse, 0, footerY, MENU_FOOTER.choose.length, () => { if (chosen) this.invoke(chosen.id); });
+		this.control(this.mouse, MENU_FOOTER.choose.length + 3, footerY, MENU_FOOTER.back.length, () => this.close());
 		this.mouse.add({ x: 0, y: 1, width, height: Math.max(0, height - 3), wheel: (delta) => { this.index = Math.max(0, Math.min(actions.length - 1, this.index + delta)); this.selected = actions[this.index]?.id; } });
 		const body = Array.from({ length: Math.max(0, height - 3) }, (_, index) => rows[index] ?? "");
-		return [dashboardHeading(`${title} > More`, `${actions.length ? this.index + 1 : 0}/${actions.length}`, width, theme), ...body, detail[0] ?? "", theme.fg("muted", "Enter choose · Esc back")].slice(0, height).map((line) => fitLine(line, width));
+		return [dashboardHeading(`${title} > More`, `${actions.length ? this.index + 1 : 0}/${actions.length}`, width, theme), ...body, detail[0] ?? "", theme.fg("muted", `${MENU_FOOTER.choose} · ${MENU_FOOTER.back}`)].slice(0, height).map((line) => fitLine(line, width));
 	}
 }

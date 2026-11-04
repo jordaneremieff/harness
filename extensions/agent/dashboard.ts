@@ -83,8 +83,8 @@ const HELP = [
 	"a opens actions. / finds loaded agents. t opens Threads. b opens Related efforts. ? opens help.",
 	"[other] marks a storage root created by another session, not its current task requester.",
 	"Related efforts shows declared intent and contact declarations, not agreement. Enter opens a contact thread; o reads observation; m sends an operator message.",
-	"Threads shows the frame, peers, and exchange. m selects participants; Enter opens one; Esc returns.",
-	"e reads the exchange, f reads the frame. p posts without a model wake.",
+	"Threads opens a thread on its latest exchange. c shows the frame and declarations; m selects participants; Enter in the exchange replies to an event; Esc returns.",
+	"p posts without a model wake.",
 	"n chooses peers to notify. Tab returns to the message. Enter posts.",
 	"i switches all times between relative age and local date and time.",
 	"This time toggle stays available when it is absent from the hint line.",
@@ -135,7 +135,6 @@ export class AgentDashboard implements Component, Focusable {
 	private tasks?: AgentTasksView;
 	private threads?: CollaborationView;
 	private efforts?: EffortView;
-	private effortsOpen = false;
 	private readonly mouse = new DashboardMouse();
 	private readonly resize: DashboardResize;
 	private resizeColumns = { roster: 0, detail: 0 };
@@ -245,7 +244,7 @@ export class AgentDashboard implements Component, Focusable {
 				this.relationsDirty = true;
 				this.queueRoster();
 				if (this.navigation.screen === "threads") void this.threads?.refresh();
-				if (this.effortsOpen) void this.efforts?.refresh();
+				if (this.navigation.screen === "efforts") void this.efforts?.refresh();
 			}),
 		);
 		this.reconciliation = setInterval(() => {
@@ -274,7 +273,10 @@ export class AgentDashboard implements Component, Focusable {
 		try {
 			const pages = await this.readRosterPages(cursor);
 			if (this.closed) return;
+			const previousRows = this.page?.rows;
 			this.page = this.reuseRoster(pages.reduce((previous, page) => this.mergeRoster(previous, page)));
+			const rows = this.page.rows;
+			if (!previousRows || rows.length !== previousRows.length || rows.some((row, index) => row !== previousRows[index])) this.console?.conversation.refreshCards();
 			this.loadMore = false;
 			this.rosterFailures = 0;
 			this.rosterNotice = undefined;
@@ -427,6 +429,7 @@ export class AgentDashboard implements Component, Focusable {
 				void this.submit(text);
 			},
 			() => this.back(),
+			() => this.page?.rows ?? [],
 		);
 		this.console.conversation.setToolDisplay(this.operations.toolDisplay);
 		this.snapshot = undefined;
@@ -559,6 +562,8 @@ export class AgentDashboard implements Component, Focusable {
 			this.done();
 			return;
 		}
+		if (this.navigation.screen === "efforts") this.efforts?.open();
+		this.mouse.reset();
 		this.reconcile();
 		this.redraw();
 	}
@@ -928,7 +933,7 @@ export class AgentDashboard implements Component, Focusable {
 			return;
 		}
 		this.saveConsole();
-		this.effortsOpen = true;
+		this.navigation.enter("efforts");
 		this.efforts ??= new EffortView({
 			tui: this.tui, theme: this.theme, keys: this.keys,
 			efforts: this.operations.efforts,
@@ -937,7 +942,7 @@ export class AgentDashboard implements Component, Focusable {
 			collaborate: this.operations.collaborate,
 			openContact: (threadId) => this.openThreads(threadId),
 			openThreads: () => this.openThreads(),
-			onBack: () => { this.effortsOpen = false; this.mouse.reset(); this.redraw(); },
+			onBack: () => this.back(),
 			redraw: () => this.redraw(),
 		});
 		this.mouse.reset();
@@ -949,7 +954,6 @@ export class AgentDashboard implements Component, Focusable {
 			return this.notice;
 		}
 		this.saveConsole();
-		this.effortsOpen = false;
 		this.navigation.enter("threads");
 		this.state.threads ??= createCollaborationViewState();
 		this.threads ??= new CollaborationView({
@@ -1019,7 +1023,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	/** Related efforts, Threads and the open action menu own the keyboard while they are showing. */
 	private routeOpenView(data: string): boolean {
-		if (this.effortsOpen) { this.effortInput(data); return true; }
+		if (this.navigation.screen === "efforts") { this.effortInput(data); return true; }
 		if (this.navigation.screen === "threads") {
 			if (matchesKey(data, "escape") || (this.tui.terminal.columns >= 60 && this.tui.terminal.rows >= 20))
 				this.threads?.handleInput(data);
@@ -1061,7 +1065,7 @@ export class AgentDashboard implements Component, Focusable {
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.closed || this.hidden || this.mouseScreen !== this.navigation.screen) return;
-		if (this.effortsOpen) return this.efforts?.handleMouse(event);
+		if (this.navigation.screen === "efforts") return this.efforts?.handleMouse(event);
 		if (this.navigation.screen === "threads") return this.threads?.handleMouse(event);
 		if (this.inventory.open) return event.width === this.tui.terminal.columns && event.height === this.tui.terminal.rows ? this.inventory.handleMouse(event) : undefined;
 		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeScreen());
@@ -1268,9 +1272,9 @@ export class AgentDashboard implements Component, Focusable {
 		const { collaborate, efforts, newAgent } = this.operations;
 		const missing = (what: string) => `${what} unavailable. Restart this Pi window with the current agent extension.`;
 		return [
-			{ id: "threads", label: "Threads", keys: ["t"], main: Boolean(collaborate), description: "Shared purpose threads", disabled: collaborate ? undefined : missing("Threads"), run: () => this.openThreads() },
-			{ id: "efforts", label: "Efforts", keys: ["b"], main: Boolean(efforts), description: "Related efforts", disabled: efforts ? undefined : missing("Related efforts"), run: () => this.openEfforts() },
-			{ id: "new", label: "New agent", keys: ["n"], main: Boolean(newAgent), disabled: newAgent ? undefined : "New agent is unavailable. Enter an existing conversation.", run: () => this.openNew() },
+			{ id: "threads", label: "Threads", keys: ["t"], main: Boolean(collaborate), navigation: Boolean(collaborate), description: "Shared purpose threads", disabled: collaborate ? undefined : missing("Threads"), run: () => this.openThreads() },
+			{ id: "efforts", label: "Efforts", keys: ["b"], main: Boolean(efforts), navigation: Boolean(efforts), description: "Related efforts", disabled: efforts ? undefined : missing("Related efforts"), run: () => this.openEfforts() },
+			{ id: "new", label: "New agent", keys: ["n"], main: Boolean(newAgent), navigation: Boolean(newAgent), disabled: newAgent ? undefined : "New agent is unavailable. Enter an existing conversation.", run: () => this.openNew() },
 			{ id: "view", label: this.allAgents ? "Related agents" : "All agents", keys: ["v"], main: this.rows.length === 0 && Boolean(this.primaryId), disabled: this.primaryId ? undefined : "Related needs a current session. All loaded agents are shown.", run: () => { this.allAgents = !this.allAgents; this.rosterScroll = undefined; this.loadMore = false; this.reconcile(); } },
 			{ id: "find", label: "Find", keys: ["/"], run: () => { this.findBefore = { filter: this.state.filter, selected: this.state.selected }; this.find.setValue(this.state.filter); this.navigation.enter("find"); } },
 			{ id: "time", label: this.state.exactTime ? "Relative times" : "Exact times", keys: ["i"], run: () => { this.state.exactTime = !this.state.exactTime; } },
@@ -1510,7 +1514,7 @@ export class AgentDashboard implements Component, Focusable {
 		const incomplete = !this.page.coverage.complete || this.page.coverage.skipped > 0 || this.page.coverage.omitted > 0 || this.page.coverage.nextCursor !== null;
 		return { active: children.filter((row) => row.state === "working" || row.state === "starting").length, total: children.length, incomplete, cost: children.every((row) => !row.partial && Number.isFinite(row.cost)) ? children.reduce((sum, row) => sum + row.cost, 0) : undefined };
 	}
-	private resizeScreen(): string { return `${this.navigation.screen}:${this.effortsOpen}:${this.hidden}`; }
+	private resizeScreen(): string { return `${this.navigation.screen}:${this.hidden}`; }
 	render(width: number): string[] {
 		const height = this.tui.terminal.rows;
 		this.resize.begin(width, height, this.resizeScreen());
@@ -1520,7 +1524,7 @@ export class AgentDashboard implements Component, Focusable {
 			return Array.from({ length: height }, (_, index) =>
 				fitLine(index === 0 ? "Resize to use Agents. Esc back." : "", width),
 			);
-		if (this.effortsOpen) return this.efforts?.render(width, height) ?? [];
+		if (this.navigation.screen === "efforts") return this.efforts?.render(width, height) ?? [];
 		const screen = this.navigation.screen;
 		this.newComposer.focused = screen === "new";
 		this.find.focused = screen === "find";

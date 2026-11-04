@@ -13,7 +13,7 @@ import {
 	type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
 import { obj } from "@earendil-works/pi-schema";
-import { createAgentToolCards } from "./tool-cards.ts";
+import { createAgentToolCards, type AgentCardLookup } from "./tool-cards.ts";
 import type { ToolDisplayLookup } from "./tool-display.ts";
 
 /** Capture presentation only. Unexpected factory API access fails closed. */
@@ -62,14 +62,17 @@ function presentationFields(presentation: ToolRenderers | undefined): ToolRender
 	};
 }
 
-/** Native and shared presentation with no execution or loadout hooks. */
-export function createDashboardToolDefinitions(cwd: string, toolDisplay?: ToolDisplayLookup): (name: string, knownCall?: boolean) => ToolDefinition {
+/**
+ * Native and shared presentation with no execution or loadout hooks. `rows` supplies the already-observed
+ * roster facts (names, applied configuration) that agent cards show for their targets; it reads no store.
+ */
+export function createDashboardToolDefinitions(cwd: string, toolDisplay?: ToolDisplayLookup, rows: AgentCardLookup = () => []): (name: string, knownCall?: boolean) => ToolDefinition {
 	const native = new Map([
 		createReadToolDefinition(cwd), createBashToolDefinition(cwd), createEditToolDefinition(cwd),
 		createWriteToolDefinition(cwd), createGrepToolDefinition(cwd), createFindToolDefinition(cwd),
 		createLsToolDefinition(cwd), createPowerShellToolDefinition(cwd),
 	].map((definition) => [definition.name, definition]));
-	const agents = createAgentToolCards();
+	const agents = createAgentToolCards(rows);
 	const renderers = codemodeRenderers();
 	return (name, knownCall = true) => {
 		const builtin = knownCall ? native.get(name) : undefined;

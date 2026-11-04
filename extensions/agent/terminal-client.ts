@@ -66,6 +66,8 @@ export class TerminalController {
 	previous?: string;
 	row?: AgentConversationSummary;
 	snapshot?: AgentConversationSnapshot & { nextBefore?: number | null };
+	/** Roster rows read at attachment. Agent cards resolve other targets from these; no paint reads a store. */
+	private pageRows: readonly AgentConversationSummary[] = [];
 	private closed = false;
 	private closing?: Promise<void>;
 	private generation = 0;
@@ -95,6 +97,11 @@ export class TerminalController {
 			subscribeRoster: (listener) => this.manager.subscribeRoster(listener),
 		});
 		this.off = this.source.subscribe(() => this.frameChanged());
+	}
+	/** The attached row as observed through live frames, then the roster as read at attachment. */
+	observedRows(): readonly AgentConversationSummary[] {
+		const row = this.row;
+		return row ? [row, ...this.pageRows.filter((item) => item.id !== row.id)] : this.pageRows;
 	}
 	get frame() { return this.target ? this.source.frame(this.target) : undefined; }
 	get selectionRevision(): number { return this.generation; }
@@ -156,6 +163,7 @@ export class TerminalController {
 		if (this.target !== id) this.previous = this.target;
 		this.source.select(undefined);
 		this.target = id;
+		this.pageRows = page.rows;
 		this.row = { ...row, name: status.name };
 		this.state.selected = id;
 		this.setSnapshot(snapshot);
@@ -307,6 +315,8 @@ export class TerminalScreen implements Component {
 	private panel?: { screen: PanelScreen; target: string };
 	private notice = "";
 	private displayNotice = "";
+	/** Name and applied configuration of the attached row as last painted; a change repaints agent cards. */
+	private rowFacts?: string;
 	private readonly navigationInput = new Input({ prompt: "Command: " });
 	private dashboardHidden = false;
 	private composerY = 0;
@@ -317,7 +327,8 @@ export class TerminalScreen implements Component {
 	private transcript = { y: 0, height: 0, width: 0 };
 	private readonly off: () => void;
 	private readonly branches: AgentBranchCache;
-	private readonly openDialogs = new Set<() => void>();
+	/** Open local dialogs by their cancel function, with the dialog title for the program status. */
+	private readonly openDialogs = new Map<() => void, string | undefined>();
 	private readonly dialogs: AgentDialogs;
 	private disposed = false;
 	private readonly tui: TUI;
@@ -325,11 +336,11 @@ export class TerminalScreen implements Component {
 	private readonly keys: KeybindingsManager;
 	readonly controller: TerminalController;
 	private readonly done: () => void;
-	constructor(tui: TUI, theme: Theme, keys: KeybindingsManager, controller: TerminalController, done: () => void, publishStatus?: (status: ProgramStatus) => void) {
+	constructor(tui: TUI, theme: Theme, keys: KeybindingsManager, controller: TerminalController, done: () => void, publishStatus?: (status: ProgramStatus) => void, publishTitle?: (title: string) => void) {
 		this.tui = tui; this.theme = theme; this.keys = keys; this.controller = controller; this.done = done;
-		if (publishStatus) this.programStatus = new TerminalProgramStatus(publishStatus);
+		if (publishStatus) this.programStatus = new TerminalProgramStatus(publishStatus, publishTitle);
 		this.dialogs = terminalDialogs({ tui, theme, keys,
-			track: (cancel) => { this.openDialogs.add(cancel); this.projectStatus(); return () => { this.openDialogs.delete(cancel); this.projectStatus(); }; },
+			track: (cancel, title) => { this.openDialogs.set(cancel, title); this.projectStatus(); return () => { this.openDialogs.delete(cancel); this.projectStatus(); }; },
 			notify: (text) => { this.notice = text; this.tui.requestRender(); } });
 		this.navigationInput.onSubmit = (text) => { this.navigationInput.setValue(""); void this.submit(text); };
 		this.branches = new AgentBranchCache(readAgentBranch, () => this.tui.requestRender());
@@ -343,7 +354,7 @@ export class TerminalScreen implements Component {
 		if (row && this.console?.row.id !== row.id) {
 			this.console?.save(); this.console?.dispose();
 			this.console = new AgentConsole(row, agentState(this.controller.state, row.id), this.tui, this.theme, this.keys,
-				(text) => { void this.submit(text); }, () => this.openDashboard());
+				(text) => { void this.submit(text); }, () => this.openDashboard(), () => this.controller.observedRows());
 		}
 		if (this.console && row) this.syncConsole(this.console, row);
 		this.projectStatus();
@@ -354,6 +365,9 @@ export class TerminalScreen implements Component {
 		console.conversation.setToolDisplay(this.controller.toolDisplay);
 		const diagnostics = this.controller.display.diagnostics;
 		this.displayNotice = diagnostics.length ? `Owner cards: ${diagnostics[0]}${diagnostics.length > 1 ? ` (+${diagnostics.length - 1} more)` : ""}` : "";
+		const facts = `${row.name ?? ""}\u0000${row.model?.provider ?? ""}/${row.model?.modelId ?? ""}/${row.model?.thinkingLevel ?? ""}`;
+		if (this.rowFacts !== undefined && this.rowFacts !== facts) console.conversation.refreshCards();
+		this.rowFacts = facts;
 		console.row = row;
 		console.warning = this.controller.availability?.state === "unavailable" ? "Connection unavailable; last observed data shown. /agent enter <target> retries." : undefined;
 		console.setContent(this.controller.snapshot?.entries ?? [], this.controller.frame?.live ?? []);
@@ -367,6 +381,9 @@ export class TerminalScreen implements Component {
 			live: this.controller.availability?.state === "live",
 			busy: this.controller.row?.state === "working",
 			interaction: this.openDialogs.size > 0,
+			name: this.controller.row?.name,
+			cwd: this.controller.row?.cwd,
+			dialog: [...this.openDialogs.values()].at(-1),
 		});
 	}
 	private async submit(text: string): Promise<void> {
@@ -622,7 +639,7 @@ export class TerminalScreen implements Component {
 		return this.console.composer.handleMouse({ ...event, y: event.y - this.composerY, height: this.composerHeight });
 	}
 	invalidate(): void { this.resetHits(); this.footer.invalidate(); this.console?.conversation.invalidate(); this.console?.composer.invalidate(); this.dashboard?.invalidate(); this.panel?.screen.invalidate(); }
-	dispose(): void { this.disposed = true; this.programStatus?.dispose(); for (const cancel of [...this.openDialogs]) cancel(); this.closePanel(); this.closeDashboard(); this.console?.save(); this.console?.dispose(); this.branches.dispose(); this.off(); }
+	dispose(): void { this.disposed = true; this.programStatus?.dispose(); for (const cancel of [...this.openDialogs.keys()]) cancel(); this.closePanel(); this.closeDashboard(); this.console?.save(); this.console?.dispose(); this.branches.dispose(); this.off(); }
 }
 
 export function parseTerminalArgs(args: string[]): { session?: string; selectedTheme: "dark" | "light" } {
@@ -658,7 +675,7 @@ export async function runTerminal(args: string[]): Promise<void> {
 	const tui = new TuiAltScreen(terminal);
 	let finish!: () => void;
 	const finished = new Promise<void>((resolveDone) => { finish = resolveDone; });
-	const screen = new TerminalScreen(tui, theme, keys, controller, finish, (status) => terminal.setProgramStatus(status));
+	const screen = new TerminalScreen(tui, theme, keys, controller, finish, (status) => terminal.setProgramStatus(status), (title) => terminal.setTitle(title));
 	const close = () => finish();
 	process.once("SIGINT", close); process.once("SIGTERM", close);
 	try {
