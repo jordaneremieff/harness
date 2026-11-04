@@ -11,7 +11,7 @@ import {
 	VERSION,
 } from "@earendil-works/pi-coding-agent";
 import { Markdown } from "@earendil-works/pi-tui";
-import { int, obj, oneOf, opt, str, type Static } from "@earendil-works/pi-schema";
+import { int, obj, opt, str, type Schema, type Static } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, parseAccess } from "./access.ts";
 import { browserEntries, PillarsBrowser } from "./browser.ts";
 import { InputError } from "./input.ts";
@@ -46,9 +46,10 @@ const PillarsParameters = obj(
 	{ open: false },
 );
 
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
 const PillarsUsageParameters = obj(
 	{
-		view: opt(oneOf(["overview", "revisions"])),
+		view: opt(StringEnum(["overview", "revisions"])),
 		windowDays: opt(int({ minimum: 1, maximum: 30 })),
 		cursor: opt(str({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$" })),
 	},

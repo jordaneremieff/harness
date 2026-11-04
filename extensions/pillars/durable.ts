@@ -16,7 +16,7 @@ import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ToolCall } from "@earendil-works/pi-ai";
-import { int, obj, oneOf, opt, str } from "@earendil-works/pi-schema";
+import { int, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, type AccessPage, parseAccess } from "./access.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import type { Stage } from "./capacity.ts";
@@ -27,6 +27,8 @@ import { InputError } from "./input.ts";
 import { accessEvidence, type DeliveryExtent, extract, readEvidence, type ResultEvidence } from "./observation.ts";
 import { createReader, errorResponse, parseRequest, TOOL_DESCRIPTION } from "./readback.ts";
 import { PillarsStore } from "./store.ts";
+
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
 
 export interface DurableContribution {
 	readonly name: string;
@@ -370,7 +372,7 @@ export function pillarsDurableContribution(
 							description: TOOL_DESCRIPTION,
 							parameters: obj(
 								{
-									view: opt(oneOf(["overview", "revisions"])),
+									view: opt(StringEnum(["overview", "revisions"])),
 									windowDays: opt(int({ minimum: 1, maximum: 30 })),
 									cursor: opt(str({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$" })),
 								},
