@@ -166,7 +166,7 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 	const stream = (_model: unknown, context: TranscriptContext) => {
 		const message = assistantMessage("DELIVERY_COMPLETE");
 		if (firstRequest && toolTarget !== undefined) {
-			message.content = [{ type: "toolCall", id: "primary-check-in-tool", name: delegateTool, arguments: delegateTool === "agent_place" ? { area: ".", prompt: "Review the local source", checkInMinutes: 30 } : { sessionId: toolTarget, message: "Review the local source" } }];
+			message.content = [{ type: "toolCall", id: "primary-check-in-tool", name: delegateTool, arguments: delegateTool === "agent_place" ? { area: ".", prompt: "Review the local source", checkInMinutes: 30 } : { sessionId: toolTarget, message: "Review the local source", checkInMinutes: 30 } }];
 			message.stopReason = "toolUse";
 		}
 		firstRequest = false;
