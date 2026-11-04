@@ -66,10 +66,11 @@ type Contribution = { name: string; source: string; panel?: { version: 1; entry:
 function readModule(exported: unknown): OperatorPanelModule {
 	if (typeof exported !== "function") throw new Error("export operatorPanel is not a function");
 	const value = exported() as Partial<OperatorPanelModule> | null;
-	if (typeof value !== "object" || value === null || value.version !== 1 || typeof value.title !== "string" || !title(value.title) || typeof value.open !== "function") {
+	const open = value?.open;
+	if (typeof value !== "object" || value === null || value.version !== 1 || typeof value.title !== "string" || !title(value.title) || typeof open !== "function") {
 		throw new Error("operatorPanel() did not return a version 1 panel with a title and an open function");
 	}
-	return { version: 1, title: title(value.title), open: (host) => value.open!(host) };
+	return { version: 1, title: title(value.title), open: (host) => open.call(value, host) };
 }
 
 /**

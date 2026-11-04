@@ -362,46 +362,32 @@ function readContribution(data: unknown, existing: readonly DurableContribution[
 	if (existing.some((contribution) => contribution.name === name)) throw new Error(`durable contribution name "${name}" is already emitted`);
 	if (existing.some((contribution) => contribution.source === source)) throw new Error(`extension ${source} emitted more than one durable contribution`);
 	const commands = readCommandList(name, record.commands);
-	let display: DisplayDescriptor | undefined;
-	if (record.display !== undefined) {
-		// A presentation fault never removes the operational contribution; cards fall back to the standard form.
-		try { display = readDisplayDescriptor(record.display); }
-		catch (error) { issues.push(new Error(`durable contribution "${name}" display descriptor refused: ${error instanceof Error ? error.message : String(error)}`)); }
-	}
-	let panel: PanelDescriptor | undefined;
-	if (record.panel !== undefined) {
-		try {
-			panel = readPanelDescriptor(record.panel);
-			if (!(commands ?? []).some((command) => command.name === panel?.command)) throw new Error(`command ${panel.command} is not a command of this contribution`);
-		} catch (error) {
-			panel = undefined;
-			issues.push(new Error(`durable contribution "${name}" panel descriptor refused: ${error instanceof Error ? error.message : String(error)}`));
-		}
-	}
+	const message = (error: unknown) => error instanceof Error ? error.message : String(error);
+	// A presentation fault never removes the operational contribution; cards and browsers fall back to their standard forms.
+	const display = record.display === undefined ? undefined : attempt(() => readDisplayDescriptor(record.display), (error) => issues.push(new Error(`durable contribution "${name}" display descriptor refused: ${message(error)}`)));
+	const panel = record.panel === undefined ? undefined : attempt(() => {
+		const descriptor = readPanelDescriptor(record.panel);
+		if (!(commands ?? []).some((command) => command.name === descriptor.command)) throw new Error(`command ${descriptor.command} is not a command of this contribution`);
+		return descriptor;
+	}, (error) => issues.push(new Error(`durable contribution "${name}" panel descriptor refused: ${message(error)}`)));
 	return { name, source, create: record.create as DurableContribution["create"], ...(commands === undefined ? {} : { commands }), ...(display === undefined ? {} : { display }), ...(panel === undefined ? {} : { panel }) };
+}
+
+/** Run a parser; a refusal reaches `refused` and yields undefined. */
+function attempt<T>(parse: () => T, refused: (error: unknown) => void): T | undefined {
+	try { return parse(); }
+	catch (error) { refused(error); return undefined; }
 }
 
 /** Advertise a descriptor only when its entry resolves to a file inside the admitted owner's directory. */
 function admitDisplays(contributions: readonly DurableContribution[], report: (error: unknown) => void): DurableContribution[] {
+	const refusal = (contribution: DurableContribution, kind: string, error: unknown) =>
+		report(new Error(`durable contribution "${contribution.name}" ${kind} entry refused: ${error instanceof Error ? error.message : String(error)}`));
 	return contributions.map((contribution) => {
-		let admitted = contribution;
-		if (admitted.display !== undefined) {
-			try { resolveDisplayEntry(admitted.source, admitted.display); }
-			catch (error) {
-				report(new Error(`durable contribution "${contribution.name}" display entry refused: ${error instanceof Error ? error.message : String(error)}`));
-				const { display: _refused, ...rest } = admitted;
-				admitted = rest;
-			}
-		}
-		if (admitted.panel !== undefined) {
-			try { resolvePanelEntry(admitted.source, admitted.panel); }
-			catch (error) {
-				report(new Error(`durable contribution "${contribution.name}" panel entry refused: ${error instanceof Error ? error.message : String(error)}`));
-				const { panel: _refused, ...rest } = admitted;
-				admitted = rest;
-			}
-		}
-		return admitted;
+		const { display, panel, ...rest } = contribution;
+		const admittedDisplay = display === undefined ? undefined : attempt(() => { resolveDisplayEntry(contribution.source, display); return display; }, (error) => refusal(contribution, "display", error));
+		const admittedPanel = panel === undefined ? undefined : attempt(() => { resolvePanelEntry(contribution.source, panel); return panel; }, (error) => refusal(contribution, "panel", error));
+		return { ...rest, ...(admittedDisplay === undefined ? {} : { display: admittedDisplay }), ...(admittedPanel === undefined ? {} : { panel: admittedPanel }) };
 	});
 }
 

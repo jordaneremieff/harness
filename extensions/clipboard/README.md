@@ -234,7 +234,9 @@ The overlay is available in TUI mode. RPC receives a notification that directs t
 
 The overlay has two scopes. **Recent** lists the newest 200 entries (marked `+` when older history exists) and filters them by label, id, and excerpt. **Search archive** runs the same literal search as `clipboard_list` over full archived text, one page at a time; a page that is empty can still have a continuation, and coverage shows whether the scan is partial. Recent rows read metadata only; a selected entry's preview is read on demand, bounded to 32,768 characters. Preview reads are cancelled when the selection moves, and late results are discarded.
 
-Pointer: a row click selects the entry and never restores it. Labelled controls act: Recent, Search archive, Refresh, Search, Actions, Detail, Continue, Close, Previous page, Next page, and, inside Actions, Restore selected. Wheel input scrolls the list or preview under the pointer. Hit regions are rebuilt on every render and dropped on resize, scope or filter change, replacement, hide, and disposal, so a stale click cannot act on a replacement row. Keyboard routes remain: Up/Down select, Left/Right scroll the preview, Enter restores the selected entry, F2 switches scope, and Escape leaves edit mode, clears the filter, then closes. Pointer delivery is exercised through `handleMouse` with fake geometry; a live terminal pointer check is not part of the automated tests.
+Pointer: a row click selects the entry and never restores it. Labelled controls act: Recent, Search archive, Refresh, Help, Search, Restore, Detail (Back to list), Continue, Close, Previous page, Next page. Restore is a visible primary control; Continue appears only while the last archive page of the current query left a next page, so an absent continuation is explicit rather than an inert button. Help shows the key legend in the preview pane; the footer line carries state (the selected record, a stale archive, a running restore) instead of a permanent shortcut catalogue. Wheel input scrolls the list or preview under the pointer. Hit regions are rebuilt on every render and dropped on resize, scope or filter change, replacement, hide, and disposal, so a stale click cannot act on a replacement row. Keyboard routes remain: Up/Down select, Left/Right scroll the preview, Enter restores the selected entry, F1 toggles help, F2 switches scope, and Escape leaves help, detail or edit mode, clears the filter, then closes. Pointer delivery is exercised through `handleMouse` with fake geometry; a live terminal pointer check is not part of the automated tests.
+
+The same component serves two hosts. The ordinary `/clipboard` command opens it as an overlay with direct archive callbacks. The attached Agent terminal opens it through `operator-panel.ts`, a presentation-only module that routes every read and the restore through the host's `clipboard` contribution command (see `docs/conventions/operator-panels.md`). The footer menu of the ordinary statusline lists `/clipboard` as a destination because this extension announces it on `harness:operator-destination:publish`.
 
 A stale archive view (after a query change, or after a read failure) shows its coverage state, refuses Restore, and offers Refresh. A Refresh or Search reruns the current query and never mutates the selected record. Escape cancels an active restore. Disposal also cancels active work and suppresses late component callbacks. A completed copy remains a success if cancellation arrives only during archival. A truncated preview is labeled. Restore resolves the selected stable id again and writes the full archived content, so preview bounds never truncate the clipboard result.
 
@@ -265,8 +267,26 @@ object. They declare no structured output schema. Pi Durable supplies bounded
 text as `NestedToolExecutionResult.structuredOutput`, so native codemode calls
 resolve to strings, including JSON text from archive search. Failed calls reject
 in the script rather than resolve to presentation details. The ordinary tool
-cards do not apply because a Durable session renders its own transcript. The
-`/clipboard` overlay is a TUI operator surface and has no Durable form.
+cards do not apply because a Durable session renders its own transcript.
+
+The contribution also registers the `clipboard` command and advertises the
+browser module as its `panel` descriptor (`./operator-panel.ts`, export
+`operatorPanel`, command `clipboard`). Without structured data the command
+answers a bounded recent listing as text, for `agent_command` and
+`/agent command`. With `data` it validates one request of the finite union in
+`panel-protocol.ts` and answers `{ text, data }`:
+
+| Request | Effect |
+|---|---|
+| `{ op: "recent" }` | Reads the newest 200 entries, metadata only. |
+| `{ op: "search", query, cursor? }` | One bounded literal archive page, the same search as `clipboard_list`. |
+| `{ op: "preview", id, archiveDate? }` | The exact record with a 32,768-character content prefix. |
+| `{ op: "restore", id, archiveDate? }` | Rereads the exact record in full, writes the host's clipboard, appends an archive record; `ok` with an optional `warning` for a failed append, or `ok: false` with the error. |
+
+Browsing, searching and previewing start no model work and change no record.
+Restore is the only effect, and only the labelled control sends it. A
+malformed request is an error, never an empty history; a malformed answer is
+reported by the browser as a read failure.
 
 ## Tool cards
 
@@ -300,6 +320,9 @@ the diagnostic has more than one line.
 - `search.ts`: bounded literal discovery, candidate validation, and stateless continuation.
 - `pb.ts`: no-shell `pbcopy` and `pbpaste` wrappers.
 - `panel.ts`: browser state, pointer hit regions, and rendering.
+- `browser-operations.ts`: the archive reads and the restore behind the browser, shared by both hosts.
+- `panel-protocol.ts`: the native route's request union and answer readers.
+- `operator-panel.ts`: the attached-terminal browser module over `panel.ts` and the request route.
 - `display.ts`: presentation-only tool renderer records returned by `toolDisplay()`; it imports only `presentation.ts` and public types.
 - `text.ts`: terminal-safe text and output bounds local to this extension.
 - `*.test.mts`: unit and entrypoint drive tests.

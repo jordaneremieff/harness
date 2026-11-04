@@ -132,10 +132,23 @@ describe("ClipboardPanel layout and controls", () => {
 		for (const width of [80, 100]) {
 			const { panel } = rig();
 			const text = panel.render(width).join("\n");
-			for (const label of ["[Recent", "[Search archive]", "[Refresh]", "[Search]", "[Actions]", "[Detail]", "[Continue]", "[Close]", "[Previous page]", "[Next page]"])
+			for (const label of ["[Recent", "[Search archive]", "[Refresh]", "[Help]", "[Search]", "[Restore]", "[Detail]", "[Close]", "[Previous page]", "[Next page]"])
 				assert.match(text, new RegExp(label.replace(/[[\]]/g, "\\$&")), `${label} at width ${width}`);
+			assert.doesNotMatch(text, /\[Continue\]/, "Continue is offered only while an archive scan has a next page");
+			assert.doesNotMatch(text, /Ctrl\+A|↑↓ Select/, "the footer carries state, not a shortcut legend");
 			assert.match(text, /Clipboard history · Recent 3/);
 		}
+	});
+
+	it("Help shows the shortcut legend in the preview pane and leaves on Esc", () => {
+		const { panel } = rig();
+		let lines = panel.render(80);
+		clickAt(panel, lines, 80, "[Help]");
+		lines = panel.render(80);
+		assert.match(lines.join("\n"), /Rows select; labelled controls act/);
+		assert.match(lines.join("\n"), /\[Help ✓\]/);
+		panel.handleInput("\x1b");
+		assert.doesNotMatch(panel.render(80).join("\n"), /Rows select; labelled controls act/);
 	});
 
 	it("renders every row within the requested width", () => {
@@ -182,15 +195,13 @@ describe("ClipboardPanel pointer interaction", () => {
 		assert.equal(calls.done, undefined);
 	});
 
-	it("restores only through the labelled Restore action after Actions opens", async () => {
+	it("restores only through the labelled Restore control, never on selection", async () => {
 		const { panel, calls } = rig();
 		let lines = panel.render(80);
 		clickAt(panel, lines, 80, "oldest copy");
 		lines = panel.render(80);
-		clickAt(panel, lines, 80, "[Actions]");
-		lines = panel.render(80);
 		assert.equal(calls.restores.length, 0);
-		clickAt(panel, lines, 80, "[Restore selected]");
+		clickAt(panel, lines, 80, "[Restore]");
 		await flush();
 		assert.equal(calls.restores.length, 1);
 		assert.equal(calls.restores[0]?.id, "33333333-3333-4333-8333-333333333333");
@@ -213,7 +224,7 @@ describe("ClipboardPanel pointer interaction", () => {
 		const { panel, calls, size } = rig({}, 20);
 		const lines = panel.render(80);
 		size.rows = 16;
-		assert.equal(clickAt(panel, lines, 80, "[Actions]"), undefined);
+		assert.equal(clickAt(panel, lines, 80, "[Restore]"), undefined);
 		assert.equal(clickAt(panel, lines, 80, "oldest copy"), undefined);
 		assert.deepEqual(calls.restores, []);
 	});

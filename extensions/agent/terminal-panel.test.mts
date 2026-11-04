@@ -102,7 +102,7 @@ it("opens an advertised browser over the attached conversation, binds requests t
 		assert.equal(f.screen.handleMouse(click(3, 1))?.handled, true, "body clicks reach the owner panel");
 		f.screen.handleMouse(click(1, 23));
 		assert.ok(plain(f.screen.render(80)).some((line) => line.includes("Detach")) && !plain(f.screen.render(80))[0].startsWith("fixture"), "Back returns to the conversation");
-		assert.equal((module.hosts.length && (module as unknown as { hosts: OperatorPanelHost[] }).hosts[0]) ? true : false, true);
+		assert.equal(module.hosts.length, 1);
 		await assert.rejects(module.hosts[0].request({ op: "late" }), /closed/, "a closed panel refuses new requests");
 		assert.equal(f.done(), 0);
 		await f.controller.close();

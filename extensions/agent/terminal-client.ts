@@ -380,15 +380,20 @@ export class TerminalScreen implements Component {
 		this.tui.requestRender();
 	}
 	private async agentCommand(words: string[]): Promise<void> {
-		if (words.length === 0) this.openDashboard();
-		else if (words[0] === "enter" && words.length === 2) await this.enter(words[1]);
-		else if (words[0] === "back" && words.length === 1) await this.back();
-		else if (words[0] === "latest" && words.length === 1) this.latest();
-		else if (words[0] === "browse" && words.length <= 2) { if (words[1]) this.openPanel(words[1]); else await this.chooseBrowser(); }
-		else if (words[0] === "recover" && words.length === 1) {
-			const revision = this.controller.selectionRevision;
-			try { await this.recover(); } catch (error) { if (revision === this.controller.selectionRevision) this.notice = String(error); }
-		} else this.notice = "Use /agent, /agent enter <identity|@handle>, /agent back, /agent latest, /agent browse [name], or /agent recover";
+		const routes: Record<string, { arity: readonly number[]; run(argument?: string): void | Promise<void> }> = {
+			enter: { arity: [2], run: (argument) => this.enter(argument ?? "") },
+			back: { arity: [1], run: () => this.back() },
+			latest: { arity: [1], run: () => this.latest() },
+			browse: { arity: [1, 2], run: (argument) => argument ? this.openPanel(argument) : this.chooseBrowser() },
+			recover: { arity: [1], run: async () => {
+				const revision = this.controller.selectionRevision;
+				try { await this.recover(); } catch (error) { if (revision === this.controller.selectionRevision) this.notice = String(error); }
+			} },
+		};
+		if (words.length === 0) { this.openDashboard(); return; }
+		const route = Object.hasOwn(routes, words[0]) ? routes[words[0]] : undefined;
+		if (route?.arity.includes(words.length)) await route.run(words[1]);
+		else this.notice = "Use /agent, /agent enter <identity|@handle>, /agent back, /agent latest, /agent browse [name], or /agent recover";
 	}
 	private async recover(): Promise<void> {
 		const id = this.controller.target;

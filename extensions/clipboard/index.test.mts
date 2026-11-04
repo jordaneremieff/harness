@@ -86,23 +86,28 @@ function registry(): {
 	tools: Registry<Tool>;
 	commands: Registry<MockCommand>;
 	contributions: EmittedContribution[];
+	emitted: Array<{ event: string; value: unknown }>;
+	request(event: string, value: unknown): void;
 } {
 	const tools = new Registry<Tool>();
 	const commands = new Registry<MockCommand>();
 	const contributions: EmittedContribution[] = [];
+	const emitted: Array<{ event: string; value: unknown }> = [];
+	const handlers = new Map<string, Array<(value: unknown) => void>>();
 	const pi = {
 		registerTool: (tool: Tool) => tools.set(tool.name, tool),
 		registerCommand: (name: string, command: MockCommand) => commands.set(name, command),
 		on: () => {},
 		events: {
-			on: () => () => {},
-			emit: (event: string, value: EmittedContribution) => {
-				if (event === "durable:contribution") contributions.push(value);
+			on: (event: string, handler: (value: unknown) => void) => { handlers.set(event, [...(handlers.get(event) ?? []), handler]); return () => {}; },
+			emit: (event: string, value: unknown) => {
+				emitted.push({ event, value });
+				if (event === "durable:contribution") contributions.push(value as EmittedContribution);
 			},
 		},
 	};
 	registerClipboard(pi as unknown as ExtensionAPI);
-	return { tools, commands, contributions };
+	return { tools, commands, contributions, emitted, request: (event, value) => { for (const handler of handlers.get(event) ?? []) handler(value); } };
 }
 
 const execute = (tool: Tool, params: Record<string, unknown>) =>
@@ -174,6 +179,16 @@ describe("clipboard entrypoint", () => {
 		assert.equal(contributions.length, 1, "the factory emits one Durable contribution");
 		assert.equal(contributions[0]?.name, "clipboard");
 		assert.equal(contributions[0]?.source, fileURLToPath(new URL("./index.ts", import.meta.url)));
+	});
+
+	it("announces /clipboard as a harmless destination at setup and on request", () => {
+		const { emitted, request } = registry();
+		const destinations = () => emitted.filter((item) => item.event === "harness:operator-destination:publish").map((item) => item.value);
+		assert.deepEqual(destinations(), [{ version: 1, destinations: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" } }] }]);
+		request("harness:operator-destination:request", { version: 1 });
+		assert.equal(destinations().length, 2);
+		request("harness:operator-destination:request", { version: 2 });
+		assert.equal(destinations().length, 2, "another version is ignored");
 	});
 
 	it("restores a listed stable id after later writes shift list order", async () => {

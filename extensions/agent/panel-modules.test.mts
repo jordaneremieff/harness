@@ -79,7 +79,9 @@ it("imports advertised panel modules and lists every failure as an unavailable b
 	for (const item of result.panels.slice(1)) assert.ok(item.unavailable && item.unavailable.length <= 160, item.contribution);
 	assert.equal(result.diagnostics.length, 6);
 	for (const line of result.diagnostics) assert.ok(/browser unavailable here/.test(line) && line.length <= 200 && !/\n/.test(line));
-	const instance = result.panels[0].module!.open({ target: { id: "conversation-1" } } as never);
+	const good = result.panels[0].module;
+	assert.ok(good);
+	const instance = good.open({ target: { id: "conversation-1" } } as never);
 	assert.deepEqual(instance.render(8), ["conversa"]);
 });
 

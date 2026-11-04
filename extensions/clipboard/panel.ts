@@ -11,11 +11,12 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
+import type { RestoreOutcome } from "./browser-operations.ts";
 import type { SearchPage } from "./search.ts";
 import type { ClipboardEntry } from "./store.ts";
 import { sanitizeTerminalText } from "./text.ts";
 
-export type RestoreOutcome = { ok: true; warning?: string } | { ok: false; error: string };
+export type { RestoreOutcome };
 
 interface PanelResult {
 	restored?: ClipboardEntry;
@@ -39,7 +40,7 @@ type Action =
 	| "recent"
 	| "archive"
 	| "search"
-	| "actions"
+	| "help"
 	| "detail"
 	| "continue"
 	| "refresh"
@@ -62,13 +63,20 @@ interface Hit {
 
 const SHORTCUTS: ReadonlyArray<readonly [KeyId, Action]> = [
 	["ctrl+f", "search"],
-	["ctrl+a", "actions"],
+	["f1", "help"],
 	["ctrl+d", "detail"],
 	["ctrl+n", "continue"],
 	["ctrl+r", "refresh"],
 	["ctrl+q", "close"],
 ];
-const FOOTER = "↑↓ Select · ←→ Preview · F2 Scope · Ctrl+F Search · Ctrl+A Actions · Esc Back/Close";
+/** Secondary help; the footer itself stays short. */
+const HELP_LINES = [
+	"Rows select; labelled controls act. Restore writes the full archived record to the clipboard.",
+	"Keys: ↑↓ select · ←→ or PageUp/PageDown scroll the preview · Enter restores the selection",
+	"F2 switches Recent and Search archive · Ctrl+F search · Ctrl+D detail · Ctrl+N continue · Ctrl+R refresh",
+	"Esc leaves help, detail or the query; Esc on the list closes. Ctrl+Q closes.",
+	"Continue appears only while an archive scan has a next page; Refresh restarts a stale query.",
+];
 const MIN_COLUMNS = 48;
 const MIN_ROWS = 12;
 
@@ -125,7 +133,7 @@ export class ClipboardPanel {
 	private listScroll = 0;
 	private previewScroll = 0;
 	private detail = false;
-	private actions = false;
+	private help = false;
 	private preview?: ClipboardEntry;
 	private previewError?: string;
 	private flash?: string;
@@ -158,7 +166,7 @@ export class ClipboardPanel {
 			recent: () => this.switchScope("recent"),
 			archive: () => this.switchScope("archive"),
 			search: () => this.onSearchAction(),
-			actions: () => this.toggle("actions"),
+			help: () => this.toggle("help"),
 			detail: () => this.toggle("detail"),
 			continue: () => void this.search(true),
 			refresh: () => void this.refresh(),
@@ -410,17 +418,25 @@ export class ClipboardPanel {
 		}
 	}
 
-	private toggle(key: "actions" | "detail"): void {
+	private toggle(key: "help" | "detail"): void {
 		this[key] = !this[key];
 		this.editing = false;
+		this.previewScroll = 0;
+		this.wrappedKey = "";
 		this.changed();
 	}
 
 	private backToList(): void {
-		this.actions = false;
+		this.help = false;
 		this.detail = false;
 		this.editing = false;
+		this.wrappedKey = "";
 		this.changed();
+	}
+
+	/** Continue is offered only while the last archive page left a next page for the same query. */
+	private canContinue(): boolean {
+		return this.scope === "archive" && this.cursor !== undefined && !this.stale && this.query === this.searchedQuery;
 	}
 
 	private scrollPreview(delta: number): void {
@@ -458,7 +474,7 @@ export class ClipboardPanel {
 			this.generation++;
 			this.busy = false;
 			this.changed();
-		} else if (this.actions || this.detail || this.editing) this.backToList();
+		} else if (this.help || this.detail || this.editing) this.backToList();
 		else if (this.query) this.setQuery("");
 		else this.close();
 	}
@@ -562,37 +578,31 @@ export class ClipboardPanel {
 		return lines;
 	}
 
-	private fullLines(rows: number, inner: number): string[] {
-		const lines: string[] = [];
+	private headerLines(inner: number): string[] {
 		const count = this.scope === "recent" ? this.entries().length : this.archive.length;
 		const scopeText = this.scope === "recent" ? `Recent ${count}${this.recentMore ? "+" : ""}` : `Search archive ${count}`;
-		lines.push(this.row(`Clipboard history · ${scopeText}${this.busy ? " · Read in progress" : ""}`, inner, "accent"));
-		lines.push(
-			this.controlRow(lines.length, inner, [
+		return [
+			this.row(`Clipboard history · ${scopeText}${this.busy ? " · Read in progress" : ""}`, inner, "accent"),
+			this.controlRow(1, inner, [
 				[this.scope === "recent" ? "Recent ✓" : "Recent", "recent"],
 				[this.scope === "archive" ? "Search archive ✓" : "Search archive", "archive"],
 				["Refresh", "refresh"],
+				[this.help ? "Help ✓" : "Help", "help"],
 			]),
-		);
-		lines.push(
-			this.controlRow(lines.length, inner, [
+			this.controlRow(2, inner, [
 				[this.scope === "archive" && this.editing ? "Run search" : "Search", "search"],
-				["Actions", "actions"],
-				["Detail", "detail"],
-				["Continue", "continue"],
+				["Restore", "restore"],
+				[this.detail ? "Back to list" : "Detail", this.detail ? "back" : "detail"],
+				...(this.canContinue() ? [["Continue", "continue"] as const] : []),
 				["Close", "close"],
 			]),
-		);
+		];
+	}
+
+	private fullLines(rows: number, inner: number): string[] {
+		const lines = this.headerLines(inner);
 		lines.push(this.row(this.queryText(), inner));
 		lines.push(...this.coverageLines(inner));
-		if (this.actions) {
-			lines.push(
-				this.controlRow(lines.length, inner, [
-					["Restore selected", "restore"],
-					["Back", "back"],
-				]),
-			);
-		}
 		const available = rows - lines.length - 2;
 		this.listRows = this.detail ? 0 : Math.max(1, Math.floor(available * 0.45));
 		this.previewRows = Math.max(1, available - this.listRows);
@@ -642,6 +652,7 @@ export class ClipboardPanel {
 	}
 
 	private previewBody(): string {
+		if (this.help) return HELP_LINES.join("\n");
 		if (this.preview) {
 			const entry = this.preview;
 			const header = `${entry.id}\n${entry.timestamp} · archive ${entry.archiveDate ?? "unavailable"} · ${entry.chars} chars`;
@@ -652,7 +663,7 @@ export class ClipboardPanel {
 	}
 
 	private previewLines(y0: number, inner: number): string[] {
-		const key = `${this.previewGeneration}:${inner}:${this.preview ? "ready" : "pending"}:${this.previewError ?? ""}`;
+		const key = `${this.previewGeneration}:${inner}:${this.help ? "help" : this.preview ? "ready" : "pending"}:${this.previewError ?? ""}`;
 		if (this.wrappedKey !== key) {
 			this.wrapped = wrapTextWithAnsi(safe(this.previewBody()), Math.max(1, inner));
 			this.wrappedKey = key;
@@ -669,7 +680,11 @@ export class ClipboardPanel {
 	private footerText(): string {
 		if (this.restoring) return "Restore in progress · Escape cancels";
 		if (this.flash) return single(this.flash);
-		return FOOTER;
+		if (this.help) return "Help · Esc or Help returns to the browser";
+		const selected = this.selected();
+		if (!selected) return "Select a record · F1 help";
+		if (this.scope === "archive" && this.stale) return "Archive state is stale · Refresh before Restore · F1 help";
+		return `Enter or Restore writes the full archived record ${selected.id} to the clipboard · F1 help`;
 	}
 
 	hide(): void {
