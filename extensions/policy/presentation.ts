@@ -383,3 +383,84 @@ export function renderProposeResult(
 	else text += `\n${theme.fg("dim", `inert until operator approval · ${expansionHint("proposal text", context)}`)}`;
 	return textComponent(text, context.lastComponent);
 }
+
+/** The call names the proposal and the effect the operator selected; the authorization text stays behind expansion. */
+export function renderApproveCall(value: unknown, theme: Theme, context: CardContext): Component {
+	const args = asRecord(value);
+	const proposalId = stringField(args, "proposalId");
+	const effect = stringField(args, "effect");
+	let heading = theme.fg("toolTitle", theme.bold("policy_approve"));
+	if (proposalId) heading += theme.fg("accent", ` · ${displayPreview(proposalId, 60)}`);
+	if (effect) heading += theme.fg("accent", ` as ${displayPreview(effect, 12)}`);
+	const revision = stringField(args, "proposalRevision");
+	const lines = [heading];
+	if (context.expanded) lines.push(expandedArguments(args, theme));
+	else lines.push(theme.fg("dim", `${revision ? `revision ${displayPreview(revision, 16)} · ` : ""}${expansionHint("authorization", context)}`));
+	return textComponent(lines.join("\n"), context.lastComponent);
+}
+
+/** Readback leads with the resulting rule state and effect; approval is distinct from session enforcement. */
+export function renderApproveResult(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: CardContext,
+): Component {
+	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Applying approval...")}`, context.lastComponent);
+	const output = textContent(result);
+	if (context.isError) return errorCard("policy_approve", "approval refused", output, options.expanded, theme, context);
+	const details = asRecord(result.details);
+	const ruleId = stringField(details, "ruleId");
+	const state = stringField(details, "state");
+	const effect = stringField(details, "effect");
+	const mode = stringField(details, "mode");
+	const lead = ruleId
+		? [`rule ${displayPreview(ruleId, 60)}`, state && displayPreview(state, 12), effect && `effect ${displayPreview(effect, 12)}`].filter(Boolean).join(" · ")
+		: displayPreview(firstMeaningfulLine(output) || "approval recorded", PREVIEW_LIMIT);
+	let text = `\n${theme.fg("success", lead)}`;
+	const qualifier = mode ? `session mode ${displayPreview(mode, 16)}; approval is not enforcement` : "approval is not enforcement";
+	if (options.expanded) text += `\n${theme.fg("dim", qualifier)}\n${theme.fg("toolOutput", boundedDisplay(output))}`;
+	else text += `\n${theme.fg("dim", `${qualifier} · ${expansionHint("readback", context)}`)}`;
+	return textComponent(text, context.lastComponent);
+}
+
+/** The call names the operation and its target; reasons, revisions and artifacts stay behind expansion. */
+export function renderControlCall(value: unknown, theme: Theme, context: CardContext): Component {
+	const args = asRecord(value);
+	const operation = stringField(args, "operation");
+	const target = stringField(args, "id") || stringField(args, "actionId") || stringField(args, "proposalId") || stringField(args, "selection") || stringField(args, "name");
+	let heading = theme.fg("toolTitle", theme.bold("policy_control"));
+	if (operation) heading += theme.fg("accent", ` · ${displayPreview(operation, 20)}`);
+	if (target) heading += theme.fg("accent", ` ${displayPreview(target, 60)}`);
+	const revision = stringField(args, "revision") || stringField(args, "proposalRevision");
+	const effect = stringField(args, "effect");
+	const lines = [heading];
+	if (context.expanded) lines.push(expandedArguments(args, theme));
+	else {
+		const facts = [effect && `effect ${displayPreview(effect, 12)}`, revision && `revision ${displayPreview(revision, 16)}`].filter(Boolean).join(" · ");
+		lines.push(theme.fg("dim", `${facts ? `${facts} · ` : ""}${expansionHint("control arguments", context)}`));
+	}
+	return textComponent(lines.join("\n"), context.lastComponent);
+}
+
+/** Readback leads with the resulting state; a refusal or an unchanged state is shown as such. */
+export function renderControlResult(
+	result: AgentToolResult<unknown>,
+	options: ToolRenderResultOptions,
+	theme: Theme,
+	context: CardContext,
+): Component {
+	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Applying control...")}`, context.lastComponent);
+	const output = textContent(result);
+	if (context.isError) return errorCard("policy_control", "control refused", output, options.expanded, theme, context);
+	const details = asRecord(result.details);
+	const operation = stringField(asRecord(context.args), "operation");
+	const mode = stringField(details, "mode");
+	const state = stringField(details, "state") || stringField(details, "outcome");
+	const lead = [operation && displayPreview(operation, 20), state && displayPreview(state, 40), mode && `mode ${displayPreview(mode, 16)}`].filter(Boolean).join(" · ")
+		|| displayPreview(firstMeaningfulLine(output) || "control applied", PREVIEW_LIMIT);
+	let text = `\n${theme.fg("success", lead)}`;
+	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
+	else text += `\n${theme.fg("dim", expansionHint("readback", context))}`;
+	return textComponent(text, context.lastComponent);
+}

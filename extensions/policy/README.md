@@ -239,6 +239,23 @@ so an interrupted execution produces an interrupted result instead of repeating
 an external write. A `policy.state` document that cannot be normalized is
 discarded field by field; the rule store is never repaired from the document.
 
+The contribution registers the `policy` command and advertises `./operator-panel.ts`
+as its `panel` descriptor bound to it. Without structured data the command answers
+a bounded registry summary (mode, rule and pending counts, store health) for
+`agent_command` and `/agent command`. With `data` it validates one request of the
+finite union in `panel-protocol.ts` and answers `{ text, data }`:
+
+| Request | Effect |
+|---|---|
+| `load`, `refresh` | The registry snapshot (and fire summary, recent activity, and the bound conversation's scope for `load`); Map-backed values travel as entry arrays. |
+| `inspect` (`state`, `explain`, `data`) | The same bounded inspection text as the native `policy_rules` views, against the bound conversation's observation state. |
+| `approve`, `reject` | `registry.decide` with the proposal revision the operator read and a `panel` audit for the bound conversation; a changed revision refuses. |
+| `lifecycle` (`disable`, `enable`, `retire`), `effect` | The same registry controls as the ordinary panel, bound to the target identity the operator saw; a changed definition refuses. |
+| `reset-revision`, `reset` | Persist the synced observation periods, return their revision, then start a new period only under that revision. |
+
+Data imports and bindings stay with `policy_control`; the attached panel lists
+data only. Approval remains distinct from session enforcement on both routes.
+
 Semantic differences from the ordinary runtime:
 
 - Observation periods are conversation-scoped rather than session-wide, so a
@@ -1016,9 +1033,18 @@ telemetry; it is not a promise that the complete invocation performs no writes.
 
 ### Tool cards
 
-Proposal and inspection tools draw compact TUI cards and stay legible without
-expansion. `policy_approve` and `policy_control` use the native tool display and return readback
-as model-visible JSON text.
+Every policy tool draws a compact TUI card and stays legible without expansion.
+
+`policy_approve`: the collapsed heading names the proposal and the selected
+effect; one dim row adds the proposal revision. The result leads with the
+resulting rule id, state, and effect, then the session mode with the note that
+approval is not enforcement; a refusal shows its first diagnostic line.
+
+`policy_control`: the collapsed heading names the operation and its target
+(rule, action, proposal, selection, or data name); one dim row adds the effect
+and revision when the call carries them. The result leads with the operation,
+the returned state or outcome, and the mode; a refusal shows its first
+diagnostic line. Expansion shows the complete arguments or readback text.
 
 `policy_propose`: the collapsed heading names the operation and rule id. One dim
 row adds the authority, the authoring form, and the expected revision for
@@ -1161,13 +1187,22 @@ makes no approval or rule edit; the normal first-use catalog initialization stil
 applies when no registry exists.
 
 The panel shares rule/proposal details and operator gates with the command. Its
-header shows Rules, Proposals, Activity, Data, and State as clickable views, plus
-`[Actions]` and `[Close]`. Below 78 columns the layout stacks, view names shorten, and
-Actions and Close stay reachable; a second click or Enter on the selected row opens its
-full-width detail, and Esc returns to the list. Clicking a row only selects it. The wheel
+header shows Rules, Proposals, Activity, Data, and State as clickable views, then
+`[Filter]` on the list views, `[Back]` inside a full-width detail, `[Actions]`, and
+`[Close]`. Below 78 columns the layout stacks and view names shorten; when the row is
+still too narrow, Filter and then Back yield (their key routes `/` and Esc remain) so
+Actions and Close stay reachable. A second click or Enter on the selected row opens its
+full-width detail, and Back or Esc returns to the list. Clicking a row only selects it. The wheel
 scrolls the list or detail pane under the pointer. Hit targets are rebuilt on every render
 and dropped on resize, view change, replacement, hide, and disposal, so a click never acts
 on the row that now occupies an old position.
+
+The same panel serves the attached Agent terminal through `operator-panel.ts`, a
+presentation-only module that routes every read and mutation through the host's
+`policy` contribution command (see `docs/conventions/operator-panels.md` and the
+Durable section). The ordinary statusline footer menu lists `/policy` as a
+destination because this extension announces it on
+`harness:operator-destination:publish`.
 
 Disable, enable, effect, retire, reset, explain, data, and state actions call the same
 owner functions as the command verbs. They ask for the reason (and the effect) in the same
@@ -1179,11 +1214,13 @@ choice. State is the `/policy state` inspection and Data is `/policy data list`;
 its view does not replace that view.
 
 Proposal approval and rejection, data changes, and catalog imports use the paged artifact
-reader. It scrolls by wheel, Space/b, and page keys and shows the exact artifact text. Its
-final button is unavailable (`[Read pages]`) until the last page is displayed and is then
-labelled for the real effect, such as `[Approve as block]`, `[Approve disable]`,
-`[Reject]`, `[Remove]`, or `[Import]`. A pointer press cannot skip the reader;
-`[Cancel]` and Esc write nothing. A result from the reader still passes the normal revision
+reader. It scrolls by wheel, Space/b, page keys, and the `[Previous]` and `[Next]`
+controls, and shows the exact artifact text. The final control appears only on the
+last page and is labelled for the real effect, such as `[Approve as block]`,
+`[Approve disable]`, `[Reject]`, `[Remove]`, or `[Import]`; until then the row says
+that every page must be read first. A page control invalidates the hit geometry, so a
+press at the same position after paging or a resize is dropped rather than read as
+approval. `[Cancel]` and Esc write nothing. A result from the reader still passes the normal revision
 and authority checks before any mutation. TUI and RPC
 command responses use notifications. JSON commands append non-context custom
 entries. Print commands use the host-managed output path. The interactive panel

@@ -4,7 +4,7 @@
  * extension. The ordinary tool registration and the tool-display publication use these same records.
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { renderProposeCall, renderProposeResult, renderRulesCall, renderRulesResult } from "./presentation.ts";
+import { renderApproveCall, renderApproveResult, renderControlCall, renderControlResult, renderProposeCall, renderProposeResult, renderRulesCall, renderRulesResult } from "./presentation.ts";
 
 export type ToolDisplayPublication = {
 	version: 1;
@@ -26,6 +26,16 @@ const TOOLS: ToolDisplayPublication["tools"] = [
 		name: "policy_rules",
 		renderCall: (args, theme, context) => renderRulesCall(args, theme, context),
 		renderResult: (result, options, theme, context) => renderRulesResult(result, options, theme, context),
+	},
+	{
+		name: "policy_approve",
+		renderCall: (args, theme, context) => renderApproveCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderApproveResult(result, options, theme, context),
+	},
+	{
+		name: "policy_control",
+		renderCall: (args, theme, context) => renderControlCall(args, theme, context),
+		renderResult: (result, options, theme, context) => renderControlResult(result, options, theme, context),
 	},
 ];
 

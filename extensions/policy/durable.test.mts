@@ -23,8 +23,9 @@ import * as DurableModule from "@earendil-works/pi-durable";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 
-import { createPolicyDurableExtension, durableResultDisposition, type PolicyDurableHost } from "./durable.ts";
-import { makeRuleAudit, proposalRevision, RuleRegistry } from "./local-rules.ts";
+import { createPolicyDurableExtension, durableResultDisposition, policyPanelCommand, type PolicyDurableHost } from "./durable.ts";
+import { makeRuleAudit, proposalRevision, RuleRegistry, targetIdentity } from "./local-rules.ts";
+import { deserializeSnapshot, readPanelAnswer } from "./panel-protocol.ts";
 import type { FactsProgram } from "./program.ts";
 import { localDate } from "./store.ts";
 import { PolicyProposeParams, PolicyRulesParams, validateProposal } from "./tools.ts";
@@ -1232,6 +1233,43 @@ test("a malformed state document is contained without failing the read", async (
 		assert.match(stateText, /"turn": 1/);
 		assert.match(stateText, /"incomplete": 0/);
 		assert.match(stateText, /"staleCompletions": 0/);
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("the policy command serves the attached panel: reads, an effect-labelled approval, lifecycle controls, and a text summary", async () => {
+	const fixture = await openFixture();
+	try {
+		const host = hostFor(fixture.directory, fixture.harness);
+		await createPolicyDurableExtension(host);
+		const call = (data?: unknown, origin: "operator" | "model" = "operator") => policyPanelCommand.run({ args: "", ...(data === undefined ? {} : { data: data as never }), origin, conversation: fixture.root, context, host, invocationId: "panel" });
+		const answer = async <T,>(data: unknown) => (await call(data) as { text: string; data: unknown }).data as T;
+		assert.match(String(await call()), /Policy mode \w+ · \d+ rules · 0 pending proposals/);
+		const auditContext = { sessionManager: { getSessionId: () => "panel-test" }, model: null };
+		const proposal = await fixture.policy.proposeAdd(
+			{ id: "panel-rule", purpose: "Guide panel tests.", authority: "steer-or-block", matcher: { kind: "declarative", language: "facts/v1", spec: { phase: "input", when: { op: "eq", path: ["tool"], value: "bash" }, action: { kind: "guide", text: "Mind the panel." }, onUnavailable: "skip" } as FactsProgram }, note: "Panel rule." },
+			"Panel test.",
+			makeRuleAudit(auditContext, "agent-tool"),
+		);
+		const loaded = readPanelAnswer({ op: "load" }, await answer({ op: "load" }));
+		assert.ok(loaded.op === "load" && loaded.snapshot.pending.some((entry) => entry.id === proposal.id) && typeof loaded.scope.cwd === "string");
+		await assert.rejects(call({ op: "approve", proposalId: proposal.id, effect: "steer", revision: "000000000000" }), /revision|changed/i, "a stale revision refuses");
+		const approved = readPanelAnswer({ op: "approve", proposalId: proposal.id }, await answer({ op: "approve", proposalId: proposal.id, effect: "steer", revision: proposalRevision(proposal) }));
+		assert.ok(approved.op === "approve" && /Approved proposal/.test(approved.outcome));
+		const snapshot = deserializeSnapshot(approved.snapshot);
+		const record = snapshot.records.get("panel-rule");
+		assert.ok(record && record.source.kind === "local" && record.source.approvedAudit.surface === "panel", "the panel audit surface is recorded");
+		const disabled = readPanelAnswer({ op: "lifecycle", verb: "disable", id: "panel-rule", reason: "panel test" }, await answer({ op: "lifecycle", verb: "disable", id: "panel-rule", reason: "panel test", expectedIdentity: targetIdentity(record) }));
+		assert.ok(disabled.op === "lifecycle" && /Disabled panel-rule/.test(disabled.outcome));
+		await assert.rejects(call({ op: "lifecycle", verb: "enable", id: "panel-rule", reason: "stale", expectedIdentity: targetIdentity(record) }), /identity|changed/i, "a stale target identity refuses");
+		const state = readPanelAnswer({ op: "inspect", view: "state" }, await answer({ op: "inspect", view: "state" }));
+		assert.ok(state.op === "inspect" && /observationPeriods/.test(state.text));
+		const revision = readPanelAnswer({ op: "reset-revision", id: "--all" }, await answer({ op: "reset-revision", id: "--all" }));
+		assert.ok(revision.op === "reset-revision" && /^[a-f0-9]{12}$/.test(revision.revision));
+		const reset = readPanelAnswer({ op: "reset", id: "--all", reason: "panel", revision: revision.revision }, await answer({ op: "reset", id: "--all", reason: "panel", revision: revision.revision }));
+		assert.ok(reset.op === "reset" && /new policy observation period/.test(reset.outcome));
+		await assert.rejects(call({ op: "steal" }), /not supported/);
 	} finally {
 		await fixture.close();
 	}

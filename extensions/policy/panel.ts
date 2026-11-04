@@ -953,8 +953,8 @@ export class PolicyApprovalPanel {
 		rows: number;
 		lineCount: number;
 		actionRow: number;
-		actionEnd: number;
-		cancelStart: number;
+		/** Column spans of the controls drawn on the action row, in draw order. */
+		controls: Array<{ x0: number; x1: number; act: () => void }>;
 	};
 
 	private readonly deps: PolicyApprovalPanelDeps;
@@ -978,24 +978,30 @@ export class PolicyApprovalPanel {
 		const end = Math.min(this.lines.length, this.scroll + this.pageRows);
 		this.ready = end === this.lines.length;
 		const label = this.deps.actionLabel ?? "Approve";
-		const action = this.ready ? `[${label}]` : "[Read pages]";
-		const cancelStart = visibleWidth(action) + 1;
-		const controls = `${action} [Cancel]`;
+		// Page controls stay separate from the final effect control, which exists only on the last page.
+		const controls: Array<{ text: string; act: () => void }> = [
+			{ text: "[Previous]", act: () => this.page(-1) },
+			{ text: "[Next]", act: () => this.page(1) },
+			{ text: "[Cancel]", act: () => this.handleInput("\u001b") },
+			...(this.ready ? [{ text: `[${label}]`, act: () => this.handleInput("a") }] : []),
+		];
+		let column = 0;
+		const spans = controls.map((control) => { const span = { x0: column, x1: column + visibleWidth(control.text), act: control.act }; column = span.x1 + 1; return span; });
 		const output = [
 			fitText(this.deps.title, width),
 			...this.lines.slice(this.scroll, end),
-			fitText(`Space/b: page | ${this.scroll + 1}-${end}/${this.lines.length}`, width),
-			fitText(controls, width),
+			fitText(`${this.scroll + 1}-${end}/${this.lines.length}${this.ready ? "" : " \u00b7 read every page before the final action"}`, width),
+			fitText(controls.map((control) => control.text).join(" "), width),
 		];
-		this.geometry = {
-			width,
-			rows,
-			lineCount: output.length,
-			actionRow: end - this.scroll + 2,
-			actionEnd: visibleWidth(action),
-			cancelStart,
-		};
+		this.geometry = { width, rows, lineCount: output.length, actionRow: end - this.scroll + 2, controls: spans };
 		return output;
+	}
+
+	private page(direction: -1 | 1): void {
+		const step = Math.max(1, this.pageRows - 1);
+		this.scroll = direction > 0 ? Math.min(Math.max(0, this.lines.length - this.pageRows), this.scroll + step) : Math.max(0, this.scroll - step);
+		this.invalidate();
+		this.deps.tui.requestRender();
 	}
 
 	handleInput(raw: string): void {
@@ -1006,16 +1012,8 @@ export class PolicyApprovalPanel {
 			this.deps.done(data === "a");
 			return;
 		}
-		if (matchesKey(raw, "space") || matchesKey(raw, "pageDown"))
-			this.scroll = Math.min(
-				Math.max(0, this.lines.length - this.pageRows),
-				this.scroll + Math.max(1, this.pageRows - 1),
-			);
-		else if (data === "b" || matchesKey(raw, "pageUp"))
-			this.scroll = Math.max(0, this.scroll - Math.max(1, this.pageRows - 1));
-		else return;
-		this.invalidate();
-		this.deps.tui.requestRender();
+		if (matchesKey(raw, "space") || matchesKey(raw, "pageDown")) this.page(1);
+		else if (data === "b" || matchesKey(raw, "pageUp")) this.page(-1);
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
@@ -1036,8 +1034,9 @@ export class PolicyApprovalPanel {
 			return { handled: true };
 		}
 		if (event.type !== "click" || event.button !== "left" || event.y !== geometry.actionRow) return;
-		if (event.x >= geometry.cancelStart && event.x < geometry.cancelStart + 8) this.handleInput("\u001b");
-		else if (event.x < geometry.actionEnd && this.ready) this.handleInput("a");
+		const control = geometry.controls.find((span) => event.x >= span.x0 && event.x < span.x1);
+		if (!control) return;
+		control.act();
 		return { handled: true };
 	}
 
@@ -1631,18 +1630,27 @@ export class PolicyPanel {
 		return `${index === this.selectedActivity ? "› " : "  "}${time} · ${record.model ?? "(none)"} · ${record.classes.join(",")} · ${record.ruleStoreDegraded ? "degraded" : "healthy"} · ${oneLine(record.captured ?? "(not captured)")}`;
 	}
 
-	/** Visible view tabs plus Actions and Close; each entry registers a hit target at its drawn columns. */
+	/** Controls that follow the view tabs: Filter where a list filters, Back inside a full-width detail, then Actions and Close. */
+	private trailingControls(): Array<{ label: string; act: () => void }> {
+		const controls: Array<{ label: string; act: () => void }> = [];
+		if (this.view === "rules" || this.view === "proposals") controls.push({ label: "[Filter]", act: () => { this.filtering = true; this.bump(); } });
+		if (this.detailOnly && this.view !== "data" && this.view !== "state") controls.push({ label: "[Back]", act: () => { this.detailOnly = false; this.detailScroll = 0; this.bump(); } });
+		controls.push({ label: "[Actions]", act: () => void this.actions() }, { label: "[Close]", act: () => this.finish() });
+		return controls;
+	}
+
+	/** Visible view tabs plus the trailing controls; each entry registers a hit target at its drawn columns. */
 	private controlRow(width: number, y: number): string {
-		const actionsLabel = "[Actions]";
+		let trailing = this.trailingControls();
 		const closeLabel = "[Close]";
 		const needed = (labels: string[]): number =>
 			labels.reduce((total, label, index) => total + label.length + (index === this.viewIndex() ? 2 : 0) + 1, 0) +
-			actionsLabel.length +
-			1 +
-			closeLabel.length;
+			trailing.reduce((total, control) => total + control.label.length + 1, 0) - 1;
 		let labels = PANEL_VIEWS.map((entry) => entry.label);
 		if (needed(labels) > width) labels = PANEL_VIEWS.map((entry) => entry.label.slice(0, 3));
 		if (needed(labels) > width) labels = PANEL_VIEWS.map((entry) => entry.label.slice(0, 1));
+		// Filter and Back keep their key routes (/ and Esc); they yield before Actions and Close do.
+		for (const optional of ["[Filter]", "[Back]"]) if (needed(labels) > width) trailing = trailing.filter((control) => control.label !== optional);
 		if (needed(labels) > width) {
 			this.hits.push({ x0: 0, x1: closeLabel.length, y, act: () => this.finish() });
 			return this.deps.theme.fg("accent", closeLabel);
@@ -1658,11 +1666,12 @@ export class PolicyPanel {
 			column += text.length + 1;
 			parts.push(" ");
 		}
-		this.hits.push({ x0: column, x1: column + actionsLabel.length, y, act: () => void this.actions() });
-		parts.push(this.deps.theme.fg("accent", actionsLabel), " ");
-		column += actionsLabel.length + 1;
-		this.hits.push({ x0: column, x1: column + closeLabel.length, y, act: () => this.finish() });
-		parts.push(this.deps.theme.fg("accent", closeLabel));
+		for (const [index, control] of trailing.entries()) {
+			this.hits.push({ x0: column, x1: column + control.label.length, y, act: control.act });
+			parts.push(this.deps.theme.fg("accent", control.label));
+			column += control.label.length + 1;
+			if (index < trailing.length - 1) parts.push(" ");
+		}
 		return parts.join("");
 	}
 

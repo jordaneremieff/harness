@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 import { normalizeDataArtifact, readDataArtifact, safeJson } from "./data-import.ts";
+import { toolDisplayRecord } from "./display.ts";
 import { MAX_RULE_EVENT_BYTES, makeRuleAudit, PolicyMutationCancelledError, proposalRevision, ruleAbsenceMessage, targetIdentity } from "./local-rules.ts";
 import { contentRevision, effectiveEffect, effectiveState, type OperatorRuleAudit } from "./rule.ts";
 import type { PolicyToolContext, ToolDeps } from "./tools.ts";
@@ -261,6 +262,8 @@ export function registerControlTool(pi: Pick<ExtensionAPI, "registerTool">, deps
 		name: "policy_control",
 		label: "Policy control",
 		description: POLICY_CONTROL_DESCRIPTION,
+		renderCall: toolDisplayRecord("policy_control").renderCall,
+		renderResult: toolDisplayRecord("policy_control").renderResult,
 		promptSnippet: "Carry clear operator decisions to revision-checked policy controls",
 		promptGuidelines: [
 			"For a require-approval denial, inspect the complete action with action-inspect, then carry clear contextual operator authority with action-approve. Existing exact authorization suffices; do not demand another human turn or fixed phrase. A broad goal does not approve your selected target or payload. Approval arms one unchanged retry, not a rule-wide exception. Use action-reject for an explicit rejection.",

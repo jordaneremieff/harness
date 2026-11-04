@@ -46,7 +46,7 @@ describe("policy display module", () => {
 		const { registered } = load();
 		const publication = toolDisplay();
 		assert.equal(publication.version, 1);
-		assert.deepEqual(publication.tools.map((tool) => tool.name), ["policy_propose", "policy_rules"]);
+		assert.deepEqual(publication.tools.map((tool) => tool.name), ["policy_propose", "policy_rules", "policy_approve", "policy_control"]);
 		for (const display of publication.tools) {
 			assert.equal(typeof display.renderCall, "function");
 			assert.equal(typeof display.renderResult, "function");

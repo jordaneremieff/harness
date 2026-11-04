@@ -9,7 +9,7 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import type { AutocompleteItem } from "@earendil-works/pi-tui";
-import { createPolicyDurableExtension, type PolicyDurableContribution } from "./durable.ts";
+import { createPolicyDurableExtension, policyPanelCommand, type PolicyDurableContribution } from "./durable.ts";
 import {
 	candidatePermitsEffectChoice,
 	makeRuleAudit,
@@ -920,6 +920,8 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		name: "policy",
 		source: fileURLToPath(import.meta.url),
 		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
+		panel: { version: 1, entry: "./operator-panel.ts", export: "operatorPanel", command: "policy" },
+		commands: [policyPanelCommand],
 		create: (host) => {
 			disposeSettings();
 			const disposeNativeSettings = publishSettings(eventBus, { agentDir: host.agentDir });
@@ -1095,6 +1097,13 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		description: "Open the policy panel",
 		handler: openPanel,
 	});
+	// Package contract: docs/conventions/operator-panels.md. The panel opens harmlessly; every mutation is its own labelled action inside.
+	const destinations = { version: 1, destinations: [{ id: "policy", label: "Policy", command: { name: "policy" } }] };
+	const publishDestinations = () => eventBus.emit("harness:operator-destination:publish", destinations);
+	eventBus.on("harness:operator-destination:request", (request) => {
+		if (typeof request === "object" && request !== null && (request as { version?: unknown }).version === 1) publishDestinations();
+	});
+	publishDestinations();
 	const commandEnv: PolicyCommandEnv = {
 		output,
 		loadRegistry,

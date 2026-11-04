@@ -889,6 +889,8 @@ function registerApprovalTool(pi: Pick<ExtensionAPI, "registerTool">, deps: Tool
 		name: "policy_approve",
 		label: "Policy approve",
 		description: POLICY_APPROVE_DESCRIPTION,
+		renderCall: toolDisplayRecord("policy_approve").renderCall,
+		renderResult: toolDisplayRecord("policy_approve").renderResult,
 		promptSnippet: "Activate a pending policy proposal under clear contextual operator approval",
 		promptGuidelines: [
 			"Use policy_approve after clear contextual operator approval, including faithfully carried decisions. Resolve the exact pending proposal, revision, and authorized effect yourself; do not require a slash command, rigid phrase, ID, or extra confirmation from the operator. Do not treat your own proposal, inference, or recommendation as operator approval. Ask only when a material authorization, target, or effect remains unresolved.",

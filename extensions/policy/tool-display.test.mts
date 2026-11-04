@@ -43,7 +43,7 @@ it("publishes only its registered display fields at load and on current requests
 	const verify = (publication: Publication) => {
 		assert.deepEqual(Object.keys(publication).sort(), ["tools", "version"]);
 		assert.equal(publication.version, 1);
-		assert.deepEqual(publication.tools.map((tool) => tool.name), ["policy_propose","policy_rules"]);
+		assert.deepEqual(publication.tools.map((tool) => tool.name), ["policy_approve", "policy_control", "policy_propose", "policy_rules"]);
 		assert.equal(publication.tools.length, [...registered.values()].filter((tool) => tool.renderCall !== undefined || tool.renderResult !== undefined || tool.renderShell !== undefined).length);
 		for (const display of publication.tools) {
 			const definition = registered.get(display.name);

@@ -924,21 +924,28 @@ describe("PolicyApprovalPanel reader", () => {
 	it("keeps the final action unavailable until the last page and ignores a pointer press before then", () => {
 		const { panel, decisions } = make("Approve steer");
 		let lines = panel.render(60);
-		assert.match(lines.at(-1) ?? "", /\[Read pages\] \[Cancel\]/);
+		assert.match(lines.at(-1) ?? "", /^\[Previous\] \[Next\] \[Cancel\]\s*$/);
+		assert.doesNotMatch(lines.at(-1) ?? "", /Approve/);
 		const press = pointer(lines, 2, lines.length - 1);
 		assert.equal(panel.handleMouse(press)?.handled, true);
 		panel.handleInput("a");
 		assert.deepEqual(decisions, []);
 		toEnd(panel, 60);
 		lines = panel.render(60);
-		assert.match(lines.at(-1) ?? "", /\[Approve steer\] \[Cancel\]/);
+		assert.match(lines.at(-1) ?? "", /\[Cancel\] \[Approve steer\]/);
 	});
 
 	it("labels the final action for its effect and commits only from that action", () => {
 		const { panel, decisions } = make("Approve as block");
 		toEnd(panel, 60);
 		const lines = panel.render(60);
-		assert.equal(panel.handleMouse(pointer(lines, 3, lines.length - 1))?.handled, true);
+		const row = lines.at(-1) ?? "";
+		assert.equal(panel.handleMouse(pointer(lines, row.indexOf("[Next]") + 1, lines.length - 1))?.handled, true, "Next on the last page is a no-op page control");
+		assert.deepEqual(decisions, []);
+		assert.equal(panel.handleMouse(pointer(lines, row.indexOf("[Approve as block]") + 1, lines.length - 1)), undefined, "a page control invalidates the geometry, so the stale press is dropped");
+		const again = panel.render(60);
+		const final = again.at(-1) ?? "";
+		assert.equal(panel.handleMouse(pointer(again, final.indexOf("[Approve as block]") + 1, again.length - 1))?.handled, true);
 		assert.deepEqual(decisions, [true]);
 	});
 
@@ -946,7 +953,7 @@ describe("PolicyApprovalPanel reader", () => {
 		const { panel } = make("Reject");
 		toEnd(panel, 60);
 		const text = panel.render(60).join("\n");
-		assert.match(text, /\[Reject\] \[Cancel\]/);
+		assert.match(text, /\[Cancel\] \[Reject\]/);
 		assert.doesNotMatch(text, /Approve/);
 	});
 

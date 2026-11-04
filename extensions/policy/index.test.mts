@@ -1487,7 +1487,7 @@ describe("panel controls reach the owner operations", () => {
 			ctx.ui.custom = nested;
 		});
 		ctx.ui.custom = baseCustom;
-		assert.match(labels[0] ?? "", /^\[Reject\] \[Cancel\]/);
+		assert.match(labels[0] ?? "", /\[Cancel\] \[Reject\]/);
 		assert.doesNotMatch(labels[0] ?? "", /Approve/);
 	});
 });

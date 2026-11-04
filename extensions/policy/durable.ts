@@ -71,7 +71,8 @@ import {
 } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
 import { readSettings } from "./settings.ts";
-import { readRecentActivity, terminalSafe } from "./panel.ts";
+import { readFireSummary, readRecentActivity, terminalSafe } from "./panel.ts";
+import { readPanelRequest, serializeFireSummary, serializeSnapshot, type PolicyPanelAnswer, type PolicyPanelRequest } from "./panel-protocol.ts";
 import {
 	type EvaluationContext,
 	evaluatePrograms,
@@ -176,8 +177,51 @@ export interface PolicyDurableContribution {
 	readonly source: string;
 	/** Pure presentation module a client can load without starting this contribution. */
 	readonly display?: { readonly version: 1; readonly entry: string; readonly export: string };
+	/** The panel module for the attached terminal and the command that serves it; see docs/conventions/operator-panels.md. */
+	readonly panel?: { readonly version: 1; readonly entry: string; readonly export: "operatorPanel"; readonly command: string };
+	readonly commands?: readonly PolicyDurableCommand[];
 	readonly create: (host: PolicyDurableHost) => Durable.Extension | Promise<Durable.Extension>;
 }
+
+export interface PolicyDurableCommand {
+	readonly name: string;
+	readonly description: string;
+	run(call: PolicyDurableCommandCall): Promise<string | { text: string; data?: JsonValue }>;
+}
+
+/** One command invocation as the agent host dispatches it; this slice reads these members. */
+export interface PolicyDurableCommandCall {
+	readonly args: string;
+	readonly data?: JsonValue;
+	readonly origin?: "operator" | "model";
+	readonly conversation: Durable.Conversation;
+	readonly context: Context;
+	readonly host: PolicyDurableHost;
+	readonly invocationId: string;
+}
+
+/** Runtimes created by `createPolicyDurableExtension`, keyed by host, for the panel command. */
+const runtimes = new WeakMap<PolicyDurableHost, DurablePolicyRuntime>();
+
+export const POLICY_COMMAND_DESCRIPTION = "Policy registry summary as text; the attached panel sends structured reads, approvals, and controls";
+
+/** The panel command: text callers get a bounded summary, the attached panel its structured route. */
+export const policyPanelCommand: PolicyDurableCommand = {
+	name: "policy",
+	description: POLICY_COMMAND_DESCRIPTION,
+	async run(call) {
+		const runtime = runtimes.get(call.host);
+		if (!runtime) throw new Error("The policy Durable extension is not installed for this host.");
+		if (call.data === undefined) return runtime.summaryText();
+		const request = readPanelRequest(call.data);
+		const answer = await runtime.panelRequest(request, call.conversation, call.context);
+		const text = "outcome" in answer ? answer.outcome
+			: answer.op === "inspect" ? `inspected ${"view" in request ? request.view : ""}`
+			: answer.op === "reset-revision" ? `reset revision ${answer.revision}`
+			: `${answer.snapshot.records.length} rules, ${answer.snapshot.pending.length} pending proposals`;
+		return { text, data: JSON.parse(JSON.stringify(answer)) as JsonValue };
+	},
+};
 
 /** What the agent session host installs, complete before the first `create()`. */
 export interface PolicyDurableInventory {
@@ -348,6 +392,7 @@ export async function createPolicyDurableExtension(host: PolicyDurableHost): Pro
 		mode: configured.values.mode,
 		stateDoc: StateDoc,
 	});
+	runtimes.set(host, runtime);
 
 	const rulesTool = defineTool({
 		name: "policy_rules",
@@ -1777,6 +1822,72 @@ class DurablePolicyRuntime {
 			structuredOutput: result.details as JsonValue,
 			details: result.details as Durable.JsonObject,
 		};
+	}
+
+	/** The conversation an attached panel is bound to stands in for a tool execution surface. */
+	private conversationSurface(conversation: Durable.Conversation): PolicySurface {
+		return {
+			conversationId: conversation.id,
+			agent: (context) => conversation.agent(context),
+			snapshot: (token, conversationId, context) => this.harness.snapshot(token, conversationId, context),
+			commit: (change, context) => this.harness.commit(change, context),
+		};
+	}
+
+	/** Bounded text for callers of the panel command that send no structured request. */
+	async summaryText(): Promise<string> {
+		const snapshot = await this.snapshot();
+		return `Policy mode ${this.getMode()} \u00b7 ${snapshot.records.size} rules \u00b7 ${snapshot.pending.length} pending proposals \u00b7 store ${snapshot.health.status}. Use policy_rules for exact records.`;
+	}
+
+	/**
+	 * The attached panel's reads, approvals, and controls against this host's registry and the bound
+	 * conversation's scope. Every mutation carries a panel audit; the registry enforces the revisions and
+	 * target identities the operator saw exactly as on the ordinary route.
+	 */
+	async panelRequest(request: PolicyPanelRequest, conversation: Durable.Conversation, context: Context): Promise<PolicyPanelAnswer> {
+		const surface = this.conversationSurface(conversation);
+		const agent = await surface.agent(context);
+		const audit = makeRuleAudit(this.auditContext(conversation.id, agent), "panel");
+		const signal = context.abortSignal;
+		const settled = async (outcome: string, op: "approve" | "reject" | "lifecycle" | "effect" | "reset"): Promise<PolicyPanelAnswer> => ({ op, outcome, snapshot: serializeSnapshot(await this.snapshot()) });
+		switch (request.op) {
+			case "load": {
+				const snapshot = await this.snapshot();
+				const [fireSummary, activity] = await Promise.all([readFireSummary(this.dir), readRecentActivity(this.dir)]);
+				return { op: "load", snapshot: serializeSnapshot(snapshot), fireSummary: serializeFireSummary(fireSummary), activity, scope: this.selectedRules(snapshot, agent).scope };
+			}
+			case "refresh": return { op: "refresh", snapshot: serializeSnapshot(await this.snapshot()) };
+			case "inspect": {
+				const text = boundedInspection(await this.inspect(request.view, request.id === undefined ? {} : { id: request.id }, surface, context));
+				return { op: "inspect", text, snapshot: serializeSnapshot(await this.snapshot()) };
+			}
+			case "approve":
+				await this.registry.decide(request.proposalId, "approved", request.effect, audit, request.revision, signal);
+				return settled(`Approved proposal ${request.proposalId}.`, "approve");
+			case "reject":
+				await this.registry.decide(request.proposalId, "rejected", undefined, audit, request.revision, signal);
+				return settled(`Rejected proposal ${request.proposalId}.`, "reject");
+			case "lifecycle": {
+				if (request.verb === "disable") await this.registry.disable(request.id, request.reason, audit, request.expectedIdentity, signal);
+				else if (request.verb === "enable") await this.registry.enable(request.id, request.reason, audit, request.expectedIdentity, signal);
+				else await this.registry.retire(request.id, request.reason, audit, request.expectedIdentity, signal);
+				return settled(`${request.verb === "retire" ? "Retired" : request.verb === "disable" ? "Disabled" : "Enabled"} ${request.id}.`, "lifecycle");
+			}
+			case "effect":
+				await this.registry.setEffect(request.id, request.effect, request.reason, audit, request.expectedIdentity, signal);
+				return settled(`Set ${request.id} effect to ${request.effect}.`, "effect");
+			case "reset-revision": {
+				// Persist the synced periods first, so the revision shown binds the reset that follows it.
+				const now = Date.now();
+				const { rules } = await this.activeRules(surface, context);
+				await this.withState(surface, context, (state) => { const observation = this.observationOf(state); observation.sync(rules, now); state.observation = observation.toJSON() as unknown as JsonValue; });
+				return { op: "reset-revision", revision: await this.resetRevision(request.id, surface, context) };
+			}
+			case "reset":
+				await this.resetObservation(request.id, request.reason, request.revision, surface, context);
+				return settled("Started a new policy observation period.", "reset");
+		}
 	}
 
 	private deps(surface: PolicySurface, context: Context): ToolDeps {
