@@ -1,4 +1,4 @@
-/** macOS clipboard tools, stable history retrieval, and the /clipboard overlay. */
+/** macOS clipboard tools, stable history retrieval, and the /clipboard view in the shared browsing frame. */
 
 import type { Static } from "@earendil-works/pi-schema";
 import { fileURLToPath } from "node:url";
@@ -29,17 +29,24 @@ import {
 	RESTORE_SNIPPET,
 	RestoreParams,
 } from "./operations.ts";
-import { ClipboardPanel } from "./panel.ts";
-import { loadRecentEntries, PREVIEW_CONTENT_CHARS, readExactEntry, restoreFromArchive, restoredNotice, searchArchive } from "./browser-operations.ts";
+import { openOperatorFrame, publishOperatorViews, type ViewHost } from "../../operator-ui/index.ts";
+import { loadRecentEntries, PREVIEW_CONTENT_CHARS, readExactEntry, restoreFromArchive, searchArchive } from "./browser-operations.ts";
 import { toolDisplay } from "./display.ts";
-import { type ClipboardEntry, readEntries, resolveClipboardDir } from "./store.ts";
+import { type ClipboardOperations, clipboardView, createClipboardViewState } from "./operator-view.ts";
+import { readEntries, resolveClipboardDir } from "./store.ts";
 import { safeLine } from "./text.ts";
 
+const OWNER = fileURLToPath(import.meta.url);
 const storeDir = () => resolveClipboardDir(process.env, getAgentDir());
 const errorText = (error: unknown) => safeLine(error instanceof Error ? error.message : String(error));
 
-/** Package contract: docs/conventions/operator-panels.md. The footer menu opens `/clipboard` as a harmless destination. */
-const DESTINATIONS = { version: 1, destinations: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" }, owner: fileURLToPath(import.meta.url) }] } as const;
+/** The archive operations behind the ordinary view, read at the moment of each call. */
+const archiveOperations: ClipboardOperations = {
+	recent: (signal) => loadRecentEntries(storeDir(), signal),
+	search: (query, cursor, signal) => searchArchive(storeDir(), query, cursor, signal),
+	preview: (entry, signal) => readExactEntry(storeDir(), entry, PREVIEW_CONTENT_CHARS, signal),
+	restore: (entry, signal) => restoreFromArchive(storeDir(), entry, signal),
+};
 
 async function notifyRecent(ctx: ExtensionContext): Promise<void> {
 	try {
@@ -55,16 +62,13 @@ async function notifyRecent(ctx: ExtensionContext): Promise<void> {
 	}
 }
 
-function notifyRestored(
-	ctx: ExtensionContext,
-	result: { restored?: ClipboardEntry; warning?: string } | undefined,
-): void {
-	if (!result?.restored) return;
-	const notice = restoredNotice(result.restored, result.warning);
-	ctx.ui.notify(notice.text, notice.type);
-}
-
 export default function (pi: ExtensionAPI) {
+	const viewState = createClipboardViewState();
+	publishOperatorViews(pi, {
+		version: 2,
+		owner: OWNER,
+		views: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" }, order: 20, view: (_ctx, host: ViewHost) => clipboardView(host, archiveOperations, viewState) }],
+	});
 	const stopSettings = publishSettings(pi.events, { agentDir: getAgentDir() });
 	pi.on("session_shutdown", () => stopSettings());
 	pi.events.emit(
@@ -142,37 +146,13 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("clipboard", {
-		description: "Browse clipboard history in an interactive overlay (recent, archive search, preview, restore)",
+		description: "Browse clipboard history: recent entries, archive search, the exact record, and Restore",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") {
 				await notifyRecent(ctx);
 				return;
 			}
-			let loaded: { entries: ClipboardEntry[]; hasMore: boolean };
-			try {
-				loaded = await loadRecentEntries(storeDir());
-			} catch (error) {
-				ctx.ui.notify(`Could not open clipboard history: ${errorText(error)}`, "error");
-				return;
-			}
-			const { entries, hasMore } = loaded;
-			const result = await ctx.ui.custom<{ restored?: ClipboardEntry; warning?: string }>(
-				(tui, theme, _keybindings, done) =>
-					new ClipboardPanel({
-						entries,
-						theme,
-						tui,
-						getMaxRows: () => Math.max(1, tui.terminal.rows - 2),
-						hasMore,
-						done,
-						onRestore: (entry, signal) => restoreFromArchive(storeDir(), entry, signal),
-						onPreview: (entry, signal) => readExactEntry(storeDir(), entry, PREVIEW_CONTENT_CHARS, signal),
-						onRecent: (signal) => loadRecentEntries(storeDir(), signal),
-						onSearch: (query, cursor, signal) => searchArchive(storeDir(), query, cursor, signal),
-					}),
-				{ overlay: true, overlayOptions: { width: "88%", minWidth: 40, anchor: "center", margin: 1 } },
-			);
-			notifyRestored(ctx, result);
+			await openOperatorFrame(pi, ctx, { owner: OWNER, id: "clipboard" });
 		},
 	});
 
@@ -183,9 +163,4 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 	publishDisplay();
-	const publishDestinations = () => pi.events.emit("harness:operator-destination:publish", DESTINATIONS);
-	pi.events.on("harness:operator-destination:request", (request) => {
-		if (typeof request === "object" && request !== null && "version" in request && request.version === 1) publishDestinations();
-	});
-	publishDestinations();
 }

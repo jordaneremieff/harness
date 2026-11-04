@@ -6,13 +6,12 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { clipboardContribution, type DurableCommandCall } from "./durable.ts";
-import { operatorPanel, type OperatorPanelHost } from "./operator-panel.ts";
+import type { JsonValue, PanelHost } from "../../operator-ui/index.ts";
+import { operatorPanel } from "./operator-panel.ts";
 import { readPanelAnswer, readPanelRequest } from "./panel-protocol.ts";
 import { appendEntry, makeEntry } from "./store.ts";
 
-type JsonValue = Parameters<OperatorPanelHost["request"]>[0];
-
-const theme = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as OperatorPanelHost["theme"];
+const theme = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as PanelHost["theme"];
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 let root: string;
@@ -85,79 +84,92 @@ describe("clipboard native browser route", () => {
 	});
 });
 
+/** A panel host over a request route, recording notices and the frame close request. */
+function panelHost(request: PanelHost["request"]) {
+	const notices: string[] = [];
+	let closed = 0;
+	const host: PanelHost = {
+		theme,
+		target: { id: "conversation-1", label: "owner · work" },
+		signal: new AbortController().signal,
+		requestRender: () => {},
+		notify: (text) => notices.push(text),
+		push: () => {},
+		back: () => {},
+		focusActions: () => {},
+		close: () => {
+			closed++;
+		},
+		request,
+	};
+	return { host, notices, closed: () => closed };
+}
+
 describe("clipboard operator panel module", () => {
-	it("opens the shared panel over host requests and restores only through the labelled control", async () => {
+	it("opens the shared view over host requests and restores only through the labelled control", async () => {
 		const module = operatorPanel();
-		assert.equal(module.version, 1);
+		assert.equal(module.version, 2);
 		assert.equal(module.title, "Clipboard");
 		const requests: JsonValue[] = [];
 		const pending: Promise<unknown>[] = [];
-		const settle = async () => { for (let round = 0; round < 6; round++) { await Promise.allSettled(pending); await flush(); } };
-		const notices: string[] = [];
-		let closed = 0;
-		const run = command();
-		const host: OperatorPanelHost = {
-			target: { id: "conversation-1", name: "owner" }, theme, tui: { requestRender() {} }, rows: () => 24,
-			request: async (data) => { requests.push(data); const answer = run(data) as Promise<{ text: string; data?: JsonValue }>; pending.push(answer); return await answer; },
-			dialogs: { notify: (text) => { notices.push(text); } },
-			close: () => { closed++; },
+		const settle = async () => {
+			for (let round = 0; round < 6; round++) {
+				await Promise.allSettled(pending);
+				await flush();
+			}
 		};
-		const instance = module.open(host);
+		const run = command();
+		const f = panelHost(async (data) => {
+			requests.push(data);
+			const answer = run(data) as Promise<{ text: string; data?: JsonValue }>;
+			pending.push(answer);
+			return await answer;
+		});
+		const view = module.open(f.host);
 		await settle();
-		let lines = instance.render(80).map(stripVTControlCharacters);
-		assert.ok(lines.some((line) => /Recent [1-9]/.test(line)) && lines.some((line) => line.includes("other")), lines.join("\n"));
+		const lines = view.render(100, 20).map(stripVTControlCharacters);
+		assert.ok(lines.some((line) => line.includes("other")), lines.join("\n"));
 		assert.deepEqual(requests[0], { op: "recent" });
 		assert.ok(requests.some((request) => (request as { op?: string }).op === "preview"), "selection reads the exact record through the host");
-		const restoreRow = lines.findIndex((line) => line.includes("[Restore]"));
-		const x = lines[restoreRow].indexOf("[Restore]") + 1;
-		instance.handleMouse({ type: "click", button: "left", x, y: restoreRow, width: 80, height: lines.length, screenX: x, screenY: restoreRow, clickCount: 1 } as never);
+		assert.ok(!requests.some((request) => (request as { op?: string }).op === "restore"), "selection never restores");
+		const restore = view.actions?.().find((action) => action.label === "Restore");
+		assert.ok(restore && restore.disabled === undefined, "Restore is labelled and available once the record is read");
+		restore.run();
 		await settle();
-		assert.equal(closed, 1, "a successful restore returns to the conversation");
-		assert.ok(notices.some((text) => /^Restored /.test(text)), notices.join("\n"));
-		assert.ok(requests.some((request) => (request as { op?: string }).op === "restore"));
-		instance.dispose();
-		lines = instance.render(80);
-		assert.ok(Array.isArray(lines));
+		assert.ok(f.notices.some((text) => /^Restored /.test(text)), f.notices.join("\n"));
+		const previewed = requests.find((request) => (request as { op?: string }).op === "preview") as { id?: string } | undefined;
+		const restored = requests.find((request) => (request as { op?: string }).op === "restore") as { id?: string } | undefined;
+		assert.ok(previewed?.id && restored?.id === previewed.id, "Restore writes the record the operator read");
+		assert.ok(["first body\nsecond line", "other body"].includes(await readFile(clipboardFile, "utf8")));
 	});
 
-	it("shows a pending and then failed initial read in the panel itself, never an empty history, and Refresh retries", async () => {
-		const notices: string[] = [];
+	it("shows a pending and then failed initial read in the view itself, never an empty history, and Refresh retries", async () => {
 		let fail = true;
 		let release: () => void = () => {};
-		const gate = new Promise<void>((resolve) => { release = resolve; });
-		const run = command();
-		const instance = operatorPanel().open({
-			target: { id: "c" }, theme, tui: { requestRender() {} }, rows: () => 20,
-			request: async (data) => {
-				await gate;
-				if (fail) throw new Error("archive unreadable");
-				return await (run(data) as Promise<{ text: string; data?: JsonValue }>);
-			},
-			dialogs: { notify: (text) => { notices.push(text); } },
-			close() {},
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
 		});
-		const draw = () => instance.render(60).map(stripVTControlCharacters);
-		let lines = draw();
-		assert.ok(lines.some((line) => line.includes("Recent \u00b7 reading")), lines.join("\n"));
-		assert.ok(lines.some((line) => line.includes("Reading clipboard history")));
-		assert.ok(!lines.some((line) => /Recent 0|No clipboard history matches/.test(line)), "a pending read is not an empty archive");
+		const run = command();
+		const f = panelHost(async (data) => {
+			await gate;
+			if (fail) throw new Error("archive unreadable");
+			return await (run(data) as Promise<{ text: string; data?: JsonValue }>);
+		});
+		const view = operatorPanel().open(f.host);
+		const draw = () => view.render(100, 20).map(stripVTControlCharacters).join("\n");
+		assert.match(draw(), /Reading recent entries/);
+		assert.doesNotMatch(draw(), /Clipboard history is empty/, "a pending read is not an empty archive");
 		release();
-		await flush(); await flush();
-		lines = draw();
-		assert.ok(lines.some((line) => line.includes("Recent \u00b7 read failed")), lines.join("\n"));
-		assert.ok(lines.some((line) => /Could not read clipboard history: archive unreadable/.test(line)), "the failure shows in the mounted panel");
-		assert.ok(!lines.some((line) => /Recent 0|No clipboard history matches/.test(line)));
-		assert.ok(notices.some((text) => /archive unreadable/.test(text)));
+		await flush();
+		await flush();
+		assert.match(draw(), /Recent entries could not be read; Refresh retries: archive unreadable/);
+		assert.doesNotMatch(draw(), /Clipboard history is empty/);
 		fail = false;
-		const refreshRow = lines.findIndex((line) => line.includes("[Refresh]"));
-		assert.ok(refreshRow >= 0, "Refresh stays reachable after the failure");
-		const x = lines[refreshRow].indexOf("[Refresh]") + 1;
-		instance.handleMouse({ type: "click", button: "left", x, y: refreshRow, width: 60, height: lines.length, screenX: x, screenY: refreshRow, clickCount: 1 } as never);
-		assert.ok(draw().some((line) => line.includes("Recent \u00b7 reading")), "a retry after a failure shows the read again");
-		for (let round = 0; round < 200 && !draw().some((line) => /Recent [1-9]/.test(line)); round++) await new Promise((resolve) => setTimeout(resolve, 5));
-		lines = draw();
-		assert.ok(lines.some((line) => /Recent [1-9]/.test(line)) && lines.some((line) => line.includes("other")), lines.join("\n"));
-		assert.ok(lines.some((line) => line.includes("[Close]")), "Close stays reachable");
-		instance.dispose();
+		const refresh = view.actions?.().find((action) => action.label === "Refresh");
+		assert.ok(refresh, "Refresh stays reachable after the failure");
+		refresh.run();
+		assert.match(draw(), /Reading recent entries/, "a retry shows the read again");
+		for (let round = 0; round < 200 && !draw().includes("other"); round++) await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.ok(draw().includes("other"), draw());
 	});
 });

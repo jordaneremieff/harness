@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { NavigationFrame } from "../../operator-ui/index.ts";
 import registerClipboard from "./index.ts";
 import type { SearchPage } from "./search.ts";
 import { appendEntry, makeEntry } from "./store.ts";
@@ -103,8 +104,10 @@ function registry(): {
 			emit: (event: string, value: unknown) => {
 				emitted.push({ event, value });
 				if (event === "durable:contribution") contributions.push(value as EmittedContribution);
+				for (const handler of handlers.get(event) ?? []) handler(value);
 			},
 		},
+		getCommands: () => [{ name: "clipboard", source: "extension", sourceInfo: { path: fileURLToPath(new URL("./index.ts", import.meta.url)), source: "local", scope: "user", origin: "top-level" } }],
 	};
 	registerClipboard(pi as unknown as ExtensionAPI);
 	return { tools, commands, contributions, emitted, request: (event, value) => { for (const handler of handlers.get(event) ?? []) handler(value); } };
@@ -181,14 +184,18 @@ describe("clipboard entrypoint", () => {
 		assert.equal(contributions[0]?.source, fileURLToPath(new URL("./index.ts", import.meta.url)));
 	});
 
-	it("announces /clipboard as a harmless destination at setup and on request", () => {
+	it("publishes the clipboard view at setup and on request, bound to this module", () => {
 		const { emitted, request } = registry();
-		const destinations = () => emitted.filter((item) => item.event === "harness:operator-destination:publish").map((item) => item.value);
-		assert.deepEqual(destinations(), [{ version: 1, destinations: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" }, owner: fileURLToPath(new URL("./index.ts", import.meta.url)) }] }], "the announcement names its owner module so the menu binds to this registration");
-		request("harness:operator-destination:request", { version: 1 });
-		assert.equal(destinations().length, 2);
-		request("harness:operator-destination:request", { version: 2 });
-		assert.equal(destinations().length, 2, "another version is ignored");
+		const publications = () => emitted.filter((item) => item.event === "harness:operator-view:publish").map((item) => item.value as { version: number; owner: string; views: Array<Record<string, unknown>> });
+		const [first] = publications();
+		assert.equal(first?.version, 2);
+		assert.equal(first?.owner, fileURLToPath(new URL("./index.ts", import.meta.url)), "the publication names its owner module so the frame binds to this registration");
+		assert.deepEqual(first?.views.map(({ view: _view, ...rest }) => rest), [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" }, order: 20 }]);
+		assert.equal(typeof first?.views[0]?.view, "function", "ordinary Pi shows the view in the frame");
+		request("harness:operator-view:request", { version: 2 });
+		assert.equal(publications().length, 2);
+		request("harness:operator-view:request", { version: 1 });
+		assert.equal(publications().length, 2, "another version is ignored");
 	});
 
 	it("restores a listed stable id after later writes shift list order", async () => {
@@ -323,26 +330,39 @@ describe("clipboard entrypoint", () => {
 		const full = `${"preview ".repeat(5000)}FULL_TAIL`;
 		await execute(tools.get("clipboard_copy"), { content: full, label: "browser-large" });
 		const notifications: string[] = [];
-		const ctx: ClipboardCommandCtx = {
+		let frameText = "";
+		const ctx = {
 			hasUI: true,
 			mode: "tui",
+			cwd: root,
+			sessionManager: { getSessionId: () => "session-1" },
 			ui: {
 				notify: (message: string) => notifications.push(message),
-				custom: async (factory) =>
+				custom: async (factory: PanelFactory) =>
 					new Promise((resolve) => {
-						const component = factory({ terminal: { rows: 24 }, requestRender: () => {} }, theme, {}, resolve);
+						const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, {}, resolve) as unknown as NavigationFrame;
+						const screen = () => frame.render(120).join("\n");
 						void (async () => {
-							for (let attempt = 0; attempt < 400 && !component.render(72).join("\n").includes(" chars"); attempt++) {
+							const restoreOf = () => frame.viewActions.find((action) => action.label === "Restore");
+							for (let attempt = 0; attempt < 400 && restoreOf()?.disabled !== undefined; attempt++) {
+								screen();
 								await new Promise((settled) => setTimeout(settled, 5));
 							}
-							assert.match(component.render(72).join("\n"), /archive \d{4}-\d{2}-\d{2} · \d+ chars/);
-							component.handleInput("\r");
+							assert.match(screen(), /\d+ lines · \d+ characters/);
+							assert.ok(screen().includes("preview preview"), "the exact record was read before Restore");
+							const restoreAction = restoreOf();
+							assert.ok(restoreAction && restoreAction.disabled === undefined, "Restore is available once the exact record is read");
+							restoreAction.run();
+							for (let attempt = 0; attempt < 400 && !/Restored/.test(screen()); attempt++) await new Promise((settled) => setTimeout(settled, 5));
+							frameText = screen();
+							frame.close();
 						})();
 					}),
 			},
 		};
-		await commands.get("clipboard").handler("", ctx);
+		await commands.get("clipboard").handler("", ctx as unknown as ClipboardCommandCtx);
 		assert.equal(await readFile(clipboardFile, "utf8"), full);
-		assert.ok(notifications.some((message) => /Restored/.test(message)));
+		assert.match(frameText, /Restored/, "the frame shows the restore outcome");
+		assert.deepEqual(notifications, []);
 	});
 });

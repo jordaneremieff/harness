@@ -15,7 +15,7 @@ the payload contains no execution functions. The renderers live in `display.ts`,
 | `clipboard_list` | tool | List recent entries or search full archived text, with bounded continuation and stable ids. |
 | `clipboard_get` | tool | Read one archived entry by stable id, in bounded pages. |
 | `clipboard_restore` | tool | Copy one archived entry back to the clipboard; the restore is archived as a new entry. |
-| `/clipboard` | command | Browse recent entries or search the archive, preview, and restore in an overlay. |
+| `/clipboard` | command | Browse recent entries or search the archive, preview, and restore in the shared browsing frame. |
 
 Each tool is one operation; there is no action multiplexer, and the model-facing
 API has no transient index addressing — stable ids are the only entry handle.
@@ -230,17 +230,40 @@ The extension provides no entry-level deletion. Daily-file removal avoids rewrit
 
 ## Browser behavior
 
-The overlay is available in TUI mode. RPC receives a notification that directs the caller to `clipboard_list`, rather than attempting a terminal-only custom component.
+`/clipboard` opens the Clipboard view in the shared browsing frame below the
+native transcript (`docs/conventions/operator-panels.md`), in TUI mode. RPC
+receives a notification that directs the caller to `clipboard_list`, rather
+than attempting a terminal-only component. The statusline work strip lists
+Clipboard because this extension publishes it as an operator view; the command
+opens it with the statusline disabled too.
 
-The overlay has two scopes. **Recent** lists the newest 200 entries (marked `+` when older history exists) and filters them by label, id, and excerpt. **Search archive** runs the same literal search as `clipboard_list` over full archived text, one page at a time; a page that is empty can still have a continuation, and coverage shows whether the scan is partial. Recent rows read metadata only; a selected entry's preview is read on demand, bounded to 32,768 characters. Preview reads are cancelled when the selection moves, and late results are discarded.
+The view has two scopes. **Recent** lists the newest 200 entries and filters
+them as you type by label, id, and excerpt. **Archive** runs the same literal
+search as `clipboard_list` over full archived text, one page at a time: type the
+text, then press Enter or choose Search archive; **Continue** reads the next
+page while the scan has one. A page that is empty can still have a
+continuation, and the status line shows whether the scan is partial. Recent
+rows read metadata only; a selected entry's preview is read on demand, bounded
+to 32,768 characters. Preview reads are cancelled when the selection moves, and
+late results are discarded.
 
-Pointer: a row click selects the entry and never restores it. Labelled controls act: Recent, Search archive, Refresh, Help, Search, Restore, Detail (Back to list), Continue, Close, Previous page, Next page. Restore is a visible primary control; Continue appears only while the last archive page of the current query left a next page, so an absent continuation is explicit rather than an inert button. Help shows the key legend in the preview pane; the footer line carries state (the selected record, a stale archive, a running restore) instead of a permanent shortcut catalogue. Wheel input scrolls the list or preview under the pointer. Hit regions are rebuilt on every render and dropped on resize, scope or filter change, replacement, hide, and disposal, so a stale click cannot act on a replacement row. Keyboard routes remain: Up/Down select, Left/Right scroll the preview, Enter restores the selected entry, F1 toggles help, F2 switches scope, and Escape leaves help, detail or edit mode, clears the filter, then closes. Pointer delivery is exercised through `handleMouse` with fake geometry; a live terminal pointer check is not part of the automated tests.
+Selecting a row reads it and never restores it. **Restore** is the one effect:
+it stays unavailable, with its reason, until the exact record has been read,
+while another restore runs, and while archive results are stale after a query
+change or a read failure. Restore resolves the selected stable id again and
+writes the full archived content, so preview bounds never truncate the
+clipboard result; a truncated preview says so. **Refresh** reads recent entries
+again or reruns the search and never changes a record. A completed copy remains
+a success if leaving the view arrives only during archival; the archive warning
+stays distinct. Leaving the view cancels active reads and drops late answers.
+The query, scope, and selection survive leaving and reopening the view within
+the session. Labels, previews, content, and error text have terminal and bidi
+controls escaped before rendering.
 
-The same component serves two hosts. The ordinary `/clipboard` command opens it as an overlay with direct archive callbacks. The attached Agent terminal opens it through `operator-panel.ts`, a presentation-only module that routes every read and the restore through the host's `clipboard` contribution command (see `docs/conventions/operator-panels.md`). The footer menu of the ordinary statusline lists `/clipboard` as a destination because this extension announces it on `harness:operator-destination:publish`.
-
-A stale archive view (after a query change, or after a read failure) shows its coverage state, refuses Restore, and offers Refresh. A Refresh or Search reruns the current query and never mutates the selected record. Escape cancels an active restore. Disposal also cancels active work and suppresses late component callbacks. A completed copy remains a success if cancellation arrives only during archival. A truncated preview is labeled. Restore resolves the selected stable id again and writes the full archived content, so preview bounds never truncate the clipboard result.
-
-The component is the sole height authority. It reads the host TUI row count and the overlay host does not impose `maxHeight`, which prevents Pi from slicing away the footer. Every rendered row paints the full width inside a background-backed frame. Below 48 columns or 12 rows the panel shows a resize message and a Close control instead of the browser. At 48 columns and above, the list and preview stack within the available rows; search, preview navigation, actions, and close remain visible at 80 and 100 columns. Labels, previews, content, and error text have terminal and bidi controls escaped before custom rendering.
+The same view serves two hosts. Ordinary Pi binds its reads and Restore to the
+archive directly. The attached Agent terminal opens it through
+`operator-panel.ts`, a presentation-only module that routes every read and the
+restore through the host's `clipboard` contribution command.
 
 ## Durable agents
 
@@ -288,12 +311,10 @@ Restore is the only effect, and only the labelled control sends it. A
 malformed request is an error, never an empty history; a malformed answer is
 reported by the browser as a read failure.
 
-In the attached browser the Recent list starts as `Recent · reading` with
-`Reading clipboard history…` in the list until the host answers. A failed read
-shows `Recent · read failed` and `Could not read clipboard history: <reason>.
-Refresh retries.` in the list itself, never `Recent 0` or an empty history, and
-the same message goes to the terminal's notice row. Refresh and Close stay
-usable; a Refresh after a failure shows the reading state again.
+Until the host answers, the Recent list and its status line say the entries are
+being read. A failed read says the history could not be read, with the reason
+and that Refresh retries, never an empty history. Refresh and the way out stay
+usable.
 
 ## Tool cards
 
@@ -326,10 +347,10 @@ the diagnostic has more than one line.
 - `store.ts`: local settings read, private append-only archive, and stable-id resolution.
 - `search.ts`: bounded literal discovery, candidate validation, and stateless continuation.
 - `pb.ts`: no-shell `pbcopy` and `pbpaste` wrappers.
-- `panel.ts`: browser state, pointer hit regions, and rendering.
-- `browser-operations.ts`: the archive reads and the restore behind the browser, shared by both hosts.
+- `operator-view.ts`: the Clipboard view in the shared browsing frame, over the operations it is given.
+- `browser-operations.ts`: the archive reads and the restore behind the view, shared by both hosts.
 - `panel-protocol.ts`: the native route's request union and answer readers.
-- `operator-panel.ts`: the attached-terminal browser module over `panel.ts` and the request route.
+- `operator-panel.ts`: the attached-terminal module over `operator-view.ts` and the request route.
 - `display.ts`: presentation-only tool renderer records returned by `toolDisplay()`; it imports only `presentation.ts` and public types.
 - `text.ts`: terminal-safe text and output bounds local to this extension.
 - `*.test.mts`: unit and entrypoint drive tests.
