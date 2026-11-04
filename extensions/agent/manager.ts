@@ -561,7 +561,11 @@ export class AgentManager {
 		}
 	}
 
-	async control(method: string, input: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
+	/**
+	 * `options.signal` withdraws the caller's wait for the answer: the client settles at once and a late
+	 * answer is dropped. The host still runs an admitted request; nothing is rolled back or replayed.
+	 */
+	async control(method: string, input: Record<string, unknown>, caller: AgentCaller, options?: { readonly signal?: AbortSignal }): Promise<unknown> {
 		const selector = String(input.sessionId ?? "");
 		const sessionId = await this.resolveTarget(selector);
 		if (typeof input.replyTo === "string") input = { ...input, replyTo: await this.resolveTarget(input.replyTo) };
@@ -582,12 +586,12 @@ export class AgentManager {
 			this.recoveryErrors.delete(record.storageId);
 			this.failures.delete(record.storageId);
 		}
-		return this.selectedControl(record, method, params, caller, selector);
+		return this.selectedControl(record, method, params, caller, selector, options?.signal);
 	}
 
-	private async selectedControl(record: CatalogRecord, method: string, params: Record<string, unknown>, caller: AgentCaller, selector: string): Promise<unknown> {
+	private async selectedControl(record: CatalogRecord, method: string, params: Record<string, unknown>, caller: AgentCaller, selector: string, signal?: AbortSignal): Promise<unknown> {
 		if (method === "release") return this.releaseControl(record, params, caller);
-		try { return await this.controlClient(await this.connection(record), method, params, caller); }
+		try { return await this.controlClient(await this.connection(record), method, params, caller, signal); }
 		catch (error) {
 			if (method !== "configure" || !selector.startsWith("@")) throw error;
 			throw new Error(`Configure of ${String(params.sessionId)} (${selector}) failed: ${errorText(error)}`, { cause: error });
@@ -613,7 +617,13 @@ export class AgentManager {
 		return method;
 	}
 
-	private async controlClient(client: HostConnection, method: string, params: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
+	/** Only the plain forwarded request carries the caller's withdrawal; task submission keeps its own admission path. */
+	private forwardControl(client: HostConnection, method: string, requested: string, params: Record<string, unknown>, caller: AgentCaller, signal: AbortSignal | undefined): Promise<unknown> {
+		if (requested === "task-submit") return client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" });
+		return client.request(method, params, signal ? { signal } : undefined);
+	}
+
+	private async controlClient(client: HostConnection, method: string, params: Record<string, unknown>, caller: AgentCaller, signal?: AbortSignal): Promise<unknown> {
 		const sessionId = String(params.sessionId);
 		const requested = this.requestedOperation(method, params);
 		const versionError = hostRequestVersionError(requested, client.runtimeContract);
@@ -624,9 +634,7 @@ export class AgentManager {
 			return { ...(receipt as Record<string, unknown>), boundary: REPORT_DELIVERY_BOUNDARY };
 		}
 		if (["submit", "rewind", "fork"].includes(method)) params.requestId ??= randomUUID();
-		const outcome = requested === "task-submit"
-			? await client.request(requested, { ...params, requester: caller.id, origin: params.origin ?? "operator" })
-			: await client.request(method, params);
+		const outcome = await this.forwardControl(client, method, requested, params, caller, signal);
 		if (requested === "task-submit") return { ...outcome as object, result: this.sentWorkResult(caller.id, sessionId, outcome, String(params.requestId)) };
 		const values = record(outcome);
 		if ((method === "rewind" && Number.isSafeInteger(values.submissionId) && Number(values.submissionId) > 0) || (method === "timer-schedule" && Number.isSafeInteger(values.timerId) && Number(values.timerId) > 0)) this.rememberSentWork(caller.id, values.identity);

@@ -285,9 +285,14 @@ it("a plain click on the header or hint discloses one peer card locally and glob
 	assert.ok(hintRow() > 0);
 	click(hintRow());
 	assert.match(lines().join("\n"), /FINAL_BODY/u);
+	component.invalidate();
+	assert.match(lines().join("\n"), /FINAL_BODY/u, "the disclosure survives Pi's rebuild of the renderer, as on a theme refresh");
+	const again = new CustomMessageComponent(message, renderAgentPeerMessage);
+	assert.match(clean(again, width).join("\n"), /FINAL_BODY/u, "a new component over the same stored message keeps the choice");
 	component.setExpanded(true);
 	component.setExpanded(false);
 	assert.doesNotMatch(lines().join("\n"), /FINAL_BODY/u, "global expansion owns the card again after a rebuild");
+	assert.doesNotMatch(clean(new CustomMessageComponent(message, renderAgentPeerMessage), width).join("\n"), /FINAL_BODY/u, "the global change clears the shared choice of that message");
 	assert.deepEqual(message.details, { kind: "report", senderIdentity: identity, ...model }, "disclosure changes no retained content");
 });
 

@@ -107,6 +107,47 @@ interface CardLayoutOptions {
 	readonly peerPadding?: number;
 	/** Peer cards draw their own expansion hint below hidden lines. */
 	readonly keys?: Pick<KeybindingHints, "keyText">;
+	/** The stable message object a peer card's pointer disclosure is bound to; absent, the choice lives in the renderer only. */
+	readonly message?: object;
+}
+
+/**
+ * Where one card keeps its pointer disclosure between renderer instances. `get` answers the choice made
+ * under the given global expansion, or undefined when none applies; a deliberate global change wins.
+ */
+export interface CardDisclosure {
+	get(global: boolean): boolean | undefined;
+	set(expanded: boolean, global: boolean): void;
+}
+
+const disclosures = new WeakMap<object, CardDisclosure>();
+
+/** Bind a message object to a disclosure store owned by its view; the store is released with the message. */
+export function bindCardDisclosure(message: object, disclosure: CardDisclosure): void {
+	disclosures.set(message, disclosure);
+}
+
+/** A choice made under one global expansion; a different global value discards it. */
+function localDisclosure(): CardDisclosure {
+	let choice: { expanded: boolean; under: boolean } | undefined;
+	return {
+		get: (global) => {
+			if (choice && choice.under !== global) choice = undefined;
+			return choice?.expanded;
+		},
+		set: (expanded, under) => { choice = { expanded, under }; },
+	};
+}
+
+/** Ordinary notices keep their choice with the stored message object Pi hands to every rebuild. */
+function disclosureFor(message: object | undefined): CardDisclosure {
+	if (!message) return localDisclosure();
+	let store = disclosures.get(message);
+	if (!store) {
+		store = localDisclosure();
+		disclosures.set(message, store);
+	}
+	return store;
 }
 
 /** Tool parts inherit Pi's Box(1,1); custom-message renderers must supply that inner vertical padding. */
@@ -144,13 +185,15 @@ class PeerCardBody implements Component {
 	private readonly sections: CardSections;
 	private readonly theme: Theme;
 	private readonly options: CardLayoutOptions;
+	private readonly disclosure: CardDisclosure;
 	constructor(header: readonly string[], content: readonly (string | Component)[], sections: CardSections, theme: Theme, options: CardLayoutOptions) {
 		this.header = header;
 		this.content = content;
 		this.sections = sections;
 		this.theme = theme;
 		this.options = options;
-		this.expanded = options.expanded;
+		this.disclosure = disclosureFor(options.message);
+		this.expanded = this.disclosure.get(options.expanded) ?? options.expanded;
 	}
 	private static lines(parts: readonly (string | Component)[], width: number): string[] {
 		return parts.flatMap((part) => typeof part === "string" ? new Text(part, 0, 0).render(width) : part.render(width));
@@ -182,6 +225,7 @@ class PeerCardBody implements Component {
 		const onHint = layout.hint !== undefined && event.y === layout.hint;
 		if (!layout.collapsible || (!onHeader && !onHint)) return undefined;
 		this.expanded = !this.expanded;
+		this.disclosure.set(this.expanded, this.options.expanded);
 		this.invalidate();
 		return { handled: true };
 	}
@@ -1247,7 +1291,7 @@ export const renderAgentPeerMessage: MessageRenderer = (message, options, theme)
 		theme.fg("dim", "/agent opens the dashboard"),
 	];
 	const subject = details.threadId !== undefined ? text(details.threadTitle) || text(details.threadId) : peerLabel(details);
-	return cardLayout({ title: `[agent] ${label}`, label: subject, metadata: peerMetadata(details), body, details: sourceDetails, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options });
+	return cardLayout({ title: `[agent] ${label}`, label: subject, metadata: peerMetadata(details), body, details: sourceDetails, previewLines: NOTICE_PREVIEW_LINES }, theme, { expanded: options.expanded, peerPadding: options.outputPad, keys: options, message });
 };
 
 /** Retained communication kinds in operator words. */
@@ -1274,11 +1318,23 @@ function communicationSubject(value: Communication): string {
 function communicationDetails(value: Communication, theme: Theme): () => (string | Component)[] {
 	return () => communicationDetailLines(value, theme);
 }
+/** One validated reference of a result, with every retained identifier. */
+function referenceLine(index: number, reference: { submissionId: number; requestId?: string; entryId?: string; answerEntryId?: string }): string {
+	const facts = [`submission ${reference.submissionId}`, reference.requestId === undefined ? undefined : `request ${displayText(reference.requestId)}`, reference.entryId === undefined ? undefined : `entry ${reference.entryId}`, reference.answerEntryId === undefined ? undefined : `answer entry ${reference.answerEntryId}`].filter(Boolean);
+	return `reference ${index + 1}: ${facts.join(" \u00b7 ")}`;
+}
+
+/** Every validated metadata field in full; the schema already bounds each value, so nothing is previewed. */
 function communicationDetailLines(value: Communication, theme: Theme): (string | Component)[] {
 	const lines = [`Sender identity: ${displayIdentity(value.sender.identity)}${value.sender.kind ? ` (${value.sender.kind})` : ""}`, `Recorded: ${new Date(value.recordedAt).toISOString()}`];
 	for (const [key, item] of Object.entries(value.metadata)) {
 		if (item === undefined) continue;
-		lines.push(`${key}: ${displayPreview(typeof item === "string" ? item : JSON.stringify(item), 240)}`);
+		if (key === "references" && value.kind === "result") {
+			lines.push(`references: ${value.metadata.references.length} retained${value.metadata.omittedReferences ? ` \u00b7 ${value.metadata.omittedReferences} omitted at retention` : ""}`);
+			lines.push(...value.metadata.references.map((reference, index) => `  ${referenceLine(index, reference)}`));
+			continue;
+		}
+		lines.push(`${key}: ${typeof item === "string" ? displayText(item) : JSON.stringify(item)}`);
 	}
 	lines.push("Retained communication · not operator authority or task acceptance · the authoring model is not retained");
 	return [new Spacer(1), theme.fg("muted", theme.bold("Source details")), ...lines.map((line) => theme.fg("muted", line))];
@@ -1288,7 +1344,7 @@ function communicationDetailLines(value: Communication, theme: Theme): (string |
  * Card for one retained communication (report, notice, result or check-in). The compact view answers
  * who, what kind, which thread or work and when; the body, exact identities and metadata open on disclosure.
  */
-export function renderCommunicationCard(value: Communication, theme: Theme, options: { expanded: boolean; outputPad?: number } & Pick<KeybindingHints, "keyText">): Component {
+export function renderCommunicationCard(value: Communication, theme: Theme, options: { expanded: boolean; outputPad?: number; message?: object } & Pick<KeybindingHints, "keyText">): Component {
 	const body: (string | Component)[] = [];
 	if (!value.body.complete) body.push(theme.fg("warning", "Partial body"));
 	if (value.body.redacted) body.push(theme.fg("warning", "Redacted body"));
@@ -1298,7 +1354,7 @@ export function renderCommunicationCard(value: Communication, theme: Theme, opti
 	return cardLayout(
 		{ title: `[agent] ${communicationKind(value)}`, label: communicationSubject(value), metadata: [`from ${sender}`, dashboardTime(value.recordedAt, true)], body, details: communicationDetails(value, theme), previewLines: NOTICE_PREVIEW_LINES },
 		theme,
-		{ expanded: options.expanded, peerPadding: options.outputPad ?? 0, keys: options },
+		{ expanded: options.expanded, peerPadding: options.outputPad ?? 0, keys: options, message: options.message },
 	);
 }
 
@@ -1306,7 +1362,7 @@ export function renderCommunicationCard(value: Communication, theme: Theme, opti
 export const renderAgentCommunicationMessage: MessageRenderer = (message, options, theme) => {
 	const value = message.details as Communication | undefined;
 	if (!value || typeof value !== "object" || value.format !== "agent.communication/1") return undefined;
-	return renderCommunicationCard(value, theme, { expanded: options.expanded, outputPad: options.outputPad, keyText: options.keyText });
+	return renderCommunicationCard(value, theme, { expanded: options.expanded, outputPad: options.outputPad, keyText: options.keyText, message });
 };
 
 // --- Factory ---------------------------------------------------------------------

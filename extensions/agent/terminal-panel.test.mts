@@ -25,6 +25,7 @@ function fixtureModule(): OperatorPanelModule & { hosts: OperatorPanelHost[] } {
 				render: (width) => [`fixture for ${host.target.id} rows ${host.rows()} ${answer}`.slice(0, width), "body line 2"],
 				handleInput(data) {
 					if (data === "\x1b") host.close();
+					if (data === "!") host.dialogs.notify("Could not read the owner store: disk unavailable", "error");
 					if (data === "\r") void host.request({ op: "recent" }).then((reply) => { answer = String(reply.data ?? reply.text); host.tui.requestRender(); }, (error) => { answer = `error ${String((error as Error).message)}`; host.tui.requestRender(); });
 				},
 				handleMouse: (event) => event.type === "click" && event.y === 1 ? { handled: true } : undefined,
@@ -40,13 +41,14 @@ function fixture(module: OperatorPanelModule, root: string) {
 	const observers = new Map<string, Parameters<TerminalManager["observeLive"]>[2]>();
 	let answer: Promise<unknown> = Promise.resolve({ name: "browse", text: "two entries", data: { entries: 2 } });
 	const inventory = { contributions: [{ name: "owner", source: join(root, "owner", "index.ts"), commands: [{ name: "browse", description: "Browse" }], panel: descriptor }], ordinaryOnly: [] };
+	const signals: Array<AbortSignal | undefined> = [];
 	const manager: TerminalManager = {
 		resolveTarget: async (id) => id,
-		control: async (method, input) => {
+		control: async (method, input, _caller, options) => {
 			calls.push({ method, input });
 			if (method === "attach") return { status: { busy: false, cwd: "/work", agent: { thinkingLevel: "off" } } };
 			if (method === "status") return { inventory };
-			if (method === "command") return answer;
+			if (method === "command") { signals.push(options?.signal); return answer; }
 			return undefined;
 		},
 		dashboardPage: async () => page([row("a", { state: "idle" }), row("b")]),
@@ -61,7 +63,7 @@ function fixture(module: OperatorPanelModule, root: string) {
 	const tui = { terminal, requestRender() {}, showOverlay(component: Component & Focusable) { overlays.push(component); component.focused = true; return { hide() {} }; } } as unknown as TUI;
 	let done = 0;
 	const screen = new TerminalScreen(tui, theme, terminalKeys(), controller, () => { done++; });
-	return { controller, screen, calls, overlays, terminal, done: () => done, setAnswer: (value: Promise<unknown>) => { answer = value; } };
+	return { controller, screen, calls, signals, overlays, terminal, done: () => done, setAnswer: (value: Promise<unknown>) => { answer = value; } };
 }
 
 function ownerRoot(): string {
@@ -125,6 +127,57 @@ it("an attachment change closes the browser and a late answer is dropped", async
 		await assert.rejects(pending, /closed/);
 		await f.controller.displaySettled();
 		assert.equal(f.calls.filter((call) => call.method === "command").length, 1);
+		await f.controller.close();
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("an owner notification shows inside the mounted browser and Back stays usable", async () => {
+	const root = ownerRoot();
+	try {
+		const module = fixtureModule();
+		const f = fixture(module, root);
+		f.terminal.rows = 20; f.terminal.columns = 60;
+		await f.controller.attach("a"); await f.controller.displaySettled();
+		f.screen.openPanel("owner");
+		assert.equal(plain(f.screen.render(60)).length, 20);
+		f.screen.handleInput("!");
+		const lines = plain(f.screen.render(60));
+		assert.equal(lines.length, 20, "the notice row comes out of the body, not off the screen");
+		assert.equal(lines[0], "fixture for a rows 18 no answer", "the body yields one row to the notice");
+		assert.match(lines[18], /Could not read the owner store: disk unavailable/);
+		assert.ok(lines[19].startsWith("Back"));
+		f.screen.handleMouse(click(1, 19, 60, 20));
+		assert.ok(!plain(f.screen.render(60))[0].startsWith("fixture"), "Back closes the browser under the notice");
+		await f.controller.close();
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("closing or replacing a browser withdraws an unanswered host request at once through the controller and manager", async () => {
+	const root = ownerRoot();
+	try {
+		const module = fixtureModule();
+		const f = fixture(module, root);
+		await f.controller.attach("a"); await f.controller.displaySettled();
+		f.setAnswer(new Promise(() => {}));
+		f.screen.openPanel("owner");
+		const first = module.hosts[0].request({ op: "recent" });
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(f.signals.length, 1, "the manager received the request");
+		assert.ok(f.signals[0], "the request carries a withdrawal signal to the manager");
+		assert.equal(f.signals[0]?.aborted, false);
+		const footer = plain(f.screen.render(80)).at(-1) ?? "";
+		assert.ok(footer.startsWith("Back"));
+		f.screen.handleMouse(click(1, 23));
+		assert.equal(f.signals[0]?.aborted, true, "Back withdraws the manager request");
+		await assert.rejects(first, /closed before the answer/, "the module request settles without a host answer");
+		await assert.rejects(module.hosts[0].request({ op: "later" }), /closed/, "a closed browser refuses later requests");
+		f.screen.openPanel("owner");
+		const second = module.hosts[1].request({ op: "recent" });
+		await new Promise((resolve) => setImmediate(resolve));
+		f.screen.openPanel("owner");
+		assert.equal(f.signals[1]?.aborted, true, "replacing the browser withdraws its outstanding request");
+		await assert.rejects(second, /closed before the answer/);
+		assert.equal(f.calls.filter((call) => call.method === "command").length, 2, "nothing was resent");
 		await f.controller.close();
 	} finally { rmSync(root, { recursive: true, force: true }); }
 });

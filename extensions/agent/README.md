@@ -257,15 +257,25 @@ card: the first line names the kind (`Report`, `Thread notice`, `Result`,
 `Result unanswered`, `Check-in`) and the thread or work it belongs to; the second
 line names the sender and the recorded local time. The body renders as Markdown
 with `Partial body` and `Redacted body` marks when they apply. Disclosure adds
-the exact sender identity, the recorded timestamp and the retained metadata. A
-communication retains no authoring provider or model, and the card never shows
-the current roster configuration as if it were.
+the exact sender identity, the recorded timestamp and every retained metadata
+field in full: a result lists each retained reference on its own line with its
+submission, request, entry and answer entry identifiers. A communication retains
+no authoring provider or model, and the card never shows the current roster
+configuration as if it were.
 
 Dashboard and attached-terminal agent cards resolve their targets through the
 roster rows already observed by that view (the dashboard page, or the attached
-row plus the roster read at attachment), so the same target shows the same name
-and applied configuration as in ordinary chat. A roster change repaints those
-cards; no paint reads a store or discovers a host.
+row plus the roster the attached terminal reads again on each roster notice),
+so the same target shows the same name and applied configuration as in ordinary
+chat. A changed name or configuration repaints those cards; reads happen outside
+paint, coalesce, and an answer for an earlier attachment is dropped. A card's
+retained snapshot still takes precedence for the configuration it applied.
+
+Pointer disclosure of a peer notice or retained communication is kept outside
+the card renderer: ordinary notices keep it with the stored message, transcripts
+keep it in the conversation's reading state under the entry id. It survives a
+theme refresh, a rebuilt transcript and a return from the dashboard or a browser;
+a global expansion change still sets every card.
 
 Collapsed results use plain outcomes rather than raw JSON. Expanded results
 retain the raw result within the display bound. Message receipts use `Admitted`
@@ -405,10 +415,17 @@ the same contribution, and imports the module locally without running any
 extension factory. A browser mounts over the conversation with Back and Detach
 controls and keeps the conversation's draft; every request it sends goes through
 the bound command of the attachment captured when the browser opened, and a
-later attachment change closes the browser and drops late answers. The panel
-host gives the module the current viewport, the theme, dialogs and a request
-function only; it never grants tool execution. A module that is missing,
-malformed or throws is reported in the Browsers chooser and costs only itself.
+later attachment change closes the browser and drops late answers. Back,
+Detach, opening another browser or an attachment change withdraws an unanswered
+request at once: the withdrawal signal travels through the controller and the
+manager to the host connection, which stops waiting, and the request is never
+resent. A request the host already admitted still finishes there; withdrawal is
+not a rollback. Owner notifications show on a notice row above the footer while
+the browser stays open, and the browser's body gets one row less. The panel host
+gives the module the current viewport, the theme, dialogs (select, confirm,
+input, the multiline editor, read and notify) and a request function only; it
+never grants tool execution. A module that is missing, malformed or throws is
+reported in the Browsers chooser and costs only itself.
 
 All other slash and bang text stays literal. In particular, `/help`, `/restart`,
 and shell text do not invoke ordinary Pi commands. Ctrl+D in a nonempty composer

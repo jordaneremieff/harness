@@ -464,10 +464,42 @@ it("retained communications render as Agent cards with click disclosure and no l
 	assert.match(text(), /Sender identity: 7f7f7f7f-1111-4222-8333-444444444444/u);
 	assert.match(text(), /requestId: source/u);
 	assert.match(text(), /authoring model is not retained/u);
+	const reading = agentState(createDashboardState(), "one").view;
+	const kept = new AgentConversation([entry], "/work", tui, false, false, undefined, reading);
+	let keptDocument = kept.render(80);
+	const keptText = () => stripVTControlCharacters(kept.render(80).lines.join("\n"));
+	assert.ok(kept.handleMouse(click(80, keptDocument.lines.length, keptDocument.lines.findIndex((line) => /\(click/u.test(stripVTControlCharacters(line))))));
+	assert.match(keptText(), /FINAL_BODY/u);
+	const returned = new AgentConversation([entry], "/work", tui, false, false, undefined, reading);
+	assert.match(stripVTControlCharacters(returned.render(80).lines.join("\n")), /FINAL_BODY/u, "a rebuilt transcript over the same reading state keeps the disclosure");
+	kept.setExpanded(true);
+	kept.setExpanded(false);
+	assert.doesNotMatch(keptText(), /FINAL_BODY/u, "a global change owns the card again");
+	assert.doesNotMatch(stripVTControlCharacters(new AgentConversation([entry], "/work", tui, false, false, undefined, reading).render(80).lines.join("\n")), /FINAL_BODY/u, "the global change cleared the kept choice");
+	keptDocument = kept.render(80);
+	assert.ok(keptDocument.lines.length > 0);
 	conversation.setExpanded(true);
 	assert.match(text(), /FINAL_BODY/u);
 	conversation.setExpanded(false);
 	assert.doesNotMatch(text(), /FINAL_BODY/u, "a global change owns the card again");
+});
+
+it("an expanded result communication lists every retained reference and the full request identifiers", () => {
+	const sender = "7f7f7f7f-1111-4222-8333-444444444444";
+	const longRequest = `request-${"x".repeat(600)}-END`;
+	const references = Array.from({ length: 16 }, (_, index) => ({ submissionId: index + 1, requestId: index === 15 ? longRequest : `req-${index + 1}`, entryId: String(index + 10), answerEntryId: String(index + 100) }));
+	const entry: AgentConversationEntry = {
+		id: "12", kind: "pi.user", model: [{ role: "user", content: "Result body", timestamp: 1 }],
+		communication: { state: "ready", recordEntryId: "12", target: { mode: "input", storageId: sender, conversationId: 1, entryId: "12", submissionId: 3, requestId: "source" }, value: { format: "agent.communication/1", kind: "result", sender: { identity: sender, name: "Peer" }, body: { text: "Result body", complete: true, redacted: false }, recordedAt: 1_700_000_000_000, metadata: { status: "done", references, omittedReferences: 2 } } },
+	};
+	const conversation = new AgentConversation([entry], "/work", tui, true, false);
+	const text = stripVTControlCharacters(conversation.render(200).lines.join("\n"));
+	assert.match(text, /\[agent\] Result \u00b7 18 referenced submissions/u);
+	assert.match(text, /references: 16 retained \u00b7 2 omitted at retention/u);
+	for (let index = 1; index <= 16; index++) assert.match(text, new RegExp(`reference ${index}: submission ${index} \\u00b7 request `, "u"));
+	assert.match(text, /reference 15: submission 15 \u00b7 request req-15 \u00b7 entry 24 \u00b7 answer entry 114/u);
+	assert.ok(conversation.render(200).lines.map((line) => stripVTControlCharacters(line).trim()).join("").includes(longRequest), "a long valid identifier stays complete across its wrapped rows");
+	assert.doesNotMatch(text, /\u2026/u, "no field is previewed in Details");
 });
 
 it("native thinking clicks retain choices only on the actual assistant instance", () => {

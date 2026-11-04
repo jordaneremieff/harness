@@ -57,6 +57,11 @@ export interface TerminalControllerOptions {
 	importModule?(url: string): Promise<Record<string, unknown>>;
 }
 /** Owns presentation links only. Native work and admission belong to the existing manager/host. */
+/** The facts agent cards read from observed rows: identity, name and applied configuration. */
+function rowFacts(rows: readonly AgentConversationSummary[]): string {
+	return rows.map((row) => `${row.id}\u0000${row.name ?? ""}\u0000${row.model?.provider ?? ""}/${row.model?.modelId ?? ""}/${row.model?.thinkingLevel ?? ""}`).join("\u0001");
+}
+
 export class TerminalController {
 	readonly state: DashboardState;
 	readonly source: AgentObservationSource;
@@ -96,12 +101,35 @@ export class TerminalController {
 			observeLive: (id, scope, listener, signal) => this.manager.observeLive(id, scope, listener, signal),
 			subscribeRoster: (listener) => this.manager.subscribeRoster(listener),
 		});
-		this.off = this.source.subscribe(() => this.frameChanged());
+		const offFrames = this.source.subscribe(() => this.frameChanged());
+		const offRoster = this.source.subscribeRoster(() => this.queueRoster());
+		this.off = () => { offFrames(); offRoster(); };
 	}
-	/** The attached row as observed through live frames, then the roster as read at attachment. */
+	/** The attached row as observed through live frames, then the roster as last read for this attachment. */
 	observedRows(): readonly AgentConversationSummary[] {
 		const row = this.row;
 		return row ? [row, ...this.pageRows.filter((item) => item.id !== row.id)] : this.pageRows;
+	}
+	private rosterPending = false;
+	private rosterAgain = false;
+	/**
+	 * A roster notice re-reads the bounded page outside paint. Reads coalesce; an answer for an earlier
+	 * attachment is dropped; a page with the same observed facts changes nothing.
+	 */
+	private queueRoster(): void {
+		if (this.closed || !this.target) return;
+		if (this.rosterPending) { this.rosterAgain = true; return; }
+		this.rosterPending = true;
+		const generation = this.generation;
+		void this.manager.dashboardPage().then((page) => {
+			if (this.closed || generation !== this.generation) return;
+			if (rowFacts(page.rows) === rowFacts(this.pageRows)) return;
+			this.pageRows = page.rows;
+			this.notify();
+		}, () => { /* The last read roster stays until a later notice reads a page. */ }).finally(() => {
+			this.rosterPending = false;
+			if (this.rosterAgain) { this.rosterAgain = false; this.queueRoster(); }
+		});
 	}
 	get frame() { return this.target ? this.source.frame(this.target) : undefined; }
 	get selectionRevision(): number { return this.generation; }
@@ -185,10 +213,11 @@ export class TerminalController {
 	 * One owner request through the panel's bound command. The target is the attachment captured when
 	 * the panel opened: a later attachment change refuses the request instead of redirecting it.
 	 */
-	async panelRequest(target: string, command: string, data: JsonValue): Promise<{ text: string; data?: JsonValue }> {
+	async panelRequest(target: string, command: string, data: JsonValue, signal?: AbortSignal): Promise<{ text: string; data?: JsonValue }> {
 		if (this.closed) throw new Error("Terminal is closed");
 		if (this.target !== target) throw new Error("The attached conversation changed; the browser request was not sent");
-		const answer = await this.manager.control("command", { sessionId: target, name: command, data, origin: "operator", invocationId: randomUUID() }, this.caller) as { text?: unknown; data?: JsonValue };
+		if (signal?.aborted) throw new Error("The browser request was withdrawn before it was sent", { cause: signal.reason });
+		const answer = await this.manager.control("command", { sessionId: target, name: command, data, origin: "operator", invocationId: randomUUID() }, this.caller, signal ? { signal } : undefined) as { text?: unknown; data?: JsonValue };
 		if (typeof answer?.text !== "string") throw new Error("The host answered without command text");
 		return { text: answer.text, ...(answer.data === undefined ? {} : { data: answer.data }) };
 	}
@@ -315,7 +344,7 @@ export class TerminalScreen implements Component {
 	private panel?: { screen: PanelScreen; target: string };
 	private notice = "";
 	private displayNotice = "";
-	/** Name and applied configuration of the attached row as last painted; a change repaints agent cards. */
+	/** Names and applied configuration of the observed rows as last painted; a change repaints agent cards. */
 	private rowFacts?: string;
 	private readonly navigationInput = new Input({ prompt: "Command: " });
 	private dashboardHidden = false;
@@ -353,6 +382,7 @@ export class TerminalScreen implements Component {
 		if (this.panel && this.panel.target !== this.controller.target) this.closePanel("The attached conversation changed; the browser was closed.");
 		if (row && this.console?.row.id !== row.id) {
 			this.console?.save(); this.console?.dispose();
+			this.rowFacts = undefined;
 			this.console = new AgentConsole(row, agentState(this.controller.state, row.id), this.tui, this.theme, this.keys,
 				(text) => { void this.submit(text); }, () => this.openDashboard(), () => this.controller.observedRows());
 		}
@@ -365,7 +395,7 @@ export class TerminalScreen implements Component {
 		console.conversation.setToolDisplay(this.controller.toolDisplay);
 		const diagnostics = this.controller.display.diagnostics;
 		this.displayNotice = diagnostics.length ? `Owner cards: ${diagnostics[0]}${diagnostics.length > 1 ? ` (+${diagnostics.length - 1} more)` : ""}` : "";
-		const facts = `${row.name ?? ""}\u0000${row.model?.provider ?? ""}/${row.model?.modelId ?? ""}/${row.model?.thinkingLevel ?? ""}`;
+		const facts = rowFacts(this.controller.observedRows());
 		if (this.rowFacts !== undefined && this.rowFacts !== facts) console.conversation.refreshCards();
 		this.rowFacts = facts;
 		console.row = row;
@@ -496,7 +526,8 @@ export class TerminalScreen implements Component {
 		const screen = new PanelScreen({
 			module: panel.module, title: panel.title, target: { id: target, ...(this.controller.row?.name ? { name: this.controller.row.name } : {}) },
 			tui: this.tui, theme: this.theme, dialogs: this.dialogs,
-			request: (data) => this.controller.panelRequest(target, command, data),
+			request: (data, signal) => this.controller.panelRequest(target, command, data, signal),
+			notice: () => this.notice,
 			onClose: () => this.closePanel(),
 			detach: () => this.done(),
 		});
@@ -517,7 +548,7 @@ export class TerminalScreen implements Component {
 	handleInput(data: string): void {
 		if (matchesKey(data, "ctrl+d") && (!this.console || this.console.composer.isEmpty()) && !this.dashboard) { this.done(); return; }
 		if (this.dashboard) { this.dashboard.handleInput(data); return; }
-		if (this.panel) { this.panel.screen.handleInput(data); this.tui.requestRender(); return; }
+		if (this.panel) { this.notice = ""; this.panel.screen.handleInput(data); this.tui.requestRender(); return; }
 		const console = this.console;
 		if (!console) {
 			if (matchesKey(data, "escape")) this.openDashboard();
@@ -620,7 +651,13 @@ export class TerminalScreen implements Component {
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.dashboard && !this.dashboardHidden) return this.dashboard.handleMouse(event);
-		if (this.panel) { const result = this.panel.screen.handleMouse(event); if (result?.handled) this.tui.requestRender(); return result; }
+		if (this.panel) {
+			// A notice describes the last outcome; the next deliberate click in the browser starts a new one.
+			if (event.type === "click" && this.notice) { this.notice = ""; this.tui.requestRender(); }
+			const result = this.panel.screen.handleMouse(event);
+			if (result?.handled) this.tui.requestRender();
+			return result;
+		}
 		const control = this.hits.handle(event);
 		if (control) return control;
 		return this.transcriptMouse(event) ?? this.composerMouse(event);

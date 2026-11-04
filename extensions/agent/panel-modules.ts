@@ -19,7 +19,10 @@ export interface OperatorPanelHost {
 		select(title: string, choices: readonly { value: string; label: string; description?: string }[]): Promise<string | undefined>;
 		confirm(title: string, description: string, action: string): Promise<boolean>;
 		input(title: string, options?: { initial?: string; placeholder?: string }): Promise<string | undefined>;
+		/** The terminal's multiline editor; resolves with the text, or undefined when cancelled. */
+		editor(title: string, initial?: string): Promise<string | undefined>;
 		read(title: string, text: string): Promise<void>;
+		/** Shown on the client's notice row while the panel is open, and after it closes. */
 		notify(text: string, type?: "info" | "warning" | "error"): void;
 	};
 	/** Return to the conversation. */

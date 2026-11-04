@@ -16,7 +16,7 @@ import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts"
 import type { AgentReadingState } from "./dashboard-state.ts";
 import { awaitFactLines, type AwaitFact } from "./await-facts.ts";
 import { parseCommunicationView, type Communication } from "./communication.ts";
-import { createAgentToolCards, renderAgentCommunicationMessage, type AgentCardLookup } from "./tool-cards.ts";
+import { bindCardDisclosure, createAgentToolCards, renderAgentCommunicationMessage, type AgentCardLookup } from "./tool-cards.ts";
 
 const agentCardNames = new Set(Object.keys(createAgentToolCards()));
 
@@ -338,7 +338,7 @@ export class AgentConversation {
 		try {
 			const communication = parseCommunicationView(source.communication);
 			if (communication?.state === "ready") {
-				this.blocks.push({ id: source.id, component: this.communicationCard(communication.value) });
+				this.blocks.push({ id: source.id, component: this.communicationCard(source.id, communication.value) });
 				return;
 			}
 			if (communication?.state === "unavailable") this.blocks.push({ id: `${source.id}:communication`, component: new Text(`[Communication metadata unavailable: ${communication.reason}]`, 1, 0) });
@@ -370,8 +370,12 @@ export class AgentConversation {
 			this.blocks.push({ id: source.id, component: new Text("[Message unavailable: invalid stored content]", 1, 1) });
 		}
 	}
-	/** The structured communication reaches the Agent card as the message details; the text is a fallback only. */
-	private communicationCard(value: Communication): Component {
+	/**
+	 * The structured communication reaches the Agent card as the message details; the text is a fallback
+	 * only. Pointer disclosure lives in the reading state under the entry id, so it survives a rebuilt
+	 * transcript and a return from another view, and a global expansion change clears it with the rest.
+	 */
+	private communicationCard(id: string, value: Communication): Component {
 		const message = {
 			role: "custom" as const,
 			customType: "agent.communication",
@@ -380,6 +384,11 @@ export class AgentConversation {
 			details: value,
 			timestamp: value.recordedAt,
 		};
+		const key = `communication:${id}`;
+		bindCardDisclosure(message, {
+			get: () => this.reading.toolExpanded.get(key),
+			set: (expanded) => { this.reading.toolExpanded.set(key, expanded); },
+		});
 		const component = new CustomMessageComponent(message, renderAgentCommunicationMessage, getMarkdownTheme(), 0);
 		component.setExpanded(this.expanded);
 		return component;

@@ -186,6 +186,37 @@ for (const failure of ["persistence", "status", "listener"] as const) it(`keeps 
 	assert.ok(overview.failures.some(({ error }) => error.includes(failure === "persistence" ? "marker write failed" : `${failure === "status" ? "status" : "roster"} callback failed`)));
 });
 
+it("a withdrawn command carries its signal to the host connection and settles without the host answer", async (t) => {
+	const root = fixtureRoot(t);
+	const seen: Array<{ method: string; signal?: AbortSignal }> = [];
+	let answers = 0;
+	const manager = new AgentManager(managerOptions(root, {
+		acquire: async (metadata) => {
+			const connection = fakeConnection(metadata, async () => undefined);
+			// The real connection rejects a withdrawn call locally and drops a later answer; unsafe work is never cancelled on the wire.
+			connection.request = (method, _params, options) => {
+				seen.push({ method, signal: options?.signal });
+				return new Promise((_resolve, reject) => {
+					options?.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+					setTimeout(() => { answers++; }, 50);
+				});
+			};
+			return connection;
+		},
+	}));
+	t.after(() => manager.close());
+	const target = createRecord(manager, root, "owner").storageId;
+	const withdraw = new AbortController();
+	const pending = manager.control("command", { sessionId: target, name: "browse", data: { op: "recent" }, origin: "operator", invocationId: "one" }, { id: "terminal", cwd: root }, { signal: withdraw.signal });
+	for (let step = 0; step < 20 && !seen.some((call) => call.method === "command"); step++) await new Promise((resolve) => setImmediate(resolve));
+	const command = seen.find((call) => call.method === "command");
+	assert.ok(command?.signal, "the manager passes the caller's signal to the host connection request");
+	withdraw.abort();
+	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
+	assert.equal(answers, 0, "the caller settled before any host answer");
+	assert.equal(seen.filter((call) => call.method === "command").length, 1, "the withdrawn command is not resent");
+});
+
 it("refuses a full place book before catalogue creation or host launch", async (t) => {
 	const root = fixtureRoot(t);
 	let launches = 0;
