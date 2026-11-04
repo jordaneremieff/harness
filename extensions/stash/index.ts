@@ -731,7 +731,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser, creationStatus),
 	});
 	// Package contract: docs/conventions/operator-panels.md. The browser is a harmless open; pickup is its own labelled action inside.
-	const destinations = { version: 1, destinations: [{ id: "stash", label: "Stashes", command: { name: "stash" } }] };
+	const destinations = { version: 1, destinations: [{ id: "stash", label: "Stashes", command: { name: "stash" }, owner: fileURLToPath(import.meta.url) }] };
 	const publishDestinations = () => pi.events.emit("harness:operator-destination:publish", destinations);
 	pi.events.on("harness:operator-destination:request", (request) => {
 		if (typeof request === "object" && request !== null && (request as { version?: unknown }).version === 1) publishDestinations();

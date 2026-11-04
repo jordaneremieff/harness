@@ -39,9 +39,10 @@ function selectTheme(theme: Theme): SelectListTheme {
 }
 
 /**
- * A list with Apply and Cancel. Enter or Apply resolves with the highlighted value; Escape,
- * Cancel and ctrl+c resolve with undefined. Hit geometry is rebuilt on every render and
- * ignored when the event width differs from the rendered width.
+ * A list with Apply and Cancel. A pointer click on a row only highlights it; Enter or Apply
+ * resolves with the highlighted value; Escape, Cancel and ctrl+c resolve with undefined. Hit
+ * geometry is rebuilt on every render and ignored when the event width differs from the
+ * rendered width.
  */
 export class ChoicePanel implements Component {
 	readonly capturesViewportInput = true;
@@ -51,6 +52,8 @@ export class ChoicePanel implements Component {
 	private renderedWidth = -1;
 	private regions: Array<{ y: number; height: number; component?: Component; buttons?: Array<{ x: number; width: number; action: () => void }> }> = [];
 	private closed = false;
+	/** Pi's list activates a row on click; while a pointer event is in flight that activation only selects. */
+	private pointer = false;
 
 	constructor(options: ChoicePanelOptions) {
 		this.options = options;
@@ -67,7 +70,7 @@ export class ChoicePanel implements Component {
 		this.list = new SelectList(this.options.items.map((item) => ({ value: item.value, label: item.label, description: item.description ?? "" })), this.height, selectTheme(this.options.theme));
 		const index = this.options.items.findIndex((item) => item.value === current);
 		if (index >= 0) this.list.setSelectedIndex(index);
-		this.list.onSelect = (item) => this.finish(item.value);
+		this.list.onSelect = (item) => { if (!this.pointer) this.finish(item.value); };
 		this.list.onCancel = () => this.finish(undefined);
 		this.regions = [];
 	}
@@ -101,8 +104,13 @@ export class ChoicePanel implements Component {
 			return { handled: true };
 		}
 		if (!region.component?.handleMouse) return undefined;
-		const result = region.component.handleMouse({ ...event, y: event.y - region.y, height: region.height });
-		return result ? { handled: true, render: result.render } : undefined;
+		this.pointer = true;
+		try {
+			const result = region.component.handleMouse({ ...event, y: event.y - region.y, height: region.height });
+			return result ? { handled: true, render: true } : undefined;
+		} finally {
+			this.pointer = false;
+		}
 	}
 
 	render(width: number): string[] {

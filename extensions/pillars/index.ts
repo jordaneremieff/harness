@@ -373,7 +373,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	});
 	displayPublisher.publish();
 	// Package contract: docs/conventions/operator-panels.md. Browse is a harmless read; the judgment verbs stay in command search.
-	const destinations = { version: 1, destinations: [{ id: "pillars", label: "Pillars", command: { name: "pillars", args: "browse" } }] };
+	const destinations = { version: 1, destinations: [{ id: "pillars", label: "Pillars", command: { name: "pillars", args: "browse" }, owner: fileURLToPath(import.meta.url) }] };
 	const publishDestinations = () => pi.events.emit("harness:operator-destination:publish", destinations);
 	pi.events.on("harness:operator-destination:request", (request) => {
 		if (typeof request === "object" && request !== null && (request as { version?: unknown }).version === 1) publishDestinations();

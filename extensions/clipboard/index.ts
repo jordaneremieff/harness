@@ -39,7 +39,7 @@ const storeDir = () => resolveClipboardDir(process.env, getAgentDir());
 const errorText = (error: unknown) => safeLine(error instanceof Error ? error.message : String(error));
 
 /** Package contract: docs/conventions/operator-panels.md. The footer menu opens `/clipboard` as a harmless destination. */
-const DESTINATIONS = { version: 1, destinations: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" } }] } as const;
+const DESTINATIONS = { version: 1, destinations: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" }, owner: fileURLToPath(import.meta.url) }] } as const;
 
 async function notifyRecent(ctx: ExtensionContext): Promise<void> {
 	try {

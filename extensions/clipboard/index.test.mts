@@ -184,7 +184,7 @@ describe("clipboard entrypoint", () => {
 	it("announces /clipboard as a harmless destination at setup and on request", () => {
 		const { emitted, request } = registry();
 		const destinations = () => emitted.filter((item) => item.event === "harness:operator-destination:publish").map((item) => item.value);
-		assert.deepEqual(destinations(), [{ version: 1, destinations: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" } }] }]);
+		assert.deepEqual(destinations(), [{ version: 1, destinations: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" }, owner: fileURLToPath(new URL("./index.ts", import.meta.url)) }] }], "the announcement names its owner module so the menu binds to this registration");
 		request("harness:operator-destination:request", { version: 1 });
 		assert.equal(destinations().length, 2);
 		request("harness:operator-destination:request", { version: 2 });

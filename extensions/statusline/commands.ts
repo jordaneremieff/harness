@@ -236,6 +236,7 @@ export class CommandsPanel implements Component {
 	private list!: SelectList;
 	private menu!: SelectList;
 	private menuHeight = 0;
+	private menuItemCount = 0;
 	private listHeightUsed = 0;
 	private placement: SelectList | undefined;
 	private selected: SlashCommandInfo | undefined;
@@ -272,9 +273,13 @@ export class CommandsPanel implements Component {
 		return filterCommands(this.commands, this.state.query);
 	}
 
-	/** Rows for the menu after its heading, hint and Close row. */
+	/**
+	 * Rows for the menu list after its heading, hint and Close row. An overflowing Pi list emits one
+	 * more row for its position, so that row is reserved whenever the items exceed the space.
+	 */
 	private menuRows(): number {
-		return Math.max(2, this.options.rows() - 3);
+		const available = Math.max(2, this.options.rows() - 3);
+		return this.menuItemCount > available ? Math.max(2, available - 1) : available;
 	}
 
 	private listHeight(): number {
@@ -290,13 +295,17 @@ export class CommandsPanel implements Component {
 		const items: Array<{ value: string; label: string; description: string }> = [];
 		if (this.options.replacedDraftPresent()) items.push({ value: RESTORE_VALUE, label: "Restore replaced draft", description: "puts the draft that Replace removed back into the editor" });
 		for (const destination of this.options.destinations) {
-			const command = `/${destination.command.name}${destination.command.args ? ` ${destination.command.args}` : ""}`;
+			const command = `/${destination.registration?.name ?? destination.command.name}${destination.command.args ? ` ${destination.command.args}` : ""}`;
 			items.push({ value: `destination:${destination.id}`, label: readerText(destination.label), description: destination.unavailable ? readerText(`unavailable: ${destination.unavailable}`) : readerText(`opens ${command}`) });
 		}
 		for (const control of this.options.controls) items.push({ value: `control:${control.id}`, label: readerText(control.label), description: readerText(control.description) });
 		items.push({ value: SEARCH_VALUE, label: "Search commands…", description: `find any of ${this.commands.length} commands, prompt templates and skills` });
+		const selected = this.menu?.getSelectedItem()?.value;
+		this.menuItemCount = items.length;
 		this.menuHeight = this.menuRows();
 		this.menu = new SelectList(items, this.menuHeight, this.listTheme);
+		const index = selected === undefined ? -1 : items.findIndex((item) => item.value === selected);
+		if (index >= 0) this.menu.setSelectedIndex(index);
 		this.menu.onSelect = (item) => this.chooseMenu(item.value);
 		this.menu.onCancel = () => this.close();
 		this.regions = [];

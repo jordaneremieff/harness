@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import type { ExtensionAPI, SlashCommandInfo, Theme } from "@earendil-works/pi-coding-agent";
+import { ExtensionRunner, type ExtensionAPI, type SlashCommandInfo, type Theme } from "@earendil-works/pi-coding-agent";
 import { TuiAltScreen, type TUI, type Terminal } from "@earendil-works/pi-tui";
 import { CommandsPanel, createSelectorState, type CommandsPanelResult } from "./commands.ts";
 import { ChoicePanel } from "./controls.ts";
@@ -16,38 +16,75 @@ const strip = (line: string) => stripVTControlCharacters(line);
 function registration(name: string, over: Partial<SlashCommandInfo> = {}): SlashCommandInfo {
 	return { name, description: `${name} description`, source: "extension", sourceInfo: { path: `/ext/${name}/index.ts`, source: "../../harness", scope: "user", origin: "package" }, ...over } as SlashCommandInfo;
 }
+const owner = (name: string) => `/ext/${name}/index.ts`;
+const destination = (id: string, name: string, args?: string, label = id[0].toUpperCase() + id.slice(1)) => ({ id, label, command: { name, ...(args === undefined ? {} : { args }) }, owner: owner(name) });
+
+/** The command inventory as Pi's own resolver names it when several extensions register one command name. */
+function resolvedInventory(extensions: Array<{ path: string; commands: string[] }>): SlashCommandInfo[] {
+	const runner = new ExtensionRunner(extensions.map((extension) => ({
+		path: extension.path, resolvedPath: extension.path,
+		sourceInfo: { path: extension.path, source: "../../harness", scope: "user", origin: "package" },
+		handlers: new Map(), tools: new Map(), messageRenderers: new Map(), entryRenderers: new Map(), flags: new Map(), shortcuts: new Map(),
+		commands: new Map(extension.commands.map((name) => [name, { name, description: `${name} description`, handler() {}, sourceInfo: { path: extension.path, source: "../../harness", scope: "user", origin: "package" } }])),
+	})) as never, undefined as never, "/work", undefined as never, undefined as never);
+	return runner.getRegisteredCommands().map((command) => ({ name: command.invocationName, description: command.description, source: "extension", sourceInfo: command.sourceInfo }));
+}
 
 /** A terminal that keeps everything the compositor writes and lets a test change its size. */
 function fakeTerminal(columns: number, rows: number) {
 	const writes: string[] = [];
 	let resize: () => void = () => {};
+	let input: (data: string) => void = () => {};
 	const terminal: Terminal & { columns: number; rows: number } = {
 		columns, rows, kittyProtocolActive: false,
-		start(_onInput, onResize) { resize = onResize; }, stop() {}, write(data) { writes.push(data); }, moveBy() {},
+		start(onInput, onResize) { input = onInput; resize = onResize; }, stop() {}, write(data) { writes.push(data); }, moveBy() {},
 		hideCursor() {}, showCursor() {}, clearLine() {}, clearFromCursor() {}, clearScreen() {}, setTitle() {}, setProgress() {}, setProgramStatus() {}, async drainInput() {},
 	};
-	return { terminal, writes, resize: () => resize(), text: () => strip(writes.join("")) };
+	/** One left click as the terminal reports it: an SGR press then release at 1-based screen cells. */
+	const click = (x: number, y: number) => { input(`\x1b[<0;${x + 1};${y + 1}M`); input(`\x1b[<0;${x + 1};${y + 1}m`); };
+	return { terminal, writes, resize: () => resize(), text: () => strip(writes.join("")), click };
 }
 
 const overlayRows = (terminal: { rows: number }) => Math.max(1, Math.floor(terminal.rows * 0.85));
 const OVERLAY = { width: "80%", minWidth: 40, maxHeight: "85%", anchor: "center" } as const;
 
 describe("destinations", () => {
-	it("keeps only well-formed version 1 entries and resolves them against the current inventory", () => {
+	it("keeps only well-formed version 1 entries with an owner and resolves them against the current inventory", () => {
 		assert.equal(readDestinations({ version: 2, destinations: [] }), undefined);
 		const read = readDestinations({
 			version: 1,
 			destinations: [
-				{ id: "stash", label: "Stashes", command: { name: "stash" } },
-				{ id: "Bad Id", label: "x", command: { name: "x" } },
-				{ id: "pillars", label: "Pillars", command: { name: "pillars", args: "browse" } },
-				{ id: "nolabel", label: "   ", command: { name: "y" } },
+				destination("stash", "stash"),
+				{ id: "Bad Id", label: "x", command: { name: "x" }, owner: owner("x") },
+				destination("pillars", "pillars", "browse"),
+				{ id: "nolabel", label: "   ", command: { name: "y" }, owner: owner("y") },
+				{ id: "unowned", label: "Unowned", command: { name: "z" } },
 			],
 		});
 		assert.deepEqual(read?.map((entry) => entry.id), ["stash", "pillars"]);
 		const resolved = resolveDestinations(read ?? [], [registration("stash"), registration("pillars", { source: "prompt" })]);
 		assert.equal(resolved[0].registration?.name, "stash");
-		assert.match(resolved[1].unavailable ?? "", /not registered/);
+		assert.match(resolved[1].unavailable ?? "", /not registered by its owner/);
+	});
+
+	it("binds a destination to its owner's registration under Pi's collision names and rejects missing or ambiguous owners", () => {
+		const inventory = resolvedInventory([
+			{ path: "/other/stash/index.ts", commands: ["stash"] },
+			{ path: owner("stash"), commands: ["stash", "stash-extra"] },
+			{ path: "/twice/index.ts", commands: ["twice"] },
+			{ path: "/twice/index.ts", commands: ["twice"] },
+		]);
+		assert.deepEqual(inventory.map((command) => command.name), ["stash:1", "stash:2", "stash-extra", "twice:1", "twice:2"], "Pi suffixes same-name registrations");
+		const resolved = resolveDestinations([
+			destination("stash", "stash"),
+			{ ...destination("foreign", "stash"), owner: "/missing/index.ts" },
+			{ ...destination("twice", "twice"), owner: "/twice/index.ts" },
+		], inventory);
+		assert.equal(resolved[0].registration?.name, "stash:2", "the owner's registration keeps Pi's invocation name");
+		assert.match(resolved[1].unavailable ?? "", /not registered by its owner/);
+		assert.match(resolved[2].unavailable ?? "", /more than once/);
+		const menu = new CommandsPanel({ commands: inventory, destinations: resolveDestinations([destination("stash", "stash")], inventory), controls: [], theme, rows: () => 20, state: createSelectorState(), draftPresent: () => false, replacedDraftPresent: () => false, done() {} });
+		assert.ok(menu.render(60).map(strip).some((line) => line.includes("opens /stash:2")), "the menu names the actual invocation");
 	});
 
 	it("subscribes before requesting and replaces entries by id", () => {
@@ -55,8 +92,8 @@ describe("destinations", () => {
 		const emitted: string[] = [];
 		const read = collectDestinations({ on: (event, handler) => { handlers.set(event, handler); }, emit: (event) => { emitted.push(event); } });
 		assert.deepEqual(emitted, ["harness:operator-destination:request"]);
-		handlers.get("harness:operator-destination:publish")?.({ version: 1, destinations: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" } }] });
-		handlers.get("harness:operator-destination:publish")?.({ version: 1, destinations: [{ id: "clipboard", label: "Clipboard history", command: { name: "clipboard" } }] });
+		handlers.get("harness:operator-destination:publish")?.({ version: 1, destinations: [destination("clipboard", "clipboard")] });
+		handlers.get("harness:operator-destination:publish")?.({ version: 1, destinations: [{ ...destination("clipboard", "clipboard"), label: "Clipboard history" }] });
 		assert.deepEqual(read().map((entry) => entry.label), ["Clipboard history"]);
 	});
 });
@@ -67,7 +104,7 @@ describe("menu", () => {
 		const commands = [registration("stash"), registration("evo")];
 		const instance = new CommandsPanel({
 			commands,
-			destinations: resolveDestinations([{ id: "stash", label: "Stashes", command: { name: "stash" } }, { id: "gone", label: "Gone", command: { name: "gone" } }], commands),
+			destinations: resolveDestinations([destination("stash", "stash", undefined, "Stashes"), destination("gone", "gone")], commands),
 			controls: [{ id: "model", label: "Model…", description: "p/m now" }, { id: "reasoning", label: "Reasoning…", description: "high now" }, { id: "statuses", label: "Statuses", description: "2 entries" }],
 			theme, rows: over.rows ?? (() => 20), state: createSelectorState(),
 			draftPresent: () => false, replacedDraftPresent: () => over.replaced ?? false,
@@ -135,6 +172,33 @@ describe("composed overlay reachability", () => {
 		}
 	});
 
+	it("keeps Close reachable in the populated menu after a height-only shrink from 60x20 to 60x12", () => {
+		const commands = Array.from({ length: 12 }, (_, index) => registration(`command-${index}`));
+		const results: CommandsPanelResult[] = [];
+		const destinations = resolveDestinations(["agent", "clipboard", "pillars", "policy", "stash"].map((name) => destination(name, name)), [...commands, ...["agent", "clipboard", "pillars", "policy", "stash"].map((name) => registration(name))]);
+		const composed = compose(60, 20, (rowsNow) => new CommandsPanel({ commands, destinations, controls: [{ id: "model", label: "Model\u2026", description: "p/m" }, { id: "reasoning", label: "Reasoning\u2026", description: "high" }, { id: "statuses", label: "Statuses", description: "0" }], theme, rows: rowsNow, state: createSelectorState(), draftPresent: () => false, replacedDraftPresent: () => false, done: (result) => results.push(result) }));
+		const panel = composed.component as CommandsPanel;
+		panel.handleInput("\x1b[B"); panel.handleInput("\x1b[B");
+		composed.writes.length = 0;
+		composed.tui.renderNow(true);
+		assert.ok(composed.text().includes("[Close]") && composed.text().includes("Search commands"), "the whole populated menu fits at 60x20");
+		composed.terminal.rows = 12;
+		composed.resize();
+		composed.writes.length = 0;
+		composed.tui.renderNow(true);
+		const shrunk = composed.text();
+		assert.ok(shrunk.includes("[Close]"), `Close after the height-only shrink:\n${shrunk}`);
+		assert.match(shrunk, /\(3\/9\)/, "the overflowing list keeps its position row and the selected item");
+		const layout = (composed.tui as unknown as { renderedOverlayLayouts: Array<{ col: number; row: number; width: number; height: number }> }).renderedOverlayLayouts[0];
+		assert.ok(layout);
+		const lines = panel.render(layout.width).map(strip);
+		const closeY = lines.findIndex((line) => line.includes("[Close]"));
+		assert.ok(closeY >= 0 && closeY < layout.height, "Close sits inside the composed overlay height");
+		composed.click(layout.col + lines[closeY].indexOf("[Close]") + 1, layout.row + closeY);
+		assert.deepEqual(results, [undefined], "the composed click on Close closes the menu");
+		composed.tui.stop();
+	});
+
 	it("reaches the final status entry at 80x24 and keeps Close after a shrink", () => {
 		const statuses = new Map(Array.from({ length: 30 }, (_, index) => [`key-${index}`, `value ${index}`]));
 		const composed = compose(80, 24, (rowsNow) => new StatusPanel({ theme, rows: rowsNow, read: () => statuses, done() {} }));
@@ -154,18 +218,39 @@ describe("composed overlay reachability", () => {
 		composed.tui.stop();
 	});
 
-	it("choice panels fit the row budget and apply only the highlighted value", () => {
+	it("choice panels fit the row budget, select on click, and apply only through Apply or Enter", () => {
 		const picks: Array<string | undefined> = [];
 		const pick = (value: string | undefined) => { picks.push(value); };
 		const choice = new ChoicePanel({ title: "Model", hint: "a/b now", items: Array.from({ length: 30 }, (_, index) => ({ value: `p/m${index}`, label: `p/m${index}` })), selected: "p/m3", theme, rows: () => 10, done: pick });
-		const lines = choice.render(60).map(strip);
+		let lines = choice.render(60).map(strip);
 		assert.ok(lines.length <= 10 && lines.at(-1)?.includes("[Apply]") && lines.at(-1)?.includes("[Cancel]"), lines.join("\n"));
-		choice.handleInput("\r");
-		assert.deepEqual(picks, ["p/m3"]);
+		const click = (x: number, y: number) => choice.handleMouse({ type: "click", button: "left", x, y, screenX: x, screenY: y, width: 60, height: lines.length, shift: false, alt: false, ctrl: false, clickCount: 1 });
+		const row = (value: string) => lines.findIndex((line) => line.includes(` ${value}`) || line.includes(`\u203a ${value}`) || line.trim() === value);
+		const otherRow = lines.findIndex((line, index) => index > 1 && !line.includes("p/m3") && /p\/m\d+/.test(line));
+		assert.ok(otherRow > 1);
+		const other = /p\/m\d+/.exec(lines[otherRow])?.[0] ?? "";
+		assert.equal(click(2, otherRow)?.handled, true);
+		assert.deepEqual(picks, [], "a row click only highlights; nothing is applied");
+		lines = choice.render(60).map(strip);
+		assert.ok(row(other) >= 0);
+		const applyX = lines.at(-1)?.indexOf("[Apply]") ?? -1;
+		assert.ok(applyX >= 0);
+		assert.equal(click(applyX + 1, lines.length - 1)?.handled, true);
+		assert.deepEqual(picks, [other], "Apply commits the highlighted value");
+		const byEnter = new ChoicePanel({ title: "Model", hint: "", items: [{ value: "a", label: "a" }, { value: "b", label: "b" }], selected: "b", theme, rows: () => 10, done: pick });
+		byEnter.render(40);
+		byEnter.handleInput("\r");
+		assert.deepEqual(picks, [other, "b"], "Enter remains the keyboard activation");
+		const cancelByClick = new ChoicePanel({ title: "Reasoning", hint: "", items: [{ value: "low", label: "low" }, { value: "high", label: "high" }], selected: "low", theme, rows: () => 10, done: pick });
+		const cancelLines = cancelByClick.render(40).map(strip);
+		cancelByClick.handleMouse({ type: "click", button: "left", x: 2, y: 3, screenX: 2, screenY: 3, width: 40, height: cancelLines.length, shift: false, alt: false, ctrl: false, clickCount: 1 });
+		const cancelX = cancelLines.at(-1)?.indexOf("[Cancel]") ?? -1;
+		cancelByClick.handleMouse({ type: "click", button: "left", x: cancelX + 1, y: cancelLines.length - 1, screenX: cancelX + 1, screenY: cancelLines.length - 1, width: 40, height: cancelLines.length, shift: false, alt: false, ctrl: false, clickCount: 1 });
+		assert.deepEqual(picks, [other, "b", undefined], "Cancel after a row click changes nothing");
 		const cancelled = new ChoicePanel({ title: "Reasoning", hint: "", items: [{ value: "low", label: "low" }], theme, rows: () => 10, done: pick });
 		cancelled.render(40);
 		cancelled.handleInput("\x1b");
-		assert.deepEqual(picks, ["p/m3", undefined]);
+		assert.deepEqual(picks, [other, "b", undefined, undefined]);
 	});
 });
 

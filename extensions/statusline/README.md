@@ -33,10 +33,13 @@ headed "Menu" and lists, in order:
 2. **Destinations** that owning extensions announce as data through the
    operator-destination contract (`docs/conventions/operator-panels.md`):
    Agents, Clipboard, Pillars, Policy, Stashes. Each is resolved at menu open
-   against the current `pi.getCommands()` inventory and opens directly on Enter
-   or click through the same guarded dispatch as a Run; a destination whose
-   command is not registered in this session is listed with that reason and
-   does not open. A destination is a harmless open; commands that start work,
+   against the current `pi.getCommands()` inventory to its announcing owner's
+   own registration (the inventory entry whose `sourceInfo.path` is the owner
+   module), keeping Pi's actual invocation name, so a destination still opens
+   when another extension registers the same name and Pi lists `stash:1` and
+   `stash:2`. It opens directly on Enter or click through the same guarded
+   dispatch as a Run; a destination whose owner registration is missing, or
+   appears more than once, is listed with that reason and does not open. A destination is a harmless open; commands that start work,
    such as `/evo`, stay behind search with their argument field.
 3. **Model…**, **Reasoning…**, **Statuses**: the session controls, each with
    its current value beside it.
@@ -47,11 +50,13 @@ Escape on the menu closes it; Escape on search returns to the menu.
 ### Model and reasoning
 
 **Model…** lists `ctx.modelRegistry.getAvailable()` as `provider/model-id` rows
-with the display name, the current model preselected. Apply calls
+with the display name, the current model preselected. A click on a row only
+highlights it; **Apply** (or Enter) commits the highlighted row. Apply calls
 `pi.setModel(model)` for this session only; a `false` return (authentication
 not configured for the provider) is reported as a refusal and nothing changes.
 Cancel and Escape change nothing. **Reasoning…** lists the levels
-`getSupportedThinkingLevels(model)` reports for the current model; Apply calls
+`getSupportedThinkingLevels(model)` reports for the current model, with the same
+click-highlights, Apply-commits behaviour; Apply calls
 `pi.setThinkingLevel(level)`, which clamps to the model. A model without
 reasoning is reported as such and offers no list. No builtin slash text is
 sent to the model to emulate these dialogs.
@@ -94,8 +99,11 @@ Pi renders an overlay at its resolved width and clips lines beyond its
 overlay component therefore reads its row budget from the live terminal on each
 render, reserves its fixed rows (heading, hint, inputs, and the Close row)
 before sizing its list or body, clamps scroll offsets, and rebuilds hit
-geometry. Close and the final entry stay reachable at 60x20 and 80x24 and after
-a height-only shrink. The overlay ignores pointer events whose width differs
+geometry. A list that overflows its rows gets one more row for Pi's position
+indicator (`(3/9)`), so the menu with every destination and session control
+keeps Close on screen and its selected entry when the terminal shrinks from
+60x20 to 60x12. Close and the final entry stay reachable at 60x20 and 80x24 and
+after a height-only shrink. The overlay ignores pointer events whose width differs
 from the rendered width, so a click after a resize cannot act on a stale row.
 Session shutdown closes an open overlay without dispatch.
 

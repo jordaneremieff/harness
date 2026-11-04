@@ -1098,7 +1098,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		handler: openPanel,
 	});
 	// Package contract: docs/conventions/operator-panels.md. The panel opens harmlessly; every mutation is its own labelled action inside.
-	const destinations = { version: 1, destinations: [{ id: "policy", label: "Policy", command: { name: "policy" } }] };
+	const destinations = { version: 1, destinations: [{ id: "policy", label: "Policy", command: { name: "policy" }, owner: fileURLToPath(import.meta.url) }] };
 	const publishDestinations = () => eventBus.emit("harness:operator-destination:publish", destinations);
 	eventBus.on("harness:operator-destination:request", (request) => {
 		if (typeof request === "object" && request !== null && (request as { version?: unknown }).version === 1) publishDestinations();

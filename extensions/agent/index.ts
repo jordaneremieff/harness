@@ -202,7 +202,7 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 });
 const asText = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value, null, 2));
 /** Ordinary destination announcement for the footer menu (docs/conventions/operator-panels.md). */
-const DESTINATIONS = { version: 1, destinations: [{ id: "agents", label: "Agents", command: { name: "agent" } }] } as const;
+const DESTINATIONS = { version: 1, destinations: [{ id: "agents", label: "Agents", command: { name: "agent" }, owner: fileURLToPath(import.meta.url) }] } as const;
 
 function admitExecutionInput(pi: ExtensionAPI, ctx: ExtensionContext, name: string, callId: string, input: Record<string, unknown>): { admitted: Record<string, unknown>; admissionCaller: AgentCaller } {
 	const admissionCaller = caller(ctx, pi);
