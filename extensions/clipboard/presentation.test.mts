@@ -293,3 +293,28 @@ describe("clipboard card robustness", () => {
 		assert.match(screen(card, 4000), /Display limit\. The full text remains in the native tool history\./);
 	});
 });
+
+describe("clipboard error cards", () => {
+	const failure = "pbcopy failed: exit 7\nstderr: permission denied\nhint: check the clipboard service";
+
+	it("collapses a multiline error to its first line and names the expansion", () => {
+		const card = renderCopyResult(text(failure), { expanded: false, isPartial: false }, theme, { ...collapsed, isError: true });
+		const rendered = screen(card, 200);
+		assert.match(rendered, /^clipboard_copy: pbcopy failed: exit 7/);
+		assert.doesNotMatch(rendered, /permission denied/);
+		assert.match(rendered, /to expand diagnostics|Expand for full diagnostics/);
+	});
+
+	it("reveals the retained diagnostic lines when expanded", () => {
+		const card = renderRestoreResult(text(failure), { expanded: true, isPartial: false }, theme, { ...expanded, isError: true });
+		const rendered = screen(card, 200);
+		assert.match(rendered, /clipboard_restore: pbcopy failed: exit 7/);
+		assert.match(rendered, /stderr: permission denied/);
+		assert.match(rendered, /hint: check the clipboard service/);
+	});
+
+	it("keeps a single-line error without an expansion hint", () => {
+		const card = renderGetResult(text("no clipboard entry with id x"), { expanded: false, isPartial: false }, theme, { ...collapsed, isError: true });
+		assert.equal(screen(card), "clipboard_get: no clipboard entry with id x");
+	});
+});

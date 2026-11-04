@@ -57,6 +57,23 @@ function firstLine(output: string): string {
 	return output.split("\n").find((line) => line.trim().length > 0)?.trim() ?? "";
 }
 
+/** Collapsed errors show the first diagnostic line; expanded errors reveal the retained text. */
+function errorCard(
+	name: string,
+	output: string,
+	fallback: string,
+	theme: Theme,
+	expanded: boolean,
+	context: CardContext,
+): Component {
+	const head = displayValue(firstLine(output) || fallback, 200);
+	const hasMore = output.split("\n").filter((line) => line.trim().length > 0).length > 1;
+	let text = `\n${theme.fg("error", `${name}: ${head}`)}`;
+	if (expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output.trim()))}`;
+	else if (hasMore) text += theme.fg("dim", ` · ${expansionHint("diagnostics", context)}`);
+	return textComponent(text, context.lastComponent);
+}
+
 function textComponent(text: string, previous?: Component): Text {
 	const component = previous instanceof Text ? previous : new Text("", 0, 0);
 	component.setText(text);
@@ -130,7 +147,7 @@ export function renderCopyResult(
 	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Copying to the clipboard...")}`, context.lastComponent);
 	const output = textContent(result);
 	if (context.isError)
-		return textComponent(`\n${theme.fg("error", `clipboard_copy: ${displayValue(firstLine(output) || "copy failed", 200)}`)}`, context.lastComponent);
+		return errorCard("clipboard_copy", output, "copy failed", theme, options.expanded, context);
 	const details = asRecord(result.details);
 	let text = `\n${theme.fg("success", `copied ${sizeLine(numberField(details, "lines"), numberField(details, "chars"))}`)}`;
 	const id = stringField(details, "id");
@@ -163,7 +180,7 @@ export function renderPasteResult(
 	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Reading the clipboard...")}`, context.lastComponent);
 	const output = textContent(result);
 	if (context.isError)
-		return textComponent(`\n${theme.fg("error", `clipboard_paste: ${displayValue(firstLine(output) || "paste failed", 200)}`)}`, context.lastComponent);
+		return errorCard("clipboard_paste", output, "paste failed", theme, options.expanded, context);
 	const details = asRecord(result.details);
 	const chars = numberField(details, "chars");
 	if (chars === 0) return textComponent(`\n${theme.fg("success", "clipboard is empty")}`, context.lastComponent);
@@ -199,7 +216,7 @@ export function renderListResult(
 	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Listing clipboard history...")}`, context.lastComponent);
 	const output = textContent(result);
 	if (context.isError)
-		return textComponent(`\n${theme.fg("error", `clipboard_list: ${displayValue(firstLine(output) || "list failed", 200)}`)}`, context.lastComponent);
+		return errorCard("clipboard_list", output, "list failed", theme, options.expanded, context);
 	const searching = stringField(context.args, "query") !== "";
 	const details = asRecord(result.details);
 	const count = numberField(details, "count") ?? 0;
@@ -239,7 +256,7 @@ export function renderGetResult(
 	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Reading the entry...")}`, context.lastComponent);
 	const output = textContent(result);
 	if (context.isError)
-		return textComponent(`\n${theme.fg("error", `clipboard_get: ${displayValue(firstLine(output) || "read failed", 200)}`)}`, context.lastComponent);
+		return errorCard("clipboard_get", output, "read failed", theme, options.expanded, context);
 	const details = asRecord(result.details);
 	const page = continuationNote(numberField(details, "nextOffset"));
 	let text = `\n${theme.fg(
@@ -271,7 +288,7 @@ export function renderRestoreResult(
 		return textComponent(`\n${theme.fg("warning", "Restoring to the clipboard...")}`, context.lastComponent);
 	const output = textContent(result);
 	if (context.isError)
-		return textComponent(`\n${theme.fg("error", `clipboard_restore: ${displayValue(firstLine(output) || "restore failed", 200)}`)}`, context.lastComponent);
+		return errorCard("clipboard_restore", output, "restore failed", theme, options.expanded, context);
 	const details = asRecord(result.details);
 	let text = `\n${theme.fg("success", `restored · ${sizeLine(numberField(details, "lines"), numberField(details, "chars"))}`)}`;
 	text += archiveNote(details, theme);
