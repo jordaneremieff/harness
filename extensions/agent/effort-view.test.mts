@@ -652,13 +652,11 @@ it("roster notices coalesce contact reads into one active read and one latest re
 });
 
 function crowd(count: number): EffortPresencePage {
-	const page = efforts();
-	page.efforts = Array.from({ length: count }, (_, index) => ({
+	return { ...efforts(), efforts: Array.from({ length: count }, (_, index) => ({
 		id: `effort-${index}`, cwd: "/work", name: `Effort ${index}`, startedAt: "2026-10-04T00:00:00.000Z",
 		liveness: index === 0 ? "live" as const : "unknown" as const, relationship: "repository" as const,
 		...(index === 0 ? { intentClaim: { purpose: "First", integration: "None", authority: "Brief", scope: { paths: [], branches: [], fullGate: false }, updatedAt: "2026-10-04T01:00:00.000Z" } } : {}),
-	}));
-	return page;
+	})) };
 }
 function wheel(x: number, y: number, width: number, height: number, wheelDelta: number): TuiMouseEvent {
 	return { ...click(x, y, width, height), type: "wheel", wheelDelta };

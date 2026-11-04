@@ -93,6 +93,17 @@ async function entryPage(source: Pick<AgentObservationSource, "snapshot" | "earl
 }
 const LATEST = "latest";
 const EARLIER = "earlier";
+function entryOptions(page: { entries: readonly AgentConversationEntry[]; nextBefore?: number | null }, fork: boolean, preferred: string | null | undefined) {
+	const entries = committedChoices(page.entries).reverse();
+	const saved = entries.findIndex((item) => item.id === preferred);
+	if (saved > 0) entries.unshift(...entries.splice(saved, 1));
+	const choices: DialogChoice[] = [
+		...(fork ? [{ value: LATEST, label: "Latest committed entry" }] : []),
+		...entries.map((item) => ({ value: item.id, label: item.label })),
+		...(page.nextBefore ? [{ value: EARLIER, label: "Earlier messages" }] : []),
+	];
+	return { entries, choices };
+}
 async function entryChoice(
 	source: Pick<AgentObservationSource, "snapshot" | "earlier">,
 	id: string,
@@ -102,23 +113,15 @@ async function entryChoice(
 ): Promise<string | null | undefined> {
 	let page = await entryPage(source, id, preferred);
 	for (;;) {
-		const choices = committedChoices(page.entries).reverse();
-		const saved = choices.findIndex((item) => item.id === preferred);
-		if (saved > 0) choices.unshift(...choices.splice(saved, 1));
-		const options: DialogChoice[] = [
-			...(fork ? [{ value: LATEST, label: "Latest committed entry" }] : []),
-			...choices.map((item) => ({ value: item.id, label: item.label })),
-			...(page.nextBefore ? [{ value: EARLIER, label: "Earlier messages" }] : []),
-		];
-		const selected = await dialogs.select("Choose a committed message", options);
+		const { entries, choices } = entryOptions(page, fork, preferred);
+		const selected = await dialogs.select("Choose a committed message", choices);
 		if (selected === undefined) return undefined;
 		if (selected === LATEST) return null;
 		if (selected === EARLIER && page.nextBefore) {
-			const older = await source.earlier(id, page.nextBefore);
-			page = { ...older };
+			page = { ...(await source.earlier(id, page.nextBefore)) };
 			continue;
 		}
-		return choices.some((item) => item.id === selected) ? selected : undefined;
+		return entries.some((item) => item.id === selected) ? selected : undefined;
 	}
 }
 export type ActionResult = string | AgentActionOutcome | undefined;
@@ -203,6 +206,15 @@ async function contextDialog(host: ActionFlowHost, reset: boolean): Promise<Acti
 		return undefined;
 	return host.run(reset ? "reset" : "compact", text.trim() ? [text] : []);
 }
+/** A host that lists its native commands offers them; otherwise the operator types the name. */
+async function commandName(dialogs: AgentDialogs, label: string, commands: readonly DialogChoice[] | undefined, current: string): Promise<string | undefined> {
+	if (commands) {
+		if (!commands.length) throw new Error("This agent's host has no native commands.");
+		return dialogs.select(`Command for ${label}`, commands, current || undefined);
+	}
+	const value = await savedInput(dialogs, `Command for ${label}`, current, "Command name");
+	return value === undefined || !value.trim() ? undefined : value;
+}
 async function commandDialog(host: ActionFlowHost, commands: readonly DialogChoice[] | undefined): Promise<ActionResult> {
 	const { dialogs } = host;
 	const label = labelOf(host);
@@ -211,16 +223,9 @@ async function commandDialog(host: ActionFlowHost, commands: readonly DialogChoi
 	if (
 		!(await dialogSteps([
 			async () => {
-				if (commands) {
-					if (!commands.length) throw new Error("This agent's host has no native commands.");
-					const picked = await dialogs.select(`Command for ${label}`, commands, command || undefined);
-					if (picked === undefined) return false;
-					command = picked;
-					return true;
-				}
-				const value = await savedInput(dialogs, `Command for ${label}`, command, "Command name");
-				if (value === undefined || !value.trim()) return false;
-				command = value;
+				const picked = await commandName(dialogs, label, commands, command);
+				if (picked === undefined) return false;
+				command = picked;
 				return true;
 			},
 			async () => {
@@ -235,51 +240,47 @@ async function commandDialog(host: ActionFlowHost, commands: readonly DialogChoi
 		return undefined;
 	return host.run("command", [command, input]);
 }
+/** Parse the typed time into an absolute deadline and refuse one that already passed. */
+async function deadlineStep(dialogs: AgentDialogs, draft: ScheduleDraft): Promise<boolean> {
+	const time = await inputField(dialogs, "Deadline", draft.time, "HH:MM local or +30m");
+	if (time === undefined) return false;
+	if (time.trim()) {
+		draft.time = time.trim();
+		draft.deadline = undefined;
+	}
+	draft.deadline ??= scheduleDeadline(draft.time, Date.now());
+	if (Date.parse(draft.deadline) <= Date.now()) throw new Error("The saved deadline passed. Enter a new deadline.");
+	return true;
+}
+async function dispositionStep(dialogs: AgentDialogs, draft: ScheduleDraft): Promise<boolean> {
+	const modes: DialogChoice[] = [{ value: "followUp", label: "Follow-up" }, { value: "steer", label: "Steer" }];
+	const mode = await dialogs.select("Busy disposition", modes, draft.mode);
+	if (!mode) return false;
+	draft.mode = mode === "steer" ? "steer" : "followUp";
+	return true;
+}
 async function scheduleDialog(host: ActionFlowHost): Promise<ActionResult> {
 	const { dialogs, row, state } = host;
 	const label = labelOf(host);
 	const record = agentState(state, row.id);
 	record.schedule ??= { message: "", time: "", mode: "followUp" };
 	const draft: ScheduleDraft = record.schedule;
-	if (
-		!(await dialogSteps([
-			async () => {
-				const message = await dialogs.editor(`Scheduled message to ${label}`, draft.message);
-				if (message === undefined) return false;
-				draft.message = message;
-				return Boolean(message.trim());
-			},
-			async () => {
-				const time = await inputField(dialogs, "Deadline", draft.time, "HH:MM local or +30m");
-				if (time === undefined) return false;
-				if (time.trim()) {
-					draft.time = time.trim();
-					draft.deadline = undefined;
-				}
-				draft.deadline ??= scheduleDeadline(draft.time, Date.now());
-				if (Date.parse(draft.deadline) <= Date.now())
-					throw new Error("The saved deadline passed. Enter a new deadline.");
-				return true;
-			},
-			async () => {
-				const modes: DialogChoice[] = [{ value: "followUp", label: "Follow-up" }, { value: "steer", label: "Steer" }];
-				const mode = await dialogs.select("Busy disposition", modes, draft.mode);
-				if (!mode) return false;
-				draft.mode = mode === "steer" ? "steer" : "followUp";
-				return true;
-			},
-			async () => {
-				if (!draft.deadline) return false;
-				return dialogs.confirm(
-					`Schedule for ${label}?`,
-					`${new Date(draft.deadline).toString()}\n${draft.deadline}\n${draft.mode === "steer" ? "Steer" : "Follow-up"}. The host must run at the deadline.`,
-					"Schedule",
-				);
-			},
-		]))
-	)
-		return undefined;
-	if (!draft.deadline) return undefined;
+	const reviewed = await dialogSteps([
+		async () => {
+			const message = await dialogs.editor(`Scheduled message to ${label}`, draft.message);
+			if (message === undefined) return false;
+			draft.message = message;
+			return Boolean(message.trim());
+		},
+		() => deadlineStep(dialogs, draft),
+		() => dispositionStep(dialogs, draft),
+		async () => draft.deadline !== undefined && dialogs.confirm(
+			`Schedule for ${label}?`,
+			`${new Date(draft.deadline).toString()}\n${draft.deadline}\n${draft.mode === "steer" ? "Steer" : "Follow-up"}. The host must run at the deadline.`,
+			"Schedule",
+		),
+	]);
+	if (!reviewed || !draft.deadline) return undefined;
 	const result = await host.schedule({ message: draft.message, deliverAt: draft.deadline, mode: draft.mode });
 	record.schedule = undefined;
 	return result;

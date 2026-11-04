@@ -45,19 +45,21 @@ export async function terminalAction(controller: TerminalController, dialogs: Ag
 		return read.models.map((model) => ({ identity: `${model.provider}/${model.modelId}`, ...(model.name ? { name: model.name } : {}) }));
 	};
 	const confirm = (title: string, description: string, action: string) => dialogs.confirm(title, description, action);
+	const runners: Record<string, (args: string[]) => Promise<ActionResult>> = {
+		fork: async (args) => { const forked = await control("fork", args[0] ? { entryId: args[0] } : {}) as { identity?: string; status?: { name?: string } }; return outcome(`Created branch “${forked.status?.name ?? label}”`, forked.identity ?? target.id); },
+		rewind: async (args) => { const result = await control("rewind", { entryId: args[0], correction: args[1], origin: "operator", selfOwned: true }) as { identity?: string }; return outcome(`Rewound “${label}” before the selected entry`, result.identity ?? target.id); },
+		reset: (args) => resetAgentContext(deps, { sessionId: target.id, ...(args[0] ? { handoff: args[0] } : {}) }),
+		compact: async (args) => { const result = await control("compact", args[0] ? { instructions: args[0] } : {}) as { status?: string }; return outcome(result?.status === "completed" ? `Compacted “${label}”` : `Compaction ${result?.status ?? "requested"} for “${label}”`); },
+		command: async (args) => { const result = await control("command", { name: args[0], args: args[1] ?? "", origin: "operator", invocationId: randomUUID() }) as { reloaded?: boolean; text?: string }; return outcome(result?.reloaded ? `Reloaded host registrations for “${label}”` : `Ran command ${args[0]} on “${label}”${result?.text ? `: ${result.text}` : ""}`); },
+		"timer-cancel": (args) => cancelAgentTimer(deps, { sessionId: target.id, timerId: Number(args[0]) }),
+		abort: async () => { await control("abort"); return outcome(`Requested stop for “${label}”`); },
+		attach: async () => { await control("attach"); return outcome(`Connected to “${label}”`); },
+		"await-release": async (args) => { const result = await control("await-release", { expectedRunId: Number(args[0]) }) as { released?: boolean }; return outcome(result.released ? "Released the selected await" : "The selected await is no longer active"); },
+	};
 	const run = async (action: string, args: string[]): Promise<ActionResult> => {
-		switch (action) {
-			case "fork": { const forked = await control("fork", args[0] ? { entryId: args[0] } : {}) as { identity?: string; status?: { name?: string } }; return outcome(`Created branch “${forked.status?.name ?? label}”`, forked.identity ?? target.id); }
-			case "rewind": { const result = await control("rewind", { entryId: args[0], correction: args[1], origin: "operator", selfOwned: true }) as { identity?: string }; return outcome(`Rewound “${label}” before the selected entry`, result.identity ?? target.id); }
-			case "reset": return resetAgentContext(deps, { sessionId: target.id, ...(args[0] ? { handoff: args[0] } : {}) });
-			case "compact": { const result = await control("compact", args[0] ? { instructions: args[0] } : {}) as { status?: string }; return outcome(result?.status === "completed" ? `Compacted “${label}”` : `Compaction ${result?.status ?? "requested"} for “${label}”`); }
-			case "command": { const result = await control("command", { name: args[0], args: args[1] ?? "", origin: "operator", invocationId: randomUUID() }) as { reloaded?: boolean; text?: string }; return outcome(result?.reloaded ? `Reloaded host registrations for “${label}”` : `Ran command ${args[0]} on “${label}”${result?.text ? `: ${result.text}` : ""}`); }
-			case "timer-cancel": return cancelAgentTimer(deps, { sessionId: target.id, timerId: Number(args[0]) });
-			case "abort": await control("abort"); return outcome(`Requested stop for “${label}”`);
-			case "attach": await control("attach"); return outcome(`Connected to “${label}”`);
-			case "await-release": { const result = await control("await-release", { expectedRunId: Number(args[0]) }) as { released?: boolean }; return outcome(result.released ? "Released the selected await" : "The selected await is no longer active"); }
-			default: throw new Error(`Unsupported terminal action: ${action}`);
-		}
+		const runner = runners[action];
+		if (!runner) throw new Error(`Unsupported terminal action: ${action}`);
+		return runner(args);
 	};
 	const host: ActionFlowHost = {
 		dialogs, row: target, state: controller.state, source: controller.source, run,

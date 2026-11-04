@@ -91,7 +91,7 @@ export class ActionInventory {
 	footer(owner: DashboardMouse, y: number, width: number, back: ScreenAction, theme: Theme, menu = true, lead = ""): string {
 		const named = (action: ScreenAction) => {
 			const key = action.keys?.[0];
-			return key ? `${keyLabel(key)} ${action.label.toLowerCase()}` : action.label.toLowerCase();
+			return key ? `${keyLabel(key)} ${action.label.toLowerCase()}` : action.label;
 		};
 		const tail: Array<{ text: string; run: () => void }> = [
 			...(menu ? [{ text: `${MENU_KEY} more`, run: () => this.show() }] : []),

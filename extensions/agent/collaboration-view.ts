@@ -403,27 +403,38 @@ export class CollaborationView {
 	}
 	/** Every action of the current screen. Footer, menu, shortcuts and pointer all dispatch these records. */
 	private actions(): ScreenAction[] {
-		const scroll = Math.max(1, this.options.tui.terminal.rows - 8);
-		const reading = (delta: number) => () => { this.offset += delta; this.follow = false; };
-		const closed = !this.page || this.page.thread.closed ? "This thread is closed or not loaded" : undefined;
-		if (this.screen === "compose") return [
+		const byScreen = { compose: () => this.composeActions(), notify: () => this.notifyActions(), members: () => this.memberActions(), list: () => this.listActions(), thread: () => this.threadActions() };
+		return byScreen[this.screen]();
+	}
+	private composeActions(): ScreenAction[] {
+		return [
 			{ id: "post", label: "Post", keys: ["enter"], main: true, run: () => this.composer.handleInput("\r") },
 			{ id: "notify", label: "Notify peers", keys: ["tab"], main: true, run: () => { this.screen = "notify"; this.memberIndex = 0; } },
 			{ id: "newline", label: "Newline", keys: ["ctrl+j"], main: true, run: () => this.composer.handleInput("\n") },
 		];
-		if (this.screen === "notify") return [
+	}
+	private notifyActions(): ScreenAction[] {
+		return [
 			{ id: "toggle", label: "Toggle peer", keys: ["enter", " "], main: true, disabled: this.page?.thread.members.length ? undefined : "This thread has no peers", run: () => this.toggleMember() },
 			{ id: "write", label: "Write", keys: ["tab"], main: true, run: () => { this.screen = "compose"; } },
 		];
-		if (this.screen === "members") return [
-			{ id: "open", label: "Open conversation", keys: ["enter"], main: true, disabled: this.page?.thread.members.length ? undefined : "This thread has no peers", run: () => { const member = this.page?.thread.members[this.memberIndex]; if (member) this.options.openParticipant?.(member.identity); } },
-		];
-		if (this.screen === "list") return [
+	}
+	private memberActions(): ScreenAction[] {
+		const open = () => { const member = this.page?.thread.members[this.memberIndex]; if (member) this.options.openParticipant?.(member.identity); };
+		return [{ id: "open", label: "Open conversation", keys: ["enter"], main: true, disabled: this.page?.thread.members.length ? undefined : "This thread has no peers", run: open }];
+	}
+	private listActions(): ScreenAction[] {
+		return [
 			{ id: "read", label: "Read", keys: ["enter"], main: true, disabled: this.choices().length ? undefined : "No thread is listed", run: () => this.choose() },
 			{ id: "refresh", label: "Refresh", keys: ["r"], main: true, run: () => { void this.refresh(); } },
 			{ id: "view", label: this.all ? "Related threads" : "All threads", keys: ["v"], main: true, disabled: this.options.related ? undefined : "Relationships are unavailable here", run: () => { this.all = !this.all; this.index = 0; } },
 			{ id: "storage", label: "Selected agent's storage", keys: ["s"], disabled: this.options.selectedAgent() ? undefined : "Select an agent first", run: () => this.setScope(this.options.selectedAgent()) },
 		];
+	}
+	private threadActions(): ScreenAction[] {
+		const scroll = Math.max(1, this.options.tui.terminal.rows - 8);
+		const reading = (delta: number) => () => { this.offset += delta; this.follow = false; };
+		const closed = !this.page || this.page.thread.closed ? "This thread is closed or not loaded" : undefined;
 		return [
 			{ id: "peers", label: "Peers", keys: ["m"], main: true, run: () => { this.screen = "members"; this.memberIndex = 0; } },
 			{ id: "post", label: "Post", keys: ["p"], main: true, disabled: closed, run: () => this.beginPost(false) },

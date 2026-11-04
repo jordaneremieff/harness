@@ -27,19 +27,27 @@ function values(snapshot: AgentConversationSummary, patch: ConfigurationPatch) {
 function modelChoices(options: readonly ModelOption[]): DialogChoice[] {
 	return options.map((option) => ({ value: option.identity, label: option.name && option.name !== option.identity ? `${option.identity} · ${display(option.name)}` : option.identity }));
 }
+async function matchingModels(models: ModelSource, query: string): Promise<ModelOption[]> {
+	const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
+	return (await models())
+		.filter((option) => terms.every((term) => option.identity.toLocaleLowerCase().includes(term)))
+		.sort((a, b) => a.identity.localeCompare(b.identity));
+}
+/** A host without a filtering list asks for search words first; a filtering list takes them while choosing. */
+async function askQuery(dialogs: AgentDialogs, query: string): Promise<string | undefined> {
+	const hint = query ? `Saved: ${query} (blank keeps it)` : "Model name or provider; blank shows all";
+	const input = await dialogs.input(`Find an available model\n${hint}`, { initial: query, placeholder: hint });
+	return input === undefined ? undefined : input.trim() ? input : query;
+}
 async function modelPatch(shown: ReturnType<typeof values>, dialogs: AgentDialogs, models: ModelSource): Promise<ConfigurationPatch> {
 	let query = "";
 	for (;;) {
 		if (!dialogs.filtersChoices) {
-			const hint = query ? `Saved: ${query} (blank keeps it)` : "Model name or provider; blank shows all";
-			const input = await dialogs.input(`Find an available model\n${hint}`, { initial: query, placeholder: hint });
-			if (input === undefined) return {};
-			if (input.trim()) query = input;
+			const asked = await askQuery(dialogs, query);
+			if (asked === undefined) return {};
+			query = asked;
 		}
-		const terms = query.toLocaleLowerCase().trim().split(/\s+/).filter(Boolean);
-		const available = (await models())
-			.filter((option) => terms.every((term) => option.identity.toLocaleLowerCase().includes(term)))
-			.sort((a, b) => a.identity.localeCompare(b.identity));
+		const available = await matchingModels(models, query);
 		if (!available.length) throw new Error(dialogs.filtersChoices ? "No available models were reported" : "No available model matches that search");
 		const model = await dialogs.select("Model (exact provider/model)", modelChoices(available), shown.model);
 		if (model !== undefined) return validateConfigurationPatch({ model });

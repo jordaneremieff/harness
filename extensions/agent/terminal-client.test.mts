@@ -365,7 +365,7 @@ it("dashboard sends display the same native admission facts", async () => {
 	const f = fixture(); await f.controller.attach("a");
 	f.setAdmission(Promise.resolve({ submissionId: 73, identity: "a", deduped: true }));
 	const { screen, afterRender } = screenFixture(f.controller);
-	const roster = afterRender(() => screen.render(140).map(stripVTControlCharacters).join("\n").includes("tab message"));
+	const roster = afterRender(() => screen.render(140).map(stripVTControlCharacters).join("\n").includes("Tab message"));
 	screen.openDashboard(); await roster;
 	screen.handleInput("m");
 	f.controller.setDraft("from dashboard");
@@ -490,7 +490,7 @@ it("late admission keeps a mode-only edit in the main console and dashboard", as
 	const started = deferred(); const control = f.manager.control;
 	f.manager.control = async (method, input, caller) => { if (method === "submit") started.resolve(); return control(method, input, caller); };
 	const { screen, afterRender } = screenFixture(f.controller);
-	const roster = afterRender(() => screen.render(140).map(stripVTControlCharacters).join("\n").includes("tab message"));
+	const roster = afterRender(() => screen.render(140).map(stripVTControlCharacters).join("\n").includes("Tab message"));
 	screen.openDashboard(); await roster; screen.handleInput("m");
 	f.controller.setDraft("dashboard text"); screen.handleInput("\r"); await started.promise;
 	f.controller.setMode("followUp");
@@ -573,4 +573,180 @@ it("a late display answer from an earlier selection never replaces the current s
 	await Promise.resolve();
 	assert.deepEqual(f.controller.display.diagnostics, []);
 	await f.controller.close();
+});
+
+function usageFrame(revision: number, total: number, model = { provider: "test", modelId: "model" }, thinkingLevel = "high") {
+	const base = conversationFrame({ revision });
+	return { ...base, status: { ...base.status, busy: false, usage: { models: { [`${model.provider}/${model.modelId}`]: { cost: { total } } }, tools: {} } as never, agent: { ...base.status.agent, model, thinkingLevel } } } as typeof base;
+}
+
+it("recorded cost follows each new usage observation without reattaching", async () => {
+	const f = fixture(); await f.controller.attach("a");
+	const { screen } = screenFixture(f.controller);
+	f.observers.get("a")?.(usageFrame(2, 0.5), true, "live");
+	assert.equal(f.controller.row?.cost, 0.5);
+	assert.match(stripVTControlCharacters(screen.render(120).join("\n")), /~\$0\.50/);
+	f.observers.get("a")?.(usageFrame(3, 1.25), true, "live");
+	assert.equal(f.controller.row?.cost, 1.25);
+	assert.equal(f.controller.row?.partial, false);
+	assert.match(stripVTControlCharacters(screen.render(120).join("\n")), /~\$1\.25/);
+	assert.equal(f.calls.filter((call) => call.method === "attach").length, 1);
+	screen.dispose(); f.controller.close();
+});
+
+it("an unreadable cost entry makes the total unknown instead of a smaller number", async () => {
+	const f = fixture(); await f.controller.attach("a");
+	const frame = usageFrame(2, 0.5);
+	(frame.status as { usage: unknown }).usage = { models: { "test/model": { cost: { total: 0.5 } }, "other/model": {} }, tools: {} };
+	f.observers.get("a")?.(frame, true, "live");
+	assert.equal(f.controller.row?.partial, true);
+	assert.ok(Number.isNaN(f.controller.row?.cost));
+	f.controller.close();
+});
+
+it("model and reasoning metadata come from the host's model list and follow a model change", async () => {
+	const f = fixture();
+	f.responses.set("models", { models: [
+		{ provider: "test", modelId: "model", name: "Test model", reasoning: true, contextWindow: 200000 },
+		{ provider: "test", modelId: "other", name: "Other model", reasoning: false, contextWindow: 64000 },
+	], source: "available-snapshot", observedAt: new Date().toISOString() });
+	await f.controller.attach("a"); await f.controller.displaySettled();
+	const { screen } = screenFixture(f.controller);
+	f.observers.get("a")?.(usageFrame(2, 0.1), true, "live");
+	assert.equal(f.controller.currentModelInfo()?.name, "Test model");
+	let shown = stripVTControlCharacters(screen.render(120).join("\n"));
+	assert.match(shown, /Test model/); assert.match(shown, /\[high\]/);
+	f.observers.get("a")?.(usageFrame(3, 0.1, { provider: "test", modelId: "other" }, "off"), true, "live");
+	assert.equal(f.controller.currentModelInfo()?.name, "Other model");
+	shown = stripVTControlCharacters(screen.render(120).join("\n"));
+	assert.match(shown, /Other model/); assert.doesNotMatch(shown, /Test model/);
+	f.observers.get("a")?.(usageFrame(4, 0.1, { provider: "test", modelId: "unlisted" }, "off"), true, "live");
+	assert.equal(f.controller.currentModelInfo(), undefined, "a model the host did not list stays unknown");
+	assert.equal(f.calls.filter((call) => call.method === "models").length, 1, "frames never trigger another model read");
+	screen.dispose(); f.controller.close();
+});
+
+it("a lost observation keeps the last facts, labels them retained and marks the cost partial", async () => {
+	const f = fixture(); await f.controller.attach("a");
+	const { screen } = screenFixture(f.controller);
+	f.observers.get("a")?.(usageFrame(2, 0.5), true, "live");
+	f.observers.get("a")?.(undefined, false, "unavailable");
+	const shown = stripVTControlCharacters(screen.render(120).join("\n"));
+	assert.match(shown, /Connection unavailable; last observed data shown/);
+	assert.equal(f.controller.row?.partial, true);
+	assert.match(shown, /~\$0\.50\+/);
+	screen.dispose(); f.controller.close();
+});
+
+it("program status follows live busy state, switches targets, blocks only on a local dialog and clears on loss and disposal", async () => {
+	const f = fixture(); await f.controller.attach("a");
+	const output: Array<{ state: string; kind?: string }> = [];
+	const { screen, overlays } = screenFixture(f.controller, (status) => output.push(status));
+	const states = () => output.map((item) => item.state);
+	const busy = (revision: number, value: boolean) => ({ ...conversationFrame({ revision }), status: { ...conversationFrame().status, busy: value } });
+	f.observers.get("a")?.(busy(2, true), true, "live");
+	assert.equal(output.at(-1)?.state, "working");
+	f.observers.get("a")?.(busy(3, false), true, "live");
+	assert.equal(output.at(-1)?.state, "idle");
+	const awaiting = { ...busy(4, true), status: { ...busy(4, true).status, awaiting: { runId: 1, heldInputs: [], results: [], queuedInputCount: 0, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 0, results: 0 }, producers: [], omittedProducers: 0, likelyCycle: [], coverage: "one hop; remote graph incomplete" } } };
+	f.observers.get("a")?.(awaiting as never, true, "live");
+	assert.equal(output.at(-1)?.state, "working", "waiting for another agent is not a human question");
+	f.observers.get("a")?.(busy(5, false), true, "live");
+	const before = output.length;
+	f.observers.get("a")?.(busy(6, false), true, "live");
+	assert.equal(output.length, before, "an unchanged state is not published again");
+	f.observers.get("a")?.(undefined, false, "unavailable");
+	assert.equal(output.at(-1)?.state, "clear", "a lost observation clears activity and does not claim failure");
+	assert.equal(states().includes("error"), false);
+	f.observers.get("a")?.(busy(7, true), true, "live");
+	assert.equal(output.at(-1)?.state, "working");
+	await f.controller.attach("b");
+	assert.equal(output.at(-1)?.state, "clear", "the old target is cleared, and the new target reports nothing before its first live observation");
+	f.observers.get("b")?.(busy(1, false), true, "live");
+	assert.equal(output.at(-1)?.state, "idle");
+	assert.equal(overlays.length, 0);
+	screen.dispose();
+	assert.equal(output.at(-1)?.state, "clear");
+	f.controller.close();
+});
+
+it("an open terminal dialog reports a question and its closing restores the live state", async () => {
+	const f = fixture(); await f.controller.attach("a");
+	const gate = deferred(); f.setAdmission(gate.promise.then(() => { throw new Error("unknown"); }));
+	f.controller.setDraft("original");
+	const failed = assert.rejects(f.controller.send()); gate.resolve(); await failed;
+	const output: Array<{ state: string; kind?: string; message?: string }> = [];
+	const { screen, overlays } = screenFixture(f.controller, (status) => output.push(status));
+	f.controller.setDraft("/agent recover"); screen.handleInput("\r");
+	assert.ok(overlays.length > 0);
+	assert.deepEqual(output.at(-1), { state: "blocked", app: "pi-agent", kind: "question", message: "Answer the terminal dialog" });
+	overlays.at(-1)?.handleInput?.("\x1b");
+	assert.notEqual(output.at(-1)?.state, "blocked");
+	assert.doesNotMatch(JSON.stringify(output), /original/);
+	screen.dispose(); f.controller.close();
+});
+
+function mouseAt(x: number, y: number, width: number, height: number, patch: Partial<import("@earendil-works/pi-tui").TuiMouseEvent> = {}): import("@earendil-works/pi-tui").TuiMouseEvent {
+	return { type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1, ...patch };
+}
+const toolEntries = [
+	{ id: "1", kind: "pi.user", model: [{ role: "user", content: "Outside card sentinel", timestamp: 1 }] },
+	{ id: "2", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "clicked-tool", name: "example_tool", arguments: { topic: "named" } }], api: "openai-responses", provider: "test", model: "test", timestamp: 2, stopReason: "toolUse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] },
+];
+const find = (lines: string[], needle: string) => { const y = lines.findIndex((line) => line.includes(needle)); assert.ok(y >= 0, needle); return { x: lines[y]?.indexOf(needle) ?? 0, y }; };
+
+it("transcript pointer events reach the native tool card and leave outside text to selection", async () => {
+	const f = fixture();
+	f.manager.snapshot = async () => ({ ...snapshot(), entries: toolEntries as never });
+	await f.controller.attach("a");
+	const { screen, terminal } = screenFixture(f.controller);
+	const draw = () => screen.render(80).map(stripVTControlCharacters);
+	const tool = find(draw(), "example_tool");
+	for (const patch of [{ type: "press" }, { type: "drag" }, { type: "release" }, { ctrl: true }, { clickCount: 2 }]) assert.equal(screen.handleMouse(mouseAt(tool.x, tool.y, 80, terminal.rows, patch as never)), undefined);
+	assert.ok(screen.handleMouse(mouseAt(tool.x, tool.y, 80, terminal.rows))?.handled);
+	assert.equal(f.controller.draftState?.view.toolExpanded.get("clicked-tool"), true);
+	assert.equal(f.calls.some((call) => call.method === "submit" || call.method === "abort"), false);
+	screen.dispose(); f.controller.close();
+});
+
+it("visible Dashboard, Back, Latest and Detach controls act on the attached conversation and detach keeps native work", async () => {
+	const f = fixture(); await f.controller.attach("a");
+	const { screen, done, terminal } = screenFixture(f.controller);
+	const draw = () => screen.render(80).map(stripVTControlCharacters);
+	const press = (needle: string) => { const p = find(draw(), needle); return screen.handleMouse(mouseAt(p.x, p.y, 80, terminal.rows)); };
+	assert.match(draw().at(-1) ?? "", /Dashboard · Back · Latest · Detach/);
+	press("Back");
+	assert.match(draw().join("\n"), /No previous conversation/);
+	const state = f.controller.draftState; assert.ok(state);
+	state.view.follow = false; state.view.anchor = { id: "1", offset: 3 };
+	press("Latest");
+	assert.equal(state.view.follow, true); assert.equal(state.view.anchor, undefined);
+	state.view.follow = false;
+	press("Dashboard");
+	assert.ok(screen.render(80).map(stripVTControlCharacters).some((line) => line.includes("Agents")));
+	screen.closeDashboard();
+	f.controller.setDraft("kept");
+	press("Detach");
+	assert.equal(done(), 1);
+	assert.equal(f.controller.draftState?.draft, "kept");
+	assert.equal(f.calls.some((call) => ["abort", "release", "submit"].includes(call.method)), false, "detaching sends no control to the native work");
+	screen.dispose(); f.controller.close();
+});
+
+it("the earlier-history row loads earlier entries by click and a stale click after resize does nothing", async () => {
+	const f = fixture();
+	let earlier = 0;
+	f.manager.snapshot = async (_id, params) => { if (params && "before" in params) earlier++; return { ...snapshot(), entries: toolEntries as never, nextBefore: 7 }; };
+	await f.controller.attach("a");
+	const { screen, terminal } = screenFixture(f.controller);
+	const lines = screen.render(80).map(stripVTControlCharacters);
+	assert.match(lines[0] ?? "", /Earlier history/);
+	terminal.rows = 30;
+	assert.equal(screen.handleMouse(mouseAt(2, 0, 80, 30)), undefined, "a click reported for a new size cannot use geometry drawn for the old one");
+	assert.equal(earlier, 0);
+	screen.render(80);
+	assert.ok(screen.handleMouse(mouseAt(2, 0, 80, 30))?.handled);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	assert.equal(earlier, 1);
+	screen.dispose(); f.controller.close();
 });

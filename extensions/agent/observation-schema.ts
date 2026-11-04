@@ -255,7 +255,7 @@ export const DurableInventorySchema = obj({
 
 /** Models the host's configured runtime currently reports as available, from its last-known snapshot. */
 export const ModelChoicesSchema = obj({
-	models: arr(obj({ provider: string, modelId: string, name: opt(string), reasoning: boolean })),
+	models: arr(obj({ provider: string, modelId: string, name: opt(string), reasoning: boolean, contextWindow: opt(number) })),
 	/** The runtime read this list came from; it performs no credential or network probe. */
 	source: lit("available-snapshot"),
 	/** The runtime's last availability error, when it reported one. */

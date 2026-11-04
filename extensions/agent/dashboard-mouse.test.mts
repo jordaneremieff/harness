@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { Text, isKittyProtocolActive, setKittyProtocolActive, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import { AgentComposer } from "./agent-composer.ts";
+import { Text, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { DashboardMouse } from "./dashboard-mouse.ts";
-import { fixture, keys, row, source, theme, turn } from "./dashboard-test-fixture.mts";
+import { fixture, row, source, turn } from "./dashboard-test-fixture.mts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
 

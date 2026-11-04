@@ -1017,22 +1017,25 @@ export class AgentDashboard implements Component, Focusable {
 		if (matchesKey(data, "escape") || (this.tui.terminal.columns >= 60 && this.tui.terminal.rows >= 20))
 			this.efforts?.handleInput(data);
 	}
-	handleInput(data: string): void {
-		if (this.closed) return;
-		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeScreen());
-		if (this.resize.input(data)) { this.redraw(); return; }
-		if (this.effortsOpen) { this.effortInput(data); return; }
+	/** Related efforts, Threads and the open action menu own the keyboard while they are showing. */
+	private routeOpenView(data: string): boolean {
+		if (this.effortsOpen) { this.effortInput(data); return true; }
 		if (this.navigation.screen === "threads") {
 			if (matchesKey(data, "escape") || (this.tui.terminal.columns >= 60 && this.tui.terminal.rows >= 20))
 				this.threads?.handleInput(data);
 			this.redraw();
-			return;
+			return true;
 		}
-		if (this.inventory.open) {
-			this.inventory.handleInput(data);
-			this.redraw();
-			return;
-		}
+		if (!this.inventory.open) return false;
+		this.inventory.handleInput(data);
+		this.redraw();
+		return true;
+	}
+	handleInput(data: string): void {
+		if (this.closed) return;
+		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeScreen());
+		if (this.resize.input(data)) { this.redraw(); return; }
+		if (this.routeOpenView(data)) return;
 		if (matchesKey(data, "escape")) {
 			this.back();
 			return;
@@ -1216,21 +1219,30 @@ export class AgentDashboard implements Component, Focusable {
 	/** Every action of the current screen. Footer, menu, shortcuts and pointer all dispatch these records. */
 	private screenActions(): ScreenAction[] {
 		const screen = this.navigation.screen;
-		const console = this.console;
-		const needsAgent = !console || this.loadMore ? "Select an agent first" : undefined;
-		if (screen === "console" || screen === "message") return [
-			{ id: "send", label: "Send", keys: ["enter"], main: true, run: () => this.messageInput("\r") },
-			{ id: "mode", label: "Steer/follow-up", keys: ["tab"], main: true, disabled: console?.row.state === "working" ? undefined : "Only a working agent has steer and follow-up", run: () => this.messageInput("\t") },
-			{ id: "newline", label: "Newline", keys: ["ctrl+j"], main: true, run: () => this.messageInput("\n") },
-		];
+		if (screen === "console" || screen === "message") return this.composerActions();
 		if (screen === "new") return [
 			{ id: "start", label: "Start", keys: ["enter"], main: true, run: () => this.newComposer.handleInput("\r") },
 			{ id: "newline", label: "Newline", keys: ["ctrl+j"], main: true, run: () => this.newComposer.handleInput("\n") },
 		];
-		if (screen === "find") return [
-			{ id: "keep", label: "Keep filter", keys: ["tab"], main: true, run: () => this.find.onSubmit?.(this.find.getValue()) },
+		if (screen === "find") return [{ id: "keep", label: "Keep filter", keys: ["tab"], main: true, run: () => this.find.onSubmit?.(this.find.getValue()) }];
+		if (screen === "help" || screen === "result") return this.readerActions();
+		if (screen === "actions") return [{ id: "choose", label: "Choose", keys: ["enter"], main: true, run: () => { void this.runAction(); } }];
+		if (screen === "tasks") return [
+			{ id: "open", label: "Open conversation", keys: ["enter"], main: true, run: () => this.tasks?.open() },
+			{ id: "refresh", label: "Refresh", keys: ["r"], main: true, run: () => { void this.tasks?.refresh(); } },
 		];
-		if (screen === "help" || screen === "result") return [
+		return this.rosterActions();
+	}
+	private composerActions(): ScreenAction[] {
+		const working = this.console?.row.state === "working";
+		return [
+			{ id: "send", label: "Send", keys: ["enter"], main: true, run: () => this.messageInput("\r") },
+			{ id: "mode", label: "Steer/follow-up", keys: ["tab"], main: true, disabled: working ? undefined : "Only a working agent has steer and follow-up", run: () => this.messageInput("\t") },
+			{ id: "newline", label: "Newline", keys: ["ctrl+j"], main: true, run: () => this.messageInput("\n") },
+		];
+	}
+	private readerActions(): ScreenAction[] {
+		return [
 			{ id: "up", label: "Scroll up", keys: ["up"], main: true, run: () => this.scrollReader(-1) },
 			{ id: "down", label: "Scroll down", keys: ["down"], main: true, run: () => this.scrollReader(1) },
 			{ id: "page-up", label: "Page up", keys: ["pageUp"], run: () => this.scrollReader(-this.bodyHeight) },
@@ -1238,21 +1250,27 @@ export class AgentDashboard implements Component, Focusable {
 			{ id: "start", label: "Top", keys: ["home"], run: () => this.scrollReader("start") },
 			{ id: "end", label: "Bottom", keys: ["end"], run: () => this.scrollReader("end") },
 		];
-		if (screen === "actions") return [
-			{ id: "choose", label: "Choose", keys: ["enter"], main: true, run: () => { void this.runAction(); } },
-		];
-		if (screen === "tasks") return [
-			{ id: "open", label: "Open conversation", keys: ["enter"], main: true, run: () => this.tasks?.open() },
-			{ id: "refresh", label: "Refresh", keys: ["r"], main: true, run: () => { void this.tasks?.refresh(); } },
-		];
+	}
+	private rosterActions(): ScreenAction[] {
+		const console = this.console;
+		const needsAgent = !console || this.loadMore ? "Select an agent first" : undefined;
+		const canOpen = Boolean(console) || this.loadMore || this.emptyStore();
+		const canStart = Boolean(this.operations.newAgent);
 		return [
-			{ id: "open", label: this.loadMore ? "Load more" : this.emptyStore() ? "New agent" : "Open", keys: ["enter"], main: Boolean(console) || this.loadMore || this.emptyStore(), disabled: console || this.loadMore || this.emptyStore() ? undefined : "Select an agent first", run: () => this.rosterEnter() },
-			{ id: "message", label: "Message", keys: ["m", "tab"], main: !needsAgent, disabled: needsAgent, run: () => { if (console) this.navigation.enter("message", console.row.id); } },
+			{ id: "open", label: this.loadMore ? "Load more" : this.emptyStore() ? "New agent" : "Open", keys: ["enter"], main: canOpen && (Boolean(console) || this.loadMore || canStart), disabled: canOpen ? undefined : "Select an agent first", run: () => this.rosterEnter() },
+			{ id: "message", label: "Message", keys: ["tab", "m"], main: !needsAgent, disabled: needsAgent, run: () => { if (console) this.navigation.enter("message", console.row.id); } },
 			{ id: "actions", label: "Actions", keys: ["a"], main: !needsAgent, description: "Control the selected agent: configure, fork, stop and more", disabled: needsAgent, run: () => { if (console) { this.actionIndex = 0; this.navigation.enter("actions", console.row.id); } } },
-			{ id: "threads", label: "Threads", keys: ["t"], main: true, description: "Shared purpose threads", disabled: this.operations.collaborate ? undefined : "Threads unavailable. Restart this Pi window with the current agent extension.", run: () => this.openThreads() },
-			{ id: "efforts", label: "Efforts", keys: ["b"], main: true, description: "Related efforts", disabled: this.operations.efforts ? undefined : "Related efforts unavailable. Restart this Pi window with the current agent extension.", run: () => this.openEfforts() },
-			{ id: "new", label: "New agent", keys: ["n"], main: true, disabled: this.operations.newAgent ? undefined : "New agent is unavailable. Enter an existing conversation.", run: () => this.openNew() },
 			{ id: "tasks", label: "Tasks", description: "Live tasks of the selected agent", disabled: needsAgent, run: () => { if (console) this.openTasks(console.row.id); } },
+			...this.navigationActions(),
+		];
+	}
+	private navigationActions(): ScreenAction[] {
+		const { collaborate, efforts, newAgent } = this.operations;
+		const missing = (what: string) => `${what} unavailable. Restart this Pi window with the current agent extension.`;
+		return [
+			{ id: "threads", label: "Threads", keys: ["t"], main: Boolean(collaborate), description: "Shared purpose threads", disabled: collaborate ? undefined : missing("Threads"), run: () => this.openThreads() },
+			{ id: "efforts", label: "Efforts", keys: ["b"], main: Boolean(efforts), description: "Related efforts", disabled: efforts ? undefined : missing("Related efforts"), run: () => this.openEfforts() },
+			{ id: "new", label: "New agent", keys: ["n"], main: Boolean(newAgent), disabled: newAgent ? undefined : "New agent is unavailable. Enter an existing conversation.", run: () => this.openNew() },
 			{ id: "view", label: this.allAgents ? "Related agents" : "All agents", keys: ["v"], main: this.rows.length === 0 && Boolean(this.primaryId), disabled: this.primaryId ? undefined : "Related needs a current session. All loaded agents are shown.", run: () => { this.allAgents = !this.allAgents; this.rosterScroll = undefined; this.loadMore = false; this.reconcile(); } },
 			{ id: "find", label: "Find", keys: ["/"], run: () => { this.findBefore = { filter: this.state.filter, selected: this.state.selected }; this.find.setValue(this.state.filter); this.navigation.enter("find"); } },
 			{ id: "time", label: this.state.exactTime ? "Relative times" : "Exact times", keys: ["i"], run: () => { this.state.exactTime = !this.state.exactTime; } },

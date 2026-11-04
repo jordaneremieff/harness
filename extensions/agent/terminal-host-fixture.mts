@@ -102,6 +102,12 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 			const observations = new Set<string>();
 			const observationEvents = eventLog<number>();
 			const runtime = await createTestRuntime();
+			const trackObservation = (method: string, params: RequestParams | undefined) => {
+				if (typeof params?.token !== "string") return;
+				if (method === "observe-open") observations.add(params.token);
+				if (method === "observe-close") observations.delete(params.token);
+				observationEvents.push(observations.size);
+			};
 			const stream = (_model: Model<Api>, context: TranscriptContext, options?: StreamOptions) => {
 				const request: ControlledTerminalHost["requests"][number] = { sessionId: options?.sessionId };
 				requests.push(request);
@@ -152,11 +158,7 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 						if (method === "models") return modelChoices({ services: { modelRuntime: runtime } as never });
 						const result = await durable.request(method, params, signal ?? BACKGROUND_CONTEXT);
 						if (method === "status") return { ...result as object, inventory: contributionHost.inventory, pid: process.pid, storageId: record.storageId };
-						if (typeof params?.token === "string") {
-							if (method === "observe-open") observations.add(params.token);
-							if (method === "observe-close") observations.delete(params.token);
-							observationEvents.push(observations.size);
-						}
+						trackObservation(method, params);
 						return result;
 					},
 					close: () => durable.close(),

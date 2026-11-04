@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { DefaultResourceLoader, SettingsManager, getAgentDir, getPackageDir, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { Input, KeybindingsManager, ProcessTerminal, TuiAltScreen, TUI_KEYBINDINGS, setKeybindings, matchesKey, type Component, type Focusable, type ProgramStatus, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { Input, KeybindingsManager, ProcessTerminal, TuiAltScreen, TUI_KEYBINDINGS, setKeybindings, matchesKey, type Component, type ProgramStatus, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { AgentManager, type AgentCaller } from "./manager.ts";
 import { createAgentObservationSource, type AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
@@ -10,6 +10,8 @@ import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
 import { agentState, createDashboardState, notifyAgentState, updateDraft, type DashboardState } from "./dashboard-state.ts";
 import type { AgentModelInfo } from "./agent-footer.ts";
 import { TerminalProgramStatus } from "./terminal-status.ts";
+import { ModelChoicesSchema } from "./observation-schema.ts";
+import { matchesSchema } from "./schema-check.ts";
 import { loadDisplayModules, noDisplayModules, type DisplayModules } from "./display-modules.ts";
 import { ConversationHistory } from "./conversation-view.ts";
 import type { AgentConversationSummary, AgentConversationSnapshot } from "./dashboard-types.ts";
@@ -17,6 +19,8 @@ import { fitLine } from "./dashboard-layout.ts";
 import { readAgentBranch, AgentBranchCache } from "./agent-git.ts";
 import { terminalAction } from "./terminal-actions.ts";
 import { terminalDialogs } from "./terminal-dialogs.ts";
+import { ActionInventory, type ScreenAction } from "./action-inventory.ts";
+import { DashboardMouse } from "./dashboard-mouse.ts";
 import type { AgentDialogs } from "./dialog-adapter.ts";
 import { admittedResult } from "./result-reference.ts";
 
@@ -91,16 +95,12 @@ export class TerminalController {
 	get selectionRevision(): number { return this.generation; }
 	get availability() { return this.target ? this.source.availability(this.target) : undefined; }
 	get draftState() { return this.target ? agentState(this.state, this.target) : undefined; }
-	modelInfo?: AgentModelInfo;
-	private modelIdentity?: string;
-	setModelInfo(identity: string, info: AgentModelInfo | undefined): void {
-		this.modelIdentity = identity;
-		this.modelInfo = info;
-		this.notify();
-	}
+	/** Model facts the attached host's runtime reported once for this attachment. Unlisted models stay unknown. */
+	private modelCatalog = new Map<string, AgentModelInfo>();
+	/** Name, reasoning support and context window of the selected conversation's current model, when the host listed it. */
 	currentModelInfo(): AgentModelInfo | undefined {
 		const model = this.row?.model;
-		return model && this.modelInfo && this.modelIdentity === `${model.provider}/${model.modelId}` ? this.modelInfo : undefined;
+		return model ? this.modelCatalog.get(`${model.provider}/${model.modelId}`) : undefined;
 	}
 	private notify(): void { if (!this.closed) for (const listener of this.listeners) listener(); }
 	subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
@@ -157,15 +157,26 @@ export class TerminalController {
 		this.source.select(id);
 		this.remember?.(id);
 		this.display = noDisplayModules;
-		this.displayLoading = this.loadDisplay(id).then((display) => {
+		this.modelCatalog = new Map();
+		this.displayLoading = Promise.all([this.loadDisplay(id), this.loadModels(id)]).then(([display, models]) => {
 			if (this.closed || generation !== this.generation) return;
 			this.display = display;
+			this.modelCatalog = models;
 			this.notify();
 		});
 		this.notify();
 	}
 	/** Resolves when the current attachment's owner renderers are loaded or refused. */
 	displaySettled(): Promise<void> { return this.displayLoading ?? Promise.resolve(); }
+	private async loadModels(id: string): Promise<Map<string, AgentModelInfo>> {
+		const catalog = new Map<string, AgentModelInfo>();
+		try {
+			const read = await this.manager.control("models", { sessionId: id }, this.caller);
+			if (!matchesSchema(ModelChoicesSchema, read)) return catalog;
+			for (const model of read.models) if (model.contextWindow !== undefined) catalog.set(`${model.provider}/${model.modelId}`, { name: model.name ?? model.modelId, reasoning: model.reasoning, contextWindow: model.contextWindow });
+		} catch { /* The footer shows the model identifier without a context window. */ }
+		return catalog;
+	}
 	/** The attached host is live here, so its status carries the admitted inventory. Failure leaves standard cards. */
 	private async loadDisplay(id: string): Promise<DisplayModules> {
 		try {
@@ -280,9 +291,8 @@ export class TerminalScreen implements Component {
 	private composerY = 0;
 	private composerHeight = 0;
 	private readonly programStatus?: TerminalProgramStatus;
-	private actionHits: Array<{ id: string; x: number; width: number }> = [];
-	private actionY = -1;
-	private boundaryY = -1;
+	private readonly hits = new DashboardMouse();
+	private readonly footer = new ActionInventory(() => this.footerActions(), (reason) => { this.notice = reason; });
 	private transcript = { y: 0, height: 0, width: 0 };
 	private readonly off: () => void;
 	private readonly branches: AgentBranchCache;
@@ -313,18 +323,20 @@ export class TerminalScreen implements Component {
 			this.console = new AgentConsole(row, agentState(this.controller.state, row.id), this.tui, this.theme, this.keys,
 				(text) => { void this.submit(text); }, () => this.openDashboard());
 		}
-		if (this.console && row) {
-			this.console.conversation.setToolDisplay(this.controller.toolDisplay);
-			const diagnostics = this.controller.display.diagnostics;
-			this.displayNotice = diagnostics.length ? `Owner cards: ${diagnostics[0]}${diagnostics.length > 1 ? ` (+${diagnostics.length - 1} more)` : ""}` : "";
-			this.console.row = row;
-			this.console.warning = this.controller.availability?.state === "unavailable" ? "Connection unavailable; last observed data shown. /agent enter <target> retries." : undefined;
-			this.console.setContent(this.controller.snapshot?.entries ?? [], this.controller.frame?.live ?? []);
-			this.console.observeUsage(this.controller.snapshot?.entries ?? [], this.controller.frame?.status.usage);
-			this.branches.refresh(row.cwd, `${row.id}:${this.controller.snapshot?.entries.at(-1)?.id ?? "empty"}`);
-		}
+		if (this.console && row) this.syncConsole(this.console, row);
 		this.projectStatus();
 		this.tui.requestRender();
+	}
+	/** Bring the visible conversation in line with the controller's current observation. */
+	private syncConsole(console: AgentConsole, row: AgentConversationSummary): void {
+		console.conversation.setToolDisplay(this.controller.toolDisplay);
+		const diagnostics = this.controller.display.diagnostics;
+		this.displayNotice = diagnostics.length ? `Owner cards: ${diagnostics[0]}${diagnostics.length > 1 ? ` (+${diagnostics.length - 1} more)` : ""}` : "";
+		console.row = row;
+		console.warning = this.controller.availability?.state === "unavailable" ? "Connection unavailable; last observed data shown. /agent enter <target> retries." : undefined;
+		console.setContent(this.controller.snapshot?.entries ?? [], this.controller.frame?.live ?? []);
+		console.observeUsage(this.controller.snapshot?.entries ?? [], this.controller.frame?.status.usage);
+		this.branches.refresh(row.cwd, `${row.id}:${this.controller.snapshot?.entries.at(-1)?.id ?? "empty"}`);
 	}
 	private projectStatus(): void {
 		this.programStatus?.update({
@@ -348,8 +360,8 @@ export class TerminalScreen implements Component {
 	private async agentCommand(words: string[]): Promise<void> {
 		if (words.length === 0) this.openDashboard();
 		else if (words[0] === "enter" && words.length === 2) await this.enter(words[1]);
-		else if (words[0] === "back" && words.length === 1) await this.runAction("back");
-		else if (words[0] === "latest" && words.length === 1) this.runAction("latest");
+		else if (words[0] === "back" && words.length === 1) await this.back();
+		else if (words[0] === "latest" && words.length === 1) this.latest();
 		else if (words[0] === "recover" && words.length === 1) {
 			const revision = this.controller.selectionRevision;
 			try { await this.recover(); } catch (error) { if (revision === this.controller.selectionRevision) this.notice = String(error); }
@@ -448,51 +460,32 @@ export class TerminalScreen implements Component {
 		console.composer.handleInput(data); this.tui.requestRender();
 	}
 	private resetHits(): void {
-		this.actionHits = [];
-		this.actionY = -1;
-		this.boundaryY = -1;
+		this.hits.reset();
 		this.transcript = { y: 0, height: 0, width: 0 };
 	}
-	private actionLine(width: number, y: number): string {
-		const labels = [
-			{ id: "dashboard", label: "Dashboard" },
-			{ id: "back", label: "Back" },
-			{ id: "latest", label: "Latest" },
-			{ id: "detach", label: "Detach" },
-		];
-		const reserved = labels.at(-1)!.label.length;
-		let x = 0;
-		const shown: typeof labels = [];
-		for (const item of labels.slice(0, -1)) {
-			const next = x + item.label.length + (shown.length ? 3 : 0);
-			if (next + 3 + reserved > width) break;
-			shown.push(item);
-			x = next;
-		}
-		const detach = labels.at(-1)!;
-		if (shown.length) x += 3;
-		shown.push(detach);
-		this.actionY = y;
-		this.actionHits = shown.map((item, index) => {
-			const start = shown.slice(0, index).reduce((total, prior) => total + prior.label.length + 3, 0);
-			return { id: item.id, x: start, width: Math.min(item.label.length, Math.max(0, width - start)) };
-		});
-		return fitLine(this.theme.fg("muted", shown.map((item) => item.label).join(" · ")), width);
-	}
-	private async runAction(id: string): Promise<void> {
-		if (id === "dashboard") this.openDashboard();
-		else if (id === "back") {
-			if (this.controller.previous) await this.enter(this.controller.previous);
-			else this.notice = "No previous conversation";
-		} else if (id === "latest") {
-			const state = this.controller.draftState;
-			if (state) {
-				state.view.follow = true;
-				state.view.anchor = undefined;
-				this.console?.conversation.invalidate();
-			}
-		} else if (id === "detach") this.done();
+	private async back(): Promise<void> {
+		if (this.controller.previous) await this.enter(this.controller.previous);
+		else this.notice = "No previous conversation";
 		this.tui.requestRender();
+	}
+	private latest(): void {
+		const state = this.controller.draftState;
+		if (!state) return;
+		state.view.follow = true;
+		state.view.anchor = undefined;
+		this.console?.conversation.invalidate();
+		this.tui.requestRender();
+	}
+	/** Dashboard, Back and Latest are footer controls; Detach is the way out and always stays. */
+	private footerActions(): ScreenAction[] {
+		return [
+			{ id: "dashboard", label: "Dashboard", main: true, run: () => this.openDashboard() },
+			{ id: "back", label: "Back", main: true, disabled: this.controller.previous ? undefined : "No previous conversation", run: () => { void this.back(); } },
+			{ id: "latest", label: "Latest", main: true, disabled: this.console ? undefined : "No conversation is attached", run: () => this.latest() },
+		];
+	}
+	private footerLine(width: number, height: number): string {
+		return this.footer.footer(this.hits, height - 1, width, { id: "detach", label: "Detach", run: () => this.done() }, this.theme, false);
 	}
 	private loadEarlier(): void {
 		const revision = this.controller.selectionRevision;
@@ -502,17 +495,21 @@ export class TerminalScreen implements Component {
 		this.resetHits();
 		if (this.dashboard && !this.dashboardHidden) return this.dashboard.render(width);
 		const height = this.tui.terminal.rows;
+		this.hits.reset(width, height);
+		const footer = this.footerLine(width, height);
 		const console = this.console;
-		const actions = this.actionLine(width, height - 1);
 		if (!console) {
 			this.navigationInput.focused = true;
-			return [fitLine("No conversation. /agent opens the dashboard; /agent enter <target> attaches.", width), ...Array<string>(Math.max(0, height - 3)).fill(""), ...this.navigationInput.render(width), actions].slice(0, height);
+			return [fitLine("No conversation. /agent opens the dashboard; /agent enter <target> attaches.", width), ...Array<string>(Math.max(0, height - 3)).fill(""), ...this.navigationInput.render(width), footer].slice(0, height);
 		}
 		if (width < 60 || height < 20) {
 			const lines = Array.from({ length: height }, (_, i) => fitLine(i === 0 ? "Resize to use this conversation. Esc opens Agents." : "", width));
-			lines[height - 1] = actions;
+			lines[height - 1] = footer;
 			return lines;
 		}
+		return this.renderConversation(console, width, height, footer);
+	}
+	private renderConversation(console: AgentConsole, width: number, height: number, footer: string): string[] {
 		console.composer.focused = true;
 		console.composer.setViewportRows(Math.max(5, Math.min(10, Math.floor(height / 3))));
 		const editor = console.composer.render(width, console.row.name?.trim() ? console.row.name : console.row.id, console.messageMode(), console.state.receipt);
@@ -520,46 +517,40 @@ export class TerminalScreen implements Component {
 		const boundary = this.controller.snapshot?.nextBefore ? "Earlier history" : "";
 		const notice = console.warning || this.notice || this.displayNotice;
 		const reserved = editor.length + status.length + 1 + (notice ? 1 : 0) + (boundary ? 1 : 0);
-		const bodyHeight = Math.max(1, height - reserved);
-		const body = console.conversation.render(width, bodyHeight);
+		const body = console.conversation.render(width, Math.max(1, height - reserved));
 		this.transcript = { y: boundary ? 1 : 0, height: body.length, width };
-		this.boundaryY = boundary ? 0 : -1;
+		if (boundary) this.hits.add({ x: 0, y: 0, width, height: 1, click: () => { this.loadEarlier(); } });
 		this.composerY = (boundary ? 1 : 0) + body.length;
 		this.composerHeight = editor.length;
 		const lines = [
 			...(boundary ? [fitLine(this.theme.fg("muted", boundary), width)] : []),
 			...body, ...editor, ...status,
 			...(notice ? [fitLine(notice, width)] : []),
-			actions,
+			footer,
 		];
 		while (lines.length < height) lines.splice(lines.length - 1, 0, "");
 		return lines.slice(0, height);
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.dashboard && !this.dashboardHidden) return this.dashboard.handleMouse(event);
-		if (event.y === this.actionY && (event.type === "click" || event.type === "press")) {
-			const hit = this.actionHits.find((item) => event.x >= item.x && event.x < item.x + item.width);
-			if (hit) { void this.runAction(hit.id); return { handled: true }; }
-		}
-		if (event.y === this.boundaryY) {
-			if (event.type === "click" || event.type === "press") this.loadEarlier();
-			return { handled: true };
-		}
-		const transcript = this.transcript;
-		if (this.console && transcript.height > 0 && event.y >= transcript.y && event.y < transcript.y + transcript.height) {
-			if (event.type === "wheel") {
-				const delta = event.wheelDelta ?? 0;
-				if (delta < 0 && this.console.conversation.atTop()) this.loadEarlier();
-				else this.console.conversation.page(delta);
-				return { handled: true };
-			}
-			return this.console.conversation.handleMouse({ ...event, y: event.y - transcript.y, width: transcript.width, height: transcript.height });
-		}
-		if (this.console && event.y >= this.composerY && event.y < this.composerY + this.composerHeight)
-			return this.console.composer.handleMouse({ ...event, y: event.y - this.composerY, height: this.composerHeight });
-		return undefined;
+		const control = this.hits.handle(event);
+		if (control) return control;
+		return this.transcriptMouse(event) ?? this.composerMouse(event);
 	}
-	invalidate(): void { this.resetHits(); this.console?.conversation.invalidate(); this.console?.composer.invalidate(); this.dashboard?.invalidate(); }
+	private transcriptMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const transcript = this.transcript;
+		if (!this.console || transcript.height <= 0 || event.y < transcript.y || event.y >= transcript.y + transcript.height) return undefined;
+		if (event.type !== "wheel") return this.console.conversation.handleMouse({ ...event, y: event.y - transcript.y, width: transcript.width, height: transcript.height });
+		const delta = event.wheelDelta ?? 0;
+		if (delta < 0 && this.console.conversation.atTop()) this.loadEarlier();
+		else this.console.conversation.page(delta);
+		return { handled: true };
+	}
+	private composerMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (!this.console || event.y < this.composerY || event.y >= this.composerY + this.composerHeight) return undefined;
+		return this.console.composer.handleMouse({ ...event, y: event.y - this.composerY, height: this.composerHeight });
+	}
+	invalidate(): void { this.resetHits(); this.footer.invalidate(); this.console?.conversation.invalidate(); this.console?.composer.invalidate(); this.dashboard?.invalidate(); }
 	dispose(): void { this.disposed = true; this.programStatus?.dispose(); for (const cancel of [...this.openDialogs]) cancel(); this.closeDashboard(); this.console?.save(); this.console?.dispose(); this.branches.dispose(); this.off(); }
 }
 

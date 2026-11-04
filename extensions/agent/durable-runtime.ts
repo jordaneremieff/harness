@@ -37,7 +37,7 @@ import { publishAgentControlDispatch, type AgentControlDispatch } from "./durabl
 import { projectConversationIntents } from "./durable-controls.ts";
 import { deliveryPendingCount } from "./delivery-store.ts";
 import { isThinkingLevel } from "./configuration.ts";
-import { ModelChoicesSchema } from "./observation-schema.ts";
+import type { ModelChoicesSchema } from "./observation-schema.ts";
 import type { Static } from "@earendil-works/pi-schema";
 import { AgentManager } from "./manager.ts";
 import { startDurableDelivery, type DurableDelivery, type NativeTargetFailure } from "./durable-delivery.ts";
@@ -116,7 +116,7 @@ export function modelChoices(services: Pick<DurableServices, "services">): Stati
 	const error = runtime.getError();
 	return {
 		models: runtime.getAvailableSnapshot()
-			.map((model) => ({ provider: model.provider, modelId: model.id, name: model.name, reasoning: model.reasoning }))
+			.map((model) => ({ provider: model.provider, modelId: model.id, name: model.name, reasoning: model.reasoning, ...(Number.isFinite(model.contextWindow) ? { contextWindow: model.contextWindow } : {}) }))
 			.sort((a, b) => `${a.provider}/${a.modelId}`.localeCompare(`${b.provider}/${b.modelId}`)),
 		source: "available-snapshot",
 		...(error === undefined ? {} : { error: error.slice(0, 240) }),
