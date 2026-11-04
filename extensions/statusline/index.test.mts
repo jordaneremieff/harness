@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import { after, before, describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type Component, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { type NavigationFrame, type OrdinaryView, publishOperatorViews, viewKey } from "../../operator-ui/index.ts";
 import registerStatusline from "./index.ts";
 import type { SessionEntryLike } from "./metrics.ts";
+
+/** The statusline entrypoint; the frame binds each statusline view to this registration of its command. */
+const ENTRY = fileURLToPath(new URL("./index.ts", import.meta.url));
 
 // --- Fake timers: capture interval create/clear so tick ownership is testable ---
 
@@ -53,13 +58,15 @@ interface MockSessionManager {
 	getLeafId?(): string | null;
 	getEntry?(id: string): (SessionEntryLike & { parentId: string | null }) | undefined;
 	getBranch?(): never;
+	getSessionId?(): string;
 }
 
-type CustomFactory = (tui: MockTui, theme: MockTheme, keybindings: unknown, done: (result: unknown) => void) => Component & { dispose?(): void };
+type CustomFactory = (tui: MockTui, theme: MockTheme, keybindings: unknown, done: (result: unknown) => void) => unknown;
+type CustomDriver = (factory: CustomFactory, resolve: (result: unknown) => void, reject: (error: unknown) => void) => void;
 
 interface MockUi {
 	setFooter(factory: MockFactory | undefined): void;
-	notify(message: string): void;
+	notify(message: string, type?: string): void;
 	custom(factory: CustomFactory, options?: unknown): Promise<unknown>;
 	getEditorText(): string;
 	setEditorText(text: string): void;
@@ -73,7 +80,10 @@ interface MockCtx {
 	model: MockModel;
 	thinkingLevel: string;
 	sessionManager: MockSessionManager;
+	modelRegistry: { getAvailable(): MockModel[] };
 	getContextUsage(): ContextUsage | undefined;
+	isIdle(): boolean;
+	abort(): void;
 	ui: MockUi;
 }
 
@@ -85,6 +95,7 @@ interface MockFooterData {
 
 interface MockTheme {
 	fg(color: string, text: string): string;
+	bg(color: string, text: string): string;
 	bold(text: string): string;
 }
 
@@ -117,6 +128,7 @@ interface CtxOverrides {
 	editorText?: string;
 	cwd?: string;
 	model?: MockModel;
+	models?: MockModel[];
 	thinkingLevel?: string;
 	entries?: SessionEntryLike[];
 	usage?: ContextUsage;
@@ -145,7 +157,13 @@ class Registry<T> {
 	}
 }
 
-function registration(name: string, over: Partial<SlashCommandInfo> = {}): SlashCommandInfo {
+interface RegistrationOverrides {
+	description?: string;
+	source?: SlashCommandInfo["source"];
+	sourceInfo?: Partial<SlashCommandInfo["sourceInfo"]>;
+}
+
+function registration(name: string, over: RegistrationOverrides = {}): SlashCommandInfo {
 	return {
 		name,
 		description: over.description ?? `${name} description`,
@@ -154,30 +172,69 @@ function registration(name: string, over: Partial<SlashCommandInfo> = {}): Slash
 	};
 }
 
-function makePi(inventory: () => SlashCommandInfo[] = () => [registration("evo"), registration("review:1")]) {
-	const handlers = new Registry<SessionHandler>();
+/** A small synchronous event bus, as Pi's extension bus delivers publications and frame requests. */
+function eventBus() {
+	const handlers = new Map<string, Set<(data: unknown) => void>>();
+	return {
+		on(name: string, handler: (data: unknown) => void) {
+			const set = handlers.get(name) ?? new Set();
+			set.add(handler);
+			handlers.set(name, set);
+			return () => set.delete(handler);
+		},
+		emit(name: string, data: unknown) {
+			for (const handler of [...(handlers.get(name) ?? [])]) handler(data);
+		},
+	};
+}
+
+interface PiOptions {
+	/** Pi's answer to setModel: false when the provider has no authentication. */
+	setModel?: (model: MockModel) => boolean;
+}
+
+function makePi(inventory: () => SlashCommandInfo[] = () => [registration("evo"), registration("review:1")], options: PiOptions = {}) {
+	const handlers = new Map<string, SessionHandler[]>();
 	const commands = new Registry<MockCommand>();
+	const owned: string[] = [];
 	const sent: Array<{ content: string; options: unknown }> = [];
-	const busHandlers = new Map<string, Array<(value: unknown) => void>>();
-	const emitted: Array<{ event: string; value: unknown }> = [];
+	const models: string[] = [];
+	const levels: string[] = [];
+	let level = "high";
+	const events = eventBus();
 	const pi = {
-		on: (event: string, handler: SessionHandler) => handlers.set(event, handler),
-		registerCommand: (name: string, command: MockCommand) => commands.set(name, command),
-		getCommands: () => inventory(),
+		on: (event: string, handler: SessionHandler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
+		registerCommand: (name: string, command: MockCommand) => {
+			commands.set(name, command);
+			owned.push(name);
+		},
+		getCommands: () => [...owned.map((name) => registration(name, { sourceInfo: { path: ENTRY } })), ...inventory()],
 		sendUserMessage: (content: string, options: unknown) => {
 			sent.push({ content, options });
 		},
-		events: {
-			on: (event: string, handler: (value: unknown) => void) => { busHandlers.set(event, [...(busHandlers.get(event) ?? []), handler]); return () => {}; },
-			emit: (event: string, value: unknown) => { emitted.push({ event, value }); },
+		events,
+		setModel: async (model: MockModel) => {
+			models.push(`${model.provider}/${model.id}`);
+			return options.setModel?.(model) ?? true;
 		},
-		setModel: async () => true,
-		getThinkingLevel: () => "high",
-		setThinkingLevel: () => {},
+		getThinkingLevel: () => level,
+		setThinkingLevel: (next: string) => {
+			level = next;
+			levels.push(next);
+		},
 	};
 	registerStatusline(pi as unknown as ExtensionAPI);
-	const publish = (value: unknown) => { for (const handler of busHandlers.get("harness:operator-destination:publish") ?? []) handler(value); };
-	return { handlers, commands, sent, emitted, publish };
+	const session = {
+		has: (event: string) => handlers.has(event),
+		get: (event: string) => async (payload: { type: string; reason?: string }, ctx: MockCtx) => {
+			const registered = handlers.get(event);
+			if (!registered) throw new Error(`missing handler: ${event}`);
+			for (const handler of registered) await handler(payload, ctx);
+		},
+	};
+	/** Announce another owner's destinations, as that owner's extension would. */
+	const publish = (owner: string, views: OrdinaryView[]) => publishOperatorViews({ events } as unknown as Pick<ExtensionAPI, "events">, { version: 2, owner, views });
+	return { handlers: session, commands, sent, models, levels, publish };
 }
 
 function makeCtx(over: CtxOverrides = {}) {
@@ -186,30 +243,39 @@ function makeCtx(over: CtxOverrides = {}) {
 	const branchChangeCbs: (() => void)[] = [];
 	const customCalls: Array<{ factory: CustomFactory; options: unknown }> = [];
 	const editorCalls: string[] = [];
+	const state = { idle: true, aborts: 0 };
 	let editorText = over.editorText ?? "";
-	let customDriver: ((factory: CustomFactory, resolve: (result: unknown) => void) => void) | undefined;
+	let customDriver: CustomDriver | undefined;
+	const model = over.model ?? { id: "test-model", name: "Test Model", api: "anthropic-messages", provider: "test", reasoning: true };
 	const ctx: MockCtx = {
 		mode: over.mode ?? "tui",
 		hasUI: over.hasUI ?? true,
 		cwd: over.cwd ?? "/tmp/statusline-test",
-		model: over.model ?? {
-			id: "test-model",
-			name: "Test Model",
-			api: "anthropic-messages",
-			provider: "test",
-			reasoning: true,
-		},
+		model,
 		thinkingLevel: over.thinkingLevel ?? "high",
-		sessionManager: { getEntries: () => over.entries ?? [], getLeafId: () => null, getEntry: () => undefined, ...over.sessionManager },
+		sessionManager: {
+			getEntries: () => over.entries ?? [],
+			getLeafId: () => null,
+			getEntry: () => undefined,
+			getSessionId: () => "session-1",
+			...over.sessionManager,
+		},
+		modelRegistry: { getAvailable: () => over.models ?? [model] },
 		getContextUsage:
 			over.getContextUsage ?? (() => over.usage ?? { tokens: 50_000, contextWindow: 200_000, percent: 25 }),
+		isIdle: () => state.idle,
+		abort: () => {
+			state.aborts += 1;
+		},
 		ui: {
 			setFooter: (factory) => footerCalls.push(factory),
 			notify: (msg) => notifications.push(msg),
 			custom: (factory, options) =>
-				new Promise((resolve) => {
+				new Promise((resolve, reject) => {
 					customCalls.push({ factory, options });
-					customDriver?.(factory, resolve);
+					const driver = customDriver;
+					customDriver = undefined;
+					driver?.(factory, resolve, reject);
 				}),
 			getEditorText: () => editorText,
 			setEditorText: (text) => {
@@ -230,7 +296,7 @@ function makeCtx(over: CtxOverrides = {}) {
 			return () => branchChangeCbs.splice(branchChangeCbs.indexOf(callback), 1);
 		},
 	};
-	const theme: MockTheme = { fg: (_c: string, t: string) => t, bold: (t: string) => t };
+	const theme: MockTheme = { fg: (_c: string, t: string) => t, bg: (_c: string, t: string) => t, bold: (t: string) => t };
 	const tui: MockTui = {
 		renders: 0,
 		mode: over.tuiMode,
@@ -239,14 +305,31 @@ function makeCtx(over: CtxOverrides = {}) {
 			this.renders++;
 		},
 	};
-	/** Drive the next custom panel: the callback receives the component and the resolver. */
-	const driveCustom = (driver: (component: Component & { dispose?(): void }, resolve: (result: unknown) => void) => void) => {
-		customDriver = (factory, resolve) => {
-			const component = factory(tui, theme, {}, resolve);
-			driver(component, resolve);
-		};
-	};
-	return { ctx, footerCalls, notifications, footerData, theme, tui, branchChangeCbs, customCalls, editorCalls, driveCustom, editorText: () => editorText };
+	/**
+	 * Drive the next frame this context opens: run the script against it, then close it. The promise
+	 * settles when the script ends, so a footer click that opens the frame without waiting is awaitable.
+	 */
+	const onNextFrame = (script: (frame: NavigationFrame) => unknown): Promise<void> =>
+		new Promise<void>((finished, failed) => {
+			customDriver = (factory, resolve, reject) => {
+				const frame = factory(tui, theme, {}, resolve) as NavigationFrame;
+				Promise.resolve()
+					.then(() => script(frame))
+					.then(
+						() => {
+							frame.close();
+							finished();
+						},
+						(error: unknown) => {
+							// Reject first: closing resolves the custom view, and a settled promise ignores a later rejection.
+							reject(error);
+							frame.close();
+							failed(error);
+						},
+					);
+			};
+		});
+	return { ctx, state, footerCalls, notifications, footerData, theme, tui, branchChangeCbs, customCalls, editorCalls, onNextFrame, editorText: () => editorText };
 }
 
 function click(x: number, y: number, width: number): TuiMouseEvent {
@@ -263,12 +346,34 @@ function installFooter(mocks: ReturnType<typeof makeCtx>) {
 	return factory(mocks.tui, mocks.theme, mocks.footerData);
 }
 
+const frameText = (frame: NavigationFrame, width = 100) => frame.render(width).map(strip).join("\n");
+
+/** Run one labelled action of the view the operator reads, as its control would. */
+function act(frame: NavigationFrame, label: string): void {
+	const action = frame.viewActions.find((candidate) => candidate.label === label);
+	assert.ok(action, `no action ${label}: ${frame.viewActions.map((candidate) => candidate.label).join(", ")}`);
+	assert.equal(action.disabled, undefined, `${label} is unavailable: ${action.disabled}`);
+	action.run();
+}
+
+function typeText(frame: NavigationFrame, text: string): void {
+	for (const character of text) frame.handleInput(character);
+}
+
+/** Type over the command list to filter it, then return to the list. */
+function filterTo(frame: NavigationFrame, text: string): void {
+	typeText(frame, text);
+	frame.handleInput("\r");
+}
+
+const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 describe("registration and mode gating", () => {
-	it("registers the toggle command and session handlers", () => {
+	it("registers the toggle, the view commands and session handlers", () => {
 		const { handlers, commands } = makePi();
 		assert.ok(handlers.has("session_start"));
 		assert.ok(handlers.has("session_shutdown"));
-		assert.ok(commands.has("statusline"));
+		for (const name of ["statusline", "commands", "statuses", "model-reasoning"]) assert.ok(commands.has(name), name);
 	});
 
 	it("installs the footer only in tui mode", async () => {
@@ -609,122 +714,202 @@ describe("/statusline toggle", () => {
 	});
 });
 
-describe("footer command discovery", () => {
-	it("renders a compact menu control in fullscreen and opens the menu on click", async () => {
-		const { handlers } = makePi();
-		const mocks = makeCtx({ tuiMode: "fullscreen", statuses: new Map([["agent", "idle"]]) });
+const STASH_OWNER = "/ext/stash/index.ts";
+const AGENT_OWNER = "/ext/agent/index.ts";
+
+/** A minimal published view: a list-free reader the frame can mount. */
+function stubView(title: string) {
+	return () => ({ title, render: () => [`${title} content`], handleInput: () => false });
+}
+
+describe("work strip", () => {
+	it("leads line 2 with published destinations and More, naming keyboard routes in regular mode", async () => {
+		const { handlers, publish } = makePi(() => [registration("stash"), registration("agent")]);
+		publish(STASH_OWNER, [{ id: "stash", label: "Stashes", command: { name: "stash" }, order: 10, view: stubView("Stashes") }]);
+		publish(AGENT_OWNER, [{ id: "agents", label: "Agents", command: { name: "agent" }, order: 5 }]);
+		for (const [tuiMode, expected] of [["fullscreen", "Agents  Stashes  More │ "], ["regular", "/agent  /stash  /commands │ "]] as const) {
+			const mocks = makeCtx({ tuiMode });
+			await handlers.get("session_start")(sessionStart, mocks.ctx);
+			const footer = installFooter(mocks);
+			try {
+				const line = strip(footer.render(120)[1]);
+				assert.ok(line.startsWith(expected), line);
+				if (tuiMode === "regular") assert.equal(footer.handleMouse?.(click(1, 1, 120)), undefined, "regular mode leaves the mouse to the terminal");
+			} finally {
+				footer.dispose();
+			}
+		}
+	});
+
+	it("opens a destination's frame view on click, and only at the rendered width", async () => {
+		const { handlers, publish } = makePi(() => [registration("stash")]);
+		publish(STASH_OWNER, [{ id: "stash", label: "Stashes", command: { name: "stash" }, order: 10, view: stubView("Stashes") }]);
+		const mocks = makeCtx({ tuiMode: "fullscreen" });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		try {
-			const [, line2] = footer.render(100);
-			assert.ok(strip(line2).startsWith(" ≡  │ "), strip(line2));
+			footer.render(100);
 			assert.equal(footer.handleMouse?.(click(60, 0, 100)), undefined, "line 1 outside the model and level segments is not a target");
 			assert.equal(footer.handleMouse?.(click(1, 1, 90)), undefined, "a click at a stale width is ignored");
+			assert.equal(footer.handleMouse?.(click(7, 1, 100)), undefined, "the gap between controls is not a target");
 			assert.equal(mocks.customCalls.length, 0);
+			const opened = mocks.onNextFrame((frame) => {
+				assert.equal(frame.activeKey, viewKey(STASH_OWNER, "stash"));
+				assert.match(frameText(frame), /Stashes content/);
+			});
 			assert.equal(footer.handleMouse?.(click(1, 1, 100))?.handled, true);
-			assert.equal(mocks.customCalls.length, 1, "the selector opened");
-			assert.match(JSON.stringify(mocks.customCalls[0].options), /overlay/);
+			await opened;
+			assert.equal(mocks.customCalls[0]?.options, undefined, "the frame takes the editor slot, not an overlay");
 		} finally {
 			footer.dispose();
 		}
 	});
 
-	it("names the keyboard route in regular mode and claims no click", async () => {
-		const { handlers } = makePi();
-		const mocks = makeCtx({ tuiMode: "regular" });
+	it("sends a command-only destination through its owner's exact registration, and refuses a missing owner", async () => {
+		let inventory = [registration("agent")];
+		const { handlers, publish, sent } = makePi(() => inventory);
+		publish(AGENT_OWNER, [{ id: "agents", label: "Agents", command: { name: "agent" }, order: 5 }]);
+		const mocks = makeCtx({ tuiMode: "fullscreen" });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		try {
-			assert.ok(strip(footer.render(100)[1]).startsWith("/commands │ "));
-			assert.equal(footer.handleMouse?.(click(2, 1, 100)), undefined);
-			assert.equal(mocks.customCalls.length, 0);
+			footer.render(100);
+			assert.equal(footer.handleMouse?.(click(1, 1, 100))?.handled, true);
+			assert.deepEqual(sent, [{ content: "/agent", options: { expandPromptTemplates: true } }]);
+			inventory = [registration("agent", { sourceInfo: { path: "/ext/other/index.ts" } })];
+			footer.render(100);
+			footer.handleMouse?.(click(1, 1, 100));
+			assert.equal(sent.length, 1, "another extension's /agent never receives the click");
+			assert.match(mocks.notifications.at(-1) ?? "", /Agents is unavailable: \/agent is not registered by its owner/);
 		} finally {
 			footer.dispose();
 		}
 	});
 
-	it("opens the status reader from the +N cell with every entry and opaque values", async () => {
+	it("shows Stop while this session works and stops it on click", async () => {
 		const { handlers } = makePi();
+		const mocks = makeCtx({ tuiMode: "fullscreen" });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const footer = installFooter(mocks);
+		try {
+			mocks.state.idle = false;
+			assert.ok(strip(footer.render(100)[1]).startsWith("Stop  More │ "));
+			assert.equal(footer.handleMouse?.(click(1, 1, 100))?.handled, true);
+			assert.equal(mocks.state.aborts, 1);
+			mocks.state.idle = true;
+			assert.ok(strip(footer.render(100)[1]).startsWith("More │ "), "Stop leaves when the session is idle");
+		} finally {
+			footer.dispose();
+		}
+		const regular = makeCtx({ tuiMode: "regular" });
+		await handlers.get("session_start")(sessionStart, regular.ctx);
+		regular.state.idle = false;
+		assert.ok(strip(installFooter(regular).render(100)[1]).startsWith("Esc stops  /commands │ "));
+	});
+
+	it("opens Commands from More, Model from the model identity and Statuses from the +N cell", async () => {
 		const statuses = new Map([["first", "alpha status"], ["second", "beta status"], ["third", "\x1b[2Jgamma\nstatus"]]);
+		const { handlers } = makePi();
 		const mocks = makeCtx({ tuiMode: "fullscreen", statuses, cwd: "/work/project" });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		try {
-			const [, line2] = footer.render(44);
-			const text = strip(line2);
+			footer.render(100);
+			let opened = mocks.onNextFrame((frame) => assert.equal(frame.activeKey, viewKey(ENTRY, "commands")));
+			assert.equal(footer.handleMouse?.(click(1, 1, 100))?.handled, true);
+			await opened;
+			opened = mocks.onNextFrame((frame) => assert.equal(frame.activeKey, viewKey(ENTRY, "model")));
+			assert.equal(footer.handleMouse?.(click(2, 0, 100))?.handled, true);
+			await opened;
+			const text = strip(footer.render(40)[1]);
 			assert.match(text, /\+\d$/, text);
-			let reader: Component | undefined;
-			mocks.driveCustom((component) => {
-				reader = component;
+			opened = mocks.onNextFrame((frame) => {
+				assert.equal(frame.activeKey, viewKey(ENTRY, "statuses"));
+				const shown = frameText(frame);
+				for (const [key, value] of [["first", "alpha status"], ["second", "beta status"], ["third", "gamma status"]]) assert.match(shown, new RegExp(`${key}  ${value}`));
+				assert.doesNotMatch(shown, /\[2J/, "values are opaque and sanitized");
 			});
-			assert.equal(footer.handleMouse?.(click(text.length - 1, 1, 44))?.handled, true);
-			assert.ok(reader, "status reader opened");
-			const lines = reader.render(60).map(strip);
-			for (const key of statuses.keys()) assert.ok(lines.includes(key), `${key} labelled`);
-			assert.ok(lines.includes("  gamma status"), "value shown opaque and sanitized");
-			assert.ok(lines.includes("  alpha status"));
+			assert.equal(footer.handleMouse?.(click(text.length - 1, 1, 40))?.handled, true);
+			await opened;
 		} finally {
 			footer.dispose();
 		}
 	});
 });
 
-describe("/commands and /statuses", () => {
-	it("dispatches an extension command only after an explicit Run with the exact current registration", async () => {
+describe("Commands view", () => {
+	it("sends an extension command only after an explicit Run with the exact current registration", async () => {
 		const review = registration("review:1", { description: "Review the current diff" });
 		const { handlers, commands, sent } = makePi(() => [registration("evo"), review]);
 		const mocks = makeCtx({});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		mocks.driveCustom((panel) => {
-			panel.render(80);
-			(panel as { search?(): void }).search?.();
-			for (const char of "review") panel.handleInput?.(char);
-			panel.handleInput?.("\r");
+		const done = mocks.onNextFrame(async (frame) => {
+			filterTo(frame, "review");
+			assert.match(frameText(frame), /Review the current diff/);
 			assert.equal(sent.length, 0, "selection sends nothing");
-			for (const char of "src/index.ts") panel.handleInput?.(char);
-			panel.handleInput?.("\r");
+			act(frame, "Run with arguments…");
+			typeText(frame, "src/index.ts");
+			assert.equal(sent.length, 0, "typing sends nothing");
+			act(frame, "Run");
 		});
 		await commands.get("commands").handler("", mocks.ctx);
+		await done;
 		assert.deepEqual(sent, [{ content: "/review:1 src/index.ts", options: { expandPromptTemplates: true } }]);
 	});
 
-	it("refuses a selection whose registration disappeared and reopens with the refreshed list", async () => {
+	it("keeps unsent arguments and the selection when the frame closes and reopens", async () => {
+		const { handlers, commands, sent } = makePi(() => [registration("evo"), registration("review:1")]);
+		const mocks = makeCtx({});
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		let done = mocks.onNextFrame((frame) => {
+			filterTo(frame, "review");
+			act(frame, "Run with arguments…");
+			typeText(frame, "half typed");
+			frame.handleInput("\u001b");
+			frame.handleInput("\u001b");
+		});
+		await commands.get("commands").handler("", mocks.ctx);
+		await done;
+		done = mocks.onNextFrame((frame) => {
+			assert.match(frameText(frame), /Unsent arguments: half typed/);
+			act(frame, "Run with arguments…");
+			assert.match(frameText(frame), /half typed/);
+		});
+		await commands.get("commands").handler("", mocks.ctx);
+		await done;
+		assert.equal(sent.length, 0);
+	});
+
+	it("refuses a command whose registration disappeared and sends nothing", async () => {
 		let inventory = [registration("evo"), registration("review:1")];
 		const { handlers, commands, sent } = makePi(() => inventory);
 		const mocks = makeCtx({});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		let opens = 0;
-		mocks.driveCustom((panel, resolve) => {
-			opens += 1;
-			if (opens === 1) {
-				panel.render(80);
-				(panel as { search?(): void }).search?.();
-				panel.handleInput?.("\x1b[B");
-				panel.handleInput?.("\r");
-				inventory = [registration("evo")];
-				panel.handleInput?.("\r");
-				return;
-			}
-			resolve(undefined);
+		const done = mocks.onNextFrame((frame) => {
+			filterTo(frame, "review");
+			inventory = [registration("evo")];
+			act(frame, "Run");
 		});
 		await commands.get("commands").handler("", mocks.ctx);
+		await done;
 		assert.equal(sent.length, 0, "a disappeared command is never sent as a prompt");
-		assert.equal(opens, 2, "the selector reopened with the refreshed inventory");
-		assert.match(mocks.notifications.at(-1) ?? "", /no longer registered/);
+		assert.match(mocks.notifications.at(-1) ?? "", /no longer registered as selected; nothing was sent/);
 	});
 
 	it("prepares a prompt template into an empty editor and never sends it", async () => {
 		const { handlers, commands, sent } = makePi(() => [registration("recap", { source: "prompt" })]);
 		const mocks = makeCtx({});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		mocks.driveCustom((panel) => {
-			panel.render(80);
-			(panel as { search?(): void }).search?.();
-			panel.handleInput?.("\r");
-			for (const char of "today") panel.handleInput?.(char);
-			panel.handleInput?.("\r");
+		const done = mocks.onNextFrame((frame) => {
+			filterTo(frame, "recap");
+			assert.deepEqual(frame.viewActions.map((action) => action.label), ["Put in editor…"], "a prompt offers no Run");
+			act(frame, "Put in editor…");
+			assert.doesNotMatch(frameText(frame), /Placement/, "an empty editor needs no placement choice");
+			typeText(frame, "today");
+			act(frame, "Put in editor");
 		});
 		await commands.get("commands").handler("", mocks.ctx);
+		await done;
 		assert.equal(sent.length, 0);
 		assert.deepEqual(mocks.editorCalls, ["set:/recap today"]);
 	});
@@ -733,61 +918,112 @@ describe("/commands and /statuses", () => {
 		const { handlers, commands, sent } = makePi(() => [registration("skill:dig", { source: "skill" })]);
 		const mocks = makeCtx({ editorText: "half-written draft" });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		mocks.driveCustom((panel) => {
-			panel.render(80);
-			(panel as { search?(): void }).search?.();
-			panel.handleInput?.("\r");
-			panel.handleInput?.("\r");
-			panel.handleInput?.("\x1b[B");
-			panel.handleInput?.("\r");
+		let done = mocks.onNextFrame((frame) => {
+			filterTo(frame, "dig");
+			act(frame, "Put in editor…");
+			assert.match(frameText(frame), /Insert at the cursor/);
+			frame.handleInput("\r");
+			frame.handleInput("\u001b[B");
+			assert.match(frameText(frame), /Replace the draft/);
+			act(frame, "Put in editor");
 		});
 		await commands.get("commands").handler("", mocks.ctx);
+		await done;
 		assert.equal(sent.length, 0);
 		assert.deepEqual(mocks.editorCalls, ["set:/skill:dig"]);
 		assert.match(mocks.notifications.at(-1) ?? "", /Restore replaced draft/);
-		mocks.driveCustom((panel) => {
-			const lines = panel.render(80).map(strip);
-			assert.ok(lines.some((line) => line.includes("Restore replaced draft")));
-			assert.ok(lines.some((line) => line.includes("Menu")), "recovery is offered on the first screen");
-			panel.handleInput?.("\r");
-		});
+		done = mocks.onNextFrame((frame) => act(frame, "Restore replaced draft"));
 		await commands.get("commands").handler("", mocks.ctx);
-		assert.deepEqual(mocks.editorCalls.at(-1), "paste:half-written draft", "recovery inserts into the current editor text");
+		await done;
+		assert.equal(mocks.editorCalls.at(-1), "paste:half-written draft", "recovery inserts into the current editor text");
 	});
 
-	it("closes open panels on session shutdown without dispatching", async () => {
+	it("closes an open frame on session shutdown without sending", async () => {
 		const { handlers, commands, sent } = makePi();
 		const mocks = makeCtx({});
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		let opened = false;
-		mocks.driveCustom((panel) => {
-			opened = true;
-			panel.render(80);
+		let frame: NavigationFrame | undefined;
+		mocks.ctx.ui.custom = (factory) => new Promise((resolve) => {
+			frame = factory(mocks.tui, mocks.theme, {}, resolve) as NavigationFrame;
 		});
 		const pending = commands.get("commands").handler("", mocks.ctx);
-		assert.ok(opened);
+		assert.ok(frame, "the frame opened");
+		filterTo(frame, "review");
 		await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mocks.ctx);
 		await pending;
 		assert.equal(sent.length, 0);
 	});
 
-	it("explains the terminal requirement outside tui mode and the footer requirement for statuses", async () => {
+	it("explains the terminal requirement outside tui mode", async () => {
 		const { handlers, commands } = makePi();
 		const rpc = makeCtx({ mode: "rpc", hasUI: true });
 		await handlers.get("session_start")(sessionStart, rpc.ctx);
 		await commands.get("commands").handler("", rpc.ctx);
-		assert.match(rpc.notifications.at(-1) ?? "", /terminal UI/);
+		assert.match(rpc.notifications.at(-1) ?? "", /interactive terminal/);
 		assert.equal(rpc.customCalls.length, 0);
-		const tui = makeCtx({});
-		await handlers.get("session_start")(sessionStart, tui.ctx);
-		await commands.get("statuses").handler("", tui.ctx);
-		assert.match(tui.notifications.at(-1) ?? "", /Enable the statusline/);
-		installFooter(tui);
-		tui.driveCustom((panel, resolve) => {
-			assert.match(strip(panel.render(60)[0]), /^Extension statuses/);
-			resolve(undefined);
+	});
+});
+
+describe("Statuses view", () => {
+	it("needs the installed footer, then reads the live status map on every paint", async () => {
+		const statuses = new Map([["lint", "lint ok"]]);
+		const { handlers, commands } = makePi();
+		const mocks = makeCtx({ statuses });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		let done = mocks.onNextFrame((frame) => assert.match(frameText(frame), /Enable the statusline \(\/statusline\)/));
+		await commands.get("statuses").handler("", mocks.ctx);
+		await done;
+		installFooter(mocks);
+		done = mocks.onNextFrame((frame) => {
+			assert.match(frameText(frame), /lint {2}lint ok/);
+			statuses.set("tests", "tests running");
+			assert.match(frameText(frame), /tests {2}tests running/);
+			assert.match(frameText(frame), /2 extension status entries/);
 		});
-		await commands.get("statuses").handler("", tui.ctx);
-		assert.equal(tui.customCalls.length, 1);
+		await commands.get("statuses").handler("", mocks.ctx);
+		await done;
+	});
+});
+
+describe("Model view", () => {
+	const models: MockModel[] = [
+		{ provider: "test", id: "test-model", name: "Test Model", reasoning: true },
+		{ provider: "other", id: "plain", name: "Plain", reasoning: false },
+		{ provider: "locked", id: "needs-auth", name: "Needs Auth", reasoning: true },
+	];
+
+	it("stages model and reasoning and applies them only on Apply", async () => {
+		const { handlers, commands, models: applied, levels } = makePi();
+		const mocks = makeCtx({ models });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const done = mocks.onNextFrame(async (frame) => {
+			assert.match(frameText(frame), /Model and reasoning for this session/);
+			frame.handleInput("\r");
+			frame.handleInput("\u001b[B");
+			assert.deepEqual(applied, [], "staging a level applies nothing");
+			act(frame, "Apply");
+			for (let attempt = 0; attempt < 20 && !/reasoning/.test(frameText(frame).split("\n").at(-1) ?? ""); attempt++) await turn();
+			assert.match(frameText(frame, 160), /Model test\/test-model · reasoning high for this session/);
+		});
+		await commands.get("model-reasoning").handler("", mocks.ctx);
+		await done;
+		assert.deepEqual(applied, [], "the unchanged model is not set again");
+		assert.equal(levels.length, 1);
+	});
+
+	it("reports Pi's refusal and changes nothing", async () => {
+		const { handlers, commands, levels } = makePi(undefined, { setModel: (model) => model.provider !== "locked" });
+		const mocks = makeCtx({ models });
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const done = mocks.onNextFrame(async (frame) => {
+			typeText(frame, "needs");
+			frame.handleInput("\u001b[B");
+			act(frame, "Apply");
+			for (let attempt = 0; attempt < 20 && !/refused/.test(frameText(frame)); attempt++) await turn();
+			assert.match(frameText(frame, 160), /Pi refused locked\/needs-auth: authentication is not configured for locked/);
+		});
+		await commands.get("model-reasoning").handler("", mocks.ctx);
+		await done;
+		assert.deepEqual(levels, []);
 	});
 });
