@@ -139,14 +139,29 @@ interface DurableInventory {
 interface DurableCommand {
   readonly name: string;
   readonly description: string;
-  /** Run against one conversation. The result text returns to the caller. */
-  run(call: DurableCommandCall): Promise<string>;
+  /**
+   * Run against one conversation. Text returns to every caller; a structured
+   * caller (an attached panel, see operator-panels.md) also receives `data`.
+   */
+  run(call: DurableCommandCall): Promise<string | DurableCommandResult>;
+}
+
+/** A command answer: bounded text for every caller, plus owner JSON for a structured caller. */
+interface DurableCommandResult {
+  readonly text: string;
+  readonly data?: JsonValue;
 }
 
 interface DurableCommandCall {
   readonly args: string;
   /** Structured invocation input; the owning contribution validates it. */
   readonly data?: JsonValue;
+  /**
+   * Who stated the invocation, when the caller said so: `operator` for an
+   * operator surface such as `/agent` or an attached panel, `model` for an
+   * agent tool. Audit context only; it never approves anything.
+   */
+  readonly origin?: "operator" | "model";
   readonly conversation: Durable.Conversation;
   /** The host's open Harness, for task-level control such as `abortTask()`. */
   readonly harness: Durable.Harness;

@@ -16,8 +16,8 @@ The statusline footer menu offers harmless browser destinations above command
 search. Pi's command inventory (`pi.getCommands()`) does not say whether a
 command opens a browser or performs an action, so an owner announces its
 destinations as data on the public `pi.events` bus. The statusline resolves
-each destination to a current registration and dispatches it through the
-existing guarded route (`dispatchExtensionCommand` in
+each destination to its owner's current registration and dispatches it through
+the existing guarded route (`dispatchExtensionCommand` in
 `extensions/statusline/commands.ts`): the exact registration identity is
 re-read before the send, and a changed or missing registration is refused.
 
@@ -31,6 +31,8 @@ type OperatorDestinationPublication = {
     label: string;
     /** The owner's registered extension command and the exact arguments that open the browser. */
     command: { name: string; args?: string };
+    /** Resolved path of the announcing extension module (`fileURLToPath(import.meta.url)`). */
+    owner: string;
   }>;
 };
 type OperatorDestinationRequest = { version: 1 };
@@ -45,6 +47,15 @@ consumer subscribes to publications, then emits one request. Pi's bus calls a
 synchronous handler immediately, so both load orders meet. A publication
 replaces that owner's earlier destinations as a unit; it never withdraws
 another owner's entries. Only version `1` is defined.
+
+`command.name` is the name the owner registered. When several extensions
+register one name, Pi's command inventory lists them as `name:1`, `name:2`, …
+The consumer keeps only the inventory entries whose `sourceInfo.path` is the
+announced `owner` (the same file, also through a resolved real path) and whose
+name without that suffix is `command.name`, and it dispatches Pi's actual
+invocation name. No owner match, or more than one, leaves the destination
+listed as unavailable with the reason; it never picks a suffix by position.
+An entry without `owner` is dropped.
 
 A destination is a harmless open: the command shows a browser and performs no
 owner mutation on selection. Commands that start work, such as `/evo`, are not
@@ -104,14 +115,20 @@ interface OperatorPanelHost {
   readonly tui: { requestRender(): void };
   /** Rows the client gives the panel on the next render; read it on every render. */
   rows(): number;
-  /** One owner request. Rejects after the panel closed or the attachment changed. */
+  /**
+   * One owner request. Rejects after the panel closed or the attachment changed.
+   * Aborting `signal`, closing or replacing the panel withdraws it at once.
+   */
   request(data: JsonValue, signal?: AbortSignal): Promise<{ text: string; data?: JsonValue }>;
   /** Modal prompts the client owns; each resolves undefined when the operator cancels. */
   readonly dialogs: {
     select(title: string, choices: readonly { value: string; label: string; description?: string }[]): Promise<string | undefined>;
     confirm(title: string, description: string, action: string): Promise<boolean>;
     input(title: string, options?: { initial?: string; placeholder?: string }): Promise<string | undefined>;
+    /** The terminal's multiline editor, for owner input such as JSON. */
+    editor(title: string, initial?: string): Promise<string | undefined>;
     read(title: string, text: string): Promise<void>;
+    /** Shown on the client's notice row inside the open panel, and after it closes. */
     notify(text: string, type?: "info" | "warning" | "error"): void;
   };
   /** Return to the conversation. */
@@ -151,8 +168,15 @@ size, cancellation, and disposal:
 - Opening a panel captures the attached host and conversation identity. Every
   `request` from that instance carries that identity and the descriptor's
   command, with a fresh `invocationId` per call and `origin: "operator"`.
-- Closing the panel, or an attachment change, disposes the instance and
-  rejects outstanding and later requests; late results are discarded.
+- Closing or replacing the panel, or an attachment change, disposes the
+  instance: outstanding requests settle at once with a refusal, later requests
+  are refused, and late results are discarded. The withdrawal travels with the
+  request through the controller and manager to the host connection, which
+  stops waiting for that answer. A request the host already admitted still
+  runs there; withdrawal is not a rollback, and the client never resends it.
+- An owner notification appears on a notice row between the panel body and the
+  footer; while it shows, `rows()` is one row smaller, so the owner's own
+  controls stay on screen.
 - The conversation editor's draft, mode, and reading position are untouched by
   opening or closing a panel.
 - Opening a panel starts no model turn. Whether a request starts one is the
@@ -183,7 +207,7 @@ Each owner documents its request union and effects in its README:
 |---|---|---|
 | clipboard | recent entries, bounded archive search with continuation, exact preview | restore: rereads the exact `id` + `archiveDate` record, writes the host's clipboard, appends an archive record; success and archive warning stay distinct |
 | stash | recent and archive views, exact preview, lifecycle and coverage | pickup (optionally with a note) activates the record and submits one follow-up to the bound conversation, keyed by the invocation; close, release, reopen, rotate through the owner's lifecycle rules; copy is a client clipboard action |
-| policy | registry, fire summary, recent activity, inspection views, exact review artifacts | approve, reject, lifecycle, effect, reset, and data actions through the native runtime with exact revisions and audit |
+| policy | registry, fire summary, recent activity, inspection views, exact review artifacts, data list and show | approve, reject, lifecycle, effect, reset; data set, set-file and remove answer first with the complete review and an exact approval that the panel sends only after the effect-labelled final action; revisions, file rereads and the panel audit are checked again on apply |
 | pillars | inventory and source pages with resource identity, offset, continuation, and digest | none; browsing never starts a judgment run or corpus mutation |
 
 ## Verification
