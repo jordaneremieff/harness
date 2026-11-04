@@ -1055,7 +1055,7 @@ describe("stash entrypoint", () => {
 		assert.doesNotMatch(sent[0].content, /stash_read|fetch the stash/i);
 		assert.equal(sent[0].options, undefined);
 		assert.ok(overlayOptions && typeof overlayOptions !== "function");
-		assert.equal(overlayOptions.minWidth, 104);
+		assert.equal(overlayOptions.minWidth, 60);
 		assert.equal(overlayOptions.maxHeight, "92%");
 		assert.equal(notifications.length, 0);
 	});

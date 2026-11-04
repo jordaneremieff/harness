@@ -22,6 +22,9 @@ import { parseFrontmatter } from "./format.ts";
 
 const DISPLAY_LIMIT = 32_000;
 
+/** Pickup refuses a closed record; the browser's Actions and /stash reopen are the guarded route back to open. */
+const REOPEN_NOTE = "pickup needs Reopen first (browser Actions or /stash reopen)";
+
 /** Controls render as text, never as terminal commands; newlines keep structure. */
 function escapeControls(value: string): string {
 	return value.replace(/[\p{Cc}\p{Cf}]/gu, (char) => {
@@ -428,7 +431,7 @@ export function renderReadResult(
 			: `artifact read${lines ? ` · ${lines}` : ""}${truncated}`;
 	return resultCard(
 		{ color: "success", line },
-		"",
+		state === "closed" ? REOPEN_NOTE : "",
 		true,
 		path ? `path: ${path}\n\n${text}` : text,
 		options,
@@ -515,7 +518,7 @@ export function renderCompleteResult(
 	if (context.isError) return errorCard("stash_complete", result, options, theme, context);
 	return resultCard(
 		{ color: "success", line: "closed · artifact retained" },
-		redactionSummary(record(result.details)),
+		joinedParts([redactionSummary(record(result.details)), REOPEN_NOTE]),
 		redactionSummary(record(result.details)) !== "",
 		textContent(result),
 		options,

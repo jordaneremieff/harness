@@ -346,8 +346,8 @@ describe("StashPanel", () => {
 		const { panel, calls, result } = rig([invalid, unread, valid], 20);
 		// The footer must not advertise actions that the panel blocks on unknown rows.
 		const unknownFooter = panel.render(104).join("\n");
-		assert.doesNotMatch(unknownFooter, /enter pick|tab actions/);
-		assert.match(unknownFooter, /no actions/);
+		assert.doesNotMatch(unknownFooter, /\[Pickup\]|\[Note\]|\[Actions\]|\[Complete\]/);
+		assert.match(unknownFooter, /no lifecycle action is offered/);
 		panel.handleInput("\r"); // enter on the invalid entry: no pickup
 		assert.equal(calls.done, undefined);
 		panel.handleInput("\t"); // tab on the invalid entry: no manage
@@ -357,9 +357,163 @@ describe("StashPanel", () => {
 		assert.equal(calls.done, undefined);
 		panel.handleInput("\x1b[B"); // move to the valid entry
 		// The footer advertises actions again once a readable row is selected.
-		assert.match(panel.render(104).join("\n"), /enter pick/);
+		assert.match(panel.render(104).join("\n"), /\[Pickup\]/);
 		panel.handleInput("\r");
 		assert.ok(result(), "a readable entry must still pick up");
 		assert.equal(result()?.selected?.meta.id, "valid");
+	});
+});
+
+function click(panel: StashPanel, lines: string[], label: string, width: number) {
+	const y = lines.findIndex((line) => line.includes(label));
+	assert.ok(y >= 0, `${label} is visible`);
+	return panel.handleMouse({
+		type: "click",
+		button: "left",
+		x: lines[y].indexOf(label) + 1,
+		y,
+		screenX: 0,
+		screenY: y,
+		width,
+		height: lines.length,
+		shift: false,
+		alt: false,
+		ctrl: false,
+	});
+}
+
+describe("StashPanel pointer and layout (component input proxy; real pointer delivery is not exercised)", () => {
+	for (const width of [80, 100]) {
+		it(`keeps every operation visible at ${width} columns`, () => {
+			const rendered = rig(samples(), 24).panel.render(width).join("\n");
+			for (const label of ["Detail", "Recent", "Search archive", "Filter", "Close", "Actions", "Pickup", "Note", "Copy", "Page up", "Page down", "Help"]) {
+				assert.ok(rendered.includes(`[${label}]`), `${label} at ${width}`);
+			}
+		});
+	}
+
+	it("a row click selects without acting, a labelled control acts", () => {
+		const { panel, calls } = rig(samples(), 24);
+		const lines = panel.render(80);
+		const y = lines.findIndex((line) => line.includes("Long work"));
+		panel.handleMouse({ type: "click", button: "left", x: 6, y, screenX: 6, screenY: y, width: 80, height: lines.length, shift: false, alt: false, ctrl: false });
+		assert.equal(Object.keys(calls).includes("done") ? (calls as { done?: unknown }).done : undefined, undefined, "row click never acts");
+		assert.match(panel.render(80).join("\n"), /› ◐ 2026-07-24 Long work/);
+		click(panel, panel.render(80), "[Pickup]", 80);
+		assert.equal((calls as { done?: StashPanelResult }).done?.selected?.meta.id, samples()[1].meta.id);
+	});
+
+	it("ignores clicks after a resize until the next render and never hits a replaced row", () => {
+		const { panel, calls } = rig(samples(), 24);
+		const lines = panel.render(80);
+		const stale = panel.handleMouse({ type: "click", button: "left", x: lines.join("\n").split("\n").filter((l) => l.includes("[Pickup]"))[0].indexOf("[Pickup]") + 1, y: lines.findIndex((l) => l.includes("[Pickup]")), screenX: 0, screenY: 0, width: 100, height: lines.length, shift: false, alt: false, ctrl: false });
+		assert.equal(stale, undefined);
+		assert.equal(calls.done, undefined);
+		panel.invalidate();
+		assert.equal(panel.handleMouse({ type: "click", button: "left", x: 3, y: 4, screenX: 0, screenY: 4, width: 80, height: 20, shift: false, alt: false, ctrl: false }), undefined);
+		panel.dispose();
+		assert.equal(panel.handleMouse({ type: "click", button: "left", x: 3, y: 4, screenX: 0, screenY: 4, width: 80, height: 20, shift: false, alt: false, ctrl: false }), undefined);
+	});
+
+	it("scrolls the pane under the pointer", () => {
+		const { panel } = rig(samples(), 16);
+		panel.handleInput("\x1b[B");
+		const lines = panel.render(120);
+		const wheel = (x: number, delta: number) =>
+			panel.handleMouse({ type: "wheel", button: "none", x, y: 4, screenX: x, screenY: 4, width: 120, height: lines.length, shift: false, alt: false, ctrl: false, wheelDelta: delta });
+		assert.equal(wheel(80, 1)?.handled, true);
+		assert.doesNotMatch(panel.render(120).join("\n"), /preview line 1\s/);
+		assert.match(panel.render(120).join("\n"), /› ◐ 2026-07-24 Long work/);
+		assert.equal(wheel(80, -1)?.handled, true);
+		assert.match(panel.render(120).join("\n"), /preview line 1/);
+	});
+
+	it("offers no pickup for a closed record and routes enter to the actions dialog", () => {
+		const closed = entry("closed", "Closed work", "done", {
+			meta: { id: "closed", title: "Closed work", created: "20260723T120000Z", tags: [], state: "closed", closedAt: "20260723T130000Z", outcome: "done" },
+		});
+		const { panel, calls } = rig([closed], 24);
+		const rendered = panel.render(100).join("\n");
+		assert.doesNotMatch(rendered, /\[Pickup\]|\[Note\]|\[Complete\]/);
+		assert.match(rendered, /\[Actions\]/);
+		panel.handleInput("\r");
+		assert.equal(calls.done?.manage?.meta.id, "closed");
+		assert.equal(calls.done?.selected, undefined);
+	});
+
+	it("a stale archive view offers refresh but no mutating or continuation controls", () => {
+		const stalePanel = new StashPanel({
+			entries: samples(),
+			title: "Stashes",
+			theme,
+			tui: { requestRender() {} },
+			getMaxRows: () => 24,
+			scope: "archive",
+			query: "needle",
+			stale: true,
+			nextCursor: "abc",
+			coverage: "cursor no longer matches",
+			copyResume: async () => {},
+			done: () => {},
+		});
+		const rendered = stalePanel.render(100).join("\n");
+		assert.match(rendered, /\[Refresh\]/);
+		assert.match(rendered, /results may be stale/);
+		assert.doesNotMatch(rendered, /\[Pickup\]|\[Note\]|\[Actions\]|\[Complete\]|\[Continue\]/);
+	});
+
+	it("shows Continue for an empty archive page and keeps coverage visible", () => {
+		let done: StashPanelResult | undefined;
+		const empty = new StashPanel({
+			entries: [],
+			title: "Stashes",
+			theme,
+			tui: { requestRender() {} },
+			getMaxRows: () => 24,
+			scope: "archive",
+			query: "needle",
+			nextCursor: "abc",
+			hasMore: true,
+			coverage: "no matches on this page · 256 visited · coverage partial · more pages: Continue",
+			copyResume: async () => {},
+			done: (result) => {
+				done = result;
+			},
+		});
+		const lines = empty.render(80);
+		assert.match(lines.join("\n"), /no matches on this page/);
+		click(empty, lines, "[Continue]", 80);
+		assert.equal(done?.navigation, "continue");
+	});
+
+	it("loads the selected preview on demand and cancels it when the selection moves", async () => {
+		const aborted: string[] = [];
+		const body = entry("a", "A", undefined);
+		const other = entry("b", "B", undefined);
+		const panel = new StashPanel({
+			entries: [body, other],
+			title: "Stashes",
+			theme,
+			tui: { requestRender() {} },
+			getMaxRows: () => 24,
+			copyResume: async () => {},
+			done: () => {},
+			loadPreview: (selected, signal) =>
+				new Promise((resolve) => {
+					signal.addEventListener("abort", () => aborted.push(selected.meta.id));
+					if (selected.meta.id === "b") resolve({ ...selected, preview: "loaded b body" });
+				}),
+		});
+		assert.match(panel.render(120).join("\n"), /Preview read pending/);
+		panel.handleInput("\x1b[B");
+		await flush();
+		assert.deepEqual(aborted, ["a"]);
+		assert.match(panel.render(120).join("\n"), /loaded b body/);
+	});
+
+	it("wraps a long body line so no character is lost to horizontal truncation", () => {
+		const long = `start ${"word ".repeat(60)}tail-end-marker`;
+		const rendered = rig([entry("w", "Wrap", long)], 40).panel.render(120).join("\n");
+		assert.match(rendered, /tail-end-marker/);
 	});
 });

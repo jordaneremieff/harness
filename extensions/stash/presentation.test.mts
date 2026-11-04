@@ -445,3 +445,26 @@ describe("stash card safety", () => {
 		assert.doesNotThrow(() => renderRotateCall(null, theme, { expanded: false, argsComplete: false }));
 	});
 });
+
+describe("closed lifecycle cards", () => {
+	it("point a closed record at the guarded reopen route instead of pickup", () => {
+		const closed = screen(
+			renderCompleteResult({ ...text("closed"), details: {} }, { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
+		assert.match(closed, /closed · artifact retained/);
+		assert.match(closed, /pickup needs Reopen first/);
+		const read = screen(
+			renderReadResult(
+				text('---\nstate: "closed"\ntitle: "Done"\n---\nbody'),
+				{ expanded: false, isPartial: false },
+				theme,
+				{ isError: false },
+			),
+		);
+		assert.match(read, /pickup needs Reopen first/);
+		const open = screen(
+			renderReadResult(text('---\nstate: "open"\ntitle: "Live"\n---\nbody'), { expanded: false, isPartial: false }, theme, { isError: false }),
+		);
+		assert.doesNotMatch(open, /Reopen/);
+	});
+});

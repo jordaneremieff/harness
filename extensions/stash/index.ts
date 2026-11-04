@@ -4,7 +4,7 @@ import type { Static } from "@earendil-works/pi-schema";
 import { toolDisplayPublisher } from "./tool-display.ts";
 import { randomUUID } from "node:crypto";
 import { mkdir, realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	type AgentToolResult,
@@ -26,7 +26,7 @@ import {
 } from "./capacity.ts";
 import { prepareDistillSource } from "./distill.ts";
 import { stashDurableContribution } from "./durable.ts";
-import { resumeCommand, stateLabel } from "./format.ts";
+import { parseFrontmatter, resumeCommand, stateLabel } from "./format.ts";
 import {
 	STASH_COMPLETE_DESCRIPTION,
 	STASH_COMPLETE_GUIDANCE,
@@ -61,14 +61,16 @@ import {
 } from "./presentation.ts";
 import { readStashResult } from "./read-result.ts";
 import { mergeRedactionReports, type RedactionReport, redactionNotice, redactSecretsWithReport } from "./redact.ts";
-import { searchStashes } from "./search.ts";
+import { type SearchMatch, type SearchPage, searchStashes } from "./search.ts";
 import {
 	editStash,
 	listStashes,
+	normalizeMeta,
 	readStash,
 	resolveStash,
 	resolveStoreDir,
 	rotateStash,
+	type StashEntry,
 	type StashLifecycleChange,
 	transitionStash,
 	writeStash,
@@ -393,6 +395,188 @@ async function selectAndPickup(
 	if (entry) await deliverPickup(pi, ctx, entry.meta.id, fail);
 }
 
+const PREVIEW_DISPLAY_BYTES = 64 * 1024;
+
+/** Read the selected artifact on demand; the panel cancels it when the selection moves. */
+async function loadSelectedPreview(entry: StashEntry, signal: AbortSignal): Promise<StashEntry> {
+	const result = await readStash(storeDir(), entry.meta.id, signal);
+	if (!result.ok) throw new Error(result.error);
+	const parsed = parseFrontmatter(result.content);
+	const bytes = Buffer.byteLength(parsed.body, "utf8");
+	const body =
+		bytes > PREVIEW_DISPLAY_BYTES ? Buffer.from(parsed.body, "utf8").subarray(0, PREVIEW_DISPLAY_BYTES).toString("utf8") : parsed.body;
+	return {
+		meta: normalizeMeta(`${entry.meta.id}.md`, parsed.meta),
+		path: result.path,
+		preview: body,
+		previewTruncated: bytes > PREVIEW_DISPLAY_BYTES,
+		previewError: undefined,
+	};
+}
+
+/** Archive matches carry identity and state only; the body is read when the row is selected. */
+function matchEntry(match: SearchMatch): StashEntry {
+	return {
+		meta: normalizeMeta(`${match.id}.md`, {
+			title: match.title,
+			state: match.state,
+			created: match.id.match(/^\d{8}T\d{6}Z/)?.[0],
+		} as Parameters<typeof normalizeMeta>[1]),
+		path: join(storeDir(), `${match.id}.md`),
+		preview: undefined,
+		previewTruncated: undefined,
+		previewError: undefined,
+	};
+}
+
+function coverageText(page: SearchPage): string {
+	const c = page.coverage;
+	const more = page.nextCursor ? " · more pages: Continue" : "";
+	const skipped = c.skippedTotal > 0 ? ` · ${c.skippedTotal} skipped` : "";
+	const scope = page.matches.length === 0 ? "no matches on this page · " : `${page.matches.length} matches · `;
+	return `${scope}${c.visited} visited${skipped} · coverage ${c.complete ? "complete" : "partial"}${more}`;
+}
+
+interface BrowserView {
+	scope: "recent" | "archive";
+	query: string;
+	/** Cursor that produced the current archive page; undefined for the first page. */
+	cursor: string | undefined;
+	nextCursor: string | null;
+	entries: StashEntry[];
+	hasMore: boolean;
+	coverage: string | undefined;
+	stale: boolean;
+}
+
+async function loadRecent(): Promise<BrowserView> {
+	const loaded = await listStashes(storeDir(), { limit: 201 });
+	return {
+		scope: "recent",
+		query: "",
+		cursor: undefined,
+		nextCursor: null,
+		entries: loaded.slice(0, 200),
+		hasMore: loaded.length > 200,
+		coverage: undefined,
+		stale: false,
+	};
+}
+
+/** Run one archive page. A rejected cursor or store change keeps the prior view and marks it stale. */
+async function loadArchive(query: string, cursor: string | undefined, prior: BrowserView | undefined): Promise<BrowserView> {
+	try {
+		const page = await searchStashes(storeDir(), { query, cursor });
+		return {
+			scope: "archive",
+			query,
+			cursor,
+			nextCursor: page.nextCursor,
+			entries: page.matches.map(matchEntry),
+			hasMore: page.nextCursor !== null,
+			coverage: coverageText(page),
+			stale: false,
+		};
+	} catch (error) {
+		if (prior?.scope !== "archive") throw error;
+		return {
+			...prior,
+			stale: true,
+			coverage: `${safeLine(error instanceof Error ? error.message : String(error))}`,
+		};
+	}
+}
+
+interface BrowserMemory {
+	filter?: string;
+	selectedId?: string;
+	selectedIndex?: number;
+	previewScroll?: number;
+	detail?: boolean;
+}
+
+function rememberPanel(result: StashPanelResult | undefined): BrowserMemory {
+	return {
+		filter: result?.filter ?? "",
+		selectedId: result?.selectedId,
+		selectedIndex: result?.selectedIndex,
+		previewScroll: result?.previewScroll,
+		detail: result?.detail,
+	};
+}
+
+function openPanel(
+	ctx: ExtensionContext,
+	view: BrowserView,
+	memory: BrowserMemory,
+	copyText?: (text: string) => Promise<void>,
+): Promise<StashPanelResult | undefined> {
+	return ctx.ui.custom<StashPanelResult>(
+		(tui, theme, _keybindings, done) =>
+			new StashPanel({
+				entries: view.entries,
+				title: "Stashes",
+				theme,
+				tui,
+				getMaxRows: () => Math.max(1, tui.terminal.rows - 6),
+				hasMore: view.hasMore,
+				scope: view.scope,
+				query: view.query,
+				coverage: view.coverage,
+				stale: view.stale,
+				nextCursor: view.nextCursor,
+				initialFilter: memory.filter,
+				initialSelectedId: memory.selectedId,
+				initialSelectedIndex: memory.selectedIndex,
+				initialPreviewScroll: memory.previewScroll,
+				initialDetail: memory.detail,
+				loadPreview: loadSelectedPreview,
+				copyResume: (entry) => (copyText ?? copyToClipboard)(resumeCommand(entry.meta.id)),
+				done,
+			}),
+		{
+			overlay: true,
+			overlayOptions: { width: "90%", minWidth: 60, maxHeight: "92%", anchor: "center", margin: 1 },
+		},
+	);
+}
+
+/** Load the view to show; a navigation result is already loaded and is shown as is. */
+async function viewToShow(view: BrowserView | undefined, loaded: boolean): Promise<BrowserView> {
+	if (view && loaded) return view;
+	return view?.scope === "archive" ? loadArchive(view.query, view.cursor, view) : loadRecent();
+}
+
+interface BrowserState {
+	memory: BrowserMemory;
+	view: BrowserView | undefined;
+	loaded: boolean;
+}
+
+/** One panel round: load, show, then route a navigation or an action. */
+async function browseStep(
+	ctx: ExtensionContext,
+	state: BrowserState,
+	fail: (message: string) => void,
+	copyText?: (text: string) => Promise<void>,
+): Promise<BrowserAction> {
+	try {
+		state.view = await viewToShow(state.view, state.loaded);
+	} catch (error) {
+		fail(`Could not open stash store: ${safeLine(error instanceof Error ? error.message : String(error))}`);
+		return { kind: "stop" };
+	}
+	state.loaded = false;
+	const result = await openPanel(ctx, state.view, state.memory, copyText);
+	state.memory = rememberPanel(result);
+	if (!result?.navigation) return browserAction(ctx, result, fail);
+	const next = await navigate(ctx, result.navigation, state.view);
+	if (next !== state.view) state.memory = {};
+	state.view = next;
+	state.loaded = true;
+	return { kind: "continue" };
+}
+
 /** Browse stashes and act on them; a selected entry is picked up. */
 async function browseAndPickup(
 	pi: StashMessageApi,
@@ -400,63 +584,49 @@ async function browseAndPickup(
 	fail: (message: string) => void,
 	copyText?: (text: string) => Promise<void>,
 ): Promise<void> {
-	let browserFilter: string | undefined;
-	let browserSelectedId: string | undefined;
-	let browserSelectedIndex: number | undefined;
-	let pickupId: string | undefined;
-	let pickupNote: string | undefined;
-
 	if (ctx.mode !== "tui" && !ctx.hasUI) {
 		throw new Error(
 			"The interactive stash browser requires TUI mode. Use stash_list to discover ids, /stash get <id> to pick up, /stash new <hint> to create, /stash complete <id> <outcome> to close, /stash reopen <id>, /stash rotate <id> to archive, or /stash help.",
 		);
 	}
-	while (!pickupId) {
-		let entries: Awaited<ReturnType<typeof listStashes>>;
-		let hasMore = false;
+	if (ctx.mode !== "tui") {
 		try {
-			const loaded = await listStashes(storeDir(), { limit: 201, previewBytes: 32 * 1024 });
-			hasMore = loaded.length > 200;
-			entries = loaded.slice(0, 200);
+			const recent = await listStashes(storeDir(), { limit: 201 });
+			await selectAndPickup(pi, ctx, recent.slice(0, 200), recent.length > 200, fail);
 		} catch (error) {
 			fail(`Could not open stash store: ${safeLine(error instanceof Error ? error.message : String(error))}`);
-			return;
 		}
-		if (ctx.mode !== "tui") {
-			await selectAndPickup(pi, ctx, entries, hasMore, fail);
-			return;
-		}
-		const result = await ctx.ui.custom<StashPanelResult>(
-			(tui, theme, _keybindings, done) =>
-				new StashPanel({
-					entries,
-					title: "Stashes",
-					theme,
-					tui,
-					getMaxRows: () => Math.max(1, tui.terminal.rows - 6),
-					hasMore,
-					initialFilter: browserFilter,
-					initialSelectedId: browserSelectedId,
-					initialSelectedIndex: browserSelectedIndex,
-					copyResume: (entry) => (copyText ?? copyToClipboard)(resumeCommand(entry.meta.id)),
-					done,
-				}),
-			{
-				overlay: true,
-				overlayOptions: { width: "90%", minWidth: 104, maxHeight: "92%", anchor: "center", margin: 1 },
-			},
-		);
-		browserFilter = result?.filter ?? "";
-		browserSelectedId = result?.selectedId;
-		browserSelectedIndex = result?.selectedIndex;
-		const action = await browserAction(ctx, result, fail);
-		if (action.kind === "stop") return;
-		if (action.kind === "pickup") {
-			pickupId = action.id;
-			pickupNote = action.note;
-		}
+		return;
 	}
-	await deliverPickup(pi, ctx, pickupId, fail, pickupNote);
+	const state: BrowserState = { memory: {}, view: undefined, loaded: false };
+	for (;;) {
+		const action = await browseStep(ctx, state, fail, copyText);
+		if (action.kind === "stop") return;
+		if (action.kind === "pickup") return deliverPickup(pi, ctx, action.id, fail, action.note);
+	}
+}
+
+/** Resolve a scope or page request into the next view; cancelling the query dialog keeps the current one. */
+async function navigate(
+	ctx: ExtensionContext,
+	navigation: NonNullable<StashPanelResult["navigation"]>,
+	view: BrowserView,
+): Promise<BrowserView> {
+	try {
+		if (navigation === "recent" || view.scope !== "archive") {
+			if (navigation !== "search") return await loadRecent();
+		}
+		if (navigation === "search") {
+			const query = (await ctx.ui.input("Search archive (full bodies, literal match):"))?.trim();
+			return query ? await loadArchive(query, undefined, undefined) : view;
+		}
+		if (navigation === "refresh") return await loadArchive(view.query, undefined, undefined);
+		return view.nextCursor ? await loadArchive(view.query, view.nextCursor, view) : view;
+	} catch (error) {
+		const message = safeLine(error instanceof Error ? error.message : String(error));
+		ctx.ui.notify(`Stash search could not run: ${message}`, "warning");
+		return view;
+	}
 }
 
 type BrowserAction = { kind: "stop" | "continue" } | { kind: "pickup"; id: string; note?: string };
