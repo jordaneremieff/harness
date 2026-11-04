@@ -1,10 +1,11 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { bool, int, lit, obj, opt, str, union, type Static } from "@earendil-works/pi-schema";
+import { bool, int, obj, opt, str, union, type Schema, type Static } from "@earendil-works/pi-schema";
 import { LIMITS, readHistory, searchHistory, toolResult } from "./core.ts";
 import { durableContribution } from "./durable.ts";
 import { toolDisplay } from "./display.ts";
 
+const StringLiteral = <const V extends string>(value: V): Schema<V> => ({ type: "string", const: value });
 const sessionId = opt(
 	str({
 		minLength: 1,
@@ -13,14 +14,14 @@ const sessionId = opt(
 			"Expected current session ID. Copy from a previous response to reject stale continuation after session replacement.",
 	}),
 );
-const filter = opt(
-	union(
+const filter = opt({
+	...union(
 		[
-			obj({ source: lit("user") }, { open: false }),
-			obj({ source: lit("summary") }, { open: false }),
+			obj({ source: StringLiteral("user") }, { open: false }),
+			obj({ source: StringLiteral("summary") }, { open: false }),
 			obj(
 				{
-					source: lit("toolResult"),
+					source: StringLiteral("toolResult"),
 					toolName: opt(
 						str({ minLength: 1, maxLength: 256, description: "Exact stored tool name." }),
 					),
@@ -38,7 +39,8 @@ const filter = opt(
 				"Select before text scanning or listing. user selects raw message entries with role user, not custom messages or proof of human authorship. summary selects compaction and branch_summary entries. toolResult selects stored tool-result messages, not assistant calls or bashExecution. Excluded entries still consume visits. Retain the same filter for continuation.",
 		},
 	),
-);
+	type: "object",
+});
 const outputBytes = opt(
 	int({
 		minimum: 4096,

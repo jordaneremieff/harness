@@ -1,7 +1,7 @@
 import type { Context } from "@earendil-works/chord";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
-import { bool, int, lit, obj, opt, str, union } from "@earendil-works/pi-schema";
+import { bool, int, obj, opt, str, union, type Schema } from "@earendil-works/pi-schema";
 import {
 	LIMITS,
 	type RecordValue,
@@ -24,6 +24,7 @@ import {
 	toolResult,
 } from "./reading.ts";
 
+const StringLiteral = <const V extends string>(value: V): Schema<V> => ({ type: "string", const: value });
 const USER_KIND = "pi.user";
 const COMPACTION_KIND = "pi.compaction";
 const TOOL_RESULT_KIND = "pi.tool-result";
@@ -123,14 +124,14 @@ const SESSION_ID = opt(
 			"Expected Durable storage ID. Copy from a previous response to reject stale continuation after storage replacement.",
 	}),
 );
-const FILTER = opt(
-	union(
+const FILTER = opt({
+	...union(
 		[
-			obj({ source: lit("user") }, { open: false }),
-			obj({ source: lit("summary") }, { open: false }),
+			obj({ source: StringLiteral("user") }, { open: false }),
+			obj({ source: StringLiteral("summary") }, { open: false }),
 			obj(
 				{
-					source: lit("toolResult"),
+					source: StringLiteral("toolResult"),
 					toolName: opt(
 						str({ minLength: 1, maxLength: 256, description: "Exact stored tool name." }),
 					),
@@ -148,7 +149,8 @@ const FILTER = opt(
 				"Select before text scanning or listing. user selects committed pi.user entries. summary selects pi.compaction entries. toolResult selects committed pi.tool-result entries, not assistant calls. Excluded entries still consume visits. Retain the same filter for continuation.",
 		},
 	),
-);
+	type: "object",
+});
 const OUTPUT_BYTES = opt(
 	int({
 		minimum: 4096,
