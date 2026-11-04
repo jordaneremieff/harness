@@ -134,6 +134,33 @@ it("the menu lists every action and runs only the chosen one", () => {
 	assert.equal(bar.menuShown, false);
 });
 
+it("a menu taller than its rows states the hidden count, and that row reveals the rest", () => {
+	runs.length = 0;
+	const bar = new ActionBar(() => {});
+	const actions = Array.from({ length: 8 }, (_, index) => action(`a${index}`, `Action ${index}`));
+	const barHits = new HitMap();
+	barHits.begin(8, 1);
+	bar.render(actions, 8, theme, barHits, 0);
+	barHits.handle(mouse(3, 0, 8, 1));
+	const menuHits = new HitMap();
+	menuHits.begin(40, 5);
+	let menu = bar.renderMenu(actions, 40, 5, theme, menuHits, 0).map(plain);
+	assert.equal(menu.length, 5);
+	assert.match(menu.at(-1) ?? "", /\u2193 5 more/u, "the last row counts the actions below");
+	assert.ok(!menu.some((row) => row.includes("Action 7")));
+	assert.deepEqual(menuHits.handle(mouse(2, 4, 40, 5)), { handled: true, render: true });
+	assert.deepEqual(runs, [], "the count row scrolls; it runs nothing");
+	menuHits.begin(40, 5);
+	menu = bar.renderMenu(actions, 40, 5, theme, menuHits, 0).map(plain);
+	assert.match(menu[0] ?? "", /\u2191 \d+ more/u, "the heading counts the actions above");
+	for (let step = 0; step < 3; step++) {
+		menuHits.handle(mouse(2, 4, 40, 5));
+		menuHits.begin(40, 5);
+		menu = bar.renderMenu(actions, 40, 5, theme, menuHits, 0).map(plain);
+	}
+	assert.ok(menu.some((row) => row.includes("Action 7")), "the last action comes into view");
+});
+
 it("closing the menu keeps the actions available on the bar", () => {
 	runs.length = 0;
 	const bar = new ActionBar(() => {});

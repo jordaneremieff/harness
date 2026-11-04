@@ -255,9 +255,11 @@ export class NavigationFrame implements Component, Focusable {
 		const controls = this.frameControls();
 		const controlText = controls.map((control) => ` ${plainLine(control.label)} `);
 		const target = theme.fg("muted", ` ${plainLine(this.options.target.label)} `);
-		const right = target + controlText.map((text) => theme.fg("accent", text)).join(theme.fg("borderMuted", "─"));
-		const { line, rightX } = renderTabs(tabs, this.active, this.zone === "tabs" ? this.tabFocus : undefined, width, theme, this.hits, 0, (key) => this.navigate(key), right);
-		let x = rightX + visibleWidth(target);
+		// The way out and the frame's controls always show; the target label gives way first.
+		const separator = theme.fg("borderMuted", "─");
+		const fixed = controlText.map((text) => theme.fg("accent", text)).join(separator) + separator;
+		const { line, fixedX } = renderTabs(tabs, this.active, this.zone === "tabs" ? this.tabFocus : undefined, width, theme, this.hits, 0, (key) => this.navigate(key), target, fixed);
+		let x = fixedX;
 		controls.forEach((control, index) => {
 			const w = visibleWidth(controlText[index] ?? "");
 			if (x + w <= width) this.hits.add({ x, y: 0, width: w, height: 1, click: () => control.run() });

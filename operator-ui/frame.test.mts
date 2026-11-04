@@ -81,6 +81,25 @@ it("destinations show as tabs with the target and the way out, and each keeps it
 	assert.equal(seen.hosts.length, 2, "a destination opens once while the frame stays open");
 });
 
+it("a narrow tab row keeps every destination and the way out on screen; the target label gives way first", () => {
+	const seen = probe();
+	const labels = ["Stashes", "Clipboard", "Policy", "Pillars", "Commands", "Model", "Statuses"];
+	const f = frame(labels.map((label) => ({ key: label, label, open: (host: ViewHost) => counter(host, label, seen) })));
+	for (const width of [120, 80, 60]) {
+		const row = plain(f.view.render(width))[0] ?? "";
+		assert.ok(row.endsWith(" Close \u2500"), `Close stays at the right at ${width}: ${row}`);
+		for (const label of labels) assert.ok(row.includes(label.slice(0, 2)), `${label} stays reachable at ${width}: ${row}`);
+		if (width === 120) assert.ok(row.includes("This session \u00b7 work"), "a wide row also names the target");
+	}
+	const narrow = plain(f.view.render(60))[0] ?? "";
+	const x = narrow.indexOf("Sta", narrow.indexOf("Mod"));
+	f.view.handleMouse({ type: "click", button: "left", x: x + 1, y: 0, screenX: x + 1, screenY: 0, width: 60, height: 12, shift: false, alt: false, ctrl: false, clickCount: 1 });
+	assert.equal(f.view.activeKey, "Statuses", "a shortened tab still opens its destination");
+	const close = narrow.lastIndexOf("Close");
+	f.view.handleMouse({ type: "click", button: "left", x: close + 1, y: 0, screenX: close + 1, screenY: 0, width: 60, height: 12, shift: false, alt: false, ctrl: false, clickCount: 1 });
+	assert.equal(f.closes.length, 1, "the way out answers where it is drawn");
+});
+
 it("push adds a nested view with a Back breadcrumb, and back leaves it", () => {
 	const seen = probe();
 	const f = frame([{ key: "a", label: "Alpha", open: (host) => counter(host, "Alpha", seen) }]);

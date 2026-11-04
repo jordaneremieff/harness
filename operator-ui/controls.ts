@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import type { HitMap } from "./hits.ts";
 import { clip, fitLine, plainLine, visibleWidth } from "./text.ts";
 import type { Action } from "./view.ts";
@@ -94,9 +94,14 @@ export class ActionBar {
 	renderMenu(actions: readonly Action[], width: number, height: number, theme: Theme, hits: HitMap, y0: number): string[] {
 		const items = this.menuItems(actions);
 		this.menuIndex = Math.max(0, Math.min(items.length - 1, this.menuIndex));
-		const rows = Math.max(1, Math.min(items.length, height - 1));
+		// A menu taller than its rows keeps one row that says how many actions are below.
+		const room = Math.max(1, height - 1);
+		const overflow = items.length > room;
+		const rows = overflow ? Math.max(1, room - 1) : items.length;
 		const start = Math.max(0, Math.min(items.length - rows, this.menuIndex - Math.floor(rows / 2)));
-		const lines = [fitLine(theme.fg("muted", "More actions · Enter runs · Esc closes"), width)];
+		const above = start > 0 ? ` · ↑ ${start} more` : "";
+		const lines = [fitLine(theme.fg("muted", `More actions${above} · Enter runs · Esc closes`), width)];
+		if (above) hits.add({ x: 0, y: y0, width, height: 1, click: () => this.moveMenu(-rows, items.length) });
 		items.slice(start, start + rows).forEach((action, offset) => {
 			const index = start + offset;
 			const note = action.disabled ? `unavailable: ${action.disabled}` : (action.description ?? "");
@@ -115,6 +120,11 @@ export class ActionBar {
 				},
 			});
 		});
+		const below = items.length - start - rows;
+		if (overflow) {
+			lines.push(fitLine(theme.fg("muted", below > 0 ? `↓ ${below} more · click, ↓ or wheel` : `${items.length} actions`), width));
+			if (below > 0) hits.add({ x: 0, y: y0 + lines.length - 1, width, height: 1, click: () => this.moveMenu(rows, items.length) });
+		}
 		hits.add({ x: 0, y: y0, width, height: lines.length, wheel: (delta) => this.moveMenu(delta, items.length) });
 		return lines;
 	}
@@ -190,8 +200,24 @@ export interface Tab {
 	readonly unavailable?: string;
 }
 
+/** One tab label: the active tab emphasised, an unavailable one dimmed, the focused one highlighted. */
+function tabText(tab: Tab, label: string, active: boolean, focused: boolean, theme: Theme): string {
+	const text = active ? theme.bold(theme.fg("accent", label)) : theme.fg(tab.unavailable ? "dim" : "muted", label);
+	return focused ? theme.bg("selectedBg", text) : text;
+}
+
+/** The widest tab label that lets every tab fit in `room`; the longest labels shorten first. */
+function tabCap(labels: readonly string[], room: number): number {
+	const widths = labels.map((label) => visibleWidth(label));
+	const total = (cap: number) => widths.reduce((sum, width) => sum + Math.min(width, cap) + 1, 1);
+	let cap = Math.max(0, ...widths);
+	while (cap > 3 && total(cap) > room) cap--;
+	return cap;
+}
+
 /**
- * The destination row: tabs on the left, a muted trailing segment on the right. The active tab
+ * The destination row: every tab on the left, a muted segment that gives way first, and the
+ * fixed controls at the right. Tabs shorten evenly before any drops out of reach. The active tab
  * is emphasised; a focused tab row highlights the tab that Enter would open.
  */
 export function renderTabs(
@@ -204,24 +230,27 @@ export function renderTabs(
 	y: number,
 	pick: (key: string) => void,
 	right = "",
-): { line: string; rightX: number } {
-	const rightWidth = right ? Math.min(visibleWidth(right), Math.floor(width / 2)) : 0;
-	const room = Math.max(0, width - rightWidth - (rightWidth ? 2 : 0));
+	fixed = "",
+): { line: string; fixedX: number } {
+	const space = Math.max(0, width - visibleWidth(fixed));
+	const labels = tabs.map((tab) => ` ${plainLine(tab.label)} `);
+	const natural = labels.reduce((sum, label) => sum + visibleWidth(label) + 1, 1);
+	const rightWidth = right ? Math.max(0, Math.min(visibleWidth(right), Math.floor(space / 2), space - natural - 2)) : 0;
+	const room = Math.max(0, space - (rightWidth ? rightWidth + 2 : 0));
+	const cell = tabCap(labels, room);
 	let x = 1;
 	let line = theme.fg("borderMuted", "─");
-	for (const tab of tabs) {
-		const label = ` ${plainLine(tab.label)} `;
+	for (const [index, tab] of tabs.entries()) {
+		const full = labels[index] ?? "";
+		const label = visibleWidth(full) > cell ? ` ${truncateToWidth(plainLine(tab.label), Math.max(1, cell - 2), "\u2026")} ` : full;
 		const w = visibleWidth(label);
 		if (x + w + 1 > room) break;
-		const isActive = tab.key === active;
-		let text = isActive ? theme.bold(theme.fg("accent", label)) : theme.fg(tab.unavailable ? "dim" : "muted", label);
-		if (focusKey === tab.key) text = theme.bg("selectedBg", text);
-		line += text + theme.fg("borderMuted", "─");
+		line += tabText(tab, label, tab.key === active, focusKey === tab.key, theme) + theme.fg("borderMuted", "─");
 		hits.add({ x, y, width: w, height: 1, click: () => pick(tab.key) });
 		x += w + 1;
 	}
 	const fill = theme.fg("borderMuted", "─".repeat(Math.max(0, room - x)));
 	const head = fitLine(line + fill, room);
-	if (!rightWidth) return { line: head, rightX: width };
-	return { line: `${head} ${clip(right, rightWidth)}${theme.fg("borderMuted", "─")}`, rightX: room + 1 };
+	const middle = rightWidth ? `${head} ${clip(right, rightWidth)}${theme.fg("borderMuted", "─")}` : head;
+	return { line: fitLine(middle, space) + fixed, fixedX: space };
 }
