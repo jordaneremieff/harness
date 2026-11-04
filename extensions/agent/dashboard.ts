@@ -26,6 +26,7 @@ import {
 	type ViewHost,
 	type ViewTarget,
 	ReaderView,
+	wrap,
 } from "../../operator-ui/index.ts";
 import { DashboardResize } from "./dashboard-resize.ts";
 import { mergeAgentCoverage, type AgentConversationPage, type AgentConversationSummary, type AgentConversationSnapshot } from "./dashboard-types.ts";
@@ -1509,7 +1510,8 @@ export class AgentDashboard implements Component, Focusable {
 		});
 		this.hits.add({ x: x0, y: y0 + 1, width, height: rosterHeight, wheel: (delta) => { this.rosterScroll = Math.max(0, Math.min(this.rosterMaxStart, this.rosterStart + delta)); } });
 		const empty = this.listEmpty();
-		if (empty) lines.splice(0, 1, theme.fg("muted", empty));
+		// An empty list explains itself in full, however narrow the list is.
+		if (empty) lines.splice(0, lines.length, ...wrap(empty, width).slice(0, rosterHeight).map((line) => theme.fg("muted", line)));
 		const body = Array.from({ length: rosterHeight }, (_, row) => lines[row] ?? "");
 		if (compact) {
 			const top = factsWidth ? `${fitLine(findLine, findWidth)} ${this.listFooter(factsWidth, x0 + findWidth + 1, y0)}` : findLine;

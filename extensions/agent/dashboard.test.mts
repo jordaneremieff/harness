@@ -568,6 +568,19 @@ it("a late new conversation completion respects a later list selection", async (
 	}
 });
 
+it("an empty Related list states its whole reason in a narrow list", async () => {
+	const f = fixture(120, 30, source([row("unrelated", { storageId: "unrelated", creatingOwnerId: "someone-else" })]), undefined, undefined, undefined, "caller-session");
+	try {
+		await settle(() => /No related agents yet/u.test(shown(f)));
+		const lines = visible(f.ui.render(120));
+		const divider = lines[1]?.indexOf("\u2502") ?? 0;
+		const list = lines.map((line) => line.slice(0, divider).trim()).join(" ");
+		assert.match(list, /No related agents yet\. All shows every loaded agent\./u);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
 it("roster publication preserves arrow order during a navigation sequence", async (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	let rows = [row("one", { modifiedAt: 3 }), row("two", { modifiedAt: 2 }), row("three", { modifiedAt: 1 })];
