@@ -175,6 +175,14 @@ export function effectiveEffect(record: Pick<RuleRecord, "definition" | "overrid
 	return permitsEffectChoice(record) ? (record.override?.effect ?? record.definition.effect) : record.definition.effect;
 }
 
+/** Whether one lifecycle or effect control applies to this rule in its current state. */
+export function selectableForAction(record: RuleRecord, verb: string): boolean {
+	if (verb === "disable") return effectiveState(record) === "active";
+	if (verb === "enable") return effectiveState(record) === "disabled";
+	if (verb === "retire") return record.definition.state === "active";
+	return effectiveState(record) !== "retired" && (verb !== "effect" || permitsEffectChoice(record));
+}
+
 export function factsProgram(record: Pick<RuleRecord, "matcher">): FactsProgram | undefined {
 	return record.matcher.kind === "declarative" && record.matcher.language === "facts/v1"
 		? record.matcher.spec

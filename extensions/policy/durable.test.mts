@@ -26,7 +26,8 @@ import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createPolicyDurableExtension, durableResultDisposition, policyPanelCommand, type PolicyDurableHost } from "./durable.ts";
 import { makeRuleAudit, proposalRevision, RuleRegistry, targetIdentity } from "./local-rules.ts";
 import { deserializeSnapshot, readPanelAnswer } from "./panel-protocol.ts";
-import { operatorPanel, type OperatorPanelHost } from "./operator-panel.ts";
+import type { OperatorView, PanelHost } from "../../operator-ui/index.ts";
+import { operatorPanel } from "./operator-panel.ts";
 import type { FactsProgram } from "./program.ts";
 import { localDate } from "./store.ts";
 import { PolicyProposeParams, PolicyRulesParams, validateProposal } from "./tools.ts";
@@ -35,7 +36,7 @@ import { DraftCasesSchema } from "./authoring.ts";
 import { readTelemetry } from "./telemetry.ts";
 
 const context = BACKGROUND_CONTEXT;
-const plainTheme = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as OperatorPanelHost["theme"];
+const plainTheme = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as PanelHost["theme"];
 const MODEL = { provider: "faux", modelId: "faux-1" } as const;
 
 test("host diagnostics distinguish rejected calls from uncertain execution and tool errors", () => {
@@ -1277,59 +1278,86 @@ test("the policy command serves the attached panel: reads, an effect-labelled ap
 	}
 });
 
-test("the attached panel's Data actions set, set-file and remove through the owner route with reviews and stale refusals", async () => {
+test("the attached view's Data actions set, set-file and remove through the owner route with reviews and stale refusals", async () => {
 	const fixture = await openFixture();
 	try {
 		const host = hostFor(fixture.directory, fixture.harness);
 		await createPolicyDurableExtension(host);
-		const notices: string[] = [];
-		const selections: string[] = [];
-		const editors: string[] = [];
-		let rendered: () => string[] = () => [];
 		let beforeApply: (() => Promise<void>) | undefined;
-		const panelHost: OperatorPanelHost = {
-			target: { id: String(fixture.root.id) }, theme: plainTheme, tui: { requestRender() {} }, rows: () => 24,
-			request: async (data) => {
-				if ((data as { op?: string; args?: string }).op === "data" && / exact$|approveRevision/.test(String((data as { args?: string }).args)) && beforeApply) { const run = beforeApply; beforeApply = undefined; await run(); }
-				return await policyPanelCommand.run({ args: "", data: data as never, origin: "operator", conversation: fixture.root, context, host, invocationId: "panel-data" }) as { text: string; data?: never };
-			},
-			dialogs: {
-				select: async (title, choices) => { const pick = selections.shift(); assert.ok(pick === undefined || choices.some((choice) => choice.value === pick), `${title}: ${pick}`); return pick; },
-				input: async () => undefined,
-				editor: async () => editors.shift(),
-				notify: (text) => { notices.push(text); },
-			},
-			close() {},
+		const request = async (data: unknown) => {
+			const args = String((data as { args?: string }).args);
+			if ((data as { op?: string }).op === "data" && / exact$|approveRevision/.test(args) && beforeApply) {
+				const run = beforeApply;
+				beforeApply = undefined;
+				await run();
+			}
+			return (await policyPanelCommand.run({ args: "", data: data as never, origin: "operator", conversation: fixture.root, context, host, invocationId: "panel-data" })) as { text: string; data?: never };
 		};
-		/** Owner reads touch the store, so waits poll the rendered panel against a deadline instead of counting turns. */
+		const layers: Array<{ view: OperatorView; controller: AbortController }> = [];
+		const notices: string[] = [];
+		const panelHost = (controller: AbortController): PanelHost => ({
+			theme: plainTheme,
+			target: { id: String(fixture.root.id), label: "root" },
+			signal: controller.signal,
+			requestRender: () => {},
+			notify: (text) => notices.push(text),
+			push: (open) => {
+				const child = new AbortController();
+				layers.push({ view: open(panelHost(child)), controller: child });
+			},
+			back: () => {
+				const index = layers.findIndex((layer) => layer.controller === controller);
+				for (const layer of layers.splice(Math.max(1, index))) layer.controller.abort();
+			},
+			focusActions: () => {},
+			close: () => {},
+			request,
+		});
+		layers.push({ view: operatorPanel().open(panelHost(new AbortController())), controller: new AbortController() });
+		const top = () => layers.at(-1)?.view;
+		const rendered = () => (top()?.render(110, 24) ?? []).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+		const shows = (pattern: RegExp) => () => rendered().some((line) => pattern.test(line)) || notices.some((notice) => pattern.test(notice));
+		/** The frame shows a view's title in its breadcrumb; here the title is read from the view. */
+		const titled = (title: string) => () => top()?.title === title;
+		/** Owner reads touch the store, so waits poll the rendered view against a deadline instead of counting turns. */
 		const until = async (ready: () => boolean | Promise<boolean>, what: string) => {
-			for (let step = 0; step < 500; step++) { if (await ready()) return; await new Promise((resolve) => setTimeout(resolve, 10)); }
-			assert.fail(`${what} within 5 s:\n${rendered().join("\n")}`);
+			for (let step = 0; step < 500; step++) {
+				if (await ready()) return;
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+			assert.fail(`${what} within 5 s:\n${rendered().join("\n")}\n${notices.join("\n")}`);
 		};
-		const shows = (pattern: RegExp) => () => rendered().some((line) => pattern.test(line));
-		const instance = operatorPanel().open(panelHost);
-		rendered = () => instance.render(110).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
-		await until(shows(/\[Actions\]/), "the registry loads");
-		const approveOnReader = async (label: RegExp) => {
-			for (let page = 0; page < 40 && !shows(label)(); page++) instance.handleInput(" ");
-			assert.ok(shows(label)(), rendered().join("\n"));
-			instance.handleInput("a");
+		const act = (label: string) => {
+			const action = top()?.actions?.().find((candidate) => candidate.label === label);
+			assert.ok(action, `no ${label}: ${top()?.actions?.().map((candidate) => candidate.label).join(", ")}`);
+			action.run();
 		};
-		instance.handleInput("t");
-		await until(shows(/"bindings"/), "Read data lists the bindings");
-		selections.push("Data actions", "set");
-		editors.push(JSON.stringify({ data: { name: "panel-table", kind: "table", rows: [{ key: "alias", value: "canonical" }] } }));
-		instance.handleInput("o");
-		await until(shows(/Approve policy data/), "the complete review shows before any change");
+		const typeText = (text: string) => {
+			for (const key of text) top()?.handleInput(key);
+		};
+		const approveReview = async (label: string) => {
+			for (let page = 0; page < 200 && !shows(/All \d+ lines read/)(); page++) top()?.handleInput("\u001b[6~");
+			act(label);
+		};
+		await until(shows(/\d+ rules/), "the registry loads");
+		top()?.focusNext?.(true);
+		for (let step = 0; step < 3; step++) top()?.handleInput("\u001b[C");
+		top()?.handleInput("\r");
+		await until(shows(/No named policy data/), "the Data scope lists the bindings");
+		act("Set data…");
+		typeText(JSON.stringify({ data: { name: "panel-table", kind: "table", rows: [{ key: "alias", value: "canonical" }] } }));
+		act("Review change");
+		await until(titled("Approve policy data"), "the complete review shows before any change");
 		assert.equal((await fixture.policy.snapshot()).data.size, 0, "nothing changed before approval");
-		await approveOnReader(/\[Set policy data\]/);
-		await until(shows(/panel-table uses revision/), "the approved change applies");
+		await approveReview("Set policy data");
+		await until(async () => Boolean((await fixture.policy.snapshot()).data.get("panel-table")), "the approved change applies");
 		const bound = (await fixture.policy.snapshot()).data.get("panel-table");
 		assert.ok(bound, "approval applied the reviewed artifact");
 		assert.equal(bound.source, "operator");
+		assert.equal(layers.length, 1, "the review and the form leave after the change applies");
 
-		selections.push("Data actions", "set");
-		editors.push(JSON.stringify({ data: { name: "panel-table", kind: "table", rows: [{ key: "alias", value: "changed" }] } }));
+		act("Set data…");
+		typeText(JSON.stringify({ data: { name: "panel-table", kind: "table", rows: [{ key: "alias", value: "changed" }] } }));
 		beforeApply = async () => {
 			const current = (await fixture.policy.snapshot()).data.get("panel-table");
 			assert.ok(current);
@@ -1338,36 +1366,36 @@ test("the attached panel's Data actions set, set-file and remove through the own
 			raced.revision = namedDataRevision(raced as never);
 			await fixture.policy.setData(raced as never, current.revision, makeRuleAudit({ sessionManager: { getSessionId: () => "other" }, model: null }, "command"));
 		};
-		instance.handleInput("o");
-		await until(shows(/Approve policy data/), "the second review shows");
-		await approveOnReader(/\[Set policy data\]/);
+		act("Review change");
+		await until(titled("Approve policy data"), "the second review shows");
+		await approveReview("Set policy data");
 		await until(shows(/revision changed|refused/i), "a binding changed after the review refuses");
 		assert.equal((await fixture.policy.snapshot()).data.get("panel-table")?.rows[0]?.value, "raced", "the stale approval changed nothing");
+		// Cancel on the review leaves the form too, back to the data list.
+		act("Cancel");
+		assert.equal(layers.length, 1);
 
 		const file = join(fixture.directory, "panel-data.json");
-		const current = (await fixture.policy.snapshot()).data.get("panel-table");
-		assert.ok(current);
 		await writeFile(file, JSON.stringify({ data: { name: "panel-file", kind: "table", source: "file", capturedAt: 1, rows: [{ key: "k", value: "v" }] }, expectedRevision: null }));
-		selections.push("Data actions", "set-file");
-		editors.push(JSON.stringify({ path: "panel-data.json" }));
-		instance.handleInput("o");
-		await until(shows(/Approve policy data/), "the file review shows");
-		await approveOnReader(/\[Set policy data\]/);
+		act("Set from file…");
+		typeText(JSON.stringify({ path: "panel-data.json" }));
+		act("Review change");
+		await until(titled("Approve policy data"), "the file review shows");
+		await approveReview("Set policy data");
 		await until(async () => Boolean((await fixture.policy.snapshot()).data.get("panel-file")), "set-file resolves the path against the bound conversation's cwd and applies");
 
-		selections.push("Data actions", "remove", "panel-file");
-		instance.handleInput("o");
-		await until(shows(/Remove policy data/), "the removal review shows");
-		await approveOnReader(/\[Remove policy data\]/);
+		await until(shows(/panel-file/), "the list shows the file binding");
+		for (let step = 0; step < 5 && !rendered().some((line) => line.startsWith("›panel-file") || line.includes("› panel-file")); step++) top()?.handleInput("\u001b[B");
+		const selected = (top() as unknown as { selected?: { name?: string } }).selected;
+		assert.equal(selected?.name, "panel-file", rendered().join("\n"));
+		act("Remove…");
+		await until(titled("Remove policy data"), "the removal review shows");
+		await approveReview("Remove policy data");
 		await until(async () => (await fixture.policy.snapshot()).data.get("panel-file") === undefined, "remove applies the reviewed binding revision");
-
-		selections.push("Data actions", "list");
-		instance.handleInput("o");
-		await until(shows(/panel-table/), "list shows the remaining binding");
+		await until(shows(/panel-table/), "the list shows the remaining binding");
 		const events = (await readFile(join(fixture.directory, "policy", "rules.jsonl"), "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as { kind?: string; audit?: { surface?: string } });
 		const surfaces = events.filter((event) => event.kind === "data").map((event) => event.audit?.surface);
-		assert.deepEqual(surfaces, ["panel", "command", "panel", "panel"], "the panel's set, set-file and remove carry the panel audit; the raced write keeps its own");
-		instance.dispose();
+		assert.deepEqual(surfaces, ["panel", "command", "panel", "panel"], "the view's set, set-file and remove carry the panel audit; the raced write keeps its own");
 	} finally {
 		await fixture.close();
 	}

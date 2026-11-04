@@ -30,8 +30,8 @@ provides revision-checked controls and their read-only inspection steps.
 Approval does not change the policy mode. Use the [authoring guide](AUTHORING.md)
 for the author, check, propose, and approve workflow.
 
-In an ordinary session, the operator uses `/policy` for the TUI panel or explicit
-commands:
+In an ordinary session, the operator uses `/policy` for the TUI Policy view or
+explicit commands:
 
 ```text
 /policy list
@@ -250,15 +250,15 @@ finite union in `panel-protocol.ts` and answers `{ text, data }`:
 | `load`, `refresh` | The registry snapshot (and fire summary, recent activity, and the bound conversation's scope for `load`); Map-backed values travel as entry arrays. |
 | `inspect` (`state`, `explain`) | The same bounded inspection text as the native `policy_rules` views, against the bound conversation's observation state. |
 | `approve`, `reject` | `registry.decide` with the proposal revision the operator read and a `panel` audit for the bound conversation; a changed revision refuses. |
-| `lifecycle` (`disable`, `enable`, `retire`), `effect` | The same registry controls as the ordinary panel, bound to the target identity the operator saw; a changed definition refuses. |
+| `lifecycle` (`disable`, `enable`, `retire`), `effect` | The same registry controls as the ordinary view, bound to the target identity the operator saw; a changed definition refuses. |
 | `reset-revision`, `reset` | Persist the synced observation periods, return their revision, then start a new period only under that revision. |
-| `data` (`args`: `list`, `show <name>`, `set <JSON>`, `set-file <JSON>`, `remove <name> <revision>`) | The owner's data command, prepared against the bound conversation's cwd (set-file paths resolve there). Reads answer with their text. A change answers first with its complete review and the exact approval arguments, and changes nothing; the panel sends those arguments only after the operator reads every page and chooses the effect-labelled final action (`Set policy data`, `Remove policy data`). Applying rechecks the binding revision, rereads the file, and requires the same artifact revision; a change in between refuses and changes nothing. Every change carries a `panel` audit. |
+| `data` (`args`: `list`, `show <name>`, `set <JSON>`, `set-file <JSON>`, `remove <name> <revision>`) | The owner's data command, prepared against the bound conversation's cwd (set-file paths resolve there). Reads answer with their text. A change answers first with its complete review and the exact approval arguments, and changes nothing; the view sends those arguments only after every line of the review was on screen and the operator chooses the effect-labelled final action (`Set policy data`, `Remove policy data`). Applying rechecks the binding revision, rereads the file, and requires the same artifact revision; a change in between refuses and changes nothing. Every change carries a `panel` audit. |
 
-In the attached panel, Read data lists the bindings and Data actions offers the
-same list, show, set, set-file and remove as `/policy data`: set and set-file
-open the terminal's multiline editor, and a set without `expectedRevision` binds
-to the revision shown. Approval remains distinct from session enforcement on
-both routes. The `o` key opens the actions menu in both panels.
+In the attached terminal the Policy view is the one ordinary Pi shows: Data
+lists the bindings and offers the same show, set, set-file and remove as
+`/policy data`, through staged forms, and a set without `expectedRevision`
+binds to the revision shown. Approval remains distinct from session enforcement
+on both routes.
 
 Semantic differences from the ordinary runtime:
 
@@ -1183,52 +1183,52 @@ partial import. There is no automatic reimport, external catalog-file loader,
 or update daemon. Large imports require smaller explicit selections rather than
 truncated approval artifacts.
 
-Press `ctrl+alt+p` in the TUI editor to open the same panel as `/policy` without
-submitting or replacing the editor draft. The panel retains its view, filter,
-and selection across closes. Repeated command or shortcut requests do not open
-another panel while the current request loads or remains open. Opening the panel
-makes no approval or rule edit; the normal first-use catalog initialization still
-applies when no registry exists.
+Bare `/policy` and `ctrl+alt+p` open the Policy view in the shared browsing frame
+below the native transcript (`docs/conventions/operator-panels.md`), without
+submitting or replacing the editor draft. A second open while the frame is open
+navigates that frame instead of opening another. The view keeps its scope,
+filter, and selection across closes. Opening the view makes no approval or rule
+edit; the normal first-use catalog initialization still applies when no
+registry exists. The statusline work strip lists Policy because this extension
+publishes it as an operator view; the command opens it with the statusline
+disabled too.
 
-The panel shares rule/proposal details and operator gates with the command. Its
-header shows Rules, Proposals, Activity, Data, and State as clickable views, then
-`[Filter]` on the list views, `[Back]` inside a full-width detail, `[Actions]`, and
-`[Close]`. Below 78 columns the layout stacks and view names shorten; when the row is
-still too narrow, Filter and then Back yield (their key routes `/` and Esc remain) so
-Actions and Close stay reachable. A second click or Enter on the selected row opens its
-full-width detail, and Back or Esc returns to the list. Clicking a row only selects it. The wheel
-scrolls the list or detail pane under the pointer. Hit targets are rebuilt on every render
-and dropped on resize, view change, replacement, hide, and disposal, so a click never acts
-on the row that now occupies an old position.
+The view shares rule and proposal details and operator gates with the command.
+Its scopes are Rules, Proposals, Activity, Data, and State. Titles come first:
+a rule shows its purpose, a proposal its candidate purpose. Typing filters the
+list; selecting a row reads it and never acts. At narrow widths the detail
+opens as its own view with Enter.
 
-The same panel serves the attached Agent terminal through `operator-panel.ts`, a
-presentation-only module that routes every read and mutation through the host's
-`policy` contribution command (see `docs/conventions/operator-panels.md` and the
-Durable section). The ordinary statusline footer menu lists `/policy` as a
-destination because this extension announces it on
-`harness:operator-destination:publish`.
+Every change is a labelled action with a staged form. A rule offers
+**Disable…** or **Enable…**, **Effect…**, **Explain**, **Reset observation…**,
+and **Retire…**; a proposal offers **Approve…** and **Reject…**; Data offers
+**Set data…**, **Set from file…**, and **Remove…**; Activity offers
+**Explain call** for a recorded call. The forms ask for the reason (and the
+effect), bind the revision or target identity of the record shown, and pin the
+reset observation period before the reason is entered. They call the same owner
+functions as the command verbs. A changed definition, proposal, or observation
+period is refused with the reason and the view rereads the store; nothing is
+applied to the new content. An exact-only rule offers no effect choice. A
+result that arrives after the operator left its view does not replace that
+view.
 
-Disable, enable, effect, retire, reset, explain, data, and state actions call the same
-owner functions as the command verbs. They ask for the reason (and the effect) in the same
-dialogs, bind the target identity of the definition shown in the panel, and pin the reset
-observation period before the reason is entered. A changed definition, proposal, or
-observation period produces an explicit "Action refused" message and refreshes the panel
-from the store; nothing is applied to the new content. An exact-only rule offers no effect
-choice. State is the `/policy state` inspection and Data is `/policy data list`; the Data view's Actions menu offers the remaining `/policy data` operations with their review reader. A result that arrives after the operator left
-its view does not replace that view.
+Proposal approval and rejection, data changes, and catalog imports end in the
+complete artifact review. It shows the exact artifact text and scrolls by key
+or wheel. The final action is labelled for the real effect, such as
+**Approve as block**, **Approve disable**, **Reject**, **Remove**, or
+**Import**, and stays unavailable until every line of the artifact has been on
+screen. Cancel and Escape write nothing. A decision from the review still
+passes the normal revision and authority checks before any mutation. A
+command route that needs a review, such as `/policy approve <id>`, opens the
+same review in the frame.
 
-Proposal approval and rejection, data changes, and catalog imports use the paged artifact
-reader. It scrolls by wheel, Space/b, page keys, and the `[Previous]` and `[Next]`
-controls, and shows the exact artifact text. The final control appears only on the
-last page and is labelled for the real effect, such as `[Approve as block]`,
-`[Approve disable]`, `[Reject]`, `[Remove]`, or `[Import]`; until then the row says
-that every page must be read first. A page control invalidates the hit geometry, so a
-press at the same position after paging or a resize is dropped rather than read as
-approval. `[Cancel]` and Esc write nothing. A result from the reader still passes the normal revision
-and authority checks before any mutation. TUI and RPC
-command responses use notifications. JSON commands append non-context custom
-entries. Print commands use the host-managed output path. The interactive panel
-itself remains TUI-only.
+The same view serves the attached Agent terminal through `operator-panel.ts`, a
+presentation-only module that routes every read and change through the host's
+`policy` contribution command (see the Durable section). TUI and RPC command
+responses use notifications. JSON commands append non-context custom entries.
+Print commands use the host-managed output path. The interactive view itself
+remains TUI-only.
+
 
 ## Command-shape rules
 

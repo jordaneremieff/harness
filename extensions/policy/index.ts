@@ -22,20 +22,10 @@ import {
 	type RuleSnapshot,
 } from "./local-rules.ts";
 import { POLICY_MODES, type PolicyMode, resolvePolicyModeValue } from "./mode.ts";
-import {
-	capText,
-	formatPolicyList,
-	formatPolicyShow,
-	type PanelActionResult,
-	PolicyApprovalPanel,
-	PolicyPanel,
-	type PolicyPanelControl,
-	type PolicyPanelResult,
-	readFireSummary,
-	readRecentActivity,
-	terminalSafe,
-} from "./panel.ts";
-import { effectiveState, permitsEffectChoice, type RuleRecord, type SessionRuleAudit } from "./rule.ts";
+import { capText, formatPolicyList, formatPolicyShow, readFireSummary, readRecentActivity, terminalSafe } from "./panel.ts";
+import { ArtifactReview, createPolicyViewState, type PolicyOperations, type PolicyResult, type PolicyViewState, policyView } from "./operator-view.ts";
+import { effectiveState, selectableForAction, type SessionRuleAudit } from "./rule.ts";
+import { frameRows, NavigationFrame, openOperatorFrame, ordinaryTarget, publishOperatorViews } from "../../operator-ui/index.ts";
 import { PolicyRuntime } from "./runtime.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
 import {
@@ -43,11 +33,14 @@ import {
 	formatCatalog,
 	policyDataCommand,
 	policyImportCommand,
+	prepareDataCommand,
 	registerRuleTools,
 	validateInspectionParams,
 } from "./tools.ts";
 
 const POLICY_MODE_FLAG = "policy-mode";
+/** This extension's entrypoint; the ordinary frame binds the published view to its /policy registration. */
+const OWNER = fileURLToPath(import.meta.url);
 const POLICY_USAGE = [
 	"Usage:",
 	"  /policy                                      Open the policy panel (TUI only)",
@@ -111,13 +104,6 @@ function scope(ctx: ExtensionContext) {
 }
 
 /** Whether one action verb accepts this record at the current position. */
-function selectableForAction(record: RuleRecord, verb: string): boolean {
-	if (verb === "disable") return effectiveState(record) === "active";
-	if (verb === "enable") return effectiveState(record) === "disabled";
-	if (verb === "retire") return record.definition.state === "active";
-	return effectiveState(record) !== "retired" && (verb !== "effect" || permitsEffectChoice(record));
-}
-
 const SELECTABLE_VERBS = new Set(["disable", "enable", "effect", "retire"]);
 
 function primaryChoices(verb: string, snapshot: RuleSnapshot | undefined, registry: RuleRegistry): string[] {
@@ -260,69 +246,91 @@ function reviewLabel(title: string): string {
 	return "Approve";
 }
 
+/** The policy view's data command: reads answer text; a change answers its review until its approval arrives. */
+async function viewData(env: PolicyCommandEnv, ctx: ExtensionContext, args: string): Promise<Awaited<ReturnType<PolicyOperations["data"]>>> {
+	const prepared = await prepareDataCommand(env.registry, args, makeRuleAudit(ctx, "panel"), ctx.cwd);
+	if ("text" in prepared) return { outcome: prepared.text, snapshot: await env.loadRegistry(ctx) };
+	if (prepared.approved) {
+		const outcome = await prepared.apply();
+		return { outcome, snapshot: await env.loadRegistry(ctx) };
+	}
+	const action = prepared.title === "Remove policy data" ? "Remove policy data" : "Set policy data";
+	return { review: { title: prepared.title, text: prepared.review, approval: prepared.approval, action }, snapshot: await env.loadRegistry(ctx) };
+}
+
 /**
- * Panel entry to the same owner operations the command verbs use. Targets come from the snapshot the
- * panel displays, so a changed definition or observation period is refused rather than applied.
+ * The ordinary policy view's owner operations: the same registry calls the command verbs use, with a
+ * panel audit. Each change binds the revision or target identity the view read, so a changed
+ * definition or observation period is refused rather than applied.
  */
-async function panelControl(
-	env: PolicyCommandEnv,
-	ctx: ExtensionContext,
-	action: PolicyPanelControl,
-	id: string | undefined,
-	snapshot: RuleSnapshot,
-): Promise<PanelActionResult> {
-	const done = async (outcome: string): Promise<PanelActionResult> => ({
-		snapshot: await env.loadRegistry(ctx),
-		outcome,
-	});
-	if (action === "state") return done(boundedInspection(await env.runtime.inspect("state", {}, ctx)));
-	if (action === "data" || action === "data-actions") return done(await panelData(env, ctx, action, snapshot));
-	if (!id) throw new Error("Select a rule or recorded call first.");
-	if (action === "explain") return done(boundedInspection(await env.runtime.inspect("explain", { id }, ctx)));
-	return done(await panelRuleControl(env, ctx, action, id, snapshot));
+function ordinaryOperations(env: PolicyCommandEnv, ctx: ExtensionContext): PolicyOperations {
+	const audit = () => makeRuleAudit(ctx, "panel");
+	const settled = async (outcome: string): Promise<PolicyResult> => ({ outcome, snapshot: await env.loadRegistry(ctx) });
+	return {
+		load: async () => {
+			const [snapshot, fireSummary, activity] = await Promise.all([env.loadRegistry(ctx), readFireSummary(env.dir), readRecentActivity(env.dir)]);
+			return { snapshot, fireSummary, activity, scope: scope(ctx) };
+		},
+		refresh: () => env.loadRegistry(ctx),
+		inspect: async (view, id) => ({ text: boundedInspection(await env.runtime.inspect(view, id === undefined ? {} : { id }, ctx)), snapshot: await env.loadRegistry(ctx) }),
+		approve: async (proposalId, effect, revision) => {
+			await env.registry.decide(proposalId, "approved", effect, audit(), revision);
+			return settled(`Approved proposal ${proposalId}.`);
+		},
+		reject: async (proposalId, revision) => {
+			await env.registry.decide(proposalId, "rejected", undefined, audit(), revision);
+			return settled(`Rejected proposal ${proposalId}.`);
+		},
+		lifecycle: async (verb, id, reason, expectedIdentity) => {
+			if (verb === "disable") await env.registry.disable(id, reason, audit(), expectedIdentity);
+			else if (verb === "enable") await env.registry.enable(id, reason, audit(), expectedIdentity);
+			else await env.registry.retire(id, reason, audit(), expectedIdentity);
+			return settled(`${verb === "retire" ? "Retired" : verb === "disable" ? "Disabled" : "Enabled"} ${id}.`);
+		},
+		effect: async (id, effect, reason, expectedIdentity) => {
+			await env.registry.setEffect(id, effect, reason, audit(), expectedIdentity);
+			return settled(`Set ${id} effect to ${effect}.`);
+		},
+		resetRevision: async (id) => env.runtime.resetRevision(id),
+		reset: async (id, reason, revision) => settled(await applyReset(env, ctx, id, reason, revision)),
+		data: (args) => viewData(env, ctx, args),
+	};
 }
 
-async function panelData(
-	env: PolicyCommandEnv,
-	ctx: ExtensionContext,
-	action: "data" | "data-actions",
-	snapshot: RuleSnapshot,
-): Promise<string> {
-	const args = action === "data" ? "list" : await dataArguments(ctx, "", snapshot);
-	if (args === undefined) return "Policy data action canceled.";
-	return policyDataCommand(
-		env.registry,
-		args,
-		makeRuleAudit(ctx, "panel"),
-		(title, message) => env.reviewArtifact(ctx, title, message, reviewLabel(title)),
-		ctx.cwd,
-	);
-}
-
-/** Lifecycle, effect, and reset controls for the rule the panel displays. */
-async function panelRuleControl(
-	env: PolicyCommandEnv,
-	ctx: ExtensionContext,
-	action: PolicyPanelControl,
-	id: string,
-	snapshot: RuleSnapshot,
-): Promise<string> {
-	if (!primaryChoices(action, snapshot, env.registry).includes(id))
-		throw new Error(`Rule ${id} does not accept ${action} in its current state`);
-	const record = snapshot.records.get(id);
-	if (action === "effect" && (!record || !permitsEffectChoice(record)))
-		throw new Error(`Rule ${id} permits an exact replacement proposal only`);
-	let revision: string | undefined;
-	const parts = await controlArguments(ctx, action, [id], snapshot, env.registry, (target) => {
-		if (action === "reset") revision = env.runtime.resetRevision(target);
+/**
+ * The complete artifact review for a command route, in the editor slot below the transcript. The
+ * final action is available only after every line was on screen; Cancel and Escape decide nothing.
+ */
+function reviewInFrame(ctx: ExtensionContext, title: string, artifact: string, label: string): Promise<boolean> {
+	if (ctx.mode !== "tui" || !ctx.hasUI) return Promise.resolve(false);
+	return ctx.ui.custom<boolean>((tui, theme, _keys, done) => {
+		let approved = false;
+		return new NavigationFrame({
+			theme,
+			target: ordinaryTarget(ctx),
+			destinations: () => [
+				{
+					key: "review",
+					label: "Review",
+					open: (host) =>
+						new ArtifactReview({
+							host,
+							title,
+							artifact,
+							label,
+							tone: /^(reject|remove)\b/i.test(label) ? "danger" : "accent",
+							decide: (decision) => {
+								approved = decision;
+								host.close();
+							},
+						}),
+				},
+			],
+			rows: () => frameRows(tui.terminal.rows, true),
+			requestRender: () => tui.requestRender(),
+			close: () => done(approved),
+		});
 	});
-	if (!parts) return "Policy control canceled. No rules changed.";
-	const audit = makeRuleAudit(ctx, "panel");
-	if (action === "reset") return applyReset(env, ctx, parts[0], parts.slice(1).join(" "), revision);
-	if (action !== "effect") return applyLifecycle(env, ctx, action, parts[0], parts.slice(1).join(" "), audit, snapshot);
-	const effect = parts[1];
-	if (effect !== "steer" && effect !== "block") throw new Error("Effect must be steer or block");
-	return applyEffect(env, ctx, parts[0], effect, parts.slice(2).join(" "), audit, snapshot);
 }
 
 type PolicyVerbHandler = (
@@ -949,7 +957,16 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	}, registerTool);
 	publish();
 	runtime.attach();
-	let panelState: PolicyPanelResult = { view: "rules", filter: "" };
+	const viewStates = new Map<string, PolicyViewState>();
+	const viewState = (ctx: ExtensionContext) => {
+		const id = ctx.sessionManager.getSessionId();
+		let state = viewStates.get(id);
+		if (!state) {
+			state = createPolicyViewState();
+			viewStates.set(id, state);
+		}
+		return state;
+	};
 	const output = (ctx: ExtensionContext, text: string, error = false): void => {
 		const safe = capText(terminalSafe(text), 32768);
 		if (ctx.hasUI) {
@@ -962,106 +979,27 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		}
 		(error ? process.stderr : process.stdout).write(`${safe}\n`);
 	};
-	const reviewArtifact = (
-		ctx: ExtensionContext,
-		title: string,
-		artifact: string,
-		actionLabel = reviewLabel(title),
-	): Promise<boolean> =>
-		ctx.mode === "tui" && ctx.hasUI
-			? ctx.ui.custom<boolean>(
-					(tui, _theme, _keys, done) =>
-						new PolicyApprovalPanel({
-							title,
-							artifact,
-							actionLabel,
-							tui,
-							getMaxRows: () => tui.terminal.rows,
-							done,
-						}),
-					{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0, anchor: "center" } },
-				)
-			: Promise.resolve(false);
-	const showPanel = async (ctx: ExtensionContext): Promise<void> => {
-		const [snapshot, fireSummary, activity] = await Promise.all([
-			loadRegistry(ctx),
-			readFireSummary(dir),
-			readRecentActivity(dir),
-		]);
-		let handle: { setHidden(hidden: boolean): void; focus(): void } | undefined;
-		const prompt = async <T>(work: () => Promise<T>): Promise<T> => {
-			handle?.setHidden(true);
-			try {
-				return await work();
-			} finally {
-				handle?.setHidden(false);
-				handle?.focus();
-			}
-		};
-		panelState = await ctx.ui.custom<PolicyPanelResult>(
-			(tui, theme, _keys, done) =>
-				new PolicyPanel({
-					data: { snapshot, fireSummary, activity },
-					scopeContext: scope(ctx),
-					theme,
-					tui,
-					getMaxRows: () => Math.max(8, tui.terminal.rows - 4),
-					done,
-					initialView: panelState.view,
-					initialFilter: panelState.filter,
-					initialSelectedRuleId: panelState.selectedRuleId,
-					initialSelectedProposalId: panelState.selectedProposalId,
-					initialSelectedActivityKey: panelState.selectedActivityKey,
-					actionHost: {
-						confirm: (title, message, actionLabel) => prompt(() => reviewArtifact(ctx, title, message, actionLabel)),
-						select: (title, options) => prompt(() => ctx.ui.select(title, options)),
-						refresh: () => loadRegistry(ctx),
-						control: (action, id, shown) => prompt(() => panelControl(commandEnv, ctx, action, id, shown)),
-						approve: async (id, effect, revision) => {
-							await registry.decide(id, "approved", effect, makeRuleAudit(ctx, "panel"), revision);
-							return { snapshot: await loadRegistry(ctx), outcome: `Approved proposal ${id}.` };
-						},
-						reject: async (id, revision) => {
-							await registry.decide(id, "rejected", undefined, makeRuleAudit(ctx, "panel"), revision);
-							return { snapshot: await loadRegistry(ctx), outcome: `Rejected proposal ${id}.` };
-						},
-					},
-				}),
-			{
-				overlay: true,
-				overlayOptions: { width: "94%", minWidth: 112, maxHeight: "92%", anchor: "center", margin: 1 },
-				onHandle: (value) => {
-					handle = value;
-				},
-			},
-		);
-	};
-	let panelOpen = false;
+	const reviewArtifact = (ctx: ExtensionContext, title: string, artifact: string, actionLabel = reviewLabel(title)): Promise<boolean> =>
+		reviewInFrame(ctx, title, artifact, actionLabel);
 	const openPanel = async (ctx: ExtensionContext): Promise<void> => {
-		if (panelOpen) return;
-		panelOpen = true;
 		try {
 			if (!ensureMode()) return output(ctx, "Policy is stopped because its mode configuration is invalid.", true);
-			if (ctx.mode !== "tui" || !ctx.hasUI)
-				return output(ctx, "The policy panel requires TUI mode. Run: /policy list", true);
-			await showPanel(ctx);
+			if (ctx.mode !== "tui" || !ctx.hasUI) return output(ctx, "The policy view requires TUI mode. Run: /policy list", true);
+			await openOperatorFrame(pi, ctx, { owner: OWNER, id: "policy" });
 		} catch (error) {
 			output(ctx, `Policy registry action failed: ${failureText(error)}`, true);
-		} finally {
-			panelOpen = false;
 		}
 	};
 	pi.registerShortcut("ctrl+alt+p", {
-		description: "Open the policy panel",
+		description: "Open the policy view",
 		handler: openPanel,
 	});
-	// Package contract: docs/conventions/operator-panels.md. The panel opens harmlessly; every mutation is its own labelled action inside.
-	const destinations = { version: 1, destinations: [{ id: "policy", label: "Policy", command: { name: "policy" }, owner: fileURLToPath(import.meta.url) }] };
-	const publishDestinations = () => eventBus.emit("harness:operator-destination:publish", destinations);
-	eventBus.on("harness:operator-destination:request", (request) => {
-		if (typeof request === "object" && request !== null && (request as { version?: unknown }).version === 1) publishDestinations();
+	// Package contract: docs/conventions/operator-panels.md. The view opens harmlessly; every change is its own labelled action inside.
+	publishOperatorViews(pi, {
+		version: 2,
+		owner: OWNER,
+		views: [{ id: "policy", label: "Policy", command: { name: "policy" }, order: 30, view: (ctx, host) => policyView(host, ordinaryOperations(commandEnv, ctx), viewState(ctx)) }],
 	});
-	publishDestinations();
 	const commandEnv: PolicyCommandEnv = {
 		output,
 		loadRegistry,

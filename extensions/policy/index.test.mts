@@ -7,8 +7,30 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { PACKAGE_CATALOG } from "./catalog.ts";
 import registerPolicy from "./index.ts";
 import { RULES_FILE, type RuleEvent, RuleRegistry, validateRuleEvent } from "./local-rules.ts";
-import { PolicyApprovalPanel, PolicyPanel } from "./panel.ts";
+import { fileURLToPath } from "node:url";
+import type { NavigationFrame } from "../../operator-ui/index.ts";
 import { PolicyProposeParams } from "./tools.ts";
+
+/** The policy entrypoint; the ordinary frame binds the published view to this registration of /policy. */
+const POLICY_ENTRY = fileURLToPath(new URL("./index.ts", import.meta.url));
+const PAGE_DOWN = "\u001b[6~";
+const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** A small synchronous event bus, as Pi's extension bus delivers publications and frame requests. */
+function eventBus() {
+	const handlers = new Map<string, Set<(data: unknown) => void>>();
+	return {
+		on(name: string, handler: (data: unknown) => void) {
+			const set = handlers.get(name) ?? new Set();
+			set.add(handler);
+			handlers.set(name, set);
+			return () => set.delete(handler);
+		},
+		emit(name: string, data: unknown) {
+			for (const handler of [...(handlers.get(name) ?? [])]) handler(data);
+		},
+	};
+}
 
 interface RegisteredTool {
 	name: string;
@@ -17,7 +39,10 @@ interface RegisteredTool {
 }
 
 class FakePi {
-	readonly events = { emit() {}, on: () => () => {} };
+	readonly events = eventBus();
+	getCommands() {
+		return [...this.commands.keys()].map((name) => ({ name, source: "extension", sourceInfo: { path: POLICY_ENTRY, source: "local", scope: "user", origin: "top-level" } }));
+	}
 	readonly handlers = new Map<string, Array<(event: never, ctx: never) => unknown>>();
 	readonly commands = new Map<
 		string,
@@ -182,6 +207,69 @@ async function callTool(tool: RegisteredTool, params: unknown, ctx: unknown): Pr
 	return (await tool.execute("tool-id", params, undefined, () => {}, ctx)) as Record<string, unknown>;
 }
 
+/** Open the policy frame once through `open`, run the script against it, then close it with its Close control. */
+async function driveFrame(ctx: { ui: Record<string, unknown> }, open: () => unknown, script: (frame: NavigationFrame) => Promise<void>): Promise<void> {
+	ctx.ui.custom = async <T,>(factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown): Promise<T> =>
+		new Promise<T>((resolve, reject) => {
+			const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender() {} }, theme, {}, resolve) as NavigationFrame;
+			script(frame).then(
+				() => frame.close(),
+				(error: unknown) => {
+					// Reject first: closing resolves the custom view, and a settled promise ignores a later rejection.
+					reject(error);
+					frame.close();
+				},
+			);
+		});
+	await open();
+}
+
+const frameText = (frame: NavigationFrame) => frame.render(120).join("\n");
+
+async function until(frame: NavigationFrame, pattern: RegExp): Promise<string> {
+	for (let attempt = 0; attempt < 400; attempt++) {
+		const text = frameText(frame);
+		if (pattern.test(text)) return text;
+		await turn();
+	}
+	throw new Error(`the view never showed ${pattern}\n${frameText(frame)}`);
+}
+
+/** Run one labelled action of the view the operator reads, as its control would. */
+function act(frame: NavigationFrame, label: string): void {
+	const action = frame.viewActions.find((candidate) => candidate.label === label);
+	assert.ok(action, `no action ${label}: ${frame.viewActions.map((candidate) => candidate.label).join(", ")}`);
+	assert.equal(action.disabled, undefined, `${label} is unavailable: ${action.disabled}`);
+	action.run();
+}
+
+function typeText(frame: NavigationFrame, text: string): void {
+	for (const character of text) frame.handleInput(character);
+}
+
+/** Type over the list to filter it, then return to the list. */
+function filterTo(frame: NavigationFrame, text: string): void {
+	typeText(frame, text);
+	frame.handleInput("\r");
+}
+
+/** Move from the list to the scope row, step right, and return to the list. */
+function scopeRight(frame: NavigationFrame, steps: number): void {
+	frame.handleInput("\u001b[Z");
+	for (let step = 0; step < steps; step++) frame.handleInput("\u001b[C");
+	frame.handleInput("\r");
+}
+
+/** Page through a complete artifact review until it reports every line read. */
+async function readArtifact(frame: NavigationFrame): Promise<void> {
+	for (let page = 0; page < 400; page++) {
+		if (/All \d+ lines read/.test(frameText(frame))) return;
+		frame.handleInput(PAGE_DOWN);
+		await turn();
+	}
+	throw new Error("the review never reported a complete read");
+}
+
 describe("registration and lazy catalog use", () => {
 	for (const [state, bytes, expected] of [
 		["healthy", undefined, /No rule or pending proposal/],
@@ -248,7 +336,7 @@ describe("panel command and shortcut", () => {
 	it("registers the direct panel shortcut", async () => {
 		const { pi } = await setup();
 		assert.deepEqual([...pi.shortcuts.keys()], ["ctrl+alt+p"]);
-		assert.equal(pi.shortcut().description, "Open the policy panel");
+		assert.equal(pi.shortcut().description, "Open the policy view");
 	});
 
 	for (const mode of ["observe", "notice", "annotate", "enforce"]) {
@@ -269,86 +357,48 @@ describe("panel command and shortcut", () => {
 		});
 	}
 
-	it("retains the panel view, filter, and selection between command and shortcut opens", async () => {
+	it("keeps the view's filter and selection between command and shortcut opens", async () => {
 		const { pi, ctx } = await setup();
-		const frames: string[][] = [];
-		let rules: string[] = [];
-		ctx.ui.custom = async <T,>(
-			factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
-		): Promise<T> => new Promise<T>((resolve) => {
-			const panel = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, {}, resolve);
-			assert.ok(panel instanceof PolicyPanel);
-			if (frames.length === 0) {
-				panel.handleInput("/");
-				panel.handleInput("routing");
-				panel.handleInput("\r");
-				panel.handleInput("\u001b[B");
-				rules = panel.render(120);
-				panel.handleInput("v");
-			}
-			frames.push(panel.render(120));
-			if (frames.length === 2) {
-				for (let step = 0; step < 4; step++) panel.handleInput("v");
-				assert.deepEqual(panel.render(120), rules);
-				setTimeout(() => panel.handleInput("\u001b"), 50);
-				return;
-			}
-			panel.handleInput("\u001b");
+		let first = "";
+		await driveFrame(ctx, () => pi.command().handler("", ctx as never), async (frame) => {
+			await until(frame, /\d+ rules/);
+			filterTo(frame, "routing");
+			frame.handleInput("\u001b[B");
+			first = await until(frame, /routing\./);
 		});
-		await pi.command().handler("", ctx as never);
-		await pi.shortcut().handler(ctx as unknown as ExtensionContext);
-		assert.deepEqual(frames[1], frames[0]);
+		await driveFrame(ctx, () => pi.shortcut().handler(ctx as unknown as ExtensionContext), async (frame) => {
+			assert.equal(await until(frame, /routing\./), first, "the reopened view shows the same filter and selection");
+		});
 	});
 
-	for (const first of ["command", "shortcut"] as const) {
-		it(`excludes overlapping opens while the ${first} loads and displays its panel`, async (t) => {
-			const { pi, ctx } = await setup();
-			let releaseLoad!: () => void;
-			const loading = new Promise<void>((resolve) => { releaseLoad = resolve; });
-			const original = RuleRegistry.prototype.snapshot;
-			let reads = 0;
-			const snapshot = mock.method(RuleRegistry.prototype, "snapshot", async function (this: RuleRegistry) {
-				reads++;
-				await loading;
-				return original.call(this);
-			});
-			t.after(() => snapshot.mock.restore());
-			let opened!: () => void;
-			const ready = new Promise<void>((resolve) => { opened = resolve; });
-			let close!: () => void;
-			let panels = 0;
-			ctx.ui.custom = async <T,>(
-				factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
-			): Promise<T> => new Promise<T>((resolve) => {
-				const panel = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, {}, resolve);
-				assert.ok(panel instanceof PolicyPanel);
-				panels++;
-				close = () => panel.handleInput("\u001b");
-				opened();
-				if (panels > 1) close();
-			});
-			const command = () => pi.command().handler("", ctx as never);
-			const shortcut = () => pi.shortcut().handler(ctx as unknown as ExtensionContext);
-			const pending = first === "command" ? command() : shortcut();
-			await command();
-			await shortcut();
-			assert.equal(reads, 1);
-			assert.equal(panels, 0);
-			releaseLoad();
-			await ready;
-			await command();
-			await shortcut();
-			assert.equal(reads, 1);
-			assert.equal(panels, 1);
-			close();
-			await pending;
-			await shortcut();
-			assert.equal(reads, 2);
-			assert.equal(panels, 2);
+	it("opens one frame for overlapping command and shortcut opens and reads the registry once", async (t) => {
+		const { pi, ctx } = await setup();
+		const original = RuleRegistry.prototype.snapshot;
+		let reads = 0;
+		const snapshot = mock.method(RuleRegistry.prototype, "snapshot", async function (this: RuleRegistry) {
+			reads++;
+			return original.call(this);
 		});
-	}
+		t.after(() => snapshot.mock.restore());
+		let frames = 0;
+		await driveFrame(ctx, () => pi.command().handler("", ctx as never), async (frame) => {
+			frames++;
+			await until(frame, /\d+ rules/);
+			await pi.shortcut().handler(ctx as unknown as ExtensionContext);
+			await pi.command().handler("", ctx as never);
+			assert.equal(frame.viewTitle, "Policy", "a second open moves the open frame to the policy view");
+		});
+		assert.equal(frames, 1, "no second frame opened");
+		assert.equal(reads, 1, "the open view reads the registry once");
+		await driveFrame(ctx, () => pi.shortcut().handler(ctx as unknown as ExtensionContext), async (frame) => {
+			frames++;
+			await until(frame, /\d+ rules/);
+		});
+		assert.equal(frames, 2);
+		assert.equal(reads, 2, "a new frame reads again");
+	});
 
-	it("reports load and UI failures and releases the opener after each failure", async (t) => {
+	it("shows a registry read failure in the view, reports a UI failure, and opens again afterwards", async (t) => {
 		const { pi, ctx, notifications } = await setup();
 		const original = RuleRegistry.prototype.snapshot;
 		let reads = 0;
@@ -357,20 +407,19 @@ describe("panel command and shortcut", () => {
 			return original.call(this);
 		});
 		t.after(() => snapshot.mock.restore());
-		await pi.shortcut().handler(ctx as unknown as ExtensionContext);
-		assert.deepEqual(notifications.at(-1), {
-			message: "Policy registry action failed: snapshot unavailable", type: "error",
+		await driveFrame(ctx, () => pi.shortcut().handler(ctx as unknown as ExtensionContext), async (frame) => {
+			await until(frame, /could not be read: snapshot unavailable/);
 		});
-		const custom = ctx.ui.custom;
-		ctx.ui.custom = async () => { throw new Error("panel unavailable"); };
+		assert.deepEqual(notifications, [], "a read failure stays in the view");
+		ctx.ui.custom = async () => {
+			throw new Error("panel unavailable");
+		};
 		await pi.command().handler("", ctx as never);
-		assert.deepEqual(notifications.at(-1), {
-			message: "Policy registry action failed: panel unavailable", type: "error",
+		assert.deepEqual(notifications.at(-1), { message: "Policy registry action failed: panel unavailable", type: "error" });
+		await driveFrame(ctx, () => pi.shortcut().handler(ctx as unknown as ExtensionContext), async (frame) => {
+			await until(frame, /\d+ rules/);
 		});
-		ctx.ui.custom = custom;
-		await pi.shortcut().handler(ctx as unknown as ExtensionContext);
-		assert.equal(reads, 3);
-		assert.equal(notifications.length, 2);
+		assert.equal(reads, 2);
 	});
 
 	it("rejects invalid mode configuration through both entrypoints before store access", async (t) => {
@@ -1014,7 +1063,7 @@ describe("unified tools and command gates", () => {
 		assert.ok((await completions("enable routing.")).includes("enable routing.cat-read"));
 	});
 
-	it("approves disable through the shortcut panel with panel audit and preserves an effect override", async () => {
+	it("approves disable through the view with panel audit and preserves an effect override", async () => {
 		const { dir, pi, ctx } = await setup();
 		await pi.command().handler("effect routing.cat-read steer panel composition setup", ctx as never);
 		const proposed = await callTool(
@@ -1023,60 +1072,21 @@ describe("unified tools and command gates", () => {
 			ctx,
 		);
 		const proposalId = (proposed.details as { proposalId: string }).proposalId;
-		const baseUi = (ctx as { ui: Record<string, unknown> }).ui;
-		const panelCtx = {
-			...ctx,
-			ui: {
-				...baseUi,
-				async confirm() {
-					assert.fail("Native confirmation must not approve complete artifacts");
-				},
-				async custom<T>(
-					factory: (tui: unknown, themeValue: unknown, keybindings: unknown, done: (result: T) => void) => unknown,
-				): Promise<T> {
-					return new Promise<T>((resolve, reject) => {
-						const component = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, {}, resolve) as {
-							handleInput(data: string): void;
-							render(width: number): string[];
-						};
-						if (component instanceof PolicyApprovalPanel) {
-							for (let page = 0; page < 100; page++) {
-								const lines = component.render(120);
-								if (lines.some((line) => line.includes("[Approve disable]"))) {
-									component.handleInput("a");
-									return;
-								}
-								component.handleInput(" ");
-							}
-							reject(new Error("approval artifact did not reach its final page"));
-							return;
-						}
-						component.handleInput("v");
-						component.handleInput("a");
-						let attempts = 0;
-						const check = () => {
-							attempts++;
-							if (/Approved proposal/.test(component.render(120).join("\n"))) {
-								component.handleInput("\u001b");
-								return;
-							}
-							if (attempts > 100) {
-								reject(new Error("panel approval did not settle"));
-								return;
-							}
-							setTimeout(check, 1);
-						};
-						setTimeout(check, 1);
-					});
-				},
-			},
-		};
-		await pi.shortcut().handler(panelCtx as unknown as ExtensionContext);
+		ctx.ui.confirm = async () => assert.fail("Native confirmation must not approve complete artifacts");
+		await driveFrame(ctx, () => pi.shortcut().handler(ctx as unknown as ExtensionContext), async (frame) => {
+			await until(frame, /\d+ rules/);
+			scopeRight(frame, 1);
+			await until(frame, /Panel-approved pause/);
+			act(frame, "Approve…");
+			await readArtifact(frame);
+			act(frame, "Approve disable");
+			await until(frame, /Approved proposal/);
+		});
 		const events = await storedEvents(dir);
 		const panelDecision = events.find((event) => event.kind === "decision" && event.proposalId === proposalId);
 		assert.equal(panelDecision?.kind, "decision");
 		if (panelDecision?.kind === "decision") assert.equal(panelDecision.audit.surface, "panel");
-		const rules = await callTool(pi.tool("policy_rules"), {}, panelCtx);
+		const rules = await callTool(pi.tool("policy_rules"), {}, ctx);
 		assert.match(
 			(rules.content as Array<{ text: string }>)[0].text,
 			/routing\.cat-read.*state=disabled.*effect=steer.*override reason=Panel-approved pause/,
@@ -1161,29 +1171,28 @@ describe("unified tools and command gates", () => {
 });
 
 describe("catalog command controls", () => {
-	it("uses the complete paged overlay instead of native confirmation for TUI imports", async () => {
+	it("uses the complete artifact review instead of native confirmation for TUI imports", async () => {
 		const { dir, pi, ctx } = await setup();
 		let pages = 0;
 		ctx.ui.confirm = async () => assert.fail("Native confirmation hides long artifacts");
 		ctx.ui.custom = async <T,>(
 			factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
-		): Promise<T> => {
-			let decision: T | undefined;
-			const panel = factory({ terminal: { rows: 24 }, requestRender() {} }, theme, {}, (value) => {
-				decision = value;
-			}) as { render(width: number): string[]; handleInput(input: string): void };
-			for (; pages < 1000 && decision === undefined; pages++) {
-				const lines = panel.render(80);
-				assert.ok(lines.length <= 24);
-				panel.handleInput("a");
-				if (decision === undefined) panel.handleInput(" ");
-			}
-			assert.equal(decision, true);
-			if (decision === undefined) throw new Error("panel did not return a decision");
-			return decision;
-		};
+		): Promise<T> =>
+			new Promise<T>((resolve) => {
+				const frame = factory({ terminal: { rows: 24, columns: 80 }, requestRender() {} }, theme, {}, resolve) as NavigationFrame;
+				for (; pages < 1000; pages++) {
+					assert.ok(frame.render(80).length <= 24);
+					const final = frame.viewActions.find((action) => action.label === "Import");
+					assert.ok(final, "the final action names the import");
+					if (final.disabled === undefined) {
+						final.run();
+						return;
+					}
+					frame.handleInput(PAGE_DOWN);
+				}
+			});
 		await pi.command().handler("import --all", ctx as never);
-		assert.ok(pages > 1);
+		assert.ok(pages > 1, "the artifact needed more than one page");
 		const imports = (await storedEvents(dir)).filter((event) => event.kind === "import");
 		assert.equal(imports.length, 1);
 		assert.equal(imports[0].rows.length, PACKAGE_CATALOG.length);
@@ -1340,62 +1349,20 @@ describe("dispatch and telemetry", () => {
 	});
 });
 
-describe("panel controls reach the owner operations", () => {
-	type Driver = {
-		handleInput(data: string): void;
-		render(width: number): string[];
-	};
-
-	/** Open the panel once, run the script against it, and close it. */
-	async function drive(
-		pi: Awaited<ReturnType<typeof setup>>["pi"],
-		ctx: Awaited<ReturnType<typeof setup>>["ctx"],
-		script: (panel: Driver) => Promise<void>,
-	): Promise<void> {
-		ctx.ui.custom = async <T,>(
-			factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
-		): Promise<T> =>
-			new Promise<T>((resolve, reject) => {
-				const panel = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, {}, resolve) as Driver;
-				script(panel).then(
-					() => panel.handleInput("\u001b"),
-					(error) => {
-						panel.handleInput("\u001b");
-						reject(error);
-					},
-				);
-			});
-		await pi.shortcut().handler(ctx as unknown as ExtensionContext);
-	}
-
-	const until = async (panel: Driver, pattern: RegExp): Promise<string> => {
-		for (let attempt = 0; attempt < 200; attempt++) {
-			const text = panel.render(120).join("\n");
-			if (pattern.test(text)) return text;
-			await new Promise((resolve) => setTimeout(resolve, 2));
-		}
-		throw new Error(`panel never showed ${pattern}`);
-	};
-
-	const select = (panel: Driver, id: string) => {
-		panel.handleInput("/");
-		for (const character of id) panel.handleInput(character);
-		panel.handleInput("\r");
-	};
+describe("view controls reach the owner operations", () => {
+	const open = (pi: Awaited<ReturnType<typeof setup>>["pi"], ctx: Awaited<ReturnType<typeof setup>>["ctx"]) => () => pi.shortcut().handler(ctx as unknown as ExtensionContext);
 
 	it("disables the selected rule with the entered reason, panel audit, and the displayed identity", async () => {
 		const { dir, pi, ctx } = await setup();
-		const inputs: string[] = [];
-		ctx.ui.input = (async (title: string) => {
-			inputs.push(title);
-			return "panel reason";
-		}) as never;
-		await drive(pi, ctx, async (panel) => {
-			select(panel, "routing.cat-read");
-			panel.handleInput("d");
-			await until(panel, /Disabled routing\.cat-read\./);
+		await driveFrame(ctx, open(pi, ctx), async (frame) => {
+			await until(frame, /\d+ rules/);
+			filterTo(frame, "routing.cat-read");
+			act(frame, "Disable…");
+			await until(frame, /Disable rule routing\.cat-read/);
+			typeText(frame, "panel reason");
+			act(frame, "Disable rule");
+			await until(frame, /Disabled routing\.cat-read\./);
 		});
-		assert.deepEqual(inputs, ["Reason to disable routing.cat-read"]);
 		const events = await storedEvents(dir);
 		const override = events.find((event) => event.kind === "override" && event.ruleId === "routing.cat-read");
 		assert.ok(override && override.kind === "override" && override.operation === "set");
@@ -1406,88 +1373,75 @@ describe("panel controls reach the owner operations", () => {
 		}
 	});
 
-	it("writes nothing when the reason entry is cancelled", async () => {
+	it("writes nothing when the form is cancelled or its reason is empty", async () => {
 		const { dir, pi, ctx } = await setup();
-		ctx.ui.input = async () => undefined;
-		await drive(pi, ctx, async (panel) => {
-			select(panel, "routing.cat-read");
-			panel.handleInput("d");
-			await until(panel, /Policy control canceled\. No rules changed\./);
+		await driveFrame(ctx, open(pi, ctx), async (frame) => {
+			await until(frame, /\d+ rules/);
+			filterTo(frame, "routing.cat-read");
+			act(frame, "Disable…");
+			act(frame, "Disable rule");
+			await until(frame, /Write the reason first\./);
+			act(frame, "Cancel");
+			await until(frame, /\d+ rules/);
 		});
 		const events = await storedEvents(dir);
 		assert.equal(events.some((event) => event.kind === "override"), false);
 	});
 
-	it("refuses an effect change after the target changed and refreshes the review", async () => {
+	it("refuses an effect change after the target changed and reads the registry again", async () => {
 		const { dir, pi, ctx } = await setup();
-		ctx.ui.input = (async () => "late reason") as never;
-		ctx.ui.select = (async () => "block") as never;
-		await drive(pi, ctx, async (panel) => {
-			select(panel, "routing.cat-read");
+		await driveFrame(ctx, open(pi, ctx), async (frame) => {
+			await until(frame, /\d+ rules/);
+			filterTo(frame, "routing.cat-read");
+			act(frame, "Effect…");
+			await until(frame, /Choose the effect of routing\.cat-read/);
 			await pi.command().handler("disable routing.cat-read external pause", ctx as never);
-			panel.handleInput("e");
-			await until(panel, /Action refused: Rule target revision changed/);
-			const text = await until(panel, /override reason: external pause/);
-			assert.match(text, /Review refreshed/);
+			frame.handleInput("\t");
+			frame.handleInput("\u001b[B");
+			typeText(frame, "late reason");
+			act(frame, "Set effect");
+			await until(frame, /target revision changed/);
+			act(frame, "Cancel");
+			await until(frame, /override reason: external pause/);
 		});
 		const events = await storedEvents(dir);
-		assert.equal(
-			events.some((event) => event.kind === "override" && JSON.stringify(event).includes("late reason")),
-			false,
-		);
+		assert.equal(events.some((event) => event.kind === "override" && JSON.stringify(event).includes("late reason")), false);
 	});
 
 	it("starts a pinned observation period for reset and reads State and Data through owner operations", async () => {
 		const { pi, ctx, notifications } = await setup("enforce");
-		ctx.ui.input = (async () => "panel reset") as never;
-		await drive(pi, ctx, async (panel) => {
-			select(panel, "routing.cat-read");
-			panel.handleInput("z");
-			await until(panel, /Started a new policy observation period\./);
-			panel.handleInput("s");
-			await until(panel, /Policy · State/);
-			await until(panel, /"/);
-			panel.handleInput("t");
-			await until(panel, /Policy · Data/);
-			await until(panel, /count|health/);
+		await driveFrame(ctx, open(pi, ctx), async (frame) => {
+			await until(frame, /\d+ rules/);
+			filterTo(frame, "routing.cat-read");
+			act(frame, "Reset observation…");
+			await until(frame, /Start a new observation period for routing\.cat-read/);
+			typeText(frame, "panel reset");
+			act(frame, "Start new period");
+			await until(frame, /Started a new policy observation period\./);
+			scopeRight(frame, 4);
+			await until(frame, /observationPeriods/);
+			frame.handleInput("\u001b[Z");
+			frame.handleInput("\u001b[D");
+			frame.handleInput("\r");
+			await until(frame, /\d+ named data/);
 		});
 		assert.deepEqual(notifications.filter((entry) => entry.type === "error"), []);
 	});
 
-	it("shows the approval reader action label for the real effect of the final button", async () => {
+	it("labels a rejection's final action Reject and never Approve", async () => {
 		const { pi, ctx } = await setup();
-		const proposed = await callTool(
-			pi.tool("policy_propose"),
-			{ operation: "disable", id: "routing.cat-read", reason: "Reader label" },
-			ctx,
-		);
+		const proposed = await callTool(pi.tool("policy_propose"), { operation: "disable", id: "routing.cat-read", reason: "Reader label" }, ctx);
 		assert.ok((proposed.details as { proposalId?: string }).proposalId);
-		const labels: string[] = [];
-		const baseCustom = ctx.ui.custom;
-		await drive(pi, ctx, async (panel) => {
-			const nested = ctx.ui.custom;
-			ctx.ui.custom = async <T,>(
-				factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
-			): Promise<T> =>
-				new Promise<T>((resolve) => {
-					const reader = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, {}, resolve) as Driver;
-					for (let page = 0; page < 50; page++) {
-						const last = reader.render(120).at(-1) ?? "";
-						if (!last.includes("[Read pages]")) {
-							labels.push(last);
-							break;
-						}
-						reader.handleInput(" ");
-					}
-					reader.handleInput("\u001b");
-				});
-			panel.handleInput("v");
-			panel.handleInput("x");
-			await until(panel, /canceled|cancelled|Action cancelled/i).catch(() => undefined);
-			ctx.ui.custom = nested;
+		await driveFrame(ctx, open(pi, ctx), async (frame) => {
+			await until(frame, /\d+ rules/);
+			scopeRight(frame, 1);
+			await until(frame, /Reader label/);
+			act(frame, "Reject…");
+			await until(frame, /Reject disable proposal/);
+			const labels = frame.viewActions.map((action) => action.label);
+			assert.deepEqual(labels, ["Reject", "Cancel"]);
+			act(frame, "Cancel");
+			await until(frame, /Cancelled\. No rule changed\./);
 		});
-		ctx.ui.custom = baseCustom;
-		assert.match(labels[0] ?? "", /\[Cancel\] \[Reject\]/);
-		assert.doesNotMatch(labels[0] ?? "", /Approve/);
 	});
 });

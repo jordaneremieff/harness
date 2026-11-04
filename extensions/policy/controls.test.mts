@@ -20,7 +20,9 @@ import {
 	validatePackageDefinitionRow,
 	validateRuleEvent,
 } from "./local-rules.ts";
-import { PolicyPanel, type PolicyPanelActionHost, ruleDetailLines } from "./panel.ts";
+import { ruleDetailLines } from "./panel.ts";
+import { type PolicyOperations, policyView } from "./operator-view.ts";
+import { viewStack } from "./view-fixture.mts";
 import { type FactsProgram, PROGRAM_LIMITS, RULE_CAPACITY } from "./program.ts";
 import {
 	type AgentRuleAudit,
@@ -956,55 +958,39 @@ describe("bounded tools and operator panel", () => {
 		await assert.rejects(call(toolOf(noCallback, "policy_rules"), { view: "state" }), /runtime callback absent/);
 	});
 
-	it("confirms the complete exact proposal and sends its revision without an effect menu", async (t) => {
+	it("reviews the complete exact proposal and sends its revision without an effect choice", async (t) => {
 		const reg = await registry(t);
 		const proposal = await reg.proposeAdd(facts(), "Exact rename.", agent);
 		const snapshot = await reg.snapshot();
-		let confirmation = "";
 		let result: [string, string | undefined, string | undefined] | undefined;
-		let finished!: () => void;
-		const done = new Promise<void>((resolve) => {
-			finished = resolve;
-		});
-		const host: PolicyPanelActionHost = {
-			async select() {
-				throw new Error("Exact actions do not use an effect menu");
-			},
-			async confirm(_title, message) {
-				confirmation = message;
-				return true;
-			},
-			async approve(id, effect, revision) {
+		const ops: PolicyOperations = {
+			load: async () => ({ snapshot, fireSummary: summary, activity: { records: [], partial: false, byteLimited: false, recordLimited: false, bytesRead: 0 }, scope: { cwd: "/work" } }),
+			refresh: async () => snapshot,
+			inspect: async () => assert.fail("no inspection"),
+			approve: async (id, effect, revision) => {
 				result = [id, effect, revision];
-				finished();
 				return { snapshot, outcome: "Approved exact action." };
 			},
-			async reject() {
-				throw new Error("Unused");
-			},
+			reject: async () => assert.fail("no rejection"),
+			lifecycle: async () => assert.fail("no lifecycle change"),
+			effect: async () => assert.fail("no effect change"),
+			resetRevision: async () => assert.fail("no reset"),
+			reset: async () => assert.fail("no reset"),
+			data: async () => assert.fail("no data change"),
 		};
-		const panel = new PolicyPanel({
-			data: {
-				snapshot,
-				fireSummary: summary,
-				activity: { records: [], partial: false, byteLimited: false, recordLimited: false, bytesRead: 0 },
-			},
-			scopeContext: { cwd: "/work" },
-			theme: {
-				fg: (_color: unknown, text: string) => text,
-				bg: (_color: unknown, text: string) => text,
-				bold: (text: string) => text,
-			} as never,
-			tui: { requestRender() {} },
-			getMaxRows: () => 24,
-			done() {},
-			actionHost: host,
-			initialView: "proposals",
-		});
-		panel.handleInput("a");
-		await done;
+		const frame = viewStack();
+		frame.mount((host) => policyView(host, ops, { scope: "proposals", filter: "", selected: {} }));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		frame.screen();
+		frame.action("Approve…").run();
+		assert.equal(frame.depth(), 2, "an exact proposal opens its review directly, with no effect choice");
+		const review = frame.screen(120, 60);
+		assert.match(review, /rename-key/);
+		for (const line of JSON.stringify(snapshot.pending[0], null, 2).split("\n")) assert.ok(review.includes(line), `artifact line missing: ${line}`);
+		frame.readAll();
+		frame.action("Approve add").run();
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.deepEqual(result, [proposal.id, undefined, proposalRevision(proposal)]);
-		assert.match(confirmation, /rename-key/);
-		assert.ok(confirmation.includes(JSON.stringify(snapshot.pending[0], null, 2)));
 	});
 });
+

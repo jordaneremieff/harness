@@ -20,7 +20,9 @@ import {
 	namedDataRevision,
 	RuleRegistry,
 } from "./local-rules.ts";
-import { PolicyApprovalPanel, terminalSafe } from "./panel.ts";
+import { terminalSafe } from "./panel.ts";
+import { ArtifactReview } from "./operator-view.ts";
+import { viewStack } from "./view-fixture.mts";
 import { contentRevision } from "./rule.ts";
 import { policyDataCommand } from "./tools.ts";
 
@@ -336,25 +338,26 @@ describe("complete named-data file import", () => {
 		assert.notEqual(stored.kind === "table" && stored.rows[0].value, "unapproved");
 	});
 
-	it("shows every complete row in the approval panel and refuses early approval", () => {
+	it("shows every complete row in the artifact review and refuses early approval", async () => {
 		const artifact = normalizeDataArtifact(source(DATA_LIMITS.rows));
 		const review = dataReview(artifact, contentRevision(artifact));
 		const decisions: boolean[] = [];
-		const panel = new PolicyApprovalPanel({
-			title: "Data review",
-			artifact: review,
-			tui: { requestRender() {} },
-			getMaxRows: () => 40,
-			done: (value) => decisions.push(value),
-		});
+		const frame = viewStack();
+		frame.mount((host) => new ArtifactReview({ host, title: "Data review", artifact: review, label: "Set policy data", decide: (value) => void decisions.push(value) }));
 		const seen = new Set<number>();
 		for (let page = 0; page < 400; page++) {
-			const rendered = panel.render(180).join("\n");
+			const rendered = frame.screen(180, 40);
 			for (const match of rendered.matchAll(/Alias(\d+)/g)) seen.add(Number(match[1]));
-			panel.handleInput("a");
-			if (decisions.length) break;
-			panel.handleInput(" ");
+			const final = frame.action("Set policy data");
+			if (final.disabled === undefined) {
+				final.run();
+				break;
+			}
+			final.run();
+			assert.deepEqual(decisions, [], "an early final action decides nothing");
+			frame.top()?.handleInput("\u001b[6~");
 		}
+		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.deepEqual(decisions, [true]);
 		assert.equal(seen.size, DATA_LIMITS.rows);
 	});
