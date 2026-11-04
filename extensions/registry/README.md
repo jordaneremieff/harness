@@ -3,6 +3,11 @@
 The ordinary extension publishes its registered tool renderers at factory load and
 on versioned requests through the [tool display contract](../../docs/conventions/tool-display.md).
 The payload contains only tool names and renderer fields, never execution functions.
+Those records come from `display.ts`, a presentation-only module over
+`presentation.ts`; the Durable contribution advertises it as its display
+descriptor (`{ version: 1, entry: "./display.ts", export: "toolDisplay" }`) so
+the standalone Agent terminal can render registry cards locally. Importing it
+registers nothing and emits nothing.
 
 This extension exposes Pi's current registration records through a read-only
 lookup. It does not create a second registry, filesystem index, or persistent

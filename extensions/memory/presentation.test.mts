@@ -355,8 +355,8 @@ describe("memory_search result cards", () => {
 		const shown = screen(view);
 		assert.match(shown, /2 of 5 window matches · source coverage complete/);
 		assert.match(shown, /1 unavailable notes · continuation available/);
-		assert.match(shown, /• a · A/);
-		assert.match(shown, /• b · B/);
+		assert.match(shown, /• A · a/);
+		assert.match(shown, /• B · b/);
 		assert.equal(lines(view).length, 4);
 	});
 
@@ -704,7 +704,7 @@ describe("freshness evidence cards", () => {
 		const before = structuredClone(response);
 		const compact = screen(renderResult("memory_read", response, collapsed, colorTheme, okContext), 300);
 		assert.match(compact, /\{warning\}.*subject/);
-		assert.match(compact, /policy before-use · review due · unresolved concern · 1 freshness problems/);
+		assert.match(compact, /review due · unresolved concern · 1 freshness problems/);
 		const expanded = screen(renderResult("memory_read", response, expandedView, theme, okContext), 300);
 		for (const pattern of [
 			/Freshness evaluated on: 2026-09-29/,
@@ -892,8 +892,10 @@ describe("historical evidence cards", () => {
 		for (const options of [collapsed, expandedView]) {
 			const shown = screen(renderResult("memory_read", result("", details), options, theme, okContext), 300);
 			assert.match(shown, /historical evidence · prior status active/);
-			assert.ok(shown.includes(revision));
+			assert.ok(shown.includes(revision.slice(0, 28)), "collapsed keeps the timestamp and first identifier group");
 		}
+		const fullRevision = screen(renderResult("memory_read", result("", details), expandedView, theme, okContext), 300);
+		assert.ok(fullRevision.includes(revision), "expanded keeps the exact revision");
 		assert.ok(
 			screen(renderCall("memory_read", { slug: "subject", revision }, theme, expandedCall), 300).includes(revision),
 		);
@@ -1029,6 +1031,82 @@ describe("renderer hygiene", () => {
 		renderResult("memory_write", writeResult, collapsed, theme, okContext);
 		renderResult("memory_write", writeResult, expandedView, theme, okContext);
 		assert.deepEqual(writeResult, before);
+	});
+
+	describe("dense rows and host hints", () => {
+		it("uses the host-injected binding and stays neutral without one", () => {
+			const pending = { slug: "s", title: "T", summary: "x" };
+			assert.match(
+				screen(renderCall("memory_write", pending, theme, { ...call, keyText: () => "ctrl+g" })),
+				/ctrl\+g to expand arguments/,
+			);
+			assert.match(
+				screen(renderResult("memory_read", result("t", { slug: "s" }), collapsed, theme, { ...okContext, keyText: () => "ctrl+g" })),
+				/ctrl\+g to expand result/,
+			);
+			for (const neutral of [{ ...call }, { ...call, keyText: () => "" }]) {
+				const shown = screen(renderCall("memory_write", pending, theme, neutral));
+				assert.match(shown, /Expand for arguments/);
+				assert.doesNotMatch(shown, /ctrl\+g/);
+			}
+		});
+
+		it("bounds collapsed subject rows at 60, 80, and 100 columns", () => {
+			const details = {
+				ok: true,
+				kind: "index",
+				query: "provider",
+				totalMatches: 1,
+				returned: 1,
+				hasMore: false,
+				notes: [
+					{
+						slug: "s".repeat(120),
+						title: "T".repeat(120),
+						lifecycle: { status: "superseded", supersededBy: "r".repeat(60) },
+						freshness: { deadline: "due", concern: { reason: "x" }, problems: ["p1"] },
+					},
+				],
+				scan: { complete: true, issueCount: 0 },
+				search: { complete: true },
+			};
+			const view = renderResult("memory_search", result("t", details), collapsed, theme, okContext);
+			const shown = screen(view, 100);
+			assert.match(shown, /T{10}/);
+			assert.match(shown, /s{10}/);
+			for (const width of [60, 80, 100]) {
+				const rows = view
+					.render(width)
+					.map((line) => stripVTControlCharacters(line).trimEnd())
+					.filter((line) => line !== "");
+				const subjectLines = rows.filter((line) => line.includes("TTT") || line.includes("sss"));
+				assert.equal(subjectLines.length, width === 100 ? 1 : 2, `subject row lines at width ${width}`);
+				assert.ok(rows.length <= 4, `card rows at width ${width}: ${rows.length}`);
+			}
+		});
+
+		it("bounds the collapsed read qualifier row with the same budget", () => {
+			const details = {
+				slug: "subject",
+				source: "history",
+				revision: `20260101T120000000Z-${"0".repeat(60)}`,
+				lifecycle: { status: "superseded", supersededBy: "replacement", problem: "p".repeat(200) },
+				content: "text",
+			};
+			const view = renderResult("memory_read", result("t", details), collapsed, theme, okContext);
+			for (const width of [60, 80, 100]) {
+				const rows = view
+					.render(width)
+					.map((line) => stripVTControlCharacters(line).trimEnd())
+					.filter((line) => line !== "");
+				assert.ok(rows.length <= 4, `card rows at width ${width}: ${rows.length}`);
+			}
+			const shown = screen(view, 100);
+			assert.match(shown, /status superseded · replacement replacement/, "lifecycle outranks the revision prefix in a crowded row");
+			assert.doesNotMatch(shown, /revision 2026/, "the revision prefix yields to the budget");
+			const expanded = screen(renderResult("memory_read", result("t", details), expandedView, theme, okContext), 300);
+			assert.match(expanded, /Revision: 20260101T120000000Z-0{60}/, "the expanded evidence keeps the exact revision");
+		});
 	});
 
 	it("reuses the previous component instance", () => {

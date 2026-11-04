@@ -10,7 +10,20 @@ and on settings requests.
 
 The ordinary extension publishes its registered tool renderers at factory time and
 on display requests through the [tool display contract](../../docs/conventions/tool-display.md);
-the payload contains no execution functions.
+the payload contains no execution functions. The same records come from
+`display.ts`, a presentation-only module that imports `presentation.ts` and
+nothing operational: the Durable contribution advertises it as its display
+descriptor (`{ version: 1, entry: "./display.ts", export: "toolDisplay" }`) so
+the standalone Agent terminal can load the memory cards locally without the
+ordinary runtime. Importing it registers no tools, emits no events, and opens no
+store.
+
+Collapsed cards bound their rows to a 100-character budget: the meaningful title
+leads a subject row with the slug after it, lifecycle state and exceptional
+freshness flags (review due, unresolved concern, freshness problems) follow, and
+a revision prefix appears only when it fits. The expanded evidence keeps the
+exact revision, the full lifecycle policy, and coverage. Expand hints use the
+host-injected key binding and name no key when the host supplies none.
 
 ## Configuration
 

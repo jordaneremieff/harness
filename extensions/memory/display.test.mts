@@ -56,7 +56,7 @@ function assertPublication(publication: Publication, registered: Map<string, Too
 	for (const display of publication.tools) {
 		const tool = registered.get(display.name);
 		assert.ok(tool);
-		assert.deepEqual(Object.keys(display).sort(), ["name", "renderCall", "renderResult", "renderShell"]);
+		assert.deepEqual(Object.keys(display).sort(), ["name", "renderCall", "renderResult"]);
 		assert.equal(typeof display.renderCall, "function");
 		assert.equal(typeof display.renderResult, "function");
 		assert.equal(display.renderCall, tool.renderCall);

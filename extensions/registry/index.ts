@@ -13,7 +13,7 @@ import type { Static } from "@earendil-works/pi-schema";
 import { publishSettings, readSettings } from "./settings.ts";
 import { RegistryNotes } from "./notes.ts";
 import { noteKnowledge, ordinaryNoteResources } from "./notes-host.ts";
-import { toolDisplayPublisher } from "./tool-display.ts";
+import { toolDisplay } from "./display.ts";
 import { settingQuery, settingsReader } from "./configuration.ts";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -25,7 +25,6 @@ import { RegistryOutputSchema } from "./output.ts";
 import { readContext } from "./host.ts";
 import { readModels } from "./models.ts";
 import { ObservationStore } from "./observer.ts";
-import { renderRegistryCall, renderRegistryResult } from "./presentation.ts";
 import { decodeCursor, type RawParams } from "./query.ts";
 import { projectNamespace, type HostSnapshot, type ObservationSnapshot, type SurfaceAvailability } from "./records.ts";
 
@@ -122,7 +121,11 @@ function sessionFacts(ctx: ExtensionContext) {
 }
 
 export default function registerRegistry(pi: ExtensionAPI) {
-	const { registerTool, publish } = toolDisplayPublisher(pi);
+	const registryDisplay = toolDisplay().tools[0];
+	const publish = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
+	pi.events.on("harness:tool-display:request", (request: unknown) => {
+		if (request && typeof request === "object" && "version" in request && request.version === 1) publish();
+	});
 	// The host, when one is listening, installs the native Durable form. In an
 	// ordinary session nothing subscribes and the emission has no effect.
 	pi.events.emit("durable:contribution", createRegistryDurableContribution(fileURLToPath(import.meta.url), pi.events));
@@ -176,7 +179,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 		configuredSettings.dispose();
 	});
 
-	registerTool<typeof RegistryParams, Record<string, unknown>>({
+	pi.registerTool<typeof RegistryParams, Record<string, unknown>>({
 		name: "registry",
 		label: "Registry",
 		description: REGISTRY_DESCRIPTION,
@@ -184,8 +187,8 @@ export default function registerRegistry(pi: ExtensionAPI) {
 		promptGuidelines: [...REGISTRY_PROMPT_GUIDELINES],
 		parameters: RegistryParams,
 		outputSchema: RegistryOutputSchema,
-		renderCall: renderRegistryCall,
-		renderResult: renderRegistryResult,
+		renderCall: registryDisplay.renderCall,
+		renderResult: registryDisplay.renderResult,
 		async execute(_toolCallId, params: Static<typeof RegistryParams>, signal, _onUpdate, ctx) {
 			const at = Date.now();
 			const abortSignal = signal ? AbortSignal.any([signal, sessionAbort.signal]) : sessionAbort.signal;

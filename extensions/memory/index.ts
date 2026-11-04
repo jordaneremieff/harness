@@ -3,7 +3,6 @@ import type { JsonObject } from "@earendil-works/pi-ai";
 import {
 	type ExtensionAPI,
 	getAgentDir,
-	type ToolDefinition,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
@@ -11,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { publishSettings, readSettings } from "./settings.ts";
 import { registerProactive } from "./proactive-ordinary.ts";
 import { createMemoryContribution } from "./durable.ts";
-import { renderCall, renderResult } from "./presentation.ts";
+import { toolDisplay } from "./display.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
 import { editMemory, memoryRoot, retireMemory, reviewMemory, writeMemory } from "./store.ts";
@@ -36,13 +35,9 @@ export default function memory(pi: ExtensionAPI): void {
 	registerProactive(pi, configuration);
 	const disposeSettings = publishSettings(pi.events, { agentDir: getAgentDir() });
 	pi.on("session_shutdown", disposeSettings);
-	const displayTools: Pick<ToolDefinition, "name" | "renderCall" | "renderResult" | "renderShell">[] = [];
+	const displays = new Map(toolDisplay().tools.map((tool) => [tool.name, tool]));
 	const registerTool: ExtensionAPI["registerTool"] = (tool) => {
-		pi.registerTool(tool);
-		const { name, renderCall, renderResult, renderShell } = tool;
-		if (renderCall || renderResult || renderShell) {
-			displayTools.push({ name, renderCall, renderResult, renderShell } as (typeof displayTools)[number]);
-		}
+		pi.registerTool({ ...tool, ...displays.get(tool.name) });
 	};
 	pi.events.emit(
 		"durable:contribution",
@@ -69,8 +64,6 @@ export default function memory(pi: ExtensionAPI): void {
 				structuredContent: details as JsonObject,
 			};
 		},
-		renderCall: (args, theme, context) => renderCall("memory_search", args, theme, context),
-		renderResult: (result, options, theme, context) => renderResult("memory_search", result, options, theme, context),
 	});
 	registerTool({
 		name: "memory_read",
@@ -81,8 +74,6 @@ export default function memory(pi: ExtensionAPI): void {
 			const details = await readMemory(memoryRoot(configuredDir()), args, signal);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
-		renderCall: (args, theme, context) => renderCall("memory_read", args, theme, context),
-		renderResult: (result, options, theme, context) => renderResult("memory_read", result, options, theme, context),
 	});
 	registerTool({
 		name: "memory_history",
@@ -93,8 +84,6 @@ export default function memory(pi: ExtensionAPI): void {
 			const details = await historyMemory(memoryRoot(configuredDir()), args, signal);
 			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 		},
-		renderCall: (args, theme, context) => renderCall("memory_history", args, theme, context),
-		renderResult: (result, options, theme, context) => renderResult("memory_history", result, options, theme, context),
 	});
 	registerTool({
 		name: "memory_write",
@@ -109,8 +98,6 @@ export default function memory(pi: ExtensionAPI): void {
 			);
 			return memoryMutationResult(root, details);
 		},
-		renderCall: (args, theme, context) => renderCall("memory_write", args, theme, context),
-		renderResult: (result, options, theme, context) => renderResult("memory_write", result, options, theme, context),
 	});
 	registerTool({
 		name: "memory_edit",
@@ -124,8 +111,6 @@ export default function memory(pi: ExtensionAPI): void {
 			);
 			return memoryMutationResult(root, details);
 		},
-		renderCall: (args, theme, context) => renderCall("memory_edit", args, theme, context),
-		renderResult: (result, options, theme, context) => renderResult("memory_edit", result, options, theme, context),
 	});
 	registerTool({
 		name: "memory_review",
@@ -140,8 +125,6 @@ export default function memory(pi: ExtensionAPI): void {
 			);
 			return memoryMutationResult(root, details);
 		},
-		renderCall: (args, theme, context) => renderCall("memory_review", args, theme, context),
-		renderResult: (result, options, theme, context) => renderResult("memory_review", result, options, theme, context),
 	});
 	registerTool({
 		name: "memory_retire",
@@ -155,10 +138,8 @@ export default function memory(pi: ExtensionAPI): void {
 			);
 			return memoryMutationResult(root, details);
 		},
-		renderCall: (args, theme, context) => renderCall("memory_retire", args, theme, context),
-		renderResult: (result, options, theme, context) => renderResult("memory_retire", result, options, theme, context),
 	});
-	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", { version: 1, tools: displayTools });
+	const publishDisplay = () => pi.events.emit("harness:tool-display:publish", toolDisplay());
 	pi.events.on("harness:tool-display:request", (request) => {
 		if (typeof request === "object" && request !== null && "version" in request && request.version === 1) {
 			publishDisplay();

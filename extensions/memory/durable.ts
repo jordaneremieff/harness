@@ -63,6 +63,7 @@ export interface MemoryDurableContribution {
 	readonly name: string;
 	/** Absolute path of the emitting entrypoint, resolved by the host against loaded extensions. */
 	readonly source: string;
+	readonly display: { readonly version: 1; readonly entry: "./display.ts"; readonly export: "toolDisplay" };
 	create(host: MemoryDurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 }
 
@@ -79,6 +80,7 @@ export function createMemoryContribution(
 	return {
 		name: "memory",
 		source,
+		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
 		create(host) {
 			disposeOrdinarySettings();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));

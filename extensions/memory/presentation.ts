@@ -16,17 +16,23 @@
  * credential, so payload fields are summarized as withheld lengths.
  */
 
-import {
-	type AgentToolResult,
-	keyText,
-	type Theme,
-	type ToolRenderResultOptions,
+import type {
+	AgentToolResult,
+	KeybindingHints,
+	Theme,
+	ToolRenderResultOptions,
 } from "@earendil-works/pi-coding-agent";
 import { type Component, Text } from "@earendil-works/pi-tui";
 
 const DISPLAY_LIMIT = 32_000;
 const QUERY_LIMIT = 64;
 const SLUG_LIMIT = 72;
+const COMPACT_TITLE_LIMIT = 48;
+const COMPACT_SLUG_LIMIT = 36;
+const COMPACT_LIFECYCLE_LIMIT = 80;
+/** Timestamp plus the first identifier group; the exact revision stays in the expanded evidence. */
+const REVISION_PREVIEW_LIMIT = 28;
+const ROW_BUDGET = 100;
 const ERROR_LIMIT = 300;
 const DIGEST_PREFIX = 8;
 const PREVIEW_ARRAY_LIMIT = 20;
@@ -35,13 +41,13 @@ const WITHHOLD_THRESHOLD = 120;
 const WRITE_ERROR_PREFIX = "Memory write incomplete: ";
 const WITHHELD_KEYS = new Set(["summary", "details", "sources", "reason", "title", "oldText", "newText"]);
 
-export interface CallContext {
+export interface CallContext extends Partial<KeybindingHints> {
 	expanded?: boolean;
 	argsComplete?: boolean;
 	lastComponent?: Component;
 }
 
-export interface ResultContext {
+export interface ResultContext extends Partial<KeybindingHints> {
 	isError: boolean;
 	lastComponent?: Component;
 }
@@ -82,6 +88,27 @@ function joinedParts(parts: string[]): string {
 	return parts.filter((part) => part !== "").join(" · ");
 }
 
+/**
+ * Dense-row bound: include parts while the row fits the budget, highest
+ * priority first; the leading part always shows, clipped if it alone exceeds
+ * the budget. Rows at or under 100 characters render on one line at 100
+ * columns and at most two at 60.
+ */
+function budgetedRow(parts: string[], budget: number): string {
+	const kept: string[] = [];
+	let used = 0;
+	for (const part of parts) {
+		if (part === "") continue;
+		const width = part.length + (kept.length ? 3 : 0);
+		if (kept.length && used + width > budget) break;
+		kept.push(part);
+		used += width;
+	}
+	if (kept.length === 0) return previewMark(parts.find((part) => part !== "") ?? "", budget).text;
+	if (kept.length === 1 && used > budget) kept[0] = previewMark(kept[0], budget).text;
+	return kept.join(" · ");
+}
+
 /** Escaped body with a display bound; the full text stays in native tool history. */
 function boundedBody(value: string): string {
 	const prefix = clip(value, DISPLAY_LIMIT);
@@ -98,8 +125,9 @@ function textContent(result: AgentToolResult<unknown>): string {
 		.join("\n");
 }
 
-function expandHint(subject: string): string {
-	const key = keyText("app.tools.expand");
+/** The host injects keyText with the operator's configured bindings; without it the hint names no key. */
+function expandHint(subject: string, keys: Partial<KeybindingHints>): string {
+	const key = keys.keyText?.("app.tools.expand");
 	return key ? `${key} to expand ${subject}` : `Expand for ${subject}`;
 }
 
@@ -183,9 +211,9 @@ function callCard(
 	}
 	const detail = qualifiers.join(" · ");
 	const line = detail
-		? theme.fg("muted", rowSafe(detail)) + (hint ? theme.fg("dim", ` · ${expandHint("arguments")}`) : "")
+		? theme.fg("muted", rowSafe(detail)) + (hint ? theme.fg("dim", ` · ${expandHint("arguments", context)}`) : "")
 		: hint
-			? theme.fg("dim", expandHint("arguments"))
+			? theme.fg("dim", expandHint("arguments", context))
 			: "";
 	return textComponent(line ? `${heading}\n${line}` : heading, context.lastComponent);
 }
@@ -205,7 +233,7 @@ function resultCard(
 	if (options.expanded) {
 		if (body) lines.push(theme.fg("toolOutput", boundedBody(body)));
 	} else {
-		const hintSuffix = hint ? theme.fg("dim", `${second ? " · " : ""}${expandHint("result")}`) : "";
+		const hintSuffix = hint ? theme.fg("dim", `${second ? " · " : ""}${expandHint("result", context)}`) : "";
 		const row = second ? theme.fg("muted", rowSafe(second)) + hintSuffix : hintSuffix;
 		if (row) lines.push(row);
 		for (const preview of previews) lines.push(theme.fg("toolOutput", rowSafe(preview)));
@@ -377,12 +405,19 @@ function pageQualifiers(
 	]);
 }
 
+/**
+ * Compact identity: the meaningful title leads, the slug trails. Both rows stay
+ * short so a subject preview survives 60-column terminals without wrapping onto
+ * a third line; full slug and title remain in the expanded evidence.
+ */
 function noteHeading(note: Record<string, unknown>, compact = false): string {
 	const slug = textField(note.slug) ?? "unknown subject";
 	const title = textField(note.title);
+	if (!compact) return joinedParts([slug, title && title !== slug ? title : ""]);
+	const titled = title !== null && title !== slug;
 	return joinedParts([
-		compact ? previewMark(slug, SLUG_LIMIT).text : slug,
-		title && title !== slug ? (compact ? previewMark(title, 96).text : title) : "",
+		titled ? previewMark(title, COMPACT_TITLE_LIMIT).text : previewMark(slug, SLUG_LIMIT).text,
+		titled ? previewMark(slug, COMPACT_SLUG_LIMIT).text : "",
 	]);
 }
 
@@ -545,11 +580,14 @@ function searchPreviews(notes: Record<string, unknown>[]): string[] {
 	const previews = notes
 		.slice(0, SEARCH_PREVIEW_LIMIT)
 		.map((note) =>
-			joinedParts([
-				`• ${noteHeading(note, true)}${textField(note.cueProblem) ? " [cue problem]" : ""}`,
-				note.lifecycle ? lifecycleView(note).label : "",
-				freshnessSummary(note.freshness),
-			]),
+			budgetedRow(
+				[
+					`• ${noteHeading(note, true)}${textField(note.cueProblem) ? " [cue problem]" : ""}`,
+					note.lifecycle ? previewMark(lifecycleView(note).label, COMPACT_LIFECYCLE_LIMIT).text : "",
+					freshnessFlag(note.freshness),
+				],
+				ROW_BUDGET,
+			),
 		);
 	if (notes.length > previews.length) previews.push(`+ ${notes.length - previews.length} more subjects on this page`);
 	return previews;
@@ -595,15 +633,19 @@ function readResult(
 	const size = shown !== null && total !== null ? `${shown} of ${total} chars` : null;
 	const more = details.hasMore === true ? " · more" : "";
 	const lifecycle = lifecycleView(details);
+	const revision = textField(details.revision);
 	const line = joinedParts([slug !== null ? previewMark(slug, SLUG_LIMIT).text : "note", size ?? ""]).concat(more);
 	return resultCard(
 		{ color: freshnessWarning(details.freshness) ? "warning" : lifecycle.color, line },
-		joinedParts([
-			previewMark(lifecycle.label, 200).text,
-			freshnessSummary(details.freshness),
-			textField(details.revision) ? `revision ${details.revision}` : "",
-			lifecycle.problem ? `Lifecycle problem: ${previewMark(lifecycle.problem, ERROR_LIMIT).text}` : "",
-		]),
+		budgetedRow(
+			[
+				previewMark(lifecycle.label, COMPACT_LIFECYCLE_LIMIT).text,
+				freshnessFlag(details.freshness),
+				revision ? `revision ${previewMark(revision, REVISION_PREVIEW_LIMIT).text}` : "",
+				lifecycle.problem ? `Lifecycle problem: ${previewMark(lifecycle.problem, 80).text}` : "",
+			],
+			ROW_BUDGET,
+		),
 		true,
 		readBody(details, lifecycle, textContent(result)),
 		options,
@@ -630,12 +672,11 @@ function lifecycleView(details: Record<string, unknown>): LifecycleView {
 	};
 }
 
-function freshnessSummary(value: unknown): string {
+/** Exceptional freshness only: policy and deadline details stay in the expanded evidence. */
+function freshnessFlag(value: unknown): string {
 	const freshness = record(value);
-	if (Object.keys(freshness).length === 0) return "";
 	return joinedParts([
-		`policy ${textField(freshness.policy) ?? "unknown"}`,
-		`review ${textField(freshness.deadline) ?? "unknown"}`,
+		freshness.deadline === "due" ? "review due" : "",
 		Object.keys(record(freshness.concern)).length ? "unresolved concern" : "",
 		stringList(freshness.problems).length ? `${stringList(freshness.problems).length} freshness problems` : "",
 	]);
