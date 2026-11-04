@@ -1,14 +1,16 @@
 /**
- * Statusline: a two-line session footer with command discovery.
+ * Statusline: a two-line session footer with a compact menu.
  *
- * Line 1: model [<level>] │ context bar │ tokens │ cost │ duration │ cache telemetry
- * Line 2: Commands │ folder (branch) │ extension statuses │ +N
+ * Line 1: provider/model [<level>] │ context bar │ tokens │ cost │ duration │ cache telemetry
+ * Line 2: ≡ (fullscreen) or /commands (regular) │ folder (branch) │ extension statuses │ +N
  *
  * Installed only in TUI mode; setFooter is a documented no-op elsewhere.
  * One unref'd 5s tick owns wall-clock freshness for duration while idle; it is
  * cleared on dispose, on session_shutdown, and before any reinstall. Toggle
- * with /statusline. In fullscreen the Commands cell and the +N cell are click
- * targets; /commands and /statuses are the keyboard routes in every TUI mode.
+ * with /statusline. In fullscreen the ≡ cell, the model and level segments and
+ * the +N cell are click targets; /commands and /statuses are the keyboard
+ * routes in every TUI mode. The menu lists announced browser destinations,
+ * the model and reasoning controls, the status reader, and command search.
  */
 
 import type {
@@ -18,6 +20,7 @@ import type {
 	SlashCommandInfo,
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import {
 	CommandsPanel,
@@ -27,7 +30,10 @@ import {
 	prepareDraft,
 	restoreDraft,
 	type CommandsPanelResult,
+	type MenuControl,
 } from "./commands.ts";
+import { ChoicePanel, type ChoiceItem } from "./controls.ts";
+import { collectDestinations, resolveDestinations } from "./destinations.ts";
 import {
 	buildBar,
 	composeLine1,
@@ -52,6 +58,18 @@ function thinkingColorKey(level: string): ThemeColor {
 	return `thinking${level.charAt(0).toUpperCase()}${level.slice(1)}` as ThemeColor;
 }
 
+/** Column spans of the two session controls on line 1; the model identity leads, the level follows it. */
+interface Line1Spans {
+	model: { x: number; width: number };
+	level?: { x: number; width: number };
+}
+
+/** The exact route identity: provider and model id, with no label. */
+function modelIdentity(ctx: ExtensionContext): string {
+	const model = ctx.model;
+	return sanitizeDisplay(model ? `${model.provider}/${model.id}` : "no-model");
+}
+
 function buildLine1(
 	ctx: ExtensionContext,
 	fg: Fg,
@@ -60,17 +78,19 @@ function buildLine1(
 	attachedAt: number,
 	metrics: SessionMetrics,
 	usage: ReturnType<ExtensionContext["getContextUsage"]>,
-): string {
+): { line: string; spans: Line1Spans } {
 	const model = ctx.model;
-
-	const modelName = sanitizeDisplay(model?.name || model?.id || "no-model");
-	let modelSeg = `${fg("accent", modelName)}${RESET}`;
+	const identity = modelIdentity(ctx);
+	let modelSeg = `${fg("accent", identity)}${RESET}`;
+	const spans: Line1Spans = { model: { x: 0, width: visibleWidth(identity) } };
 	// The thinking bracket follows the model's declared reasoning capability,
 	// not a provider-name check: providers whose Pi thinking level is inert
 	// register reasoning: false and the bracket disappears on its own.
 	const level = ctx.thinkingLevel;
 	if (model?.reasoning === true && level) {
-		modelSeg += fg(thinkingColorKey(level), ` [${level}]`);
+		const bracket = ` [${level}]`;
+		spans.level = { x: spans.model.width + 1, width: visibleWidth(bracket) - 1 };
+		modelSeg += fg(thinkingColorKey(level), bracket);
 	}
 
 	const parts: Line1Parts = { model: modelSeg };
@@ -101,7 +121,7 @@ function buildLine1(
 		parts.cacheRate = fg("dim", `${rate}% hit`);
 	}
 
-	return composeLine1(parts, sep, width, visibleWidth);
+	return { line: composeLine1(parts, sep, width, visibleWidth), spans };
 }
 
 function buildLine2(
@@ -125,9 +145,9 @@ function buildLine2(
 		const clean = sanitizeDisplay(text);
 		if (clean) statuses.push(`${RESET}${clean}${RESET}`);
 	}
-	// Fullscreen delivers clicks to the footer, so the cell reads as a control;
-	// regular mode leaves the mouse to the terminal, so it names the command.
-	const control = pointer ? fg("accent", "[Commands]") : fg("dim", "/commands");
+	// Fullscreen delivers clicks to the footer, so the cell is a padded menu
+	// glyph; regular mode leaves the mouse to the terminal, so it names the route.
+	const control = pointer ? fg("accent", " ≡ ") : fg("dim", "/commands");
 	const layout = composeLine2(project, statuses, sep, width, visibleWidth, fg, control);
 
 	// truncateToWidth is ANSI-aware and carries whole sequences, so a sanitized
@@ -145,8 +165,22 @@ function footerTarget(layout: Line2Layout, x: number): "commands" | "statuses" |
 	return undefined;
 }
 
+/** Which line-1 control a click lands on: the model identity or the level bracket. */
+function line1Target(spans: Line1Spans | undefined, x: number): "model" | "reasoning" | undefined {
+	if (!spans) return undefined;
+	if (spans.level && x >= spans.level.x && x < spans.level.x + spans.level.width) return "reasoning";
+	if (x >= spans.model.x && x < spans.model.x + spans.model.width) return "model";
+	return undefined;
+}
+
 function isFooterClick(event: TuiMouseEvent): boolean {
-	return event.type === "click" && event.button === "left" && event.y === 1;
+	return event.type === "click" && event.button === "left";
+}
+
+/** Line 1 carries the session controls, line 2 the menu and the hidden-status count. */
+function clickTarget(spans: Line1Spans | undefined, layout: Line2Layout, event: TuiMouseEvent): "commands" | "statuses" | "model" | "reasoning" | undefined {
+	if (event.y === 0) return line1Target(spans, event.x);
+	return event.y === 1 ? footerTarget(layout, event.x) : undefined;
 }
 
 export default function registerStatusline(pi: ExtensionAPI) {
@@ -161,6 +195,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	/** The installed footer's status provider; the keyboard route reads through it. */
 	let readStatuses: (() => ReadonlyMap<string, string>) | undefined;
 	const selector = createSelectorState();
+	const destinations = collectDestinations(pi.events);
 	let replacedDraft: string | undefined;
 	/** Open panels, closed on session shutdown so no callback outlives its session. */
 	const openPanels = new Set<() => void>();
@@ -188,15 +223,31 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		openPanels.clear();
 	}
 
-	/** Show the selector as an overlay and resolve with the operator's choice. */
+	/** Rows an overlay capped at 85% of the terminal can show; read live so a resize re-sizes the panel. */
+	const overlayRows = (tui: { terminal: { rows: number } }) => Math.max(1, Math.floor(tui.terminal.rows * 0.85));
+
+	/** The current values the menu shows beside the session controls. */
+	function menuControls(ctx: ExtensionContext): MenuControl[] {
+		const model = ctx.model;
+		const level = model?.reasoning === true ? ctx.thinkingLevel : "";
+		return [
+			{ id: "model", label: "Model…", description: `${modelIdentity(ctx)} now · choose from the configured registry` },
+			{ id: "reasoning", label: "Reasoning…", description: model?.reasoning === true ? `${level || "default"} now` : `${modelIdentity(ctx)} has no reasoning levels` },
+			{ id: "statuses", label: "Statuses", description: `${readStatuses?.().size ?? 0} extension status entries` },
+		];
+	}
+
+	/** Show the menu as an overlay and resolve with the operator's choice. */
 	async function showSelector(ctx: ExtensionContext, commands: SlashCommandInfo[]): Promise<CommandsPanelResult> {
 		let close: (() => void) | undefined;
 		const result = await ctx.ui.custom<CommandsPanelResult>(
 			(tui, theme, _keybindings, done) => {
 				const panel = new CommandsPanel({
 					commands,
+					destinations: resolveDestinations(destinations(), commands),
+					controls: menuControls(ctx),
 					theme,
-					rows: tui.terminal.rows,
+					rows: () => overlayRows(tui),
 					state: selector,
 					draftPresent: () => ctx.ui.getEditorText().length > 0,
 					replacedDraftPresent: () => replacedDraft !== undefined,
@@ -212,8 +263,64 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		return result;
 	}
 
-	/** Act on a selection; "retry" reopens the selector with a refreshed inventory. */
-	function settleSelection(ctx: ExtensionContext, result: NonNullable<CommandsPanelResult>): "done" | "retry" {
+	/** One choice overlay; resolves undefined on Cancel, Escape or a shutdown close. */
+	async function choose(ctx: ExtensionContext, title: string, hint: string, items: readonly ChoiceItem[], selected?: string): Promise<string | undefined> {
+		let close: (() => void) | undefined;
+		const result = await ctx.ui.custom<string | undefined>(
+			(tui, theme, _keybindings, done) => {
+				const panel = new ChoicePanel({ title, hint, items, selected, theme, rows: () => overlayRows(tui), done });
+				close = () => panel.close();
+				openPanels.add(close);
+				return panel;
+			},
+			{ overlay: true, overlayOptions: { width: "80%", minWidth: 40, maxHeight: "85%", anchor: "center" } },
+		);
+		if (close) openPanels.delete(close);
+		return result;
+	}
+
+	/** Apply changes the session's model through the public API; Cancel preserves it. A refused model is reported as such. */
+	async function openModel(ctx: ExtensionContext): Promise<void> {
+		const available = ctx.modelRegistry.getAvailable();
+		if (available.length === 0) { ctx.ui.notify("No model is available in the configured registry.", "warning"); return; }
+		const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+		const items = available.map((model) => ({ value: `${model.provider}/${model.id}`, label: sanitizeDisplay(`${model.provider}/${model.id}`), description: sanitizeDisplay(`${model.name}${model.reasoning ? " · reasoning" : ""}${`${model.provider}/${model.id}` === current ? " · current" : ""}`) }));
+		const picked = await choose(ctx, "Model", `${modelIdentity(ctx)} now · Apply changes this session only`, items, current);
+		if (picked === undefined || picked === current) return;
+		const model = available.find((candidate) => `${candidate.provider}/${candidate.id}` === picked);
+		if (!model) { ctx.ui.notify("The chosen model is no longer available.", "warning"); return; }
+		if (await pi.setModel(model)) ctx.ui.notify(`Model set to ${sanitizeDisplay(picked)} for this session.`, "info");
+		else ctx.ui.notify(`Pi refused ${sanitizeDisplay(picked)}: authentication is not configured for ${sanitizeDisplay(model.provider)}.`, "warning");
+		requestRender();
+	}
+
+	/** Apply sets the reasoning level through the public API, which clamps to the model; Cancel preserves it. */
+	async function openReasoning(ctx: ExtensionContext): Promise<void> {
+		const model = ctx.model;
+		if (model?.reasoning !== true) { ctx.ui.notify(`${modelIdentity(ctx)} has no reasoning levels.`, "info"); return; }
+		const levels = getSupportedThinkingLevels(model);
+		const current = pi.getThinkingLevel();
+		const picked = await choose(ctx, "Reasoning", `${current} now for ${modelIdentity(ctx)} · Apply changes this session only`, levels.map((level) => ({ value: level, label: level, description: level === current ? "current" : "" })), current);
+		if (picked === undefined || picked === current) return;
+		pi.setThinkingLevel(picked as Parameters<typeof pi.setThinkingLevel>[0]);
+		ctx.ui.notify(`Reasoning set to ${pi.getThinkingLevel()} for this session.`, "info");
+		requestRender();
+	}
+
+	/** The overlays each menu control and footer target opens. */
+	const controls: Record<"commands" | "statuses" | "model" | "reasoning", (ctx: ExtensionContext) => Promise<void>> = {
+		commands: (ctx) => openCommands(ctx),
+		statuses: (ctx) => openStatuses(ctx),
+		model: (ctx) => openModel(ctx),
+		reasoning: (ctx) => openReasoning(ctx),
+	};
+
+	/** Act on a selection; "retry" reopens the menu with a refreshed inventory. */
+	async function settleSelection(ctx: ExtensionContext, result: NonNullable<CommandsPanelResult>): Promise<"done" | "retry"> {
+		if (result.kind === "control") {
+			await controls[result.id](ctx);
+			return "done";
+		}
 		if (result.kind === "restore-draft") {
 			if (replacedDraft !== undefined) restoreDraft(ctx.ui, replacedDraft);
 			replacedDraft = undefined;
@@ -233,13 +340,13 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * Open the selector, dispatch the chosen action, and reopen on a refused
+	 * Open the menu, dispatch the chosen action, and reopen on a refused
 	 * dispatch so the operator sees the refreshed inventory. Every dispatch
 	 * happens after the panel has resolved, so a command's own UI can open.
 	 */
 	async function openCommands(ctx: ExtensionContext): Promise<void> {
 		if (ctx.mode !== "tui") {
-			if (ctx.hasUI) ctx.ui.notify("Commands needs the terminal UI.", "info");
+			if (ctx.hasUI) ctx.ui.notify("The menu needs the terminal UI.", "info");
 			return;
 		}
 		const started = generation;
@@ -247,7 +354,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 			const commands = pi.getCommands().map((command) => ({ ...command, sourceInfo: { ...command.sourceInfo } }));
 			const result = await showSelector(ctx, commands);
 			if (result === undefined || started !== generation) return;
-			if (settleSelection(ctx, result) === "done") return;
+			if (await settleSelection(ctx, result) === "done") return;
 		}
 	}
 
@@ -264,7 +371,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		let close: (() => void) | undefined;
 		await ctx.ui.custom<void>(
 			(tui, theme, _keybindings, done) => {
-				const panel = new StatusPanel({ theme, rows: tui.terminal.rows, read, done });
+				const panel = new StatusPanel({ theme, rows: () => overlayRows(tui), read, done });
 				close = () => panel.close();
 				openPanels.add(close);
 				return panel;
@@ -292,11 +399,9 @@ export default function registerStatusline(pi: ExtensionAPI) {
 			tick = setInterval(refresh, TICK_MS);
 			tick.unref?.();
 			let layout: Line2Layout | undefined;
+			let spans: Line1Spans | undefined;
 			let renderedWidth = -1;
-			const open = (target: "commands" | "statuses") => {
-				const context = current ?? ctx;
-				void (target === "commands" ? openCommands(context) : openStatuses(context));
-			};
+			const open = (target: keyof typeof controls) => { void controls[target](current ?? ctx); };
 			return {
 				dispose() {
 					unsub();
@@ -312,14 +417,13 @@ export default function registerStatusline(pi: ExtensionAPI) {
 				render(width: number): string[] {
 					renderedWidth = width;
 					layout = buildLine2(ctx, footerData, fg, sep, width, pointer);
-					return [
-						truncateToWidth(buildLine1(ctx, fg, sep, width, attachedAt, metrics.value, contextUsage), width),
-						layout.line,
-					];
+					const first = buildLine1(ctx, fg, sep, width, attachedAt, metrics.value, contextUsage);
+					spans = first.spans;
+					return [truncateToWidth(first.line, width), layout.line];
 				},
 				handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 					if (!pointer || !layout || event.width !== renderedWidth || !isFooterClick(event)) return undefined;
-					const target = footerTarget(layout, event.x);
+					const target = clickTarget(spans, layout, event);
 					if (!target) return undefined;
 					open(target);
 					return { handled: true };
@@ -368,7 +472,7 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("commands", {
-		description: "Find a command by name or description, read it, then run it or prepare it as a draft",
+		description: "Open the footer menu: browser destinations, model and reasoning controls, statuses, and command search",
 		handler: async (_args, ctx) => {
 			await openCommands(ctx);
 		},

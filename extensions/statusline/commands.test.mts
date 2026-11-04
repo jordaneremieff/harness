@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { SlashCommandInfo, Theme } from "@earendil-works/pi-coding-agent";
 import type { TuiMouseEvent } from "@earendil-works/pi-tui";
+import type { ResolvedDestination } from "./destinations.ts";
 import {
 	CommandsPanel,
 	commandIdentity,
@@ -47,19 +48,23 @@ function wheel(delta: number, width: number, y = 2): TuiMouseEvent {
 	return { ...click(0, y, width, "wheel"), button: "none" as TuiMouseEvent["button"], wheelDelta: delta };
 }
 
-function makePanel(over: { commands?: SlashCommandInfo[]; state?: SelectorState; draft?: boolean; replaced?: boolean; rows?: number } = {}) {
+function makePanel(over: { commands?: SlashCommandInfo[]; state?: SelectorState; draft?: boolean; replaced?: boolean; rows?: number; destinations?: ResolvedDestination[]; menu?: boolean } = {}) {
 	const results: CommandsPanelResult[] = [];
 	const state = over.state ?? createSelectorState();
+	let rows = over.rows ?? 30;
 	const panel = new CommandsPanel({
 		commands: over.commands ?? inventory,
+		destinations: over.destinations ?? [],
+		controls: [{ id: "model", label: "Model…", description: "test/model now" }, { id: "reasoning", label: "Reasoning…", description: "high now" }, { id: "statuses", label: "Statuses", description: "0 entries" }],
 		theme,
-		rows: over.rows ?? 30,
+		rows: () => rows,
 		state,
 		draftPresent: () => over.draft ?? false,
 		replacedDraftPresent: () => over.replaced ?? false,
 		done: (result) => results.push(result),
 	});
-	return { panel, results, state };
+	if (!over.menu) panel.search();
+	return { panel, results, state, resize: (next: number) => { rows = next; } };
 }
 
 /** Rendered row index and column of a label, or -1 when absent. */
@@ -191,7 +196,10 @@ describe("CommandsPanel", () => {
 		assert.ok(list.some((line) => line.includes("review")), "query survives Back");
 		assert.equal(first.results.length, 0);
 		first.panel.handleInput("\x1b");
-		assert.deepEqual(first.results, [undefined], "Escape on the list closes without an action");
+		assert.deepEqual(first.results, [], "Escape on the list returns to the menu");
+		assert.ok(first.panel.render(80).map(strip).some((line) => line === "Menu"));
+		first.panel.handleInput("\x1b");
+		assert.deepEqual(first.results, [undefined], "Escape on the menu closes without an action");
 		const second = makePanel({ state });
 		second.panel.render(80);
 		second.panel.handleInput("\r");
@@ -269,6 +277,7 @@ describe("CommandsPanel", () => {
 		const tiny = makePanel({ rows: 4 });
 		assert.match(strip(tiny.panel.render(60)[0]), /too small/);
 		assert.equal(tiny.panel.handleMouse(click(0, 0, 60)), undefined, "nothing to hit while too small");
+		tiny.panel.handleInput("\x1b");
 		tiny.panel.handleInput("\x1b");
 		assert.deepEqual(tiny.results, [undefined], "Escape still closes");
 	});

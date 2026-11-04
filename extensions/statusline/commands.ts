@@ -1,18 +1,22 @@
 /**
- * Command discovery for the ordinary Pi footer.
+ * The footer menu and command discovery for the ordinary Pi footer.
  *
- * The selector lists `pi.getCommands()` (extension commands, prompt templates,
- * and skills) under their exact invocation names with Pi's `sourceInfo`
- * provenance. Choosing an entry opens its detail. Only the labelled primary
- * action acts: an extension command is dispatched through `pi.sendUserMessage`
- * with command expansion, after the selector has closed and the exact
- * registration has been re-read; a prompt template or skill is prepared into
- * the editor draft and never sent. A disappeared or changed registration is
- * refused rather than sent, so a stale selection cannot reach model input.
+ * The first screen is the menu: announced browser destinations, the session
+ * controls, then command search. Search lists `pi.getCommands()` (extension
+ * commands, prompt templates, and skills) under their exact invocation names
+ * with Pi's `sourceInfo` provenance. Choosing an entry opens its detail. Only
+ * the labelled primary action acts: an extension command is dispatched through
+ * `pi.sendUserMessage` with command expansion, after the panel has closed and
+ * the exact registration has been re-read; a prompt template or skill is
+ * prepared into the editor draft and never sent. A disappeared or changed
+ * registration is refused rather than sent, so a stale selection cannot reach
+ * model input. Every screen sizes itself from the live row budget on each
+ * render, so a resize never leaves a control outside the overlay.
  */
 
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { ResolvedDestination } from "./destinations.ts";
 import {
 	Input,
 	SelectList,
@@ -137,17 +141,30 @@ export function createSelectorState(): SelectorState {
 	return { query: "", args: new Map() };
 }
 
+export type MenuControlId = "model" | "reasoning" | "statuses";
+
+export interface MenuControl {
+	id: MenuControlId;
+	label: string;
+	/** Current value or availability, shown beside the label. */
+	description: string;
+}
+
 export type CommandsPanelResult =
 	| { kind: "run"; command: SlashCommandInfo; args: string }
 	| { kind: "prepare"; command: SlashCommandInfo; args: string; placement: DraftPlacement }
+	| { kind: "control"; id: MenuControlId }
 	| { kind: "restore-draft" }
 	| undefined;
 
 export interface CommandsPanelOptions {
 	commands: readonly SlashCommandInfo[];
+	/** Browser destinations resolved against the current inventory, in announcement order. */
+	destinations: readonly ResolvedDestination[];
+	controls: readonly MenuControl[];
 	theme: Theme;
-	/** Terminal rows available to the panel; bounds list and detail heights. */
-	rows: number;
+	/** Rows the overlay can show right now; read on every render. */
+	rows: () => number;
 	state: SelectorState;
 	/** Whether the editor currently holds a draft; decides whether placement is asked. */
 	draftPresent: () => boolean;
@@ -156,7 +173,7 @@ export interface CommandsPanelOptions {
 	done: (result: CommandsPanelResult) => void;
 }
 
-type Screen = "list" | "detail" | "placement";
+type Screen = "menu" | "list" | "detail" | "placement";
 
 interface Region {
 	y: number;
@@ -166,6 +183,7 @@ interface Region {
 }
 
 const RESTORE_VALUE = "\u0000restore-draft";
+const SEARCH_VALUE = "\u0000search";
 
 /** Lines to scroll for a navigation key, or undefined for any other input. */
 function detailScrollDelta(data: string, page: number): number | undefined {
@@ -207,16 +225,18 @@ function kindLabel(command: SlashCommandInfo): string {
  */
 export class CommandsPanel implements Component {
 	readonly capturesViewportInput = true;
-	private screen: Screen = "list";
+	private screen: Screen = "menu";
 	private readonly commands: SlashCommandInfo[];
 	private readonly theme: Theme;
 	private readonly listTheme: SelectListTheme;
-	private readonly rows: number;
 	private readonly state: SelectorState;
 	private readonly options: CommandsPanelOptions;
 	private readonly find: Input;
 	private args: Input;
 	private list!: SelectList;
+	private menu!: SelectList;
+	private menuHeight = 0;
+	private listHeightUsed = 0;
 	private placement: SelectList | undefined;
 	private selected: SlashCommandInfo | undefined;
 	private detailLines: string[] = [];
@@ -231,11 +251,11 @@ export class CommandsPanel implements Component {
 		this.commands = [...options.commands];
 		this.theme = options.theme;
 		this.listTheme = selectTheme(options.theme);
-		this.rows = options.rows;
 		this.state = options.state;
 		this.find = new Input({ prompt: "Find: ", placeholder: "name or description" });
 		seedInput(this.find, this.state.query);
 		this.args = new Input({ prompt: "Arguments: " });
+		this.rebuildMenu();
 		this.rebuildList();
 		const remembered = this.state.selected ? this.commands.find((c) => commandIdentity(c) === this.state.selected) : undefined;
 		if (remembered) {
@@ -252,12 +272,50 @@ export class CommandsPanel implements Component {
 		return filterCommands(this.commands, this.state.query);
 	}
 
+	/** Rows for the menu after its heading, hint and Close row. */
+	private menuRows(): number {
+		return Math.max(2, this.options.rows() - 3);
+	}
+
 	private listHeight(): number {
-		return Math.max(3, Math.min(14, this.rows - 7));
+		return Math.max(3, Math.min(14, this.options.rows() - 7));
 	}
 
 	private detailHeight(): number {
-		return Math.max(2, Math.min(10, this.rows - 9));
+		return Math.max(2, Math.min(10, this.options.rows() - 9));
+	}
+
+	/** Destinations first, then session controls, then the full inventory behind search. */
+	private rebuildMenu(): void {
+		const items: Array<{ value: string; label: string; description: string }> = [];
+		if (this.options.replacedDraftPresent()) items.push({ value: RESTORE_VALUE, label: "Restore replaced draft", description: "puts the draft that Replace removed back into the editor" });
+		for (const destination of this.options.destinations) {
+			const command = `/${destination.command.name}${destination.command.args ? ` ${destination.command.args}` : ""}`;
+			items.push({ value: `destination:${destination.id}`, label: readerText(destination.label), description: destination.unavailable ? readerText(`unavailable: ${destination.unavailable}`) : readerText(`opens ${command}`) });
+		}
+		for (const control of this.options.controls) items.push({ value: `control:${control.id}`, label: readerText(control.label), description: readerText(control.description) });
+		items.push({ value: SEARCH_VALUE, label: "Search commands…", description: `find any of ${this.commands.length} commands, prompt templates and skills` });
+		this.menuHeight = this.menuRows();
+		this.menu = new SelectList(items, this.menuHeight, this.listTheme);
+		this.menu.onSelect = (item) => this.chooseMenu(item.value);
+		this.menu.onCancel = () => this.close();
+		this.regions = [];
+	}
+
+	/** Open command search over the full inventory, as choosing the menu's search item does. */
+	search(): void {
+		if (this.closed) return;
+		this.screen = "list";
+		this.regions = [];
+	}
+
+	private chooseMenu(value: string): void {
+		if (value === SEARCH_VALUE) { this.search(); return; }
+		if (value === RESTORE_VALUE) { this.finish({ kind: "restore-draft" }); return; }
+		if (value.startsWith("control:")) { this.finish({ kind: "control", id: value.slice("control:".length) as MenuControlId }); return; }
+		const destination = this.options.destinations.find((candidate) => `destination:${candidate.id}` === value);
+		if (!destination?.registration) return;
+		this.finish({ kind: "run", command: destination.registration, args: destination.command.args ?? "" });
 	}
 
 	private rebuildList(): void {
@@ -269,7 +327,8 @@ export class CommandsPanel implements Component {
 		if (this.options.replacedDraftPresent()) {
 			items.unshift({ value: RESTORE_VALUE, label: "Restore replaced draft", description: "puts the draft that Replace removed back into the editor" });
 		}
-		this.list = new SelectList(items, this.listHeight(), this.listTheme);
+		this.listHeightUsed = this.listHeight();
+		this.list = new SelectList(items, this.listHeightUsed, this.listTheme);
 		this.list.onSelect = (item) => {
 			if (item.value === RESTORE_VALUE) {
 				this.finish({ kind: "restore-draft" });
@@ -305,6 +364,11 @@ export class CommandsPanel implements Component {
 			this.placement = undefined;
 			this.screen = "detail";
 			this.regions = [];
+			return;
+		}
+		if (this.screen === "list") {
+			this.screen = "menu";
+			this.rebuildMenu();
 			return;
 		}
 		this.rememberArgs();
@@ -369,6 +433,7 @@ export class CommandsPanel implements Component {
 		this.detailWidth = -1;
 		this.find.invalidate();
 		this.args.invalidate();
+		this.menu.invalidate();
 		this.list.invalidate();
 		this.placement?.invalidate();
 	}
@@ -380,11 +445,12 @@ export class CommandsPanel implements Component {
 			return;
 		}
 		if (matchesKey(data, "escape")) {
-			if (this.screen === "list") this.close();
+			if (this.screen === "menu") this.close();
 			else this.back();
 			return;
 		}
-		if (this.screen === "placement") this.placement?.handleInput(data);
+		if (this.screen === "menu") this.menu.handleInput(data);
+		else if (this.screen === "placement") this.placement?.handleInput(data);
 		else if (this.screen === "detail") this.handleDetailInput(data);
 		else this.handleListInput(data);
 	}
@@ -440,6 +506,44 @@ export class CommandsPanel implements Component {
 		return result ? { handled: true, render: result.render } : undefined;
 	}
 
+	/** A changed row budget resizes the lists before they draw, so Close stays inside the overlay. */
+	private fitLists(): void {
+		if (this.menuHeight !== this.menuRows()) this.rebuildMenu();
+		if (this.listHeightUsed === this.listHeight()) return;
+		const selected = this.list.getSelectedItem()?.value;
+		this.rebuildList();
+		const index = selected === undefined ? -1 : this.visibleCommands().findIndex((c) => commandIdentity(c) === selected);
+		if (index >= 0) this.list.setSelectedIndex(index + this.restoreOffset());
+	}
+
+	private renderMenu(width: number, lines: string[], push: (line: string) => void): string[] {
+		push(this.theme.bold("Menu"));
+		push(this.theme.fg("dim", "Enter or click opens · Escape closes"));
+		const menuLines = this.menu.render(width);
+		this.regions.push({ y: lines.length, height: menuLines.length, component: this.menu });
+		lines.push(...menuLines);
+		const closeRow = this.buttonRow(width, [{ label: "Close", action: () => this.close() }]);
+		this.regions.push({ y: lines.length, height: 1, buttons: closeRow.hits });
+		lines.push(closeRow.line);
+		return lines;
+	}
+
+	private renderList(width: number, lines: string[], push: (line: string) => void): string[] {
+		push(this.theme.bold("Commands"));
+		push(this.theme.fg("dim", "Type to find · Enter or click opens · Escape returns to the menu"));
+		this.find.focused = true;
+		const findLines = this.find.render(width);
+		this.regions.push({ y: lines.length, height: findLines.length, component: this.find });
+		lines.push(...findLines);
+		const listLines = this.list.render(width);
+		this.regions.push({ y: lines.length, height: listLines.length, component: this.list });
+		lines.push(...listLines);
+		const closeRow = this.buttonRow(width, [{ label: "Menu", action: () => this.back() }, { label: "Close", action: () => this.close() }]);
+		this.regions.push({ y: lines.length, height: 1, buttons: closeRow.hits });
+		lines.push(closeRow.line);
+		return lines;
+	}
+
 	private buildDetail(width: number): void {
 		if (!this.selected || this.detailWidth === width) return;
 		const command = this.selected;
@@ -474,26 +578,15 @@ export class CommandsPanel implements Component {
 		this.regions = [];
 		this.renderedWidth = width;
 		if (this.closed) return [];
-		if (width < MIN_WIDTH || this.rows < MIN_ROWS) {
-			return [truncateToWidth("Terminal too small for Commands. Escape closes.", width)];
+		const rows = this.options.rows();
+		if (width < MIN_WIDTH || rows < MIN_ROWS) {
+			return [truncateToWidth("Terminal too small for the menu. Escape closes.", width)];
 		}
+		this.fitLists();
 		const lines: string[] = [];
 		const push = (line: string) => lines.push(truncateToWidth(line, width));
-		if (this.screen === "list") {
-			push(this.theme.bold("Commands"));
-			push(this.theme.fg("dim", "Type to find · Enter or click opens · Escape closes"));
-			this.find.focused = true;
-			const findLines = this.find.render(width);
-			this.regions.push({ y: lines.length, height: findLines.length, component: this.find });
-			lines.push(...findLines);
-			const listLines = this.list.render(width);
-			this.regions.push({ y: lines.length, height: listLines.length, component: this.list });
-			lines.push(...listLines);
-			const closeRow = this.buttonRow(width, [{ label: "Close", action: () => this.close() }]);
-			this.regions.push({ y: lines.length, height: 1, buttons: closeRow.hits });
-			lines.push(closeRow.line);
-			return lines;
-		}
+		if (this.screen === "menu") return this.renderMenu(width, lines, push).slice(0, rows);
+		if (this.screen === "list") return this.renderList(width, lines, push).slice(0, rows);
 		const command = this.selected;
 		if (!command) return [];
 		push(`${this.theme.bold(`/${readerText(command.name)}`)} ${this.theme.fg("dim", kindLabel(command))}`);
@@ -527,6 +620,6 @@ export class CommandsPanel implements Component {
 		this.regions.push({ y: lines.length, height: 1, buttons: row.hits });
 		lines.push(row.line);
 		push(this.theme.fg("dim", command.source === "extension" ? "Enter runs · Escape goes back" : "Enter prepares the draft · Escape goes back"));
-		return lines;
+		return lines.slice(0, rows);
 	}
 }

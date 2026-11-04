@@ -31,7 +31,7 @@ describe("StatusPanel", () => {
 		let closed = 0;
 		const panel = new StatusPanel({
 			theme,
-			rows,
+			rows: () => rows,
 			read: () => {
 				reads += 1;
 				return map;

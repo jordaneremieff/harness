@@ -158,6 +158,8 @@ function makePi(inventory: () => SlashCommandInfo[] = () => [registration("evo")
 	const handlers = new Registry<SessionHandler>();
 	const commands = new Registry<MockCommand>();
 	const sent: Array<{ content: string; options: unknown }> = [];
+	const busHandlers = new Map<string, Array<(value: unknown) => void>>();
+	const emitted: Array<{ event: string; value: unknown }> = [];
 	const pi = {
 		on: (event: string, handler: SessionHandler) => handlers.set(event, handler),
 		registerCommand: (name: string, command: MockCommand) => commands.set(name, command),
@@ -165,9 +167,17 @@ function makePi(inventory: () => SlashCommandInfo[] = () => [registration("evo")
 		sendUserMessage: (content: string, options: unknown) => {
 			sent.push({ content, options });
 		},
+		events: {
+			on: (event: string, handler: (value: unknown) => void) => { busHandlers.set(event, [...(busHandlers.get(event) ?? []), handler]); return () => {}; },
+			emit: (event: string, value: unknown) => { emitted.push({ event, value }); },
+		},
+		setModel: async () => true,
+		getThinkingLevel: () => "high",
+		setThinkingLevel: () => {},
 	};
 	registerStatusline(pi as unknown as ExtensionAPI);
-	return { handlers, commands, sent };
+	const publish = (value: unknown) => { for (const handler of busHandlers.get("harness:operator-destination:publish") ?? []) handler(value); };
+	return { handlers, commands, sent, emitted, publish };
 }
 
 function makeCtx(over: CtxOverrides = {}) {
@@ -328,7 +338,7 @@ describe("footer render", () => {
 		const [line1, line2] = footer.render(120);
 		assert.ok(visibleWidth(line1) <= 120);
 		assert.ok(visibleWidth(line2) <= 120);
-		assert.ok(line1.includes("Test Model\x1b[0m [high]"));
+		assert.ok(line1.includes("test/test-model\x1b[0m [high]"), line1);
 		assert.match(line1, /25%/);
 		assert.match(line1, /50k\/200k/);
 		assert.match(line1, /~\$0\.42/);
@@ -374,7 +384,7 @@ describe("footer render", () => {
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		const [line1, line2] = footer.render(120);
-		assert.match(line1, /acp-model-high/);
+		assert.match(line1, /acp\/acp-model/, "the route identity is provider/model");
 		assert.ok(!line1.includes("[high]"), "no bracket without reasoning");
 		assert.ok(!line1.includes("%"), "no percentage when usage is unknown");
 		assert.match(line1, /context \?/);
@@ -396,7 +406,7 @@ describe("footer render", () => {
 	});
 	it("sanitizes model and project labels before terminal rendering", async () => {
 		const { handlers } = makePi();
-		const mocks = makeCtx({ cwd: "/work/\x1b[2Jproject\nnext", model: { name: "\x1b]0;title\x07Model\nnext" } });
+		const mocks = makeCtx({ cwd: "/work/\x1b[2Jproject\nnext", model: { provider: "p", id: "\x1b]0;title\x07Model\nnext" } });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const lines = installFooter(mocks).render(120);
 		assert.match(lines[0], /Model next/);
@@ -404,7 +414,7 @@ describe("footer render", () => {
 		for (const line of lines) assert.doesNotMatch(line, /\n|\[2J|title/);
 	});
 	for (const { label, overrides, lineIndex, following } of [
-		{ label: "model", overrides: { model: { name: "\x1b[8;5;41mLabel", reasoning: true } }, lineIndex: 0, following: "[high]" },
+		{ label: "model", overrides: { model: { provider: "p", id: "\x1b[8;5;41mLabel", reasoning: true } }, lineIndex: 0, following: "[high]" },
 		{ label: "project", overrides: { cwd: "/work/\x1b[8;5;41mLabel" }, lineIndex: 1, following: "(main)" },
 		{ label: "branch", overrides: { gitBranch: "\x1b[8;5;41mLabel" }, lineIndex: 1, following: " │ " },
 	] as const) {
@@ -600,18 +610,18 @@ describe("/statusline toggle", () => {
 });
 
 describe("footer command discovery", () => {
-	it("renders a clickable Commands cell in fullscreen and opens the selector on click", async () => {
+	it("renders a compact menu control in fullscreen and opens the menu on click", async () => {
 		const { handlers } = makePi();
 		const mocks = makeCtx({ tuiMode: "fullscreen", statuses: new Map([["agent", "idle"]]) });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const footer = installFooter(mocks);
 		try {
 			const [, line2] = footer.render(100);
-			assert.ok(strip(line2).startsWith("[Commands] │ "), strip(line2));
-			assert.equal(footer.handleMouse?.(click(3, 0, 100)), undefined, "line 1 is not a target");
-			assert.equal(footer.handleMouse?.(click(3, 1, 90)), undefined, "a click at a stale width is ignored");
+			assert.ok(strip(line2).startsWith(" ≡  │ "), strip(line2));
+			assert.equal(footer.handleMouse?.(click(60, 0, 100)), undefined, "line 1 outside the model and level segments is not a target");
+			assert.equal(footer.handleMouse?.(click(1, 1, 90)), undefined, "a click at a stale width is ignored");
 			assert.equal(mocks.customCalls.length, 0);
-			assert.equal(footer.handleMouse?.(click(3, 1, 100))?.handled, true);
+			assert.equal(footer.handleMouse?.(click(1, 1, 100))?.handled, true);
 			assert.equal(mocks.customCalls.length, 1, "the selector opened");
 			assert.match(JSON.stringify(mocks.customCalls[0].options), /overlay/);
 		} finally {
@@ -667,6 +677,7 @@ describe("/commands and /statuses", () => {
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		mocks.driveCustom((panel) => {
 			panel.render(80);
+			(panel as { search?(): void }).search?.();
 			for (const char of "review") panel.handleInput?.(char);
 			panel.handleInput?.("\r");
 			assert.equal(sent.length, 0, "selection sends nothing");
@@ -687,6 +698,7 @@ describe("/commands and /statuses", () => {
 			opens += 1;
 			if (opens === 1) {
 				panel.render(80);
+				(panel as { search?(): void }).search?.();
 				panel.handleInput?.("\x1b[B");
 				panel.handleInput?.("\r");
 				inventory = [registration("evo")];
@@ -707,6 +719,7 @@ describe("/commands and /statuses", () => {
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		mocks.driveCustom((panel) => {
 			panel.render(80);
+			(panel as { search?(): void }).search?.();
 			panel.handleInput?.("\r");
 			for (const char of "today") panel.handleInput?.(char);
 			panel.handleInput?.("\r");
@@ -722,6 +735,7 @@ describe("/commands and /statuses", () => {
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		mocks.driveCustom((panel) => {
 			panel.render(80);
+			(panel as { search?(): void }).search?.();
 			panel.handleInput?.("\r");
 			panel.handleInput?.("\r");
 			panel.handleInput?.("\x1b[B");
@@ -734,7 +748,7 @@ describe("/commands and /statuses", () => {
 		mocks.driveCustom((panel) => {
 			const lines = panel.render(80).map(strip);
 			assert.ok(lines.some((line) => line.includes("Restore replaced draft")));
-			panel.handleInput?.("\x1b[A");
+			assert.ok(lines.some((line) => line.includes("Menu")), "recovery is offered on the first screen");
 			panel.handleInput?.("\r");
 		});
 		await commands.get("commands").handler("", mocks.ctx);

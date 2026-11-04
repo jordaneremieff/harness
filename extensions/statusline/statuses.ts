@@ -38,7 +38,8 @@ export function statusEntries(statuses: ReadonlyMap<string, string>): StatusEntr
 
 export interface StatusPanelOptions {
 	theme: Theme;
-	rows: number;
+	/** Rows the overlay can show right now; read on every render. */
+	rows: () => number;
 	read: () => ReadonlyMap<string, string>;
 	done: () => void;
 }
@@ -57,7 +58,7 @@ interface Button {
 export class StatusPanel implements Component {
 	readonly capturesViewportInput = true;
 	private readonly theme: Theme;
-	private readonly rows: number;
+	private readonly rows: () => number;
 	private readonly read: () => ReadonlyMap<string, string>;
 	private readonly done: () => void;
 	private entries: StatusEntry[];
@@ -76,8 +77,9 @@ export class StatusPanel implements Component {
 		this.entries = statusEntries(options.read());
 	}
 
+	/** Heading, controls and the position line are reserved before the scrollable body. */
 	private bodyHeight(): number {
-		return Math.max(2, Math.min(this.rows - 4, 40));
+		return Math.max(2, Math.min(this.rows() - 3, 40));
 	}
 
 	private scroll(delta: number): void {
@@ -160,10 +162,11 @@ export class StatusPanel implements Component {
 		this.buttonRow = out.length;
 		out.push(truncateToWidth(row, width));
 		const height = this.bodyHeight();
+		this.scroll(0);
 		for (const line of this.lines.slice(this.offset, this.offset + height)) out.push(truncateToWidth(line, width));
 		if (this.lines.length > height) {
 			out.push(truncateToWidth(this.theme.fg("dim", `${this.offset + 1}-${Math.min(this.lines.length, this.offset + height)} of ${this.lines.length} lines · wheel or arrows scroll · r refreshes`), width));
 		}
-		return out;
+		return out.slice(0, this.rows());
 	}
 }

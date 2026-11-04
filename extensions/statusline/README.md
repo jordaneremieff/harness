@@ -1,10 +1,11 @@
 # statusline: two-line session footer
 
 This extension replaces Pi's default footer with a two-line statusline for
-long-running agentic sessions. Line 1 carries session metrics; line 2 carries
-a command-discovery control, project context, and whatever extension statuses
-other extensions publish through `ctx.ui.setStatus()`. Two overlays complete
-the footer: a command selector and a reader for the complete status map.
+long-running agentic sessions. Line 1 carries the session's route identity and
+metrics; line 2 carries a compact menu control, project context, and whatever
+extension statuses other extensions publish through `ctx.ui.setStatus()`.
+Overlays complete the footer: the menu with command search, a model selector,
+a reasoning selector, and a reader for the complete status map.
 
 ## Surfaces
 
@@ -12,9 +13,10 @@ the footer: a command selector and a reader for the complete status map.
 |---|---|---|
 | footer | `ctx.ui.setFooter` | Two-line statusline, installed on `session_start` in TUI mode only. |
 | `/statusline` | command | Toggle between the custom statusline and Pi's default footer. |
-| `/commands` | command | Open the command selector: find a command by name or description, read it, then run it or prepare it as a draft. |
+| `/commands` | command | Open the footer menu: browser destinations, model and reasoning controls, statuses, and command search. |
 | `/statuses` | command | Open the read-only reader for the complete extension status map. |
-| Commands cell | footer click target | In fullscreen, the leading `[Commands]` cell opens the selector. |
+| `≡` cell | footer click target | In fullscreen, the leading padded `≡` cell opens the menu. |
+| model and level segments | footer click targets | In fullscreen, a click on the `provider/model` segment opens the model selector; a click on the `[level]` bracket opens the reasoning selector. |
 | `+N` cell | footer click target | In fullscreen, the hidden-status count opens the status reader. |
 
 No extension-specific configuration is required. The custom footer starts
@@ -22,9 +24,41 @@ enabled; use `/statusline` to switch to Pi's default footer or back.
 There are no tools, timers beyond one footer-owned tick, background work, or
 configuration overlays.
 
-## Command selector
+## Menu
 
-The selector lists `pi.getCommands()`: extension commands, prompt templates,
+The menu is the first screen of the `≡` overlay and of `/commands`. It is
+headed "Menu" and lists, in order:
+
+1. **Restore replaced draft**, only while a replaced draft waits for recovery.
+2. **Destinations** that owning extensions announce as data through the
+   operator-destination contract (`docs/conventions/operator-panels.md`):
+   Agents, Clipboard, Pillars, Policy, Stashes. Each is resolved at menu open
+   against the current `pi.getCommands()` inventory and opens directly on Enter
+   or click through the same guarded dispatch as a Run; a destination whose
+   command is not registered in this session is listed with that reason and
+   does not open. A destination is a harmless open; commands that start work,
+   such as `/evo`, stay behind search with their argument field.
+3. **Model…**, **Reasoning…**, **Statuses**: the session controls, each with
+   its current value beside it.
+4. **Search commands…**: the full inventory below.
+
+Escape on the menu closes it; Escape on search returns to the menu.
+
+### Model and reasoning
+
+**Model…** lists `ctx.modelRegistry.getAvailable()` as `provider/model-id` rows
+with the display name, the current model preselected. Apply calls
+`pi.setModel(model)` for this session only; a `false` return (authentication
+not configured for the provider) is reported as a refusal and nothing changes.
+Cancel and Escape change nothing. **Reasoning…** lists the levels
+`getSupportedThinkingLevels(model)` reports for the current model; Apply calls
+`pi.setThinkingLevel(level)`, which clamps to the model. A model without
+reasoning is reported as such and offers no list. No builtin slash text is
+sent to the model to emulate these dialogs.
+
+### Command search
+
+Search lists `pi.getCommands()`: extension commands, prompt templates,
 and skills under their exact invocation names, including collision suffixes
 such as `review:1`. Pi's `sourceInfo` is the provenance shown for each entry;
 ownership is never inferred from names or paths. Builtin interactive commands
@@ -47,15 +81,23 @@ actions. Selection never executes anything.
   prepared in the editor, never sent. An empty editor receives it directly. When
   a draft exists the selector asks: *Insert at cursor* pastes through Pi's
   paste handling and keeps the draft; *Replace draft* keeps the removed draft
-  recoverable through the *Restore replaced draft* entry at the top of the list;
+  recoverable through the *Restore replaced draft* entry at the top of the menu;
   *Keep draft* returns to the command.
 - **Back** returns to the list with the query, selection, and typed arguments
-  kept; **Close** and Escape leave without an action. Typed arguments and the
-  query survive reopening within the session.
+  kept; **Menu** returns to the menu; **Close** leaves without an action. Typed
+  arguments and the query survive reopening within the session.
 
-The overlay rebuilds its hit regions on every render and ignores pointer events
-whose width differs from the rendered width, so a click after a resize cannot
-act on a stale row. Session shutdown closes an open selector without dispatch.
+### Overlay sizing
+
+Pi renders an overlay at its resolved width and clips lines beyond its
+`maxHeight` (85% of the terminal rows here); it is not a layout root. Every
+overlay component therefore reads its row budget from the live terminal on each
+render, reserves its fixed rows (heading, hint, inputs, and the Close row)
+before sizing its list or body, clamps scroll offsets, and rebuilds hit
+geometry. Close and the final entry stay reachable at 60x20 and 80x24 and after
+a height-only shrink. The overlay ignores pointer events whose width differs
+from the rendered width, so a click after a resize cannot act on a stale row.
+Session shutdown closes an open overlay without dispatch.
 
 ## Status reader
 
@@ -69,17 +111,19 @@ footer disabled, `/statuses` says so.
 ## Pointer and mode boundary
 
 Pi delivers mouse events to footer components only in fullscreen mode. There
-the leading cell renders as `[Commands]` and the `+N` cell is a click target.
-In regular mode the mouse belongs to the terminal, so the leading cell names
-the keyboard route (`/commands`) and claims no click. Both commands work in
-every TUI mode; outside the TUI they explain the requirement.
+the leading cell renders as a padded `≡`, the line-1 model and level segments
+are click targets, and the `+N` cell is a click target. In regular mode the
+mouse belongs to the terminal, so the leading cell names the keyboard route
+(`/commands`) and claims no click. Both commands work in every TUI mode;
+outside the TUI they explain the requirement.
 
 ## Line 1: session metrics
 
 Segments join with a dim `│` separator:
 
-1. **Model + thinking.** `ctx.model.name`, accent-colored, plus a
-   `[<level>]` bracket (for example `[high]`) in the per-level theme color.
+1. **Route + thinking.** `provider/model-id` (the exact route identity, with
+   no label), accent-colored, plus a `[<level>]` bracket (for example
+   `[high]`) in the per-level theme color.
    The bracket appears only when the model declares `reasoning: true` and a
    thinking level is present; it does not depend on the provider name.
 2. **Context bar + tokens.** A ten-cell block bar (`██████░░░░ 62%`) rendered
@@ -149,9 +193,9 @@ prefix, and a truncated count is not a click target. Both lines remain
 unchanged when all segments fit. `truncateToWidth` is the final guard on both
 lines.
 
-## Line 2: commands + project + git + extension statuses
+## Line 2: menu + project + git + extension statuses
 
-The leading cell is the command control described above; it is never shed.
+The leading cell is the menu control described above; it is never shed.
 The project label is the home-relative working directory (`~/work/app`,
 following Pi's footer convention) plus the git branch from
 `footerData.getGitBranch()`. Extension statuses come from
@@ -196,10 +240,12 @@ set the window title, write the clipboard, or emit a hyperlink.
 
 ## Files
 
-- `index.ts`: registration, footer factory, pointer targets, tick ownership,
-  `/statusline`, `/commands`, and `/statuses`.
-- `commands.ts`: registration identity, filtering, guarded dispatch, draft
-  preparation, and the selector component.
+- `index.ts`: registration, footer factory, pointer targets, the model and
+  reasoning controls, tick ownership, `/statusline`, `/commands`, and `/statuses`.
+- `commands.ts`: the menu, registration identity, filtering, guarded dispatch,
+  draft preparation, and the search component.
+- `destinations.ts`: the operator-destination consumer and registration resolution.
+- `controls.ts`: the Apply/Cancel choice overlay behind Model… and Reasoning….
 - `statuses.ts`: opaque status entries and the reader component.
 - `metrics.ts`: session usage aggregation and bounded append catch-up.
 - `format.ts`: pure formatting, cache telemetry, and width-shedding composition
