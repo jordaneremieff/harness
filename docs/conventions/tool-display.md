@@ -137,6 +137,13 @@ The slice advertises the module in the contribution it emits on
 display: { version: 1, entry: "./display.ts", export: "toolDisplay" }
 ```
 
+This contract covers tool cards only: inert presentation of retained tool calls
+and results. An owner browser that the attached terminal can open over the
+conversation is a different role with its own request route; it is the
+[operator panels](operator-panels.md) contract, advertised beside `display` as
+`panel`. A display module never executes and a panel module never renders tool
+cards.
+
 - `version` is `1` and `export` is `"toolDisplay"`. Other values and extra
   fields are refused.
 - `entry` is a bare relative file path that starts with `./`. It has no empty,

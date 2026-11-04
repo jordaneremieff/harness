@@ -69,6 +69,17 @@ interface DurableContribution {
     readonly entry: string;
     readonly export: "toolDisplay";
   };
+  /**
+   * Optional owner browser for the attached Agent terminal, bound to one of this
+   * contribution's own commands. Same entry rules as `display`. See
+   * [operator panels](operator-panels.md#attached-panels).
+   */
+  readonly panel?: {
+    readonly version: 1;
+    readonly entry: string;
+    readonly export: "operatorPanel";
+    readonly command: string;
+  };
 }
 
 interface DurableContributionHost {
@@ -110,6 +121,13 @@ interface DurableInventory {
       readonly version: 1;
       readonly entry: string;
       readonly export: "toolDisplay";
+    };
+    /** Present when the panel descriptor was admitted; `command` names one of this contribution's commands. */
+    readonly panel?: {
+      readonly version: 1;
+      readonly entry: string;
+      readonly export: "operatorPanel";
+      readonly command: string;
     };
   }[];
   /** Resolved paths of loaded extensions that emitted no contribution. */

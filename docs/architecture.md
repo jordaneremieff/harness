@@ -267,6 +267,10 @@ documented surface:
 - [Status keys](conventions/status-keys.md): footer publishers and consumers.
 - [Durable contributions](conventions/durable-contributions.md): native
   capability bundles supplied by extension factories to agent hosts.
+- [Tool display](conventions/tool-display.md): owner tool-card renderers for
+  ordinary chat, the dashboard and the attached terminal.
+- [Operator panels](conventions/operator-panels.md): footer destinations in
+  ordinary Pi and owner browsers served in the attached terminal.
 - [Session host roles](conventions/session-host-roles.md): ordinary primary
   and Durable execution responsibilities.
 - [Policy recovery](conventions/policy-recovery.md): public tool evidence used
