@@ -2030,8 +2030,11 @@ entrypoint. The host requires Pi and Durable 1.5: it observes stored commits
 with `observeCommits()`, reads the task graph and conversation windows through
 watches and synchronous observers, and validates stored and protocol JSON with
 `@earendil-works/pi-schema`. Ordinary and native tool parameter and output schemas
-use the same package. Ordinary `execute` arguments use its `Static` type explicitly;
-renderers use `unknown` with guards for raw or partial arguments.
+use the same package. Every model-facing tool parameter schema declares an explicit
+JSON Schema `type`, and each parameters root declares `type: "object"`; a bare
+`enum`, `const` union, or `anyOf` is not sufficient for strict-schema providers.
+Ordinary `execute` arguments use its `Static` type explicitly; renderers use
+`unknown` with guards for raw or partial arguments.
 Work that host crashes cut off at Durable's restart limit ends with a terminal
 outcome (`runFailure`, `compactionFailure`, or a tool error result); the host
 does not park or retry it. A model request in flight when a host died counts as

@@ -1,4 +1,4 @@
-import { str, int, lit, union, arr, opt, obj } from "@earendil-works/pi-schema";
+import { str, int, arr, opt, obj, type Schema } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import { defineDoc, defineDocFamily, ROOT_CONVERSATION_ID, type Harness, type Session, type Tx } from "@earendil-works/pi-durable";
@@ -11,9 +11,10 @@ const MAX_PAGE_BYTES = 48 * 1024;
 const ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}(?::[1-9][0-9]*)?$/u;
 const THREAD_ID = /^([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/([a-f0-9]{32})$/u;
 const textSchema = (maxLength: number) => str({ minLength: 1, maxLength });
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
 
 export const CollaborationParams = obj({
-	action: union(["create", "list", "read", "join", "leave", "post", "revise", "close"].map((value) => lit(value))),
+	action: StringEnum(["create", "list", "read", "join", "leave", "post", "revise", "close"]),
 	sessionId: opt(textSchema(256)),
 	threadId: opt(textSchema(128)),
 	title: opt(textSchema(160)),
@@ -25,7 +26,7 @@ export const CollaborationParams = obj({
 	integrator: opt(textSchema(256)),
 	contribution: opt(str({ minLength: 1, description: "At most 256 characters. Write longer content to a file and post its path. The handler enforces this cap with that remedy." })),
 	message: opt(str({ minLength: 1, description: "At most 8,000 characters. Write longer content to a file and post its path. The handler enforces this cap with that remedy." })),
-	kind: opt(union([lit("contribution"), lit("carried-authority") ])),
+	kind: opt(StringEnum(["contribution", "carried-authority"])),
 	replyTo: opt(int({ minimum: 1 })),
 	notify: opt(arr(textSchema(256), { maxItems: 16, uniqueItems: true })),
 	query: opt(textSchema(256)),

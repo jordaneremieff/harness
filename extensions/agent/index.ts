@@ -21,7 +21,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
-import { str, num, int, bool, lit, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
+import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { checkInMinutes } from "./durable-checkins.ts";
 import { CollaborationParams } from "./collaboration.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
@@ -74,7 +74,7 @@ export function agentRestartHosts(): RestartHosts {
 	};
 }
 /** Provider tool declarations retain an explicit string type. */
-const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const StringEnum = <const T extends readonly string[]>(values: T, options: { readonly description?: string } = {}): Schema<T[number]> => ({ type: "string", enum: [...values], ...options });
 const id = str({ minLength: 1, maxLength: 256 });
 const maybeTrust = opt(bool());
 const abort = obj(
@@ -364,7 +364,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 	register(
 		"agent_status",
 		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected Durable agent returns full state and bounded pending timers. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state.",
-		obj({ sessionId: opt(id), view: opt(lit("fleet", { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })), ...FleetSelectionProperties }, {}),
+		obj({ sessionId: opt(id), view: opt(StringEnum(["fleet"], { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })), ...FleetSelectionProperties }, {}),
 		(input, ctx) => {
 			const sessionId = input.sessionId as string | undefined;
 			const view = input.view as "fleet" | undefined;

@@ -49,7 +49,7 @@ import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { inputEntry } from "./input-entry.ts";
-import { str, num, int, bool, lit, unknown, opt, obj, union, map, oneOf, type Static, type Schema } from "@earendil-works/pi-schema";
+import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines } from "./control-guidance.ts";
@@ -337,7 +337,7 @@ function modelOf(value: string): Durable.ModelRef {
 
 // ─── Parameter schemas ──────────────────────────────────────────────────────
 
-const StringEnum = <const T extends readonly string[]>(values: T) => oneOf(values);
+const StringEnum = <const T extends readonly string[]>(values: T, options: { readonly description?: string } = {}): Schema<T[number]> => ({ type: "string", enum: [...values], ...options });
 
 const CheckInParams = opt(num({ minimum: 0, maximum: 35791, description: "Owner check-in interval while unanswered, in minutes. Default configured agent.checkInMinutes, which is 0 (no check-ins) unless set; results arrive without them." }));
 
@@ -478,7 +478,7 @@ const CommandParams = obj(
 
 const StatusParams = obj(
 	{
-		view: opt(lit("fleet", { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })),
+		view: opt(StringEnum(["fleet"], { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })),
 		...FleetSelectionProperties,
 		sessionId: opt(
 			str({ minLength: 1, description: "Default: the calling conversation; omit for the storage overview." }),
@@ -506,12 +506,12 @@ const ListParams = obj(
 );
 
 /** A positive native record ID in the number or numeric-string form the host accepts. */
-const PositiveId = union([int({ minimum: 1 }), str({ pattern: "^[0-9]+$" })]);
+const PositiveId = int({ minimum: 1 });
 
 const InspectParams = obj(
 	{
 		sessionId: opt(str({ minLength: 1, description: "Default: the calling conversation." })),
-		view: opt(oneOf(["activity", "history", "branch", "search", "exact", "result"])),
+		view: opt(StringEnum(["activity", "history", "branch", "search", "exact", "result"])),
 		limit: opt(int({ minimum: 1 })),
 		cursor: opt(
 			map(unknown(), {
@@ -522,7 +522,7 @@ const InspectParams = obj(
 		fromId: opt(PositiveId),
 		offset: opt(int({ minimum: 0 })),
 		query: opt(str({ minLength: 1 })),
-		source: opt(oneOf(["user", "assistant", "toolResult", "summary", "custom"])),
+		source: opt(StringEnum(["user", "assistant", "toolResult", "summary", "custom"])),
 		submissionId: opt(PositiveId),
 		requestId: opt(str({ minLength: 1, description: "Native request ID within the selected conversation; result view only." })),
 		operationId: opt(str({ minLength: 1 })),
@@ -534,7 +534,7 @@ const AttachParams = obj(
 	{
 		sessionId: str({ minLength: 1 }),
 		model: opt(str({ minLength: 3 })),
-		thinkingLevel: opt(oneOf(THINKING_LEVELS)),
+		thinkingLevel: opt(StringEnum(THINKING_LEVELS)),
 	},
 	{},
 );

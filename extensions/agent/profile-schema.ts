@@ -1,11 +1,12 @@
-import { str, num, int, bool, nul, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
+import { str, num, int, bool, nul, lit, union, arr, opt, obj, type Schema, type Static } from "@earendil-works/pi-schema";
 import { HANDLE_PATTERN } from "./identity.ts";
 
 const nullableText = union([str(), nul()]);
 const nullableTime = union([num(), nul()]);
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
 export const ProfileParams = obj({
 	sessionId: opt(str({ minLength: 1, maxLength: 256 })),
-	action: union([lit("read"), lit("update")]),
+	action: StringEnum(["read", "update"]),
 	expectedRevision: opt(str({ pattern: "^[a-f0-9]{64}$" })),
 	role: opt(str({ maxLength: 2000 })),
 	expertise: opt(str({ maxLength: 16384 })),
