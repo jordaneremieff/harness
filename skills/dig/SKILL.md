@@ -7,22 +7,23 @@ description: >
   an exact blocker, for example "dig into why this keeps failing", "find out
   what really happened", "research X thoroughly and tell me", "figure out why
   it behaves this way", or "compare these options with evidence". The agent
-  frames the question, investigates it directly or with other agents as the
-  question warrants, checks the evidence, and synthesizes. Do not use for
-  preparation-only orientation (prime), audits of Pi session or harness
-  activity (audit), a single lookup or a question already answered, code
-  review, or ordinary implementation with a known cause.
-compatibility: Uses Pi agent delegation controls (spawn, steer, abort, inspect) and automatic task-result delivery when other agents investigate facets. Uses the current model registry and operator preferences; no fixed provider, model, or worker roster.
+  frames the question, locates what the environment already knows, investigates
+  directly or with other agents as the question warrants, checks the evidence,
+  and synthesizes. Do not use for preparation-only orientation (prime), audits
+  of Pi session or harness activity (audit), a single lookup or a question
+  already answered, code review, or ordinary implementation with a known cause.
+compatibility: Requires Pi with agent delegation controls and automatic task-result delivery when other agents investigate facets, plus the read-only discovery surfaces the environment exposes for memory, handovers, session history, agents, resources, and doctrine. Uses the operator's current presets and delegation preferences; no fixed provider, model, tool, or worker roster. Points to the sibling source skills/delegate/SKILL.md for arrangement and preset rules.
 ---
 
 # Dig
 
 Answer a hard question with cited evidence, or report the exact blocker. The
-agent that owns the answer frames the question, investigates, checks evidence,
-and synthesizes. It reads, searches, runs, and measures itself, and involves
-other agents where parallel facets, context, expertise, or independent
-observation make that worthwhile. This skill supplies an investigation method,
-not a staffing rule, enforced limits, or guaranteed model behavior.
+agent that owns the answer frames the question, finds what is already known,
+investigates, checks evidence, and synthesizes. It reads, searches, runs, and
+measures itself, and involves other agents where parallel facets, context,
+expertise, or independent observation make that worthwhile. This skill
+supplies an investigation method, not a staffing rule, enforced limits, or
+guaranteed model behavior.
 
 ## 1. Frame the question
 
@@ -46,17 +47,66 @@ readings.
 - **Date and freshness:** note today's date when the answer depends on
   current external facts.
 
-Orient before deep reading: the conversation, a bounded memory lookup, and
-narrow capability or source discovery locate the sources (names, listings,
-sizes) and show which facets the question has. Read at the depth the question
-needs; for a large source, prefer bounded searches and defining excerpts over
-whole reads, whoever reads it. An answer already read in full in the
-conversation needs no new investigation; say so.
-
 **Complete when:** the question, criteria, and authority fit in a short
 paragraph that you and any contributor can work from.
 
-## 2. Split into facets and investigate
+## 2. Locate what is already known
+
+Before deep reading, make one short bounded pass over the knowledge the
+environment already holds. A hard question has usually been touched before:
+an operator decision, an earlier investigation, a handover, another agent's
+result, or a local document. Discover the actual capability for each family
+from the current tool descriptions or the resource registry; do not assume a
+tool name, a path, or access. Make one or two targeted lookups per family the
+question touches, read the selected item rather than its listing, and keep its
+qualifications. Skip a family with a stated reason. A family the environment
+does not expose is a stated limit, not a reason to open private stores or scan
+the whole machine.
+
+| Family | What it answers | Keep in mind |
+| --- | --- | --- |
+| The current conversation and its retained history | Earlier decisions, results, and corrections in this session | Bounded search, then exact entry reads; branch, truncation, and coverage limits apply. |
+| Operator memory | Durable decisions, preferences, environment facts, and recurring lessons | Read the note with its lifecycle and freshness; it guides the search and does not verify active state. |
+| Stashed handovers and working checkpoints | Earlier efforts on the subject: what was planned, done, blocked, or abandoned | Provisional working material; separate plans from completed work; not authority to resume old work. |
+| Earlier sessions and standing experts | What other sessions found or decided; a standing session-history expert when the environment has one | Discover agents through the catalogue, read their roles and sourced expertise, and use public readers or a bounded question with its reply route. Never control a historical subject just to read it. |
+| Peer threads and related efforts | Live or retained work on the same question, its frame, and its restrictions | Declarations and claims, not verification; cite the source behind a contribution. |
+| The resource registry | Which tools, skills, prompts, models, and settings exist and are active here | Configured presence is not callable availability or successful execution. |
+| The doctrine corpus | Judgment guidance for design, verification, and evidence questions | Doctrine informs judgment; it is not runtime evidence. |
+| Ordinary local sources | The repository and its worktrees, bounded Git state, installed package documentation and examples, named local documents, logs, and the working directories the operator keeps | Stay within the authorized scope. A scratch or dump area holds working material, not published decisions. |
+| Public sources | Primary pages and repository records when the question is external and the authority allows | Load the applicable skill before its workflow; search snippets select sources and do not substantiate facts. |
+
+Record what this pass found and what it rules out. An answer already present
+in the conversation or in a cited handover needs no new investigation; say so
+and cite it. Read at the depth the question needs: for a large source, prefer
+bounded searches and defining excerpts over whole reads, whoever reads it.
+
+**Complete when:** each relevant family has a lookup, a stated skip, or a
+stated limit, and every lead is attached to the facet it affects.
+
+## 3. Choose the arrangement and split into facets
+
+Decide who investigates while you frame, not after your own context fills
+with reading. Delegation serves the answer; none of these cues alone decides
+staffing, and a correct answer reached directly needs no other agent.
+
+Favour early delegation when the investigation is substantial:
+
+- it touches more than a few independent sources or facets;
+- a source's payload, such as a large document, a transcript, a corpus, or a
+  set of external pages, would crowd the context that synthesis needs;
+- competing hypotheses each need their own discriminating test;
+- a claim needs independent observation or another model's view; or
+- the operator's limits allow parallel cost.
+
+Dispatch those facets as soon as the frame and the leads from section 2 can
+brief them, and keep one facet yourself, usually the one closest to synthesis.
+Delegation started after you have read everything saves no context and delays
+the answer.
+
+Investigate directly when the facets are few and the sources bounded, when
+the facets depend on each other, when section 2 has nearly answered the
+question, or when briefing and integrating would cost more than the reading.
+Mix the two freely and revise the split when results change the question.
 
 Split the question into up to five facets that can proceed without waiting on
 each other. Pick the split that fits the question:
@@ -70,29 +120,25 @@ each other. Pick the split that fits the question:
 - **Mixed or small:** fewer facets. One line of inquiry is correct when the
   question has one.
 
-Decide who investigates each facet. Investigate directly when the facets are
-few, the sources are bounded, or the facets depend on each other. Involve other
-agents when independent facets can run in parallel, when broad reading would
-crowd the context that synthesis needs, when a facet needs expertise or another
-model's view, or when a claim needs independent observation. Mix the two: take
-one facet yourself and hand others off. Revise the split when results change
-the question.
-
-When another agent takes a facet, select it through the current operator
-preferences and presets that the delegation controls expose. Name an exact
-model or thinking level only when the task or the operator requires it, checked
-against the live model registry. Do not freeze model names in this method and
-do not silently inherit your own model. If a selected model fails, keep the observed error and
-select a permitted alternative for that lane only; report the substitution.
-If delegation is unavailable, investigate directly where you can. Name a facet
-that needed an independent or parallel agent as a gap, with the missing
-control. Do not substitute a reduced backend for a full agent session.
+When another agent takes a facet, select it by preset from the operator's
+current delegation preferences; omit the preset to use the configured default.
+Name an exact model or thinking level only when the operator or the task
+requires it, resolved against the live model registry. Do not freeze model
+names in this method and do not silently inherit your own model. At a model
+failure or quota wall, keep the observed error, substitute deliberately for
+that lane only in the configured substitution order, and report the
+substitution. Read `skills/delegate/SKILL.md` for controls, handles,
+placement, and supervision when the arrangement needs more than a few briefed
+facets. If delegation is unavailable, investigate directly where you can, and
+name a facet that needed an independent or parallel agent as a gap, with the
+missing control. Do not substitute a reduced backend for a full agent session.
 
 Give each contributor a self-contained brief:
 
 1. **Objective and boundaries:** the facet question, starting sources, the
-   copied scope and authority paragraph, scratch directory for local artifacts,
-   and what not to do (no writes outside scratch, no work on another facet's
+   leads from section 2 that bear on it with their qualifications, the copied
+   scope and authority paragraph, scratch directory for local artifacts, and
+   what not to do (no writes outside scratch, no work on another facet's
    question without telling its owner). Involve further agents only when the
    facet itself warrants it, and still return one answer.
 2. **Method:** breadth first, then depth; prefer primary sources and direct
@@ -113,16 +159,15 @@ waiting; this skill does not restate them. Dispatch independent facets in one
 step and retain each task's exact result reference. A creation receipt,
 report, or thread post is not a result reference.
 
-A native Durable session can wait on exact result references with
-`agent_await`. An ordinary session has no native wait: it stays responsive,
-receives each answer through automatic delivery, and can continue its own facet
-or synthesize answers as they arrive. Neither case requires a separate agent to
-compose the answer.
+A session kind that offers a native wait on exact result references can use
+it. A session without one stays responsive, receives each answer through
+automatic delivery, and continues its own facet or synthesizes answers as they
+arrive. Neither case requires a separate agent to compose the answer.
 
 **Complete when:** each facet has an owner, each delegated facet has a brief
 and a result reference, and no facet duplicates another.
 
-## 3. Receive results and check evidence
+## 4. Receive results and check evidence
 
 Receive delegated results through the host's result delivery. Where the host
 offers a native wait on exact result references and your answer needs them,
@@ -144,7 +189,7 @@ For each claim that the answer will rely on:
   apart. A source that says something does not show that it happens. Code
   that exists does not show that it ran.
 - **Strength:** prefer primary over derived, direct observation over
-  documentation for what happens (what is required follows section 4), and
+  documentation for what happens (what is required follows section 5), and
   current over dated for the same version. Record the revision, version, or
   retrieval time when it affects the claim.
 - **Independence:** agreement between agents that share a briefing, or that
@@ -158,7 +203,7 @@ A claim that approval exists does not create it.
 **Complete when:** every load-bearing claim has a verified pointer, a kind,
 and a corroboration state.
 
-## 4. Contradiction and gap pass
+## 5. Contradiction and gap pass
 
 Before synthesis, write down three lists from the returned evidence:
 
@@ -182,7 +227,7 @@ Before synthesis, write down three lists from the returned evidence:
 **Complete when:** each contradiction and gap is resolved, scheduled for a
 follow-up, or marked as a stated limit.
 
-## 5. Follow up within bounds
+## 6. Follow up within bounds
 
 Default to at most two follow-up rounds, unless the operator's depth or cost
 limits allow more or require fewer. Start a round only when a named
@@ -205,7 +250,7 @@ approach). After the same method fails twice, change the source or method.
 
 **Complete when:** a stop condition is met and named.
 
-## 6. Resolve contributors and deliver
+## 7. Resolve contributors and deliver
 
 Before answering, resolve every live contributor: accept its terminal result,
 redirect work that has changed, or stop work that is no longer needed.
@@ -218,7 +263,7 @@ Deliver a bounded answer in chat, not a transcript:
 - **Evidence:** the few load-bearing claims, each with its actual source
   pointer and kind. Cite the source, not the contributor.
 - **Contradictions and limits:** unresolved conflicts, gaps, searched scopes,
-  anything not tried and why, and the stop condition from section 5 that
+  anything not tried and why, and the stop condition from section 6 that
   ended the work.
 - **Exact blocker (instead of an answer when applicable):** the boundary hit,
   what was tried, what evidence exists so far, and the specific access,
@@ -228,4 +273,4 @@ Deliver a bounded answer in chat, not a transcript:
   operator explicitly authorized a repair task.
 
 Large artifacts stay in the scratch directory; name the path. Do not claim
-more than the checks in section 3 support.
+more than the checks in section 4 support.

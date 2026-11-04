@@ -7,7 +7,7 @@ description: >
   with source coverage, then wait. Do not use for a single lookup, a question
   already answered in the session, or a request to start implementation,
   diagnosis, review, or research for an answer.
-compatibility: Requires Pi with source-discovery tools and Pi Durable agent hosts with automatic task-result delivery. Uses the available read-only source tools and current model registry; no fixed provider or model roster.
+compatibility: Requires Pi with read-only source-discovery surfaces and Pi Durable agent hosts with automatic task-result delivery. Uses the available read-only source tools, the operator's current presets and delegation preferences, and the live model registry; no fixed provider, model, or worker roster.
 ---
 
 # Prime
@@ -43,10 +43,13 @@ freshness and lifecycle qualifications, rather than relying on index snippets.
 Memory guides the search; it does not verify active state. Do not read large
 code, documentation, test files, or transcripts into the parent before dispatch.
 
-Use available tool descriptions directly. Where the tool or path is uncertain,
-use the current registry or equivalent discovery surface to inspect its actual
-availability, provenance, arguments, and limits. Do not infer access from a
-resource name. Avoid whole-machine inventories and scans of private tool stores.
+Discover the actual capability for each source family from the current tool
+descriptions or the resource registry; do not assume a tool name, a path, or
+access. Where the tool or path is uncertain, inspect its actual availability,
+provenance, arguments, and limits there. Do not infer access from a resource
+name. A family the environment does not expose is an explicit limit, not a
+reason to open private stores. Avoid whole-machine inventories and scans of
+private tool stores.
 
 ## 2. Choose relevant sources and dispatch
 
@@ -57,12 +60,13 @@ of the topic:
 | Source family | What to retrieve and preserve |
 | --- | --- |
 | Operator memory | Decisions, preferences, and leads through the current memory tools; read the selected note and its qualifications. |
-| Stashed work and named local artifacts | Search/read handovers through their tools; inspect only named or narrowly discovered artifact paths. Separate plans from completed work. |
+| Stashed handovers, working checkpoints, and named local artifacts | Search and read handovers and checkpoints through their tools; inspect only named or narrowly discovered artifact paths, including the working directories the operator keeps. Separate plans from completed work; provisional material is not authority to resume old work. |
 | Repository and owning worktrees | Current source, documentation, tests, and bounded Git state for the topic. Distinguish a candidate change from shipped or active behavior; do not run tests or code merely to orient. |
 | Active capabilities | Registry or equivalent source provenance and callable availability. A catalog entry is not successful execution. |
 | Installed dependencies | Current installed documentation, source, and examples for host contracts. Discover the active installation; a checkout dependency is not automatically the running copy. |
 | Current conversation history | Bounded history search followed by exact entry reads for earlier decisions and results. Keep branch, truncation, and coverage limits. |
-| Other sessions | Metadata discovery followed by exact relevant transcript or result inspection. Session labels and summaries are not acceptance or current runtime evidence. |
+| Earlier sessions and standing experts | Catalogue discovery, then exact transcript or result inspection through public readers. A standing session-history expert, when the environment has one, answers a bounded question through its reply route; read its role and sourced expertise first. Session labels and summaries are not acceptance or current runtime evidence. |
+| Peer threads and related efforts | Thread frames, contributions, and intent claims for live or retained work on the topic. Declarations, not verification or permission. |
 | Public sources | Primary pages or repository records when relevant and authorized. Load the applicable skill, such as the GitHub skill, before its workflow. Search snippets select sources; they do not substantiate the final facts. |
 | Pillars | Consult the live corpus when judgment needs doctrine. Doctrine guides judgment; it is not runtime evidence. |
 
@@ -73,13 +77,15 @@ workers when their payloads would crowd that context, as one parallel wave
 grouped by facet without duplicate assignments. Integrate their bounded returns
 without repeating their broad reads.
 
-Choose each worker's explicit model and thinking level from current operator
-preferences and the live model registry. Read the relevant preference sources
+Select each worker by preset from the operator's current delegation
+preferences; omit the preset to use the configured default. Name an exact
+model or thinking level only when the request or the operator requires it,
+resolved against the live model registry. Read the relevant preference sources
 before selection; do not freeze model identities in the workflow or silently
 inherit the parent's model. Registry availability is not proof of remote model
-health. If a selected model fails, preserve the observed error. For that failed
-lane only, explicitly select a permitted alternative model and thinking level
-from the current registry and preferences when it fits the invoking budget.
+health. If a selected model fails or hits a quota wall, preserve the observed
+error. For that failed lane only, substitute deliberately by the next permitted
+preset in the configured substitution order that fits the invoking budget.
 Report the substitution; keep the same source assignment and bounds rather than
 start a new survey wave. If no authorized, budget-fitting alternative is
 available, or dispatch or automatic result delivery is unavailable, mark the
