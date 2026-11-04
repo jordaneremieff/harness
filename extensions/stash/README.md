@@ -4,6 +4,8 @@ The ordinary extension publishes its registered tool renderers at factory load a
 on versioned requests through the [tool display contract](../../docs/conventions/tool-display.md).
 The payload contains only tool names and renderer fields, never execution functions.
 
+`display.ts` is the pure presentation module for those records: it imports only `presentation.ts` and public Pi types, and importing it registers nothing, emits nothing, and opens no store. The ordinary publication in `tool-display.ts` is derived from its `toolDisplay()` export, and the Durable contribution carries `display: { version: 1, entry: "./display.ts", export: "toolDisplay" }` so the standalone Agent terminal can render stash cards locally without starting this extension.
+
 The agent distills an effort into a durable Markdown handover. The extension owns deterministic storage, discovery, and pickup. The active agent distills its own effort through `stash_write`; `/stash new <hint>` starts independent Durable work from a captured session snapshot, without a caller turn. Ordinary UI callers show temporary status during admission.
 
 ## Surfaces

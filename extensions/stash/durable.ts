@@ -118,6 +118,8 @@ export interface StashDurableCommandCall {
 export interface StashDurableContribution {
 	readonly name: string;
 	readonly source: string;
+	/** Presentation-only module the standalone Agent terminal imports locally; see docs/conventions/tool-display.md. */
+	readonly display?: { readonly version: 1; readonly entry: string; readonly export: string };
 	create(host: StashDurableHost): Durable.Extension;
 	readonly commands?: readonly StashDurableCommand[];
 }
@@ -694,6 +696,7 @@ export function stashDurableContribution(
 	return {
 		name: "stash",
 		source,
+		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
 		create(host) {
 			disposeFactorySettings();
 			const publicationOptions = {
