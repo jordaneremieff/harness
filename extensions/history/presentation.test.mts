@@ -212,6 +212,91 @@ describe("history_read cards", () => {
 	});
 });
 
+describe("expanded history cards", () => {
+	it("leads the search expansion with readable evidence before the raw payload", () => {
+		const sm = SessionManager.inMemory();
+		sessionUser(sm, "decision amber raw detail");
+		sessionUser(sm, "recent cyan");
+		const value = searchHistory(sm, { query: "amber" });
+		const shown = screen(renderSearchResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }), 400);
+		assert.match(shown, /Matches \(first 1 of 1\):/);
+		assert.match(shown, /1 · message · user · /);
+		assert.match(shown, /"amber raw detail"/, "the search owner's bounded excerpt starts at the match");
+		assert.match(shown, /\/message\/content · offsets 9\.\.14/);
+		assert.ok(shown.indexOf("Matches (first 1 of 1):") < shown.indexOf("Raw payload (retained):"));
+		assert.match(shown, /Scope: session .* · start /);
+		assert.match(shown, /Raw payload \(retained\):/);
+		assert.match(shown, /"status": "ancestry_exhausted"/);
+	});
+
+	it("marks error entries and caps the shown matches", () => {
+		const hostileTitle = "safe\u202etitle";
+		const value = {
+			status: "match_limit",
+			visited: 5,
+			matches: [1, 2, 3, 4, 5].map((index) => ({
+				entry: { id: index, kind: "pi.tool-result", toolName: `bash-${index}`, isError: index % 2 === 0, timestamp: `2026-11-04T10:3${index}:05.000Z` },
+				pointer: `/model/${index}/content/0/text`,
+				offset: index,
+				endOffset: index + 3,
+				excerpt: `${hostileTitle} excerpt ${index}`,
+			})),
+			next: { sessionId: "s", fromId: 1, position: { message: 0, block: 0 }, offset: 0 },
+		};
+		const shown = screen(renderSearchResult(emptyResult(JSON.stringify(value)), { expanded: true, isPartial: false }, theme, { isError: false }), 400);
+		assert.match(shown, /Matches \(first 3 of 5\):/);
+		assert.match(shown, /1 · pi\.tool-result · tool bash-1 · 2026-11-04T10:31:05\.000Z · #1/);
+		assert.match(shown, /2 · pi\.tool-result · tool bash-2 · error · 2026-11-04T10:32:05\.000Z · #2/);
+		assert.match(shown, /\(\+2 more matches in the raw payload\)/);
+		assert.doesNotMatch(shown.slice(0, shown.indexOf("Raw payload")), /\u202e/u);
+	});
+
+	it("leads the read expansion with the exact stored text, then scope, then raw", () => {
+		const sm = SessionManager.inMemory();
+		const id = sessionUser(sm, "the exact stored sentence");
+		const value = readHistory(sm, { entryId: id, pointer: "/message/content" });
+		const shown = screen(renderReadResult(toolResult(value), { expanded: true, isPartial: false }, theme, { isError: false }), 400);
+		assert.match(shown, /Text \(exact stored page\):/);
+		assert.match(shown, /the exact stored sentence/);
+		assert.ok(shown.indexOf("Text (exact stored page):") < shown.indexOf("Scope:") && shown.indexOf("Scope:") < shown.indexOf("Raw payload (retained):"));
+		assert.match(shown, /Scope: entry message · user · /);
+		assert.match(shown, /membership not_checked/);
+		assert.match(shown, /"totalCodeUnits"/);
+	});
+
+	it("lists item pointers as read evidence for manifest reads", () => {
+		const value = { status: "complete", startId: 9, pointer: "/message/content", sessionId: "s", membership: "not_checked", entry: { id: 9, type: "message", role: "assistant", timestamp: "2026-11-04T10:31:05.000Z" }, items: [{ pointer: "/message/content/0", kind: "block" }, { pointer: "/message/content/1", kind: "block" }], next: null };
+		const shown = screen(renderReadResult(emptyResult(JSON.stringify(value)), { expanded: true, isPartial: false }, theme, { isError: false }), 400);
+		assert.match(shown, /Items \(first 2 of 2\):/);
+		assert.match(shown, /\/message\/content\/0 · block/);
+	});
+});
+
+describe("retained error diagnostics and injected hints", () => {
+	it("collapses an error to one clipped line and expands the retained diagnostic", () => {
+		const diagnostic = "history_read failed: source changed\nsecond line \u202e with \x1b[31m controls\n\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad";
+		const collapsedRows = rows(renderReadResult(emptyResult(diagnostic), { expanded: false, isPartial: false }, theme, { isError: true }), 400);
+		assert.equal(collapsedRows.length, 1, "one clipped line beside the card's leading spacer");
+		assert.match(collapsedRows[0], /^history_read failed: source changed/);
+		assert.doesNotMatch(collapsedRows[0], /second line/);
+		const expandedView = screen(renderReadResult(emptyResult(diagnostic), { expanded: true, isPartial: false }, theme, { isError: true }), 400);
+		assert.match(expandedView, /second line \\u\{202e\} with \\u\{1b\}\[31m controls/);
+		assert.match(expandedView, /\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad/);
+	});
+
+	it("names the configured expansion key only when the host supplies it", () => {
+		const sm = SessionManager.inMemory();
+		sessionUser(sm, "needle decision");
+		const value = searchHistory(sm, { query: "needle" });
+		const withKey = screen(renderSearchResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false, keyText: () => "ctrl+o" }));
+		assert.match(withKey, /ctrl\+o to expand result/);
+		const withoutKey = screen(renderSearchResult(toolResult(value), { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(withoutKey, /Expand for result/);
+		const callWithKey = screen(renderSearchCall({ query: "q".repeat(200) }, theme, { argsComplete: true, keyText: () => "ctrl+o" }));
+		assert.match(callWithKey, /ctrl\+o to expand arguments/);
+	});
+});
+
 describe("history card safety", () => {
 	const hostile = "safe\u009b\u202e\x1b[31m";
 	it("escapes C1 and bidi controls from payload values and expanded output", () => {

@@ -1,4 +1,4 @@
-/** Terminal cards for the brave tools: request identity and bounded outcome counts. */
+/** Terminal cards for source identity, retained evidence, and coverage bounds. */
 import type { AgentToolResult, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import type { KeybindingHints } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
@@ -171,6 +171,26 @@ function linksLead(details: Record<string, unknown>): string {
 	return parts.join(" · ");
 }
 
+function errorResult(name: string, output: string, options: ToolRenderResultOptions, theme: Theme, context: CardContext): Component {
+	const summary = `${name}: ${displayValue(firstLine(output) || "request failed", 200)}`;
+	return textComponent(`\n${theme.fg("error", summary)}${options.expanded ? `\n${theme.fg("toolOutput", boundedDisplay(output))}` : ""}`, context.lastComponent);
+}
+
+/** Identity labels drop control and format characters instead of showing their escaped forms. */
+function identityValue(value: string, limit: number): string {
+	const clean = value.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
+	const end = Math.min(clean.length, limit);
+	return clean.slice(0, /[\uD800-\uDBFF]/u.test(clean[end - 1] ?? "") ? end - 1 : end);
+}
+
+function readIdentity(details: Record<string, unknown>): string {
+	const title = stringField(details, "title");
+	const url = stringField(details, "finalUrl") || stringField(details, "requestedUrl");
+	let domain = "";
+	try { domain = new URL(url).hostname; } catch { /* A missing URL supplies no domain. */ }
+	return [title ? identityValue(title, 120) : "", domain ? identityValue(domain, 80) : ""].filter(Boolean).join(" · ");
+}
+
 export function renderReadResult(
 	result: AgentToolResult<unknown>,
 	options: ToolRenderResultOptions,
@@ -179,11 +199,11 @@ export function renderReadResult(
 ): Component {
 	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Reading the page...")}`, context.lastComponent);
 	const output = textContent(result);
-	if (context.isError)
-		return textComponent(`\n${theme.fg("error", `web_read: ${displayValue(firstLine(output) || "read failed", 200)}`)}`, context.lastComponent);
+	if (context.isError) return errorResult("web_read", output, options, theme, context);
 	const details = asRecord(result.details);
 	const lead = stringField(details, "view") === "links" ? linksLead(details) : textLead(details);
-	let text = `\n${theme.fg("success", lead)}`;
+	const identity = readIdentity(details);
+	let text = identity ? `\n${theme.fg("accent", identity)}\n${theme.fg("success", lead)}` : `\n${theme.fg("success", lead)}`;
 	const finalUrl = stringField(details, "finalUrl");
 	if (finalUrl && finalUrl !== stringField(details, "requestedUrl")) text += theme.fg("dim", ` → ${displayValue(finalUrl, URL_LIMIT)}`);
 	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
@@ -233,15 +253,24 @@ export function renderSearchResult(
 ): Component {
 	if (options.isPartial) return textComponent(`\n${theme.fg("warning", "Searching the web...")}`, context.lastComponent);
 	const output = textContent(result);
-	if (context.isError)
-		return textComponent(`\n${theme.fg("error", `web_search: ${displayValue(firstLine(output) || "search failed", 200)}`)}`, context.lastComponent);
+	if (context.isError) return errorResult("web_search", output, options, theme, context);
 	const details = asRecord(result.details);
 	const parts = [countLabel(numberField(details, "resultCount") ?? 0, "result")];
 	if (booleanField(details, "moreResultsAvailable") === true) parts.push("more available");
 	const altered = stringField(details, "alteredQuery");
 	if (altered) parts.push(`altered query ${displayValue(altered, 80)}`);
 	if (booleanField(details, "outputTruncated") === true) parts.push("output truncated");
-	let text = `\n${theme.fg("success", parts.join(" · "))}`;
+	const sources = Array.isArray(details.sources) ? details.sources.slice(0, 3) : [];
+	const identities = sources.map((source) => {
+		const value = asRecord(source);
+		return [numberField(value, "rank") !== undefined ? `#${numberField(value, "rank")}` : "", stringField(value, "title"), stringField(value, "domain")]
+			.filter(Boolean).map((part) => displayValue(part, 120)).join(" · ");
+	}).filter(Boolean);
+	const omitted = Math.max(0, (numberField(details, "resultCount") ?? 0) - identities.length);
+	if (omitted > 0 && identities.length > 0) parts.push(`${omitted} more sources in detail`);
+	const offset = numberField(details, "offset");
+	if (offset !== undefined && offset > 0) parts.push(`page ${offset + 1}`);
+	let text = `\n${identities.map((identity) => theme.fg("accent", identity)).join("\n")}${identities.length ? "\n" : ""}${theme.fg("success", parts.join(" · "))}`;
 	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
 	else text += `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);

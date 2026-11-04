@@ -55,6 +55,7 @@ export interface DurableContribution {
 	readonly name: string;
 	/** Absolute path of the emitting extension entrypoint. */
 	readonly source: string;
+	readonly display: { readonly version: 1; readonly entry: "./display.ts"; readonly export: "toolDisplay" };
 	/** Build the native extension for one session host; called once per host. */
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 }
@@ -97,6 +98,7 @@ export function braveDurableContribution(
 	return {
 		name: "brave",
 		source,
+		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
 		create(host) {
 			disposeFactorySettings();
 			const disposeSettings = publishSettings(bus, { agentDir: host.agentDir });

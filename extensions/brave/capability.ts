@@ -159,10 +159,27 @@ export const BRAVE_WEB_SEARCH_GUIDELINES: readonly string[] = [
 	"Treat web_search snippets as discovery evidence; open primary sources before relying on load-bearing claims.",
 ];
 
+export const SEARCH_DISPLAY_LIMITS = { sources: 3, title: 120, domain: 80 } as const;
+
+function displayText(value: string, limit: number): string {
+	const clean = value.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/gu, " ").trim();
+	const end = Math.min(clean.length, limit);
+	return clean.slice(0, /[\uD800-\uDBFF]/u.test(clean[end - 1] ?? "") ? end - 1 : end);
+}
+
+function sourceDomain(url: string): string {
+	try {
+		return displayText(new URL(url).hostname, SEARCH_DISPLAY_LIMITS.domain);
+	} catch {
+		return "";
+	}
+}
+
 export interface BraveWebSearchDetails {
 	query: string;
 	alteredQuery?: string;
 	resultCount: number;
+	sources: { rank: number; title: string; domain: string }[];
 	count: number;
 	offset: number;
 	moreResultsAvailable: boolean;
@@ -192,6 +209,11 @@ export async function runWebSearch(
 			query: params.query,
 			alteredQuery: response.alteredQuery,
 			resultCount: response.results.length,
+			sources: response.results.slice(0, SEARCH_DISPLAY_LIMITS.sources).map((result, index) => ({
+				rank: offset * count + index + 1,
+				title: displayText(result.title, SEARCH_DISPLAY_LIMITS.title),
+				domain: sourceDomain(result.url),
+			})),
 			count,
 			offset,
 			moreResultsAvailable: response.moreResultsAvailable,

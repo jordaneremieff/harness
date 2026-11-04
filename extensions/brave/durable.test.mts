@@ -190,6 +190,7 @@ describe("brave durable contribution", () => {
 			offset: 0,
 			moreResultsAvailable: false,
 			outputTruncated: false,
+			sources: [{ rank: 1, title: "Durable evidence", domain: "example.com" }],
 		});
 		assert.equal(read?.toolName, "web_read");
 		assert.match(toolText(read), /Final URL: http:\/\/8\.8\.8\.8\/evidence/);

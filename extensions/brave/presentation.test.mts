@@ -86,7 +86,7 @@ describe("web_read result cards", () => {
 			theme,
 			{ ...collapsed, args: { url: "https://example.com/a" } },
 		);
-		assert.match(screen(card), /^readable · 3 excerpts \(E3\.\.E5\) · continuation/);
+		assert.match(screen(card), /^example\.com\nreadable · 3 excerpts \(E3\.\.E5\) · continuation/);
 		assertFits(card);
 	});
 
@@ -269,5 +269,114 @@ describe("web_search result cards", () => {
 		assert.equal(screen(partial), "Searching the web...");
 		const full = renderSearchResult(text("1. Result title\n   https://example.com"), { expanded: true, isPartial: false }, theme, expanded);
 		assert.match(screen(full, 400), /Result title/);
+	});
+});
+
+describe("source identity before extraction mechanics", () => {
+	it("leads the web_read card with the page title and domain", () => {
+		const card = renderReadResult(
+			text("body", { status: "readable", excerptCount: 1, title: "Example \u2014 A Page", requestedUrl: "https://example.com/a", finalUrl: "https://example.com/a" }),
+			{ expanded: false, isPartial: false },
+			theme,
+			collapsed,
+		);
+		assert.equal(screen(card).split("\n")[0], "Example \u2014 A Page · example.com");
+		assert.match(screen(card).split("\n")[1] ?? "", /^readable · 1 excerpt/);
+		assertFits(card);
+	});
+
+	it("keeps a missing title to the domain alone and cleans control characters", () => {
+		const card = renderReadResult(
+			text("body", { status: "readable", excerptCount: 1, title: "bad\u202etitle", finalUrl: "https://example.com/x" }),
+			{ expanded: false, isPartial: false },
+			theme,
+			collapsed,
+		);
+		assert.equal(screen(card).split("\n")[0], "bad title · example.com");
+	});
+
+	it("lists ranked source identities before the web_search outcome row", () => {
+		const card = renderSearchResult(
+			text("results", {
+				resultCount: 5,
+				moreResultsAvailable: true,
+				offset: 1,
+				sources: [
+					{ rank: 11, title: "Alpha", domain: "a.com" },
+					{ rank: 12, title: "Beta \u65e5\u672c\u8a9e", domain: "b.org" },
+					{ rank: 13, title: "Gamma", domain: "c.io" },
+				],
+			}),
+			{ expanded: false, isPartial: false },
+			theme,
+			collapsed,
+		);
+		const lines = screen(card).split("\n");
+		assert.equal(lines[0], "#11 · Alpha · a.com");
+		assert.equal(lines[1], "#12 · Beta \u65e5\u672c\u8a9e · b.org");
+		assert.equal(lines[2], "#13 · Gamma · c.io");
+		assert.match(lines[3] ?? "", /^5 results · more available · 2 more sources in detail · page 2$/);
+		assertFits(card);
+	});
+
+	it("shows every source when the page is short and no result is omitted", () => {
+		const card = renderSearchResult(
+			text("results", { resultCount: 2, moreResultsAvailable: false, sources: [{ rank: 1, title: "One", domain: "one.dev" }, { rank: 2, title: "Two", domain: "two.dev" }] }),
+			{ expanded: false, isPartial: false },
+			theme,
+			collapsed,
+		);
+		assert.doesNotMatch(screen(card), /more sources in detail/);
+		assert.match(screen(card).split("\n")[2] ?? "", /^2 results/);
+	});
+});
+
+describe("retained error diagnostics", () => {
+	const hostile = `Brave search failed: 429\nsecond line \u202e with \x1b[31m controls\n\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad https://example.com/very/long/path/that/keeps/going`;
+
+	it("collapses an error to its first line and expands the retained diagnostic", () => {
+		const collapsedError = renderSearchResult(text(hostile), { expanded: false, isPartial: false }, theme, { ...collapsed, isError: true });
+		const collapsedScreen = screen(collapsedError);
+		assert.equal(collapsedScreen.split("\n").length, 1);
+		assert.match(collapsedScreen, /^web_search: Brave search failed: 429$/);
+		assert.doesNotMatch(collapsedScreen, /second line/);
+		const expandedError = renderSearchResult(text(hostile), { expanded: true, isPartial: false }, theme, { ...expanded, isError: true });
+		const expandedScreen = screen(expandedError, 400);
+		assert.match(expandedScreen, /^web_search: Brave search failed: 429$/m);
+		assert.match(expandedScreen, /second line \\u\{202e\} with \\x1b\[31m controls/);
+		assert.match(expandedScreen, /\u65e5\u672c\u8a9e\u306e\u8a3a\u65ad/);
+		assertFits(expandedError);
+	});
+
+	it("expands a web_read error across lines without a second row when collapsed", () => {
+		const diagnostic = "Web reader refused the URL\nbecause the host is private";
+		const collapsedError = renderReadResult(text(diagnostic), { expanded: false, isPartial: false }, theme, { ...collapsed, isError: true });
+		assert.equal(screen(collapsedError), "web_read: Web reader refused the URL");
+		const expandedError = renderReadResult(text(diagnostic), { expanded: true, isPartial: false }, theme, { ...expanded, isError: true });
+		assert.match(screen(expandedError, 200), /because the host is private/);
+	});
+});
+
+describe("host-injected expansion hints", () => {
+	it("names the configured key when the host supplies keyText", () => {
+		const card = renderReadResult(
+			text("body", { status: "readable", excerptCount: 1, nextOffset: 2 }),
+			{ expanded: false, isPartial: false },
+			theme,
+			{ ...collapsed, keyText: () => "ctrl+o" },
+		);
+		assert.match(screen(card), /ctrl\+o to expand result/);
+	});
+
+	it("uses neutral wording when no binding is supplied", () => {
+		const card = renderReadResult(
+			text("body", { status: "readable", excerptCount: 1, nextOffset: 2 }),
+			{ expanded: false, isPartial: false },
+			theme,
+			collapsed,
+		);
+		assert.match(screen(card), /Expand for full result/);
+		const longQuery = renderSearchCall({ query: "q".repeat(300) }, theme, { ...collapsed, keyText: () => "ctrl+o" });
+		assert.match(screen(longQuery), /ctrl\+o to expand arguments/);
 	});
 });

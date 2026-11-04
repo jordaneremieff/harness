@@ -6,7 +6,12 @@ rebuild model context, edit entries, open session files, or search other session
 
 The ordinary extension publishes its registered tool renderers at factory time and
 on display requests through the [tool display contract](../../docs/conventions/tool-display.md);
-the payload contains no execution functions.
+the payload contains no execution functions. The same records come from
+`display.ts`, a presentation-only module over `presentation.ts` that the Durable
+contribution advertises as its display descriptor
+(`{ version: 1, entry: "./display.ts", export: "toolDisplay" }`), so the standalone
+Agent terminal renders history cards locally without the ordinary runtime.
+Importing it registers no tools and emits no events.
 
 ## Use
 
@@ -106,9 +111,14 @@ Both history tools render their own cards in the interactive transcript. A
 collapsed card shows the request on its heading row and at most one qualifier
 row, then one or two outcome rows. The argument and result expansion hints
 appear only when the collapsed view hides or clips content, and each rides the
-row it belongs to. An expanded card shows the full arguments or the
-pretty-printed result. Terminal controls are escaped and long values are
-clipped.
+row it belongs to. An expanded card shows the full arguments, or readable
+evidence first: for a search, the shown matches with entry kind, role or tool,
+time, error flag, excerpt, pointer, and offsets, then the walked scope, then the
+retained payload under a `Raw payload (retained)` heading; for a read, the
+exact stored page text, then scope, then the raw payload. A collapsed error
+shows one clipped line and the expanded card keeps the full retained
+diagnostic. Expansion hints use the host-injected key binding and name no key
+without one. Terminal controls are escaped and long values are clipped.
 
 - `history_search` names the literal query, or the bounded listing when the
   query is omitted, with filter, start entry, and continuation qualifiers. The

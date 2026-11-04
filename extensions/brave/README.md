@@ -6,7 +6,12 @@ reader opens them as evidence without a browser or stored credentials.
 
 The ordinary extension publishes its registered tool renderers at factory time and
 on display requests through the [tool display contract](../../docs/conventions/tool-display.md);
-the payload contains no execution functions.
+the payload contains no execution functions. The same records come from
+`display.ts`, a presentation-only module over `presentation.ts` that the Durable
+contribution advertises as its display descriptor
+(`{ version: 1, entry: "./display.ts", export: "toolDisplay" }`), so the standalone
+Agent terminal renders Brave cards locally without the ordinary runtime.
+Importing it registers no tools and emits no events.
 
 ## Surface
 
@@ -416,17 +421,22 @@ the URL or query is clipped.
 
 A collapsed result leads with the outcome the response establishes:
 
-- `web_read` text reads show the status, the excerpt count, whether a continuation
-  exists, an exact label range when no `find` applies, and the first matched label
-  for a `find`. Coverage flags state extraction or output truncation. A redirect
+- `web_read` text reads lead with the source identity (page title and domain)
+  before the status, the excerpt count, whether a continuation exists, an exact
+  label range when no `find` applies, and the first matched label for a
+  `find`. Coverage flags state extraction or output truncation. A redirect
   shows the final URL when it differs from the request.
 - `web_read` links reads show the link count, page offset, coverage flags, and
   the `max_bytes` the next complete record needs.
-- `web_search` shows the returned result count, whether more pages are
-  available, an altered query, and output truncation.
+- `web_search` leads with the first ranked sources (rank, title, domain) from
+  the bounded `sources` projection the producer carries in result details,
+  then the returned result count, whether more pages are available, an altered
+  query, and output truncation; further sources are in the expanded detail.
 
-Expansion shows the full result text with a display bound; terminal controls
-escape to text in every collapsed value.
+Expansion shows the full result text with a display bound. A collapsed error
+shows one clipped line; the expanded card keeps the complete retained
+diagnostic. Terminal controls escape to text in every collapsed value, and
+expansion hints use the host-injected key binding.
 
 ## Dependencies
 

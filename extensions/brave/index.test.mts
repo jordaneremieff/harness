@@ -175,6 +175,7 @@ describe("Brave extension entrypoint", () => {
 			moreResultsAvailable: true,
 			nextOffset: 2,
 			outputTruncated: false,
+			sources: [{ rank: 6, title: "Pi", domain: "example.com" }],
 		});
 	});
 
@@ -213,6 +214,7 @@ describe("Brave extension entrypoint", () => {
 			moreResultsAvailable: false,
 			nextOffset: undefined,
 			outputTruncated: false,
+			sources: [],
 		});
 	});
 
