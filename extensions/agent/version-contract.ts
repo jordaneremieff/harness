@@ -31,7 +31,7 @@ function schemaId(schema: unknown): string {
 	return createHash("sha256").update(JSON.stringify(schema)).digest("hex");
 }
 const operations: Record<string, OperationContract> = {};
-for (const method of ["close", "recovery-state", "submit", "passive-submit", "spawn", "place", "attach", "receipts", "report", "acknowledge", "inspect", "status", "list", "fork", "rewind", "abort", "compact", "configure", "command", "reset", "timer-schedule", "timer-list", "timer-cancel", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "changes", "collaboration-list", "collaboration-read", "collaboration-mutate"]) {
+for (const method of ["close", "recovery-state", "submit", "passive-submit", "spawn", "place", "attach", "receipts", "report", "acknowledge", "inspect", "status", "list", "fork", "rewind", "abort", "compact", "configure", "command", "reset", "timer-schedule", "timer-list", "timer-cancel", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "changes", "collaboration-list", "collaboration-read", "collaboration-mutate", "models"]) {
 	operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };
 }
 for (const method of ["profile-read", "profile-update", "profile-list", "resolve-agent", "task-submit", "release"]) operations[method] = { request: `${method}/1.0.0`, response: `${method}/1.0.0` };

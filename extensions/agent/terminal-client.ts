@@ -16,6 +16,8 @@ import type { AgentConversationSummary, AgentConversationSnapshot } from "./dash
 import { fitLine } from "./dashboard-layout.ts";
 import { readAgentBranch, AgentBranchCache } from "./agent-git.ts";
 import { terminalAction } from "./terminal-actions.ts";
+import { terminalDialogs } from "./terminal-dialogs.ts";
+import type { AgentDialogs } from "./dialog-adapter.ts";
 import { admittedResult } from "./result-reference.ts";
 
 export function terminalAdmission(receipt: unknown, id: string, mode: "steer" | "followUp"): string {
@@ -284,7 +286,8 @@ export class TerminalScreen implements Component {
 	private transcript = { y: 0, height: 0, width: 0 };
 	private readonly off: () => void;
 	private readonly branches: AgentBranchCache;
-	private readonly dialogs = new Set<() => void>();
+	private readonly openDialogs = new Set<() => void>();
+	private readonly dialogs: AgentDialogs;
 	private disposed = false;
 	private readonly tui: TUI;
 	private readonly theme: Theme;
@@ -294,6 +297,9 @@ export class TerminalScreen implements Component {
 	constructor(tui: TUI, theme: Theme, keys: KeybindingsManager, controller: TerminalController, done: () => void, publishStatus?: (status: ProgramStatus) => void) {
 		this.tui = tui; this.theme = theme; this.keys = keys; this.controller = controller; this.done = done;
 		if (publishStatus) this.programStatus = new TerminalProgramStatus(publishStatus);
+		this.dialogs = terminalDialogs({ tui, theme, keys,
+			track: (cancel) => { this.openDialogs.add(cancel); this.projectStatus(); return () => { this.openDialogs.delete(cancel); this.projectStatus(); }; },
+			notify: (text) => { this.notice = text; this.tui.requestRender(); } });
 		this.navigationInput.onSubmit = (text) => { this.navigationInput.setValue(""); void this.submit(text); };
 		this.branches = new AgentBranchCache(readAgentBranch, () => this.tui.requestRender());
 		this.off = controller.subscribe(() => this.changed());
@@ -326,7 +332,7 @@ export class TerminalScreen implements Component {
 			revision: this.controller.selectionRevision,
 			live: this.controller.availability?.state === "live",
 			busy: this.controller.row?.state === "working",
-			interaction: this.dialogs.size > 0,
+			interaction: this.openDialogs.size > 0,
 		});
 	}
 	private async submit(text: string): Promise<void> {
@@ -354,13 +360,17 @@ export class TerminalScreen implements Component {
 		if (!id) throw new Error("No attached conversation");
 		const inputs = this.controller.unconfirmed(id);
 		if (!inputs.length) throw new Error("No unconfirmed input for this target");
-		const choice = await this.ask(`Unconfirmed inputs for ${id}`, ["Inspect native history before any resend. Recovery never sends input.", ...inputs.map((input, i) => `${i + 1}: requested ${input.mode} · ${JSON.stringify(input.text)}`)], `Input number (1-${inputs.length}): `);
-		if (!choice) return;
-		const input = /^[1-9]\d*$/.test(choice) ? inputs[Number(choice) - 1] : undefined;
-		if (!input) throw new Error("Choose a listed input number");
+		const picked = await this.dialogs.select(`Unconfirmed inputs for ${id}\nInspect native history before any resend. Recovery never sends input.`, inputs.map((input, index) => ({ value: String(index), label: `requested ${input.mode} · ${input.text.replace(/\s+/g, " ").slice(0, 80)}` })));
+		const input = picked === undefined ? undefined : inputs[Number(picked)];
+		if (!input) return;
 		const state = agentState(this.controller.state, id);
 		const revision = state.draftRevision; const mode = state.mode;
-		const action = await this.ask(`Recover input for ${id}`, ["restore replaces the current target draft and mode with the full text; it does not send.", "The unconfirmed copy remains until explicit discard. discard removes only that copy.", `Requested mode: ${input.mode}`, ...input.text.split("\n")], "Type restore or discard: ");
+		let action: string | undefined;
+		do {
+			action = await this.dialogs.select(`Recover input for ${id}\nRestore replaces the current target draft and mode with the full text; it does not send. The unconfirmed copy remains until explicit discard. Requested mode: ${input.mode}`, [
+				{ value: "read", label: "Read full text" }, { value: "restore", label: "Restore to the draft" }, { value: "discard", label: "Discard this copy" }, { value: "cancel", label: "Cancel" }]);
+			if (action === "read") await this.dialogs.read("Unconfirmed input", input.text);
+		} while (action === "read");
 		if (action === "restore") this.controller.restoreUnconfirmed(id, input, revision, mode);
 		else if (action === "discard") this.controller.discardUnconfirmed(id, input);
 	}
@@ -395,44 +405,13 @@ export class TerminalScreen implements Component {
 			},
 			submissionFailure: (input, error) => this.controller.failureReceipt(input.id, error),
 			chooseConversation: async (labels) => {
-				const id = await this.ask("Choose conversation", labels.map((label) => `${label.identity} ${label.name ?? ""}`), "Identity: ");
-				if (id === undefined) return undefined;
-				if (!labels.some((label) => label.identity === id)) throw new Error("Choose a listed identity");
-				return id;
+				return this.dialogs.select("Choose a conversation", labels.map((label) => ({ value: label.identity, label: label.name || label.firstMessage || "Conversation", description: label.identity })));
 			},
 			toolDisplay: this.controller.toolDisplay,
-			action: (name, target) => terminalAction(this.controller, (title, lines, prompt, initial) => this.ask(title, lines, prompt, initial), name, target),
+			action: (name, target) => terminalAction(this.controller, this.dialogs, name, target),
 		};
 		this.dashboard = new AgentDashboard(this.tui, this.theme, this.keys, () => this.closeDashboard(), this.controller.state, source, operations, { hide: () => { this.dashboardHidden = true; this.tui.requestRender(); }, show: () => { this.dashboardHidden = false; this.tui.requestRender(); } }, this.controller.target);
 		this.tui.requestRender();
-	}
-	private ask(title: string, lines: string[], prompt: string, initial = ""): Promise<string | undefined> {
-		if (this.disposed) return Promise.resolve(undefined);
-		return new Promise((resolveAnswer) => {
-			const input = new Input({ prompt });
-			input.setValue(initial);
-			let handle: { hide(): void } | undefined;
-			let settled = false;
-			const finish = (answer?: string) => { if (settled) return; settled = true; this.dialogs.delete(cancel); this.projectStatus(); handle?.hide(); resolveAnswer(answer); this.tui.requestRender(); };
-			const cancel = () => finish();
-			this.dialogs.add(cancel);
-			this.projectStatus();
-			input.onSubmit = (value) => finish(value);
-			const component: Component & Focusable = {
-				get focused() { return input.focused; },
-				set focused(value: boolean) { input.focused = value; },
-				render: (width) => {
-					const field = input.render(width);
-					const bodyRows = Math.max(0, Math.floor(this.tui.terminal.rows * 0.9) - field.length - 2);
-					const body = lines.slice(0, bodyRows);
-					if (lines.length > bodyRows && bodyRows > 0) body[bodyRows - 1] = `${lines.length - bodyRows + 1} text lines omitted.`;
-					return [fitLine(title, width), ...body.map((line) => fitLine(line, width)), ...field, fitLine("Enter applies · Esc cancels", width)];
-				},
-				handleInput: (data) => { if (matchesKey(data, "escape")) finish(); else input.handleInput(data); this.tui.requestRender(); },
-				invalidate: () => input.invalidate(),
-			};
-			handle = this.tui.showOverlay(component, { width: "90%", maxHeight: "90%", anchor: "center" });
-		});
 	}
 	closeDashboard(): void {
 		this.dashboard?.dispose(); this.dashboard = undefined;
@@ -581,7 +560,7 @@ export class TerminalScreen implements Component {
 		return undefined;
 	}
 	invalidate(): void { this.resetHits(); this.console?.conversation.invalidate(); this.console?.composer.invalidate(); this.dashboard?.invalidate(); }
-	dispose(): void { this.disposed = true; this.programStatus?.dispose(); for (const cancel of this.dialogs) cancel(); this.closeDashboard(); this.console?.save(); this.console?.dispose(); this.branches.dispose(); this.off(); }
+	dispose(): void { this.disposed = true; this.programStatus?.dispose(); for (const cancel of [...this.openDialogs]) cancel(); this.closeDashboard(); this.console?.save(); this.console?.dispose(); this.branches.dispose(); this.off(); }
 }
 
 export function parseTerminalArgs(args: string[]): { session?: string; selectedTheme: "dark" | "light" } {

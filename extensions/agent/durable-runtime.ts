@@ -37,6 +37,8 @@ import { publishAgentControlDispatch, type AgentControlDispatch } from "./durabl
 import { projectConversationIntents } from "./durable-controls.ts";
 import { deliveryPendingCount } from "./delivery-store.ts";
 import { isThinkingLevel } from "./configuration.ts";
+import { ModelChoicesSchema } from "./observation-schema.ts";
+import type { Static } from "@earendil-works/pi-schema";
 import { AgentManager } from "./manager.ts";
 import { startDurableDelivery, type DurableDelivery, type NativeTargetFailure } from "./durable-delivery.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
@@ -106,6 +108,20 @@ function validateModel(services: DurableServices, model: { provider: string; mod
 	if (!selected) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
 	if (!isThinkingLevel(level)) throw new Error("Unknown reasoning level");
 	return clampThinkingLevel(selected, level);
+}
+
+/** Last-known available models of the configured runtime; the read starts no credential check or network request. */
+export function modelChoices(services: Pick<DurableServices, "services">): Static<typeof ModelChoicesSchema> {
+	const runtime = services.services.modelRuntime;
+	const error = runtime.getError();
+	return {
+		models: runtime.getAvailableSnapshot()
+			.map((model) => ({ provider: model.provider, modelId: model.id, name: model.name, reasoning: model.reasoning }))
+			.sort((a, b) => `${a.provider}/${a.modelId}`.localeCompare(`${b.provider}/${b.modelId}`)),
+		source: "available-snapshot",
+		...(error === undefined ? {} : { error: error.slice(0, 240) }),
+		observedAt: new Date().toISOString(),
+	};
 }
 
 /** Constructed only after the process claims the storage writer. */
@@ -654,6 +670,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			case "attach": return attach(params);
 			case "configure": return configureRequest(params, requestId);
 			case "command": params.invocationId ??= requestId; return runCommand(params);
+			case "models": return modelChoices(services);
 			case "status": return { ...await host.request(method, params) as Record<string, unknown>, inventory: services.inventory, pid: process.pid, storageId: metadata.storageId };
 			case "receipts": return host.request(method, params, signal ? withAbortSignal(signal, BACKGROUND_CONTEXT) : BACKGROUND_CONTEXT);
 			case "task-submit": case "profile-update": case "submit": case "rewind": case "report": params.requestId ??= requestId; break;

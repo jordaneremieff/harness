@@ -6,6 +6,7 @@ import type { AgentObservationSource } from "./agent-observation.ts";
 import type { TimerListRow, TimerMode } from "./durable-timers.ts";
 import { agentState, type DashboardState, type ScheduleDraft } from "./dashboard-state.ts";
 import { agentDisplayName } from "./action-outcome.ts";
+import { dialogSteps, ordinaryDialogs, type AgentDialogs, type DialogChoice } from "./dialog-adapter.ts";
 export interface ActionDialogExtras {
 	timers(id: string, ctx: ExtensionContext): Promise<readonly TimerListRow[]>;
 	schedule(
@@ -83,20 +84,19 @@ export function scheduleDeadline(text: string, now: number): string {
 		throw new Error("The deadline must be in the future");
 	return deadline.toISOString();
 }
-async function confirm(ctx: ExtensionContext, title: string, description: string, action: string): Promise<boolean> {
-	return (await ctx.ui.select(`${title}\n${description}`, ["Cancel", action])) === action;
-}
-async function entryPage(source: AgentObservationSource, id: string, preferred: string | null | undefined) {
+async function entryPage(source: Pick<AgentObservationSource, "snapshot" | "earlier">, id: string, preferred: string | null | undefined) {
 	let page = await source.snapshot(id);
 	while (preferred && !page.entries.some((entry) => entry.id === preferred) && page.nextBefore) {
 		page = await source.earlier(id, page.nextBefore);
 	}
 	return page;
 }
+const LATEST = "latest";
+const EARLIER = "earlier";
 async function entryChoice(
-	source: AgentObservationSource,
+	source: Pick<AgentObservationSource, "snapshot" | "earlier">,
 	id: string,
-	ctx: ExtensionContext,
+	dialogs: AgentDialogs,
 	fork: boolean,
 	preferred?: string | null,
 ): Promise<string | null | undefined> {
@@ -105,95 +105,72 @@ async function entryChoice(
 		const choices = committedChoices(page.entries).reverse();
 		const saved = choices.findIndex((item) => item.id === preferred);
 		if (saved > 0) choices.unshift(...choices.splice(saved, 1));
-		const labels = [
-			...(fork ? ["Latest committed entry"] : []),
-			...choices.map((item) => item.label),
-			...(page.nextBefore ? ["Earlier messages"] : []),
+		const options: DialogChoice[] = [
+			...(fork ? [{ value: LATEST, label: "Latest committed entry" }] : []),
+			...choices.map((item) => ({ value: item.id, label: item.label })),
+			...(page.nextBefore ? [{ value: EARLIER, label: "Earlier messages" }] : []),
 		];
-		const selected = await ctx.ui.select("Choose a committed message", labels);
+		const selected = await dialogs.select("Choose a committed message", options);
 		if (selected === undefined) return undefined;
-		if (selected === "Latest committed entry") return null;
-		if (selected === "Earlier messages" && page.nextBefore) {
+		if (selected === LATEST) return null;
+		if (selected === EARLIER && page.nextBefore) {
 			const older = await source.earlier(id, page.nextBefore);
 			page = { ...older };
 			continue;
 		}
-		return choices.find((item) => item.label === selected)?.id;
+		return choices.some((item) => item.id === selected) ? selected : undefined;
 	}
 }
-interface DialogContext {
-	state: DashboardState;
-	row: AgentConversationSummary;
-	ctx: ExtensionContext;
-	actions: readonly AgentCommandAction[];
-	source: AgentObservationSource;
-	extras: ActionDialogExtras;
-	label: string;
+export type ActionResult = string | AgentActionOutcome | undefined;
+/** Everything a form needs from its host: prompts, identity, and the effects it may request. */
+export interface ActionFlowHost {
+	readonly dialogs: AgentDialogs;
+	readonly row: AgentConversationSummary;
+	readonly state: DashboardState;
+	readonly source: Pick<AgentObservationSource, "snapshot" | "earlier">;
+	/** Run one native action with the positional arguments of its command form. */
+	run(name: string, args: string[]): Promise<ActionResult>;
+	timers(): Promise<readonly TimerListRow[]>;
+	schedule(input: { message: string; deliverAt: string; mode: TimerMode }): Promise<AgentActionOutcome>;
+	configure(): Promise<ActionResult>;
 }
-async function runNative(
-	context: DialogContext,
-	name: string,
-	args: string[] = [],
-): Promise<string | AgentActionOutcome | undefined> {
-	const action = context.actions.find((item) => item.name === name);
-	if (!action) throw new Error(`Action unavailable: ${name}`);
-	return action.run([context.row.id, ...args], context.ctx);
-}
-/** A cancelled step goes back once; cancellation at the first step leaves the action. */
-async function formSteps(steps: readonly (() => Promise<boolean>)[]): Promise<boolean> {
-	for (let step = 0; step < steps.length; ) {
-		if (await steps[step]?.()) step++;
-		else if (step === 0) return false;
-		else step--;
-	}
-	return true;
-}
+const labelOf = (host: ActionFlowHost) => agentDisplayName(host.row);
 /** Native input ignores placeholders, so its title shows the completed value. */
-function inputField(
-	ctx: ExtensionContext,
-	title: string,
-	value: string,
-	placeholder: string,
-): Promise<string | undefined> {
+function inputField(dialogs: AgentDialogs, title: string, value: string, placeholder: string): Promise<string | undefined> {
 	const hint = value ? `Saved: ${value} (blank keeps it)` : placeholder;
-	return ctx.ui.input(`${title}\n${hint}`, hint);
+	return dialogs.input(`${title}\n${hint}`, { initial: value, placeholder: hint });
 }
 /** Blank submission retains a completed single-line value. */
-async function savedInput(
-	ctx: ExtensionContext,
-	title: string,
-	value: string,
-	placeholder: string,
-): Promise<string | undefined> {
-	const input = await inputField(ctx, title, value, placeholder);
+async function savedInput(dialogs: AgentDialogs, title: string, value: string, placeholder: string): Promise<string | undefined> {
+	const input = await inputField(dialogs, title, value, placeholder);
 	return input === undefined ? undefined : input.trim() ? input : value;
 }
-async function branchDialog(context: DialogContext, rewind: boolean): Promise<string | AgentActionOutcome | undefined> {
-	const { source, row, ctx, label } = context;
+async function branchDialog(host: ActionFlowHost, rewind: boolean): Promise<ActionResult> {
+	const { source, row, dialogs } = host;
+	const label = labelOf(host);
 	let entry: string | null | undefined;
 	let correction = "";
 	const choose = async () => {
-		const selected = await entryChoice(source, row.id, ctx, !rewind, entry);
+		const selected = await entryChoice(source, row.id, dialogs, !rewind, entry);
 		if (selected === undefined) return false;
 		entry = selected;
 		return true;
 	};
 	if (!rewind) {
 		if (!(await choose()) || entry === undefined) return undefined;
-		return runNative(context, "fork", entry === null ? [] : [entry]);
+		return host.run("fork", entry === null ? [] : [entry]);
 	}
 	if (
-		!(await formSteps([
+		!(await dialogSteps([
 			choose,
 			async () => {
-				const text = await ctx.ui.editor(`Correction for ${label}`, correction);
+				const text = await dialogs.editor(`Correction for ${label}`, correction);
 				if (text === undefined) return false;
 				correction = text;
 				return Boolean(text.trim());
 			},
 			() =>
-				confirm(
-					ctx,
+				dialogs.confirm(
 					`Rewind ${label}?`,
 					"Source history stays. Files do not roll back. A new branch starts corrected work.",
 					"Rewind",
@@ -202,68 +179,78 @@ async function branchDialog(context: DialogContext, rewind: boolean): Promise<st
 	)
 		return undefined;
 	if (entry === undefined || entry === null) return undefined;
-	return runNative(context, "rewind", [entry, correction]);
+	return host.run("rewind", [entry, correction]);
 }
-async function contextDialog(context: DialogContext, reset: boolean): Promise<string | AgentActionOutcome | undefined> {
-	const { ctx, label } = context;
+async function contextDialog(host: ActionFlowHost, reset: boolean): Promise<ActionResult> {
+	const { dialogs } = host;
+	const label = labelOf(host);
 	let text = "";
 	const description = reset
 		? "History, files, settings, and timers stay. No new turn starts. Busy work resets at the next boundary."
 		: "Active work stops. The conversation compacts without resuming.";
 	const title = reset ? "Reset context" : "Compact";
 	if (
-		!(await formSteps([
+		!(await dialogSteps([
 			async () => {
-				const value = await ctx.ui.editor(`${reset ? "Optional handoff" : "Optional instructions"} for ${label}`, text);
+				const value = await dialogs.editor(`${reset ? "Optional handoff" : "Optional instructions"} for ${label}`, text);
 				if (value === undefined) return false;
 				text = value;
 				return true;
 			},
-			() => confirm(ctx, `${title} for ${label}?`, description, title),
+			() => dialogs.confirm(`${title} for ${label}?`, description, title),
 		]))
 	)
 		return undefined;
-	return runNative(context, reset ? "reset" : "compact", text.trim() ? [text] : []);
+	return host.run(reset ? "reset" : "compact", text.trim() ? [text] : []);
 }
-async function commandDialog(context: DialogContext): Promise<string | AgentActionOutcome | undefined> {
-	const { ctx, label } = context;
+async function commandDialog(host: ActionFlowHost, commands: readonly DialogChoice[] | undefined): Promise<ActionResult> {
+	const { dialogs } = host;
+	const label = labelOf(host);
 	let command = "";
 	let input = "";
 	if (
-		!(await formSteps([
+		!(await dialogSteps([
 			async () => {
-				const value = await savedInput(ctx, `Command for ${label}`, command, "Command name");
+				if (commands) {
+					if (!commands.length) throw new Error("This agent's host has no native commands.");
+					const picked = await dialogs.select(`Command for ${label}`, commands, command || undefined);
+					if (picked === undefined) return false;
+					command = picked;
+					return true;
+				}
+				const value = await savedInput(dialogs, `Command for ${label}`, command, "Command name");
 				if (value === undefined || !value.trim()) return false;
 				command = value;
 				return true;
 			},
 			async () => {
-				const value = await savedInput(ctx, `Arguments for ${label}`, input, "Optional arguments");
+				const value = await savedInput(dialogs, `Arguments for ${label}`, input, "Optional arguments");
 				if (value === undefined) return false;
 				input = value;
 				return true;
 			},
-			() => confirm(ctx, `Run ${command} on ${label}?`, "This uses the selected agent's authority.", "Run"),
+			() => dialogs.confirm(`Run ${command} on ${label}?`, "This uses the selected agent's authority.", "Run"),
 		]))
 	)
 		return undefined;
-	return runNative(context, "command", [command, input]);
+	return host.run("command", [command, input]);
 }
-async function scheduleDialog(context: DialogContext): Promise<string | AgentActionOutcome | undefined> {
-	const { ctx, row, extras, label, state } = context;
+async function scheduleDialog(host: ActionFlowHost): Promise<ActionResult> {
+	const { dialogs, row, state } = host;
+	const label = labelOf(host);
 	const record = agentState(state, row.id);
 	record.schedule ??= { message: "", time: "", mode: "followUp" };
 	const draft: ScheduleDraft = record.schedule;
 	if (
-		!(await formSteps([
+		!(await dialogSteps([
 			async () => {
-				const message = await ctx.ui.editor(`Scheduled message to ${label}`, draft.message);
+				const message = await dialogs.editor(`Scheduled message to ${label}`, draft.message);
 				if (message === undefined) return false;
 				draft.message = message;
 				return Boolean(message.trim());
 			},
 			async () => {
-				const time = await inputField(ctx, "Deadline", draft.time, "HH:MM local or +30m");
+				const time = await inputField(dialogs, "Deadline", draft.time, "HH:MM local or +30m");
 				if (time === undefined) return false;
 				if (time.trim()) {
 					draft.time = time.trim();
@@ -275,16 +262,15 @@ async function scheduleDialog(context: DialogContext): Promise<string | AgentAct
 				return true;
 			},
 			async () => {
-				const modes = draft.mode === "steer" ? ["Steer", "Follow-up"] : ["Follow-up", "Steer"];
-				const mode = await ctx.ui.select("Busy disposition", modes);
+				const modes: DialogChoice[] = [{ value: "followUp", label: "Follow-up" }, { value: "steer", label: "Steer" }];
+				const mode = await dialogs.select("Busy disposition", modes, draft.mode);
 				if (!mode) return false;
-				draft.mode = mode === "Steer" ? "steer" : "followUp";
+				draft.mode = mode === "steer" ? "steer" : "followUp";
 				return true;
 			},
 			async () => {
 				if (!draft.deadline) return false;
-				return confirm(
-					ctx,
+				return dialogs.confirm(
 					`Schedule for ${label}?`,
 					`${new Date(draft.deadline).toString()}\n${draft.deadline}\n${draft.mode === "steer" ? "Steer" : "Follow-up"}. The host must run at the deadline.`,
 					"Schedule",
@@ -294,63 +280,72 @@ async function scheduleDialog(context: DialogContext): Promise<string | AgentAct
 	)
 		return undefined;
 	if (!draft.deadline) return undefined;
-	const result = await extras.schedule(
-		{ sessionId: row.id, message: draft.message, deliverAt: draft.deadline, mode: draft.mode },
-		ctx,
-	);
+	const result = await host.schedule({ message: draft.message, deliverAt: draft.deadline, mode: draft.mode });
 	record.schedule = undefined;
 	return result;
 }
-async function timersDialog(context: DialogContext): Promise<string | AgentActionOutcome | undefined> {
-	const { ctx, row, extras, label } = context;
-	const timers = await extras.timers(row.id, ctx);
+async function timersDialog(host: ActionFlowHost): Promise<ActionResult> {
+	const { dialogs } = host;
+	const label = labelOf(host);
+	const timers = await host.timers();
 	if (!timers.length) return `No scheduled messages for ${label}`;
-	const labels = timers.map(
-		(timer) =>
-			`${new Date(timer.deadline).toLocaleString()} · ${timer.status} · ${timer.messagePreview} · #${timer.timerId}`,
-	);
+	const choices: DialogChoice[] = timers.map((timer) => ({
+		value: String(timer.timerId),
+		label: `${new Date(timer.deadline).toLocaleString()} · ${timer.status} · ${timer.messagePreview} · #${timer.timerId}`,
+	}));
 	let choice: string | undefined;
 	if (
-		!(await formSteps([
+		!(await dialogSteps([
 			async () => {
-				const selected = await ctx.ui.select(
-					`Scheduled messages for ${label}`,
-					choice ? [choice, ...labels.filter((item) => item !== choice)] : labels,
-				);
+				const selected = await dialogs.select(`Scheduled messages for ${label}`, choices, choice);
 				if (selected === undefined) return false;
 				choice = selected;
-				return labels.includes(selected);
+				return choices.some((item) => item.value === selected);
 			},
 			() =>
-				confirm(
-					ctx,
+				dialogs.confirm(
 					`Cancel message for ${label}?`,
-					`${choice}\nA fired message stays unchanged.`,
+					`${choices.find((item) => item.value === choice)?.label}\nA fired message stays unchanged.`,
 					"Cancel scheduled message",
 				),
 		]))
 	)
 		return undefined;
-	const timer = timers[labels.indexOf(choice ?? "")];
+	const timer = timers.find((item) => String(item.timerId) === choice);
 	if (!timer) return undefined;
-	return runNative(context, "timer-cancel", [String(timer.timerId)]);
+	return host.run("timer-cancel", [String(timer.timerId)]);
 }
-async function stopDialog(context: DialogContext): Promise<string | AgentActionOutcome | undefined> {
-	if (
-		!(await confirm(
-			context.ctx,
-			`Stop ${context.label}?`,
-			"History stays. Background work is not included.",
-			"Stop current work",
-		))
-	)
-		return undefined;
-	return runNative(context, "abort");
+async function stopDialog(host: ActionFlowHost): Promise<ActionResult> {
+	const label = labelOf(host);
+	if (!(await host.dialogs.confirm(`Stop ${label}?`, "History stays. Background work is not included.", "Stop current work"))) return undefined;
+	return host.run("abort", []);
 }
-async function reconnectDialog(context: DialogContext): Promise<string | AgentActionOutcome | undefined> {
-	if (!(await confirm(context.ctx, `Reconnect ${context.label}?`, "Retained unfinished work resumes.", "Reconnect")))
-		return undefined;
-	return runNative(context, "attach");
+async function reconnectDialog(host: ActionFlowHost): Promise<ActionResult> {
+	if (!(await host.dialogs.confirm(`Reconnect ${labelOf(host)}?`, "Retained unfinished work resumes.", "Reconnect"))) return undefined;
+	return host.run("attach", []);
+}
+async function awaitReleaseDialog(host: ActionFlowHost): Promise<ActionResult> {
+	const runId = host.row.awaiting?.runId;
+	if (runId === undefined) return undefined;
+	if (!(await host.dialogs.confirm(`Release await for ${labelOf(host)}?`, "The original request resumes with partial results. Producers stay active.", "Release await"))) return undefined;
+	return host.run("await-release", [String(runId)]);
+}
+/** Run one operator form against its host. `commands` lists selectable native commands when the host knows them. */
+export function runActionFlow(name: string, host: ActionFlowHost, commands?: readonly DialogChoice[]): Promise<ActionResult> {
+	const flows: Record<string, () => Promise<ActionResult>> = {
+		configure: () => host.configure(),
+		fork: () => branchDialog(host, false),
+		rewind: () => branchDialog(host, true),
+		reset: () => contextDialog(host, true),
+		compact: () => contextDialog(host, false),
+		command: () => commandDialog(host, commands),
+		schedule: () => scheduleDialog(host),
+		timers: () => timersDialog(host),
+		"await-release": () => awaitReleaseDialog(host),
+		abort: () => stopDialog(host),
+		attach: () => reconnectDialog(host),
+	};
+	return flows[name] ? flows[name]() : host.run(name, []);
 }
 export async function runActionDialog(
 	name: string,
@@ -360,25 +355,16 @@ export async function runActionDialog(
 	source: AgentObservationSource,
 	extras: ActionDialogExtras,
 	state: DashboardState,
-): Promise<string | AgentActionOutcome | undefined> {
-	const context: DialogContext = { row, ctx, actions, source, extras, state, label: agentDisplayName(row) };
-	const flows: Record<string, () => Promise<string | AgentActionOutcome | undefined>> = {
-		configure: async () => actions.find((item) => item.name === "configure")?.dialog?.(row, ctx),
-		fork: () => branchDialog(context, false),
-		rewind: () => branchDialog(context, true),
-		reset: () => contextDialog(context, true),
-		compact: () => contextDialog(context, false),
-		command: () => commandDialog(context),
-		schedule: () => scheduleDialog(context),
-		timers: () => timersDialog(context),
-		"await-release": async () => {
-			const runId = context.row.awaiting?.runId;
-			if (runId === undefined) return undefined;
-			if (!await confirm(context.ctx, `Release await for ${context.label}?`, "The original request resumes with partial results. Producers stay active.", "Release await")) return undefined;
-			return runNative(context, "await-release", [String(runId)]);
+): Promise<ActionResult> {
+	return runActionFlow(name, {
+		dialogs: ordinaryDialogs(ctx), row, state, source,
+		run: (action, args) => {
+			const found = actions.find((item) => item.name === action);
+			if (!found) throw new Error(`Action unavailable: ${action}`);
+			return found.run([row.id, ...args], ctx);
 		},
-		abort: () => stopDialog(context),
-		attach: () => reconnectDialog(context),
-	};
-	return flows[name] ? flows[name]() : runNative(context, name);
+		timers: () => extras.timers(row.id, ctx),
+		schedule: (input) => extras.schedule({ sessionId: row.id, ...input }, ctx),
+		configure: async () => actions.find((item) => item.name === "configure")?.dialog?.(row, ctx),
+	});
 }

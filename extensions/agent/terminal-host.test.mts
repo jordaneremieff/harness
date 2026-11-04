@@ -14,6 +14,7 @@ import { eventLog } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { TerminalController } from "./terminal-client.ts";
 import { terminalAction } from "./terminal-actions.ts";
+import { scriptedDialogs } from "./terminal-dialog-fixture.mts";
 import { controlledGate, createSibling, terminalHostFixture, type ControlledTerminalHost } from "./terminal-host-fixture.mts";
 
 async function rewindEntry(host: ControlledTerminalHost, manager: TerminalController["manager"]): Promise<string> {
@@ -29,9 +30,34 @@ async function rewindEntry(host: ControlledTerminalHost, manager: TerminalContro
 	return entryId;
 }
 
-for (const action of ["rewind", "schedule"] as const) it(`terminal ${action} owns its result in the executing conversation without another input`, { timeout: 20000 }, async (t) => {
+it(`terminal schedule requests a timer owned by the caller, for the captured target, without another input`, { timeout: 20000 }, async (t) => {
 	const fixture = terminalHostFixture(t);
-	const host = await fixture.host(action, { timers: action === "schedule" });
+	const host = await fixture.host("schedule", { timers: true });
+	const manager = fixture.manager();
+	const caller = { id: `terminal:${randomUUID()}`, cwd: fixture.root };
+	const controller = new TerminalController({ manager, caller });
+	t.after(() => controller.close());
+	await controller.attach(host.record.storageId);
+	const row = controller.row;
+	assert.ok(row);
+	const before = Date.now();
+	const returned = await terminalAction(controller, scriptedDialogs(["gate:schedule", "+1m", "steer", true]), "schedule", row);
+	assert.equal(returned?.sessionId, row.id);
+	assert.match(returned?.text ?? "", /Scheduled timer/u);
+	const request = host.calls.find((call) => call.method === "timer-schedule");
+	assert.equal(request?.params?.selfOwned, true);
+	assert.equal(request?.params?.ownerId, caller.id);
+	assert.equal(request?.params?.sessionId, row.id);
+	assert.equal(request?.params?.mode, "steer");
+	const deadline = Number(request?.params?.deliverAt);
+	assert.ok(deadline >= before + 59_000 && deadline <= Date.now() + 61_000, "the relative time becomes an absolute deadline");
+	assert.equal(host.requests.length, 0, "scheduling starts no model turn");
+});
+
+it(`terminal rewind owns its result in the executing conversation without another input`, { timeout: 20000 }, async (t) => {
+	const action = "rewind" as const;
+	const fixture = terminalHostFixture(t);
+	const host = await fixture.host(action);
 	const manager = fixture.manager();
 	const caller = { id: `terminal:${randomUUID()}`, cwd: fixture.root };
 	const controller = new TerminalController({ manager, caller });
@@ -42,8 +68,8 @@ for (const action of ["rewind", "schedule"] as const) it(`terminal ${action} own
 	const entryId = action === "rewind" ? await rewindEntry(host, manager) : undefined;
 	const gate = controlledGate();
 	host.gates.set(action, gate);
-	const answers = action === "rewind" ? [entryId, `gate:${action}`] : [`gate:${action}`, new Date(Date.now() - 1).toISOString()];
-	const returned = await terminalAction(controller, async () => answers.shift(), action, row);
+	const answers = action === "rewind" ? [entryId, `gate:${action}`, true] : [`gate:${action}`, "+1m", "steer", true];
+	const returned = await terminalAction(controller, scriptedDialogs(answers), action, row);
 	assert.ok(returned?.sessionId);
 	const started = await gate.started;
 	const status = await host.status(returned.sessionId);
@@ -327,12 +353,11 @@ it("dispatches native commands with a distinct invocation ID and the target capt
 	const entered = new Promise<void>((resolve) => { enterArgs = resolve; });
 	let answerArgs!: (args: string) => void;
 	const argumentsReply = new Promise<string>((resolve) => { answerArgs = resolve; });
-	let questions = 0;
-	const pending = terminalAction(controller, async () => {
-		if (++questions === 1) return "echo";
-		enterArgs();
-		return argumentsReply;
-	}, "command", row);
+	const pending = terminalAction(controller, scriptedDialogs([
+		"echo",
+		() => { enterArgs(); return argumentsReply; },
+		true,
+	]), "command", row);
 	await entered;
 	await controller.attach(host.record.storageId);
 	answerArgs("hello");
@@ -346,9 +371,9 @@ it("dispatches native commands with a distinct invocation ID and the target capt
 	assert.equal(command.harness, host.durable.harness);
 	assert.match(command.invocationId, /^[a-f0-9-]{36}$/u);
 	assert.equal(controller.target, host.record.storageId);
-	assert.equal((JSON.parse(result.text) as { identity: string }).identity, target);
-	const inputs = ["echo", "hello"];
-	await terminalAction(controller, async () => inputs.shift(), "command", row);
+	assert.equal(result.sessionId, target);
+	assert.match(result.text, /Ran command echo/u);
+	await terminalAction(controller, scriptedDialogs(["echo", "hello", true]), "command", row);
 	assert.equal(host.commandCalls.length, 2);
 	assert.notEqual(host.commandCalls[1]?.invocationId, command.invocationId);
 	const dispatched = host.calls.filter((call) => call.method === "command");
@@ -371,16 +396,20 @@ it("configures the native model object on an idle exact target without provider 
 	assert.ok(row);
 	const model = { provider: host.record.model.provider, modelId: "alternate" };
 	const rootBefore = await host.status();
-	const result = await terminalAction(controller, async () => JSON.stringify({ model }), "configure", row);
+	const choices = scriptedDialogs(["model", `${model.provider}/${model.modelId}`, "apply"]);
+	const result = await terminalAction(controller, choices, "configure", row);
 	assert.ok(result);
-	assert.equal((JSON.parse(result.text) as { outcome: string }).outcome, "applied");
+	assert.match(result.text, /Updated configuration/u);
+	const offered = choices.calls.find((call) => call.title.startsWith("Model"))?.choices ?? [];
+	assert.ok(offered.some((choice) => choice.value === `${model.provider}/${model.modelId}`), "the host's own model list backs the picker");
 	assert.deepEqual((await host.status(target)).agent.model, model);
 	assert.deepEqual((await host.status()).agent, rootBefore.agent);
 	const configure = host.calls.find((call) => call.method === "configure");
 	assert.equal(configure?.params?.sessionId, target);
 	assert.deepEqual(configure?.params?.model, model);
-	await assert.rejects(terminalAction(controller, async () => JSON.stringify({ model: "provider/model" }), "configure", row), /Use model: \{provider,modelId\}, not a provider\/model string/u);
-	assert.equal(host.calls.filter((call) => call.method === "configure").length, 1, "invalid model shape stops before native dispatch");
+	const cancelled = scriptedDialogs([undefined]);
+	assert.equal(await terminalAction(controller, cancelled, "configure", row), undefined);
+	assert.equal(host.calls.filter((call) => call.method === "configure").length, 1, "cancelling stops before native dispatch");
 	assert.deepEqual((await host.status(target)).agent.model, model);
 	assert.equal(host.requests.length, 0, "model selection and rejected shape do not invoke the provider");
 	assert.equal((await host.status(target)).busy, false);

@@ -7,7 +7,8 @@ import { stripVTControlCharacters } from "node:util";
 import { CURSOR_MARKER, TuiAltScreen, getKeybindings, setKeybindings, type Component, type Focusable, type Terminal, type TUI } from "@earendil-works/pi-tui";
 import { AgentComposer } from "./agent-composer.ts";
 import { TerminalController, TerminalScreen, terminalAdmission, terminalKeys, terminalTargetFile, parseTerminalArgs, type TerminalManager } from "./terminal-client.ts";
-import { terminalAction, parseTerminalConfiguration } from "./terminal-actions.ts";
+import { terminalAction } from "./terminal-actions.ts";
+import { scriptedDialogs } from "./terminal-dialog-fixture.mts";
 import { row, page, conversationFrame, deferred, theme } from "./dashboard-test-fixture.mts";
 
 function snapshot(revision = "initial"): Awaited<ReturnType<TerminalManager["snapshot"]>> {
@@ -20,9 +21,14 @@ function fixture() {
 	let closes = 0;
 	let releases = 0;
 	let admission: Promise<unknown> = Promise.resolve({ submissionId: 17, deduped: false });
+	const responses = new Map<string, unknown>();
 	const manager: TerminalManager = {
 		resolveTarget: async (id) => id === "@one" ? "a" : id,
-		control: async (method, input) => { calls.push({ method, input }); return method === "attach" ? { status: { busy: false, cwd: "/work", agent: { thinkingLevel: "off" } } } : admission; },
+		control: async (method, input) => {
+			calls.push({ method, input });
+			if (method === "attach") return { status: { busy: false, cwd: "/work", agent: { thinkingLevel: "off" } } };
+			return responses.has(method) ? responses.get(method) : admission;
+		},
 		dashboardPage: async () => page([row("a", { state: "idle" }), row("b")]),
 		snapshot: async () => snapshot(),
 		observeLive: async (id, _scope, listener) => { observers.set(id, listener); return () => { releases++; }; },
@@ -30,7 +36,7 @@ function fixture() {
 		close: async () => { closes++; },
 	};
 	const controller = new TerminalController({ manager, caller: { id: "terminal", cwd: "/work" } });
-	return { controller, manager, calls, observers, setAdmission: (value: Promise<unknown>) => { admission = value; }, closes: () => closes, releases: () => releases };
+	return { controller, manager, calls, observers, responses, setAdmission: (value: Promise<unknown>) => { admission = value; }, closes: () => closes, releases: () => releases };
 }
 
 it("terminal teardown awaits its manager and reuses the same close operation", async () => {
@@ -182,15 +188,17 @@ it("native action confirmation cancels safely and uses the captured target", asy
 	const f = fixture(); await f.controller.attach("a");
 	const captured = row("a");
 	await f.controller.attach("b");
-	const cancelled = await terminalAction(f.controller, async () => undefined, "abort", captured);
+	const cancelled = await terminalAction(f.controller, scriptedDialogs([undefined]), "abort", captured);
 	assert.equal(cancelled, undefined); assert.equal(f.calls.some((call) => call.method === "abort"), false);
-	await terminalAction(f.controller, async () => "stop", "abort", captured);
+	const declined = await terminalAction(f.controller, scriptedDialogs([false]), "release", captured);
+	assert.equal(declined, undefined); assert.equal(f.calls.some((call) => call.method === "release"), false);
+	await terminalAction(f.controller, scriptedDialogs([true]), "abort", captured);
+	assert.equal(f.calls.at(-1)?.method, "abort");
 	assert.equal(f.calls.at(-1)?.input.sessionId, "a");
-	await terminalAction(f.controller, async () => "release", "release", captured);
+	await terminalAction(f.controller, scriptedDialogs([true]), "release", captured);
 	assert.equal(f.calls.at(-1)?.method, "release");
 	assert.equal(f.calls.at(-1)?.input.sessionId, "a");
 	assert.equal(f.controller.target, "b");
-	await assert.rejects(terminalAction(f.controller, async () => '{"sessionId":"other"}', "configure", captured), /Use only/);
 	f.controller.close();
 });
 
@@ -299,16 +307,55 @@ it("only documented terminal commands intercept slash text, including the quit e
 	screen.dispose(); f.controller.close();
 });
 
-it("configure advertises and passes the native model object, and commands have invocation IDs", async () => {
+it("configuration chooses the model and reasoning from the host's list and applies them to the captured target", async () => {
 	const f = fixture(); await f.controller.attach("a");
-	let shown: string[] = [];
-	await terminalAction(f.controller, async (_title, lines) => { shown = lines; return '{"model":{"provider":"test","modelId":"model"},"thinkingLevel":"high"}'; }, "configure", row("a"));
-	assert.match(shown.join("\n"), /provider.*modelId/);
-	assert.deepEqual(f.calls.at(-1)?.input.model, { provider: "test", modelId: "model" });
-	assert.throws(() => parseTerminalConfiguration('{"model":"test/model"}'), /provider\/model string/);
-	const answers = ["fixture-command", "args"];
-	await terminalAction(f.controller, async () => answers.shift(), "command", row("a"));
+	f.responses.set("models", { models: [{ provider: "test", modelId: "model", name: "Test model", reasoning: true }, { provider: "other", modelId: "small", reasoning: false }], source: "available-snapshot", observedAt: new Date().toISOString() });
+	f.responses.set("configure", { outcome: "applied" });
+	const captured = row("a");
+	await f.controller.attach("b");
+	const dialogs = scriptedDialogs(["model", "test/model", "reasoning", "high", "apply"]);
+	const result = await terminalAction(f.controller, dialogs, "configure", captured);
+	const offered = dialogs.calls.find((call) => call.title.startsWith("Model"))?.choices;
+	assert.deepEqual(offered?.map((choice) => choice.value), ["other/small", "test/model"]);
+	assert.match(offered?.[1]?.label ?? "", /Test model/);
+	const configure = f.calls.find((call) => call.method === "configure");
+	assert.deepEqual({ ...configure?.input }, { sessionId: "a", model: { provider: "test", modelId: "model" }, thinkingLevel: "high" });
+	assert.equal(result?.sessionId, "a");
+	assert.equal(dialogs.remaining(), 0);
+	f.controller.close();
+});
+
+it("a refused configuration returns to the staged fields and cancelling writes nothing", async () => {
+	const f = fixture(); await f.controller.attach("a");
+	f.responses.set("configure", { outcome: "failed", reason: "model busy" });
+	const refused = scriptedDialogs(["reasoning", "low", "apply", "cancel"]);
+	assert.equal(await terminalAction(f.controller, refused, "configure", row("a")), undefined);
+	assert.equal(f.calls.filter((call) => call.method === "configure").length, 1);
+	assert.ok(refused.calls.some((call) => call.kind === "notify" && /model busy/.test(call.title)));
+	const cancelled = scriptedDialogs([undefined]);
+	assert.equal(await terminalAction(f.controller, cancelled, "configure", row("a")), undefined);
+	assert.equal(f.calls.filter((call) => call.method === "configure").length, 1);
+	f.controller.close();
+});
+
+it("a host that cannot list models names the problem instead of asking for a typed identity", async () => {
+	const f = fixture(); await f.controller.attach("a");
+	f.responses.set("models", { models: "unreadable" });
+	const dialogs = scriptedDialogs(["model", "cancel"]);
+	await terminalAction(f.controller, dialogs, "configure", row("a"));
+	assert.ok(dialogs.calls.some((call) => call.kind === "notify" && /Model list unavailable/.test(call.title)));
+	assert.equal(dialogs.calls.some((call) => call.kind === "input"), false);
+	f.controller.close();
+});
+
+it("native commands come from the target host's inventory and carry invocation IDs", async () => {
+	const f = fixture(); await f.controller.attach("a");
+	f.responses.set("status", { inventory: { contributions: [{ name: "fixture", source: "/x/index.ts", commands: [{ name: "fixture-command", description: "Does a thing" }] }], ordinaryOnly: [] } });
+	const dialogs = scriptedDialogs(["fixture-command", "args", true]);
+	await terminalAction(f.controller, dialogs, "command", row("a"));
+	assert.deepEqual(dialogs.calls[0]?.choices?.map((choice) => choice.value), ["fixture-command", "reload"]);
 	assert.equal(f.calls.at(-1)?.input.name, "fixture-command");
+	assert.equal(f.calls.at(-1)?.input.args, "args");
 	assert.equal(f.calls.at(-1)?.input.sessionId, "a");
 	assert.match(String(f.calls.at(-1)?.input.invocationId), /^[0-9a-f-]{36}$/);
 	f.controller.close();
@@ -358,7 +405,7 @@ it("uncertain A input survives edits, B navigation, failure, repeated failure an
 	f.controller.close();
 });
 
-it("recovery dialogs forward native input focus and restore only the captured target without sending", async () => {
+it("recovery dialogs are selectable, restore only the captured target and never send", async () => {
 	const f = fixture(); await f.controller.attach("a");
 	const gate = deferred(); f.setAdmission(gate.promise.then(() => { throw new Error("unknown"); }));
 	f.controller.setDraft("original"); f.controller.setMode("followUp");
@@ -366,14 +413,14 @@ it("recovery dialogs forward native input focus and restore only the captured ta
 	const { screen, overlays, afterRender } = screenFixture(f.controller);
 	f.controller.setDraft("/agent recover"); screen.handleInput("\r");
 	const first = overlays.at(-1); assert.ok(first);
-	assert.equal(first.focused, true); assert.ok(first.render(100).some((line) => line.includes(CURSOR_MARKER)));
-	first.focused = false; assert.ok(first.render(100).every((line) => !line.includes(CURSOR_MARKER)));
-	first.focused = true;
+	assert.equal(first.focused, true);
+	assert.match(first.render(100).map(stripVTControlCharacters).join("\n"), /requested followUp · original/);
 	const next = afterRender(() => overlays.length === 2);
-	first.handleInput?.("1"); first.handleInput?.("\r"); await next;
+	first.handleInput?.("\r"); await next;
 	await f.controller.attach("b"); f.controller.setDraft("B draft");
 	const restored = afterRender(() => f.controller.state.agents.get("a")?.draft === "original");
-	overlays.at(-1)?.handleInput?.("restore"); overlays.at(-1)?.handleInput?.("\r"); await restored;
+	const second = overlays.at(-1);
+	second?.handleInput?.("\x1b[B"); second?.handleInput?.("\r"); await restored;
 	assert.equal(f.controller.draftState?.draft, "B draft");
 	assert.equal(f.controller.state.agents.get("a")?.mode, "followUp");
 	assert.equal(f.calls.filter((call) => call.method === "submit").length, 1);
@@ -453,23 +500,27 @@ it("late admission keeps a mode-only edit in the main console and dashboard", as
 	screen.dispose(); f.controller.close();
 });
 
-it("long recovery text never clips the action effects, focused input or footer", async () => {
+it("long recovery text is readable in full and its action buttons stay on screen", async () => {
 	const f = fixture(); await f.controller.attach("a");
 	const gate = deferred(); f.setAdmission(gate.promise.then(() => { throw new Error("unknown"); }));
 	f.controller.setDraft(Array.from({ length: 300 }, (_, i) => `retained line ${i}`).join("\n"));
 	const failed = assert.rejects(f.controller.send()); gate.resolve(); await failed;
 	const { screen, overlays, afterRender, terminal } = screenFixture(f.controller);
 	f.controller.setDraft("/agent recover"); screen.handleInput("\r");
-	const next = afterRender(() => overlays.length === 2);
-	overlays.at(-1)?.handleInput?.("1"); overlays.at(-1)?.handleInput?.("\r"); await next;
-	const dialog = overlays.at(-1); assert.ok(dialog);
+	let next = afterRender(() => overlays.length === 2);
+	overlays.at(-1)?.handleInput?.("\r"); await next;
+	next = afterRender(() => overlays.length === 3);
+	overlays.at(-1)?.handleInput?.("\r"); await next;
+	const reader = overlays.at(-1); assert.ok(reader);
 	for (const height of [20, 100]) {
-		terminal.rows = height; const lines = dialog.render(100); const text = lines.map(stripVTControlCharacters).join("\n");
+		terminal.rows = height; const lines = reader.render(100); const text = lines.map(stripVTControlCharacters).join("\n");
 		assert.ok(lines.length <= Math.floor(height * 0.9));
-		assert.match(text, /restore replaces/); assert.match(text, /discard removes/); assert.match(text, /text lines omitted/);
-		assert.match(text, /Type restore or discard/); assert.match(text, /Enter applies/);
-		assert.ok(lines.some((line) => line.includes(CURSOR_MARKER)));
+		assert.match(text, /of 300 lines/); assert.match(text, /\[ Close \]/);
 	}
+	reader.handleInput?.("\x1b[6~"); reader.handleInput?.("\x1b[6~");
+	assert.doesNotMatch(reader.render(100).map(stripVTControlCharacters).join("\n"), /retained line 0\b/);
+	reader.handleInput?.("\x1b");
+	assert.equal(overlays.length, 3, "the reader returns to the recovery choices");
 	screen.dispose(); f.controller.close();
 });
 

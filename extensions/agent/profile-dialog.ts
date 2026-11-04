@@ -4,6 +4,7 @@ import { matchesSchema } from "./schema-check.ts";
 import { AgentProfileSchema, ProfileUpdateSchema, type AgentProfile } from "./profile-schema.ts";
 import type { AgentCommandAction } from "./command.ts";
 import { DashboardMouse } from "./dashboard-mouse.ts";
+import { ordinaryDialogs, type AgentDialogs } from "./dialog-adapter.ts";
 import { displayText } from "./tool-cards.ts";
 
 export interface ProfileDraft {
@@ -12,8 +13,10 @@ export interface ProfileDraft {
 	expertise?: string;
 	needsRead?: boolean;
 }
-type ProfileChoice = "role" | "expertise" | "save" | "read" | "revision" | "discard" | "close";
+export type ProfileChoice = "role" | "expertise" | "save" | "read" | "revision" | "discard" | "close";
 type ProfileControl = (method: "profile-read" | "profile-update", input: Record<string, unknown>, ctx: ExtensionContext) => Promise<unknown>;
+/** The target is captured by the caller; the form supplies only the operation and its input. */
+export type BoundProfileControl = (method: "profile-read" | "profile-update", input: Record<string, unknown>) => Promise<unknown>;
 const safe = (value: string | null) => value === null ? "Unknown" : displayText(value);
 
 function identityLines(profile: AgentProfile): string[] {
@@ -116,7 +119,7 @@ export class ProfilePanel implements Component {
 	}
 }
 
-function readValue(value: unknown): AgentProfile {
+export function readValue(value: unknown): AgentProfile {
 	if (!matchesSchema(AgentProfileSchema, value)) throw new Error("Invalid profile response");
 	return value;
 }
@@ -125,21 +128,21 @@ const hasPatch = (draft: ProfileDraft) => draft.role !== undefined || draft.expe
 interface ProfileEditing {
 	profile: AgentProfile;
 	draft: ProfileDraft;
-	ctx: ExtensionContext;
-	control: ProfileControl;
+	dialogs: AgentDialogs;
+	control: BoundProfileControl;
 }
 function clearDraft(state: ProfileEditing): void {
 	delete state.draft.role; delete state.draft.expertise; delete state.draft.needsRead;
 	state.draft.expectedRevision = state.profile.revision;
 }
 async function saveDraft(state: ProfileEditing): Promise<void> {
-	const { profile, draft, ctx, control } = state;
+	const { profile, draft, dialogs, control } = state;
 	if (!hasPatch(draft)) throw new Error("Edit role or expertise before Save");
 	if (draft.needsRead || draft.expectedRevision !== profile.revision) throw new Error("Draft retained. Read the current profile and select its revision before Save.");
 	const result = await control("profile-update", {
 		sessionId: profile.identity, expectedRevision: draft.expectedRevision,
 		...(draft.role === undefined ? {} : { role: draft.role }), ...(draft.expertise === undefined ? {} : { expertise: draft.expertise }),
-	}, ctx);
+	});
 	if (!matchesSchema(ProfileUpdateSchema, result)) throw new Error("Invalid profile update response");
 	if (result.outcome === "conflict") {
 		draft.needsRead = true;
@@ -147,18 +150,18 @@ async function saveDraft(state: ProfileEditing): Promise<void> {
 	}
 	state.profile = result.profile;
 	clearDraft(state);
-	ctx.ui.notify("Profile saved", "info");
+	dialogs.notify("Profile saved", "info");
 }
 async function editField(state: ProfileEditing, field: "role" | "expertise"): Promise<void> {
-	const { profile, draft, ctx } = state;
+	const { profile, draft, dialogs } = state;
 	const label = safe(profile.handle ?? profile.name ?? profile.identity);
-	const value = await ctx.ui.editor(`${field === "role" ? "Role" : "Expertise"} for ${label} (blank clears)`, draft[field] ?? profile[field]);
+	const value = await dialogs.editor(`${field === "role" ? "Role" : "Expertise"} for ${label} (blank clears)`, draft[field] ?? profile[field]);
 	if (value !== undefined) draft[field] = value;
 }
 async function useCurrentRevision(state: ProfileEditing): Promise<void> {
 	if (state.draft.needsRead) throw new Error("Read the current profile before changing the draft revision");
-	const confirmed = await state.ctx.ui.select("Use the displayed current revision? Fields in your draft will replace its values.", ["Keep original revision", "Use current revision"]);
-	if (confirmed === "Use current revision") state.draft.expectedRevision = state.profile.revision;
+	const confirmed = await state.dialogs.select("Use the displayed current revision? Fields in your draft will replace its values.", [{ value: "keep", label: "Keep original revision" }, { value: "use", label: "Use current revision" }]);
+	if (confirmed === "use") state.draft.expectedRevision = state.profile.revision;
 }
 async function applyChoice(state: ProfileEditing, choice: ProfileChoice): Promise<void> {
 	if (choice === "role" || choice === "expertise") return editField(state, choice);
@@ -166,22 +169,51 @@ async function applyChoice(state: ProfileEditing, choice: ProfileChoice): Promis
 	if (choice === "revision") return useCurrentRevision(state);
 	if (choice === "discard") return clearDraft(state);
 	if (choice === "read") {
-		state.profile = readValue(await state.control("profile-read", { sessionId: state.profile.identity }, state.ctx));
+		state.profile = readValue(await state.control("profile-read", { sessionId: state.profile.identity }));
 		state.draft.needsRead = false;
 		if (!hasPatch(state.draft)) state.draft.expectedRevision = state.profile.revision;
 	}
 }
+/** Pick the next profile operation. The ordinary host shows a scrollable panel; others use a menu. */
+export type ProfilePick = (profile: AgentProfile, draft: ProfileDraft) => Promise<ProfileChoice>;
+
 /** The draft keeps its original revision across refusals, close/reopen, and explicit rereads. */
-export async function editProfile(profile: AgentProfile, draft: ProfileDraft, ctx: ExtensionContext, control: ProfileControl): Promise<void> {
-	const state: ProfileEditing = { profile, draft, ctx, control };
+export async function runProfileForm(profile: AgentProfile, draft: ProfileDraft, dialogs: AgentDialogs, control: BoundProfileControl, pick: ProfilePick): Promise<void> {
+	const state: ProfileEditing = { profile, draft, dialogs, control };
 	for (;;) {
-		const choice = await ctx.ui.custom<ProfileChoice>((tui, theme, _keys, done) =>
-			new ProfilePanel(state.profile, draft, theme, () => tui.terminal.rows, done, () => tui.requestRender()),
-			{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } });
+		const choice = await pick(state.profile, draft);
 		if (choice === "close") return;
 		try { await applyChoice(state, choice); }
-		catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+		catch (error) { dialogs.notify(error instanceof Error ? error.message : String(error), "error"); }
 	}
+}
+
+/** A selectable menu over the same operations; the full profile opens in a scrollable reader. */
+export function profileMenu(dialogs: AgentDialogs): ProfilePick {
+	return async (profile, draft) => {
+		for (;;) {
+			const conflict = draft.expectedRevision !== profile.revision && !draft.needsRead;
+			const choice = await dialogs.select(`Profile: ${safe(profile.handle ?? profile.name ?? profile.identity)}\nRevision ${safe(profile.revision)}${hasPatch(draft) ? " · draft not saved" : ""}`, [
+				{ value: "view", label: "Read profile and expertise" }, { value: "role", label: "Edit role" }, { value: "expertise", label: "Edit expertise" },
+				{ value: "save", label: "Save draft" }, { value: "read", label: "Read current profile" },
+				...(conflict ? [{ value: "revision", label: "Use current revision for draft" }] : []),
+				{ value: "discard", label: "Discard draft" }, { value: "close", label: "Back" },
+			]);
+			if (choice === "view") { await dialogs.read("Agent profile", profileText(profile, true, draft)); continue; }
+			return (choice ?? "close") as ProfileChoice;
+		}
+	};
+}
+
+/** Scrollable panel used by ordinary Pi. */
+function profilePanel(ctx: ExtensionContext): ProfilePick {
+	return (profile, draft) => ctx.ui.custom<ProfileChoice>((tui, theme, _keys, done) =>
+		new ProfilePanel(profile, draft, theme, () => tui.terminal.rows, done, () => tui.requestRender()),
+		{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } });
+}
+
+export function editProfile(profile: AgentProfile, draft: ProfileDraft, ctx: ExtensionContext, control: ProfileControl): Promise<void> {
+	return runProfileForm(profile, draft, ordinaryDialogs(ctx), (method, input) => control(method, input, ctx), profilePanel(ctx));
 }
 
 export function profileCommand(control: ProfileControl): AgentCommandAction {

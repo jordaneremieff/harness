@@ -19,6 +19,7 @@ import { runHost, type HostProcess } from "./host-process.ts";
 import { AgentManager } from "./manager.ts";
 import { TimerTask } from "./durable-timers.ts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
+import { modelChoices } from "./durable-runtime.ts";
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -132,7 +133,7 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 				durable: Durable, services: {}, cwd, agentDir, storageId: record.storageId,
 				get harness() { return durable.harness; },
 				signal: new AbortController().signal, onClose() {},
-				inventory: { contributions: [], ordinaryOnly: [] },
+				inventory: { contributions: [{ name: "fixture", source: join(cwd, "index.ts"), commands: [{ name: "echo", description: "Return command arguments" }] }], ordinaryOnly: [] },
 			} as unknown as DurableCommandHost;
 			const commands = [{ name: "echo", description: "Return command arguments", async run(call: DurableCommandCall) {
 				commandCalls.push(call);
@@ -147,7 +148,10 @@ export function terminalHostFixture(t: { after(fn: () => void | Promise<void>): 
 					async request(method, raw, _requestId, signal) {
 						const params = raw as RequestParams | undefined;
 						calls.push({ method, params });
+						// The runtime layer answers these two before the native host sees them.
+						if (method === "models") return modelChoices({ services: { modelRuntime: runtime } as never });
 						const result = await durable.request(method, params, signal ?? BACKGROUND_CONTEXT);
+						if (method === "status") return { ...result as object, inventory: contributionHost.inventory, pid: process.pid, storageId: record.storageId };
 						if (typeof params?.token === "string") {
 							if (method === "observe-open") observations.add(params.token);
 							if (method === "observe-close") observations.delete(params.token);

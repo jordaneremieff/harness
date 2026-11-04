@@ -449,7 +449,7 @@ For every member in the following set, request and response are both `<member>/1
 
 ```text
 close attach report acknowledge abort release reset
- timer-list timer-cancel observe-close changes
+ timer-list timer-cancel observe-close changes models
  collaboration-list collaboration-read collaboration-mutate await-release
 ```
 
@@ -1106,7 +1106,7 @@ The current retry-safe method set is exactly:
 profile-read profile-list profile-update task-submit resolve-agent
 collaboration-list collaboration-read collaboration-mutate passive-submit
 submit report acknowledge inspect status list receipts dashboard snapshot
-observe-open observe-frame observe-close timer-list
+observe-open observe-frame observe-close timer-list models
 ```
 
 Unknown methods, abort, configure, fork, rewind, compact, spawn, place, reset, close, and timer mutations are not made retry-safe merely by having a request ID. A consumer may use a narrower retry policy. Observation reconnection creates fresh tokens and a new baseline. The shared transport supports caller-local cancellation of a Chord wait. The

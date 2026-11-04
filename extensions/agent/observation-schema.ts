@@ -253,6 +253,16 @@ export const DurableInventorySchema = obj({
 	failed: opt(arr(obj({ path: string, error: string }))),
 });
 
+/** Models the host's configured runtime currently reports as available, from its last-known snapshot. */
+export const ModelChoicesSchema = obj({
+	models: arr(obj({ provider: string, modelId: string, name: opt(string), reasoning: boolean })),
+	/** The runtime read this list came from; it performs no credential or network probe. */
+	source: lit("available-snapshot"),
+	/** The runtime's last availability error, when it reported one. */
+	error: opt(string),
+	observedAt: string,
+});
+
 /** One manager list row: the native summary plus its catalog and external identity. */
 export const ListRowProperties = {
 	conversationId: id,

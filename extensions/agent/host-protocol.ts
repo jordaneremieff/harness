@@ -188,7 +188,7 @@ export function parseHostReadyLine(line: string): HostReady | undefined {
  * by request ID or acknowledgement state; read methods are naturally safe.
  * Unknown methods are never retried.
  */
-const HOST_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(["profile-read", "profile-list", "profile-update", "task-submit", "resolve-agent", "collaboration-list", "collaboration-read", "collaboration-mutate", "passive-submit", "submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "timer-list"]);
+const HOST_RETRY_SAFE_METHODS: ReadonlySet<string> = new Set(["profile-read", "profile-list", "profile-update", "task-submit", "resolve-agent", "collaboration-list", "collaboration-read", "collaboration-mutate", "passive-submit", "submit", "report", "acknowledge", "inspect", "status", "list", "receipts", "dashboard", "snapshot", "observe-open", "observe-frame", "observe-close", "timer-list", "models"]);
 
 export function isRetrySafeHostMethod(method: string): boolean {
 	return HOST_RETRY_SAFE_METHODS.has(method);
