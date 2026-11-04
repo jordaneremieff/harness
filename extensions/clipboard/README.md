@@ -4,7 +4,7 @@ This extension provides agent clipboard I/O and an operator-facing history brows
 
 The ordinary extension publishes its registered tool renderers at factory time and
 on display requests through the [tool display contract](../../docs/conventions/tool-display.md);
-the payload contains no execution functions.
+the payload contains no execution functions. The renderers live in `display.ts`, a presentation-only module with no registration, store, or settings access. The durable contribution advertises that module as its `display` descriptor (`./display.ts`, export `toolDisplay`), and the ordinary publication is derived from the same records.
 
 ## Surfaces
 
@@ -15,7 +15,7 @@ the payload contains no execution functions.
 | `clipboard_list` | tool | List recent entries or search full archived text, with bounded continuation and stable ids. |
 | `clipboard_get` | tool | Read one archived entry by stable id, in bounded pages. |
 | `clipboard_restore` | tool | Copy one archived entry back to the clipboard; the restore is archived as a new entry. |
-| `/clipboard` | command | Filter, preview, and restore history in an overlay. |
+| `/clipboard` | command | Browse recent entries or search the archive, preview, and restore in an overlay. |
 
 Each tool is one operation; there is no action multiplexer, and the model-facing
 API has no transient index addressing — stable ids are the only entry handle.
@@ -214,7 +214,7 @@ archive directory, default `<agentDir>/clipboard/YYYY-MM-DD.jsonl`.
 - Appends use one bounded `O_APPEND` write per record, with leading and trailing newline separators. Concurrent large appends do not interleave chunks. Short writes return an archive warning; a later append remains readable after a torn record without rewriting prior bytes.
 - Archive opens use `O_NOFOLLOW` and `O_NONBLOCK`, then verify the descriptor is a regular file before changing its mode or accessing content. A pipe at an archive path is refused without waiting for a peer.
 - Reads reject a symlinked store, ignore symlinked archives, skip blank or malformed records, and recompute derived metadata from validated content.
-- Readers scan files and records newest-first in bounded chunks and check cancellation between reads and records. Lists stop after the requested page and retain no body content; the browser retains at most 32,768 characters per entry. Stable-id lookup refetches the full selected record without materializing a whole daily archive.
+- Readers scan files and records newest-first in bounded chunks and check cancellation between reads and records. Lists stop after the requested page and retain no body content; the browser reads no body content for list rows and at most 32,768 characters for a selected preview. Stable-id lookup refetches the full selected record without materializing a whole daily archive.
 - Individual JSONL records are capped at 64 MiB. This contains malformed or unexpectedly large historical data while accommodating the tool's string-length input limit of 8 × 1024 × 1024 and JSON escaping.
 - Restores append a new `(restored)` entry because they are real clipboard writes.
 
@@ -232,9 +232,13 @@ The extension provides no entry-level deletion. Daily-file removal avoids rewrit
 
 The overlay is available in TUI mode. RPC receives a notification that directs the caller to `clipboard_list`, rather than attempting a terminal-only custom component.
 
-The overlay loads the newest 200 entries and marks the count with `+` when older history exists. It supports live filtering across labels, ids, and loaded body prefixes. Up/Down selects entries, Left/Right scrolls the preview by a page, Enter restores, and Escape clears or closes. Escape cancels an active restore. Disposal also cancels active work and suppresses late component callbacks. A completed copy remains a success if cancellation arrives only during archival. A truncated preview is labeled. Restore resolves the selected stable id again and writes the full archived content, so preview bounds never truncate the clipboard result.
+The overlay has two scopes. **Recent** lists the newest 200 entries (marked `+` when older history exists) and filters them by label, id, and excerpt. **Search archive** runs the same literal search as `clipboard_list` over full archived text, one page at a time; a page that is empty can still have a continuation, and coverage shows whether the scan is partial. Recent rows read metadata only; a selected entry's preview is read on demand, bounded to 32,768 characters. Preview reads are cancelled when the selection moves, and late results are discarded.
 
-The component is the sole height authority. It reads the host TUI row count and the overlay host does not impose `maxHeight`, which prevents Pi from slicing away the footer. Every rendered row paints the full width inside a background-backed frame. The footer is always the final row, including `40x10` and `50x12` terminals. Labels, previews, content, and error text have terminal and bidi controls escaped before custom rendering.
+Pointer: a row click selects the entry and never restores it. Labelled controls act: Recent, Search archive, Refresh, Search, Actions, Detail, Continue, Close, Previous page, Next page, and, inside Actions, Restore selected. Wheel input scrolls the list or preview under the pointer. Hit regions are rebuilt on every render and dropped on resize, scope or filter change, replacement, hide, and disposal, so a stale click cannot act on a replacement row. Keyboard routes remain: Up/Down select, Left/Right scroll the preview, Enter restores the selected entry, F2 switches scope, and Escape leaves edit mode, clears the filter, then closes. Pointer delivery is exercised through `handleMouse` with fake geometry; a live terminal pointer check is not part of the automated tests.
+
+A stale archive view (after a query change, or after a read failure) shows its coverage state, refuses Restore, and offers Refresh. A Refresh or Search reruns the current query and never mutates the selected record. Escape cancels an active restore. Disposal also cancels active work and suppresses late component callbacks. A completed copy remains a success if cancellation arrives only during archival. A truncated preview is labeled. Restore resolves the selected stable id again and writes the full archived content, so preview bounds never truncate the clipboard result.
+
+The component is the sole height authority. It reads the host TUI row count and the overlay host does not impose `maxHeight`, which prevents Pi from slicing away the footer. Every rendered row paints the full width inside a background-backed frame. Below 48 columns or 12 rows the panel shows a resize message and a Close control instead of the browser. At 48 columns and above, the list and preview stack within the available rows; search, preview navigation, actions, and close remain visible at 80 and 100 columns. Labels, previews, content, and error text have terminal and bidi controls escaped before custom rendering.
 
 ## Durable agents
 
@@ -282,7 +286,9 @@ in every collapsed value.
 - `clipboard_restore` names the entry id, then the restored size and any archive warning.
 
 A result that hides content carries the expansion hint; a restore result, which repeats no
-hidden content, carries none.
+hidden content, carries none. An error card shows the first diagnostic line when collapsed and
+reveals the full retained diagnostic text when expanded; the expansion hint appears only when
+the diagnostic has more than one line.
 
 ## Files
 
@@ -293,7 +299,8 @@ hidden content, carries none.
 - `store.ts`: local settings read, private append-only archive, and stable-id resolution.
 - `search.ts`: bounded literal discovery, candidate validation, and stateless continuation.
 - `pb.ts`: no-shell `pbcopy` and `pbpaste` wrappers.
-- `panel.ts`: browser state and rendering.
+- `panel.ts`: browser state, pointer hit regions, and rendering.
+- `display.ts`: presentation-only tool renderer records returned by `toolDisplay()`; it imports only `presentation.ts` and public types.
 - `text.ts`: terminal-safe text and output bounds local to this extension.
 - `*.test.mts`: unit and entrypoint drive tests.
 

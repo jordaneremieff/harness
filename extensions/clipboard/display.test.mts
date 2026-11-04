@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -69,12 +69,11 @@ function assertPublication(publication: Publication, registered: Map<string, Too
 	for (const display of publication.tools) {
 		const tool = registered.get(display.name);
 		assert.ok(tool);
-		assert.deepEqual(Object.keys(display).sort(), ["name", "renderCall", "renderResult", "renderShell"]);
+		assert.deepEqual(Object.keys(display).sort(), ["name", "renderCall", "renderResult"]);
 		assert.equal(typeof display.renderCall, "function");
 		assert.equal(typeof display.renderResult, "function");
 		assert.equal(display.renderCall, tool.renderCall);
 		assert.equal(display.renderResult, tool.renderResult);
-		assert.equal(display.renderShell, tool.renderShell);
 	}
 }
 
@@ -106,4 +105,22 @@ test("publishes registered renderers at factory time and for current display req
 	assert.equal(publications.length, 4);
 	assertPublication(publications[3], second.registered);
 	second.unload();
+});
+
+test("the presentation module exports only its publication factory", async () => {
+	const module = await import("./display.ts");
+	assert.deepEqual(Object.keys(module).sort(), ["toolDisplay"]);
+});
+
+test("the presentation module imports only presentation code and public types", async () => {
+	const source = await readFile(new URL("./display.ts", import.meta.url), "utf8");
+	const specifiers = [...source.matchAll(/from "([^"]+)"/g)].map((match) => match[1]).sort();
+	assert.deepEqual(specifiers, ["./presentation.ts", "@earendil-works/pi-coding-agent"]);
+});
+
+test("the durable contribution carries the presentation descriptor", async () => {
+	const { clipboardContribution } = await import("./durable.ts");
+	const bus = { on: () => () => {}, emit: () => {} } as unknown as Parameters<typeof clipboardContribution>[1];
+	const contribution = clipboardContribution("/extension/index.ts", bus, () => {});
+	assert.deepEqual(contribution.display, { version: 1, entry: "./display.ts", export: "toolDisplay" });
 });

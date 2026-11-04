@@ -85,7 +85,7 @@ describe("appendEntry + readEntries", () => {
 		for (const entry of entries)
 			assert.deepEqual(
 				found.find((candidate) => candidate.id === entry.id),
-				entry,
+				{ ...entry, archiveDate: localDate(new Date(entry.timestamp)) },
 			);
 	});
 
@@ -97,7 +97,7 @@ describe("appendEntry + readEntries", () => {
 		await writeFile(path, torn);
 		assert.equal(await appendEntry(tornDir, entry), null);
 		assert.ok((await readFile(path, "utf8")).startsWith(torn));
-		assert.deepEqual(await readEntries(tornDir), [entry]);
+		assert.deepEqual(await readEntries(tornDir), [{ ...entry, archiveDate: localDate(new Date(entry.timestamp)) }]);
 	});
 
 	for (const connected of [false, true]) {

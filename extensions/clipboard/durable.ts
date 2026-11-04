@@ -45,6 +45,8 @@ export interface DurableContribution {
 	readonly name: string;
 	/** Absolute path of the emitting extension's entrypoint. */
 	readonly source: string;
+	/** Side-effect-free presentation module for standalone tool cards. */
+	readonly display: { readonly version: 1; readonly entry: "./display.ts"; readonly export: "toolDisplay" };
 	/** Build the native extension for one session host; called once per host. */
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 }
@@ -76,6 +78,7 @@ export function clipboardContribution(
 	return {
 		name: "clipboard",
 		source,
+		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
 		create(host) {
 			stopFactoryPublisher();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));

@@ -19,6 +19,8 @@ export interface ClipboardEntry {
 	content: string;
 	/** True when this in-memory view carries only a prefix of archived content. */
 	contentTruncated?: boolean;
+	/** YYYY-MM-DD of the daily archive file that yielded this record. Set by reads, never persisted. */
+	archiveDate?: string;
 }
 
 const PREVIEW_CHARS = 100;
@@ -286,7 +288,7 @@ async function readArchiveEntries(dir: string, file: string, state: ReadState): 
 		for await (const line of reverseLines(opened.handle, opened.size, state.signal)) {
 			state.signal?.throwIfAborted();
 			if (!line?.trim()) continue;
-			if (collectLine(line, state) === "done") return "done";
+			if (collectLine(line, state, file) === "done") return "done";
 		}
 	} finally {
 		await opened.handle.close();
@@ -294,10 +296,11 @@ async function readArchiveEntries(dir: string, file: string, state: ReadState): 
 	return "continue";
 }
 
-function collectLine(line: string, state: ReadState): "done" | "continue" {
+function collectLine(line: string, state: ReadState, file: string): "done" | "continue" {
 	try {
-		const entry = normalizeEntry(JSON.parse(line), state.contentChars);
-		if (!entry) return "continue";
+		const parsed = normalizeEntry(JSON.parse(line), state.contentChars);
+		if (!parsed) return "continue";
+		const entry: ClipboardEntry = { ...parsed, archiveDate: file.slice(0, 10) };
 		if (state.lookupId !== undefined) {
 			if (entry.id !== state.lookupId) return "continue";
 			state.entries.push(entry);

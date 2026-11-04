@@ -316,8 +316,13 @@ describe("clipboard entrypoint", () => {
 				custom: async (factory) =>
 					new Promise((resolve) => {
 						const component = factory({ terminal: { rows: 24 }, requestRender: () => {} }, theme, {}, resolve);
-						assert.match(component.render(72).join("\n"), /preview truncated/);
-						component.handleInput("\r");
+						void (async () => {
+							for (let attempt = 0; attempt < 400 && !component.render(72).join("\n").includes(" chars"); attempt++) {
+								await new Promise((settled) => setTimeout(settled, 5));
+							}
+							assert.match(component.render(72).join("\n"), /archive \d{4}-\d{2}-\d{2} · \d+ chars/);
+							component.handleInput("\r");
+						})();
 					}),
 			},
 		};

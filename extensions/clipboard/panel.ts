@@ -1,7 +1,17 @@
-/** Interactive /clipboard browser. Clipboard and archive I/O are delegated to the host. */
+/** Interactive clipboard archive browser. The host owns archive and clipboard I/O. */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { decodeKittyPrintable, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import {
+	decodeKittyPrintable,
+	type KeyId,
+	matchesKey,
+	truncateToWidth,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
+import type { SearchPage } from "./search.ts";
 import type { ClipboardEntry } from "./store.ts";
 import { sanitizeTerminalText } from "./text.ts";
 
@@ -12,7 +22,7 @@ interface PanelResult {
 	warning?: string;
 }
 
-interface PanelDeps {
+export interface PanelDeps {
 	entries: ClipboardEntry[];
 	theme: Theme;
 	tui: { requestRender(): void };
@@ -20,401 +30,664 @@ interface PanelDeps {
 	hasMore?: boolean;
 	done: (result: PanelResult) => void;
 	onRestore: (entry: ClipboardEntry, signal: AbortSignal) => Promise<RestoreOutcome>;
+	onPreview?: (entry: ClipboardEntry, signal: AbortSignal) => Promise<ClipboardEntry>;
+	onRecent?: (signal: AbortSignal) => Promise<{ entries: ClipboardEntry[]; hasMore: boolean }>;
+	onSearch?: (query: string, cursor: string | undefined, signal: AbortSignal) => Promise<SearchPage>;
 }
 
-interface Layout {
-	total: number;
-	framed: boolean;
-	filter: boolean;
-	listRows: number;
-	separator: boolean;
-	previewRows: number;
+type Action =
+	| "recent"
+	| "archive"
+	| "search"
+	| "actions"
+	| "detail"
+	| "continue"
+	| "refresh"
+	| "close"
+	| "restore"
+	| "back"
+	| "previous"
+	| "next";
+type Scope = "recent" | "archive";
+type Colour = Parameters<Theme["fg"]>[0];
+
+interface Hit {
+	x: number;
+	y: number;
+	width: number;
+	action?: Action;
+	entry?: ClipboardEntry;
+	pane?: "list" | "preview";
 }
 
-type Color = Parameters<Theme["fg"]>[0];
+const SHORTCUTS: ReadonlyArray<readonly [KeyId, Action]> = [
+	["ctrl+f", "search"],
+	["ctrl+a", "actions"],
+	["ctrl+d", "detail"],
+	["ctrl+n", "continue"],
+	["ctrl+r", "refresh"],
+	["ctrl+q", "close"],
+];
+const FOOTER = "↑↓ Select · ←→ Preview · F2 Scope · Ctrl+F Search · Ctrl+A Actions · Esc Back/Close";
+const MIN_COLUMNS = 48;
+const MIN_ROWS = 12;
 
-function safeLine(value: string): string {
-	return sanitizeTerminalText(value).text.replace(/\n/g, "↵");
+const safe = (value: string) => sanitizeTerminalText(value).text;
+const single = (value: string) => safe(value).replace(/\n/g, "↵");
+const identity = (entry: ClipboardEntry) => `${entry.archiveDate ?? ""}\0${entry.id}`;
+const clamp = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+
+function dateTime(value: string): string {
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return "unknown date";
+	const pad = (part: number) => String(part).padStart(2, "0");
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function localTime(iso: string): string {
-	const date = new Date(iso);
-	if (Number.isNaN(date.getTime())) return "--:--";
-	return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+function fitCells(value: string, width: number): string {
+	const text = truncateToWidth(value, Math.max(0, width)).replace(/\x1b\[[0-9;]*m/g, "");
+	return `${text}${" ".repeat(Math.max(0, width - visibleWidth(text)))}`;
 }
 
-function fitText(text: string, width: number): string {
-	if (width <= 0) return "";
-	// Input is plain, sanitized text. Strip SGR resets the width helper may add
-	// around a Unicode ellipsis before applying the panel's own styling.
-	const truncated = truncateToWidth(text, width).replace(/\x1b\[[0-9;]*m/g, "");
-	return `${truncated}${" ".repeat(Math.max(0, width - visibleWidth(truncated)))}`;
+function matchEntry(match: SearchPage["matches"][number]): ClipboardEntry {
+	return {
+		id: match.id,
+		archiveDate: match.date,
+		timestamp: match.timestamp,
+		label: match.label,
+		lines: match.lines,
+		chars: match.chars,
+		preview: match.match.excerpt,
+		content: "",
+		contentTruncated: true,
+	};
 }
 
-function computeLayout(maxRows: number, width: number): Layout {
-	const total = Math.min(44, Math.max(1, Math.floor(maxRows)));
-	if (total === 1) return { total, framed: false, filter: false, listRows: 0, separator: false, previewRows: 0 };
-	const framed = total >= 8 && width >= 4;
-	const contentRows = total - 1 - (framed ? 1 : 0); // footer, plus framed top
-	const filter = contentRows >= 3;
-	let remaining = contentRows - 1 - (filter ? 1 : 0); // header + optional filter
-	let separator = remaining >= 3;
-	if (separator) remaining--;
-	let listRows = 0;
-	let previewRows = 0;
-	if (remaining === 1) {
-		listRows = 1;
-	} else if (remaining >= 2) {
-		listRows = Math.max(1, Math.ceil(remaining * 0.48));
-		previewRows = remaining - listRows;
-	}
-	if (previewRows === 0) separator = false;
-	return { total, framed, filter, listRows, separator, previewRows };
+function coverageText(page: SearchPage): string {
+	const detail = `Stop ${page.stop}; ${page.scan.records} records; skipped ${page.scan.malformed} malformed and ${page.scan.oversized} oversized.`;
+	return page.hasMore ? `Partial scan; Continue remains available. ${detail}` : `End of observed scan. ${detail}`;
 }
 
 export class ClipboardPanel {
 	private readonly deps: PanelDeps;
-	private filter = "";
-	private selected = 0;
+	private readonly handlers: Record<Action, () => void>;
+	private recent: ClipboardEntry[];
+	private recentMore: boolean;
+	private scope: Scope = "recent";
+	private query = "";
+	private searchedQuery = "";
+	private editing = false;
+	private archive: ClipboardEntry[] = [];
+	private cursor?: string;
+	private coverage = "Enter literal text, then select Search.";
+	private stale = false;
+	private selectedKey?: string;
 	private listScroll = 0;
 	private previewScroll = 0;
-	private flash: string | null = null;
+	private detail = false;
+	private actions = false;
+	private preview?: ClipboardEntry;
+	private previewError?: string;
+	private flash?: string;
+	private busy = false;
 	private restoring = false;
-	private restoreController?: AbortController;
 	private disposed = false;
+	private hidden = false;
+	private generation = 0;
+	private previewGeneration = 0;
+	private readController?: AbortController;
+	private previewController?: AbortController;
+	private restoreController?: AbortController;
 	private version = 0;
-	private lastWidth = 80;
-	private cachedWidth = -1;
-	private cachedRows = -1;
 	private cachedVersion = -1;
-	private cachedLines: string[] = [];
+	private width = 0;
+	private rows = 0;
+	private cached: string[] = [];
+	private hits: Hit[] = [];
+	private listRows = 1;
+	private previewRows = 1;
+	private wrapped: string[] = [];
+	private wrappedKey = "";
 
 	constructor(deps: PanelDeps) {
 		this.deps = deps;
+		this.recent = deps.entries;
+		this.recentMore = deps.hasMore ?? false;
+		this.selectedKey = this.recent[0] && identity(this.recent[0]);
+		this.handlers = {
+			recent: () => this.switchScope("recent"),
+			archive: () => this.switchScope("archive"),
+			search: () => this.onSearchAction(),
+			actions: () => this.toggle("actions"),
+			detail: () => this.toggle("detail"),
+			continue: () => void this.search(true),
+			refresh: () => void this.refresh(),
+			close: () => this.close(),
+			restore: () => void this.restore(),
+			back: () => this.backToList(),
+			previous: () => this.scrollPreview(-this.previewRows),
+			next: () => this.scrollPreview(this.previewRows),
+		};
+		this.loadPreview();
 	}
 
-	private get filtered(): ClipboardEntry[] {
-		if (!this.filter) return this.deps.entries;
-		const needle = this.filter.toLocaleLowerCase();
-		return this.deps.entries.filter(
-			(entry) =>
-				entry.content.toLocaleLowerCase().includes(needle) ||
-				(entry.label ?? "").toLocaleLowerCase().includes(needle) ||
-				entry.id.toLocaleLowerCase().includes(needle),
+	private entries(): ClipboardEntry[] {
+		if (this.scope === "archive") return this.archive;
+		const query = this.query.toLocaleLowerCase();
+		return query
+			? this.recent.filter((entry) =>
+					`${entry.id}\n${entry.label ?? ""}\n${entry.preview}`.toLocaleLowerCase().includes(query),
+				)
+			: this.recent;
+	}
+
+	private selected(): ClipboardEntry | undefined {
+		return this.entries().find((entry) => identity(entry) === this.selectedKey);
+	}
+
+	private isSelected(entry: ClipboardEntry | undefined): boolean {
+		return entry !== undefined && identity(entry) === this.selectedKey;
+	}
+
+	private changed(): void {
+		this.hits = [];
+		this.version++;
+		if (!this.disposed) this.deps.tui.requestRender();
+	}
+
+	private select(entry: ClipboardEntry, reveal = false): void {
+		if (this.selectedKey !== identity(entry)) {
+			this.selectedKey = identity(entry);
+			this.previewScroll = 0;
+			this.loadPreview();
+		}
+		if (reveal) {
+			const index = this.entries().findIndex((item) => this.isSelected(item));
+			if (index < this.listScroll) this.listScroll = index;
+			if (index >= this.listScroll + this.listRows) this.listScroll = index - this.listRows + 1;
+		}
+		this.changed();
+	}
+
+	private loadPreview(): void {
+		const generation = ++this.previewGeneration;
+		this.previewController?.abort();
+		this.preview = undefined;
+		this.previewError = undefined;
+		this.wrappedKey = "";
+		const entry = this.selected();
+		if (!entry) return;
+		if (!this.deps.onPreview) {
+			this.preview = entry;
+			return;
+		}
+		const controller = new AbortController();
+		this.previewController = controller;
+		const current = () => !this.disposed && !controller.signal.aborted && generation === this.previewGeneration;
+		this.deps.onPreview(entry, controller.signal).then(
+			(preview) => {
+				if (!current()) return;
+				this.preview = preview;
+				this.changed();
+			},
+			(error: unknown) => {
+				if (!current()) return;
+				this.previewError = error instanceof Error ? error.message : String(error);
+				this.stale = this.scope === "archive";
+				this.changed();
+			},
 		);
 	}
 
-	private layout(width = this.lastWidth): Layout {
-		return computeLayout(this.deps.getMaxRows(), width);
-	}
-
-	private previewSource(entries: ClipboardEntry[]): string[] {
-		const entry = entries[this.selected];
-		if (!entry) return [];
-		const lines = entry.content.split("\n").map(safeLine);
-		if (entry.contentTruncated) lines.push("[preview truncated; restore uses the full archived entry]");
-		return lines;
-	}
-
-	private previewPageSize(): number {
-		return Math.max(1, this.layout().previewRows);
-	}
-
-	private previewMaxScroll(entries: ClipboardEntry[], layout = this.layout()): number {
-		return Math.max(0, this.previewSource(entries).length - layout.previewRows);
-	}
-
-	private bump(): void {
-		this.version++;
-		this.deps.tui.requestRender();
-	}
-
-	handleInput(data: string): void {
-		if (this.disposed) return;
-		if (this.restoring) {
-			if (matchesKey(data, "escape")) this.restoreController?.abort();
-			return;
-		}
-		if (matchesKey(data, "escape")) {
-			this.onEscape();
-			return;
-		}
-		this.flash = null;
-		if (matchesKey(data, "up")) {
-			this.onUp();
-			return;
-		}
-		if (matchesKey(data, "down")) {
-			this.onDown(this.filtered.length);
-			return;
-		}
-		if (matchesKey(data, "left")) {
-			this.onPreview(-1, this.filtered);
-			return;
-		}
-		if (matchesKey(data, "right")) {
-			this.onPreview(1, this.filtered);
-			return;
-		}
-		if (matchesKey(data, "backspace")) {
-			this.onBackspace();
-			return;
-		}
-		if (matchesKey(data, "enter")) {
-			this.onEnter(this.filtered);
-			return;
-		}
-		this.handleTyped(data);
-	}
-
-	private onEscape(): void {
-		if (this.filter) {
-			this.filter = "";
-			this.selected = 0;
-			this.listScroll = 0;
-			this.previewScroll = 0;
-			this.bump();
+	private setQuery(query: string): void {
+		this.query = query;
+		this.readController?.abort();
+		this.generation++;
+		this.busy = false;
+		if (this.scope === "archive") {
+			this.cursor = undefined;
+			this.stale = true;
+			this.coverage = "Query changed. Select Search or Refresh before an action.";
 		} else {
-			this.deps.done({});
+			this.keepSelectionVisible();
+		}
+		this.listScroll = 0;
+		this.changed();
+	}
+
+	private keepSelectionVisible(): void {
+		const entries = this.entries();
+		if (entries.some((entry) => this.isSelected(entry))) return;
+		this.selectedKey = entries[0] && identity(entries[0]);
+		this.previewScroll = 0;
+		this.loadPreview();
+	}
+
+	private switchScope(scope: Scope): void {
+		if (scope === this.scope) return;
+		this.readController?.abort();
+		this.generation++;
+		this.busy = false;
+		this.scope = scope;
+		this.editing = scope === "archive";
+		this.listScroll = 0;
+		this.keepSelectionVisible();
+		this.changed();
+	}
+
+	private isCurrent(generation: number, controller: AbortController): boolean {
+		return !this.disposed && !controller.signal.aborted && generation === this.generation;
+	}
+
+	private finishRead(generation: number): void {
+		if (!this.disposed && generation === this.generation) {
+			this.busy = false;
+			this.changed();
 		}
 	}
 
-	private onUp(): void {
-		this.selected = Math.max(0, this.selected - 1);
-		this.previewScroll = 0;
-		this.bump();
+	private startRead(): { generation: number; controller: AbortController } {
+		const generation = ++this.generation;
+		this.readController?.abort();
+		const controller = new AbortController();
+		this.readController = controller;
+		this.busy = true;
+		this.changed();
+		return { generation, controller };
 	}
 
-	private onDown(count: number): void {
-		this.selected = Math.min(Math.max(0, count - 1), this.selected + 1);
-		this.previewScroll = 0;
-		this.bump();
+	private async search(continuation: boolean): Promise<void> {
+		if (!this.deps.onSearch || !this.query.trim() || this.busy) return;
+		if (continuation && (!this.cursor || this.stale || this.query !== this.searchedQuery)) return;
+		const query = this.query;
+		const cursor = continuation ? this.cursor : undefined;
+		this.editing = false;
+		this.flash = undefined;
+		const { generation, controller } = this.startRead();
+		try {
+			const page = await this.deps.onSearch(query, cursor, controller.signal);
+			if (this.isCurrent(generation, controller)) this.applyPage(page, query, continuation);
+		} catch (error) {
+			if (this.isCurrent(generation, controller)) this.markStale(error);
+		} finally {
+			this.finishRead(generation);
+		}
 	}
 
-	private onPreview(direction: number, entries: ClipboardEntry[]): void {
-		const page = this.previewPageSize();
-		this.previewScroll =
-			direction < 0
-				? Math.max(0, this.previewScroll - page)
-				: Math.min(this.previewMaxScroll(entries), this.previewScroll + page);
-		this.bump();
+	private applyPage(page: SearchPage, query: string, continuation: boolean): void {
+		const existing = continuation ? this.archive : [];
+		const keys = new Set(existing.map(identity));
+		this.archive = [...existing, ...page.matches.map(matchEntry).filter((entry) => !keys.has(identity(entry)))];
+		this.cursor = page.nextCursor ?? undefined;
+		this.searchedQuery = query;
+		this.stale = false;
+		this.coverage = coverageText(page);
+		if (!this.archive.some((entry) => this.isSelected(entry))) {
+			this.selectedKey = this.archive[0] && identity(this.archive[0]);
+		}
+		if (!continuation) this.listScroll = 0;
+		this.loadPreview();
 	}
 
-	private onBackspace(): void {
-		if (!this.filter) return;
-		this.filter = Array.from(this.filter).slice(0, -1).join("");
-		this.selected = 0;
-		this.listScroll = 0;
-		this.previewScroll = 0;
-		this.bump();
+	private markStale(error: unknown): void {
+		this.stale = true;
+		this.coverage = `Archive state unavailable or stale. Refresh required: ${error instanceof Error ? error.message : String(error)}`;
 	}
 
-	private onEnter(entries: ClipboardEntry[]): void {
-		const entry = entries[this.selected];
-		if (!entry) return;
-		this.restoring = true;
+	private async refresh(): Promise<void> {
+		if (this.scope === "archive") {
+			await this.search(false);
+			return;
+		}
+		if (!this.deps.onRecent || this.busy) return;
+		const { generation, controller } = this.startRead();
+		try {
+			const page = await this.deps.onRecent(controller.signal);
+			if (this.isCurrent(generation, controller)) this.replaceEntries(page.entries, page.hasMore);
+		} catch (error) {
+			if (!controller.signal.aborted) {
+				this.flash = `Refresh failed: ${error instanceof Error ? error.message : String(error)}`;
+			}
+		} finally {
+			this.finishRead(generation);
+		}
+	}
+
+	/** Replaces the Recent entries from the host and resets hit geometry. */
+	replaceEntries(entries: ClipboardEntry[], hasMore = false): void {
+		this.recent = entries;
+		this.recentMore = hasMore;
+		this.keepSelectionVisible();
+		this.changed();
+	}
+
+	private async restore(): Promise<void> {
+		const entry = this.preview;
+		const refused = !entry || this.previewError !== undefined || (this.stale && this.scope === "archive");
+		if (refused || this.busy || this.restoring) {
+			this.flash = "Restore unavailable. Read the selected record; refresh stale archive state.";
+			this.changed();
+			return;
+		}
 		const controller = new AbortController();
 		this.restoreController = controller;
-		this.bump();
-		void this.restore(entry, controller);
-	}
-
-	private async restore(entry: ClipboardEntry, controller: AbortController): Promise<void> {
+		this.restoring = true;
+		this.changed();
 		let outcome: RestoreOutcome;
 		try {
 			outcome = await this.deps.onRestore(entry, controller.signal);
 		} catch (error) {
 			outcome = { ok: false, error: error instanceof Error ? error.message : String(error) };
 		}
-		this.restoreController = undefined;
 		this.restoring = false;
 		if (this.disposed) return;
-		if ("error" in outcome) {
-			this.flash = `restore failed: ${outcome.error}`;
-			this.bump();
+		if (!outcome.ok) {
+			this.flash = `Restore failed: ${outcome.error}`;
+			this.changed();
 			return;
 		}
-		this.deps.done(outcome.warning === undefined ? { restored: entry } : { restored: entry, warning: outcome.warning });
+		this.close({ restored: entry, ...(outcome.warning === undefined ? {} : { warning: outcome.warning }) });
 	}
 
-	private handleTyped(data: string): void {
-		// A terminal that negotiated the Kitty keyboard protocol sends CSI-u for
-		// every key, printable ones included. Decode first, the way pi-tui's own
-		// input component does, or typed filter text never arrives.
+	private close(result: PanelResult = {}): void {
+		this.hide();
+		this.deps.done(result);
+	}
+
+	private act(action: Action): void {
+		if (this.restoring) {
+			if (action === "close") this.restoreController?.abort();
+			return;
+		}
+		this.handlers[action]();
+	}
+
+	private onSearchAction(): void {
+		if (this.scope === "archive" && this.editing) void this.search(false);
+		else {
+			this.editing = true;
+			this.changed();
+		}
+	}
+
+	private toggle(key: "actions" | "detail"): void {
+		this[key] = !this[key];
+		this.editing = false;
+		this.changed();
+	}
+
+	private backToList(): void {
+		this.actions = false;
+		this.detail = false;
+		this.editing = false;
+		this.changed();
+	}
+
+	private scrollPreview(delta: number): void {
+		this.previewScroll = clamp(this.previewScroll + delta, 0, Math.max(0, this.wrapped.length - this.previewRows));
+		this.changed();
+	}
+
+	private scrollList(delta: number): void {
+		this.listScroll = clamp(this.listScroll + delta, 0, Math.max(0, this.entries().length - this.listRows));
+		this.changed();
+	}
+
+	handleInput(data: string): void {
+		if (this.disposed || this.hidden) return;
+		if (this.restoring) {
+			if (matchesKey(data, "escape")) this.restoreController?.abort();
+			return;
+		}
+		const shortcut = SHORTCUTS.find(([key]) => matchesKey(data, key));
+		if (shortcut) {
+			this.act(shortcut[1]);
+			return;
+		}
+		if (matchesKey(data, "f2")) this.switchScope(this.scope === "recent" ? "archive" : "recent");
+		else if (matchesKey(data, "escape")) this.onEscape();
+		else if (matchesKey(data, "enter")) this.onEnter();
+		else if (this.onNavigate(data)) return;
+		else if (matchesKey(data, "backspace")) this.setQuery(Array.from(this.query).slice(0, -1).join(""));
+		else this.onText(data);
+	}
+
+	private onEscape(): void {
+		if (this.busy) {
+			this.readController?.abort();
+			this.generation++;
+			this.busy = false;
+			this.changed();
+		} else if (this.actions || this.detail || this.editing) this.backToList();
+		else if (this.query) this.setQuery("");
+		else this.close();
+	}
+
+	private onEnter(): void {
+		if (!this.editing) {
+			this.act("restore");
+			return;
+		}
+		this.editing = false;
+		if (this.scope === "archive") void this.search(false);
+		else this.changed();
+	}
+
+	private onNavigate(data: string): boolean {
+		if (matchesKey(data, "up") || matchesKey(data, "down")) {
+			const entries = this.entries();
+			const index = entries.findIndex((entry) => this.isSelected(entry));
+			const step = matchesKey(data, "up") ? -1 : 1;
+			const next = entries[clamp(index + step, 0, entries.length - 1)];
+			if (next) this.select(next, true);
+			return true;
+		}
+		if (matchesKey(data, "left") || matchesKey(data, "pageUp")) {
+			this.act("previous");
+			return true;
+		}
+		if (matchesKey(data, "right") || matchesKey(data, "pageDown")) {
+			this.act("next");
+			return true;
+		}
+		return false;
+	}
+
+	private onText(data: string): void {
 		const typed = decodeKittyPrintable(data) ?? data;
-		if (typed.length === 0 || matchesKey(data, "ctrl+c") || !/^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(typed)) return;
-		this.filter += typed;
-		this.selected = 0;
-		this.listScroll = 0;
-		this.previewScroll = 0;
-		this.bump();
+		if (typed && /^[\p{L}\p{N}\p{P}\p{S} ]+$/u.test(typed)) {
+			this.editing = true;
+			this.setQuery(this.query + typed);
+		}
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.disposed || this.hidden || event.width !== this.width || this.rows !== this.maxRows()) {
+			this.hits = [];
+			return;
+		}
+		const hit = this.hits.find((item) => item.y === event.y && event.x >= item.x && event.x < item.x + item.width);
+		if (!hit) return;
+		if (event.type === "wheel") {
+			if (hit.pane === "preview") this.scrollPreview(event.wheelDelta ?? 0);
+			else if (hit.pane === "list") this.scrollList(event.wheelDelta ?? 0);
+			return { handled: true };
+		}
+		if (event.type !== "click" || event.button !== "left") return;
+		if (hit.entry) this.select(hit.entry);
+		else if (hit.action) this.act(hit.action);
+		return { handled: true };
+	}
+
+	private maxRows(): number {
+		return Math.max(1, Math.min(44, Math.floor(this.deps.getMaxRows())));
 	}
 
 	render(width: number): string[] {
-		this.lastWidth = width;
-		const layout = this.layout(width);
-		if (this.cachedWidth === width && this.cachedRows === layout.total && this.cachedVersion === this.version) {
-			return this.cachedLines;
-		}
-		const entries = this.filtered;
-		this.previewScroll = Math.min(this.previewScroll, this.previewMaxScroll(entries, layout));
-		const lines = this.buildLines(width, layout, entries);
-		this.cachedWidth = width;
-		this.cachedRows = layout.total;
+		const rows = this.maxRows();
+		if (this.cachedVersion === this.version && this.width === width && this.rows === rows) return this.cached;
+		this.hits = [];
+		this.width = width;
+		this.rows = rows;
+		const inner = Math.max(0, width - 2);
+		const lines =
+			rows < MIN_ROWS || width < MIN_COLUMNS ? this.compactLines(rows, inner) : this.fullLines(rows, inner);
+		this.cached = lines.slice(0, rows);
 		this.cachedVersion = this.version;
-		this.cachedLines = lines.slice(0, layout.total);
-		return this.cachedLines;
+		return this.cached;
 	}
 
-	private styleLine(text: string, targetWidth: number, color?: Color, bold = false): string {
-		let result = fitText(text, targetWidth); // truncate before styling so resets cannot punch through the panel background
-		if (bold) result = this.deps.theme.bold(result);
-		if (color) result = this.deps.theme.fg(color, result);
-		return result;
+	/** A row is fitted to the pane before styling, so colour codes survive into the output. */
+	private row(text: string, inner: number, colour: Colour = "muted"): string {
+		return this.deps.theme.bg("customMessageBg", this.deps.theme.fg(colour, `│${fitCells(text, inner)}│`));
 	}
 
-	private paintLine(width: number, text: string, color?: Color, bold = false): string {
-		return this.deps.theme.bg("customMessageBg", this.styleLine(text, width, color, bold));
+	/** Labelled controls become hit regions at the row index they occupy. */
+	private controlRow(y: number, inner: number, items: ReadonlyArray<readonly [string, Action]>): string {
+		let text = "";
+		for (const [label, action] of items) {
+			const value = `[${label}] `;
+			if (visibleWidth(text + value) > inner) break;
+			this.hits.push({ x: 1 + visibleWidth(text), y, width: visibleWidth(value) - 1, action });
+			text += value;
+		}
+		return this.row(text, inner, "accent");
 	}
 
-	private rowLine(
-		layout: Layout,
-		width: number,
-		innerWidth: number,
-		text: string,
-		color?: Color,
-		bold = false,
-	): string {
-		if (!layout.framed) return this.paintLine(width, text, color, bold);
-		const theme = this.deps.theme;
-		return theme.bg(
-			"customMessageBg",
-			`${theme.fg("borderMuted", "│")}${this.styleLine(text, innerWidth, color, bold)}${theme.fg("borderMuted", "│")}`,
-		);
+	private compactLines(rows: number, inner: number): string[] {
+		if (rows === 1) return [this.controlRow(0, inner, [["Close", "close"]])];
+		const lines = [this.row(`Resize to ${MIN_COLUMNS}x${MIN_ROWS} or larger.`, inner)];
+		while (lines.length < rows - 1) lines.push(this.row("", inner));
+		lines.push(this.controlRow(lines.length, inner, [["Close", "close"]]));
+		return lines;
 	}
 
-	private footerLine(layout: Layout, width: number, innerWidth: number, text: string): string {
-		if (!layout.framed) return this.paintLine(width, text, "dim");
-		const theme = this.deps.theme;
-		return theme.bg(
-			"customMessageBg",
-			`${theme.fg("borderMuted", "╰")}${this.styleLine(text, innerWidth, "dim")}${theme.fg("borderMuted", "╯")}`,
-		);
-	}
-
-	private buildLines(width: number, layout: Layout, entries: ClipboardEntry[]): string[] {
-		const total = this.deps.entries.length;
-		const innerWidth = layout.framed ? Math.max(0, width - 2) : width;
-		if (layout.total === 1) return [this.footerLine(layout, width, innerWidth, " esc close")];
+	private fullLines(rows: number, inner: number): string[] {
 		const lines: string[] = [];
-		if (layout.framed) lines.push(this.paintLine(width, `╭${"─".repeat(innerWidth)}╮`, "borderMuted"));
+		const count = this.scope === "recent" ? this.entries().length : this.archive.length;
+		const scopeText = this.scope === "recent" ? `Recent ${count}${this.recentMore ? "+" : ""}` : `Search archive ${count}`;
+		lines.push(this.row(`Clipboard history · ${scopeText}${this.busy ? " · Read in progress" : ""}`, inner, "accent"));
 		lines.push(
-			this.rowLine(layout, width, innerWidth, ` Clipboard history ${this.filterNote(entries.length, total)}`, "accent", true),
+			this.controlRow(lines.length, inner, [
+				[this.scope === "recent" ? "Recent ✓" : "Recent", "recent"],
+				[this.scope === "archive" ? "Search archive ✓" : "Search archive", "archive"],
+				["Refresh", "refresh"],
+			]),
 		);
-		if (layout.filter) {
+		lines.push(
+			this.controlRow(lines.length, inner, [
+				[this.scope === "archive" && this.editing ? "Run search" : "Search", "search"],
+				["Actions", "actions"],
+				["Detail", "detail"],
+				["Continue", "continue"],
+				["Close", "close"],
+			]),
+		);
+		lines.push(this.row(this.queryText(), inner));
+		lines.push(...this.coverageLines(inner));
+		if (this.actions) {
 			lines.push(
-				this.rowLine(
-					layout,
-					width,
-					innerWidth,
-					this.filter ? ` filter: ${safeLine(this.filter)}▌` : " type to filter",
-					this.filter ? "muted" : "dim",
-				),
+				this.controlRow(lines.length, inner, [
+					["Restore selected", "restore"],
+					["Back", "back"],
+				]),
 			);
 		}
-		this.syncListScroll(layout);
-		lines.push(...this.listLines(layout, width, innerWidth, entries, total));
-		if (layout.separator) lines.push(this.rowLine(layout, width, innerWidth, "─".repeat(innerWidth), "borderMuted"));
-		lines.push(...this.previewLines(layout, width, innerWidth, entries));
-		lines.push(this.footerLine(layout, width, innerWidth, this.hintLine(entries.length)));
+		const available = rows - lines.length - 2;
+		this.listRows = this.detail ? 0 : Math.max(1, Math.floor(available * 0.45));
+		this.previewRows = Math.max(1, available - this.listRows);
+		lines.push(...this.listLines(lines.length, inner));
+		lines.push(this.controlRow(lines.length, inner, [
+			["Previous page", "previous"],
+			["Next page", "next"],
+			[this.detail ? "Back to list" : "Read detail", "detail"],
+		]));
+		lines.push(...this.previewLines(lines.length, inner));
+		lines.push(this.row(this.footerText(), inner, this.flash ? "warning" : "dim"));
 		return lines;
 	}
 
-	private filterNote(count: number, total: number): string {
-		const loadedTotal = `${total}${this.deps.hasMore ? "+" : ""}`;
-		if (!this.filter) return ` — ${loadedTotal} entries`;
-		return this.deps.hasMore ? ` — ${count} match in ${loadedTotal} recent` : ` — ${count} of ${total} match`;
+	private queryText(): string {
+		const label = this.scope === "recent" ? "Recent filter" : "Literal archive query";
+		return `${label}: ${single(this.query)}${this.editing ? "▌ (Enter to apply)" : ""}`;
 	}
 
-	private syncListScroll(layout: Layout): void {
-		if (this.selected < this.listScroll) this.listScroll = this.selected;
-		if (this.selected >= this.listScroll + layout.listRows) {
-			this.listScroll = this.selected - layout.listRows + 1;
+	private coverageLines(inner: number): string[] {
+		if (this.scope === "recent") return [this.row("Recent filters labels, ids and excerpts. Search archive reads full records.", inner, "dim")];
+		return wrapTextWithAnsi(this.coverage, inner)
+			.slice(0, 2)
+			.map((line) => this.row(line, inner, this.stale ? "warning" : "dim"));
+	}
+
+	private listLines(y0: number, inner: number): string[] {
+		const entries = this.entries();
+		const out: string[] = [];
+		for (let index = 0; index < this.listRows; index++) {
+			const entry = entries[this.listScroll + index];
+			this.hits.push({ x: 1, y: y0 + index, width: inner, pane: "list", entry });
+			out.push(this.row(this.listText(entry, index), inner, this.isSelected(entry) ? "accent" : "muted"));
 		}
+		return out;
 	}
 
-	private emptyRow(index: number, total: number): string {
+	private listText(entry: ClipboardEntry | undefined, index: number): string {
+		if (entry) {
+			const marker = this.isSelected(entry) ? "›" : " ";
+			const label = entry.label ? single(entry.label) : single(entry.preview);
+			return `${marker} ${dateTime(entry.timestamp)} · ${label} · ${entry.chars}c`;
+		}
 		if (index !== 0) return "";
-		return total === 0 ? " No clipboard history yet." : " No matching entries.";
+		if (this.scope === "archive") return "No matches on this page. Check coverage and Continue.";
+		return "No clipboard history matches.";
 	}
 
-	private entryRowText(entry: ClipboardEntry, absolute: number): string {
-		const label = entry.label ? ` [${safeLine(entry.label)}]` : "";
-		const preview = safeLine(entry.preview);
-		const marker = absolute === this.selected ? "›" : " ";
-		return `${marker} ${localTime(entry.timestamp)}${label} (${entry.lines}L/${entry.chars}c)  ${preview}`;
-	}
-
-	private listLines(
-		layout: Layout,
-		width: number,
-		innerWidth: number,
-		entries: ClipboardEntry[],
-		total: number,
-	): string[] {
-		const lines: string[] = [];
-		const visible = entries.slice(this.listScroll, this.listScroll + layout.listRows);
-		for (let index = 0; index < layout.listRows; index++) {
-			const entry = visible[index];
-			if (!entry) {
-				lines.push(this.rowLine(layout, width, innerWidth, this.emptyRow(index, total), "dim"));
-				continue;
-			}
-			const absolute = this.listScroll + index;
-			lines.push(
-				this.rowLine(
-					layout,
-					width,
-					innerWidth,
-					this.entryRowText(entry, absolute),
-					absolute === this.selected ? "accent" : undefined,
-					absolute === this.selected,
-				),
-			);
+	private previewBody(): string {
+		if (this.preview) {
+			const entry = this.preview;
+			const header = `${entry.id}\n${entry.timestamp} · archive ${entry.archiveDate ?? "unavailable"} · ${entry.chars} chars`;
+			const notice = entry.contentTruncated ? "\n[Preview truncated; restore uses the full archived entry]" : "";
+			return `${header}\n${entry.content}${notice}`;
 		}
-		return lines;
+		return this.previewError ?? (this.selected() ? "Read in progress…" : "Select a record.");
 	}
 
-	private previewLines(layout: Layout, width: number, innerWidth: number, entries: ClipboardEntry[]): string[] {
-		const lines: string[] = [];
-		const source = this.previewSource(entries);
-		const page = source.slice(this.previewScroll, this.previewScroll + layout.previewRows);
-		for (let index = 0; index < layout.previewRows; index++) {
-			let text = page[index] ?? "";
-			if (index === layout.previewRows - 1 && source.length > this.previewScroll + layout.previewRows) {
-				text = ` +${source.length - this.previewScroll - layout.previewRows} more · ${text}`;
-			}
-			lines.push(this.rowLine(layout, width, innerWidth, text, "muted"));
+	private previewLines(y0: number, inner: number): string[] {
+		const key = `${this.previewGeneration}:${inner}:${this.preview ? "ready" : "pending"}:${this.previewError ?? ""}`;
+		if (this.wrappedKey !== key) {
+			this.wrapped = wrapTextWithAnsi(safe(this.previewBody()), Math.max(1, inner));
+			this.wrappedKey = key;
 		}
-		return lines;
+		this.previewScroll = clamp(this.previewScroll, 0, Math.max(0, this.wrapped.length - this.previewRows));
+		const out: string[] = [];
+		for (let index = 0; index < this.previewRows; index++) {
+			this.hits.push({ x: 1, y: y0 + index, width: inner, pane: "preview" });
+			out.push(this.row(this.wrapped[this.previewScroll + index] ?? "", inner));
+		}
+		return out;
 	}
 
-	private hintLine(count: number): string {
-		if (this.restoring) return " restoring… · esc cancel";
-		if (this.flash) return ` esc close · ${safeLine(this.flash)}`;
-		const position = count > 0 ? `${this.selected + 1}/${count}${this.deps.hasMore ? "+" : ""}` : "0/0";
-		return ` enter restore · esc close · ←→ preview · ↑↓ select · ${position}`;
+	private footerText(): string {
+		if (this.restoring) return "Restore in progress · Escape cancels";
+		if (this.flash) return single(this.flash);
+		return FOOTER;
+	}
+
+	hide(): void {
+		this.hidden = true;
+		this.hits = [];
+		this.previewController?.abort();
+		this.readController?.abort();
 	}
 
 	dispose(): void {
 		this.disposed = true;
+		this.hide();
 		this.restoreController?.abort();
 	}
 
 	invalidate(): void {
-		this.cachedWidth = -1;
-		this.cachedRows = -1;
+		this.hits = [];
 		this.cachedVersion = -1;
-		this.cachedLines = [];
+		this.wrappedKey = "";
 	}
 }
