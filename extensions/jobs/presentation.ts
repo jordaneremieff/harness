@@ -1,5 +1,7 @@
 import { createBashToolDefinition, type AgentToolResult, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
+import { basename } from "node:path";
+import { displayText } from "./completion.ts";
 
 /** Facts a job card can show. Absent fields are unknown, not empty. */
 export interface JobView {
@@ -35,8 +37,16 @@ type RenderContext = Parameters<NonNullable<ToolDefinition["renderCall"]>>[2];
 type NativeContext = Parameters<NonNullable<NativeBash["renderCall"]>>[2];
 const COMPACT_ERROR_CHARS = 120;
 
+/** One retained string as display text: terminal controls removed, newlines and tabs kept. */
 function textOf(value: unknown): string | undefined {
-	return typeof value === "string" && value.length > 0 ? value : undefined;
+	if (typeof value !== "string" || value.length === 0) return undefined;
+	const clean = displayText(value);
+	return clean.length > 0 ? clean : undefined;
+}
+
+/** One retained string on one card line. */
+function lineOf(value: unknown): string | undefined {
+	return textOf(value)?.replace(/\s+/gu, " ").trim() || undefined;
 }
 
 function jobView(value: unknown): JobView | undefined {
@@ -77,9 +87,18 @@ function stateLabel(job: JobView): string {
 	return "unknown";
 }
 
-function requestLabel(job: JobView): string {
-	if (job.cancellationRequested) return "cancellation requested";
-	return "no cancel request";
+/** A requested cancellation on a settled job is a fact worth a word; its absence is routine. */
+function requestLabel(job: JobView): string | undefined {
+	return job.cancellationRequested && job.status !== "running" && job.status !== "cancelled" && job.status !== "timed_out" ? "cancellation requested" : undefined;
+}
+
+/** Short stable identity and the context that tells repeated commands apart. */
+function contextLine(job: JobView): string | undefined {
+	const id = lineOf(job.id);
+	const cwd = lineOf(job.cwd);
+	const folder = cwd ? basename(cwd) || cwd : undefined;
+	const parts = [id ? `job ${id}` : undefined, folder ? `in ${folder}` : undefined, lineOf(job.owner)].filter((part): part is string => part !== undefined);
+	return parts.length ? parts.join(" · ") : undefined;
 }
 
 function exitLabel(job: JobView): string | undefined {
@@ -96,9 +115,11 @@ function compactError(error: string | undefined): string | undefined {
 	return `${flat.slice(0, COMPACT_ERROR_CHARS - 1)}…`;
 }
 
+/** The exceptional state leads; exit and duration follow; the routine absence of a cancel request says nothing. */
 function compactJob(job: JobView): string[] {
-	const facts = [stateLabel(job), duration(job), exitLabel(job), requestLabel(job)].filter((fact): fact is string => fact !== undefined);
-	const lines = [textOf(job.commandPreview) ?? "command unknown", [...new Set(facts)].join(" · ")];
+	const facts = [stateLabel(job), requestLabel(job), exitLabel(job), duration(job)].filter((fact): fact is string => fact !== undefined);
+	const context = contextLine(job);
+	const lines = [lineOf(job.commandPreview) ?? "command unknown", ...(context ? [context] : []), [...new Set(facts)].join(" · ")];
 	const error = compactError(textOf(job.error));
 	if (error) lines.push(error);
 	return lines;
@@ -116,13 +137,15 @@ function lossLines(job: JobView): string[] {
 function detailJob(job: JobView, logs?: LogView): string[] {
 	const lines = [
 		...compactJob(job),
-		`id: ${known(textOf(job.id))}`,
-		`owner: ${known(textOf(job.owner))}`,
-		`working directory: ${known(textOf(job.cwd))}`,
+		`id: ${known(lineOf(job.id))}`,
+		`owner: ${known(lineOf(job.owner))}`,
+		`working directory: ${known(lineOf(job.cwd))}`,
 		`timeout: ${typeof job.timeoutSeconds === "number" ? `${job.timeoutSeconds}s` : "none"}`,
+		`cancel request: ${job.cancellationRequested === undefined ? "unknown" : job.cancellationRequested ? "yes" : "no"}`,
 		...lossLines(job),
 	];
-	if (textOf(job.error)) lines.push(`retained error: ${job.error}`);
+	const error = textOf(job.error);
+	if (error) lines.push(`retained error: ${error}`);
 	if (logs) lines.push(...logDetail(logs));
 	else lines.push("Logs are not in this result.");
 	return lines;
@@ -133,15 +156,16 @@ function flag(value: boolean | undefined, yes: string): string {
 	return value ? yes : "no";
 }
 
+/** The retained page as display text; the raw bytes stay in the result. */
 function logTextLines(text: string | undefined): string[] {
 	if (text === undefined) return ["Log text is unavailable."];
 	if (text.length === 0) return ["This page has no output."];
-	return ["Retained page:", text];
+	return ["Retained page:", displayText(text)];
 }
 
 function logDetail(logs: LogView): string[] {
 	const lines = [
-		`log id: ${known(textOf(logs.id))}`,
+		`log id: ${known(lineOf(logs.id))}`,
 		`earliest: ${logs.earliest ?? "unknown"}`,
 		`next: ${logs.next ?? "unknown"}`,
 		`end: ${logs.end ?? "unknown"}`,
@@ -156,7 +180,7 @@ function logDetail(logs: LogView): string[] {
 
 function compactLogs(logs: LogView): string[] {
 	const job = logs.job;
-	const lines = job ? compactJob(job).slice(0, 2) : [`log ${known(textOf(logs.id))}`];
+	const lines = job ? compactJob({ ...job, error: undefined }) : [`log ${known(lineOf(logs.id))}`];
 	const marks = [
 		logs.gap ? "output gap" : undefined,
 		logs.more ? "more output" : undefined,
@@ -167,10 +191,16 @@ function compactLogs(logs: LogView): string[] {
 	return lines;
 }
 
-function card(lines: string[], theme: Theme, context: RenderContext): Text {
+/** The disclosure hint names the operator's configured expansion key when the host supplies one. */
+function expansionHint(context: RenderContext): string {
+	const key = typeof context.keyText === "function" ? context.keyText("app.tools.expand") : "";
+	return key ? `... (${key} to expand)` : "... (expand for full details)";
+}
+
+function card(lines: string[], theme: Theme, context: RenderContext, hint = false): Text {
 	const text = context.lastComponent instanceof Text ? context.lastComponent : new Text("", 0, 0);
 	const [title, ...rest] = lines;
-	text.setText([theme.fg("toolTitle", title ?? "command unknown"), ...rest.map((line) => theme.fg("toolOutput", line))].join("\n"));
+	text.setText([theme.fg("toolTitle", title ?? "command unknown"), ...rest.map((line) => theme.fg("toolOutput", line)), ...(hint ? [theme.fg("muted", expansionHint(context))] : [])].join("\n"));
 	return text;
 }
 
@@ -192,18 +222,23 @@ function listLines(jobs: unknown[], expanded: boolean): string[] {
 	});
 }
 
-function jobsLines(details: unknown, expanded: boolean, isError: boolean, fallback: string): string[] {
+/** Card lines and whether a collapsed card hides more. Fallback text is the model-visible result text. */
+function jobsLines(details: unknown, expanded: boolean, isError: boolean, fallback: string): { lines: string[]; more: boolean } {
+	const cleanFallback = displayText(fallback);
 	const logs = logView(details);
 	if (logs) {
 		const lines = logsLines(logs, expanded);
-		return isError && fallback ? [...lines, fallback] : lines;
+		return { lines: isError && cleanFallback ? [...lines, cleanFallback] : lines, more: !expanded };
 	}
 	const record = jobView(details) as { jobs?: unknown; job?: unknown } | undefined;
-	if (Array.isArray(record?.jobs)) return listLines(record.jobs, expanded);
+	if (Array.isArray(record?.jobs)) return { lines: listLines(record.jobs, expanded), more: !expanded && record.jobs.length > 0 };
 	const job = jobView(record?.job);
-	if (job) return expanded ? detailJob(job) : compactJob(job);
-	if (fallback) return expanded ? [fallback] : [fallback.split("\n")[0] ?? "unknown"];
-	return ["command unknown", "unknown"];
+	if (job) return { lines: expanded ? detailJob(job) : compactJob(job), more: !expanded };
+	if (cleanFallback) {
+		const [first = "unknown", ...rest] = cleanFallback.split("\n");
+		return { lines: expanded ? [cleanFallback] : [first], more: !expanded && rest.length > 0 };
+	}
+	return { lines: ["command unknown", "unknown"], more: false };
 }
 
 let nativeBash: ReturnType<typeof createBashToolDefinition> | undefined;
@@ -221,8 +256,8 @@ export function renderJobsCall(args: unknown, theme: Theme, context: RenderConte
 }
 
 export function renderJobsResult(result: AgentToolResult<unknown>, options: { expanded: boolean }, theme: Theme, context: RenderContext): Text {
-	const lines = jobsLines(result.details, options.expanded, result.isError === true, result.isError ? resultText(result) : "");
-	return card(lines, theme, context);
+	const { lines, more } = jobsLines(result.details, options.expanded, result.isError === true, result.isError ? resultText(result) : "");
+	return card(lines, theme, context, more);
 }
 
 export function renderBashCall(args: unknown, theme: Theme, context: RenderContext): Text {
@@ -241,5 +276,6 @@ export function renderBashResult(
 	if (jobView(result.details) && jobView((result.details as { job?: unknown }).job)) return renderJobsResult(result, options, theme, context);
 	const native = nativeRenderers().renderResult;
 	if (native) return native(result as never, options, theme, context as NativeContext);
-	return card(jobsLines(result.details, options.expanded, result.isError === true, resultText(result)), theme, context);
+	const { lines, more } = jobsLines(result.details, options.expanded, result.isError === true, resultText(result));
+	return card(lines, theme, context, more);
 }

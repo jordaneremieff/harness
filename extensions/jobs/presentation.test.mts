@@ -90,8 +90,9 @@ test("cards keep accepted, requested, settled, timeout, loss, and unavailable ou
 	assert.match(running, /^npm test/u);
 	assert.match(running, /accepted, running/u);
 	assert.match(running, /elapsed 1\.5s at observation/u);
-	assert.match(running, /no cancel request/u);
-	assert.doesNotMatch(running, /settled cancellation/u);
+	assert.match(running, /^job 1 \u00b7 in work \u00b7 session\s*$/mu, "a short identity and folder tell repeated commands apart");
+	assert.doesNotMatch(running, /no cancel request|settled cancellation/u, "a routine absence says nothing");
+	assert.match(running, /\.\.\. \(expand for full details\)\s*$/u);
 
 	const requested = jobResult({ id: "2", commandPreview: "sleep 30", status: "running", startedAt: 0, observedAt: 2000, cancellationRequested: true });
 	assert.match(requested, /cancellation requested/u);
@@ -103,6 +104,12 @@ test("cards keep accepted, requested, settled, timeout, loss, and unavailable ou
 	assert.match(settled, /id: 3/u);
 	assert.match(settled, /owner: unknown/u);
 	assert.match(settled, /working directory: unknown/u);
+	assert.match(settled, /cancel request: yes/u);
+	assert.doesNotMatch(settled, /to expand|expand for full/u, "expanded cards show no hint");
+	const failed = jobResult({ id: "7", commandPreview: "npm test", cwd: "/work", status: "failed", startedAt: 0, endedAt: 4000, exitCode: 1, cancellationRequested: false, error: "Exit 1\x1b[2J\x1b]52;c;Zm9v\x07 with\nrest" });
+	assert.match(failed, /^failed \u00b7 exit 1 \u00b7 final 4(?:\.0)?s\s*$/mu, "the exceptional state leads the facts line");
+	assert.match(failed, /^Exit 1 with rest\s*$/mu);
+	assert.doesNotMatch(failed, /\x1b|Zm9v/u, "terminal sequences never reach the card");
 
 	const timed = jobResult({ id: "4", commandPreview: "sleep 30", status: "timed_out", startedAt: 0, endedAt: 50, cancellationRequested: true, timeoutSeconds: 0.05 }, true);
 	assert.match(timed, /timed out/u);
@@ -122,6 +129,18 @@ test("cards keep accepted, requested, settled, timeout, loss, and unavailable ou
 	assert.match(gap, /earlier output was discarded/u);
 	assert.match(gap, /pending bytes: 2/u);
 	assert.match(gap, /incomplete UTF-8 suffix/u);
+	const hostile = render({
+		content: [{ type: "text", text: "" }],
+		details: { id: "8", text: "line\x1b[31m red\x1b[0m\n\x1b]52;c;Zm9v\x07tab\tend", earliest: 0, next: 10, end: 10, gap: false, more: true, pendingBytes: 0, job: { id: "8", commandPreview: "printf\x1b[2J hostile", cwd: "/work/deep", owner: "storage:8", status: "succeeded", exitCode: 0, cancellationRequested: false } },
+	}, true);
+	assert.match(hostile, /^printf hostile\s*$/mu);
+	assert.match(hostile, /line red\s*\ntab\s+end/u, "log text keeps newlines and tabs without controls");
+	assert.doesNotMatch(hostile, /\x1b|Zm9v/u);
+	assert.match(hostile, /more: yes/u);
+	const compactLogs = render({ content: [{ type: "text", text: "" }], details: { id: "8", text: "x", earliest: 0, next: 1, end: 1, gap: true, more: true, pendingBytes: 1, job: { id: "8", commandPreview: "printf hostile", status: "succeeded", exitCode: 0, cancellationRequested: false, error: "stderr noise" } } });
+	assert.match(compactLogs, /output gap \u00b7 more output \u00b7 output pending/u);
+	assert.doesNotMatch(compactLogs, /stderr noise/u, "a log page card shows the page marks, not the job error");
+	assert.match(compactLogs, /expand for full details/u);
 
 	const blank = jobResult({});
 	assert.match(blank, /command unknown/u);

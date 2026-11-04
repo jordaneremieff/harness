@@ -119,15 +119,28 @@ page, so a log card names the command it belongs to.
 ## Tool cards
 
 The `jobs` tool and background `bash` results have owner renderers. A compact
-card leads with the command preview, then state and duration: accepted and
-running, cancellation requested, settled cancellation, timed out, host lost,
-or succeeded/failed, with the exit code when one exists and a one-line error
-preview. Expanded detail adds the exact job ID, owner, working directory,
-timeout, the full retained error, and for log pages the byte cursors, gap,
-continuation (`more`), pending UTF-8 suffix, and the retained page text. A
-`list` card identifies each job by command preview, not only by ID. Foreground
-`bash` results keep Pi's native bash card; only the background admission shape
-uses the job card.
+card leads with the command preview, then one context line that tells repeated
+commands apart (`job 7 · in harness · storage:9`: the short job ID, the last
+segment of the working directory and the owner, each only when known), then
+the facts line with the exceptional state first: accepted and running,
+cancellation requested, settled cancellation, timed out, host lost, or
+succeeded/failed, followed by the exit code when one exists and the duration,
+then a one-line error preview. The routine absence of a cancel request is not
+stated; the expanded `cancel request:` line keeps the exact value. A collapsed
+card ends with `... (ctrl+o to expand)` using the operator's configured key.
+Expanded detail adds the exact job ID, owner, working directory, timeout, the
+full retained error, and for log pages the byte cursors, gap, continuation
+(`more`), pending UTF-8 suffix, and the retained page text; a collapsed log
+card shows the page marks (`output gap · more output · output pending`) rather
+than the job error. A `list` card identifies each job by command preview, not
+only by ID. Foreground `bash` results keep Pi's native bash card; only the
+background admission shape uses the job card.
+
+Every retained string on a card (command preview, directory, owner, identifiers,
+error text, model-visible fallback text and the retained log page) passes
+through the same display sanitation as the model-visible text before theme
+styling: terminal control and escape sequences are removed, newlines and tabs
+stay. The raw bytes remain in the structured result for exact reads.
 
 The renderers live in `presentation.ts` as pure functions over the result
 shape, and `display.ts` publishes them. The same records serve three routes:
