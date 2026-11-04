@@ -33,7 +33,7 @@ import {
 } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
 import { capText, terminalSafe } from "./panel.ts";
-import { renderProposeCall, renderProposeResult, renderRulesCall, renderRulesResult } from "./presentation.ts";
+import { toolDisplayRecord } from "./display.ts";
 import { PROPOSAL_CONDITION_GRAMMAR, ProposalConditionSchema, ProposalProgramSchema } from "./program.ts";
 import {
 	contentRevision,
@@ -957,8 +957,8 @@ export function registerRuleTools(
 			"Use policy_rules to inspect all rules, pending proposals, health, and exact session scope values before proposing a change.",
 		],
 		parameters: PolicyProposeParams,
-		renderCall: (args, theme, context) => renderProposeCall(args, theme, context),
-		renderResult: (result, options, theme, context) => renderProposeResult(result, options, theme, context),
+		renderCall: toolDisplayRecord("policy_propose").renderCall,
+		renderResult: toolDisplayRecord("policy_propose").renderResult,
 		async execute(_toolCallId, params: Static<typeof PolicyProposeParams>, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new PolicyMutationCancelledError();
 			validateProposal(params);
@@ -998,8 +998,8 @@ export function registerRuleTools(
 			"Read policy_rules view=authoring before authoring policies. Use view=check for read-only draft admission and bounded synthetic cases before proposal submission; checks never grant approval.",
 		],
 		parameters: PolicyRulesParams,
-		renderCall: (args, theme, context) => renderRulesCall(args, theme, context),
-		renderResult: (result, options, theme, context) => renderRulesResult(result, options, theme, context),
+		renderCall: toolDisplayRecord("policy_rules").renderCall,
+		renderResult: toolDisplayRecord("policy_rules").renderResult,
 		async execute(_toolCallId, params: Static<typeof PolicyRulesParams>, signal, _onUpdate, ctx) {
 			if (signal?.aborted) throw new Error("policy_rules cancelled");
 			validateInspectionParams(params);

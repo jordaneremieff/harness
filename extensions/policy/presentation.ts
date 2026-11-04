@@ -1,10 +1,5 @@
 /** Terminal cards for the policy tools: the request at a glance and bounded outcome summaries. */
-import {
-	type AgentToolResult,
-	keyText,
-	type Theme,
-	type ToolRenderResultOptions,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentToolResult, KeybindingHints, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { Text, type Component } from "@earendil-works/pi-tui";
 
 const RESULT_DISPLAY_BYTES = 32_000;
@@ -19,11 +14,13 @@ function escapeControls(value: string): string {
 	});
 }
 
+/** The subset of the host render context the cards read; key hints come from the active host. */
 interface CardContext {
 	expanded: boolean;
 	isError: boolean;
 	args?: unknown;
 	lastComponent?: Component;
+	keyText?: KeybindingHints["keyText"];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -83,9 +80,26 @@ function textComponent(text: string, previous?: Component): Text {
 	return component;
 }
 
-function expansionHint(subject: string): string {
-	const key = keyText("app.tools.expand");
+function expansionHint(subject: string, context: CardContext): string {
+	const key = context.keyText?.("app.tools.expand");
 	return key ? `${key} to expand ${subject}` : `Expand for full ${subject}`;
+}
+
+/** Error card: the first meaningful line leads; expansion reveals every retained diagnostic line. */
+function errorCard(
+	label: string,
+	fallback: string,
+	output: string,
+	expanded: boolean,
+	theme: Theme,
+	context: CardContext,
+): Component {
+	const message = firstMeaningfulLine(output) || fallback;
+	let text = `\n${theme.fg("error", `${label}: ${displayPreview(message, PREVIEW_LIMIT)}`)}`;
+	const retained = output.split("\n").filter((line) => line.trim().length > 0);
+	if (expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
+	else if (retained.length > 1) text += `\n${theme.fg("dim", expansionHint("diagnostics", context))}`;
+	return textComponent(text, context.lastComponent);
 }
 
 function boundedDisplay(value: string): string {
@@ -261,7 +275,7 @@ export function renderRulesCall(value: unknown, theme: Theme, context: CardConte
 	const lines = [heading];
 	const qualifier = inspectionQualifier(view, args);
 	if (context.expanded) lines.push(expandedArguments(args, theme));
-	else if (qualifier) lines.push(theme.fg("dim", `${qualifier} · ${expansionHint("arguments")}`));
+	else if (qualifier) lines.push(theme.fg("dim", `${qualifier} · ${expansionHint("arguments", context)}`));
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
 
@@ -314,17 +328,14 @@ export function renderRulesResult(
 	if (options.isPartial)
 		return textComponent(`\n${theme.fg("warning", "Inspecting policy...")}`, context.lastComponent);
 	const output = textContent(result);
-	if (context.isError) {
-		const message = firstMeaningfulLine(output) || "inspection failed";
-		return textComponent(`\n${theme.fg("error", `policy_rules: ${displayPreview(message, PREVIEW_LIMIT)}`)}`, context.lastComponent);
-	}
+	if (context.isError) return errorCard("policy_rules", "inspection failed", output, options.expanded, theme, context);
 	const args = asRecord(context.args);
 	const view = stringField(args, "view") || "rules";
 	const details = asRecord(result.details);
 	const { lead, color } = rulesOutcome(view, args, details, output);
 	let text = `\n${theme.fg(color, lead)}${degradedSuffix(details, theme)}`;
 	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
-	else text += `\n${theme.fg("dim", expansionHint("result"))}`;
+	else text += `\n${theme.fg("dim", expansionHint("result", context))}`;
 	return textComponent(text, context.lastComponent);
 }
 
@@ -340,8 +351,8 @@ export function renderProposeCall(value: unknown, theme: Theme, context: CardCon
 	if (context.expanded) lines.push(expandedArguments(args, theme));
 	else {
 		const qualifier = proposalQualifier(args, operation);
-		if (qualifier) lines.push(theme.fg("dim", `${qualifier} · ${expansionHint("proposal")}`));
-		else if (operation) lines.push(theme.fg("dim", expansionHint("proposal")));
+		if (qualifier) lines.push(theme.fg("dim", `${qualifier} · ${expansionHint("proposal", context)}`));
+		else if (operation) lines.push(theme.fg("dim", expansionHint("proposal", context)));
 	}
 	return textComponent(lines.join("\n"), context.lastComponent);
 }
@@ -356,10 +367,7 @@ export function renderProposeResult(
 	if (options.isPartial)
 		return textComponent(`\n${theme.fg("warning", "Submitting proposal...")}`, context.lastComponent);
 	const output = textContent(result);
-	if (context.isError) {
-		const message = firstMeaningfulLine(output) || "proposal failed";
-		return textComponent(`\n${theme.fg("error", `policy_propose: ${displayPreview(message, PREVIEW_LIMIT)}`)}`, context.lastComponent);
-	}
+	if (context.isError) return errorCard("policy_propose", "proposal failed", output, options.expanded, theme, context);
 	const details = asRecord(result.details);
 	const proposalId = stringField(details, "proposalId");
 	const revision = stringField(details, "proposalRevision");
@@ -372,6 +380,6 @@ export function renderProposeResult(
 	let text = `\n${theme.fg("success", lead)}`;
 	if (options.expanded)
 		text += `\n${theme.fg("dim", "inert until operator approval")}\n${theme.fg("toolOutput", boundedDisplay(output))}`;
-	else text += `\n${theme.fg("dim", `inert until operator approval · ${expansionHint("proposal text")}`)}`;
+	else text += `\n${theme.fg("dim", `inert until operator approval · ${expansionHint("proposal text", context)}`)}`;
 	return textComponent(text, context.lastComponent);
 }

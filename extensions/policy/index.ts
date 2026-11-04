@@ -808,6 +808,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	eventBus.emit("durable:contribution", {
 		name: "policy",
 		source: fileURLToPath(import.meta.url),
+		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
 		create: (host) => {
 			disposeSettings();
 			const disposeNativeSettings = publishSettings(eventBus, { agentDir: host.agentDir });

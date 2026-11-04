@@ -174,6 +174,8 @@ export function durableResultDisposition(result: Durable.ToolExecutionResult): {
 export interface PolicyDurableContribution {
 	readonly name: string;
 	readonly source: string;
+	/** Pure presentation module a client can load without starting this contribution. */
+	readonly display?: { readonly version: 1; readonly entry: string; readonly export: string };
 	readonly create: (host: PolicyDurableHost) => Durable.Extension | Promise<Durable.Extension>;
 }
 

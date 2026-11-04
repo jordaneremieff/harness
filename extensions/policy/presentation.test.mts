@@ -399,3 +399,47 @@ describe("policy_propose result cards", () => {
 		assert.match(rendered, /Pending proposal prop-9/);
 	});
 });
+
+describe("error diagnostics and host key hints", () => {
+	const multiline = "policy_rules failed: store unreadable\nline two: 界e\u0301 detail\n\u001b[31mcontrol\u0007 text";
+	const idle = { expanded: false, isPartial: false };
+	const open = { expanded: true, isPartial: false };
+
+	it("collapses to the first line with an expansion hint when more diagnostics are retained", () => {
+		const card = renderRulesResult(text(multiline), idle, theme, { ...collapsed, isError: true, keyText: () => "ctrl+x" });
+		const rendered = screen(card);
+		assert.match(rendered, /^policy_rules: policy_rules failed: store unreadable\nctrl\+x to expand diagnostics/);
+		assert.doesNotMatch(rendered, /line two/);
+	});
+
+	it("reveals every retained diagnostic line when expanded, with terminal controls escaped", () => {
+		for (const [render, label] of [
+			[renderRulesResult, "policy_rules"],
+			[renderProposeResult, "policy_propose"],
+		] as const) {
+			const card = render(text(multiline), open, theme, { ...expanded, isError: true });
+			const rendered = screen(card, 400);
+			assert.match(rendered, new RegExp(`^${label}: `));
+			assert.match(rendered, /line two: 界e\u0301 detail/);
+			assert.match(rendered, /\\x1b\[31mcontrol\\x07 text/);
+			assert.ok(!raw(card).includes("\u001b[31m"));
+			assertFits(card);
+		}
+	});
+
+	it("uses neutral wording when the host supplies no binding", () => {
+		const card = renderRulesResult(text("{}", { rules: 1, pending: 0 }), idle, theme, { ...collapsed, args: { view: "rules" } });
+		assert.match(screen(card), /Expand for full result/);
+		const bound = renderRulesResult(text("{}", { rules: 1, pending: 0 }), idle, theme, {
+			...collapsed,
+			args: { view: "rules" },
+			keyText: () => "alt+e",
+		});
+		assert.match(screen(bound), /alt\+e to expand result/);
+	});
+
+	it("shows only the single line for a one-line error without an expansion hint", () => {
+		const card = renderProposeResult(text("bad draft"), idle, theme, { ...collapsed, isError: true });
+		assert.equal(screen(card), "policy_propose: bad draft");
+	});
+});
