@@ -2,7 +2,7 @@ import { publishSettings } from "./settings.ts";
 /** Agent controls for independent Pi Durable hosts and the ordinary primary UI. */
 import { mkdirSync, realpathSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { PresetParameter, presetParameter, presetInventory, readAgentPreferences, renderAgentPreferences, parsePreferenceSnapshot, parseExecutionSelection, type PreferenceSnapshot } from "./agent-preferences.ts";
+import { PresetParameter, presetChoices, presetParameter, presetInventory, readAgentPreferences, renderAgentPreferences, parsePreferenceSnapshot, parseExecutionSelection, type PreferenceSnapshot } from "./agent-preferences.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
@@ -13,6 +13,7 @@ import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { profileCommand } from "./profile-dialog.ts";
 import { join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { publishOperatorViews } from "../../operator-ui/index.ts";
 import {
 	getAgentDir,
 	getPackageDir,
@@ -27,7 +28,6 @@ import { CollaborationParams } from "./collaboration.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { dashboardPreferences } from "./dashboard-preferences.ts";
 import { collectToolDisplay, publishToolDisplay } from "./tool-display.ts";
-import { configurationWithApply } from "./configuration-dialog.ts";
 import { THINKING_LEVELS, isThinkingLevel, parseConfigurationArguments } from "./configuration.ts";
 import { controlText, createAgentContribution, resolveAgentControlDispatch } from "./durable-agents.ts";
 import {
@@ -201,8 +201,6 @@ const caller = (ctx: ExtensionContext, pi: ExtensionAPI): AgentCaller => ({
 	},
 });
 const asText = (value: unknown) => (typeof value === "string" ? value : JSON.stringify(value, null, 2));
-/** Ordinary destination announcement for the footer menu (docs/conventions/operator-panels.md). */
-const DESTINATIONS = { version: 1, destinations: [{ id: "agents", label: "Agents", command: { name: "agent" }, owner: fileURLToPath(import.meta.url) }] } as const;
 
 function admitExecutionInput(pi: ExtensionAPI, ctx: ExtensionContext, name: string, callId: string, input: Record<string, unknown>): { admitted: Record<string, unknown>; admissionCaller: AgentCaller } {
 	const admissionCaller = caller(ctx, pi);
@@ -730,16 +728,6 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 					? outcome(`Configuration failed for “${label}”${failureDetail(result)}`, parsed.sessionId)
 					: outcome(`Updated configuration for “${label}”`, parsed.sessionId);
 			},
-			dialog: async (target, ctx) => {
-				if (!target) return "Select an agent before configuration.";
-				return configurationWithApply(target, ctx, async (patch) => {
-					const result = (await control("configure", { sessionId: target.id, ...patch }, ctx)) as { outcome?: string };
-					const label = await agentLabel(target.id);
-					if (result?.outcome === "failed")
-						throw new Error(`Configuration failed for “${label}”${failureDetail(result)}`);
-					return outcome(`Updated configuration for “${label}”`, target.id);
-				});
-			},
 		},
 		profileCommand((method, input, ctx) => control(method, input, ctx)),
 		{
@@ -828,6 +816,17 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 				readAgentTimerRows({ control: (method, input) => control(method, input, ctx), label: agentLabel }, id),
 			schedule: async (input, ctx) =>
 				scheduleAgentInput({ control: (method, params) => control(method, params, ctx), label: agentLabel }, input),
+			control: (method, input, ctx, signal) => getManager().control(method, input, caller(ctx, pi), signal ? { signal } : undefined),
+			newAgent: async ({ prompt, preset, cwd }, ctx, onCreated) => {
+				const created = (await getManager().spawn({ prompt, preset, cwd, origin: "operator" }, caller(ctx, pi), onCreated)) as { sessionId: string; cwd?: string; status?: { name?: string } };
+				const label = created.status?.name ?? (prompt === undefined ? shortIdentity(created.sessionId) : excerpt(prompt));
+				const place = basename(created.cwd ?? ctx.cwd);
+				return outcome(prompt === undefined ? `Created idle agent “${label}” in ${place}` : `Started agent “${label}” in ${place}`, created.sessionId);
+			},
+			newDefaults: (ctx) => {
+				const { defaultPreset, choices } = presetChoices(refreshPreferences(ctx));
+				return { cwd: ctx.cwd, presets: choices, ...(defaultPreset === undefined ? {} : { preset: defaultPreset }), ownership: "The answer to the purpose comes back to this session, like agent_spawn." };
+			},
 		},
 		(input, ctx) => getManager().collaborate({ ...input, origin: "operator" }, caller(ctx, pi)),
 		(ctx, page) => getManager().sessionFigures(ctx.sessionManager.getSessionId(), page),
@@ -846,11 +845,7 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		(id) => getManager().status(id),
 	);
 	pi.registerCommand("agent", command);
-	const publishDestinations = () => pi.events.emit("harness:operator-destination:publish", DESTINATIONS);
-	pi.events.on("harness:operator-destination:request", (request) => {
-		if (typeof request === "object" && request !== null && "version" in request && request.version === 1) publishDestinations();
-	});
-	publishDestinations();
+	publishOperatorViews(pi, { version: 2, owner: fileURLToPath(import.meta.url), views: [{ id: "agents", label: "Agents", command: { name: "agent" }, order: 0 }] });
 	pi.registerShortcut("ctrl+alt+g", {
 		description: "Open the agent dashboard",
 		handler: (ctx) => command.openDashboard(ctx),

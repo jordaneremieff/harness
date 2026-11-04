@@ -1,31 +1,39 @@
-import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
-import { DefaultResourceLoader, SettingsManager, getAgentDir, getPackageDir, initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import { Input, KeybindingsManager, ProcessTerminal, TuiAltScreen, TUI_KEYBINDINGS, setKeybindings, matchesKey, type Component, type ProgramStatus, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import {
+	DefaultResourceLoader,
+	ModelRuntime,
+	ProjectTrustStore,
+	SettingsManager,
+	getAgentDir,
+	getPackageDir,
+	hasTrustRequiringProjectResources,
+	initTheme,
+} from "@earendil-works/pi-coding-agent";
+import { clampThinkingLevel } from "@earendil-works/pi-ai";
+import { KeybindingsManager, ProcessTerminal, TuiAltScreen, TUI_KEYBINDINGS, setKeybindings, type Component, type ProgramStatus, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import type { JsonValue } from "@earendil-works/chord";
+import { type Action, type Choice, Form, plainLine, type ViewHost } from "../../operator-ui/index.ts";
 import { AgentManager, type AgentCaller } from "./manager.ts";
 import { createAgentObservationSource, type AgentObservationSource } from "./agent-observation.ts";
-import { AgentConsole } from "./agent-console.ts";
-import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
+import { AgentDashboard, type DashboardOperations, type DashboardResult, type NewAgentDefaults, type NewAgentInput } from "./dashboard.ts";
 import { agentState, createDashboardState, notifyAgentState, updateDraft, type DashboardState } from "./dashboard-state.ts";
 import type { AgentModelInfo } from "./agent-footer.ts";
 import { TerminalProgramStatus } from "./terminal-status.ts";
 import { ModelChoicesSchema } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { loadDisplayModules, noDisplayModules, type DisplayModules } from "./display-modules.ts";
-import { loadPanelModules, noPanelModules, type PanelModules } from "./panel-modules.ts";
-import { PanelScreen } from "./terminal-panel.ts";
-import type { JsonValue } from "@earendil-works/chord";
-import { ConversationHistory } from "./conversation-view.ts";
-import type { AgentConversationSummary, AgentConversationSnapshot } from "./dashboard-types.ts";
-import { fitLine } from "./dashboard-layout.ts";
-import { readAgentBranch, AgentBranchCache } from "./agent-git.ts";
-import { terminalAction } from "./terminal-actions.ts";
-import { terminalDialogs } from "./terminal-dialogs.ts";
-import { ActionInventory, type ScreenAction } from "./action-inventory.ts";
-import { DashboardMouse } from "./dashboard-mouse.ts";
-import type { AgentDialogs } from "./dialog-adapter.ts";
+import { loadPanelModules, noPanelModules, panelDestinations, type PanelModules } from "./panel-modules.ts";
+import type { AgentConversationSummary } from "./dashboard-types.ts";
+import { readAgentBranch } from "./agent-git.ts";
 import { admittedResult } from "./result-reference.ts";
+import { agentDisplayName } from "./action-outcome.ts";
+import { presetChoices, readAgentPreferences, type PreferenceCatalog } from "./agent-preferences.ts";
+import { isThinkingLevel, type ConfigurationPatch } from "./configuration.ts";
+import { cancelAgentTimer, readAgentTimerRows, resetAgentContext, scheduleAgentInput, type ResetTimerDeps } from "./durable-reset-timers.ts";
+import type { ActionResult, AgentFormHost } from "./agent-forms.ts";
+import type { ProfileDraft } from "./profile-dialog.ts";
 
 export function terminalAdmission(receipt: unknown, id: string, mode: "steer" | "followUp"): string {
 	const reference = admittedResult(id, receipt);
@@ -33,21 +41,22 @@ export function terminalAdmission(receipt: unknown, id: string, mode: "steer" | 
 	return `Input ${deduped ? "already admitted" : "admitted"} for ${reference.sessionId} (submission ${reference.submissionId}; requested ${mode === "followUp" ? "follow-up" : "steer"})`;
 }
 
-function observedUsageCost(usage: { models?: Record<string, { cost?: { total?: number } }>; tools?: Record<string, { cost?: { total?: number } }> } | undefined): { cost: number; partial: boolean } | undefined {
-	if (!usage) return undefined;
-	let cost = 0;
-	for (const bucket of [usage.models, usage.tools]) {
-		for (const item of Object.values(bucket ?? {})) {
-			const total = item?.cost?.total;
-			if (typeof total !== "number" || !Number.isFinite(total) || total < 0) return { cost: Number.NaN, partial: true };
-			cost += total;
-		}
-	}
-	return { cost, partial: false };
+export type TerminalManager = Pick<AgentManager, "resolveTarget" | "control" | "snapshot" | "dashboardPage" | "observeLive" | "subscribeRoster" | "close"> &
+	Partial<Pick<AgentManager, "collaborate" | "spawn">>;
+export interface UnconfirmedTerminalInput {
+	readonly text: string;
+	readonly mode: "steer" | "followUp";
 }
 
-export type TerminalManager = Pick<AgentManager, "resolveTarget" | "control" | "snapshot" | "dashboardPage" | "observeLive" | "subscribeRoster" | "close"> & Partial<Pick<AgentManager, "collaborate">>;
-export interface UnconfirmedTerminalInput { readonly text: string; readonly mode: "steer" | "followUp" }
+/** What independent creation needs from this process: a model catalogue and the trust facts for a cwd. */
+export interface TerminalCreation {
+	readonly catalog: PreferenceCatalog;
+	validateModel(model: { provider: string; modelId: string }, level: string): string;
+	/** Whether `cwd` needs a trust decision that nothing has made yet. */
+	trustUndecided(cwd: string): boolean;
+	readonly agentDir: string;
+}
+
 export interface TerminalControllerOptions {
 	manager: TerminalManager;
 	caller: AgentCaller;
@@ -55,152 +64,87 @@ export interface TerminalControllerOptions {
 	remember?(id: string): void;
 	/** Test seam for the local display-module import; the default imports the advertised file. */
 	importModule?(url: string): Promise<Record<string, unknown>>;
-}
-/** Owns presentation links only. Native work and admission belong to the existing manager/host. */
-/** The facts agent cards read from observed rows: identity, name and applied configuration. */
-function rowFacts(rows: readonly AgentConversationSummary[]): string {
-	return rows.map((row) => `${row.id}\u0000${row.name ?? ""}\u0000${row.model?.provider ?? ""}/${row.model?.modelId ?? ""}/${row.model?.thinkingLevel ?? ""}`).join("\u0001");
+	creation?: TerminalCreation;
 }
 
+/**
+ * The attached terminal's own jobs. The work view owns presentation and observation; native work,
+ * admission and creation belong to the existing manager and host. Selection reads passively:
+ * nothing here starts a host except Send, Connect and creation, which are explicit.
+ */
 export class TerminalController {
 	readonly state: DashboardState;
 	readonly source: AgentObservationSource;
 	readonly manager: TerminalManager;
 	readonly caller: AgentCaller;
-	target?: string;
-	previous?: string;
-	row?: AgentConversationSummary;
-	snapshot?: AgentConversationSnapshot & { nextBefore?: number | null };
-	/** Roster rows read at attachment. Agent cards resolve other targets from these; no paint reads a store. */
-	private pageRows: readonly AgentConversationSummary[] = [];
+	readonly creation?: TerminalCreation;
+	/** Owner renderers advertised by the selected conversation's live host. Replaced as a unit. */
+	display: DisplayModules = noDisplayModules;
+	/** Owner views advertised by the selected conversation's live host. Replaced as a unit. */
+	panels: PanelModules = noPanelModules;
+	private selectedId?: string;
+	private generation = 0;
 	private closed = false;
 	private closing?: Promise<void>;
-	private generation = 0;
-	private readonly histories = new Map<string, ConversationHistory>();
+	private modelCatalog = new Map<string, AgentModelInfo>();
 	private readonly failedInputs = new Map<string, UnconfirmedTerminalInput[]>();
 	private readonly listeners = new Set<() => void>();
-	private readonly off: () => void;
 	private readonly remember?: (id: string) => void;
 	private readonly importModule?: TerminalControllerOptions["importModule"];
-	/** Owner renderers advertised by the attached host. Replaced as a unit when the source changes. */
-	display: DisplayModules = noDisplayModules;
-	/** Owner browsers advertised by the attached host. Replaced as a unit when the source changes. */
-	panels: PanelModules = noPanelModules;
-	private displayLoading?: Promise<void>;
-	/** Identity changes with the attached source, so views holding an older lookup rebuild their cards. */
-	get toolDisplay() { return this.display.lookup; }
+	private loading?: Promise<void>;
+
 	constructor(options: TerminalControllerOptions) {
 		this.manager = options.manager;
 		this.caller = options.caller;
 		this.state = options.state ?? createDashboardState();
 		this.remember = options.remember;
 		this.importModule = options.importModule;
+		this.creation = options.creation;
 		this.source = createAgentObservationSource({
 			list: (input) => this.manager.dashboardPage(input),
 			snapshot: (id, params) => this.manager.snapshot(id, params),
 			observeLive: (id, scope, listener, signal) => this.manager.observeLive(id, scope, listener, signal),
 			subscribeRoster: (listener) => this.manager.subscribeRoster(listener),
 		});
-		const offFrames = this.source.subscribe(() => this.frameChanged());
-		const offRoster = this.source.subscribeRoster(() => this.queueRoster());
-		this.off = () => { offFrames(); offRoster(); };
 	}
-	/** The attached row as observed through live frames, then the roster as last read for this attachment. */
-	observedRows(): readonly AgentConversationSummary[] {
-		const row = this.row;
-		return row ? [row, ...this.pageRows.filter((item) => item.id !== row.id)] : this.pageRows;
+
+	get selected(): string | undefined {
+		return this.selectedId;
 	}
-	private rosterPending = false;
-	private rosterAgain = false;
-	/**
-	 * A roster notice re-reads the bounded page outside paint. Reads coalesce; an answer for an earlier
-	 * attachment is dropped; a page with the same observed facts changes nothing.
-	 */
-	private queueRoster(): void {
-		if (this.closed || !this.target) return;
-		if (this.rosterPending) { this.rosterAgain = true; return; }
-		this.rosterPending = true;
-		const generation = this.generation;
-		void this.manager.dashboardPage().then((page) => {
-			if (this.closed || generation !== this.generation) return;
-			if (rowFacts(page.rows) === rowFacts(this.pageRows)) return;
-			this.pageRows = page.rows;
-			this.notify();
-		}, () => { /* The last read roster stays until a later notice reads a page. */ }).finally(() => {
-			this.rosterPending = false;
-			if (this.rosterAgain) { this.rosterAgain = false; this.queueRoster(); }
-		});
+
+	/** Changes with every new selection, including a reconnect of the same target. */
+	get revision(): number {
+		return this.generation;
 	}
-	get frame() { return this.target ? this.source.frame(this.target) : undefined; }
-	get selectionRevision(): number { return this.generation; }
-	get availability() { return this.target ? this.source.availability(this.target) : undefined; }
-	get draftState() { return this.target ? agentState(this.state, this.target) : undefined; }
-	/** Model facts the attached host's runtime reported once for this attachment. Unlisted models stay unknown. */
-	private modelCatalog = new Map<string, AgentModelInfo>();
-	/** Name, reasoning support and context window of the selected conversation's current model, when the host listed it. */
-	currentModelInfo(): AgentModelInfo | undefined {
-		const model = this.row?.model;
-		return model ? this.modelCatalog.get(`${model.provider}/${model.modelId}`) : undefined;
+
+	/** Identity changes with the loaded source, so views holding an older lookup rebuild their cards. */
+	get toolDisplay() {
+		return this.display.lookup;
 	}
-	private notify(): void { if (!this.closed) for (const listener of this.listeners) listener(); }
-	subscribe(listener: () => void): () => void { this.listeners.add(listener); return () => this.listeners.delete(listener); }
-	private history(id: string): ConversationHistory {
-		let history = this.histories.get(id);
-		if (!history) { history = new ConversationHistory(); this.histories.set(id, history); }
-		return history;
+
+	subscribe(listener: () => void): () => void {
+		this.listeners.add(listener);
+		return () => this.listeners.delete(listener);
 	}
-	private frameChanged(): void {
-		const frame = this.frame;
-		const row = this.row;
-		const live = this.availability?.state === "live";
-		if (frame && row && this.target && live) {
-			const observed = observedUsageCost(frame.status.usage);
-			this.row = { ...row, name: frame.status.name, awaiting: frame.status.awaiting,
-				state: frame.status.busy ? "working" : "idle",
-				...(observed ? { cost: observed.cost, partial: observed.partial } : {}),
-				model: frame.status.agent.model ? { ...frame.status.agent.model, thinkingLevel: frame.status.agent.thinkingLevel } : row.model };
-			this.setSnapshot({ entries: frame.entries, partial: !frame.coverage.complete, revision: `r${frame.revision}`, nextBefore: frame.nextBefore });
-		} else if (row && this.target && this.availability?.state === "unavailable") this.row = { ...row, partial: true };
-		this.notify();
+
+	private notify(): void {
+		if (!this.closed) for (const listener of this.listeners) listener();
 	}
-	private setSnapshot(snapshot: AgentConversationSnapshot & { nextBefore?: number | null }): void {
-		if (!this.target) return;
-		const history = this.history(this.target);
-		const anchor = this.draftState?.view.anchor?.id;
-		history.tail(snapshot, anchor);
-		this.snapshot = { ...snapshot, entries: history.entries(anchor), nextBefore: history.earlier() };
-	}
-	async attach(selector: string): Promise<void> {
-		if (this.closed) throw new Error("Terminal is closed");
+
+	/** A new selection: remember it and read its host's advertised cards, views and models without starting it. */
+	select(id: string | undefined): void {
+		if (this.closed || id === this.selectedId) return;
 		const generation = ++this.generation;
-		const id = await this.manager.resolveTarget(selector);
-		if (this.closed || generation !== this.generation) return;
-		const attached = await this.manager.control("attach", { sessionId: id }, this.caller) as { status: { name?: string; cwd?: string; busy: boolean; agent: { model?: { provider: string; modelId: string }; thinkingLevel: string } } };
-		if (this.closed || generation !== this.generation) return;
-		const page = await this.manager.dashboardPage();
-		const status = attached.status;
-		// Empty children and rows outside roster coverage remain directly addressable.
-		const row: AgentConversationSummary = page.rows.find((candidate) => candidate.id === id) ?? {
-			id, storageId: id.split(":")[0], name: status.name, cwd: status.cwd ?? this.caller.cwd,
-			state: status.busy ? "working" : "idle", owner: "unknown", modifiedAt: Date.now(),
-			cost: Number.NaN, partial: true,
-			model: status.agent.model ? { ...status.agent.model, thinkingLevel: status.agent.thinkingLevel } : undefined,
-		};
-		const snapshot = await this.manager.snapshot(id);
-		if (this.closed || generation !== this.generation) return;
-		if (this.target !== id) this.previous = this.target;
-		this.source.select(undefined);
-		this.target = id;
-		this.pageRows = page.rows;
-		this.row = { ...row, name: status.name };
-		this.state.selected = id;
-		this.setSnapshot(snapshot);
-		this.source.select(id);
-		this.remember?.(id);
+		this.selectedId = id;
 		this.display = noDisplayModules;
 		this.panels = noPanelModules;
 		this.modelCatalog = new Map();
-		this.displayLoading = Promise.all([this.loadModules(id), this.loadModels(id)]).then(([modules, models]) => {
+		if (!id) {
+			this.notify();
+			return;
+		}
+		this.remember?.(id);
+		this.loading = Promise.all([this.loadModules(id), this.loadModels(id)]).then(([modules, models]) => {
 			if (this.closed || generation !== this.generation) return;
 			this.display = modules.display;
 			this.panels = modules.panels;
@@ -209,44 +153,59 @@ export class TerminalController {
 		});
 		this.notify();
 	}
-	/**
-	 * One owner request through the panel's bound command. The target is the attachment captured when
-	 * the panel opened: a later attachment change refuses the request instead of redirecting it.
-	 */
-	async panelRequest(target: string, command: string, data: JsonValue, signal?: AbortSignal): Promise<{ text: string; data?: JsonValue }> {
-		if (this.closed) throw new Error("Terminal is closed");
-		if (this.target !== target) throw new Error("The attached conversation changed; the browser request was not sent");
-		if (signal?.aborted) throw new Error("The browser request was withdrawn before it was sent", { cause: signal.reason });
-		const answer = await this.manager.control("command", { sessionId: target, name: command, data, origin: "operator", invocationId: randomUUID() }, this.caller, signal ? { signal } : undefined) as { text?: unknown; data?: JsonValue };
-		if (typeof answer?.text !== "string") throw new Error("The host answered without command text");
-		return { text: answer.text, ...(answer.data === undefined ? {} : { data: answer.data }) };
+
+	/** Resolves when the selected conversation's owner modules are loaded or refused. */
+	displaySettled(): Promise<void> {
+		return this.loading ?? Promise.resolve();
 	}
-	/** Resolves when the current attachment's owner renderers are loaded or refused. */
-	displaySettled(): Promise<void> { return this.displayLoading ?? Promise.resolve(); }
+
+	modelInfo(provider: string, modelId: string): AgentModelInfo | undefined {
+		return this.modelCatalog.get(`${provider}/${modelId}`);
+	}
+
 	private async loadModels(id: string): Promise<Map<string, AgentModelInfo>> {
 		const catalog = new Map<string, AgentModelInfo>();
 		try {
 			const read = await this.manager.control("models", { sessionId: id }, this.caller);
 			if (!matchesSchema(ModelChoicesSchema, read)) return catalog;
-			for (const model of read.models) if (model.contextWindow !== undefined) catalog.set(`${model.provider}/${model.modelId}`, { name: model.name ?? model.modelId, reasoning: model.reasoning, contextWindow: model.contextWindow });
-		} catch { /* The footer shows the model identifier without a context window. */ }
+			for (const model of read.models)
+				if (model.contextWindow !== undefined) catalog.set(`${model.provider}/${model.modelId}`, { name: model.name ?? model.modelId, reasoning: model.reasoning, contextWindow: model.contextWindow });
+		} catch {
+			// The status line shows the model identifier without a context window.
+		}
 		return catalog;
 	}
-	/** The attached host is live here, so its status carries the admitted inventory. Failure leaves standard cards and no browsers. */
+
+	/** The live host's status carries the admitted inventory. A stored or stopped host has none. */
 	private async loadModules(id: string): Promise<{ display: DisplayModules; panels: PanelModules }> {
 		try {
-			const status = await this.manager.control("status", { sessionId: id }, this.caller) as { inventory?: unknown };
-			if (status?.inventory === undefined) return { display: { lookup: noDisplayModules.lookup, diagnostics: ["Host status carried no inventory; standard tool cards are used."] }, panels: noPanelModules };
+			const status = (await this.manager.control("status", { sessionId: id }, this.caller)) as { inventory?: unknown };
+			if (status?.inventory === undefined) return { display: { lookup: noDisplayModules.lookup, diagnostics: [] }, panels: noPanelModules };
 			const [display, panels] = await Promise.all([loadDisplayModules(status.inventory, this.importModule), loadPanelModules(status.inventory, this.importModule)]);
 			return { display, panels };
 		} catch (error) {
-			return { display: { lookup: noDisplayModules.lookup, diagnostics: [`Display modules unavailable (${String(error instanceof Error ? error.message : error).slice(0, 120)}); standard tool cards are used.`] }, panels: noPanelModules };
+			return { display: { lookup: noDisplayModules.lookup, diagnostics: [`Owner cards unavailable (${String(error instanceof Error ? error.message : error).slice(0, 120)}); standard tool cards are used.`] }, panels: noPanelModules };
 		}
 	}
-	setDraft(text: string): void { if (this.draftState) updateDraft(this.draftState, text); }
-	setMode(mode: "steer" | "followUp"): void { if (this.draftState) { this.draftState.mode = mode; notifyAgentState(this.draftState); this.notify(); } }
-	unconfirmed(id: string): readonly UnconfirmedTerminalInput[] { return this.failedInputs.get(id) ?? []; }
-	failureReceipt(id: string, error: unknown): string { return `Delivery not confirmed for ${id}. Current draft and mode kept; submitted input retained. /agent recover. ${String(error)}`; }
+
+	/** One owner request to the target captured when its view opened; the signal withdraws the wait. */
+	async panelRequest(target: string, command: string, data: JsonValue, signal?: AbortSignal): Promise<{ text: string; data?: JsonValue }> {
+		if (this.closed) throw new Error("Terminal is closed");
+		if (signal?.aborted) throw new Error("The owner request was withdrawn before it was sent", { cause: signal.reason });
+		const answer = (await this.manager.control("command", { sessionId: target, name: command, data, origin: "operator", invocationId: randomUUID() }, this.caller, signal ? { signal } : undefined)) as { text?: unknown; data?: JsonValue };
+		if (typeof answer?.text !== "string") throw new Error("The host answered without command text");
+		return { text: answer.text, ...(answer.data === undefined ? {} : { data: answer.data }) };
+	}
+
+	unconfirmed(id: string): readonly UnconfirmedTerminalInput[] {
+		return this.failedInputs.get(id) ?? [];
+	}
+
+	failureReceipt(id: string, error: unknown): string {
+		return `Delivery not confirmed for ${id}. Your draft is kept and the submitted text is retained; More › Recover input restores it without sending. ${String(error)}`;
+	}
+
+	/** Admit operator input whose answer stays in the target conversation itself. */
 	async admit(id: string, text: string, mode: "steer" | "followUp"): Promise<{ raw: unknown; text: string }> {
 		if (this.closed) throw new Error("Terminal is closed");
 		try {
@@ -254,58 +213,72 @@ export class TerminalController {
 			return { raw, text: terminalAdmission(raw, id, mode) };
 		} catch (error) {
 			const inputs = this.failedInputs.get(id) ?? [];
-			inputs.push({ text, mode }); this.failedInputs.set(id, inputs);
+			inputs.push({ text, mode });
+			this.failedInputs.set(id, inputs);
 			throw error;
 		}
 	}
+
+	/** Put an unconfirmed input back into the target's draft only while the draft is unchanged. Nothing is sent. */
 	restoreUnconfirmed(id: string, input: UnconfirmedTerminalInput, revision: number, mode: "steer" | "followUp"): void {
 		const state = agentState(this.state, id);
 		if (this.closed || state.pending || state.draftRevision !== revision || state.mode !== mode || !this.unconfirmed(id).includes(input)) throw new Error("The target draft changed. Inspect again before restoring.");
-		state.mode = input.mode; updateDraft(state, input.text); this.notify();
+		state.mode = input.mode;
+		updateDraft(state, input.text);
+		this.notify();
 	}
+
 	discardUnconfirmed(id: string, input: UnconfirmedTerminalInput): void {
 		this.failedInputs.set(id, this.unconfirmed(id).filter((item) => item !== input));
 	}
-	async send(text = this.draftState?.draft ?? ""): Promise<unknown> {
-		const id = this.target;
-		const state = this.draftState;
-		if (this.closed || !id || !state) throw new Error("No attached conversation");
-		if (state.pending || !text.trim()) return undefined;
-		const revision = state.draftRevision;
-		const mode = state.mode;
-		state.pending = { text, mode, revision };
-		state.receipt = "Sending…";
-		notifyAgentState(state);
-		this.notify();
+
+	/** Explicitly connect: start the host if needed; retained unfinished work resumes. */
+	async connect(id: string): Promise<void> {
+		await this.manager.control("attach", { sessionId: id }, this.caller);
+		const selected = this.selectedId;
+		if (selected === id) {
+			this.selectedId = undefined;
+			this.select(id);
+		}
+	}
+
+	/**
+	 * Create an independent operator conversation: idle creation through the existing manager with
+	 * the machine presets and this process's model catalogue, then the first message through the
+	 * normal operator admission, whose answer the new conversation owns. One request identity per
+	 * form keeps a retry from creating a second conversation.
+	 */
+	async create(input: NewAgentInput & { requestId: string; trust?: boolean }): Promise<DashboardResult> {
+		const creation = this.creation;
+		const spawn = this.manager.spawn?.bind(this.manager);
+		if (!creation || !spawn) throw new Error("Creation needs the configured model catalogue; it is unavailable in this terminal.");
+		const creator: AgentCaller = { ...this.caller, preferenceCatalog: creation.catalog, validateModel: (model, level) => creation.validateModel(model, level) };
+		const created = (await spawn(
+			{ ...(input.preset ? { preset: input.preset } : {}), ...(input.cwd ? { cwd: input.cwd } : {}), ...(input.trust === undefined ? {} : { trust: input.trust }), origin: "operator", requestId: input.requestId },
+			creator,
+			input.onCreated,
+		)) as { sessionId: string; cwd?: string };
+		const id = created.sessionId;
+		const place = basename(created.cwd ?? this.caller.cwd);
+		const prompt = input.prompt?.trim() ? input.prompt : undefined;
+		if (!prompt) return { text: `Created an idle conversation in ${place}`, sessionId: id };
 		try {
-			const receipt = await this.admit(id, text, mode);
-			state.receipt = receipt.text;
-			state.history.push(text);
-			if (state.draftRevision === revision && state.draft === text) { if (state.mode === mode) state.mode = "steer"; updateDraft(state, ""); }
-			return receipt.raw;
+			const receipt = await this.admit(id, prompt, "followUp");
+			return { text: `Started a conversation in ${place}. ${receipt.text}`, receipt: receipt.text, sessionId: id };
 		} catch (error) {
+			// The conversation exists. Keep it, and keep the purpose as its draft; never create another.
+			const state = agentState(this.state, id);
+			updateDraft(state, prompt);
 			state.receipt = this.failureReceipt(id, error);
-			throw error;
-		} finally { state.pending = undefined; notifyAgentState(state); this.notify(); }
+			notifyAgentState(state);
+			return { text: `Created the conversation in ${place}, but its first message was not confirmed. The text is in its message field; check the conversation before sending again.`, sessionId: id };
+		}
 	}
-	async earlier(): Promise<void> {
-		const id = this.target;
-		const generation = this.generation;
-		const before = this.snapshot?.nextBefore;
-		if (!id || !before) return;
-		const snapshot = await this.source.earlier(id, before);
-		if (this.closed || generation !== this.generation) return;
-		const history = this.history(id);
-		const anchor = this.draftState?.view.anchor?.id;
-		history.add(snapshot, before, anchor);
-		this.snapshot = { ...snapshot, entries: history.entries(anchor), nextBefore: history.earlier() };
-		this.notify();
-	}
+
 	async close(): Promise<void> {
 		if (this.closed) return this.closing;
 		this.closed = true;
 		this.generation++;
-		this.off();
 		this.source.select(undefined);
 		this.source.releaseTasks();
 		this.listeners.clear();
@@ -318,365 +291,304 @@ export function terminalTargetFile(root: string): { read(): string | undefined; 
 	const file = join(root, "terminal-target.json");
 	return {
 		read() {
-			try { const value: unknown = JSON.parse(readFileSync(file, "utf8")); return typeof value === "string" ? value : undefined; }
-			catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+			try {
+				const value: unknown = JSON.parse(readFileSync(file, "utf8"));
+				return typeof value === "string" ? value : undefined;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+				throw error;
+			}
 		},
-		write(id) { const temporary = `${file}.${randomUUID()}`; writeFileSync(temporary, JSON.stringify(id), { mode: 0o600 }); renameSync(temporary, file); },
+		write(id) {
+			const temporary = `${file}.${randomUUID()}`;
+			writeFileSync(temporary, JSON.stringify(id), { mode: 0o600 });
+			renameSync(temporary, file);
+		},
 	};
 }
 
 export function terminalKeys(): KeybindingsManager {
-	return new KeybindingsManager({ ...TUI_KEYBINDINGS,
-		"app.interrupt": { defaultKeys: "escape" }, "app.exit": { defaultKeys: "ctrl+d" },
+	return new KeybindingsManager({
+		...TUI_KEYBINDINGS,
+		"app.interrupt": { defaultKeys: "escape" },
+		"app.exit": { defaultKeys: "ctrl+d" },
 		"app.clipboard.pasteImage": { defaultKeys: [] },
 		// The focused screen owns paging, not the outer fullscreen viewport.
-		"tui.altScreen.pageUp": { defaultKeys: [] }, "tui.altScreen.pageDown": { defaultKeys: [] },
-		"app.tools.expand": { defaultKeys: "ctrl+o" }, "app.thinking.toggle": { defaultKeys: "ctrl+t" },
+		"tui.altScreen.pageUp": { defaultKeys: [] },
+		"tui.altScreen.pageDown": { defaultKeys: [] },
+		"app.tools.expand": { defaultKeys: "ctrl+o" },
+		"app.thinking.toggle": { defaultKeys: "ctrl+t" },
 	});
 }
 
-/** One full-window console; dashboard/dialogs temporarily own the same viewport. */
+const failure = (value: unknown) => {
+	const reason = (value as { reason?: unknown; error?: unknown } | null)?.reason ?? (value as { error?: unknown } | null)?.error;
+	return typeof reason === "string" && reason ? `: ${reason.slice(0, 200)}` : "";
+};
+
+/** Forms for one captured target through the terminal's own caller. */
+export function terminalForms(controller: TerminalController, drafts: Map<string, ProfileDraft>, target: AgentConversationSummary): AgentFormHost {
+	const label = agentDisplayName(target);
+	const control = (method: string, input: Record<string, unknown> = {}) => controller.manager.control(method, { sessionId: target.id, ...input }, controller.caller);
+	const deps: ResetTimerDeps = { control: (method, input) => controller.manager.control(method, input, controller.caller), label: async () => label };
+	const outcome = (text: string, sessionId = target.id) => ({ text, sessionId });
+	const runners: Record<string, (args: string[]) => Promise<ActionResult>> = {
+		fork: async (args) => {
+			const forked = (await control("fork", args[0] ? { entryId: args[0] } : {})) as { identity?: string; status?: { name?: string } };
+			return outcome(`Created branch “${forked.status?.name ?? label}”`, forked.identity ?? target.id);
+		},
+		rewind: async (args) => {
+			const result = (await control("rewind", { entryId: args[0], correction: args[1], origin: "operator", selfOwned: true })) as { identity?: string };
+			return outcome(`Rewound “${label}” before the selected entry`, result.identity ?? target.id);
+		},
+		reset: (args) => resetAgentContext(deps, { sessionId: target.id, ...(args[0] ? { handoff: args[0] } : {}) }),
+		compact: async (args) => {
+			const result = (await control("compact", args[0] ? { instructions: args[0] } : {})) as { status?: string };
+			return outcome(result?.status === "completed" ? `Compacted “${label}”` : `Compaction ${result?.status ?? "requested"} for “${label}”`);
+		},
+		command: async (args) => {
+			const result = (await control("command", { name: args[0], args: args[1] ?? "", origin: "operator", invocationId: randomUUID() })) as { reloaded?: boolean; text?: string };
+			return outcome(result?.reloaded ? `Reloaded host registrations for “${label}”` : `Ran command ${args[0]} on “${label}”${result?.text ? `: ${result.text}` : ""}`);
+		},
+		"timer-cancel": (args) => cancelAgentTimer(deps, { sessionId: target.id, timerId: Number(args[0]) }),
+		abort: async () => {
+			await control("abort");
+			return outcome(`Requested stop for “${label}”`);
+		},
+		release: async () => {
+			await control("release");
+			return outcome(`Requested release for “${label}”`);
+		},
+		attach: async () => {
+			await controller.connect(target.id);
+			return outcome(`Connected to “${label}”`);
+		},
+		"await-release": async (args) => {
+			const result = (await control("await-release", { expectedRunId: Number(args[0]) })) as { released?: boolean };
+			return outcome(result.released ? "Released the selected await" : "The selected await is no longer active");
+		},
+	};
+	return {
+		row: target,
+		state: controller.state,
+		source: controller.source,
+		run: async (name, args) => {
+			const runner = runners[name];
+			if (!runner) throw new Error(`Unsupported terminal action: ${name}`);
+			return runner(args);
+		},
+		timers: () => readAgentTimerRows(deps, target.id),
+		schedule: (input) => scheduleAgentInput(deps, { sessionId: target.id, ...input, selfOwned: true }),
+		models: async () => {
+			let read: unknown;
+			try {
+				read = await control("models");
+			} catch (error) {
+				throw new Error(`Model list unavailable: ${error instanceof Error ? error.message : String(error)}`);
+			}
+			if (!matchesSchema(ModelChoicesSchema, read)) throw new Error("Model list unavailable: the host answered with an unreadable list");
+			return read.models.map((model) => ({ identity: `${model.provider}/${model.modelId}`, ...(model.name ? { name: model.name } : {}) }));
+		},
+		configure: async (patch: ConfigurationPatch) => {
+			// The native request takes the model as an object; the form stores the exact identity string.
+			const { model: identity, ...rest } = patch;
+			const split = identity?.indexOf("/") ?? -1;
+			const result = (await control("configure", { ...rest, ...(identity === undefined ? {} : { model: { provider: identity.slice(0, split), modelId: identity.slice(split + 1) } }) })) as { outcome?: string };
+			if (result?.outcome === "failed") throw new Error(`Configuration failed for “${label}”${failure(result)}`);
+			return outcome(`Updated configuration for “${label}”`);
+		},
+		commands: async () => {
+			const status = (await control("status")) as { inventory?: { contributions?: Array<{ commands?: Array<{ name: string; description: string }> }> } };
+			if (!status.inventory) return undefined;
+			const commands = status.inventory.contributions?.flatMap((contribution) => contribution.commands ?? []) ?? [];
+			return [...commands.map((command) => ({ value: command.name, label: command.name, description: command.description })), { value: "reload", label: "reload", description: "Reload host registrations (needs an idle storage)" }];
+		},
+		profile: (method, input) => controller.manager.control(method, input, controller.caller),
+		profileDrafts: drafts,
+		status: () => control("status"),
+		outcome: () => {},
+	};
+}
+
+/** Review and restore unconfirmed input for one target. Recovery never sends anything. */
+function recoverView(controller: TerminalController, id: string, host: ViewHost) {
+	const inputs = controller.unconfirmed(id);
+	const state = agentState(controller.state, id);
+	const revision = state.draftRevision;
+	const mode = state.mode;
+	const choices: Choice[] = inputs.map((input, index) => ({ value: String(index), label: `requested ${input.mode} · ${plainLine(input.text).slice(0, 80)}` }));
+	return new Form({
+		title: "Recover input",
+		heading: `Unconfirmed input for ${id}`,
+		intro: "A transport error does not prove that admission failed: read the conversation before sending again. Restore replaces the current draft and sends nothing.",
+		fields: [{ kind: "choice", id: "input", label: "Input", choices, rows: 6 }],
+		action: { label: "Restore to the draft" },
+		host,
+		submit: async (values) => {
+			const input = inputs[Number(values.input)];
+			if (!input) throw new Error("Choose an input");
+			controller.restoreUnconfirmed(id, input, revision, mode);
+			return { close: true, notice: { text: "Restored to the draft; nothing was sent", kind: "success" } };
+		},
+	});
+}
+
+/** The attached terminal: the agent work view filling the window, plus program status and title. */
 export class TerminalScreen implements Component {
-	private console?: AgentConsole;
-	private dashboard?: AgentDashboard;
-	private dashboardSource?: AgentObservationSource;
-	/** One owner browser mounted over the conversation, bound to the attachment it opened on. */
-	private panel?: { screen: PanelScreen; target: string };
-	private notice = "";
-	private displayNotice = "";
-	/** Names and applied configuration of the observed rows as last painted; a change repaints agent cards. */
-	private rowFacts?: string;
-	private readonly navigationInput = new Input({ prompt: "Command: " });
-	private dashboardHidden = false;
-	private composerY = 0;
-	private composerHeight = 0;
+	readonly view: AgentDashboard;
 	private readonly programStatus?: TerminalProgramStatus;
-	private readonly hits = new DashboardMouse();
-	private readonly footer = new ActionInventory(() => this.footerActions(), (reason) => { this.notice = reason; });
-	private transcript = { y: 0, height: 0, width: 0 };
 	private readonly off: () => void;
-	private readonly branches: AgentBranchCache;
-	/** Open local dialogs by their cancel function, with the dialog title for the program status. */
-	private readonly openDialogs = new Map<() => void, string | undefined>();
-	private readonly dialogs: AgentDialogs;
+	private readonly controller: TerminalController;
+	private readonly drafts = new Map<string, ProfileDraft>();
+	private creationId = randomUUID();
 	private disposed = false;
-	private readonly tui: TUI;
-	private readonly theme: Theme;
 	private readonly keys: KeybindingsManager;
-	readonly controller: TerminalController;
-	private readonly done: () => void;
-	constructor(tui: TUI, theme: Theme, keys: KeybindingsManager, controller: TerminalController, done: () => void, publishStatus?: (status: ProgramStatus) => void, publishTitle?: (title: string) => void) {
-		this.tui = tui; this.theme = theme; this.keys = keys; this.controller = controller; this.done = done;
+
+	constructor(tui: TUI, theme: import("@earendil-works/pi-coding-agent").Theme, keys: KeybindingsManager, controller: TerminalController, done: () => void, publishStatus?: (status: ProgramStatus) => void, publishTitle?: (title: string) => void) {
+		this.controller = controller;
+		this.keys = keys;
 		if (publishStatus) this.programStatus = new TerminalProgramStatus(publishStatus, publishTitle);
-		this.dialogs = terminalDialogs({ tui, theme, keys,
-			track: (cancel, title) => { this.openDialogs.set(cancel, title); this.projectStatus(); return () => { this.openDialogs.delete(cancel); this.projectStatus(); }; },
-			notify: (text) => { this.notice = text; this.tui.requestRender(); } });
-		this.navigationInput.onSubmit = (text) => { this.navigationInput.setValue(""); void this.submit(text); };
-		this.branches = new AgentBranchCache(readAgentBranch, () => this.tui.requestRender());
-		this.off = controller.subscribe(() => this.changed());
-		this.changed();
-	}
-	private changed(): void {
-		if (this.disposed) return;
-		const row = this.controller.row;
-		if (this.panel && this.panel.target !== this.controller.target) this.closePanel("The attached conversation changed; the browser was closed.");
-		if (row && this.console?.row.id !== row.id) {
-			this.console?.save(); this.console?.dispose();
-			this.rowFacts = undefined;
-			this.console = new AgentConsole(row, agentState(this.controller.state, row.id), this.tui, this.theme, this.keys,
-				(text) => { void this.submit(text); }, () => this.openDashboard(), () => this.controller.observedRows());
-		}
-		if (this.console && row) this.syncConsole(this.console, row);
-		this.projectStatus();
-		this.tui.requestRender();
-	}
-	/** Bring the visible conversation in line with the controller's current observation. */
-	private syncConsole(console: AgentConsole, row: AgentConversationSummary): void {
-		console.conversation.setToolDisplay(this.controller.toolDisplay);
-		const diagnostics = this.controller.display.diagnostics;
-		this.displayNotice = diagnostics.length ? `Owner cards: ${diagnostics[0]}${diagnostics.length > 1 ? ` (+${diagnostics.length - 1} more)` : ""}` : "";
-		const facts = rowFacts(this.controller.observedRows());
-		if (this.rowFacts !== undefined && this.rowFacts !== facts) console.conversation.refreshCards();
-		this.rowFacts = facts;
-		console.row = row;
-		console.warning = this.controller.availability?.state === "unavailable" ? "Connection unavailable; last observed data shown. /agent enter <target> retries." : undefined;
-		console.setContent(this.controller.snapshot?.entries ?? [], this.controller.frame?.live ?? []);
-		console.observeUsage(this.controller.snapshot?.entries ?? [], this.controller.frame?.status.usage);
-		this.branches.refresh(row.cwd, `${row.id}:${this.controller.snapshot?.entries.at(-1)?.id ?? "empty"}`);
-	}
-	private projectStatus(): void {
-		this.programStatus?.update({
-			target: this.controller.target,
-			revision: this.controller.selectionRevision,
-			live: this.controller.availability?.state === "live",
-			busy: this.controller.row?.state === "working",
-			interaction: this.openDialogs.size > 0,
-			name: this.controller.row?.name,
-			cwd: this.controller.row?.cwd,
-			dialog: [...this.openDialogs.values()].at(-1),
-		});
-	}
-	private async submit(text: string): Promise<void> {
-		const words = text.trim().split(/\s+/);
-		if (words[0] === "/agent") { this.controller.setDraft(""); await this.agentCommand(words.slice(1)); }
-		else if (text.trim() === "/quit") this.done();
-		else {
-			try { await this.controller.send(text); }
-			catch { /* The captured target's receipt retains the error. */ }
-		}
-		this.tui.requestRender();
-	}
-	private async agentCommand(words: string[]): Promise<void> {
-		const routes: Record<string, { arity: readonly number[]; run(argument?: string): void | Promise<void> }> = {
-			enter: { arity: [2], run: (argument) => this.enter(argument ?? "") },
-			back: { arity: [1], run: () => this.back() },
-			latest: { arity: [1], run: () => this.latest() },
-			browse: { arity: [1, 2], run: (argument) => argument ? this.openPanel(argument) : this.chooseBrowser() },
-			recover: { arity: [1], run: async () => {
-				const revision = this.controller.selectionRevision;
-				try { await this.recover(); } catch (error) { if (revision === this.controller.selectionRevision) this.notice = String(error); }
-			} },
-		};
-		if (words.length === 0) { this.openDashboard(); return; }
-		const route = Object.hasOwn(routes, words[0]) ? routes[words[0]] : undefined;
-		if (route?.arity.includes(words.length)) await route.run(words[1]);
-		else this.notice = "Use /agent, /agent enter <identity|@handle>, /agent back, /agent latest, /agent browse [name], or /agent recover";
-	}
-	private async recover(): Promise<void> {
-		const id = this.controller.target;
-		if (!id) throw new Error("No attached conversation");
-		const inputs = this.controller.unconfirmed(id);
-		if (!inputs.length) throw new Error("No unconfirmed input for this target");
-		const picked = await this.dialogs.select(`Unconfirmed inputs for ${id}\nInspect native history before any resend. Recovery never sends input.`, inputs.map((input, index) => ({ value: String(index), label: `requested ${input.mode} · ${input.text.replace(/\s+/g, " ").slice(0, 80)}` })));
-		const input = picked === undefined ? undefined : inputs[Number(picked)];
-		if (!input) return;
-		const state = agentState(this.controller.state, id);
-		const revision = state.draftRevision; const mode = state.mode;
-		let action: string | undefined;
-		do {
-			action = await this.dialogs.select(`Recover input for ${id}\nRestore replaces the current target draft and mode with the full text; it does not send. The unconfirmed copy remains until explicit discard. Requested mode: ${input.mode}`, [
-				{ value: "read", label: "Read full text" }, { value: "restore", label: "Restore to the draft" }, { value: "discard", label: "Discard this copy" }, { value: "cancel", label: "Cancel" }]);
-			if (action === "read") await this.dialogs.read("Unconfirmed input", input.text);
-		} while (action === "read");
-		if (action === "restore") this.controller.restoreUnconfirmed(id, input, revision, mode);
-		else if (action === "discard") this.controller.discardUnconfirmed(id, input);
-	}
-	private async enter(id: string): Promise<void> {
-		this.console?.save();
-		const entering = this.controller.attach(id);
-		const revision = this.controller.selectionRevision;
-		try { await entering; if (revision === this.controller.selectionRevision) { this.closeDashboard(); this.notice = ""; } }
-		catch (error) { if (revision === this.controller.selectionRevision) this.notice = String(error); }
-		this.tui.requestRender();
-	}
-	openDashboard(): void {
-		if (this.dashboard || this.disposed) return;
-		this.console?.save();
-		const manager = this.controller.manager;
-		const source = createAgentObservationSource({ list: (input) => manager.dashboardPage(input), snapshot: (id, params) => manager.snapshot(id, params), observeLive: (id, scope, listener, signal) => manager.observeLive(id, scope, listener, signal), subscribeRoster: (listener) => manager.subscribeRoster(listener) });
-		this.dashboardSource = source;
+		const manager = controller.manager;
 		const collaborate = manager.collaborate?.bind(manager);
 		const operations: DashboardOperations = {
-			enter: (id) => { void this.enter(id); },
+			toolDisplay: controller.toolDisplay,
 			branch: readAgentBranch,
-			readLineage: (id) => manager.control("status", { sessionId: id }, this.controller.caller),
-			collaborate: collaborate ? (input) => {
-				const id = this.controller.target;
-				if (!["list", "read"].includes(String(input.action)) && !id)
-					return Promise.reject(new Error("Attach a conversation before posting to a thread."));
-				return collaborate({ ...input, origin: "operator" }, { ...this.controller.caller, id: id ?? this.controller.caller.id });
-			} : undefined,
+			readLineage: (id) => manager.control("status", { sessionId: id }, controller.caller),
+			collaborate: collaborate
+				? (input) => {
+						const id = controller.selected;
+						if (!["list", "read"].includes(String(input.action)) && !id) return Promise.reject(new Error("Select a conversation before posting to a thread."));
+						return collaborate({ ...input, origin: "operator" }, { ...controller.caller, id: id ?? controller.caller.id });
+					}
+				: undefined,
+			modelInfo: (provider, modelId) => controller.modelInfo(provider, modelId),
 			submit: async (input) => {
-				const receipt = await this.controller.admit(input.id, input.text, input.mode);
+				const receipt = await controller.admit(input.id, input.text, input.mode);
 				return { text: receipt.text, receipt: receipt.text };
 			},
-			submissionFailure: (input, error) => this.controller.failureReceipt(input.id, error),
-			chooseConversation: async (labels) => {
-				return this.dialogs.select("Choose a conversation", labels.map((label) => ({ value: label.identity, label: label.name || label.firstMessage || "Conversation", description: label.identity })));
+			submissionFailure: (input, error) => controller.failureReceipt(input.id, error),
+			newAgent: controller.creation && manager.spawn ? (input) => this.create(input) : undefined,
+			newDefaults: () => this.newDefaults(),
+			newUnavailable: "Creation needs the configured model catalogue, which this terminal could not load.",
+			forms: (target) => terminalForms(controller, this.drafts, target),
+			panels: async (target) => {
+				if (controller.selected !== target.id) controller.select(target.id);
+				await controller.displaySettled();
+				return panelDestinations(controller.panels, target.id, (command, data, signal) => controller.panelRequest(target.id, command, data, signal));
 			},
-			toolDisplay: this.controller.toolDisplay,
-			action: (name, target) => terminalAction(this.controller, this.dialogs, name, target),
+			observed: (row) => {
+				controller.select(row?.id);
+				this.projectStatus(row);
+			},
+			command: (text) => this.command(text),
+			extraActions: (target) => this.extraActions(target),
+			exitLabel: "Detach",
 		};
-		this.dashboard = new AgentDashboard(this.tui, this.theme, this.keys, () => this.closeDashboard(), this.controller.state, source, operations, { hide: () => { this.dashboardHidden = true; this.tui.requestRender(); }, show: () => { this.dashboardHidden = false; this.tui.requestRender(); } }, this.controller.target);
-		this.tui.requestRender();
+		this.view = new AgentDashboard(tui, theme, keys, done, controller.state, controller.source, operations);
+		const offController = controller.subscribe(() => this.changed());
+		// Live observation changes, including its loss, move the program status without a new selection.
+		const offSource = controller.source.subscribe(() => this.projectStatus(this.view.selectedRow));
+		this.off = () => {
+			offController();
+			offSource();
+		};
+		this.done = done;
 	}
-	closeDashboard(): void {
-		this.dashboard?.dispose(); this.dashboard = undefined;
-		this.dashboardSource?.select(undefined); this.dashboardSource?.releaseTasks(); this.dashboardSource = undefined;
-		this.console?.conversation.invalidate();
-		this.tui.requestRender();
+
+	private readonly done: () => void;
+
+	private newDefaults(): NewAgentDefaults {
+		const creation = this.controller.creation;
+		const { defaultPreset, choices } = presetChoices(readAgentPreferences(creation?.agentDir, creation?.catalog));
+		return {
+			cwd: this.controller.caller.cwd,
+			presets: choices,
+			...(defaultPreset === undefined ? {} : { preset: defaultPreset }),
+			ownership: "The new conversation owns the answer to its first message; closing this terminal never strands it.",
+		};
 	}
-	/** Offer the attached host's browsers; an unavailable one explains itself instead of opening. */
-	private async chooseBrowser(): Promise<void> {
-		const panels = this.controller.panels.panels;
-		if (!panels.length) { this.notice = "No browsers are advertised by this conversation's host."; this.tui.requestRender(); return; }
-		const revision = this.controller.selectionRevision;
-		const picked = await this.dialogs.select("Browsers", panels.map((panel) => ({ value: panel.contribution, label: panel.title, description: panel.unavailable ? `browser unavailable here: ${panel.unavailable}` : `${panel.contribution} browser` })));
-		if (picked === undefined || revision !== this.controller.selectionRevision) return;
-		this.openPanel(picked);
+
+	private async create(input: NewAgentInput): Promise<DashboardResult> {
+		const cwd = resolve(this.controller.caller.cwd, input.cwd ?? ".");
+		if (!statSync(cwd, { throwIfNoEntry: false })?.isDirectory()) throw new Error(`Not a directory: ${cwd}`);
+		if (this.controller.creation?.trustUndecided(cwd)) throw new Error(`${cwd} has project resources and no saved trust decision. Decide in an ordinary Pi window opened there, or start in another directory.`);
+		const result = await this.controller.create({ ...input, cwd, requestId: this.creationId });
+		this.creationId = randomUUID();
+		return result;
 	}
-	openPanel(contribution: string): void {
-		const target = this.controller.target;
-		const panel = this.controller.panels.panels.find((candidate) => candidate.contribution === contribution);
-		if (!target || !panel) { this.notice = `No browser named ${contribution} is available here.`; this.tui.requestRender(); return; }
-		if (!panel.module) { this.notice = `${panel.title}: browser unavailable here (${panel.unavailable ?? "module not loaded"})`; this.tui.requestRender(); return; }
-		if (this.panel) this.closePanel();
-		this.console?.save();
-		const command = panel.command;
-		const screen = new PanelScreen({
-			module: panel.module, title: panel.title, target: { id: target, ...(this.controller.row?.name ? { name: this.controller.row.name } : {}) },
-			tui: this.tui, theme: this.theme, dialogs: this.dialogs,
-			request: (data, signal) => this.controller.panelRequest(target, command, data, signal),
-			notice: () => this.notice,
-			onClose: () => this.closePanel(),
-			detach: () => this.done(),
-		});
-		this.panel = { screen, target };
-		this.notice = "";
-		this.tui.requestRender();
+
+	/** The terminal's own composer routes; other slash and bang text stays a literal message. */
+	private async command(text: string): Promise<boolean> {
+		const words = text.trim().split(/\s+/);
+		if (text.trim() === "/quit") {
+			this.done();
+			return true;
+		}
+		if (words[0] !== "/agent") return false;
+		if (words[1] === "enter" && words[2]) {
+			const id = await this.controller.manager.resolveTarget(words[2]);
+			this.view.selectIdentity(id);
+		} else if (words[1] === "browse") this.view.openNamedAction("browse");
+		else if (words[1] === "new") this.view.openNamedAction("new");
+		else if (words[1] === "recover") this.recover(this.controller.selected);
+		return true;
 	}
-	private closePanel(reason = ""): void {
-		const panel = this.panel;
-		if (!panel) return;
-		this.panel = undefined;
-		panel.screen.dispose();
-		if (reason) this.notice = reason;
-		this.console?.conversation.invalidate();
-		this.resetHits();
-		this.tui.requestRender();
+
+	/** Review unconfirmed input of one target; recovery restores a draft and sends nothing. */
+	private recover(id: string | undefined): void {
+		if (id && this.controller.unconfirmed(id).length) this.view.openViewAction("Recover input", (host) => recoverView(this.controller, id, host));
+		else this.view.notify("This conversation has no unconfirmed input", "info");
+	}
+
+	private extraActions(target: AgentConversationSummary): Action[] {
+		const inputs = this.controller.unconfirmed(target.id);
+		if (!inputs.length) return [];
+		return [{ id: "recover", label: `Recover input (${inputs.length})`, primary: true, description: "Restore an unconfirmed input to the draft without sending", run: () => this.recover(target.id) }];
+	}
+
+	private changed(): void {
+		if (this.disposed) return;
+		this.view.setToolDisplay(this.controller.toolDisplay);
+		this.projectStatus(this.view.selectedRow);
+	}
+
+	/** Program status and title follow the selected conversation as last observed. */
+	private projectStatus(row: AgentConversationSummary | undefined): void {
+		const id = this.controller.selected;
+		const live = id !== undefined && this.controller.source.availability(id)?.state === "live";
+		this.programStatus?.update({ target: id, revision: this.controller.revision, live, busy: row?.id === id ? row?.state === "working" : undefined, name: row?.name, cwd: row?.cwd });
+	}
+
+	render(width: number): string[] {
+		return this.view.render(width);
 	}
 	handleInput(data: string): void {
-		if (matchesKey(data, "ctrl+d") && (!this.console || this.console.composer.isEmpty()) && !this.dashboard) { this.done(); return; }
-		if (this.dashboard) { this.dashboard.handleInput(data); return; }
-		if (this.panel) { this.notice = ""; this.panel.screen.handleInput(data); this.tui.requestRender(); return; }
-		const console = this.console;
-		if (!console) {
-			if (matchesKey(data, "escape")) this.openDashboard();
-			else this.navigationInput.handleInput(data);
-			this.tui.requestRender();
+		// The exit key in an empty message field closes this terminal, as in a shell; native work continues.
+		if (this.keys.matches(data, "app.exit") && this.emptyMessage()) {
+			this.done();
 			return;
 		}
-		this.consoleInput(console, data);
+		this.view.handleInput(data);
 	}
-	private consoleInput(console: AgentConsole, data: string): void {
-		if (matchesKey(data, "tab")) { this.controller.setMode(console.state.mode === "steer" ? "followUp" : "steer"); return; }
-		if (matchesKey(data, "ctrl+o") || matchesKey(data, "ctrl+t")) {
-			if (matchesKey(data, "ctrl+o")) console.state.view.expanded = !console.state.view.expanded;
-			else console.state.view.showThinking = !console.state.view.showThinking;
-			console.conversation.invalidate(); this.changed(); return;
-		}
-		if (matchesKey(data, "pageUp") || matchesKey(data, "pageDown")) {
-			if (matchesKey(data, "pageUp") && console.conversation.atTop()) {
-				const revision = this.controller.selectionRevision;
-				void this.controller.earlier().catch((error) => { if (revision === this.controller.selectionRevision) this.notice = String(error); this.tui.requestRender(); });
-			}
-			console.conversation.page(matchesKey(data, "pageUp") ? -10 : 10); this.tui.requestRender(); return;
-		}
-		console.composer.handleInput(data); this.tui.requestRender();
-	}
-	private resetHits(): void {
-		this.hits.reset();
-		this.transcript = { y: 0, height: 0, width: 0 };
-	}
-	private async back(): Promise<void> {
-		if (this.controller.previous) await this.enter(this.controller.previous);
-		else this.notice = "No previous conversation";
-		this.tui.requestRender();
-	}
-	private latest(): void {
-		const state = this.controller.draftState;
-		if (!state) return;
-		state.view.follow = true;
-		state.view.anchor = undefined;
-		this.console?.conversation.invalidate();
-		this.tui.requestRender();
-	}
-	/** Dashboard, Browsers, Back and Latest are footer controls; Detach is the way out and always stays. */
-	private footerActions(): ScreenAction[] {
-		const panels = this.controller.panels.panels;
-		return [
-			{ id: "dashboard", label: "Dashboard", main: true, run: () => this.openDashboard() },
-			{ id: "browsers", label: "Browsers", main: panels.length > 0, description: "Open an owner browser over this conversation", disabled: panels.length ? undefined : "No browsers are advertised by this conversation's host", run: () => { void this.chooseBrowser(); } },
-			{ id: "back", label: "Back", main: true, disabled: this.controller.previous ? undefined : "No previous conversation", run: () => { void this.back(); } },
-			{ id: "latest", label: "Latest", main: true, disabled: this.console ? undefined : "No conversation is attached", run: () => this.latest() },
-		];
-	}
-	private footerLine(width: number, height: number): string {
-		return this.footer.footer(this.hits, height - 1, width, { id: "detach", label: "Detach", run: () => this.done() }, this.theme, false);
-	}
-	private loadEarlier(): void {
-		const revision = this.controller.selectionRevision;
-		void this.controller.earlier().catch((error) => { if (revision === this.controller.selectionRevision) this.notice = String(error); this.tui.requestRender(); });
-	}
-	render(width: number): string[] {
-		this.resetHits();
-		if (this.dashboard && !this.dashboardHidden) return this.dashboard.render(width);
-		if (this.panel) return this.panel.screen.render(width);
-		const height = this.tui.terminal.rows;
-		this.hits.reset(width, height);
-		const footer = this.footerLine(width, height);
-		const console = this.console;
-		if (!console) {
-			this.navigationInput.focused = true;
-			return [fitLine("No conversation. /agent opens the dashboard; /agent enter <target> attaches.", width), ...Array<string>(Math.max(0, height - 3)).fill(""), ...this.navigationInput.render(width), footer].slice(0, height);
-		}
-		if (width < 60 || height < 20) {
-			const lines = Array.from({ length: height }, (_, i) => fitLine(i === 0 ? "Resize to use this conversation. Esc opens Agents." : "", width));
-			lines[height - 1] = footer;
-			return lines;
-		}
-		return this.renderConversation(console, width, height, footer);
-	}
-	private renderConversation(console: AgentConsole, width: number, height: number, footer: string): string[] {
-		console.composer.focused = true;
-		console.composer.setViewportRows(Math.max(5, Math.min(10, Math.floor(height / 3))));
-		const editor = console.composer.render(width, console.row.name?.trim() ? console.row.name : console.row.id, console.messageMode(), console.state.receipt);
-		const status = console.statusLines(width, this.controller.currentModelInfo(), this.branches.get(console.row.cwd));
-		const boundary = this.controller.snapshot?.nextBefore ? "Earlier history" : "";
-		const notice = console.warning || this.notice || this.displayNotice;
-		const reserved = editor.length + status.length + 1 + (notice ? 1 : 0) + (boundary ? 1 : 0);
-		const body = console.conversation.render(width, Math.max(1, height - reserved));
-		this.transcript = { y: boundary ? 1 : 0, height: body.length, width };
-		if (boundary) this.hits.add({ x: 0, y: 0, width, height: 1, click: () => { this.loadEarlier(); } });
-		this.composerY = (boundary ? 1 : 0) + body.length;
-		this.composerHeight = editor.length;
-		const lines = [
-			...(boundary ? [fitLine(this.theme.fg("muted", boundary), width)] : []),
-			...body, ...editor, ...status,
-			...(notice ? [fitLine(notice, width)] : []),
-			footer,
-		];
-		while (lines.length < height) lines.splice(lines.length - 1, 0, "");
-		return lines.slice(0, height);
+
+	private emptyMessage(): boolean {
+		const { region, surface } = this.view.focus;
+		const id = this.controller.selected;
+		return surface === "work" && region === "composer" && id !== undefined && !agentState(this.controller.state, id).draft;
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (this.dashboard && !this.dashboardHidden) return this.dashboard.handleMouse(event);
-		if (this.panel) {
-			// A notice describes the last outcome; the next deliberate click in the browser starts a new one.
-			if (event.type === "click" && this.notice) { this.notice = ""; this.tui.requestRender(); }
-			const result = this.panel.screen.handleMouse(event);
-			if (result?.handled) this.tui.requestRender();
-			return result;
-		}
-		const control = this.hits.handle(event);
-		if (control) return control;
-		return this.transcriptMouse(event) ?? this.composerMouse(event);
+		return this.view.handleMouse(event);
 	}
-	private transcriptMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		const transcript = this.transcript;
-		if (!this.console || transcript.height <= 0 || event.y < transcript.y || event.y >= transcript.y + transcript.height) return undefined;
-		if (event.type !== "wheel") return this.console.conversation.handleMouse({ ...event, y: event.y - transcript.y, width: transcript.width, height: transcript.height });
-		const delta = event.wheelDelta ?? 0;
-		if (delta < 0 && this.console.conversation.atTop()) this.loadEarlier();
-		else this.console.conversation.page(delta);
-		return { handled: true };
+	invalidate(): void {
+		this.view.invalidate();
 	}
-	private composerMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (!this.console || event.y < this.composerY || event.y >= this.composerY + this.composerHeight) return undefined;
-		return this.console.composer.handleMouse({ ...event, y: event.y - this.composerY, height: this.composerHeight });
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.programStatus?.dispose();
+		this.off();
+		this.view.dispose();
 	}
-	invalidate(): void { this.resetHits(); this.footer.invalidate(); this.console?.conversation.invalidate(); this.console?.composer.invalidate(); this.dashboard?.invalidate(); this.panel?.screen.invalidate(); }
-	dispose(): void { this.disposed = true; this.programStatus?.dispose(); for (const cancel of [...this.openDialogs.keys()]) cancel(); this.closePanel(); this.closeDashboard(); this.console?.save(); this.console?.dispose(); this.branches.dispose(); this.off(); }
 }
 
 export function parseTerminalArgs(args: string[]): { session?: string; selectedTheme: "dark" | "light" } {
@@ -693,6 +605,31 @@ export function parseTerminalArgs(args: string[]): { session?: string; selectedT
 	return { session, selectedTheme };
 }
 
+/** The public services creation needs in this process: the configured catalogue and trust facts. */
+async function creationServices(agentDir: string): Promise<TerminalCreation | undefined> {
+	try {
+		const runtime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), allowModelNetwork: false, refreshOnCreate: false });
+		const trust = new ProjectTrustStore(agentDir);
+		return {
+			agentDir,
+			catalog: runtime,
+			validateModel: (model, level) => {
+				const selected = runtime.getModel(model.provider, model.modelId);
+				if (!selected) throw new Error(`Model is not in the configured catalog: ${model.provider}/${model.modelId}`);
+				if (!isThinkingLevel(level)) throw new Error("Unknown reasoning level");
+				return clampThinkingLevel(selected, level);
+			},
+			trustUndecided: (cwd) => {
+				if (!hasTrustRequiringProjectResources(cwd) || trust.get(cwd) !== null) return false;
+				const fallback = SettingsManager.create(cwd, agentDir, { projectTrusted: false }).getDefaultProjectTrust();
+				return fallback !== "always" && fallback !== "never";
+			},
+		};
+	} catch {
+		return undefined;
+	}
+}
+
 export async function runTerminal(args: string[]): Promise<void> {
 	const { session, selectedTheme } = parseTerminalArgs(args);
 	if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("This attachment requires an interactive terminal");
@@ -705,21 +642,36 @@ export async function runTerminal(args: string[]): Promise<void> {
 	const theme = loader.getThemes().themes.find((item) => item.name === selectedTheme);
 	if (!theme) throw new Error(`Shipped ${selectedTheme} theme did not load`);
 	initTheme(selectedTheme, false);
-	const keys = terminalKeys(); setKeybindings(keys);
+	const keys = terminalKeys();
+	setKeybindings(keys);
 	const manager = new AgentManager({ root: realpathSync(root), agentDir, packageDir: getPackageDir() });
-	const controller = new TerminalController({ manager, caller: { id: `terminal:${randomUUID()}`, cwd: process.cwd() }, remember: (id) => remembered.write(id) });
+	const controller = new TerminalController({ manager, caller: { id: `terminal:${randomUUID()}`, cwd: process.cwd() }, remember: (id) => remembered.write(id), creation: await creationServices(agentDir) });
 	const terminal = new ProcessTerminal();
 	const tui = new TuiAltScreen(terminal);
 	let finish!: () => void;
-	const finished = new Promise<void>((resolveDone) => { finish = resolveDone; });
+	const finished = new Promise<void>((resolveDone) => {
+		finish = resolveDone;
+	});
 	const screen = new TerminalScreen(tui, theme, keys, controller, finish, (status) => terminal.setProgramStatus(status), (title) => terminal.setTitle(title));
 	const close = () => finish();
-	process.once("SIGINT", close); process.once("SIGTERM", close);
+	process.once("SIGINT", close);
+	process.once("SIGTERM", close);
 	try {
 		const target = session ?? remembered.read();
-		if (target) await controller.attach(target);
-		else screen.openDashboard();
-		tui.addChild(screen); tui.setFocus(screen); tui.start();
+		if (target) screen.view.selectIdentity(await manager.resolveTarget(target));
+		else screen.view.openNamedAction("new");
+		tui.addChild(screen);
+		tui.setFocus(screen);
+		tui.start();
 		await finished;
-	} finally { process.off("SIGINT", close); process.off("SIGTERM", close); screen.dispose(); try { await controller.close(); } finally { tui.stop(); } }
+	} finally {
+		process.off("SIGINT", close);
+		process.off("SIGTERM", close);
+		screen.dispose();
+		try {
+			await controller.close();
+		} finally {
+			tui.stop();
+		}
+	}
 }

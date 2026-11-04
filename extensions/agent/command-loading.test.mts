@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { it } from "node:test";
 
-it("loads dashboard modules only for an interactive dashboard request", () => {
+it("loads the work view, its forms and owner views only for an interactive request", () => {
 	const script = `
 		import assert from "node:assert/strict";
 		import { registerHooks } from "node:module";
 		const loaded = [];
 		registerHooks({ load(url, context, next) {
-			if (/\\/(dashboard|action-dialogs)\\.ts$/.test(url)) loaded.push(url);
+			if (/\\/(dashboard|agent-forms|panel-modules)\\.ts$/.test(url)) loaded.push(url);
 			return next(url, context);
 		} });
 		const { createAgentCommand } = await import(${JSON.stringify(new URL("./command.ts", import.meta.url).href)});
@@ -26,7 +26,8 @@ it("loads dashboard modules only for an interactive dashboard request", () => {
 		for (let attempt = 0; calls === 0 && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
 		assert.equal(calls, 1);
 		assert.equal(loaded.filter(url => url.endsWith("/dashboard.ts")).length, 1);
-		assert.equal(loaded.filter(url => url.endsWith("/action-dialogs.ts")).length, 1);
+		assert.equal(loaded.filter(url => url.endsWith("/agent-forms.ts")).length, 1);
+		assert.equal(loaded.filter(url => url.endsWith("/panel-modules.ts")).length, 0, "owner views wait for their own first use");
 		finish();
 		await opening;
 		await command.openDashboard(ctx);

@@ -105,7 +105,7 @@ function setup(width = 100, height = 30, override?: (input: Record<string, unkno
 }
 async function open(f: ReturnType<typeof setup>) {
 	await turn();
-	f.ui.handleInput("t");
+	f.ui.openNamedAction("threads");
 	await turn();
 	f.ui.handleInput("\r");
 	await turn();
@@ -246,7 +246,7 @@ it("i toggles relative and absolute times without a read and retains the choice 
 		);
 		try {
 			await turn();
-			reopened.ui.handleInput("t");
+			reopened.ui.openNamedAction("threads");
 			await turn();
 			reopened.ui.handleInput("\r");
 			await turn();
@@ -293,7 +293,7 @@ it("thread discovery refresh rejects clicks on the previous list before repaint"
 	const f = setup(100, 36, async () => structuredClone(current));
 	try {
 		await turn();
-		f.ui.handleInput("t");
+		f.ui.openNamedAction("threads");
 		await turn();
 		const oldClick = cellEvent(f, "Boundary review");
 		const first = current.items[0];
@@ -356,7 +356,7 @@ it("mouse follows thread rows, timestamps, notify choices and hints without cons
 	};
 	try {
 		await turn();
-		f.ui.handleInput("t");
+		f.ui.openNamedAction("threads");
 		await turn();
 		mouse("Boundary review");
 		await turn();
@@ -429,7 +429,7 @@ it("Threads preserves the agent draft, thread draft and selection across return 
 	const f = setup();
 	try {
 		await turn();
-		f.ui.handleInput("\t");
+		f.ui.handleInput("\r");
 		f.ui.handleInput("Agent draft");
 		f.ui.handleInput("\x1b");
 		const selected = f.state.selected;
@@ -440,10 +440,8 @@ it("Threads preserves the agent draft, thread draft and selection across return 
 		f.ui.handleInput("\x1b");
 		f.ui.handleInput("\x1b");
 		assert.equal(f.state.selected, selected);
-		assert.equal(f.ui.navigation.screen, "roster");
-		f.ui.handleInput("\t");
+		assert.equal(f.ui.focus.surface, "work");
 		assert.match(text(f), /Agent draft/);
-		f.ui.handleInput("\x1b");
 		await open(f);
 		f.ui.handleInput("p");
 		assert.match(text(f), /Thread draft/);
@@ -457,7 +455,7 @@ it("Threads preserves the agent draft, thread draft and selection across return 
 		);
 		try {
 			await turn();
-			reopened.ui.handleInput("t");
+			reopened.ui.openNamedAction("threads");
 			await turn();
 			reopened.ui.handleInput("\r");
 			await turn();
@@ -482,7 +480,7 @@ it("published omitted storage rows and continued discovery stay reachable", asyn
 	});
 	try {
 		await turn();
-		f.ui.handleInput("t");
+		f.ui.openNamedAction("threads");
 		await turn();
 		assert.match(text(f), /12 threads omitted/);
 		assert.match(text(f), /Partial/);
@@ -534,7 +532,7 @@ it("a stale discovery cannot overwrite a scoped list and invalid schemas show a 
 	const f = setup(100, 30, async (input) => (input.sessionId ? list() : gate.promise));
 	try {
 		await turn();
-		f.ui.handleInput("t");
+		f.ui.openNamedAction("threads");
 		f.ui.handleInput("s");
 		gate.resolve({ bad: true });
 		await turn();
@@ -548,7 +546,7 @@ it("a stale discovery cannot overwrite a scoped list and invalid schemas show a 
 	const invalid = setup(100, 30, async () => ({ bad: true }));
 	try {
 		await turn();
-		invalid.ui.handleInput("t");
+		invalid.ui.openNamedAction("threads");
 		await turn();
 		assert.match(text(invalid), /invalid thread list/);
 	} finally {
@@ -659,7 +657,7 @@ it("a receipt after close refreshes the reopened draft without an old source cal
 	);
 	try {
 		await turn();
-		reopened.ui.handleInput("t");
+		reopened.ui.openNamedAction("threads");
 		await turn();
 		reopened.ui.handleInput("\r");
 		await turn();
@@ -784,7 +782,7 @@ it("wheel over the thread list scrolls the list without moving the selection", a
 	const wheel = (delta: number) => f.ui.handleMouse({ ...cellEvent(f, "Thread "), type: "wheel", wheelDelta: delta, width: 100, height: 24 });
 	try {
 		await turn();
-		f.ui.handleInput("t");
+		f.ui.openNamedAction("threads");
 		await turn();
 		assert.match(text(f), /\u203a Open \u00b7 Thread 0 /);
 		wheel(6);
@@ -800,13 +798,20 @@ it("wheel over the thread list scrolls the list without moving the selection", a
 });
 
 it("dashboard help distinguishes a silent post from passive notification delivery", async () => {
-	const f = setup(120, 36);
+	const f = setup(240, 60);
 	try {
 		await turn();
-		f.ui.handleInput("?");
-		assert.match(text(f, 120), /p posts without a model wake\./);
-		assert.match(text(f, 120), /i switches all times between relative age and local date and time\./);
-		assert.doesNotMatch(text(f, 120), /p posts without notification\./);
+		f.ui.openNamedAction("help");
+		assert.equal(f.ui.focus.inspector, "Help");
+		let help = "";
+		for (let page = 0; page < 12; page++) {
+			help += text(f, 240);
+			f.ui.handleInput("\x1b[6~");
+		}
+		assert.match(help, /p posts without a model wake\./);
+		assert.match(help, /n chooses peers to notify\./);
+		assert.match(help, /i switches all times between relative age and local date and time\./);
+		assert.doesNotMatch(help, /p posts without notification\./);
 	} finally {
 		f.ui.dispose();
 	}

@@ -22,6 +22,9 @@ import {
 
 import { dashboardHeading } from "./dashboard-layout.ts";
 
+/** Text rows a compact message field shows before its draft scrolls. */
+const DEFAULT_ROWS = 6;
+
 class ComposerEditor extends Editor {
 	topHidden = 0;
 	bottomHidden = 0;
@@ -46,19 +49,33 @@ export interface AgentComposerOptions {
 	onEscape(): void;
 }
 
+/** Column span of one border control, relative to the composer's own first column. */
+export interface ComposerSpan {
+	readonly x: number;
+	readonly width: number;
+}
+
 export class AgentComposer implements Component, Focusable {
 	private readonly editor: ComposerEditor;
 	private readonly options: AgentComposerOptions;
 	private viewportRows?: number;
+	private rowLimit?: number;
 	private paddingRows = 0;
 	private bottomRow = 0;
 	private textRows = 1;
 	autocompleteRows = 0;
 	grip?: "normal" | "hover" | "active";
+	/** Spans of the last render: the delivery effect on the top border, and each bottom-border control. */
+	spans: { mode?: ComposerSpan; controls: ComposerSpan[] } = { controls: [] };
+	/** Rows of the last render, so a host can find the bottom border. */
+	get renderedBottom(): number {
+		return this.bottomRow;
+	}
 
 	constructor(options: AgentComposerOptions) {
 		this.options = options;
-		const rows = () => this.viewportRows === undefined ? 20 : Math.ceil(this.viewportRows / 0.3);
+		// The native editor shows 30% of the terminal rows, at least five; the proxy turns a row count into that height.
+		const rows = () => Math.ceil((this.viewportRows ?? this.rowLimit ?? DEFAULT_ROWS) / 0.3);
 		const tui = new Proxy(options.tui, {
 			get(target, key) {
 				if (key === "terminal")
@@ -137,6 +154,11 @@ export class AgentComposer implements Component, Focusable {
 	setViewportRows(rows?: number): void {
 		this.viewportRows = rows === undefined ? undefined : Math.max(5, Math.trunc(rows));
 	}
+
+	/** Cap the text rows a growing draft shows, without padding a short one; five is the native minimum. */
+	limitRows(rows?: number): void {
+		this.rowLimit = rows === undefined ? undefined : Math.max(5, Math.min(DEFAULT_ROWS, Math.trunc(rows)));
+	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (event.x < 1 || event.x >= event.width - 1) return;
 		if (event.y > this.textRows && event.y < this.bottomRow) {
@@ -149,15 +171,35 @@ export class AgentComposer implements Component, Focusable {
 
 	private topFrame(width: number, caption: string | ((width: number) => string), mode: string): string {
 		const theme = this.options.theme;
-		const position = [mode, this.editor.topHidden ? `↑ ${this.editor.topHidden} lines` : ""].filter(Boolean).join(" · ");
+		const hidden = this.editor.topHidden ? `↑ ${this.editor.topHidden} lines` : "";
+		const position = [hidden, mode].filter(Boolean).join(" · ");
 		const frameWidth = this.grip ? width - 4 : width;
 		const captionWidth = Math.max(1, frameWidth - visibleWidth(position ? ` ${position} ` : "") - 6);
 		const label = typeof caption === "function" ? caption(captionWidth) : caption;
 		const top = dashboardHeading(label, position, frameWidth, theme);
+		// The delivery effect ends the right segment, just before its trailing space and the corner.
+		this.spans.mode = mode ? { x: frameWidth - 2 - visibleWidth(mode), width: visibleWidth(mode) } : undefined;
 		if (!this.grip) return top;
 		return sliceByColumn(top, 0, width - 5, true) + theme.fg(this.grip === "normal" ? "borderMuted" : "accent", `─${this.grip === "active" ? "━━━" : "┄┄┄"}╮`);
 	}
-	render(width: number, caption: string | ((width: number) => string) = "Message", mode = "", receipt = ""): string[] {
+
+	/** The bottom border: the receipt on the left, the labelled controls on the right. */
+	private bottomFrame(width: number, receipt: string, controls: readonly string[]): string {
+		const hidden = this.editor.bottomHidden ? `↓ ${this.editor.bottomHidden} lines` : "";
+		const labels = controls.join(" · ");
+		const position = [hidden, labels].filter(Boolean).join(" · ");
+		const line = dashboardHeading(receipt, position, width, this.options.theme, true);
+		const spans: ComposerSpan[] = [];
+		let x = width - 2 - visibleWidth(labels);
+		for (const control of controls) {
+			spans.push({ x, width: visibleWidth(control) });
+			x += visibleWidth(control) + 3;
+		}
+		this.spans.controls = spans;
+		return line;
+	}
+
+	render(width: number, caption: string | ((width: number) => string) = "Message", mode = "", receipt = "", controls: readonly string[] = []): string[] {
 		const lines = this.editor.render(Math.max(1, width - 2));
 		const bottom = lines.findIndex((line, index) => index > 0 && line === "");
 		this.autocompleteRows = Math.max(0, lines.length - bottom - 1);
@@ -167,17 +209,11 @@ export class AgentComposer implements Component, Focusable {
 		if (this.paddingRows) lines.splice(bottom, 0, ...Array.from({ length: this.paddingRows }, () => " ".repeat(Math.max(1, width - 2))));
 		const theme = this.options.theme;
 		const border = (text: string) => theme.fg(this.focused ? "accent" : "borderMuted", text);
+		this.spans = { controls: [] };
 		return lines.map((line, index) => {
 			if (index === 0) return this.topFrame(width, caption, mode);
 			// Native text and autocomplete rows are padded; only our border hooks emit empty rows.
-			if (line === "")
-				return dashboardHeading(
-					receipt,
-					this.editor.bottomHidden ? `↓ ${this.editor.bottomHidden} lines` : "",
-					width,
-					theme,
-					true,
-				);
+			if (line === "") return this.bottomFrame(width, receipt, controls);
 			return border("│") + line + border("│");
 		});
 	}

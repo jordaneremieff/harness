@@ -3,10 +3,28 @@ import { it } from "node:test";
 import { fixture, turn, row, source, page, conversationFrame } from "./dashboard-test-fixture.mts";
 import { agentState, updateDraft } from "./dashboard-state.ts";
 import { stripVTControlCharacters } from "node:util";
-import { sliceByColumn, visibleWidth } from "@earendil-works/pi-tui";
-import { dashboardGeometry } from "./dashboard-layout.ts";
+import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { sessionAppearance } from "./dashboard-roster.ts";
 import { buildLiveEntries } from "./live-frames.ts";
+
+/** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
+const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+const click = (x: number, y: number, width: number, height: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
+
+/** Choose one of the selected agent's More actions with the pointer, as the operator would. */
+function chooseMore(f: ReturnType<typeof fixture>, label: string): void {
+	const { columns, rows } = f.tui.terminal;
+	const lines = visible(f.ui.render(columns));
+	const header = lines.findIndex((line, index) => index > 0 && line.includes("More…"));
+	const more = lines[header]?.lastIndexOf("More…") ?? -1;
+	assert.ok(more >= 0, "the selected agent's controls show More");
+	f.ui.handleMouse(click(more + 1, header, columns, rows));
+	const menu = visible(f.ui.render(columns));
+	const y = menu.findIndex((line) => line.includes(label));
+	assert.ok(y >= 0, `More lists ${label}`);
+	f.ui.handleMouse(click((menu[y]?.indexOf(label) ?? 0) + 1, y, columns, rows));
+}
+
 it("dashboard close releases a native nested renderer timer through the console", async (t) => {
 	const intervals = t.mock.method(globalThis, "setInterval");
 	const clears = t.mock.method(globalThis, "clearInterval");
@@ -28,7 +46,7 @@ it("dashboard close releases a native nested renderer timer through the console"
 	}
 });
 
-it("opened console focuses the editor and routes all letters and slash text only to the agent", async () => {
+it("the message field takes every letter and slash text literally for the selected agent", async () => {
 	const sent: Array<{ id: string; text: string; mode: string }> = [];
 	const f = fixture(80, 24, undefined, {
 		submit: async (input) => {
@@ -38,16 +56,18 @@ it("opened console focuses the editor and routes all letters and slash text only
 	});
 	await turn();
 	f.ui.handleInput("\r");
+	assert.equal(f.ui.focus.region, "composer");
 	f.ui.render(80);
 	f.ui.handleInput("/help n a ? !literal");
-	f.ui.handleInput("\t");
+	chooseMore(f, "Send as follow-up");
 	assert.equal(agentState(f.state, "storage:1").mode, "followUp");
+	assert.equal(f.ui.focus.region, "composer", "choosing the delivery effect keeps the message field");
 	f.ui.handleInput("\r");
 	await turn();
 	assert.deepEqual(sent, [{ id: "storage:1", text: "/help n a ? !literal", mode: "followUp" }]);
-	assert.equal(agentState(f.state, "storage:1").mode, "steer");
+	assert.equal(agentState(f.state, "storage:1").mode, "steer", "the next message starts as steer again");
 	f.ui.handleInput("\x1b");
-	assert.equal(f.ui.navigation.screen, "roster");
+	assert.equal(f.ui.focus.region, "list");
 	f.ui.dispose();
 });
 it("refused admission retains the draft and disposition", async () => {
@@ -57,9 +77,9 @@ it("refused admission retains the draft and disposition", async () => {
 		},
 	});
 	await turn();
-	f.ui.handleInput("\t");
+	f.ui.handleInput("\r");
 	f.ui.handleInput("retained");
-	f.ui.handleInput("\t");
+	chooseMore(f, "Send as follow-up");
 	f.ui.handleInput("\r");
 	await turn();
 	const state = agentState(f.state, "storage:1");
@@ -78,44 +98,50 @@ function factSource(state: "working" | "idle" | "failed") {
 	return observed;
 }
 for (const state of ["working", "idle", "failed"] as const) {
-	for (const width of [164, 100, 80, 60]) for (const consoleView of [false, true]) {
-		it(`${state} right pane assigns facts once below the composer at ${width} in ${consoleView ? "console" : "roster"}`, async () => {
+	for (const width of [164, 100, 80, 60]) for (const writing of [false, true]) {
+		it(`${state} target facts appear once under the header at ${width}${writing ? " while writing" : ""}`, async () => {
 			const f = fixture(width, 30, factSource(state), { modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }) });
 			try {
-				await turn(); if (consoleView) f.ui.handleInput("\r");
-				const lines = f.ui.render(width).map(stripVTControlCharacters);
+				await turn();
+				await turn();
+				if (writing) f.ui.handleInput("\r");
+				const lines = visible(f.ui.render(width));
 				assert.equal(lines.length, 30); assert.ok(lines.every((line) => visibleWidth(line) === width));
-				const geometry = dashboardGeometry(width, 30, 0, consoleView);
-				const paneX = geometry.wide ? geometry.rosterWidth + 1 : 0;
-				const paneY = consoleView || geometry.wide ? 1 : 5;
-				const pane = lines.slice(paneY, -1).map((line) => sliceByColumn(line, paneX, width));
+				const wide = width >= 100;
+				const paneX = wide ? (lines[1]?.indexOf("│") ?? 0) + 1 : 0;
+				const paneY = wide ? 1 : 6;
+				const pane = lines.slice(paneY, -1).map((line) => line.slice(paneX));
 				const right = pane.join("\n");
-				assert.match(pane[0], /@recipient · Recipient/);
-				assert.match(pane[0], new RegExp(sessionAppearance[state].label));
-				assert.doesNotMatch(pane[0], /model|high|%|\$/);
-				assert.match(pane.at(-2) ?? "", /Example model \[high\].*16%.*160\/1.0k/);
-				assert.match(pane.at(-1) ?? "", /\/work/);
+				assert.match(pane[0] ?? "", /@recipient · Recipient/);
+				assert.match(pane[0] ?? "", new RegExp(sessionAppearance[state].label));
+				assert.doesNotMatch(pane[0] ?? "", /model|high|%|\$/);
+				const facts = state === "failed" ? 2 : 1;
+				assert.match(pane[facts] ?? "", /Example model \[high\].*16%.*160\/1.0k/);
+				assert.match(pane[facts + 1] ?? "", /\/work/);
 				for (const fact of ["Example model", "[high]", "16%", "160/1.0k", "~$0.42"]) assert.equal(right.split(fact).length - 1, 1, right);
 				const caption = pane.find((line) => line.includes("╭─")) ?? "";
-				const effect = state === "working" ? "steer at next step" : "send";
-				assert.match(caption, new RegExp(`╭─ ${effect} ─`));
-				assert.doesNotMatch(caption, /working|idle|failed|model|high|%|\$|hit|ctx| in| out|…/);
-				assert.equal(right.split("21% hit").length - 1, geometry.conversationWidth >= visibleWidth("Example model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit") ? 1 : 0);
+				assert.match(caption, /╭─ To Recipient /);
+				assert.match(caption, new RegExp(state === "working" ? "Steer at next step ⇄" : " Send "));
+				assert.doesNotMatch(caption, /Working|Idle|Failed|model|high|%|\$|hit|ctx| in| out/);
+				const status = "Example model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit";
+				assert.equal(right.split("21% hit").length - 1, width - paneX >= visibleWidth(status) ? 1 : 0);
 			} finally { f.ui.dispose(); }
 		});
 	}
 }
-it("effect-only caption preserves mode and draft beside native hidden rows", async () => {
+it("the delivery effect and a long draft stay on the message field without other facts", async () => {
 	const f = fixture(100, 30, factSource("working"), { modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }) });
 	try {
-		await turn(); const state = agentState(f.state, "one");
-		f.ui.handleInput("\t"); f.ui.handleInput("\t");
+		await turn(); await turn();
+		const state = agentState(f.state, "one");
+		f.ui.handleInput("\r");
+		chooseMore(f, "Send as follow-up");
 		updateDraft(state, Array.from({ length: 30 }, (_, index) => `draft ${index}`).join("\n"));
-		const caption = () => stripVTControlCharacters(f.ui.render(f.tui.terminal.columns).slice(1).find((line) => line.includes("╭─")) ?? "");
-		assert.match(caption(), /follow-up after answer/); assert.match(caption(), /↑ \d+ lines/);
-		assert.doesNotMatch(caption(), /model|high|ctx|%|\$| in| out|…/);
-		(f.tui.terminal as { columns: number }).columns = 60;
-		assert.match(caption(), /follow-up after answer/);
+		const caption = () => visible(f.ui.render(f.tui.terminal.columns)).slice(1).find((line) => line.includes("╭─")) ?? "";
+		assert.match(caption(), /Follow-up after answer/); assert.match(caption(), /↑ \d+ lines/);
+		assert.doesNotMatch(caption(), /model|high|ctx|%|\$| in| out/);
+		f.resize(60, 30);
+		assert.match(caption(), /Follow-up after answer/);
 		assert.equal(state.mode, "followUp"); assert.equal(state.draft.split("\n").length, 30);
 	} finally { f.ui.dispose(); }
 });
@@ -125,10 +151,10 @@ it("project statistics include only the selected agent's loaded delegates", asyn
 	const f = fixture(164, 30, observed, { branch: async () => "main" });
 	try {
 		await turn(); await turn();
-		assert.match(f.ui.render(164).at(-2) ?? "", /\/work \(main\) │ agents: 1\/1\+ active · ~\$1.00/);
-		const before = f.ui.navigation.screen;
+		assert.match(visible(f.ui.render(164)).join("\n"), /\/work \(main\) │ agents: 1\/1\+ active · ~\$1\.00/);
+		const before = f.ui.focus;
 		f.ui.handleMouse({ type: "press", button: "left", x: 100, y: 28, screenX: 100, screenY: 28, width: 164, height: 30, shift: false, alt: false, ctrl: false });
-		assert.equal(f.ui.navigation.screen, before);
+		assert.deepEqual(f.ui.focus, before, "a press on the figures changes nothing");
 	} finally { f.ui.dispose(); }
 });
 
@@ -147,7 +173,7 @@ it("cwd events refresh the branch, while ordinary renders never launch reads", a
 		assert.equal(reads.length, count);
 		current = { ...current, cwd: "/two" }; notify(); t.mock.timers.tick(250); await turn();
 		assert.equal(reads.at(-1), "/two");
-		assert.match(f.ui.render(80).at(-2) ?? "", /\/two \(topic\)/);
+		assert.match(visible(f.ui.render(80)).join("\n"), /\/two \(topic\)/);
 		const updated = reads.length; notify(); t.mock.timers.tick(250); await turn();
 		assert.equal(reads.length, updated);
 	} finally { f.ui.dispose(); }

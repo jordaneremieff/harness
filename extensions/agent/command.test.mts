@@ -8,14 +8,13 @@ import {
 	ModelRuntime,
 } from "@earendil-works/pi-coding-agent";
 import { CombinedAutocompleteProvider, Editor, type TUI, visibleWidth } from "@earendil-works/pi-tui";
-import { createAgentCommand, executeAgentAction } from "./command.ts";
+import { type AgentViewWiring, createAgentCommand, executeAgentAction } from "./command.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import registerAgentExtension from "./index.ts";
 import { defined } from "./test-assertions.mts";
 import { source, row, page as rosterPage, theme, keys, turn } from "./dashboard-test-fixture.mts";
 import type { AgentDashboard } from "./dashboard.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
-import type { ActionDialogExtras } from "./action-dialogs.ts";
 const noSource = {
 	select() {},
 	refresh() {},
@@ -32,7 +31,13 @@ const noSource = {
 	subscribe: () => () => {},
 	subscribeRoster: () => () => {},
 } satisfies Omit<AgentObservationSource, "list" | "snapshot">;
-const extras: ActionDialogExtras = { timers: async () => [], schedule: async () => ({ text: "scheduled" }) };
+const extras: AgentViewWiring = {
+	timers: async () => [],
+	schedule: async () => ({ text: "scheduled" }),
+	control: async () => ({}),
+	newAgent: async () => ({ text: "created" }),
+	newDefaults: () => ({ cwd: "/work", presets: [], ownership: "The answer to the purpose comes back to this session." }),
+};
 function registration() {
 	let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
 	registerAgentExtension({
@@ -102,7 +107,7 @@ it("the dashboard gets its context window and session figures from the current p
 		assert.deepEqual(lookups, [["test", "model"]]);
 		assert.equal(reads, 1);
 		assert.match(text, /Example model \[high\].*16%.*163k\/1.0M/);
-		assert.match(text, /Agents > Related · 1\/1 active · ~\$0.42/);
+		assert.match(text, / Related {2}All .*agents: 1\/1 active · ~\$0\.42/, "the primary's session figures sit in the heading");
 	} finally { dashboard?.dispose(); finish(); await opened; }
 });
 it("the dashboard collaboration adapter carries its primary context and structured read", async () => {
@@ -137,7 +142,7 @@ it("the dashboard collaboration adapter carries its primary context and structur
 	try {
 		await turn();
 		assert.ok(dashboard);
-		dashboard.handleInput("t");
+		dashboard.openNamedAction("threads");
 		await turn();
 		assert.deepEqual(calls, [{ input: { action: "list", limit: 20 }, ctx }, { input: { action: "list" }, ctx }]);
 		assert.match(stripVTControlCharacters(dashboard.render(80).join("\n")), /Agents > Threads/);
@@ -183,27 +188,23 @@ const rows: AgentConversationSummary[] = [
 		partial: false,
 	},
 ];
-it("dashboard New-agent task text is literal even when it is a help flag", async () => {
+it("the New conversation purpose is literal text even when it is a help flag", async () => {
 	for (const text of ["--help", "-h"]) {
-		const admitted: string[][] = [];
+		const admitted: Array<string | undefined> = [];
 		const rows = [row("one")];
 		const command = createAgentCommand(
-			[
-				{
-					name: "new",
-					description: "Start",
-					args: [{ name: "task", rest: true, optional: true }],
-					run: async (args, _ctx, onCreated) => {
-						admitted.push(args);
-						const created = row("created", { firstMessage: args[0], state: "starting" });
-						rows.push(created);
-						onCreated?.(created);
-						return { text: "Started", sessionId: "created" };
-					},
-				},
-			],
+			[],
 			source(rows),
-			extras,
+			{
+				...extras,
+				newAgent: async ({ prompt }, _ctx, onCreated) => {
+					admitted.push(prompt);
+					const created = row("created", { firstMessage: prompt, state: "starting" });
+					rows.push(created);
+					onCreated(created);
+					return { text: "Started", sessionId: "created" };
+				},
+			},
 		);
 		let ui: AgentDashboard | undefined;
 		let finish = () => {};
@@ -231,12 +232,18 @@ it("dashboard New-agent task text is literal even when it is a help flag", async
 		await turn();
 		assert.ok(ui);
 		try {
-			ui.handleInput("n");
+			ui.render(80);
+			ui.openNamedAction("new");
 			ui.handleInput(text);
-			ui.handleInput("\r");
-			await turn();
-			assert.deepEqual(admitted, [[text]]);
+			assert.equal(ui.state.newTask, text, "the purpose draft is kept while the form is open");
+			for (const key of ["\t", "\t", "\r"]) {
+				ui.render(80);
+				ui.handleInput(key);
+			}
+			for (let attempt = 0; attempt < 10 && ui.state.newTask; attempt++) await turn();
+			assert.deepEqual(admitted, [text]);
 			assert.equal(ui.state.newTask, "");
+			assert.equal(ui.selectedRow?.id, "created", "the created conversation is selected");
 		} finally {
 			ui.dispose();
 			finish();

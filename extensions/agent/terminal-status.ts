@@ -6,13 +6,10 @@ export interface TerminalActivity {
 	revision: number;
 	live: boolean;
 	busy?: boolean;
-	interaction: boolean;
 	/** Observed name of the attached conversation; the title and status message name it. */
 	name?: string;
 	/** Working directory of the attached conversation; the title shows its last path segment. */
 	cwd?: string;
-	/** Title of the open terminal dialog when known. */
-	dialog?: string;
 }
 
 /** Printable single-line text for a title or status message. Control characters would end the sequence. */
@@ -22,9 +19,9 @@ function plainLine(value: string, limit: number): string {
 }
 
 /**
- * Projects only the attached terminal's observed activity and local questions: the window title names the
- * attached conversation and its folder, the program status carries the conversation name, and a dialog
- * blocks with its title. Detaching, disposal and an unavailable connection clear both.
+ * Projects only the attached terminal's observed activity: the window title names the attached
+ * conversation and its folder, and the program status carries the conversation name. Detaching,
+ * disposal and an unavailable connection clear both.
  */
 export class TerminalProgramStatus {
 	private previous = "";
@@ -60,15 +57,7 @@ export class TerminalProgramStatus {
 		const name = activity.name ? plainLine(activity.name, 80) : "";
 		const folder = activity.cwd ? plainLine(basename(activity.cwd), 48) : "";
 		this.title(attached ? [name, folder].filter(Boolean).join(" · ") : "");
-		this.send(this.status(activity, attached, name));
-	}
-	private status(activity: TerminalActivity, attached: boolean, name: string): ProgramStatus {
-		if (activity.interaction) {
-			const dialog = activity.dialog ? plainLine(activity.dialog, 80) : "";
-			return { state: "blocked", app: "pi-agent", kind: "question", message: dialog ? `Answer: ${dialog}` : "Answer the terminal dialog" };
-		}
-		if (!attached) return { state: "clear" };
-		return { state: activity.busy ? "working" : "idle", app: "pi-agent", ...(name ? { message: name } : {}) };
+		this.send(attached ? { state: activity.busy ? "working" : "idle", app: "pi-agent", ...(name ? { message: name } : {}) } : { state: "clear" });
 	}
 	dispose(): void {
 		if (this.disposed) return;

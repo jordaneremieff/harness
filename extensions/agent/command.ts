@@ -5,12 +5,16 @@ import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
 import { dashboardSessionState } from "./dashboard-state.ts";
 import { readAgentBranch } from "./agent-git.ts";
 import type { DashboardPreferences } from "./dashboard-preferences.ts";
+import { randomUUID } from "node:crypto";
+import type { JsonValue } from "../../operator-ui/index.ts";
 import type { ToolDisplayLookup } from "./tool-display.ts";
-import type { DashboardResult } from "./dashboard.ts";
+import type { DashboardOperations, DashboardResult, NewAgentDefaults } from "./dashboard.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
-import type { ActionDialogExtras } from "./action-dialogs.ts";
-import type { AgentConversationPage, AgentConversationSummary, AgentObservationSources, DashboardTarget } from "./dashboard-types.ts";
+import type { AgentFormHost, ActionResult } from "./agent-forms.ts";
+import type { ProfileDraft } from "./profile-dialog.ts";
+import type { TimerListRow, TimerMode } from "./durable-timers.ts";
+import type { AgentConversationPage, AgentConversationSummary, AgentObservationSources } from "./dashboard-types.ts";
 import { actionOutcomeText, agentDisplayName, outcomeSessionId } from "./action-outcome.ts";
 
 interface CommandArgument {
@@ -26,13 +30,40 @@ export interface AgentActionOutcome {
 	sessionId?: string;
 }
 
+/** Ordinary routes the work view uses beyond the text actions. */
+export interface AgentViewWiring {
+	timers(id: string, ctx: ExtensionContext): Promise<readonly TimerListRow[]>;
+	schedule(input: { sessionId: string; message: string; deliverAt: string; mode: TimerMode }, ctx: ExtensionContext): Promise<AgentActionOutcome>;
+	/** One native control with this session as the caller. `signal` withdraws the wait for the answer. */
+	control(method: string, input: Record<string, unknown>, ctx: ExtensionContext, signal?: AbortSignal): Promise<unknown>;
+	newAgent(input: { prompt?: string; preset?: string; cwd?: string }, ctx: ExtensionContext, onCreated: (row: AgentConversationSummary) => void): Promise<AgentActionOutcome>;
+	newDefaults(ctx: ExtensionContext): NewAgentDefaults;
+}
+
+/** Actions whose form opens in the work view when a TUI command names a target without its other arguments. */
+const VIEW_ACTIONS = new Set(["configure", "fork", "rewind", "compact", "reset", "command", "schedule", "timers", "profile", "abort", "attach", "await-release", "timer-cancel"]);
+
+/** The form a command opens: cancelling one scheduled message starts from the list of them. */
+const formName = (name: string) => (name === "timer-cancel" ? "timers" : name);
+
+/** A TUI command that names a target but not its other arguments opens that target's form instead. */
+function opensForm(action: AgentCommandAction, args: string[]): boolean {
+	if (!args[0] || !VIEW_ACTIONS.has(action.name)) return false;
+	return action.name === "profile" || argumentHelp(action, args) !== undefined;
+}
+
+/** The owner's stated reason for a refused request, bounded for one line. */
+function failureReason(result: { reason?: unknown; error?: unknown }): string {
+	const reason = typeof result.reason === "string" ? result.reason : typeof result.error === "string" ? result.error : "";
+	return reason ? `: ${reason.slice(0, 200)}` : "";
+}
+
 export interface AgentCommandAction {
 	name: string;
 	description: string;
 	args: CommandArgument[];
 	help?: string;
 	confirm?: string;
-	dialog?(target: DashboardTarget | undefined, ctx: ExtensionContext): Promise<string | AgentActionOutcome | undefined>;
 	run(
 		args: string[],
 		ctx: ExtensionContext,
@@ -158,7 +189,7 @@ async function displayResult(
 export function createAgentCommand(
 	actions: AgentCommandAction[],
 	sources: AgentObservationSource,
-	options: ActionDialogExtras,
+	wiring: AgentViewWiring,
 	collaborate?: (input: Record<string, unknown>, ctx: ExtensionContext) => Promise<unknown>,
 	sessionFigures?: (ctx: ExtensionContext, page: AgentConversationPage) => Promise<string>,
 	effortWiring?: {
@@ -171,7 +202,7 @@ export function createAgentCommand(
 	toolDisplay?: ToolDisplayLookup,
 	taskTargets?: (ctx: ExtensionContext) => readonly string[],
 	readLineage?: (id: string, ctx: ExtensionContext) => Promise<unknown>,
-): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext): Promise<void> } {
+): Omit<RegisteredCommand, "name" | "sourceInfo"> & { openDashboard(ctx: ExtensionContext, open?: { select?: string; action?: string }): Promise<void> } {
 	const find = (name: string) => commands.find((action) => action.name === name);
 	const unknown = (name: string) =>
 		`Unknown action "${plain(name).slice(0, 80)}". Use /agent help, or type /agent and a space to choose an action.`;
@@ -217,63 +248,102 @@ export function createAgentCommand(
 		taskTargets: taskTargets ? () => taskTargets(ctx) : undefined,
 		readLineage: readLineage ? (id: string) => readLineage(id, ctx) : undefined,
 	});
-	const openDashboard = async (ctx: ExtensionContext): Promise<void> => {
+	const profileDrafts = new Map<string, ProfileDraft>();
+	/** A listed identity or handle selects its row; anything else stays the exact typed target. */
+	const listedTarget = (target: string) => sources.list().then((page) => page.rows.find((row) => row.id === target || row.profile?.handle === target)?.id ?? target, () => target);
+	/** Native commands the target's live host lists; a host that is not live leaves the name typed. */
+	const nativeCommands = async (id: string, ctx: ExtensionContext) => {
+		const status = (await wiring.control("status", { sessionId: id }, ctx)) as { inventory?: { contributions?: Array<{ commands?: Array<{ name: string; description: string }> }> } };
+		if (!status?.inventory) return undefined;
+		const commands = status.inventory.contributions?.flatMap((contribution) => contribution.commands ?? []) ?? [];
+		return [...commands.map((command) => ({ value: command.name, label: command.name, description: command.description })), { value: "reload", label: "reload", description: "Reload host registrations (needs an idle storage)" }];
+	};
+	const formsHost = (ctx: ExtensionContext, state: ReturnType<typeof dashboardSessionState>) => (row: AgentConversationSummary): AgentFormHost => ({
+		row,
+		state,
+		source: sources,
+		run: async (name, args) => {
+			const [action, rest] = name === "release" ? ["abort", ["release"]] : [name, args];
+			return requireAction(action).run([row.id, ...rest], ctx);
+		},
+		timers: () => wiring.timers(row.id, ctx),
+		schedule: (input) => wiring.schedule({ sessionId: row.id, ...input }, ctx),
+		models: async () => ctx.modelRegistry.getAvailable().map((model) => ({ identity: `${model.provider}/${model.id}`, name: model.name })),
+		configure: async (patch): Promise<ActionResult> => {
+			const result = (await wiring.control("configure", { sessionId: row.id, ...patch }, ctx)) as { outcome?: string; reason?: unknown; error?: unknown };
+			const label = agentDisplayName(row);
+			if (result?.outcome === "failed") throw new Error(`Configuration failed for “${label}”${failureReason(result)}`);
+			return { text: `Updated configuration for “${label}”`, sessionId: row.id };
+		},
+		commands: () => nativeCommands(row.id, ctx),
+		profile: (method, input) => wiring.control(method, input, ctx),
+		profileDrafts,
+		status: () => wiring.control("status", { sessionId: row.id }, ctx),
+		outcome: () => {},
+	});
+	const panels = (ctx: ExtensionContext) => async (row: AgentConversationSummary) => {
+		const status = (await wiring.control("status", { sessionId: row.id }, ctx)) as { inventory?: unknown };
+		if (status?.inventory === undefined) return [];
+		// Owner views load with their first use, like the work view itself.
+		const { loadPanelModules, panelDestinations } = await import("./panel-modules.ts");
+		const loaded = await loadPanelModules(status.inventory);
+		return panelDestinations(loaded, row.id, async (command, data: JsonValue, signal) => {
+			const answer = (await wiring.control("command", { sessionId: row.id, name: command, data, origin: "operator", invocationId: randomUUID() }, ctx, signal)) as { text?: unknown; data?: JsonValue };
+			if (typeof answer?.text !== "string") throw new Error("The host answered without command text");
+			return { text: answer.text, ...(answer.data === undefined ? {} : { data: answer.data }) };
+		});
+	};
+	const openDashboard = async (ctx: ExtensionContext, open: { select?: string; action?: string } = {}): Promise<void> => {
 		if (!ctx.hasUI || dashboardOpen) return;
 		dashboardOpen = true;
 		const state = dashboardSessionState(ctx.sessionManager.getSessionId(), preferences?.load);
 		state.hideThinkingBlock = readHideThinkingBlock?.() ?? false;
 		try {
-			const [{ showAgentDashboard }, { hideAround, runActionDialog }] = await Promise.all([
-				import("./dashboard.ts"),
-				import("./action-dialogs.ts"),
-			]);
+			const { showAgentDashboard } = await import("./dashboard.ts");
+			const operations: DashboardOperations = {
+				toolDisplay,
+				saveLayout: preferences ? (layout) => preferences.save(layout) : undefined,
+				efforts: effortWiring ? () => effortWiring.efforts(ctx) : undefined,
+				messageEffort: effortWiring ? (id, text) => effortWiring.messageEffort(id, text, ctx) : undefined,
+				observeEffort: observationFor(ctx),
+				sessionFigures: sessionFigures ? (page) => sessionFigures(ctx, page) : undefined,
+				modelInfo: (provider, modelId) => ctx.modelRegistry.find(provider, modelId),
+				branch: readAgentBranch,
+				collaborate: collaborate ? (input) => collaborate(input, ctx) : undefined,
+				...relationOperations(ctx),
+				submit: async ({ id, text, mode }) => {
+					const result = await executeAgentAction(requireAction(mode === "steer" ? "steer" : "send"), [id, text], ctx);
+					return { text: actionOutcomeText(result) ?? "Message admitted", sessionId: id };
+				},
+				newAgent: async ({ prompt, preset, cwd, onCreated }) => {
+					const result = await wiring.newAgent({ prompt, preset, cwd }, ctx, onCreated);
+					return { text: result.text, sessionId: result.sessionId };
+				},
+				newDefaults: () => wiring.newDefaults(ctx),
+				forms: formsHost(ctx, state),
+				panels: panels(ctx),
+			};
 			await showAgentDashboard({
 				ctx,
 				state,
 				source: { ...sources, list: (input) => sources.list({ ...input, ownerId: ctx.sessionManager.getSessionId() }) },
-				operations: {
-					toolDisplay,
-					saveLayout: preferences ? (layout) => preferences.save(layout) : undefined,
-					efforts: effortWiring ? () => effortWiring.efforts(ctx) : undefined,
-					messageEffort: effortWiring ? (id, text) => effortWiring.messageEffort(id, text, ctx) : undefined,
-					observeEffort: observationFor(ctx),
-					sessionFigures: sessionFigures ? (page) => sessionFigures(ctx, page) : undefined,
-					modelInfo: (provider, modelId) => ctx.modelRegistry.find(provider, modelId),
-					branch: readAgentBranch,
-					collaborate: collaborate ? (input) => collaborate(input, ctx) : undefined,
-					...relationOperations(ctx),
-					chooseConversation: async (labels, surface) =>
-						hideAround(surface, async () => {
-							const choices = labels.map(
-								(label) => `${label.name || label.firstMessage || "Conversation"} · ${label.identity}`,
-							);
-							const choice = await ctx.ui.select("Choose a conversation", choices);
-							return labels[choices.indexOf(choice ?? "")]?.identity;
-						}),
-					submit: async ({ id, text, mode }) => {
-						const result = await executeAgentAction(
-							requireAction(mode === "steer" ? "steer" : "send"),
-							[id, text],
-							ctx,
-						);
-						return { text: actionOutcomeText(result) ?? "Message admitted", sessionId: id };
-					},
-					newAgent: async ({ prompt, onCreated }) => {
-						const result = await requireAction("new").run([prompt], ctx, onCreated);
-						return { text: actionOutcomeText(result) ?? "Agent requested", sessionId: outcomeSessionId(result) };
-					},
-					action: async (name, target, surface) => {
-						const result = await hideAround(surface, () =>
-							runActionDialog(name, target, ctx, commands, sources, options, state),
-						);
-						const text = await displayResult(result, sources);
-						return text === undefined ? undefined : { text, sessionId: outcomeSessionId(result) };
-					},
-				},
+				operations,
+				...open,
 			});
 		} finally {
 			dashboardOpen = false;
 		}
+	};
+	/** Help, an action's result text, or a form in the work view when a TUI command names only its target. */
+	const dispatch = async (name: string, args: string[], ctx: ExtensionContext): Promise<string | undefined> => {
+		if (["--help", "-h"].includes(name)) return overview();
+		const action = find(name);
+		if (!action) return unknown(name);
+		if (ctx.mode === "tui" && opensForm(action, args)) {
+			await openDashboard(ctx, { select: await listedTarget(args[0] ?? ""), action: formName(action.name) });
+			return undefined;
+		}
+		return displayResult(await executeAgentAction(action, args, ctx), sources);
 	};
 	return {
 		openDashboard,
@@ -300,15 +370,10 @@ export function createAgentCommand(
 		},
 		async handler(input, ctx) {
 			const [name, ...args] = input.trim().split(/\s+/);
-			const notify = (text: string) => ctx.ui.notify(text, "info");
 			try {
 				if (!name) return await openDashboard(ctx);
-				if (["--help", "-h"].includes(name)) return notify(overview());
-				const action = find(name);
-				if (!action) return notify(unknown(name));
-				const result = await executeAgentAction(action, args, ctx);
-				const text = await displayResult(result, sources);
-				if (text !== undefined) notify(text);
+				const text = await dispatch(name, args, ctx);
+				if (text !== undefined) ctx.ui.notify(text, "info");
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 			}

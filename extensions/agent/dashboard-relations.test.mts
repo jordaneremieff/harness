@@ -20,6 +20,14 @@ function discovery(pages: CollaborationPage[]) {
 }
 const rows = () => [row(storage, { storageId: storage, creatingOwnerId: ordinary, name: "Builder" }), row(peer, { storageId: peer.split(":")[0], creatingOwnerId: other, name: "Peer" }), row(other, { storageId: other, name: "Unrelated" })];
 const shown = (f: ReturnType<typeof fixture>) => stripVTControlCharacters(f.ui.render(f.tui.terminal.columns).join("\n"));
+/** Click Related or All in the heading, as the operator would. */
+function choose(f: ReturnType<typeof fixture>, label: "Related" | "All") {
+	const { columns, rows: height } = f.tui.terminal;
+	const heading = stripVTControlCharacters(f.ui.render(columns)[0] ?? "");
+	const x = heading.indexOf(` ${label} `) + 1;
+	assert.ok(x > 0, `${label} is a visible heading control`);
+	assert.equal(f.ui.handleMouse({ type: "click", button: "left", x, y: 0, screenX: x, screenY: 0, width: columns, height, shift: false, alt: false, ctrl: false, clickCount: 1 })?.handled, true);
+}
 
 it("ordinary caller joins ownership and exact admissions, not shared cwd or unknown ownership", () => {
 	const values = [...rows(), row("grandchild", { storageId: "grandchild", creatingOwnerId: storage }), row("target", { storageId: "target", creatingOwnerId: other }), row("unknown", { creatingOwnerId: undefined })];
@@ -146,14 +154,14 @@ for (const [width, height] of [[80, 24], [140, 45]]) it(`Related, All, thread, p
 	const f = fixture(width, height, source(rows()), { collaborate: async (input) => input.action === "list" ? discovery([current]) : current }, undefined, theme, ordinary);
 	try {
 		await turn();
-		assert.match(shown(f), /Agents > Related/);
+		assert.match(shown(f), / Related {2}All /);
 		assert.equal(f.state.selected === other, false);
-		assert.doesNotMatch(shown(f), /Unrelated/);
-		f.ui.handleInput("v");
-		assert.match(shown(f), /Agents > All/);
+		assert.doesNotMatch(shown(f), /Unrelated/, "Related starts with this session's work");
+		choose(f, "All");
 		assert.match(shown(f), /Unrelated/);
-		f.ui.handleInput("v");
-		f.ui.handleInput("t"); await turn();
+		choose(f, "Related");
+		assert.doesNotMatch(shown(f), /Unrelated/);
+		f.ui.openNamedAction("threads"); await turn();
 		assert.match(shown(f), /Related threads/);
 		f.ui.handleInput("\r"); await turn();
 		assert.match(shown(f), /Exchange message 20/);
@@ -163,16 +171,19 @@ for (const [width, height] of [[80, 24], [140, 45]]) it(`Related, All, thread, p
 		f.ui.handleInput("m");
 		f.ui.handleInput("\x1b[B");
 		f.ui.handleInput("\r"); await turn();
-		assert.equal(f.ui.navigation.screen, "console");
+		assert.deepEqual(f.ui.focus, { region: "composer", surface: "work" }, "a participant opens its conversation with the message field");
 		assert.equal(f.state.selected, peer);
 		f.ui.handleInput("\x1b");
+		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.focus.surface, "threads", "leaving the conversation returns to the thread it came from");
 		assert.match(shown(f), /Participants/);
 		f.ui.handleInput("\x1b");
 		assert.match(shown(f), /Exchange message 20/);
 		f.ui.handleInput("\x1b");
 		assert.match(shown(f), /Related threads/);
 		f.ui.handleInput("\x1b");
-		assert.equal(f.ui.navigation.screen, "roster");
+		assert.equal(f.ui.focus.surface, "work");
+		assert.equal(f.counts().closes, 0, "Escape steps back one level at a time");
 	} finally { f.ui.dispose(); }
 });
 it("alias participants retain canonical selection through roster refresh and live recovery", { timeout: 5000 }, async () => {
@@ -198,12 +209,12 @@ it("alias participants retain canonical selection through roster refresh and liv
 	const f = fixture(100, 30, observed, { collaborate: async (input) => input.action === "list" ? discovery([current]) : current }, undefined, theme, ordinary);
 	try {
 		await turn();
-		f.ui.handleInput("t"); await turn();
+		f.ui.openNamedAction("threads"); await turn();
 		f.ui.handleInput("\r"); await turn();
 		f.ui.handleInput("m");
 		f.ui.handleInput("\r"); await turn();
 		assert.equal(f.state.selected, storage);
-		assert.equal(f.ui.navigation.target, storage);
+		assert.equal(f.ui.selectedRow?.id, storage);
 		assert.equal(selected.at(-1), storage);
 		const reads = snapshots.length;
 		currentRows = currentRows.map((item) => item.id === storage ? { ...item, modifiedAt: 1, state: "idle" as const, name: "Refreshed root" } : item);
@@ -219,7 +230,7 @@ it("alias participants retain canonical selection through roster refresh and liv
 		availability = "live";
 		frameChanged();
 		assert.equal(f.state.selected, storage);
-		assert.equal(f.ui.navigation.target, storage);
+		assert.equal(f.ui.selectedRow?.id, storage);
 		assert.equal(shown(f).includes("Recovered live conversation"), true);
 		assert.equal(shown(f).includes("Conversation unavailable"), false);
 	} finally { f.ui.dispose(); }
@@ -236,12 +247,12 @@ it("unknown participants retain their exact read error", async () => {
 	const f = fixture(100, 30, observed, { collaborate: async (input) => input.action === "list" ? discovery([current]) : current }, undefined, theme, ordinary);
 	try {
 		await turn();
-		f.ui.handleInput("t"); await turn();
+		f.ui.openNamedAction("threads"); await turn();
 		f.ui.handleInput("\r"); await turn();
 		f.ui.handleInput("m");
 		f.ui.handleInput("\r"); await turn();
 		assert.equal(f.state.selected, missing);
-		assert.equal(f.ui.navigation.target, missing);
+		assert.equal(f.ui.selectedRow?.id, missing);
 		assert.equal(shown(f).includes("Participant storage is unreadable"), true);
 	} finally { f.ui.dispose(); }
 });
@@ -250,12 +261,12 @@ it("empty and failed relation evidence keep All and Threads reachable", async ()
 	try {
 		await turn();
 		assert.match(shown(f), /No related agents/);
-		assert.match(shown(f), /All agents/);
-		f.ui.handleInput("v");
+		assert.match(shown(f), /All shows every loaded agent/);
+		choose(f, "All");
 		assert.equal(f.state.selected, other);
-		f.ui.handleInput("t"); await turn();
+		f.ui.openNamedAction("threads"); await turn();
 		assert.match(shown(f), /Threads unavailable/);
 		f.ui.handleInput("\x1b");
-		assert.equal(f.ui.navigation.screen, "roster");
+		assert.equal(f.ui.focus.surface, "work");
 	} finally { f.ui.dispose(); }
 });

@@ -9,7 +9,8 @@ import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts"
 const click = (x: number, y: number, width: number, height: number, patch: Partial<TuiMouseEvent> = {}): TuiMouseEvent => ({
 	type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1, ...patch,
 });
-const plain = (lines: string[]) => lines.map(stripVTControlCharacters);
+/** Visible text only: terminal styling and the zero-width cursor markers removed, so columns match the screen. */
+const plain = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 const locate = (lines: string[], needle: string) => {
 	const y = lines.findIndex((line) => line.includes(needle));
 	assert.ok(y >= 0, `Missing ${needle}`);
@@ -118,52 +119,89 @@ it("the menu lists every action with disabled reasons, selects by pointer, and r
 	assert.equal(f.subject.open, false);
 });
 
+const TARGET_ACTIONS = ["Configure", "Tasks", "Fork", "Rewind", "Compact", "Reset context", "Schedule message", "Scheduled messages", "Run command", "Profile", "Details", "Stop and release host"];
+const VIEW_ACTIONS = ["New conversation", "Threads", "Efforts", "Help"];
+
 for (const [width, height] of [[60, 20], [80, 24], [164, 44]] as const) {
-	it(`every roster action is reachable through visible controls at ${width}x${height}`, async () => {
-		const ran: string[] = [];
+	it(`every work view action is reachable through labelled controls or their More menu at ${width}x${height}`, async () => {
 		const f = fixture(width, height, source([row("one", { state: "idle" })]), {
-			action: async (name) => { ran.push(name); return undefined; },
 			collaborate: async () => ({ items: [], nextCursor: null, coverage: { complete: true, visited: 0, omitted: 0 } }),
-			efforts: async () => { throw new Error("Related efforts are not read by the footer"); },
+			efforts: async () => {
+				throw new Error("Related efforts are not read by the controls");
+			},
 		});
 		const lines = () => plain(f.ui.render(width));
-		const press = (needle: string) => { const p = locate(lines(), needle); return f.ui.handleMouse(click(p.x, p.y, width, height)); };
+		const press = (p: { x: number; y: number }) => f.ui.handleMouse(click(p.x, p.y, width, height));
+		/** The labels on the line that holds `anchor`, plus the labels its More menu lists. */
+		const reachable = (anchor: string) => {
+			const shown = lines();
+			const y = shown.findIndex((line) => line.includes(anchor));
+			assert.ok(y >= 0, `no line holds ${anchor}`);
+			const line = shown[y] ?? "";
+			const more = line.lastIndexOf("More…");
+			if (more < 0) return line;
+			press({ x: more + 1, y });
+			let menu = "";
+			for (let step = 0; step < 16; step++) {
+				menu += lines().join("\n");
+				f.ui.handleInput("\x1b[B");
+			}
+			f.ui.handleInput("\x1b");
+			return `${line}\n${menu}`;
+		};
 		try {
 			await turn();
-			const footer = lines().at(-1) ?? "";
-			assert.match(footer, /Threads · Efforts · New agent · More \(x\) · Close \(Esc\)/, "destinations stay visible at every supported width");
-			assert.doesNotMatch(footer, /Enter open|t threads|x more/, "controls read as labels, not shortcuts");
-			press("More (x)");
-			const menu = lines().join("\n");
-			for (const label of ["Open · Enter", "Message", "Actions", "Threads · t", "Efforts · b", "New agent", "Tasks", "Find", "Help", "Exact times"]) assert.match(menu, new RegExp(label), label);
-			assert.ok(plain(f.ui.render(width)).length === height);
-			press("Find");
-			press("Choose (Enter)");
-			assert.equal(f.ui.navigation.screen, "find");
-			assert.match(lines().at(-1) ?? "", /Cancel find \(Esc\)/);
+			await turn();
+			const heading = reachable("Agents");
+			for (const label of VIEW_ACTIONS) assert.match(heading, new RegExp(label), `${label} from the heading`);
+			const target = reachable("Configure");
+			for (const label of TARGET_ACTIONS) assert.match(target, new RegExp(label), `${label} for the selected agent`);
+			assert.doesNotMatch(lines().join("\n"), /\(x\)|\bt threads|\bn new/, "controls read as labels, not letter shortcuts");
+			assert.equal(lines().length, height);
+			f.ui.openNamedAction("tasks");
+			assert.equal(f.ui.focus.inspector, "Tasks");
 			f.ui.handleInput("\x1b");
-			press("More (x)");
-			press("Tasks");
-			press("Choose (Enter)");
-			assert.equal(f.ui.navigation.screen, "tasks");
-			assert.match(lines().at(-1) ?? "", /Back \(Esc\)/);
-			f.ui.handleInput("\x1b");
-			assert.equal(f.ui.navigation.screen, "roster");
-			assert.deepEqual(ran, []);
+			assert.equal(f.ui.focus.inspector, undefined, "Escape leaves the inspector");
+			assert.deepEqual(f.calls, [], "reading the controls runs nothing");
 		} finally {
 			f.ui.dispose();
 		}
 	});
 }
 
-it("a disabled roster action names its reason and keeps the selected recipient and draft", async () => {
-	const f = fixture(80, 24, source([]));
+it("Tab reaches the heading controls, and Enter there runs the focused control", async () => {
+	const f = fixture(164, 44, source([row("one", { state: "idle" })]));
 	try {
 		await turn();
-		f.ui.handleInput("a");
-		assert.equal(f.ui.navigation.screen, "roster");
-		const footer = plain(f.ui.render(80));
-		assert.match(footer.join("\n"), /Select an agent first/);
+		await turn();
+		f.ui.render(164);
+		for (let step = 0; step < 4; step++) f.ui.handleInput("\t");
+		assert.equal(f.ui.focus.region, "heading");
+		f.ui.handleInput("\r");
+		assert.equal(f.ui.focus.inspector, "New conversation", "the first heading control is New conversation");
+		assert.deepEqual(f.calls, []);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("a disabled control names its reason and keeps the selected recipient and draft", async () => {
+	const f = fixture(164, 44, source([row("one", { state: "working" })]), { newAgent: undefined, newUnavailable: "Creation is not wired here" });
+	try {
+		await turn();
+		await turn();
+		f.ui.handleInput("\r");
+		f.ui.handleInput("keep this");
+		const configure = locate(plain(f.ui.render(164)), "Configure");
+		f.ui.handleMouse(click(configure.x, configure.y, 164, 44));
+		assert.match(plain(f.ui.render(164)).join("\n"), /Stop current work first; the owner configures idle agents only/);
+		const start = locate(plain(f.ui.render(164)), "New conversation");
+		f.ui.handleMouse(click(start.x, start.y, 164, 44));
+		assert.match(plain(f.ui.render(164)).join("\n"), /Creation is not wired here/);
+		assert.equal(f.ui.selectedRow?.id, "one");
+		assert.equal(f.state.agents.get("one")?.draft, "keep this");
+		assert.equal(f.ui.focus.inspector, undefined, "a refused control opens nothing");
+		assert.deepEqual(f.calls, []);
 	} finally {
 		f.ui.dispose();
 	}

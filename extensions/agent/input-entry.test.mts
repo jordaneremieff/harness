@@ -7,7 +7,7 @@ import { richSubmitConversation, readOutcome, recordDeliveryIntent, reconcileDel
 import { fixtureRegistry, fixtureRuntime } from "./durable-host-fixture.mts";
 import { testModel } from "./test-runtime.mts";
 import { entrySource } from "./durable-observation.ts";
-import { committedChoices } from "./action-dialogs.ts";
+import { committedChoices } from "./agent-forms.ts";
 
 it("keeps operator admission native and records agent or unknown authors explicitly", () => {
 	assert.equal(inputEntry("operator", "operator"), undefined);

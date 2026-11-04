@@ -2,59 +2,77 @@ import { readAgentPreferences, renderPreferenceStatus } from "./agent-preference
 import { isInputKind } from "./input-entry.ts";
 import type { ExtensionContext, Theme, ToolRenderers } from "@earendil-works/pi-coding-agent";
 import {
-	Input,
 	type KeybindingsManager,
 	visibleWidth,
-	truncateToWidth,
 	matchesKey,
-	wrapTextWithAnsi,
 	type Component,
 	type Focusable,
 	type TUI,
 	type TuiMouseEvent,
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
-import { DashboardMouse } from "./dashboard-mouse.ts";
-import { ActionInventory, type ScreenAction } from "./action-inventory.ts";
+import {
+	type Action,
+	ActionBar,
+	type Choice,
+	type Destination,
+	Form,
+	HitMap,
+	NavigationFrame,
+	type Notice,
+	type OperatorView,
+	plainLine,
+	TextField,
+	type ViewHost,
+	type ViewTarget,
+	ReaderView,
+} from "../../operator-ui/index.ts";
 import { DashboardResize } from "./dashboard-resize.ts";
 import { mergeAgentCoverage, type AgentConversationPage, type AgentConversationSummary, type AgentConversationSnapshot } from "./dashboard-types.ts";
 import type { AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
-import { AgentComposer } from "./agent-composer.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
-import { dashboardActions } from "./dashboard-actions.ts";
-import { clamp, MIN_COMPOSER_ROWS, dashboardGeometry, dashboardPaneGeometry, dashboardHeading, dashboardRule, dashboardSelection, fitLine } from "./dashboard-layout.ts";
-import { dashboardRecords, rosterLines, activityOf, sessionAppearance, titleOf, attentionReason } from "./dashboard-roster.ts";
-import {
-	agentState,
-	dashboardSessionState,
-	DashboardNavigation,
-	updateDraft,
-	notifyAgentState,
-	type DashboardState,
-	type DashboardLayout,
-} from "./dashboard-state.ts";
+import { clamp, MIN_COMPOSER_ROWS, dashboardGeometry, dashboardRule, fitLine } from "./dashboard-layout.ts";
+import { dashboardRecords, rosterLines, sessionAppearance, titleOf, attentionReason, needsAttention } from "./dashboard-roster.ts";
+import { agentState, dashboardSessionState, updateDraft, notifyAgentState, type DashboardState, type DashboardLayout } from "./dashboard-state.ts";
 import { agentDisplayName } from "./action-outcome.ts";
 import type { TaskLabel, ConversationFrame } from "./live-frames.ts";
 import { firstTaskEntry, cleanDashboardText } from "./dashboard-conversation.ts";
 import { ConversationHistory } from "./conversation-view.ts";
-import type { NativeSurface } from "./action-dialogs.ts";
 import { CollaborationView, createCollaborationViewState, type Collaborate } from "./collaboration-view.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import { EffortView } from "./effort-view.ts";
 import { AgentBranchCache, type AgentBranchReader } from "./agent-git.ts";
 import type { AgentModelInfo, DelegatedFigures } from "./agent-footer.ts";
 import { DashboardRelations, relationIdentity, type ReadRelationLineage } from "./dashboard-relations.ts";
+import { actionView, type ActionResult, type AgentFormHost } from "./agent-forms.ts";
 
 export interface DashboardResult {
 	text: string;
 	receipt?: string;
 	sessionId?: string;
 }
+
+/** What the New conversation form asks for. An empty purpose creates an idle conversation. */
+export interface NewAgentInput {
+	prompt?: string;
+	preset?: string;
+	cwd?: string;
+	onCreated: (row: AgentConversationSummary) => void;
+}
+
+/** The defaults the New conversation form shows before anything starts. */
+export interface NewAgentDefaults {
+	readonly cwd: string;
+	/** Configured presets with their resolved model and reasoning, the default first. */
+	readonly presets: readonly Choice[];
+	readonly preset?: string;
+	/** Where the answer to the first message goes, in plain words. */
+	readonly ownership: string;
+}
+
 export interface DashboardOperations {
 	toolDisplay?: (name: string) => ToolRenderers | undefined;
-	/** A terminal attachment enters the target instead of opening an embedded console. */
-	enter?(id: string): void;
 	saveLayout?(layout: DashboardLayout): void;
 	efforts?(): Promise<EffortAwareness>;
 	messageEffort?(id: string, text: string): Promise<DashboardResult>;
@@ -68,94 +86,120 @@ export interface DashboardOperations {
 	readLineage?: ReadRelationLineage;
 	submit(input: { id: string; text: string; mode: "steer" | "followUp" }): Promise<DashboardResult>;
 	submissionFailure?(input: { id: string; text: string; mode: "steer" | "followUp" }, error: unknown): string;
-	newAgent?(input: { prompt: string; onCreated: (row: AgentConversationSummary) => void }): Promise<DashboardResult>;
-	chooseConversation(labels: readonly TaskLabel[], surface: NativeSurface): Promise<string | undefined>;
-	action(name: string, target: AgentConversationSummary, surface: NativeSurface): Promise<DashboardResult | undefined>;
+	newAgent?(input: NewAgentInput): Promise<DashboardResult>;
+	newDefaults?(): NewAgentDefaults;
+	/** Why New is unavailable on this host, when it is. */
+	readonly newUnavailable?: string;
+	/** The forms host for one captured target. */
+	forms(target: AgentConversationSummary): AgentFormHost;
+	/** Owner views the target's live host advertises, bound to that target. */
+	panels?(target: AgentConversationSummary): Promise<readonly Destination[]>;
+	/** The selected conversation or its observed state changed; a host may read per-target display data. Reading never starts a host. */
+	observed?(row: AgentConversationSummary | undefined): void;
+	/** Composer text the host handles itself, such as the attached terminal's /agent routes. Returns true when handled. */
+	command?(text: string): boolean | Promise<boolean>;
+	/** Host-specific secondary actions for the selected conversation. */
+	extraActions?(target: AgentConversationSummary): readonly Action[];
+	/** The way out of this view: "Close" in ordinary Pi, "Detach" in the attached terminal. */
+	readonly exitLabel?: string;
 }
+
+export type Region = "list" | "conversation" | "composer" | "controls" | "inspector" | "heading";
+export type Surface = "work" | "threads" | "efforts";
+
 const HELP = [
-	"Dashboard",
-	"Related starts with this session's work. v switches Related and All agents.",
-	"Relations use exact creation ancestry, task targets and shared thread membership, never storage or directory proximity.",
-	"Unknown relationships stay out of Related. All and Load more expose wider bounded discovery.",
-	"↑↓ selects an agent. Enter opens its full conversation.",
-	"Tab or m writes to the selected agent.",
-	"n starts a new agent.",
-	"a opens actions. / finds loaded agents. t opens Threads. b opens Related efforts. ? opens help.",
-	"[other] marks a storage root created by another session, not its current task requester.",
+	"Agents",
+	"The list starts with Related: this session's work. Related and All switch between it and every loaded agent.",
+	"Relations use exact creation ancestry, task targets and shared thread membership, never directory proximity.",
+	"Selecting an agent reads its conversation without starting its host. Sending a message starts a stopped host.",
+	"",
+	"Moving around",
+	"Tab and Shift+Tab move between the list, the conversation, the message field, the agent's controls, the inspector and the heading's controls.",
+	"Escape leaves the inspector, then the message field, then the view. It never stops work.",
+	"Type over the list to find agents. Up and Down select. Enter writes to the selected agent.",
+	"",
+	"Messages",
+	"Enter sends. Ctrl+J adds a new line. A working agent gets Steer at next step unless you choose Follow-up after answer:",
+	"click the effect on the message field, or choose More › Send as follow-up.",
+	"All letters, slash text and bang text are literal messages. Commands belong to the agent's controls.",
+	"",
+	"Reading",
+	"PageUp and PageDown read the conversation; PageUp at the top reads earlier entries. End returns to live output.",
+	"Ctrl+O expands tools. Ctrl+T shows or hides thinking. Click a card or a time to change it.",
+	"",
+	"Controls",
+	"Stop, Configure and More act on the agent shown in the header. Forms open in the inspector beside the conversation.",
+	"Every form binds to the agent it opened for; selecting another agent closes it without sending anything.",
+	"Drag the list divider or the message field's grip to resize; double-click a handle to reset it.",
+	"",
+	"Threads and Related efforts",
+	"Threads and Efforts in the heading open full views. Their hint lines name their keys; x lists every action; Esc returns.",
 	"Related efforts shows declared intent and contact declarations, not agreement. Enter opens a contact thread; o reads observation; m sends an operator message.",
-	"Threads opens a thread on its latest exchange. c shows the frame and declarations; m selects participants; Enter in the exchange replies to an event; Esc returns.",
+	"Threads opens a thread on its latest exchange. c shows the frame and declarations; m selects participants; Enter in the exchange replies to an event.",
 	"p posts without a model wake.",
 	"n chooses peers to notify. Tab returns to the message. Enter posts.",
 	"i switches all times between relative age and local date and time.",
-	"This time toggle stays available when it is absent from the hint line.",
-	"A time shows the agent's last recorded change, not an activity timer.",
-	"In fullscreen mode, click rows to select and visible hints to act.",
-	"Click a time to switch its format. Click a message field to write.",
-	"Use the wheel over a pane to scroll. Drag text to select it.",
-	"Drag the roster divider or the composer's small top-right grip to resize.",
-	"Double-click a handle to reset it. Other borders remain decorative.",
-	"The split stays across Pi restarts.",
-	"Published omissions have storage rows. Enter reads their full thread directory.",
-	"",
-	"Messages",
-	"Enter sends. A working agent starts with Steer at next step.",
-	"Tab changes Steer to Follow-up after answer while the agent works.",
-	"Ctrl+J adds a newline. Esc keeps your draft.",
-	"All letters, slash text, and bang text are literal messages.",
-	"Commands belong to Actions > Run agent command.",
-	"",
-	"Read",
-	"PageUp/PageDown reads the conversation. The tail resumes live follow.",
-	"Ctrl+O expands tools. Ctrl+T shows or hides thinking.",
-	"",
-	"Return",
-	"Esc leaves the message field or full conversation, then the dashboard.",
-	"Esc never stops work. Stop current work is in Actions.",
-	"The dashboard never changes the primary editor.",
+	"[other] marks a storage root created by another session, not its current task requester.",
+	"A time shows the agent's last recorded change, not an activity timer. Click a time to switch its format.",
 	"",
 	"Context tokens come from the latest assistant usage; compaction makes them unknown.",
-	"A message starts a retired host. Reading never starts a host.",
-	"Actions > Reconnect addresses a host error.",
 ];
+
+/** Conversation rows kept on screen however far the message field grows. */
+const CONVERSATION_ROWS = 4;
+
 /** Roster fields that change when an agent's host starts, works, finishes, or stops. */
 function rosterMark(row: AgentConversationSummary): string {
 	return `${row.id}|${row.modifiedAt}|${row.state}|${row.cost}|${row.owner}|${JSON.stringify(row.awaiting)}`;
 }
-/** The root owns source handles and async generations. Rendering performs no source reads. */
+
+const projectOf = (row: AgentConversationSummary) => row.cwd.split("/").filter(Boolean).at(-1) ?? row.cwd;
+
+/** The receipt for an admitted input when the owner names none. */
+function admittedText(row: AgentConversationSummary, mode: "steer" | "followUp"): string {
+	if (row.state !== "working") return `Admitted for ${agentDisplayName(row)}`;
+	return mode === "steer" ? `Steer admitted for ${agentDisplayName(row)}` : `Follow-up admitted for ${agentDisplayName(row)}`;
+}
+
+/** An open inspector: forms, details or owner views for one captured target. */
+interface Inspector {
+	readonly frame: NavigationFrame;
+	readonly target: string;
+}
+
+/** The agent work view. The root owns source handles and async generations; rendering performs no source reads. */
 export class AgentDashboard implements Component, Focusable {
-	readonly navigation: DashboardNavigation;
 	private machinePreferences = renderPreferenceStatus(readAgentPreferences()).map(cleanDashboardText);
 	private page?: AgentConversationPage;
 	private rows: AgentConversationSummary[] = [];
 	private console?: AgentConsole;
 	private snapshot?: AgentConversationSnapshot & { nextBefore?: number | null };
-	private readonly find = new Input({ prompt: "Find agents: " });
-	private findBefore = { filter: "", selected: undefined as string | undefined };
-	private readonly newComposer: AgentComposer;
-	private tasks?: AgentTasksView;
+	private readonly find: TextField;
 	private threads?: CollaborationView;
 	private efforts?: EffortView;
-	private readonly mouse = new DashboardMouse();
+	private readonly hits = new HitMap();
+	private readonly controls: ActionBar;
+	/** The heading's own controls: New conversation, Threads, Efforts and Help. */
+	private readonly headingBar: ActionBar;
 	private readonly resize: DashboardResize;
-	private resizeColumns = { roster: 0, detail: 0 };
-	private mouseScreen?: string;
+	private inspector?: Inspector;
+	private surface: Surface = "work";
+	/** The surface Threads returns to: Related efforts when a contact thread opened from there. */
+	private threadsFrom: Surface = "work";
+	/** Leaving the work view returns here when a thread participant opened it. */
+	private returnSurface?: Surface;
+	private region: Region = "list";
+	private notice?: Notice;
 	private rosterScroll?: number;
 	private rosterStart = 0;
 	private rosterMaxStart = 0;
-	private actionIndex = 0;
-	private helpOffset = 0;
-	private result = "";
-	private notice?: string;
-	private readonly inventory = new ActionInventory(() => this.screenActions(), (reason) => { this.notice = reason; });
 	private rosterNotice?: string;
 	private rosterFailures = 0;
 	private sessionFigures = "";
 	private closed = false;
-	private hidden = false;
 	private rosterPending = false;
 	private rosterAgain = false;
 	private sourceGeneration = 0;
-	/** Roster fields of the selected row when the conversation was last read; a change while not live triggers a reread. */
 	private selectedMark = "";
 	private earlierPending = false;
 	private history = new ConversationHistory();
@@ -168,12 +212,16 @@ export class AgentDashboard implements Component, Focusable {
 	private streamTimer?: ReturnType<typeof setTimeout>;
 	private lastStreamPaint = 0;
 	private bodyHeight = 10;
-	private creating = false;
-	private rosterOrderLocked = false;
+	private expanded = false;
+	/** An identity chosen explicitly (remembered, created or named by a command); a refresh never replaces it. */
+	private pinned?: string;
+	/** An action a command asked for, opened once its target is selected. */
+	private pendingAction?: string;
 	private readonly relations: DashboardRelations;
 	private relationMark = "";
 	private relationsDirty = true;
 	private allAgents: boolean;
+	private geometry = { listX: 0, listWidth: 0, listY: 0, listHeight: 0, paneX: 0, paneWidth: 0, conversationY: 0, conversationHeight: 0, conversationWidth: 0, composerY: 0, composerHeight: 0 };
 	focused = true;
 	private readonly tui: TUI;
 	private readonly theme: Theme;
@@ -182,10 +230,10 @@ export class AgentDashboard implements Component, Focusable {
 	readonly state: DashboardState;
 	private readonly source: AgentObservationSource;
 	private readonly operations: DashboardOperations;
-	private readonly surface: NativeSurface;
 	private readonly primaryId?: string;
 	private readonly branches: AgentBranchCache;
 	private branchChanges = 0;
+
 	constructor(
 		tui: TUI,
 		theme: Theme,
@@ -194,7 +242,6 @@ export class AgentDashboard implements Component, Focusable {
 		state: DashboardState,
 		source: AgentObservationSource,
 		operations: DashboardOperations,
-		surface: NativeSurface,
 		primaryId?: string,
 	) {
 		this.tui = tui;
@@ -202,66 +249,61 @@ export class AgentDashboard implements Component, Focusable {
 		this.keys = keys;
 		this.done = done;
 		this.state = state;
-		this.resize = new DashboardResize(state.layout, () => {
-			try { this.operations.saveLayout?.({ ...this.state.layout }); }
-			catch { this.notice = "Layout kept here; restart persistence failed"; }
-		});
 		this.source = source;
 		this.operations = operations;
-		this.branches = new AgentBranchCache(operations.branch, () => this.redraw());
-		this.surface = surface;
 		this.primaryId = primaryId;
 		this.allAgents = !primaryId;
+		this.resize = new DashboardResize(state.layout, () => {
+			try {
+				this.operations.saveLayout?.({ ...this.state.layout });
+			} catch {
+				this.notice = { text: "Layout kept here; restart persistence failed", kind: "warning" };
+			}
+		});
+		this.branches = new AgentBranchCache(operations.branch, () => this.redraw());
 		this.relations = new DashboardRelations(operations.collaborate, () => {
 			if (this.closed) return;
 			this.reconcile();
 			this.redraw();
 		}, operations.readLineage);
-		this.navigation = new DashboardNavigation(state);
-		this.newComposer = new AgentComposer({
-			tui,
-			theme,
-			keys,
-			onSubmit: (text) => {
-				void this.startAgent(text);
-			},
-			onChange: (text) => {
-				state.newTask = text;
-			},
-			onEscape: () => this.back(),
-		});
-		this.newComposer.setText(state.newTask);
-		this.find.onSubmit = () => {
-			state.filter = this.find.getValue();
-			this.navigation.escape();
-			this.reconcile();
-			this.redraw();
-		};
+		this.find = new TextField("Find", state.filter, (value) => this.setFilter(value));
+		this.controls = new ActionBar((reason) => this.show(reason, "warning"));
+		this.headingBar = new ActionBar((reason) => this.show(reason, "warning"));
 		this.unsubscribe.push(
 			source.subscribe(() => this.frameChanged()),
 			source.subscribeRoster(() => {
 				this.relations.invalidate();
 				this.relationsDirty = true;
 				this.queueRoster();
-				if (this.navigation.screen === "threads") void this.threads?.refresh();
-				if (this.navigation.screen === "efforts") void this.efforts?.refresh();
+				if (this.surface === "threads") void this.threads?.refresh();
+				if (this.surface === "efforts") void this.efforts?.refresh();
 			}),
 		);
-		this.reconciliation = setInterval(() => {
-			if (!this.hidden) void this.refreshRoster();
-		}, 2000);
+		this.reconciliation = setInterval(() => void this.refreshRoster(), 2000);
+		// The roster refresh never holds a process open on its own; the terminal or Pi does.
+		this.reconciliation.unref?.();
 		void this.refreshRoster();
 	}
+
 	private redraw(): void {
-		if (!this.closed && !this.hidden) this.tui.requestRender();
+		if (!this.closed) this.tui.requestRender();
 	}
+
+	private show(text: string, kind: Notice["kind"] = "info"): void {
+		this.notice = { text: plainLine(text), kind };
+		this.redraw();
+	}
+
+	// --- roster ---------------------------------------------------------
+
 	private queueRoster(): void {
 		if (this.closed || this.rosterTimer) return;
 		this.rosterTimer = setTimeout(() => {
 			this.rosterTimer = undefined;
-			if (!this.hidden) void this.refreshRoster();
+			void this.refreshRoster();
 		}, 250);
 	}
+
 	private async refreshRoster(cursor?: string): Promise<void> {
 		this.machinePreferences = renderPreferenceStatus(readAgentPreferences()).map(cleanDashboardText);
 		if (this.closed) return;
@@ -281,7 +323,7 @@ export class AgentDashboard implements Component, Focusable {
 			this.rosterFailures = 0;
 			this.rosterNotice = undefined;
 			this.refreshRelations();
-			this.sessionFigures = await this.operations.sessionFigures?.(this.page) ?? "";
+			this.sessionFigures = (await this.operations.sessionFigures?.(this.page)) ?? "";
 			if (this.closed) return;
 			this.reconcile();
 			this.redraw();
@@ -300,6 +342,7 @@ export class AgentDashboard implements Component, Focusable {
 			}
 		}
 	}
+
 	private refreshRelations(): void {
 		if (!this.primaryId || !this.page) return;
 		const targets = this.operations.taskTargets?.() ?? [];
@@ -311,13 +354,15 @@ export class AgentDashboard implements Component, Focusable {
 			void this.relations.refresh();
 		}
 	}
+
 	private rosterFailed(error: unknown): void {
 		this.rosterFailures++;
 		const hasRows = Boolean(this.page?.rows.length);
-		this.rosterNotice = !hasRows || this.rosterFailures >= 3
-			? `Roster refresh unavailable${hasRows ? "; last roster shown" : ""}: ${error instanceof Error ? error.message : String(error)}`
-			: undefined;
+		const reason = error instanceof Error ? error.message : String(error);
+		// The state leads, so a narrow list still shows it; the reason follows.
+		this.rosterNotice = !hasRows ? `Agents unavailable: ${reason}` : this.rosterFailures >= 3 ? `List kept; refresh failed: ${reason}` : undefined;
 	}
+
 	private reuseRoster(page: AgentConversationPage): AgentConversationPage {
 		const next = new Map<string, { signature: string; row: AgentConversationSummary }>();
 		const rows = page.rows.map((row) => {
@@ -330,6 +375,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.rosterCache = next;
 		return { ...page, rows };
 	}
+
 	private mergeRoster(previous: AgentConversationPage, page: AgentConversationPage): AgentConversationPage {
 		return {
 			...page,
@@ -337,6 +383,7 @@ export class AgentDashboard implements Component, Focusable {
 			coverage: mergeAgentCoverage(previous.coverage, page.coverage),
 		};
 	}
+
 	private async readRosterPages(cursor?: string): Promise<AgentConversationPage[]> {
 		if (cursor && this.page) {
 			const page = await this.source.list({ cursor });
@@ -352,59 +399,80 @@ export class AgentDashboard implements Component, Focusable {
 		this.loadedPages = pages.length;
 		return pages;
 	}
+
+	/** Keep the visible order stable while the operator works; a refresh only updates rows in place. */
 	private reconcileOrder(filtered: AgentConversationSummary[]): void {
-		if (
-			(this.navigation.screen === "roster" && !this.rosterOrderLocked) ||
-			!this.rows.length ||
-			this.navigation.screen === "find"
-		) {
+		if (!this.rows.length || this.state.filter) {
 			this.rows = filtered;
 			return;
 		}
 		this.rows = this.rows
 			.flatMap((row) => {
 				const current = filtered.find((item) => item.id === row.id);
-				return current ? [current] : this.navigation.screen === "roster" ? [] : [row];
+				return current ? [current] : row.id === this.state.selected ? [row] : [];
 			})
 			.concat(filtered.filter((row) => !this.rows.some((item) => item.id === row.id)));
 	}
-	private reconcile(): void {
-		const previousId = this.navigation.target ?? this.state.selected;
+
+	/** A live selection's observed state replaces its published row. */
+	private observeSelectedRow(): void {
+		const previousId = this.state.selected;
 		const frame = previousId ? this.source.frame(previousId) : undefined;
 		if (previousId && frame && this.source.availability(previousId)?.state === "live" && this.page)
-			this.page = {
-				...this.page,
-				rows: this.page.rows.map((row) => (row.id === previousId ? this.observedRow(row, frame) : row)),
-			};
+			this.page = { ...this.page, rows: this.page.rows.map((row) => (row.id === previousId ? this.observedRow(row, frame) : row)) };
+	}
+
+	/**
+	 * A pinned identity wins; otherwise a missing selection takes the first listed agent. While Find
+	 * has text, the selection follows it to the first match.
+	 */
+	private chooseSelection(): void {
+		if (this.pinned) this.state.selected = this.pinned;
+		else if (!this.state.selected || (!this.rows.some((row) => row.id === this.state.selected) && (!this.console || this.state.filter)))
+			this.state.selected = this.rows[0]?.id;
+	}
+
+	/** Find text is the operator's choice: it unpins the selection and lists matches in their own order. */
+	private setFilter(value: string): void {
+		this.state.filter = value;
+		this.rosterScroll = undefined;
+		this.pinned = undefined;
+		this.rows = [];
+		this.reconcile();
+	}
+
+	private reconcile(): void {
+		this.observeSelectedRow();
 		const filtered = dashboardRecords(
-			this.page
-				? { observedAt: Date.parse(this.page.observedAt), sessions: this.page.rows, coverage: this.page.coverage }
-				: undefined,
-			this.navigation.screen === "find" ? this.find.getValue() : this.state.filter,
+			this.page ? { observedAt: Date.parse(this.page.observedAt), sessions: this.page.rows, coverage: this.page.coverage } : undefined,
+			this.state.filter,
 		);
 		const identities = this.relations.view().identities;
 		this.reconcileOrder(this.allAgents ? filtered : filtered.filter((row) => identities.has(relationIdentity(row.id))));
-		this.navigation.reconcile(this.rows);
-		const id = this.navigation.target ?? this.state.selected;
-		const row = this.page?.rows.find((item) => item.id === id);
-		if (row && this.console && this.console.row.id === id) {
-			if (this.console.row.cwd !== row.cwd) this.branches.refresh(row.cwd, `cwd:${++this.branchChanges}`);
-			this.console.row = row;
+		this.chooseSelection();
+		const id = this.state.selected;
+		const console = this.console;
+		const row = this.page?.rows.find((item) => item.id === id) ?? (id !== undefined && console?.row.id === id ? console.row : undefined) ?? this.pinnedRow(id);
+		if (row && console?.row.id === row.id) {
+			if (console.row.cwd !== row.cwd) this.branches.refresh(row.cwd, `cwd:${++this.branchChanges}`);
+			console.row = row;
+			this.operations.observed?.(row);
 			this.rereadIfStale(row);
 		} else if (row) this.select(row);
-		else if (this.navigation.screen === "roster" || this.navigation.screen === "find") {
-			this.saveConsole();
-			this.console?.dispose();
-			this.console = undefined;
-			this.source.select(undefined);
-			this.sourceGeneration++;
-		}
+		else if (!id && this.console) this.clearSelection();
 	}
-	/**
-	 * A stopped host restarted by another action attaches again when its roster
-	 * row changes. A host launch already owned by this manager attaches through
-	 * its pending open, without a roster change.
-	 */
+
+	private clearSelection(): void {
+		this.saveConsole();
+		this.console?.dispose();
+		this.console = undefined;
+		this.closeInspector();
+		this.source.select(undefined);
+		this.sourceGeneration++;
+		this.operations.observed?.(undefined);
+	}
+
+	/** A stopped host restarted by another action attaches again when its row changes. */
 	private rereadIfStale(row: AgentConversationSummary): void {
 		const mark = rosterMark(row);
 		if (mark === this.selectedMark) return;
@@ -414,7 +482,10 @@ export class AgentDashboard implements Component, Focusable {
 		this.source.refresh(row.id);
 		void this.readSelected(row, generation);
 	}
+
+	/** Selection reads passively: it never starts a host and never moves a draft between agents. */
 	private select(row: AgentConversationSummary): void {
+		if (this.inspector && this.inspector.target !== row.id && this.inspector.target !== "new") this.closeInspector();
 		this.selectedMark = rosterMark(row);
 		this.saveConsole();
 		this.console?.dispose();
@@ -425,10 +496,8 @@ export class AgentDashboard implements Component, Focusable {
 			this.tui,
 			this.theme,
 			this.keys,
-			(text) => {
-				void this.submit(text);
-			},
-			() => this.back(),
+			(text) => void this.submit(text),
+			() => this.escapeComposer(),
 			() => this.page?.rows ?? [],
 		);
 		this.console.conversation.setToolDisplay(this.operations.toolDisplay);
@@ -436,6 +505,14 @@ export class AgentDashboard implements Component, Focusable {
 		this.source.select(undefined);
 		const generation = ++this.sourceGeneration;
 		this.branches.refresh(row.cwd, `selection:${row.id}:${generation}`);
+		this.operations.observed?.(row);
+		const pending = this.pendingAction;
+		if (pending) {
+			this.pendingAction = undefined;
+			queueMicrotask(() => {
+				if (!this.closed && this.console?.row.id === row.id) this.openNamedAction(pending);
+			});
+		}
 		queueMicrotask(() => {
 			if (this.closed || generation !== this.sourceGeneration) return;
 			this.source.select(row.id);
@@ -443,43 +520,94 @@ export class AgentDashboard implements Component, Focusable {
 			this.frameChanged();
 		});
 	}
+
+	/** Replace the renderer lookup, for example when the attached host's owner cards loaded. */
+	setToolDisplay(lookup: ((name: string) => ToolRenderers | undefined) | undefined): void {
+		this.operations.toolDisplay = lookup;
+		this.console?.conversation.setToolDisplay(lookup);
+		this.redraw();
+	}
+
+	/** Select one conversation by identity, for example a remembered or newly created target. */
+	selectIdentity(id: string, row?: AgentConversationSummary): void {
+		this.pinned = id;
+		this.state.selected = id;
+		const known = this.page?.rows.find((item) => item.id === id) ?? row ?? this.pinnedRow(id);
+		if (known && !this.rows.some((item) => item.id === id)) this.rows = [...this.rows, known];
+		if (known) this.select(known);
+		// The message field never keeps another agent as its recipient.
+		else if (this.console && this.console.row.id !== id) this.clearSelection();
+		this.region = this.console ? "composer" : "list";
+		this.redraw();
+	}
+
+	/** A pinned identity outside the loaded list stays addressable with what is known about it. */
+	private pinnedRow(id: string | undefined): AgentConversationSummary | undefined {
+		if (!id || id !== this.pinned || !this.page) return undefined;
+		return { id, storageId: id.split(":")[0] ?? id, cwd: "", modifiedAt: Date.now(), owner: "unknown", state: "unavailable", cost: Number.NaN, partial: true };
+	}
+
+	/**
+	 * Open a named action, Tasks or owner views for the selected agent once it is selected. New,
+	 * Help, Threads and Efforts need no selection.
+	 */
+	openNamedAction(name: string): void {
+		if (name === "new") this.openNew();
+		else if (name === "help") this.openHelp();
+		else if (name === "threads") this.openThreads();
+		else if (name === "efforts") this.openEfforts();
+		else if (!this.console) this.pendingAction = name;
+		else if (name === "tasks") this.openTasks();
+		else if (name === "browse") void this.openBrowsers();
+		else this.openAction(name);
+	}
+
+	/** Open one host-specific view in the inspector, bound to the selected agent. */
+	openViewAction(title: string, open: (host: ViewHost) => OperatorView): void {
+		if (this.console) this.openInspector([{ key: title, label: title, open }]);
+		else this.show("Select an agent first", "warning");
+	}
+
+	/** The selected conversation as last observed. */
+	get selectedRow(): AgentConversationSummary | undefined {
+		return this.console?.row;
+	}
+
+	/** Where keys go now, the full-surface view shown, and the title of the open inspector view. */
+	get focus(): { readonly region: Region; readonly surface: Surface; readonly inspector?: string } {
+		const inspector = this.inspector?.frame.viewTitle;
+		return { region: this.region, surface: this.surface, ...(inspector === undefined ? {} : { inspector }) };
+	}
+
+	/** Show a one-line notice in the target header. */
+	notify(text: string, kind: Notice["kind"] = "info"): void {
+		this.show(text, kind);
+	}
+
 	private async readSelected(row: AgentConversationSummary, generation: number): Promise<void> {
 		try {
 			const snapshot = await this.source.snapshot(row.id);
-			if (this.closed || generation !== this.sourceGeneration || this.source.availability(row.id)?.state === "live")
-				return;
+			if (this.closed || generation !== this.sourceGeneration || this.source.availability(row.id)?.state === "live") return;
 			this.history.tail(snapshot, this.console?.state.view.anchor?.id);
-			this.snapshot = {
-				...snapshot,
-				entries: this.history.entries(this.console?.state.view.anchor?.id),
-				nextBefore: this.history.earlier(),
-			};
+			this.snapshot = { ...snapshot, entries: this.history.entries(this.console?.state.view.anchor?.id), nextBefore: this.history.earlier() };
 			const console = this.console;
 			if (!console) return;
 			this.setConversation();
-			if (
-				console.state.view.before &&
-				!this.snapshot.entries.some((entry) => entry.id === console.state.view.anchor?.id)
-			)
-				void this.readHistory(console.state.view.before);
+			if (console.state.view.before && !this.snapshot.entries.some((entry) => entry.id === console.state.view.anchor?.id)) void this.readHistory(console.state.view.before);
 			console.status = snapshot.partial ? "Partial history" : "";
-			console.warning = this.source.availability(row.id)?.state === "unavailable" ? "Conversation unavailable; stored messages shown" : undefined;
+			console.warning = this.source.availability(row.id)?.state === "unavailable" ? "Not connected; stored messages shown" : undefined;
 			console.observeUsage(snapshot.entries);
 			this.branches.refresh(console.row.cwd, `${console.row.id}:${snapshot.entries.at(-1)?.id ?? "empty"}`);
 			this.redraw();
 		} catch (error) {
-			if (
-				generation === this.sourceGeneration &&
-				!this.closed &&
-				this.console &&
-				this.source.availability(row.id)?.state !== "live"
-			) {
+			if (generation === this.sourceGeneration && !this.closed && this.console && this.source.availability(row.id)?.state !== "live") {
 				this.console.warning = `Conversation unavailable: ${String(error)}`;
 				this.console.status = "";
 				this.redraw();
 			}
 		}
 	}
+
 	private observedRow(row: AgentConversationSummary, frame: ConversationFrame): AgentConversationSummary {
 		if (row.state === "starting" && !frame.entries.some((entry) => isInputKind(entry.kind))) return row;
 		return {
@@ -493,49 +621,35 @@ export class AgentDashboard implements Component, Focusable {
 				: row.state === "starting" || row.state === "new" || row.state === "working" || row.state === "unavailable"
 					? "idle"
 					: row.state,
-			model: frame.status.agent.model
-				? { ...frame.status.agent.model, thinkingLevel: frame.status.agent.thinkingLevel }
-				: row.model,
+			model: frame.status.agent.model ? { ...frame.status.agent.model, thinkingLevel: frame.status.agent.thinkingLevel } : row.model,
 		};
 	}
+
 	private updateObservedRow(console: AgentConsole, frame: ConversationFrame): void {
 		if (this.source.availability(console.row.id)?.state !== "live") return;
 		console.row = this.observedRow(console.row, frame);
-		if (this.page)
-			this.page = { ...this.page, rows: this.page.rows.map((row) => (row.id === console.row.id ? console.row : row)) };
+		if (this.page) this.page = { ...this.page, rows: this.page.rows.map((row) => (row.id === console.row.id ? console.row : row)) };
 		this.rows = this.rows.map((row) => (row.id === console.row.id ? console.row : row));
+		this.operations.observed?.(console.row);
 	}
+
 	private frameChanged(): void {
 		const console = this.console;
 		if (!console || this.closed) return;
 		const frame = this.source.frame(console.row.id);
 		if (frame) {
 			console.save();
-			this.history.tail(
-				{
-					entries: frame.entries,
-					partial: !frame.coverage.complete,
-					revision: `r${frame.revision}`,
-					nextBefore: frame.nextBefore,
-				},
-				console.state.view.anchor?.id,
-			);
-			this.snapshot = {
-				entries: this.history.entries(console.state.view.anchor?.id),
-				revision: `r${frame.revision}`,
-				partial: !frame.coverage.complete,
-				nextBefore: this.history.earlier(),
-			};
+			this.history.tail({ entries: frame.entries, partial: !frame.coverage.complete, revision: `r${frame.revision}`, nextBefore: frame.nextBefore }, console.state.view.anchor?.id);
+			this.snapshot = { entries: this.history.entries(console.state.view.anchor?.id), revision: `r${frame.revision}`, partial: !frame.coverage.complete, nextBefore: this.history.earlier() };
 			this.updateObservedRow(console, frame);
 			this.setConversation(frame.live);
 			const availability = this.source.availability(console.row.id);
 			console.status = frame.coverage.complete ? "" : "Partial history";
-			console.warning = availability?.state === "unavailable" ? "Conversation unavailable; last messages shown" : undefined;
+			console.warning = availability?.state === "unavailable" ? "Connection lost; last observed messages shown. Reconnect starts the host." : undefined;
 			console.observeUsage(frame.entries, availability?.state === "live" ? frame.status.usage : undefined);
 			this.branches.refresh(console.row.cwd, `${console.row.id}:${frame.entries.at(-1)?.id ?? "empty"}`);
 		}
-		if (!frame && this.source.availability(console.row.id)?.state === "unavailable")
-			console.warning = "Conversation unavailable; stored messages shown";
+		if (!frame && this.source.availability(console.row.id)?.state === "unavailable") console.warning = "Not connected; stored messages shown";
 		const wait = Math.max(0, 50 - (Date.now() - this.lastStreamPaint));
 		if (!this.streamTimer)
 			this.streamTimer = setTimeout(() => {
@@ -544,55 +658,61 @@ export class AgentDashboard implements Component, Focusable {
 				this.redraw();
 			}, wait);
 	}
-	private back(): void {
-		this.rosterOrderLocked = false;
-		this.saveConsole();
-		this.state.newTask = this.newComposer.getText();
-		if (this.navigation.screen === "find") {
-			this.state.filter = this.findBefore.filter;
-			this.state.selected = this.findBefore.selected;
-		}
-		if (this.navigation.screen === "tasks") {
-			this.tasks?.dispose();
-			this.tasks = undefined;
-			this.source.releaseTasks();
-		}
-		if (this.navigation.escape() === "close") {
-			this.dispose();
-			this.done();
-			return;
-		}
-		if (this.navigation.screen === "efforts") this.efforts?.open();
-		this.mouse.reset();
-		this.reconcile();
-		this.redraw();
+
+	private saveConsole(): void {
+		this.console?.save();
+		if (this.console) this.console.state.view.before = this.history.upper(this.console.state.view.anchor?.id);
 	}
-	private move(delta: number): void {
-		this.rosterScroll = undefined;
-		this.navigation.generation++;
-		this.rosterOrderLocked = this.navigation.screen === "roster";
-		const index = this.rows.findIndex((row) => row.id === this.state.selected);
-		const next = index + delta;
-		if (this.loadMore && delta < 0) {
-			this.loadMore = false;
-			this.redraw();
-			return;
-		}
-		if (next >= this.rows.length && this.page?.coverage.nextCursor) {
-			this.loadMore = true;
-			this.redraw();
-			return;
-		}
-		this.loadMore = false;
-		this.state.selected = this.rows[Math.max(0, Math.min(this.rows.length - 1, next))]?.id;
-		this.reconcile();
-		this.redraw();
+
+	private setConversation(live: readonly import("./dashboard-types.ts").AgentConversationEntry[] = []): void {
+		const console = this.console;
+		const snapshot = this.snapshot;
+		if (!console || !snapshot) return;
+		const first = firstTaskEntry({ ...snapshot, partial: snapshot.partial || console.row.state === "starting" }, console.row);
+		console.setContent(first ? [first, ...snapshot.entries] : snapshot.entries, this.history.newer() ? [] : live);
 	}
+
+	private async readHistory(before?: number): Promise<void> {
+		const console = this.console;
+		if (!console || this.earlierPending) return;
+		const generation = this.sourceGeneration;
+		console.save();
+		this.earlierPending = true;
+		console.status = before ? "Loading earlier messages…" : "Loading current messages…";
+		this.redraw();
+		try {
+			const page = before ? await this.source.earlier(console.row.id, before) : await this.source.snapshot(console.row.id);
+			if (this.closed || generation !== this.sourceGeneration) return;
+			this.history.add(page, before, console.state.view.anchor?.id);
+			this.snapshot = { ...page, entries: this.history.entries(console.state.view.anchor?.id), nextBefore: this.history.earlier() };
+			this.setConversation(this.source.frame(console.row.id)?.live);
+			console.conversation.reanchor();
+			console.status = page.partial ? "Partial history" : "";
+		} catch (error) {
+			if (generation === this.sourceGeneration) {
+				console.warning = `Conversation unavailable: ${String(error)}`;
+				console.status = "";
+			}
+		} finally {
+			this.earlierPending = false;
+			this.redraw();
+		}
+	}
+
+	private earlier(): void {
+		const before = this.history.earlier();
+		if (before) void this.readHistory(before);
+	}
+
+	// --- effects ----------------------------------------------------------
+
+	/** Admit the draft to the captured target. A late answer never clears newer text. */
 	private async submit(text: string): Promise<void> {
 		const console = this.console;
 		if (!console || console.state.pending || !text.trim()) return;
+		if (await this.handledCommand(console, text)) return;
 		const { row, state } = console;
-		const mode = state.mode;
+		const mode = row.state === "working" ? state.mode : "followUp";
 		const revision = state.draftRevision;
 		state.pending = { text, mode, revision };
 		state.receipt = "Sending…";
@@ -600,361 +720,326 @@ export class AgentDashboard implements Component, Focusable {
 		try {
 			const result = await Promise.resolve().then(() => this.operations.submit({ id: row.id, text, mode }));
 			state.history.push(text);
-			state.receipt = result.receipt ?? (
-				row.state === "working"
-					? mode === "steer"
-						? `Steer sent to ${agentDisplayName(row)}`
-						: `Follow-up queued for ${agentDisplayName(row)}`
-					: `Sent to ${agentDisplayName(row)}`);
+			state.receipt = result.receipt ?? admittedText(row, mode);
+			// A late answer clears only the draft revision it sent; newer text stays.
 			if (state.draftRevision === revision && state.draft === text) {
 				if (state.mode === mode) state.mode = "steer";
 				updateDraft(state, "");
 			}
 			this.queueRoster();
 		} catch (error) {
-			state.receipt = this.operations.submissionFailure?.({ id: row.id, text, mode }, error) ?? `Delivery not confirmed. Current draft kept; check the conversation before resending. ${error instanceof Error ? error.message : String(error)}`;
+			state.receipt =
+				this.operations.submissionFailure?.({ id: row.id, text, mode }, error) ??
+				`Delivery not confirmed. Your draft is kept; check the conversation before resending. ${error instanceof Error ? error.message : String(error)}`;
 		} finally {
 			state.pending = undefined;
 			notifyAgentState(state);
 			this.redraw();
 		}
 	}
-	private async startAgent(text: string): Promise<void> {
-		const newAgent = this.operations.newAgent;
-		if (!newAgent || this.creating || !text.trim()) return;
-		this.creating = true;
-		let generation = this.navigation.generation;
-		this.notice = "Starting agent…";
-		this.redraw();
-		try {
-			const result = await Promise.resolve().then(() =>
-				newAgent({
-					prompt: text,
-					onCreated: (row) => {
-						if (this.closed || generation !== this.navigation.generation) return;
-						this.state.selected = row.id;
-						this.state.filter = "";
-						this.navigation.roster();
-						generation = this.navigation.generation;
-						if (this.page)
-							this.page = { ...this.page, rows: [...this.page.rows.filter((item) => item.id !== row.id), row] };
-						this.rows = [...this.rows.filter((item) => item.id !== row.id), row];
-						this.select(row);
-						this.snapshot = { entries: [], partial: false, revision: "starting", nextBefore: null };
-						this.setConversation();
-						if (this.console) this.console.status = "STARTING";
-						this.redraw();
-					},
-				}),
-			);
-			if (this.state.newTask === text) {
-				this.state.newTask = "";
-				this.newComposer.setText("");
-			}
-			if (!this.closed && generation === this.navigation.generation && result.sessionId) {
-				this.state.selected = result.sessionId;
-				this.state.filter = "";
-				this.navigation.roster();
-				this.notice = result.text;
-			}
-			await this.refreshRoster();
-		} catch (error) {
-			this.notice = `Agent start failed: ${String(error)}`;
-		} finally {
-			this.creating = false;
-			this.redraw();
-		}
-	}
 
-	private saveConsole(): void {
-		this.console?.save();
-		if (this.console) this.console.state.view.before = this.history.upper(this.console.state.view.anchor?.id);
-	}
-	private setConversation(live: readonly import("./dashboard-types.ts").AgentConversationEntry[] = []): void {
-		const console = this.console;
-		const snapshot = this.snapshot;
-		if (!console || !snapshot) return;
-		const first = firstTaskEntry(
-			{ ...snapshot, partial: snapshot.partial || console.row.state === "starting" },
-			console.row,
-		);
-		console.setContent(first ? [first, ...snapshot.entries] : snapshot.entries, this.history.newer() ? [] : live);
-	}
-	private async readHistory(before?: number): Promise<void> {
-		const console = this.console;
-		if (!console || this.earlierPending) return;
-		const generation = this.sourceGeneration;
-		console.save();
-		this.earlierPending = true;
-		console.status = before ? "Loading message range…" : "Loading current messages…";
+	/** Composer text the host routes itself, such as the attached terminal's /agent commands. */
+	private async handledCommand(console: AgentConsole, text: string): Promise<boolean> {
+		if (!this.operations.command || !(await this.operations.command(text))) return false;
+		if (console.state.draft === text) updateDraft(console.state, "");
 		this.redraw();
-		try {
-			const page = before
-				? await this.source.earlier(console.row.id, before)
-				: await this.source.snapshot(console.row.id);
-			if (this.closed || generation !== this.sourceGeneration) return;
-			this.history.add(page, before, console.state.view.anchor?.id);
-			this.snapshot = {
-				...page,
-				entries: this.history.entries(console.state.view.anchor?.id),
-				nextBefore: this.history.earlier(),
-			};
-			this.setConversation(this.source.frame(console.row.id)?.live);
-			console.conversation.reanchor();
-			console.status = page.partial ? "Partial history" : "";
-		} catch (error) {
-			if (generation === this.sourceGeneration) { console.warning = `Conversation unavailable: ${String(error)}`; console.status = ""; }
-		} finally {
-			this.earlierPending = false;
-			this.redraw();
-		}
-	}
-	private earlier(): void {
-		const before = this.history.earlier();
-		if (before) void this.readHistory(before);
-	}
-
-	private taskRow(id: string, label?: TaskLabel): AgentConversationSummary | undefined {
-		const published = this.page?.rows.find((item) => item.id === id);
-		if (published) return published;
-		const parent = this.console?.row;
-		if (!parent) return undefined;
-		return {
-			...parent,
-			id,
-			name: label?.name,
-			firstMessage: label?.firstMessage,
-			model: undefined,
-			cost: Number.NaN,
-			partial: true,
-			state: "unavailable",
-			error: undefined,
-			health: undefined,
-		};
-	}
-	private openTaskConversation(id: string, label?: TaskLabel): void {
-		const row = this.taskRow(id, label);
-		if (!row) return;
-		this.tasks?.dispose();
-		this.tasks = undefined;
-		this.source.releaseTasks();
-		this.state.selected = id;
-		this.navigation.roster();
-		this.navigation.enter("console", id);
-		this.select(row);
-		this.redraw();
-	}
-	private async chooseTaskConversation(labels: readonly TaskLabel[]): Promise<void> {
-		const generation = this.navigation.generation;
-		this.resize.clear();
-		this.hidden = true;
-		try {
-			const id = await this.operations.chooseConversation(labels, this.surface);
-			if (id && !this.closed && generation === this.navigation.generation)
-				this.openTaskConversation(
-					id,
-					labels.find((label) => label.identity === id),
-				);
-		} finally {
-			this.hidden = false;
-			this.redraw();
-		}
-	}
-	private openTasks(id: string): void {
-		this.navigation.enter("tasks", id);
-		this.tasks = new AgentTasksView({
-			theme: this.theme,
-			source: this.source,
-			id,
-			onChooseConversations: (labels) => {
-				void this.chooseTaskConversation(labels);
-			},
-			onNotice: (text) => {
-				this.notice = text;
-				this.redraw();
-			},
-			onSelectConversation: (identity, label) => this.openTaskConversation(identity, label),
-		});
-		this.redraw();
-	}
-	/** A created branch has an identity before a bounded metadata page necessarily includes it. */
-	private openBranch(id: string): void {
-		const source = this.console?.row;
-		if (!source) return;
-		const branch: AgentConversationSummary = this.page?.rows.find((row) => row.id === id) ?? {
-			id,
-			storageId: source.storageId,
-			cwd: source.cwd,
-			modifiedAt: Date.now(),
-			owner: "unknown",
-			state: "new",
-			cost: Number.NaN,
-			partial: true,
-		};
-		if (!this.rows.some((row) => row.id === id)) this.rows.push(branch);
-		this.select(branch);
-	}
-	private actionResult(result: DashboardResult, name: string, id: string): void {
-		if (result.sessionId && result.sessionId !== id) {
-			this.state.selected = result.sessionId;
-			this.state.filter = "";
-			this.navigation.roster();
-			if (name === "fork" || name === "rewind") {
-				this.navigation.enter("console", result.sessionId);
-				this.openBranch(result.sessionId);
-			}
-			return;
-		}
-		if (name === "status" || result.text.includes("\n")) {
-			this.result = result.text;
-			this.helpOffset = 0;
-			this.navigation.enter("result", id);
-			return;
-		}
-		this.navigation.roster();
-	}
-	private async runAction(): Promise<void> {
-		const console = this.console;
-		if (!console) return;
-		const choice = dashboardActions(console.row)[this.actionIndex];
-		if (!choice) return;
-		if (choice.disabled) {
-			this.notice = choice.disabled;
-			this.redraw();
-			return;
-		}
-		if (choice.name === "tasks") {
-			this.openTasks(console.row.id);
-			return;
-		}
-		const generation = this.navigation.generation;
-		this.notice = undefined;
-		console.state.receipt = undefined;
-		try {
-			this.resize.clear();
-			this.hidden = true;
-			const result = await Promise.resolve().then(() => this.operations.action(choice.name, console.row, this.surface));
-			if (!result) return;
-			console.state.receipt = result.text;
-			if (result.sessionId && result.sessionId !== console.row.id && ["fork", "rewind"].includes(choice.name))
-				await this.refreshRoster();
-			if (!this.closed && generation === this.navigation.generation)
-				this.actionResult(result, choice.name, console.row.id);
-			this.queueRoster();
-		} catch (error) {
-			console.state.receipt = `Action failed: ${String(error)}`;
-		} finally {
-			this.hidden = false;
-			this.redraw();
-		}
-	}
-	private scrollReader(to: number | "start" | "end"): void {
-		this.helpOffset = to === "start" ? 0 : to === "end" ? Number.MAX_SAFE_INTEGER : Math.max(0, this.helpOffset + to);
-	}
-	private actionsInput(data: string): void {
-		const last = this.console ? dashboardActions(this.console.row).length - 1 : 0;
-		const size = Math.max(1, Math.floor(this.bodyHeight / 2));
-		const changes: Record<string, number> = { up: -1, down: 1, pageUp: -size, pageDown: size };
-		for (const [key, delta] of Object.entries(changes))
-			if (matchesKey(data, key as "up")) this.actionIndex = Math.max(0, Math.min(last, this.actionIndex + delta));
-		if (matchesKey(data, "home")) this.actionIndex = 0;
-		if (matchesKey(data, "end")) this.actionIndex = last;
-		if (matchesKey(data, "enter")) void this.runAction();
-	}
-	private findInput(data: string): void {
-		if (matchesKey(data, "up") || matchesKey(data, "down")) this.move(matchesKey(data, "up") ? -1 : 1);
-		else if (matchesKey(data, "tab")) this.find.onSubmit?.(this.find.getValue());
-		else this.find.handleInput(data);
-		this.reconcile();
-	}
-	private transcriptInput(data: string): boolean {
-		const console = this.console;
-		if (!console) return false;
-		if (this.keys.matches(data, "app.tools.expand") || matchesKey(data, "ctrl+o")) {
-			console.state.view.expanded = !console.state.view.expanded;
-			console.state.view.toolExpanded.clear();
-			this.reloadContent();
-			return true;
-		}
-		if (this.keys.matches(data, "app.thinking.toggle") || matchesKey(data, "ctrl+t")) {
-			console.state.view.showThinking = !console.state.view.showThinking;
-			this.reloadContent();
-			return true;
-		}
-		if (!matchesKey(data, "pageUp") && !matchesKey(data, "pageDown")) return false;
-		const up = matchesKey(data, "pageUp");
-		if (up && console.conversation.atTop()) this.earlier();
-		else if (!up && console.conversation.atBottom() && this.history.newer())
-			void this.readHistory(this.history.newer()?.upper);
-		else console.conversation.page((up ? -1 : 1) * Math.max(1, this.bodyHeight - 1));
 		return true;
 	}
-	private messageInput(data: string): void {
+
+	private toggleMode(): void {
 		const console = this.console;
-		if (!console) return;
-		if (matchesKey(data, "tab")) {
-			if (console.row.state === "working") console.state.mode = console.state.mode === "steer" ? "followUp" : "steer";
+		if (console?.row.state !== "working") return;
+		console.state.mode = console.state.mode === "steer" ? "followUp" : "steer";
+		notifyAgentState(console.state);
+		this.redraw();
+	}
+
+	// --- inspector --------------------------------------------------------
+
+	private targetLabel(row: AgentConversationSummary): string {
+		return `${plainLine(agentDisplayName(row))} · ${plainLine(projectOf(row))}`;
+	}
+
+	/** Open an inspector for the selected agent. Its views keep the target captured now. */
+	private openInspector(destinations: readonly Destination[], initial?: string, target?: ViewTarget): void {
+		const row = target ? undefined : this.console?.row;
+		this.closeInspector();
+		const frame = new NavigationFrame({
+			theme: this.theme,
+			target: target ?? (row ? { id: row.id, label: this.targetLabel(row) } : { id: "agents", label: "Agents" }),
+			destinations: () => destinations,
+			initial,
+			rows: () => this.inspectorRows,
+			requestRender: () => this.redraw(),
+			close: (then) => {
+				if (this.inspector?.frame === frame) this.inspector = undefined;
+				// A late close, such as a finished request, leaves focus where the operator moved it.
+				if (this.region === "inspector") this.region = this.console ? "composer" : "list";
+				this.redraw();
+				then?.();
+			},
+			closeLabel: target ? "Back" : "Back to conversation",
+		});
+		this.inspector = { frame, target: target?.id ?? row?.id ?? "" };
+		this.region = "inspector";
+		this.redraw();
+	}
+
+	private inspectorRows = 10;
+	/** Column widths of the list and the conversation pane at the last paint, for resize feedback. */
+	private resizeColumns = { list: 0, pane: 0 };
+
+	private closeInspector(): void {
+		const inspector = this.inspector;
+		if (!inspector) return;
+		this.inspector = undefined;
+		inspector.frame.dispose();
+		if (this.region === "inspector") this.region = this.console ? "composer" : "list";
+	}
+
+	private openAction(name: string): void {
+		const row = this.console?.row;
+		if (!row) {
+			this.show("Select an agent first", "warning");
 			return;
 		}
-		if (matchesKey(data, "ctrl+v")) {
-			this.notice = "This field accepts text, not file or image attachments";
-			return;
+		let frame: NavigationFrame | undefined;
+		const host = this.formsFor(row, () => frame !== undefined && this.inspector?.frame === frame);
+		this.openInspector([{ key: name, label: this.actionLabel(name), open: (view) => actionView(name, host, view) }]);
+		frame = this.inspector?.frame;
+	}
+
+	/** The forms host for one captured target; `open` says whether the form that acts is still shown. */
+	private formsFor(row: AgentConversationSummary, open: () => boolean): AgentFormHost {
+		const host = this.operations.forms(row);
+		const outcome = (result: ActionResult, name: string) => {
+			host.outcome(result, name);
+			this.actionOutcome(result, name, row.id, open());
+		};
+		return { ...host, outcome };
+	}
+
+	/**
+	 * Record an action's result on its target. A created branch opens only while its form is still
+	 * shown; after the operator leaves the form, the branch appears in the list and nothing moves.
+	 */
+	private actionOutcome(result: ActionResult, name: string, id: string, open: boolean): void {
+		const value = typeof result === "object" ? result : undefined;
+		const text = typeof result === "string" ? result : value?.text;
+		if (text) {
+			const state = agentState(this.state, id);
+			state.receipt = plainLine(text);
+			notifyAgentState(state);
 		}
-		console.composer.handleInput(data);
-	}
-	private emptyStore(): boolean {
-		return Boolean(this.page?.coverage.complete && !this.page.rows.length && !this.state.filter);
-	}
-	private rosterEnter(): void {
-		if (this.loadMore) {
-			const cursor = this.page?.coverage.nextCursor ?? undefined;
-			this.rosterNotice = "Loading more agents…";
-			queueMicrotask(() => {
-				void this.refreshRoster(cursor);
+		const created = value?.sessionId;
+		if (open && created && created !== id && (name === "fork" || name === "rewind")) {
+			void this.refreshRoster().then(() => {
+				if (!this.closed && this.state.selected === id) this.selectIdentity(created);
 			});
-			return;
 		}
-		if (this.emptyStore()) {
-			this.openNew();
-			return;
-		}
-		if (this.console) {
-			if (this.operations.enter) this.operations.enter(this.console.row.id);
-			else this.navigation.enter("console", this.console.row.id);
+		this.queueRoster();
+	}
+
+	private actionLabel(name: string): string {
+		const labels: Record<string, string> = {
+			configure: "Configure", fork: "Fork", rewind: "Rewind", reset: "Reset context", compact: "Compact", command: "Run command",
+			schedule: "Schedule message", timers: "Scheduled messages", profile: "Profile", status: "Details", abort: "Stop",
+			release: "Release", attach: "Reconnect", "await-release": "Release await",
+		};
+		return labels[name] ?? name;
+	}
+
+	private openTasks(): void {
+		const row = this.console?.row;
+		if (!row) return;
+		this.openInspector([{ key: "tasks", label: "Tasks", open: (view) => this.tasksView(row, view) }]);
+	}
+
+	private tasksView(row: AgentConversationSummary, view: ViewHost): OperatorView {
+		const tasks = new AgentTasksView({
+			theme: this.theme,
+			source: this.source,
+			id: row.id,
+			onChooseConversations: (labels) => view.push((next) => this.chooseConversation(labels, next)),
+			onNotice: (text) => view.notify(text, "info"),
+			onSelectConversation: (identity, label) => this.openTaskConversation(identity, label),
+		});
+		const hits = new HitMap();
+		return {
+			title: "Tasks",
+			render: (width, height) => {
+				hits.begin(width, height);
+				hits.add({ x: 0, y: 0, width, height, click: (event) => (tasks.clickRow(event.y) ? undefined : false), wheel: (delta) => tasks.scroll(delta) });
+				return tasks.render(width, height);
+			},
+			handleInput: (data) => tasks.handleInput(data),
+			handleMouse: (event) => hits.handle(event),
+			actions: () => [
+				{ id: "open", label: "Open conversation", primary: true, run: () => tasks.open() },
+				{ id: "refresh", label: "Refresh", primary: true, run: () => void tasks.refresh() },
+			],
+			dispose: () => {
+				tasks.dispose();
+				this.source.releaseTasks();
+			},
+		};
+	}
+
+	private chooseConversation(labels: readonly TaskLabel[], view: ViewHost): OperatorView {
+		return new Form({
+			title: "Conversations",
+			heading: "Choose the conversation to open",
+			fields: [{ kind: "choice", id: "id", label: "Conversation", rows: 8, choices: labels.map((label) => ({ value: label.identity, label: plainLine(label.name || label.firstMessage || "Conversation"), description: label.identity })) }],
+			action: { label: "Open" },
+			host: view,
+			submit: async (values) => {
+				const label = labels.find((item) => item.identity === values.id);
+				if (label) this.openTaskConversation(label.identity, label);
+				return undefined;
+			},
+		});
+	}
+
+	private openTaskConversation(id: string, label?: TaskLabel): void {
+		const published = this.page?.rows.find((item) => item.id === id);
+		const parent = this.console?.row;
+		const row: AgentConversationSummary | undefined =
+			published ??
+			(parent ? { ...parent, id, name: label?.name, firstMessage: label?.firstMessage, model: undefined, cost: Number.NaN, partial: true, state: "unavailable", error: undefined, health: undefined } : undefined);
+		if (!row) return;
+		this.closeInspector();
+		this.selectIdentity(id, row);
+	}
+
+	private openHelp(): void {
+		const view = (host: ViewHost) =>
+			new ReaderView("Help", host, () => ["Machine execution preferences", ...this.machinePreferences, "", ...HELP].join("\n"));
+		this.openInspector([{ key: "help", label: "Help", open: view }]);
+	}
+
+	private async openBrowsers(): Promise<void> {
+		const row = this.console?.row;
+		const panels = this.operations.panels;
+		if (!row || !panels) return this.show("Owner views are unavailable here", "warning");
+		this.show(`Reading the owner views of ${agentDisplayName(row)}…`, "pending");
+		try {
+			const destinations = await panels(row);
+			if (this.closed || this.console?.row.id !== row.id) return;
+			if (!destinations.length) return this.show("This agent's host advertises no owner views. A stored or stopped host shows none.", "warning");
+			this.notice = undefined;
+			this.openInspector(destinations);
+		} catch (error) {
+			this.show(`Owner views could not be read: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}
 	}
+
+	private newDefaults(): NewAgentDefaults | undefined {
+		try {
+			return this.operations.newDefaults?.();
+		} catch (error) {
+			this.show(`New conversation defaults could not be read: ${error instanceof Error ? error.message : String(error)}`, "error");
+			return undefined;
+		}
+	}
+
 	private openNew(): void {
-		if (this.operations.newAgent) this.navigation.enter("new");
-		else this.notice = "New agent is unavailable. Enter an existing conversation.";
+		const newAgent = this.operations.newAgent;
+		if (!newAgent) {
+			this.show(this.operations.newUnavailable ?? "New conversation is unavailable here", "warning");
+			return;
+		}
+		const defaults = this.newDefaults();
+		if (!defaults) return;
+		this.closeInspector();
+		const open = (view: ViewHost) =>
+			new Form({
+				title: "New conversation",
+				heading: "Start a new conversation",
+				intro: `${defaults.ownership} Closing this view later does not stop it.`,
+				fields: [
+					{ kind: "area", id: "prompt", label: "Purpose", value: this.state.newTask, rows: 5, hint: "The first message. Leave it empty to create an idle conversation." },
+					...(defaults.presets.length ? [{ kind: "choice" as const, id: "preset", label: "Preset", value: defaults.preset, choices: defaults.presets, rows: Math.min(7, defaults.presets.length) }] : []),
+					{ kind: "text", id: "cwd", label: "Directory", value: defaults.cwd },
+				],
+				action: { label: "Start" },
+				host: view,
+				change: (values) => {
+					this.state.newTask = values.prompt ?? "";
+				},
+				submit: (values) => this.startAgent(newAgent, values),
+			});
+		this.openInspector([{ key: "new", label: "New conversation", open }], undefined, { id: "new", label: "New conversation" });
 	}
+
+	private async startAgent(newAgent: NonNullable<DashboardOperations["newAgent"]>, values: Readonly<Record<string, string>>) {
+		const prompt = (values.prompt ?? "").trim() ? values.prompt : undefined;
+		let created: string | undefined;
+		const before = this.state.selected;
+		const result = await newAgent({
+			prompt,
+			preset: values.preset || undefined,
+			cwd: values.cwd || undefined,
+			onCreated: (row) => {
+				if (this.closed) return;
+				created = row.id;
+				this.allAgents = true;
+				if (this.page) this.page = { ...this.page, rows: [...this.page.rows.filter((item) => item.id !== row.id), row] };
+				this.rows = [...this.rows.filter((item) => item.id !== row.id), row];
+				this.state.selected = row.id;
+				this.select(row);
+				this.snapshot = { entries: [], partial: false, revision: "starting", nextBefore: null };
+				this.setConversation();
+				if (this.console) this.console.status = "Starting…";
+				this.redraw();
+			},
+		});
+		this.state.newTask = "";
+		const id = result.sessionId ?? created;
+		if (!this.closed && id) {
+			// The new conversation keeps the selection only while the operator has not chosen another.
+			if (this.state.selected === (created ?? before)) this.state.selected = id;
+			const state = agentState(this.state, id);
+			state.receipt = plainLine(result.text);
+			notifyAgentState(state);
+			void this.refreshRoster();
+		}
+		return { close: true, notice: { text: result.text, kind: "success" as const } };
+	}
+
+	// --- full-surface views --------------------------------------------------
+
 	private openEfforts(): void {
 		if (!this.operations.efforts) {
-			this.notice = "Related efforts unavailable. Restart this Pi window with the current agent extension.";
+			this.show("Related efforts need the ordinary Pi window.", "warning");
 			return;
 		}
 		this.saveConsole();
-		this.navigation.enter("efforts");
+		this.surface = "efforts";
 		this.efforts ??= new EffortView({
-			tui: this.tui, theme: this.theme, keys: this.keys,
+			tui: this.tui,
+			theme: this.theme,
+			keys: this.keys,
 			efforts: this.operations.efforts,
 			messageEffort: this.operations.messageEffort,
 			observeEffort: this.operations.observeEffort,
 			collaborate: this.operations.collaborate,
 			openContact: (threadId) => this.openThreads(threadId),
 			openThreads: () => this.openThreads(),
-			onBack: () => this.back(),
+			onBack: () => this.backToWork(),
 			redraw: () => this.redraw(),
 		});
-		this.mouse.reset();
 		this.efforts.open();
+		this.redraw();
 	}
+
 	private openThreads(contactThread?: string): string | undefined {
 		if (!this.operations.collaborate) {
-			this.notice = "Threads unavailable. Restart this Pi window with the current agent extension.";
-			return this.notice;
+			this.show("Threads are unavailable here.", "warning");
+			return "Threads are unavailable here.";
 		}
 		this.saveConsole();
-		this.navigation.enter("threads");
+		this.threadsFrom = this.surface === "efforts" ? "efforts" : "work";
+		this.surface = "threads";
 		this.state.threads ??= createCollaborationViewState();
 		this.threads ??= new CollaborationView({
 			tui: this.tui,
@@ -972,585 +1057,783 @@ export class AgentDashboard implements Component, Focusable {
 			related: this.primaryId ? () => this.relations.view() : undefined,
 			openParticipant: (id) => this.openParticipant(id),
 			redraw: () => this.redraw(),
-			onBack: () => this.back(),
+			onBack: () => this.leaveThreads(),
 		});
 		if (contactThread) this.threads.openContact(contactThread);
 		else this.threads.open();
+		this.redraw();
+		return undefined;
 	}
+
 	private openParticipant(id: string): void {
 		const row = this.page?.rows.find((item) => relationIdentity(item.id) === relationIdentity(id)) ?? {
-			id, storageId: id.split(":")[0], name: id, cwd: "", modifiedAt: 0,
-			owner: "unknown" as const, state: "unavailable" as const, cost: Number.NaN, partial: true,
+			id, storageId: id.split(":")[0], name: id, cwd: "", modifiedAt: 0, owner: "unknown" as const, state: "unavailable" as const, cost: Number.NaN, partial: true,
 		};
-		this.saveConsole();
-		this.state.selected = row.id;
-		this.navigation.enter("console", row.id);
-		this.select(row);
-		this.redraw();
+		this.returnSurface = "threads";
+		this.surface = "work";
+		this.selectIdentity(row.id, row);
 	}
-	private rosterInput(data: string): void {
-		this.notice = undefined;
-		if (!matchesKey(data, "up") && !matchesKey(data, "down")) this.rosterOrderLocked = false;
-		if (matchesKey(data, "up") || matchesKey(data, "down")) {
-			this.move(matchesKey(data, "up") ? -1 : 1);
-			return;
-		}
-		if (data.length === 1)
-			this.notice = this.console ? `Tab to write to ${agentDisplayName(this.console.row)}` : "n starts a new agent";
-	}
-	private routeInput(data: string): void {
-		const screen = this.navigation.screen;
-		const routes: Partial<Record<typeof screen, () => void>> = {
-			actions: () => this.actionsInput(data),
-			find: () => this.findInput(data),
-			tasks: () => {
-				this.tasks?.handleInput(data);
-				if (data === "r") void this.tasks?.refresh();
-			},
-			new: () => this.newComposer.handleInput(data),
-		};
-		if (routes[screen]) {
-			routes[screen]();
-			return;
-		}
-		if (this.transcriptInput(data)) return;
-		if (screen === "message" || screen === "console") this.messageInput(data);
-		else this.rosterInput(data);
-	}
-	private effortInput(data: string): void {
-		if (matchesKey(data, "escape") || (this.tui.terminal.columns >= 60 && this.tui.terminal.rows >= 20))
-			this.efforts?.handleInput(data);
-	}
-	/** Related efforts, Threads and the open action menu own the keyboard while they are showing. */
-	private routeOpenView(data: string): boolean {
-		if (this.navigation.screen === "efforts") { this.effortInput(data); return true; }
-		if (this.navigation.screen === "threads") {
-			if (matchesKey(data, "escape") || (this.tui.terminal.columns >= 60 && this.tui.terminal.rows >= 20))
-				this.threads?.handleInput(data);
+
+	/** Threads returns where it opened from: Related efforts keeps its selection and draft. */
+	private leaveThreads(): void {
+		const from = this.threadsFrom;
+		this.threadsFrom = "work";
+		if (from === "efforts" && this.efforts) {
+			this.surface = "efforts";
+			this.hits.clear();
 			this.redraw();
-			return true;
-		}
-		if (!this.inventory.open) return false;
-		this.inventory.handleInput(data);
-		this.redraw();
-		return true;
+		} else this.backToWork();
 	}
-	handleInput(data: string): void {
-		if (this.closed) return;
-		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeScreen());
-		if (this.resize.input(data)) { this.redraw(); return; }
-		if (this.routeOpenView(data)) return;
-		if (matchesKey(data, "escape")) {
-			this.back();
-			return;
-		}
-		if (this.tui.terminal.columns < 60 || this.tui.terminal.rows < 20) return;
-		const screen = this.navigation.screen;
-		if (this.console && !["find", "actions", "result"].includes(screen)) this.console.state.receipt = undefined;
-		if (["roster", "actions", "help", "tasks", "result"].includes(screen) && data.includes("\x1b[200~")) {
-			this.notice = "Paste into a message field";
-			this.redraw();
-			return;
-		}
-		if (screen === "roster") {
-			this.notice = undefined;
-			if (!matchesKey(data, "up") && !matchesKey(data, "down")) this.rosterOrderLocked = false;
-		}
-		if (this.inventory.handleInput(data, ["console", "message", "new", "find"].includes(screen))) {
-			this.redraw();
-			return;
-		}
-		this.routeInput(data);
-		this.redraw();
-	}
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-		if (this.closed || this.hidden || this.mouseScreen !== this.navigation.screen) return;
-		if (this.navigation.screen === "efforts") return this.efforts?.handleMouse(event);
-		if (this.navigation.screen === "threads") return this.threads?.handleMouse(event);
-		if (this.inventory.open) return event.width === this.tui.terminal.columns && event.height === this.tui.terminal.rows ? this.inventory.handleMouse(event) : undefined;
-		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeScreen());
-		if (event.width !== this.tui.terminal.columns || event.height !== this.tui.terminal.rows) return;
-		return this.resize.handle(event) ?? this.mouse.handle(event);
-	}
-	private mouseSelect(id: string): false | undefined {
-		if (!this.rows.some((row) => row.id === id)) return false;
-		if (this.navigation.screen === "find") this.find.onSubmit?.(this.find.getValue());
-		else this.navigation.roster();
-		this.state.selected = id;
-		this.loadMore = false;
-		this.rosterOrderLocked = true;
+
+	private backToWork(): void {
+		this.returnSurface = undefined;
+		this.surface = "work";
+		this.hits.clear();
 		this.reconcile();
 		this.redraw();
 	}
+
+	// --- actions ------------------------------------------------------------
+
+	/** The selected agent's controls. Stop and configuration stay visible while they apply. */
+	private targetActions(): Action[] {
+		const row = this.console?.row;
+		if (!row) return [];
+		const working = row.state === "working";
+		const actions: Action[] = [];
+		if (working) actions.push({ id: "abort", label: "Stop", primary: true, tone: "danger", description: "Stop current work; history stays", run: () => this.openAction("abort") });
+		if (working) {
+			const steer = this.console?.state.mode !== "followUp";
+			actions.push({ id: "mode", label: steer ? "Send as follow-up" : "Send as steer", description: steer ? "The next message waits for the current answer" : "The next message applies at the next step", run: () => this.toggleMode() });
+		}
+		if (row.awaiting !== undefined) actions.push({ id: "await-release", label: "Release await", primary: true, description: "Return partial results; producers continue", run: () => this.openAction("await-release") });
+		// Reconnect shows directly for an agent that needs attention, and stays in More while its observation is lost.
+		const attention = needsAttention(row);
+		if (attention || this.source.availability(row.id)?.state === "unavailable")
+			actions.push({ id: "attach", label: "Reconnect", primary: attention, description: "Start the host; unfinished work resumes", run: () => this.openAction("attach") });
+		actions.push({ id: "configure", label: "Configure", primary: true, disabled: working ? "Stop current work first; the owner configures idle agents only" : undefined, description: "Name, model and reasoning", run: () => this.openAction("configure") });
+		actions.push({ id: "tasks", label: "Tasks", primary: true, description: "The live tasks in this agent's storage", run: () => this.openTasks() });
+		if (this.operations.panels) actions.push({ id: "browsers", label: "Owner views", description: "Stashes, clipboard, policy and pillars bound to this agent", run: () => void this.openBrowsers() });
+		const secondary: Array<[string, string, string]> = [
+			["fork", "Fork", "An idle branch from a committed message"],
+			["rewind", "Rewind", "A corrected branch before a mistake; files stay current"],
+			["compact", "Compact", "Summarise at the next boundary while work continues"],
+			["reset", "Reset context", "A new context; history and timers stay"],
+			["schedule", "Schedule message", "Admit a message at a deadline"],
+			["timers", "Scheduled messages", "Read or cancel scheduled messages"],
+			["command", "Run command", "A native command with this agent's authority"],
+			["profile", "Profile", "Identity, role, request routes and saved expertise"],
+			["status", "Details", "Full identity, path, model and host state"],
+			["release", "Stop and release host", "Stop this conversation and retire its host"],
+		];
+		for (const [id, label, description] of secondary) actions.push({ id, label, description, run: () => this.openAction(id) });
+		actions.push(...(this.operations.extraActions?.(row) ?? []));
+		return actions;
+	}
+
+	/** Actions available without a selection, in the heading. */
+	private viewActions(): Action[] {
+		const actions: Action[] = [
+			{ id: "new", label: "New conversation", primary: true, disabled: this.operations.newAgent ? undefined : (this.operations.newUnavailable ?? "Unavailable here"), run: () => this.openNew() },
+		];
+		if (this.operations.collaborate) actions.push({ id: "threads", label: "Threads", primary: true, run: () => void this.openThreads() });
+		if (this.operations.efforts) actions.push({ id: "efforts", label: "Efforts", primary: true, run: () => this.openEfforts() });
+		actions.push({ id: "help", label: "Help", primary: true, run: () => this.openHelp() });
+		return actions;
+	}
+
+	// --- input ----------------------------------------------------------------
+
+	private escapeComposer(): void {
+		if (this.inspector) this.closeInspector();
+		else this.region = "list";
+		this.redraw();
+	}
+
+	private regions(): Region[] {
+		const order: Region[] = [];
+		if (!this.state.layout.listHidden || !this.console) order.push("list");
+		if (this.console) order.push("conversation", "composer", "controls");
+		if (this.inspector) order.push("inspector");
+		order.push("heading");
+		return order;
+	}
+
+	private traverse(backward: boolean): void {
+		// The inspector takes Tab through its own fields and controls before focus moves on.
+		if (this.region === "inspector" && this.inspector?.frame.focusNext(backward)) return;
+		const order = this.regions();
+		const index = order.indexOf(this.region);
+		const next = order[(index + (backward ? order.length - 1 : 1)) % order.length] ?? "list";
+		this.region = next;
+		if (next === "controls") this.controls.focusEdge(backward);
+		else if (next === "heading") this.headingBar.focusEdge(backward);
+		else if (next === "inspector") this.inspector?.frame.focusEdge(backward);
+	}
+
+	handleInput(data: string): void {
+		if (this.closed) return;
+		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeKey());
+		if (this.resize.input(data)) {
+			// The resize handle consumed the key.
+		} else if (this.surface === "threads") this.threads?.handleInput(data);
+		else if (this.surface === "efforts") this.efforts?.handleInput(data);
+		else {
+			this.notice = this.notice?.kind === "pending" ? this.notice : undefined;
+			const menu = this.openMenu();
+			if (menu) menu.bar.handleInput(data, menu.actions);
+			else this.routeKey(data);
+		}
+		this.redraw();
+	}
+
+	private currentActions(): Action[] {
+		return this.console ? this.targetActions() : this.viewActions();
+	}
+
+	/** The open More menu of the heading or the target controls, with the actions it lists. */
+	private openMenu(): { readonly bar: ActionBar; readonly actions: Action[] } | undefined {
+		if (this.headingBar.menuShown) return { bar: this.headingBar, actions: this.viewActions() };
+		if (this.controls.menuShown) return { bar: this.controls, actions: this.currentActions() };
+		return undefined;
+	}
+
+	private routeKey(data: string): void {
+		const tab = matchesKey(data, "tab") || matchesKey(data, "shift+tab");
+		const completing = this.region === "composer" && (this.console?.composer.autocompleteRows ?? 0) > 0;
+		if (tab && completing) this.console?.composer.handleInput(data);
+		else if (tab) this.traverse(matchesKey(data, "shift+tab"));
+		else if (this.region === "inspector" && this.inspector) this.inspector.frame.handleInput(data);
+		else if (this.transcriptKeys(data)) {
+			// Expansion, thinking and paging keys apply to the conversation from any region.
+		} else if (this.region === "composer" && this.console) this.composerKey(data);
+		else if (this.region === "controls") this.controlsKey(data);
+		else if (this.region === "heading") this.headingKey(data);
+		else if (this.region === "conversation") this.conversationKey(data);
+		else this.listKey(data);
+	}
+
+	private headingKey(data: string): void {
+		if (matchesKey(data, "escape")) this.region = this.console ? "composer" : "list";
+		else this.headingBar.handleInput(data, this.viewActions());
+	}
+
+	private composerKey(data: string): void {
+		if (matchesKey(data, "ctrl+v")) this.show("This field accepts text, not file or image attachments", "warning");
+		else this.console?.composer.handleInput(data);
+	}
+
+	private controlsKey(data: string): void {
+		if (matchesKey(data, "escape")) {
+			this.region = this.console ? "composer" : "list";
+			return;
+		}
+		this.controls.handleInput(data, this.currentActions());
+	}
+
+	private conversationKey(data: string): void {
+		const conversation = this.console?.conversation;
+		if (!conversation) return;
+		if (matchesKey(data, "escape")) {
+			this.region = "list";
+			return;
+		}
+		if (matchesKey(data, "up") || matchesKey(data, "down")) this.wheelConversation(matchesKey(data, "up") ? -1 : 1);
+		else if (matchesKey(data, "end")) {
+			const state = this.console?.state;
+			if (state) {
+				state.view.follow = true;
+				state.view.anchor = undefined;
+				conversation.invalidate();
+			}
+		} else if (matchesKey(data, "enter")) this.region = "composer";
+	}
+
+	private listKey(data: string): void {
+		if (matchesKey(data, "escape")) this.listEscape();
+		else if (matchesKey(data, "up") || matchesKey(data, "down")) this.move(matchesKey(data, "up") ? -1 : 1);
+		else if (matchesKey(data, "enter")) this.listEnter();
+		// Typing over the list writes into its visible Find field.
+		else if (data.length >= 1 && !data.startsWith("\u001b")) this.find.handleInput(data);
+	}
+
+	/** Escape over the list clears an active search first, then returns to Threads or leaves the view. */
+	private listEscape(): void {
+		const back = this.returnSurface;
+		if (!this.state.filter && back) {
+			this.returnSurface = undefined;
+			this.saveConsole();
+			this.surface = back;
+			this.hits.clear();
+			return;
+		}
+		if (!this.state.filter) {
+			this.exit();
+			return;
+		}
+		this.find.value = "";
+		this.setFilter("");
+	}
+
+	private listEnter(): void {
+		if (this.loadMore) this.loadMoreAgents();
+		else if (this.console) this.region = "composer";
+		else if (this.emptyStore()) this.openNew();
+	}
+
+	private exit(): void {
+		if (this.operations.exitLabel === "Detach") {
+			this.show("Detach closes this terminal; it is the control at the bottom right.", "info");
+			return;
+		}
+		this.dispose();
+		this.done();
+	}
+
+	private transcriptKeys(data: string): boolean {
+		const console = this.console;
+		if (!console || this.region === "inspector") return false;
+		if (this.keys.matches(data, "app.tools.expand") || matchesKey(data, "ctrl+o")) {
+			console.state.view.expanded = !console.state.view.expanded;
+			console.state.view.toolExpanded.clear();
+			this.reloadContent();
+			return true;
+		}
+		if (this.keys.matches(data, "app.thinking.toggle") || matchesKey(data, "ctrl+t")) {
+			console.state.view.showThinking = !console.state.view.showThinking;
+			this.reloadContent();
+			return true;
+		}
+		if (!matchesKey(data, "pageUp") && !matchesKey(data, "pageDown")) return false;
+		const up = matchesKey(data, "pageUp");
+		if (up && console.conversation.atTop()) this.earlier();
+		else if (!up && console.conversation.atBottom() && this.history.newer()) void this.readHistory(this.history.newer()?.upper);
+		else console.conversation.page((up ? -1 : 1) * Math.max(1, this.bodyHeight - 1));
+		return true;
+	}
+
+	private move(delta: number): void {
+		this.rosterScroll = undefined;
+		const index = this.rows.findIndex((row) => row.id === this.state.selected);
+		const next = index + delta;
+		if (this.loadMore && delta < 0) {
+			this.loadMore = false;
+			return;
+		}
+		if (next >= this.rows.length && this.page?.coverage.nextCursor) {
+			this.loadMore = true;
+			return;
+		}
+		this.loadMore = false;
+		this.pinned = undefined;
+		this.state.selected = this.rows[Math.max(0, Math.min(this.rows.length - 1, next))]?.id;
+		this.reconcile();
+	}
+
+	private loadMoreAgents(): void {
+		const cursor = this.page?.coverage.nextCursor ?? undefined;
+		this.rosterNotice = "Loading more agents…";
+		queueMicrotask(() => void this.refreshRoster(cursor));
+	}
+
+	private emptyStore(): boolean {
+		return Boolean(this.page?.coverage.complete && !this.page.rows.length && !this.state.filter);
+	}
+
 	private wheelConversation(delta: number): void {
 		const conversation = this.console?.conversation;
 		if (!conversation) return;
 		if (delta < 0 && conversation.atTop()) this.earlier();
-		else if (delta > 0 && conversation.atBottom() && this.history.newer())
-			void this.readHistory(this.history.newer()?.upper);
+		else if (delta > 0 && conversation.atBottom() && this.history.newer()) void this.readHistory(this.history.newer()?.upper);
 		else conversation.page(delta);
 		this.redraw();
 	}
+
 	private reloadContent(): void {
 		this.setConversation(this.console ? this.source.frame(this.console.row.id)?.live : []);
 		this.redraw();
 	}
 
-	private title(): string {
-		const screen = this.navigation.screen;
-		const names: Partial<Record<typeof screen, string>> = {
-			help: "Agents > Help",
-			tasks: "Agents > Tasks",
-			result: "Agents > Details",
-		};
-		if (names[screen]) return names[screen];
-		if (screen === "console" || screen === "actions")
-			return `Agents > ${this.console ? agentDisplayName(this.console.row) : "Agent"}${screen === "actions" ? " > Actions" : ""}`;
-		return this.primaryId ? `Agents > ${this.allAgents ? "All" : "Related"}${this.sessionFigures ? ` · ${this.sessionFigures.replace(/^agents:\s*/u, "")}` : ""}` : this.sessionFigures ? this.sessionFigures.replace(/^agents/, "Agents") : "Agents";
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (this.closed) return undefined;
+		if (this.surface === "threads") return this.threads?.handleMouse(event);
+		if (this.surface === "efforts") return this.efforts?.handleMouse(event);
+		// A pointer event drawn for another size acts on nothing and ends a resize at its committed layout.
+		if (event.width !== this.tui.terminal.columns || event.height !== this.tui.terminal.rows) return this.resize.cancel() ? { handled: true, render: true } : undefined;
+		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeKey());
+		return this.resize.handle(event) ?? this.hits.handle(event) ?? this.paneMouse(event);
 	}
-	private heading(width: number): string {
-		let position = "";
-		if (this.navigation.screen === "actions" && this.console)
-			position = `${this.actionIndex + 1}/${dashboardActions(this.console.row).length} actions`;
-		else if (["roster", "find", "message", "console"].includes(this.navigation.screen)) {
-			const index = this.rows.findIndex((row) => row.id === this.state.selected);
-			position = `${index + 1}/${this.rows.length}${this.page?.coverage.complete ? "" : "+"}`;
-		}
-		return dashboardHeading(this.operations.newAgent ? this.title() : `${this.title()} · New unavailable`, position, width, this.theme);
-	}
-	private actionLines(): string[] {
-		if (!this.console) return [];
-		const choices = dashboardActions(this.console.row);
-		const capacity = Math.max(1, Math.floor((this.bodyHeight - 2) / 2));
-		const start = Math.max(0, Math.min(choices.length - capacity, this.actionIndex - Math.floor(capacity / 2)));
-		const visible = choices.slice(start, start + capacity);
-		for (let index = 0; index < visible.length; index++)
-			this.mouse.add({
-				x: 0,
-				y: 1 + index * 2,
-				width: this.tui.terminal.columns,
-				height: 2,
-				click: () => {
-					this.actionIndex = start + index;
-				},
-			});
-		const lines = visible.flatMap((choice, index) => [
-			dashboardSelection(
-				`${start + index === this.actionIndex ? "›" : " "} ${choice.label}${choice.disabled ? ` · ${choice.disabled}` : ""}`,
-				this.tui.terminal.columns,
-				start + index === this.actionIndex,
-				this.theme,
-			),
-			this.theme.fg("muted", `  ${choice.description}`),
-		]);
-		if (visible.length < choices.length)
-			lines.push(`${this.actionIndex + 1}/${choices.length} actions · +${choices.length - visible.length} more`);
-		return lines;
-	}
-	private readerLines(width: number): string[] {
-		const help = this.operations.newAgent ? HELP : HELP.map((line) => line === "n starts a new agent." ? "New agent is unavailable. Enter an existing conversation." : line);
-		const source = this.navigation.screen === "help" ? ["Machine execution preferences", ...this.machinePreferences, "", ...help] : this.result.split("\n");
-		const content = source.flatMap((line) =>
-			wrapTextWithAnsi(
-				this.navigation.screen === "help" && ["Dashboard", "Messages", "Read", "Return"].includes(line)
-					? this.theme.bold(this.theme.fg("accent", line))
-					: line,
-				Math.max(1, width),
-			),
-		);
-		this.helpOffset = Math.max(0, Math.min(this.helpOffset, Math.max(0, content.length - this.bodyHeight)));
-		return content.slice(this.helpOffset, this.helpOffset + this.bodyHeight);
-	}
-	private renderModal(width: number, height: number): string[] {
-		this.bodyHeight = height - 3;
-		const screen = this.navigation.screen;
-		const body =
-			screen === "tasks"
-				? (this.tasks?.render(width, this.bodyHeight) ?? ["Reading tasks…"])
-				: screen === "actions"
-					? this.actionLines()
-					: this.readerLines(width);
-		this.mouse.add({
-			x: 0,
-			y: 1,
-			width,
-			height: this.bodyHeight,
-			wheel: (delta) => {
-				if (screen === "tasks") this.tasks?.scroll(delta);
-				else if (screen === "actions") {
-					const last = this.console ? dashboardActions(this.console.row).length - 1 : 0;
-					this.actionIndex = Math.max(0, Math.min(last, this.actionIndex + delta));
-				} else this.helpOffset = Math.max(0, this.helpOffset + delta);
-			},
-		});
-		if (screen === "tasks")
-			this.mouse.add({
-				x: 0,
-				y: 1,
-				width,
-				height: this.bodyHeight,
-				click: (event) => (this.tasks?.clickRow(event.y) ? undefined : false),
-			});
-		return [
-			this.heading(width),
-			...Array.from({ length: this.bodyHeight }, (_, index) => body[index] ?? ""),
-			(screen === "actions" ? this.console?.state.receipt : undefined) ?? this.notice ?? "",
-			this.inventory.footer(this.mouse, height - 1, width, this.backAction(), this.theme, false),
-		];
-	}
-	private messageLabel(): string {
-		if (this.navigation.screen === "new") return `New agent · Enter starts · ${this.creating ? "Starting…" : "Task"}`;
-		if (this.navigation.screen === "find") return "Find loaded agents · Enter keeps filter · Esc cancels";
-		return (
-			this.console?.messageLabel() ??
-			(this.operations.newAgent ? this.emptyStore() ? "Enter or n starts a new agent" : "No selected agent · n starts a new agent" : "Enter an existing conversation")
-		);
-	}
-	private statusText(): string {
-		if (this.console) {
-			return `${sessionAppearance[this.console.row.state].label} · ${activityOf(this.console.row)}`;
-		}
-		if (!this.page) return "Loading roster…";
-		if (this.state.filter) return `No agents match ${this.state.filter}`;
-		if (!this.allAgents) return this.relations.view().pending ? "Read related work…" : "No related agents in loaded evidence. v shows All agents; t opens Threads.";
-		return this.page.coverage.complete
-			? "No agents yet. Start an agent with a task in your own words."
-			: "Roster coverage incomplete";
-	}
-	private resizeValue(): string {
-		return this.resize.selected === "roster" ? `roster ${this.resizeColumns.roster} · detail ${this.resizeColumns.detail}` : `draft ${this.state.layout.composerRows ?? "auto"}`;
-	}
-	/** Every action of the current screen. Footer, menu, shortcuts and pointer all dispatch these records. */
-	private screenActions(): ScreenAction[] {
-		const screen = this.navigation.screen;
-		if (screen === "console" || screen === "message") return this.composerActions();
-		if (screen === "new") return [
-			{ id: "start", label: "Start", keys: ["enter"], main: true, run: () => this.newComposer.handleInput("\r") },
-			{ id: "newline", label: "Newline", keys: ["ctrl+j"], main: true, run: () => this.newComposer.handleInput("\n") },
-		];
-		if (screen === "find") return [{ id: "keep", label: "Keep filter", keys: ["tab"], main: true, run: () => this.find.onSubmit?.(this.find.getValue()) }];
-		if (screen === "help" || screen === "result") return this.readerActions();
-		if (screen === "actions") return [{ id: "choose", label: "Choose", keys: ["enter"], main: true, run: () => { void this.runAction(); } }];
-		if (screen === "tasks") return [
-			{ id: "open", label: "Open conversation", keys: ["enter"], main: true, run: () => this.tasks?.open() },
-			{ id: "refresh", label: "Refresh", keys: ["r"], main: true, run: () => { void this.tasks?.refresh(); } },
-		];
-		return this.rosterActions();
-	}
-	private composerActions(): ScreenAction[] {
-		const working = this.console?.row.state === "working";
-		return [
-			{ id: "send", label: "Send", keys: ["enter"], main: true, run: () => this.messageInput("\r") },
-			{ id: "mode", label: "Steer/follow-up", keys: ["tab"], main: true, disabled: working ? undefined : "Only a working agent has steer and follow-up", run: () => this.messageInput("\t") },
-			{ id: "newline", label: "Newline", keys: ["ctrl+j"], main: true, run: () => this.messageInput("\n") },
-		];
-	}
-	private readerActions(): ScreenAction[] {
-		return [
-			{ id: "up", label: "Scroll up", keys: ["up"], main: true, run: () => this.scrollReader(-1) },
-			{ id: "down", label: "Scroll down", keys: ["down"], main: true, run: () => this.scrollReader(1) },
-			{ id: "page-up", label: "Page up", keys: ["pageUp"], run: () => this.scrollReader(-this.bodyHeight) },
-			{ id: "page-down", label: "Page down", keys: ["pageDown"], run: () => this.scrollReader(this.bodyHeight) },
-			{ id: "start", label: "Top", keys: ["home"], run: () => this.scrollReader("start") },
-			{ id: "end", label: "Bottom", keys: ["end"], run: () => this.scrollReader("end") },
-		];
-	}
-	private rosterActions(): ScreenAction[] {
+
+	/** Pointer events for the conversation and the composer, in their own coordinates. */
+	private paneMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const g = this.geometry;
 		const console = this.console;
-		const needsAgent = !console || this.loadMore ? "Select an agent first" : undefined;
-		const canOpen = Boolean(console) || this.loadMore || this.emptyStore();
-		const canStart = Boolean(this.operations.newAgent);
-		return [
-			{ id: "open", label: this.loadMore ? "Load more" : this.emptyStore() ? "New agent" : "Open", keys: ["enter"], main: canOpen && (Boolean(console) || this.loadMore || canStart), disabled: canOpen ? undefined : "Select an agent first", run: () => this.rosterEnter() },
-			{ id: "message", label: "Message", keys: ["tab", "m"], main: !needsAgent, disabled: needsAgent, run: () => { if (console) this.navigation.enter("message", console.row.id); } },
-			{ id: "actions", label: "Actions", keys: ["a"], main: !needsAgent, description: "Control the selected agent: configure, fork, stop and more", disabled: needsAgent, run: () => { if (console) { this.actionIndex = 0; this.navigation.enter("actions", console.row.id); } } },
-			{ id: "tasks", label: "Tasks", description: "Live tasks of the selected agent", disabled: needsAgent, run: () => { if (console) this.openTasks(console.row.id); } },
-			...this.navigationActions(),
-		];
+		if (!console || event.x < g.paneX || event.x >= g.paneX + g.paneWidth) return undefined;
+		if (event.y >= g.conversationY && event.y < g.conversationY + g.conversationHeight && event.x < g.paneX + g.conversationWidth) {
+			if (event.type === "wheel") return undefined;
+			const result = console.conversation.handleMouse({ ...event, x: event.x - g.paneX, y: event.y - g.conversationY, width: Math.max(1, g.conversationWidth - 1), height: g.conversationHeight });
+			if (result) this.region = "conversation";
+			return result;
+		}
+		if (event.y >= g.composerY && event.y < g.composerY + g.composerHeight) {
+			const result = console.composer.handleMouse({ ...event, x: event.x - g.paneX, y: event.y - g.composerY, width: g.paneWidth, height: g.composerHeight });
+			if (result) this.region = "composer";
+			return result;
+		}
+		return undefined;
 	}
-	private navigationActions(): ScreenAction[] {
-		const { collaborate, efforts, newAgent } = this.operations;
-		const missing = (what: string) => `${what} unavailable. Restart this Pi window with the current agent extension.`;
-		return [
-			{ id: "threads", label: "Threads", keys: ["t"], main: Boolean(collaborate), navigation: Boolean(collaborate), description: "Shared purpose threads", disabled: collaborate ? undefined : missing("Threads"), run: () => this.openThreads() },
-			{ id: "efforts", label: "Efforts", keys: ["b"], main: Boolean(efforts), navigation: Boolean(efforts), description: "Related efforts", disabled: efforts ? undefined : missing("Related efforts"), run: () => this.openEfforts() },
-			{ id: "new", label: "New agent", keys: ["n"], main: Boolean(newAgent), navigation: Boolean(newAgent), disabled: newAgent ? undefined : "New agent is unavailable. Enter an existing conversation.", run: () => this.openNew() },
-			{ id: "view", label: this.allAgents ? "Related agents" : "All agents", keys: ["v"], main: this.rows.length === 0 && Boolean(this.primaryId), disabled: this.primaryId ? undefined : "Related needs a current session. All loaded agents are shown.", run: () => { this.allAgents = !this.allAgents; this.rosterScroll = undefined; this.loadMore = false; this.reconcile(); } },
-			{ id: "find", label: "Find", keys: ["/"], run: () => { this.findBefore = { filter: this.state.filter, selected: this.state.selected }; this.find.setValue(this.state.filter); this.navigation.enter("find"); } },
-			{ id: "time", label: this.state.exactTime ? "Relative times" : "Exact times", keys: ["i"], run: () => { this.state.exactTime = !this.state.exactTime; } },
-			{ id: "help", label: "Help", keys: ["?"], run: () => { this.helpOffset = 0; this.navigation.enter("help"); } },
-		];
+
+	// --- render -------------------------------------------------------------
+
+	private resizeKey(): string {
+		return `${this.surface}:${this.inspector ? "inspector" : "work"}`;
 	}
-	private backAction(): ScreenAction {
-		const screen = this.navigation.screen;
-		const label = screen === "console" ? (this.navigation.previousScreen === "threads" ? "Participants" : "Dashboard")
-			: screen === "find" ? "Cancel find" : screen === "roster" ? (this.state.filter ? "Clear find" : "Close") : "Back";
-		return { id: "back", label, keys: ["escape"], run: () => this.back() };
+
+	render(width: number): string[] {
+		const height = this.tui.terminal.rows;
+		this.resize.begin(width, height, this.resizeKey());
+		this.hits.begin(width, height);
+		if (this.surface === "efforts") return this.efforts?.render(width, height) ?? [];
+		if (this.surface === "threads") return this.threads?.render(width, height) ?? [];
+		if (width < 60 || height < 16) return Array.from({ length: height }, (_, row) => fitLine(row === 0 ? "Make the window larger to use Agents (60×16). Esc leaves." : "", width));
+		const body = this.renderWork(width, height);
+		this.resize.end();
+		return body.map((line) => fitLine(line, width));
 	}
-	private hintLine(width: number): string {
-		const lead = this.resize.selected ? this.resizeValue() : "";
-		return this.inventory.footer(this.mouse, this.tui.terminal.rows - 1, width, this.backAction(), this.theme, ["roster"].includes(this.navigation.screen), lead);
+
+	private renderHeading(width: number): string {
+		const theme = this.theme;
+		const title = theme.bold(theme.fg("accent", " Agents "));
+		let x = visibleWidth(" Agents ") + 1;
+		let line = `${title} `;
+		if (this.primaryId) {
+			for (const [all, label] of [[false, "Related"], [true, "All"]] as const) {
+				const text = ` ${label} `;
+				const active = this.allAgents === all;
+				line += active ? theme.bg("selectedBg", theme.bold(text)) : theme.fg("muted", text);
+				this.hits.add({ x, y: 0, width: visibleWidth(text), height: 1, click: () => { this.allAgents = all; this.rosterScroll = undefined; this.reconcile(); } });
+				x += visibleWidth(text);
+			}
+			line += " ";
+			x += 1;
+		}
+		const listLabel = this.state.layout.listHidden ? " Show list " : " Hide list ";
+		line += theme.fg("muted", listLabel);
+		this.hits.add({ x, y: 0, width: visibleWidth(listLabel), height: 1, click: () => this.toggleList() });
+		x += visibleWidth(listLabel) + 1;
+		const actions = this.viewActions();
+		const barWidth = ActionBar.measure(actions);
+		const exit = ` ${this.operations.exitLabel ?? "Close"} `;
+		const figures = this.sessionFigures ? theme.fg("muted", ` ${plainLine(this.sessionFigures)} `) : "";
+		const right = visibleWidth(figures) + visibleWidth(exit);
+		const barHits = new HitMap();
+		barHits.begin(width, 1);
+		const barRoom = Math.max(0, Math.min(barWidth, width - x - right - 1));
+		this.headingBar.focused = this.focused && this.region === "heading";
+		const bar = this.headingBar.render(actions, barRoom, theme, barHits, 0);
+		this.hits.include(barHits, x, 0);
+		const gap = Math.max(1, width - x - barRoom - right);
+		this.hits.add({ x: width - visibleWidth(exit), y: 0, width: visibleWidth(exit), height: 1, click: () => this.exitControl() });
+		return `${line}${bar}${" ".repeat(gap)}${figures}${theme.fg("accent", exit)}`;
 	}
-	private rosterViewport(width: number, height: number, compact: boolean, y: number): string[] {
-		const lines = rosterLines(
-			this.rows,
-			this.loadMore ? undefined : this.state.selected,
-			width,
-			height,
-			Date.now(),
-			this.theme,
-			compact,
-			{
-				primaryId: this.primaryId,
-				start: this.rosterScroll,
-				exactTime: this.state.exactTime,
-				range: (start, maxStart) => {
-					this.rosterStart = start;
-					this.rosterMaxStart = maxStart;
-				},
-				row: (row, line, count) =>
-					this.mouse.add({ x: 0, y: y + line, width, height: count, click: () => this.mouseSelect(row.id) }),
-				timestamp: (_row, line, x, timeWidth) =>
-					this.mouse.add({
-						x,
-						y: y + line,
-						width: timeWidth,
-						height: 1,
-						click: () => {
-							this.state.exactTime = !this.state.exactTime;
-						},
-					}),
+
+	private exitControl(): void {
+		if (this.operations.exitLabel === "Detach") {
+			this.dispose();
+			this.done();
+			return;
+		}
+		this.exit();
+	}
+
+	private toggleList(): void {
+		this.state.layout.listHidden = !this.state.layout.listHidden;
+		if (this.state.layout.listHidden && this.region === "list" && this.console) this.region = "composer";
+		try {
+			this.operations.saveLayout?.({ ...this.state.layout });
+		} catch {
+			// The choice still applies to this view.
+		}
+		this.redraw();
+	}
+
+	private renderWork(width: number, height: number): string[] {
+		const heading = this.renderHeading(width);
+		const bodyHeight = height - 2;
+		const wide = width >= 100;
+		const showList = !this.state.layout.listHidden || !this.console;
+		const shape = dashboardGeometry(width, height, 0, false, 0, 4, this.state.layout);
+		const listWidth = showList && wide ? shape.rosterWidth : 0;
+		this.resizeColumns = { list: listWidth, pane: width - listWidth - 1 };
+		let body: string[];
+		if (listWidth) body = this.renderSplit(width, bodyHeight, listWidth);
+		else if (showList) {
+			// A narrow window stacks the list above the conversation; a short one lists fewer rows.
+			const strip = this.renderList(width, bodyHeight >= 24 ? 5 : bodyHeight >= 20 ? 4 : 3, 0, 1, true);
+			body = [...strip, ...this.renderPane(0, 1 + strip.length, width, bodyHeight - strip.length)];
+		} else body = this.renderPane(0, 1, width, bodyHeight);
+		return [heading, ...body.slice(0, bodyHeight), this.renderFooter(width, height - 1)];
+	}
+
+	/** The list beside the pane, with the divider that resizes them. */
+	private renderSplit(width: number, bodyHeight: number, listWidth: number): string[] {
+		const list = this.renderList(listWidth - 1, bodyHeight, 0, 1);
+		const pane = this.renderPane(listWidth + 1, 1, width - listWidth - 1, bodyHeight);
+		this.resize.add({ kind: "roster", x: listWidth - 1, y: 1, width: 2, height: bodyHeight, value: listWidth, min: 24, max: width - 1 - 60 });
+		const active = this.resize.active("roster");
+		const lit = active || this.resize.hover === "roster" || this.region === "list";
+		const divider = this.theme.fg(lit ? "accent" : "borderMuted", active ? "┃" : "│");
+		return pane.map((line, row) => fitLine(list[row] ?? "", listWidth) + divider + fitLine(line, width - listWidth - 1));
+	}
+
+	private renderList(width: number, height: number, x0: number, y0: number, compact = false): string[] {
+		const theme = this.theme;
+		this.find.focused = this.focused && this.region === "list";
+		// A compact strip keeps its facts beside Find, so each other row lists an agent.
+		const facts = compact ? this.listFacts() : undefined;
+		const factsWidth = facts ? Math.min(Math.floor(width / 2), visibleWidth([facts.text, facts.more].filter(Boolean).join(" "))) : 0;
+		const findWidth = factsWidth ? width - factsWidth - 1 : width;
+		const findLine = this.find.render(findWidth, theme, 6, "type to find agents");
+		this.hits.add({ x: x0, y: y0, width: findWidth, height: 1, click: (event) => ({ ...this.find.handleMouse(event, 6), ...this.focusRegion("list") }) });
+		const rosterHeight = Math.max(1, height - (compact ? 1 : 2));
+		const lines = rosterLines(this.rows, this.loadMore ? undefined : this.state.selected, width, rosterHeight, Date.now(), theme, compact, {
+			primaryId: this.primaryId,
+			start: this.rosterScroll,
+			exactTime: this.state.exactTime,
+			range: (start, maxStart) => {
+				this.rosterStart = start;
+				this.rosterMaxStart = maxStart;
 			},
-		);
-		this.mouse.add({
-			x: 0,
-			y,
-			width,
-			height,
-			wheel: (delta) => {
-				this.rosterScroll = Math.max(0, Math.min(this.rosterMaxStart, this.rosterStart + delta));
-				this.redraw();
-			},
+			row: (row, line, count) => this.hits.add({ x: x0, y: y0 + 1 + line, width, height: count, click: () => this.pick(row.id) }),
+			timestamp: (_row, line, x, timeWidth) => this.hits.add({ x: x0 + x, y: y0 + 1 + line, width: timeWidth, height: 1, click: () => { this.state.exactTime = !this.state.exactTime; } }),
 		});
-		if (!this.rows.length && this.page?.rows.length)
-			lines[lines.length - 1] = `0 matches of ${this.page.rows.length} loaded`;
-		return lines;
+		this.hits.add({ x: x0, y: y0 + 1, width, height: rosterHeight, wheel: (delta) => { this.rosterScroll = Math.max(0, Math.min(this.rosterMaxStart, this.rosterStart + delta)); } });
+		const empty = this.listEmpty();
+		if (empty) lines.splice(0, 1, theme.fg("muted", empty));
+		const body = Array.from({ length: rosterHeight }, (_, row) => lines[row] ?? "");
+		if (compact) {
+			const top = factsWidth ? `${fitLine(findLine, findWidth)} ${this.listFooter(factsWidth, x0 + findWidth + 1, y0)}` : findLine;
+			return [top, ...body].map((line) => fitLine(line, width));
+		}
+		return [findLine, ...body, this.listFooter(width, x0, y0 + height - 1)].map((line) => fitLine(line, width));
 	}
-	private loadMoreLine(width: number, y: number): string {
-		if (!this.page?.coverage.nextCursor) return "";
-		this.mouse.add({
-			x: 0,
-			y,
-			width,
-			height: 1,
-			click: () => {
-				this.loadMore = true;
-				this.rosterEnter();
-			},
-		});
-		return this.loadMore ? "› Load more agents" : "Load more agents";
+
+	private focusRegion(region: Region): TuiMouseEventResult {
+		this.region = region;
+		return { handled: true, focus: true };
 	}
-	private relationNotice(): string | undefined {
-		if (this.allAgents) return undefined;
-		const related = this.relations.view();
-		return related.pending ? "Read relations…" : related.partial ? "Relations partial" : undefined;
+
+	private pick(id: string): undefined | false {
+		if (!this.rows.some((row) => row.id === id)) return false;
+		this.pinned = undefined;
+		this.region = "list";
+		this.state.selected = id;
+		this.loadMore = false;
+		this.reconcile();
+		return undefined;
 	}
-	private rosterFooter(summary: string, width: number, y: number): string {
-		const action = this.loadMoreLine(width, y);
-		if (this.rosterNotice) return this.theme.fg("muted", fitLine(cleanDashboardText(this.rosterNotice).replace(/\s+/g, " "), width));
+
+	private listEmpty(): string | undefined {
+		if (this.rows.length) return undefined;
+		if (!this.page) return "Reading agents…";
+		if (this.state.filter) return `No agent matches “${plainLine(this.state.filter)}”.`;
+		if (!this.allAgents) return this.relations.view().pending ? "Reading related work…" : "No related agents yet. All shows every loaded agent.";
+		return this.page.coverage.complete ? "No agents yet. New conversation starts one." : "The agent list is incomplete.";
+	}
+
+	/** The list's coverage facts and, when more agents exist, the Load more control. */
+	private listFacts(): { readonly text: string; readonly tone: "warning" | "muted"; readonly more?: string } {
+		if (this.rosterNotice) return { text: plainLine(this.rosterNotice), tone: "warning" };
 		const coverage = this.page?.coverage;
 		const facts: string[] = [];
+		if (!this.allAgents) {
+			const related = this.relations.view();
+			if (related.pending) facts.push("reading relations");
+			else if (related.partial) facts.push("relations partial");
+		}
 		if (coverage?.skipped) facts.push(`${coverage.skipped} unreadable`);
 		if (coverage?.omitted) facts.push(`${coverage.omitted} omitted`);
-		if (coverage && !coverage.complete && !coverage.nextCursor && !facts.length) facts.push("Incomplete");
-		const relationNotice = this.relationNotice();
-		if (relationNotice) facts.unshift(relationNotice);
-		const loaded = cleanDashboardText(summary);
-		let parts = [loaded, ...facts, action].filter(Boolean);
-		if (visibleWidth(parts.join(" · ")) > width) {
-			parts = [loaded, ...facts, action ? this.loadMore ? "› More" : "More" : ""].filter(Boolean);
-		}
-		const text = parts.join(" · ");
-		return this.theme.fg("muted", fitLine(visibleWidth(text) <= width ? text : parts.join("  "), width));
+		if (coverage?.nextCursor) return { text: facts.join(" · "), tone: "muted", more: this.loadMore ? "› Load more" : "Load more" };
+		if (coverage && !coverage.complete && !facts.length) facts.push("incomplete");
+		return { text: facts.join(" · "), tone: "muted" };
 	}
-	private selectedHeader(width: number): string[] {
-		if (this.navigation.screen === "new") return [this.theme.bold("New agent"), this.theme.fg("muted", "Machine default preset and primary directory"), this.theme.fg("muted", fitLine(this.machinePreferences[0], width))];
+
+	private listFooter(width: number, x0: number, y: number): string {
+		const { text, tone, more } = this.listFacts();
+		if (!more) return this.theme.fg(tone, text);
+		const label = visibleWidth(more);
+		this.hits.add({ x: x0 + Math.max(0, width - label), y, width: label, height: 1, click: () => { this.loadMore = true; this.loadMoreAgents(); } });
+		return `${fitLine(this.theme.fg(tone, text), Math.max(0, width - label))}${this.theme.fg("accent", more)}`;
+	}
+
+	/** The target header, controls, conversation or inspector, and composer of the selected agent. */
+	private renderPane(x0: number, y0: number, width: number, height: number): string[] {
 		const console = this.console;
-		if (!console) return [this.statusText(), this.notice].filter((line): line is string => Boolean(line)).map((line) => this.theme.fg("muted", line));
+		if (!console) return this.renderNoSelection(x0, y0, width, height);
+		const header = this.renderTargetHeader(console, x0, y0, width);
+		// A fact line with nothing known, such as the metrics of an agent without a model, takes no row.
+		const status = console.statusLines(width, this.modelInfo(console), this.branches.get(console.row.cwd), this.delegatedFigures()).filter((line) => visibleWidth(line) > 0);
+		const top = [...header, ...status.map((line) => fitLine(line, width))];
+		const composer = this.renderComposer(console, width, Math.max(3, height - top.length - 4));
+		const middleHeight = Math.max(1, height - top.length - composer.length);
+		const middleY = y0 + top.length;
+		const middle = this.renderMiddle(console, x0, middleY, width, middleHeight);
+		const composerY = middleY + middle.length;
+		this.geometry = { ...this.geometry, paneX: x0, paneWidth: width, composerY, composerHeight: composer.length };
+		this.composerHits(console, x0, composerY, width, composer.length);
+		return [...top, ...middle, ...composer];
+	}
+
+	private modelInfo(console: AgentConsole): AgentModelInfo | undefined {
+		const model = console.row.model;
+		return model ? this.operations.modelInfo?.(model.provider, model.modelId) : undefined;
+	}
+
+	private renderNoSelection(x0: number, y0: number, width: number, height: number): string[] {
+		const theme = this.theme;
+		const lines = [
+			theme.bold("No conversation selected"),
+			"",
+			this.rows.length ? "Select an agent in the list to read its conversation." : "No agent is shown yet.",
+			this.operations.newAgent ? "New conversation starts one here." : (this.operations.newUnavailable ?? ""),
+		];
+		this.geometry = { ...this.geometry, paneX: x0, paneWidth: width, conversationY: y0, conversationHeight: 0, composerY: y0 + height, composerHeight: 0 };
+		const menu = this.openMenu();
+		if (menu) return this.renderMenu(menu, x0, y0, width, height);
+		if (this.inspector) return this.renderInspector(x0, y0, width, height);
+		return Array.from({ length: height }, (_, row) => fitLine(lines[row] ? ` ${lines[row]}` : "", width));
+	}
+
+	private renderTargetHeader(console: AgentConsole, x0: number, y0: number, width: number): string[] {
+		const theme = this.theme;
 		const row = console.row;
 		const appearance = sessionAppearance[row.state];
-		const state = truncateToWidth(`${appearance.glyph} ${appearance.label}`, Math.floor(width / 2), "…");
-		const name = this.theme.bold(this.theme.fg("text", titleOf(row)));
-		const lines = [`${fitLine(name, Math.max(1, width - visibleWidth(state) - 2))}  ${this.theme.fg(appearance.color, state)}`];
+		const actions = this.targetActions();
+		const name = theme.bold(theme.fg("text", plainLine(titleOf(row))));
+		const project = theme.fg("muted", ` · ${plainLine(projectOf(row))}`);
+		const state = theme.fg("muted", " · ") + theme.fg(appearance.color, `${appearance.glyph} ${appearance.label}`);
+		// Name, project and state keep their width first; controls that do not fit move into More,
+		// and the first control with More always stays visible.
+		const need = visibleWidth(` ${name}${project}${state}`);
+		const first = actions.find((action) => action.primary);
+		const least = first ? ActionBar.measure([first, { ...first, id: "more", primary: false }]) : 0;
+		const barWidth = Math.min(ActionBar.measure(actions), Math.max(least, width - need - 1));
+		const left = this.targetTitle(name, project, state, Math.max(1, width - barWidth - 1));
+		this.controls.focused = this.focused && this.region === "controls";
+		const barHits = new HitMap();
+		barHits.begin(this.tui.terminal.columns, this.tui.terminal.rows);
+		const bar = this.controls.render(actions, barWidth, theme, barHits, 0);
+		this.hits.include(barHits, x0 + width - barWidth, y0);
+		const lines = [`${left} ${bar}`];
 		const reason = attentionReason(row);
-		if (reason) lines.push(this.theme.fg("error", reason));
-		if (console.warning) lines.push(this.theme.fg("warning", console.warning));
-		if (this.notice) lines.push(this.theme.fg("warning", this.notice));
-		return lines.map((line) => fitLine(line, width));
+		if (reason) lines.push(fitLine(theme.fg("error", ` ${plainLine(reason)}`), width));
+		if (console.warning) lines.push(fitLine(theme.fg("warning", ` ${plainLine(console.warning)}`), width));
+		if (this.notice) lines.push(fitLine(this.noticeText(this.notice), width));
+		return lines;
 	}
-	private conversationBoundary(width: number): string {
-		const console = this.console;
-		const position = console?.conversation.position();
+
+	/** Name, project and state in `room` columns: the project goes first, then the name shortens; the state stays. */
+	private targetTitle(name: string, project: string, state: string, room: number): string {
+		const full = ` ${name}${project}${state}`;
+		if (visibleWidth(full) <= room) return fitLine(full, room);
+		const short = ` ${name}${state}`;
+		const stateWidth = visibleWidth(state);
+		if (visibleWidth(short) <= room || room <= stateWidth + 4) return fitLine(short, room);
+		return fitLine(` ${fitLine(name, room - stateWidth - 1)}${state}`, room);
+	}
+
+	private noticeText(notice: Notice): string {
+		const colour = notice.kind === "error" ? "error" : notice.kind === "warning" ? "warning" : notice.kind === "success" ? "success" : "muted";
+		return this.theme.fg(colour, ` ${notice.text}`);
+	}
+
+	/** Conversation, or the inspector beside or instead of it. */
+	private renderMiddle(console: AgentConsole, x0: number, y0: number, width: number, height: number): string[] {
+		const menu = this.openMenu();
+		if (menu) return this.renderMenu(menu, x0, y0, width, height);
+		const beside = this.inspector && width >= 120;
+		const conversationWidth = this.inspector ? (beside ? Math.floor(width * 0.52) : 0) : width;
+		if (!conversationWidth && this.inspector) {
+			this.geometry = { ...this.geometry, conversationY: y0, conversationHeight: 0, conversationWidth: 0 };
+			return this.renderInspector(x0, y0, width, height);
+		}
+		const conversation = this.renderConversation(console, x0, y0, conversationWidth, height);
+		if (!beside) return conversation;
+		const inspectorWidth = width - conversationWidth - 1;
+		const inspector = this.renderInspector(x0 + conversationWidth + 1, y0, inspectorWidth, height);
+		const divider = this.theme.fg(this.region === "inspector" ? "accent" : "borderMuted", "│");
+		return conversation.map((line, row) => `${fitLine(line, conversationWidth)}${divider}${fitLine(inspector[row] ?? "", inspectorWidth)}`);
+	}
+
+	private renderMenu(menu: { readonly bar: ActionBar; readonly actions: Action[] }, x0: number, y0: number, width: number, height: number): string[] {
+		const menuHits = new HitMap();
+		menuHits.begin(this.tui.terminal.columns, this.tui.terminal.rows);
+		const lines = menu.bar.renderMenu(menu.actions, width, height, this.theme, menuHits, 0);
+		this.hits.include(menuHits, x0, y0);
+		this.geometry = { ...this.geometry, conversationY: y0, conversationHeight: 0, conversationWidth: 0 };
+		return Array.from({ length: height }, (_, row) => fitLine(lines[row] ?? "", width));
+	}
+
+	private renderInspector(x0: number, y0: number, width: number, height: number): string[] {
+		const inspector = this.inspector;
+		if (!inspector) return [];
+		this.inspectorRows = height;
+		inspector.frame.focused = this.focused && this.region === "inspector";
+		const lines = inspector.frame.render(width);
+		this.hits.add({
+			x: x0,
+			y: y0,
+			width,
+			height,
+			click: (event) => {
+				const result = inspector.frame.handleMouse({ ...event, x: event.x, y: event.y, width, height });
+				this.region = "inspector";
+				return result ?? { handled: true, focus: true };
+			},
+			wheel: (delta) => {
+				inspector.frame.handleMouse({ type: "wheel", button: "none", x: 0, y: Math.floor(height / 2), screenX: x0, screenY: y0, width, height, shift: false, alt: false, ctrl: false, wheelDelta: delta });
+			},
+		});
+		return lines;
+	}
+
+	private renderConversation(console: AgentConsole, x0: number, y0: number, width: number, height: number): string[] {
+		const boundary = this.conversationBoundary(console, width);
+		if (height <= 1) {
+			this.geometry = { ...this.geometry, conversationY: y0 + 1, conversationHeight: 0, conversationWidth: width };
+			return [boundary];
+		}
+		const bodyHeight = Math.max(1, height - 1);
+		this.bodyHeight = bodyHeight;
+		const lines = console.conversation.render(Math.max(1, width - 1), bodyHeight);
+		const position = console.conversation.position();
+		this.geometry = { ...this.geometry, conversationY: y0 + 1, conversationHeight: bodyHeight, conversationWidth: width };
+		this.hits.add({ x: x0, y: y0 + 1, width, height: bodyHeight, wheel: (delta) => this.wheelConversation(delta) });
+		this.hits.add({ x: x0, y: y0, width, height: 1, click: () => { if (this.history.earlier()) this.earlier(); return undefined; } });
+		const scrolled = position && position.total > bodyHeight;
+		const thumb = scrolled ? Math.max(1, Math.round((bodyHeight * bodyHeight) / position.total)) : 0;
+		const thumbTop = scrolled ? Math.round(((bodyHeight - thumb) * (position.first - 1)) / Math.max(1, position.total - bodyHeight)) : 0;
+		const body = lines.map((line, row) => {
+			if (!scrolled) return fitLine(line, width);
+			const inThumb = row >= thumbTop && row < thumbTop + thumb;
+			return fitLine(line, width - 1) + this.theme.fg(inThumb ? "scrollbarThumb" : "scrollbarTrack", inThumb ? "┃" : "│");
+		});
+		return [boundary, ...body];
+	}
+
+	private conversationBoundary(console: AgentConsole, width: number): string {
+		const position = console.conversation.position();
 		let label = "";
-		if (console?.status && console.status !== "Partial history") label = console.status;
+		if (console.status && console.status !== "Partial history") label = console.status;
 		else if (position && !position.end) {
-			label = position.first <= 1 && (this.history.earlier() || console?.status === "Partial history")
-				? "Partial history · PgUp loads earlier"
-				: `↓ ${position.estimated ? "about " : ""}${position.total - position.last} lines below`;
-		} else if (this.history.newer()) label = "Newer messages available · PgDn loads more";
+			label = position.first <= 1 && (this.history.earlier() || console.status === "Partial history") ? "Earlier history · PageUp or click to read" : `↓ ${position.estimated ? "about " : ""}${position.total - position.last} lines below · End follows live output`;
+		} else if (this.history.newer()) label = "Newer messages available · PageDown reads them";
 		return dashboardRule(label, width, this.theme);
 	}
-	private transcriptLines(width: number, height: number): string[] {
-		const conversation = this.console?.conversation;
-		const lines = conversation?.render(Math.max(1, width - 1), height) ?? Array.from({ length: height }, () => "");
-		const position = conversation?.position();
-		if (!position || position.total <= height) return lines.map((line) => fitLine(line, width));
-		const thumb = Math.max(1, Math.round(height * height / position.total));
-		const top = Math.round((height - thumb) * (position.first - 1) / Math.max(1, position.total - height));
-		return lines.map((line, index) => fitLine(line, width - 1) + this.theme.fg(index >= top && index < top + thumb ? "scrollbarThumb" : "scrollbarTrack", index >= top && index < top + thumb ? "┃" : "│"));
-	}
-	private sizeComposer(composer: AgentComposer | undefined, maxRows: number): void {
-		if (!composer) return;
-		if (maxRows < MIN_COMPOSER_ROWS) { composer.setViewportRows(); composer.grip = undefined; return; }
+
+	/** A compact composer that grows with the draft, unless the operator resized or expanded it. */
+	/**
+	 * A compact message field that grows with the draft. A resized or expanded field grows only into
+	 * the rows the conversation can spare, and a window too short for that shows no resize grip.
+	 */
+	private sizeComposer(console: AgentConsole, room: number): void {
+		const composer = console.composer;
+		const grow = room - (CONVERSATION_ROWS - 1);
 		const requested = this.state.layout.composerRows;
-		composer.setViewportRows(requested === undefined ? undefined : clamp(requested, MIN_COMPOSER_ROWS, maxRows));
-		composer.grip = this.resize.active("composer") ? "active" : this.resize.hover === "composer" ? "hover" : "normal";
+		composer.limitRows(room);
+		if (this.expanded) composer.setViewportRows(clamp(Math.floor(grow * 0.7), MIN_COMPOSER_ROWS, Math.max(MIN_COMPOSER_ROWS, room)));
+		else if (requested !== undefined && grow >= MIN_COMPOSER_ROWS) composer.setViewportRows(clamp(requested, MIN_COMPOSER_ROWS, grow));
+		else composer.setViewportRows();
+		const grip = this.resize.active("composer") ? "active" : this.resize.hover === "composer" ? "hover" : "normal";
+		composer.grip = grow >= MIN_COMPOSER_ROWS ? grip : undefined;
 	}
-	private renderComposer(composer: AgentComposer | undefined, width: number, maxRows: number, availableRows: number): { editor: string[]; maxRows: number } {
-		if (!composer) return { editor: [], maxRows };
-		const render = () => composer.render(width, this.messageLabel(), "", this.navigation.screen === "new" ? this.notice : this.console?.state.receipt);
-		this.sizeComposer(composer, maxRows);
-		let editor = render();
-		if (composer.autocompleteRows) { maxRows -= composer.autocompleteRows; this.sizeComposer(composer, maxRows); editor = render(); }
-		if (editor.length > availableRows) { composer.setViewportRows(MIN_COMPOSER_ROWS); editor = render(); }
-		return { editor, maxRows };
+
+	private renderComposer(console: AgentConsole, width: number, maxRows: number): string[] {
+		const composer = console.composer;
+		composer.focused = this.focused && this.region === "composer";
+		this.sizeComposer(console, maxRows);
+		const working = console.row.state === "working";
+		const mode = working ? (console.state.mode === "steer" ? "Steer at next step ⇄" : "Follow-up after answer ⇄") : "Send";
+		const receipt = console.state.pending ? "Sending…" : (console.state.receipt ?? "");
+		const caption = `To ${plainLine(agentDisplayName(console.row))}`;
+		const lines = composer.render(width, caption, mode, receipt, ["Send", this.expanded ? "Shrink" : "Expand"]);
+		return lines.length > maxRows + 2 ? lines.slice(0, maxRows + 2) : lines;
 	}
-	private composerHandle(composer: AgentComposer | undefined, geometry: ReturnType<typeof dashboardGeometry>, paneX: number, paneY: number, headerRows: number, editorRows: number, maxRows: number): void {
-		if (!composer || maxRows < MIN_COMPOSER_ROWS) return;
+
+	private composerHits(console: AgentConsole, x0: number, y0: number, width: number, rows: number): void {
+		if (!rows) return;
+		const spans = console.composer.spans;
+		const bottom = y0 + rows - 1;
+		if (spans.mode && console.row.state === "working") this.hits.add({ x: x0 + spans.mode.x, y: y0, width: spans.mode.width, height: 1, click: () => this.toggleMode() });
+		const [send, expand] = spans.controls;
+		if (send) this.hits.add({ x: x0 + send.x, y: bottom, width: send.width, height: 1, click: () => void this.submit(console.composer.getText()) });
+		if (expand) this.hits.add({ x: x0 + expand.x, y: bottom, width: expand.width, height: 1, click: () => { this.expanded = !this.expanded; } });
+		if (console.composer.grip === undefined) return;
 		const requested = this.state.layout.composerRows;
-		const value = requested === undefined ? Math.max(MIN_COMPOSER_ROWS, editorRows - 2 - composer.autocompleteRows) : clamp(requested, MIN_COMPOSER_ROWS, maxRows);
-		this.resize.add({ kind: "composer", x: paneX + geometry.conversationWidth - 4, y: paneY + headerRows + geometry.bodyHeight, width: 3, height: 1, value, min: MIN_COMPOSER_ROWS, max: maxRows });
+		const value = requested ?? Math.max(MIN_COMPOSER_ROWS, rows - 2);
+		this.resize.add({ kind: "composer", x: x0 + width - 4, y: y0, width: 3, height: 1, value, min: MIN_COMPOSER_ROWS, max: Math.max(MIN_COMPOSER_ROWS, this.tui.terminal.rows - 12) });
 	}
-	private preferenceHeader(screen: string, width: number, remainingRows: number): string[] {
-		return screen === "console" || screen === "new" || remainingRows < MIN_COMPOSER_ROWS + 3 ? [] : [this.theme.fg("muted", fitLine(`${this.machinePreferences[0]} · ? file and presets`, width))];
+
+	/** The sizes a resize drag sets, shown while it lasts. */
+	private resizeFeedback(): string | undefined {
+		const selected = this.resize.selected;
+		if (selected === "roster") return `List ${this.resizeColumns.list} · conversation ${this.resizeColumns.pane} columns · release to keep · esc restores`;
+		if (selected === "composer") return `Message field ${this.state.layout.composerRows ?? "auto"} rows · release to keep · esc restores`;
+		return undefined;
 	}
-	private renderDashboard(width: number, height: number): string[] {
-		const screen = this.navigation.screen;
-		const composer = screen === "new" ? this.newComposer : this.console?.composer;
-		const reserved = screen === "find" ? 1 : 0;
-		const shape = dashboardGeometry(width, height, 0, screen === "console", reserved, 4, this.state.layout);
-		const paneWidth = shape.conversationWidth;
-		const model = screen === "new" ? undefined : this.console?.row.model;
-		const info = model ? this.operations.modelInfo?.(model.provider, model.modelId) : undefined;
-		const status = screen === "new" ? [] : this.console?.statusLines(paneWidth, info, this.branches.get(this.console.row.cwd), this.delegatedFigures()) ?? [];
-		const available = shape.paneHeight - status.length;
-		const selected = this.selectedHeader(paneWidth - 2);
-		const header = [...selected, ...this.preferenceHeader(screen, paneWidth - 2, available - selected.length)].map((line) => ` ${line} `);
-		const budget = dashboardPaneGeometry(available, header.length + 2, 0);
-		const editorLimit = Math.max(MIN_COMPOSER_ROWS + 2, available - header.length - 2);
-		const { editor, maxRows } = this.renderComposer(composer, paneWidth, budget.composerMaxRows, editorLimit);
-		const separators = Math.max(0, Math.min(2, available - header.length - editor.length));
-		const boundaryRows = Math.min(1, separators);
-		const headerRows = header.length + separators;
-		const geometry = { ...shape, ...dashboardPaneGeometry(available, headerRows, editor.length) };
-		this.resizeColumns = { roster: geometry.rosterWidth, detail: geometry.conversationWidth };
-		this.bodyHeight = geometry.bodyHeight;
-		const transcript = this.transcriptLines(paneWidth, geometry.bodyHeight);
-		const pane = [...header, ...[this.conversationBoundary(paneWidth)].slice(0, boundaryRows), ...transcript, ...Array<string>(separators - boundaryRows).fill(""), ...editor, ...status];
-		const bodyY = 1 + reserved;
-		const paneX = geometry.wide ? geometry.rosterWidth + 1 : 0;
-		const paneY = bodyY + geometry.rosterHeight;
-		if (geometry.wide) this.resize.add({ kind: "roster", x: geometry.rosterWidth - 1, y: bodyY, width: 2, height: geometry.paneHeight, value: geometry.rosterWidth, min: 24, max: width - 1 - 60 });
-		this.composerHandle(composer, geometry, paneX, paneY, headerRows, editor.length, maxRows);
-		this.resize.end();
-		this.mouse.add({
-			x: paneX, y: paneY + header.length, width: paneWidth, height: geometry.bodyHeight + boundaryRows,
-			click: (event) => {
-				if (!this.console || screen === "new" || screen === "find") return false;
-				if (event.y >= boundaryRows && event.x < paneWidth - 1) {
-					const handled = this.console.conversation.handleMouse({ ...event, y: event.y - boundaryRows, width: Math.max(1, paneWidth - 1), height: geometry.bodyHeight });
-					if (handled?.handled) return handled;
-				}
-				if (screen !== "console") {
-					if (this.operations.enter) this.operations.enter(this.console.row.id);
-					else this.navigation.enter("console", this.console.row.id);
-				}
-			},
-			wheel: (delta) => this.wheelConversation(delta),
-		});
-		this.mouse.add({
-			x: paneX, y: paneY + headerRows + geometry.bodyHeight, width: paneWidth, height: editor.length,
-			click: (event) => {
-				if (!composer) return false;
-				if (screen !== "new" && screen !== "console" && screen !== "message" && this.console)
-					this.navigation.enter("message", this.console.row.id);
-				composer.focused = true;
-				return composer.handleMouse(event);
-			},
-		});
-		let body: string[];
-		if (geometry.wide) {
-			const roster = this.rosterViewport(geometry.rosterWidth - 1, geometry.paneHeight, false, bodyY);
-			const last = Math.max(0, roster.length - 1);
-			roster[last] = this.rosterFooter(roster[last] ?? "", geometry.rosterWidth, bodyY + last);
-			body = pane.map((line, index) => fitLine(roster[index] ?? "", geometry.rosterWidth) + this.theme.fg(this.resize.active("roster") || this.resize.hover === "roster" ? "accent" : "borderMuted", this.resize.active("roster") ? "┃" : this.resize.hover === "roster" && index === Math.floor(geometry.paneHeight / 2) ? "┇" : "│") + fitLine(line, paneWidth));
-		} else if (screen === "console") body = pane;
-		else {
-			const roster = this.rosterViewport(width, 4, true, bodyY);
-			roster[3] = this.rosterFooter(roster[3] ?? "", width, bodyY + 3);
-			body = [...roster, ...pane];
-		}
-		if (reserved) {
-			body.unshift(this.find.render(width)[0] ?? "");
-			this.mouse.add({ x: 0, y: 1, width, height: 1, click: (event) => this.find.handleMouse({ ...event, type: "press" }) });
-		}
-		return [this.heading(width), ...body, this.hintLine(width)];
+
+	private renderFooter(width: number, y: number): string {
+		const theme = this.theme;
+		const hints: Record<Region, string> = {
+			list: "↑↓ select · enter write · type to find · tab next · esc close",
+			conversation: "↑↓ pgup pgdn read · end live · enter write · tab next · esc list",
+			composer: "enter send · ctrl+j new line · pgup earlier · tab next · esc list",
+			controls: "←→ choose · enter run · tab next · esc back",
+			inspector: "tab next field · enter next or run · esc back",
+			heading: "←→ choose · enter run · tab next · esc back",
+		};
+		let text = this.resizeFeedback() ?? hints[this.region];
+		if (this.returnSurface) text = text.replace("esc close", "esc back to the thread");
+		else if (this.operations.exitLabel === "Detach") text = text.replace("esc close", "detach at right");
+		const exit = ` ${this.operations.exitLabel ?? "Close"} `;
+		this.hits.add({ x: width - visibleWidth(exit), y, width: visibleWidth(exit), height: 1, click: () => this.exitControl() });
+		// A narrow footer drops middle hints first, so the first and the way back stay readable.
+		const room = width - visibleWidth(exit);
+		const parts = text.split(" · ");
+		while (parts.length > 2 && visibleWidth(` ${parts.join(" · ")}`) > room) parts.splice(parts.length - 2, 1);
+		return `${fitLine(theme.fg("dim", ` ${parts.join(" · ")}`), room)}${theme.fg("accent", exit)}`;
 	}
+
 	private delegatedFigures(): DelegatedFigures | undefined {
 		const parent = this.console?.row.id;
 		if (!parent || !this.page) return undefined;
 		const children = this.page.rows.filter((row) => row.creatingOwnerId === parent);
 		if (!children.length) return undefined;
 		const incomplete = !this.page.coverage.complete || this.page.coverage.skipped > 0 || this.page.coverage.omitted > 0 || this.page.coverage.nextCursor !== null;
-		return { active: children.filter((row) => row.state === "working" || row.state === "starting").length, total: children.length, incomplete, cost: children.every((row) => !row.partial && Number.isFinite(row.cost)) ? children.reduce((sum, row) => sum + row.cost, 0) : undefined };
+		return {
+			active: children.filter((row) => row.state === "working" || row.state === "starting").length,
+			total: children.length,
+			incomplete,
+			cost: children.every((row) => !row.partial && Number.isFinite(row.cost)) ? children.reduce((sum, row) => sum + row.cost, 0) : undefined,
+		};
 	}
-	private resizeScreen(): string { return `${this.navigation.screen}:${this.hidden}`; }
-	render(width: number): string[] {
-		const height = this.tui.terminal.rows;
-		this.resize.begin(width, height, this.resizeScreen());
-		this.mouse.reset(width, height);
-		this.mouseScreen = this.navigation.screen;
-		if (width < 60 || height < 20)
-			return Array.from({ length: height }, (_, index) =>
-				fitLine(index === 0 ? "Resize to use Agents. Esc back." : "", width),
-			);
-		if (this.navigation.screen === "efforts") return this.efforts?.render(width, height) ?? [];
-		const screen = this.navigation.screen;
-		this.newComposer.focused = screen === "new";
-		this.find.focused = screen === "find";
-		if (this.console) this.console.composer.focused = screen === "message" || screen === "console";
-		if (screen === "threads") return this.threads?.render(width, height) ?? [];
-		if (this.inventory.open) return this.inventory.render(width, height, "Agents", screen, this.theme).map((line) => fitLine(line, width));
-		const lines = ["help", "actions", "tasks", "result"].includes(screen)
-			? this.renderModal(width, height)
-			: this.renderDashboard(width, height);
-		return lines.map((line) => fitLine(line, width));
-	}
+
 	invalidate(): void {
-		this.mouse.reset();
-		this.inventory.invalidate();
+		this.hits.clear();
 		this.console?.conversation.invalidate();
 		this.console?.composer.invalidate();
-		this.newComposer.invalidate();
-		this.find.invalidate();
+		this.find.input.invalidate();
 		this.threads?.invalidate();
 		this.efforts?.invalidate();
+		this.inspector?.frame.invalidate();
 	}
+
 	dispose(): void {
 		if (this.closed) return;
 		this.resize.clear();
 		this.saveConsole();
 		this.closed = true;
+		this.closeInspector();
 		this.branches.dispose();
 		this.relations.dispose();
 		this.console?.dispose();
@@ -1558,7 +1841,6 @@ export class AgentDashboard implements Component, Focusable {
 		for (const off of this.unsubscribe) off();
 		this.source.select(undefined);
 		this.source.releaseTasks();
-		this.tasks?.dispose();
 		this.threads?.dispose();
 		this.efforts?.dispose();
 		clearInterval(this.reconciliation);
@@ -1566,39 +1848,29 @@ export class AgentDashboard implements Component, Focusable {
 		clearTimeout(this.streamTimer);
 	}
 }
+
+/** Open the work view over the ordinary session. It is a temporary surface; closing returns to the session. */
 export async function showAgentDashboard(input: {
 	ctx: ExtensionContext;
 	source: AgentObservationSource;
 	operations: DashboardOperations;
 	state?: DashboardState;
+	select?: string;
+	action?: string;
 }): Promise<void> {
 	const { ctx } = input;
 	if (ctx.mode !== "tui") {
 		const page = await input.source.list();
-		ctx.ui.notify(`The dashboard needs the interactive terminal. ${page.rows.length} loaded agents.`, "info");
+		ctx.ui.notify(`Agents need the interactive terminal. ${page.rows.length} loaded agents.`, "info");
 		return;
 	}
-	let handle: { setHidden(hidden: boolean): void } | undefined;
-	const surface = { hide: () => handle?.setHidden(true), show: () => handle?.setHidden(false) };
 	await ctx.ui.custom<void>(
-		(tui, theme, keys, done) =>
-			new AgentDashboard(
-				tui,
-				theme,
-				keys,
-				done,
-				input.state ?? dashboardSessionState(ctx.sessionManager.getSessionId()),
-				input.source,
-				input.operations,
-				surface,
-				ctx.sessionManager.getSessionId(),
-			),
-		{
-			overlay: true,
-			overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 },
-			onHandle: (value) => {
-				handle = value;
-			},
+		(tui, theme, keys, done) => {
+			const view = new AgentDashboard(tui, theme, keys, done, input.state ?? dashboardSessionState(ctx.sessionManager.getSessionId()), input.source, input.operations, ctx.sessionManager.getSessionId());
+			if (input.select) view.selectIdentity(input.select);
+			if (input.action) view.openNamedAction(input.action);
+			return view;
 		},
+		{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } },
 	);
 }

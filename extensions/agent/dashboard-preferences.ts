@@ -9,8 +9,9 @@ export interface DashboardPreferences {
 }
 export function validDashboardLayout(value: unknown): DashboardLayout {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-	const { rosterRatio, composerRows } = value as Record<string, unknown>;
+	const { rosterRatio, composerRows, listHidden } = value as Record<string, unknown>;
 	return {
+		...(listHidden === true ? { listHidden } : {}),
 		...(typeof rosterRatio === "number" && Number.isFinite(rosterRatio) && rosterRatio > 0 && rosterRatio < 1 ? { rosterRatio } : {}),
 		...(typeof composerRows === "number" && Number.isSafeInteger(composerRows) && composerRows >= 5 ? { composerRows } : {}),
 	};

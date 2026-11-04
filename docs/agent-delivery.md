@@ -355,8 +355,8 @@ continues the same native run. Preserve the governing frame; compaction neither
 reconstructs omitted decisions nor certifies completion. Do not type a slash
 command into the operator's editor. Other owner-wait controls still refuse
 self-targets; do not retry a refused self-control through another name.
-Compaction through another session's controller uses native summarization,
-stops active work, and needs explicit resumption.
+Compaction through another session's controller uses native summarization at
+the next native boundary; active work and queued input continue.
 
 Before coordinator exit, resolve every live worker: await useful work, redirect
 changed work, or stop superseded work with its public control. A saved handover

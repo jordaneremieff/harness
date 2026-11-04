@@ -9,6 +9,7 @@ import type { AgentObservationSource } from "./agent-observation.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
 import { createDashboardState, type DashboardState } from "./dashboard-state.ts";
+import type { ActionResult, AgentFormHost } from "./agent-forms.ts";
 const previousPreferences = process.env.PI_HARNESS_FILE;
 let preferencesRoot: string | undefined;
 before(() => {
@@ -140,6 +141,45 @@ export function source(rows: readonly AgentConversationSummary[] = [row()]): Age
 		subscribeRoster: () => () => {},
 	};
 }
+/** One recorded owner call from an agent form: the action name, its positional arguments and the captured target. */
+export interface FormCall {
+	readonly name: string;
+	readonly args: readonly string[];
+	readonly target: string;
+}
+
+/** A forms host that records every owner call and answers with `answer`. Nothing runs natively. */
+export function formsHost(
+	target: AgentConversationSummary,
+	state: DashboardState,
+	observed: AgentObservationSource,
+	calls: FormCall[] = [],
+	patch: Partial<AgentFormHost> = {},
+	answer: (call: FormCall) => Promise<ActionResult> = async (call) => `${call.name} done`,
+): AgentFormHost {
+	const record = (name: string, args: readonly string[] = []) => {
+		const call = { name, args: [...args], target: target.id };
+		calls.push(call);
+		return answer(call);
+	};
+	return {
+		row: target,
+		state,
+		source: observed,
+		run: (name, args) => record(name, args),
+		timers: async () => [],
+		schedule: async (input) => ({ text: String(await record("schedule", [input.message, input.deliverAt, input.mode])), sessionId: target.id }),
+		models: async () => [{ identity: "test/model" }, { identity: "test/other", name: "Other" }],
+		configure: (configured) => record("configure", [JSON.stringify(configured)]),
+		commands: async () => [{ value: "plan", label: "plan", description: "Plan the work" }],
+		profile: async (method, input) => record(method, [JSON.stringify(input)]),
+		profileDrafts: new Map(),
+		status: async () => ({ identity: target.id }),
+		outcome: () => {},
+		...patch,
+	};
+}
+
 export function fixture(
 	width = 80,
 	height = 24,
@@ -149,6 +189,7 @@ export function fixture(
 	paint: Theme = theme,
 	caller?: string,
 ) {
+	const calls: FormCall[] = [];
 	let renders = 0;
 	let closes = 0;
 	const terminal = { rows: height, columns: width };
@@ -171,17 +212,18 @@ export function fixture(
 		{
 			submit: async () => ({ text: "admitted" }),
 			newAgent: async () => ({ text: "created" }),
-			chooseConversation: async () => undefined,
-			action: async () => undefined,
+			newDefaults: () => ({ cwd: "/work", presets: [{ value: "worker", label: "worker", description: "test/model \u00b7 high \u00b7 machine default" }], preset: "worker", ownership: "The new conversation owns its answer." }),
+			forms: (target) => formsHost(target, state, observed, calls),
 			...operations,
 		},
-		{ hide() {}, show() {} },
 		caller,
 	);
 	return {
 		ui,
 		tui,
 		state,
+		/** Owner calls the default forms host recorded. */
+		calls,
 		counts: () => ({ renders, closes }),
 		resize(width: number, height: number) {
 			terminal.columns = width;

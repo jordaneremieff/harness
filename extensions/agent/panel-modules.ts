@@ -1,47 +1,8 @@
 import { pathToFileURL } from "node:url";
-import type { JsonValue } from "@earendil-works/chord";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { type Destination, type JsonValue, type OperatorPanelModule, plainLine, readPanelModule, type ViewHost } from "../../operator-ui/index.ts";
 import { DurableInventorySchema } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { resolvePanelEntry } from "./display-descriptor.ts";
-
-/** Package contract: docs/conventions/operator-panels.md. The client supplies these facilities to an owner panel. */
-export interface OperatorPanelHost {
-	readonly target: { readonly id: string; readonly name?: string };
-	readonly theme: Theme;
-	readonly tui: { requestRender(): void };
-	/** Rows the panel receives on the next render. */
-	rows(): number;
-	/** One owner request through the bound command. Rejects after the panel closed or the attachment changed. */
-	request(data: JsonValue, signal?: AbortSignal): Promise<{ text: string; data?: JsonValue }>;
-	readonly dialogs: {
-		select(title: string, choices: readonly { value: string; label: string; description?: string }[]): Promise<string | undefined>;
-		confirm(title: string, description: string, action: string): Promise<boolean>;
-		input(title: string, options?: { initial?: string; placeholder?: string }): Promise<string | undefined>;
-		/** The terminal's multiline editor; resolves with the text, or undefined when cancelled. */
-		editor(title: string, initial?: string): Promise<string | undefined>;
-		read(title: string, text: string): Promise<void>;
-		/** Shown on the client's notice row while the panel is open, and after it closes. */
-		notify(text: string, type?: "info" | "warning" | "error"): void;
-	};
-	/** Return to the conversation. */
-	close(): void;
-}
-
-export interface OperatorPanelInstance {
-	render(width: number): string[];
-	handleInput(data: string): void;
-	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
-	invalidate?(): void;
-	dispose(): void;
-}
-
-export interface OperatorPanelModule {
-	readonly version: 1;
-	readonly title: string;
-	open(host: OperatorPanelHost): OperatorPanelInstance;
-}
 
 /** One advertised panel: usable when `module` is present, otherwise listed with its reason. */
 export interface LoadedPanel {
@@ -66,23 +27,13 @@ const title = (text: string) => bounded(text).slice(0, 32);
 type Importer = (url: string) => Promise<Record<string, unknown>>;
 type Contribution = { name: string; source: string; panel?: { version: 1; entry: string; export: "operatorPanel"; command: string } };
 
-function readModule(exported: unknown): OperatorPanelModule {
-	if (typeof exported !== "function") throw new Error("export operatorPanel is not a function");
-	const value = exported() as Partial<OperatorPanelModule> | null;
-	const open = value?.open;
-	if (typeof value !== "object" || value === null || value.version !== 1 || typeof value.title !== "string" || !title(value.title) || typeof open !== "function") {
-		throw new Error("operatorPanel() did not return a version 1 panel with a title and an open function");
-	}
-	return { version: 1, title: title(value.title), open: (host) => open.call(value, host) };
-}
-
 /**
  * Import each advertised panel module and keep the checked module. A failure stays with its
  * contribution: the panel is listed as unavailable with a bounded reason and nothing else changes.
- * The caller scopes the result to one attached source; nothing here is cached across sources.
+ * The caller scopes the result to one source; nothing here is cached across sources.
  */
 export async function loadPanelModules(inventory: unknown, importModule: Importer = (url) => import(url)): Promise<PanelModules> {
-	if (!matchesSchema(DurableInventorySchema, inventory)) return { panels: [], diagnostics: ["Host inventory is not readable; no browsers are available here."] };
+	if (!matchesSchema(DurableInventorySchema, inventory)) return { panels: [], diagnostics: ["Host inventory is not readable; no owner views are available here."] };
 	const panels: LoadedPanel[] = [];
 	const diagnostics: string[] = [];
 	for (const contribution of inventory.contributions as readonly Contribution[]) {
@@ -90,13 +41,59 @@ export async function loadPanelModules(inventory: unknown, importModule: Importe
 		if (!descriptor) continue;
 		try {
 			const entry = resolvePanelEntry(contribution.source, descriptor);
-			const module = readModule((await importModule(pathToFileURL(entry).href))[descriptor.export]);
-			panels.push({ contribution: contribution.name, command: descriptor.command, title: module.title, module });
+			const module = readPanelModule((await importModule(pathToFileURL(entry).href))[descriptor.export]);
+			panels.push({ contribution: contribution.name, command: descriptor.command, title: title(module.title), module });
 		} catch (error) {
 			const reason = bounded(error instanceof Error ? error.message : String(error));
 			panels.push({ contribution: contribution.name, command: descriptor.command, title: contribution.name, unavailable: reason });
-			diagnostics.push(bounded(`${contribution.name}: browser unavailable here (${reason})`));
+			diagnostics.push(bounded(`${contribution.name}: owner view unavailable here (${reason})`));
 		}
 	}
 	return { panels, diagnostics };
+}
+
+/** The owner route of one captured target: one request through the panel's bound command. */
+export type PanelRequest = (command: string, data: JsonValue, signal: AbortSignal) => Promise<{ text: string; data?: JsonValue }>;
+
+/** Settle at once when the view is left; a late answer is dropped, never applied. */
+function withdrawable<T>(request: Promise<T>, signal: AbortSignal): Promise<T> {
+	if (signal.aborted) return Promise.reject(new Error("The view closed; the request was withdrawn"));
+	return new Promise<T>((resolve, reject) => {
+		const abort = () => reject(new Error("The view closed; the request was withdrawn"));
+		signal.addEventListener("abort", abort, { once: true });
+		request.then(
+			(value) => {
+				signal.removeEventListener("abort", abort);
+				resolve(value);
+			},
+			(error: unknown) => {
+				signal.removeEventListener("abort", abort);
+				reject(error);
+			},
+		);
+	});
+}
+
+/**
+ * Frame destinations for the loaded panels of one target. Each view's requests carry the target
+ * captured here and its own command; leaving the view withdraws its unanswered requests through
+ * `request`'s signal, and nothing is resent.
+ */
+export function panelDestinations(panels: PanelModules, targetKey: string, request: PanelRequest): Destination[] {
+	return panels.panels.map((panel) => ({
+		key: `${targetKey}\u0000${panel.contribution}`,
+		label: plainLine(panel.title),
+		...(panel.module ? {} : { unavailable: panel.unavailable ?? "module not loaded" }),
+		open: (host: ViewHost) => {
+			const module = panel.module;
+			if (!module) throw new Error(panel.unavailable ?? "module not loaded");
+			return module.open({
+				...host,
+				request: (data, signal) => {
+					const combined = signal ? AbortSignal.any([signal, host.signal]) : host.signal;
+					return withdrawable(request(panel.command, data, combined), combined);
+				},
+			});
+		},
+	}));
 }

@@ -8,11 +8,11 @@ agent's work. Reopening the primary reconnects to its agents and recovers
 unfinished work after an owner-agreed offline claim recovery when their hosts died.
 
 The ordinary primary owns its terminal, editor, transcript, `/restart`, and
-self-compaction. `/agent` opens an agent dashboard over that workspace. The
+self-compaction. `/agent` opens the agent work view over that workspace. The
 existing `ctrl+alt+g` shortcut also opens it without changing your native draft.
-The dashboard lists agents beside the selected live conversation on wide
-terminals and above it on narrow terminals. Enter opens an agent console for
-full-window conversation. Esc steps back to the untouched primary without
+The view lists agents beside the selected conversation on wide terminals and
+above it on narrow terminals, with the conversation, its message field and the
+agent's controls in one place. Esc steps back to the untouched primary without
 stopping work.
 
 Choose the surface that serves your task:
@@ -20,7 +20,7 @@ Choose the surface that serves your task:
 | Need | Start here |
 |---|---|
 | Start work or change its direction | [Controls](#controls); use the returned canonical identity or a retained `@handle`, not a display name. |
-| Read and message an agent | [Dashboard and agent console](#dashboard-and-agent-console), then [live conversation and history](#live-conversation-and-history). |
+| Read and message an agent | [Agent work view](#agent-work-view), then [live conversation and history](#live-conversation-and-history). |
 | Use an existing agent as the main terminal conversation | [Standalone terminal attachment](#standalone-terminal-attachment). |
 | Delegate and receive an answer | [Agent collaboration and placement](#agent-collaboration-and-placement); native callers also [await exact peer results](#await-exact-peer-results). |
 | Reuse an expert or develop a shared outcome | [Standing agents and expertise](#standing-agents-and-expertise) and [peer threads](#peer-threads). |
@@ -297,9 +297,9 @@ results remain unchanged. Status totals mark partial costs with a trailing `+`, 
 `$0.25+`: at least that amount is known; some data was not fully readable.
 
 In ordinary Pi, the extension announces one destination, `Agents`, through the
-[operator destinations](../../docs/conventions/operator-panels.md#ordinary-destinations)
-event so the footer menu can open `/agent` directly; the announcement names the
-command and carries no handler.
+[operator views](../../docs/conventions/operator-panels.md#ordinary-destinations)
+publication so the statusline work strip can open `/agent` directly; the
+announcement names the command and carries no view.
 
 `/agent` exposes `new`, `list`, `status`, `send`, `steer`, `await-release`, `abort`, `attach`,
 `fork`, `compact`, `inspect`, `rewind`, `configure`, `profile`, `command`, `place`, `places`,
@@ -307,17 +307,19 @@ command and carries no handler.
 syntax. `await-release` names the selected native run; it returns partial awaited
 results without canceling producers and cannot release a later request. Tab completes actions, canonical identities, and retained `@handle`
 addresses without executing them. Completion searches retained role hints too.
-Without an action, `/agent` opens the dashboard. In the roster, Up/Down selects,
-Enter opens the agent console, Tab or m focuses its message field, n starts an
-agent, a opens contextual actions, / finds loaded agents, and ? shows help.
-PageUp/PageDown reads the selected conversation. Ctrl+O expands tool output;
-Ctrl+T toggles thinking. Esc clears a committed filter before closing the dashboard.
+Without an action, `/agent` opens the work view. A TUI command that names a
+target without its other arguments, such as `/agent configure @handle`, opens
+that target's form there. In the list, Up/Down selects, typing finds loaded
+agents, and Enter writes to the selected agent. PageUp/PageDown reads the
+selected conversation. Ctrl+O expands tool output; Ctrl+T toggles thinking.
+Esc clears Find before closing the view.
 
-In a message field or agent console, letters are message text. Enter starts an
-idle turn or steers working agents at the next step. Tab changes the current
-draft to Follow-up after answer while the agent works. The field label names the
-disposition. Ctrl+J adds a newline. Esc keeps the draft and returns to the roster.
-There are no F-key controls, Alt controls, or typed dashboard commands.
+In the message field, letters are message text. Enter starts an idle turn or
+steers working agents at the next step; the field's top border names the
+effect, and a click on it, or More › Send as follow-up, changes it while the
+agent works. Ctrl+J adds a newline. Esc keeps the draft and returns to the
+list. There are no F-key controls, Alt controls, letter shortcuts, or typed
+dashboard commands.
 
 `/agent unbind <area>` removes only the directory binding. It does not delete
 storage or abort work.
@@ -353,14 +355,15 @@ node extensions/agent/terminal.ts --theme dark --session @handle
 ```
 
 `--session` accepts a root storage identity, `storageId:conversationId` for an
-exact nonroot conversation, or a retained `@handle`. Entry attaches through the
-existing manager and host. It sends no prompt, changes no model, and creates no
-ordinary Pi session. A target need not appear in the bounded dashboard roster.
-The selected conversation fills the window with the existing transcript, native
-pi-tui `Editor`, tool cards, live tool and assistant output, and status block.
-The composer caption uses the selected native conversation's actual name from
-attach status and live observations. Name clears remove stale captions; an
-unnamed target uses its exact identity, not an invented name.
+exact nonroot conversation, or a retained `@handle`. The terminal resolves it
+through the existing manager and selects it in the agent work view, the same
+view `/agent` opens in ordinary Pi (see below). Selection reads passively: it
+sends no prompt, changes no model, starts no host, and creates no ordinary Pi
+session. A target need not appear in the bounded list. The work view fills the
+window with the list, the selected conversation's transcript, tool cards, live
+output, native pi-tui `Editor`, and its header and controls. The message field
+caption names the selected conversation by its observed name, or by its exact
+identity when it has none.
 
 The same command shows an agent in any terminal pane beside the main
 conversation, so the operator can watch its work and type to it directly. In a
@@ -370,171 +373,167 @@ Rex window, for example:
 rex run --label "agent @handle" -c <package root> -- node extensions/agent/terminal.ts --session @handle
 ```
 
-The pane shows the agent's live transcript, composer, and status block. Text
-typed there is admitted to the same native conversation as any other input, and
-closing the pane closes only that terminal, not the agent's work. A pane started
-without an interactive shell can lack the managed `pi` launcher on `PATH`; the
-entry then resolves the install under Pi's agent directory, so the command needs
-no environment variable.
+Text typed there is admitted to the same native conversation as any other
+input, and closing the pane closes only that terminal, not the agent's work. A
+pane started without an interactive shell can lack the managed `pi` launcher on
+`PATH`; the entry then resolves the install under Pi's agent directory, so the
+command needs no environment variable.
 
-Without `--session`, the terminal reads the last attached identity from
+Without `--session`, the terminal reads the last selected identity from
 `terminal-target.json` under `PI_AGENT_SESSIONS_DIR`, or its default store root.
-With no remembered target, it opens the dashboard. This file remembers only the
-identity; drafts, sent-message history, reading positions, and expanded cards
-remain local to each terminal process. Navigation away and back preserves those
-local values while native work continues. Separate terminals have independent
-local values and share operator input to the same native conversation. There is
-no exclusive input lease. Native admission determines the result. The standalone
-terminal leaves the outer fullscreen page bindings empty so PageUp and PageDown
-reach the screen that owns the conversation or thread.
+With no remembered target, it opens New conversation, or states why creation is
+unavailable here. This file remembers only
+the identity; drafts, sent-message history, reading positions, and expanded
+cards stay local to each terminal process, and selecting another conversation
+and back keeps them while native work continues. Separate terminals have
+independent local values and share operator input to the same native
+conversation. There is no exclusive input lease; native admission determines
+the result. The terminal leaves the outer fullscreen page bindings empty so
+PageUp and PageDown reach the work view.
 
 | Input | Effect |
 |---|---|
-| `/agent` or Esc in the main console | Open the dashboard without stopping work. |
-| `/agent enter <identity-or-@handle>` | Attach that exact conversation as the main console. |
-| Enter on a dashboard row | Use that row as the main console. |
-| `/agent back` | Return to the previously attached target. |
-| `/agent latest` | Return to the newest entries and follow new output. |
-| Dashboard, Back, Latest, Browsers, Detach controls | Footer controls with the same effects. Browsers lists the owner browsers the attached host admitted; Detach closes this terminal only. |
-| `/agent browse [name]` | Open an admitted owner browser (clipboard, pillars, policy, stash) over the conversation, or choose one. Back returns to the editor. |
-| `/agent recover` | Choose an unconfirmed input, then explicitly restore it to the composer or discard its local copy. Never resend automatically. |
-| Esc in the dashboard | Return to the main console, or the navigation field if no target exists. |
-| Enter in the composer | Admit the text through the selected native host. |
+| Enter in the message field | Admit the text to the selected conversation as operator input; its answer stays in that conversation. |
 | Ctrl+J | Insert a native editor newline. |
-| Tab | Choose requested Steer or Follow-up. |
-| PageUp / PageDown | Read conversation history or the open thread; PageUp at the oldest conversation boundary requests earlier entries. |
+| Esc | Leave the inspector, then the message field. Over the list it names Detach; it never detaches or stops work. |
+| Detach (heading and footer), `/quit`, or Ctrl+D in an empty message field | Close this terminal and its observation links, not native work. |
+| `/agent enter <identity-or-@handle>` | Select that exact conversation. |
+| `/agent new` | Open New conversation. |
+| `/agent browse` | Open the selected conversation's owner views. |
+| `/agent recover` | Open Recover input for the selected conversation. |
+| PageUp / PageDown | Read the conversation or the open thread; PageUp at the oldest loaded entry reads earlier entries. |
 | Ctrl+O / Ctrl+T | Expand tool output / show thinking. |
-| `/quit`, Ctrl+D with an empty composer, or process exit | Close this terminal and its observation links, not native work. |
 
-Owner browsers come from the panel modules each owning extension advertises
-beside its tool-display module (see
-[operator panels](../../docs/conventions/operator-panels.md)). After attaching,
-the client reads the live host's inventory, admits each descriptor under the
-same rules as display modules plus the check that its bound command belongs to
-the same contribution, and imports the module locally without running any
-extension factory. A browser mounts over the conversation with Back and Detach
-controls and keeps the conversation's draft; every request it sends goes through
-the bound command of the attachment captured when the browser opened, and a
-later attachment change closes the browser and drops late answers. Back,
-Detach, opening another browser or an attachment change withdraws an unanswered
-request at once: the withdrawal signal travels through the controller and the
-manager to the host connection, which stops waiting, and the request is never
-resent. A request the host already admitted still finishes there; withdrawal is
-not a rollback. Owner notifications show on a notice row above the footer while
-the browser stays open, and the browser's body gets one row less. The panel host
-gives the module the current viewport, the theme, dialogs (select, confirm,
-input, the multiline editor, read and notify) and a request function only; it
-never grants tool execution. A module that is missing, malformed or throws is
-reported in the Browsers chooser and costs only itself.
+All other slash and bang text stays literal. In particular, `/help`,
+`/restart`, and shell text do not invoke ordinary Pi commands. Ctrl+D in a
+nonempty message field keeps its native forward-delete behaviour. Receipts say
+*admitted* or *already admitted*, name the exact target and submission, and
+label the mode as *requested*. Admission does not prove placement, execution,
+or an answer.
 
-All other slash and bang text stays literal. In particular, `/help`, `/restart`,
-and shell text do not invoke ordinary Pi commands. Ctrl+D in a nonempty composer
-keeps its native forward-delete behavior. Receipts say *admitted* or *already
-admitted*, name the exact target and submission, and label the mode as
-*requested*. Admission does not prove placement, execution, or an answer. An
-uncertain delivery keeps the current draft and mode. The submitted text and
-requested mode remain separately in a target-local unconfirmed-input list, not
-sent-message history. Each failure adds a separate record. `/agent recover`
-opens local dialogs to choose a record and explicitly restore or discard it.
-Restore replaces the captured target's current draft and mode only after the
-displayed confirmation; a concurrent edit cancels that restoration. Restore
-never resends, and the unconfirmed copy remains until explicit discard. Inspect
-native history before any resend because a transport error does not prove that
-admission failed. Unconfirmed copies disappear when the terminal exits. An
-unavailable stream shows a warning over the last observed data. Re-enter the
-target to retry the connection.
+An uncertain delivery keeps the current draft and mode, and the receipt says
+the delivery is not confirmed. The submitted text and requested mode also stay
+in a target-local unconfirmed-input list, not sent-message history; each
+failure adds a record. **Recover input (N)** in the agent's More menu, or
+`/agent recover`, opens a form to choose a record and restore it to the draft.
+Restore applies only while the captured target's draft and mode are unchanged
+since the form opened; it never sends, and the record stays until the terminal
+exits. Read the conversation before any resend, because a transport error does
+not prove that admission failed. An unavailable stream shows a warning over the
+last observed data; Reconnect in More starts the host.
 
-Native actions run in local dialogs: status, reconnect, stop, release, reset,
-compaction, contributed commands, configuration, profile, fork, rewind,
-schedules, and timer cancellation. The dialogs are the same Agent forms the
-ordinary dashboard runs, over a small dialog adapter with an ordinary Pi and a
-standalone implementation. A choice dialog shows labels while storing the exact
-identity behind them, narrows long lists as you type, and answers to Enter, a
-click on a row, or `Choose`. A text dialog is prefilled and applies with Enter or
-`Apply`; a multiline dialog inserts a line break with Ctrl+J, Shift+Enter or
-`New line`. A reader wraps every line and scrolls by key or wheel. Esc or
-`Cancel` leaves without a write, and a cancelled step returns to the previous
-completed step. No form asks for JSON or an identifier to be typed:
-
-- Configuration chooses Name, Model and Reasoning, then `Apply`. Models come from the
-  host's own configured model runtime through a bounded `models` read that reports
-  the last-known available snapshot, with the runtime's error text when it has one.
-  The read starts no credential check and no network request. A host that cannot
-  answer names the problem and offers no typed fallback.
-- Fork and rewind choose a committed message from the retained history, with
-  `Earlier messages` to page back. Rewind then takes a correction in the multiline
-  dialog and a confirmation.
-- Timers list scheduled messages by time and preview. Cancelling one confirms first.
-- Contributed commands list the commands the target's live host advertises, plus
-  `reload`, then take optional arguments and a confirmation.
-- Profile shows the identity, role and saved expertise in the reader and edits role
-  or expertise as a draft. Save checks the displayed revision. A conflict keeps the
-  draft until the current profile is read and its revision is chosen again, and the
-  draft survives closing and reopening the dialog.
-- Stop, release, reset, compaction, await release and timer cancellation confirm in a
-  dialog with the effect described.
-
-Actions keep their captured target if the main selection changes. New Agent is
-visibly unavailable here; create an agent through the agent tools, then enter it.
+Native actions run as the same staged forms ordinary Pi uses, in the inspector
+beside the conversation (see [Agent work view](#agent-work-view)). The terminal
+supplies their routes through its own caller: models come from the host's own
+`models` read, which reports the last-known available snapshot and starts no
+credential check or network request; a host that cannot answer names the
+problem and offers no typed fallback. Contributed commands come from the host's
+inventory, plus `reload`, each run with a fresh invocation identity. Each form
+keeps the target captured when it opened, even if the selection changes.
 Rewind corrections and scheduled inputs own their results in the conversation
-that runs the work. The watcher acknowledges those results in place without a
+that runs the work; the watcher acknowledges those results in place without a
 follow-up input. The terminal remains the rewind fork's creating owner and the
-scheduled input's requester. Ordinary primary and dashboard actions retain their
-caller-owned reply routes.
+scheduled input's requester.
 
-Pointer events reach the same conversation component as the ordinary dashboard: a click on a tool card or thinking run toggles it, other press, drag and release gestures stay with Pi's text selection, and the wheel at the oldest loaded entry requests earlier history. The `Earlier history` row loads earlier entries on a click. Footer geometry belongs to the last drawn layout; a click reported for another size does nothing.
+New conversation works here when the terminal could load the configured model
+catalogue; otherwise it states that reason and creates nothing. Purpose is the
+first message, literal text; an empty purpose creates an idle conversation.
+Preset lists the machine presets with their resolved model and reasoning, the
+default first. Directory must exist; a directory with project resources and no
+saved trust decision is refused with the reason. Start creates an independent
+operator conversation through the existing manager with this process's model
+catalogue, then admits the purpose through operator admission, so the new
+conversation owns the answer and closing the terminal never strands it. One
+request identity covers a form until creation succeeds, so a retry after a
+refusal never creates a second conversation. If the first message is not
+confirmed, the conversation stays, with the purpose in its message field and a
+receipt that says so.
 
-Selected cost, usage and model facts follow the observation already open for the target. Each live frame refreshes the name, state, awaiting fact, model, reasoning level and recorded cost without rescanning the store. A cost that cannot be read for any bucket makes the total unknown rather than a smaller number. Model name, reasoning support and context window come from the host's `models` read once per attachment; a model the host did not list shows its identifier without a context bar. When the observation is lost, the last facts stay on screen under a warning, and the cost carries a `+` partial mark.
+Pointer events reach the same conversation component as in ordinary Pi: a
+click on a tool card or thinking run toggles it, other press, drag and release
+gestures stay with Pi's text selection, and the wheel at the oldest loaded
+entry requests earlier history. A click on the conversation's top rule reads
+earlier history. Pointer geometry belongs to the last drawn layout; a click
+reported for another size does nothing.
+
+Selected cost, usage and model facts follow the observation already open for
+the target. Each live frame refreshes the name, state, awaiting fact, model and
+reasoning level without rescanning the store. Model name, reasoning support and
+context window come from the host's `models` read once per selection; a model
+the host did not list shows its identifier without a context bar. When the
+observation is lost, the last facts stay on screen under a warning.
 
 Owner tool cards come from a presentation-only module each owning extension
 advertises through its admitted contribution (see
 [tool display](../../docs/conventions/tool-display.md#presentation-modules-for-the-attached-terminal)).
-After attaching, the client reads the live host's inventory and imports those
-modules locally, without running any extension factory or tool. A module that is
+When the operator selects a conversation, the client reads the live host's
+inventory and imports those modules locally, without running any extension
+factory or tool. A stored or stopped host advertises none. A module that is
 missing, malformed or throws costs only its own cards, which fall back to Pi's
-standard card with one `Owner cards:` diagnostic line. The renderer lookup is
-replaced as a unit when the attached host changes, and the same lookup serves the
-main conversation and the embedded dashboard. Builtin, codemode and Agent cards keep
-their precedence. A host from another release refuses the status read through the
-existing operation identity check; there is no older reader.
+standard card. The renderer lookup is replaced as a unit when the selection
+changes, and a late answer for an earlier selection is dropped. Builtin,
+codemode and Agent cards keep their precedence. A host from another release
+refuses the status read through the existing operation identity check; there
+is no older reader. Owner views (clipboard, pillars, policy, stash) load the
+same way and open from More › Owner views; see
+[operator views](../../docs/conventions/operator-panels.md#attached-panels).
 
-The attached client sets the window title to the observed conversation name and
-the last segment of its working directory (`Parser review · harness`) through
-Pi's public terminal API, and clears it when the target changes, the observation
-is lost or unavailable, and when the terminal closes. Control characters in a
-name never reach the title sequence.
+The terminal sets the window title to the observed conversation name and the
+last segment of its working directory (`Parser review · harness`) through Pi's
+public terminal API, and clears it when the target changes, the observation is
+lost, and when the terminal closes. Control characters in a name never reach
+the title sequence.
 
-When the terminal supports Rex's program status protocol, the attached client
-reports the selected conversation the same way. A live, busy conversation is
-`working` and a live idle one is `idle`; both carry the observed conversation
-name as the message and never the target identity. `blocked` (`question`)
-appears only while a dialog in this terminal waits for you; its message is the
-dialog title (`Answer: Choose a browser`) and never the dialog's content or your
-draft. Waiting for another agent is `working`, never blocked. The status clears
-with the title. Idle does not mean done, and a lost observation is not reported
-as a failure. An unchanged status is not sent again; there is no heartbeat or
-polling, and ordinary Pi's own reporter is unchanged. A terminal without the
-protocol is unaffected.
+When the terminal supports Rex's program status protocol, the client reports
+the selected conversation the same way. A live, busy conversation is `working`
+and a live idle one is `idle`; both carry the observed conversation name as the
+message and never the target identity. Waiting for another agent is `working`.
+The status clears with the title. Idle does not mean done, and a lost
+observation is not reported as a failure. An unchanged status is not sent
+again; there is no heartbeat or polling, and ordinary Pi's own reporter is
+unchanged. A terminal without the protocol is unaffected.
 
 The standalone attachment supports explicit shipped `dark` and `light` themes.
 It resolves public Pi packages from the managed install selected by
 `PI_MANAGED_INSTALL_ROOT`, then the managed `pi` launcher on `PATH`, then the
 install under Pi's agent directory (`PI_CODING_AGENT_DIR`, otherwise
-`~/.pi/agent`), and rereads `current-version` on each process start. Agent/Durable runtime dependencies stay
-checkout-local. It uses the existing `PI_AGENT_DIR` and `PI_AGENT_SESSIONS_DIR`
-configuration.
+`~/.pi/agent`), and rereads `current-version` on each process start.
+Agent/Durable runtime dependencies stay checkout-local. It uses the existing
+`PI_AGENT_DIR` and `PI_AGENT_SESSIONS_DIR` configuration.
 
 This surface accepts text only. It has no image or file ingestion, image
-clipboard action, external editor, shell runner, ordinary slash-command palette,
-automatic/system theme selection, or ordinary extension UI context. Related
-efforts require the ordinary extension surface and are unavailable here. No retained ordinary archive is converted or edited.
+clipboard action, external editor, shell runner, ordinary slash-command
+palette, automatic/system theme selection, or ordinary extension UI context.
+Related efforts and the Related list view require the ordinary extension
+surface and are not offered here; Threads are, and posts are attributed to the
+selected conversation. No retained ordinary archive is converted or edited.
 
-## Dashboard and agent console
+## Agent work view
 
-The dashboard is one full-screen overlay. It starts in **Related** for the current
-session. Press `v` to show **All** loaded agents or return to Related. Find applies
-to the selected view. Each dashboard opening starts in Related; a native terminal
-without an attached conversation starts with All.
+`/agent` opens the agent work view (also called the dashboard in this README)
+over the ordinary session; the attached terminal shows the same view. It
+observes agents and effort presence, not primary conversations: it reads no
+primary draft and writes no primary editor text. Close leaves it; work
+continues.
+
+The view has a heading row, the list, the selected agent's pane, and a footer:
+
+- **Heading.** Agents, Related and All (ordinary Pi only), Hide list or Show
+  list, then New conversation, Threads, Efforts (ordinary Pi only) and Help,
+  the session's delegated figures, and the way out (Close, or Detach in the
+  terminal). Controls that do not fit move into More.
+- **List.** A Find field, then the agent rows. At 100 columns or more the list
+  sits beside the pane at full height; narrower windows stack a strip of three
+  to five rows above it, with coverage facts and Load more beside Find.
+- **Pane.** The selected agent's header (name, project, state, and its
+  controls), its fact lines, any attention reason, warning or outcome line,
+  then the conversation, and the message field at the bottom.
+- **Footer.** Hints for the focused region, and the way out at the right.
+  While a resize drag lasts, the footer shows the sizes it sets.
+
+The list starts in **Related** for the current session; a native terminal
+without an attached conversation starts with All. Find applies to the selected
+view.
 
 Related uses exact identities from existing evidence: the current conversation,
 successful task admissions retained by the ordinary session, its published
@@ -551,124 +550,144 @@ cwd or repository, a name, and unknown ownership do not establish a relationship
 
 Lineage and membership reads use bounded public status, thread discovery and
 seed-storage directories. Unchanged thread summary timestamps reuse already-read
-frames within the overlay. Catalog notifications invalidate those caches even
-when a publisher timestamp repeats. The roster's periodic refresh does not repeat
-unchanged membership reads. Read failures, scan bounds and incomplete roster pages
+frames within the view. Catalog notifications invalidate those caches even
+when a publisher timestamp repeats. The list's periodic refresh does not repeat
+unchanged membership reads. Read failures, scan bounds and incomplete list pages
 remain explicit. Unknown relationships stay out of Related, not out of All.
-Load more extends the roster; All threads and selected-storage discovery expose
+Load more extends the list; All threads and selected-storage discovery expose
 wider thread evidence. No relationship store or host protocol is added.
 
-The dashboard observes agents and effort presence, not primary conversations.
-It reads no primary draft and writes no primary editor text. Selection, drafts, successful-message history, reading positions, and
-Steer/Follow-up disposition and pane layout survive closing and reopening in
-the same primary process. Different primary sessions have independent UI state.
-Stable pane preferences also survive Pi restarts in the agent-owned
-`agent-dashboard-layout.json` file under `PI_AGENT_DIR` or Pi's agent directory.
-Only completed resize gestures and resets write this private
-file through an adjacent temporary file and atomic rename. A failed save keeps
-the local split and shows a restart-persistence notice. Fresh primaries load the
-last completed save; existing windows keep their own split. A successful
-admission clears only the submitted draft revision, including after the
-dashboard reopens; newer text stays. Every truncated dashboard list keeps the
-focused entry and nearby entries visible and states the hidden count.
+### Focus and input
 
-The dashboard and console have framed headings and one action line at the
-bottom. Each screen owns an explicit list of its actions, with an identity,
-label, shortcut keys, an optional reason it cannot run now, and the effect. The
-footer controls, the complete menu, the shortcuts and the pointer all run that
-same list, so no action depends on a shortcut legend that a narrow window cut off.
-Footer controls read as labels, not shortcuts: the item actions that fit
-(`Open · Message · Actions`), then a fixed group separated by `│` that
-holds the destinations (`Threads · Efforts · New agent`), `More (x)` and
-the way out (`Close (Esc)`, `Back (Esc)`, or the screen's own name for it, such
-as `Participants (Esc)`). The fixed group stays visible at every supported size;
-item actions drop from the end first. `More (x)` opens the complete list for the
-screen, with each shortcut and with the reason beside any action that cannot run
-now, such as Message with no selected agent; the shortcuts live there rather
-than in every footer. Choosing a disabled action shows its reason and changes
-nothing. The menu never changes the selected agent, message recipient, input
-mode or draft. Composer screens show Send, the Steer or Follow-up choice and
-Newline as footer controls, since printable keys belong to the text field there.
-Profile action rows retain their own key labels. Time format remains available
-through `i`, a click on a time, and the menu.
+Tab and Shift+Tab move between the list, the conversation, the message field,
+the agent's controls, the inspector, and the heading's controls. Escape leaves
+the inspector, then the message field, then the view; it never stops work.
+Letters typed over the list go to Find: the list narrows, the selection follows
+the first match, and the pane previews it without starting its host. Up and
+Down select; Enter writes to the selected agent. Escape over the list clears
+Find first and keeps the chosen agent. No letter is a shortcut for an effect.
 
-Threads, Related efforts and New agent are destinations on the navigation stack.
-Opening a contact thread from Related efforts and a participant console from
-that thread, then pressing Back twice, returns to Related efforts with its
-selection, list position and message draft; Back from a thread opened from the
-list returns to the list.
+Selection reads passively: it never starts a host and never moves a draft
+between agents. Sending a message starts a stopped host through the normal
+send path. Selection, drafts, successful-message history, reading positions,
+the delivery effect and pane layout survive closing and reopening in the same
+primary process. Different primary sessions have independent UI state.
 
-At side-by-side widths (100 columns or more), the roster occupies the full body
-height. Drag its border or the blank gutter immediately to its left to exchange
-width with the detail pane. The roster keeps at least 24 columns and the detail
-keeps at least 60. The default roster remains narrow; an explicit split saves a
-ratio. Narrow stacked windows suspend this handle and retain the ratio for a
-wider window. Temporary clamps never replace the saved preference.
+### Messages
 
-Where height permits, drag the small three-cell grip at the composer's top-right
-corner upward for more draft rows or downward for more transcript rows. Explicit
-height reserves at least five draft rows and six transcript rows, plus the
-native frames and blank separator. Short windows bound the automatic draft
-height without discarding the saved row preference. Optional transcript separators
-disappear only when the height needs that space for warnings, the editor, the
-status block, and the hint line. The useful caption and native editor remain intact. Double-click either handle to reset only that split.
-Other rules and borders remain decorative.
+Enter sends; Ctrl+J adds a new line. The message field's caption names the
+recipient (`To Parser review`). An idle agent gets **Send**; a working agent
+gets **Steer at next step** unless you choose **Follow-up after answer**: click
+the effect on the field's top border, or choose More › Send as follow-up. After
+a send, the next message starts as steer again. All letters, slash text and
+bang text are literal messages; commands belong to the agent's controls. A
+successful admission clears only the submitted draft revision, including after
+the view reopens; newer text stays. A refused or uncertain admission keeps the
+draft and the effect and states the reason in the receipt on the field's
+bottom border. Text paste works; Pi's file and image attachment interface is
+not embedded. Native hidden-row counts keep their space on the field's
+borders.
 
-Pane resizing is mouse-only in fullscreen mode. Keyboard-only and regular-mode
-use keep the default or saved split. The split is a display preference, so these
-splits serve keyboard use without a separate resize mode. Resize cancels on
-terminal dimensions or screen changes, hiding, or disposal. After a lost release,
-subsequent input clears the local gesture.
+### Controls and forms
 
-The conversation header shows the selected agent's handle and name, with its
-state mark on the right. An attention reason or conversation warning appears
-under the identity. Model and usage facts appear only below the composer,
-including in the full console. No status band separates the transcript from
-the composer.
+The header's controls act on the agent shown in the header:
 
-Heading counters describe the loaded selection or current thread page, not an
-unknown global total. A `+` marks incomplete loaded coverage. A scrollbar shows
-the position within loaded conversation content. The header rule stays blank
-at the live tail; away from it, the rule states the distance below or the action
-to load an earlier or newer range. Estimated heights say `about`. The transcript
-keeps blank space above the composer, including at the tail.
+- **Stop** (while the agent works), **Release await** (while it awaits other
+  agents), **Reconnect** (when it needs attention), **Configure** (disabled with
+  its reason while the agent works) and **Tasks** show directly when they fit.
+- **More** lists the rest: the delivery effect, Owner views, Fork, Rewind,
+  Compact, Reset context, Schedule message, Scheduled messages, Run command,
+  Profile, Details, Stop and release host, and host extras such as the
+  terminal's Recover input.
 
-Conversation content uses Pi's native components. Built-in tools retain native
-cards; codemode uses Pi's public codemode presentation. Agent tools use the
-shared agent cards. The dashboard requests custom renderers through the
-[tool-display contract](../../docs/conventions/tool-display.md). Native built-ins,
-codemode, and agent cards keep precedence; published custom tools use their
-owning extension renderers. Unpublished tools use Pi's standard named-argument
-card and logical-line output preview with an expansion hint. Display definitions
-never execute tools. The agent factory subscribes before it requests renderers.
-Publishers subscribe before their initial publication. Pi reload replaces
-subscriptions and the factory-local renderer registry; dashboard reopen creates
-new component instances.
+Each action except the delivery effect opens a staged form or reader in the
+inspector: beside the
+conversation when the pane has 120 columns or more, otherwise in its place.
+A form binds to the agent it opened for; selecting another agent closes it
+without sending anything. Fields keep their values after a refusal; only the
+effect-labelled action calls the owner, and Cancel or Escape sends nothing.
 
-An unmodified single left click reaches the native component in the preview,
-message view, and full console. Native handlers toggle one tool card or thinking
-run, including its hidden label; custom child controls keep their own actions.
-Unhandled clicks on pending cards and card padding toggle the card through
-Pi's public expansion setter. Empty outer spacer rows remain outside the card.
-The clicked item stays in view and suspends tail-follow. Outside-card clicks
-keep the preview's console action. Press, drag, release, modified clicks, and
-multiple clicks stay available for Pi's native text selection. Ctrl+O sets all
-tool cards and clears individual choices; Ctrl+T does the same for thinking.
-Thinking starts from the primary's effective setting. Dashboard Ctrl+T changes
-only dashboard state and never writes primary settings.
+- **Configure** stages Name, Model and Reasoning, then Apply. Models come from
+  the host's model list, narrowed as you type; a current model the host does
+  not list stays choosable. An unchanged form is refused before any request.
+- **Fork** starts an idle branch from the latest committed entry or a chosen
+  message; **Rewind** starts a corrected branch before a chosen message and
+  needs the correction. Earlier messages pages back. The created branch opens
+  while its form is still shown; after you leave the form, the branch appears in
+  the list and nothing moves.
+- **Compact** and **Reset context** take optional instructions or a handoff.
+- **Run command** lists the native commands the target's live host advertises,
+  or takes a typed name when the host lists none, plus arguments.
+- **Schedule message** takes the message, a deadline as HH:MM local or a
+  relative time such as `+30m`, and the busy effect. A Delivers line shows the
+  exact instant the deadline names, or why it names none. The draft stays with
+  its target until it is scheduled. The storage host must run at the deadline.
+  **Scheduled messages** lists them by time and preview and cancels the chosen
+  one.
+- **Profile** shows the canonical identity, optional immutable handle, display
+  name, role, actual model and reasoning, creator as provenance, directory,
+  revision, update evidence, retained current request routes, and the saved
+  expertise, which is evidence, not fresh authority. Requester and reply
+  recipient remain separate. Cold profiles are labeled retained and reads start
+  no host. Edit role or expertise stages a draft; Save checks the displayed
+  revision. A conflict keeps the draft and requires reading the current profile
+  and choosing its revision before another Save. Drafts survive closing and
+  reopening within the primary process and never replace the message draft.
+  `/agent profile <identity-or-@handle>` opens the same view; outside the
+  interactive terminal it returns the full profile as text.
+- **Details** reads the host status for the captured target and keeps all
+  returned text.
+- **Stop**, **Stop and release host**, **Reconnect** and **Release await**
+  state the effect and run on their labelled action.
+- **Tasks** shows the storage's live task graph. Open conversation selects the
+  task's conversation, choosing among several when needed; Refresh retries an
+  unavailable attachment. Closing Tasks releases only its task-graph watch.
 
-The native editor caption contains only the delivery effect: `steer at next
-step` or `follow-up after answer` for a busy target, and `send` otherwise. Native
-hidden-row counts and the resize grip retain their space. The delivery receipt
-uses the bottom border.
+**New conversation** stages Purpose (the first message, literal text even when
+it looks like a flag; empty creates an idle conversation), Preset (the machine
+presets with resolved model and reasoning, the default first) and Directory.
+Start creates the conversation and selects it with a Starting state before its
+host is ready; the conversation then follows the host's live output. A late
+completion never moves a selection the operator changed since. In ordinary Pi
+the answer to the purpose comes back to this session; the attached terminal's
+form is described above. The unsent purpose survives closing the form.
 
-A two-line status block sits under the composer in roster preview, message view,
-and full console. Its first line uses the primary footer's presentation: the
-model registry display name, a colored `[level]` only for a reasoning-capable
-model, a ten-cell `█░` context bar and percent, context tokens over model window,
-`~$` recorded cost, and `● NN% hit`. Dim `│` separators divide the fields. The
-bar uses success through 60%, warning through 80%, and error above; it fills at
-100% but retains overflow percentages. These are display bands, not compaction
+**Help** lists every key and pointer route, and starts with the machine
+execution preferences: the file path, document status, digest, diagnostics,
+enforcement setting, and every preset with its model.
+
+### Layout and resizing
+
+At side-by-side widths, drag the list's divider to exchange width with the
+pane. The list keeps at least 24 columns and the pane at least 60. Drag the
+small grip at the message field's top-right corner upward for more draft rows
+or downward for more conversation rows; the conversation keeps at least four
+rows, and a window too short for that shows no grip. The footer shows the sizes
+a drag sets; Escape restores the previous size; double-click a handle to reset
+it. Hide list gives the pane the full width. Stable pane preferences survive Pi
+restarts in the agent-owned `agent-dashboard-layout.json` file under
+`PI_AGENT_DIR` or Pi's agent directory. Only completed resize gestures and
+resets write this private file, through an adjacent temporary file and atomic
+rename. A failed save keeps the local split and shows a restart-persistence
+notice. Pane resizing is mouse-only in fullscreen mode; keyboard-only and
+regular-mode use keep the default or saved split. Resize cancels on terminal
+dimension changes, hiding, or disposal.
+
+Below 60 columns or 16 rows the view asks for a larger window.
+
+### Header and fact lines
+
+The header shows the selected agent's name, project and state; a narrow pane
+drops the project first, then shortens the name, and the state stays. An
+attention reason, a conversation warning, or an outcome line appears under the
+header when present. A fact line with nothing known takes no row.
+
+The first fact line uses the primary footer's presentation: the model registry
+display name, a colored `[level]` only for a reasoning-capable model, a
+ten-cell `█░` context bar and percent, context tokens over model window, `~$`
+recorded cost, and `● NN% hit`. Dim `│` separators divide the fields. The bar
+uses success through 60%, warning through 80%, and error above; it fills at 100%
+but retains overflow percentages. These are display bands, not compaction
 thresholds or a safe remaining budget. The current registry model is resolved
 once per render. An unknown registry model retains its known model ID without
 inventing a name or reasoning capability.
@@ -683,115 +702,67 @@ across every model call in the agent's live `UsageState.models` totals,
 **including compaction calls**, and excludes tool totals. The dot is green
 when those totals contain cache reads and red for write-only cache use. It does
 not establish a recent assistant cache result or a cache that is alive now.
-Cache-free or unavailable totals produce no cache field.
-
-Elapsed, when available, means time since the agent's placed input started its
-current run, not process attach age. The current host observation exposes no
-placed-run start, so elapsed is omitted. The UI never substitutes overlay age,
-last activity, or the latest user-turn duration. Unknown facts have no
+Cache-free or unavailable totals produce no cache field. Unknown facts have no
 placeholders. Narrow widths remove cache rate, cache dot, token count, then
 cost; model and context bar stay to the end, with width clipping as a final
 guard.
 
-Line two shows the agent's home-relative cwd and its cached Git branch. It
-shortens the path from the left before shortening or omitting the branch.
-A `+1` cell marks a delegate segment hidden by width.
-When loaded catalog rows identify that agent as their creating owner, a final
-`agents: active/total active · ~$cost` segment counts only those delegates.
-A `+` marks incomplete loaded coverage; unavailable child costs are absent.
-An absent child observation is not a zero global count. These figures never
-use the primary's own fleet total. Git reads use a bounded subprocess without
-a shell, cache a bounded set of cwd values per overlay, and refresh only on
-selection, cwd changes, or committed-entry events. In-flight events coalesce; disposal and
-cache eviction abort pending reads. No Git polling or duration tick exists.
+The second fact line shows the agent's home-relative cwd and its cached Git
+branch. It shortens the path from the left before shortening or omitting the
+branch. A `+1` cell marks a delegate segment hidden by width. When loaded
+catalog rows identify that agent as their creating owner, a final
+`agents: active/total active · ~$cost` segment counts only those delegates. A
+`+` marks incomplete loaded coverage; unavailable child costs are absent. An
+absent child observation is not a zero global count. These figures never use
+the primary's own fleet total. Git reads use a bounded subprocess without a
+shell, cache a bounded set of cwd values per view, and refresh only on
+selection, cwd changes, or committed-entry events. In-flight events coalesce;
+disposal and cache eviction abort pending reads. No Git polling or duration
+tick exists.
 
-The frame preserves native keyboard input, text selection, caret placement,
-and drafts. The status block reserves its own rows outside the editor's mouse
-target. Below side-by-side widths, compact roster rows sit above the same
-header, transcript, composer, and status block.
+Heading figures describe the loaded selection, not an unknown global total. A
+`+` marks incomplete loaded coverage. A scrollbar shows the position within
+loaded conversation content. The conversation's top rule stays blank at the
+live tail; away from it, the rule states the distance below or the action to
+load an earlier or newer range. Estimated heights say `about`.
 
-In Pi fullscreen mode, click a roster or task row to select it, then click the
-`Open` control to open it. In Threads, click a row to select it; click the
-selected row or the `Read` control to open it. Click action rows to select,
-then `Choose` to run the action through its usual confirmation flow. Click a
-message field to focus it and place its caret. A click in the conversation opens
-the agent console. A click on a footer control or a menu row runs the action as it
-is at that moment: a control drawn before a refresh or resize never runs a replaced
-action, and a click on a row after the list changed selects the row now under the
-pointer. Click a thread's notify checkbox row to change the recipient selection.
+### Conversation and pointer
 
-The wheel scrolls the pane under the pointer. Roster scroll does not change
-the selected agent or the message recipient. In Related efforts and in the
-Threads list the lists scroll on their own: wheeling a list moves its visible
-rows, not the selected effort, thread or the effort a started message will go
-to; an explicit selection change brings the selected row back into view. Conversation and thread scroll
-leave the editor focus and drafts intact. Outside the two-cell roster handle
-and small composer grip, press, drag, release, modified clicks, and multiple
-clicks remain available to Pi's native text selection. Handles capture only
-unmodified left-button resize gestures, without changing editor focus.
-Dashboard actions use completed unmodified single clicks. A drag does not activate a
-row, timestamp, or hint. Pi retains control of copy-on-select and links.
-Regular terminal mode leaves mouse input to the terminal. Except for pane
-resizing, every action retains a keyboard path; no mouse setting or global
-shortcut is added.
+Conversation content uses Pi's native components. Built-in tools retain native
+cards; codemode uses Pi's public codemode presentation. Agent tools use the
+shared agent cards. The view requests custom renderers through the
+[tool-display contract](../../docs/conventions/tool-display.md). Native built-ins,
+codemode, and agent cards keep precedence; published custom tools use their
+owning extension renderers. Unpublished tools use Pi's standard named-argument
+card and logical-line output preview with an expansion hint. Display definitions
+never execute tools. The agent factory subscribes before it requests renderers.
+Publishers subscribe before their initial publication. Pi reload replaces
+subscriptions and the factory-local renderer registry; reopening the view
+creates new component instances.
 
-The New agent field accepts a task in your own words and treats it literally,
-including text such as `--help`. Enter starts the agent
-with the primary's current directory and machine default preset, selects it, and keeps the
-dashboard open. Its task, model, and reasoning appear immediately with a
-Starting state in the flat roster, before the host is ready. The conversation
-then follows the host's live output. A late startup completion never moves a
-selection the operator has changed since. Esc keeps the unsent task. Configure
-changes name, model, and reasoning afterwards; staged fields change nothing
-before Apply. Model search uses available model metadata, not a typed model
-identity. Esc in the model picker returns to its saved search, and the Model
-and Reasoning pickers start on the completed values. An owner refusal returns
-Configure to its staged fields; Cancel abandons that configuration.
+An unmodified single left click reaches the native component. Native handlers
+toggle one tool card or thinking run, including its hidden label; custom child
+controls keep their own actions. Unhandled clicks on pending cards and card
+padding toggle the card through Pi's public expansion setter. The clicked item
+stays in view and suspends tail-follow. Press, drag, release, modified clicks,
+and multiple clicks stay available for Pi's native text selection. Ctrl+O sets
+all tool cards and clears individual choices; Ctrl+T does the same for
+thinking. Thinking starts from the primary's effective setting; Ctrl+T here
+changes only this view and never writes primary settings.
 
-Actions apply only to the selected agent. They expose Stop current work,
-Configure, Tasks, Fork, Rewind, Reset context, Schedule message, Scheduled
-messages, Compact, Reconnect, Run agent command, Profile, and Details. Disabled
-actions state their reason. Profile remains available while an agent works. Stop, Reset, Rewind, and Compact confirm with Cancel selected.
-A refusal appears on the restored Actions screen at once. Fork and Rewind open
-the created branch's console while their action still has focus. Details and
-command results wrap to the available width and keep all returned text.
-Native dialogs temporarily hide the dashboard and restore it afterwards. Esc
-returns one form step; Esc at the first step returns to Actions. Completed
-editor fields return prefilled; completed input values appear above the field,
-and blank Enter keeps them. Entry,
-conversation, and timer pickers supply identities internally. Schedule accepts
-HH:MM local or a relative time such as +30m, then confirms the exact deadline
-and busy disposition. Completed schedule fields stay with their target after
-Cancel or host refusal. Reopening prefills the message; a blank deadline keeps
-the saved exact deadline. Native Cancel discards edits in the current unsubmitted
-field. The storage host must run at the deadline.
+In Pi fullscreen mode, click a list row to select it, a heading or header
+control to run it, the message field to focus it and place its caret, and a
+time to switch every time between relative age and local date and time. A
+control drawn before a refresh or resize never runs a replaced action. The
+wheel scrolls the pane under the pointer; list scroll does not change the
+selected agent or the message recipient. Regular terminal mode leaves mouse
+input to the terminal. Except for pane resizing, every action keeps a keyboard
+path; no mouse setting or global shortcut is added.
 
-Profile shows the canonical identity, optional immutable handle, display name,
-role, actual model and reasoning, creator as provenance, directory, revision,
-update evidence, and retained current request routes. Requester and reply
-recipient remain separate. Cold profiles are labeled retained and reads start
-no host. Saved expertise opens on demand with `v`; it is evidence, not fresh
-authority. Arrows, PageUp/PageDown, Home/End, and the mouse wheel read the full
-text at the available width. Click an action row to invoke it.
-
-Use `r` to edit the role or `e` to edit expertise in Pi's native editor. A blank
-submitted field clears it. `s` saves the staged draft; `u` reads the current
-profile; `d` discards the draft; Esc returns to Actions. Native editor Cancel
-leaves the completed draft unchanged. Save checks the revision from the read.
-A conflict keeps the draft and requires a fresh read, followed by explicit
-selection of the displayed current revision before another Save. Closing and
-reopening Profile keeps staged fields within the current primary session and
-process. These fields neither replace the message draft nor alter the primary
-editor. `/agent profile <identity-or-@handle>` opens the same view and edits;
-outside the interactive terminal it returns the full profile as text.
-
-The agent console uses the same conversation and message components as the
-selected dashboard view. Its editor has focus; PageUp/PageDown reads without
-changing the text destination. Reaching the transcript tail resumes follow.
-Esc returns directly to the dashboard. Actions, Tasks, and help are on that
-screen, not additional console modes. Slash and bang text are literal messages.
-Native agent commands use Actions > Run agent command. Text paste works;
-Pi's file and image attachment interface is not embedded.
+The view does not embed InteractiveMode. The published extension API has no
+complete InteractiveMode view, editor state, dialog, widget, or renderer
+registry to mount. The view composes public chat, editor, and scrolling
+primitives instead.
 
 ## Live conversation and history
 
@@ -809,7 +780,7 @@ previous watch. Tasks acquires a separate storage task-graph watch only while
 its view is open. A task with several conversations offers a conversation
 picker. Finished tasks leave the graph; their results stay in the conversation.
 No live host means no live task graph, not proof of no retained work.
-Press `r` in Tasks to retry an unavailable observation attachment. A pending or
+Refresh in Tasks retries an unavailable observation attachment. A pending or
 live attachment stays unchanged. Subscription updates only read the selected
 graph; they do not retry a declined attachment. An attached observer also accepts
 live frames after a connection recovery. Refresh never starts a host or admits
@@ -1107,14 +1078,9 @@ create optional documents or settle deliveries; attempted writes reject. An abse
 has an empty in-memory internal observation that is not cached, so a later read
 sees database creation.
 
-The command loads the terminal dashboard and its action dialogs only when you
-open the dashboard. Control commands and completion stay available before that
+The command loads the work view, its forms and the owner-view loader only when
+the view opens. Control commands and completion stay available before that
 load.
-
-The dashboard does not embed InteractiveMode. The published extension API has
-no complete InteractiveMode view, editor state, dialog, widget, or renderer
-registry to mount. The dashboard composes public chat, editor, and scrolling
-primitives instead.
 
 ## Roster and coverage
 
@@ -1684,7 +1650,7 @@ hints are not an exhaustive search of retained history. Explicit coverage and
 scoped continuation are part of the result, not a claim that absent matches
 do not exist.
 
-In `/agent`, press `t` or the Threads control for Threads. The view starts with
+In `/agent`, choose Threads in the heading. The view starts with
 Related threads from the current session's relationship evidence; each row shows
 the state, title, peer count, last activity time and purpose. Press `v` for All
 threads from bounded catalog discovery. Select a thread or an omitted-source row
@@ -1702,8 +1668,8 @@ carried authority claim, authority source, restrictions, acceptance, integrator,
 creator, creation and update times, and the member declarations, with the
 reminder that these are attributed claims, not proof of authority or agreement.
 In a thread, `m` (Peers) opens its participants. Arrows select a participant;
-Enter opens its conversation within the dashboard. Esc returns to the participant
-list, then the same thread position. Participant reads do not send a message or
+Enter opens its conversation in the work view. Escape returns through the message
+field and the list to the participants, then to the same thread position. Participant reads do not send a message or
 start a model turn. Unavailable conversations show their read error rather than
 an invented empty conversation. The standalone native terminal uses the same
 collaboration operations and attributes operator posts to its attached
@@ -1838,7 +1804,7 @@ Fleet and selected-session status do not read caller identity. An ordinary
 overview uses it only for the optional effort-awareness section. If identity
 is unavailable, that section is omitted and the agent overview remains available.
 
-`/agent` opens Related efforts with `b` or its mouse hint. The view leads with
+`/agent` opens Related efforts with Efforts in its heading. The view leads with
 declared purpose and integration claims, or a source-labeled observed fallback
 when no intent exists. It also shows quoted operator direction with scope and
 active threads. A contact-thread read displays its frame and current member
@@ -3069,9 +3035,7 @@ matches no preset. Per-field origins distinguish `explicit`, `preset`,
 `defaultPreset`, `retained`, and `default` values. An unapplied field is not a successful change
 to the target's configuration.
 
-The existing `/agent` dashboard shows current load state and default preset on
-its main panel when space permits. Warnings, the draft, and status take priority
-at minimum height. Its scrollable Help view always starts with the file path,
+The `/agent` work view's Help always starts with the file path,
 absent/loaded/invalid/unavailable document status, full digest, diagnostics, enforcement setting, and every
 preset name with its model. Reopen or the existing roster refresh updates these
 facts. No new command is required.

@@ -41,8 +41,8 @@ it("resolves the panel entry inside the owner directory and refuses an escape", 
 
 const MODULE = `
 export function operatorPanel() {
-	return { version: 1, title: "Fixture browser", open(host) {
-		return { render: (width) => [host.target.id.slice(0, width)], handleInput() {}, dispose() {} };
+	return { version: 2, title: "Fixture browser", open(host) {
+		return { title: "Fixture browser", render: (width) => [host.target.id.slice(0, width)], handleInput: () => false, dispose() {} };
 	} };
 }
 `;
@@ -51,12 +51,12 @@ function inventory(entries: Array<{ name: string; source: string; panel?: unknow
 	return { contributions: entries.map((entry) => ({ commands: [{ name: "browse", description: "browse" }], ...entry })), ordinaryOnly: [] };
 }
 
-it("imports advertised panel modules and lists every failure as an unavailable browser", async (t) => {
+it("imports advertised panel modules and lists every failure as an unavailable owner view", async (t) => {
 	const root = directory(t);
 	const files: Record<string, string> = {
 		"good/index.ts": "", "good/panel.ts": MODULE,
-		"wrong/index.ts": "", "wrong/panel.ts": "export function operatorPanel() { return { version: 2, title: 'x', open() {} }; }",
-		"untitled/index.ts": "", "untitled/panel.ts": "export function operatorPanel() { return { version: 1, title: '', open() {} }; }",
+		"wrong/index.ts": "", "wrong/panel.ts": "export function operatorPanel() { return { version: 1, title: 'x', open() {} }; }",
+		"untitled/index.ts": "", "untitled/panel.ts": "export function operatorPanel() { return { version: 2, title: '', open() {} }; }",
 		"throws/index.ts": "", "throws/panel.ts": "export function operatorPanel() { throw new Error('boom'); }",
 		"nofunction/index.ts": "", "nofunction/panel.ts": "export const operatorPanel = 1;",
 	};
@@ -78,14 +78,15 @@ it("imports advertised panel modules and lists every failure as an unavailable b
 	assert.equal(result.panels[0].command, "browse");
 	for (const item of result.panels.slice(1)) assert.ok(item.unavailable && item.unavailable.length <= 160, item.contribution);
 	assert.equal(result.diagnostics.length, 6);
-	for (const line of result.diagnostics) assert.ok(/browser unavailable here/.test(line) && line.length <= 200 && !/\n/.test(line));
+	for (const line of result.diagnostics) assert.ok(/owner view unavailable here/.test(line) && line.length <= 200 && !/\n/.test(line));
 	const good = result.panels[0].module;
 	assert.ok(good);
 	const instance = good.open({ target: { id: "conversation-1" } } as never);
-	assert.deepEqual(instance.render(8), ["conversa"]);
+	assert.deepEqual(instance.render(8, 1), ["conversa"]);
+	assert.match(result.panels[1].unavailable ?? "", /unsupported panel module version 1/, "an older module shape is refused, never adapted");
 });
 
-it("a malformed inventory yields no browsers and one diagnostic", async () => {
+it("a malformed inventory yields no owner views and one diagnostic", async () => {
 	const result = await loadPanelModules({ contributions: "nope" });
 	assert.deepEqual(result.panels, []);
 	assert.equal(result.diagnostics.length, 1);

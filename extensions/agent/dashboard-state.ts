@@ -1,18 +1,5 @@
-import type { AgentConversationSummary } from "./dashboard-types.ts";
 import type { CollaborationViewState } from "./collaboration-view.ts";
 
-export type DashboardScreen =
-	| "roster"
-	| "message"
-	| "console"
-	| "new"
-	| "find"
-	| "actions"
-	| "help"
-	| "tasks"
-	| "result"
-	| "threads"
-	| "efforts";
 export interface AgentReadingState {
 	follow: boolean;
 	scroll: number;
@@ -25,7 +12,6 @@ export interface AgentReadingState {
 export interface ScheduleDraft {
 	message: string;
 	time: string;
-	deadline?: string;
 	mode: "steer" | "followUp";
 }
 export interface AgentDraftState {
@@ -41,6 +27,8 @@ export interface AgentDraftState {
 export interface DashboardLayout {
 	rosterRatio?: number;
 	composerRows?: number;
+	/** The agent list is collapsed; the conversation takes the whole width. */
+	listHidden?: boolean;
 }
 export interface DashboardState {
 	layout: DashboardLayout;
@@ -79,7 +67,7 @@ export function updateDraft(state: AgentDraftState, text: string): void {
 	state.draftRevision++;
 	notifyAgentState(state);
 }
-/** Active consoles release their state listener when selection changes or the overlay closes. */
+/** Active consoles release their state listener when selection changes or the work view closes. */
 export function subscribeAgentState(state: AgentDraftState, listener: () => void): () => void {
 	let listeners = draftListeners.get(state);
 	if (!listeners) {
@@ -89,48 +77,7 @@ export function subscribeAgentState(state: AgentDraftState, listener: () => void
 	listeners.add(listener);
 	return () => listeners.delete(listener);
 }
-/** Interaction state is local to the overlay; retained values contain no source handles. */
-export class DashboardNavigation {
-	screen: DashboardScreen = "roster";
-	target?: string;
-	generation = 0;
-	private readonly back: Array<{ screen: DashboardScreen; target?: string }> = [];
-	readonly state: DashboardState;
-	constructor(state: DashboardState) {
-		this.state = state;
-	}
-	enter(screen: DashboardScreen, target = this.state.selected): void {
-		this.back.push({ screen: this.screen, target: this.target });
-		this.screen = screen;
-		this.target = screen === "find" ? undefined : target;
-		this.generation++;
-	}
-	escape(): "close" | "back" {
-		this.generation++;
-		const previous = this.back.pop();
-		if (previous) {
-			this.screen = previous.screen;
-			this.target = previous.target;
-			return "back";
-		}
-		if (this.state.filter) {
-			this.state.filter = "";
-			return "back";
-		}
-		return "close";
-	}
-	get previousScreen(): DashboardScreen | undefined { return this.back.at(-1)?.screen; }
-	roster(): void {
-		this.back.length = 0;
-		this.screen = "roster";
-		this.target = undefined;
-		this.generation++;
-	}
-	reconcile(rows: readonly AgentConversationSummary[]): void {
-		if (rows.some((row) => row.id === this.state.selected)) return;
-		this.state.selected = rows[0]?.id;
-	}
-}
+/** Work view state per ordinary session; retained values contain no source handles. */
 const sessions = new Map<string, DashboardState>();
 export function dashboardSessionState(id: string, load?: () => DashboardLayout): DashboardState {
 	let state = sessions.get(id);

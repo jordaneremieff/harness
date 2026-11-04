@@ -9,6 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 
+/** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
+const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+
 it("activity summarizes string arguments without raw JSON, including published partial arguments", () => {
 	assert.equal(argumentSummary('{"count":1,"path":"notes.md","text":"other"}'), "notes.md");
 	assert.equal(argumentSummary('{"text":"first\\n second"'), "first second");
@@ -36,7 +39,7 @@ it("selected status uses the same state labels as the roster", async () => {
 	}
 });
 for (const [width, skipped] of [[164, 18], [164, 0], [100, 18], [100, 0], [80, 18], [80, 0]]) {
-	it(`roster coverage stays out of the selected header at ${width} with ${skipped} unreadable`, async () => {
+	it(`list coverage stays out of the target header at ${width} with ${skipped} unreadable`, async () => {
 		const observed = source(Array.from({ length: 31 }, (_, index) => row(String(index))));
 		const list = observed.list;
 		observed.list = async (input) => {
@@ -44,27 +47,28 @@ for (const [width, skipped] of [[164, 18], [164, 0], [100, 18], [100, 0], [80, 1
 			return { ...result, coverage: { ...result.coverage, complete: false, skipped, nextCursor: skipped ? "more" : null } };
 		};
 		const f = fixture(width, 30, observed);
+		const read = () => visible(f.ui.render(width));
 		try {
 			await turn();
-			const lines = f.ui.render(width).map(stripVTControlCharacters);
+			await turn();
+			const lines = read();
 			const wide = width >= 100;
-			const paneX = wide ? dashboardGeometry(width, 30, 3).rosterWidth + 1 : 0;
-			const headerY = wide ? 1 : 5;
+			const paneX = wide ? (lines[1]?.indexOf("│") ?? 0) + 1 : 0;
+			const headerY = wide ? 1 : 6;
 			const header = lines.slice(headerY, headerY + 4).map((line) => line.slice(paneX));
-			assert.doesNotMatch(header.join("\n"), /Coverage|unreadable|omitted|Incomplete/);
-			assert.match(header[1], /Preferences: absent; default preset: none/u);
-			assert.match(header[2], /^─+$/);
-			const roster = wide ? lines.slice(1, -1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 5);
-			assert.match(roster.join("\n"), skipped ? /18 unreadable/ : /Incomplete/);
-			assert.match(lines[0], /1\/31\+ ╮$/);
-			if (skipped) assert.match(roster.join("\n"), /More|Load more/);
+			assert.doesNotMatch(header.join("\n"), /coverage|unreadable|omitted|incomplete/i);
+			assert.match(header[0] ?? "", /0 · work · ● Working/u, "the target header names the agent, project and state");
+			assert.match(header[3] ?? "", /^─+$/);
+			const roster = wide ? lines.slice(1, -1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 6);
+			assert.match(roster.join("\n"), skipped ? /18 unreadable/ : /incomplete/);
+			if (skipped) assert.match(roster.join("\n"), /Load more/);
 			f.ui.handleInput("\r");
-			assert.doesNotMatch(f.ui.render(width).map(stripVTControlCharacters).slice(1, 5).join("\n"), /Coverage|unreadable|Incomplete/);
+			assert.doesNotMatch(read().slice(headerY, headerY + 4).map((line) => line.slice(paneX)).join("\n"), /coverage|unreadable|incomplete/i);
 		} finally { f.ui.dispose(); }
 	});
 }
 
-it("selected status keeps live usage and receipts separate from conversation and roster notices", async () => {
+it("live usage sits under the target header and receipts stay on the message field", async () => {
 	const usage = { input: 100, output: 20, cacheRead: 30, cacheWrite: 10, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 	const initial = conversationFrame();
 	const frame = conversationFrame({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage }] }], status: { ...initial.status, usage: { models: { "test/model": usage }, tools: {} } } });
@@ -74,22 +78,22 @@ it("selected status keeps live usage and receipts separate from conversation and
 	const f = fixture(160, 45, observed, { modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }), sessionFigures: async () => "agents: 1/1 active · ~$0.42" });
 	try {
 		await turn();
+		await turn();
 		const state = f.state.agents.get("one");
 		assert.ok(state);
 		state.receipt = "Message admitted";
-		const lines = f.ui.render(160);
-		assert.match(lines[0], /Agents: 1\/1 active · ~\$0.42/);
-		const status = lines.slice(1, 5).map((line) => line.slice(dashboardGeometry(160, 45, 3).rosterWidth + 1)).join("\n");
-		assert.doesNotMatch(status, /LIVE|RETAINED|Earlier messages available|Roster/);
-		assert.match(status, /● Working/);
-		assert.doesNotMatch(status, /Example model|high/);
-		assert.doesNotMatch(status, /ctx| in| out|\$/);
-		const caption = lines.find((line) => line.includes("╭─ steer at next step"));
+		const lines = visible(f.ui.render(160));
+		assert.match(lines[0] ?? "", /agents: 1\/1 active · ~\$0\.42 {2}Close/, "session figures sit in the heading");
+		const paneX = (lines[1]?.indexOf("│") ?? 0) + 1;
+		const pane = lines.slice(1, 5).map((line) => line.slice(paneX));
+		assert.doesNotMatch(pane.join("\n"), /LIVE|RETAINED|Earlier messages available|Roster|Message admitted/);
+		assert.match(pane[0] ?? "", /one · work · ● Working/);
+		assert.match(pane[1] ?? "", /Example model \[high\].*16%.*160\/1\.0k.*~\$0\.42.*21% hit/);
+		assert.match(pane[2] ?? "", /\/work/);
+		const caption = lines.find((line) => line.includes("╭─ To one"));
+		assert.match(caption ?? "", /Steer at next step/);
 		assert.doesNotMatch(caption ?? "", /%|\$|model|high|ctx/);
-		assert.match(lines.at(-3) ?? "", /Example model \[high\].*16%.*160\/1.0k.*~\$0.42.*21% hit/);
-		assert.match(lines.at(-2) ?? "", /\/work/);
-		assert.doesNotMatch(status, /Message admitted/);
-		assert.match(lines.at(-4) ?? "", /╰─ Message admitted/);
+		assert.ok(lines.some((line) => line.includes("╰─ Message admitted")), "the receipt is on the message field's bottom border");
 	} finally { f.ui.dispose(); }
 });
 it("dashboard reconciliation and roster events reuse the scanned page for session figures", async (t) => {
@@ -111,7 +115,7 @@ it("dashboard reconciliation and roster events reuse the scanned page for sessio
 	try {
 		await turn();
 		assert.equal(reads, 1);
-		assert.match(f.ui.render(100)[0], /Agents: 1\/1 active · ~\$0.42/);
+		assert.match(f.ui.render(100)[0], /agents: 1\/1 active · ~\$0.42/i);
 		changed(); t.mock.timers.tick(250); await turn();
 		assert.equal(reads, 2, "the roster event performs one page read");
 		t.mock.timers.tick(1750); await turn();
@@ -128,7 +132,7 @@ it("a late session total read does not recreate the selection after close", asyn
 	assert.equal(f.state.selected, undefined);
 	assert.equal(f.state.agents.size, 0);
 });
-it("failed roster refresh keeps rows, suppresses transient errors and clears a persistent notice after success", async (t) => {
+it("failed list refresh keeps rows, suppresses transient errors and clears a persistent notice after success", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] });
 	let fail = false;
 	let changed = () => {};
@@ -144,11 +148,12 @@ it("failed roster refresh keeps rows, suppresses transient errors and clears a p
 		assert.match(f.ui.render(100).join("\n"), /good/);
 		assert.doesNotMatch(f.ui.render(100).join("\n"), /refresh failure/);
 		await refresh(); await refresh();
-		const lines = f.ui.render(100).map(stripVTControlCharacters);
-		assert.match(lines.map((line) => line.slice(0, 30)).join("\n"), /Roster refresh unavailable/);
-		assert.doesNotMatch(lines.slice(1, 5).map((line) => line.slice(31)).join("\n"), /Roster refresh|refresh failure/);
+		const lines = visible(f.ui.render(100));
+		const paneX = (lines[1]?.indexOf("│") ?? 0) + 1;
+		assert.match(lines.map((line) => line.slice(0, paneX - 1)).join("\n"), /List kept; refresh failed/);
+		assert.doesNotMatch(lines.slice(1, 5).map((line) => line.slice(paneX)).join("\n"), /refresh failed|refresh failure/);
 		fail = false;
 		await refresh();
-		assert.doesNotMatch(f.ui.render(100).join("\n"), /Roster refresh unavailable|refresh failure/);
+		assert.doesNotMatch(f.ui.render(100).join("\n"), /refresh failed|refresh failure/);
 	} finally { f.ui.dispose(); }
 });

@@ -1,10 +1,7 @@
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, truncateToWidth, wrapTextWithAnsi, type Component, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { matchesSchema } from "./schema-check.ts";
-import { AgentProfileSchema, ProfileUpdateSchema, type AgentProfile } from "./profile-schema.ts";
+import { AgentProfileSchema, type AgentProfile } from "./profile-schema.ts";
 import type { AgentCommandAction } from "./command.ts";
-import { DashboardMouse } from "./dashboard-mouse.ts";
-import { ordinaryDialogs, type AgentDialogs } from "./dialog-adapter.ts";
 import { displayText } from "./tool-cards.ts";
 
 export interface ProfileDraft {
@@ -13,10 +10,7 @@ export interface ProfileDraft {
 	expertise?: string;
 	needsRead?: boolean;
 }
-export type ProfileChoice = "role" | "expertise" | "save" | "read" | "revision" | "discard" | "close";
 type ProfileControl = (method: "profile-read" | "profile-update", input: Record<string, unknown>, ctx: ExtensionContext) => Promise<unknown>;
-/** The target is captured by the caller; the form supplies only the operation and its input. */
-export type BoundProfileControl = (method: "profile-read" | "profile-update", input: Record<string, unknown>) => Promise<unknown>;
 const safe = (value: string | null) => value === null ? "Unknown" : displayText(value);
 
 function identityLines(profile: AgentProfile): string[] {
@@ -52,184 +46,25 @@ function draftLines(profile: AgentProfile, draft?: ProfileDraft): string[] {
 			? ["Conflict: draft retained. Read the current profile, then explicitly select its revision before Save."] : []),
 	];
 }
-/** Identity and bounded request routes; saved expertise is separate from present instructions. */
-export function profileText(profile: AgentProfile, expertise = false, draft?: ProfileDraft): string {
+/** Identity, bounded request routes and saved expertise, which is evidence and separate from present instructions. */
+export function profileText(profile: AgentProfile, draft?: ProfileDraft): string {
 	return [
 		...identityLines(profile), ...requestLines(profile), ...draftLines(profile, draft),
-		expertise ? `Saved expertise (evidence, not fresh authority):\n${safe(profile.expertise) || "(empty)"}` : `Saved expertise: ${profile.expertise ? "Present; press v to view" : "Empty"}`,
-		...(expertise && draft?.expertise !== undefined ? [`Draft expertise (not saved):\n${safe(draft.expertise) || "(empty)"}`] : []),
+		`Saved expertise (evidence, not fresh authority):\n${safe(profile.expertise) || "(empty)"}`,
+		...(draft?.expertise !== undefined ? [`Draft expertise (not saved):\n${safe(draft.expertise) || "(empty)"}`] : []),
 	].join("\n");
-}
-
-/** Scrollable profile with mouse actions; edits use Pi's native editor after this view closes. */
-export class ProfilePanel implements Component {
-	private offset = 0;
-	private maxOffset = 0;
-	private bodyHeight = 1;
-	private expertise = false;
-	private mouse = new DashboardMouse();
-	private profile: AgentProfile;
-	private draft: ProfileDraft;
-	private theme: Theme;
-	private height: () => number;
-	private done: (choice: ProfileChoice) => void;
-	private redraw: () => void;
-	constructor(profile: AgentProfile, draft: ProfileDraft, theme: Theme, height: () => number, done: (choice: ProfileChoice) => void, redraw: () => void) {
-		this.profile = profile; this.draft = draft; this.theme = theme; this.height = height; this.done = done; this.redraw = redraw;
-	}
-	invalidate(): void { this.mouse.reset(); }
-	private scroll(delta: number): void { this.offset = Math.max(0, Math.min(this.maxOffset, this.offset + delta)); this.redraw(); }
-	handleInput(data: string): void {
-		if (matchesKey(data, "escape")) this.done("close");
-		else if (matchesKey(data, "up")) this.scroll(-1);
-		else if (matchesKey(data, "down")) this.scroll(1);
-		else if (matchesKey(data, "pageUp")) this.scroll(-this.bodyHeight);
-		else if (matchesKey(data, "pageDown")) this.scroll(this.bodyHeight);
-		else if (matchesKey(data, "home")) this.scroll(-this.maxOffset);
-		else if (matchesKey(data, "end")) this.scroll(this.maxOffset);
-		else if (data === "v") { this.expertise = !this.expertise; this.redraw(); }
-		else {
-			const choices: Record<string, ProfileChoice> = { r: "role", e: "expertise", s: "save", u: "read", a: "revision", d: "discard" };
-			if (choices[data]) this.done(choices[data]);
-		}
-	}
-	handleMouse(event: TuiMouseEvent) { return this.mouse.handle(event); }
-	render(width: number): string[] {
-		const height = Math.max(1, this.height());
-		this.mouse.reset(width, height);
-		const actions = [
-			["v", this.expertise ? "Hide expertise" : "View expertise"], ["r", "Edit role"], ["e", "Edit expertise"],
-			["s", "Save draft"], ["u", "Read current profile"],
-			...(this.draft.expectedRevision !== this.profile.revision && !this.draft.needsRead ? [["a", "Use current revision for draft"]] : []),
-			["d", "Discard draft"], ["Esc", "Back"],
-		];
-		this.bodyHeight = Math.max(1, height - actions.length - 2);
-		const body = profileText(this.profile, this.expertise, this.draft).split("\n").flatMap((line) => wrapTextWithAnsi(line, Math.max(1, width)));
-		this.maxOffset = Math.max(0, body.length - this.bodyHeight);
-		this.offset = Math.min(this.offset, this.maxOffset);
-		const lines = [this.theme.fg("accent", truncateToWidth("Agent profile · ↑↓ / PgUp/PgDn scroll", width)), ...body.slice(this.offset, this.offset + this.bodyHeight)];
-		while (lines.length < this.bodyHeight + 1) lines.push("");
-		lines.push(this.theme.fg("dim", truncateToWidth(`${this.offset + 1}-${Math.min(body.length, this.offset + this.bodyHeight)} of ${body.length} lines`, width)));
-		this.mouse.add({ x: 0, y: 1, width, height: this.bodyHeight, wheel: (delta) => this.scroll(delta * 3) });
-		for (const [key, label] of actions) {
-			this.mouse.add({ x: 0, y: lines.length, width, height: 1, click: () => this.handleInput(key === "Esc" ? "\x1b" : key) });
-			lines.push(this.theme.fg("accent", truncateToWidth(`${key}  ${label}`, width)));
-		}
-		return lines.slice(0, height).map((line) => truncateToWidth(line, width));
-	}
 }
 
 export function readValue(value: unknown): AgentProfile {
 	if (!matchesSchema(AgentProfileSchema, value)) throw new Error("Invalid profile response");
 	return value;
 }
-const hasPatch = (draft: ProfileDraft) => draft.role !== undefined || draft.expertise !== undefined;
-
-interface ProfileEditing {
-	profile: AgentProfile;
-	draft: ProfileDraft;
-	dialogs: AgentDialogs;
-	control: BoundProfileControl;
-}
-function clearDraft(state: ProfileEditing): void {
-	delete state.draft.role; delete state.draft.expertise; delete state.draft.needsRead;
-	state.draft.expectedRevision = state.profile.revision;
-}
-async function saveDraft(state: ProfileEditing): Promise<void> {
-	const { profile, draft, dialogs, control } = state;
-	if (!hasPatch(draft)) throw new Error("Edit role or expertise before Save");
-	if (draft.needsRead || draft.expectedRevision !== profile.revision) throw new Error("Draft retained. Read the current profile and select its revision before Save.");
-	const result = await control("profile-update", {
-		sessionId: profile.identity, expectedRevision: draft.expectedRevision,
-		...(draft.role === undefined ? {} : { role: draft.role }), ...(draft.expertise === undefined ? {} : { expertise: draft.expertise }),
-	});
-	if (!matchesSchema(ProfileUpdateSchema, result)) throw new Error("Invalid profile update response");
-	if (result.outcome === "conflict") {
-		draft.needsRead = true;
-		throw new Error(`Profile changed to revision ${result.profile.revision}. Draft retained; read the current profile.`);
-	}
-	state.profile = result.profile;
-	clearDraft(state);
-	dialogs.notify("Profile saved", "info");
-}
-async function editField(state: ProfileEditing, field: "role" | "expertise"): Promise<void> {
-	const { profile, draft, dialogs } = state;
-	const label = safe(profile.handle ?? profile.name ?? profile.identity);
-	const value = await dialogs.editor(`${field === "role" ? "Role" : "Expertise"} for ${label} (blank clears)`, draft[field] ?? profile[field]);
-	if (value !== undefined) draft[field] = value;
-}
-async function useCurrentRevision(state: ProfileEditing): Promise<void> {
-	if (state.draft.needsRead) throw new Error("Read the current profile before changing the draft revision");
-	const confirmed = await state.dialogs.select("Use the displayed current revision? Fields in your draft will replace its values.", [{ value: "keep", label: "Keep original revision" }, { value: "use", label: "Use current revision" }]);
-	if (confirmed === "use") state.draft.expectedRevision = state.profile.revision;
-}
-async function applyChoice(state: ProfileEditing, choice: ProfileChoice): Promise<void> {
-	if (choice === "role" || choice === "expertise") return editField(state, choice);
-	if (choice === "save") return saveDraft(state);
-	if (choice === "revision") return useCurrentRevision(state);
-	if (choice === "discard") return clearDraft(state);
-	if (choice === "read") {
-		state.profile = readValue(await state.control("profile-read", { sessionId: state.profile.identity }));
-		state.draft.needsRead = false;
-		if (!hasPatch(state.draft)) state.draft.expectedRevision = state.profile.revision;
-	}
-}
-/** Pick the next profile operation. The ordinary host shows a scrollable panel; others use a menu. */
-export type ProfilePick = (profile: AgentProfile, draft: ProfileDraft) => Promise<ProfileChoice>;
-
-/** The draft keeps its original revision across refusals, close/reopen, and explicit rereads. */
-export async function runProfileForm(profile: AgentProfile, draft: ProfileDraft, dialogs: AgentDialogs, control: BoundProfileControl, pick: ProfilePick): Promise<void> {
-	const state: ProfileEditing = { profile, draft, dialogs, control };
-	for (;;) {
-		const choice = await pick(state.profile, draft);
-		if (choice === "close") return;
-		try { await applyChoice(state, choice); }
-		catch (error) { dialogs.notify(error instanceof Error ? error.message : String(error), "error"); }
-	}
-}
-
-/** A selectable menu over the same operations; the full profile opens in a scrollable reader. */
-export function profileMenu(dialogs: AgentDialogs): ProfilePick {
-	return async (profile, draft) => {
-		for (;;) {
-			const conflict = draft.expectedRevision !== profile.revision && !draft.needsRead;
-			const choice = await dialogs.select(`Profile: ${safe(profile.handle ?? profile.name ?? profile.identity)}\nRevision ${safe(profile.revision)}${hasPatch(draft) ? " · draft not saved" : ""}`, [
-				{ value: "view", label: "Read profile and expertise" }, { value: "role", label: "Edit role" }, { value: "expertise", label: "Edit expertise" },
-				{ value: "save", label: "Save draft" }, { value: "read", label: "Read current profile" },
-				...(conflict ? [{ value: "revision", label: "Use current revision for draft" }] : []),
-				{ value: "discard", label: "Discard draft" }, { value: "close", label: "Back" },
-			]);
-			if (choice === "view") { await dialogs.read("Agent profile", profileText(profile, true, draft)); continue; }
-			return (choice ?? "close") as ProfileChoice;
-		}
-	};
-}
-
-/** Scrollable panel used by ordinary Pi. */
-function profilePanel(ctx: ExtensionContext): ProfilePick {
-	return (profile, draft) => ctx.ui.custom<ProfileChoice>((tui, theme, _keys, done) =>
-		new ProfilePanel(profile, draft, theme, () => tui.terminal.rows, done, () => tui.requestRender()),
-		{ overlay: true, overlayOptions: { width: "100%", maxHeight: "100%", margin: 0 } });
-}
-
-export function editProfile(profile: AgentProfile, draft: ProfileDraft, ctx: ExtensionContext, control: ProfileControl): Promise<void> {
-	return runProfileForm(profile, draft, ordinaryDialogs(ctx), (method, input) => control(method, input, ctx), profilePanel(ctx));
-}
-
+/** `/agent profile <session>`: the profile as text. In the terminal UI the work view opens it as a form. */
 export function profileCommand(control: ProfileControl): AgentCommandAction {
-	const drafts = new Map<string, ProfileDraft>();
 	return {
-		name: "profile", description: "Read identity and expertise; edit role or expertise with a revision check",
+		name: "profile",
+		description: "Read identity and expertise; edit role or expertise with a revision check",
 		args: [{ name: "session", complete: "session" }],
-		run: async ([sessionId], ctx) => {
-			const profile = readValue(await control("profile-read", { sessionId }, ctx));
-			if (!ctx.hasUI || ctx.mode !== "tui") return profileText(profile, true);
-			const key = `${ctx.sessionManager.getSessionId()}:${profile.identity}`;
-			const draft = drafts.get(key) ?? { expectedRevision: profile.revision };
-			drafts.set(key, draft);
-			await editProfile(profile, draft, ctx, control);
-			if (!hasPatch(draft)) drafts.delete(key);
-			return undefined;
-		},
+		run: async ([sessionId], ctx) => profileText(readValue(await control("profile-read", { sessionId }, ctx))),
 	};
 }

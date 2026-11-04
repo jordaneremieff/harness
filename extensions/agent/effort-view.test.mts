@@ -47,7 +47,6 @@ function setup(width = 100, height = 30) {
 		efforts: async () => { reads++; return awareness(current); },
 		messageEffort: async (id, text) => { messages.push({ id, text }); return { text: "Operator message admitted" }; },
 		submit: async () => { controls.push("submit"); return { text: "wrong" }; },
-		action: async () => { controls.push("action"); return { text: "wrong" }; },
 		newAgent: async () => { controls.push("new"); return { text: "wrong" }; },
 	});
 	return { ...f, messages, controls, current, reads: () => reads, notify: () => notify() };
@@ -57,7 +56,7 @@ it("effort entry is event-driven and renders claims and finite coverage at narro
 	try {
 		await turn();
 		assert.equal(f.reads(), 0);
-		f.ui.handleInput("b");
+		f.ui.openNamedAction("efforts");
 		await turn();
 		assert.equal(f.reads(), 1);
 		const lines = f.ui.render(60);
@@ -118,7 +117,7 @@ it("the mouse opens Related efforts and message hints without agent-control leak
 it("unknown and incompatible efforts receive no direct messages", async () => {
 	const f = setup();
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		f.ui.handleInput("\x1b[B"); f.ui.handleInput("m"); await turn();
 		assert.equal(f.messages.length, 0);
 		assert.match(f.ui.render(100).join("\n"), /need a live compatible effort/);
@@ -131,7 +130,7 @@ it("message failures retain drafts and changed liveness refuses a pending draft"
 	const f = fixture(100, 30, source(), { efforts: async () => awareness(current), messageEffort: async () => { throw new Error("channel unavailable"); } });
 	const current = efforts();
 	try {
-		await turn(); f.ui.handleInput("b"); await turn(); f.ui.handleInput("m"); f.ui.handleInput("Keep this draft"); f.ui.handleInput("\r"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn(); f.ui.handleInput("m"); f.ui.handleInput("Keep this draft"); f.ui.handleInput("\r"); await turn();
 		assert.match(f.ui.render(100).join("\n"), /Draft retained/);
 		assert.match(f.ui.render(100).join("\n"), /Keep this draft/);
 		current.efforts[0] = { ...current.efforts[0], liveness: "unknown" };
@@ -142,7 +141,7 @@ it("message failures retain drafts and changed liveness refuses a pending draft"
 it("closing during an effort read drops late results", async () => {
 	const read = deferred<EffortAwareness>();
 	const f = fixture(100, 30, source(), { efforts: () => read.promise });
-	await turn(); f.ui.handleInput("b"); f.ui.dispose();
+	await turn(); f.ui.openNamedAction("efforts"); f.ui.dispose();
 	const count = f.counts().renders;
 	read.resolve(awareness()); await turn();
 	assert.equal(f.counts().renders, count);
@@ -164,7 +163,7 @@ it("keyboard and mouse contact entry read the existing Threads view without list
 		const calls: Record<string, unknown>[] = [];
 		const f = fixture(100, 30, source(), { efforts: async () => awareness(), collaborate: async (input) => { calls.push(input); return contactPage(); } });
 		try {
-			await turn(); f.ui.handleInput("b"); await turn();
+			await turn(); f.ui.openNamedAction("efforts"); await turn();
 			if (mouse) {
 				const lines = f.ui.render(100);
 				const y = lines.findIndex((line) => line.includes("Open thread"));
@@ -179,20 +178,20 @@ it("keyboard and mouse contact entry read the existing Threads view without list
 it("Back from a contact thread returns to Related efforts with its selection and draft", async () => {
 	const f = fixture(100, 30, source(), { efforts: async () => awareness(), collaborate: async () => contactPage(), messageEffort: async () => ({ text: "admitted" }) });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
-		assert.equal(f.ui.navigation.screen, "efforts");
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
+		assert.equal(f.ui.focus.surface, "efforts");
 		f.ui.handleInput("m"); f.ui.handleInput("Draft for later"); f.ui.handleInput("\x1b");
 		f.ui.handleInput("\r"); await turn();
-		assert.equal(f.ui.navigation.screen, "threads");
+		assert.equal(f.ui.focus.surface, "threads");
 		assert.match(f.ui.render(100).join("\n"), /Contact exchange/);
 		f.ui.handleInput("\x1b"); await turn();
-		assert.equal(f.ui.navigation.screen, "efforts", "the thread was opened from Related efforts, not the list");
+		assert.equal(f.ui.focus.surface, "efforts", "the thread was opened from Related efforts, not the list");
 		assert.match(f.ui.render(100).join("\n"), /Agents > Related efforts/);
 		f.ui.handleInput("m");
 		assert.match(f.ui.render(100).join("\n"), /Draft for later/);
 		f.ui.handleInput("\x1b");
 		f.ui.handleInput("\x1b");
-		assert.equal(f.ui.navigation.screen, "roster");
+		assert.equal(f.ui.focus.surface, "work");
 	} finally { f.ui.dispose(); }
 });
 it("the command adapter binds effort reads and operator messages to the unchanged primary context", async () => {
@@ -200,7 +199,8 @@ it("the command adapter binds effort reads and operator messages to the unchange
 	let finish = () => {};
 	const ctx = { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => "primary" }, modelRegistry: { find: () => undefined }, ui: { notify() {}, custom: async (factory: (tui: TUI, paint: typeof theme, appKeys: typeof keys, done: () => void) => AgentDashboard) => new Promise<void>((resolve) => { finish = resolve; dashboard = factory({ terminal: { rows: 30, columns: 100 }, requestRender() {} } as unknown as TUI, theme, keys, resolve); }) } } as unknown as ExtensionContext;
 	const calls: unknown[] = [];
-	const command = createAgentCommand([], source([row("one", { storageId: "one", creatingOwnerId: "other" })]), { timers: async () => [], schedule: async () => ({ text: "scheduled" }) }, undefined, undefined, {
+	const wiring = { timers: async () => [], schedule: async () => ({ text: "scheduled" }), control: async () => ({}), newAgent: async () => ({ text: "created" }), newDefaults: () => ({ cwd: "/work", presets: [], ownership: "" }) };
+	const command = createAgentCommand([], source([row("one", { storageId: "one", creatingOwnerId: "other" })]), wiring, undefined, undefined, {
 		efforts: async (primary) => { calls.push(primary); return awareness(); },
 		messageEffort: async (id, text, primary) => { calls.push({ id, text, primary }); return { text: "Operator message admitted" }; },
 		observeEffort: async (id, primary) => { calls.push({ observe: id, primary }); return "Recorded activity from source"; },
@@ -209,10 +209,11 @@ it("the command adapter binds effort reads and operator messages to the unchange
 	try {
 		await turn(); assert.ok(dashboard);
 		assert.doesNotMatch(dashboard.render(100).join("\n"), /\[other\]/);
-		assert.match(dashboard.render(100).join("\n"), /v shows All agents/);
-		dashboard.handleInput("v"); await turn();
+		const heading = dashboard.render(100)[0] ?? "";
+		assert.match(heading, / Related {2}All /, "Related and All are visible choices");
+		assert.equal(dashboard.handleMouse(click(heading.indexOf(" All ") + 1, 0, 100, 30))?.handled, true); await turn();
 		assert.match(dashboard.render(100).join("\n"), /\[other\]/);
-		dashboard.handleInput("b"); await turn(); dashboard.handleInput("o"); await turn();
+		dashboard.openNamedAction("efforts"); await turn(); dashboard.handleInput("o"); await turn();
 		assert.match(dashboard.render(100).join("\n"), /Recorded activity from source/);
 		dashboard.handleInput("m"); dashboard.handleInput("Coordinate this"); dashboard.handleInput("\r"); await turn();
 		assert.deepEqual(calls, [ctx, { observe: "effort", primary: ctx }, { id: "effort", text: "Coordinate this", primary: ctx }]);
@@ -224,7 +225,7 @@ it("roster reconciliation does not read effort presence", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval"] });
 	const f = setup();
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		const reads = f.reads();
 		t.mock.timers.tick(6000); await turn();
 		assert.equal(f.reads(), reads);
@@ -235,7 +236,7 @@ it("observed purpose stays visible without an intent claim", async () => {
 	current.efforts[0] = { ...current.efforts[0], intentClaim: undefined, observedPurpose: { source: "interactive-input", text: "Compare this change" } };
 	const f = fixture(60, 20, source(), { efforts: async () => awareness(current) });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		const text = f.ui.render(60).join("\n");
 		assert.match(text, /Observed purpose \(interactive-input\): Compare this change/);
 		assert.match(text, /No stated integration plan/);
@@ -249,7 +250,7 @@ it("a late message receipt preserves edits and does not retarget an omitted effo
 	observed.subscribeRoster = (listener) => { notify = listener; return () => {}; };
 	const f = fixture(60, 20, observed, { efforts: async () => awareness(current), messageEffort: async () => admitted.promise });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn(); f.ui.handleInput("m"); f.ui.handleInput("Retain this"); f.ui.handleInput("\r");
+		await turn(); f.ui.openNamedAction("efforts"); await turn(); f.ui.handleInput("m"); f.ui.handleInput("Retain this"); f.ui.handleInput("\r");
 		f.ui.handleInput("\x03"); f.ui.handleInput("Retain this");
 		current.efforts.shift(); notify(); await turn();
 		const lines = f.ui.render(60);
@@ -269,7 +270,7 @@ it("all-local machine efforts show purpose and contact without full intent leaka
 	const calls: Record<string, unknown>[] = [];
 	const f = fixture(80, 30, source(), { efforts: async () => awareness(current), collaborate: async (input) => { calls.push(input); return contactPage(); } });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		const text = f.ui.render(80).join("\n");
 		assert.match(text, /Stated by this effort/);
 		assert.match(text, /Purpose: Review another project/);
@@ -291,7 +292,7 @@ it("inline active threads show covered recency and open through keyboard or mous
 		const calls: Record<string, unknown>[] = [];
 		const f = fixture(60, 30, source(), { efforts: async () => current, collaborate: async (input) => { calls.push(input); const page = contactPage(); return { ...page, thread: { ...page.thread, id: String(input.threadId) } }; } });
 		try {
-			await turn(); f.ui.handleInput("b"); await turn();
+			await turn(); f.ui.openNamedAction("efforts"); await turn();
 			const lines = f.ui.render(60);
 			const text = lines.join("\n");
 			assert.match(text, /Your observed purpose \(interactive-input\): Current own work/);
@@ -320,7 +321,7 @@ it("multiline effort drafts keep the send receipt and escape hint inside the nar
 	current.threads.coverage = { ...current.threads.coverage, complete: false, reasons: ["visit-limit"], unvisited: true };
 	const f = fixture(60, 20, source(), { efforts: async () => current, messageEffort: async () => ({ text: "admitted" }) });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		f.ui.handleInput("m");
 		for (let index = 0; index < 20; index++) { f.ui.handleInput("Draft line"); f.ui.handleInput("\x1b[106;5u"); }
 		const lines = f.ui.render(60);
@@ -341,7 +342,7 @@ it("malformed recorded dates render unknown without a viewport failure", async (
 		current.threads.items = [{ id: "store/thread", title: "Invalid dated hint", purpose: "Read a current frame", updatedAt: Number.MAX_VALUE, closed: false, members: 1 }];
 		const f = fixture(80, 40, source(), { efforts: async () => current });
 		try {
-			await turn(); f.ui.handleInput("b"); await turn();
+			await turn(); f.ui.openNamedAction("efforts"); await turn();
 			const lines = f.ui.render(80);
 			assert.equal(lines.length, 40);
 			const text = lines.join("\n");
@@ -365,7 +366,7 @@ it("wide effort panes separate discovery from claim-first details and quiet cove
 	for (const [width, height] of [[164, 44], [100, 32]]) {
 		const f = fixture(width, height, source(), { efforts: async () => awareness() }, undefined, colored);
 		try {
-			await turn(); f.ui.handleInput("b"); await turn();
+			await turn(); f.ui.openNamedAction("efforts"); await turn();
 			const lines = f.ui.render(width);
 			const text = lines.map(stripVTControlCharacters).join("\n");
 			assert.equal(lines.length, height);
@@ -389,7 +390,7 @@ it("wide discovery clicks select efforts and open inline threads through existin
 		const calls: Record<string, unknown>[] = [];
 		const f = fixture(width, 44, source(), { efforts: async () => current, collaborate: async (input) => { calls.push(input); return contactPage(); } });
 		try {
-			await turn(); f.ui.handleInput("b"); await turn();
+			await turn(); f.ui.openNamedAction("efforts"); await turn();
 			let lines = f.ui.render(width);
 			const uncertainY = lines.findIndex((line) => line.startsWith("  uncertain"));
 			assert.ok(uncertainY >= 0);
@@ -415,7 +416,7 @@ it("effort ages stay fixed between observations and keyboard or mouse reveals on
 	let reads = 0;
 	const f = fixture(100, 44, source(), { efforts: async () => { reads++; return current; } });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		const before = f.ui.render(100);
 		assert.match(before.join("\n"), /Started: 15m ago/);
 		assert.ok(before.some((line) => line.split("│")[1]?.trim() === "15m ago"));
@@ -441,7 +442,7 @@ it("thread detail timestamps use the same label-free mouse toggle as claims", as
 	current.threads.items = [{ id: "store/thread", title: "Shared work", purpose: "Agree the order", updatedAt: at, closed: false, members: 2 }];
 	const f = fixture(100, 44, source(), { efforts: async () => current });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		f.ui.handleInput("\x1b[B"); f.ui.handleInput("\x1b[B");
 		const before = f.ui.render(100);
 		assert.match(before.join("\n"), /Active thread: Shared work/);
@@ -464,7 +465,7 @@ for (const [width, height] of [[60, 30], [100, 32], [164, 44]]) for (const compl
 		};
 		const f = fixture(width, height, source(), { efforts: async () => current });
 		try {
-			await turn(); f.ui.handleInput("b"); await turn();
+			await turn(); f.ui.openNamedAction("efforts"); await turn();
 			const lines = f.ui.render(width);
 			const text = lines.join("\n");
 			assert.equal(lines.filter((line) => line.includes("Scan incomplete:")).length, complete ? 0 : 1);
@@ -493,7 +494,7 @@ it("wide effort discovery keeps the selected loaded row visible on bounded pages
 	const current = { ...initial, presence: { ...initial.presence, efforts: Array.from({ length: 20 }, (_, index) => ({ ...initial.presence.efforts[0], id: `effort-${index}`, name: `Loaded effort ${index}` })) } };
 	const f = fixture(100, 32, source(), { efforts: async () => current });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		for (let index = 0; index < 19; index++) f.ui.handleInput("\x1b[B");
 		const lines = f.ui.render(100);
 		assert.match(lines.join("\n"), /› Loaded effort 19/);
@@ -512,11 +513,10 @@ it("explicit effort observation fires no message or agent control and keeps sele
 		observeEffort: async (id) => { reads.push(id); return read.promise; },
 		messageEffort: async () => { messages.push("message"); return { text: "wrong" }; },
 		submit: async () => { controls.push("submit"); return { text: "wrong" }; },
-		action: async () => { controls.push("action"); return { text: "wrong" }; },
 		newAgent: async () => { controls.push("new"); return { text: "wrong" }; },
 	});
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		assert.deepEqual(reads, []);
 		const lines = f.ui.render(100);
 		const y = lines.findIndex((line) => line.includes("Observe"));
@@ -539,7 +539,7 @@ it("late observations are rejected after away-and-back selection, pane exit and 
 		const read = deferred<string>();
 		const f = fixture(100, 32, source(), { efforts: async () => awareness(), observeEffort: () => read.promise });
 		try {
-			await turn(); f.ui.handleInput("b"); await turn(); f.ui.handleInput("o");
+			await turn(); f.ui.openNamedAction("efforts"); await turn(); f.ui.handleInput("o");
 			if (exit === "selection") { f.ui.handleInput("\x1b[B"); f.ui.handleInput("\x1b[A"); }
 			else if (exit === "pane") f.ui.handleInput("\x1b");
 			else f.ui.dispose();
@@ -555,7 +555,7 @@ it("observation text has a Unicode-safe display bound, explicit omissions and no
 	for (const width of [60, 100]) {
 		const f = fixture(width, 32, source(), { efforts: async () => awareness(), observeEffort: async () => `Safe\x1b[2J\n${"x".repeat(15990)}😀TAIL_NOT_SHOWN` });
 		try {
-			await turn(); f.ui.handleInput("b"); await turn(); f.ui.handleInput("o"); await turn();
+			await turn(); f.ui.openNamedAction("efforts"); await turn(); f.ui.handleInput("o"); await turn();
 			const lines = f.ui.render(width);
 			assert.equal(lines.length, 32); assert.ok(lines.every((line) => visibleWidth(line) <= width));
 			assert.match(lines.join("\n"), /Safe/); assert.doesNotMatch(lines.join("\n"), /\x1b\[2J/);
@@ -569,7 +569,7 @@ it("observation absence, empty output and failure stay explicit without delivery
 	for (const observeEffort of [undefined, async () => "", async () => { throw Error("reader offline"); }]) {
 		const f = fixture(100, 32, source(), { efforts: async () => awareness(), observeEffort });
 		try {
-			await turn(); f.ui.handleInput("b"); await turn(); f.ui.handleInput("o"); await turn();
+			await turn(); f.ui.openNamedAction("efforts"); await turn(); f.ui.handleInput("o"); await turn();
 			assert.match(f.ui.render(100).join("\n"), /no reader|coverage unknown|reader offline/);
 		} finally { f.ui.dispose(); }
 	}
@@ -585,7 +585,7 @@ it("contact declarations retain separate release and hold, source frame and ordi
 	const observed = source(); observed.subscribeRoster = (fn) => { notify = fn; return () => {}; };
 	const f = fixture(100, 60, observed, { efforts: async () => awareness(), collaborate: async (input) => { calls.push(input); return structuredClone(current); } });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		const text = f.ui.render(100).join("\n");
 		assert.match(text, /Contact frame 1/); assert.match(text, /Authority source: brief/);
 		assert.match(text, /Member declarations, not agreement/);
@@ -606,7 +606,7 @@ it("late contact pages cannot attach declarations to another selected effort", a
 	const read = deferred<CollaborationPage>();
 	const f = fixture(100, 60, source(), { efforts: async () => awareness(), collaborate: () => read.promise });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn(); f.ui.handleInput("\x1b[B");
+		await turn(); f.ui.openNamedAction("efforts"); await turn(); f.ui.handleInput("\x1b[B");
 		const page = contactPage(); page.thread.members = [{ identity: "one", contribution: "OLD_CONTACT_DECLARATION", joinedAt: 1 }];
 		read.resolve(page); await turn();
 		assert.doesNotMatch(f.ui.render(100).join("\n"), /OLD_CONTACT_DECLARATION/);
@@ -619,7 +619,7 @@ it("contact failures and display omissions do not imply agreement or an empty ma
 		page.thread.members = Array.from({ length: 17 }, (_, i) => ({ identity: `peer-${i}`, contribution: `Hold gate ${i}`, joinedAt: 1 }));
 		const f = fixture(100, 70, source(), { efforts: async () => awareness(), collaborate: async () => invalid ? { bad: true } : page });
 		try {
-			await turn(); f.ui.handleInput("b"); await turn();
+			await turn(); f.ui.openNamedAction("efforts"); await turn();
 			const text = f.ui.render(100).join("\n");
 			const detail = f.ui.render(100).map((line) => line.split("│")[1]?.trim() ?? "").join(" ");
 			assert.match(detail, invalid ? /invalid contact thread\s+page/ : /1 member declarations omitted/);
@@ -631,7 +631,7 @@ it("contact failures and display omissions do not imply agreement or an empty ma
 it("contact reads stop at pane disposal and narrow contact text stays in the viewport", async () => {
 	const pending = deferred<CollaborationPage>();
 	const closed = fixture(60, 30, source(), { efforts: async () => awareness(), collaborate: () => pending.promise });
-	await turn(); closed.ui.handleInput("b"); await turn(); closed.ui.dispose();
+	await turn(); closed.ui.openNamedAction("efforts"); await turn(); closed.ui.dispose();
 	const count = closed.counts().renders;
 	pending.resolve(contactPage()); await turn();
 	assert.equal(closed.counts().renders, count);
@@ -639,7 +639,7 @@ it("contact reads stop at pane disposal and narrow contact text stays in the vie
 	page.thread.members = [{ identity: "peer", contribution: "Hold dependency checks. Source: #3", joinedAt: 1 }];
 	const f = fixture(60, 24, source(), { efforts: async () => awareness(), collaborate: async () => page });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		let shown = "";
 		for (let i = 0; i < 12; i++) {
 			const lines = f.ui.render(60);
@@ -660,7 +660,7 @@ it("roster notices coalesce contact reads into one active read and one latest re
 	const latest = contactPage(); latest.thread.members = [{ identity: "peer", contribution: "LATEST_DECLARATION", joinedAt: 1 }];
 	const f = fixture(100, 60, observed, { efforts: async () => awareness(), collaborate: () => { reads++; return reads === 1 ? pending.promise : Promise.resolve(latest); } });
 	try {
-		await turn(); f.ui.handleInput("b"); await turn();
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		for (let i = 0; i < 3; i++) { notify(); await turn(); }
 		assert.equal(reads, 1);
 		pending.resolve(contactPage()); await turn();
@@ -690,7 +690,7 @@ for (const width of [60, 100]) {
 		});
 		try {
 			await turn();
-			f.ui.handleInput("b");
+			f.ui.openNamedAction("efforts");
 			await turn();
 			const draw = () => stripVTControlCharacters(f.ui.render(width).join("\n"));
 			assert.match(draw(), /Effort 0/);
@@ -714,7 +714,7 @@ it("an effort row click after the list scrolled selects the row under the pointe
 	const f = fixture(100, 30, source(), { efforts: async () => awareness(crowd(12)) });
 	try {
 		await turn();
-		f.ui.handleInput("b");
+		f.ui.openNamedAction("efforts");
 		await turn();
 		const before = f.ui.render(100).map(stripVTControlCharacters);
 		const y = before.findIndex((line) => line.includes("Effort 0"));
@@ -732,7 +732,7 @@ it("the footer menu lists every Related efforts action and a disabled message na
 	const f = setup(60, 20);
 	try {
 		await turn();
-		f.ui.handleInput("b");
+		f.ui.openNamedAction("efforts");
 		await turn();
 		assert.match(f.ui.render(60).at(-1) ?? "", /More \(x\) · Back \(Esc\)/);
 		f.ui.handleInput("x");

@@ -7,6 +7,9 @@ import { dashboardGeometry, dashboardHeading } from "./dashboard-layout.ts";
 import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 import { agentState, updateDraft } from "./dashboard-state.ts";
 
+/** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
+const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+
 it("the roster stays narrow and owns the full body beside the conversation", () => {
 	for (const [width, expected] of [[100, 30], [120, 30], [164, 36], [240, 40]]) {
 		const geometry = dashboardGeometry(width, 44, 3);
@@ -19,21 +22,22 @@ it("the roster stays narrow and owns the full body beside the conversation", () 
 	assert.equal(dashboardGeometry(164, 44, 3, true).conversationWidth, 164);
 });
 
-it("console header keeps identity and state without activity", async () => {
+it("the target header keeps identity and state without activity", async () => {
 	const observed = source([row("one", { name: "Selected recipient", state: "working", currentTool: { name: "read", argument: JSON.stringify({ path: `/${"long-path/".repeat(40)}` }) } })]);
 	const f = fixture(60, 20, observed);
 	try {
 		await turn();
+		await turn();
 		f.ui.handleInput("\r");
-		const lines = f.ui.render(60).map(stripVTControlCharacters);
-		assert.match(lines[1], /Selected recipient/);
-		assert.match(lines[1], /● Working/);
-		assert.doesNotMatch(lines[1], /read|long-path|…/);
-		assert.equal(visibleWidth(lines[1]), 60);
+		const lines = visible(f.ui.render(60));
+		const header = lines.find((line) => line.includes("● Working") && line.includes("More…")) ?? "";
+		assert.match(header, /Selected recipient/);
+		assert.doesNotMatch(header, /read|long-path/);
+		assert.equal(visibleWidth(header), 60);
 	} finally { f.ui.dispose(); }
 });
 
-it("each surface occupies the exact terminal rectangle and keeps Esc last", async () => {
+it("every view occupies the exact terminal rectangle and keeps the way out last", async () => {
 	for (const [width, height] of [
 		[164, 44],
 		[120, 40],
@@ -48,63 +52,69 @@ it("each surface occupies the exact terminal rectangle and keeps Esc last", asyn
 		);
 		try {
 			await turn();
-			for (const key of ["", "\t", "\x1b", "\r", "\x1b", "a", "\x1b", "?", "\x1b", "/", "\x1b", "n"]) {
-				if (key) f.ui.handleInput(key);
+			await turn();
+			const steps: Array<string | (() => void)> = ["", "\t", "\x1b", "\r", "\x1b", () => f.ui.openNamedAction("configure"), "\x1b", () => f.ui.openNamedAction("help"), "\x1b", "x", "\x1b", () => f.ui.openNamedAction("new")];
+			for (const [index, step] of steps.entries()) {
+				if (typeof step === "function") step();
+				else if (step) f.ui.handleInput(step);
+				await turn();
 				const lines = f.ui.render(width);
-				assert.equal(lines.length, height, key);
-				assert.ok(
-					lines.every((line) => visibleWidth(line) <= width),
-					key,
-				);
-				assert.match(lines.at(-1) ?? "", /Esc/);
+				assert.equal(lines.length, height, `step ${index}`);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width), `step ${index}`);
+				assert.match(stripVTControlCharacters(lines.at(-1) ?? ""), /Close $/, `step ${index}`);
 			}
 			f.ui.handleInput("first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh\neighth");
 			const lines = f.ui.render(width);
 			assert.equal(lines.length, height);
-			assert.ok(lines.some((line) => line.includes(CURSOR_MARKER)));
+			assert.ok(lines.some((line) => line.includes(CURSOR_MARKER)), "the New conversation purpose holds the cursor");
 		} finally {
 			f.ui.dispose();
 		}
 	}
 });
-for (const width of [60, 80]) for (const height of [20, 21]) for (const mode of ["roster", "find", "message", "console"] as const) for (const notice of [false, true]) {
-	it(`compact failed conversations retain warnings, draft, status and mouse targets at ${width}x${height} in ${mode}, notice ${notice}`, async () => {
+for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of ["list", "composer", "conversation", "controls"] as const) for (const notice of [false, true]) {
+	it(`compact failed conversations keep warnings, draft, status and targets at ${width}x${height} from the ${focus}, notice ${notice}`, async () => {
 		const observed = source([row("one", { state: "failed", error: "quota limit" })]);
 		observed.availability = () => ({ state: "unavailable", at: new Date(0).toISOString() });
 		const f = fixture(width, height, observed);
 		try {
 			await turn();
+			await turn();
 			const state = agentState(f.state, "one");
 			const draft = Array.from({ length: 10 }, (_, index) => `draft ${index}`).join("\n");
 			updateDraft(state, draft);
-			if (mode === "find") f.ui.handleInput("/");
-			if (mode === "message") f.ui.handleInput("\t");
-			if (mode === "console") f.ui.handleInput("\r");
-			if (notice) Reflect.set(f.ui, "notice", "Layout could not be saved");
+			if (focus === "composer") f.ui.handleInput("\r");
+			if (focus === "conversation") f.ui.handleInput("\t");
+			if (focus === "controls") for (let step = 0; step < 3; step++) f.ui.handleInput("\t");
+			assert.equal(f.ui.focus.region, focus);
+			if (notice) f.ui.notify("Layout could not be saved", "warning");
 			f.ui.focused = true;
 			const lines = f.ui.render(width);
-			const plain = lines.map(stripVTControlCharacters);
-			assert.equal(lines.length, height, `${width}x${height} ${mode}`);
-			if (mode === "find" && height === 20 && notice) assert.doesNotMatch(plain.join("\n"), /Preferences:/u);
-			else if (mode !== "console") assert.match(plain.join("\n"), /Preferences: absent/u);
+			const plain = visible(lines);
+			assert.equal(lines.length, height, `${width}x${height} ${focus}`);
 			assert.ok(plain.every((line) => visibleWidth(line) === width));
-			assert.match(plain.join("\n"), /quota limit/);
-			assert.match(plain.join("\n"), /Conversation unavailable; stored messages shown/);
-			if (notice) assert.match(plain.join("\n"), /Layout could not be saved/);
-			assert.match(plain.at(-3) ?? "", /model │ ~\$0.42/);
-			assert.match(plain.at(-2) ?? "", /\/work/);
-			assert.match(plain.at(-1) ?? "", /Esc/);
+			const text = plain.join("\n");
+			assert.match(text, /quota limit/);
+			assert.match(text, /Not connected; stored messages shown/);
+			if (notice) assert.match(text, /Layout could not be saved/);
+			const statusY = plain.findIndex((line) => /model │ ~\$0\.42/.test(line));
+			assert.ok(statusY > 0, "the model and cost line stays visible");
+			assert.match(plain[statusY + 1] ?? "", /\/work/);
+			assert.match(plain.at(-1) ?? "", /Close $/);
 			const click = (y: number, x = 2) => f.ui.handleMouse({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
-			for (const y of [height - 3, height - 2]) assert.equal(click(y), undefined, "status rows are not editor targets");
+			for (const y of [statusY, statusY + 1]) assert.equal(click(y), undefined, "status rows are not editor targets");
 			const top = plain.findIndex((line, index) => index > 0 && line.startsWith("╭─"));
-			assert.ok(top >= 0, mode);
+			assert.ok(top >= 0, focus);
+			assert.ok(plain.some((line, index) => index > top && line.startsWith("╰─")), "the message field keeps its bottom border and controls");
 			assert.equal(click(top + 1)?.focus, true, "visible draft rows target the native editor");
+			assert.equal(f.ui.focus.region, "composer");
 			const updated = f.ui.render(width);
 			assert.equal(updated.length, height);
 			assert.ok(updated.some((line) => line.includes(CURSOR_MARKER)));
 			assert.equal(state.draft, draft);
-			const hint = stripVTControlCharacters(updated.at(-1) ?? "");
-			assert.equal(click(height - 1, hint.indexOf("Esc"))?.handled, true, "footer hint stays clickable");
+			const footer = visible(updated).at(-1) ?? "";
+			assert.equal(click(height - 1, footer.lastIndexOf("Close"))?.handled, true, "the way out stays clickable");
+			assert.equal(f.counts().closes, 1);
 		} finally { f.ui.dispose(); }
 	});
 }
@@ -137,7 +147,7 @@ it("framed headings keep multiline metadata within one physical row", () => {
 		}
 	}
 });
-it("a roster heading labels incomplete loaded coverage rather than a global total", async () => {
+it("the list labels incomplete loaded coverage rather than a global total", async () => {
 	const observed = source([row()]);
 	const list = observed.list;
 	observed.list = async (input) => {
@@ -147,9 +157,11 @@ it("a roster heading labels incomplete loaded coverage rather than a global tota
 	const f = fixture(100, 30, observed);
 	try {
 		await turn();
-		const header = f.ui.render(100)[0] ?? "";
-		assert.doesNotMatch(header, /retained|\$/);
-		assert.match(header, /1\/1\+ ╮$/);
+		await turn();
+		const lines = visible(f.ui.render(100));
+		assert.doesNotMatch(lines[0] ?? "", /retained|\$|\d+\/\d+/, "the heading claims no total");
+		const listX = lines[1]?.indexOf("│") ?? 0;
+		assert.match(lines.map((line) => line.slice(0, listX)).join("\n"), /Load more/);
 	} finally {
 		f.ui.dispose();
 	}

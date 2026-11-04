@@ -5,69 +5,188 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
-import { fixture, source, row, page, turn, deferred, conversationFrame } from "./dashboard-test-fixture.mts";
-import { agentState } from "./dashboard-state.ts";
-import { dashboardActions } from "./dashboard-actions.ts";
-import { dashboardGeometry } from "./dashboard-layout.ts";
-import type { ConversationFrame } from "./live-frames.ts";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { fixture, formsHost, source, row, page, turn, deferred, conversationFrame, type FormCall } from "./dashboard-test-fixture.mts";
+import { agentState, createDashboardState } from "./dashboard-state.ts";
+import type { ConversationFrame } from "./live-frames.ts";
 import { sessionFigures } from "./footer.ts";
 import type { AwaitFact } from "./await-facts.ts";
 import type { AgentConversationPage } from "./dashboard-types.ts";
 import { createAgentObservationSource } from "./agent-observation.ts";
+import type { ActionResult } from "./agent-forms.ts";
 
-it("dashboard shows current machine file state, digest, default, names and models without a new command", async (t) => {
+type Fixture = ReturnType<typeof fixture>;
+
+/** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
+const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+const shown = (f: Fixture) => visible(f.ui.render(f.tui.terminal.columns)).join("\n");
+const click = (x: number, y: number, width: number, height: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
+
+/** Deliver keys one at a time with a paint before each, as a terminal does. */
+function press(f: Fixture, ...keys: string[]): void {
+	for (const key of keys) {
+		f.ui.render(f.tui.terminal.columns);
+		f.ui.handleInput(key);
+	}
+}
+
+/** Type text one character at a time into whatever has focus. */
+function type(f: Fixture, text: string): void {
+	for (const character of text) f.ui.handleInput(character);
+}
+
+/** Click the lowest visible occurrence of a label, as the operator would. */
+function clickLabel(f: Fixture, label: string): void {
+	const { columns, rows } = f.tui.terminal;
+	const lines = visible(f.ui.render(columns));
+	for (let y = lines.length - 1; y >= 0; y--) {
+		const x = lines[y]?.indexOf(label) ?? -1;
+		if (x >= 0) {
+			f.ui.handleMouse(click(x + 1, y, columns, rows));
+			return;
+		}
+	}
+	assert.fail(`no visible ${label}`);
+}
+
+/** Wait for asynchronous owner work until the screen shows `pattern`. */
+async function until(f: Fixture, pattern: RegExp): Promise<string> {
+	for (let attempt = 0; attempt < 100; attempt++) {
+		const screen = shown(f);
+		if (pattern.test(screen)) return screen;
+		await turn();
+	}
+	throw new Error(`the screen never showed ${pattern}\n${shown(f)}`);
+}
+
+/** Wait for asynchronous owner work until `condition` holds. */
+async function settle(condition: () => boolean): Promise<void> {
+	for (let attempt = 0; attempt < 100 && !condition(); attempt++) await turn();
+	assert.ok(condition(), "the condition never held");
+}
+
+/** The rows right of the list divider, or every row when the list is a strip above the pane. */
+function paneLines(f: Fixture): { lines: string[]; title: number } {
+	const lines = visible(f.ui.render(f.tui.terminal.columns));
+	const title = lines.findIndex((line, index) => index > 0 && line.includes("More…"));
+	assert.ok(title > 0, "the selected agent's header is shown");
+	const divider = lines[title]?.indexOf("│") ?? -1;
+	return { lines: lines.map((line) => (divider >= 0 ? line.slice(divider + 1) : line)), title };
+}
+
+/** The pane's text joined without its wrap breaks or the reader's scrollbar column. */
+const joined = (f: Fixture) =>
+	paneLines(f)
+		.lines.map((line) => line.replace(/[│┃]\s*$/u, "").trim())
+		.join("");
+
+/** The selected agent's header and fact lines: the pane rows from the title to the conversation rule. */
+function targetHeader(f: Fixture): string[] {
+	const { lines, title } = paneLines(f);
+	const rule = lines.findIndex((line, index) => index > title && /^─{8}/u.test(line));
+	return lines.slice(title, rule);
+}
+
+/** A forms host whose every owner call answers with `answer`. */
+function answering(answer: (call: FormCall) => Promise<ActionResult>, patch: Parameters<typeof formsHost>[4] = {}) {
+	const state = createDashboardState();
+	const calls: FormCall[] = [];
+	return { state, calls, forms: (observed: ReturnType<typeof source>) => (target: Parameters<typeof formsHost>[0]) => formsHost(target, state, observed, calls, patch, answer) };
+}
+
+it("Help shows the current machine file, digest, default preset and models without terminal controls", async (t) => {
 	const directory = mkdtempSync(join(tmpdir(), "dashboard-machine-preferences-"));
 	const path = join(directory, "preferences.json");
 	const previous = process.env.PI_HARNESS_FILE;
 	process.env.PI_HARNESS_FILE = path;
-	t.after(() => { if (previous === undefined) delete process.env.PI_HARNESS_FILE; else process.env.PI_HARNESS_FILE = previous; rmSync(directory, { recursive: true, force: true }); });
+	t.after(() => {
+		if (previous === undefined) delete process.env.PI_HARNESS_FILE;
+		else process.env.PI_HARNESS_FILE = previous;
+		rmSync(directory, { recursive: true, force: true });
+	});
 	for (const content of [undefined, JSON.stringify(machineConfig({ presets: { standard: { model: "acme/model-x\u001b[2J" }, economy: { model: "other/model-y" } }, preferences: { defaultPreset: "standard" } })), "malformed"]) {
 		if (content !== undefined) writeFileSync(path, content);
-		const f = fixture(120, 60, source([row("one")]));
+		const f = fixture(80, 100, source([row("one")]));
 		try {
 			await turn();
-			assert.match(stripVTControlCharacters(f.ui.render(120).join("\n")), /Preferences:.*default preset:/u);
-			f.ui.handleInput("?");
-			const raw = f.ui.render(120).join("\n");
+			f.ui.openNamedAction("help");
+			const raw = f.ui.render(80).join("\n");
 			assert.ok(!raw.includes("\u001b[2J"), "machine text never supplies terminal controls");
-			const screen = stripVTControlCharacters(raw);
-			assert.ok(screen.includes(path));
-			if (content === undefined) { assert.match(screen, /Preferences: absent/u); assert.match(screen, /Digest: none/u); assert.match(screen, /Presets: none/u); }
-			else {
-				assert.ok(screen.includes(createHash("sha256").update(content).digest("hex")));
-				if (content === "malformed") { assert.match(screen, /Preferences: invalid/u); assert.match(screen, /Diagnostic document:/u); assert.doesNotMatch(screen, /acme\/model-x/u); }
-				else { assert.match(screen, /Preferences: loaded; default preset: standard/u); assert.match(screen, /Preset standard: acme\/model-x/u); assert.match(screen, /Preset economy: other\/model-y/u); }
+			const text = joined(f);
+			assert.ok(text.includes(path), "Help names the machine file");
+			if (content === undefined) {
+				assert.match(text, /Preferences: absent/u);
+				assert.match(text, /Digest: none/u);
+				assert.match(text, /Presets: none/u);
+			} else {
+				assert.ok(text.includes(createHash("sha256").update(content).digest("hex")));
+				if (content === "malformed") {
+					assert.match(text, /Preferences: invalid/u);
+					assert.match(text, /Diagnostic document:/u);
+					assert.doesNotMatch(text, /acme\/model-x/u);
+				} else {
+					assert.match(text, /Preferences: loaded; default preset: standard/u);
+					assert.match(text, /Preset standard: acme\/model-x/u);
+					assert.match(text, /Preset economy: other\/model-y/u);
+				}
 			}
-		} finally { f.ui.dispose(); }
+		} finally {
+			f.ui.dispose();
+		}
 	}
 });
 
 for (const [width, height] of [[120, 36], [60, 24]]) {
 	it(`selected dependency facts update and retire through native frames at ${width}`, async () => {
 		const fact: AwaitFact = { runId: 7, heldInputs: [8], results: [{ result: { sessionId: "exact-peer:2", submissionId: 9, requestId: "exact-request" }, status: "pending" }], queuedInputCount: 1, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 1, results: 2 }, producers: [{ sessionId: "exact-peer:2", source: "producer await-state", observedAt: 123, unavailable: "Producer endpoint closed" }], omittedProducers: 3, likelyCycle: [], coverage: "one hop; remote graph incomplete" };
-		const observed = source([row("one", { awaiting: fact })]); let notify = () => {};
-		observed.subscribe = (listener) => { notify = listener; return () => {}; };
-		let frame = conversationFrame(); frame = { ...frame, status: { ...frame.status, awaiting: fact } };
-		observed.frame = () => frame; observed.availability = () => ({ state: "live", at: frame.observedAt });
+		const observed = source([row("one", { awaiting: fact })]);
+		let notify = () => {};
+		observed.subscribe = (listener) => {
+			notify = listener;
+			return () => {};
+		};
+		let frame = conversationFrame();
+		frame = { ...frame, status: { ...frame.status, awaiting: fact } };
+		observed.frame = () => frame;
+		observed.availability = () => ({ state: "live", at: frame.observedAt });
 		const f = fixture(width, height, observed);
 		const read = () => {
 			let text = "";
-			for (let index = 0; index < 5; index++) { const lines = f.ui.render(width); assert.ok(lines.every((line) => visibleWidth(line) <= width)); text += stripVTControlCharacters(lines.join("\n")); f.ui.handleInput("\x1b[5~"); }
-			f.ui.handleInput("\x1b[6~"); return text.replace(/\s+/gu, " ");
+			for (let index = 0; index < 5; index++) {
+				const lines = f.ui.render(width);
+				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+				text += visible(lines).join("\n");
+				f.ui.handleInput("\x1b[5~");
+			}
+			f.ui.handleInput("\x1b[6~");
+			return text.replace(/\s+/gu, " ");
 		};
 		try {
-			await turn(); f.ui.handleInput("\t");
-			let text = read(); assert.match(text, /exact-peer:2/u); assert.match(text, /submission 9.*pending/u);
-			assert.match(text, /Producer endpoint closed/u); assert.match(text, /123/u); assert.match(text, /Coverage: one hop/u); assert.match(text, /omitted 1 held requests/u);
+			await turn();
+			let text = read();
+			assert.match(text, /exact-peer:2/u);
+			assert.match(text, /submission 9.*pending/u);
+			assert.match(text, /Producer endpoint closed/u);
+			assert.match(text, /123/u);
+			assert.match(text, /Coverage: one hop/u);
+			assert.match(text, /omitted 1 held requests/u);
+			assert.match(targetHeader(f).join("\n") + shown(f), /Release await/u, "an await offers its release");
 			const next = { ...fact, results: [{ ...fact.results[0], status: "done" as const }], producers: [{ sessionId: "exact-peer:2", source: "producer await-state" as const, observedAt: 456 }] };
-			frame = { ...frame, revision: 2, status: { ...frame.status, awaiting: next } }; notify();
-			text = read(); assert.match(text, /submission 9.*done/u); assert.match(text, /456/u); assert.doesNotMatch(text, /Producer endpoint closed/u);
-			frame = { ...frame, revision: 3, status: { ...frame.status, awaiting: undefined } }; notify();
-			text = read(); assert.doesNotMatch(text, /exact-peer:2|Coverage: one hop|producer await-state/u);
-			f.ui.handleInput("\x1b"); f.ui.handleInput("a"); assert.doesNotMatch(f.ui.render(width).join("\n"), /Release await/u);
-		} finally { f.ui.dispose(); }
+			frame = { ...frame, revision: 2, status: { ...frame.status, awaiting: next } };
+			notify();
+			text = read();
+			assert.match(text, /submission 9.*done/u);
+			assert.match(text, /456/u);
+			assert.doesNotMatch(text, /Producer endpoint closed/u);
+			frame = { ...frame, revision: 3, status: { ...frame.status, awaiting: undefined } };
+			notify();
+			text = read();
+			assert.doesNotMatch(text, /exact-peer:2|Coverage: one hop|producer await-state/u);
+			assert.doesNotMatch(text, /Release await/u, "a retired await offers no release");
+		} finally {
+			f.ui.dispose();
+		}
 	});
 }
 
@@ -75,38 +194,7 @@ for (const [width, height] of [
 	[140, 45],
 	[80, 24],
 ]) {
-	it(`the header qualifies a subtotal when inventory coverage is incomplete at ${width}`, async () => {
-		const observed = source();
-		observed.list = async () => ({
-			...page([row()]),
-			coverage: { ...page([row()]).coverage, complete: false, nextCursor: "more" },
-		});
-		const f = fixture(width, height, observed);
-		try {
-			await turn();
-			assert.doesNotMatch(f.ui.render(width)[0] ?? "", /retained|\$/);
-		} finally {
-			f.ui.dispose();
-		}
-	});
-	it(`Actions states the hidden count and keeps the selected entry with neighbors at ${width}`, async () => {
-		const f = fixture(width, height);
-		try {
-			await turn();
-			f.ui.handleInput("a");
-			for (let index = 0; index < dashboardActions(row()).length; index++) {
-				const screen = f.ui.render(width).join("\n");
-				assert.match(screen, /› /);
-				if (width === 80) assert.match(screen, /\+5 more/);
-				else assert.match(screen, /Reconnect[\s\S]*Run agent command[\s\S]*Details/);
-				f.ui.handleInput("\x1b[B");
-			}
-			assert.match(f.ui.render(width).join("\n"), /› Details/);
-		} finally {
-			f.ui.dispose();
-		}
-	});
-	it(`live state drives message labels and action availability at ${width}`, async () => {
+	it(`live state drives the delivery label and Stop at ${width}`, async () => {
 		const observed = source([row("one")]);
 		let notify = () => {};
 		observed.subscribe = (listener) => {
@@ -122,16 +210,12 @@ for (const [width, height] of [
 			for (const busy of [false, true, false]) {
 				frame = { ...frame, revision: frame.revision + 1, status: { ...frame.status, busy } };
 				notify();
-				f.ui.handleInput("\t");
-				const message = f.ui.render(width).join("\n");
-				assert.match(message, busy ? /╭─ steer at next step/ : /╭─ send/);
-				assert.match(message, busy ? /Working/ : /Idle/);
-				f.ui.handleInput("\x1b");
-				f.ui.handleInput("a");
-				const screen = f.ui.render(width).join("\n");
-				assert.match(screen, busy ? /Stop current work first/ : /Stop current work · No current work/);
-				if (!busy) assert.doesNotMatch(screen, /Stop current work first/);
-				f.ui.handleInput("\x1b");
+				const screen = shown(f);
+				assert.match(screen, busy ? /╭─ To one ─+ Steer at next step ⇄/u : /╭─ To one ─+ Send /u);
+				const header = targetHeader(f).join("\n");
+				assert.match(header, busy ? /● Working/u : /Idle/u);
+				if (busy) assert.match(header, /Stop/u);
+				else assert.doesNotMatch(header, /Stop/u, "Stop shows only while work runs");
 			}
 		} finally {
 			f.ui.dispose();
@@ -151,25 +235,25 @@ for (const [width, height] of [
 				},
 			});
 			await turn();
-			f.ui.handleInput("\t");
-			f.ui.handleInput("first");
+			f.ui.handleInput("\r");
+			type(f, "first");
 			f.ui.handleInput("\r");
 			await started.promise;
 			f.ui.dispose();
 			const reopened = fixture(width, height, observed, undefined, f.state);
 			try {
 				await turn();
-				reopened.ui.handleInput("\t");
+				reopened.ui.handleInput("\r");
+				assert.equal(reopened.ui.focus.region, "composer");
 				if (outcome === "newer" || outcome === "same-text-new-revision") {
 					reopened.ui.handleInput("\x03");
-					reopened.ui.handleInput(outcome === "newer" ? "newer" : "first");
+					type(reopened, outcome === "newer" ? "newer" : "first");
 				}
 				gate.resolve();
 				await turn();
 				const text = outcome === "success" ? "" : outcome === "newer" ? "newer" : "first";
 				assert.equal(agentState(f.state, "storage:1").draft, text);
-				const screen = stripVTControlCharacters(reopened.ui.render(width).join("\n"));
-				if (outcome === "success") assert.doesNotMatch(screen, /^first\s*$/m);
+				if (outcome === "success") assert.doesNotMatch(shown(reopened), /^│first\s*│$/mu);
 				reopened.ui.dispose();
 				assert.equal(agentState(f.state, "storage:1").draft, text);
 			} finally {
@@ -178,12 +262,8 @@ for (const [width, height] of [
 			}
 		});
 	}
-	it(`Find observes and previews the current match before commit at ${width}`, async () => {
-		const observed = source([
-			row("one", { name: "Audit" }),
-			row("two", { name: "Build" }),
-			row("three", { name: "Build more" }),
-		]);
+	it(`Find selects and previews the first match, and Escape clears it without moving the selection at ${width}`, async () => {
+		const observed = source([row("one", { name: "Audit" }), row("two", { name: "Build" }), row("three", { name: "Build more" })]);
 		const selected: Array<string | undefined> = [];
 		observed.select = (id) => selected.push(id);
 		observed.snapshot = async (id) => ({
@@ -196,60 +276,66 @@ for (const [width, height] of [
 		try {
 			await turn();
 			assert.equal(f.state.selected, "one");
-			f.ui.handleInput("/");
-			f.ui.handleInput("Build");
+			type(f, "Build");
 			await turn();
-			assert.equal(f.state.selected, "three");
-			assert.equal(selected.at(-1), "three");
-			assert.match(f.ui.render(width).join("\n"), /Transcript for three/);
+			assert.equal(f.state.filter, "Build");
+			// Typing moved the selection; read it again rather than through the earlier assertion's narrowing.
+			const first = f.state.selected as string | undefined;
+			assert.ok(first === "two" || first === "three", "the selection follows Find to a match");
+			assert.equal(selected.at(-1), first);
+			assert.match(shown(f), new RegExp(`Transcript for ${first}`, "u"));
+			assert.doesNotMatch(shown(f), /Audit/u);
 			f.ui.handleInput("\x1b[B");
 			await turn();
-			assert.equal(selected.at(-1), "two");
-			assert.match(f.ui.render(width).join("\n"), /Transcript for two/);
+			const second = first === "two" ? "three" : "two";
+			assert.equal(selected.at(-1), second);
+			assert.match(shown(f), new RegExp(`Transcript for ${second}`, "u"));
 			f.ui.handleInput("\x1b");
 			await turn();
-			assert.equal(f.state.selected, "one");
-			assert.equal(selected.at(-1), "one");
+			assert.equal(f.state.filter, "");
+			assert.equal(f.state.selected, second, "clearing Find keeps the chosen agent");
+			assert.equal(f.counts().closes, 0);
 		} finally {
 			f.ui.dispose();
 		}
 	});
-	it(`Find reserves a row without deleting metadata or conversation at ${width}`, async () => {
+	it(`Find keeps the list, the header and the conversation on screen at ${width}`, async () => {
 		for (const count of [1, 3]) {
 			const records = Array.from({ length: count }, (_, index) => row(`build-${index}`, { name: `Build ${index}` }));
 			const f = fixture(width, height, source(records));
 			try {
 				await turn();
-				const console = (
-					f.ui as unknown as { console: { conversation: { render(width: number, height: number): string[] } } }
-				).console;
-				console.conversation.render = (_width, rows) =>
-					Array.from({ length: rows }, (_, index) => (index === 0 ? "FIRST-CONVERSATION-LINE" : ""));
-				f.ui.handleInput("/");
-				f.ui.handleInput("Build");
+				type(f, "Build");
+				await turn();
 				const lines = f.ui.render(width);
 				assert.equal(lines.length, height);
-				assert.match(lines.join("\n"), /▌ ● Build/);
-				assert.match(lines.join("\n"), /FIRST-CONVERSATION-LINE/);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width));
+				const screen = visible(lines).join("\n");
+				assert.match(screen, /▌ ● Build/u);
+				assert.match(screen, /Find {2}Build/u);
+				assert.match(screen, /Check the task/u);
 			} finally {
 				f.ui.dispose();
 			}
 		}
 	});
-	it(`zero matches do not start an agent and retain truthful hints at ${width}`, async () => {
-		const f = fixture(width, height);
+	it(`zero matches start nothing and state the empty search at ${width}`, async () => {
+		let starts = 0;
+		const f = fixture(width, height, undefined, {
+			newAgent: async () => {
+				starts++;
+				return { text: "created" };
+			},
+		});
 		try {
 			await turn();
-			f.ui.handleInput("/");
-			f.ui.handleInput("no-match");
+			type(f, "no-match");
+			await turn();
+			assert.match(shown(f), /No agent matches “no-match”/u);
 			f.ui.handleInput("\r");
-			const screen = f.ui.render(width).join("\n");
-			assert.match(screen, /0 matches of 1 loaded/);
-			assert.match(screen, /Clear find \(Esc\)/);
-			assert.doesNotMatch(screen, /enter (new agent|or n starts)/);
-			f.ui.handleInput("\r");
-			assert.equal(f.ui.navigation.screen, "roster");
+			await turn();
+			assert.equal(starts, 0);
+			assert.equal(f.ui.focus.region, "list");
 			f.ui.handleInput("\x1b");
 			assert.equal(f.state.filter, "");
 			assert.equal(f.counts().closes, 0);
@@ -259,103 +345,99 @@ for (const [width, height] of [
 			f.ui.dispose();
 		}
 	});
-	for (const index of [0, 1, 6]) {
-		it(`action refusal is visible immediately at ${width} (action ${index})`, async () => {
-			const f = fixture(width, height, source([row("one", { state: index === 0 ? "working" : "idle" })]), {
-				action: async () => {
-					throw new Error("Host refusal marker");
-				},
+	for (const name of ["abort", "attach", "release"]) {
+		it(`an owner refusal stays visible in the ${name} form at ${width}`, async () => {
+			const observed = source([row("one", { state: name === "abort" ? "working" : "idle", health: name === "attach" ? { lastError: "lost" } : undefined })]);
+			const host = answering(async () => {
+				throw new Error("Host refusal marker");
 			});
+			const f = fixture(width, height, observed, { forms: host.forms(observed) }, host.state);
 			try {
 				await turn();
-				f.ui.handleInput("a");
-				for (let step = 0; step < index; step++) f.ui.handleInput("\x1b[B");
-				f.ui.handleInput("\r");
-				await turn();
-				assert.equal(f.ui.navigation.screen, "actions");
-				assert.match(f.ui.render(width).join("\n"), /Host refusal marker/);
+				f.ui.openNamedAction(name);
+				const title = f.ui.focus.inspector;
+				assert.ok(title, "the form opens in the inspector");
+				press(f, "\r", "\r");
+				await until(f, /Host refusal marker/u);
+				assert.equal(f.ui.focus.inspector, title, "the refused form stays open");
+				assert.deepEqual(host.calls.map((call) => call.target), ["one"]);
 			} finally {
 				f.ui.dispose();
 			}
 		});
 	}
 	for (const action of ["fork", "rewind"]) {
-		const index = dashboardActions(row()).findIndex((choice) => choice.name === action);
-		it(`branch action opens the created console without losing source state at ${width} (${action})`, async () => {
+		it(`a ${action} opens the created branch and keeps the source draft at ${width}`, async () => {
 			const rows = [row("one")];
-			const f = fixture(width, height, source(rows), {
-				action: async () => {
-					rows.push(row("branch", { name: "New branch", state: "idle" }));
-					return { text: "Branch created", sessionId: "branch" };
-				},
+			const observed = source(rows);
+			const host = answering(async () => {
+				rows.push(row("branch", { name: "New branch", state: "idle" }));
+				return { text: "Branch created", sessionId: "branch" };
 			});
+			const f = fixture(width, height, observed, { forms: host.forms(observed) }, host.state);
 			try {
 				await turn();
-				f.ui.handleInput("\t");
-				f.ui.handleInput("source draft");
-				f.ui.handleInput("\x1b");
-				f.ui.handleInput("a");
-				for (let step = 0; step < index; step++) f.ui.handleInput("\x1b[B");
 				f.ui.handleInput("\r");
-				await turn();
-				assert.equal(f.ui.navigation.screen, "console");
-				assert.equal(f.state.selected, "branch");
-				const branch = f.ui.render(width).join("\n");
-				assert.match(branch, /╭─ send/);
-				assert.match(branch, /Idle/); assert.match(branch, /model │/);
+				type(f, "source draft");
+				f.ui.handleInput("\x1b");
+				f.ui.openNamedAction(action);
+				await until(f, action === "rewind" ? /Correction/u : /Latest committed entry/u);
+				if (action === "rewind") {
+					press(f, "\r");
+					type(f, "Use the other parser");
+					press(f, "\t", "\r");
+				} else press(f, "\r", "\r");
+				await settle(() => f.state.selected === "branch");
+				assert.deepEqual(host.calls.map((call) => call.name), [action]);
+				const screen = await until(f, /To New branch/u);
+				assert.match(screen, /╭─ To New branch ─+ Send /u);
+				assert.match(targetHeader(f).join("\n"), /Idle/u);
+				assert.equal(f.ui.focus.region, "composer");
 				assert.equal(agentState(f.state, "one").draft, "source draft");
 			} finally {
 				f.ui.dispose();
 			}
 		});
 	}
-	it(`Details retains long Unicode and exact source suffixes at ${width}`, async () => {
+	it(`Details keeps long Unicode values and their exact suffixes at ${width}`, async () => {
 		const values = [`/work/${"界".repeat(150)}EXACT_PATH_END`, `provider/${"m".repeat(240)}EXACT_MODEL_END`];
-		const f = fixture(width, height, undefined, { action: async () => ({ text: values.join("\n") }) });
+		const observed = source([row("one")]);
+		const host = answering(async () => undefined, { status: async () => ({ cwd: values[0], model: values[1] }) });
+		const f = fixture(width, 80, observed, { forms: host.forms(observed) }, host.state);
 		try {
 			await turn();
-			f.ui.handleInput("a");
-			f.ui.handleInput("\x1b[F");
-			f.ui.handleInput("\r");
-			await turn();
-			assert.equal(f.ui.navigation.screen, "result");
-			let readable = "";
-			for (let step = 0; step < 12; step++) {
-				const lines = f.ui.render(width);
-				assert.ok(lines.every((line) => visibleWidth(line) <= width));
-				readable += lines
-					.slice(1, height - 2)
-					.map((line) => line.trim())
-					.join("");
-				f.ui.handleInput("\x1b[6~");
-			}
-			for (const value of values) assert.ok(readable.includes(value), `Source value missing at ${width}`);
+			f.ui.openNamedAction("status");
+			await until(f, /EXACT_MODEL_END/u);
+			const lines = f.ui.render(width);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			const text = joined(f);
+			for (const value of values) assert.ok(text.includes(value), `Details keeps ${value.slice(-15)} at ${width}`);
 		} finally {
 			f.ui.dispose();
 		}
 	});
-	for (const patch of [
-		{ owner: "unavailable" as const, state: "unavailable" as const, error: "Claim conflict marker" },
-		{ health: { lastError: "Host error marker" } },
-		{
-			health: { compactionFailure: { trigger: "manual" as const, at: "now", errorMessage: "Compaction error marker" } },
-		},
-		{ health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "Exhausted retry marker" } } },
-		{ state: "failed" as const, error: "Work failure marker" },
-	]) {
-		it(`selected Attention reason appears in the status at ${width} (${JSON.stringify(patch)})`, async () => {
-			const f = fixture(width, height, source([row("one", patch)]));
-			try {
-				await turn();
-				f.ui.handleInput("\r");
-				const status = f.ui.render(width).slice(1, 8).join("\n");
-				assert.equal(status.split("marker").length - 1, 1);
-			} finally {
-				f.ui.dispose();
-			}
-		});
-	}
 }
+
+for (const patch of [
+	{ owner: "unavailable" as const, state: "unavailable" as const, error: "Claim conflict marker" },
+	{ health: { lastError: "Host error marker" } },
+	{ health: { compactionFailure: { trigger: "manual" as const, at: "now", errorMessage: "Compaction error marker" } } },
+	{ health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "Exhausted retry marker" } } },
+	{ state: "failed" as const, error: "Work failure marker" },
+]) {
+	it(`the selected agent's header states its attention reason once (${JSON.stringify(patch)})`, async () => {
+		const f = fixture(140, 45, source([row("one", patch)]));
+		try {
+			await turn();
+			const header = targetHeader(f).join("\n");
+			assert.equal(header.split("marker").length - 1, 1);
+			assert.match(header, /Reconnect/u, "an agent that needs attention offers Reconnect");
+		} finally {
+			f.ui.dispose();
+		}
+	});
+}
+
 it("late admission adds successful message history to the reopened composer", async () => {
 	const gate = deferred();
 	const started = deferred();
@@ -368,15 +450,15 @@ it("late admission adds successful message history to the reopened composer", as
 		},
 	});
 	await turn();
-	f.ui.handleInput("\t");
-	f.ui.handleInput("first");
+	f.ui.handleInput("\r");
+	type(f, "first");
 	f.ui.handleInput("\r");
 	await started.promise;
 	f.ui.dispose();
 	const reopened = fixture(80, 24, observed, undefined, f.state);
 	try {
 		await turn();
-		reopened.ui.handleInput("\t");
+		reopened.ui.handleInput("\r");
 		gate.resolve();
 		await turn();
 		reopened.ui.handleInput("\x1b[A");
@@ -386,25 +468,29 @@ it("late admission adds successful message history to the reopened composer", as
 		reopened.ui.dispose();
 	}
 });
-it("a created branch outside the published roster never retains the source as its recipient", async () => {
+
+it("a created branch outside the published roster receives the next message, never its source", async () => {
 	const sent: string[] = [];
-	const f = fixture(80, 24, source([row("one")]), {
-		action: async () => ({ text: "Forked", sessionId: "branch" }),
+	const observed = source([row("one")]);
+	const host = answering(async () => ({ text: "Forked", sessionId: "branch" }));
+	const f = fixture(80, 24, observed, {
+		forms: host.forms(observed),
 		submit: async (input) => {
 			sent.push(input.id);
 			return { text: "admitted" };
 		},
-	});
+	}, host.state);
 	try {
 		await turn();
-		f.ui.handleInput("a");
-		for (let index = 0; index < dashboardActions(row()).findIndex((choice) => choice.name === "fork"); index++) f.ui.handleInput("\x1b[B");
-		f.ui.handleInput("\r");
-		await turn();
-		assert.equal(f.ui.navigation.screen, "console");
-		assert.doesNotMatch(f.ui.render(80).join("\n"), /\$\?/);
-		assert.doesNotMatch(f.ui.render(80).join("\n"), /model │/);
-		f.ui.handleInput("branch instruction");
+		f.ui.openNamedAction("fork");
+		await until(f, /Latest committed entry/u);
+		press(f, "\r", "\r");
+		await settle(() => f.state.selected === "branch");
+		assert.equal(f.ui.focus.region, "composer");
+		const header = targetHeader(f).join("\n");
+		assert.doesNotMatch(header, /\$\?/u);
+		assert.doesNotMatch(header, /model │/u);
+		type(f, "branch instruction");
 		f.ui.handleInput("\r");
 		await turn();
 		assert.deepEqual(sent, ["branch"]);
@@ -412,35 +498,41 @@ it("a created branch outside the published roster never retains the source as it
 		f.ui.dispose();
 	}
 });
-it("late branch completion does not take focus after Escape", async () => {
+
+it("a late branch completion after Escape leaves the selection and focus where they are", async () => {
 	const gate = deferred();
 	const entered = deferred();
 	const rows = [row("one")];
-	const f = fixture(80, 24, source(rows), {
-		action: async () => {
-			entered.resolve();
-			await gate.promise;
-			rows.push(row("branch"));
-			return { text: "Forked", sessionId: "branch" };
-		},
+	const observed = source(rows);
+	const host = answering(async () => {
+		entered.resolve();
+		await gate.promise;
+		rows.push(row("branch"));
+		return { text: "Forked", sessionId: "branch" };
 	});
+	const f = fixture(80, 24, observed, { forms: host.forms(observed) }, host.state);
 	try {
 		await turn();
-		f.ui.handleInput("a");
-		for (let step = 0; step < dashboardActions(row()).findIndex((choice) => choice.name === "fork"); step++) f.ui.handleInput("\x1b[B");
-		f.ui.handleInput("\r");
+		f.ui.openNamedAction("fork");
+		await until(f, /Latest committed entry/u);
+		press(f, "\r", "\r");
 		await entered.promise;
 		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.focus.inspector, undefined);
+		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.focus.region, "list");
 		gate.resolve();
+		await settle(() => agentState(f.state, "one").receipt === "Forked");
 		await turn();
 		assert.equal(f.state.selected, "one");
-		assert.equal(f.ui.navigation.screen, "roster");
+		assert.equal(f.ui.focus.region, "list");
 	} finally {
 		gate.resolve();
 		f.ui.dispose();
 	}
 });
-it("late new-agent completion respects arrow selection", async () => {
+
+it("a late new conversation completion respects a later list selection", async () => {
 	const gate = deferred();
 	const created = deferred();
 	const rows = [row("one")];
@@ -456,20 +548,26 @@ it("late new-agent completion respects arrow selection", async () => {
 	});
 	try {
 		await turn();
-		f.ui.handleInput("n");
-		f.ui.handleInput("task");
-		f.ui.handleInput("\r");
-		await created.promise;
+		f.ui.openNamedAction("new");
+		type(f, "task");
+		clickLabel(f, "Start");
+		await settle(() => f.state.selected === "two");
+		f.ui.handleInput("\x1b");
+		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.focus.region, "list");
 		f.ui.handleInput("\x1b[A");
 		assert.equal(f.state.selected, "one");
 		gate.resolve();
 		await turn();
+		await turn();
 		assert.equal(f.state.selected, "one");
+		assert.equal(f.ui.focus.region, "list");
 	} finally {
 		gate.resolve();
 		f.ui.dispose();
 	}
 });
+
 it("roster publication preserves arrow order during a navigation sequence", async (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	let rows = [row("one", { modifiedAt: 3 }), row("two", { modifiedAt: 2 }), row("three", { modifiedAt: 1 })];
@@ -496,22 +594,18 @@ it("roster publication preserves arrow order during a navigation sequence", asyn
 	}
 });
 
-it("the dashboard opens on the roster and Esc returns without a primary mutation", async () => {
-	const f = fixture();
+it("the view opens on the list, letters find agents, and Escape clears Find before it closes", async () => {
+	const sent: string[] = [];
+	const f = fixture(80, 24, source([row("one"), row("two")]), {
+		submit: async (input) => {
+			sent.push(input.text);
+			return { text: "admitted" };
+		},
+	});
 	await turn();
-	assert.equal(f.ui.navigation.screen, "roster");
-	assert.match(f.ui.render(80).join("\n"), /storage:1/);
-	f.ui.handleInput("z");
-	assert.match(f.ui.render(80).join("\n"), /Tab to write/);
-	f.ui.handleInput("\x1b");
-	assert.equal(f.counts().closes, 1);
-});
-it("find has a separate text destination and Esc clears the committed filter before close", async () => {
-	const f = fixture(80, 24, source([row("one"), row("two")]));
-	await turn();
-	f.ui.handleInput("/");
-	f.ui.handleInput("two");
-	f.ui.handleInput("\r");
+	assert.equal(f.ui.focus.region, "list");
+	assert.match(shown(f), /one/u);
+	type(f, "two");
 	assert.equal(f.state.filter, "two");
 	assert.equal(f.state.selected, "two");
 	f.ui.handleInput("\x1b");
@@ -519,37 +613,41 @@ it("find has a separate text destination and Esc clears the committed filter bef
 	assert.equal(f.counts().closes, 0);
 	f.ui.handleInput("\x1b");
 	assert.equal(f.counts().closes, 1);
+	assert.deepEqual(sent, [], "typing over the list never sends a message");
 });
+
 it("a late send receipt keeps a newer draft and never changes focus", async () => {
-	let finish!: () => void;
-	const gate = new Promise<void>((resolve) => {
-		finish = resolve;
-	});
+	const gate = deferred();
 	const sent: string[] = [];
 	const f = fixture(80, 24, source([row("one"), row("two")]), {
 		submit: async (input) => {
 			sent.push(input.id);
-			await gate;
+			await gate.promise;
 			return { text: "admitted" };
 		},
 	});
-	await turn();
-	f.ui.handleInput("\t");
-	f.ui.handleInput("first");
-	f.ui.handleInput("\r");
-	f.ui.handleInput("\x1b");
-	f.ui.handleInput("\x1b[B");
-	assert.equal(f.state.selected, "two");
-	agentState(f.state, "one").draft = "newer";
-	finish();
-	await turn();
-	assert.deepEqual(sent, ["one"]);
-	assert.equal(f.state.selected, "two");
-	assert.equal(f.ui.navigation.screen, "roster");
-	assert.equal(agentState(f.state, "one").draft, "newer");
-	f.ui.dispose();
+	try {
+		await turn();
+		f.ui.handleInput("\r");
+		type(f, "first");
+		f.ui.handleInput("\r");
+		f.ui.handleInput("\x1b");
+		f.ui.handleInput("\x1b[B");
+		assert.equal(f.state.selected, "two");
+		agentState(f.state, "one").draft = "newer";
+		gate.resolve();
+		await turn();
+		assert.deepEqual(sent, ["one"]);
+		assert.equal(f.state.selected, "two");
+		assert.equal(f.ui.focus.region, "list");
+		assert.equal(agentState(f.state, "one").draft, "newer");
+	} finally {
+		gate.resolve();
+		f.ui.dispose();
+	}
 });
-it("new agent selects its task and starting conversation before host readiness", async () => {
+
+it("a new conversation selects its purpose and starting state before host readiness", async () => {
 	const rows = [row("one")];
 	const observed = source(rows);
 	observed.snapshot = async () => ({ entries: [], partial: false, revision: "empty", nextBefore: null });
@@ -567,31 +665,27 @@ it("new agent selects its task and starting conversation before host readiness",
 	});
 	try {
 		await turn();
-		f.ui.handleInput("n");
-		f.ui.handleInput("Write the startup note");
-		f.ui.handleInput("\r");
-		await created.promise;
-		assert.equal(f.state.selected, "two");
-		assert.equal(f.ui.navigation.screen, "roster");
+		f.ui.openNamedAction("new");
+		type(f, "Write the startup note");
+		clickLabel(f, "Start");
+		await settle(() => f.state.selected === "two");
 		for (const [width, height] of [
 			[140, 45],
 			[80, 24],
 		]) {
 			f.resize(width, height);
-			const screen = f.ui.render(width).join("\n");
-			assert.match(screen, /◌ Starting/);
-			assert.doesNotMatch(screen, /retained/);
-			assert.match(screen, /Write the startup note/);
-			assert.match(screen, /╭─ send/);
-			assert.match(screen, /model │/);
-			assert.doesNotMatch(
-				screen,
-				/Conversation unavailable|Unavailable|Attention|need attention|Message two|model \?|reasoning \?/,
-			);
+			const screen = shown(f);
+			assert.match(screen, /◌ Starting/u);
+			assert.match(screen, /Write the startup note/u);
+			const header = targetHeader(f).join("\n");
+			assert.match(header, /model │/u);
+			assert.doesNotMatch(screen, /Conversation unavailable|Unavailable|Attention|need attention|model \?|reasoning \?/u);
 		}
+		f.resize(140, 45);
+		assert.match(shown(f), /╭─ To Write the startup note ─+ Send /u);
 		await turn();
-		assert.match(f.ui.render(140).join("\n"), /Starting/);
-		assert.doesNotMatch(f.ui.render(140).join("\n"), /Conversation unavailable/);
+		assert.match(shown(f), /Starting/u);
+		assert.doesNotMatch(shown(f), /Conversation unavailable/u);
 	} finally {
 		release.resolve();
 		await turn();
@@ -599,7 +693,7 @@ it("new agent selects its task and starting conversation before host readiness",
 	}
 });
 
-it("a busy live frame updates the header, roster, and footer together", async () => {
+it("a busy live frame updates the header, the list and the message field together", async () => {
 	const observed = source([row("one", { state: "done" })]);
 	let changed = () => {};
 	observed.subscribe = (listener) => {
@@ -614,13 +708,11 @@ it("a busy live frame updates the header, roster, and footer together", async ()
 		await turn();
 		frame = conversationFrame();
 		changed();
-		const screen = f.ui.render(140).join("\n");
-		assert.match(screen, /╭─ steer at next step/);
-		assert.match(screen, /Working/);
-		assert.match(screen, /model │/);
-		assert.doesNotMatch(screen, /Done|0 working/);
-		f.ui.handleInput("/");
-		assert.match(f.ui.render(140).join("\n"), /● Working/);
+		const screen = shown(f);
+		assert.match(screen, /Steer at next step ⇄/u);
+		assert.match(targetHeader(f).join("\n"), /● Working/u);
+		assert.match(targetHeader(f).join("\n"), /model │/u);
+		assert.doesNotMatch(screen, /Done|0 working/u);
 	} finally {
 		f.ui.dispose();
 	}
@@ -650,33 +742,36 @@ it("a late cold snapshot error never replaces a live conversation", async () => 
 		changed();
 		fail(new Error("ENOENT: source was absent before the host started"));
 		await turn();
-		const screen = f.ui.render(140).join("\n");
-		assert.match(screen, /model │/);
-		assert.match(screen, /Live task/);
-		assert.doesNotMatch(screen, /Conversation unavailable|ENOENT/);
+		const screen = shown(f);
+		assert.match(screen, /model │/u);
+		assert.match(screen, /Live task/u);
+		assert.doesNotMatch(screen, /Conversation unavailable|ENOENT/u);
 	} finally {
 		f.ui.dispose();
 	}
 });
 
-it("new agent returns to roster and selects the created identity", async () => {
+it("a new conversation without a creation callback selects the created identity", async () => {
 	const rows = [row("one")];
-	const observed = source(rows);
-	const f = fixture(80, 24, observed, {
+	const f = fixture(80, 24, source(rows), {
 		newAgent: async () => {
 			rows.push(row("two"));
 			return { text: "Started", sessionId: "two" };
 		},
 	});
-	await turn();
-	f.ui.handleInput("n");
-	f.ui.handleInput("task");
-	f.ui.handleInput("\r");
-	await turn();
-	assert.equal(f.state.selected, "two");
-	assert.equal(f.ui.navigation.screen, "roster");
-	assert.equal(f.state.newTask, "");
-	f.ui.dispose();
+	try {
+		await turn();
+		f.ui.openNamedAction("new");
+		type(f, "task");
+		clickLabel(f, "Start");
+		await settle(() => f.state.selected === "two");
+		await settle(() => f.ui.focus.inspector === undefined);
+		assert.equal(f.state.newTask, "");
+		assert.equal(f.ui.focus.inspector, undefined);
+		assert.equal(f.ui.focus.region, "composer");
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 it("a retained conversation reattaches and rereads when a stopped host restarts", async (t) => {
@@ -696,42 +791,39 @@ it("a retained conversation reattaches and rereads when a stopped host restarts"
 	observed.snapshot = async () => {
 		reads++;
 		return {
-			entries: [
-				{
-					id: "1",
-					kind: "pi.user",
-					model: [{ role: "user", content: reads === 1 ? "Stored task" : "Restarted task", timestamp: 0 }],
-				},
-			],
+			entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: reads === 1 ? "Stored task" : "Restarted task", timestamp: 0 }] }],
 			partial: false,
 			revision: "2",
 			nextBefore: null,
 		};
 	};
 	const f = fixture(80, 24, observed);
-	await turn();
-	await turn();
-	assert.match(f.ui.render(80).join("\n"), /model │/);
-	assert.match(f.ui.render(80).join("\n"), /Stored task/);
-	rosterChange();
-	t.mock.timers.tick(250);
-	await turn();
-	assert.deepEqual(refreshed, []);
-	current = row("new", { state: "working", modifiedAt: 2, cost: 0.43 });
-	rosterChange();
-	t.mock.timers.tick(250);
-	await turn();
-	await turn();
-	assert.deepEqual(refreshed, ["new"]);
-	assert.equal(reads, 2);
-	const screen = f.ui.render(80).join("\n");
-	assert.match(screen, /Conversation unavailable; stored messages shown/);
-	assert.equal(screen.split("Conversation unavailable").length - 1, 1);
-	assert.match(screen, /Restarted task/);
-	f.ui.dispose();
+	try {
+		await turn();
+		await turn();
+		assert.match(shown(f), /model │/u);
+		assert.match(shown(f), /Stored task/u);
+		rosterChange();
+		t.mock.timers.tick(250);
+		await turn();
+		assert.deepEqual(refreshed, []);
+		current = row("new", { state: "working", modifiedAt: 2, cost: 0.43 });
+		rosterChange();
+		t.mock.timers.tick(250);
+		await turn();
+		await turn();
+		assert.deepEqual(refreshed, ["new"]);
+		assert.equal(reads, 2);
+		const screen = shown(f);
+		assert.match(screen, /Not connected; stored messages shown/u);
+		assert.equal(screen.split("Not connected").length - 1, 1);
+		assert.match(screen, /Restarted task/u);
+	} finally {
+		f.ui.dispose();
+	}
 });
 
-it("Load more is selected before admission and loaded coverage survives reconciliation", async (t) => {
+it("Load more is selected before it reads, and loaded coverage survives reconciliation", async (t) => {
 	t.mock.timers.enable({ apis: ["setInterval", "setTimeout", "Date"] });
 	const observed = source();
 	let rosterChange = () => {};
@@ -758,33 +850,36 @@ it("Load more is selected before admission and loaded coverage survives reconcil
 				};
 	};
 	const f = fixture(80, 24, observed, { sessionFigures: async (roster) => sessionFigures(roster.rows, "primary", () => "primary") });
-	await turn();
-	f.ui.handleInput("\x1b[B");
-	f.ui.handleInput("\x1b[B");
-	assert.deepEqual(calls, [undefined]);
-	assert.match(f.ui.render(80).join("\n"), /› Load more/);
-	f.ui.handleInput("\r");
-	await turn();
-	assert.deepEqual(calls, [undefined, "more"]);
-	assert.match(f.ui.render(80)[0], /Agents: 3\/3 active · ~\$1\.26/);
-	assert.match(f.ui.render(80).join("\n"), /3 loaded/);
-	rosterChange();
-	t.mock.timers.tick(250);
-	await turn();
-	assert.deepEqual(calls, [undefined, "more", undefined, "more"]);
-	assert.match(f.ui.render(80)[0], /Agents: 3\/3 active · ~\$1\.26/);
-	assert.match(f.ui.render(80).join("\n"), /2 unreadable/);
-	f.ui.dispose();
+	try {
+		await turn();
+		f.ui.handleInput("\x1b[B");
+		f.ui.handleInput("\x1b[B");
+		assert.deepEqual(calls, [undefined], "moving to Load more reads nothing");
+		assert.match(shown(f), /› Load more/u);
+		assert.equal(f.state.selected, "b", "Load more leaves the last agent selected");
+		f.ui.handleInput("\r");
+		await turn();
+		assert.deepEqual(calls, [undefined, "more"]);
+		assert.match(visible(f.ui.render(80))[0] ?? "", /agents: 3\/3 active · ~\$1\.26/u);
+		rosterChange();
+		t.mock.timers.tick(250);
+		await turn();
+		assert.deepEqual(calls, [undefined, "more", undefined, "more"]);
+		assert.match(visible(f.ui.render(80))[0] ?? "", /agents: 3\/3 active · ~\$1\.26/u);
+		assert.match(shown(f), /2 unreadable/u);
+	} finally {
+		f.ui.dispose();
+	}
 });
 
-it("the Tasks r key retries a declined attachment without reopening the view", async () => {
+it("Tasks Refresh retries a declined attachment without reopening the view", async () => {
 	const storageId = "00000000-0000-4000-8000-000000000001";
 	const base = source([row(storageId)]);
 	let attaches = 0;
 	let releases = 0;
 	const observed = createAgentObservationSource({
 		list: base.list,
-		snapshot: async () => ({ ...await base.snapshot(storageId), nextBefore: null, coverage: { complete: true, entries: 0, bytes: 0, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false } }),
+		snapshot: async () => ({ ...(await base.snapshot(storageId)), nextBefore: null, coverage: { complete: true, entries: 0, bytes: 0, hiddenExcluded: 0, entryLimitReached: false, byteLimitReached: false } }),
 		subscribeRoster: base.subscribeRoster,
 		observeLive: async (id, scope, listener) => {
 			if (scope !== "tasks") return () => {};
@@ -792,33 +887,37 @@ it("the Tasks r key retries a declined attachment without reopening the view", a
 			if (attaches === 1) return undefined;
 			await Promise.resolve();
 			listener({ scope: "tasks", storageId: id, revision: 1, observedAt: new Date(0).toISOString(), tasks: [], labels: [], coverage: { complete: true, live: true } }, true, "live");
-			return () => { releases++; };
+			return () => {
+				releases++;
+			};
 		},
 	});
 	const f = fixture(80, 24, observed);
 	try {
 		await turn();
-		f.ui.handleInput("a");
-		for (let step = 0; step < dashboardActions(row()).findIndex((choice) => choice.name === "tasks"); step++) f.ui.handleInput("\x1b[B");
-		f.ui.handleInput("\r");
+		f.ui.openNamedAction("tasks");
 		await turn();
-		assert.equal(f.ui.navigation.screen, "tasks");
+		assert.equal(f.ui.focus.inspector, "Tasks");
 		assert.equal(attaches, 1);
 		assert.equal((await observed.tasks(storageId)).coverage.live, false);
-		f.ui.handleInput("r");
+		clickLabel(f, "Refresh");
 		await turn();
-		assert.equal(f.ui.navigation.screen, "tasks");
+		assert.equal(f.ui.focus.inspector, "Tasks");
 		assert.equal(attaches, 2);
 		assert.equal((await observed.tasks(storageId)).coverage.live, true);
-		assert.match(f.ui.render(80).join("\n"), /No live tasks/u);
-		f.ui.handleInput("r");
+		assert.match(await until(f, /No live tasks/u), /No live tasks/u);
+		clickLabel(f, "Refresh");
 		await turn();
-		assert.equal(attaches, 2);
+		assert.equal(attaches, 2, "a live attachment is not attached again");
 		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.focus.inspector, undefined);
 		assert.equal(releases, 1);
-	} finally { f.ui.dispose(); }
+	} finally {
+		f.ui.dispose();
+	}
 });
-it("Tasks opens a resolved unloaded conversation, releases its graph, and Esc returns to roster", async () => {
+
+it("Tasks opens a resolved unloaded conversation and releases its graph", async () => {
 	const observed = source([row("storage")]);
 	let active = false;
 	let releases = 0;
@@ -837,84 +936,80 @@ it("Tasks opens a resolved unloaded conversation, releases its graph, and Esc re
 			observedAt: new Date(0).toISOString(),
 			coverage: { complete: true, live: true },
 			labels: [{ conversationId: 2, identity: "storage:2", name: "Child" }],
-			tasks: [
-				{
-					id: 1,
-					kind: "turn",
-					conversationId: 2,
-					background: false,
-					abortRequested: false,
-					status: "running",
-					phase: "model",
-					waitsOn: [],
-					conversations: [2],
-				},
-			],
+			tasks: [{ id: 1, kind: "turn", conversationId: 2, background: false, abortRequested: false, status: "running", phase: "model", waitsOn: [], conversations: [2] }],
 		};
 	};
 	const f = fixture(80, 24, observed);
-	await turn();
-	f.ui.handleInput("a");
-	for (let step = 0; step < dashboardActions(row()).findIndex((choice) => choice.name === "tasks"); step++) f.ui.handleInput("\x1b[B");
-	f.ui.handleInput("\r");
-	await turn();
-	assert.equal(f.ui.navigation.screen, "tasks");
-	f.ui.handleInput("\r");
-	await turn();
-	assert.equal(f.ui.navigation.screen, "console");
-	assert.equal(f.state.selected, "storage:2");
-	assert.ok(selected.includes("storage:2"));
-	assert.equal(active, false);
-	assert.equal(releases, 1);
-	const screen = f.ui.render(80).join("\n");
-	assert.match(screen, /Child/);
-	assert.doesNotMatch(screen, /\$\?/);
-	f.ui.handleInput("\x1b");
-	assert.equal(f.ui.navigation.screen, "roster");
-	f.ui.dispose();
+	try {
+		await turn();
+		f.ui.openNamedAction("tasks");
+		await until(f, /Child/u);
+		f.ui.handleInput("\r");
+		await turn();
+		assert.equal(f.ui.focus.inspector, undefined);
+		assert.equal(f.ui.focus.region, "composer");
+		assert.equal(f.state.selected, "storage:2");
+		assert.ok(selected.includes("storage:2"));
+		assert.equal(active, false);
+		assert.equal(releases, 1);
+		const header = targetHeader(f).join("\n");
+		assert.match(header, /Child/u);
+		assert.doesNotMatch(header, /\$\?/u);
+		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.focus.region, "list");
+	} finally {
+		f.ui.dispose();
+	}
 });
 
 for (const width of [80, 164]) {
-	it(`status block resolves the current model once per render at ${width}`, async () => {
+	it(`the fact line resolves the current model once per render at ${width}`, async () => {
 		const observed = source([row("one"), row("two", { model: { provider: "other", modelId: "second", thinkingLevel: "high" } })]);
 		observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.assistant", model: [{ role: "assistant", api: "openai-responses", provider: "test", model: "model", content: [], timestamp: 0, stopReason: "stop", usage: { input: 160, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 160, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] }], partial: false, revision: "1" });
 		const lookups: Array<[string, string]> = [];
 		let capacity: number | undefined = 1000;
-		const f = fixture(width, 30, observed, { modelInfo: (provider, modelId) => { lookups.push([provider, modelId]); return capacity === undefined ? undefined : { name: modelId, reasoning: true, contextWindow: capacity }; } });
+		const f = fixture(width, 30, observed, {
+			modelInfo: (provider, modelId) => {
+				lookups.push([provider, modelId]);
+				return capacity === undefined ? undefined : { name: modelId, reasoning: true, contextWindow: capacity };
+			},
+		});
 		try {
 			await turn();
-			let screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
+			let screen = shown(f);
 			assert.deepEqual(lookups, [["test", "model"]]);
-			assert.match(screen, /160\/1.0k/);
-			assert.match(screen, /16%/);
+			assert.match(screen, /160\/1.0k/u);
+			assert.match(screen, /16%/u);
 			capacity = 2000;
 			f.ui.handleInput("\x1b[B");
 			await turn();
-			screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
+			screen = shown(f);
 			assert.deepEqual(lookups, [["test", "model"], ["other", "second"]]);
-			assert.match(screen, /160\/2.0k/);
-			assert.match(screen, /8%/);
+			assert.match(screen, /160\/2.0k/u);
+			assert.match(screen, /8%/u);
 			capacity = undefined;
-			screen = stripVTControlCharacters(f.ui.render(width).join("\n"));
+			screen = shown(f);
 			assert.equal(lookups.length, 3);
-			assert.match(screen, /│ 160 │/);
-			assert.doesNotMatch(screen, /8%|2.0k/);
-		} finally { f.ui.dispose(); }
+			assert.match(screen, /│ 160 │/u);
+			assert.doesNotMatch(screen, /8%|2.0k/u);
+		} finally {
+			f.ui.dispose();
+		}
 	});
 }
 
 for (const width of [80, 164]) {
-	it(`detail header omits empty fact lines at ${width}`, async () => {
-		const f = fixture(width, 30, source([row("one", { state: "idle", model: undefined, cost: undefined })]));
+	it(`the header omits fact lines with nothing known at ${width}`, async () => {
+		const f = fixture(width, 30, source([row("one", { state: "idle", model: undefined, cost: Number.NaN })]));
 		try {
 			await turn();
-			const lines = f.ui.render(width).map(stripVTControlCharacters);
-			const paneX = width >= 100 ? dashboardGeometry(width, 30, 3).rosterWidth + 1 : 0;
-			const titleY = width >= 100 ? 1 : 5;
-			assert.match(lines[titleY], /one.*Idle/);
-			assert.match(lines[titleY + 1].slice(paneX), /Preferences:.*default preset:/);
-			assert.match(lines[titleY + 2].slice(paneX), /^─+$/);
-			assert.doesNotMatch(lines.slice(titleY, titleY + 2).map((line) => line.slice(paneX)).join("\n"), /Model|Tokens|Context|Cost/);
-		} finally { f.ui.dispose(); }
+			const header = targetHeader(f);
+			assert.match(header[0] ?? "", /one · work · ○ Idle/u);
+			assert.match(header[1] ?? "", /^\/work/u, "the directory follows the title without an empty metrics line");
+			assert.equal(header.length, 2);
+			assert.doesNotMatch(header.join("\n"), /Model|Tokens|Context|Cost|\$\?/u);
+		} finally {
+			f.ui.dispose();
+		}
 	});
 }

@@ -118,21 +118,21 @@ it("raw SGR drag dispatch reaches the dashboard across rerenders without changin
 		render();
 		const send = rawDispatcher(f.ui, 164, 44);
 		send(0, 35, 8); render(); send(32, 51, 8);
-		assert.match(render().at(-1) ?? "", /roster 52 · detail 111/);
+		assert.match(render().at(-1) ?? "", /List 52 · conversation 111 columns · release to keep/);
 		send(0, 51, 8, true); render();
 		assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 52);
 		assert.equal(saved.length, 1);
-		assert.equal(f.state.selected, "one"); assert.equal(f.ui.navigation.screen, "roster");
+		assert.equal(f.state.selected, "one"); assert.equal(f.ui.focus.region, "list");
 		assert.equal(state.draft, "literal r 🧩"); assert.equal(state.draftRevision, 7);
 		// A moved press stays a drag even after it returns to its starting cell.
 		send(0, 52, 8); send(32, 60, 8); render(); send(32, 52, 8); render(); send(0, 52, 8, true); render();
-		assert.equal(saved.length, 1); assert.equal(f.ui.navigation.screen, "roster");
+		assert.equal(saved.length, 1); assert.equal(f.ui.focus.region, "list");
 		// Pi's stationary completed clicks carry the reset count.
 		send(0, 52, 8); send(0, 52, 8, true); render();
 		send(0, 52, 8); send(0, 52, 8, true); render();
 		assert.equal(f.state.layout.rosterRatio, undefined);
 		assert.equal(saved.length, 2);
-		f.ui.handleInput("\t"); f.ui.render(164); f.ui.handleInput("r");
+		f.ui.handleInput("\r"); f.ui.render(164); f.ui.handleInput("r");
 		assert.equal(agentState(f.state, "one").draft, "literal r 🧩r");
 	} finally { f.ui.dispose(); }
 });
@@ -145,16 +145,16 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 		const send = rawDispatcher(f.ui, 164, 44);
 		send(0, 161, y); render(); send(32, 161, y - 4); const dragged = render(); send(0, 161, y - 4, true);
 		assert.equal(f.state.layout.composerRows, 9);
-		assert.match(dragged.at(-1) ?? "", /draft 9/);
+		assert.match(dragged.at(-1) ?? "", /Message field 9 rows/);
 		assert.ok(dragged.some((line) => line.includes("━━━")));
 		assert.ok(dragged.some((line) => line.includes("model │")));
-		assert.ok(dragged.some((line) => line.includes("steer at next step")));
+		assert.ok(dragged.some((line) => line.includes("Steer at next step")), "the delivery effect stays on the resized field");
 		const resetY = render().findIndex((line) => line.includes("┄┄┄"));
 		send(0, 161, resetY); send(0, 161, resetY, true); render(); send(0, 161, resetY); send(0, 161, resetY, true); render();
 		assert.equal(f.state.layout.composerRows, undefined);
 	} finally { f.ui.dispose(); }
 });
-it("r on the roster is unbound and leaves the split and hints unchanged", async () => {
+it("letters over the list type into Find and never resize the split", async () => {
 	const saved: DashboardLayout[] = [];
 	const f = fixture(164, 44, source(), { saveLayout: (layout) => saved.push(layout) });
 	try {
@@ -163,13 +163,15 @@ it("r on the roster is unbound and leaves the split and hints unchanged", async 
 		assert.doesNotMatch(footer, /r resize/);
 		f.ui.handleInput("r");
 		const lines = f.ui.render(164).map(stripVTControlCharacters);
-		assert.equal(f.ui.navigation.screen, "roster");
+		assert.equal(f.ui.focus.region, "list");
+		assert.equal(f.state.filter, "r", "the letter went to the visible Find field");
 		assert.deepEqual(f.state.layout, {}); assert.deepEqual(saved, []);
 		assert.equal(lines.at(-1), footer);
-		assert.match(lines.join("\n"), /Tab to write to/);
 		f.ui.handleInput("\x1b[C"); f.ui.handleInput("0");
 		assert.deepEqual(f.state.layout, {});
-		f.ui.handleInput("\t"); assert.equal(f.ui.navigation.screen, "message");
+		f.ui.handleInput("\x1b");
+		assert.equal(f.state.filter, "", "Escape clears the search first");
+		f.ui.handleInput("\r"); assert.equal(f.ui.focus.region, "composer");
 	} finally { f.ui.dispose(); }
 });
 it("short windows hide the composer grip without discarding the saved row preference", async () => {
@@ -181,8 +183,9 @@ it("short windows hide the composer grip without discarding the saved row prefer
 		const send = rawDispatcher(f.ui, 164, 44);
 		send(0, 161, y); send(32, 161, y - 1); f.ui.render(164); send(0, 161, y - 1, true);
 		assert.deepEqual(saved, [{ composerRows: 6 }]);
-		f.resize(80, 20); const small = f.ui.render(80);
-		assert.equal(small.length, 20); assert.ok(!small.some((line) => line.includes("┄┄┄")));
+		// At 80×18 the message field cannot grow while the conversation keeps its rows.
+		f.resize(80, 18); const small = f.ui.render(80);
+		assert.equal(small.length, 18); assert.ok(!small.some((line) => line.includes("┄┄┄")));
 		assert.equal(f.state.layout.composerRows, 6);
 		f.resize(164, 44); assert.ok(f.ui.render(164).some((line) => line.includes("┄┄┄")));
 		assert.equal(f.state.layout.composerRows, 6); assert.deepEqual(saved, [{ composerRows: 6 }]);
@@ -209,7 +212,7 @@ it("raw text drags use the native fallback and focus loss clears the abandoned r
 		assert.deepEqual(f.state.layout, {});
 		// Captured bounds are stale after a terminal resize, even before the next render.
 		send(0, 35, 8); send(32, 60, 8); f.resize(120, 32); send(32, 70, 8); send(0, 70, 8, true);
-		assert.deepEqual(f.state.layout, {}); assert.equal(f.ui.navigation.screen, "roster");
+		assert.deepEqual(f.state.layout, {}); assert.equal(f.ui.focus.region, "list");
 	} finally { f.ui.dispose(); }
 });
 it("width and height changes preserve an entry reading anchor rather than resuming the tail", async () => {

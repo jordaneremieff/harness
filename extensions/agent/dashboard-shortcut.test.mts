@@ -10,6 +10,9 @@ it("/agent mounts one dashboard, not a primary projection, and releases the open
 	const command = createAgentCommand([], source(), {
 		timers: async () => [],
 		schedule: async () => ({ text: "scheduled" }),
+		control: async () => ({}),
+		newAgent: async () => ({ text: "created" }),
+		newDefaults: () => ({ cwd: "/work", presets: [], ownership: "The answer to the purpose comes back to this session." }),
 	});
 	let ui!: AgentDashboard;
 	let opens = 0;
@@ -45,7 +48,7 @@ it("/agent mounts one dashboard, not a primary projection, and releases the open
 	const opened = command.handler("", ctx);
 	await mounting;
 	assert.ok(ui instanceof AgentDashboard);
-	assert.equal(ui.navigation.screen, "roster");
+	assert.equal(ui.focus.region, "list");
 	await command.openDashboard(ctx);
 	assert.equal(opens, 1);
 	done();

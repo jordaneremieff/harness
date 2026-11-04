@@ -133,6 +133,19 @@ export function presetNames(snapshot: PreferenceSnapshot): string[] {
 	return Object.keys(snapshot.document?.presets ?? {}).sort();
 }
 
+/** Configured presets with their model and reasoning, the machine default first. */
+export function presetChoices(snapshot: PreferenceSnapshot): { defaultPreset?: string; choices: Array<{ value: string; label: string; description: string }> } {
+	const presets = snapshot.document?.presets ?? {};
+	const defaultPreset = snapshot.document?.preferences?.defaultPreset;
+	const names = presetNames(snapshot).sort((a, b) => Number(b === defaultPreset) - Number(a === defaultPreset));
+	const choices = names.map((preset) => {
+		const entry = presets[preset];
+		const facts = [entry?.model, entry?.thinkingLevel, preset === defaultPreset ? "machine default" : ""].filter(Boolean);
+		return { value: preset, label: preset, description: facts.join(" \u00b7 ") };
+	});
+	return { ...(defaultPreset === undefined ? {} : { defaultPreset }), choices };
+}
+
 export function presetInventory(snapshot: PreferenceSnapshot): string {
 	return `Presets: ${JSON.stringify(presetNames(snapshot))}; digest ${snapshot.source.digest ?? "none"}; file ${JSON.stringify(snapshot.source.path)} (${snapshot.source.status}).`;
 }
