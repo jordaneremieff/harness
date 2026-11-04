@@ -21,7 +21,6 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { compile } from "@earendil-works/pi-schema";
-import type { StashPanel, StashPanelResult, PanelTheme } from "./panel.ts";
 
 export function testModel(overrides: Partial<Model<Api>> = {}): Model<Api> {
 	return {
@@ -67,15 +66,16 @@ export class RequiredMap<K, V> extends Map<K, V> {
 	}
 }
 
+/** The component factory Pi passes to a custom view; the browser frame is one such component. */
 export type PanelFactory = (
-	tui: { terminal: { rows: number }; requestRender(): void },
-	theme: PanelTheme,
+	tui: { terminal: { rows: number; columns?: number }; requestRender(): void },
+	theme: never,
 	keybindings: object,
-	done: (result: StashPanelResult) => void,
-) => StashPanel;
+	done: (result: unknown) => void,
+) => unknown;
 export type CustomOptions = Parameters<ExtensionUIContext["custom"]>[1];
 export type TestUi = Partial<Omit<ExtensionUIContext, "custom">> & {
-	custom?: (factory: PanelFactory, options?: CustomOptions) => Promise<StashPanelResult>;
+	custom?: (factory: PanelFactory, options?: CustomOptions) => Promise<unknown>;
 };
 export interface TestContext {
 	mode?: ExtensionContext["mode"];
@@ -92,7 +92,7 @@ export interface TestContext {
 // These entrypoint drives supply only the context members each exercised path reads.
 // The adapters bridge to Pi's full host context; omitted services are not simulated.
 export function hostContext(ctx: TestContext = {}): ExtensionCommandContext {
-	return ctx as ExtensionCommandContext;
+	return ctx as unknown as ExtensionCommandContext;
 }
 
 export function captureCommand(command: Omit<RegisteredCommand, "name" | "sourceInfo">) {
@@ -116,7 +116,7 @@ export function captureShortcut(shortcut: Parameters<ExtensionAPI["registerShort
 						assert.ok(key in target, `shortcut context does not supply ${String(key)}`);
 						return Reflect.get(target, key);
 					},
-				}) as ExtensionContext,
+				}) as unknown as ExtensionContext,
 			),
 	};
 }

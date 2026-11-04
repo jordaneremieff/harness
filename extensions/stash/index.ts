@@ -42,9 +42,9 @@ import {
 } from "./guidance.ts";
 import { captureHint, creationRequest, independentLauncher } from "./launch.ts";
 import { emptyListText, ListOutputSchema, recentListResult } from "./list-result.ts";
-import { browseStashes, type BrowserDialogs, type BrowserOwner, type ShowPanel } from "./browser-flow.ts";
+import { openOperatorFrame, publishOperatorViews } from "../../operator-ui/index.ts";
 import { loadArchive, loadRecent, loadSelectedPreview } from "./browser-views.ts";
-import { StashPanel, type StashPanelResult } from "./panel.ts";
+import { createStashViewState, type StashOperations, type StashViewState, stashView } from "./operator-view.ts";
 import { CompleteParams, EditParams, ListParams, ReadParams, RotateParams, WriteParams } from "./params.ts";
 import { buildPickupMessage } from "./pickup.ts";
 import {
@@ -82,6 +82,7 @@ type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
 type StashExtensionApi = Pick<
 	ExtensionAPI,
 	| "events"
+	| "getCommands"
 	| "exec"
 	| "registerCommand"
 	| "registerShortcut"
@@ -93,6 +94,8 @@ type StashExtensionApi = Pick<
 >;
 
 const storeDir = () => resolveStoreDir(process.env, getAgentDir());
+/** This extension's entrypoint; the ordinary frame binds the published view to its /stash registration. */
+const OWNER = fileURLToPath(import.meta.url);
 
 async function checkpointDirectory(): Promise<string> {
 	const { dir: handovers, checkpointDir: directory } = readSettings({ agentDir: getAgentDir() }).values;
@@ -395,33 +398,24 @@ async function selectAndPickup(
 	if (entry) await deliverPickup(pi, ctx, entry.meta.id, fail);
 }
 
-/** Browse stashes and act on them; a selected entry is picked up. The loop, the panel and the effects are shared with the attached terminal. */
-async function browseAndPickup(
+/**
+ * Store operations behind the ordinary browser. Pickup closes the browser first, so the handover
+ * arrives in the restored conversation; deliverPickup reports queueing and failures itself.
+ */
+function ordinaryOperations(
 	pi: StashMessageApi,
 	ctx: ExtensionContext,
 	fail: (message: string) => void,
 	copyText?: (text: string) => Promise<void>,
-): Promise<void> {
-	if (ctx.mode !== "tui" && !ctx.hasUI) {
-		throw new Error(
-			"The interactive stash browser requires TUI mode. Use stash_list to discover ids, /stash get <id> to pick up, /stash new <hint> to create, /stash complete <id> <outcome> to close, /stash reopen <id>, /stash rotate <id> to archive, or /stash help.",
-		);
-	}
-	if (ctx.mode !== "tui") {
-		try {
-			const recent = await listStashes(storeDir(), { limit: 201 });
-			await selectAndPickup(pi, ctx, recent.slice(0, 200), recent.length > 200, fail);
-		} catch (error) {
-			fail(`Could not open stash store: ${safeLine(error instanceof Error ? error.message : String(error))}`);
-		}
-		return;
-	}
-	const owner: BrowserOwner = {
+): StashOperations {
+	return {
 		recent: (signal) => loadRecent(storeDir(), signal),
 		archive: (query, cursor, prior, signal) => loadArchive(storeDir(), query, cursor, prior, signal),
 		preview: (entry, signal) => loadSelectedPreview(storeDir(), entry, signal),
-		// deliverPickup reports queueing and failures itself, so the loop shows no second receipt.
-		pickup: async (id, note) => { await deliverPickup(pi, ctx, id, fail, note); return ""; },
+		pickup: async (id, note, leave) => {
+			leave(() => deliverPickup(pi, ctx, id, fail, note));
+			return "";
+		},
 		close: async (id, outcome) => {
 			const transitioned = await changeLifecycle(id, { action: "close", outcome });
 			if (transitioned.redactions.count) ctx.ui.notify(redactionNotice(transitioned.redactions), "warning");
@@ -432,42 +426,21 @@ async function browseAndPickup(
 		rotate: async (id) => `Rotated stash ${(await rotateLifecycle(id)).id} to the stash archive.`,
 		copy: (text) => (copyText ?? copyToClipboard)(text),
 	};
-	const dialogs: BrowserDialogs = {
-		input: (title) => ctx.ui.input(title),
-		select: (title, choices) => ctx.ui.select(title, [...choices]),
-		confirm: (title, description) => ctx.ui.confirm(title, description),
-		notify: (text, type) => ctx.ui.notify(text, type ?? "info"),
-	};
-	const show: ShowPanel = (round) =>
-		ctx.ui.custom<StashPanelResult>(
-			(tui, theme, _keybindings, done) =>
-				new StashPanel({
-					entries: round.view.entries,
-					title: "Stashes",
-					theme,
-					tui,
-					getMaxRows: () => Math.max(1, tui.terminal.rows - 6),
-					hasMore: round.view.hasMore,
-					scope: round.view.scope,
-					query: round.view.query,
-					coverage: round.view.coverage,
-					stale: round.view.stale,
-					nextCursor: round.view.nextCursor,
-					initialFilter: round.memory.filter,
-					initialSelectedId: round.memory.selectedId,
-					initialSelectedIndex: round.memory.selectedIndex,
-					initialPreviewScroll: round.memory.previewScroll,
-					initialDetail: round.memory.detail,
-					loadPreview: round.loadPreview,
-					copyResume: round.copyResume,
-					done,
-				}),
-			{
-				overlay: true,
-				overlayOptions: { width: "90%", minWidth: 60, maxHeight: "92%", anchor: "center", margin: 1 },
-			},
+}
+
+/** Without the interactive terminal a UI picks from the newest records; without any UI the browser refuses. */
+async function pickWithoutTerminal(pi: StashMessageApi, ctx: ExtensionContext, fail: (message: string) => void): Promise<void> {
+	if (!ctx.hasUI) {
+		throw new Error(
+			"The interactive stash browser requires TUI mode. Use stash_list to discover ids, /stash get <id> to pick up, /stash new <hint> to create, /stash complete <id> <outcome> to close, /stash reopen <id>, /stash rotate <id> to archive, or /stash help.",
 		);
-	await browseStashes(owner, dialogs, show);
+	}
+	try {
+		const recent = await listStashes(storeDir(), { limit: 201 });
+		await selectAndPickup(pi, ctx, recent.slice(0, 200), recent.length > 200, fail);
+	} catch (error) {
+		fail(`Could not open stash store: ${safeLine(error instanceof Error ? error.message : String(error))}`);
+	}
 }
 
 export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: string) => Promise<void> }) {
@@ -706,23 +679,30 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		},
 	});
 
-	let browserOpen = false;
-	async function openBrowser(ctx: ExtensionContext): Promise<void> {
-		if (browserOpen) return;
-		browserOpen = true;
-		try {
-			await browseAndPickup(
-				pi,
-				ctx,
-				(message) => {
-					if (ctx.hasUI) ctx.ui.notify(message, "error");
-					else throw new Error(message);
-				},
-				overrides?.copyText,
-			);
-		} finally {
-			browserOpen = false;
+	const failFor = (ctx: ExtensionContext) => (message: string) => {
+		if (ctx.hasUI) ctx.ui.notify(message, "error");
+		else throw new Error(message);
+	};
+	/** Browsing position per session, kept while the extension instance lives. */
+	const viewStates = new Map<string, StashViewState>();
+	const viewState = (ctx: ExtensionContext) => {
+		const id = ctx.sessionManager.getSessionId();
+		let state = viewStates.get(id);
+		if (!state) {
+			state = createStashViewState();
+			viewStates.set(id, state);
 		}
+		return state;
+	};
+	// Package contract: docs/conventions/operator-panels.md. Opening is a harmless read; pickup and lifecycle changes are labelled actions inside.
+	publishOperatorViews(pi, {
+		version: 2,
+		owner: OWNER,
+		views: [{ id: "stash", label: "Stashes", command: { name: "stash" }, order: 10, view: (ctx, host) => stashView(host, ordinaryOperations(pi, ctx, failFor(ctx), overrides?.copyText), viewState(ctx)) }],
+	});
+	async function openBrowser(ctx: ExtensionContext): Promise<void> {
+		if (ctx.mode === "tui") await openOperatorFrame(pi, ctx, { owner: OWNER, id: "stash" });
+		else await pickWithoutTerminal(pi, ctx, failFor(ctx));
 	}
 
 	pi.registerCommand("stash", {
@@ -730,13 +710,6 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		getArgumentCompletions: stashArgumentCompletions,
 		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser, creationStatus),
 	});
-	// Package contract: docs/conventions/operator-panels.md. The browser is a harmless open; pickup is its own labelled action inside.
-	const destinations = { version: 1, destinations: [{ id: "stash", label: "Stashes", command: { name: "stash" }, owner: fileURLToPath(import.meta.url) }] };
-	const publishDestinations = () => pi.events.emit("harness:operator-destination:publish", destinations);
-	pi.events.on("harness:operator-destination:request", (request) => {
-		if (typeof request === "object" && request !== null && (request as { version?: unknown }).version === 1) publishDestinations();
-	});
-	publishDestinations();
 	pi.registerShortcut("ctrl+alt+s", {
 		description: "Open the stash browser",
 		handler: async (ctx) => {

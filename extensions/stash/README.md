@@ -18,8 +18,8 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `stash_edit` | tool | Correct or amend the saved body with revision-checked exact replacements; preserve the title, metadata, and lifecycle. |
 | `stash_complete` | tool | Close an open or active effort with a required concrete outcome. |
 | `stash_rotate` | tool | Archive a stale open or closed effort so it no longer appears in listings or pickup; the file moves to the store's dot-hidden `.trash` directory and remains recoverable. |
-| `/stash` | command | Browse and pick up efforts through the TUI overlay or an RPC selection dialog. |
-| `ctrl+alt+s` | shortcut | Open the same browser directly in TUI mode without submitting or replacing the editor draft. |
+| `/stash` | command | Browse and pick up efforts in the shared browsing frame (TUI) or an RPC selection dialog. |
+| `ctrl+alt+s` | shortcut | Open the same view directly in TUI mode without submitting or replacing the editor draft. |
 | `/stash new <hint>` | command | Admit independent Durable creation from the current context snapshot and hint; find the artifact through normal discovery. |
 | `/stash get <id>` | command | Pick up a stash by full id or unique prefix. |
 | `/stash get <id> <note>` | command | Pick up with an operator note: material recalled after the stash was written, delivered ahead of the artifact and authoritative on conflict. The artifact itself is never rewritten. |
@@ -49,7 +49,7 @@ is a provisional working synthesis saved in a separate, explicitly selected coll
    [Lifecycle](#lifecycle) for deliberate release, reopen, and archive actions.
 
 For operator pickup, `/stash get <id>` activates the handover and delivers it as
-one request. Bare `/stash` opens the custom browser in Pi's interactive terminal
+one request. Bare `/stash` opens the Stashes view in Pi's interactive terminal
 (TUI) mode. In non-TUI modes with UI support, including RPC, it offers a selection
 dialog with the same newest-first handovers and preload bound. Each option shows
 the title, lifecycle state, and a distinguishing id prefix. A choice uses the same
@@ -607,7 +607,7 @@ agent remains discoverable through the host's existing agent controls; use those
 controls for explicit inspection or cancellation, including background work.
 The artifact appears through `stash_list` discovery without a follow-up caller turn.
 
-Only TUI mode constructs the custom browser. RPC uses the public `ctx.ui.select`
+Only TUI mode opens the Stashes view. RPC uses the public `ctx.ui.select`
 dialog for bare `/stash`, without custom terminal components or client-specific
 behavior. Callers without UI can use `stash_list` to discover ids; the explicit
 `get` and lifecycle verbs remain usable without the browser. Bare JSON/print
@@ -795,8 +795,8 @@ submission as `get`. The contribution advertises `./operator-panel.ts` as its
 
 Durable differences from the ordinary entrypoint:
 
-- A Durable session has no `/stash` overlay and no `ctrl+alt+s` shortcut; the
-  attached Agent terminal supplies the browser through the panel route above.
+- A Durable session has no `/stash` view and no `ctrl+alt+s` shortcut; the
+  attached Agent terminal supplies the view through the panel route above.
   Model discovery is `stash_list` and the explicit `get` and lifecycle verbs.
 - The source snapshot is committed Durable model context rather than Pi's
   persisted-session projection. Both paths publish through an independent
@@ -835,37 +835,70 @@ Artifacts are retained until the operator explicitly removes their exact `.md`
 files, or rotates them into `.trash`. There is no automatic pruning: continuity
 data should not disappear because of an age default or an accidental keypress.
 Rotation moves an artifact out of the discoverable store; it is operator-initiated, requires
-confirmation in the browser, and is recoverable — archived files stay in place
+confirmation in the view, and is recoverable — archived files stay in place
 at 0600 under the store's `.trash` directory until the operator moves them back
 or removes them. Rotated artifacts are invisible to discovery, listing, pickup,
 and lifecycle changes; nothing ever deletes continuity data automatically.
 
 ## Browser behavior
 
-Press `ctrl+alt+s` to open the same browser as bare `/stash`, including while the
-agent works. The shortcut leaves the editor draft in place and does not stop the
-agent. Opening or closing the browser does not pick up, create, close, release,
-reopen, or rotate an artifact. Those actions still require an explicit choice.
-Repeated shortcut or bare command invocations do nothing while this browser or
-one of its action dialogs is open. Closing the workflow or an error releases the
-guard. The shortcut does nothing outside TUI mode; direct commands keep their
-existing mode behavior.
+Bare `/stash` and `ctrl+alt+s` open the Stashes view in the shared browsing
+frame below the native transcript (`docs/conventions/operator-panels.md`),
+including while the agent works. The editor draft stays in place and returns
+when the frame closes, and opening does not stop the agent. Opening, reading,
+searching, and selecting do not pick up, create, close, release, reopen, or
+rotate an artifact; each of those is its own labelled action. A second open
+while the frame is open navigates that frame instead of opening another. The
+shortcut does nothing outside TUI mode; direct commands keep their existing
+mode behavior. The statusline work strip lists Stashes because this extension
+publishes it as an operator view; the command opens it with the statusline
+disabled too.
 
-The overlay is available at every terminal width. It never removes an operation because the terminal is narrow; below 104 columns it shows the list at full width and the Detail control switches to a full-width detail view instead of showing both panes. Below 32 columns, or with fewer than five rows, it shows a resize message and a Close control. In fullscreen mode every control below accepts a left click; regular mode leaves the mouse to the terminal, so the keyboard keys stay the route there.
+The view has two scopes. **Recent** loads metadata for the newest 200
+artifacts; it reads no bodies. The selected row's body is read on demand, and
+moving the selection cancels the outstanding read. Filtering in Recent matches
+the loaded metadata as you type. **Search archive** runs the bounded
+`stash_list` search (`search.ts`) over full bodies, so it finds older records
+and matches beyond any preview: type the text, then press Enter or choose
+**Search**. The status line shows the page's coverage and whether more pages
+remain. **Continue** reads the next page and stays available after a page with
+no matches, because a partial empty page is not proof of absence. If the store
+changes under a held cursor or the cursor is rejected, the previous page stays
+visible and marked stale: record actions are unavailable with that reason, and
+Refresh restarts the search. No selected item is mutated by a read.
 
-**Recent** loads metadata for the newest 200 artifacts (marked `+` when older ones exist); it reads no bodies. The selected row's body is read on demand, and moving the selection cancels the outstanding read. Filtering in Recent matches the loaded metadata and any body already read. **Search archive** runs the bounded `stash_list` search (`search.ts`) over full bodies, so it finds older records and matches beyond any preview. The status line shows the page's matches, candidates visited, skipped records, whether coverage is complete or partial, and whether more pages remain. **Continue** reads the next page and stays available after a page with no matches, because a partial empty page is not proof of absence. If the store changes under a held cursor or the cursor is rejected, the previous page stays visible and marked stale: only Refresh (restart the query), Recent, Search archive, and Close act, and no selected item is mutated.
+Rows show the date, title, lifecycle glyph (`○` open, `◐` active, `●` closed,
+`◈` unknown), lifecycle label, project, and branch. The detail adds the full
+id, session, artifact path, timestamps, outcome, and tags, and wraps long lines
+so no text is lost to horizontal truncation. Stored terminal and bidi controls
+render as inert escape text. At narrow widths the detail opens as its own view
+with Enter.
 
-Rows show the date, title, lifecycle glyph (`○` open, `◐` active, `●` closed, `◈` unknown), lifecycle label, project, and branch. The detail view adds the full id, session, artifact path, timestamps, outcome, and tags, and wraps long lines so no text is lost to horizontal truncation. Stored terminal and bidi controls render as inert escape text.
+The actions follow the real lifecycle:
 
-A row click selects only; in the stacked layout both lines of a row are its hit area. Labelled controls act: **Prev**, **Next**, **Detail**, **Recent**, **Search archive**, **Filter**, **Refresh**, **Continue**, **Actions**, **Pick up**, **Pick up + note**, **Complete**, **Copy command**, **Page up**, **Page down**, **Help**, and **Close**. The wheel scrolls the pane under the pointer: over the list it moves the list viewport without changing the selection or activating anything, over the preview it scrolls the preview. An explicit selection (keys or click) reveals its row; a resize clamps the viewport without undoing an independent scroll. Hit regions reset on resize, filter or scope change, replacement, hide, and disposal, so a stale click never reaches the row that now occupies an old position.
+- **Pick up** and **Pick up with note…** for open and active records. Pick up
+  activates the record and delivers its handover to the session named in the
+  frame; the note form sends nothing until its Pick up, and Cancel returns with
+  no activation and no message.
+- **Close with outcome…** and **Release…** for active records.
+- **Reopen…** for closed records, and **Rotate…** for open and closed ones;
+  each confirms its effect in a form.
+- **Copy resume command** copies `pi "/stash get <id>"` for a new session. It is a
+  client clipboard action and changes no record.
 
-Keys remain as alternatives: Up/Down select, `b`/Space page, `/` filters, `d` detail, `r` Recent, `s` Search archive, `n` Continue, `f` Refresh, Enter and `a` pick up (with a note for `a`), Tab opens Actions, `o` completes an active effort, `c` copies the resume command, `h` opens help, Escape goes back and then closes.
+A record with an unknown state offers no lifecycle action. A record that is
+unreadable, a running action, or stale search results make the record actions
+unavailable with the reason. The store remains the final authority on every
+transition. **Refresh** reads the newest stashes again or reruns the search
+from its first page. The query, scope, and selection survive leaving and
+reopening the view within the session.
 
-The visible actions follow the real lifecycle. Pick up and Pick up + note appear for open and active records only. A closed record offers Actions (guarded Reopen, then Rotate); Enter and `a` on it open that dialog instead of a pickup the store would refuse. Active records offer Complete and, in Actions, Release. A record with an unknown state offers no lifecycle action. The store remains the final authority on every transition. Note cancellation returns to the browser with no activation and no message; an explicitly submitted empty note is one deliberate plain pickup. Copy command is a client clipboard action and changes no record.
-
-The component derives its row budget from the host TUI and the overlay height margin. Short terminals pack the controls into fewer rows with Close first.
-
-The loop behind the browser (`browser-flow.ts`) and the views it shows (`browser-views.ts`) are shared by two hosts. The ordinary `/stash` command runs it over direct store operations and the Pi dialogs. The attached Agent terminal runs it through `operator-panel.ts`, a presentation-only module that routes every read and effect through the host's `stash` contribution command (see `docs/conventions/operator-panels.md` and the Durable section below), with the same confirmations. The ordinary statusline footer menu lists `/stash` as a destination because this extension announces it on `harness:operator-destination:publish`.
+The view (`operator-view.ts`) and the reads it shows (`browser-views.ts`) are
+shared by two hosts. Ordinary `/stash` binds them to direct store operations.
+The attached Agent terminal opens them through `operator-panel.ts`, a
+presentation-only module that routes every read and effect through the host's
+`stash` contribution command (see the Durable section above), with the same
+forms.
 
 ## Files
 
@@ -880,11 +913,10 @@ The loop behind the browser (`browser-flow.ts`) and the views it shows (`browser
 - `list-result.ts`: explicit native output schema and byte-bounded recent records derived from displayed rows.
 - `read-result.ts`: bounded terminal-safe artifact text with its complete-file digest on both tool entrypoints.
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
-- `panel.ts`: interactive browser state, hit regions, and rendering.
-- `browser-views.ts`: the recent and archive views and the on-demand preview read, shared by both hosts.
-- `browser-flow.ts`: the browse-and-act loop with its navigation, confirmations, and effects, shared by both hosts.
+- `operator-view.ts`: the Stashes view in the shared browsing frame, with its lifecycle forms, over the operations it is given.
+- `browser-views.ts`: the recent and archive reads and the on-demand preview read, shared by both hosts.
 - `panel-protocol.ts`: the native route's request union and answer readers.
-- `operator-panel.ts`: the attached-terminal browser module over `panel.ts`, the loop, and the request route.
+- `operator-panel.ts`: the attached-terminal module over `operator-view.ts` and the request route.
 - `display.ts`: pure presentation module for the tool-card renderers; `tool-display.ts` publishes the same records on the ordinary bus.
 - `pickup.ts`: self-contained pickup message, operator amendment block, and already-active ownership handoff.
 - `distill.ts`: projection serialization, bounded redacted snapshots, prompt building, and payload validation.

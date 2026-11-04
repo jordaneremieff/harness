@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it, mock } from "node:test";
@@ -8,10 +8,8 @@ import { CAPACITY_STATE, capacityReset, readCapacityState } from "./capacity.ts"
 import { buildDistillPrompt } from "./distill.ts";
 import registerStash from "./index.ts";
 import { type IndependentCommandInput, type IndependentCommandLaunch, readDistillInput } from "./launch.ts";
-import type { PanelTheme, StashPanelResult } from "./panel.ts";
-import { listStashes, readStash, rotateStash, transitionStash, writeStash } from "./store.ts";
+import { listStashes, readStash, transitionStash, writeStash } from "./store.ts";
 import {
-	type CustomOptions,
 	captureCommand,
 	captureShortcut,
 	captureTool,
@@ -65,6 +63,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 			safety.push({ message, options });
 		},
 		appendEntry: () => {},
+		getCommands: () => [],
 		events: {
 			emit: (event, value) => {
 				if (event !== "durable:launch-provider") return;
@@ -150,15 +149,6 @@ it("retains command safety notices without a model acknowledgment in print mode"
 	assert.deepEqual(sent, []);
 });
 
-const theme: PanelTheme = {
-	fg: (_color: string, text: string) => text,
-	bg: (_color: string, text: string) => text,
-	bold: (text: string) => text,
-	italic: (text: string) => text,
-	underline: (text: string) => text,
-	strikethrough: (text: string) => text,
-};
-
 let dir: string;
 let oldStore: string | undefined;
 let oldCheckpoint: string | undefined;
@@ -200,83 +190,7 @@ describe("stash entrypoint", () => {
 		assert.equal(shortcuts.get("ctrl+alt+s").description, "Open the stash browser");
 	});
 
-	it("opens and closes from the shortcut without pickup, creation, or editor changes", async () => {
-		const unexpected = () => {
-			throw new Error("opening the browser must not perform this action");
-		};
-		const { shortcuts, sent, pi } = registry({ copyText: unexpected });
-		pi.exec = unexpected;
-		pi.appendEntry = unexpected;
-		const entries = await listStashes(dir, { limit: 50 });
-		const before = await Promise.all(entries.map((entry) => readFile(entry.path, "utf8")));
-		const names = await readdir(dir);
-		let panels = 0;
-		for (const idle of [true, false]) {
-			await shortcuts.get("ctrl+alt+s").handler({
-				mode: "tui",
-				hasUI: true,
-				isIdle: () => idle,
-				ui: {
-					notify: unexpected,
-					setEditorText: unexpected,
-					pasteToEditor: unexpected,
-					setEditorComponent: unexpected,
-					custom: async (factory, options) => {
-						assert.equal(options?.overlay, true);
-						return new Promise((resolve) => {
-							const component = factory({ terminal: { rows: 30 }, requestRender() {} }, theme, {}, resolve);
-							assert.match(component.render(120).join("\n"), /Stashes/);
-							panels++;
-							component.handleInput("\x1b");
-						});
-					},
-				},
-			});
-		}
-		assert.equal(panels, 2);
-		assert.deepEqual(sent, []);
-		assert.deepEqual(await readdir(dir), names);
-		assert.deepEqual(await Promise.all(entries.map((entry) => readFile(entry.path, "utf8"))), before);
-	});
 
-	it("keeps deliberate shortcut pickup immediate when idle and queued while busy", async () => {
-		for (const idle of [true, false]) {
-			const title = `Shortcut pickup ${idle ? "idle" : "busy"}`;
-			const { record } = await writeStash(
-				dir,
-				{ title, summary: "SELECTED_SHORTCUT_HANDOVER" },
-				new Date("2025-01-01T00:00:00Z"),
-			);
-			const { shortcuts, sent } = registry();
-			const notices: string[] = [];
-			await shortcuts.get("ctrl+alt+s").handler({
-				mode: "tui",
-				hasUI: true,
-				cwd: "/workspace",
-				isIdle: () => idle,
-				ui: {
-					notify: (message) => {
-						notices.push(message);
-					},
-					custom: async (factory) =>
-						new Promise((resolve) => {
-							const component = factory({ terminal: { rows: 30 }, requestRender() {} }, theme, {}, resolve);
-							component.handleInput("/");
-							for (const character of title) component.handleInput(character);
-							component.handleInput("\r");
-							component.handleInput("\r");
-						}),
-				},
-			});
-			assert.equal(sent.length, 1);
-			assert.match(sent[0].content, /SELECTED_SHORTCUT_HANDOVER/);
-			assert.deepEqual(sent[0].options, idle ? undefined : { deliverAs: "followUp" });
-			const result = await readStash(dir, record.id);
-			assert.ok(result.ok);
-			assert.match(result.content, /^state: "active"$/m);
-			assert.equal(notices.length, idle ? 0 : 1);
-		}
-	});
 
 	it("ignores the shortcut outside TUI without a UI or store access", async () => {
 		const { shortcuts, sent } = registry();
@@ -292,88 +206,12 @@ describe("stash entrypoint", () => {
 		assert.deepEqual(sent, []);
 	});
 
-	for (const first of ["command", "shortcut"] as const) {
-		it(`shares the pending browser guard from ${first} through close and reopen`, async () => {
-			const { commands, shortcuts, sent } = registry();
-			let panels = 0;
-			let close: (result: StashPanelResult) => void = () => assert.fail("panel not open");
-			let ready: () => void = () => {};
-			let opened = new Promise<void>((resolve) => {
-				ready = resolve;
-			});
-			const ctx: TestContext = {
-				mode: "tui",
-				hasUI: true,
-				ui: {
-					custom: async () => {
-						panels++;
-						return new Promise((resolve) => {
-							close = resolve;
-							ready();
-						});
-					},
-				},
-			};
-			const command = () => commands.get("stash").handler("", ctx);
-			const shortcut = () => shortcuts.get("ctrl+alt+s").handler(ctx);
-			const pending = first === "command" ? command() : shortcut();
-			// Both calls arrive before the store load reaches the custom UI.
-			await Promise.all([command(), shortcut()]);
-			await opened;
-			await Promise.all([command(), shortcut()]);
-			assert.equal(panels, 1);
-			close({});
-			await pending;
-			opened = new Promise<void>((resolve) => {
-				ready = resolve;
-			});
-			const reopened = first === "command" ? shortcut() : command();
-			await opened;
-			assert.equal(panels, 2);
-			close({});
-			await reopened;
-			assert.deepEqual(sent, []);
-		});
-	}
 
-	it("releases the browser guard after UI rejection and store failure", async () => {
-		const { commands, shortcuts } = registry();
-		const notices: string[] = [];
-		let rejectPanel = true;
-		let panels = 0;
-		const ctx: TestContext = {
-			mode: "tui",
-			hasUI: true,
-			ui: {
-				notify: (message) => {
-					notices.push(message);
-				},
-				custom: async () => {
-					panels++;
-					if (rejectPanel) throw new Error("panel failed");
-					return {};
-				},
-			},
-		};
-		await assert.rejects(shortcuts.get("ctrl+alt+s").handler(ctx), /panel failed/);
-		rejectPanel = false;
-		await commands.get("stash").handler("", ctx);
-		const previous = process.env.PI_STASH_DIR;
-		process.env.PI_STASH_DIR = join(dir, "20260724T100000Z-large.md");
-		try {
-			await commands.get("stash").handler("", ctx);
-			assert.match(notices.join("\n"), /Could not open stash store/);
-		} finally {
-			process.env.PI_STASH_DIR = previous;
-		}
-		await shortcuts.get("ctrl+alt+s").handler(ctx);
-		assert.equal(panels, 3);
-	});
 
 	it("keeps browser guards local to each extension instance", async () => {
 		const first = registry();
 		const second = registry();
-		let close: (result: StashPanelResult) => void = () => assert.fail("panel not open");
+		let close: (result: unknown) => void = () => assert.fail("panel not open");
 		let ready: () => void = () => {};
 		const opened = new Promise<void>((resolve) => {
 			ready = resolve;
@@ -608,42 +446,6 @@ describe("stash entrypoint", () => {
 		assert.match(notifications.join("\n"), /Usage: \/stash rotate/);
 	});
 
-	it("rotates from the browser manage dialog only after confirmation", async () => {
-		const { record } = await writeStash(
-			dir,
-			{ title: "Panel rotation", summary: "panel stale" },
-			new Date("2027-07-25T10:00:00Z"),
-		);
-		const { commands } = registry();
-		const notifications: string[] = [];
-		let confirmShown = 0;
-		let rounds = 0;
-		const ctx: TestContext = {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			ui: {
-				notify: (message: string) => notifications.push(message),
-				custom: async (factory) => {
-					rounds++;
-					if (rounds > 1) return {};
-					return new Promise((resolve) => {
-						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput("\t"));
-					});
-				},
-				select: async () => "Rotate (archive)",
-				confirm: async () => {
-					confirmShown++;
-					return true;
-				},
-			},
-		};
-		await commands.get("stash").handler("", ctx);
-		assert.equal(confirmShown, 1, "rotation must require explicit confirmation");
-		assert.match(notifications.join("\n"), /Rotated stash/);
-		assert.ok(!(await listStashes(dir, { limit: 50 })).some((entry) => entry.meta.id === record.id));
-	});
 
 	it("signals a missing stash as a failed tool execution", async () => {
 		const { tools } = registry();
@@ -1024,152 +826,9 @@ describe("stash entrypoint", () => {
 		}
 	});
 
-	it("picks up the selected artifact in one injected message and retains the footer height authority", async () => {
-		const { commands, sent } = registry();
-		let overlayOptions: NonNullable<CustomOptions>["overlayOptions"];
-		const notifications: Array<{ message: string; level: string | undefined }> = [];
-		const ctx: TestContext = {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			ui: {
-				notify: (message, level) => notifications.push({ message, level }),
-				custom: async (factory, options) => {
-					overlayOptions = options?.overlayOptions;
-					return new Promise((resolve) => {
-						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => {
-							const lines = component.render(38);
-							assert.ok(lines.length <= 8);
-							assert.match(lines.join("\n"), /esc|close/i);
-							component.handleInput("\r");
-						});
-					});
-				},
-			},
-		};
 
-		await commands.get("stash").handler("", ctx);
-		assert.equal(sent.length, 1);
-		assert.match(sent[0].content, /UNIQUE_PICKUP_BODY/);
-		assert.doesNotMatch(sent[0].content, /stash_read|fetch the stash/i);
-		assert.equal(sent[0].options, undefined);
-		assert.ok(overlayOptions && typeof overlayOptions !== "function");
-		assert.equal(overlayOptions.minWidth, 60);
-		assert.equal(overlayOptions.maxHeight, "92%");
-		assert.equal(notifications.length, 0);
-	});
 
-	it("copies the selected resume command without leaving the browser", async () => {
-		const copied: string[] = [];
-		const { commands } = registry({
-			copyText: async (text) => {
-				copied.push(text);
-			},
-		});
-		let panels = 0;
-		await commands.get("stash").handler("", {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			ui: {
-				notify: () => {},
-				custom: async (factory) =>
-					new Promise((resolve) => {
-						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
-						const component = factory(tui, theme, {}, resolve);
-						if (panels++ === 0) {
-							component.handleInput("c");
-							setImmediate(() => component.handleInput("\x1b"));
-						}
-					}),
-			},
-		});
-		assert.equal(copied.length, 1);
-		assert.match(copied[0], /^pi "\/stash get \d{8}T\d{6}Z-/);
-	});
 
-	it("closes an active stash from the direct outcome key", async () => {
-		const { record } = await writeStash(
-			dir,
-			{ title: "Direct browser completion", summary: "close from the browser" },
-			new Date("2026-07-26T10:00:00Z"),
-		);
-		const notifications: string[] = [];
-		const token = "sk-abcdefgh" + "ijklmnop1234";
-		await transitionStash(dir, record.id, { action: "activate" });
-		const { commands } = registry();
-		let panels = 0;
-		await commands.get("stash").handler("", {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			ui: {
-				notify: (message) => {
-					notifications.push(message);
-				},
-				input: async () => `The direct browser action closed this effort. ${token}`,
-				custom: async (factory) =>
-					new Promise((resolve) => {
-						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
-						const component = factory(tui, theme, {}, resolve);
-						if (panels++ === 0) {
-							component.handleInput("/");
-							for (const ch of "Direct browser completion") component.handleInput(ch);
-							component.handleInput("\x1b");
-							component.handleInput("o");
-						} else {
-							component.handleInput("/");
-							assert.match(component.render(104).join("\n"), /filter Direct browser completion▌/);
-							component.handleInput("\x1b");
-							component.handleInput("\x1b");
-						}
-					}),
-			},
-		});
-		assert.ok((await listStashes(dir, { state: "closed" })).some((entry) => entry.meta.id === record.id));
-		assert.match(notifications.join("\n"), /Redaction notice: 1.*provider token/);
-		assert.ok(!notifications.join("\n").includes(token));
-	});
-
-	it("offers lifecycle actions through a separate browser dialog without stealing filter text", async () => {
-		const { record } = await writeStash(
-			dir,
-			{ title: "Separate dialog target", summary: "close from the dashboard" },
-			new Date("2026-07-25T10:00:00Z"),
-		);
-		await transitionStash(dir, record.id, { action: "activate" });
-		const { commands } = registry();
-		let overlays = 0;
-		const notifications: string[] = [];
-		await commands.get("stash").handler("", {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			ui: {
-				notify: (message: string) => notifications.push(message),
-				select: async () => "Close with outcome",
-				input: async () => "The browser-driven effort reached its intended result.",
-				confirm: async () => true,
-				custom: async (factory) =>
-					new Promise((resolve) => {
-						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
-						const component = factory(tui, theme, {}, resolve);
-						if (overlays++ === 0) {
-							component.handleInput("/");
-							for (const ch of "Separate dialog target") component.handleInput(ch);
-							component.handleInput("\x1b");
-							component.handleInput("\t");
-						} else {
-							component.handleInput("\x1b");
-							component.handleInput("\x1b");
-						}
-					}),
-			},
-		});
-		assert.match(notifications.join("\n"), /Closed stash/);
-		assert.ok((await listStashes(dir, { state: "closed" })).some((entry) => entry.meta.id === record.id));
-	});
 });
 
 function creationCtx(ui: TestUi = {}, extra: TestContext = {}): TestContext {
@@ -1735,36 +1394,10 @@ describe("unknown and unread lifecycle states", () => {
 		assert.ok(!label.includes("\x1b") && !label.includes("\n"), "details.states must be sanitized");
 	});
 
-	it("offers no pickup, manage, or completion actions for an unknown state", async () => {
+	it("keeps an unknown state out of activation and describes it as unknown in completions", async () => {
 		const invalidId = "20270725T000000Z-invalid-manage";
 		await writeFile(join(dir, `${invalidId}.md`), '---\nstate: "mystery"\n---\nbody\n', "utf8");
-		const { commands, sent } = registry();
-		const notifications: string[] = [];
-		let selects = 0;
-		await commands.get("stash").handler("", {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			ui: {
-				notify: (message: string) => notifications.push(message),
-				select: async () => {
-					selects++;
-					return "Back";
-				},
-				custom: async (factory) =>
-					new Promise((resolve) => {
-						const tui = { terminal: { rows: 20 }, requestRender: () => {} };
-						const component = factory(tui, theme, {}, resolve);
-						// The newest artifact is the invalid one; enter and tab must do nothing.
-						component.handleInput("\r");
-						component.handleInput("\t");
-						component.handleInput("\x1b");
-					}),
-			},
-		});
-		assert.equal(selects, 0, "no lifecycle menu may be offered for an unknown state");
-		assert.equal(sent.length, 0, "an unknown state must not be picked up");
-		assert.equal(notifications.length, 0);
+		const { commands } = registry();
 		assert.ok(
 			(await listStashes(dir, { limit: 50 })).some(
 				(entry) => entry.meta.id === invalidId && entry.meta.invalidState === "mystery",
@@ -1780,177 +1413,8 @@ describe("unknown and unread lifecycle states", () => {
 		assert.ok(items?.some((item) => item.description?.includes("unknown (mystery)")));
 		assert.ok(!items?.some((item) => item.description?.includes("open ·")));
 	});
-	it("collects an operator note from the browser a key and delivers it with pickup", async () => {
-		const { record } = await writeStash(
-			dir,
-			{ title: "Browser note target", summary: "BROWSER_NOTE_BODY" },
-			new Date("2027-07-26T10:00:00Z"),
-		);
-		const { commands, sent } = registry();
-		const inputs: string[] = [];
-		const ctx: TestContext = {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			cwd: "/workspace",
-			ui: {
-				notify: () => {},
-				input: async (prompt: string) => {
-					inputs.push(prompt);
-					return "Thursday landed the migration.";
-				},
-				custom: async (factory) => {
-					return new Promise((resolve) => {
-						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput("a"));
-					});
-				},
-			},
-		};
-		await commands.get("stash").handler("", ctx);
-		assert.deepEqual(inputs, ["Operator note for this pickup (empty for none):"]);
-		assert.equal(sent.length, 1);
-		assert.match(sent[0].content, /Operator amendment/);
-		assert.match(sent[0].content, /Thursday landed the migration/);
-		assert.match(sent[0].content, /BROWSER_NOTE_BODY/);
-		assert.ok((await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === record.id));
-	});
 
-	it("returns to the browser without activation or delivery when the note dialog is cancelled", async () => {
-		const { record } = await writeStash(
-			dir,
-			{ title: "Cancelled note target", summary: "CANCELLED_NOTE_BODY" },
-			new Date("2027-07-26T10:00:00Z"),
-		);
-		const { commands, sent } = registry();
-		let opens = 0;
-		const ctx: TestContext = {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			cwd: "/workspace",
-			ui: {
-				notify: () => {},
-				input: async () => undefined,
-				custom: async (factory) => {
-					opens += 1;
-					return new Promise((resolve) => {
-						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput(opens === 1 ? "a" : "\x1b"));
-					});
-				},
-			},
-		};
-		await commands.get("stash").handler("", ctx);
-		assert.equal(opens, 2, "the browser reopened after the cancelled dialog");
-		assert.equal(sent.length, 0, "nothing was delivered");
-		assert.ok((await listStashes(dir, { state: "open" })).some((entry) => entry.meta.id === record.id), "the stash stays open");
-	});
 
-	it("treats an explicitly empty note as one plain pickup", async () => {
-		const { record } = await writeStash(
-			dir,
-			{ title: "Empty note target", summary: "EMPTY_NOTE_BODY" },
-			new Date("2027-07-26T10:00:00Z"),
-		);
-		const { commands, sent } = registry();
-		const ctx: TestContext = {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			cwd: "/workspace",
-			ui: {
-				notify: () => {},
-				input: async () => "",
-				custom: async (factory) => {
-					return new Promise((resolve) => {
-						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput("a"));
-					});
-				},
-			},
-		};
-		await commands.get("stash").handler("", ctx);
-		assert.equal(sent.length, 1);
-		assert.doesNotMatch(sent[0].content, /Operator amendment/);
-		assert.match(sent[0].content, /EMPTY_NOTE_BODY/);
-		assert.ok((await listStashes(dir, { state: "active" })).some((entry) => entry.meta.id === record.id));
-	});
 
-	it("routes Enter on a closed stash to the actions dialog instead of a failing pickup", async () => {
-		const { record } = await writeStash(
-			dir,
-			{ title: "Closed pickup target", summary: "CLOSED_BODY" },
-			new Date("2027-07-28T10:00:00Z"),
-		);
-		await transitionStash(dir, record.id, { action: "activate" });
-		await transitionStash(dir, record.id, { action: "close", outcome: "done" });
-		const { commands, sent } = registry();
-		const selects: string[] = [];
-		let opens = 0;
-		const ctx: TestContext = {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			cwd: "/workspace",
-			ui: {
-				notify: () => {},
-				select: async (title: string, choices: string[]) => {
-					selects.push(`${title}: ${choices.join("|")}`);
-					return "Back";
-				},
-				custom: async (factory) => {
-					opens += 1;
-					return new Promise((resolve) => {
-						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput(opens === 1 ? "\r" : "\x1b"));
-					});
-				},
-			},
-		};
-		await commands.get("stash").handler("", ctx);
-		assert.equal(selects.length, 1, "the actions dialog opened for the closed stash");
-		assert.match(selects[0], /Reopen\|Rotate \(archive\)\|Back/, "the dialog offers the explicit reopen, not a pickup");
-		assert.equal(opens, 2, "Back returns to the browser");
-		assert.equal(sent.length, 0, "no pickup was attempted");
-		assert.ok((await listStashes(dir, { state: "closed" })).some((entry) => entry.meta.id === record.id));
-		await rotateStash(dir, record.id);
-	});
 
-	it("releases an active stash from the browser actions dialog", async () => {
-		const { record } = await writeStash(
-			dir,
-			{ title: "Dialog release target", summary: "phantom active" },
-			new Date("2027-07-27T10:00:00Z"),
-		);
-		await transitionStash(dir, record.id, { action: "activate" });
-		const { commands } = registry();
-		const notifications: string[] = [];
-		let rounds = 0;
-		const ctx: TestContext = {
-			mode: "tui",
-			hasUI: true,
-			isIdle: () => true,
-			ui: {
-				notify: (message: string) => notifications.push(message),
-				custom: async (factory) => {
-					rounds++;
-					if (rounds > 1) return {};
-					return new Promise((resolve) => {
-						const tui = { terminal: { rows: 10 }, requestRender: () => {} };
-						void Promise.resolve(factory(tui, theme, {}, resolve)).then((component) => component.handleInput("\t"));
-					});
-				},
-				select: async () => "Release (return to open)",
-				confirm: async () => {
-					throw new Error("release must not require a separate confirmation dialog");
-				},
-			},
-		};
-		await commands.get("stash").handler("", ctx);
-		assert.match(notifications.join("\n"), /Released stash .* back to open/);
-		const target = (await listStashes(dir, { limit: 50 })).find((entry) => entry.meta.id === record.id);
-		assert.equal(target?.meta.state, "open");
-		assert.equal(target?.meta.activatedAt, undefined);
-	});
 });

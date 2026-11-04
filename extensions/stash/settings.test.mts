@@ -142,6 +142,7 @@ function factory() {
 	});
 	const pi: Parameters<typeof registerStash>[0] = {
 		events: bus,
+		getCommands: () => [],
 		registerTool: () => {},
 		registerCommand: () => {},
 		registerShortcut: () => {},
