@@ -152,16 +152,26 @@ class PeerCardBody implements Component {
 		this.options = options;
 		this.expanded = options.expanded;
 	}
+	private static lines(parts: readonly (string | Component)[], width: number): string[] {
+		return parts.flatMap((part) => typeof part === "string" ? new Text(part, 0, 0).render(width) : part.render(width));
+	}
+	/** Details are built on the first expanded paint and kept for the life of the card. */
+	private detailLines(width: number): string[] {
+		if (!this.expanded) return [];
+		this.details ??= this.sections.details?.() ?? [];
+		return PeerCardBody.lines(this.details, width);
+	}
+	private hint(hidden: number): string {
+		if (this.sections.hint) return this.sections.hint;
+		return !this.expanded && (hidden > 0 || this.sections.details !== undefined) ? expansionHint(this.options.keys, true) : "";
+	}
 	render(width: number): string[] {
-		const lines = this.content.flatMap((part) => typeof part === "string" ? new Text(part, 0, 0).render(width) : part.render(width));
+		const lines = PeerCardBody.lines(this.content, width);
 		const limit = this.expanded ? lines.length : this.sections.previewLines ?? lines.length;
 		const hidden = Math.max(0, lines.length - limit);
-		if (this.expanded && this.details === undefined) this.details = this.sections.details?.() ?? [];
-		const shownDetails = this.expanded ? (this.details ?? []).flatMap((part) => typeof part === "string" ? new Text(part, 0, 0).render(width) : part.render(width)) : [];
-		const collapsible = hidden > 0 || this.sections.details !== undefined;
-		const hint = this.sections.hint ? this.sections.hint : !this.expanded && collapsible ? expansionHint(this.options.keys, true) : "";
-		const rows = [...this.header.map((line) => clipCardLine(line, width)), ...(this.header.length ? [""] : []), ...lines.slice(0, limit), ...shownDetails, ...(this.sections.outcome ?? [])];
-		this.layout = { width, header: this.header.length, hint: hint ? rows.length : undefined, collapsible };
+		const hint = this.hint(hidden);
+		const rows = [...this.header.map((line) => clipCardLine(line, width)), ...(this.header.length ? [""] : []), ...lines.slice(0, limit), ...this.detailLines(width), ...(this.sections.outcome ?? [])];
+		this.layout = { width, header: this.header.length, hint: hint ? rows.length : undefined, collapsible: hidden > 0 || this.sections.details !== undefined };
 		return hint ? [...rows, clipCardLine(this.theme.fg("muted", hint), width)] : rows;
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {

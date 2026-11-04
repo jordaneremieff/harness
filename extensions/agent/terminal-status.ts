@@ -60,11 +60,15 @@ export class TerminalProgramStatus {
 		const name = activity.name ? plainLine(activity.name, 80) : "";
 		const folder = activity.cwd ? plainLine(basename(activity.cwd), 48) : "";
 		this.title(attached ? [name, folder].filter(Boolean).join(" · ") : "");
+		this.send(this.status(activity, attached, name));
+	}
+	private status(activity: TerminalActivity, attached: boolean, name: string): ProgramStatus {
 		if (activity.interaction) {
 			const dialog = activity.dialog ? plainLine(activity.dialog, 80) : "";
-			this.send({ state: "blocked", app: "pi-agent", kind: "question", message: dialog ? `Answer: ${dialog}` : "Answer the terminal dialog" });
-		} else if (!attached) this.send({ state: "clear" });
-		else this.send({ state: activity.busy ? "working" : "idle", app: "pi-agent", ...(name ? { message: name } : {}) });
+			return { state: "blocked", app: "pi-agent", kind: "question", message: dialog ? `Answer: ${dialog}` : "Answer the terminal dialog" };
+		}
+		if (!attached) return { state: "clear" };
+		return { state: activity.busy ? "working" : "idle", app: "pi-agent", ...(name ? { message: name } : {}) };
 	}
 	dispose(): void {
 		if (this.disposed) return;

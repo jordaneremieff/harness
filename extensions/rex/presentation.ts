@@ -75,8 +75,7 @@ function canonicalLines(name: string, value: Record<string, unknown>, options: T
 	const data = object(value.data);
 	const request = object(args);
 	return [
-		...resultHeader(value, effects, options.isPartial),
-		...subjectLines(data),
+		leadLine(name, request, value, data, options.isPartial),
 		...statusSummaryLines(name, data),
 		...terminalQualifications(name, request, value),
 		...authorityQualifications(name, request, value),
@@ -88,20 +87,44 @@ function canonicalLines(name: string, value: Record<string, unknown>, options: T
 	];
 }
 
-function resultHeader(value: Record<string, unknown>, effects: Record<string, unknown>, isPartial: boolean): Line[] {
-	const state = effects.state;
-	const effect = state === "unknown" ? "UNKNOWN EFFECTS" : state === "confirmed" ? "effects confirmed" : "no effects";
-	const lines = [line(`${isPartial ? "partial · " : ""}${String(value.outcome).replaceAll("_", " ")} · ${effect}`, state === "unknown" ? "warning" : value.ok ? "toolOutput" : "error")];
-	const target = targetText(value.target);
-	if (target) lines.push(line(target, "muted"));
-	if (string(effects.recordId)) lines.push(line(`record ${effects.recordId}`, "muted"));
-	return lines;
+/**
+ * The collapsed lead: the human subject (the resolved label, or the plain resource kind) and the precise
+ * outcome. Unknown effects stay on this line; exact identities, endpoints and the effect record wait in Details.
+ */
+function leadLine(name: string, request: Record<string, unknown>, value: Record<string, unknown>, data: Record<string, unknown>, isPartial: boolean): Line {
+	const unknown = object(value.effects).state === "unknown";
+	const subject = string(data.label) ?? string(request.label) ?? subjectKind(name, request, value.target);
+	const parts = [isPartial ? "partial" : undefined, subject, String(value.outcome).replaceAll("_", " "), unknown ? "UNKNOWN EFFECTS" : undefined].filter(Boolean);
+	return line(parts.join(" · "), unknown ? "warning" : value.ok ? "toolOutput" : "error");
 }
 
-/** The resolved human label of the operation subject, when the result carries one. */
-function subjectLines(data: Record<string, unknown>): Line[] {
-	const label = string(data.label);
-	return label ? [line(label, "toolOutput")] : [];
+const OWNED_SUBJECTS: Record<string, string> = { owned: "owned records", observe: "observation", reconcile: "reconciliation", cleanup: "cleanup" };
+const STATUS_SUBJECTS: Record<string, string> = { bind: "binding", unbind: "unbinding" };
+const TARGET_KINDS: ReadonlyArray<readonly [string, string, string]> = [["blockId", "block", "block"], ["windowId", "window", "window"], ["sessionId", "session", "session"], ["clientId", "client", "client"]];
+
+/** The subject of a native call: the method or action it named, or its kind. */
+function nativeSubject(request: Record<string, unknown>): string {
+	const kind = string(request.kind);
+	if (kind !== "api" && kind !== "action") return kind ?? "native call";
+	return `${kind} ${string(request.method) ?? string(request.action) ?? ""}`.trim();
+}
+
+/** A plain name for what the operation acted on, without identifiers. */
+function subjectKind(name: string, request: Record<string, unknown>, target: unknown): string | undefined {
+	const op = string(request.op) ?? "";
+	const kind = string(request.kind);
+	const byTool: Record<string, () => string | undefined> = {
+		rex_terminal: () => (op === "create" ? `new ${kind ?? "terminal"}` : undefined),
+		rex_native: () => nativeSubject(request),
+		rex_wait: () => (string(request.condition) ? `wait for ${String(request.condition).replaceAll("_", " ")}` : "wait"),
+		rex_owned: () => OWNED_SUBJECTS[op],
+		rex_status: () => STATUS_SUBJECTS[op] ?? "status",
+		rex_environment: () => (op === "resolve" ? `${kind ?? "target"} resolution` : "environment"),
+	};
+	const named = byTool[name]?.();
+	if (named) return named;
+	const t = object(target);
+	return TARGET_KINDS.find(([id, alias]) => t[id] ?? t[alias])?.[2];
 }
 
 /** Program states reported anywhere inside the status payload, bounded in depth and count. */
@@ -194,6 +217,7 @@ function countLines(coverage: Record<string, unknown>, data: Record<string, unkn
 	return lines;
 }
 
+/** Collapsed: the error, notes and a two-line capture preview. Expanded: exact identities, then the complete bounded result. */
 function resultDetails(value: Record<string, unknown>, effects: Record<string, unknown>, coverage: Record<string, unknown>, data: Record<string, unknown>, expanded: boolean): Line[] {
 	const lines: Line[] = [];
 	if (string(value.error)) lines.push(line(String(value.error), "error", true));
@@ -202,7 +226,15 @@ function resultDetails(value: Record<string, unknown>, effects: Record<string, u
 		if (string(coverage.note)) lines.push(line(String(coverage.note), "muted", true));
 		const capture = string(data.content) ?? string(object(data.snapshot).content);
 		if (capture) lines.push(...capture.split("\n").slice(0, 2).map((part) => line(part, "toolOutput", true)));
-	} else lines.push(line(""), ...jsonLines(value));
+		return lines;
+	}
+	lines.push(line(""), line("Details", "muted"));
+	const target = targetText(value.target);
+	if (target) lines.push(line(`target ${target}`, "muted"));
+	if (string(effects.recordId)) lines.push(line(`record ${effects.recordId}`, "muted"));
+	const state = effects.state;
+	lines.push(line(state === "unknown" ? "effects UNKNOWN" : state === "confirmed" ? "effects confirmed" : "no effects", state === "unknown" ? "warning" : "muted"));
+	lines.push(line(""), ...jsonLines(value));
 	return lines;
 }
 

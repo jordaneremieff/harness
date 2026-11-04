@@ -25,16 +25,24 @@ test("cards retain meaningful uncertainty, delivery and observer qualifications 
 		const unknown = render("rex_terminal", fixture({ ok: false, outcome: "cli_failure", effects: { state: "unknown", recordId: "complete-operation-identity" }, error: "Connection ended after input." }), { op: "input" }, false, width);
 		assert.match(unknown.join(" "), /UNKNOWN\s+EFFECTS/);
 		assert.match(unknown.join(" "), /Input delivery is not application\s+execution/);
-		assert.ok(unknown.join("").includes("complete-operation-identity"));
+		assert.ok(!unknown.join("").includes("complete-operation-identity"), "the effect record waits in Details");
+		assert.ok(render("rex_terminal", fixture({ ok: false, outcome: "cli_failure", effects: { state: "unknown", recordId: "complete-operation-identity" } }), { op: "input" }, true, width).join("").includes("complete-operation-identity"));
 		const delivered = render("rex_terminal", fixture(), { op: "input" }, false, width);
-		assert.match(delivered.join(" "), /input delivered/);
+		assert.match(delivered.join(" "), /block\s+\u00b7\s+input\s+delivered/, "the lead names the plain subject and the outcome");
 		assert.match(delivered.join(" "), /not application\s+execution/);
 		const deadline = render("rex_wait", fixture({ ok: false, outcome: "timeout", effects: { state: "none" } }), { op: "wait", condition: "child_exit" }, false, width);
 		assert.match(deadline.join(" "), /Observer deadline/);
 		assert.match(deadline.join(" "), /terminal work remains\s+independent/);
 		for (const row of [...unknown, ...delivered, ...deadline]) assert.ok(visibleWidth(row) <= width, JSON.stringify(row));
 	}
-	assert.ok(render("rex_terminal", fixture(), { op: "input" }).join("\n").includes(block), "full identifiers fit without shortening");
+	const collapsed = render("rex_terminal", fixture(), { op: "input" }).join("\n");
+	assert.ok(!collapsed.includes(block) && !collapsed.includes(server.endpoint), "collapsed cards keep exact identities and endpoints out of the lead");
+	assert.doesNotMatch(collapsed, /effects confirmed|no effects/, "a routine effect state is not a collapsed fact");
+	const expanded = render("rex_terminal", fixture(), { op: "input" }, true).join("\n");
+	assert.ok(expanded.includes(block) && expanded.includes(server.endpoint), "full identifiers fit without shortening");
+	assert.match(expanded, /Details\n.*target block:.*explicit target.*unix:/s);
+	assert.match(expanded, /record complete-operation-identity/);
+	assert.match(expanded, /effects confirmed/);
 });
 
 test("cards expose omissions and complete bounded JSON without changing canonical channels", () => {
@@ -132,8 +140,11 @@ test("collapsed cards lead with observed facts: status host activity, reported s
 	const wait = render("rex_wait", fixture({ outcome: "observed" }), { op: "wait", condition: "text", timeoutMs: 25000 }).join("\n");
 	assert.match(wait, /deadline 25000 ms/);
 	const created = render("rex_terminal", fixture({ outcome: "created", data: { label: "build pane" } }), { op: "create", kind: "session", label: "build pane" }).join("\n");
-	assert.match(created, /build pane/);
-	assert.match(render("rex_terminal", fixture(), { op: "input" }).join("\n"), /explicit target/);
+	assert.match(created, /^build pane \u00b7 created/m, "the label leads, then the outcome");
+	assert.match(render("rex_terminal", fixture({ outcome: "created" }), { op: "create", kind: "window" }).join("\n"), /^new window \u00b7 created/m, "without a label the plain resource kind leads");
+	assert.match(render("rex_wait", fixture({ ok: false, outcome: "timeout", effects: { state: "none" } }), { op: "wait", condition: "child_exit" }).join("\n"), /^wait for child exit \u00b7 timeout/m);
+	assert.doesNotMatch(render("rex_terminal", fixture(), { op: "input" }).join("\n"), /explicit target/);
+	assert.match(render("rex_terminal", fixture(), { op: "input" }, true).join("\n"), /explicit target/);
 	for (const width of [24, 72]) {
 		const rows = createRexToolDisplay("rex_status").renderResult(resultChannels(fixture({ outcome: "snapshot", data: { hostActivity: { host: "durable", state: "idle", observedAt: "x", source: "y", note: "z" }, reportedStatus: { blocks: [{ status: { state: "working" } }] }, binding, terminalProjection: "" } })), { expanded: false, isPartial: false }, theme, { args: { op: "snapshot" }, isError: false }).render(width);
 		for (const row of rows) assert.ok(visibleWidth(row) <= width, JSON.stringify(row));

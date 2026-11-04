@@ -213,7 +213,8 @@ export class CollaborationView {
 		return draft;
 	}
 	private positions(): Map<string, ThreadPosition> {
-		return (this.options.state.positions ??= new Map());
+		if (!this.options.state.positions) this.options.state.positions = new Map();
+		return this.options.state.positions;
 	}
 	open(): void {
 		this.screen = "list";
@@ -369,29 +370,31 @@ export class CollaborationView {
 				origin: "operator",
 				requestId: draft.request.id,
 			});
-			const sequence = receiptSequence(result, threadId);
-			draft.request = undefined;
-			if (draft.revision === revision) {
-				draft.text = "";
-				draft.notify = [];
-				draft.replyTo = undefined;
-				draft.revision++;
-			}
-			if (!this.disposed && threadId === this.options.state.selected) {
-				this.composer.setText(draft.text);
-				if (draft.revision === revision + 1 && draft.text === "") this.screen = "thread";
-				this.before = undefined;
-				this.offset = Number.MAX_SAFE_INTEGER;
-				this.follow = true;
-				this.notice = `Post ${sequence} retained. Notification does not prove a response.`;
-				void this.refresh();
-			}
+			this.settlePost(draft, revision, threadId, receiptSequence(result, threadId));
 		} catch (error) {
 			if (!this.disposed) this.notice = `Post failed: ${String(error)}. Your draft stays.`;
 		} finally {
 			draft.pending = false;
 			for (const listener of listeners.get(this.options.state) ?? []) listener();
 		}
+	}
+	/** A retained post clears the draft it carried; a newer draft revision stays untouched. */
+	private settlePost(draft: NonNullable<ReturnType<CollaborationView["draft"]>>, revision: number, threadId: string, sequence: number): void {
+		draft.request = undefined;
+		if (draft.revision === revision) {
+			draft.text = "";
+			draft.notify = [];
+			draft.replyTo = undefined;
+			draft.revision++;
+		}
+		if (this.disposed || threadId !== this.options.state.selected) return;
+		this.composer.setText(draft.text);
+		if (draft.revision === revision + 1 && draft.text === "") this.screen = "thread";
+		this.before = undefined;
+		this.offset = Number.MAX_SAFE_INTEGER;
+		this.follow = true;
+		this.notice = `Post ${sequence} retained. Notification does not prove a response.`;
+		void this.refresh();
 	}
 	private composeInput(data: string): void {
 		if (matchesKey(data, "tab")) {
@@ -721,20 +724,10 @@ export class CollaborationView {
 					: this.options.theme.fg("muted", line),
 			),
 		);
-		const total = blocks.reduce((sum, block) => sum + block.length, 0);
-		if (this.listReveal) {
-			const selectedLine = blocks.slice(0, this.index).reduce((sum, block) => sum + block.length, 0);
-			const selectedEnd = selectedLine + (blocks[this.index]?.length ?? 1);
-			if (selectedLine < this.listScroll) this.listScroll = selectedLine;
-			else if (selectedEnd > this.listScroll + height) this.listScroll = selectedEnd - height;
-			this.listReveal = false;
-		}
-		this.listScroll = Math.max(0, Math.min(this.listScroll, Math.max(0, total - height)));
-		const start = this.listScroll;
+		const start = this.listViewport(blocks, height);
 		let line = 0;
-		for (let index = 0; index < blocks.length; index++) {
-			const block = blocks[index];
-			if (block && line + block.length > start && line < start + height) {
+		blocks.forEach((block, index) => {
+			if (line + block.length > start && line < start + height) {
 				const top = Math.max(line, start);
 				this.mouse.add({
 					x: 0,
@@ -747,9 +740,22 @@ export class CollaborationView {
 					},
 				});
 			}
-			line += block?.length ?? 0;
-		}
+			line += block.length;
+		});
 		return blocks.flat().slice(start);
+	}
+	/** The first visible list line: revealed after an explicit selection change, otherwise where the wheel left it. */
+	private listViewport(blocks: readonly string[][], height: number): number {
+		const total = blocks.reduce((sum, block) => sum + block.length, 0);
+		if (this.listReveal) {
+			const selectedLine = blocks.slice(0, this.index).reduce((sum, block) => sum + block.length, 0);
+			const selectedEnd = selectedLine + (blocks[this.index]?.length ?? 1);
+			if (selectedLine < this.listScroll) this.listScroll = selectedLine;
+			else if (selectedEnd > this.listScroll + height) this.listScroll = selectedEnd - height;
+			this.listReveal = false;
+		}
+		this.listScroll = Math.max(0, Math.min(this.listScroll, Math.max(0, total - height)));
+		return this.listScroll;
 	}
 	private memberLines(width: number, height: number): string[] {
 		const members = this.page?.thread.members ?? [];
@@ -873,21 +879,20 @@ export class CollaborationView {
 		if (!coverage) return `${scope} · Coverage unknown`;
 		return `${scope} · ${coverage.complete ? "Complete" : "Partial"} · ${coverage.omitted} omitted · ${coverage.unavailable ?? 0} unavailable`;
 	}
+	private headingPosition(): string {
+		const counted = (index: number, count: number, unit: string) => `${count ? index + 1 : 0}/${count}${unit}`;
+		switch (this.screen) {
+			case "list": return counted(this.index, this.choices().length, this.list?.coverage.complete ? "" : "+");
+			case "notify":
+			case "members": return counted(this.memberIndex, this.page?.thread.members.length ?? 0, " peers");
+			case "reply": return counted(this.replyIndex, this.page?.events.length ?? 0, " events");
+			default: return this.page ? `Frame ${this.page.thread.revision}` : "";
+		}
+	}
 	private heading(width: number): string {
-		let position = "";
-		if (this.screen === "list") {
-			const count = this.choices().length;
-			position = `${count ? this.index + 1 : 0}/${count}${this.list?.coverage.complete ? "" : "+"}`;
-		} else if (this.screen === "notify" || this.screen === "members") {
-			const count = this.page?.thread.members.length ?? 0;
-			position = `${count ? this.memberIndex + 1 : 0}/${count} peers`;
-		} else if (this.screen === "reply") {
-			const count = this.page?.events.length ?? 0;
-			position = `${count ? this.replyIndex + 1 : 0}/${count} events`;
-		} else if (this.page) position = `Frame ${this.page.thread.revision}`;
 		const base = this.screen === "list" || !this.page ? "Agents > Threads" : `Agents > Threads > ${plain(this.page.thread.title)}`;
-		const title = this.screen === "context" ? `${base} > Context` : this.screen === "reply" ? `${base} > Reply` : base;
-		return dashboardHeading(title, position, width, this.options.theme);
+		const suffix = { context: " > Context", reply: " > Reply" }[this.screen as string] ?? "";
+		return dashboardHeading(`${base}${suffix}`, this.headingPosition(), width, this.options.theme);
 	}
 	private boundary(width: number, height: number): string {
 		const offset = this.screen === "context" ? this.contextOffset : this.offset;

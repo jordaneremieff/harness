@@ -281,9 +281,10 @@ export class AgentConversation {
 	}
 	private pruneComponents(): void {
 		const retained = new Set(this.blocks.map((block) => block.component));
-		for (const component of this.agentCards) if (!retained.has(component)) this.agentCards.delete(component);
-		for (const component of this.rendered.keys()) if (!retained.has(component)) this.rendered.delete(component);
-		for (const component of this.heights.keys()) if (!retained.has(component)) this.heights.delete(component);
+		const caches: Array<{ keys(): Iterable<Component>; delete(component: Component): boolean }> = [this.agentCards, this.rendered, this.heights];
+		for (const cache of caches) {
+			for (const component of [...cache.keys()]) if (!retained.has(component)) cache.delete(component);
+		}
 		for (const [id, card] of this.callCards) if (!retained.has(card.component)) this.callCards.delete(id);
 		for (const [id, component] of this.unmatched) if (!retained.has(component)) this.unmatched.delete(id);
 		this.pruneNestedTools(retained);
