@@ -41,7 +41,19 @@ class TestPi {
 	tools = new Map<string, Tool>();
 	sent: SentMessage[] = [];
 	emitted: Array<{ channel: string; data: unknown }> = [];
-	events = { emit: (channel: string, data: unknown) => this.emitted.push({ channel, data }) };
+	#listeners = new Map<string, Set<(data: unknown) => void>>();
+	events = {
+		emit: (channel: string, data: unknown) => {
+			this.emitted.push({ channel, data });
+			for (const handler of this.#listeners.get(channel) ?? []) handler(data);
+		},
+		on: (channel: string, handler: (data: unknown) => void) => {
+			const handlers = this.#listeners.get(channel) ?? new Set<(data: unknown) => void>();
+			handlers.add(handler);
+			this.#listeners.set(channel, handlers);
+			return () => handlers.delete(handler);
+		},
+	};
 	#handlers = new Map<string, (event: unknown) => Promise<void>>();
 	registerTool(tool: Tool) {
 		this.tools.set(tool.name, tool);
@@ -152,11 +164,11 @@ describe("Command Jobs adapter", () => {
 		const { pi, call } = setup();
 		try {
 			assert.deepEqual([...pi.tools.keys()], ["bash", "jobs"]);
-			assert.equal(pi.emitted.length, 1);
-			assert.equal(pi.emitted[0].channel, "durable:contribution");
-			const contribution = pi.emitted[0].data as { name: string; source: string };
+			assert.deepEqual(pi.emitted.map((event) => event.channel), ["durable:contribution", "harness:tool-display:publish"]);
+			const contribution = pi.emitted[0].data as { name: string; source: string; display: { version: number; entry: string; export: string } };
 			assert.equal(contribution.name, "jobs");
 			assert.equal(contribution.source, new URL("./index.ts", import.meta.url).pathname);
+			assert.deepEqual(contribution.display, { version: 1, entry: "./display.ts", export: "toolDisplay" });
 			const schema = pi.tool("bash").outputSchema;
 			assert.ok("anyOf" in schema && Array.isArray(schema.anyOf));
 			assert.deepEqual(schema.anyOf[0], createBashToolDefinition(root).outputSchema);
@@ -212,6 +224,12 @@ describe("Command Jobs adapter", () => {
 			);
 			const id = jobOf(started).id;
 			assert.equal(jobOf(started).status, "running");
+			assert.equal(jobOf(started).owner, "job-session");
+			assert.equal(jobOf(started).cwd, root);
+			assert.match(jobOf(started).commandPreview ?? "", /sleep 0\.1/u);
+			const listed = detailsOf(await call("jobs", { action: "list" })).jobs ?? [];
+			assert.equal(listed[0]?.commandPreview, jobOf(started).commandPreview);
+			assert.notEqual(listed[0]?.commandPreview, id);
 			assert.deepEqual(started.structuredContent, started.details);
 			controller.abort();
 			assert.equal((await call("bash", { command: "printf independent" })).content[0].text, "independent");
@@ -256,12 +274,13 @@ describe("Command Jobs adapter", () => {
 			const quiet = await call("bash", { command: "exit 0", background: true });
 			const quietSent = await completion(pi, jobOf(quiet).id);
 			assert.deepEqual(completionDetails(quietSent).tail, { text: "", omitted: false, outputBytes: 0 });
-			assert.match(quietSent.message.content, /succeeded with exit code 0 after \d+s: exit 0\nThe command produced no output\.$/u);
+			assert.match(quietSent.message.content, /succeeded with exit code 0 after \d+s: exit 0\nWorking directory: .+\nThe command produced no output\.$/u);
 
 			const expired = await call("bash", { command: "sleep 30", background: true, timeout: 0.05 });
 			const expiredSent = await completion(pi, jobOf(expired).id);
 			assert.equal(completionDetails(expiredSent).job.status, "timed_out");
-			assert.match(expiredSent.message.content, /timed out after 0\.05s and was cancelled/u);
+			assert.match(expiredSent.message.content, /timed out after \d+(?:\.\d+)?s and settled cancellation \(timeout limit 0\.05s\)/u);
+			assert.match(expiredSent.message.content, /Working directory: /u);
 
 			await pi.emit("agent_settled", { type: "agent_settled", aborted: true });
 			const afterAbort = await call("bash", { command: "printf quiet", background: true });

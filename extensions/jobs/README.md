@@ -29,12 +29,17 @@ exactly one message.
 
 The message text names the job ID, the outcome (exit code, timeout, or backend
 error), the elapsed time, a bounded control-free preview of the command (at
-most 200 characters), the total output byte count, and the last output lines
-(at most 40 lines from the last 4 KiB of the retained tail). It labels that
-excerpt as untrusted command output and says when earlier lines are omitted.
-`details` carries the same facts as `{ job, command, tail }`, where `tail` is
-`{ text, omitted, outputBytes }`; the raw text keeps terminal controls, the
-model-visible text drops them. Read the full retained tail with `jobs` logs.
+most 200 characters), the working directory (or `unknown` when the record has
+none), the retained backend error on its own line, the total output byte count,
+and the last output lines (at most 40 lines from the last 4 KiB of the retained
+tail). A timeout reports the settled duration and names the configured limit.
+A job lost to a host restart states that its output is unavailable and that zero
+retained bytes does not mean the command produced no output. The excerpt is
+labelled as untrusted command output, and the text says when earlier lines are
+omitted. `details` carries the same facts as `{ job, command, tail }`, where
+`tail` is `{ text, omitted, outputBytes }`; the raw text keeps terminal
+controls, the model-visible text drops them. Read the full retained tail with
+`jobs` logs.
 
 No message is sent for a job that ends `cancelled`: the caller requested that
 cancellation through `jobs`, or the session is shutting down. A service that
@@ -70,7 +75,6 @@ request ID derived from the launching call, so a retry never admits it twice.
 A busy conversation receives it as a follow-up after its current run; an idle
 conversation starts a run from it. Cancellation settles the task `aborted` and
 admits nothing.
-
 Job status persists in the task record and survives host restarts; the output
 tail lives in the host process only. If the host stops while a job runs, the
 next host marks the task on restart and admits one completion with status
@@ -98,7 +102,42 @@ Foreground output truncation, timeout errors, and nonzero-exit errors remain
 Pi's native behavior. Background timeout is optional and uses seconds. The job
 manager owns its timeout timer and cancellation signal.
 
-### Programmatic results
+### Job identity
+
+Every job record carries display identity: a bounded control-free command
+preview (at most 200 characters), the working directory the command runs in,
+and an owner. Ordinary jobs take the owner from the session ID; Durable jobs
+take command, directory, and owner from the task input, never from formatted
+tool output. Each snapshot also carries `observedAt`, the time the record was
+read. It is a snapshot clock, not a live clock: an elapsed time on a retained
+card is elapsed at observation, and a card without `endedAt` has no final
+duration. A record without identity fields is unknown, not blank: older
+records that never stored them render `command unknown` and `owner: unknown`
+instead of an empty string. `logs` results carry the job record alongside the
+page, so a log card names the command it belongs to.
+
+## Tool cards
+
+The `jobs` tool and background `bash` results have owner renderers. A compact
+card leads with the command preview, then state and duration: accepted and
+running, cancellation requested, settled cancellation, timed out, host lost,
+or succeeded/failed, with the exit code when one exists and a one-line error
+preview. Expanded detail adds the exact job ID, owner, working directory,
+timeout, the full retained error, and for log pages the byte cursors, gap,
+continuation (`more`), pending UTF-8 suffix, and the retained page text. A
+`list` card identifies each job by command preview, not only by ID. Foreground
+`bash` results keep Pi's native bash card; only the background admission shape
+uses the job card.
+
+The renderers live in `presentation.ts` as pure functions over the result
+shape, and `display.ts` publishes them. The same records serve three routes:
+the ordinary tool registration, the package-level `harness:tool-display`
+handshake (`docs/conventions/tool-display.md`), and the presentation-only
+display descriptor each Durable contribution advertises, which the standalone
+Agent terminal loads locally. `display.ts` imports presentation code only: it
+registers no tools, emits no events, and starts nothing.
+
+## Programmatic results
 
 Both tools declare output schemas and return `structuredContent`. Native
 codemode scripts receive these objects directly, without parsing the displayed
@@ -146,10 +185,11 @@ one; cancellation does not invent a numeric exit code or signal name.
 
 The manager allows at most eight running jobs and retains at most 32 records.
 At capacity, a new job evicts the oldest finished record, never a running job.
-Unknown or evicted IDs produce an error. The manager does not retain command
-text or environment variables in records. Use the originating Bash call to
-associate a command with its ID. List results omit backend error text; status
-returns the individual error, bounded to 2 KiB.
+Unknown or evicted IDs produce an error. Records retain the bounded command
+preview, working directory, and owner described above, never the full command
+text or environment variables. Use the originating Bash call for the complete
+command. List results omit backend error text; status returns the individual
+error, bounded to 2 KiB.
 
 Each job retains the last 256 KiB of combined stdout and stderr in a fixed-capacity
 byte ring. Appends copy only retained new bytes, not the existing prefix. A log

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { BashOperations } from "@earendil-works/pi-coding-agent";
+import { commandPreview } from "./completion.ts";
 import { OutputTail } from "./output-tail.ts";
 
 export const JOB_LIMITS = Object.freeze({
@@ -14,6 +15,12 @@ export const JOB_LIMITS = Object.freeze({
 export type JobStatus = "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
 export interface JobSnapshot {
 	id: string;
+	/** Display identity is absent when the owning record does not supply it. */
+	commandPreview?: string;
+	cwd?: string;
+	owner?: string;
+	/** Time this snapshot was read, not a live clock for retained cards. */
+	observedAt?: number;
 	status: JobStatus;
 	startedAt: number;
 	endedAt?: number;
@@ -184,6 +191,7 @@ export class JobManager {
 		operations: BashOperations,
 		env?: NodeJS.ProcessEnv,
 		timeoutSeconds?: number,
+		owner?: string,
 	): JobSnapshot {
 		if (this.closed) throw new Error("Job manager is closed");
 		validateStartArgs(command, cwd, operations, timeoutSeconds, env);
@@ -199,6 +207,9 @@ export class JobManager {
 		const job: Job = {
 			snapshot: {
 				id: randomUUID(),
+				commandPreview: commandPreview(command),
+				cwd,
+				...(owner === undefined ? {} : { owner }),
 				status: "running",
 				startedAt: Date.now(),
 				cancellationRequested: false,
@@ -214,7 +225,11 @@ export class JobManager {
 		job.done = Promise.resolve().then(() =>
 			this.#executeJob(job, command, cwd, operations, environment, timeoutSeconds),
 		);
-		return { ...job.snapshot };
+		return this.snapshot(job);
+	}
+
+	private snapshot(job: Job): JobSnapshot {
+		return { ...job.snapshot, observedAt: Date.now() };
 	}
 
 	/** Run one job after the caller has its snapshot; every terminal path sets endedAt. */
@@ -252,15 +267,15 @@ export class JobManager {
 	}
 
 	list(): JobSnapshot[] {
-		return [...this.jobs.values()].map((job) => ({ ...job.snapshot }));
+		return [...this.jobs.values()].map((job) => this.snapshot(job));
 	}
 	status(id: string): JobSnapshot {
-		return { ...this.get(id).snapshot };
+		return this.snapshot(this.get(id));
 	}
 	async wait(id: string): Promise<JobSnapshot> {
 		const job = this.get(id);
 		await job.done;
-		return { ...job.snapshot };
+		return this.snapshot(job);
 	}
 	logs(id: string, cursor = 0): JobLogs {
 		const job = this.get(id);
@@ -269,7 +284,7 @@ export class JobManager {
 	cancel(id: string): JobSnapshot {
 		const job = this.get(id);
 		this.stop(job, "cancelled");
-		return { ...job.snapshot };
+		return this.snapshot(job);
 	}
 	dispose(): Promise<void> {
 		if (!this.disposal) {

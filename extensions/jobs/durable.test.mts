@@ -142,6 +142,9 @@ test("a finite background command continues its conversation once with its outco
 		assert.equal(results[0]?.name, "bash");
 		assert.equal(results[0]?.isError, false);
 		assert.match(results[0]?.text ?? "", /"status": "running"/u);
+		assert.match(results[0]?.text ?? "", /"commandPreview": "printf 'started/u);
+		assert.ok((results[0]?.text ?? "").includes(`"cwd": ${JSON.stringify(root)}`), "admission carries the execution directory");
+		assert.match(results[0]?.text ?? "", /"owner": "jobs-durable-test:/u);
 		assert.match(results[1]?.text ?? "", /independent/u, "independent foreground work ran while the job was live");
 		const [record] = await liveJobTasks(harness);
 		assert.ok(record);
