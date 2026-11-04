@@ -1,6 +1,6 @@
 /** Policy proposals, authorized activation, and read-only rule inspection. */
 
-import { arr, bool, compile, int, lit, obj, opt, str, type Schema, type Static, union, unknown } from "@earendil-works/pi-schema";
+import { arr, bool, compile, int, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { resolve } from "node:path";
 import type { ActionControl } from "./action-approval.ts";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -47,6 +47,10 @@ import {
 	type RuleRecord,
 } from "./rule.ts";
 
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const StringLiteral = <const V extends string>(value: V): Schema<V> => ({ type: "string", const: value });
+const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({ ...union(schemas), type: "object" });
+const AnyJson: Schema<unknown> = { type: ["object", "array", "string", "number", "boolean", "null"] };
 const StringEntry = str({ minLength: 1, maxLength: MAX_LIST_ENTRY_LENGTH });
 const StringList = arr(StringEntry, { maxItems: MAX_LIST_ENTRIES });
 const CommandList = arr(str({ minLength: 1, maxLength: MAX_COMMAND_LENGTH }), {
@@ -96,10 +100,10 @@ const MatchSchema = obj(MatchFields);
 const CliMatchSchema = obj(
 	{
 		...MatchFields,
-		command: lit("git"),
+		command: StringLiteral("git"),
 		cli: obj(
 			{
-				profile: lit("git"),
+				profile: StringLiteral("git"),
 				subcommand: arr(PushSubcommand, { minItems: 1, maxItems: 1 }),
 			},
 			{ open: false },
@@ -107,7 +111,7 @@ const CliMatchSchema = obj(
 	},
 	{ open: false },
 );
-const UnavailableSchema = union([lit("skip"), lit("deny")]);
+const UnavailableSchema = StringEnum(["skip", "deny"]);
 
 const SuggestionSchema = obj(
 	{
@@ -139,7 +143,7 @@ const ReasonSchema = str({ minLength: 1, maxLength: MAX_REASON_LENGTH });
 const RevisionSchema = str({ pattern: "^[a-f0-9]{12}$" });
 const NoteSchema = str({ minLength: 1, maxLength: MAX_NOTE_LENGTH });
 const PurposeSchema = str({ minLength: 1, maxLength: MAX_PURPOSE_LENGTH });
-const AuthoritySchema = union([lit("exact"), lit("steer-or-block")]);
+const AuthoritySchema = StringEnum(["exact", "steer-or-block"]);
 const FactsProposal = {
 	purpose: PurposeSchema,
 	authority: AuthoritySchema,
@@ -147,7 +151,7 @@ const FactsProposal = {
 	id: RuleIdSchema,
 	reason: ReasonSchema,
 	note: NoteSchema,
-	language: lit("facts/v1"),
+	language: StringLiteral("facts/v1"),
 	program: ProposalProgramSchema,
 	scope: opt(ScopeSchema),
 };
@@ -179,29 +183,29 @@ const CommandProposal = {
 const CliProposal = { ...CommandProposal, match: CliMatchSchema, onUnavailable: UnavailableSchema };
 
 const ProposalVariants = [
-	obj({ operation: lit("add"), ...PredicateProposal }, { open: false }),
+	obj({ operation: StringLiteral("add"), ...PredicateProposal }, { open: false }),
 	obj(
-		{ operation: lit("replace"), ...PredicateProposal, expectedRevision: RevisionSchema },
+		{ operation: StringLiteral("replace"), ...PredicateProposal, expectedRevision: RevisionSchema },
 		{ open: false },
 	),
-	obj({ operation: lit("add"), ...FactsProposal }, { open: false }),
+	obj({ operation: StringLiteral("add"), ...FactsProposal }, { open: false }),
 	obj(
-		{ operation: lit("replace"), ...FactsProposal, expectedRevision: RevisionSchema },
+		{ operation: StringLiteral("replace"), ...FactsProposal, expectedRevision: RevisionSchema },
 		{ open: false },
 	),
-	obj({ operation: lit("add"), ...CommandProposal }, { open: false }),
+	obj({ operation: StringLiteral("add"), ...CommandProposal }, { open: false }),
 	obj(
-		{ operation: lit("replace"), ...CommandProposal, expectedRevision: RevisionSchema },
+		{ operation: StringLiteral("replace"), ...CommandProposal, expectedRevision: RevisionSchema },
 		{ open: false },
 	),
-	obj({ operation: lit("add"), ...CliProposal }, { open: false }),
+	obj({ operation: StringLiteral("add"), ...CliProposal }, { open: false }),
 	obj(
-		{ operation: lit("replace"), ...CliProposal, expectedRevision: RevisionSchema },
+		{ operation: StringLiteral("replace"), ...CliProposal, expectedRevision: RevisionSchema },
 		{ open: false },
 	),
 	obj(
 		{
-			operation: lit("retire"),
+			operation: StringLiteral("retire"),
 			id: RuleIdSchema,
 			reason: ReasonSchema,
 		},
@@ -209,7 +213,7 @@ const ProposalVariants = [
 	),
 	obj(
 		{
-			operation: lit("disable"),
+			operation: StringLiteral("disable"),
 			id: RuleIdSchema,
 			reason: ReasonSchema,
 		},
@@ -224,8 +228,8 @@ const PolicyProposalSchema = {
 		...FactsProposal,
 		...PredicateProposal,
 		...CommandProposal,
-		operation: union([lit("add"), lit("replace"), lit("retire"), lit("disable")]),
-		match: union([MatchSchema, CliMatchSchema]),
+		operation: StringEnum(["add", "replace", "retire", "disable"]),
+		match: objectUnion([MatchSchema, CliMatchSchema]),
 		expectedRevision: RevisionSchema,
 	}).properties,
 	required: ["operation", "id", "reason"],
@@ -234,20 +238,15 @@ const PolicyProposalSchema = {
 /** Describe fields once; the closed operation variants govern admission during execution. */
 export const PolicyProposeParams = obj(
 	{
-		operation: union([
-			lit("add"),
-			lit("replace"),
-			lit("retire"),
-			lit("disable"),
-		]),
+		operation: StringEnum(["add", "replace", "retire", "disable"]),
 		id: RuleIdSchema,
 		reason: ReasonSchema,
 		purpose: opt(PurposeSchema),
 		authority: opt(AuthoritySchema),
 		note: opt(NoteSchema),
-		match: opt(union([MatchSchema, CliMatchSchema])),
+		match: opt(objectUnion([MatchSchema, CliMatchSchema])),
 		predicate: opt(RuleIdSchema),
-		language: opt(lit("facts/v1")),
+		language: opt(StringLiteral("facts/v1")),
 		program: opt(ProposalProgramSchema),
 		applicability: opt({ ...ProposalConditionSchema, description: PROPOSAL_CONDITION_GRAMMAR }),
 		scope: opt(ScopeSchema),
@@ -265,7 +264,7 @@ export const PolicyProposeParams = obj(
 const MAX_PREVIEW_CONTENT_BLOCKS = 64;
 const PreviewContentSchema = arr(
 	obj(
-		{ type: lit("text"), text: str({ maxLength: MAX_RULE_EVENT_BYTES }) },
+		{ type: StringLiteral("text"), text: str({ maxLength: MAX_RULE_EVENT_BYTES }) },
 		{ open: false },
 	),
 	{ maxItems: MAX_PREVIEW_CONTENT_BLOCKS },
@@ -273,13 +272,7 @@ const PreviewContentSchema = arr(
 
 export const PolicyRulesParams = obj(
 	{
-		view: opt(
-			union([
-				lit("rules"), lit("catalog"), lit("capabilities"), lit("state"),
-				lit("health"), lit("explain"), lit("preview"), lit("data"),
-				lit("authoring"), lit("check"),
-			]),
-		),
+		view: opt(StringEnum(["rules", "catalog", "capabilities", "state", "health", "explain", "preview", "data", "authoring", "check"])),
 		id: opt(str({ minLength: 1, maxLength: 261 })),
 		draft: opt(
 			{
@@ -290,7 +283,7 @@ export const PolicyRulesParams = obj(
 					"An existing policy_propose add/replace object, not a new rule format. Full proposal and candidate validation returns admission diagnostics. Read view=authoring for the check workflow.",
 			} as Schema<Record<string, unknown>>,
 		),
-		effect: opt(union([lit("steer"), lit("block")])),
+		effect: opt(StringEnum(["steer", "block"])),
 		cases: opt(DraftCasesSchema),
 		tool: opt(str({ minLength: 1, maxLength: 200 })),
 		input: opt({
@@ -300,7 +293,7 @@ export const PolicyRulesParams = obj(
 			obj(
 				{
 					isError: bool(),
-					details: opt(unknown()),
+					details: opt(AnyJson),
 					content: opt(PreviewContentSchema),
 				},
 				{ open: false },
@@ -314,7 +307,7 @@ export const PolicyApproveParams = obj(
 	{
 		proposalId: str({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" }),
 		proposalRevision: RevisionSchema,
-		effect: union([lit("steer"), lit("block"), lit("exact")]),
+		effect: StringEnum(["steer", "block", "exact"]),
 		authorization: str({
 			minLength: 1,
 			maxLength: MAX_REASON_LENGTH,

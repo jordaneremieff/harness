@@ -1,5 +1,5 @@
 /** Approved structured data and bounded, noncoercing JSON operations. */
-import { arr, bool, compile, int, lit, nul, num, obj, oneOf, opt, str, type JsonSchema, type Static, union } from "@earendil-works/pi-schema";
+import { arr, compile, int, lit, num, obj, oneOf, opt, str, type JsonSchema, type Schema, type Static } from "@earendil-works/pi-schema";
 import { createHash } from "node:crypto";
 
 
@@ -7,7 +7,7 @@ export type Scalar = string | number | boolean | null;
 export type Truth = true | false | "unknown";
 export const UNKNOWN = Symbol("policy-unavailable");
 export const DATA_LIMITS = { bindings: 64, rows: 2048, bytes: 262144, depth: 32, nodes: 16384 } as const;
-export const ScalarSchema = union([str({ maxLength: 4096 }), num(), bool(), nul()]);
+export const ScalarSchema: Schema<Scalar> = { type: ["string", "number", "boolean", "null"], maxLength: 4096 };
 export const DataNameSchema = str({
 	minLength: 1,
 	maxLength: 80,

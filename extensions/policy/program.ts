@@ -1,6 +1,6 @@
 /** Closed facts grammar and private correction plans. No action commits occur here. */
 
-import { arr, compile, int, lit, obj, oneOf, opt, str, type JsonSchema, type Schema, union } from "@earendil-works/pi-schema";
+import { arr, compile, int, obj, opt, str, type JsonSchema, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { type CommandEvidence, captureEvidence, type RuleEvidence } from "./compiler.ts";
 import {
 	checkToolSchema,
@@ -89,23 +89,23 @@ export interface FactsProgram {
 	data?: string[];
 	state?: StateSpec;
 }
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const StringLiteral = <const V extends string>(value: V): Schema<V> => ({ type: "string", const: value });
+const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({ ...union(schemas), type: "object" });
+const ScalarValueSchema: Schema = { type: ["string", "number", "boolean", "null", "array"], maxLength: 4096, items: ScalarSchema, maxItems: 64 };
 const PathSchema = arr(str({ minLength: 1, maxLength: 128 }), { minItems: 1, maxItems: 16 });
 const ParentPathSchema = arr(str({ minLength: 1, maxLength: 128 }), { maxItems: 16 });
 const closed = { open: false };
 function conditionShape<C extends Schema>(child: C) {
-	return union([
+	return objectUnion([
 		obj({ all: arr(child, { minItems: 1, maxItems: PROGRAM_LIMITS.children }) }, closed),
 		obj({ any: arr(child, { minItems: 1, maxItems: PROGRAM_LIMITS.children }) }, closed),
 		obj({ not: child }, closed),
 		obj(
 			{
-				op: union([
-					lit("eq"), lit("in"), lit("exists"), lit("type"),
-					lit("gt"), lit("gte"), lit("lt"), lit("lte"),
-					lit("starts-with"), lit("ends-with"), lit("contains"), lit("lookup"),
-				]),
+				op: StringEnum(["eq", "in", "exists", "type", "gt", "gte", "lt", "lte", "starts-with", "ends-with", "contains", "lookup"]),
 				path: PathSchema,
-				value: opt(union([ScalarSchema, arr(ScalarSchema, { maxItems: 64 })])),
+				value: opt(ScalarValueSchema),
 				table: opt(DataNameSchema),
 			},
 			closed,
@@ -115,14 +115,14 @@ function conditionShape<C extends Schema>(child: C) {
 const conditionReference: Schema<Condition> = { $ref: "#/$defs/Condition" };
 const conditionDefinitions = {
 	$defs: {
-		Condition: union([
+		Condition: objectUnion([
 			obj({ all: arr(conditionReference, { minItems: 1, maxItems: PROGRAM_LIMITS.children }) }),
 			obj({ any: arr(conditionReference, { minItems: 1, maxItems: PROGRAM_LIMITS.children }) }),
 			obj({ not: conditionReference }),
 			obj({
-				op: oneOf(["eq", "in", "exists", "type", "gt", "gte", "lt", "lte", "starts-with", "ends-with", "contains", "lookup"]),
+				op: StringEnum(["eq", "in", "exists", "type", "gt", "gte", "lt", "lte", "starts-with", "ends-with", "contains", "lookup"]),
 				path: { ...PathSchema },
-				value: opt(union([{ ...ScalarSchema }, arr({ ...ScalarSchema }, { maxItems: 64 })])),
+				value: opt({ ...ScalarValueSchema }),
 				table: opt({ ...DataNameSchema }),
 			}),
 		]),
@@ -158,7 +158,7 @@ function stateShape<C extends Schema>(condition: C) {
 				),
 			),
 			cooldownMs: opt(int({ minimum: 0, maximum: 86400000 })),
-			once: opt(union([lit("period"), lit("turn")])),
+			once: opt(StringEnum(["period", "turn"])),
 			expiresAfterMs: opt(int({ minimum: 1, maximum: 86400000 })),
 		},
 		closed,
@@ -169,7 +169,7 @@ export const StateSpecSchema: Schema<StateSpec> = { ...nativeStateSchema, ...con
 function programShape<C extends Schema>(condition: C) {
 	return obj(
 		{
-			phase: union([lit("input"), lit("result"), lit("completion"), lit("context")]),
+			phase: StringEnum(["input", "result", "completion", "context"]),
 			selector: opt(
 				obj(
 					{
@@ -193,12 +193,12 @@ function programShape<C extends Schema>(condition: C) {
 				),
 			),
 			when: condition,
-			action: union([
-				obj({ kind: lit("deny") }, closed),
-				obj({ kind: lit("require-approval") }, closed),
+			action: objectUnion([
+				obj({ kind: StringLiteral("deny") }, closed),
+				obj({ kind: StringLiteral("require-approval") }, closed),
 				obj(
 					{
-						kind: lit("rename-key"),
+						kind: StringLiteral("rename-key"),
 						path: ParentPathSchema,
 						from: str({ minLength: 1, maxLength: 128 }),
 						to: str({ minLength: 1, maxLength: 128 }),
@@ -207,22 +207,22 @@ function programShape<C extends Schema>(condition: C) {
 				),
 				obj(
 					{
-						kind: lit("substitute"),
+						kind: StringLiteral("substitute"),
 						path: PathSchema,
 						table: DataNameSchema,
-						stage: opt(union([lit("logical-target"), lit("values")])),
+						stage: opt(StringEnum(["logical-target", "values"])),
 					},
 					closed,
 				),
-				obj({ kind: lit("assert-error") }, closed),
+				obj({ kind: StringLiteral("assert-error") }, closed),
 				obj(
-					{ kind: lit("guide"), text: str({ minLength: 1, maxLength: PROGRAM_LIMITS.text }) },
+					{ kind: StringLiteral("guide"), text: str({ minLength: 1, maxLength: PROGRAM_LIMITS.text }) },
 					closed,
 				),
-				obj({ kind: lit("observe"), label: str({ minLength: 1, maxLength: 80 }) }, closed),
+				obj({ kind: StringLiteral("observe"), label: str({ minLength: 1, maxLength: 80 }) }, closed),
 			]),
-			onUnavailable: union([lit("skip"), lit("deny")]),
-			inputView: opt(union([lit("original"), lit("effective")])),
+			onUnavailable: StringEnum(["skip", "deny"]),
+			inputView: opt(StringEnum(["original", "effective"])),
 			data: opt(arr(DataNameSchema, { maxItems: PROGRAM_LIMITS.data, uniqueItems: true })),
 			state: opt(stateShape(condition)),
 		},

@@ -220,10 +220,8 @@ describe("registration and lazy catalog use", () => {
 		assert.equal(schema.additionalProperties, false);
 		assert.equal(schema.anyOf, undefined);
 		assert.deepEqual(schema.required, ["operation", "id", "reason"]);
-		assert.deepEqual(
-			schema.properties.operation.anyOf.map((entry: { const: string }) => entry.const),
-			["add", "replace", "retire", "disable"],
-		);
+		assert.equal(schema.properties.operation.type, "string");
+		assert.deepEqual(schema.properties.operation.enum, ["add", "replace", "retire", "disable"]);
 		const propertyNames = new Set(Object.keys(schema.properties));
 		for (const forbidden of ["approve", "reject", "decision", "state", "effect", "enable"]) {
 			assert.equal(propertyNames.has(forbidden), false, `${forbidden} must not be exposed`);

@@ -1,5 +1,5 @@
 /** Context-authorized controls over the same registry and runtime as operator commands. */
-import { compile, lit, nul, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
+import { compile, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -8,74 +8,56 @@ import { MAX_RULE_EVENT_BYTES, makeRuleAudit, PolicyMutationCancelledError, prop
 import { contentRevision, effectiveEffect, effectiveState, type OperatorRuleAudit } from "./rule.ts";
 import type { PolicyToolContext, ToolDeps } from "./tools.ts";
 
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const StringLiteral = <const V extends string>(value: V): Schema<V> => ({ type: "string", const: value });
+const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({ ...union(schemas), type: "object" });
 const Id = str({ minLength: 1, maxLength: 80, pattern: "^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)*$" });
 const Revision = str({ pattern: "^[a-f0-9]{12}$" });
 const Authorization = str({ minLength: 1, maxLength: 1000 });
 const Path = str({ minLength: 1, maxLength: 4096 });
-const Selection = union([Id, lit("--all")]);
+const Selection: Schema<string> = { ...union([Id, StringEnum(["--all"])]), type: "string" };
 const ActionId = str({ minLength: 36, maxLength: 36, pattern: "^[0-9a-fA-F-]{36}$" });
 const Artifact = obj(
 	{
 		data: { type: "object", patternProperties: { "^.*$": {} }, maxProperties: 12 } as Schema<Record<string, unknown>>,
-		expectedRevision: union([Revision, nul()]),
+		expectedRevision: { type: ["string", "null"], pattern: "^[a-f0-9]{12}$" },
 	},
 	{ open: false },
 );
 const authority = { revision: { ...Revision }, authorization: { ...Authorization } };
 const reason = { reason: { ...str({ minLength: 1, maxLength: 1000 }) } };
 const variants = [
-	obj({ operation: lit("actions") }),
-	obj({ operation: lit("action-inspect"), actionId: { ...ActionId } }),
-	obj({ operation: union([lit("action-approve"), lit("action-reject")]), actionId: { ...ActionId }, ...authority }),
-	obj({ operation: lit("inspect"), id: { ...Id } }),
-	obj({ operation: lit("import-preview"), selection: { ...Selection } }),
-	obj({ operation: lit("data-preview"), artifact: { ...Artifact } }),
-	obj({ operation: lit("data-preview"), path: { ...Path } }),
-	obj({ operation: lit("reset-preview"), id: { ...Selection } }),
-	obj({ operation: lit("mode") }),
+	obj({ operation: StringLiteral("actions") }),
+	obj({ operation: StringLiteral("action-inspect"), actionId: { ...ActionId } }),
+	obj({ operation: StringEnum(["action-approve", "action-reject"]), actionId: { ...ActionId }, ...authority }),
+	obj({ operation: StringLiteral("inspect"), id: { ...Id } }),
+	obj({ operation: StringLiteral("import-preview"), selection: { ...Selection } }),
+	obj({ operation: StringLiteral("data-preview"), artifact: { ...Artifact } }),
+	obj({ operation: StringLiteral("data-preview"), path: { ...Path } }),
+	obj({ operation: StringLiteral("reset-preview"), id: { ...Selection } }),
+	obj({ operation: StringLiteral("mode") }),
 	obj({
-		operation: lit("telemetry"),
+		operation: StringLiteral("telemetry"),
 		from: str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
 		to: str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }),
 	}),
-	obj({ operation: lit("reject"), proposalId: { ...ActionId }, ...authority }),
-	obj({ operation: union([lit("disable"), lit("enable"), lit("retire")]), id: { ...Id }, ...authority, ...reason }),
-	obj({ operation: lit("effect"), id: { ...Id }, effect: union([lit("steer"), lit("block")]), ...authority, ...reason }),
-	obj({ operation: lit("reset"), id: { ...Selection }, ...authority, ...reason }),
-	obj({ operation: lit("import"), selection: { ...Selection }, ...authority }),
-	obj({ operation: lit("data-set"), artifact: { ...Artifact }, ...authority }),
-	obj({ operation: lit("data-set-file"), path: { ...Path }, ...authority }),
-	obj({ operation: lit("data-remove"), name: { ...Id }, ...authority }),
+	obj({ operation: StringLiteral("reject"), proposalId: { ...ActionId }, ...authority }),
+	obj({ operation: StringEnum(["disable", "enable", "retire"]), id: { ...Id }, ...authority, ...reason }),
+	obj({ operation: StringLiteral("effect"), id: { ...Id }, effect: StringEnum(["steer", "block"]), ...authority, ...reason }),
+	obj({ operation: StringLiteral("reset"), id: { ...Selection }, ...authority, ...reason }),
+	obj({ operation: StringLiteral("import"), selection: { ...Selection }, ...authority }),
+	obj({ operation: StringLiteral("data-set"), artifact: { ...Artifact }, ...authority }),
+	obj({ operation: StringLiteral("data-set-file"), path: { ...Path }, ...authority }),
+	obj({ operation: StringLiteral("data-remove"), name: { ...Id }, ...authority }),
 ] as const;
-const ControlContract = union(variants);
+const ControlContract = objectUnion(variants);
 const validator = compile(ControlContract);
 type Input = Static<typeof ControlContract>;
 
 /** Provider adapters retain object properties; execution enforces the closed operation variants. */
 export const PolicyControlParams = obj(
 	{
-		operation: union([
-			lit("actions"),
-			lit("action-inspect"),
-			lit("action-approve"),
-			lit("action-reject"),
-			lit("inspect"),
-			lit("import-preview"),
-			lit("data-preview"),
-			lit("reset-preview"),
-			lit("mode"),
-			lit("telemetry"),
-			lit("reject"),
-			lit("disable"),
-			lit("enable"),
-			lit("retire"),
-			lit("effect"),
-			lit("reset"),
-			lit("import"),
-			lit("data-set"),
-			lit("data-set-file"),
-			lit("data-remove"),
-		]),
+		operation: StringEnum(["actions", "action-inspect", "action-approve", "action-reject", "inspect", "import-preview", "data-preview", "reset-preview", "mode", "telemetry", "reject", "disable", "enable", "retire", "effect", "reset", "import", "data-set", "data-set-file", "data-remove"]),
 		actionId: opt(ActionId),
 		id: opt(Selection),
 		selection: opt(Selection),
@@ -84,7 +66,7 @@ export const PolicyControlParams = obj(
 		revision: opt(Revision),
 		authorization: opt(Authorization),
 		reason: opt(reason.reason),
-		effect: opt(union([lit("steer"), lit("block")])),
+		effect: opt(StringEnum(["steer", "block"])),
 		artifact: opt(Artifact),
 		path: opt(Path),
 		from: opt(str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),

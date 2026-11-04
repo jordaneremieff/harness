@@ -1,5 +1,5 @@
 /** Read-only draft checks use isolated instances of the production runtime. */
-import { arr, bool, compile, int, lit, obj, opt, str, type Schema, type Static, union, unknown } from "@earendil-works/pi-schema";
+import { arr, bool, compile, int, obj, opt, str, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { readFile, stat } from "node:fs/promises";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
@@ -25,14 +25,17 @@ export const AUTHORING_LIMITS = {
 	guideBytes: 24576,
 	outputBytes: 24576,
 };
+const StringLiteral = <const V extends string>(value: V): Schema<V> => ({ type: "string", const: value });
+const objectUnion = <S extends readonly Schema[]>(schemas: S): Schema<Static<S[number]>> => ({ ...union(schemas), type: "object" });
+const AnyJson: Schema<unknown> = { type: ["object", "array", "string", "number", "boolean", "null"] };
 const ResultSchema = obj(
 	{
 		isError: bool(),
-		details: opt(unknown()),
+		details: opt(AnyJson),
 		content: opt(
 			arr(
 				obj(
-					{ type: lit("text"), text: str({ maxLength: 65536 }) },
+					{ type: StringLiteral("text"), text: str({ maxLength: 65536 }) },
 					{ open: false },
 				),
 				{ maxItems: 64 },
@@ -70,10 +73,10 @@ export const DraftCasesSchema = arr(
 				),
 			),
 			steps: arr(
-				union([
+				objectUnion([
 					obj(
 						{
-							kind: lit("call"),
+							kind: StringLiteral("call"),
 							...StepFields,
 							tool: str({ minLength: 1, maxLength: 200 }),
 							input: {
@@ -83,7 +86,7 @@ export const DraftCasesSchema = arr(
 						},
 						{ open: false },
 					),
-					obj({ kind: lit("context"), ...StepFields }, { open: false }),
+					obj({ kind: StringLiteral("context"), ...StepFields }, { open: false }),
 				]),
 				{ minItems: 1, maxItems: AUTHORING_LIMITS.steps },
 			),
