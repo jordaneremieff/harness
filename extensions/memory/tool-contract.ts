@@ -1,4 +1,4 @@
-import { arr, bool, int, lit, nul, num, obj, opt, str, union } from "@earendil-works/pi-schema";
+import { arr, bool, int, num, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import { REVISION_PATTERN } from "./history.ts";
 import { DIGEST, SLUG, type WriteReceipt } from "./store.ts";
 
@@ -9,21 +9,29 @@ import { DIGEST, SLUG, type WriteReceipt } from "./store.ts";
  * contract single-sourced.
  */
 
+const StringEnum = <const T extends readonly string[]>(values: T): Schema<T[number]> => ({ type: "string", enum: [...values] });
+const booleanLiteral = (value: true): Schema<true> => ({ type: "boolean", const: value });
 const slug = () => str({ pattern: SLUG.source, minLength: 1, maxLength: 120 });
 const digest = () => str({ pattern: DIGEST.source });
-const reviewPolicy = () => union([lit("on-change"), lit("before-use")]);
-const reviewAfter = () => union([str({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" }), nul()]);
+const reviewPolicy = () => StringEnum(["on-change", "before-use"]);
+const reviewAfter = (): Schema<string | null> => ({ type: ["string", "null"], pattern: "^\\d{4}-\\d{2}-\\d{2}$" });
 const reviewSources = () => str({ minLength: 1, maxLength: 1500 });
 const reviewReason = () => str({ minLength: 1, maxLength: 600 });
-const query = () =>
-	str({
-		maxLength: 200,
-		description:
-			"Short keywords or quoted, case-insensitive literal fragments. Unquoted words match exact tokens, without stemming or camelCase splitting. Omit query to browse; blank strings refuse. Maximum 200 characters and 16 distinct terms.",
-	});
+const QUERY_DESCRIPTION =
+	"Short keywords or quoted, case-insensitive literal fragments. Unquoted words match exact tokens, without stemming or camelCase splitting. Omit query to browse; blank strings refuse. Maximum 200 characters and 16 distinct terms.";
+const query = () => str({ maxLength: 200, description: QUERY_DESCRIPTION });
+const queryOrList: Schema<string | string[]> = {
+	type: ["string", "array"],
+	maxLength: 200,
+	description: QUERY_DESCRIPTION,
+	items: query(),
+	minItems: 1,
+	maxItems: 3,
+};
+const reviewPolicyOrNull: Schema<"on-change" | "before-use" | null> = { type: ["string", "null"], enum: ["on-change", "before-use", null] };
 
 export const memorySearchParameters = obj({
-	query: opt(union([query(), arr(query(), { minItems: 1, maxItems: 3 })])),
+	query: opt(queryOrList),
 	includeRetired: opt(bool()),
 	limit: opt(
 		int({
@@ -109,14 +117,14 @@ export const memoryEditParameters = obj({
 export const memoryReviewParameters = obj({
 	slug: slug(),
 	expectedDigest: digest(),
-	outcome: union([lit("confirmed"), lit("unresolved")]),
+	outcome: StringEnum(["confirmed", "unresolved"]),
 	sources: reviewSources(),
 	reason: opt(
 		str({ minLength: 1, maxLength: 600, description: "Required only for unresolved; omit for confirmed." }),
 	),
-	reviewPolicy: opt(union([reviewPolicy(), nul()])),
+	reviewPolicy: opt(reviewPolicyOrNull),
 	reviewAfter: opt(reviewAfter()),
-	reactivate: opt(lit(true)),
+	reactivate: opt(booleanLiteral(true)),
 }, { open: true });
 
 export const memoryRetireParameters = obj({
