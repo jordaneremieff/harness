@@ -296,14 +296,14 @@ test("native tools use file settings and resolve checkpoint paths against their 
 	assert.deepEqual(await listStashes(join(agentDir, "wrong-store"), {}), []);
 	const command = contribution.commands?.[0];
 	assert.ok(command);
-	const message = await command.run({
+	const message = String(await command.run({
 		args: "capacity",
 		conversation,
 		harness,
 		context,
 		host,
 		invocationId: "capacity-status",
-	});
+	}));
 	assert.match(message, /Capacity observation is disabled by stash.capacity/);
 	assert.doesNotMatch(message, /PI_STASH_CAPACITY=0/);
 });

@@ -60,6 +60,8 @@ import {
 	redactSecretsWithReport,
 } from "./redact.ts";
 import { searchStashes } from "./search.ts";
+import { loadArchive, loadRecent, loadSelectedPreview } from "./browser-views.ts";
+import { readPanelRequest, type StashPanelAnswer, type StashPanelRequest } from "./panel-protocol.ts";
 import {
 	editStash,
 	listStashes,
@@ -69,6 +71,7 @@ import {
 	resolveStash,
 	resolveStoreDir,
 	rotateStash,
+	type StashEntry,
 	transitionStash,
 	writeReplayableStash,
 } from "./store.ts";
@@ -100,7 +103,7 @@ export interface StashDurableInventory {
 export interface StashDurableCommand {
 	readonly name: string;
 	readonly description: string;
-	run(call: StashDurableCommandCall): Promise<string>;
+	run(call: StashDurableCommandCall): Promise<string | { text: string; data?: JsonValue }>;
 }
 
 export interface StashDurableCommandCall {
@@ -120,6 +123,8 @@ export interface StashDurableContribution {
 	readonly source: string;
 	/** Presentation-only module the standalone Agent terminal imports locally; see docs/conventions/tool-display.md. */
 	readonly display?: { readonly version: 1; readonly entry: string; readonly export: string };
+	/** The browser module for the attached terminal and the command that serves it; see docs/conventions/operator-panels.md. */
+	readonly panel?: { readonly version: 1; readonly entry: string; readonly export: "operatorPanel"; readonly command: string };
 	create(host: StashDurableHost): Durable.Extension;
 	readonly commands?: readonly StashDurableCommand[];
 }
@@ -426,9 +431,11 @@ function bindingOrThrow(host: StashDurableHost): StashBinding {
 	return binding;
 }
 
-async function runStashCommand(call: StashDurableCommandCall): Promise<string> {
+async function runStashCommand(call: StashDurableCommandCall): Promise<string | { text: string; data: JsonValue }> {
 	const binding = bindingOrThrow(call.host);
 	const parts = call.args.trim().split(/\s+/).filter(Boolean);
+	// The browser sends structured data with no verb; `new` carries its own structured distill input.
+	if (call.data !== undefined && parts.length === 0) return browserAnswer(binding, call);
 	const verb = parts[0];
 	switch (verb) {
 		case "new":
@@ -543,10 +550,14 @@ async function captureNativeCreation(
 }
 
 async function pickupCommand(binding: StashBinding, call: StashDurableCommandCall, parts: string[]): Promise<string> {
-	const { conversation, context, invocationId } = call;
 	const id = parts[1];
 	if (!id) throw new Error("Usage: /stash get <id> [note]");
-	const note = parts.slice(2).join(" ").trim() || undefined;
+	return pickupStash(binding, call, id, parts.slice(2).join(" ").trim() || undefined);
+}
+
+/** Activate one record and queue its handover as the bound conversation's next input; the invocation keys the submission. */
+async function pickupStash(binding: StashBinding, call: StashDurableCommandCall, id: string, note: string | undefined): Promise<string> {
+	const { conversation, context, invocationId } = call;
 	const activated = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
 		transitionStash(dir, targetId, { action: "activate" }),
 	);
@@ -570,6 +581,10 @@ async function completeCommand(binding: StashBinding, context: Context, parts: s
 	const id = parts[1];
 	const outcome = parts.slice(2).join(" ");
 	if (!id || !outcome) throw new Error("Usage: /stash complete <id> <concrete outcome>");
+	return closeStash(binding, context, id, outcome);
+}
+
+async function closeStash(binding: StashBinding, context: Context, id: string, outcome: string): Promise<string> {
 	const transitioned = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
 		transitionStash(dir, targetId, { action: "close", outcome }),
 	);
@@ -584,6 +599,10 @@ async function lifecycleCommand(
 ): Promise<string> {
 	const id = parts[1];
 	if (!id || parts.length !== 2) throw new Error(`Usage: /stash ${verb} <id>`);
+	return changeStash(binding, context, verb, id);
+}
+
+async function changeStash(binding: StashBinding, context: Context, verb: "release" | "reopen" | "rotate", id: string): Promise<string> {
 	if (verb === "rotate") {
 		const rotated = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
 			rotateStash(dir, targetId),
@@ -594,6 +613,30 @@ async function lifecycleCommand(
 		transitionStash(dir, targetId, { action: verb }),
 	);
 	return verb === "release" ? `Released stash ${transitioned.id} back to open.` : `Reopened stash ${transitioned.id}.`;
+}
+
+/** The attached browser's requests: views and entries as data, effects as receipts; each effect is one deliberate control. */
+async function browserAnswer(binding: StashBinding, call: StashDurableCommandCall): Promise<{ text: string; data: JsonValue }> {
+	const request = readPanelRequest(call.data);
+	const signal = call.context.abortSignal;
+	const answer = await browserRequestAnswer(binding, call, request, signal);
+	const text = "view" in answer ? `${answer.view.entries.length}${answer.view.hasMore ? "+" : ""} ${answer.view.scope} stashes` : "entry" in answer ? `stash ${answer.entry.meta.id}` : answer.text;
+	return { text, data: JSON.parse(JSON.stringify(answer)) as JsonValue };
+}
+
+async function browserRequestAnswer(binding: StashBinding, call: StashDurableCommandCall, request: StashPanelRequest, signal: AbortSignal | undefined): Promise<StashPanelAnswer> {
+	switch (request.op) {
+		case "recent": return { op: "recent", view: await loadRecent(binding.storeDir, signal) };
+		case "archive": return { op: "archive", view: await loadArchive(binding.storeDir, request.query, request.cursor, undefined, signal) };
+		case "preview": {
+			const located = await resolveStash(binding.storeDir, request.id, signal);
+			if ("error" in located) throw readFailure(located);
+			return { op: "preview", entry: await loadSelectedPreview(binding.storeDir, { meta: { id: located.id } } as StashEntry, signal) };
+		}
+		case "pickup": return { op: "pickup", id: request.id, text: await pickupStash(binding, call, request.id, request.note) };
+		case "close": return { op: "close", id: request.id, text: await closeStash(binding, call.context, request.id, request.outcome) };
+		case "release": case "reopen": case "rotate": return { op: request.op, id: request.id, text: await changeStash(binding, call.context, request.op, request.id) };
+	}
 }
 
 async function capacityCommand(
@@ -697,6 +740,7 @@ export function stashDurableContribution(
 		name: "stash",
 		source,
 		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
+		panel: { version: 1, entry: "./operator-panel.ts", export: "operatorPanel", command: "stash" },
 		create(host) {
 			disposeFactorySettings();
 			const publicationOptions = {
@@ -709,7 +753,7 @@ export function stashDurableContribution(
 		commands: [
 			{
 				name: "stash",
-				description: "Create, get, complete, release, reopen, rotate, or inspect stashed efforts",
+				description: "Create, get, complete, release, reopen, rotate, or inspect stashed efforts; the attached browser sends structured requests",
 				run: runStashCommand,
 			},
 		],

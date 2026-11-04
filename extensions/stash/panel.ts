@@ -183,7 +183,7 @@ const HELP_PARAGRAPHS = [
 	"What this is",
 	"A browser over saved efforts. Select a row, then use a labelled control. Create an effort with /stash new <hint>.",
 	"What it does",
-	"Pickup activates an open or active stash and delivers its handover. Note asks for an optional operator note: cancelling that dialog returns here without pickup; an explicitly empty answer requests a plain pickup.",
+	"Pick up activates an open or active stash and delivers its handover. Pick up + note asks for an optional operator note: cancelling that dialog returns here without pickup; an explicitly empty answer requests a plain pickup. Copy command copies the resume command for a new session.",
 	"Actions offers the transitions the store permits: Reopen for closed records, Release for active records, Rotate behind a confirmation. Closed records never offer pickup.",
 	"Recent filters the newest preloaded records. Search archive searches full supported bodies through the same bounded search as stash_list. Continue stays available after an empty bounded page. Refresh restarts a stale query.",
 	"Closing",
@@ -223,9 +223,9 @@ function controlList(state: ControlState): Array<[string, PanelAction]> {
 	if (state.archive && state.hasNext && !state.stale) controls.push(["Continue", "continue"]);
 	const mutable = state.readable && !state.stale;
 	if (mutable) controls.push(["Actions", "manage"]);
-	if (state.pickable) controls.push(["Pickup", "pickup"], ["Note", "note"]);
+	if (state.pickable) controls.push(["Pick up", "pickup"], ["Pick up + note", "note"]);
 	if (mutable && state.active) controls.push(["Complete", "complete"]);
-	controls.push(["Copy", "copy"], ["Page up", "pageUp"], ["Page down", "pageDown"], ["Help", "help"]);
+	controls.push(["Copy command", "copy"], ["Page up", "pageUp"], ["Page down", "pageDown"], ["Help", "help"]);
 	return controls;
 }
 
@@ -257,6 +257,8 @@ export class StashPanel {
 	private filtering = false;
 	private selected = 0;
 	private listScroll = 0;
+	/** Set by an explicit selection; the next render scrolls the list to the selected row once. */
+	private reveal = true;
 	private previewScroll: number;
 	private detail: boolean;
 	private help = false;
@@ -355,9 +357,11 @@ export class StashPanel {
 		);
 	}
 
+	/** Explicit selection reveals its row; wheel scrolling never changes the selection. */
 	private select(index: number): void {
 		this.selected = Math.max(0, Math.min(this.filtered.length - 1, index));
 		this.previewScroll = 0;
+		this.reveal = true;
 		this.loadSelected();
 		this.bump();
 	}
@@ -598,10 +602,15 @@ export class StashPanel {
 		return `${index === this.selected ? "›" : " "} ${entryMark(entry)} ${entryDate(entry.meta.created)} ${flat(entry.meta.title)}`;
 	}
 
-	private keepSelectionVisible(): void {
+	/** Clamp the list viewport to the current size; reveal the selection only after an explicit selection. */
+	private clampList(): void {
 		const visible = Math.max(1, Math.floor(this.bodyRows / (this.split ? 1 : 2)));
-		if (this.selected < this.listScroll) this.listScroll = this.selected;
-		if (this.selected >= this.listScroll + visible) this.listScroll = this.selected - visible + 1;
+		if (this.reveal) {
+			if (this.selected < this.listScroll) this.listScroll = this.selected;
+			if (this.selected >= this.listScroll + visible) this.listScroll = this.selected - visible + 1;
+			this.reveal = false;
+		}
+		this.listScroll = Math.max(0, Math.min(this.listScroll, Math.max(0, this.filtered.length - visible)));
 	}
 
 	private listRow(row: number, y: number, width: number, source: string[]): string {
@@ -610,7 +619,8 @@ export class StashPanel {
 		const second = !this.split && row % 2 === 1;
 		const entry = entries[index];
 		if (!entry) return row === 0 && entries.length === 0 ? (source[0] ?? "") : "";
-		if (!second) this.hits.push({ x: 2, y, width, id: entry.meta.id });
+		// Both lines of a stacked row select it; a click never acts.
+		this.hits.push({ x: 2, y, width, id: entry.meta.id });
 		return this.listCell(entry, index, second);
 	}
 
@@ -649,7 +659,7 @@ export class StashPanel {
 		const source = this.help ? this.helpSource(inner) : this.detailSource(this.split ? panes.previewWidth : inner);
 		const offset = this.help ? this.helpScroll : this.previewScroll;
 		if (!this.help) this.previewScroll = Math.min(this.previewScroll, Math.max(0, source.length - this.bodyRows));
-		this.keepSelectionVisible();
+		this.clampList();
 		const framed = (value: string) => theme.bg("customMessageBg", `│ ${fitText(value, inner)} │`);
 		const out = [fitText(`┌─ ${this.headerText()}`, width)];
 		if (showStatus) out.push(framed(this.statusText()));

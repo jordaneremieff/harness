@@ -668,23 +668,23 @@ test("issues one capacity notice per threshold crossing and re-arms through the 
 
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	const reset = await command.run({
+	const reset = String(await command.run({
 		args: "capacity reset",
 		conversation: h.root,
 		context,
 		host: h.host,
 		invocationId: "capacity-reset",
 		harness: h.harness,
-	});
+	}));
 	assert.match(reset, /episode reset to 2/u);
-	const status = await command.run({
+	const status = String(await command.run({
 		args: "capacity",
 		conversation: h.root,
 		context,
 		host: h.host,
 		invocationId: "capacity-status",
 		harness: h.harness,
-	});
+	}));
 	assert.match(status, /Episode 2/u);
 
 	h.faux.setResponses([fauxAssistantMessage("fourth"), fauxAssistantMessage("fifth")]);
@@ -753,7 +753,7 @@ function creationInput(h: TestHarness): DistillInput {
 async function admitCreation(h: TestHarness, invocationId = "creation-1", data: JsonValue = { ...creationInput(h) }) {
 	const command = h.contribution.commands?.[0];
 	assert.ok(command);
-	const text = await command.run({
+	const text = String(await command.run({
 		args: "new",
 		data,
 		conversation: h.root,
@@ -761,7 +761,7 @@ async function admitCreation(h: TestHarness, invocationId = "creation-1", data: 
 		host: h.host,
 		invocationId,
 		harness: h.harness,
-	});
+	}));
 	const taskId = Number(/task (\d+)/u.exec(text)?.[1]) as Durable.TaskId;
 	assert.ok(taskId, text);
 	return taskId;
@@ -891,7 +891,7 @@ test("native retries bind the original credential-bearing hint without retaining
 			}),
 		context,
 	);
-	assert.match(await command.run(call), /Redaction notice: 2.*provider token/);
+	assert.match(String(await command.run(call)), /Redaction notice: 2.*provider token/);
 	assert.deepEqual(h.launches[1], h.launches[0]);
 	const input = readDistillInput(h.launches[0].command.data);
 	assert.equal(input.redactions.count, 2);
@@ -1181,6 +1181,37 @@ test("reports lifecycle failures from the command without changing the store", {
 	);
 });
 
+test("serves the attached browser's structured requests beside the text verbs", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t);
+	capacityOff(t);
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	assert.deepEqual(h.contribution.panel, { version: 1, entry: "./operator-panel.ts", export: "operatorPanel", command: "stash" });
+	const written = await writeStash(h.storeDir, { title: "Browser target", summary: "Body for the browser." });
+	const call = (data: unknown, invocationId = "browse") => ({ args: "", data: data as never, conversation: h.root, context, host: h.host, invocationId, harness: h.harness });
+	const answer = async <T,>(input: ReturnType<typeof call>) => (await command.run(input)) as unknown as T;
+	const recent = await answer<{ text: string; data: { op: string; view: { entries: Array<{ meta: { id: string; state: string } }>; scope: string } } }>(call({ op: "recent" }));
+	assert.equal(recent.data.op, "recent");
+	assert.deepEqual(recent.data.view.entries.map((entry) => entry.meta.id), [written.record.id]);
+	assert.match(recent.text, /1 recent stashes/);
+	const preview = await answer<{ data: { entry: { preview: string } } }>(call({ op: "preview", id: written.record.id }));
+	assert.match(preview.data.entry.preview, /Body for the browser/);
+	const archive = await answer<{ data: { view: { scope: string; entries: unknown[] } } }>(call({ op: "archive", query: "browser" }));
+	assert.equal(archive.data.view.scope, "archive");
+	assert.equal(archive.data.view.entries.length, 1);
+	const closed = await answer<{ data: { text: string } }>(call({ op: "close", id: written.record.id, outcome: "Done." }));
+	assert.match(closed.data.text, /Closed stash/);
+	assert.match((await answer<{ data: { text: string } }>(call({ op: "reopen", id: written.record.id }))).data.text, /Reopened/);
+	h.faux.setResponses([fauxAssistantMessage("picked up")]);
+	const picked = await answer<{ data: { text: string } }>(call({ op: "pickup", id: written.record.id, note: "browser note" }, "pickup-browser"));
+	assert.match(picked.data.text, /queued for pickup \(submission \d+\)/);
+	await h.harness.waitForIdle(context);
+	assert.match(await modelText(h.root), /browser note/);
+	await assert.rejects(command.run(call({ op: "steal" })), /not supported/);
+	await assert.rejects(command.run(call({ op: "close", id: written.record.id, outcome: "" })), /concrete outcome/);
+	assert.match(String(await command.run({ ...call(undefined), args: "help" })), /session-continuity handovers/);
+});
+
 test("keys pickup submissions by invocation identity", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t);
 	capacityOff(t);
@@ -1196,12 +1227,12 @@ test("keys pickup submissions by invocation identity", { timeout: 30000 }, async
 		invocationId,
 		harness: h.harness,
 	});
-	const first = await command.run(call("pickup-1"));
+	const first = String(await command.run(call("pickup-1")));
 	const firstId = /submission (\d+)/u.exec(first)?.[1];
 	assert.ok(firstId, first);
-	const repeat = await command.run(call("pickup-1"));
+	const repeat = String(await command.run(call("pickup-1")));
 	assert.equal(/submission (\d+)/u.exec(repeat)?.[1], firstId, "a retried invocation reuses its submission");
-	const second = await command.run(call("pickup-2"));
+	const second = String(await command.run(call("pickup-2")));
 	assert.notEqual(/submission (\d+)/u.exec(second)?.[1], firstId, "a distinct invocation is a distinct request");
 	await h.harness.waitForIdle(context);
 });

@@ -783,10 +783,21 @@ submission is keyed by the command invocation identity, so a retry of one
 invocation reuses its submission while a distinct invocation is a distinct
 request.
 
+The same command serves the attached terminal's browser: with structured
+`data` and no verb it validates one request of the finite union in
+`panel-protocol.ts` and answers `{ text, data }`. `recent`, `archive`, and
+`preview` answer views and entries through the shared `browser-views.ts`
+reads; `pickup`, `close`, `release`, `reopen`, and `rotate` run the same
+operations as the verbs and answer their receipt text. `pickup` is the only
+request that starts conversation work, with the same invocation-keyed
+submission as `get`. The contribution advertises `./operator-panel.ts` as its
+`panel` descriptor bound to this command. A malformed request is an error.
+
 Durable differences from the ordinary entrypoint:
 
-- There is no TUI browser and no `ctrl+alt+s` shortcut. Discovery is
-  `stash_list` and the explicit `get` and lifecycle verbs.
+- A Durable session has no `/stash` overlay and no `ctrl+alt+s` shortcut; the
+  attached Agent terminal supplies the browser through the panel route above.
+  Model discovery is `stash_list` and the explicit `get` and lifecycle verbs.
 - The source snapshot is committed Durable model context rather than Pi's
   persisted-session projection. Both paths publish through an independent
   native worker with the same independent ownership contract. Native callers do
@@ -846,13 +857,15 @@ The overlay is available at every terminal width. It never removes an operation 
 
 Rows show the date, title, lifecycle glyph (`○` open, `◐` active, `●` closed, `◈` unknown), lifecycle label, project, and branch. The detail view adds the full id, session, artifact path, timestamps, outcome, and tags, and wraps long lines so no text is lost to horizontal truncation. Stored terminal and bidi controls render as inert escape text.
 
-A row click selects only. Labelled controls act: **Prev**, **Next**, **Detail**, **Recent**, **Search archive**, **Filter**, **Refresh**, **Continue**, **Actions**, **Pickup**, **Note**, **Complete**, **Copy**, **Page up**, **Page down**, **Help**, and **Close**. The wheel scrolls the pane under the pointer. Hit regions reset on resize, filter or scope change, replacement, hide, and disposal, so a stale click never reaches the row that now occupies an old position.
+A row click selects only; in the stacked layout both lines of a row are its hit area. Labelled controls act: **Prev**, **Next**, **Detail**, **Recent**, **Search archive**, **Filter**, **Refresh**, **Continue**, **Actions**, **Pick up**, **Pick up + note**, **Complete**, **Copy command**, **Page up**, **Page down**, **Help**, and **Close**. The wheel scrolls the pane under the pointer: over the list it moves the list viewport without changing the selection or activating anything, over the preview it scrolls the preview. An explicit selection (keys or click) reveals its row; a resize clamps the viewport without undoing an independent scroll. Hit regions reset on resize, filter or scope change, replacement, hide, and disposal, so a stale click never reaches the row that now occupies an old position.
 
 Keys remain as alternatives: Up/Down select, `b`/Space page, `/` filters, `d` detail, `r` Recent, `s` Search archive, `n` Continue, `f` Refresh, Enter and `a` pick up (with a note for `a`), Tab opens Actions, `o` completes an active effort, `c` copies the resume command, `h` opens help, Escape goes back and then closes.
 
-The visible actions follow the real lifecycle. Pickup and Note appear for open and active records only. A closed record offers Actions (guarded Reopen, then Rotate); Enter and `a` on it open that dialog instead of a pickup the store would refuse. Active records offer Complete and, in Actions, Release. A record with an unknown state offers no lifecycle action. The store remains the final authority on every transition. Note cancellation returns to the browser with no activation and no message; an explicitly submitted empty note is one deliberate plain pickup.
+The visible actions follow the real lifecycle. Pick up and Pick up + note appear for open and active records only. A closed record offers Actions (guarded Reopen, then Rotate); Enter and `a` on it open that dialog instead of a pickup the store would refuse. Active records offer Complete and, in Actions, Release. A record with an unknown state offers no lifecycle action. The store remains the final authority on every transition. Note cancellation returns to the browser with no activation and no message; an explicitly submitted empty note is one deliberate plain pickup. Copy command is a client clipboard action and changes no record.
 
 The component derives its row budget from the host TUI and the overlay height margin. Short terminals pack the controls into fewer rows with Close first.
+
+The loop behind the browser (`browser-flow.ts`) and the views it shows (`browser-views.ts`) are shared by two hosts. The ordinary `/stash` command runs it over direct store operations and the Pi dialogs. The attached Agent terminal runs it through `operator-panel.ts`, a presentation-only module that routes every read and effect through the host's `stash` contribution command (see `docs/conventions/operator-panels.md` and the Durable section below), with the same confirmations. The ordinary statusline footer menu lists `/stash` as a destination because this extension announces it on `harness:operator-destination:publish`.
 
 ## Files
 
@@ -868,6 +881,10 @@ The component derives its row budget from the host TUI and the overlay height ma
 - `read-result.ts`: bounded terminal-safe artifact text with its complete-file digest on both tool entrypoints.
 - `format.ts`: record shape, lifecycle metadata, and Markdown/frontmatter codec.
 - `panel.ts`: interactive browser state, hit regions, and rendering.
+- `browser-views.ts`: the recent and archive views and the on-demand preview read, shared by both hosts.
+- `browser-flow.ts`: the browse-and-act loop with its navigation, confirmations, and effects, shared by both hosts.
+- `panel-protocol.ts`: the native route's request union and answer readers.
+- `operator-panel.ts`: the attached-terminal browser module over `panel.ts`, the loop, and the request route.
 - `display.ts`: pure presentation module for the tool-card renderers; `tool-display.ts` publishes the same records on the ordinary bus.
 - `pickup.ts`: self-contained pickup message, operator amendment block, and already-active ownership handoff.
 - `distill.ts`: projection serialization, bounded redacted snapshots, prompt building, and payload validation.
