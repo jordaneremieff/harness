@@ -2,8 +2,9 @@
 
 This extension replaces Pi's default footer with a two-line statusline for
 long-running agentic sessions. Line 1 carries session metrics; line 2 carries
-project context and whatever extension statuses other extensions publish
-through `ctx.ui.setStatus()`.
+a command-discovery control, project context, and whatever extension statuses
+other extensions publish through `ctx.ui.setStatus()`. Two overlays complete
+the footer: a command selector and a reader for the complete status map.
 
 ## Surfaces
 
@@ -11,11 +12,67 @@ through `ctx.ui.setStatus()`.
 |---|---|---|
 | footer | `ctx.ui.setFooter` | Two-line statusline, installed on `session_start` in TUI mode only. |
 | `/statusline` | command | Toggle between the custom statusline and Pi's default footer. |
+| `/commands` | command | Open the command selector: find a command by name or description, read it, then run it or prepare it as a draft. |
+| `/statuses` | command | Open the read-only reader for the complete extension status map. |
+| Commands cell | footer click target | In fullscreen, the leading `[Commands]` cell opens the selector. |
+| `+N` cell | footer click target | In fullscreen, the hidden-status count opens the status reader. |
 
 No extension-specific configuration is required. The custom footer starts
 enabled; use `/statusline` to switch to Pi's default footer or back.
 There are no tools, timers beyond one footer-owned tick, background work, or
 configuration overlays.
+
+## Command selector
+
+The selector lists `pi.getCommands()`: extension commands, prompt templates,
+and skills under their exact invocation names, including collision suffixes
+such as `review:1`. Pi's `sourceInfo` is the provenance shown for each entry;
+ownership is never inferred from names or paths. Builtin interactive commands
+such as `/model` are not in that inventory and are not offered.
+
+The list filters as you type, matching every query word against the name or
+description. Enter or a row click opens the entry's detail: description,
+provenance, an argument editor (labelled Direction for `/evo`), and labelled
+actions. Selection never executes anything.
+
+- **Run** (extension commands): the selector closes first, so the command's own
+  UI can open. The inventory is then re-read and the exact registration is
+  compared field by field; only a still-present, unchanged registration is sent
+  through `pi.sendUserMessage("/name args", { expandPromptTemplates: true })`.
+  Pi runs extension commands immediately, even while the agent is busy, without
+  a model acknowledgement. A registration that disappeared or changed is
+  refused with a notification, and the selector reopens with the refreshed
+  list, so a stale selection never becomes a model prompt.
+- **Insert into draft** (prompt templates and skills): the invocation text is
+  prepared in the editor, never sent. An empty editor receives it directly. When
+  a draft exists the selector asks: *Insert at cursor* pastes through Pi's
+  paste handling and keeps the draft; *Replace draft* keeps the removed draft
+  recoverable through the *Restore replaced draft* entry at the top of the list;
+  *Keep draft* returns to the command.
+- **Back** returns to the list with the query, selection, and typed arguments
+  kept; **Close** and Escape leave without an action. Typed arguments and the
+  query survive reopening within the session.
+
+The overlay rebuilds its hit regions on every render and ignores pointer events
+whose width differs from the rendered width, so a click after a resize cannot
+act on a stale row. Session shutdown closes an open selector without dispatch.
+
+## Status reader
+
+The reader shows every entry of `footerData.getExtensionStatuses()` with the
+owner key as the label and the value as opaque text: terminal sequences removed,
+control characters spaced, nothing parsed and no severity inferred. Close and
+Refresh are visible controls; Refresh re-reads the map. The reader needs the
+installed statusline footer, which supplies the status provider; with the
+footer disabled, `/statuses` says so.
+
+## Pointer and mode boundary
+
+Pi delivers mouse events to footer components only in fullscreen mode. There
+the leading cell renders as `[Commands]` and the `+N` cell is a click target.
+In regular mode the mouse belongs to the terminal, so the leading cell names
+the keyboard route (`/commands`) and claims no click. Both commands work in
+every TUI mode; outside the TUI they explain the requirement.
 
 ## Line 1: session metrics
 
@@ -86,12 +143,15 @@ the branch with an ellipsis or omits it. If necessary, it also shortens the last
 path component from the left. Only when complete extension statuses
 still do not fit with a one-character project label does it drop statuses from
 the right. A `+N` cell reports how many statuses are hidden. At extreme widths,
-that count takes priority over the project label and separator; a viewport too
-small for the count shows only its fitting prefix. Both lines remain unchanged
-when all segments fit. `truncateToWidth` is the final guard on both lines.
+the command control and then the count take priority over the project label
+and separator; a viewport too small for the control shows only its fitting
+prefix, and a truncated count is not a click target. Both lines remain
+unchanged when all segments fit. `truncateToWidth` is the final guard on both
+lines.
 
-## Line 2: project + git + extension statuses
+## Line 2: commands + project + git + extension statuses
 
+The leading cell is the command control described above; it is never shed.
 The project label is the home-relative working directory (`~/work/app`,
 following Pi's footer convention) plus the git branch from
 `footerData.getGitBranch()`. Extension statuses come from
@@ -136,9 +196,14 @@ set the window title, write the clipboard, or emit a hyperlink.
 
 ## Files
 
-- `index.ts`: registration, footer factory, tick ownership, `/statusline`.
+- `index.ts`: registration, footer factory, pointer targets, tick ownership,
+  `/statusline`, `/commands`, and `/statuses`.
+- `commands.ts`: registration identity, filtering, guarded dispatch, draft
+  preparation, and the selector component.
+- `statuses.ts`: opaque status entries and the reader component.
 - `metrics.ts`: session usage aggregation and bounded append catch-up.
-- `format.ts`: pure formatting, cache telemetry, and width-shedding composition.
+- `format.ts`: pure formatting, cache telemetry, and width-shedding composition
+  with the control and count spans used for hit-testing.
 - `*.test.mts`: unit and entrypoint drive tests.
 
 ## Verification

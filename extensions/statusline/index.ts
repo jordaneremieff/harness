@@ -1,22 +1,33 @@
 /**
- * Statusline: a two-line session footer.
+ * Statusline: a two-line session footer with command discovery.
  *
  * Line 1: model [<level>] │ context bar │ tokens │ cost │ duration │ cache telemetry
- * Line 2: folder (branch) │ extension statuses
+ * Line 2: Commands │ folder (branch) │ extension statuses │ +N
  *
  * Installed only in TUI mode; setFooter is a documented no-op elsewhere.
  * One unref'd 5s tick owns wall-clock freshness for duration while idle; it is
  * cleared on dispose, on session_shutdown, and before any reinstall. Toggle
- * with /statusline.
+ * with /statusline. In fullscreen the Commands cell and the +N cell are click
+ * targets; /commands and /statuses are the keyboard routes in every TUI mode.
  */
 
 import type {
 	ExtensionAPI,
 	ExtensionContext,
 	ReadonlyFooterDataProvider,
+	SlashCommandInfo,
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import {
+	CommandsPanel,
+	commandLine,
+	createSelectorState,
+	dispatchExtensionCommand,
+	prepareDraft,
+	restoreDraft,
+	type CommandsPanelResult,
+} from "./commands.ts";
 import {
 	buildBar,
 	composeLine1,
@@ -28,8 +39,10 @@ import {
 	sanitizeDisplay,
 	type Fg,
 	type Line1Parts,
+	type Line2Layout,
 } from "./format.ts";
 import { MetricsCache, type SessionMetrics } from "./metrics.ts";
+import { StatusPanel } from "./statuses.ts";
 
 const TICK_MS = 5_000;
 /** Full reset bounds each label and status cell's own SGR state. */
@@ -97,8 +110,9 @@ function buildLine2(
 	fg: Fg,
 	sep: string,
 	width: number,
-): string {
-	// --- Line 2: project + git + extension statuses ---
+	pointer: boolean,
+): Line2Layout {
+	// --- Line 2: command control + project + git + extension statuses ---
 	const branch = footerData.getGitBranch();
 	const project = {
 		folder: sanitizeDisplay(folderLabel(ctx.cwd || process.cwd(), process.env.HOME)),
@@ -111,29 +125,28 @@ function buildLine2(
 		const clean = sanitizeDisplay(text);
 		if (clean) statuses.push(`${RESET}${clean}${RESET}`);
 	}
-	const line = composeLine2(project, statuses, sep, width, visibleWidth, fg);
+	// Fullscreen delivers clicks to the footer, so the cell reads as a control;
+	// regular mode leaves the mouse to the terminal, so it names the command.
+	const control = pointer ? fg("accent", "[Commands]") : fg("dim", "/commands");
+	const layout = composeLine2(project, statuses, sep, width, visibleWidth, fg, control);
 
 	// truncateToWidth is ANSI-aware and carries whole sequences, so a sanitized
 	// line cannot come back cut in half; it only needs a closing reset when it
 	// did not truncate and add one itself.
-	const body = truncateToWidth(line, width);
-	return body.endsWith(RESET) ? body : `${body}${RESET}`;
+	const body = truncateToWidth(layout.line, width);
+	return { ...layout, line: body.endsWith(RESET) ? body : `${body}${RESET}` };
 }
 
-function renderLines(
-	width: number,
-	ctx: ExtensionContext,
-	footerData: ReadonlyFooterDataProvider,
-	fg: Fg,
-	sep: string,
-	attachedAt: number,
-	metrics: SessionMetrics,
-	usage: ReturnType<ExtensionContext["getContextUsage"]>,
-): string[] {
-	return [
-		truncateToWidth(buildLine1(ctx, fg, sep, width, attachedAt, metrics, usage), width),
-		buildLine2(ctx, footerData, fg, sep, width),
-	];
+/** Which footer target a line-2 click lands on, if any. */
+function footerTarget(layout: Line2Layout, x: number): "commands" | "statuses" | undefined {
+	const { control, overflow } = layout;
+	if (control && x >= control.x && x < control.x + control.width) return "commands";
+	if (overflow && x >= overflow.x && x < overflow.x + overflow.width) return "statuses";
+	return undefined;
+}
+
+function isFooterClick(event: TuiMouseEvent): boolean {
+	return event.type === "click" && event.button === "left" && event.y === 1;
 }
 
 export default function registerStatusline(pi: ExtensionAPI) {
@@ -145,6 +158,13 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	const metrics = new MetricsCache();
 	let contextUsage: ReturnType<ExtensionContext["getContextUsage"]>;
 	let requestRender = () => {};
+	/** The installed footer's status provider; the keyboard route reads through it. */
+	let readStatuses: (() => ReadonlyMap<string, string>) | undefined;
+	const selector = createSelectorState();
+	let replacedDraft: string | undefined;
+	/** Open panels, closed on session shutdown so no callback outlives its session. */
+	const openPanels = new Set<() => void>();
+	let generation = 0;
 
 	function refresh(): void {
 		if (!current || !enabled) return;
@@ -163,6 +183,97 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		}
 	};
 
+	function closePanels(): void {
+		for (const close of [...openPanels]) close();
+		openPanels.clear();
+	}
+
+	/** Show the selector as an overlay and resolve with the operator's choice. */
+	async function showSelector(ctx: ExtensionContext, commands: SlashCommandInfo[]): Promise<CommandsPanelResult> {
+		let close: (() => void) | undefined;
+		const result = await ctx.ui.custom<CommandsPanelResult>(
+			(tui, theme, _keybindings, done) => {
+				const panel = new CommandsPanel({
+					commands,
+					theme,
+					rows: tui.terminal.rows,
+					state: selector,
+					draftPresent: () => ctx.ui.getEditorText().length > 0,
+					replacedDraftPresent: () => replacedDraft !== undefined,
+					done,
+				});
+				close = () => panel.close();
+				openPanels.add(close);
+				return panel;
+			},
+			{ overlay: true, overlayOptions: { width: "80%", minWidth: 40, maxHeight: "85%", anchor: "center" } },
+		);
+		if (close) openPanels.delete(close);
+		return result;
+	}
+
+	/** Act on a selection; "retry" reopens the selector with a refreshed inventory. */
+	function settleSelection(ctx: ExtensionContext, result: NonNullable<CommandsPanelResult>): "done" | "retry" {
+		if (result.kind === "restore-draft") {
+			if (replacedDraft !== undefined) restoreDraft(ctx.ui, replacedDraft);
+			replacedDraft = undefined;
+			return "done";
+		}
+		if (result.kind === "prepare") {
+			const outcome = prepareDraft(ctx.ui, commandLine(result.command.name, result.args), result.placement);
+			if (outcome.replaced !== undefined && outcome.replaced.length > 0) {
+				replacedDraft = outcome.replaced;
+				ctx.ui.notify("Draft replaced. Commands offers Restore replaced draft.", "info");
+			}
+			return "done";
+		}
+		if (dispatchExtensionCommand(pi, result.command, result.args).kind === "sent") return "done";
+		ctx.ui.notify(`/${result.command.name} is no longer registered as selected. The list was refreshed.`, "warning");
+		return "retry";
+	}
+
+	/**
+	 * Open the selector, dispatch the chosen action, and reopen on a refused
+	 * dispatch so the operator sees the refreshed inventory. Every dispatch
+	 * happens after the panel has resolved, so a command's own UI can open.
+	 */
+	async function openCommands(ctx: ExtensionContext): Promise<void> {
+		if (ctx.mode !== "tui") {
+			if (ctx.hasUI) ctx.ui.notify("Commands needs the terminal UI.", "info");
+			return;
+		}
+		const started = generation;
+		for (;;) {
+			const commands = pi.getCommands().map((command) => ({ ...command, sourceInfo: { ...command.sourceInfo } }));
+			const result = await showSelector(ctx, commands);
+			if (result === undefined || started !== generation) return;
+			if (settleSelection(ctx, result) === "done") return;
+		}
+	}
+
+	async function openStatuses(ctx: ExtensionContext): Promise<void> {
+		if (ctx.mode !== "tui") {
+			if (ctx.hasUI) ctx.ui.notify("Statuses needs the terminal UI.", "info");
+			return;
+		}
+		const read = readStatuses;
+		if (!read) {
+			ctx.ui.notify("Enable the statusline (/statusline) to read extension statuses.", "info");
+			return;
+		}
+		let close: (() => void) | undefined;
+		await ctx.ui.custom<void>(
+			(tui, theme, _keybindings, done) => {
+				const panel = new StatusPanel({ theme, rows: tui.terminal.rows, read, done });
+				close = () => panel.close();
+				openPanels.add(close);
+				return panel;
+			},
+			{ overlay: true, overlayOptions: { width: "80%", minWidth: 30, maxHeight: "85%", anchor: "center" } },
+		);
+		if (close) openPanels.delete(close);
+	}
+
 	function install(ctx: ExtensionContext) {
 		if (ctx.mode !== "tui") return;
 		current = ctx;
@@ -171,22 +282,47 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		ctx.ui.setFooter((tui, theme, footerData) => {
 			const fg: Fg = (color, text) => theme.fg(color as ThemeColor, text);
 			const sep = theme.fg("dim", " │ ");
+			const pointer = tui.mode === "fullscreen";
 			const unsub = footerData.onBranchChange(() => tui.requestRender());
 			// Pi disposes a replaced footer, but own the tick at every boundary so
 			// a reload or rapid toggle can never accumulate intervals.
 			stopTick();
 			requestRender = () => tui.requestRender();
+			readStatuses = () => footerData.getExtensionStatuses();
 			tick = setInterval(refresh, TICK_MS);
 			tick.unref?.();
+			let layout: Line2Layout | undefined;
+			let renderedWidth = -1;
+			const open = (target: "commands" | "statuses") => {
+				const context = current ?? ctx;
+				void (target === "commands" ? openCommands(context) : openStatuses(context));
+			};
 			return {
 				dispose() {
 					unsub();
 					stopTick();
 					requestRender = () => {};
+					readStatuses = undefined;
+					layout = undefined;
 				},
-				invalidate() {},
+				invalidate() {
+					layout = undefined;
+					renderedWidth = -1;
+				},
 				render(width: number): string[] {
-					return renderLines(width, ctx, footerData, fg, sep, attachedAt, metrics.value, contextUsage);
+					renderedWidth = width;
+					layout = buildLine2(ctx, footerData, fg, sep, width, pointer);
+					return [
+						truncateToWidth(buildLine1(ctx, fg, sep, width, attachedAt, metrics.value, contextUsage), width),
+						layout.line,
+					];
+				},
+				handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+					if (!pointer || !layout || event.width !== renderedWidth || !isFooterClick(event)) return undefined;
+					const target = footerTarget(layout, event.x);
+					if (!target) return undefined;
+					open(target);
+					return { handled: true };
 				},
 			};
 		});
@@ -198,9 +334,12 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		generation += 1;
+		closePanels();
 		stopTick();
 		current = undefined;
 		requestRender = () => {};
+		readStatuses = undefined;
 	});
 
 	pi.on("turn_end", (_event, ctx) => { if (ctx.mode === "tui") { current = ctx; refresh(); } });
@@ -225,6 +364,20 @@ export default function registerStatusline(pi: ExtensionAPI) {
 			if (ctx.hasUI) {
 				ctx.ui.notify(enabled ? "Statusline enabled" : "Statusline disabled (default footer restored)", "info");
 			}
+		},
+	});
+
+	pi.registerCommand("commands", {
+		description: "Find a command by name or description, read it, then run it or prepare it as a draft",
+		handler: async (_args, ctx) => {
+			await openCommands(ctx);
+		},
+	});
+
+	pi.registerCommand("statuses", {
+		description: "Read the complete extension status map behind the footer",
+		handler: async (_args, ctx) => {
+			await openStatuses(ctx);
 		},
 	});
 }

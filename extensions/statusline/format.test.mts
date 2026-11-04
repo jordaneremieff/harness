@@ -191,10 +191,10 @@ describe("sanitizeDisplay invariants", () => {
 
 describe("folderLabel", () => {
 	it("abbreviates paths under home and passes others through", () => {
-		assert.equal(folderLabel("/Users/x/work/app", "/Users/x"), "~/work/app");
-		assert.equal(folderLabel("/Users/x", "/Users/x"), "~");
-		assert.equal(folderLabel("/opt/tool", "/Users/x"), "/opt/tool");
-		assert.equal(folderLabel("/Users/x2/other", "/Users/x"), "/Users/x2/other");
+		assert.equal(folderLabel("/people/x/work/app", "/people/x"), "~/work/app");
+		assert.equal(folderLabel("/people/x", "/people/x"), "~");
+		assert.equal(folderLabel("/opt/tool", "/people/x"), "/opt/tool");
+		assert.equal(folderLabel("/people/x2/other", "/people/x"), "/people/x2/other");
 		assert.equal(folderLabel("/work/app", undefined), "/work/app");
 	});
 });
@@ -242,8 +242,9 @@ describe("composeLine1", () => {
 
 describe("composeLine2", () => {
 	const project = { folder: "~/app", branch: "main" };
+	const strip = (text: string) => text.replace(/\x1b\[[0-9;:]*m/g, "");
 	function line(width: number, statuses = ["one", "two", "three"], label = project) {
-		return composeLine2(label, statuses, " │ ", width, visibleWidth, plain).replace(/\x1b\[[0-9;:]*m/g, "");
+		return strip(composeLine2(label, statuses, " │ ", width, visibleWidth, plain).line);
 	}
 
 	it("preserves the complete project and statuses when they fit", () => {
@@ -288,12 +289,54 @@ describe("composeLine2", () => {
 		const label = { folder: "\x1b[8;41m/work/文件/👩‍💻project", branch: "\x1b[5m主题" };
 		const statuses = ["\x1b[31mready\x1b[0m", "界面", "last"];
 		for (let width = 0; width <= 140; width++) {
-			const rendered = composeLine2(label, statuses, " │ ", width, visibleWidth, plain);
+			const rendered = composeLine2(label, statuses, " │ ", width, visibleWidth, plain).line;
 			assert.ok(visibleWidth(rendered) <= width, `width ${width}`);
-			assert.doesNotMatch(rendered.replace(/\x1b\[[0-9;:]*m/g, ""), /\x1b|\ufffd/);
+			assert.doesNotMatch(strip(rendered), /\x1b|\ufffd/);
 			if (width >= 24) assert.ok(rendered.includes(statuses[0]), "status color survives whole");
 		}
 		const noBranch = composeLine2({ folder: "/work/very-long-path/sample" }, ["ready"], " │ ", 16, visibleWidth, plain);
-		assert.equal(noBranch.replace(/\x1b\[[0-9;:]*m/g, ""), "…/sample │ ready");
+		assert.equal(strip(noBranch.line), "…/sample │ ready");
+	});
+
+	describe("control cell", () => {
+		const control = "\x1b[36m[Commands]\x1b[39m";
+		function layout(width: number, statuses = ["one", "two", "three"]) {
+			return composeLine2(project, statuses, " │ ", width, visibleWidth, plain, control);
+		}
+
+		it("leads the line and reports its span", () => {
+			const result = layout(200);
+			assert.equal(strip(result.line), "[Commands] │ ~/app (main) │ one │ two │ three");
+			assert.deepEqual(result.control, { x: 0, width: 10 });
+			assert.equal(result.overflow, undefined, "no count cell when nothing is hidden");
+		});
+
+		it("reports the count cell span after shedding", () => {
+			const result = layout(28);
+			const text = strip(result.line);
+			assert.match(text, /^\[Commands\] │ .* │ \+\d$/);
+			assert.ok(result.overflow, "count span present");
+			assert.equal(result.overflow.hidden, Number(/\+(\d)$/.exec(text)?.[1]));
+			assert.equal(result.overflow.x + result.overflow.width, visibleWidth(result.line));
+			assert.equal(strip(result.line).slice(result.overflow.x), `+${result.overflow.hidden}`);
+		});
+
+		it("outranks the project and keeps the count at extreme widths", () => {
+			assert.equal(strip(layout(15).line), "[Commands] │ +3");
+			assert.deepEqual(layout(15).overflow, { x: 13, width: 2, hidden: 3 });
+			assert.equal(strip(layout(10).line), "[Commands]");
+			assert.equal(layout(10).overflow, undefined, "a truncated count cell is not a click target");
+			assert.equal(strip(layout(4).line), "[Com");
+			assert.deepEqual(layout(4).control, { x: 0, width: 4 });
+			assert.equal(layout(0).line, "");
+		});
+
+		it("bounds every width and keeps the control first", () => {
+			for (let width = 0; width <= 120; width++) {
+				const result = layout(width, ["ready", "界面", "last"]);
+				assert.ok(visibleWidth(result.line) <= width, `width ${width}`);
+				if (width >= 10) assert.ok(strip(result.line).startsWith("[Commands]"), `control first at ${width}`);
+			}
+		});
 	});
 });
