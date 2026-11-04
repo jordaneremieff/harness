@@ -159,7 +159,12 @@ that shows the exact resource and reference digest of the page it read, with a
 More control that follows the continuation under that digest. Rows select by
 click or arrow keys; Open, More, Back, and Close are visible controls; the
 wheel scrolls the pane. Nothing in the reader starts a check, derivation, or
-review, and nothing writes to the corpus. Outside the terminal UI, or when the
+review, and nothing writes to the corpus. The ordinary statusline footer menu
+lists `/pillars browse` as a destination because this extension announces it on
+`harness:operator-destination:publish` (see `docs/conventions/operator-panels.md`).
+The attached Agent terminal opens the same reader through `operator-panel.ts`,
+a presentation-only module that routes the inventory and every page read
+through the host's `pillars` contribution command. Outside the terminal UI, or when the
 inventory cannot be read, `browse` falls back to the Markdown inventory text. Argument autocomplete offers actions
 with descriptions and current resource identifiers after `read `. It does not
 complete free-text hints or invent continuation values. Source output uses Pi's
@@ -454,12 +459,20 @@ Documented differences from the ordinary entrypoint:
   The source page stays unchanged.
 - Collector diagnostics go to standard error, because a Durable agent session
   has no UI host. Invalid `PI_PILLARS_COLLECT` values still disable collection.
-- The `pillars` command admits the judgment actions only. It submits the same
-  judgment prompt to the conversation as a steer. The ordinary browse, read,
-  usage, and help paths render through the terminal UI, which a Durable
-  command has no view for; `export` writes an operator filesystem path that
-  the calling session may not share. The tools remain the model-facing
-  form for source reads and access evidence.
+- The `pillars` command admits the judgment actions through its text route
+  (`agent_command`, `/agent command`): it submits the same judgment prompt to
+  the conversation as a steer. With structured `data` it serves the attached
+  terminal's reader instead: `{ op: "inventory" }` answers the catalogued
+  sources with their quoted index statements, and
+  `{ op: "read", resource, offset?, referenceBodyDigest? }` answers one bounded
+  source page or the access error, through the same `access` owner as the
+  `pillars` tool. The contribution advertises `./operator-panel.ts` as its
+  `panel` descriptor bound to that command. Neither route starts a check,
+  derivation, or review; a malformed request is an error. The ordinary usage
+  and help paths render through the terminal UI, which a Durable command has
+  no view for; `export` writes an operator filesystem path that the calling
+  session may not share. The tools remain the model-facing form for source
+  reads and access evidence.
 
 ## Privacy and configuration
 

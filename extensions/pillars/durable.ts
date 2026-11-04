@@ -18,7 +18,9 @@ import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ToolCall } from "@earendil-works/pi-ai";
 import { int, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, type AccessPage, parseAccess } from "./access.ts";
+import { browserEntries } from "./browser.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
+import { readPanelRequest, type PillarsPanelAnswer } from "./panel-protocol.ts";
 import type { Stage } from "./capacity.ts";
 import { Collector, utcDay } from "./collector.ts";
 import { judgmentPrompt, parseJudgmentRequest } from "./commands.ts";
@@ -35,6 +37,8 @@ export interface DurableContribution {
 	readonly source: string;
 	/** Presentation-only module the standalone Agent terminal imports locally; see docs/conventions/tool-display.md. */
 	readonly display?: { readonly version: 1; readonly entry: string; readonly export: string };
+	/** The read-only reader module for the attached terminal and the command that serves it; see docs/conventions/operator-panels.md. */
+	readonly panel?: { readonly version: 1; readonly entry: string; readonly export: "operatorPanel"; readonly command: string };
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 	readonly commands?: readonly DurableCommand[];
 }
@@ -63,11 +67,13 @@ export interface DurableInventory {
 export interface DurableCommand {
 	readonly name: string;
 	readonly description: string;
-	run(call: DurableCommandCall): Promise<string>;
+	run(call: DurableCommandCall): Promise<string | { text: string; data?: JsonValue }>;
 }
 
 export interface DurableCommandCall {
 	readonly args: string;
+	/** Structured input of the reader route; absent for the judgment verbs. */
+	readonly data?: JsonValue;
 	readonly conversation: Durable.Conversation;
 	readonly harness: Durable.Harness;
 	readonly context: Context;
@@ -104,10 +110,34 @@ function assessmentDiagnostics(
 export const PILLARS_COMMAND_DESCRIPTION =
 	"Ask the conversation to check Pillars alignment, derive candidates, or review guidance. Accepts an optional hint.";
 
+/** Catalogs loaded by `create()`, keyed by host; a reader request on an unknown host loads its own. */
+const catalogs = new WeakMap<DurableContributionHost, Catalog | undefined>();
+
+async function hostCatalog(host: DurableContributionHost, signal: AbortSignal | undefined): Promise<Catalog> {
+	let catalog = catalogs.get(host);
+	if (catalog === undefined) catalog = await loadCatalog(signal, { agentDir: host.agentDir });
+	return catalog;
+}
+
+/** The reader's requests: an inventory listing and bounded source pages with exact digests. No judgment action starts here. */
+async function readerAnswer(call: DurableCommandCall): Promise<{ text: string; data: JsonValue }> {
+	const request = readPanelRequest(call.data);
+	const signal = call.context.abortSignal;
+	const catalog = await hostCatalog(call.host, signal);
+	const read = (input: Parameters<typeof access>[1], readSignal?: AbortSignal) => access(catalog, input, readSignal);
+	let answer: PillarsPanelAnswer;
+	if (request.op === "inventory") answer = { op: "inventory", entries: await browserEntries(catalog, read, signal) };
+	else answer = { op: "read", page: await read({ resource: request.resource, offset: request.offset, referenceBodyDigest: request.referenceBodyDigest }, signal) };
+	const text = answer.op === "inventory" ? `${answer.entries.length} Pillars sources`
+		: answer.page.schema === "pillars-source" ? `${answer.page.resource} bytes ${answer.page.offset}-${answer.page.endOffset} of ${answer.page.bodyBytes}` : `source read refused: ${answer.page.code}`;
+	return { text, data: JSON.parse(JSON.stringify(answer)) as JsonValue };
+}
+
 const pillarsCommand: DurableCommand = {
 	name: "pillars",
 	description: PILLARS_COMMAND_DESCRIPTION,
 	async run(call) {
+		if (call.data !== undefined) return readerAnswer(call);
 		const request = parseJudgmentRequest(call.args);
 		if (!request) return "The pillars command accepts check, derive, or review with an optional hint.";
 		const submission = await call.conversation.submit(
@@ -136,6 +166,7 @@ export function pillarsDurableContribution(
 		name: "pillars",
 		source,
 		display: { version: 1, entry: "./display.ts", export: "toolDisplay" },
+		panel: { version: 1, entry: "./operator-panel.ts", export: "operatorPanel", command: "pillars" },
 		commands: [pillarsCommand],
 		async create(host) {
 			const { GenerationTask, ToolTask, defineExtension, defineTool, hook, section } = host.durable;
@@ -161,6 +192,7 @@ export function pillarsDurableContribution(
 			} catch {
 				catalog = undefined;
 			}
+			catalogs.set(host, catalog);
 			if (!catalog)
 				process.stderr.write("The loaded Pillars source is unavailable. Access attribution remains unavailable.\n");
 			let closing = false;

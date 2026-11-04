@@ -444,7 +444,7 @@ test("the pillars command steers the judgment prompt and reuses one invocation",
 		faux.setResponses([fauxAssistantMessage("Checked.")]);
 		const result = await command.run(call);
 		await harness.waitForIdle(BACKGROUND_CONTEXT);
-		assert.match(result, /Submitted the Pillars check request as submission \d+\./u);
+		assert.match(String(result), /Submitted the Pillars check request as submission \d+\./u);
 		const users = (await root.context(BACKGROUND_CONTEXT)).messages.filter((message) => message.role === "user");
 		assert.equal(users.length, 1);
 		const prompt = users[0];
