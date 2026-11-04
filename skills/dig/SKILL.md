@@ -7,23 +7,23 @@ description: >
   an exact blocker, for example "dig into why this keeps failing", "find out
   what really happened", "research X thoroughly and tell me", "figure out why
   it behaves this way", or "compare these options with evidence". The agent
-  frames the question, locates what the environment already knows, investigates
+  frames the question, finds the sources that own the answer, investigates
   directly or with other agents as the question warrants, checks the evidence,
   and synthesizes. Do not use for preparation-only orientation (prime), audits
   of Pi session or harness activity (audit), a single lookup or a question
   already answered, code review, or ordinary implementation with a known cause.
-compatibility: Requires Pi with agent delegation controls and automatic task-result delivery when other agents investigate facets, plus the read-only discovery surfaces the environment exposes for memory, handovers, session history, agents, resources, and doctrine. Uses the operator's current presets and delegation preferences; no fixed provider, model, tool, or worker roster. Points to the sibling source skills/delegate/SKILL.md for arrangement and preset rules.
+compatibility: Requires Pi with agent delegation controls and automatic task-result delivery when other agents investigate facets, plus the discovery surfaces the environment exposes for tools, deferred tools, namespaces, resources, memory, handovers, session history, and agents. Uses the operator's current presets and delegation preferences; no fixed provider, model, tool, or worker roster. Points to the sibling source skills/delegate/SKILL.md for arrangement and preset rules.
 ---
 
 # Dig
 
 Answer a hard question with cited evidence, or report the exact blocker. The
-agent that owns the answer frames the question, finds what is already known,
-investigates, checks evidence, and synthesizes. It reads, searches, runs, and
-measures itself, and involves other agents where parallel facets, context,
-expertise, or independent observation make that worthwhile. This skill
-supplies an investigation method, not a staffing rule, enforced limits, or
-guaranteed model behavior.
+agent that owns the answer frames the question, finds the sources that own
+the answer, investigates, checks evidence, and synthesizes. It reads,
+searches, runs, and measures itself, and involves other agents where an
+independent contribution improves the investigation. This skill supplies an
+investigation method, not a staffing rule, enforced limits, or guaranteed
+model behavior.
 
 ## 1. Frame the question
 
@@ -50,63 +50,93 @@ readings.
 **Complete when:** the question, criteria, and authority fit in a short
 paragraph that you and any contributor can work from.
 
-## 2. Locate what is already known
+## 2. Find the sources that own the answer
 
-Before deep reading, make one short bounded pass over the knowledge the
-environment already holds. A hard question has usually been touched before:
-an operator decision, an earlier investigation, a handover, another agent's
-result, or a local document. Discover the actual capability for each family
-from the current tool descriptions or the resource registry; do not assume a
-tool name, a path, or access. Make one or two targeted lookups per family the
-question touches, read the selected item rather than its listing, and keep its
-qualifications. Skip a family with a stated reason. A family the environment
-does not expose is a stated limit, not a reason to open private stores or scan
-the whole machine.
+Start from the facts the question needs, not from a tour of every source. For
+each material question or facet, name the kind of source that owns the
+answer, then discover a usable route to it. A hard question has usually been
+touched before: a decision record, a ticket, a discussion, an operational
+record, an earlier investigation, or a local document.
 
-| Family | What it answers | Keep in mind |
-| --- | --- | --- |
-| The current conversation and its retained history | Earlier decisions, results, and corrections in this session | Bounded search, then exact entry reads; branch, truncation, and coverage limits apply. |
-| Operator memory | Durable decisions, preferences, environment facts, and recurring lessons | Read the note with its lifecycle and freshness; it guides the search and does not verify active state. |
-| Stashed handovers and working checkpoints | Earlier efforts on the subject: what was planned, done, blocked, or abandoned | Provisional working material; separate plans from completed work; not authority to resume old work. |
-| Earlier sessions and standing experts | What other sessions found or decided; a standing session-history expert when the environment has one | Discover agents through the catalogue, read their roles and sourced expertise, and use public readers or a bounded question with its reply route. Never control a historical subject just to read it. |
-| Peer threads and related efforts | Live or retained work on the same question, its frame, and its restrictions | Declarations and claims, not verification; cite the source behind a contribution. |
-| The resource registry | Which tools, skills, prompts, models, and settings exist and are active here | Configured presence is not callable availability or successful execution. |
-| The doctrine corpus | Judgment guidance for design, verification, and evidence questions | Doctrine informs judgment; it is not runtime evidence. |
-| Ordinary local sources | The repository and its worktrees, bounded Git state, installed package documentation and examples, named local documents, logs, and the working directories the operator keeps | Stay within the authorized scope. A scratch or dump area holds working material, not published decisions. |
-| Public sources | Primary pages and repository records when the question is external and the authority allows | Load the applicable skill before its workflow; search snippets select sources and do not substantiate facts. |
+| Evidence role | Typical owner of the answer |
+| --- | --- |
+| Internal documentation | Specifications, policies, runbooks, design notes, and decision records |
+| Work records | Tickets, plans, reviews, and change history |
+| Organisational communications | Discussion threads, meeting records, and announcements |
+| Execution, operational, and business records | Logs, metrics, analytics, and business or data records |
+| Conversation and continuity material | This conversation and its retained history, operator memory, stashed handovers and working checkpoints, earlier sessions and standing experts, and peer threads |
+| Ordinary local sources | The repository and its worktrees, bounded Git state, installed package documentation and examples, named documents, working directories, exports, and synced or mounted corpora |
+| Public sources | Primary pages and public repository records, when the question is external and the authority allows |
 
-Record what this pass found and what it rules out. An answer already present
-in the conversation or in a cited handover needs no new investigation; say so
-and cite it. Read at the depth the question needs: for a large source, prefer
-bounded searches and defining excerpts over whole reads, whoever reads it.
+Doctrine informs judgment about design, verification, and evidence; it is not
+evidence about the question.
 
-**Complete when:** each relevant family has a lookup, a stated skip, or a
-stated limit, and every lead is attached to the facet it affects.
+Keep discovery of a capability separate from search of its content:
+
+- **Discover capability by function and evidence role.** Use the current tool
+  descriptions and the environment's discovery surfaces: the resource registry,
+  deferred-tool search, namespace instructions, and resource lists or templates
+  where the environment exposes them. The project name or topic need not appear
+  in a capability's description; search for what the capability does. Reuse a
+  route already known to be valid.
+- **Do not read one no-match as absence.** A capability missing from the inline
+  tool declarations, or one search with no match, does not establish that the
+  environment lacks it. When the facet warrants it, try a bounded alternative
+  functional term or the relevant namespace or resource route, and account for
+  discovery that is incomplete, truncated, or not yet ready.
+- **Then query content.** Once the route is known, query the actual subject
+  terms, identifiers, and dates, and read the defining records. Metadata, a
+  listing, or a search snippet is not a read of the record.
+- **Local sources beyond repositories.** Use named documents, the operator's
+  working directories, exports, and synced or mounted corpora when they are
+  relevant and accessible. Bound each root by the task, loaded guidance, a
+  qualified memory note, or a discovered pointer. Do not crawl the whole
+  machine or inspect credential stores.
+- **Access.** Respect existing access and data-handling boundaries without
+  asking again for permissions already granted. Discovery does not itself grant
+  access, and a credential found along the way is not permission to use it.
+
+Keep the working source map in this conversation: for each facet, the owner
+role, the route, what was queried, and what the reads established. Distinguish
+an empty query, unavailable access, a failed read, and demonstrated absence.
+Record enough provenance for each actual read to establish its scope; do not
+infer unavailability from one weak search. Handovers and checkpoints are
+provisional working material; history and memory are evidence, not direction.
+
+Reuse an existing answer without new investigation when its evidence reaches
+the present claim at the required scope, authority, and freshness; say so and
+cite it. Otherwise use history or a handover to locate the current evidence
+owner. Adequate historical records answer historical questions; a settled
+operator decision or an old fact needs no revalidation merely because of age.
+
+Read at the depth the question needs: for a large source, prefer bounded
+searches and defining excerpts over whole reads, whoever reads it. This map is
+a relevance map, not a checklist: do not search every role for every task,
+exhaust history before investigating, or finish a serial pass before
+allocating independent work.
+
+**Complete when:** each facet has a named owner role and a route, a stated
+skip, or a stated limit, and every lead is attached to the facet it affects.
 
 ## 3. Choose the arrangement and split into facets
 
-Decide who investigates while you frame, not after your own context fills
-with reading. Delegation serves the answer; none of these cues alone decides
-staffing, and a correct answer reached directly needs no other agent.
+Decide who investigates during framing, after cheap orientation and before
+broad or deep reading. Delegation serves the answer: favour dispatching an
+independent facet when another agent's contribution materially improves
+investigation time, evidence coverage, context isolation, expertise, or a
+consequential check. Dispatch as soon as the frame and the leads from section
+2 support a useful brief, and continue your own discovery and synthesis while
+the contributor works. Two substantial bounded inquiries can be enough to
+dispatch one of them. Counts of facets and the size of sources inform cost;
+they do not decide the arrangement by themselves.
 
-Favour early delegation when the investigation is substantial:
-
-- it touches more than a few independent sources or facets;
-- a source's payload, such as a large document, a transcript, a corpus, or a
-  set of external pages, would crowd the context that synthesis needs;
-- competing hypotheses each need their own discriminating test;
-- a claim needs independent observation or another model's view; or
-- the operator's limits allow parallel cost.
-
-Dispatch those facets as soon as the frame and the leads from section 2 can
-brief them, and keep one facet yourself, usually the one closest to synthesis.
-Delegation started after you have read everything saves no context and delays
-the answer.
-
-Investigate directly when the facets are few and the sources bounded, when
-the facets depend on each other, when section 2 has nearly answered the
-question, or when briefing and integrating would cost more than the reading.
-Mix the two freely and revise the split when results change the question.
+Work directly when the task is genuinely short or cheap, when the steps depend
+tightly on each other, when only this session holds the access a facet needs,
+when the operator constrained the arrangement, or when briefing and
+integration would outweigh the contribution. Reassess when the investigation
+exposes useful independent work later. No fixed worker count, manager, or
+one worker per source or file applies, and no dispatch happens to satisfy a
+quota.
 
 Split the question into up to five facets that can proceed without waiting on
 each other. Pick the split that fits the question:
@@ -135,12 +165,15 @@ missing control. Do not substitute a reduced backend for a full agent session.
 
 Give each contributor a self-contained brief:
 
-1. **Objective and boundaries:** the facet question, starting sources, the
-   leads from section 2 that bear on it with their qualifications, the copied
-   scope and authority paragraph, scratch directory for local artifacts, and
-   what not to do (no writes outside scratch, no work on another facet's
-   question without telling its owner). Involve further agents only when the
-   facet itself warrants it, and still return one answer.
+1. **Objective and boundaries:** the bounded facet question, starting sources
+   and the leads from section 2 that bear on it with their qualifications,
+   the copied scope and authority paragraph, the data and access restrictions
+   that apply, the scratch directory for local artifacts, and what not to do
+   (no writes outside scratch, no work on another facet's question without
+   telling its owner). Do not assume the contributor has your access: keep a
+   facet that needs caller-only retrieval here, or share only permitted
+   evidence, never credentials. Involve further agents only when the facet
+   itself warrants it, and still return one answer.
 2. **Method:** breadth first, then depth; prefer primary sources and direct
    observation over summaries; try to disprove the leading answer; record
    negative results with the scope searched.
@@ -177,7 +210,8 @@ status, use timed delays, or repeat inspections as a wait loop. Do not stop a
 live contributor and present its unfinished facet as answered; a facet stopped
 without a terminal result is a gap until someone investigates it. While
 contributors run, continue your own facet, synthesize what has arrived, and
-prepare the checks below.
+prepare the checks below. Fold a contributor's evidence into the answer; a
+record that a contributor ran is not evidence.
 
 For each claim that the answer will rely on:
 
@@ -217,7 +251,7 @@ Before synthesis, write down three lists from the returned evidence:
   contradiction that stays unresolved visible in the answer.
 - **Gaps:** success criteria not yet answered, access that failed, searches
   that stopped at a bound. An empty search is a result only for the scope
-  searched.
+  searched, and an absence claim reflects only the discovery actually done.
 - **Alternatives not excluded:** for troubleshooting, each hypothesis with the
   evidence that eliminated it or the reason it stays open. Name a cause only
   when a discriminating observation supports it, not only a story that fits.

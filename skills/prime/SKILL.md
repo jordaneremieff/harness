@@ -43,25 +43,38 @@ freshness and lifecycle qualifications, rather than relying on index snippets.
 Memory guides the search; it does not verify active state. Do not read large
 code, documentation, test files, or transcripts into the parent before dispatch.
 
-Discover the actual capability for each source family from the current tool
-descriptions or the resource registry; do not assume a tool name, a path, or
-access. Where the tool or path is uncertain, inspect its actual availability,
-provenance, arguments, and limits there. Do not infer access from a resource
-name. A family the environment does not expose is an explicit limit, not a
-reason to open private stores. Avoid whole-machine inventories and scans of
-private tool stores.
+Keep discovery of a capability separate from search of its content. Discover
+each capability by function and evidence role through the current tool
+descriptions and the environment's discovery surfaces: the resource registry,
+deferred-tool search, namespace instructions, and resource lists or templates
+where the environment exposes them. The topic's name need not appear in a
+capability's description; search for what the capability does, and reuse a
+route already known to be valid. One search with no match does not establish
+absence: when the facet warrants it, try a bounded alternative functional term
+or the relevant namespace or resource route, and account for discovery that is
+incomplete, truncated, or not yet ready. Once the route is known, query the
+actual subject terms, identifiers, and dates, and read the defining records; a
+listing or a search snippet is not a read. Do not assume a tool name, a path,
+or access, and do not infer access from a resource name. A role the environment
+does not expose is an explicit limit, not a reason to open private stores.
+Avoid whole-machine inventories and scans of private tool stores.
 
 ## 2. Choose relevant sources and dispatch
 
 Build a small source map for this topic, not a compulsory checklist of every
-source on the machine. Consider these families where they answer a real facet
-of the topic:
+source on the machine. Start from the facts the later task needs: for each
+facet, name the kind of source that owns the answer, then discover its route.
+Consider these evidence roles where they answer a real facet of the topic:
 
-| Source family | What to retrieve and preserve |
+| Evidence role | What to retrieve and preserve |
 | --- | --- |
+| Internal documentation | Specifications, policies, runbooks, design notes, and decision records that govern the topic; cite the defining record, not its index entry. |
+| Work records | Tickets, plans, reviews, and change history for the topic; separate planned, in-progress, and completed work. |
+| Organisational communications | Discussion threads, meeting records, and announcements where the topic was decided or disputed; quote the deciding passage with its date. |
+| Execution, operational, and business records | Logs, metrics, analytics, and business or data records that show what actually happened; keep the query and window. |
 | Operator memory | Decisions, preferences, and leads through the current memory tools; read the selected note and its qualifications. |
 | Stashed handovers, working checkpoints, and named local artifacts | Search and read handovers and checkpoints through their tools; inspect only named or narrowly discovered artifact paths, including the working directories the operator keeps. Separate plans from completed work; provisional material is not authority to resume old work. |
-| Repository and owning worktrees | Current source, documentation, tests, and bounded Git state for the topic. Distinguish a candidate change from shipped or active behavior; do not run tests or code merely to orient. |
+| Repository, owning worktrees, and other local sources | Current source, documentation, tests, and bounded Git state for the topic, plus named documents, exports, and synced or mounted corpora within bounded roots. Distinguish a candidate change from shipped or active behavior; do not run tests or code merely to orient. |
 | Active capabilities | Registry or equivalent source provenance and callable availability. A catalog entry is not successful execution. |
 | Installed dependencies | Current installed documentation, source, and examples for host contracts. Discover the active installation; a checkout dependency is not automatically the running copy. |
 | Current conversation history | Bounded history search followed by exact entry reads for earlier decisions and results. Keep branch, truncation, and coverage limits. |
