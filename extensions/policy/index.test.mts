@@ -290,9 +290,10 @@ describe("panel command and shortcut", () => {
 			}
 			frames.push(panel.render(120));
 			if (frames.length === 2) {
-				panel.handleInput("v");
-				panel.handleInput("v");
+				for (let step = 0; step < 4; step++) panel.handleInput("v");
 				assert.deepEqual(panel.render(120), rules);
+				setTimeout(() => panel.handleInput("\u001b"), 50);
+				return;
 			}
 			panel.handleInput("\u001b");
 		});
@@ -1043,7 +1044,7 @@ describe("unified tools and command gates", () => {
 						if (component instanceof PolicyApprovalPanel) {
 							for (let page = 0; page < 100; page++) {
 								const lines = component.render(120);
-								if (lines.some((line) => line.includes("a: approve"))) {
+								if (lines.some((line) => line.includes("[Approve disable]"))) {
 									component.handleInput("a");
 									return;
 								}
@@ -1338,5 +1339,157 @@ describe("dispatch and telemetry", () => {
 			),
 			undefined,
 		);
+	});
+});
+
+describe("panel controls reach the owner operations", () => {
+	type Driver = {
+		handleInput(data: string): void;
+		render(width: number): string[];
+	};
+
+	/** Open the panel once, run the script against it, and close it. */
+	async function drive(
+		pi: Awaited<ReturnType<typeof setup>>["pi"],
+		ctx: Awaited<ReturnType<typeof setup>>["ctx"],
+		script: (panel: Driver) => Promise<void>,
+	): Promise<void> {
+		ctx.ui.custom = async <T,>(
+			factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
+		): Promise<T> =>
+			new Promise<T>((resolve, reject) => {
+				const panel = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, {}, resolve) as Driver;
+				script(panel).then(
+					() => panel.handleInput("\u001b"),
+					(error) => {
+						panel.handleInput("\u001b");
+						reject(error);
+					},
+				);
+			});
+		await pi.shortcut().handler(ctx as unknown as ExtensionContext);
+	}
+
+	const until = async (panel: Driver, pattern: RegExp): Promise<string> => {
+		for (let attempt = 0; attempt < 200; attempt++) {
+			const text = panel.render(120).join("\n");
+			if (pattern.test(text)) return text;
+			await new Promise((resolve) => setTimeout(resolve, 2));
+		}
+		throw new Error(`panel never showed ${pattern}`);
+	};
+
+	const select = (panel: Driver, id: string) => {
+		panel.handleInput("/");
+		for (const character of id) panel.handleInput(character);
+		panel.handleInput("\r");
+	};
+
+	it("disables the selected rule with the entered reason, panel audit, and the displayed identity", async () => {
+		const { dir, pi, ctx } = await setup();
+		const inputs: string[] = [];
+		ctx.ui.input = (async (title: string) => {
+			inputs.push(title);
+			return "panel reason";
+		}) as never;
+		await drive(pi, ctx, async (panel) => {
+			select(panel, "routing.cat-read");
+			panel.handleInput("d");
+			await until(panel, /Disabled routing\.cat-read\./);
+		});
+		assert.deepEqual(inputs, ["Reason to disable routing.cat-read"]);
+		const events = await storedEvents(dir);
+		const override = events.find((event) => event.kind === "override" && event.ruleId === "routing.cat-read");
+		assert.ok(override && override.kind === "override" && override.operation === "set");
+		if (override.kind === "override" && override.operation === "set") {
+			assert.equal(override.override.state, "disabled");
+			assert.equal(override.override.reason, "panel reason");
+			assert.equal(override.override.audit.surface, "panel");
+		}
+	});
+
+	it("writes nothing when the reason entry is cancelled", async () => {
+		const { dir, pi, ctx } = await setup();
+		ctx.ui.input = async () => undefined;
+		await drive(pi, ctx, async (panel) => {
+			select(panel, "routing.cat-read");
+			panel.handleInput("d");
+			await until(panel, /Policy control canceled\. No rules changed\./);
+		});
+		const events = await storedEvents(dir);
+		assert.equal(events.some((event) => event.kind === "override"), false);
+	});
+
+	it("refuses an effect change after the target changed and refreshes the review", async () => {
+		const { dir, pi, ctx } = await setup();
+		ctx.ui.input = (async () => "late reason") as never;
+		ctx.ui.select = (async () => "block") as never;
+		await drive(pi, ctx, async (panel) => {
+			select(panel, "routing.cat-read");
+			await pi.command().handler("disable routing.cat-read external pause", ctx as never);
+			panel.handleInput("e");
+			await until(panel, /Action refused: Rule target revision changed/);
+			const text = await until(panel, /override reason: external pause/);
+			assert.match(text, /Review refreshed/);
+		});
+		const events = await storedEvents(dir);
+		assert.equal(
+			events.some((event) => event.kind === "override" && JSON.stringify(event).includes("late reason")),
+			false,
+		);
+	});
+
+	it("starts a pinned observation period for reset and reads State and Data through owner operations", async () => {
+		const { pi, ctx, notifications } = await setup("enforce");
+		ctx.ui.input = (async () => "panel reset") as never;
+		await drive(pi, ctx, async (panel) => {
+			select(panel, "routing.cat-read");
+			panel.handleInput("z");
+			await until(panel, /Started a new policy observation period\./);
+			panel.handleInput("s");
+			await until(panel, /Policy · State/);
+			await until(panel, /"/);
+			panel.handleInput("t");
+			await until(panel, /Policy · Data/);
+			await until(panel, /count|health/);
+		});
+		assert.deepEqual(notifications.filter((entry) => entry.type === "error"), []);
+	});
+
+	it("shows the approval reader action label for the real effect of the final button", async () => {
+		const { pi, ctx } = await setup();
+		const proposed = await callTool(
+			pi.tool("policy_propose"),
+			{ operation: "disable", id: "routing.cat-read", reason: "Reader label" },
+			ctx,
+		);
+		assert.ok((proposed.details as { proposalId?: string }).proposalId);
+		const labels: string[] = [];
+		const baseCustom = ctx.ui.custom;
+		await drive(pi, ctx, async (panel) => {
+			const nested = ctx.ui.custom;
+			ctx.ui.custom = async <T,>(
+				factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
+			): Promise<T> =>
+				new Promise<T>((resolve) => {
+					const reader = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, {}, resolve) as Driver;
+					for (let page = 0; page < 50; page++) {
+						const last = reader.render(120).at(-1) ?? "";
+						if (!last.includes("[Read pages]")) {
+							labels.push(last);
+							break;
+						}
+						reader.handleInput(" ");
+					}
+					reader.handleInput("\u001b");
+				});
+			panel.handleInput("v");
+			panel.handleInput("x");
+			await until(panel, /canceled|cancelled|Action cancelled/i).catch(() => undefined);
+			ctx.ui.custom = nested;
+		});
+		ctx.ui.custom = baseCustom;
+		assert.match(labels[0] ?? "", /^\[Reject\] \[Cancel\]/);
+		assert.doesNotMatch(labels[0] ?? "", /Approve/);
 	});
 });

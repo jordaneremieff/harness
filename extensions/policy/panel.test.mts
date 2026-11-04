@@ -517,20 +517,6 @@ describe("PolicyPanel", () => {
 		assert.doesNotMatch(text, /routing\.cat-read.*package/);
 	});
 
-	it("shows exact command equivalents for reason-bearing actions because nested Pi input is unsafe", () => {
-		const { panel } = rig();
-		panel.handleInput("\u001b[B");
-		const rendered = () => panel.render(120).join("\n").replace(/[│]/g, " ").replace(/\s+/g, " ");
-		panel.handleInput("d");
-		assert.match(rendered(), /Run: \/policy disable local\.scan <reason\.\.\.>/);
-		panel.handleInput("e");
-		assert.match(rendered(), /Run: \/policy effect local\.scan <steer\|block> <reason\.\.\.>/);
-		panel.handleInput("n");
-		assert.match(rendered(), /Run: \/policy enable local\.scan <reason\.\.\.>/);
-		panel.handleInput("r");
-		assert.match(rendered(), /Run: \/policy retire local\.scan <reason\.\.\.>/);
-	});
-
 	it("confirms panel approval and rejection before invoking the operator host", async () => {
 		const actions: string[] = [];
 		const approved: Array<[string, "steer" | "block" | undefined]> = [];
@@ -676,10 +662,318 @@ describe("PolicyPanel", () => {
 			actions[1],
 			/^confirm:Approve add proposal 00000000-0000-4000-8000-000000000010 for local.new with effect block\?/,
 		);
-		assert.match(actions[1], /candidate matcher:.*command-shape\/v1/);
-		assert.match(actions[1], /candidate note: Bound scan output\./);
+		assert.match(actions[1], /"language": "command-shape\/v1"/);
+		assert.match(actions[1], /"note": "Bound scan output\."/);
 		assert.equal(actions[2], "approve");
 		assert.deepEqual(approved, [["00000000-0000-4000-8000-000000000010", "block"]]);
 		assert.match(panel.render(120).join("\n"), /add approved through panel/);
+	});
+});
+
+const pointer = (
+	lines: string[],
+	x: number,
+	y: number,
+	type: "click" | "wheel" = "click",
+	wheelDelta?: number,
+): Parameters<NonNullable<PolicyPanel["handleMouse"]>>[0] => ({
+	type,
+	button: type === "click" ? "left" : "none",
+	x,
+	y,
+	screenX: x,
+	screenY: y,
+	width: Math.max(...lines.map((line) => visibleWidth(line))),
+	height: lines.length,
+	shift: false,
+	alt: false,
+	ctrl: false,
+	...(wheelDelta === undefined ? {} : { wheelDelta }),
+});
+
+/** Click the first drawn occurrence of a label, using the columns the render actually produced. */
+function clickLabel(panel: PolicyPanel, width: number, label: string, occurrence = 0): boolean {
+	const lines = panel.render(width);
+	let seen = 0;
+	for (const [y, line] of lines.entries()) {
+		let from = 0;
+		for (;;) {
+			const x = line.indexOf(label, from);
+			if (x < 0) break;
+			if (seen++ === occurrence) {
+				const event = pointer(lines, x + 1, y);
+				event.width = width;
+				return panel.handleMouse(event)?.handled === true;
+			}
+			from = x + 1;
+		}
+	}
+	throw new Error(`no label ${label}`);
+}
+
+interface ControlCall {
+	action: string;
+	id: string | undefined;
+	snapshot: RuleSnapshot;
+}
+
+function controlHost(overrides: Partial<PolicyPanelActionHost> = {}) {
+	const calls: ControlCall[] = [];
+	const selections: string[][] = [];
+	const host: PolicyPanelActionHost = {
+		async confirm() {
+			return false;
+		},
+		async select(_title, options) {
+			selections.push(options);
+			return options[0];
+		},
+		async approve() {
+			throw new Error("unused");
+		},
+		async reject() {
+			throw new Error("unused");
+		},
+		async control(action, id, shown) {
+			calls.push({ action, id, snapshot: shown });
+			return { snapshot: shown, outcome: `${action} done for ${id ?? "-"}` };
+		},
+		...overrides,
+	};
+	return { host, calls, selections };
+}
+
+describe("PolicyPanel navigation and actions", () => {
+	it("shows Rules, Proposals, Activity, Data, and State as visible navigation", () => {
+		const text = rig().panel.render(120).join("\n");
+		for (const label of ["[Rules]", "Proposals", "Activity", "Data", "State", "[Actions]", "[Close]"])
+			assert.ok(text.includes(label), label);
+	});
+
+	it("switches views by pointer and loads Data and State through the owner control", async () => {
+		const { host, calls } = controlHost();
+		const { panel } = rig(data(), 24, { actionHost: host });
+		assert.equal(clickLabel(panel, 120, "Proposals"), true);
+		assert.match(panel.render(120).join("\n"), /Policy · Proposals/);
+		assert.equal(clickLabel(panel, 120, "Data"), true);
+		await settle();
+		assert.deepEqual(calls.map((call) => [call.action, call.id]), [["data", undefined]]);
+		assert.match(panel.render(120).join("\n"), /data done for -/);
+		assert.equal(clickLabel(panel, 120, "State"), true);
+		await settle();
+		assert.deepEqual(calls.map((call) => call.action), ["data", "state"]);
+		assert.match(panel.render(120).join("\n"), /Policy · State/);
+	});
+
+	it("routes a keyboard action and an Actions menu choice to the owner with the displayed target", async () => {
+		const { host, calls, selections } = controlHost();
+		const shown = data();
+		const { panel } = rig(shown, 24, { actionHost: host });
+		panel.handleInput("d");
+		await settle();
+		assert.equal(calls[0].action, "disable");
+		assert.equal(calls[0].id, "routing.cat-read");
+		assert.equal(calls[0].snapshot, shown.snapshot);
+		panel.handleInput("\u001b[B");
+		clickLabel(panel, 120, "[Actions]");
+		await settle();
+		assert.deepEqual(selections[0], ["Disable", "Enable", "Effect", "Retire", "Reset", "Explain"]);
+		assert.deepEqual(calls[1], { action: "disable", id: "local.scan", snapshot: shown.snapshot });
+	});
+
+	it("never offers an exact-only rule an effect choice and never calls the owner", async () => {
+		const exact = packageRule({
+			id: "local.exact",
+			definition: { ...packageRule().definition, authority: "exact" },
+		});
+		const shown = data({ snapshot: snapshot({ records: new Map([["local.exact", exact]]) }) });
+		const { host, calls } = controlHost();
+		const { panel } = rig(shown, 24, { actionHost: host });
+		panel.handleInput("e");
+		await settle();
+		assert.deepEqual(calls, []);
+		assert.match(panel.render(120).join("\n"), /exact replacement proposal/);
+	});
+
+	it("refuses a changed revision explicitly, refreshes the review, and keeps the old content out", async () => {
+		const fresh = snapshot({ records: new Map([["routing.cat-read", packageRule({ definition: { ...packageRule().definition, revision: "999999999999" } })]]), pending: [] });
+		let refreshed = 0;
+		const { host } = controlHost({
+			async control() {
+				throw new Error("Rule target revision changed; inspect the current rule");
+			},
+			async refresh() {
+				refreshed++;
+				return fresh;
+			},
+		});
+		const { panel } = rig(data(), 24, { actionHost: host });
+		panel.handleInput("d");
+		await settle();
+		const text = panel.render(120).join("\n");
+		assert.equal(refreshed, 1);
+		assert.match(text, /Action refused: Rule target revision changed/);
+		assert.match(text, /Review refreshed/);
+		assert.match(text, /definition revision: 999999999999/);
+	});
+
+	it("selects a row by click without acting, then opens its detail on the second click", async () => {
+		const { host, calls } = controlHost();
+		const { panel } = rig(data(), 24, { actionHost: host });
+		const before = panel.render(120).join("\n");
+		assert.match(before, /› routing\.cat-read/);
+		assert.equal(clickLabel(panel, 120, "local.scan"), true);
+		assert.match(panel.render(120).join("\n"), /› local\.scan/);
+		assert.deepEqual(calls, []);
+		assert.equal(clickLabel(panel, 120, "local.scan"), true);
+		assert.match(panel.render(120).join("\n"), /id: local\.scan/);
+		assert.deepEqual(calls, []);
+	});
+
+	it("ignores clicks after invalidation, a size change, or a replaced snapshot", async () => {
+		const { host, calls } = controlHost();
+		const { panel, calls: panelCalls } = rig(data(), 24, { actionHost: host });
+		const lines = panel.render(120);
+		const row = lines.findIndex((line) => line.includes("local.scan"));
+		const column = lines[row].indexOf("local.scan");
+		panel.invalidate();
+		assert.equal(panel.handleMouse(pointer(lines, column, row)), undefined);
+		panel.render(120);
+		const stale = pointer(lines, column, row);
+		stale.height = lines.length + 1;
+		assert.equal(panel.handleMouse(stale), undefined);
+		panel.render(70);
+		assert.equal(panel.handleMouse(pointer(lines, column, row)), undefined);
+		assert.match(panel.render(120).join("\n"), /› routing\.cat-read/);
+		panel.dispose();
+		assert.equal(panel.handleMouse(pointer(lines, column, row)), undefined);
+		assert.deepEqual(calls, []);
+		assert.equal(panelCalls.done, undefined);
+	});
+
+	it("scrolls the list under the pointer without invoking an action", () => {
+		const { host, calls } = controlHost();
+		const { panel } = rig(data(), 24, { actionHost: host });
+		const lines = panel.render(120);
+		const row = lines.findIndex((line) => line.includes("routing.cat-read"));
+		assert.equal(panel.handleMouse(pointer(lines, 4, row, "wheel", 1))?.handled, true);
+		assert.match(panel.render(120).join("\n"), /› local\.scan/);
+		assert.deepEqual(calls, []);
+	});
+
+	it("keeps every action and Close reachable at narrow widths", async () => {
+		for (const width of [60, 30]) {
+			const { host, calls } = controlHost();
+			const { panel, calls: panelCalls } = rig(data(), 12, { actionHost: host });
+			const lines = panel.render(width);
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			assert.ok(lines.join("\n").includes("[Actions]"), `actions at ${width}`);
+			clickLabel(panel, width, "[Actions]");
+			await settle();
+			assert.equal(calls[0].action, "disable");
+			clickLabel(panel, width, "[Close]");
+			assert.ok(panelCalls.done);
+		}
+		const { panel, calls: panelCalls } = rig(data(), 12);
+		assert.match(panel.render(12).join("\n"), /\[Close\]/);
+		clickLabel(panel, 12, "[Close]");
+		assert.ok(panelCalls.done);
+	});
+
+	it("does not let a late reader result replace the view the operator moved to", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => (release = resolve));
+		const { host } = controlHost({
+			async control(action, _id, shown) {
+				await gate;
+				return { snapshot: shown, outcome: `late ${action}` };
+			},
+		});
+		const { panel } = rig(data(), 24, { actionHost: host });
+		clickLabel(panel, 120, "Data");
+		clickLabel(panel, 120, "Rules");
+		release();
+		await settle();
+		const text = panel.render(120).join("\n");
+		assert.match(text, /Policy · Rules/);
+		assert.doesNotMatch(text, /late data/);
+		assert.match(text, /routing\.cat-read/);
+	});
+});
+
+describe("PolicyApprovalPanel reader", () => {
+	const make = (actionLabel: string, rows = 10) => {
+		const decisions: boolean[] = [];
+		const panel = new PolicyApprovalPanel({
+			title: "Review",
+			artifact: Array.from({ length: 40 }, (_, index) => `row-${index}`).join("\n"),
+			actionLabel,
+			tui: { requestRender() {} },
+			getMaxRows: () => rows,
+			done: (approved) => decisions.push(approved),
+		});
+		return { panel, decisions };
+	};
+	const toEnd = (panel: PolicyApprovalPanel, width: number) => {
+		for (let step = 0; step < 100 && !panel.render(width).join("\n").includes("row-39"); step++) {
+			const lines = panel.render(width);
+			panel.handleMouse(pointer(lines, 2, 2, "wheel", 3));
+		}
+	};
+
+	it("keeps the final action unavailable until the last page and ignores a pointer press before then", () => {
+		const { panel, decisions } = make("Approve steer");
+		let lines = panel.render(60);
+		assert.match(lines.at(-1) ?? "", /\[Read pages\] \[Cancel\]/);
+		const press = pointer(lines, 2, lines.length - 1);
+		assert.equal(panel.handleMouse(press)?.handled, true);
+		panel.handleInput("a");
+		assert.deepEqual(decisions, []);
+		toEnd(panel, 60);
+		lines = panel.render(60);
+		assert.match(lines.at(-1) ?? "", /\[Approve steer\] \[Cancel\]/);
+	});
+
+	it("labels the final action for its effect and commits only from that action", () => {
+		const { panel, decisions } = make("Approve as block");
+		toEnd(panel, 60);
+		const lines = panel.render(60);
+		assert.equal(panel.handleMouse(pointer(lines, 3, lines.length - 1))?.handled, true);
+		assert.deepEqual(decisions, [true]);
+	});
+
+	it("never labels a rejection as approval", () => {
+		const { panel } = make("Reject");
+		toEnd(panel, 60);
+		const text = panel.render(60).join("\n");
+		assert.match(text, /\[Reject\] \[Cancel\]/);
+		assert.doesNotMatch(text, /Approve/);
+	});
+
+	it("cancels by pointer or key without confirming and scrolls by wheel and page keys", () => {
+		const { panel, decisions } = make("Approve exact");
+		const lines = panel.render(60);
+		const label = lines.at(-1) ?? "";
+		panel.handleMouse(pointer(lines, label.indexOf("[Cancel]") + 1, lines.length - 1));
+		assert.deepEqual(decisions, [false]);
+		const second = make("Approve exact");
+		second.panel.render(60);
+		second.panel.handleInput("\u001b[6~");
+		assert.match(second.panel.render(60).join("\n"), /row-9|row-8/);
+		const start = second.panel.render(60);
+		second.panel.handleMouse(pointer(start, 2, 2, "wheel", -3));
+		assert.deepEqual(second.decisions, []);
+	});
+
+	it("ignores a press whose geometry no longer matches the rendered page", () => {
+		const { panel, decisions } = make("Approve exact");
+		toEnd(panel, 60);
+		const lines = panel.render(60);
+		const press = pointer(lines, 3, lines.length - 1);
+		panel.invalidate();
+		assert.equal(panel.handleMouse(press), undefined);
+		panel.render(40);
+		assert.equal(panel.handleMouse(press), undefined);
+		assert.deepEqual(decisions, []);
 	});
 });

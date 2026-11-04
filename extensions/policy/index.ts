@@ -25,17 +25,20 @@ import {
 	capText,
 	formatPolicyList,
 	formatPolicyShow,
+	type PanelActionResult,
 	PolicyApprovalPanel,
 	PolicyPanel,
+	type PolicyPanelControl,
 	type PolicyPanelResult,
 	readFireSummary,
 	readRecentActivity,
 	terminalSafe,
 } from "./panel.ts";
-import { effectiveState, permitsEffectChoice, type RuleRecord } from "./rule.ts";
+import { effectiveState, permitsEffectChoice, type RuleRecord, type SessionRuleAudit } from "./rule.ts";
 import { PolicyRuntime } from "./runtime.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
 import {
+	boundedInspection,
 	formatCatalog,
 	policyDataCommand,
 	policyImportCommand,
@@ -245,7 +248,80 @@ interface PolicyCommandEnv {
 	runtime: PolicyRuntime;
 	dir: string;
 	modeText: () => { mode: PolicyMode; source: string };
-	reviewArtifact: (ctx: ExtensionContext, title: string, artifact: string) => Promise<boolean>;
+	reviewArtifact: (ctx: ExtensionContext, title: string, artifact: string, actionLabel?: string) => Promise<boolean>;
+}
+
+/** Final-button label for the reader, taken from the effect the title announces. */
+function reviewLabel(title: string): string {
+	if (/^reject\b/i.test(title)) return "Reject";
+	if (/^remove\b/i.test(title)) return "Remove";
+	if (/^import\b/i.test(title)) return "Import";
+	return "Approve";
+}
+
+/**
+ * Panel entry to the same owner operations the command verbs use. Targets come from the snapshot the
+ * panel displays, so a changed definition or observation period is refused rather than applied.
+ */
+async function panelControl(
+	env: PolicyCommandEnv,
+	ctx: ExtensionContext,
+	action: PolicyPanelControl,
+	id: string | undefined,
+	snapshot: RuleSnapshot,
+): Promise<PanelActionResult> {
+	const done = async (outcome: string): Promise<PanelActionResult> => ({
+		snapshot: await env.loadRegistry(ctx),
+		outcome,
+	});
+	if (action === "state") return done(boundedInspection(await env.runtime.inspect("state", {}, ctx)));
+	if (action === "data" || action === "data-actions") return done(await panelData(env, ctx, action, snapshot));
+	if (!id) throw new Error("Select a rule or recorded call first.");
+	if (action === "explain") return done(boundedInspection(await env.runtime.inspect("explain", { id }, ctx)));
+	return done(await panelRuleControl(env, ctx, action, id, snapshot));
+}
+
+async function panelData(
+	env: PolicyCommandEnv,
+	ctx: ExtensionContext,
+	action: "data" | "data-actions",
+	snapshot: RuleSnapshot,
+): Promise<string> {
+	const args = action === "data" ? "list" : await dataArguments(ctx, "", snapshot);
+	if (args === undefined) return "Policy data action canceled.";
+	return policyDataCommand(
+		env.registry,
+		args,
+		makeRuleAudit(ctx, "panel"),
+		(title, message) => env.reviewArtifact(ctx, title, message, reviewLabel(title)),
+		ctx.cwd,
+	);
+}
+
+/** Lifecycle, effect, and reset controls for the rule the panel displays. */
+async function panelRuleControl(
+	env: PolicyCommandEnv,
+	ctx: ExtensionContext,
+	action: PolicyPanelControl,
+	id: string,
+	snapshot: RuleSnapshot,
+): Promise<string> {
+	if (!primaryChoices(action, snapshot, env.registry).includes(id))
+		throw new Error(`Rule ${id} does not accept ${action} in its current state`);
+	const record = snapshot.records.get(id);
+	if (action === "effect" && (!record || !permitsEffectChoice(record)))
+		throw new Error(`Rule ${id} permits an exact replacement proposal only`);
+	let revision: string | undefined;
+	const parts = await controlArguments(ctx, action, [id], snapshot, env.registry, (target) => {
+		if (action === "reset") revision = env.runtime.resetRevision(target);
+	});
+	if (!parts) return "Policy control canceled. No rules changed.";
+	const audit = makeRuleAudit(ctx, "panel");
+	if (action === "reset") return applyReset(env, ctx, parts[0], parts.slice(1).join(" "), revision);
+	if (action !== "effect") return applyLifecycle(env, ctx, action, parts[0], parts.slice(1).join(" "), audit, snapshot);
+	const effect = parts[1];
+	if (effect !== "steer" && effect !== "block") throw new Error("Effect must be steer or block");
+	return applyEffect(env, ctx, parts[0], effect, parts.slice(2).join(" "), audit, snapshot);
 }
 
 type PolicyVerbHandler = (
@@ -397,9 +473,20 @@ async function policyResetVerb(
 		env.output(ctx, "Usage: /policy reset <id|--all> <reason...>", true);
 		return;
 	}
+	env.output(ctx, await applyReset(env, ctx, parts[0], parts.slice(1).join(" "), revision));
+}
+
+/** Start a new observation period for one rule or all rules; the revision pins the admitted period. */
+async function applyReset(
+	env: PolicyCommandEnv,
+	ctx: ExtensionContext,
+	target: string,
+	reason: string,
+	revision: string | undefined,
+): Promise<string> {
 	await env.loadRegistry(ctx);
-	env.runtime.reset(parts[0] === "--all" ? undefined : [parts[0]], parts.slice(1).join(" "), revision);
-	env.output(ctx, "Started a new policy observation period.");
+	env.runtime.reset(target === "--all" ? undefined : [target], reason, revision);
+	return "Started a new policy observation period.";
 }
 
 function policyCatalogVerb(
@@ -457,7 +544,7 @@ function supplyDataRevision(json: string, snapshot: RuleSnapshot): string {
 }
 
 async function dataEditor(
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	action: string,
 	snapshot: RuleSnapshot,
 ): Promise<string | undefined> {
@@ -470,7 +557,7 @@ async function dataEditor(
 }
 
 async function dataArguments(
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	supplied: string,
 	snapshot: RuleSnapshot,
 ): Promise<string | undefined> {
@@ -690,7 +777,7 @@ function validateControlTarget(
 }
 
 async function selectControlTarget(
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	verb: string,
 	snapshot: RuleSnapshot,
 	registry: RuleRegistry,
@@ -710,7 +797,7 @@ async function selectControlTarget(
 }
 
 async function controlArguments(
-	ctx: ExtensionCommandContext,
+	ctx: ExtensionContext,
 	verb: string,
 	supplied: string[],
 	snapshot: RuleSnapshot,
@@ -759,14 +846,28 @@ async function policyLifecycleVerb(
 		return;
 	}
 	const [id, ...reasons] = parts;
-	const reason = reasons.join(" ");
-	const audit = makeRuleAudit(ctx, "command");
+	env.output(
+		ctx,
+		await applyLifecycle(env, ctx, verb, id, reasons.join(" "), makeRuleAudit(ctx, "command"), snapshot),
+	);
+}
+
+/** Disable, enable, or retire one rule against the target identity the operator saw. */
+async function applyLifecycle(
+	env: PolicyCommandEnv,
+	ctx: ExtensionContext,
+	verb: string,
+	id: string,
+	reason: string,
+	audit: SessionRuleAudit,
+	snapshot: RuleSnapshot,
+): Promise<string> {
 	const expectedIdentity = targetIdentity(snapshot.records.get(id)) ?? undefined;
 	if (verb === "disable") await env.registry.disable(id, reason, audit, expectedIdentity);
 	else if (verb === "enable") await env.registry.enable(id, reason, audit, expectedIdentity);
 	else await env.registry.retire(id, reason, audit, expectedIdentity);
 	await env.loadRegistry(ctx);
-	env.output(ctx, `${verb === "retire" ? "Retired" : verb === "disable" ? "Disabled" : "Enabled"} ${id}.`);
+	return `${verb === "retire" ? "Retired" : verb === "disable" ? "Disabled" : "Enabled"} ${id}.`;
 }
 
 async function policyEffectVerb(
@@ -784,15 +885,25 @@ async function policyEffectVerb(
 		env.output(ctx, "Usage: /policy effect <id> <steer|block> <reason...>", true);
 		return;
 	}
-	await env.registry.setEffect(
-		parts[0],
-		parts[1],
-		parts.slice(2).join(" "),
-		makeRuleAudit(ctx, "command"),
-		targetIdentity(snapshot.records.get(parts[0])) ?? undefined,
+	env.output(
+		ctx,
+		await applyEffect(env, ctx, parts[0], parts[1], parts.slice(2).join(" "), makeRuleAudit(ctx, "command"), snapshot),
 	);
+}
+
+/** Select steer or block for one rule against the target identity the operator saw. */
+async function applyEffect(
+	env: PolicyCommandEnv,
+	ctx: ExtensionContext,
+	id: string,
+	effect: "steer" | "block",
+	reason: string,
+	audit: SessionRuleAudit,
+	snapshot: RuleSnapshot,
+): Promise<string> {
+	await env.registry.setEffect(id, effect, reason, audit, targetIdentity(snapshot.records.get(id)) ?? undefined);
 	await env.loadRegistry(ctx);
-	env.output(ctx, `Set ${parts[0]} effect to ${parts[1]}.`);
+	return `Set ${id} effect to ${effect}.`;
 }
 
 export default function registerPolicy(pi: ExtensionAPI): void {
@@ -891,13 +1002,19 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		}
 		(error ? process.stderr : process.stdout).write(`${safe}\n`);
 	};
-	const reviewArtifact = (ctx: ExtensionContext, title: string, artifact: string): Promise<boolean> =>
+	const reviewArtifact = (
+		ctx: ExtensionContext,
+		title: string,
+		artifact: string,
+		actionLabel = reviewLabel(title),
+	): Promise<boolean> =>
 		ctx.mode === "tui" && ctx.hasUI
 			? ctx.ui.custom<boolean>(
 					(tui, _theme, _keys, done) =>
 						new PolicyApprovalPanel({
 							title,
 							artifact,
+							actionLabel,
 							tui,
 							getMaxRows: () => tui.terminal.rows,
 							done,
@@ -936,14 +1053,16 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 					initialSelectedProposalId: panelState.selectedProposalId,
 					initialSelectedActivityKey: panelState.selectedActivityKey,
 					actionHost: {
-						confirm: (title, message) => prompt(() => reviewArtifact(ctx, title, message)),
+						confirm: (title, message, actionLabel) => prompt(() => reviewArtifact(ctx, title, message, actionLabel)),
 						select: (title, options) => prompt(() => ctx.ui.select(title, options)),
+						refresh: () => loadRegistry(ctx),
+						control: (action, id, shown) => prompt(() => panelControl(commandEnv, ctx, action, id, shown)),
 						approve: async (id, effect, revision) => {
 							await registry.decide(id, "approved", effect, makeRuleAudit(ctx, "panel"), revision);
 							return { snapshot: await loadRegistry(ctx), outcome: `Approved proposal ${id}.` };
 						},
-						reject: async (id) => {
-							await registry.decide(id, "rejected", undefined, makeRuleAudit(ctx, "panel"));
+						reject: async (id, revision) => {
+							await registry.decide(id, "rejected", undefined, makeRuleAudit(ctx, "panel"), revision);
 							return { snapshot: await loadRegistry(ctx), outcome: `Rejected proposal ${id}.` };
 						},
 					},

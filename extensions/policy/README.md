@@ -4,6 +4,15 @@ The ordinary extension publishes its registered tool renderers at factory load a
 on versioned requests through the [tool display contract](../../docs/conventions/tool-display.md).
 The payload contains only tool names and renderer fields, never execution functions.
 
+`display.ts` is the presentation-only module for those renderers. Its `toolDisplay()`
+export returns the same renderer records the tool registration and the publication use.
+It imports only `presentation.ts` and public Pi types, so a client can load it to
+render policy cards without starting the extension. The `durable:contribution` carries
+`display: { version: 1, entry: "./display.ts", export: "toolDisplay" }` for that purpose.
+Cards use the host-supplied key hints for the expansion binding and show neutral wording
+when the host has none. An error card leads with its first line; expansion shows every
+retained diagnostic line with terminal controls escaped.
+
 `policy` governs tool choice, argument validity, result interpretation, failure
 recovery, and resource use. Each rule declares its purpose, applicability,
 evidence, action, and authority. One extension owns decisions, corrections,
@@ -1151,12 +1160,31 @@ another panel while the current request loads or remains open. Opening the panel
 makes no approval or rule edit; the normal first-use catalog initialization still
 applies when no registry exists.
 
-The panel shares rule/proposal details and operator gates with the command. It
-shows exact actions and revisions, presents complete approval artifacts, and
-provides command hints for disable/enable, effect, retire, reset, explain, and
-data/state controls. TUI proposal and data approvals use the same paged artifact reviewer.
-A result from that reviewer still passes the normal revision and authority checks
-before any mutation. TUI and RPC
+The panel shares rule/proposal details and operator gates with the command. Its
+header shows Rules, Proposals, Activity, Data, and State as clickable views, plus
+`[Actions]` and `[Close]`. Below 78 columns the layout stacks, view names shorten, and
+Actions and Close stay reachable; a second click or Enter on the selected row opens its
+full-width detail, and Esc returns to the list. Clicking a row only selects it. The wheel
+scrolls the list or detail pane under the pointer. Hit targets are rebuilt on every render
+and dropped on resize, view change, replacement, hide, and disposal, so a click never acts
+on the row that now occupies an old position.
+
+Disable, enable, effect, retire, reset, explain, data, and state actions call the same
+owner functions as the command verbs. They ask for the reason (and the effect) in the same
+dialogs, bind the target identity of the definition shown in the panel, and pin the reset
+observation period before the reason is entered. A changed definition, proposal, or
+observation period produces an explicit "Action refused" message and refreshes the panel
+from the store; nothing is applied to the new content. An exact-only rule offers no effect
+choice. State is the `/policy state` inspection and Data is `/policy data list`; the Data view's Actions menu offers the remaining `/policy data` operations with their review reader. A result that arrives after the operator left
+its view does not replace that view.
+
+Proposal approval and rejection, data changes, and catalog imports use the paged artifact
+reader. It scrolls by wheel, Space/b, and page keys and shows the exact artifact text. Its
+final button is unavailable (`[Read pages]`) until the last page is displayed and is then
+labelled for the real effect, such as `[Approve as block]`, `[Approve disable]`,
+`[Reject]`, `[Remove]`, or `[Import]`. A pointer press cannot skip the reader;
+`[Cancel]` and Esc write nothing. A result from the reader still passes the normal revision
+and authority checks before any mutation. TUI and RPC
 command responses use notifications. JSON commands append non-context custom
 entries. Print commands use the host-managed output path. The interactive panel
 itself remains TUI-only.

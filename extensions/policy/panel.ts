@@ -10,6 +10,8 @@ import {
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
 import { ruleScopeVisibility } from "./classify.ts";
 import {
@@ -38,7 +40,41 @@ const MAX_PANEL_ROWS = 46;
 const READ_CHUNK_BYTES = 64 * 1024;
 const DAILY_STORE_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 
-export type PolicyView = "rules" | "proposals" | "activity";
+export type PolicyView = "rules" | "proposals" | "activity" | "data" | "state";
+export type PolicyPanelControl = "disable" | "enable" | "effect" | "retire" | "reset" | "explain" | "data" | "state" | "data-actions";
+
+const ACTION_MENUS: Record<PolicyView, string[]> = {
+	rules: ["Disable", "Enable", "Effect", "Retire", "Reset", "Explain"],
+	proposals: ["Approve", "Reject"],
+	activity: [],
+	data: ["Read data", "Data actions"],
+	state: ["Read state"],
+};
+
+const ACTION_CONTROLS: Record<string, PolicyPanelControl> = {
+	Disable: "disable",
+	Enable: "enable",
+	Effect: "effect",
+	Retire: "retire",
+	Reset: "reset",
+	Explain: "explain",
+	"Explain call": "explain",
+	"Read data": "data",
+	"Data actions": "data-actions",
+	"Read state": "state",
+};
+
+const PANEL_VIEWS: ReadonlyArray<{ id: PolicyView; label: string }> = [
+	{ id: "rules", label: "Rules" },
+	{ id: "proposals", label: "Proposals" },
+	{ id: "activity", label: "Activity" },
+	{ id: "data", label: "Data" },
+	{ id: "state", label: "State" },
+];
+
+function viewLabel(view: PolicyView): string {
+	return PANEL_VIEWS.find((entry) => entry.id === view)?.label ?? view;
+}
 type ModelFireMap = ReadonlyMap<string | null, number>;
 
 export interface RuleFireSummary {
@@ -100,10 +136,12 @@ export interface PanelActionResult {
 }
 
 export interface PolicyPanelActionHost {
-	confirm(title: string, message: string): Promise<boolean>;
+	confirm(title: string, message: string, actionLabel?: string): Promise<boolean>;
 	select(title: string, options: string[]): Promise<string | undefined>;
 	approve(proposalId: string, effect?: RuleEffect, expectedProposalRevision?: string): Promise<PanelActionResult>;
-	reject(proposalId: string): Promise<PanelActionResult>;
+	reject(proposalId: string, expectedProposalRevision?: string): Promise<PanelActionResult>;
+	control?(action: PolicyPanelControl, id: string | undefined, snapshot: RuleSnapshot): Promise<PanelActionResult>;
+	refresh?(): Promise<RuleSnapshot>;
 }
 
 interface PolicyPanelDeps {
@@ -874,6 +912,7 @@ function activityDetailLines(record: PolicyActivityRecord, activity: ActivityRea
 interface PolicyApprovalPanelDeps {
 	title: string;
 	artifact: string;
+	actionLabel?: string;
 	tui: { requestRender(): void };
 	getMaxRows(): number;
 	done(approved: boolean): void;
@@ -909,6 +948,14 @@ export class PolicyApprovalPanel {
 	private lines: string[] = [];
 	private ready = false;
 	private finished = false;
+	private geometry?: {
+		width: number;
+		rows: number;
+		lineCount: number;
+		actionRow: number;
+		actionEnd: number;
+		cancelStart: number;
+	};
 
 	private readonly deps: PolicyApprovalPanelDeps;
 
@@ -924,17 +971,31 @@ export class PolicyApprovalPanel {
 			this.lines = wrapArtifact(this.deps.artifact, Math.max(8, width));
 		}
 		this.ready = false;
+		this.geometry = undefined;
 		this.pageRows = Math.max(0, rows - 3);
-		if (width < 24 || rows < 6) return [fitText("Resize to review. Esc cancels.", width)];
+		if (width < 24 || rows < 6) return [fitText("Resize. Esc cancels.", width)];
 		this.scroll = Math.min(this.scroll, Math.max(0, this.lines.length - this.pageRows));
 		const end = Math.min(this.lines.length, this.scroll + this.pageRows);
 		this.ready = end === this.lines.length;
-		return [
+		const label = this.deps.actionLabel ?? "Approve";
+		const action = this.ready ? `[${label}]` : "[Read pages]";
+		const cancelStart = visibleWidth(action) + 1;
+		const controls = `${action} [Cancel]`;
+		const output = [
 			fitText(this.deps.title, width),
 			...this.lines.slice(this.scroll, end),
 			fitText(`Space/b: page | ${this.scroll + 1}-${end}/${this.lines.length}`, width),
-			fitText(this.ready ? "a: approve | Esc: cancel" : "Esc: cancel | Read pages", width),
+			fitText(controls, width),
 		];
+		this.geometry = {
+			width,
+			rows,
+			lineCount: output.length,
+			actionRow: end - this.scroll + 2,
+			actionEnd: visibleWidth(action),
+			cancelStart,
+		};
+		return output;
 	}
 
 	handleInput(raw: string): void {
@@ -953,15 +1014,39 @@ export class PolicyApprovalPanel {
 		else if (data === "b" || matchesKey(raw, "pageUp"))
 			this.scroll = Math.max(0, this.scroll - Math.max(1, this.pageRows - 1));
 		else return;
-		this.ready = false;
+		this.invalidate();
 		this.deps.tui.requestRender();
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const geometry = this.geometry;
+		if (
+			this.finished ||
+			!geometry ||
+			event.width !== geometry.width ||
+			event.height !== geometry.lineCount ||
+			this.deps.getMaxRows() !== geometry.rows
+		)
+			return;
+		if (event.type === "wheel") {
+			const delta = Math.sign(event.wheelDelta ?? 0) * Math.min(3, Math.max(1, this.pageRows - 1));
+			this.scroll = Math.max(0, Math.min(this.lines.length - this.pageRows, this.scroll + delta));
+			this.invalidate();
+			this.deps.tui.requestRender();
+			return { handled: true };
+		}
+		if (event.type !== "click" || event.button !== "left" || event.y !== geometry.actionRow) return;
+		if (event.x >= geometry.cancelStart && event.x < geometry.cancelStart + 8) this.handleInput("\u001b");
+		else if (event.x < geometry.actionEnd && this.ready) this.handleInput("a");
+		return { handled: true };
 	}
 
 	invalidate(): void {
 		this.ready = false;
+		this.geometry = undefined;
 	}
 
-	dispose(): void {}
+	dispose(): void { this.finished = true; this.invalidate(); }
 }
 
 export class PolicyPanel {
@@ -982,6 +1067,11 @@ export class PolicyPanel {
 	private cachedRows = -1;
 	private cachedVersion = -1;
 	private cachedLines: string[] = [];
+	private detailOnly = false;
+	private disposed = false;
+	private controlToken = 0;
+	private hits: Array<{ x0: number; x1: number; y: number; act: () => void }> = [];
+	private geometry?: { width: number; lineCount: number; version: number; bodyRows: number; split: number; detailOnly: boolean };
 
 	constructor(deps: PolicyPanelDeps) {
 		this.deps = deps;
@@ -1000,6 +1090,11 @@ export class PolicyPanel {
 				(record) => activityKey(record) === deps.initialSelectedActivityKey,
 			);
 			if (selected >= 0) this.selectedActivity = selected;
+		}
+		if (this.view === "data" || this.view === "state") {
+			this.detailOnly = true;
+			const view = this.view;
+			queueMicrotask(() => void this.runControl(view));
 		}
 	}
 
@@ -1028,6 +1123,7 @@ export class PolicyPanel {
 	}
 
 	private itemCount(): number {
+		if (this.view === "data" || this.view === "state") return 0;
 		return this.view === "rules"
 			? this.rules.length
 			: this.view === "proposals"
@@ -1064,6 +1160,7 @@ export class PolicyPanel {
 				width,
 			);
 		}
+		if (this.view === "data" || this.view === "state") return wrapDetail([...health, this.outcome || "Select Actions to refresh this reader."], width);
 		const record = this.currentActivity();
 		return wrapDetail(
 			record
@@ -1083,17 +1180,24 @@ export class PolicyPanel {
 	}
 
 	private bump(): void {
+		this.hits = [];
+		this.geometry = undefined;
 		this.version++;
 		this.deps.tui.requestRender();
 	}
 
 	private move(delta: number): void {
+		if (this.detailOnly) {
+			this.detailScroll = Math.max(0, this.detailScroll + delta);
+			return;
+		}
 		const last = Math.max(0, this.itemCount() - 1);
 		if (this.view === "rules") this.selectedRule = Math.max(0, Math.min(last, this.selectedRule + delta));
 		else if (this.view === "proposals")
 			this.selectedProposal = Math.max(0, Math.min(last, this.selectedProposal + delta));
 		else this.selectedActivity = Math.max(0, Math.min(last, this.selectedActivity + delta));
 		this.detailScroll = 0;
+		this.outcome = "";
 	}
 
 	private finish(): void {
@@ -1121,7 +1225,9 @@ export class PolicyPanel {
 			const result = await this.confirmAndRun(host, action, proposal, effect);
 			if (result !== undefined) this.applyResult(result);
 		} catch (error) {
-			this.outcome = `Action failed: ${terminalSafe(error instanceof Error ? error.message : String(error))}`;
+			this.outcome = `Action refused: ${terminalSafe(error instanceof Error ? error.message : String(error))}. Review refreshed.`;
+			const fresh = await host.refresh?.();
+			if (fresh) this.deps.data.snapshot = fresh;
 		} finally {
 			if (this.outcome === "working…") this.outcome = "Action cancelled.";
 			this.actionPending = false;
@@ -1155,41 +1261,151 @@ export class PolicyPanel {
 		proposal: PendingProposal,
 		effect: RuleEffect | undefined,
 	): Promise<PanelActionResult | undefined> {
-		const exact =
-			(proposal.candidate !== undefined && !candidatePermitsEffectChoice(proposal.candidate)) ||
-			proposal.operation === "replace";
 		const decision = action === "approve" ? "approve" : "reject";
 		const effectText = effect ? ` with effect ${effect}` : "";
 		const title = decision === "approve" ? "Approve policy proposal" : "Reject policy proposal";
-		const message = `${decision === "approve" ? "Approve" : "Reject"} ${proposal.operation} proposal ${proposal.id} for ${proposal.ruleId}${effectText}?\n\n${proposalDetailLines(proposal).map(terminalSafe).join("\n")}`;
-		const confirmed = await host.confirm(title, message);
+		const message = `${decision === "approve" ? "Approve" : "Reject"} ${proposal.operation} proposal ${proposal.id} for ${proposal.ruleId}${effectText}?\n\n${JSON.stringify(proposal, null, 2)}`;
+		const label = action === "reject" ? "Reject" : effect ? `Approve as ${effect}` : `Approve ${proposal.operation}`;
+		const confirmed = await host.confirm(title, message, label);
 		if (!confirmed) return undefined;
 		return action === "approve"
-			? await host.approve(proposal.id, effect, exact ? proposalRevision(proposal) : undefined)
-			: await host.reject(proposal.id);
+			? await host.approve(proposal.id, effect, proposalRevision(proposal))
+			: await host.reject(proposal.id, proposalRevision(proposal));
 	}
 
 	private applyResult(result: PanelActionResult): void {
+		const ruleId = this.currentRule()?.id;
+		const proposalId = this.currentProposal()?.id;
 		this.deps.data.snapshot = result.snapshot;
 		this.outcome = terminalSafe(result.outcome);
-		this.selectedRule = Math.min(this.selectedRule, Math.max(0, this.rules.length - 1));
-		this.selectedProposal = Math.min(this.selectedProposal, Math.max(0, this.proposals.length - 1));
+		this.selectedRule = Math.max(0, this.rules.findIndex((record) => record.id === ruleId));
+		this.selectedProposal = Math.max(0, this.proposals.findIndex((proposal) => proposal.id === proposalId));
 	}
 
-	private showRuleActionCommand(action: "disable" | "enable" | "effect" | "retire" | "reset" | "explain"): void {
-		const record = this.currentRule();
-		if (!record) return;
-		if (action === "effect" && !permitsEffectChoice(record)) {
-			this.outcome = "This action requires an exact replacement proposal.";
-		} else {
-			const tail = action === "effect" ? "<steer|block> <reason...>" : action === "explain" ? "" : "<reason...>";
-			this.outcome = `Run: /policy ${action} ${record.id} ${tail}`.trim();
+	/** The rule or recorded call a control acts on, or undefined when the control has no target. */
+	private controlTarget(action: PolicyPanelControl): string | undefined {
+		if (action === "data" || action === "state" || action === "data-actions") return undefined;
+		if (this.view === "activity") {
+			const callId = this.currentActivity()?.callId;
+			return callId === undefined ? undefined : `call:${callId}`;
 		}
+		return this.currentRule()?.id;
+	}
+
+	/**
+	 * Run one owner control. Readers (explain, data, state) may be superseded by a later request; a
+	 * result that arrives after the operator left its view changes the snapshot only.
+	 */
+	private async runControl(action: PolicyPanelControl): Promise<void> {
+		const host = this.deps.actionHost;
+		if (!host?.control || this.disposed) return;
+		const reader = action === "explain" || action === "data" || action === "state";
+		if (!reader && this.actionPending) return;
+		if (this.exactOnly(action)) return;
+		const token = ++this.controlToken;
+		const startView = this.view;
+		const current = () => !this.disposed && token === this.controlToken && this.view === startView;
+		if (!reader) this.actionPending = true;
+		this.bump();
+		try {
+			const result = await host.control(action, this.controlTarget(action), this.deps.data.snapshot);
+			if (this.disposed) return;
+			if (current()) this.applyResult(result);
+			else this.deps.data.snapshot = result.snapshot;
+		} catch (error) {
+			await this.refuse(host, error, current);
+		} finally {
+			this.settleControl(action, reader, current());
+		}
+	}
+
+	/** An exact-only rule has no steer or block choice; say so instead of calling the owner. */
+	private exactOnly(action: PolicyPanelControl): boolean {
+		const record = this.view === "rules" ? this.currentRule() : undefined;
+		if (action !== "effect" || !record || permitsEffectChoice(record)) return false;
+		this.outcome = "This action requires an exact replacement proposal.";
+		this.bump();
+		return true;
+	}
+
+	private settleControl(action: PolicyPanelControl, reader: boolean, current: boolean): void {
+		if (!reader) this.actionPending = false;
+		if (current) {
+			this.detailOnly = reader || action === "data-actions";
+			this.detailScroll = 0;
+		}
+		if (!this.disposed) this.bump();
+	}
+
+	private async refuse(host: PolicyPanelActionHost, error: unknown, current: () => boolean): Promise<void> {
+		if (this.disposed) return;
+		const fresh = await host.refresh?.();
+		if (fresh && !this.disposed) this.deps.data.snapshot = fresh;
+		if (current())
+			this.outcome = `Action refused: ${terminalSafe(error instanceof Error ? error.message : String(error))}. Review refreshed.`;
+	}
+
+	private actionMenu(): string[] {
+		if (this.view === "activity") return this.currentActivity()?.callId === undefined ? [] : ["Explain call"];
+		return ACTION_MENUS[this.view];
+	}
+
+	private async actions(): Promise<void> {
+		const host = this.deps.actionHost;
+		if (!host || this.actionPending || this.disposed) return;
+		const options = this.actionMenu();
+		if (options.length === 0) {
+			this.outcome = "This activity record has no retained call id to explain.";
+			this.bump();
+			return;
+		}
+		const version = this.version;
+		const selected = await host.select("Policy actions", options);
+		if (!selected || this.disposed || version !== this.version) return;
+		if (selected === "Approve" || selected === "Reject") {
+			void this.runProposalAction(selected === "Approve" ? "approve" : "reject");
+			return;
+		}
+		const action = ACTION_CONTROLS[selected];
+		if (action) void this.runControl(action);
+	}
+
+	private changeView(view: PolicyView): void {
+		if (this.disposed) return;
+		this.view = view;
+		this.listScroll = 0;
+		this.detailScroll = 0;
+		this.detailOnly = view === "data" || view === "state";
+		this.outcome = "";
+		this.bump();
+		if (view === "data" || view === "state") void this.runControl(view);
+	}
+
+	private openDetail(): void {
+		if (this.view === "data" || this.view === "state") return;
+		this.detailOnly = !this.detailOnly;
+		this.detailScroll = 0;
+		this.bump();
+	}
+
+	/** A click selects a row; a second click on the selected row opens its full-width detail. */
+	private selectOnly(index: number): void {
+		const last = Math.max(0, this.itemCount() - 1);
+		const next = Math.max(0, Math.min(last, index));
+		if (next === this.selectedIndex()) {
+			this.openDetail();
+			return;
+		}
+		this.outcome = "";
+		if (this.view === "rules") this.selectedRule = next;
+		else if (this.view === "proposals") this.selectedProposal = next;
+		else this.selectedActivity = next;
 		this.detailScroll = 0;
 		this.bump();
 	}
 
 	handleInput(raw: string): void {
+		if (this.disposed) return;
 		const decoded = decodeKittyPrintable(raw);
 		const data = decoded ?? raw;
 		if (this.filtering) {
@@ -1238,7 +1454,16 @@ export class PolicyPanel {
 
 	private consumeNavigation(raw: string, data: string): boolean {
 		if (matchesKey(raw, "escape")) {
+			if (this.detailOnly && this.view !== "data" && this.view !== "state") {
+				this.detailOnly = false;
+				this.detailScroll = 0;
+				return true;
+			}
 			this.finish();
+			return false;
+		}
+		if (matchesKey(raw, "enter")) {
+			this.openDetail();
 			return false;
 		}
 		if (matchesKey(raw, "up")) {
@@ -1274,12 +1499,15 @@ export class PolicyPanel {
 	}
 
 	private cycleView(): void {
-		this.view = this.view === "rules" ? "proposals" : this.view === "proposals" ? "activity" : "rules";
-		this.listScroll = 0;
-		this.detailScroll = 0;
+		const order = PANEL_VIEWS.map((entry) => entry.id);
+		this.changeView(order[(order.indexOf(this.view) + 1) % order.length] ?? "rules");
 	}
 
 	private consumeActionKey(data: string): boolean {
+		if (data === "o") {
+			void this.actions();
+			return true;
+		}
 		if (this.view === "proposals" && this.consumeProposalKey(data)) return true;
 		if (this.view === "rules" && this.consumeRuleKey(data)) return true;
 		return this.consumeSharedKey(data);
@@ -1300,22 +1528,22 @@ export class PolicyPanel {
 	private consumeRuleKey(data: string): boolean {
 		switch (data) {
 			case "d":
-				this.showRuleActionCommand("disable");
+				void this.runControl("disable");
 				return true;
 			case "n":
-				this.showRuleActionCommand("enable");
+				void this.runControl("enable");
 				return true;
 			case "e":
-				this.showRuleActionCommand("effect");
+				void this.runControl("effect");
 				return true;
 			case "r":
-				this.showRuleActionCommand("retire");
+				void this.runControl("retire");
 				return true;
 			case "z":
-				this.showRuleActionCommand("reset");
+				void this.runControl("reset");
 				return true;
 			case "i":
-				this.showRuleActionCommand("explain");
+				void this.runControl("explain");
 				return true;
 			default:
 				return false;
@@ -1324,12 +1552,12 @@ export class PolicyPanel {
 
 	private consumeSharedKey(data: string): boolean {
 		if (data === "t") {
-			this.outcome = "Run: /policy data list";
-			return true;
+			this.changeView("data");
+			return false;
 		}
 		if (data === "s") {
-			this.outcome = "Run: /policy state";
-			return true;
+			this.changeView("state");
+			return false;
 		}
 		return false;
 	}
@@ -1339,15 +1567,21 @@ export class PolicyPanel {
 	}
 
 	private footerText(innerWidth: number): string {
-		if (this.outcome.startsWith("Run: ")) {
-			return this.deps.theme.fg("accent", this.outcome);
-		}
 		if (this.filtering) {
 			const suffix = ` · ↑↓ select · enter/esc done · ${this.itemCount()} match`;
 			const queryWidth = Math.max(1, innerWidth - visibleWidth("filter ") - visibleWidth(suffix));
 			return `${this.deps.theme.fg("accent", "filter ")}${this.deps.theme.fg("text", keepTail(`${oneLine(this.filter)}▌`, queryWidth))}${this.deps.theme.fg("dim", suffix)}`;
 		}
-		const keys = [this.keyPair("↑↓", "select"), this.keyPair("b/spc", "detail"), this.keyPair("v", "view")];
+		if (this.outcome && !this.detailOnly) {
+			const first = this.outcome.split("\n").find((line) => line.trim()) ?? this.outcome;
+			return this.deps.theme.fg("accent", oneLine(first));
+		}
+		const keys = [
+			this.keyPair("↑↓", "select"),
+			this.keyPair("b/spc", "detail"),
+			this.keyPair("v", "view"),
+			this.keyPair("o", "actions"),
+		];
 		if (this.view === "rules")
 			keys.push(
 				this.keyPair("d/n", "disable/enable"),
@@ -1357,7 +1591,8 @@ export class PolicyPanel {
 				this.keyPair("/", "filter"),
 			);
 		if (this.view === "proposals") keys.push(this.keyPair("a/x", "approve/reject"), this.keyPair("/", "filter"));
-		keys.push(this.keyPair("t/s", "data/state"), this.keyPair("esc", "close"));
+		if (this.view === "data" || this.view === "state") keys.push(this.keyPair("t/s", "data/state"));
+		keys.push(this.keyPair("esc", "close"));
 		return keys.join(this.deps.theme.fg("dim", " · "));
 	}
 
@@ -1396,23 +1631,71 @@ export class PolicyPanel {
 		return `${index === this.selectedActivity ? "› " : "  "}${time} · ${record.model ?? "(none)"} · ${record.classes.join(",")} · ${record.ruleStoreDegraded ? "degraded" : "healthy"} · ${oneLine(record.captured ?? "(not captured)")}`;
 	}
 
+	/** Visible view tabs plus Actions and Close; each entry registers a hit target at its drawn columns. */
+	private controlRow(width: number, y: number): string {
+		const actionsLabel = "[Actions]";
+		const closeLabel = "[Close]";
+		const needed = (labels: string[]): number =>
+			labels.reduce((total, label, index) => total + label.length + (index === this.viewIndex() ? 2 : 0) + 1, 0) +
+			actionsLabel.length +
+			1 +
+			closeLabel.length;
+		let labels = PANEL_VIEWS.map((entry) => entry.label);
+		if (needed(labels) > width) labels = PANEL_VIEWS.map((entry) => entry.label.slice(0, 3));
+		if (needed(labels) > width) labels = PANEL_VIEWS.map((entry) => entry.label.slice(0, 1));
+		if (needed(labels) > width) {
+			this.hits.push({ x0: 0, x1: closeLabel.length, y, act: () => this.finish() });
+			return this.deps.theme.fg("accent", closeLabel);
+		}
+		const parts: string[] = [];
+		let column = 0;
+		for (const [index, entry] of PANEL_VIEWS.entries()) {
+			const name = labels[index] ?? entry.label;
+			const selected = entry.id === this.view;
+			const text = selected ? `[${name}]` : name;
+			this.hits.push({ x0: column, x1: column + text.length, y, act: () => this.changeView(entry.id) });
+			parts.push(selected ? this.deps.theme.fg("accent", this.deps.theme.bold(text)) : this.deps.theme.fg("text", text));
+			column += text.length + 1;
+			parts.push(" ");
+		}
+		this.hits.push({ x0: column, x1: column + actionsLabel.length, y, act: () => void this.actions() });
+		parts.push(this.deps.theme.fg("accent", actionsLabel), " ");
+		column += actionsLabel.length + 1;
+		this.hits.push({ x0: column, x1: column + closeLabel.length, y, act: () => this.finish() });
+		parts.push(this.deps.theme.fg("accent", closeLabel));
+		return parts.join("");
+	}
+
+	private viewIndex(): number {
+		return PANEL_VIEWS.findIndex((entry) => entry.id === this.view);
+	}
+
 	render(width: number): string[] {
 		this.lastWidth = width;
 		const layout = this.layout(width);
 		if (this.cachedWidth === width && this.cachedRows === layout.total && this.cachedVersion === this.version)
 			return this.cachedLines;
+		this.hits = [];
+		this.geometry = undefined;
 		const count = this.itemCount();
 		const selected = this.selectedIndex();
-		const position = count === 0 ? "0/0" : `${selected + 1}/${count}`;
-		const label = this.view === "rules" ? "Rules" : this.view === "proposals" ? "Proposals" : "Activity";
-		const healthLabel = this.healthLabel();
+		const reader = this.view === "data" || this.view === "state";
+		const position = reader ? "reader" : count === 0 ? "0/0" : `${selected + 1}/${count}`;
 		const paint = (text: string) => this.deps.theme.bg("customMessageBg", fitText(text, width));
 		this.cachedLines = layout.framed
-			? this.renderFramed(width, layout, label, position, healthLabel, selected)
-			: this.renderUnframed(width, layout, paint, label, position, healthLabel, selected);
+			? this.renderFramed(width, layout, viewLabel(this.view), position, this.healthLabel(), selected)
+			: this.renderUnframed(width, layout, paint, selected);
 		this.cachedWidth = width;
 		this.cachedRows = layout.total;
 		this.cachedVersion = this.version;
+		this.geometry = {
+			width,
+			lineCount: this.cachedLines.length,
+			version: this.version,
+			bodyRows: layout.bodyRows,
+			split: layout.framed ? 2 + layout.listWidth + 3 : width,
+			detailOnly: this.detailOnly,
+		};
 		return this.cachedLines;
 	}
 
@@ -1421,22 +1704,67 @@ export class PolicyPanel {
 		return this.deps.data.snapshot.health.incompleteFinalLine !== undefined ? "append-in-flight" : "healthy";
 	}
 
-	private renderUnframed(
-		width: number,
-		layout: Layout,
-		paint: (text: string) => string,
-		label: string,
-		position: string,
-		healthLabel: string,
-		selected: number,
-	): string[] {
-		const lines = [paint(`Policy · ${label} · ${position} · ${healthLabel}`), paint(this.listHeader(width))];
+	private renderUnframed(width: number, layout: Layout, paint: (text: string) => string, selected: number): string[] {
+		const lines = [paint(this.controlRow(width, 0))];
+		if (this.detailOnly) {
+			const rows = Math.max(0, layout.total - 2);
+			this.detailScroll = Math.min(this.detailScroll, Math.max(0, this.detailSource(width).length - rows));
+			for (const line of this.detailSource(width).slice(this.detailScroll, this.detailScroll + rows))
+				lines.push(paint(line));
+			lines.push(paint(this.footerText(width)));
+			return lines.slice(0, layout.total);
+		}
+		lines.push(paint(this.listHeader(width)));
 		const available = Math.max(0, layout.total - 3);
 		if (selected < this.listScroll) this.listScroll = selected;
 		if (selected >= this.listScroll + available) this.listScroll = Math.max(0, selected - available + 1);
-		for (let slot = 0; slot < available; slot++) lines.push(paint(this.listRow(this.listScroll + slot, width)));
+		for (let slot = 0; slot < available; slot++) {
+			const absolute = this.listScroll + slot;
+			if (absolute < this.itemCount())
+				this.hits.push({ x0: 0, x1: width, y: 2 + slot, act: () => this.selectOnly(absolute) });
+			lines.push(paint(this.listRow(absolute, width)));
+		}
 		lines.push(paint(this.footerText(width)));
 		return lines.slice(0, layout.total);
+	}
+
+	private frameRow(content: string): string {
+		return this.deps.theme.bg(
+			"customMessageBg",
+			`${this.deps.theme.fg("borderMuted", "│ ")}${content}${this.deps.theme.fg("borderMuted", " │")}`,
+		);
+	}
+
+	private framedDetail(layout: Layout, bodyRows: number): string[] {
+		const source = this.detailSource(layout.innerWidth);
+		this.detailScroll = Math.min(this.detailScroll, Math.max(0, source.length - bodyRows));
+		const detail = source.slice(this.detailScroll, this.detailScroll + bodyRows);
+		return Array.from({ length: bodyRows }, (_, body) => this.frameRow(fitText(detail[body] ?? "", layout.innerWidth)));
+	}
+
+	private framedSplit(layout: Layout, bodyRows: number, selected: number): string[] {
+		const listRows = Math.max(0, bodyRows - 1);
+		if (selected < this.listScroll) this.listScroll = selected;
+		if (selected >= this.listScroll + listRows) this.listScroll = Math.max(0, selected - listRows + 1);
+		const source = this.detailSource(layout.detailWidth);
+		this.detailScroll = Math.min(this.detailScroll, Math.max(0, source.length - bodyRows));
+		const detail = source.slice(this.detailScroll, this.detailScroll + bodyRows);
+		const rows: string[] = [];
+		for (let body = 0; body < bodyRows; body++) {
+			const absolute = this.listScroll + body - 1;
+			const list =
+				body === 0
+					? this.deps.theme.bold(this.deps.theme.fg("dim", this.listHeader(layout.listWidth)))
+					: this.deps.theme.fg(absolute === selected ? "accent" : "text", this.listRow(absolute, layout.listWidth));
+			if (body > 0 && absolute < this.itemCount())
+				this.hits.push({ x0: 2, x1: 2 + layout.listWidth, y: 2 + body, act: () => this.selectOnly(absolute) });
+			rows.push(
+				this.frameRow(
+					`${fitText(list, layout.listWidth)}${this.deps.theme.fg("borderMuted", " │ ")}${fitText(detail[body] ?? "", layout.detailWidth)}`,
+				),
+			);
+		}
+		return rows;
 	}
 
 	private renderFramed(
@@ -1450,39 +1778,22 @@ export class PolicyPanel {
 		const title = `┌─ ◆ Policy · ${label} · ${position} · ${healthLabel} `;
 		const top = `${title}${"─".repeat(Math.max(0, width - visibleWidth(title) - 1))}┐`;
 		const lines = [this.deps.theme.bg("customMessageBg", this.deps.theme.fg("borderMuted", top))];
-		const listRows = Math.max(0, layout.bodyRows - 1);
-		if (selected < this.listScroll) this.listScroll = selected;
-		if (selected >= this.listScroll + listRows) this.listScroll = Math.max(0, selected - listRows + 1);
-		this.detailScroll = Math.min(this.detailScroll, this.detailMaxScroll());
-		const detail = this.detailSource(layout.detailWidth).slice(
-			this.detailScroll,
-			this.detailScroll + layout.bodyRows,
-		);
-		for (let body = 0; body < layout.bodyRows; body++) {
-			const absolute = this.listScroll + body - 1;
-			const list =
-				body === 0
-					? this.deps.theme.bold(this.deps.theme.fg("dim", this.listHeader(layout.listWidth)))
-					: this.deps.theme.fg(absolute === selected ? "accent" : "text", this.listRow(absolute, layout.listWidth));
-			lines.push(
-				this.deps.theme.bg(
-					"customMessageBg",
-					`${this.deps.theme.fg("borderMuted", "│ ")}${fitText(list, layout.listWidth)}${this.deps.theme.fg("borderMuted", " │ ")}${fitText(detail[body] ?? "", layout.detailWidth)}${this.deps.theme.fg("borderMuted", " │")}`,
-				),
-			);
+		const control = this.controlRow(layout.innerWidth, 1);
+		for (const hit of this.hits) {
+			hit.x0 += 2;
+			hit.x1 += 2;
 		}
+		lines.push(this.frameRow(fitText(control, layout.innerWidth)));
+		const bodyRows = Math.max(0, layout.bodyRows - 1);
+		if (this.detailOnly) lines.push(...this.framedDetail(layout, bodyRows));
+		else lines.push(...this.framedSplit(layout, bodyRows, selected));
 		lines.push(
 			this.deps.theme.bg(
 				"customMessageBg",
 				this.deps.theme.fg("borderMuted", `├${"─".repeat(Math.max(0, width - 2))}┤`),
 			),
 		);
-		lines.push(
-			this.deps.theme.bg(
-				"customMessageBg",
-				`${this.deps.theme.fg("borderMuted", "│ ")}${fitText(this.footerText(layout.innerWidth), layout.innerWidth)}${this.deps.theme.fg("borderMuted", " │")}`,
-			),
-		);
+		lines.push(this.frameRow(fitText(this.footerText(layout.innerWidth), layout.innerWidth)));
 		lines.push(
 			this.deps.theme.bg(
 				"customMessageBg",
@@ -1492,9 +1803,44 @@ export class PolicyPanel {
 		return lines.slice(0, layout.total);
 	}
 
-	dispose(): void {}
+	private wheel(geometry: NonNullable<PolicyPanel["geometry"]>, event: TuiMouseEvent): void {
+		const delta = event.wheelDelta ?? 0;
+		if (delta === 0) return;
+		if (!geometry.detailOnly && event.x < geometry.split) this.move(Math.sign(delta) * Math.min(5, Math.abs(delta)));
+		else {
+			const width = geometry.detailOnly ? geometry.width : this.layout(geometry.width).detailWidth;
+			const max = Math.max(0, this.detailSource(width).length - geometry.bodyRows);
+			this.detailScroll = Math.max(0, Math.min(max, this.detailScroll + delta));
+		}
+		this.bump();
+	}
+
+	/** Pointer routing for the last rendered frame; geometry that no longer matches acts on nothing. */
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const geometry = this.geometry;
+		if (this.disposed || !geometry) return undefined;
+		if (event.width !== geometry.width || event.height !== geometry.lineCount || geometry.version !== this.version)
+			return undefined;
+		if (event.type === "wheel") {
+			this.wheel(geometry, event);
+			return { handled: true };
+		}
+		if (event.type !== "click" || event.button !== "left") return undefined;
+		const hit = this.hits.find((entry) => event.y === entry.y && event.x >= entry.x0 && event.x < entry.x1);
+		if (!hit) return undefined;
+		hit.act();
+		return { handled: true };
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		this.hits = [];
+		this.geometry = undefined;
+	}
 
 	invalidate(): void {
+		this.hits = [];
+		this.geometry = undefined;
 		this.cachedWidth = -1;
 		this.cachedRows = -1;
 		this.cachedVersion = -1;

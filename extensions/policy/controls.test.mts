@@ -20,7 +20,7 @@ import {
 	validatePackageDefinitionRow,
 	validateRuleEvent,
 } from "./local-rules.ts";
-import { PolicyPanel, type PolicyPanelActionHost, proposalDetailLines, ruleDetailLines } from "./panel.ts";
+import { PolicyPanel, type PolicyPanelActionHost, ruleDetailLines } from "./panel.ts";
 import { type FactsProgram, PROGRAM_LIMITS, RULE_CAPACITY } from "./program.ts";
 import {
 	type AgentRuleAudit,
@@ -1005,6 +1005,6 @@ describe("bounded tools and operator panel", () => {
 		await done;
 		assert.deepEqual(result, [proposal.id, undefined, proposalRevision(proposal)]);
 		assert.match(confirmation, /rename-key/);
-		assert.ok(proposalDetailLines(proposal).every((line) => confirmation.includes(line)));
+		assert.ok(confirmation.includes(JSON.stringify(snapshot.pending[0], null, 2)));
 	});
 });
