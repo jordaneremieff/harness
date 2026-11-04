@@ -6,10 +6,17 @@ import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { test } from "node:test";
 import { pillarsDurableContribution, type DurableCommandCall, type DurableContributionHost } from "./durable.ts";
-import { operatorPanel, type OperatorPanelHost } from "./operator-panel.ts";
+import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
+import type { JsonValue, PanelHost } from "../../operator-ui/index.ts";
+import { operatorPanel } from "./operator-panel.ts";
 import { readPanelAnswer, readPanelRequest } from "./panel-protocol.ts";
 
-type JsonValue = Parameters<OperatorPanelHost["request"]>[0];
+initTheme("dark");
+const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
+
+function panelHost(request: PanelHost["request"]): PanelHost {
+	return { theme, target: { id: "c", label: "Reviewer · work" }, signal: new AbortController().signal, requestRender: () => {}, notify: () => {}, push: () => {}, back: () => {}, focusActions: () => {}, close: () => {}, request };
+}
 const flush = async () => { for (let round = 0; round < 40; round++) await new Promise((resolve) => setTimeout(resolve, 5)); };
 
 async function corpus(t: { after(fn: () => void | Promise<void>): void }) {
@@ -57,41 +64,33 @@ test("the reader route answers inventory and exact source pages without starting
 	assert.match(String(text), /check, derive, or review/);
 });
 
-test("the reader module lists the inventory, opens a source through the host, and closes on Esc", async (t) => {
+test("the reader module lists the inventory and reads a selected source through the host", async (t) => {
 	const { root } = await corpus(t);
 	const run = command(join(root, "agent"));
 	const requests: JsonValue[] = [];
-	let closed = 0;
 	const module = operatorPanel();
 	assert.equal(module.title, "Pillars");
-	const instance = module.open({
-		target: { id: "c" }, tui: { requestRender() {} }, rows: () => 20,
-		request: async (data) => { requests.push(data); return await run(data) as { text: string; data?: JsonValue }; },
-		close: () => { closed++; },
-	});
-	assert.match(instance.render(60).join("\n"), /Read Pillars inventory/);
+	const view = module.open(panelHost(async (data) => {
+		requests.push(data);
+		return (await run(data)) as { text: string; data?: JsonValue };
+	}));
+	const screen = () => view.render(120, 20).map(stripVTControlCharacters).join("\n");
+	assert.match(screen(), /Reading the inventory/);
 	await flush();
-	let lines = instance.render(60).map(stripVTControlCharacters);
-	assert.ok(lines.some((line) => line.includes("Principle one")), lines.join("\n"));
+	assert.ok(screen().includes("Principle one"), screen());
 	assert.deepEqual(requests[0], { op: "inventory" });
-	instance.handleInput("\x1b[B"); instance.handleInput("\x1b[B");
-	instance.handleInput("\r");
+	view.handleInput("\x1b[B");
+	view.handleInput("\x1b[B");
 	await flush();
-	lines = instance.render(60).map(stripVTControlCharacters);
-	assert.ok(lines.some((line) => line.includes("Checked evidence")), lines.join("\n"));
-	assert.ok(requests.some((request) => (request as { op?: string }).op === "read"));
-	instance.handleInput("\x1b");
-	instance.handleInput("\x1b");
-	assert.equal(closed, 1);
-	instance.dispose();
+	assert.ok(screen().includes("Checked evidence"), screen());
+	assert.ok(requests.some((request) => (request as { op?: string }).op === "read" && (request as { resource?: string }).resource === "principle-one"));
+	assert.deepEqual(view.actions?.().map((action) => action.label), ["Read more", "Read again"]);
 });
 
-test("an unreadable inventory is reported and Esc still returns", async () => {
-	let closed = 0;
-	const instance = operatorPanel().open({ target: { id: "c" }, tui: { requestRender() {} }, rows: () => 20, request: async () => { throw new Error("corpus missing"); }, close: () => { closed++; } });
+test("an unreadable inventory is reported in the view", async () => {
+	const view = operatorPanel().open(panelHost(async () => {
+		throw new Error("corpus missing");
+	}));
 	await flush();
-	assert.match(instance.render(60).join("\n"), /corpus missing/);
-	instance.handleInput("\x1b");
-	assert.equal(closed, 1);
-	instance.dispose();
+	assert.match(view.render(80, 10).map(stripVTControlCharacters).join("\n"), /corpus missing/);
 });

@@ -152,17 +152,20 @@ Operator commands:
 
 `/pillars` displays command help, examples, and the actual inventory.
 `/pillars help` shows just the guide, even if the corpus is unavailable.
-In the terminal UI, `/pillars` and `/pillars browse` open a read-only reader:
-a selectable inventory of every catalogued source with its canonical title,
-type, and index statement quoted from the inventory, and a scrollable body view
-that shows the exact resource and reference digest of the page it read, with a
-More control that follows the continuation under that digest. Rows select by
-click or arrow keys; Open, More, Back, and Close are visible controls; the
-wheel scrolls the pane. Nothing in the reader starts a check, derivation, or
-review, and nothing writes to the corpus. The ordinary statusline footer menu
-lists `/pillars browse` as a destination because this extension announces it on
-`harness:operator-destination:publish` (see `docs/conventions/operator-panels.md`).
-The attached Agent terminal opens the same reader through `operator-panel.ts`,
+In the terminal UI, `/pillars` and `/pillars browse` open the read-only Pillars
+view in the shared browsing frame below the native transcript
+(`docs/conventions/operator-panels.md`): a searchable inventory of every
+catalogued source with its canonical title, type, and index statement quoted
+from the inventory, and a detail that reads the selected source page by page.
+The detail shows the exact resource and reference digest of the page it read;
+**Read more** follows the continuation under that digest; a changed source
+refuses it, so pages of two revisions never mix, and **Read again** reads the
+source from its first page. Typing filters titles, types, and statements.
+Selecting a row reads; nothing in the view starts a check, derivation, or
+review, and nothing writes to the corpus. The statusline work strip lists
+Pillars under More because this extension publishes it as a secondary operator
+view; the command opens it with the statusline disabled too.
+The attached Agent terminal opens the same view through `operator-panel.ts`,
 a presentation-only module that routes the inventory and every page read
 through the host's `pillars` contribution command. Outside the terminal UI, or when the
 inventory cannot be read, `browse` falls back to the Markdown inventory text. Argument autocomplete offers actions

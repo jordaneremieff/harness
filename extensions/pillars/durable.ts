@@ -18,7 +18,7 @@ import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ToolCall } from "@earendil-works/pi-ai";
 import { int, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, type AccessPage, parseAccess } from "./access.ts";
-import { browserEntries } from "./browser.ts";
+import { browserEntries } from "./inventory.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import { readPanelRequest, type PillarsPanelAnswer } from "./panel-protocol.ts";
 import type { Stage } from "./capacity.ts";

@@ -5,7 +5,7 @@
  */
 
 import type { AccessError, AccessPage } from "./access.ts";
-import type { BrowserEntry } from "./browser.ts";
+import type { BrowserEntry } from "./inventory.ts";
 
 export type PillarsPanelRequest =
 	| { op: "inventory" }

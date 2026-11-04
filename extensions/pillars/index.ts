@@ -13,7 +13,9 @@ import {
 import { Markdown } from "@earendil-works/pi-tui";
 import { int, obj, opt, str, type Schema, type Static } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, parseAccess } from "./access.ts";
-import { browserEntries, PillarsBrowser } from "./browser.ts";
+import { openOperatorFrame, publishOperatorViews } from "../../operator-ui/index.ts";
+import { browserEntries } from "./inventory.ts";
+import { createPillarsViewState, type PillarsViewState, pillarsView } from "./operator-view.ts";
 import { InputError } from "./input.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import { Collector, utcDay } from "./collector.ts";
@@ -305,24 +307,33 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		}
 		display(usageMarkdown(await reader.read({ view: parsed.kind, windowDays: parsed.windowDays }, ctx.signal)), ctx);
 	}
-	/** Open the read-only TUI reader; it returns false when only the text route applies. */
+	/** Corpus reads behind the browser; the catalogue is discovered on first use. */
+	const browserOperations = {
+		inventory: async (signal: AbortSignal) => {
+			await discover(signal);
+			const current = catalog;
+			if (!current) throw new Error("The Pillars catalogue is unavailable");
+			return browserEntries(current, (request, readSignal) => access(current, request, readSignal), signal);
+		},
+		read: async (request: Parameters<typeof access>[1], signal: AbortSignal) => {
+			await discover(signal);
+			return access(catalog, request, signal);
+		},
+	};
+	const viewStates = new Map<string, PillarsViewState>();
+	const viewState = (ctx: ExtensionContext) => {
+		const id = ctx.sessionManager.getSessionId();
+		let state = viewStates.get(id);
+		if (!state) {
+			state = createPillarsViewState();
+			viewStates.set(id, state);
+		}
+		return state;
+	};
+	/** Open the read-only browser in the interactive terminal; it returns false when only the text route applies. */
 	async function openBrowser(ctx: ExtensionContext): Promise<boolean> {
-		if (!ctx.hasUI || typeof ctx.ui.custom !== "function" || !catalog) return false;
-		const read = (request: Parameters<typeof access>[1], signal?: AbortSignal) => access(catalog, request, signal);
-		const entries = await browserEntries(catalog, read, ctx.signal).catch(() => undefined);
-		if (entries === undefined) return false;
-		ctx.ui.custom(
-			(tui, _theme, _keybindings, done) =>
-				new PillarsBrowser({
-				entries,
-				read,
-				size: () => ({ columns: tui.terminal.columns, rows: tui.terminal.rows }),
-				requestRender: () => tui.requestRender(),
-				close: () => done(undefined),
-				signal: ctx.signal,
-			}),
-			{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" } },
-		);
+		if (ctx.mode !== "tui" || !catalog) return false;
+		await openOperatorFrame(pi, ctx, { owner: OWNER, id: "pillars" });
 		return true;
 	}
 	/** Browse opens the reader when a TUI is present; every other input keeps its text route. */
@@ -373,10 +384,12 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	});
 	displayPublisher.publish();
 	// Package contract: docs/conventions/operator-panels.md. Browse is a harmless read; the judgment verbs stay in command search.
-	const destinations = { version: 1, destinations: [{ id: "pillars", label: "Pillars", command: { name: "pillars", args: "browse" }, owner: fileURLToPath(import.meta.url) }] };
-	const publishDestinations = () => pi.events.emit("harness:operator-destination:publish", destinations);
-	pi.events.on("harness:operator-destination:request", (request) => {
-		if (typeof request === "object" && request !== null && (request as { version?: unknown }).version === 1) publishDestinations();
+	publishOperatorViews(pi, {
+		version: 2,
+		owner: OWNER,
+		views: [{ id: "pillars", label: "Pillars", command: { name: "pillars", args: "browse" }, order: 40, secondary: true, view: (ctx, host) => pillarsView(host, browserOperations, viewState(ctx)) }],
 	});
-	publishDestinations();
 }
+
+/** This extension's entrypoint; the ordinary frame binds the published view to its /pillars registration. */
+const OWNER = fileURLToPath(import.meta.url);
