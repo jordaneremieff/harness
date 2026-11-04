@@ -40,6 +40,14 @@ it("a choice dialog returns the value behind the label, filters long lists, and 
 	assert.equal(h.hidden.length, 1);
 });
 
+it("every dialog row fills the overlay width so nothing behind it shows through", async () => {
+	const h = harness();
+	const picking = h.dialogs.select("Pick", [{ value: "a", label: "Alpha" }, { value: "b", label: "Beta" }]);
+	for (const line of h.top().render(60)) assert.equal(stripVTControlCharacters(line).replace(/\u001b_pi:[^\u0007]*\u0007/gu, "").length, 60);
+	h.top().handleInput?.("\x1b");
+	await picking;
+});
+
 it("a choice dialog can be chosen by pointer, cancelled by Escape, and cancelled by disposal", async () => {
 	const h = harness();
 	const pointed = h.dialogs.select("Pick", [{ value: "a", label: "Alpha" }, { value: "b", label: "Beta" }]);

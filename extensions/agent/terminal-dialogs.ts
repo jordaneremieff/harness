@@ -39,7 +39,8 @@ abstract class DialogBase implements Component, Focusable {
 	}
 	render(width: number): string[] {
 		this.hits = [];
-		return this.frame(Math.max(1, width), this.capacity).map((line) => truncateToWidth(line, width));
+		// Every row fills the overlay, so the conversation behind the dialog never shows through.
+		return this.frame(Math.max(1, width), this.capacity).map((line) => truncateToWidth(line, width, "", true));
 	}
 	protected clickFooter(event: TuiMouseEvent): boolean {
 		if (event.type !== "click" || event.button !== "left") return false;
