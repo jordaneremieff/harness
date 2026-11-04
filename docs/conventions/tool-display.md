@@ -53,7 +53,7 @@ extension state, or a tool registration API. Do not wait for `session_start`.
 A request response only emits display data; it executes no tool. Publishers own
 their renderer logic and its handling of arguments and result details.
 
-The owning slices are brave, clipboard, history, memory, pillars, policy,
+The owning slices are brave, clipboard, history, jobs, memory, pillars, policy,
 registry, rex, and stash. Agent publishes its internal cards from the same renderer
 records used by its ordinary registration. The agent dashboard also retains
 local precedence for those cards.
@@ -112,11 +112,77 @@ codemode results only, the dashboard applies Pi's terminal rule: existing nested
 calls with status `running` display as `cancelled`. Partial results, other fields,
 and stored details stay unchanged; no legacy-record normalizer exists.
 
+## Presentation modules for the attached terminal
+
+The standalone Agent terminal is a separate process. It cannot receive the
+renderer references that the event bus carries, and it does not run extension
+factories. An owning slice therefore also exposes a pure presentation module that
+the attached client imports locally.
+
+```ts
+// <slice>/display.ts
+export function toolDisplay(): ToolDisplayPublication; // same records as the ordinary publication
+```
+
+The module imports only presentation code and public Pi or pi-tui types. It does
+not import the slice entrypoint or its Durable form, register tools, emit events,
+read settings or credentials, open a store, or start a host. Evaluating it has no
+effect beyond module evaluation. The ordinary registration and the event
+publication derive from this function, so one record set serves all consumers.
+
+The slice advertises the module in the contribution it emits on
+`durable:contribution`:
+
+```ts
+display: { version: 1, entry: "./display.ts", export: "toolDisplay" }
+```
+
+- `version` is `1` and `export` is `"toolDisplay"`. Other values and extra
+  fields are refused.
+- `entry` is a bare relative file path that starts with `./`. It has no empty,
+  `.`, or `..` segment, backslash, colon, query, fragment, or control or space
+  character. It is never an absolute path or a URL.
+- `entry` resolves relative to the directory of the contribution's `source`.
+  The resolved real path must be a file inside that directory, so a symbolic link
+  that leaves it is refused.
+
+Host. The Agent host reads the descriptor only from a contribution that its
+loader admitted: the `source` must match a loaded extension entrypoint. A
+malformed descriptor, or an entry that does not resolve, removes only the
+descriptor. The contribution still installs and the host reports the refusal as a
+bootstrap issue. The inventory in `status` carries each admitted descriptor
+beside its contribution. The field is optional in `DurableInventorySchema`, so
+the status response identity changed with its introduction. A host and a client
+from different releases refuse each other through the existing operation
+identity check. No reader accepts the older shape.
+
+Client. After a successful attach the client reads the live host's `status`
+inventory and imports each advertised module under the managed Pi peer
+resolver. It calls the export and keeps only fields that
+`presentationRecords` accepts: a tool name plus `renderCall`, `renderResult`,
+and `renderShell`. A module that is missing, throws, exports no function,
+publishes another version, or repeats a name already supplied costs only its own
+cards. The client shows one bounded diagnostic and uses Pi's standard card for
+those tools. The attach does not wait for the modules. The lookup replaces the
+previous source's lookup as a unit and the transcript rebuilds its cards, so no
+renderer closure from an earlier source stays attached. Passive roster or
+retained-transcript reads never start a host to obtain presentation.
+
+Resolution order is unchanged: builtin, codemode and local Agent cards come
+first, then the lookup, then the standard card. The standalone main
+conversation and its embedded dashboard use the same lookup. Definitions stay
+inert: `execute` always throws and no loadout hook exists. Renderers are trusted
+local code, not a sandbox.
+
 ## Verification
 
 Each publisher's slice-local tests use a fake bus to assert initial publication,
 request responses, renderer identity, field selection, and subscription cleanup.
 Agent tests use fake publishers to assert both load orders, registry replacement,
 reload, malformed-payload containment, inert definitions, native precedence, and
-use by the native `ToolExecutionComponent`. No slice test imports another
-slice's source or asserts its private display vocabulary.
+use by the native `ToolExecutionComponent`. Each slice also tests its descriptor,
+its `toolDisplay()` records against the ordinary publication, and that importing
+the module registers and emits nothing. Agent tests load fixture modules through
+the real resolver for the standalone path, covering a missing module, a
+throwing export, a refused entry and source replacement. No slice test imports
+another slice's source or asserts its private display vocabulary.

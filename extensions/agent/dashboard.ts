@@ -426,7 +426,7 @@ export class AgentDashboard implements Component, Focusable {
 			},
 			() => this.back(),
 		);
-		this.console.conversation.toolDisplay = this.operations.toolDisplay;
+		this.console.conversation.setToolDisplay(this.operations.toolDisplay);
 		this.snapshot = undefined;
 		this.source.select(undefined);
 		const generation = ++this.sourceGeneration;

@@ -53,6 +53,7 @@ import {
 import { createProjectTrustResolver, type ProjectTrustDecision } from "./trust-support.ts";
 import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
+import { readDisplayDescriptor, resolveDisplayEntry, type DisplayDescriptor } from "./display-descriptor.ts";
 
 /** One command invocation as the host dispatches it. */
 export interface DurableCommandCall {
@@ -87,6 +88,8 @@ export interface DurableContribution {
 	readonly source: string;
 	create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
 	readonly commands?: readonly DurableCommand[];
+	/** Presentation-only module the attached terminal imports locally; see docs/conventions/tool-display.md. */
+	readonly display?: DisplayDescriptor;
 }
 
 /** Session host passed to every contribution `create()` call. */
@@ -127,6 +130,8 @@ export interface DurableInventory {
 		readonly name: string;
 		readonly source: string;
 		readonly commands: readonly { readonly name: string; readonly description: string }[];
+		/** Present only for an admitted contribution whose display entry resolved inside its owner directory. */
+		readonly display?: DisplayDescriptor;
 	}[];
 	/** Resolved paths of configured extensions that emitted no contribution. */
 	readonly ordinaryOnly: readonly string[];
@@ -335,7 +340,7 @@ function readCommandList(contribution: string, raw: unknown): DurableCommand[] |
 }
 
 /** Parse one emitted contribution, rejecting contract violations at the emitting factory. */
-function readContribution(data: unknown, existing: readonly DurableContribution[]): DurableContribution {
+function readContribution(data: unknown, existing: readonly DurableContribution[], issues: Error[]): DurableContribution {
 	if (typeof data !== "object" || data === null) throw new Error("durable:contribution payload must be an object");
 	const record = data as Record<string, unknown>;
 	const name = requiredString(record, "name", "durable:contribution requires a non-empty name");
@@ -345,7 +350,26 @@ function readContribution(data: unknown, existing: readonly DurableContribution[
 	if (existing.some((contribution) => contribution.name === name)) throw new Error(`durable contribution name "${name}" is already emitted`);
 	if (existing.some((contribution) => contribution.source === source)) throw new Error(`extension ${source} emitted more than one durable contribution`);
 	const commands = readCommandList(name, record.commands);
-	return { name, source, create: record.create as DurableContribution["create"], ...(commands === undefined ? {} : { commands }) };
+	let display: DisplayDescriptor | undefined;
+	if (record.display !== undefined) {
+		// A presentation fault never removes the operational contribution; cards fall back to the standard form.
+		try { display = readDisplayDescriptor(record.display); }
+		catch (error) { issues.push(new Error(`durable contribution "${name}" display descriptor refused: ${error instanceof Error ? error.message : String(error)}`)); }
+	}
+	return { name, source, create: record.create as DurableContribution["create"], ...(commands === undefined ? {} : { commands }), ...(display === undefined ? {} : { display }) };
+}
+
+/** Advertise a descriptor only when its entry resolves to a file inside the admitted owner's directory. */
+function admitDisplays(contributions: readonly DurableContribution[], report: (error: unknown) => void): DurableContribution[] {
+	return contributions.map((contribution) => {
+		if (contribution.display === undefined) return contribution;
+		try { resolveDisplayEntry(contribution.source, contribution.display); return contribution; }
+		catch (error) {
+			report(new Error(`durable contribution "${contribution.name}" display entry refused: ${error instanceof Error ? error.message : String(error)}`));
+			const { display: _refused, ...admitted } = contribution;
+			return admitted;
+		}
+	});
 }
 
 /** Local calendar date for the prompt preamble. */
@@ -463,6 +487,7 @@ function buildInventory(contributions: readonly DurableContribution[], loadedPat
 			name: contribution.name,
 			source: contribution.source,
 			commands: (contribution.commands ?? []).map((command) => ({ name: command.name, description: command.description })),
+			...(contribution.display === undefined ? {} : { display: contribution.display }),
 		})),
 		ordinaryOnly: loadedPaths.filter((path) => !emitted.has(path)),
 		// The member appears only when something failed, like `timers` appears only when one waits.
@@ -677,7 +702,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 	const unsubscribe = bus.on("durable:contribution", (data) => {
 		try {
 			selectionError ??= unselectedAgentContribution(data, selectedAgent);
-			contributions.push(readContribution(data, contributions));
+			contributions.push(readContribution(data, contributions, collectionErrors));
 		} catch (error) {
 			collectionErrors.push(error instanceof Error ? error : new Error(String(error)));
 		}
@@ -753,7 +778,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 		const loaded = services.resourceLoader.getExtensions();
 		reportIssues(report, collectionErrors, services, loaded, contributions);
 		const loadedPaths = loaded.extensions.map((extension) => extension.resolvedPath);
-		const matched = matchContributions(contributions, loadedPaths);
+		const matched = admitDisplays(matchContributions(contributions, loadedPaths), report);
 		requireSelectedAgent(selectedAgent, matched, selectionError);
 		const inventory = buildInventory(matched, loadedPaths, loaded.errors);
 		const commands = buildCommands(matched);

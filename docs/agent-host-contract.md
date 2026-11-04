@@ -505,7 +505,7 @@ Each `H-*` is the lowercase hex SHA-256 of `JSON.stringify` of the owning schema
 
 ```text
 H-inspect       671fa063aab1424eba635272c95977761450c735d34efd2def12a7de7689ff70
-H-status        9ca1713e8665258c5891d8fb82774e10c130d6848f8c7d2b8c38ef56d2b223e9
+H-status        53fba66dedcca53c2e07f5a7744b74a3d60cfc47ba9bb08dae672b0db7d3388a
 H-list          1176e0c72bb1e1eb5ca2e574182c802a4733cf77b9a1ea1eabd8af27aa52fbe6
 H-dashboard     9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04
 H-profile-read  396c6aa90325ba4f92e72f38538561c810d31eb6dde087341591b34af479400b
@@ -1078,7 +1078,7 @@ HostInventory = {
 }
 ```
 
-`contributions[].name` is the contribution that supplies its commands, and `source` is where it was loaded from. `ordinaryOnly` names extensions that load but add no host command. The response identity is the schema hash `H-status`, so a consumer checks the operation identity above and the shape it uses, and refuses a reply whose `inventory` has a field outside this shape. The inventory belongs to the loaded runtime: a host reload replaces it, so a cached copy is valid only for the connection it was read on. Source: `extensions/agent/observation-schema.ts:243-249,317-320`; `extensions/agent/durable-runtime.ts:508`.
+`contributions[].name` is the contribution that supplies its commands, and `source` is where it was loaded from. A contribution may carry `display`, `{ version: 1, entry, export: "toolDisplay" }`, which names a presentation-only module that an attached terminal imports locally; the host advertises it only after `entry` resolves to a file inside the directory of the admitted `source`, and the field is absent otherwise. See `docs/conventions/tool-display.md`. `ordinaryOnly` names extensions that load but add no host command. The response identity is the schema hash `H-status`, so a consumer checks the operation identity above and the shape it uses, and refuses a reply whose `inventory` has a field outside this shape. The inventory belongs to the loaded runtime: a host reload replaces it, so a cached copy is valid only for the connection it was read on. Adding `display` changed `H-status`, so a host and a client from different releases refuse each other's `status` through the existing operation-identity check; no reader accepts the previous shape. Source: `extensions/agent/observation-schema.ts:243-249,317-320`; `extensions/agent/durable-runtime.ts:508`.
 
 ### command
 

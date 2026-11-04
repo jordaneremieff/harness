@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -471,4 +471,55 @@ it("long recovery text never clips the action effects, focused input or footer",
 		assert.ok(lines.some((line) => line.includes(CURSOR_MARKER)));
 	}
 	screen.dispose(); f.controller.close();
+});
+
+it("an attachment loads owner renderers from its host inventory and replaces them when the source changes", async () => {
+	const root = mkdtempSync(join(tmpdir(), "agent-terminal-display-"));
+	try {
+		for (const name of ["one", "two"]) { mkdirSync(join(root, name)); writeFileSync(join(root, name, "index.ts"), ""); writeFileSync(join(root, name, "display.ts"), ""); }
+		const call = () => ({ render: () => [], invalidate() {} });
+		const inventories: Record<string, unknown> = {
+			a: { contributions: [{ name: "one", source: join(root, "one", "index.ts"), commands: [], display: { version: 1, entry: "./display.ts", export: "toolDisplay" } }], ordinaryOnly: [] },
+			b: { contributions: [{ name: "two", source: join(root, "two", "index.ts"), commands: [], display: { version: 1, entry: "./display.ts", export: "toolDisplay" } }], ordinaryOnly: [] },
+			c: { contributions: [{ name: "gone", source: join(root, "gone", "index.ts"), commands: [], display: { version: 1, entry: "./display.ts", export: "toolDisplay" } }], ordinaryOnly: [] },
+		};
+		const f = fixture();
+		const control = f.manager.control;
+		f.manager.control = async (method, input, caller) => method === "status" ? { inventory: inventories[String(input.sessionId)] } : control(method, input, caller);
+		const imported: string[] = [];
+		const controller = new TerminalController({ manager: f.manager, caller: { id: "terminal", cwd: "/work" }, importModule: async (url) => {
+			imported.push(url);
+			const name = url.includes("/one/") ? "tool_one" : "tool_two";
+			return { toolDisplay: () => ({ version: 1, tools: [{ name, renderCall: call }] }) };
+		} });
+		await controller.attach("a"); await controller.displaySettled();
+		const first = controller.toolDisplay;
+		assert.equal(typeof first("tool_one")?.renderCall, "function");
+		assert.equal(first("tool_two"), undefined);
+		await controller.attach("b");
+		assert.equal(controller.toolDisplay("tool_one"), undefined, "the previous source's renderers are gone before the new source answers");
+		await controller.displaySettled();
+		assert.equal(controller.toolDisplay("tool_one"), undefined);
+		assert.equal(typeof controller.toolDisplay("tool_two")?.renderCall, "function");
+		assert.notEqual(controller.toolDisplay, first);
+		await controller.attach("c"); await controller.displaySettled();
+		assert.equal(controller.toolDisplay("tool_two"), undefined);
+		assert.match(controller.display.diagnostics.join("\n"), /gone: display module unavailable/);
+		assert.equal(imported.length, 2);
+		assert.equal(f.calls.some((call) => call.method === "submit" || call.method === "abort"), false);
+		await controller.close();
+	} finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+it("a late display answer from an earlier selection never replaces the current source", async () => {
+	const f = fixture();
+	const gate = deferred<unknown>();
+	const control = f.manager.control;
+	f.manager.control = async (method, input, caller) => method === "status" && input.sessionId === "a" ? gate.promise : method === "status" ? { inventory: { contributions: [], ordinaryOnly: [] } } : control(method, input, caller);
+	await f.controller.attach("a");
+	await f.controller.attach("b"); await f.controller.displaySettled();
+	gate.resolve({ inventory: { contributions: [{ name: "late", source: "/nowhere/index.ts", commands: [], display: { version: 1, entry: "./display.ts", export: "toolDisplay" } }], ordinaryOnly: [] } });
+	await Promise.resolve();
+	assert.deepEqual(f.controller.display.diagnostics, []);
+	await f.controller.close();
 });

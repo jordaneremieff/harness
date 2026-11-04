@@ -27,7 +27,9 @@ a shared module to satisfy it. Each slice copies the members it uses from the
 
 3. The host subscribes before loading and installs the contributions of the
    loaded extension set. It matches each contribution's `source` to the
-   resolved paths of Pi's loaded extensions. A configured extension that emits
+   resolved paths of Pi's loaded extensions. A descriptor in `display` is kept only when its
+   entry resolves to a file inside the source's directory; a refused descriptor
+   is reported and the contribution still installs. A configured extension that emits
    nothing has no Durable form. The host names it in agent status and in the
    agent's prompt; it never substitutes ordinary execution for it. Loader
    failures are a separate `inventory.failed` list, not ordinary-only extensions.
@@ -57,6 +59,16 @@ interface DurableContribution {
   create(host: DurableContributionHost): Durable.Extension | Promise<Durable.Extension>;
   /** Commands that agent controls invoke by name, such as `agent_command`. */
   readonly commands?: readonly DurableCommand[];
+  /**
+   * Optional presentation-only module for the attached Agent terminal. `entry`
+   * is a bare relative path inside the directory of `source`. See
+   * [tool display](tool-display.md#presentation-modules-for-the-attached-terminal).
+   */
+  readonly display?: {
+    readonly version: 1;
+    readonly entry: string;
+    readonly export: "toolDisplay";
+  };
 }
 
 interface DurableContributionHost {
@@ -93,6 +105,12 @@ interface DurableInventory {
     readonly name: string;
     readonly source: string;
     readonly commands: readonly { readonly name: string; readonly description: string }[];
+    /** Present when the descriptor was admitted and its entry resolved. */
+    readonly display?: {
+      readonly version: 1;
+      readonly entry: string;
+      readonly export: "toolDisplay";
+    };
   }[];
   /** Resolved paths of loaded extensions that emitted no contribution. */
   readonly ordinaryOnly: readonly string[];

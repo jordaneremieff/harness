@@ -10,6 +10,7 @@ import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
 import { agentState, createDashboardState, notifyAgentState, updateDraft, type DashboardState } from "./dashboard-state.ts";
 import type { AgentModelInfo } from "./agent-footer.ts";
 import { TerminalProgramStatus } from "./terminal-status.ts";
+import { loadDisplayModules, noDisplayModules, type DisplayModules } from "./display-modules.ts";
 import { ConversationHistory } from "./conversation-view.ts";
 import type { AgentConversationSummary, AgentConversationSnapshot } from "./dashboard-types.ts";
 import { fitLine } from "./dashboard-layout.ts";
@@ -43,6 +44,8 @@ export interface TerminalControllerOptions {
 	caller: AgentCaller;
 	state?: DashboardState;
 	remember?(id: string): void;
+	/** Test seam for the local display-module import; the default imports the advertised file. */
+	importModule?(url: string): Promise<Record<string, unknown>>;
 }
 /** Owns presentation links only. Native work and admission belong to the existing manager/host. */
 export class TerminalController {
@@ -62,11 +65,18 @@ export class TerminalController {
 	private readonly listeners = new Set<() => void>();
 	private readonly off: () => void;
 	private readonly remember?: (id: string) => void;
+	private readonly importModule?: TerminalControllerOptions["importModule"];
+	/** Owner renderers advertised by the attached host. Replaced as a unit when the source changes. */
+	display: DisplayModules = noDisplayModules;
+	private displayLoading?: Promise<void>;
+	/** Identity changes with the attached source, so views holding an older lookup rebuild their cards. */
+	get toolDisplay() { return this.display.lookup; }
 	constructor(options: TerminalControllerOptions) {
 		this.manager = options.manager;
 		this.caller = options.caller;
 		this.state = options.state ?? createDashboardState();
 		this.remember = options.remember;
+		this.importModule = options.importModule;
 		this.source = createAgentObservationSource({
 			list: (input) => this.manager.dashboardPage(input),
 			snapshot: (id, params) => this.manager.snapshot(id, params),
@@ -144,7 +154,25 @@ export class TerminalController {
 		this.setSnapshot(snapshot);
 		this.source.select(id);
 		this.remember?.(id);
+		this.display = noDisplayModules;
+		this.displayLoading = this.loadDisplay(id).then((display) => {
+			if (this.closed || generation !== this.generation) return;
+			this.display = display;
+			this.notify();
+		});
 		this.notify();
+	}
+	/** Resolves when the current attachment's owner renderers are loaded or refused. */
+	displaySettled(): Promise<void> { return this.displayLoading ?? Promise.resolve(); }
+	/** The attached host is live here, so its status carries the admitted inventory. Failure leaves standard cards. */
+	private async loadDisplay(id: string): Promise<DisplayModules> {
+		try {
+			const status = await this.manager.control("status", { sessionId: id }, this.caller) as { inventory?: unknown };
+			if (status?.inventory === undefined) return { lookup: noDisplayModules.lookup, diagnostics: ["Host status carried no inventory; standard tool cards are used."] };
+			return await loadDisplayModules(status.inventory, this.importModule);
+		} catch (error) {
+			return { lookup: noDisplayModules.lookup, diagnostics: [`Display modules unavailable (${String(error instanceof Error ? error.message : error).slice(0, 120)}); standard tool cards are used.`] };
+		}
 	}
 	setDraft(text: string): void { if (this.draftState) updateDraft(this.draftState, text); }
 	setMode(mode: "steer" | "followUp"): void { if (this.draftState) { this.draftState.mode = mode; notifyAgentState(this.draftState); this.notify(); } }
@@ -244,6 +272,7 @@ export class TerminalScreen implements Component {
 	private dashboard?: AgentDashboard;
 	private dashboardSource?: AgentObservationSource;
 	private notice = "";
+	private displayNotice = "";
 	private readonly navigationInput = new Input({ prompt: "Command: " });
 	private dashboardHidden = false;
 	private composerY = 0;
@@ -279,6 +308,9 @@ export class TerminalScreen implements Component {
 				(text) => { void this.submit(text); }, () => this.openDashboard());
 		}
 		if (this.console && row) {
+			this.console.conversation.setToolDisplay(this.controller.toolDisplay);
+			const diagnostics = this.controller.display.diagnostics;
+			this.displayNotice = diagnostics.length ? `Owner cards: ${diagnostics[0]}${diagnostics.length > 1 ? ` (+${diagnostics.length - 1} more)` : ""}` : "";
 			this.console.row = row;
 			this.console.warning = this.controller.availability?.state === "unavailable" ? "Connection unavailable; last observed data shown. /agent enter <target> retries." : undefined;
 			this.console.setContent(this.controller.snapshot?.entries ?? [], this.controller.frame?.live ?? []);
@@ -368,6 +400,7 @@ export class TerminalScreen implements Component {
 				if (!labels.some((label) => label.identity === id)) throw new Error("Choose a listed identity");
 				return id;
 			},
+			toolDisplay: this.controller.toolDisplay,
 			action: (name, target) => terminalAction(this.controller, (title, lines, prompt, initial) => this.ask(title, lines, prompt, initial), name, target),
 		};
 		this.dashboard = new AgentDashboard(this.tui, this.theme, this.keys, () => this.closeDashboard(), this.controller.state, source, operations, { hide: () => { this.dashboardHidden = true; this.tui.requestRender(); }, show: () => { this.dashboardHidden = false; this.tui.requestRender(); } }, this.controller.target);
@@ -506,7 +539,7 @@ export class TerminalScreen implements Component {
 		const editor = console.composer.render(width, console.row.name?.trim() ? console.row.name : console.row.id, console.messageMode(), console.state.receipt);
 		const status = console.statusLines(width, this.controller.currentModelInfo(), this.branches.get(console.row.cwd));
 		const boundary = this.controller.snapshot?.nextBefore ? "Earlier history" : "";
-		const notice = console.warning || this.notice;
+		const notice = console.warning || this.notice || this.displayNotice;
 		const reserved = editor.length + status.length + 1 + (notice ? 1 : 0) + (boundary ? 1 : 0);
 		const bodyHeight = Math.max(1, height - reserved);
 		const body = console.conversation.render(width, bodyHeight);

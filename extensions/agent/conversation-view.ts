@@ -176,7 +176,7 @@ export class ConversationView {
 	private expanded?: boolean;
 	private showThinking?: boolean;
 	private liveIdentity?: { id: string; timestamp: number };
-	toolDisplay?: (name: string) => ToolRenderers | undefined;
+	private toolDisplay?: (name: string) => ToolRenderers | undefined;
 	private viewport?: { width: number; height: number; top: number };
 	private readonly tui: TUI;
 	readonly state: AgentReadingState;
@@ -187,6 +187,18 @@ export class ConversationView {
 			{ render: () => [], invalidate: () => {} },
 			{ follow: "end", scrollbar: "hidden", overscroll: "contain" },
 		);
+	}
+	/** A different lookup rebuilds the transcript, so no card keeps a renderer from a previous source. */
+	setToolDisplay(lookup: ((name: string) => ToolRenderers | undefined) | undefined): void {
+		if (lookup === this.toolDisplay) return;
+		this.toolDisplay = lookup;
+		if (!this.transcript) return;
+		this.save();
+		this.transcript.dispose();
+		this.transcript = undefined;
+		this.cwd = "";
+		this.viewport = undefined;
+		this.restored = false;
 	}
 	private transferLiveInstance(entries: readonly AgentConversationEntry[]): void {
 		const previous = this.liveIdentity;

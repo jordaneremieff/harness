@@ -14,7 +14,8 @@ export class TerminalProgramStatus {
 	private target?: string;
 	private revision = -1;
 	private disposed = false;
-	constructor(private readonly publish: (status: ProgramStatus) => void) {}
+	private readonly publish: (status: ProgramStatus) => void;
+	constructor(publish: (status: ProgramStatus) => void) { this.publish = publish; }
 	private send(status: ProgramStatus): void {
 		const key = JSON.stringify(status);
 		if (key === this.previous) return;
