@@ -22,7 +22,9 @@ import {
 	HitMap,
 	keyInput,
 	keyMatches,
+	keyText,
 	menuControl,
+	MORE_CHORD,
 	MORE_KEY,
 	NavigationFrame,
 	type Notice,
@@ -124,7 +126,7 @@ const HELP = [
 	"",
 	"Keys",
 	"The footer at the bottom lists the keys that work where the focus is now. A click on a footer control does the same as its key.",
-	"x lists every other action with its key. Escape goes back one step: it clears Find, closes a form, leaves the message field, then the view.",
+	"x lists every other action with its key; in a text field ctrl+n does, because every letter there is text. Escape goes back one step: it clears Find, closes a form, leaves the message field, then the view.",
 	"Escape never stops work. Tab and Shift+Tab move between the list, the conversation, the message field and an open form.",
 	"n starts a new conversation; ? shows this help.",
 	"",
@@ -219,6 +221,8 @@ export class AgentDashboard implements Component, Focusable {
 	private rosterPending = false;
 	private rosterAgain = false;
 	private sourceGeneration = 0;
+	/** Newer operator intent: a selection, inspector or surface change outdates an answer asked for before it. */
+	private intent = 0;
 	private selectedMark = "";
 	private earlierPending = false;
 	private history = new ConversationHistory();
@@ -372,6 +376,15 @@ export class AgentDashboard implements Component, Focusable {
 	private show(text: string, kind: Notice["kind"] = "info"): void {
 		this.notice = { text: plainLine(text), kind };
 		this.redraw();
+	}
+
+	/**
+	 * Note newer operator intent. An answer asked for before a selection, inspector or surface change
+	 * belongs to the request that asked for it; a pending line belongs to that request too.
+	 */
+	private newerIntent(): void {
+		this.intent++;
+		if (this.notice?.kind === "pending") this.notice = undefined;
 	}
 
 	// --- roster ---------------------------------------------------------
@@ -569,6 +582,7 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** Selection reads passively: it never starts a host and never moves a draft between agents. */
 	private select(row: AgentConversationSummary): void {
+		this.newerIntent();
 		if (this.inspector && this.inspector.target !== row.id && this.inspector.target !== "new") this.closeInspector();
 		this.selectedMark = rosterMark(row);
 		this.saveConsole();
@@ -846,6 +860,7 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** Open an inspector for the selected agent. Its views keep the target captured now. */
 	private openInspector(destinations: readonly Destination[], initial?: string, target?: ViewTarget): void {
+		this.newerIntent();
 		const row = target ? undefined : this.console?.row;
 		this.closeInspector();
 		const frame = new NavigationFrame({
@@ -857,6 +872,7 @@ export class AgentDashboard implements Component, Focusable {
 			requestRender: () => this.redraw(),
 			close: (then) => {
 				if (this.inspector?.frame === frame) this.inspector = undefined;
+				this.newerIntent();
 				// A late close, such as a finished request, leaves focus where the operator moved it.
 				if (this.region === "inspector") this.region = this.console ? "composer" : "list";
 				this.redraw();
@@ -889,6 +905,7 @@ export class AgentDashboard implements Component, Focusable {
 		const inspector = this.inspector;
 		if (!inspector) return;
 		this.inspector = undefined;
+		this.newerIntent();
 		inspector.frame.dispose();
 		if (this.region === "inspector") this.region = this.console ? "composer" : "list";
 	}
@@ -1018,16 +1035,33 @@ export class AgentDashboard implements Component, Focusable {
 		const row = this.console?.row;
 		const panels = this.operations.panels;
 		if (!row || !panels) return this.show("Owner views are unavailable here", "warning");
-		this.show(`Reading the owner views of ${agentDisplayName(row)}…`, "pending");
+		const intent = ++this.intent;
+		const notice: Notice = { text: `Reading the owner views of ${agentDisplayName(row)}…`, kind: "pending" };
+		this.notice = notice;
+		this.redraw();
 		try {
 			const destinations = await panels(row);
-			if (this.closed || this.console?.row.id !== row.id) return;
+			if (!this.ownerViewIsCurrent(intent, row, notice)) return;
 			if (!destinations.length) return this.show("This agent's host advertises no owner views. A stored or stopped host shows none.", "warning");
-			this.notice = undefined;
 			this.openInspector(destinations);
 		} catch (error) {
+			if (!this.ownerViewIsCurrent(intent, row, notice)) return;
 			this.show(`Owner views could not be read: ${error instanceof Error ? error.message : String(error)}`, "error");
 		}
+	}
+
+	/**
+	 * An owner-view answer applies only to the selection, view and request that asked for it. An
+	 * operator who moved on gets no replaced view and no stale failure; the pending line goes.
+	 */
+	private ownerViewIsCurrent(intent: number, row: AgentConversationSummary, notice: Notice): boolean {
+		if (this.closed) return false;
+		if (intent === this.intent && this.console?.row.id === row.id) return true;
+		if (this.notice === notice) {
+			this.notice = undefined;
+			this.redraw();
+		}
+		return false;
 	}
 
 	private newDefaults(): NewAgentDefaults | undefined {
@@ -1070,6 +1104,10 @@ export class AgentDashboard implements Component, Focusable {
 
 	private async startAgent(newAgent: NonNullable<DashboardOperations["newAgent"]>, values: Readonly<Record<string, string>>) {
 		const prompt = (values.prompt ?? "").trim() ? values.prompt : undefined;
+		const submitted = values.prompt ?? "";
+		// The creation keeps the view only while this form and this intent still own it.
+		const intent = this.intent;
+		const form = this.inspector?.frame;
 		let created: string | undefined;
 		const before = this.state.selected;
 		const result = await newAgent({
@@ -1079,8 +1117,10 @@ export class AgentDashboard implements Component, Focusable {
 			onCreated: (row) => {
 				if (this.closed) return;
 				created = row.id;
-				this.allAgents = true;
+				// The created record stays addressable whether or not this creation still owns the view.
 				if (this.page) this.page = { ...this.page, rows: [...this.page.rows.filter((item) => item.id !== row.id), row] };
+				if (!this.creationIsCurrent(intent, form)) return;
+				this.allAgents = true;
 				this.rows = [...this.rows.filter((item) => item.id !== row.id), row];
 				this.state.selected = row.id;
 				this.select(row);
@@ -1090,7 +1130,8 @@ export class AgentDashboard implements Component, Focusable {
 				this.redraw();
 			},
 		});
-		this.state.newTask = "";
+		// Only the purpose this submission carried is cleared; a draft started since stays.
+		if (this.state.newTask === submitted) this.state.newTask = "";
 		const id = result.sessionId ?? created;
 		if (!this.closed && id) {
 			// The new conversation keeps the selection only while the operator has not chosen another.
@@ -1103,6 +1144,11 @@ export class AgentDashboard implements Component, Focusable {
 		return { close: true, notice: { text: result.text, kind: "success" as const } };
 	}
 
+	/** A created conversation takes the selection only while its own form still owns the view. */
+	private creationIsCurrent(intent: number, form: NavigationFrame | undefined): boolean {
+		return !this.closed && this.surface === "work" && this.intent === intent && form !== undefined && this.inspector?.frame === form;
+	}
+
 	// --- full-surface views --------------------------------------------------
 
 	private openEfforts(): void {
@@ -1112,6 +1158,7 @@ export class AgentDashboard implements Component, Focusable {
 		}
 		this.saveConsole();
 		this.surface = "efforts";
+		this.newerIntent();
 		this.efforts ??= new EffortView({
 			tui: this.tui,
 			theme: this.theme,
@@ -1137,6 +1184,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.saveConsole();
 		this.threadsFrom = this.surface === "efforts" ? "efforts" : "work";
 		this.surface = "threads";
+		this.newerIntent();
 		this.state.threads ??= createThreadsState();
 		this.threads ??= new ThreadsView({
 			tui: this.tui,
@@ -1174,6 +1222,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.threadsFrom = "work";
 		if (from === "efforts" && this.efforts) {
 			this.surface = "efforts";
+			this.newerIntent();
 			this.hits.clear();
 			this.redraw();
 		} else this.backToWork();
@@ -1182,6 +1231,7 @@ export class AgentDashboard implements Component, Focusable {
 	private backToWork(): void {
 		this.returnSurface = undefined;
 		this.surface = "work";
+		this.newerIntent();
 		this.hits.clear();
 		this.reconcile();
 		this.redraw();
@@ -1310,12 +1360,25 @@ export class AgentDashboard implements Component, Focusable {
 		if (this.resize.input(data)) {
 			// The resize handle consumed the key.
 		} else if (this.footer.menuShown) this.footer.menuInput(data);
-		else if (this.surface !== "work") this.surfaceKey(data);
+		else if (this.moreChord(data)) {
+			// Ctrl+N opens More from any focus, before a text field or a surface view sees the key.
+		} else if (this.surface !== "work") this.surfaceKey(data);
 		else {
 			this.notice = this.notice?.kind === "pending" ? this.notice : undefined;
 			this.routeKey(data);
 		}
 		this.redraw();
+	}
+
+	/**
+	 * Ctrl+N opens the footer's More menu wherever the focus is. A text field takes every letter as
+	 * text, so the row offers this chord instead of `x`; the frame keeps its own forms' More menu.
+	 */
+	private moreChord(data: string): boolean {
+		if (this.surface === "work" && this.region === "inspector" && this.inspector) return false;
+		if (!this.footer.hasMore || !keyMatches(data, MORE_CHORD)) return false;
+		this.footer.toggleMenu();
+		return true;
 	}
 
 	/** Threads and Efforts take their own keys; `x` opens the footer's More menu while no text field has focus. */
@@ -1350,9 +1413,11 @@ export class AgentDashboard implements Component, Focusable {
 
 	/**
 	 * Outside text fields the keys of the selected agent and of the view run their actions, `x` opens
-	 * More, and the attached terminal's exit key detaches.
+	 * More, and the attached terminal's exit key detaches. A key the focused region's hints claim
+	 * stays with that region, so one key never means two things in one focus.
 	 */
 	private commandKey(data: string): boolean {
+		if (this.claimedKey(data)) return false;
 		const action = this.allActions().find((candidate) => candidate.key !== undefined && keyMatches(data, candidate.key));
 		if (action) {
 			this.invokeAction(action.id);
@@ -1371,6 +1436,11 @@ export class AgentDashboard implements Component, Focusable {
 
 	private allActions(): Action[] {
 		return [...this.targetActions(), ...this.viewActions()];
+	}
+
+	/** True when a hint of the focused work region claims this key: that region owns the binding. */
+	private claimedKey(data: string): boolean {
+		return this.workHints().some((hint) => hint.keys.some((key) => keyMatches(data, key)));
 	}
 
 	/** Run an action by identity after re-reading the current lists; a disabled one explains itself. */
@@ -1572,9 +1642,15 @@ export class AgentDashboard implements Component, Focusable {
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.closed) return undefined;
-		// A click above the open More menu closes it, so no entry runs against a selection that click changed.
-		if (this.footer.menuShown && event.type === "click" && event.y < this.menuTop) this.footer.closeMenu();
-		if (this.surface !== "work") return this.surfaceMouse(event);
+		const result = this.surface === "work" ? this.workMouse(event) : this.surfaceMouse(event);
+		// A click the view accepted above an open More menu then closes the menu, so no entry runs
+		// against a selection that click changed; a declined gesture leaves the menu as it is.
+		if (result && this.footer.menuShown && event.type === "click" && event.y < this.menuTop) this.footer.closeMenu();
+		return result;
+	}
+
+	/** The work view's pointer route: a resize gesture, the regions of the last paint, then the pane. */
+	private workMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		// A pointer event drawn for another size acts on nothing and ends a resize at its committed layout.
 		if (event.width !== this.tui.terminal.columns || event.height !== this.tui.terminal.rows) return this.resize.cancel() ? { handled: true, render: true } : undefined;
 		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeKey());
@@ -1646,7 +1722,14 @@ export class AgentDashboard implements Component, Focusable {
 	private renderFooter(width: number, y: number): string {
 		if (this.surface === "work" && this.region === "inspector" && this.inspector) return this.inspector.frame.renderFooter(width, this.hits, y);
 		const { controls, menu } = this.footer.menuShown ? { controls: Footer.menuControls(this.footer, (key) => this.sendKey(key)), menu: [] } : this.footerControls();
-		return this.footer.render(controls, width, this.theme, this.hits, y, 0, menu);
+		return this.footer.render(controls, width, this.theme, this.hits, y, 0, menu, this.footerEditing());
+	}
+
+	/** True while the focused surface holds a text field: its row then offers the More chord, not its key. */
+	private footerEditing(): boolean {
+		if (this.surface === "threads") return this.threads?.editing() ?? false;
+		if (this.surface === "efforts") return this.efforts?.editing() ?? false;
+		return this.region === "find" || this.region === "composer";
 	}
 
 	private footerControls(): { controls: Control[]; menu: Control[] } {
@@ -1671,7 +1754,11 @@ export class AgentDashboard implements Component, Focusable {
 	/** Send one key through the dashboard's own input route; footer clicks on key controls use it. */
 	private sendKey(key: string): void {
 		const data = keyInput(key);
-		if (data !== undefined) this.handleInput(data);
+		if (data === undefined) {
+			this.show(`The ${keyText(key)} key has no clickable form here.`, "warning");
+			return;
+		}
+		this.handleInput(data);
 	}
 
 	private hint(keys: readonly string[], label: string, priority = 2): Control {
@@ -1683,26 +1770,42 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** The agents view's footer for the focused region: navigation first, then actions, then the way out. */
 	private workFooter(): { controls: Control[]; menu: Control[] } {
-		const console = this.console;
-		if (this.region === "find") return { controls: [this.hint(["up", "down"], "select", 0), this.hint(["enter"], "done", 1), this.hint(["escape"], this.find.value ? "clear" : "list", 0)], menu: [] };
-		if (this.region === "composer" && console) return { controls: this.composerControls(console), menu: [] };
-		const controls: Control[] =
-			this.region === "conversation" && console
-				? [this.hint(["up", "down"], "scroll", 0), this.hint(["pageUp", "pageDown"], "read"), this.hint(["end"], "live"), this.hint(["enter"], "message", 1)]
-				: this.listControls();
+		const controls = this.workHints();
+		// A text field takes every key but Escape, Tab and the frame's chords, so its row lists its own keys only.
+		if (this.textFocus()) return { controls, menu: [] };
 		const menu = this.actionControls(controls);
 		controls.push(...this.wayOut());
 		return { controls, menu };
 	}
 
-	/** Primary keyed actions join the row; the rest are listed in More, keys included. Returns the More entries. */
+	/** True while Find or the message field has focus: printable keys there are text. */
+	private textFocus(): boolean {
+		return this.region === "find" || (this.region === "composer" && Boolean(this.console));
+	}
+
+	/** The focused work region's own key hints, before any action joins the row. */
+	private workHints(): Control[] {
+		const console = this.console;
+		if (this.region === "find")
+			return [this.hint(["up", "down"], "select", 0), this.hint(["enter"], "done", 1), this.hint(["escape"], this.find.value ? "clear" : "list", 0)];
+		if (this.region === "composer" && console) return this.composerControls(console);
+		return this.region === "conversation" && console
+			? [this.hint(["up", "down"], "scroll", 0), this.hint(["pageUp", "pageDown"], "read"), this.hint(["end"], "live"), this.hint(["enter"], "message", 1)]
+			: this.listControls();
+	}
+
+	/**
+	 * Primary keyed actions join the row; the rest are listed in More, keys included. A key the row's
+	 * hints already claim stays with the view, so that action lists in More without the key.
+	 */
 	private actionControls(controls: Control[]): Control[] {
 		const menu: Control[] = [];
 		const invoke = (id: string) => this.invokeAction(id);
+		const claimed = new Set(controls.flatMap((control) => control.keys));
 		for (const action of this.allActions()) {
-			const control = action.primary ? actionControl(action, invoke, AgentDashboard.PRIORITY[action.id] ?? 1) : undefined;
+			const control = action.primary && !claimed.has(action.key ?? "") ? actionControl(action, invoke, AgentDashboard.PRIORITY[action.id] ?? 1) : undefined;
 			if (control) controls.push(control);
-			else menu.push(menuControl(action, invoke));
+			else menu.push(claimed.has(action.key ?? "") ? { ...menuControl(action, invoke), keys: [] } : menuControl(action, invoke));
 		}
 		return menu;
 	}
@@ -1833,9 +1936,9 @@ export class AgentDashboard implements Component, Focusable {
 	private renderList(width: number, height: number, x0: number, y0: number, compact = false): string[] {
 		const theme = this.theme;
 		this.find.focused = this.focused && this.region === "find";
-		// A compact strip keeps its facts beside Find, so each other row lists an agent; the scope controls keep their room.
-		const facts = compact ? this.listFacts(false) : undefined;
-		const factsWidth = facts ? Math.min(Math.floor(width / 2), visibleWidth([facts.text, facts.more].filter(Boolean).join(" "))) : 0;
+		// One allocation places Find, Related/All and the facts, so the row that is drawn is the row that is clicked.
+		const facts = this.listFacts();
+		const factsWidth = compact ? this.compactFactsWidth(width, facts) : 0;
 		const findArea = factsWidth ? width - factsWidth - 1 : width;
 		const scope = this.listScope(x0 + findArea, y0, Math.max(0, findArea - 12));
 		const findWidth = findArea - scope.width;
@@ -1862,10 +1965,18 @@ export class AgentDashboard implements Component, Focusable {
 		if (empty) lines.splice(0, lines.length, ...wrap(empty, width).slice(0, rosterHeight).map((line) => theme.fg("muted", line)));
 		const body = Array.from({ length: rosterHeight }, (_, row) => lines[row] ?? "");
 		if (compact) {
-			const top = factsWidth ? `${fitLine(findLine, findWidth)} ${this.listFooter(factsWidth, x0 + findWidth + 1, y0)}` : findLine;
+			const top = factsWidth ? `${findLine} ${this.listFooter(factsWidth, x0 + findArea + 1, y0, facts)}` : findLine;
 			return [top, ...body].map((line) => fitLine(line, width));
 		}
-		return [findLine, ...body, this.listFooter(width, x0, y0 + height - 1)].map((line) => fitLine(line, width));
+		return [findLine, ...body, this.listFooter(width, x0, y0 + height - 1, facts)].map((line) => fitLine(line, width));
+	}
+
+	/** The facts share the compact strip's first row with Find and the scope controls; Find keeps its own room. */
+	private compactFactsWidth(width: number, facts: { readonly text: string; readonly more?: string }): number {
+		const natural = visibleWidth([facts.text, facts.more].filter(Boolean).join(" "));
+		if (!natural) return 0;
+		const scope = this.primaryId ? visibleWidth(" Related ") + visibleWidth(" All ") : 0;
+		return Math.min(natural, Math.max(0, width - scope - 13));
 	}
 
 	private focusRegion(region: Region): TuiMouseEventResult {
@@ -1892,14 +2003,18 @@ export class AgentDashboard implements Component, Focusable {
 		return this.page.coverage.complete ? "No agents yet. New conversation starts one." : "The agent list is incomplete.";
 	}
 
-	/** The list's coverage facts and, when more agents exist, the Load more control. */
-	private listFacts(withScope = true): { readonly text: string; readonly tone: "warning" | "muted"; readonly more?: string } {
+	/** The list's scope and coverage facts, and the Load more control when the store has more agents. */
+	private listFacts(): { readonly text: string; readonly tone: "warning" | "muted"; readonly more?: string } {
 		if (this.rosterNotice && (!this.rows.length || this.rosterNotice.startsWith("Loading"))) return { text: plainLine(this.rosterNotice), tone: "warning" };
+		const related = this.relations.view();
+		// A first read says it is reading; a refresh of retained facts keeps them until the new facts are ready.
+		const first = !this.allAgents && related.pending && !related.loaded;
+		const failed = !this.allAgents && related.failed && !related.pending;
+		const facts = first ? "reading related work…" : this.scopeFacts();
 		const coverage = this.page?.coverage;
 		// Storage coverage counts stay in Details; the list says which loaded rows the view shows and what can still load.
-		const text = !this.allAgents && this.relations.view().pending ? "reading related work…" : withScope ? this.scopeFacts() : "";
-		if (coverage?.nextCursor) return { text, tone: "muted", more: this.loadMore ? "› Load more" : "Load more" };
-		return { text, tone: "muted" };
+		const more = coverage?.nextCursor ? (this.loadMore ? "› Load more" : "Load more") : undefined;
+		return { text: failed ? `${facts ? `${facts} · ` : ""}failed` : facts, tone: failed ? "warning" : "muted", ...(more ? { more } : {}) };
 	}
 
 	/** Which loaded rows the list shows: the scope, the Find and error filters, then the loaded total. */
@@ -1911,12 +2026,14 @@ export class AgentDashboard implements Component, Focusable {
 		return shown === loaded && !this.state.filter && !this.errorsOnly ? `${filters ? `${filters} · ` : ""}${loaded} loaded` : `${filters} · ${shown} of ${loaded} loaded`;
 	}
 
-	private listFooter(width: number, x0: number, y: number): string {
-		const { text, tone, more } = this.listFacts();
+	private listFooter(width: number, x0: number, y: number, facts: { readonly text: string; readonly tone: "warning" | "muted"; readonly more?: string }): string {
+		const { text, tone, more } = facts;
 		if (!more) return this.theme.fg(tone, text);
 		const label = visibleWidth(more);
+		// The facts keep their space when both do not fit; the list end still offers Load more by key.
+		if (visibleWidth(text) + label + 1 > width) return this.theme.fg(tone, fitLine(text, width));
 		this.hits.add({ x: x0 + Math.max(0, width - label), y, width: label, height: 1, click: () => { this.loadMore = true; this.loadMoreAgents(); } });
-		return `${fitLine(this.theme.fg(tone, text), Math.max(0, width - label))}${this.theme.fg("accent", more)}`;
+		return `${fitLine(this.theme.fg(tone, text), Math.max(0, width - label - 1))} ${this.theme.fg("accent", more)}`;
 	}
 
 	/** The target header, controls, conversation or inspector, and composer of the selected agent. */

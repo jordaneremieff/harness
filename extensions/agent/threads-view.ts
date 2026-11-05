@@ -12,7 +12,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { type Action, type Control, HitMap, TextField, actionControl, keyInput, keyMatches } from "../../operator-ui/index.ts";
+import { type Action, type Control, HitMap, TextField, actionControl, keyInput, keyMatches, keyText, menuControl } from "../../operator-ui/index.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration.ts";
 import { LIST_BLOCK_ROWS, fitLine, listBlock, readingGeometry } from "./dashboard-layout.ts";
@@ -47,9 +47,9 @@ export interface ThreadsViewOptions {
 }
 
 type Region = "list" | "find" | "exchange" | "composer";
-type Panel = "exchange" | "members" | "details";
+type Panel = "exchange" | "members" | "details" | "replies";
 /** The focus whose keys the footer describes. */
-type Focus = "list" | "find" | "exchange" | "members" | "details" | "composer";
+type Focus = "list" | "find" | "exchange" | "members" | "details" | "replies" | "composer";
 
 /** One thread's loaded exchange: the newest page and every earlier page read since. */
 interface ThreadRead {
@@ -75,6 +75,23 @@ interface EventRows {
 	readonly lines: string[];
 	readonly toggle?: number;
 	readonly header?: number;
+}
+
+/** A reading position in the exchange: the document top, or one event and a row inside it. */
+type ExchangeAnchor = "document" | { sequence: number; offset: number };
+
+/** What one discovery read covered: its own pages, the sources it followed and where it stopped. */
+interface DiscoveryRead {
+	complete: boolean;
+	visited: number;
+	omitted: number;
+	unavailable: number;
+	/** Source storages the read could not include, and those it stopped before following. */
+	sourcesUnavailable: Set<string>;
+	sourcesSkipped: Set<string>;
+	/** A page bound or a repeated cursor stopped the read before the owner ran out of pages. */
+	bounded: boolean;
+	stalled: boolean;
 }
 
 /** Where one event sits in the exchange document. */
@@ -109,6 +126,18 @@ const STRUCTURAL_EVENTS: Record<string, string> = {
 };
 
 const oneLine = (text: string) => plainThreadText(text).replace(/\s+/g, " ").trim();
+/** Whether one event can be the target of a reply; structural events carry no post header. */
+const replyable = (event: CollaborationEvent) => !(event.kind in STRUCTURAL_EVENTS);
+const emptyDiscovery = (): DiscoveryRead => ({
+	complete: true,
+	visited: 0,
+	omitted: 0,
+	unavailable: 0,
+	sourcesUnavailable: new Set(),
+	sourcesSkipped: new Set(),
+	bounded: false,
+	stalled: false,
+});
 /** Clip with one ellipsis character; the generic line fit must never add its own three dots. */
 const clip = (text: string, width: number) => truncateToWidth(text, Math.max(1, width), "…");
 const reason = (error: unknown) => oneLine(String(error instanceof Error ? error.message : error));
@@ -139,18 +168,22 @@ export class ThreadsView {
 	private readonly reads = new Map<string, ThreadRead>();
 	private region: Region = "list";
 	private panel: Panel = "exchange";
-	/** In a narrow window the list and the thread take turns. */
-	private narrowThread = false;
+	/** The last render showed both panes; a narrow window shows the pane that holds focus. */
+	private wide = false;
 	private loading = false;
 	private loadedOnce = false;
 	private again = false;
 	private discoveredAt = 0;
 	private generation = 0;
 	private readGeneration = 0;
+	/** Read failures, kept with the thread whose read failed. */
+	private readonly readErrors = new Map<string, string>();
+	/** The newest read started for each thread, so an older result cannot report over it. */
+	private readonly readAt = new Map<string, number>();
 	private listError?: string;
 	private notice?: { text: string; kind: "info" | "success" | "warning" | "error" };
-	/** A post or send result, shown as the composer receipt. */
-	private receipt?: { text: string; kind: "info" | "success" | "warning" | "error" };
+	/** A post result per thread, kept with the thread whose draft it describes. */
+	private readonly receipts = new Map<string, { text: string; kind: "info" | "success" | "warning" | "error" }>();
 	private listScroll = 0;
 	private listReveal = true;
 	/** The closed-thread disclosure is view-local: expanded and keyboard-focused. */
@@ -162,15 +195,23 @@ export class ThreadsView {
 	/** Long posts the operator opened or closed against the view's default; Ctrl+O flips the default. */
 	private readonly postChoices = new Set<string>();
 	private postsOpen = false;
-	/** Rows of the last exchange document, so opening a post keeps the window's first row in place. */
-	private exchangeTotal = 0;
-	private keepWindowTop = false;
-	/** Lines scrolled up from the newest exchange line; zero follows new posts. */
-	private exchangeBack = 0;
+	/** The top visible exchange row, kept by event so a rebuilt document does not move the reader. */
+	private exchangeTop?: ExchangeAnchor;
+	/** The last render's exchange geometry, for scroll steps and anchor capture. */
+	private exchangeSpans: readonly ExchangeSpan[] = [];
+	private exchangeStart = 0;
 	private exchangeMax = 0;
 	private detailsOffset = 0;
-	/** The selected member row of the Members panel. */
+	/** The selected member row of the Members panel and the first row its viewport shows. */
 	private memberIndex = 0;
+	private memberStart = 0;
+	private memberRows = 1;
+	/** The chosen post of the reply panel and the first row its viewport shows. */
+	private replyIndex = 0;
+	private replyStart = 0;
+	private replyRows = 1;
+	/** Facts of the last completed discovery; absent before the first one. */
+	private discovery?: DiscoveryRead;
 	/** A thread opened from elsewhere (a related effort's contact thread) returns there on Escape. */
 	private direct = false;
 	private disposed = false;
@@ -183,7 +224,7 @@ export class ThreadsView {
 			keys: options.keys,
 			onSubmit: (text) => void this.post(text),
 			onEscape: () => {
-				this.region = "list";
+				this.region = "exchange";
 				this.options.redraw();
 			},
 			onChange: (text) => {
@@ -203,9 +244,15 @@ export class ThreadsView {
 
 	/** Show the view: read every thread, and open one thread when asked. */
 	open(threadId?: string): void {
-		if (threadId) this.select(threadId, true);
-		else if (this.options.state.selected) this.select(this.options.state.selected, false);
 		this.direct = Boolean(threadId);
+		this.panel = "exchange";
+		this.memberIndex = 0;
+		this.memberStart = 0;
+		this.replyIndex = 0;
+		this.replyStart = 0;
+		this.exchangeTop = undefined;
+		if (threadId) this.select(threadId);
+		else if (this.options.state.selected) this.select(this.options.state.selected);
 		this.region = threadId ? "exchange" : "list";
 		void this.discover(true);
 	}
@@ -215,6 +262,14 @@ export class ThreadsView {
 		const selected = this.options.state.selected;
 		if (selected) void this.readThread(selected);
 		await this.discover(false);
+	}
+
+	/** Read the selected thread and the whole thread list again on request. */
+	private retry(): void {
+		this.listError = undefined;
+		const selected = this.options.state.selected;
+		if (selected) void this.readThread(selected);
+		void this.discover(true);
 	}
 
 	// --- data -----------------------------------------------------------------
@@ -243,12 +298,14 @@ export class ThreadsView {
 		}
 		this.loading = true;
 		const generation = ++this.generation;
+		const facts = emptyDiscovery();
 		try {
-			const found = await this.collect(generation);
+			const found = await this.collect(generation, facts);
 			if (!found || !this.current(generation)) return;
 			this.threads.clear();
 			for (const [id, thread] of found) this.threads.set(id, thread);
 			this.listError = undefined;
+			this.discovery = facts;
 			this.discoveredAt = Date.now();
 		} catch (error) {
 			if (this.current(generation)) this.listError = `Threads could not be read: ${reason(error)}`;
@@ -257,13 +314,16 @@ export class ThreadsView {
 		}
 	}
 
-	private async collect(generation: number): Promise<Map<string, CollaborationSummary> | undefined> {
+	private async collect(generation: number, facts: DiscoveryRead): Promise<Map<string, CollaborationSummary> | undefined> {
 		const found = new Map<string, CollaborationSummary>();
 		const sources = new Map<string, number>();
-		await this.pages(generation, undefined, MAX_PAGES, found, sources);
-		for (const sessionId of [...sources.keys()].slice(0, MAX_SOURCES)) {
+		await this.pages(generation, undefined, MAX_PAGES, found, sources, facts);
+		if (!this.current(generation)) return undefined;
+		const pending = [...sources.keys()];
+		for (const sessionId of pending.slice(MAX_SOURCES)) facts.sourcesSkipped.add(sessionId);
+		for (const sessionId of pending.slice(0, MAX_SOURCES)) {
 			if (!this.current(generation)) return undefined;
-			await this.pages(generation, sessionId, MAX_SOURCE_PAGES, found, sources);
+			await this.pages(generation, sessionId, MAX_SOURCE_PAGES, found, sources, facts);
 		}
 		return found;
 	}
@@ -274,24 +334,39 @@ export class ThreadsView {
 		if (this.disposed) return;
 		// The newest thread is shown at once; reading it is passive.
 		const first = this.sorted()[0];
-		if (!this.options.state.selected && first) this.select(first.id, false);
-		this.listReveal = true;
+		if (!this.options.state.selected && first) this.select(first.id);
 		this.options.redraw();
 		if (!this.again) return;
 		this.again = false;
 		void this.discover(true);
 	}
 
-	private async pages(generation: number, sessionId: string | undefined, limit: number, found: Map<string, CollaborationSummary>, sources: Map<string, number>): Promise<void> {
+	private async pages(generation: number, sessionId: string | undefined, limit: number, found: Map<string, CollaborationSummary>, sources: Map<string, number>, facts: DiscoveryRead): Promise<void> {
 		let cursor: string | undefined;
 		for (let page = 0; page < limit; page++) {
 			const result = await this.call({ action: "list", ...(sessionId ? { sessionId } : {}), ...(cursor ? { cursor } : {}) });
 			if (!this.current(generation)) return;
 			if (!threadDiscovery(result)) throw new Error("the host returned an invalid thread list");
 			this.absorb(result, sessionId === undefined, found, sources);
-			if (!result.nextCursor || result.nextCursor === cursor) return;
+			this.cover(facts, result);
+			if (!result.nextCursor) return;
+			// A repeated cursor cannot advance; the read is partial and must say so.
+			if (result.nextCursor === cursor) {
+				facts.stalled = true;
+				return;
+			}
 			cursor = result.nextCursor;
+			if (page + 1 >= limit) facts.bounded = true;
 		}
+	}
+
+	/** Record what one discovery page covered and which of its sources it could not read. */
+	private cover(facts: DiscoveryRead, discovery: ThreadDiscovery): void {
+		facts.visited += discovery.coverage.visited;
+		facts.omitted += discovery.coverage.omitted;
+		facts.unavailable += discovery.coverage.unavailable ?? 0;
+		facts.complete &&= discovery.coverage.complete;
+		for (const source of discovery.sources ?? []) if (source.unavailable) facts.sourcesUnavailable.add(source.sessionId);
 	}
 
 	private absorb(discovery: ThreadDiscovery, root: boolean, found: Map<string, CollaborationSummary>, sources: Map<string, number>): void {
@@ -307,20 +382,23 @@ export class ThreadsView {
 		return !this.disposed && generation === this.generation;
 	}
 
-	private select(threadId: string, openThread: boolean): void {
+	private select(threadId: string): void {
 		if (this.options.state.selected !== threadId) {
 			if (this.options.state.selected) this.direct = false;
 			this.options.state.selected = threadId;
-			this.exchangeBack = 0;
+			this.exchangeTop = undefined;
+			this.exchangeStart = 0;
 			this.detailsOffset = 0;
+			this.memberIndex = 0;
+			this.memberStart = 0;
+			this.replyIndex = 0;
+			this.replyStart = 0;
 			this.panel = "exchange";
 			this.notice = undefined;
-			this.receipt = undefined;
 		}
 		// Opening a closed thread reveals the closed group; it stays expanded until collapsed.
 		if (this.threads.get(threadId)?.closed) this.closedExpanded = true;
 		this.closedFocused = false;
-		if (openThread) this.narrowThread = true;
 		this.listReveal = true;
 		void this.readThread(threadId);
 	}
@@ -328,6 +406,7 @@ export class ThreadsView {
 	/** Read the newest page of a thread, keeping earlier pages already read. */
 	private async readThread(threadId: string): Promise<void> {
 		const generation = ++this.readGeneration;
+		this.readAt.set(threadId, generation);
 		const current = () => !this.disposed && generation === this.readGeneration && this.options.state.selected === threadId;
 		try {
 			const result = await this.call({ action: "read", threadId });
@@ -335,10 +414,12 @@ export class ThreadsView {
 			if (!threadPage(result) || result.thread.id !== threadId) throw new Error("the host returned an invalid thread page");
 			this.reads.set(threadId, mergeNewest(this.reads.get(threadId), result));
 			this.notice = undefined;
+			this.readErrors.delete(threadId);
 			const summary = this.threads.get(threadId);
 			if (summary) this.threads.set(threadId, { ...summary, updatedAt: result.thread.updatedAt, closed: result.thread.closed, members: result.thread.members.length });
 		} catch (error) {
-			if (current()) this.notice = { text: `The thread could not be read: ${reason(error)}`, kind: "error" };
+			// A failure belongs to the thread it read, even after the operator moves elsewhere.
+			if (!this.disposed && this.readAt.get(threadId) === generation) this.readErrors.set(threadId, `The thread could not be read: ${reason(error)}`);
 		} finally {
 			if (!this.disposed) this.options.redraw();
 		}
@@ -350,7 +431,7 @@ export class ThreadsView {
 		const read = threadId ? this.reads.get(threadId) : undefined;
 		if (!threadId || !read?.nextBefore) return;
 		const before = read.nextBefore;
-		try {
+			try {
 			const result = await this.call({ action: "read", threadId, before });
 			const current = this.reads.get(threadId);
 			if (this.disposed || this.options.state.selected !== threadId || current?.nextBefore !== before) return;
@@ -359,8 +440,9 @@ export class ThreadsView {
 			current.events = [...result.events.filter((event) => !known.has(event.sequence)), ...current.events].sort(bySequence);
 			current.nextBefore = result.nextBefore;
 			this.notice = undefined;
+			this.readErrors.delete(threadId);
 		} catch (error) {
-			if (!this.disposed) this.notice = { text: `Earlier messages could not be read: ${reason(error)}`, kind: "error" };
+			if (!this.disposed && this.reads.get(threadId)?.nextBefore === before) this.readErrors.set(threadId, `Earlier messages could not be read: ${reason(error)}`);
 		} finally {
 			if (!this.disposed) this.options.redraw();
 		}
@@ -393,7 +475,7 @@ export class ThreadsView {
 		const threadId = this.options.state.selected;
 		if (!draft || !threadId || draft.pending || !message.trim()) return;
 		if (!this.canPost()) {
-			this.receipt = { text: "This thread is closed; posting is off.", kind: "warning" };
+			this.receipts.set(threadId, { text: "This thread is closed; posting is off.", kind: "warning" });
 			this.options.redraw();
 			return;
 		}
@@ -401,7 +483,7 @@ export class ThreadsView {
 		const content = JSON.stringify([revision, message, draft.notify, draft.replyTo ?? null]);
 		if (draft.request?.content !== content) draft.request = { id: randomUUID(), content };
 		draft.pending = true;
-		this.receipt = { text: "Posting…", kind: "info" };
+		this.receipts.set(threadId, { text: "Posting…", kind: "info" });
 		this.options.redraw();
 		try {
 			const result = await this.call({
@@ -416,7 +498,8 @@ export class ThreadsView {
 			receiptSequence(result, threadId);
 			this.posted(draft, revision, threadId);
 		} catch (error) {
-			if (!this.disposed) this.receipt = { text: `The post was not confirmed: ${reason(error)}. Your draft stays; Send retries it once.`, kind: "error" };
+			// The result belongs to the thread that sent it, never to whichever thread is showing.
+			this.receipts.set(threadId, { text: `The post was not confirmed: ${reason(error)}. Your draft stays; Send retries it once.`, kind: "error" });
 		} finally {
 			draft.pending = false;
 			if (!this.disposed) this.options.redraw();
@@ -432,18 +515,20 @@ export class ThreadsView {
 			draft.replyTo = undefined;
 			draft.revision++;
 		}
+		this.receipts.set(threadId, { text: "Posted.", kind: "success" });
 		if (this.disposed || this.options.state.selected !== threadId) return;
 		this.composer.setText(draft.text);
-		this.exchangeBack = 0;
-		this.receipt = { text: "Posted.", kind: "success" };
+		this.exchangeTop = undefined;
 		void this.readThread(threadId);
 	}
 
+	/** Mark or clear the exact post the next message answers; the composer keeps the draft. */
 	private replyTo(event: CollaborationEvent): void {
 		const draft = this.draft();
 		if (!draft || !this.canPost()) return;
 		draft.replyTo = draft.replyTo === event.sequence ? undefined : event.sequence;
 		draft.revision++;
+		this.panel = "exchange";
 		this.region = "composer";
 	}
 
@@ -476,7 +561,7 @@ export class ThreadsView {
 		if (this.postChoices.has(key)) this.postChoices.delete(key);
 		else this.postChoices.add(key);
 		this.exchangeCache = undefined;
-		this.keepWindowTop = true;
+		this.holdExchangeTop();
 	}
 
 	/** Ctrl+O opens or closes every long post in the view. */
@@ -484,7 +569,12 @@ export class ThreadsView {
 		this.postsOpen = !this.postsOpen;
 		this.postChoices.clear();
 		this.exchangeCache = undefined;
-		this.keepWindowTop = true;
+		this.holdExchangeTop();
+	}
+
+	/** Turn the current top row into an event anchor, so a rebuilt document keeps it in place. */
+	private holdExchangeTop(): void {
+		this.exchangeTop = this.exchangeSpot(this.exchangeStart);
 	}
 
 	// --- input ----------------------------------------------------------------
@@ -509,6 +599,7 @@ export class ThreadsView {
 		if (this.region === "exchange") {
 			if (this.panel === "members") this.membersInput(data);
 			else if (this.panel === "details") this.detailsInput(data);
+			else if (this.panel === "replies") this.repliesInput(data);
 			else this.exchangeInput(data);
 		} else this.listInput(data);
 	}
@@ -522,23 +613,27 @@ export class ThreadsView {
 
 	/** Every action of this view, re-read at each render and each invocation. */
 	private actions(): Action[] {
-		const closed = this.canPost() ? undefined : "This thread is closed; posting is off.";
+		const missing = this.options.state.selected ? undefined : "No thread is selected";
+		const closed = missing ?? (this.canPost() ? undefined : "This thread is closed; posting is off.");
 		const expand = this.options.keys.getKeys("app.tools.expand")[0] ?? "ctrl+o";
 		return [
-			{ id: "members", label: this.panel === "members" ? "Exchange" : "Members", key: "m", run: () => this.showPanel("members") },
-			{ id: "details", label: this.panel === "details" ? "Exchange" : "Details", key: "d", run: () => this.showPanel("details") },
+			{ id: "members", label: this.panel === "members" ? "Exchange" : "Members", key: "m", disabled: missing, run: () => this.showPanel("members") },
+			{ id: "details", label: this.panel === "details" ? "Exchange" : "Details", key: "d", disabled: missing, run: () => this.showPanel("details") },
+			{ id: "replies", label: this.panel === "replies" ? "Exchange" : "Reply", key: "r", disabled: closed, run: () => this.showPanel("replies") },
 			{ id: "posts", label: this.postsOpen ? "Close posts" : "Open posts", key: expand, run: () => this.toggleAllPosts() },
 			{ id: "write", label: "Write", key: "enter", disabled: closed, run: () => { this.region = "composer"; } },
 			{ id: "wake", label: "Wake on post", key: "space", disabled: closed, run: () => this.toggleSelectedMember() },
+			{ id: "retry", label: this.retryNeeded() ? "Retry read" : "Read again", short: this.retryNeeded() ? "retry" : "read again", key: "ctrl+r", run: () => this.retry() },
 		];
 	}
 
 	/** The action ids whose key the footer shows in this focus. */
 	private shownActions(focus: Focus): string[] {
-		if (focus === "list") return ["members", "details", "posts"];
+		if (focus === "list") return ["members", "details", "replies", "posts", "retry"];
 		if (focus === "members") return ["wake", "members"];
 		if (focus === "details") return ["details"];
-		if (focus === "exchange") return ["write", "members", "details", "posts"];
+		if (focus === "replies") return ["replies"];
+		if (focus === "exchange") return ["write", "members", "details", "replies", "posts", "retry"];
 		return [];
 	}
 
@@ -566,6 +661,11 @@ export class ThreadsView {
 		return this.region === "find" || this.region === "composer";
 	}
 
+	/** Whether a read failed or stopped early, so the retry must stay on the row. */
+	private retryNeeded(): boolean {
+		return Boolean(this.listError) || this.partial() || this.readErrors.size > 0;
+	}
+
 	/**
 	 * The footer for the current focus: navigation keys first, then actions on the selection, then view
 	 * keys, and the way out last. `menu` lists entries only the More menu shows.
@@ -573,13 +673,21 @@ export class ThreadsView {
 	footer(): { controls: Control[]; menu: Control[] } {
 		const focus = this.focus();
 		const controls = this.focusHints(focus);
+		const menu: Control[] = [];
 		for (const id of this.shownActions(focus)) {
-			const item = this.controlFor(id, id === "posts" ? 2 : 1);
+			const action = this.actions().find((item) => item.id === id);
+			if (!action) continue;
+			// Reading again is an offered extra while every read is complete; it earns a row place only when needed.
+			if (id === "retry" && !this.retryNeeded()) {
+				menu.push(menuControl(action, (chosen) => this.invoke(chosen)));
+				continue;
+			}
+			const item = this.controlFor(id, id === "retry" ? 3 : id === "posts" ? 2 : 1);
 			if (item) controls.push(item);
 		}
 		if (focus === "list" || focus === "exchange" || focus === "composer") controls.push(this.hint("tab", ["tab"], "focus", 3));
 		controls.push(this.hint("escape", ["escape"], this.escapeLabel(focus), 0));
-		return { controls, menu: [] };
+		return { controls, menu };
 	}
 
 	/** The keys this focus handles itself, in footer order. */
@@ -600,14 +708,26 @@ export class ThreadsView {
 				return [this.hint("choose", ["up", "down"], "choose", 0), this.hint("open-member", ["enter"], "open conversation", 1)];
 			case "details":
 				return [this.hint("scroll", ["up", "down"], "scroll", 0), this.hint("page", ["pageUp", "pageDown"], "page", 2)];
+			case "replies":
+				return [this.hint("choose", ["up", "down"], "choose", 0), this.hint("mark", ["enter"], "reply", 1)];
 			case "composer":
-				return [this.hint("post", ["enter"], "post", 1), { id: "newline", keys: this.newlineKeys(), label: "newline", priority: 2, run: (key) => this.handleInput(keyInput(key) ?? "") }];
+				return [this.hint("post", ["enter"], "post", 1), { id: "newline", keys: this.newlineKeys(), label: "newline", priority: 2, run: (key) => this.sendHint(key) }];
 		}
 	}
 
 	/** One key the view handles itself; a click sends exactly that key. */
 	private hint(id: string, keys: string[], label: string, priority: number): Control {
-		return { id, keys, label, priority, run: (key) => this.handleInput(keyInput(key) ?? "") };
+		return { id, keys, label, priority, run: (key) => this.sendHint(key) };
+	}
+
+	/** Send one footer key; a key with no terminal form says so and sends nothing. */
+	private sendHint(key: string): void {
+		const input = keyInput(key);
+		if (input === undefined) {
+			this.notice = { text: `The ${keyText(key)} key has no clickable form here.`, kind: "warning" };
+			return;
+		}
+		this.handleInput(input);
 	}
 
 	private controlFor(id: string, priority: number): Control | undefined {
@@ -625,7 +745,8 @@ export class ThreadsView {
 	private escapeLabel(focus: Focus): string {
 		if (focus === "find") return this.find.value ? "clear" : "list";
 		if (focus === "list") return this.find.value ? "clear" : "back";
-		if (focus === "members" || focus === "details") return "exchange";
+		if (focus === "members" || focus === "details" || focus === "replies") return "exchange";
+		if (focus === "composer") return "exchange";
 		// A thread opened from another surface returns there; otherwise Escape goes back to the list.
 		return this.direct ? "back" : "list";
 	}
@@ -642,15 +763,71 @@ export class ThreadsView {
 		this.region = "exchange";
 		this.detailsOffset = 0;
 		this.memberIndex = 0;
+		this.memberStart = 0;
+		if (this.panel === "replies") {
+			const current = this.draft()?.replyTo;
+			const at = current === undefined ? -1 : this.replyTargets().findIndex((event) => event.sequence === current);
+			this.replyIndex = Math.max(0, at);
+			this.replyStart = 0;
+		}
 	}
 
 	/** Members: Up and Down choose, Enter opens the conversation, Space ticks a wake for the next post. */
 	private membersInput(data: string): void {
 		const members = this.selectedRead()?.page.thread.members ?? [];
-		const member = members[this.memberIndex];
-		if (matchesKey(data, "up") || matchesKey(data, "down")) this.memberIndex = Math.max(0, Math.min(members.length - 1, this.memberIndex + (matchesKey(data, "up") ? -1 : 1)));
-		else if (matchesKey(data, "home") || matchesKey(data, "end")) this.memberIndex = matchesKey(data, "home") ? 0 : Math.max(0, members.length - 1);
-		else if (matchesKey(data, "enter") && member) this.options.openParticipant?.(member.identity);
+		if (matchesKey(data, "up")) this.memberMove(-1, members.length);
+		else if (matchesKey(data, "down")) this.memberMove(1, members.length);
+		else if (matchesKey(data, "home")) this.memberMove(-members.length, members.length);
+		else if (matchesKey(data, "end")) this.memberMove(members.length, members.length);
+		else if (matchesKey(data, "enter")) {
+			const member = members[this.memberIndex];
+			if (member) this.options.openParticipant?.(member.identity);
+		}
+	}
+
+	private memberMove(delta: number, count: number): void {
+		this.memberIndex = Math.max(0, Math.min(Math.max(0, count - 1), this.memberIndex + delta));
+		this.revealMember(count);
+	}
+
+	/** Keep the chosen member inside the rows the Members pane shows. */
+	private revealMember(count: number): void {
+		const maxStart = Math.max(0, count - this.memberRows);
+		this.memberStart = Math.max(0, Math.min(this.memberStart, maxStart));
+		if (this.memberIndex < this.memberStart) this.memberStart = this.memberIndex;
+		else if (this.memberIndex >= this.memberStart + this.memberRows) this.memberStart = this.memberIndex - this.memberRows + 1;
+		this.memberStart = Math.max(0, Math.min(this.memberStart, maxStart));
+	}
+
+	/** The posts a reply can name, newest first. */
+	private replyTargets(): CollaborationEvent[] {
+		return [...(this.selectedRead()?.events ?? [])].reverse().filter(replyable);
+	}
+
+	/** Replies: Up and Down choose a post, Enter marks or clears it as the reply target. */
+	private repliesInput(data: string): void {
+		const targets = this.replyTargets();
+		if (matchesKey(data, "up")) this.replyMove(-1, targets.length);
+		else if (matchesKey(data, "down")) this.replyMove(1, targets.length);
+		else if (matchesKey(data, "home")) this.replyMove(-targets.length, targets.length);
+		else if (matchesKey(data, "end")) this.replyMove(targets.length, targets.length);
+		else if (matchesKey(data, "enter")) {
+			const event = targets[this.replyIndex];
+			if (event) this.replyTo(event);
+		}
+	}
+
+	private replyMove(delta: number, count: number): void {
+		this.replyIndex = Math.max(0, Math.min(Math.max(0, count - 1), this.replyIndex + delta));
+		this.revealReply(count);
+	}
+
+	private revealReply(count: number): void {
+		const maxStart = Math.max(0, count - this.replyRows);
+		this.replyStart = Math.max(0, Math.min(this.replyStart, maxStart));
+		if (this.replyIndex < this.replyStart) this.replyStart = this.replyIndex;
+		else if (this.replyIndex >= this.replyStart + this.replyRows) this.replyStart = this.replyIndex - this.replyRows + 1;
+		this.replyStart = Math.max(0, Math.min(this.replyStart, maxStart));
 	}
 
 	private toggleSelectedMember(): void {
@@ -662,7 +839,6 @@ export class ThreadsView {
 		const order = this.regions();
 		const index = Math.max(0, order.indexOf(this.region));
 		this.region = order[(index + (backward ? order.length - 1 : 1)) % order.length] ?? "list";
-		if (this.region !== "list") this.narrowThread = true;
 	}
 
 	private composerInput(data: string): void {
@@ -686,9 +862,13 @@ export class ThreadsView {
 		else if (matchesKey(data, "pageUp")) this.scroll(page);
 		else if (matchesKey(data, "pageDown")) this.scroll(-page);
 		else if (matchesKey(data, "home")) {
-			this.scroll(Number.MAX_SAFE_INTEGER);
+			this.exchangeTop = "document";
+			this.exchangeStart = 0;
 			void this.earlier();
-		} else if (matchesKey(data, "end")) this.scroll(-Number.MAX_SAFE_INTEGER);
+		} else if (matchesKey(data, "end")) {
+			this.exchangeTop = undefined;
+			this.exchangeStart = this.exchangeMax;
+		}
 	}
 
 	private detailsInput(data: string): void {
@@ -704,15 +884,38 @@ export class ThreadsView {
 		else if (this.direct) {
 			this.direct = false;
 			this.options.onExit();
-		} else {
-			this.region = "list";
-			this.narrowThread = false;
-		}
+		} else this.region = "list";
 	}
 
 	private scroll(lines: number): void {
 		if (this.panel === "details") this.detailsOffset = Math.max(0, this.detailsOffset - lines);
-		else this.exchangeBack = Math.max(0, Math.min(this.exchangeMax, this.exchangeBack + lines));
+		else this.scrollExchange(lines);
+	}
+
+	/** Move the exchange top by `lines` rows; a negative count moves toward the newest line. */
+	private scrollExchange(lines: number): void {
+		const start = Math.max(0, Math.min(this.exchangeMax, this.exchangeStart - lines));
+		this.exchangeStart = start;
+		this.exchangeTop = start >= this.exchangeMax ? undefined : this.exchangeSpot(start);
+	}
+
+	/** The reading anchor for the exchange row at `start`: the document top, or the event and row inside it. */
+	private exchangeSpot(start: number): ExchangeAnchor {
+		if (start <= 0) return "document";
+		const span = this.exchangeSpans.find((item) => start < item.end);
+		if (!span) {
+			const last = this.exchangeSpans.at(-1);
+			return last ? { sequence: last.event.sequence, offset: start - last.start } : "document";
+		}
+		return { sequence: span.event.sequence, offset: start - span.start };
+	}
+
+	/** The exchange row an anchor names in the current document; absent follows the newest line. */
+	private exchangeRow(anchor: ExchangeAnchor | undefined): number {
+		if (!anchor) return this.exchangeMax;
+		if (anchor === "document") return 0;
+		const span = this.exchangeSpans.find((item) => item.event.sequence === anchor.sequence);
+		return span ? Math.max(0, Math.min(this.exchangeMax, span.start + anchor.offset)) : this.exchangeMax;
 	}
 
 	private listInput(data: string): void {
@@ -767,7 +970,7 @@ export class ThreadsView {
 		const next = targets[Math.max(0, Math.min(targets.length - 1, Math.max(0, current) + move[1]))];
 		if (!next) return false;
 		if (next.closed) this.closedFocused = true;
-		else if (next.id) this.select(next.id, false);
+		else if (next.id) this.select(next.id);
 		return true;
 	}
 
@@ -800,9 +1003,8 @@ export class ThreadsView {
 			return;
 		}
 		const first = this.sorted()[0];
-		if (!this.options.state.selected && first) this.select(first.id, true);
+		if (!this.options.state.selected && first) this.select(first.id);
 		const selected = Boolean(this.options.state.selected);
-		this.narrowThread = selected;
 		this.region = this.canPost() ? "composer" : selected ? "exchange" : "list";
 	}
 
@@ -820,6 +1022,7 @@ export class ThreadsView {
 		this.hits.begin(width, height);
 		const bodyHeight = Math.max(1, height);
 		const wide = width >= 100 && listWidth > 0;
+		this.wide = wide;
 		let body: string[];
 		if (wide) {
 			// The same split as the Agents tab: the divider sits at column `listWidth` in every tab.
@@ -827,9 +1030,14 @@ export class ThreadsView {
 			const pane = this.renderThread(listWidth + 1, width - listWidth - 1, bodyHeight);
 			const divider = this.options.theme.fg(this.region === "list" ? "accent" : "borderMuted", "│");
 			body = Array.from({ length: bodyHeight }, (_, row) => fitLine(list[row] ?? "", listWidth) + divider + fitLine(pane[row] ?? "", width - listWidth - 1));
-		} else if (this.narrowThread && this.options.state.selected) body = this.renderThread(0, width, bodyHeight, true);
+		} else if (this.threadShown()) body = this.renderThread(0, width, bodyHeight, true);
 		else body = this.renderList(0, width, bodyHeight);
 		return body.map((line) => fitLine(line, width));
+	}
+
+	/** In a narrow window the pane that holds focus is the one that shows. */
+	private threadShown(): boolean {
+		return this.region === "exchange" || this.region === "composer";
 	}
 
 	private renderList(x0: number, width: number, height: number): string[] {
@@ -845,7 +1053,16 @@ export class ThreadsView {
 		for (const block of blocks) {
 			const top = block.start - this.listScroll;
 			if (top + block.size <= 0 || top >= room) continue;
-			this.hits.add({ x: x0, y: 1 + Math.max(0, top), width, height: Math.min(block.size, room - Math.max(0, top)), click: () => { this.select(block.id, true); this.region = "list"; } });
+			this.hits.add({
+				x: x0,
+				y: 1 + Math.max(0, top),
+				width,
+				height: Math.min(block.size, room - Math.max(0, top)),
+				click: () => {
+					this.select(block.id);
+					this.region = this.wide ? "list" : "exchange";
+				},
+			});
 		}
 		if (disclosure !== undefined) {
 			const top = disclosure - this.listScroll;
@@ -911,9 +1128,37 @@ export class ThreadsView {
 	private listFooter(count: number, width: number): string {
 		const theme = this.options.theme;
 		if (this.listError) return theme.fg("warning", clip(this.listError, width));
-		if (count) return theme.fg("muted", clip(`${count} thread${count === 1 ? "" : "s"}${this.loading ? " · reading…" : ""}`, width));
-		if (this.loading || !this.loadedOnce) return theme.fg("muted", "Reading threads…");
-		return theme.fg("muted", clip(this.find.value ? `No thread matches “${oneLine(this.find.value)}”.` : "No threads yet.", width));
+		const partial = this.partial();
+		// A refresh of usable data keeps the count row it already showed; only the first read says it is reading.
+		if (count) return theme.fg("muted", clip(`${count} thread${count === 1 ? "" : "s"}${partial ? " · partial" : ""}`, width));
+		if (!this.loadedOnce) return theme.fg("muted", "Reading threads…");
+		if (this.find.value) return theme.fg(partial ? "warning" : "muted", clip(`No thread matches “${oneLine(this.find.value)}”.${partial ? " The read is partial." : ""}`, width));
+		if (partial) return theme.fg("warning", clip("No threads · partial", width));
+		return theme.fg("muted", "No threads yet.");
+	}
+
+	/** Whether the last discovery stopped before it covered every thread and source. */
+	private partial(): boolean {
+		const read = this.discovery;
+		if (!read) return false;
+		const covered = read.complete && !read.bounded && !read.stalled && !read.omitted && !read.unavailable;
+		return !covered || read.sourcesUnavailable.size > 0 || read.sourcesSkipped.size > 0;
+	}
+
+	/** What the last discovery did not reach, in plain words. */
+	private readGap(): string {
+		const read = this.discovery;
+		if (!read) return "";
+		const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
+		const parts: string[] = [];
+		if (read.sourcesUnavailable.size) parts.push(`${plural(read.sourcesUnavailable.size, "source storage is", "source storages are")} unavailable`);
+		if (read.sourcesSkipped.size) parts.push(`${plural(read.sourcesSkipped.size, "source storage was", "source storages were")} not read`);
+		if (read.omitted) parts.push(`${plural(read.omitted, "thread is", "threads are")} omitted`);
+		if (read.unavailable) parts.push(`${plural(read.unavailable, "record is", "records are")} unavailable`);
+		if (read.bounded) parts.push("the page limit is reached");
+		if (read.stalled) parts.push("a repeated page cursor stopped the read");
+		if (!parts.length && !read.complete) parts.push("the read is incomplete");
+		return parts.join(", ");
 	}
 
 	/** The shared list block: the title wraps into the gap row before the purpose shortens it. */
@@ -952,10 +1197,11 @@ export class ThreadsView {
 	private threadHeader(read: ThreadRead | undefined, summary: CollaborationSummary | undefined, x0: number, width: number, narrow: boolean, closed: boolean): string[] {
 		const theme = this.options.theme;
 		const back = narrow ? "‹ Threads " : "";
-		if (narrow) this.hits.add({ x: x0, y: 0, width: visibleWidth(back), height: 1, click: () => { this.narrowThread = false; this.region = "list"; } });
+		if (narrow) this.hits.add({ x: x0, y: 0, width: visibleWidth(back), height: 1, click: () => { this.region = "list"; } });
 		const thread = read?.page.thread;
 		const title = oneLine(thread?.title ?? summary?.title ?? "Thread");
 		const members = thread?.members.length ?? summary?.members ?? 0;
+		const id = this.options.state.selected ?? "";
 		const lead = `${theme.fg("accent", back)} `;
 		const leadWidth = visibleWidth(lead);
 		const titleRoom = Math.max(1, width - leadWidth - 1);
@@ -963,9 +1209,8 @@ export class ThreadsView {
 		const header = [`${lead}${theme.bold(theme.fg("text", rows[0] ?? ""))}`];
 		const rest = rows.length > 1 ? clip(rows.slice(1).join(" "), titleRoom) : "";
 		if (rest) header.push(`${" ".repeat(leadWidth)}${theme.bold(theme.fg("text", rest))}`);
-		const facts = this.notice ? oneLine(this.notice.text) : this.threadFacts(read, closed, members);
-		const colour = this.notice?.kind === "error" ? "error" : this.notice?.kind === "warning" ? "warning" : "muted";
-		header.push(theme.fg(colour, ` ${facts}`));
+		const facts = this.headerFacts(id, read, closed, members);
+		header.push(theme.fg(facts.colour, ` ${facts.text}`));
 		const purpose = oneLine(thread?.purpose ?? summary?.purpose ?? "");
 		if (purpose) header.push(...this.purposeRows(purpose, width));
 		// One blank row separates the header from the exchange.
@@ -973,12 +1218,23 @@ export class ThreadsView {
 		return header;
 	}
 
+	/** The header's state line: a view notice, this thread's read failure, or its own facts. */
+	private headerFacts(id: string, read: ThreadRead | undefined, closed: boolean, members: number): { text: string; colour: "error" | "warning" | "muted" } {
+		if (this.notice) {
+			const colour = this.notice.kind === "error" ? "error" : this.notice.kind === "warning" ? "warning" : "muted";
+			return { text: oneLine(this.notice.text), colour };
+		}
+		const failure = this.readErrors.get(id);
+		if (failure) return { text: failure, colour: "error" };
+		return { text: this.threadFacts(read, closed, members), colour: "muted" };
+	}
+
 	/** State, members and how much of the exchange is loaded, in one short muted line. */
 	private threadFacts(read: ThreadRead | undefined, closed: boolean, members: number): string {
 		const total = read?.page.thread.sequence;
 		const loaded = read?.events.length ?? 0;
 		const events = !read ? "" : read.nextBefore && total ? `latest ${loaded} of ${total} events` : `${loaded} event${loaded === 1 ? "" : "s"}`;
-		return [closed ? "Closed" : "Open", `${members} member${members === 1 ? "" : "s"}`, events].filter(Boolean).join(" · ");
+		return [closed ? "Closed" : "Open", `${members} member${members === 1 ? "" : "s"}`, events, ...(this.partial() ? ["thread list partial"] : [])].filter(Boolean).join(" · ");
 	}
 
 	/** The purpose in muted rows at the reading width; a longer purpose ends with a pointer to Details. */
@@ -998,39 +1254,58 @@ export class ThreadsView {
 		if (!read) return [this.options.theme.fg("muted", " Reading the thread…")];
 		if (this.panel === "members") return this.renderMembers(read, x0, y0, width, height);
 		if (this.panel === "details") return this.renderDetails(read, x0, y0, width, height);
+		if (this.panel === "replies") return this.renderReplies(x0, y0, width, height);
 		return this.renderExchange(read, x0, y0, width, height);
 	}
 
 	private emptyThread(width: number, height: number): string[] {
 		const theme = this.options.theme;
+		const partial = this.partial();
+		let detail: string;
+		if (this.listError) detail = this.listError;
+		else if (!this.loadedOnce) detail = "Reading threads…";
+		else if (this.threads.size) detail = partial ? `Select a thread in the list to read it. The thread list is partial: ${this.readGap()}; press ctrl+r to read it again.` : "Select a thread in the list to read it.";
+		else if (partial) detail = `No threads in the pages read. The read is partial: ${this.readGap()}; press ctrl+r to read the list again.`;
+		else detail = this.find.value ? "No thread matches Find." : "No threads yet. Agents create threads when they collaborate.";
+		const rows = wrapTextWithAnsi(detail, Math.max(1, width - 1));
+		const colour = this.listError || partial ? "warning" : "muted";
 		const lines = [
 			` ${theme.bold(clip("No thread selected", width - 1))}`,
 			"",
-			theme.fg("muted", ` ${clip(this.threads.size ? "Select a thread in the list to read it." : this.loadedOnce ? "No threads yet. Agents create threads when they collaborate." : "Reading threads…", width - 1)}`),
+			...rows.map((row) => theme.fg(colour, ` ${row}`)),
 		];
 		return Array.from({ length: height }, (_, row) => lines[row] ?? "");
 	}
 
 	/**
 	 * The exchange, newest at the bottom. The first row says how many earlier events are still unread and
-	 * reads them on a click or Home. While the view sits above the newest line, the last row says how far
-	 * below it is; a window that starts inside a post names that post on its first row.
+	 * reads them on a click or Home. The reader's top row is kept by event, so a refresh or an opened post
+	 * never moves it; a window that already follows the newest line keeps following. While the view sits
+	 * above the newest line, the last row says how far below it is; a window that starts inside a post
+	 * names that post on its first row.
 	 */
 	private renderExchange(read: ThreadRead, x0: number, y0: number, width: number, height: number): string[] {
 		const { lines, spans } = this.exchangeDocument(read, width);
-		// An opened or closed post grows or shrinks below the rows already in view, not above them.
-		if (this.keepWindowTop) this.exchangeBack = Math.max(0, this.exchangeBack + lines.length - this.exchangeTotal);
-		this.keepWindowTop = false;
-		this.exchangeTotal = lines.length;
+		this.exchangeSpans = spans;
 		this.exchangeMax = Math.max(0, lines.length - height);
-		this.exchangeBack = Math.min(this.exchangeBack, this.exchangeMax);
-		const start = Math.max(0, lines.length - height - this.exchangeBack);
+		const start = this.exchangeRow(this.exchangeTop);
+		this.exchangeStart = start;
 		const visible = lines.slice(start, start + height);
 		if (start === 0 && read.nextBefore) this.hits.add({ x: x0, y: y0, width, height: 1, click: () => void this.earlier() });
 		const area = { x0, y0, width, height, start };
 		this.postHits(spans, area);
 		this.exchangeEdges(visible, spans, lines.length, area);
-		this.hits.add({ x: x0, y: y0, width, height, wheel: (delta) => { this.exchangeBack = Math.max(0, Math.min(this.exchangeMax, this.exchangeBack - delta)); if (this.exchangeBack === this.exchangeMax && read.nextBefore && delta < 0) void this.earlier(); } });
+		this.hits.add({
+			x: x0,
+			y: y0,
+			width,
+			height,
+			wheel: (delta) => {
+				this.scrollExchange(-delta);
+				if (this.exchangeStart === 0 && delta < 0 && read.nextBefore) void this.earlier();
+			},
+		});
+		this.exchangeTop = start >= this.exchangeMax ? undefined : this.exchangeSpot(start);
 		return visible.map((line) => fitLine(line, width));
 	}
 
@@ -1083,12 +1358,12 @@ export class ThreadsView {
 		if (inside) {
 			visible[0] = theme.fg("muted", `${pad}↑ ${clip(`${this.name(inside.event.sender)} · #${inside.event.sequence}, continued`, Math.max(1, area.width - pad.length - 3))}`);
 			const back = area.start - (inside.header ?? area.start);
-			this.hits.add({ x: area.x0, y: area.y0, width: area.width, height: 1, click: () => { this.exchangeBack = Math.min(this.exchangeMax, this.exchangeBack + back); } });
+			this.hits.add({ x: area.x0, y: area.y0, width: area.width, height: 1, click: () => { this.scrollExchange(back); } });
 		}
 		const below = total - (area.start + area.height);
 		if (below <= 0) return;
 		visible[area.height - 1] = theme.fg("muted", `${pad}↓ ${below} line${below === 1 ? "" : "s"} below · End shows the latest`);
-		this.hits.add({ x: area.x0, y: area.y0 + area.height - 1, width: area.width, height: 1, click: () => { this.exchangeBack = 0; } });
+		this.hits.add({ x: area.x0, y: area.y0 + area.height - 1, width: area.width, height: 1, click: () => { this.exchangeTop = undefined; this.exchangeStart = this.exchangeMax; } });
 	}
 
 	/**
@@ -1181,9 +1456,18 @@ export class ThreadsView {
 	private renderMembers(read: ThreadRead, x0: number, y0: number, width: number, height: number): string[] {
 		const theme = this.options.theme;
 		const draft = this.draft();
-		const lines = [theme.fg("muted", " Click a name to open its conversation."), ...(this.canPost() ? [theme.fg("muted", " Ticked members wake on your next post.")] : [])];
-		this.memberIndex = Math.max(0, Math.min(read.page.thread.members.length - 1, this.memberIndex));
-		read.page.thread.members.forEach((member, index) => {
+		const members = read.page.thread.members;
+		this.memberIndex = Math.max(0, Math.min(members.length - 1, this.memberIndex));
+		const preambleRows = this.canPost() ? 2 : 1;
+		this.memberRows = Math.max(1, Math.floor((Math.max(1, height) - preambleRows) / 2));
+		this.revealMember(members.length);
+		const position = members.length > this.memberRows ? ` · ${this.memberIndex + 1} of ${members.length}` : "";
+		const lines = [
+			theme.fg("muted", `${clip(` Click a name to open its conversation.${position}`, width - 1)}`),
+			...(this.canPost() ? [theme.fg("muted", " Ticked members wake on your next post.")] : []),
+		];
+		members.slice(this.memberStart, this.memberStart + this.memberRows).forEach((member, offset) => {
+			const index = this.memberStart + offset;
 			const ticked = draft?.notify.includes(member.identity) ? "[x]" : "[ ]";
 			const y = lines.length;
 			const box = this.canPost() ? `${ticked} ` : "";
@@ -1191,11 +1475,39 @@ export class ThreadsView {
 			lines.push(`${marker}${theme.fg("accent", box)}${theme.bold(clip(this.name(member.identity), width - 3 - visibleWidth(box)))}`);
 			lines.push(theme.fg("muted", `     ${truncateToWidth(oneLine(member.contribution) || "No contribution declared", Math.max(1, width - 6), "…")}`));
 			if (y < height) {
-				if (box) this.hits.add({ x: x0 + 1, y: y0 + y, width: 4, height: 1, click: () => this.toggleNotify(member.identity) });
-				this.hits.add({ x: x0 + 1 + visibleWidth(box), y: y0 + y, width: Math.max(1, width - 1 - visibleWidth(box)), height: 1, click: () => this.options.openParticipant?.(member.identity) });
+				if (box) this.hits.add({ x: x0 + 1, y: y0 + y, width: 4, height: 1, click: () => { this.memberIndex = index; this.toggleNotify(member.identity); } });
+				this.hits.add({ x: x0 + 1 + visibleWidth(box), y: y0 + y, width: Math.max(1, width - 1 - visibleWidth(box)), height: 1, click: () => { this.memberIndex = index; this.options.openParticipant?.(member.identity); } });
 			}
 		});
-		return lines.slice(0, height).map((line) => fitLine(line, width));
+		if (!members.length) lines.push(theme.fg("muted", " No members recorded in this read."));
+		this.hits.add({ x: x0, y: y0, width, height, wheel: (delta) => this.memberMove(delta, members.length) });
+		return Array.from({ length: height }, (_, row) => lines[row] ?? "").map((line) => fitLine(line, width));
+	}
+
+	/** The reply chooser: every post newest first; Enter marks or clears the exact reply target. */
+	private renderReplies(x0: number, y0: number, width: number, height: number): string[] {
+		const theme = this.options.theme;
+		const targets = this.replyTargets();
+		const preamble = [theme.fg("muted", " Choose the post your next message answers."), theme.fg("muted", " Enter marks or clears it; your draft stays.")];
+		const room = Math.max(1, height - preamble.length);
+		this.replyRows = room;
+		this.replyIndex = Math.max(0, Math.min(Math.max(0, targets.length - 1), this.replyIndex));
+		this.revealReply(targets.length);
+		const current = this.draft()?.replyTo;
+		const lines = [...preamble];
+		const rows = targets.slice(this.replyStart, this.replyStart + room);
+		rows.forEach((event, offset) => {
+			const index = this.replyStart + offset;
+			const chosen = index === this.replyIndex;
+			const marked = event.sequence === current;
+			const text = `${marked ? "●" : "○"} #${event.sequence} ${this.name(event.sender)} · ${clip(oneLine(event.message) || "No text", Math.max(1, width - 16))}`;
+			const row = `${chosen ? theme.fg("accent", "›") : " "} ${theme.fg(marked ? "accent" : "text", text)}${marked ? theme.fg("accent", " replying") : ""}`;
+			lines.push(chosen ? theme.bg("selectedBg", fitLine(row, width)) : fitLine(row, width));
+			this.hits.add({ x: x0, y: y0 + preamble.length + offset, width, height: 1, click: () => { this.replyIndex = index; this.replyTo(event); } });
+		});
+		if (!targets.length) lines.push(theme.fg("muted", " No posts to reply to yet."));
+		this.hits.add({ x: x0, y: y0, width, height, wheel: (delta) => this.replyMove(delta, targets.length) });
+		return Array.from({ length: height }, (_, row) => lines[row] ?? "").map((line) => fitLine(line, width));
 	}
 
 	private renderDetails(read: ThreadRead, x0: number, y0: number, width: number, height: number): string[] {
@@ -1229,7 +1541,8 @@ export class ThreadsView {
 		if (draft?.replyTo) parts.push(`reply to #${draft.replyTo}`);
 		if (draft?.notify.length) parts.push(`wakes ${draft.notify.length}`);
 		const caption = `Post to ${title}`;
-		return this.composer.render(width, caption, parts.join(" · "), draft?.pending ? "Posting…" : this.receipt?.text ?? "");
+		const receipt = this.options.state.selected ? this.receipts.get(this.options.state.selected) : undefined;
+		return this.composer.render(width, caption, parts.join(" · "), draft?.pending ? "Posting…" : receipt?.text ?? "");
 	}
 
 	/** The composer takes focus on a click; the footer's `enter post` control posts the draft. */

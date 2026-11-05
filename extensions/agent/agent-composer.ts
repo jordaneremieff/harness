@@ -124,16 +124,18 @@ export class AgentComposer implements Component, Focusable {
 		this.editor.addToHistory(text);
 	}
 	handleInput(data: string): void {
+		// A configured newline binding may itself be an Alt chord, so it applies before the Alt guard.
+		const newline = this.options.keys.matches(data, "tui.input.newLine");
 		const key = parseKey(data);
-		if (key?.includes("alt+") || /^f\d+$/.test(key ?? "")) return;
-		if ((matchesKey(data, "escape") || this.options.keys.matches(data, "app.interrupt")) && !this.editor.isShowingAutocomplete()) {
-			this.options.onEscape();
-			return;
-		}
-		if (this.options.keys.matches(data, "tui.input.newLine")) {
+		if (!newline && (key?.includes("alt+") || /^f\d+$/.test(key ?? ""))) return;
+		if (newline) {
 			setKeybindings(this.options.keys);
 			this.editor.handleInput(data);
 			this.options.onChange?.(this.getText());
+			return;
+		}
+		if ((matchesKey(data, "escape") || this.options.keys.matches(data, "app.interrupt")) && !this.editor.isShowingAutocomplete()) {
+			this.options.onEscape();
 			return;
 		}
 		if (matchesKey(data, "enter")) {

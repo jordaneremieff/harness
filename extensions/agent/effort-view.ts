@@ -6,7 +6,7 @@ import { matchesKey, visibleWidth, wrapTextWithAnsi, truncateToWidth, type TUI, 
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { RelatedEffort } from "./effort-presence.ts";
 import type { DashboardResult } from "./dashboard.ts";
-import { type Action, type Control, actionControl, keyInput, keyMatches, menuControl } from "../../operator-ui/index.ts";
+import { type Action, type Control, actionControl, keyInput, keyMatches, keyText, menuControl } from "../../operator-ui/index.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
 import { DashboardMouse } from "./dashboard-mouse.ts";
@@ -78,6 +78,8 @@ export class EffortView {
 	private observation?: string;
 	private observing = false;
 	private notice = "";
+	/** The effort a notice describes; another selection does not show it. */
+	private noticeFor?: string;
 	private offset = 0;
 	private observedAt = Date.now();
 	private exactTime = false;
@@ -132,8 +134,7 @@ export class EffortView {
 		const threadId = this.contactId();
 		const generation = this.generation;
 		const read = ++this.contactRead;
-		this.contactPage = undefined;
-		this.contactNotice = !threadId ? "No contact thread claim" : !this.options.collaborate ? "Contact declarations unavailable: no thread reader" : "Read contact declarations…";
+		this.contactStart(threadId);
 		if (!threadId || !this.options.collaborate) return;
 		if (this.contactPending) { this.contactAgain = true; return; }
 		this.contactPending = true;
@@ -146,12 +147,23 @@ export class EffortView {
 			this.contactNotice = "";
 			this.detailVersion++;
 		} catch (error) {
-			if (current()) this.contactNotice = `Contact declarations unavailable: ${plain(String(error).slice(0, 512))}`;
-			this.detailVersion++;
+			if (current()) {
+				this.contactPage = undefined;
+				this.contactNotice = `Contact declarations unavailable: ${plain(String(error).slice(0, 512))}`;
+				this.detailVersion++;
+			}
 		} finally {
 			this.contactPending = false;
 			this.contactFinished(current());
 		}
+	}
+	/** Start a contact read: a routine refresh keeps the declaration already read. */
+	private contactStart(threadId: string | undefined): void {
+		const retained = threadId && this.contactPage?.thread.id === threadId ? this.contactPage : undefined;
+		this.contactPage = retained;
+		if (!threadId) this.contactNotice = "No contact thread claim";
+		else if (!this.options.collaborate) this.contactNotice = "Contact declarations unavailable: no thread reader";
+		else this.contactNotice = retained ? "" : "Read contact declarations…";
 	}
 	private contactFinished(current: boolean): void {
 		if (current) this.options.redraw();
@@ -229,7 +241,7 @@ export class EffortView {
 	private message(): void {
 		const row = this.row();
 		if (this.selectedThread || row?.liveness !== "live" || !this.options.messageEffort) {
-			this.notice = "Direct messages need a live compatible effort";
+			this.setNotice("Direct messages need a live compatible effort", this.selected);
 			return;
 		}
 		this.target = row.id;
@@ -242,32 +254,37 @@ export class EffortView {
 		const contact = this.selectedThread ?? (row?.relationship === "machine" ? row.contactThreadClaim : row?.intentClaim?.contactThread);
 		if (contact) {
 			const notice = this.options.openContact(contact);
-			this.notice = notice ?? "";
+			this.setNotice(notice ?? "", this.selectedThread ?? this.selected);
 			if (!notice) { this.active = false; this.clearSelectionReads(); }
 		}
-		else this.notice = "No contact thread claim";
+		else this.setNotice("No contact thread claim", this.selected);
+	}
+	/** Publish a notice against the effort it describes, so another selection never shows it. */
+	private setNotice(text: string, id?: string): void {
+		this.notice = text;
+		this.noticeFor = id;
 	}
 	private async send(text: string): Promise<void> {
 		const id = this.target;
 		if (!id || this.sending || !text.trim()) return;
 		if (this.view?.presence.efforts.find((row) => row.id === id)?.liveness !== "live" || !this.options.messageEffort) {
-			this.notice = "Delivery not attempted: effort is not live";
+			this.setNotice("Delivery not attempted: effort is not live", id);
 			return;
 		}
 		const revision = this.drafts.get(id)?.revision;
 		this.sending = true;
-		this.notice = "Sending operator message…";
+		this.setNotice("Sending operator message…", id);
 		this.options.redraw();
 		try {
 			const result = await this.options.messageEffort(id, text);
 			if (this.disposed) return;
-			this.notice = plain(result.text);
+			this.setNotice(plain(result.text), id);
 			if (this.drafts.get(id)?.text === text && this.drafts.get(id)?.revision === revision) {
 				this.drafts.delete(id);
 				if (this.target === id) this.composer.setText("");
 			}
 		} catch (error) {
-			if (!this.disposed) this.notice = `Delivery not confirmed. Draft retained: ${String(error)}`;
+			if (!this.disposed) this.setNotice(`Delivery not confirmed. Draft retained: ${String(error)}`, id);
 		} finally {
 			this.sending = false;
 			if (!this.disposed) this.options.redraw();
@@ -282,7 +299,7 @@ export class EffortView {
 	}
 	private openThreads(): void {
 		const notice = this.options.openThreads();
-		this.notice = notice ?? "";
+		this.setNotice(notice ?? "", this.selectedThread ?? this.selected);
 		if (!notice) { this.active = false; this.clearSelectionReads(); }
 	}
 	/** Every action of this view, re-read at each render and each invocation. Footer, keys and pointer all run these. */
@@ -314,7 +331,7 @@ export class EffortView {
 		const action = this.actions().find((item) => item.id === id);
 		if (!action) return;
 		if (action.disabled) {
-			this.notice = action.disabled;
+			this.setNotice(action.disabled, this.selectedThread ?? this.selected);
 			return;
 		}
 		action.run();
@@ -337,14 +354,14 @@ export class EffortView {
 			return action ? actionControl(action, (chosen) => this.invoke(chosen), priority) : undefined;
 		};
 		const hint = (id: string, keys: string[], label: string, priority: number): Control =>
-			({ id, keys, label, priority, run: (key) => this.handleInput(keyInput(key) ?? "") });
+			({ id, keys, label, priority, run: (key) => this.sendHint(key) });
 		const back = hint("back", ["escape"], "back", 0);
 		if (this.composing) {
 			const send = control("send", 1);
 			return {
 				controls: [
 					...(send ? [send] : []),
-					{ id: "newline", keys: this.newlineKeys(), label: "newline", priority: 2, run: (key) => this.handleInput(keyInput(key) ?? "") },
+					{ id: "newline", keys: this.newlineKeys(), label: "newline", priority: 2, run: (key) => this.sendHint(key) },
 					back,
 				],
 				menu: [],
@@ -360,6 +377,16 @@ export class EffortView {
 			.filter((action) => !action.primary && !STEP_ACTIONS.has(action.id))
 			.map((action) => menuControl(action, (chosen) => this.invoke(chosen)));
 		return { controls, menu };
+	}
+
+	/** Send one footer key; a key with no terminal form says so and sends nothing. */
+	private sendHint(key: string): void {
+		const input = keyInput(key);
+		if (input === undefined) {
+			this.setNotice(`The ${keyText(key)} key has no clickable form here.`);
+			return;
+		}
+		this.handleInput(input);
 	}
 
 	/** The keys the resolved newline binding accepts, as the composer footer shows them. */
@@ -535,11 +562,11 @@ export class EffortView {
 		while (lines.at(-1) === "") lines.pop();
 		return lines;
 	}
-	private scanLines(width: number): string[] {
+	/** The scanned coverage text; the pane scrolls it, so every sentence stays reachable. */
+	private scanBody(width: number): string[] {
 		const { margin, textWidth } = readingGeometry(width);
 		const pad = " ".repeat(margin);
-		const theme = this.options.theme;
-		return [`${pad}${theme.bold("Scan details")}`, "", ...this.coverageLines().flatMap((line) => (line ? wrapTextWithAnsi(line, textWidth).map((part) => `${pad}${part}`) : [""]))];
+		return this.coverageLines().flatMap((line) => (line ? wrapTextWithAnsi(line, textWidth).map((part) => `${pad}${part}`) : [""]));
 	}
 	/** How long ago this view read presence, against the clock; record ages stay fixed to the read itself. */
 	private readAge(): string {
@@ -685,7 +712,8 @@ export class EffortView {
 		const pad = " ".repeat(margin);
 		const section = this.detailSections(width, x, y, margin, includeIntegration);
 		const editor = this.composing ? this.composer.render(width, this.composerCaption()) : [];
-		const noticeLines = this.notice ? [theme.fg(this.notice.includes("unavailable") ? "warning" : "muted", truncateToWidth(`${pad}${plain(this.notice)}`, Math.max(1, width - 1), "…"))] : [];
+		const notice = this.notice && (!this.noticeFor || this.noticeFor === this.selected) ? this.notice : "";
+		const noticeLines = notice ? [theme.fg(notice.includes("unavailable") ? "warning" : "muted", truncateToWidth(`${pad}${plain(notice)}`, Math.max(1, width - 1), "…"))] : [];
 		const available = Math.max(1, height - section.preamble.length - editor.length - noticeLines.length);
 		this.offset = Math.max(0, Math.min(this.offset, Math.max(0, section.bodySource.length - available)));
 		const body = Array.from({ length: available }, (_, index) => section.bodySource[this.offset + index] ?? "");
@@ -698,7 +726,7 @@ export class EffortView {
 	/** The pane's preamble and scrolling body for its current state. */
 	private detailSections(width: number, x: number, y: number, margin: number, includeIntegration: boolean): { preamble: string[]; bodySource: string[]; timeLine: number } {
 		const row = this.row();
-		if (this.scanOpen) return { preamble: this.scanLines(width), bodySource: [], timeLine: -1 };
+		if (this.scanOpen) return { preamble: [this.options.theme.fg("muted", `${" ".repeat(margin)}Scan details`)], bodySource: this.scanBody(width), timeLine: -1 };
 		if (!row) {
 			const message = this.composing ? `Message target ${plain(this.target ?? "")}: not in the current presence page` : this.view ? "No efforts in this page." : "Reading efforts…";
 			return { preamble: [" ".repeat(margin) + clip(message, width - margin - 1)], bodySource: [], timeLine: -1 };

@@ -565,9 +565,15 @@ The view has a heading row, the list, and the selected agent's pane:
   After three failed refreshes the line reads `List kept; refresh failed` in
   the warning colour. The second count line names the scope and the active
   filters and how many loaded agents they show, such as `Related + Find · 3 of
-  329 loaded`, then Load more when the store has more agents. At 100 columns
-  or more the list sits beside the pane at full height; narrower windows stack
-  a strip above the pane, with Load more beside Find.
+  329 loaded`, then Load more when the store has more agents and the row has
+  room for both; one space always divides the two, and the facts keep their
+  space when they do not both fit. A routine refresh of related work keeps the
+  last count, its width and its controls until the new facts are ready; only a
+  first read says `reading related work…`, and a failed read adds `· failed` in
+  the warning colour until a later read succeeds. At 100 columns or more the
+  list sits beside the pane at full height; narrower windows stack a strip
+  above the pane whose first row holds Find, Related and All, and those facts
+  together, with Load more at its end when the row has room for it.
 - **Pane.** The selected agent's header of two lines, then one blank line.
   Line 1 holds the bold label and the project in muted text. Line 2 holds the
   state glyph and label, then at most one status:
@@ -609,8 +615,9 @@ Lineage and membership reads use bounded public status, thread discovery and
 seed-storage directories. Unchanged thread summary timestamps reuse already-read
 frames within the view. Catalog notifications invalidate those caches even
 when a publisher timestamp repeats. The list's periodic refresh does not repeat
-unchanged membership reads. Read failures, scan bounds and incomplete list pages
-remain explicit. Unknown relationships stay out of Related, not out of All.
+unchanged membership reads. A failed read adds `· failed` to the second count
+line, and scan bounds and incomplete list pages remain explicit. Unknown
+relationships stay out of Related, not out of All.
 Load more extends the list; All threads and selected-storage discovery expose
 wider thread evidence. No relationship store or host protocol is added.
 
@@ -623,7 +630,13 @@ the list: the selection follows the first match, and the pane previews it
 without starting its host. Up and Down select, Home and End select the first
 and last agent; Enter writes to the selected agent. Outside a text field, the
 keys in the footer run their actions; `x` lists the actions the row does not
-show, with their keys. Escape over the list clears the error filter first,
+show, with their keys. In a text field every letter is text, so `ctrl+n` opens
+and closes More there, and the row shows that chord instead of `x` when the row
+has hidden entries. A key the
+row's own hints claim stays with the view; an action with the same key lists in
+More without one. A footer key with no terminal encoding shows
+`The <key> key has no clickable form here.` instead of acting quietly. Escape
+over the list clears the error filter first,
 then Find, and keeps the chosen agent.
 
 Selection reads passively: it never starts a host and never moves a draft
@@ -657,7 +670,8 @@ The footer's controls act on the agent shown in the header:
   awaits other agents), **Reconnect** (`r`, when it needs attention),
   **Configure** (`c`, disabled with its reason while the agent works) and
   **Tasks** (`k`) show directly when they fit.
-- **x more** lists the rest with their keys: the delivery effect, Owner views
+- **x more** (`ctrl+n` while a text field has focus) lists the rest with their
+  keys: the delivery effect, Owner views
   (`o`), Fork, Rewind, Compact, Reset context, Schedule message, Scheduled
   messages, Run command, Profile, Details, Stop and release host, and host
   extras such as the terminal's Recover input (`u`).
@@ -668,6 +682,11 @@ conversation when the pane has 120 columns or more, otherwise in its place.
 A form binds to the agent it opened for; selecting another agent closes it
 without sending anything. Fields keep their values after a refusal; only the
 effect-labelled action calls the owner, and Cancel or Escape sends nothing.
+
+Owner views (`o`) read the selected host's advertised views. The answer opens
+only while that agent and that view still own the screen: after another form
+opens, another agent is selected, or the view is left, the late answer opens
+nothing and states no failure.
 
 - **Configure** stages Name, Model and Reasoning, then Apply. Models come from
   the host's model list, narrowed as you type; a current model the host does
@@ -710,7 +729,9 @@ it looks like a flag; empty creates an idle conversation), Preset (the machine
 presets with resolved model and reasoning, the default first) and Directory.
 Start creates the conversation and selects it with a Starting state before its
 host is ready; the conversation then follows the host's live output. A late
-completion never moves a selection the operator changed since. In ordinary Pi
+completion never moves a selection the operator changed since: the created
+conversation and its result stay in the list, and only its automatic selection
+is given up. In ordinary Pi
 the answer to the purpose comes back to this session; the attached terminal's
 form is described above. The unsent purpose survives closing the form.
 
@@ -1242,7 +1263,8 @@ the cursor continues, and a short note while related work is still read.
 Storage counts such as unreadable or omitted records stay in Details and the
 plain-text summary; they are not selected-agent warnings. Unreadable or missing
 views remain unknown, not absent. Load more agents continues the cursor; a
-short row puts lower-priority controls in `x more`, with their keys. Rows carry
+short row puts lower-priority controls in `x more`, with their keys, and
+`ctrl+n` opens the same menu while a text field has focus. Rows carry
 no creating-session tag. A
 provider error that ends in a JSON body reads as its message, for example
 `429 Usage limit reached`. Find searches loaded
@@ -1778,8 +1800,16 @@ one. The member count sits in the thread header. `/` moves to Find, whose
 letters search open and closed threads and show every match; Enter keeps the
 filter and returns to the list, Escape clears it, and clearing Find restores
 the earlier choice. Over the list, letters are keys, never Find text. Up/Down,
-PageUp/PageDown, Home and End select; the wheel scrolls the list. The list footer reads `N threads`, or one read warning. The
-newest thread is selected when the view opens. Selecting a thread reads its
+PageUp/PageDown, Home and End select; the wheel scrolls the list. The list footer
+reads `N threads`, or a read warning. A discovery that stops at its page bound,
+meets a repeated cursor, or cannot read a source storage marks the row
+`partial`, and the thread header marks it too. With no thread selected, the
+thread pane names each unread or unavailable source and the omitted threads.
+`ctrl+r` reads the list again: the control stays on the row while the list is
+partial or a read failed, and the More menu lists it as `Read again` at other
+times. A partial read never reads as an empty list, and
+a routine refresh keeps the count row it already showed.
+The newest thread is selected when the view opens. Selecting a thread reads its
 newest page; reading is passive and starts no model turn.
 
 The thread pane's header holds the bold title, then one muted line with Open
@@ -1800,7 +1830,9 @@ reading width, a two-column margin and at most 100 columns; the stored message
 is unchanged. A post longer than 16 rows opens as a preview of 10 rows with
 `▸ N more lines`; a click opens it in place, `▴ Show less` closes it, and
 Ctrl+O opens or closes every long post. Opening or closing a post keeps the
-rows above it where they are. A muted `notified` line lists the members a post
+rows above it where they are, and the top visible post stays in place through a
+refresh, an earlier page and a resize; a window that already shows the newest
+line keeps following it. A muted `notified` line lists the members a post
 woke, and one blank line separates posts. A participant's name comes from the
 roster (name, else handle), `This session` for the session that runs the view,
 or a Pi session name from effort presence; without one it shows as `Session`
@@ -1821,8 +1853,10 @@ thread text is plain text: terminal sequences are removed.
 
 The message field at the bottom posts to the selected thread with origin
 `operator`; a post wakes nobody unless members are ticked. Click a post's header
-row to reply to that message; the field's caption shows the reply and the number of
-members it wakes. A retained post clears the draft and its reply target. A post
+row, or press `r` and choose the post in the reply panel, to reply to that
+message; Enter in the panel marks or clears the chosen post. The field's caption
+shows the reply and the number of members it wakes, and the exchange marks the
+chosen post `replying`. A retained post clears the draft and its reply target. A post
 that is not confirmed keeps the draft, and sending the same content again
 reuses its request identity. A closed thread takes no posts. Drafts stay per
 thread for the session.
@@ -1830,14 +1864,20 @@ thread for the session.
 `m` (members) lists the members with their declared contributions. Up/Down
 choose, Space ticks a member to wake on the next post, and Enter or a click
 opens that member's conversation in the Agents tab; Escape there returns to the
-thread. `d` (details) shows the frame as attributed claims: purpose, the
+thread. The pane shows one member per two rows and keeps the chosen member in
+view, so End and the wheel reach the last member. `d` (details) shows the frame as attributed claims: purpose, the
 carried operator direction, source, restrictions, acceptance, integrator,
-creator and the member declarations; the same key returns to the exchange.
+creator and the member declarations; the same key returns to the exchange. `r`
+(reply) lists the posts newest first and marks or clears the reply target.
 The key footer lists the keys of the focused part: the list, Find, the
 exchange, a panel or the message field, where `enter post` and the newline keys
 apply and every letter is text. Tab moves through the list, the exchange and
-the message field. Escape steps back one level: from a panel to the exchange,
-from the exchange to the list, and from the list to where Threads opened from. A thread opened from Related efforts returns there directly.
+the message field. A window narrower than 100 columns shows one pane: the list
+while it has focus, the thread whenever the exchange, a panel or the message
+field has focus. Escape steps back one level: from a panel to the exchange,
+from the message field to the exchange, from the exchange to the list, and from
+the list to where Threads opened from. A thread opened from Related efforts
+returns there directly.
 Catalog notices reread the selected thread at once and the thread list at most
 every ten seconds. The standalone native terminal uses the same view and
 attributes operator posts to its attached conversation.
@@ -1967,7 +2007,9 @@ registration; activity is sampled, so the first minute after a start leaves no
 record. Active threads follow under their own label, with the same
 blocks. The list footer reads `N efforts`, when presence was read, and the
 scan's stop reasons in plain words (such as `scan limit hit`) with a Details
-control when coverage is partial; the row opens Scan details.
+control when coverage is partial; the row opens Scan details. A routine refresh
+keeps the last count row and the selected record's detail until the new read
+arrives.
 
 The selected effort's header shows the complete title, then a muted line with
 the same presence and activity facts, then a blank line; it holds no commands.
@@ -1990,9 +2032,11 @@ declarations and the full contact frame. Scan details states, in sentences, how
 many entries the presence scan visited, how many efforts it lists, what it
 skipped and why it stopped, and the same for active threads; efforts the scan
 did not reach are not listed, and Refresh (`r`) reads presence again within the
-same bounds. A contact-thread
+same bounds. Its heading stays on the first row and the sentences scroll, so
+PgUp/PgDn and the wheel reach every line. A contact-thread
 read displays its frame and current member
-contributions as declarations, not agreement or permission. Rejoin a thread to
+contributions as declarations, not agreement or permission; a routine refresh
+keeps the declaration already read until its replacement arrives. Rejoin a thread to
 replace your contribution with a current hold, release or continuing condition
 and cite its source exchange. A release by one member does not clear another
 member's hold. A contact-thread link opens the existing Threads view.

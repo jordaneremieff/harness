@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { CURSOR_MARKER, visibleWidth, type AutocompleteProvider, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, KeybindingsManager, TUI_KEYBINDINGS, getKeybindings, setKeybindings, visibleWidth, type AutocompleteProvider, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { stripVTControlCharacters } from "node:util";
 import { AgentComposer } from "./agent-composer.ts";
 import { deferred, keys, theme } from "./dashboard-test-fixture.mts";
@@ -149,4 +149,33 @@ it("padding precedes native autocomplete and preserves its mouse transform", asy
 	const y = plain.findIndex((line) => line.includes("completion item")); assert.ok(y > 9);
 	assert.equal(composer.handleMouse({ type: "click", button: "left", clickCount: 1, x: 3, y, screenX: 3, screenY: y, width: 80, height: lines.length, shift: false, alt: false, ctrl: false })?.handled, true);
 	assert.equal(composer.getText(), "complete");
+});
+
+it("a configured alt+enter newline inserts a line and plain Enter still submits", () => {
+	const previous = getKeybindings();
+	const custom = new KeybindingsManager(TUI_KEYBINDINGS, { "tui.input.newLine": ["alt+enter"] });
+	setKeybindings(custom);
+	try {
+		const sent: string[] = [];
+		const changes: string[] = [];
+		const composer = new AgentComposer({
+			tui: { terminal: { rows: 24, columns: 80 }, requestRender() {} } as unknown as TUI,
+			theme,
+			keys: custom,
+			onSubmit: (text) => sent.push(text),
+			onChange: (text) => changes.push(text),
+			onEscape() {},
+		});
+		composer.focused = true;
+		composer.handleInput("one");
+		composer.handleInput("\u001b\r");
+		composer.handleInput("two");
+		assert.equal(composer.getText(), "one\ntwo", "the configured chord inserts a newline");
+		assert.deepEqual(sent, [], "the chord does not submit");
+		composer.handleInput("\r");
+		assert.deepEqual(sent, ["one\ntwo"], "plain Enter still submits");
+		assert.ok(changes.includes("one\ntwo"));
+	} finally {
+		setKeybindings(previous);
+	}
 });

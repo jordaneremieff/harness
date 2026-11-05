@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { stripVTControlCharacters } from "node:util";
 import { dashboardTime } from "./dashboard-time.ts";
 import { it } from "node:test";
-import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { KeybindingsManager, TUI_KEYBINDINGS, visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { EffortPresencePage } from "./effort-presence.ts";
 import { fixture, source, row, turn, deferred, theme } from "./dashboard-test-fixture.mts";
 import { rosterLines } from "./dashboard-roster.ts";
 import type { CollaborationPage } from "./collaboration.ts";
 import { createAgentCommand } from "./command.ts";
+import { EffortView } from "./effort-view.ts";
 import type { AgentDashboard } from "./dashboard.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
@@ -1039,4 +1040,144 @@ it("the footer keeps a disabled command listed and explains it when used", async
 		f.ui.handleMouse(click(row().indexOf("m message"), 43, 164, 44));
 		assert.match(f.ui.render(164).join("\n"), /Direct messages need a live compatible effort/, "a click names the reason");
 	} finally { f.ui.dispose(); }
+});
+
+/** A result the test settles later, in either direction. */
+function later<T>() {
+	let resolve!: (value: T) => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<T>((done, fail) => {
+		resolve = done;
+		reject = fail;
+	});
+	return { promise, resolve, reject };
+}
+
+it("Scan details scrolls to its last coverage sentence at the minimum size", async () => {
+	const initial = awareness();
+	const current = {
+		...initial,
+		presence: {
+			...initial.presence,
+			coverage: { ...initial.presence.coverage, complete: false, unreadable: 3, omitted: 4, reasons: ["visit-limit", "result-limit", "byte-limit", "status-byte-limit", "unreadable", "repository-unknown"] },
+		},
+		threads: {
+			...initial.threads,
+			coverage: { ...initial.threads.coverage, complete: false, unvisited: true, missingHints: 2, omittedHints: 5, omittedResults: 7, unreadable: 1, reasons: ["visit-limit", "result-limit"] },
+		},
+	};
+	const f = fixture(60, 20, source(), { efforts: async () => current });
+	try {
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
+		f.ui.handleInput("c");
+		const draw = () => stripVTControlCharacters(f.ui.render(60).join("\n"));
+		const last = /The Threads tab reads every thread\./;
+		assert.match(draw(), /Scan details/, "the scan heading is visible");
+		assert.doesNotMatch(draw(), last, "the last sentence starts below the pane");
+		for (let step = 0; step < 12; step++) f.ui.handleInput("\x1b[6~");
+		assert.match(draw(), last, "PgDn reaches the last sentence");
+		assert.match(draw(), /Scan details/, "the heading stays while the body scrolls");
+		f.ui.handleInput("c");
+		f.ui.handleInput("c");
+		assert.doesNotMatch(draw(), last, "reopening starts at the top again");
+		for (let step = 0; step < 12; step++) f.ui.handleMouse(wheel(30, 10, 60, 20, 4));
+		assert.match(draw(), last, "the wheel reaches the last sentence");
+	} finally { f.ui.dispose(); }
+});
+
+it("a late delivery result stays with the effort it was sent to", async () => {
+	const sent = later<{ text: string }>();
+	const f = fixture(100, 30, source(), { efforts: async () => awareness(), messageEffort: async () => sent.promise });
+	try {
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
+		f.ui.handleInput("m");
+		f.ui.handleInput("Draft one");
+		f.ui.handleInput("\r"); await turn();
+		f.ui.handleInput("\x1b");
+		f.ui.handleInput("\x1b[B"); await turn();
+		assert.match(f.ui.render(100).map((line) => line.split("│")[1] ?? "").join("\n"), /Untitled session in work/, "the second effort is selected");
+		sent.reject(new Error("channel unavailable")); await turn();
+		assert.doesNotMatch(f.ui.render(100).join("\n"), /Delivery not confirmed/, "another effort never shows the sender's failure");
+		f.ui.handleInput("\x1b[A"); await turn();
+		assert.match(f.ui.render(100).join("\n"), /Delivery not confirmed/, "the sender's failure shows on its own effort");
+		f.ui.handleInput("m");
+		assert.match(f.ui.render(100).join("\n"), /Draft one/, "the draft stays with its effort");
+	} finally { f.ui.dispose(); }
+});
+
+it("a pending refresh keeps the effort count row and publishes an unchanged result", async () => {
+	const pending = later<EffortAwareness>();
+	let reads = 0;
+	const f = fixture(140, 40, source(), { efforts: async () => { reads++; return reads <= 2 ? awareness() : pending.promise; } });
+	try {
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
+		const row = () => f.ui.render(140).map((line) => line.split("│")[0] ?? "").find((line) => line.includes("efforts")) ?? "";
+		assert.match(row(), /2 efforts/);
+		const before = row();
+		f.ui.handleInput("r");
+		f.ui.render(140);
+		assert.equal(row(), before, "the retained count row stays while the refresh runs");
+		pending.resolve(awareness()); await turn();
+		assert.equal(row(), before, "an unchanged refresh publishes the same row");
+	} finally { f.ui.dispose(); }
+});
+
+it("a routine contact refresh keeps the declaration already read", async () => {
+	const pending = later<CollaborationPage>();
+	let reads = 0;
+	let notify = () => {};
+	const observed = source();
+	observed.subscribeRoster = (listener) => { notify = listener; return () => {}; };
+	const f = fixture(100, 60, observed, { efforts: async () => awareness(), collaborate: () => { reads++; return reads === 1 ? Promise.resolve(contactPage()) : pending.promise; } });
+	try {
+		await turn(); f.ui.openNamedAction("efforts"); await turn(); await turn();
+		assert.match(f.ui.render(100).join("\n"), /Contact exchange · Open · 0 members/);
+		notify(); await turn(); await turn();
+		assert.equal(reads, 2);
+		const during = f.ui.render(100).join("\n");
+		assert.match(during, /Contact exchange · Open · 0 members/, "the declaration stays while the refresh runs");
+		assert.doesNotMatch(during, /Read contact declarations/, "no pending word replaces it");
+		pending.resolve(contactPage()); await turn();
+		assert.match(f.ui.render(100).join("\n"), /Contact exchange · Open · 0 members/);
+	} finally { f.ui.dispose(); }
+});
+
+it("a contact thread opened from Related efforts at the minimum width shows the thread and returns there", async () => {
+	const f = fixture(80, 24, source(), { efforts: async () => awareness(), collaborate: async () => contactPage() });
+	try {
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
+		f.ui.handleInput("\r"); await turn(); await turn();
+		assert.equal(f.ui.focus.surface, "threads");
+		const text = f.ui.render(80).join("\n");
+		assert.match(text, /Contact exchange/, "the contact thread opens in the thread pane");
+		assert.match(text, /Post to Contact exchange/, "the thread pane is the visible pane");
+		assert.doesNotMatch(text, /Find {2}\/ to find threads/, "the thread list does not replace the requested thread");
+		f.ui.handleInput("\x1b"); await turn();
+		assert.equal(f.ui.focus.surface, "efforts", "Escape returns to Related efforts");
+	} finally { f.ui.dispose(); }
+});
+
+it("a clicked hint whose key has no terminal form warns and sends nothing", async () => {
+	const custom = new KeybindingsManager(TUI_KEYBINDINGS, { "tui.input.newLine": ["ctrl+escape"] });
+	const view = new EffortView({
+		tui: { terminal: { rows: 30, columns: 100 }, requestRender() {} } as unknown as TUI,
+		theme,
+		keys: custom,
+		efforts: async () => awareness(),
+		messageEffort: async () => ({ text: "admitted" }),
+		openContact: () => undefined,
+		openThreads: () => undefined,
+		onBack() {},
+		redraw() {},
+	});
+	try {
+		view.open();
+		await turn(); await turn();
+		view.handleInput("m");
+		const newline = view.footer().controls.find((control) => control.id === "newline");
+		assert.ok(newline, "the message field lists its newline key");
+		newline.run("ctrl+escape");
+		const text = stripVTControlCharacters(view.render(100, 29, 30).join("\n"));
+		assert.match(text, /The ctrl\+esc key has no clickable form here\./);
+	} finally { view.dispose(); }
 });

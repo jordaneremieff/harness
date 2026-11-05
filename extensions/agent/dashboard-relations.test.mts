@@ -280,3 +280,24 @@ it("empty and failed relation evidence show every agent and keep Threads reachab
 		assert.equal(f.ui.focus.surface, "work");
 	} finally { f.ui.dispose(); }
 });
+it("a completed read leaves retained facts usable, and a later failure is stated until recovery", async () => {
+	let failing = false;
+	const index = new DashboardRelations(async (input) => {
+		if (failing) throw new Error("Unreadable");
+		return input.action === "list" ? discovery([thread()]) : thread();
+	}, () => {});
+	index.set(rows(), ordinary);
+	assert.equal(index.view().loaded, false, "no facts are retained before the first read");
+	await index.refresh();
+	assert.equal(index.view().loaded, true);
+	assert.equal(index.view().failed, false);
+	assert.equal(index.view().pending, false);
+	failing = true;
+	await index.refresh();
+	assert.equal(index.view().failed, true, "the failure is stated");
+	assert.equal(index.view().pending, false);
+	failing = false;
+	await index.refresh();
+	assert.equal(index.view().failed, false, "recovery clears the failure");
+	index.dispose();
+});

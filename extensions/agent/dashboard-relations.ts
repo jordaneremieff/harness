@@ -58,6 +58,10 @@ export interface RelatedWork {
 	threads: CollaborationSummary[];
 	partial: boolean;
 	pending: boolean;
+	/** A read has completed for this view, so its facts can stay shown while a later read is pending. */
+	loaded: boolean;
+	/** The latest completed read failed; the view states it instead of hiding it. */
+	failed: boolean;
 }
 export function relatedWork(seeds: ReadonlySet<string>, pages: readonly CollaborationPage[]): RelatedWork {
 	const identities = new Set(seeds);
@@ -68,7 +72,7 @@ export function relatedWork(seeds: ReadonlySet<string>, pages: readonly Collabor
 		for (const member of thread.members) identities.add(relationIdentity(member.identity));
 		threads.push({ id: thread.id, title: thread.title, purpose: thread.purpose.slice(0, 160), updatedAt: thread.updatedAt, closed: thread.closed, members: thread.members.length });
 	}
-	return { identities, threads, partial: false, pending: false };
+	return { identities, threads, partial: false, pending: false, loaded: true, failed: false };
 }
 
 /** UI-local membership reads reuse public collaboration operations and unchanged frame revisions. */
@@ -77,6 +81,8 @@ export class DashboardRelations {
 	private cache = new Map<string, { updatedAt: number; page: CollaborationPage }>();
 	private partial = false;
 	private pending = false;
+	private loaded = false;
+	private failed = false;
 	private again = false;
 	private disposed = false;
 	private revision = 0;
@@ -109,7 +115,13 @@ export class DashboardRelations {
 		this.scopes = [...new Set([...(this.rows.some((row) => row.storageId === this.caller.split(":")[0]) ? [this.caller.split(":")[0]] : []), ...this.rows.filter((row) => this.seeds.has(relationIdentity(row.id))).map((row) => row.storageId)])];
 	}
 	view(): RelatedWork {
-		return { ...relatedWork(this.seeds, this.pages), partial: this.partial || this.lineagePartial || !this.collaborate, pending: this.pending };
+		return {
+			...relatedWork(this.seeds, this.pages),
+			partial: this.partial || this.lineagePartial || !this.collaborate,
+			pending: this.pending,
+			loaded: this.loaded,
+			failed: this.failed,
+		};
 	}
 	/** Catalogue notices invalidate evidence even when the publisher's clock repeats. */
 	invalidate(): void {
@@ -118,8 +130,9 @@ export class DashboardRelations {
 		this.lineageCache.clear();
 		if (this.pending) this.again = true;
 	}
-	private async readLineages(revision: number): Promise<boolean> {
+	private async readLineages(revision: number): Promise<{ partial: boolean; failed: boolean }> {
 		let partial = false;
+		let failed = false;
 		const candidates = this.rows.filter((row) => relationIdentity(row.id) !== row.storageId && this.scopes.includes(row.storageId));
 		partial ||= candidates.length > 20 || candidates.length > 0 && !this.readLineage;
 		const lineage: ConversationSummary[] = [];
@@ -132,16 +145,20 @@ export class DashboardRelations {
 				if (!summary) throw new Error("Invalid conversation summary");
 				lineage.push(summary);
 				lineageCache.set(row.id, { modifiedAt: row.modifiedAt, summary });
-			} catch { partial = true; }
+			} catch {
+				partial = true;
+				failed = true;
+			}
 		}
-		if (this.disposed || revision !== this.revision) return partial;
+		if (this.disposed || revision !== this.revision) return { partial, failed };
 		this.lineage = lineage;
 		this.lineageCache = lineageCache;
 		this.updateSeeds();
-		return partial;
+		return { partial, failed };
 	}
-	private async readSummaries(collaborate: Collaborate): Promise<{ summaries: Map<string, CollaborationSummary>; partial: boolean }> {
+	private async readSummaries(collaborate: Collaborate): Promise<{ summaries: Map<string, CollaborationSummary>; partial: boolean; failed: boolean }> {
 		let partial = this.scopes.length > 4;
+		let failed = false;
 		const summaries = new Map<string, CollaborationSummary>();
 		const requests = [...this.scopes.slice(0, 4).map((sessionId) => ({ action: "list", sessionId, limit: 20 })), { action: "list", limit: 20 }];
 		for (const input of requests) {
@@ -151,12 +168,16 @@ export class DashboardRelations {
 				if (!threadDiscovery(result)) throw new Error("Invalid thread discovery");
 				partial ||= !result.coverage.complete || result.nextCursor !== null;
 				for (const item of result.items) summaries.set(item.id, item);
-			} catch { partial = true; }
+			} catch {
+				partial = true;
+				failed = true;
+			}
 		}
-		return { summaries, partial };
+		return { summaries, partial, failed };
 	}
-	private async readPages(summaries: ReadonlyMap<string, CollaborationSummary>, collaborate: Collaborate, revision: number): Promise<boolean> {
+	private async readPages(summaries: ReadonlyMap<string, CollaborationSummary>, collaborate: Collaborate, revision: number): Promise<{ partial: boolean; failed: boolean }> {
 		let partial = summaries.size > 20;
+		let failed = false;
 		const next = new Map<string, { updatedAt: number; page: CollaborationPage }>();
 		for (const item of [...summaries.values()].slice(0, 20)) {
 			if (this.disposed) break;
@@ -165,12 +186,15 @@ export class DashboardRelations {
 				const page = cached?.updatedAt === item.updatedAt ? cached.page : await collaborate({ action: "read", threadId: item.id, limit: 1 });
 				if (!threadPage(page) || page.thread.id !== item.id) throw new Error("Invalid thread page");
 				next.set(item.id, { updatedAt: item.updatedAt, page });
-			} catch { partial = true; }
+			} catch {
+				partial = true;
+				failed = true;
+			}
 		}
-		if (this.disposed || revision !== this.revision) return partial;
+		if (this.disposed || revision !== this.revision) return { partial, failed };
 		this.cache = next;
 		this.pages = [...next.values()].map((item) => item.page);
-		return partial;
+		return { partial, failed };
 	}
 	async refresh(): Promise<void> {
 		if (this.disposed || !this.collaborate) return;
@@ -178,12 +202,16 @@ export class DashboardRelations {
 		this.pending = true;
 		this.changed();
 		const revision = this.revision;
-		const lineagePartial = await this.readLineages(revision);
+		const lineage = await this.readLineages(revision);
 		if (this.disposed) return;
-		const { summaries, partial } = await this.readSummaries(this.collaborate);
-		const pagePartial = await this.readPages(summaries, this.collaborate, revision);
+		const summaries = await this.readSummaries(this.collaborate);
+		const pages = await this.readPages(summaries.summaries, this.collaborate, revision);
 		if (this.disposed) return;
-		if (revision === this.revision) this.partial = lineagePartial || partial || pagePartial;
+		if (revision === this.revision) {
+			this.partial = lineage.partial || summaries.partial || pages.partial;
+			this.failed = lineage.failed || summaries.failed || pages.failed;
+			this.loaded = true;
+		}
 		this.pending = false;
 		this.changed();
 		if (this.again) { this.again = false; void this.refresh(); }
