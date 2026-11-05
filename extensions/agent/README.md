@@ -1919,6 +1919,29 @@ RPC and extension-generated input do not supply the fallback. The extension does
 not interpret another extension's prompts or entry formats. A session name or
 declared purpose still supplies useful context.
 
+### Automatic session names
+
+An ordinary session with no name receives one from its first genuine interactive
+input. Naming uses Pi's public session name API, so it works with or without a
+terminal projection and stays independent of the purpose record. A nonempty
+existing name, including a resumed name, is never replaced. RPC input, extension
+input, model responses and effort-purpose updates do not name a session. A later
+explicit name always wins because automatic naming only fills an empty name.
+
+The derivation is deterministic and makes no model request:
+
+- Remove fenced code blocks, inline code spans and URLs.
+- Remove control and format characters, then collapse whitespace.
+- Use the first nonempty line and remove leading block markers for headings,
+  quotes, list items and emphasis. Keep the first sentence of that line: text
+  before a `.`, `!`, `?` or `…` that whitespace follows.
+- For input that starts with a slash command token, use the remaining arguments.
+  Arguments with no usable word do not name the session.
+- Reject text with fewer than three letters or digits.
+- Cap the name at 48 code points and eight words at a word boundary. A single
+  word longer than the cap yields no name.
+- Remove trailing punctuation.
+
 `agent_intent` publishes only the invoking ordinary primary or native
 conversation. It takes no target identity. Native conversations retain claims in
 their own conversation metadata; a native root or child needs no ordinary primary

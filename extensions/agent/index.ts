@@ -49,6 +49,7 @@ import { createAgentObservationSource } from "./agent-observation.ts";
 import { promptProjectTrust } from "./trust-support.ts";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-purpose.ts";
+import { sessionNameFromInput } from "./session-name.ts";
 import { formatEffortAwareness } from "./effort-awareness.ts";
 import { formatPrimaryObservation } from "./primary-observation.ts";
 import type { PrimaryIntentClaim } from "./primary-channel.ts";
@@ -904,6 +905,10 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		getManager().touchPrimary(id);
 		if (event.source === "interactive" && getManager().recordPrimaryInput(id, event.text, event.source)) {
 			pi.appendEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: purposeExcerpt(event.text) });
+		}
+		if (event.source === "interactive" && pi.getSessionName() === undefined) {
+			const name = sessionNameFromInput(event.text);
+			if (name !== undefined) pi.setSessionName(name);
 		}
 	});
 	pi.on("tool_execution_end", (_event, ctx) => {
