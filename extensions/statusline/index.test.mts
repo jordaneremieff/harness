@@ -384,7 +384,8 @@ describe("registration and mode gating", () => {
 		const { handlers, commands } = makePi();
 		assert.ok(handlers.has("session_start"));
 		assert.ok(handlers.has("session_shutdown"));
-		for (const name of ["statusline", "commands", "statuses", "model-reasoning"]) assert.ok(commands.has(name), name);
+		for (const name of ["statusline", "commands", "statuses", "dashboard"]) assert.ok(commands.has(name), name);
+		assert.equal(commands.has("model-reasoning"), false, "the Model view opens from the footer and /dashboard, not from a command of its own");
 	});
 
 	it("installs the footer only in tui mode", async () => {
@@ -966,6 +967,7 @@ describe("Model view", () => {
 		const mocks = makeCtx({ models });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const done = mocks.onNextFrame(async (frame) => {
+			frame.navigate(viewKey(ENTRY, "model"));
 			assert.match(frameText(frame), /Model and reasoning for this session/);
 			frame.handleInput("\r");
 			frame.handleInput("\u001b[B");
@@ -974,7 +976,7 @@ describe("Model view", () => {
 			for (let attempt = 0; attempt < 20 && !/reasoning/.test(frameText(frame).split("\n").at(-1) ?? ""); attempt++) await turn();
 			assert.match(frameText(frame, 160), /Model test\/test-model · reasoning high for this session/);
 		});
-		await commands.get("model-reasoning").handler("", mocks.ctx);
+		await commands.get("dashboard").handler("", mocks.ctx);
 		await done;
 		assert.deepEqual(applied, [], "the unchanged model is not set again");
 		assert.equal(levels.length, 1);
@@ -985,13 +987,14 @@ describe("Model view", () => {
 		const mocks = makeCtx({ models });
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const done = mocks.onNextFrame(async (frame) => {
+			frame.navigate(viewKey(ENTRY, "model"));
 			typeText(frame, "needs");
 			frame.handleInput("\u001b[B");
 			act(frame, "Apply");
 			for (let attempt = 0; attempt < 20 && !/refused/.test(frameText(frame)); attempt++) await turn();
 			assert.match(frameText(frame, 160), /Pi refused locked\/needs-auth: authentication is not configured for locked/);
 		});
-		await commands.get("model-reasoning").handler("", mocks.ctx);
+		await commands.get("dashboard").handler("", mocks.ctx);
 		await done;
 		assert.deepEqual(levels, []);
 	});

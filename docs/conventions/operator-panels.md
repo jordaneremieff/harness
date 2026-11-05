@@ -153,7 +153,9 @@ exact registration identity; the statusline Commands view runs commands
 through it, and a changed or missing registration is refused.
 
 Each owner's own command opens its destination directly through
-`openOperatorFrame`. Pi's status footer carries no control or menu for
+`openOperatorFrame`. A destination without a command of its own names
+another command of its owner that opens it, as the statusline's Model view
+names `/dashboard`. Pi's status footer carries no control or menu for
 these destinations.
 
 Publishers: stash (Stashes), clipboard (Clipboard), policy (Policy), pillars

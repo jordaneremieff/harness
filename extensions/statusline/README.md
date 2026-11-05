@@ -6,9 +6,11 @@ metrics; line 2 carries the project context and whatever extension statuses
 other extensions publish through `ctx.ui.setStatus()`. The footer shows status
 only: it adds no navigation labels and no menu. The statusline also owns three
 views of the shared browsing frame below the native transcript
-(`docs/conventions/operator-panels.md`): Commands, Model, and Statuses. Each
-view opens on its own from its command. `/dashboard` shows every published
-view, including other extensions' views, as tabs of one frame.
+(`docs/conventions/operator-panels.md`): Commands, Model, and Statuses.
+Commands and Statuses open on their own from their commands; the Model view
+opens from the footer's model and level segments and has no command of its
+own. `/dashboard` shows every published view, including other extensions'
+views, as tabs of one frame.
 
 ## Surfaces
 
@@ -17,7 +19,6 @@ view, including other extensions' views, as tabs of one frame.
 | footer | `ctx.ui.setFooter` | Two-line statusline, installed on `session_start` in TUI mode only. |
 | `/statusline` | command | Toggle between the custom statusline and Pi's default footer. |
 | `/commands` | command | Open the Commands view: every command, prompt template, and skill, searchable. |
-| `/model-reasoning` | command | Open the Model view: this session's model and reasoning in one form. |
 | `/statuses` | command | Open the Statuses view: the complete extension status map. |
 | `/dashboard` | command | Open every published view as tabs of one frame, starting at the first. |
 | model and level segments | footer click targets | In fullscreen, a click on the `provider/model` segment or its `[level]` bracket opens the Model view. |
@@ -25,8 +26,9 @@ view, including other extensions' views, as tabs of one frame.
 
 No extension-specific configuration is required. The custom footer starts
 enabled; use `/statusline` to switch to Pi's default footer or back. With the
-footer disabled, each command still opens its view; Statuses then explains
-that it needs the statusline footer. There are no tools, timers beyond one
+footer disabled, `/commands` and `/statuses` still open their views and
+`/dashboard` reaches Model; Statuses then explains that it needs the
+statusline footer. There are no tools, timers beyond one
 footer-owned tick, or background work.
 
 ## Footer clicks
@@ -230,7 +232,7 @@ set the window title, write the clipboard, or emit a hyperlink.
 
 - `index.ts`: registration, the footer factory, the pointer targets, tick
   ownership, the publication of this owner's views, and the
-  `/statusline`, `/commands`, `/model-reasoning`, and `/statuses` commands.
+  `/statusline`, `/commands`, `/statuses`, and `/dashboard` commands.
 - `views.ts`: the Commands, Model, and Statuses views in the shared frame.
 - `commands.ts`: editor placement for prompt templates and skills.
 - `metrics.ts`: session usage aggregation and bounded append catch-up.

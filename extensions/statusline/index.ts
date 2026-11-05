@@ -175,7 +175,8 @@ export default function registerStatusline(pi: ExtensionAPI) {
 		owner: OWNER,
 		views: [
 			{ id: "commands", label: "Commands", command: { name: "commands" }, order: 80, view: (ctx, host) => commandsView(pi, ctx, host, commandState) },
-			{ id: "model", label: "Model", command: { name: "model-reasoning" }, order: 85, view: (ctx, host) => modelView(pi, ctx, host, () => requestRender()) },
+			// Model has no command of its own: the footer's model and level segments and /dashboard open it.
+			{ id: "model", label: "Model", command: { name: "dashboard" }, order: 85, view: (ctx, host) => modelView(pi, ctx, host, () => requestRender()) },
 			{ id: "statuses", label: "Statuses", command: { name: "statuses" }, order: 90, view: (_ctx, host) => statusesView(host, readStatuses) },
 		],
 	});
@@ -307,10 +308,5 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	pi.registerCommand("statuses", {
 		description: "Read the complete extension status map behind the footer",
 		handler: async (_args, ctx) => openOwn(ctx, "statuses"),
-	});
-
-	pi.registerCommand("model-reasoning", {
-		description: "Choose this session's model and reasoning level in one form",
-		handler: async (_args, ctx) => openOwn(ctx, "model"),
 	});
 }
