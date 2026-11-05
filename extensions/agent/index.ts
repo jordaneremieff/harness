@@ -13,7 +13,6 @@ import { retainedSentWork, SENT_WORK_ENTRY } from "./session-work.ts";
 import { profileCommand } from "./profile-dialog.ts";
 import { join, resolve, basename } from "node:path";
 import { fileURLToPath } from "node:url";
-import { publishOperatorViews } from "../../operator-ui/index.ts";
 import {
 	getAgentDir,
 	getPackageDir,
@@ -845,7 +844,6 @@ export default function registerAgentExtension(pi: ExtensionAPI): void {
 		(id) => getManager().status(id),
 	);
 	pi.registerCommand("agent", command);
-	publishOperatorViews(pi, { version: 2, owner: fileURLToPath(import.meta.url), views: [{ id: "agents", label: "Agents", command: { name: "agent" }, order: 0 }] });
 	pi.registerShortcut("ctrl+alt+g", {
 		description: "Open the agent dashboard",
 		handler: (ctx) => command.openDashboard(ctx),

@@ -16,15 +16,10 @@ export interface OrdinaryView {
 	readonly label: string;
 	/** The owner's registered command that opens this destination, before any collision suffix. */
 	readonly command: { readonly name: string; readonly args?: string };
-	/** Sort position on the work strip and in the frame; lower first. */
+	/** Sort position among the frame's tabs; lower first. */
 	readonly order?: number;
-	/** Listed under More on the work strip instead of directly. */
-	readonly secondary?: boolean;
-	/**
-	 * Trusted in-process content, bound to the current context when the view opens. A destination
-	 * without a view (for example Agents) opens through its guarded command instead of the frame.
-	 */
-	readonly view?: (ctx: ExtensionContext, host: ViewHost) => OperatorView;
+	/** Trusted in-process content, bound to the current context when the view opens. */
+	readonly view: (ctx: ExtensionContext, host: ViewHost) => OperatorView;
 }
 
 export interface OperatorViewPublication {
@@ -68,14 +63,13 @@ function readView(entry: unknown, owner: string): PublishedView | undefined {
 	if (!isRecord(entry) || typeof entry.id !== "string" || !ID.test(entry.id)) return undefined;
 	if (typeof entry.label !== "string" || !entry.label.trim() || entry.label.length > MAX_LABEL) return undefined;
 	const command = readCommand(entry.command);
-	if (!command || (entry.view !== undefined && typeof entry.view !== "function")) return undefined;
+	if (!command || typeof entry.view !== "function") return undefined;
 	return {
 		id: entry.id,
 		label: entry.label.trim(),
 		command,
 		...(typeof entry.order === "number" && Number.isFinite(entry.order) ? { order: entry.order } : {}),
-		...(entry.secondary === true ? { secondary: true } : {}),
-		...(typeof entry.view === "function" ? { view: entry.view as OrdinaryView["view"] } : {}),
+		view: entry.view as OrdinaryView["view"],
 		owner,
 		key: viewKey(owner, entry.id),
 	};
@@ -237,7 +231,7 @@ export async function openOperatorFrame(pi: FrameApi, ctx: ExtensionContext, sta
 		const seen = new Set<string>();
 		const commands = pi.getCommands();
 		const all = [...local, ...registry.views()].filter((view) => {
-			if (seen.has(view.key) || !view.view) return false;
+			if (seen.has(view.key)) return false;
 			seen.add(view.key);
 			return true;
 		});
@@ -245,15 +239,11 @@ export async function openOperatorFrame(pi: FrameApi, ctx: ExtensionContext, sta
 			.sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || a.label.localeCompare(b.label))
 			.map((view) => {
 				const resolution = resolveOwner(view, commands);
-				const open = view.view;
 				return {
 					key: view.key,
 					label: view.label,
 					...("unavailable" in resolution ? { unavailable: resolution.unavailable } : {}),
-					open: (host: ViewHost) => {
-						if (!open) throw new Error(`${view.label} has no view here`);
-						return open(ctx, host);
-					},
+					open: (host: ViewHost) => view.view(ctx, host),
 				};
 			});
 	};

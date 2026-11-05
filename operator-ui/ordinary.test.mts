@@ -71,26 +71,27 @@ it("a publication of another version or a malformed view is refused, never guess
 		version: 2,
 		owner: "/owner/index.ts",
 		views: [
-			{ id: "ok", label: "Fine", command: { name: "fine" } },
-			{ id: "Bad Id", label: "Bad", command: { name: "bad" } },
-			{ id: "long", label: "x".repeat(30), command: { name: "long" } },
-			{ id: "nocommand", label: "No command" },
+			{ id: "ok", label: "Fine", command: { name: "fine" }, view: () => view("Fine") },
+			{ id: "Bad Id", label: "Bad", command: { name: "bad" }, view: () => view("Bad") },
+			{ id: "long", label: "x".repeat(30), command: { name: "long" }, view: () => view("Long") },
+			{ id: "nocommand", label: "No command", view: () => view("No command") },
+			{ id: "noview", label: "No view", command: { name: "noview" } },
 		],
 	});
-	assert.deepEqual(read?.views.map((entry) => entry.id), ["ok"]);
+	assert.deepEqual(read?.views.map((entry) => entry.id), ["ok"], "a view without content is refused too");
 });
 
 it("collected views follow publications in both load orders and stop after dispose", () => {
 	const host = pi();
-	publishOperatorViews(host.api, { version: 2, owner: "/early.ts", views: [{ id: "early", label: "Early", command: { name: "early" }, order: 20 }] });
+	publishOperatorViews(host.api, { version: 2, owner: "/early.ts", views: [{ id: "early", label: "Early", command: { name: "early" }, order: 20, view: () => view("Early") }] });
 	const registry = collectOperatorViews(host.api.events);
 	assert.deepEqual(registry.views().map((entry) => entry.id), ["early"], "a consumer that loads later asks and receives");
-	publishOperatorViews(host.api, { version: 2, owner: "/late.ts", views: [{ id: "late", label: "Late", command: { name: "late" }, order: 10 }] });
+	publishOperatorViews(host.api, { version: 2, owner: "/late.ts", views: [{ id: "late", label: "Late", command: { name: "late" }, order: 10, view: () => view("Late") }] });
 	assert.deepEqual(registry.views().map((entry) => entry.id), ["late", "early"], "views sort by order");
 	host.api.events.emit(OPERATOR_VIEW_PUBLISH, { version: 2, owner: "/late.ts", views: [] });
 	assert.deepEqual(registry.views().map((entry) => entry.id), ["early"], "a publication replaces that owner's views only");
 	registry.dispose();
-	publishOperatorViews(host.api, { version: 2, owner: "/third.ts", views: [{ id: "third", label: "Third", command: { name: "third" } }] });
+	publishOperatorViews(host.api, { version: 2, owner: "/third.ts", views: [{ id: "third", label: "Third", command: { name: "third" }, view: () => view("Third") }] });
 	assert.deepEqual(registry.views().map((entry) => entry.id), ["early"]);
 });
 

@@ -296,11 +296,6 @@ channel delivery receipt does not establish action or task acceptance. Model-vis
 results remain unchanged. Status totals mark partial costs with a trailing `+`, such as
 `$0.25+`: at least that amount is known; some data was not fully readable.
 
-In ordinary Pi, the extension announces one destination, `Agents`, through the
-[operator views](../../docs/conventions/operator-panels.md#ordinary-destinations)
-publication so the statusline work strip can open `/agent` directly; the
-announcement names the command and carries no view.
-
 `/agent` exposes `new`, `list`, `status`, `send`, `steer`, `await-release`, `abort`, `attach`,
 `fork`, `compact`, `inspect`, `rewind`, `configure`, `profile`, `command`, `place`, `places`,
 `unbind`, `reset`, `schedule`, `timers`, and `timer-cancel`. `help` shows action

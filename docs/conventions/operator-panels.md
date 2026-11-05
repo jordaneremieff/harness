@@ -67,12 +67,10 @@ interface OperatorViewPublication {
     label: string;
     /** The owner's registered command that opens this destination, before any collision suffix. */
     command: { name: string; args?: string };
-    /** Sort position on the work strip and in the frame; lower first. */
+    /** Sort position among the frame's tabs; lower first. */
     order?: number;
-    /** Listed under More on the work strip instead of directly. */
-    secondary?: boolean;
     /** Trusted in-process content, bound to the current context when the view opens. */
-    view?: (ctx: ExtensionContext, host: ViewHost) => OperatorView;
+    view: (ctx: ExtensionContext, host: ViewHost) => OperatorView;
   }>;
 }
 ```
@@ -84,7 +82,8 @@ interface OperatorViewPublication {
   consumer (`collectOperatorViews`) subscribes to publications, then emits one
   request. Pi's bus calls a synchronous handler immediately, so both load
   orders meet. A publication replaces that owner's earlier views as a unit.
-  A malformed entry is dropped, never adapted. Only version `2` is defined.
+  A malformed entry, including one without a `view` function, is dropped,
+  never adapted. Only version `2` is defined.
 - `resolveOwner` binds a destination to its owner's current registration:
   the inventory entry whose `sourceInfo.path` is the announced `owner` (also
   through a resolved real path) and whose name without Pi's `:<n>` collision
@@ -97,20 +96,20 @@ interface OperatorViewPublication {
 
 `openOperatorFrame(pi, ctx, { owner, id })` opens the ordinary frame at one
 destination in the editor slot, below the native transcript; the editor's
-draft returns when the frame closes. Every destination with a `view` is a tab.
+draft returns when the frame closes. Every published destination is a tab.
 If a frame is already open in the session, `OPERATOR_FRAME_OPEN`
 (`harness:operator-frame:open`) navigates that frame instead of opening
-another. A destination without a `view` (Agents) opens through its guarded
-command: `dispatchCommand` re-reads the exact registration identity before it
-sends the command line, and a changed or missing registration is refused.
+another. `dispatchCommand` sends a command line only after it re-reads the
+exact registration identity; the statusline Commands view runs commands
+through it, and a changed or missing registration is refused.
 
 Each owner's own command opens its destination directly through
-`openOperatorFrame`, so every destination stays reachable with the statusline
-disabled.
+`openOperatorFrame`, and the frame's tabs reach the other published
+destinations. No footer control or menu is part of this contract.
 
-Publishers: agent (Agents, no view: opens `/agent`), stash (Stashes), clipboard
-(Clipboard), policy (Policy), pillars (Pillars, secondary), statusline
-(Commands, Model, Statuses; secondary). Consumer: the statusline work strip.
+Publishers: stash (Stashes), clipboard (Clipboard), policy (Policy), pillars
+(Pillars), statusline (Commands, Model, Statuses). The frame collects the
+publications each time it opens.
 
 ## Attached panels
 

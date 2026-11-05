@@ -411,10 +411,10 @@ describe("footer render", () => {
 				assert.ok(visibleWidth(line2) <= width);
 				assert.match(text, /workers 3 · \$1\.23/);
 				if (width === 140) {
-					assert.equal(text, "/commands │ /work/Workspace/harness.worktrees/sample (extension/sample) │ workers 3 · $1.23 │ checks ready │ links online");
+					assert.equal(text, "/work/Workspace/harness.worktrees/sample (extension/sample) │ workers 3 · $1.23 │ checks ready │ links online");
 				} else if (width >= 70) {
 					assert.match(text, /checks ready │ links online$/);
-					assert.match(text, /^\/commands │ ….*sample /, "the last path component stays visible before the branch shrinks");
+					assert.match(text, /^….*sample /, "the last path component stays visible before the branch shrinks");
 				} else {
 					assert.match(text, / │ \+2$/);
 					assert.doesNotMatch(text, /checks ready|links online/);
@@ -449,7 +449,7 @@ describe("footer render", () => {
 		assert.match(line1, /~\$0\.42/);
 		assert.match(line1, /●/);
 		assert.match(line1, /90% hit/);
-		assert.equal(line2, "/commands\x1b[0m │ /tmp/statusline-test\x1b[0m (main)\x1b[0m │ \x1b[0mlint ok\x1b[0m");
+		assert.equal(line2, "/tmp/statusline-test\x1b[0m (main)\x1b[0m │ \x1b[0mlint ok\x1b[0m");
 	});
 
 	it("includes recorded costs from all session entries, not only the current branch", async () => {
@@ -495,7 +495,7 @@ describe("footer render", () => {
 		assert.match(line1, /context \?/);
 		assert.match(line1, /\?\/200k/);
 		assert.ok(!line1.includes("cache "), "no estimated cache TTL segment");
-		assert.equal(line2, "/commands\x1b[0m │ /tmp/statusline-test\x1b[0m");
+		assert.equal(line2, "/tmp/statusline-test\x1b[0m");
 	});
 
 	it("distinguishes zero usage from an unavailable host estimate", async () => {
@@ -715,99 +715,33 @@ describe("/statusline toggle", () => {
 });
 
 const STASH_OWNER = "/ext/stash/index.ts";
-const AGENT_OWNER = "/ext/agent/index.ts";
 
 /** A minimal published view: a list-free reader the frame can mount. */
 function stubView(title: string) {
 	return () => ({ title, render: () => [`${title} content`], handleInput: () => false });
 }
 
-describe("work strip", () => {
-	it("leads line 2 with published destinations and More, naming keyboard routes in regular mode", async () => {
-		const { handlers, publish } = makePi(() => [registration("stash"), registration("agent")]);
+describe("footer controls", () => {
+	it("keeps line 2 to status: no navigation labels, whatever owners publish", async () => {
+		const { handlers, publish } = makePi(() => [registration("stash")]);
 		publish(STASH_OWNER, [{ id: "stash", label: "Stashes", command: { name: "stash" }, order: 10, view: stubView("Stashes") }]);
-		publish(AGENT_OWNER, [{ id: "agents", label: "Agents", command: { name: "agent" }, order: 5 }]);
-		for (const [tuiMode, expected] of [["fullscreen", "Agents  Stashes  More │ "], ["regular", "/agent  /stash  /commands │ "]] as const) {
-			const mocks = makeCtx({ tuiMode });
+		for (const tuiMode of ["fullscreen", "regular"] as const) {
+			const mocks = makeCtx({ tuiMode, cwd: "/work/project" });
 			await handlers.get("session_start")(sessionStart, mocks.ctx);
+			mocks.state.idle = false;
 			const footer = installFooter(mocks);
 			try {
 				const line = strip(footer.render(120)[1]);
-				assert.ok(line.startsWith(expected), line);
-				if (tuiMode === "regular") assert.equal(footer.handleMouse?.(click(1, 1, 120)), undefined, "regular mode leaves the mouse to the terminal");
+				assert.ok(line.startsWith("/work/project"), line);
+				assert.doesNotMatch(line, /Stashes|Agents|More|Stop|\/commands/u, "the footer adds no navigation words");
+				assert.equal(footer.handleMouse?.(click(1, 1, 120)), undefined, "the folder is not a control");
 			} finally {
 				footer.dispose();
 			}
 		}
 	});
 
-	it("opens a destination's frame view on click, and only at the rendered width", async () => {
-		const { handlers, publish } = makePi(() => [registration("stash")]);
-		publish(STASH_OWNER, [{ id: "stash", label: "Stashes", command: { name: "stash" }, order: 10, view: stubView("Stashes") }]);
-		const mocks = makeCtx({ tuiMode: "fullscreen" });
-		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		const footer = installFooter(mocks);
-		try {
-			footer.render(100);
-			assert.equal(footer.handleMouse?.(click(60, 0, 100)), undefined, "line 1 outside the model and level segments is not a target");
-			assert.equal(footer.handleMouse?.(click(1, 1, 90)), undefined, "a click at a stale width is ignored");
-			assert.equal(footer.handleMouse?.(click(7, 1, 100)), undefined, "the gap between controls is not a target");
-			assert.equal(mocks.customCalls.length, 0);
-			const opened = mocks.onNextFrame((frame) => {
-				assert.equal(frame.activeKey, viewKey(STASH_OWNER, "stash"));
-				assert.match(frameText(frame), /Stashes content/);
-			});
-			assert.equal(footer.handleMouse?.(click(1, 1, 100))?.handled, true);
-			await opened;
-			assert.equal(mocks.customCalls[0]?.options, undefined, "the frame takes the editor slot, not an overlay");
-		} finally {
-			footer.dispose();
-		}
-	});
-
-	it("sends a command-only destination through its owner's exact registration, and refuses a missing owner", async () => {
-		let inventory = [registration("agent")];
-		const { handlers, publish, sent } = makePi(() => inventory);
-		publish(AGENT_OWNER, [{ id: "agents", label: "Agents", command: { name: "agent" }, order: 5 }]);
-		const mocks = makeCtx({ tuiMode: "fullscreen" });
-		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		const footer = installFooter(mocks);
-		try {
-			footer.render(100);
-			assert.equal(footer.handleMouse?.(click(1, 1, 100))?.handled, true);
-			assert.deepEqual(sent, [{ content: "/agent", options: { expandPromptTemplates: true } }]);
-			inventory = [registration("agent", { sourceInfo: { path: "/ext/other/index.ts" } })];
-			footer.render(100);
-			footer.handleMouse?.(click(1, 1, 100));
-			assert.equal(sent.length, 1, "another extension's /agent never receives the click");
-			assert.match(mocks.notifications.at(-1) ?? "", /Agents is unavailable: \/agent is not registered by its owner/);
-		} finally {
-			footer.dispose();
-		}
-	});
-
-	it("shows Stop while this session works and stops it on click", async () => {
-		const { handlers } = makePi();
-		const mocks = makeCtx({ tuiMode: "fullscreen" });
-		await handlers.get("session_start")(sessionStart, mocks.ctx);
-		const footer = installFooter(mocks);
-		try {
-			mocks.state.idle = false;
-			assert.ok(strip(footer.render(100)[1]).startsWith("Stop  More │ "));
-			assert.equal(footer.handleMouse?.(click(1, 1, 100))?.handled, true);
-			assert.equal(mocks.state.aborts, 1);
-			mocks.state.idle = true;
-			assert.ok(strip(footer.render(100)[1]).startsWith("More │ "), "Stop leaves when the session is idle");
-		} finally {
-			footer.dispose();
-		}
-		const regular = makeCtx({ tuiMode: "regular" });
-		await handlers.get("session_start")(sessionStart, regular.ctx);
-		regular.state.idle = false;
-		assert.ok(strip(installFooter(regular).render(100)[1]).startsWith("Esc stops  /commands │ "));
-	});
-
-	it("opens Commands from More, Model from the model identity and Statuses from the +N cell", async () => {
+	it("opens Model from the model identity and Statuses from the +N cell, only at the rendered width", async () => {
 		const statuses = new Map([["first", "alpha status"], ["second", "beta status"], ["third", "\x1b[2Jgamma\nstatus"]]);
 		const { handlers } = makePi();
 		const mocks = makeCtx({ tuiMode: "fullscreen", statuses, cwd: "/work/project" });
@@ -815,12 +749,12 @@ describe("work strip", () => {
 		const footer = installFooter(mocks);
 		try {
 			footer.render(100);
-			let opened = mocks.onNextFrame((frame) => assert.equal(frame.activeKey, viewKey(ENTRY, "commands")));
-			assert.equal(footer.handleMouse?.(click(1, 1, 100))?.handled, true);
-			await opened;
-			opened = mocks.onNextFrame((frame) => assert.equal(frame.activeKey, viewKey(ENTRY, "model")));
+			assert.equal(footer.handleMouse?.(click(60, 0, 100)), undefined, "line 1 outside the model and level segments is not a target");
+			assert.equal(footer.handleMouse?.(click(2, 0, 90)), undefined, "a click at a stale width is ignored");
+			let opened = mocks.onNextFrame((frame) => assert.equal(frame.activeKey, viewKey(ENTRY, "model")));
 			assert.equal(footer.handleMouse?.(click(2, 0, 100))?.handled, true);
 			await opened;
+			assert.equal(mocks.customCalls[0]?.options, undefined, "the frame takes the editor slot, not an overlay");
 			const text = strip(footer.render(40)[1]);
 			assert.match(text, /\+\d$/, text);
 			opened = mocks.onNextFrame((frame) => {

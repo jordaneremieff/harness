@@ -298,45 +298,13 @@ describe("composeLine2", () => {
 		assert.equal(strip(noBranch.line), "…/sample │ ready");
 	});
 
-	describe("control cell", () => {
-		const control = "\x1b[36m[Commands]\x1b[39m";
-		function layout(width: number, statuses = ["one", "two", "three"]) {
-			return composeLine2(project, statuses, " │ ", width, visibleWidth, plain, control);
-		}
-
-		it("leads the line and reports its span", () => {
-			const result = layout(200);
-			assert.equal(strip(result.line), "[Commands] │ ~/app (main) │ one │ two │ three");
-			assert.deepEqual(result.control, { x: 0, width: 10 });
-			assert.equal(result.overflow, undefined, "no count cell when nothing is hidden");
-		});
-
-		it("reports the count cell span after shedding", () => {
-			const result = layout(28);
-			const text = strip(result.line);
-			assert.match(text, /^\[Commands\] │ .* │ \+\d$/);
-			assert.ok(result.overflow, "count span present");
-			assert.equal(result.overflow.hidden, Number(/\+(\d)$/.exec(text)?.[1]));
-			assert.equal(result.overflow.x + result.overflow.width, visibleWidth(result.line));
-			assert.equal(strip(result.line).slice(result.overflow.x), `+${result.overflow.hidden}`);
-		});
-
-		it("outranks the project and keeps the count at extreme widths", () => {
-			assert.equal(strip(layout(15).line), "[Commands] │ +3");
-			assert.deepEqual(layout(15).overflow, { x: 13, width: 2, hidden: 3 });
-			assert.equal(strip(layout(10).line), "[Commands]");
-			assert.equal(layout(10).overflow, undefined, "a truncated count cell is not a click target");
-			assert.equal(strip(layout(4).line), "[Com");
-			assert.deepEqual(layout(4).control, { x: 0, width: 4 });
-			assert.equal(layout(0).line, "");
-		});
-
-		it("bounds every width and keeps the control first", () => {
-			for (let width = 0; width <= 120; width++) {
-				const result = layout(width, ["ready", "界面", "last"]);
-				assert.ok(visibleWidth(result.line) <= width, `width ${width}`);
-				if (width >= 10) assert.ok(strip(result.line).startsWith("[Commands]"), `control first at ${width}`);
-			}
-		});
+	it("reports the count cell span after shedding, and none when nothing is hidden", () => {
+		assert.equal(composeLine2(project, ["one", "two", "three"], " │ ", 200, visibleWidth, plain).overflow, undefined);
+		const result = composeLine2(project, ["one", "two", "three"], " │ ", 15, visibleWidth, plain);
+		const text = strip(result.line);
+		assert.ok(result.overflow, "count span present");
+		assert.equal(result.overflow.hidden, Number(/\+(\d)$/.exec(text)?.[1]));
+		assert.equal(result.overflow.x + result.overflow.width, visibleWidth(result.line));
+		assert.equal(text.slice(result.overflow.x), `+${result.overflow.hidden}`);
 	});
 });

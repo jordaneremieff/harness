@@ -387,7 +387,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	publishOperatorViews(pi, {
 		version: 2,
 		owner: OWNER,
-		views: [{ id: "pillars", label: "Pillars", command: { name: "pillars", args: "browse" }, order: 40, secondary: true, view: (ctx, host) => pillarsView(host, browserOperations, viewState(ctx)) }],
+		views: [{ id: "pillars", label: "Pillars", command: { name: "pillars", args: "browse" }, order: 40, view: (ctx, host) => pillarsView(host, browserOperations, viewState(ctx)) }],
 	});
 }
 

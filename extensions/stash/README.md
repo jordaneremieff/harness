@@ -850,9 +850,8 @@ searching, and selecting do not pick up, create, close, release, reopen, or
 rotate an artifact; each of those is its own labelled action. A second open
 while the frame is open navigates that frame instead of opening another. The
 shortcut does nothing outside TUI mode; direct commands keep their existing
-mode behavior. The statusline work strip lists Stashes because this extension
-publishes it as an operator view; the command opens it with the statusline
-disabled too.
+mode behavior. Stashes is a tab of the shared frame because this extension
+publishes it as an operator view, so the other frame tabs reach it too.
 
 The view has two scopes. **Recent** loads metadata for the newest 200
 artifacts; it reads no bodies. The selected row's body is read on demand, and

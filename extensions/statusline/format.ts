@@ -282,18 +282,15 @@ export interface LineSpan {
 
 export interface Line2Layout {
 	line: string;
-	/** Span of the leading control cell when one was supplied; never shed. */
-	control?: LineSpan;
 	/** Span of the hidden-status count cell when statuses were shed. */
 	overflow?: LineSpan & { hidden: number };
 }
 
 /**
- * Compose line 2 with complete status cells. An optional control cell leads
- * the line and is never shed. Project context shortens before statuses drop
- * from the right behind a +N cell; at extreme widths the control and the count
- * outrank the project. The returned spans let a pointer host hit-test the
- * control and the count without parsing the rendered text.
+ * Compose line 2 with complete status cells. Project context shortens before
+ * statuses drop from the right behind a +N cell; at extreme widths the count
+ * outranks the project. The returned span lets a pointer host hit-test the
+ * count without parsing the rendered text.
  */
 export function composeLine2(
 	project: Line2Project,
@@ -302,34 +299,24 @@ export function composeLine2(
 	width: number,
 	visibleWidth: (s: string) => number,
 	fg: Fg,
-	control?: string,
 ): Line2Layout {
-	const lead = control !== undefined ? [`${control}${RESET}`] : [];
-	const leadWidth = lead.length ? visibleWidth(lead[0]) + visibleWidth(sep) : 0;
 	for (let count = statuses.length; count >= 0; count--) {
 		const hidden = statuses.length - count;
 		const countCell = hidden ? `${fg("dim", `+${hidden}`)}${RESET}` : undefined;
 		const cells = countCell === undefined ? statuses.slice(0, count) : [...statuses.slice(0, count), countCell];
 		const tail = cells.join(sep);
-		const budget = width - leadWidth - visibleWidth(tail) - (cells.length ? visibleWidth(sep) : 0);
+		const budget = width - visibleWidth(tail) - (cells.length ? visibleWidth(sep) : 0);
 		const label = fitProject(project, budget, visibleWidth, fg);
-		const line = [...lead, label, ...cells].join(sep);
-		if (visibleWidth(line) <= width) return line2Layout(line, lead[0], countCell, hidden, visibleWidth);
-		if (count === 0) return minimalLine2(lead[0], countCell, label, hidden, sep, width, visibleWidth);
+		const line = [label, ...cells].join(sep);
+		if (visibleWidth(line) <= width) return line2Layout(line, countCell, hidden, visibleWidth);
+		if (count === 0) return minimalLine2(countCell, label, hidden, width, visibleWidth);
 	}
 	return { line: "" };
 }
 
-/** Attach the control and count spans to a composed line. */
-function line2Layout(
-	line: string,
-	lead: string | undefined,
-	countCell: string | undefined,
-	hidden: number,
-	visibleWidth: (s: string) => number,
-): Line2Layout {
+/** Attach the count span to a composed line. */
+function line2Layout(line: string, countCell: string | undefined, hidden: number, visibleWidth: (s: string) => number): Line2Layout {
 	const result: Line2Layout = { line };
-	if (lead !== undefined) result.control = { x: 0, width: Math.min(visibleWidth(lead), visibleWidth(line)) };
 	if (countCell !== undefined && line.endsWith(countCell)) {
 		const cellWidth = visibleWidth(countCell);
 		result.overflow = { x: visibleWidth(line) - cellWidth, width: cellWidth, hidden };
@@ -337,19 +324,9 @@ function line2Layout(
 	return result;
 }
 
-/** Nothing left to shed: drop the project, then truncate the control before the count. */
-function minimalLine2(
-	lead: string | undefined,
-	countCell: string | undefined,
-	label: string,
-	hidden: number,
-	sep: string,
-	width: number,
-	visibleWidth: (s: string) => number,
-): Line2Layout {
-	const minimal = [lead, countCell].filter((cell): cell is string => cell !== undefined).join(sep);
-	if (minimal && visibleWidth(minimal) <= width) return line2Layout(minimal, lead, countCell, hidden, visibleWidth);
-	if (lead !== undefined) return line2Layout(truncateToWidth(lead, Math.max(0, width), ""), lead, undefined, hidden, visibleWidth);
+/** Nothing left to shed: the count alone when it fits, otherwise the shortened project. */
+function minimalLine2(countCell: string | undefined, label: string, hidden: number, width: number, visibleWidth: (s: string) => number): Line2Layout {
+	if (countCell !== undefined && visibleWidth(countCell) <= width) return line2Layout(countCell, countCell, hidden, visibleWidth);
 	if (countCell !== undefined) return { line: truncateToWidth(countCell, Math.max(0, width), "") };
 	return { line: truncateToWidth(label, Math.max(0, width), "\u2026") };
 }

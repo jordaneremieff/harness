@@ -162,9 +162,9 @@ The detail shows the exact resource and reference digest of the page it read;
 refuses it, so pages of two revisions never mix, and **Read again** reads the
 source from its first page. Typing filters titles, types, and statements.
 Selecting a row reads; nothing in the view starts a check, derivation, or
-review, and nothing writes to the corpus. The statusline work strip lists
-Pillars under More because this extension publishes it as a secondary operator
-view; the command opens it with the statusline disabled too.
+review, and nothing writes to the corpus. Pillars is a tab of the shared frame
+because this extension publishes it as an operator view, so the other frame
+tabs reach it too.
 The attached Agent terminal opens the same view through `operator-panel.ts`,
 a presentation-only module that routes the inventory and every page read
 through the host's `pillars` contribution command. Outside the terminal UI, or when the
