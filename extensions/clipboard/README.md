@@ -233,9 +233,9 @@ The extension provides no entry-level deletion. Daily-file removal avoids rewrit
 `/clipboard` opens the Clipboard view in the shared browsing frame below the
 native transcript (`docs/conventions/operator-panels.md`), in TUI mode. RPC
 receives a notification that directs the caller to `clipboard_list`, rather
-than attempting a terminal-only component. Clipboard is a tab of the shared
-frame because this extension publishes it as an operator view, so the other
-frame tabs reach it too.
+than attempting a terminal-only component. The command shows Clipboard on its
+own. Because this extension publishes it as an operator view, `/dashboard` also
+shows it as a tab.
 
 The view has two scopes. **Recent** lists the newest 200 entries and filters
 them as you type by label, id, and excerpt. **Archive** runs the same literal

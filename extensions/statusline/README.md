@@ -7,8 +7,8 @@ other extensions publish through `ctx.ui.setStatus()`. The footer shows status
 only: it adds no navigation labels and no menu. The statusline also owns three
 views of the shared browsing frame below the native transcript
 (`docs/conventions/operator-panels.md`): Commands, Model, and Statuses. Each
-view opens from its own command, and the frame's tabs reach every other
-published view.
+view opens on its own from its command. `/dashboard` shows every published
+view, including other extensions' views, as tabs of one frame.
 
 ## Surfaces
 
@@ -19,6 +19,7 @@ published view.
 | `/commands` | command | Open the Commands view: every command, prompt template, and skill, searchable. |
 | `/model-reasoning` | command | Open the Model view: this session's model and reasoning in one form. |
 | `/statuses` | command | Open the Statuses view: the complete extension status map. |
+| `/dashboard` | command | Open every published view as tabs of one frame, starting at the first. |
 | model and level segments | footer click targets | In fullscreen, a click on the `provider/model` segment or its `[level]` bracket opens the Model view. |
 | `+N` cell | footer click target | In fullscreen, the hidden-status count opens the Statuses view. |
 

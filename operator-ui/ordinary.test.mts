@@ -163,6 +163,30 @@ it("an open frame navigates instead of opening a second one, and close runs its 
 	assert.deepEqual(order, ["closed", "continuation"], "the continuation runs after the custom view resolves");
 });
 
+it("a view's command shows that view alone; the dashboard shows every view as a tab", async () => {
+	const host = pi([command("one", "/one.ts"), command("two", "/two.ts")]);
+	let reads = 0;
+	const api = { ...host.api, getCommands: () => { reads += 1; return host.api.getCommands(); } } as FrameApi;
+	publishOperatorViews(api, { version: 2, owner: "/one.ts", views: [{ id: "one", label: "One", command: { name: "one" }, order: 1, view: () => view("One") }] });
+	publishOperatorViews(api, { version: 2, owner: "/two.ts", views: [{ id: "two", label: "Two", command: { name: "two" }, order: 2, view: () => view("Two") }] });
+	const own: { frame?: NavigationFrame; done?: () => void } = {};
+	const opened = openOperatorFrame(api, tuiContext(own), { owner: "/two.ts", id: "two" });
+	for (let paint = 0; paint < 5; paint++) own.frame?.render(100);
+	const header = own.frame?.render(100)[0] ?? "";
+	assert.match(header, /Two/);
+	assert.doesNotMatch(header, /One/, "no tab for another owner's view");
+	assert.equal(reads, 1, "the command inventory is read once per open, not on every paint");
+	own.done?.();
+	await opened;
+	const all: { frame?: NavigationFrame; done?: () => void } = {};
+	const dashboard = openOperatorFrame(api, tuiContext(all), undefined, { tabs: true });
+	const tabs = all.frame?.render(100)[0] ?? "";
+	assert.match(tabs, /One.*Two/, "every view is a tab, in publication order");
+	assert.equal(all.frame?.viewTitle, "One", "the dashboard opens at the first view");
+	all.done?.();
+	await dashboard;
+});
+
 it("outside the interactive terminal the frame only explains itself", async () => {
 	const notes: string[] = [];
 	const ctx = { mode: "print", hasUI: true, ui: { notify: (text: string) => notes.push(text) } } as unknown as ExtensionContext;

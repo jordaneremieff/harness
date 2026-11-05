@@ -95,11 +95,13 @@ export function publishOperatorViews(pi: Pick<ExtensionAPI, "events">, publicati
 }
 
 /** A live registry of published destinations. A publication replaces that owner's entries only. */
-export function collectOperatorViews(bus: Bus): { views(): readonly PublishedView[]; dispose(): void } {
+export function collectOperatorViews(bus: Bus, changed?: () => void): { views(): readonly PublishedView[]; dispose(): void } {
 	const byOwner = new Map<string, PublishedView[]>();
 	const off = bus.on(OPERATOR_VIEW_PUBLISH, (value) => {
 		const publication = readPublication(value);
-		if (publication) byOwner.set(publication.owner, publication.views);
+		if (!publication) return;
+		byOwner.set(publication.owner, publication.views);
+		changed?.();
 	});
 	bus.emit(OPERATOR_VIEW_REQUEST, { version: 2 });
 	return {
@@ -209,25 +211,35 @@ export function frameRows(terminalRows: number, expanded: boolean): number {
 export interface OpenFrameOptions {
 	/** Destinations this owner supplies directly, in addition to the published ones. */
 	readonly local?: readonly PublishedView[];
+	/** Show every published view as a tab (the dashboard). By default the frame shows only the opened view. */
+	readonly tabs?: boolean;
 }
 
 /**
- * Open the ordinary browsing frame at one destination, in the editor slot below the native
- * transcript. If a frame is already open in this session, it navigates there instead. Every
- * destination is checked against its owner's current command registration before it mounts.
+ * Open the ordinary browsing frame in the editor slot below the native transcript, at one
+ * destination or, without `start`, at the first. If a frame is already open in this session, it
+ * navigates there instead. Every destination is checked against its owner's current command
+ * registration when the frame opens and when a publication changes.
  */
-export async function openOperatorFrame(pi: FrameApi, ctx: ExtensionContext, start: { owner: string; id: string }, options: OpenFrameOptions = {}): Promise<void> {
+export async function openOperatorFrame(pi: FrameApi, ctx: ExtensionContext, start: { owner: string; id: string } | undefined, options: OpenFrameOptions = {}): Promise<void> {
 	if (ctx.mode !== "tui") {
 		if (ctx.hasUI) ctx.ui.notify("This view needs the interactive terminal.", "info");
 		return;
 	}
-	const startKey = viewKey(start.owner, start.id);
-	const request: FrameOpenRequest = { version: 1, key: startKey, handled: false };
-	pi.events.emit(OPERATOR_FRAME_OPEN, request);
-	if (request.handled) return;
-	const registry = collectOperatorViews(pi.events);
+	const startKey = start ? viewKey(start.owner, start.id) : undefined;
+	if (startKey) {
+		const request: FrameOpenRequest = { version: 1, key: startKey, handled: false };
+		pi.events.emit(OPERATOR_FRAME_OPEN, request);
+		if (request.handled) return;
+	}
+	let cached: Destination[] | undefined;
+	const registry = collectOperatorViews(pi.events, () => {
+		cached = undefined;
+	});
 	const local = options.local ?? [];
-	const destinations = (): Destination[] => {
+	// Built once per open and per publication change, not on every paint: command inventory and
+	// path resolution are too slow to repeat for each key press.
+	const build = (): Destination[] => {
 		const seen = new Set<string>();
 		const commands = pi.getCommands();
 		const all = [...local, ...registry.views()].filter((view) => {
@@ -246,6 +258,10 @@ export async function openOperatorFrame(pi: FrameApi, ctx: ExtensionContext, sta
 					open: (host: ViewHost) => view.view(ctx, host),
 				};
 			});
+	};
+	const destinations = (): Destination[] => {
+		cached ??= build();
+		return cached;
 	};
 	let expanded = false;
 	let frame: NavigationFrame | undefined;
@@ -272,6 +288,7 @@ export async function openOperatorFrame(pi: FrameApi, ctx: ExtensionContext, sta
 					done(undefined);
 				},
 				controls,
+				tabs: options.tabs === true,
 			});
 			closeFrame = () => frame?.close();
 			closing.add(closeFrame);

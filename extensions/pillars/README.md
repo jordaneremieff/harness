@@ -162,9 +162,9 @@ The detail shows the exact resource and reference digest of the page it read;
 refuses it, so pages of two revisions never mix, and **Read again** reads the
 source from its first page. Typing filters titles, types, and statements.
 Selecting a row reads; nothing in the view starts a check, derivation, or
-review, and nothing writes to the corpus. Pillars is a tab of the shared frame
-because this extension publishes it as an operator view, so the other frame
-tabs reach it too.
+review, and nothing writes to the corpus. The command shows Pillars on its own.
+Because this extension publishes it as an operator view, `/dashboard` also
+shows it as a tab.
 The attached Agent terminal opens the same view through `operator-panel.ts`,
 a presentation-only module that routes the inventory and every page read
 through the host's `pillars` contribution command. Outside the terminal UI, or when the

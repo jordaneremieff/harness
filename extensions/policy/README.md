@@ -1189,8 +1189,8 @@ submitting or replacing the editor draft. A second open while the frame is open
 navigates that frame instead of opening another. The view keeps its scope,
 filter, and selection across closes. Opening the view makes no approval or rule
 edit; the normal first-use catalog initialization still applies when no
-registry exists. Policy is a tab of the shared frame because this extension
-publishes it as an operator view, so the other frame tabs reach it too.
+registry exists. The command shows Policy on its own. Because this extension
+publishes it as an operator view, `/dashboard` also shows it as a tab.
 
 The view shares rule and proposal details and operator gates with the command.
 Its scopes are Rules, Proposals, Activity, Data, and State. Titles come first:

@@ -96,16 +96,19 @@ interface OperatorViewPublication {
 
 `openOperatorFrame(pi, ctx, { owner, id })` opens the ordinary frame at one
 destination in the editor slot, below the native transcript; the editor's
-draft returns when the frame closes. Every published destination is a tab.
-If a frame is already open in the session, `OPERATOR_FRAME_OPEN`
+draft returns when the frame closes. The frame shows the opened destination
+alone, under its title; with `{ tabs: true }` and no start, it shows every
+published destination as a tab, starting at the first (the statusline's
+`/dashboard`). The frame resolves its destinations when it opens and again
+when a publication changes, not on every paint. If a frame is already open in
+the session, `OPERATOR_FRAME_OPEN`
 (`harness:operator-frame:open`) navigates that frame instead of opening
 another. `dispatchCommand` sends a command line only after it re-reads the
 exact registration identity; the statusline Commands view runs commands
 through it, and a changed or missing registration is refused.
 
 Each owner's own command opens its destination directly through
-`openOperatorFrame`, and the frame's tabs reach the other published
-destinations. No footer control or menu is part of this contract.
+`openOperatorFrame`. No footer control or menu is part of this contract.
 
 Publishers: stash (Stashes), clipboard (Clipboard), policy (Policy), pillars
 (Pillars), statusline (Commands, Model, Statuses). The frame collects the

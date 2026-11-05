@@ -7,7 +7,8 @@
  * The footer carries status only; it adds no navigation labels. In fullscreen the model, the
  * level and the +N cell are click targets for the Model and Statuses views; regular mode leaves
  * the mouse to the terminal. This owner publishes Commands, Model and Statuses as views of the
- * shared frame (docs/conventions/operator-panels.md); each has its own command. Installed only in
+ * shared frame (docs/conventions/operator-panels.md); each has its own command, and /dashboard
+ * shows every published view as tabs. Installed only in
  * TUI mode; setFooter is a documented no-op elsewhere. One unref'd 5s tick owns wall-clock
  * freshness for duration while idle.
  */
@@ -296,6 +297,11 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	pi.registerCommand("commands", {
 		description: "Browse every command, prompt and skill, and run or prepare one",
 		handler: async (_args, ctx) => openOwn(ctx, "commands"),
+	});
+
+	pi.registerCommand("dashboard", {
+		description: "Show every view (stashes, clipboard, policy, pillars, commands and more) as tabs of one frame",
+		handler: async (_args, ctx) => openOperatorFrame(pi, ctx, undefined, { tabs: true }),
 	});
 
 	pi.registerCommand("statuses", {

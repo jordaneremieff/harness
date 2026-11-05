@@ -29,6 +29,8 @@ export interface FrameOptions {
 	controls?(): readonly Action[];
 	/** Label of the way out, for example "Close" or "Back to conversation". */
 	readonly closeLabel?: string;
+	/** Show every destination as a tab. False shows only the active destination's title. Default true. */
+	readonly tabs?: boolean;
 }
 
 interface Layer {
@@ -251,7 +253,8 @@ export class NavigationFrame implements Component, Focusable {
 
 	private renderHeader(width: number): string {
 		const theme = this.options.theme;
-		const tabs = this.options.destinations().map((destination) => ({ key: destination.key, label: destination.label, unavailable: destination.unavailable }));
+		const shown = this.options.destinations().filter((destination) => this.options.tabs !== false || destination.key === this.active);
+		const tabs = shown.map((destination) => ({ key: destination.key, label: destination.label, unavailable: destination.unavailable }));
 		const controls = this.frameControls();
 		const controlText = controls.map((control) => ` ${plainLine(control.label)} `);
 		const target = theme.fg("muted", ` ${plainLine(this.options.target.label)} `);
@@ -363,7 +366,7 @@ export class NavigationFrame implements Component, Focusable {
 		const view = this.top()?.view;
 		this.bar.closeMenu();
 		if (this.zone === "view" && view?.focusNext?.(backward)) return;
-		const ring = ["view", "actions", "tabs"] as const;
+		const ring: readonly ("view" | "actions" | "tabs")[] = this.options.tabs === false ? ["view", "actions"] : ["view", "actions", "tabs"];
 		const next = ring[(ring.indexOf(this.zone) + (backward ? ring.length - 1 : 1)) % ring.length] ?? "view";
 		this.zone = next;
 		if (next === "actions") this.bar.focusEdge(backward);
