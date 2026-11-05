@@ -391,7 +391,7 @@ PageUp and PageDown reach the work view.
 | Enter in the message field | Admit the text to the selected conversation as operator input; its answer stays in that conversation. |
 | Ctrl+J | Insert a native editor newline. |
 | Esc | Leave the inspector, then the message field. Over the list it names Detach; it never detaches or stops work. |
-| Detach (heading and footer), `/quit`, or Ctrl+D in an empty message field | Close this terminal and its observation links, not native work. |
+| Detach (heading), `/quit`, or Ctrl+D in an empty message field | Close this terminal and its observation links, not native work. |
 | `/agent enter <identity-or-@handle>` | Select that exact conversation. |
 | `/agent new` | Open New conversation. |
 | `/agent browse` | Open the selected conversation's owner views. |
@@ -511,21 +511,35 @@ observes agents and effort presence, not primary conversations: it reads no
 primary draft and writes no primary editor text. Close leaves it; work
 continues.
 
-The view has a heading row, the list, the selected agent's pane, and a footer:
+The view has a heading row, the list, and the selected agent's pane:
 
-- **Heading.** The Agents, Threads and Efforts tabs (Efforts in ordinary Pi
-  only); on the Agents tab, Related and All (ordinary Pi only), Hide list or
-  Show list, New conversation and Help, and the session's delegated figures;
-  then the way out at the top right (Close, or Detach in the terminal). Controls
-  that do not fit move into More.
-- **List.** A Find field, then the agent rows. At 100 columns or more the list
-  sits beside the pane at full height; narrower windows stack a strip of three
-  to five rows above it, with coverage facts and Load more beside Find.
-- **Pane.** The selected agent's header (name, project, state, and its
-  controls), its fact lines, any attention reason, warning or outcome line,
-  then the conversation, and the message field at the bottom.
-- **Footer.** Hints for the focused region. While a resize drag lasts, the
-  footer shows the sizes it sets.
+- **Heading.** The Agents, Threads and Efforts tabs on the left (Efforts in
+  ordinary Pi only), with Show list when the list is hidden; the session's
+  delegated figures, New conversation, Help, and the way out (Close, or Detach
+  in the attached terminal) on the right. Controls that do not fit move into
+  More.
+- **List.** A Find field, with Related, All (ordinary Pi only) and ‹ (hide the
+  list) at its right end; then the agent rows and one footer line. Line 1 of a
+  row is the state glyph, the bold name and the relative time; line 2 is the
+  model with its reasoning level and the cost, in muted text aligned under the
+  name; a blank line follows each agent. The list shows no activity, reply,
+  tool, attention or error text; the state shows through the glyph and its
+  colour. The footer reads `N agents`, or an arrow and `N more` when rows sit
+  out of view, then `· N need attention` when that count is not zero; after
+  three failed refreshes it reads `List kept; refresh failed` in the warning
+  colour. At 100 columns or more the list sits beside the pane at full height;
+  narrower windows stack a strip above the pane that holds two agents at 80x24
+  and one at 60x20, with coverage facts and Load more beside Find.
+- **Pane.** The selected agent's header of two lines, then one blank line.
+  Line 1 holds the bold name, the project in muted text, and the agent's
+  controls. Line 2 holds the state glyph and label, then at most one status in
+  muted text: the first that applies of the sizes of a resize drag in progress,
+  a notice from the last action, the conversation load status, a connection or
+  stored-history warning, or `Details has the stored error` when the agent
+  needs attention. Full errors stay in Details. The conversation follows, then
+  the message field, then the agent's two status lines (model, context, tokens,
+  cost and cache; then cwd, branch and delegate figures) in the main session's
+  footer layout.
 
 The list starts in **Related** for the current session when it holds related
 work; with none, it shows All, so the view never opens on an empty list. After
@@ -658,12 +672,16 @@ enforcement setting, and every preset with its model.
 ### Layout and resizing
 
 At side-by-side widths, drag the list's divider to exchange width with the
-pane. The list keeps at least 24 columns and the pane at least 60. Drag the
+pane. The list takes 22% of the width, clamped to 30 to 40 columns; a saved
+divider position is clamped to the same range. While a drag lasts, the list
+keeps 30 to 40 columns and the pane keeps at least 60. Drag the
 small grip at the message field's top-right corner upward for more draft rows
 or downward for more conversation rows; the conversation keeps at least four
-rows, and a window too short for that shows no grip. The footer shows the sizes
-a drag sets; Escape restores the previous size; double-click a handle to reset
-it. Hide list gives the pane the full width. Stable pane preferences survive Pi
+rows, and a window too short for that shows no grip. Line 2 of the pane header
+shows the sizes a drag sets (`List N · conversation N columns · release to
+keep · esc restores`, or the message field rows); Escape restores the previous
+size; double-click a handle to reset it. Hide list gives the pane the full
+width. Stable pane preferences survive Pi
 restarts in the agent-owned `agent-dashboard-layout.json` file under
 `PI_AGENT_DIR` or Pi's agent directory. Only completed resize gestures and
 resets write this private file, through an adjacent temporary file and atomic
@@ -676,10 +694,16 @@ Below 60 columns or 16 rows the view asks for a larger window.
 
 ### Header and fact lines
 
-The header shows the selected agent's name, project and state; a narrow pane
-drops the project first, then shortens the name, and the state stays. An
-attention reason, a conversation warning, or an outcome line appears under the
-header when present. A fact line with nothing known takes no row.
+The header holds exactly two lines. Line 1 shows the selected agent's bold
+name, the project in muted text, and the agent's controls; a narrow pane drops
+the project first, then shortens the name. Line 2 shows the state glyph and
+label, then at most one status in muted text: the first that applies of the
+sizes of a resize drag in progress, a notice from the last action, the
+conversation load status (such as `Partial history`), a connection or
+stored-history warning, or `Details has the stored error` when the agent needs
+attention. One blank line follows the header. The agent's two status lines sit
+under the message field, in the main session's footer layout. A line with
+nothing known takes no row.
 
 The first fact line uses the primary footer's presentation: the model registry
 display name, a colored `[level]` only for a reasoning-capable model, a
@@ -721,20 +745,41 @@ tick exists.
 
 Heading figures describe the loaded selection, not an unknown global total. A
 `+` marks incomplete loaded coverage. A scrollbar shows the position within
-loaded conversation content. The conversation's top rule stays blank at the
-live tail; away from it, the rule states the distance below or the action to
-load an earlier or newer range. Estimated heights say `about`.
+loaded conversation content. The conversation's top rule shows only when there
+is a scroll status to state: the distance below, or the action to load an
+earlier or newer range. Estimated heights say `about`.
 
 ### Conversation and pointer
 
-Conversation content uses Pi's native components. Built-in tools retain native
-cards; codemode uses Pi's public codemode presentation. Agent tools use the
-shared agent cards. The view requests custom renderers through the
-[tool-display contract](../../docs/conventions/tool-display.md). Native built-ins,
-codemode, and agent cards keep precedence; published custom tools use their
-owning extension renderers. Unpublished tools use Pi's standard named-argument
-card and logical-line output preview with an expansion hint. Display definitions
-never execute tools. The agent factory subscribes before it requests renderers.
+Conversation content uses Pi's native components. Text sits after a two-column
+margin and is at most 100 columns wide; extra width stays empty on the right.
+An assistant message and the tool calls it issued form one step with no blank
+row inside it. One blank row separates steps, and separates user, compaction
+and custom-message blocks from their neighbours. A tool result belongs to its
+call.
+
+Every tool other than an agent tool shows as one line by default: the bold tool
+name, then one argument and an outcome in muted text, such as
+`edit · src/index.ts → Successfully replaced 2 block(s)`. The argument is the
+command for shell tools, the path for file tools, the pattern for search tools,
+or the first useful string argument. A path inside the agent's cwd shows
+relative to it, a path under the home directory starts with `~/`, and a leading
+`cd <cwd> && ` is left out. The outcome is the first line of the result; a JSON
+object result shows its `outcome`, `status`, `state` or `error` field; `read`
+shows the line count, or `image`. A running tool ends in `→ pending`, and
+partial output ends in `…`. A long line shortens the argument first and keeps
+up to 40 columns of the outcome. A failed tool keeps the same line in the error
+colour. A click or Ctrl+O expands the tool to its native call and result,
+without the outer coloured block of the main transcript. Codemode, published
+custom tools and unpublished tools follow the same rule. Agent tools keep the
+shared agent card's two-line header and collapse only its body, without an
+expansion hint line; the main transcript keeps its hint.
+
+When expanded, codemode uses Pi's public codemode presentation, published custom
+tools use their owning extension renderers through the
+[tool-display contract](../../docs/conventions/tool-display.md), and unpublished
+tools use Pi's standard named-argument card. Native built-ins, codemode, and
+agent cards keep precedence. Display definitions never execute tools. The agent factory subscribes before it requests renderers.
 Publishers subscribe before their initial publication. Pi reload replaces
 subscriptions and the factory-local renderer registry; reopening the view
 creates new component instances.
@@ -746,8 +791,9 @@ padding toggle the card through Pi's public expansion setter. The clicked item
 stays in view and suspends tail-follow. Press, drag, release, modified clicks,
 and multiple clicks stay available for Pi's native text selection. Ctrl+O sets
 all tool cards and clears individual choices; Ctrl+T does the same for
-thinking. Thinking starts from the primary's effective setting; Ctrl+T here
-changes only this view and never writes primary settings.
+thinking. Thinking starts hidden for every agent as one `▸ Thinking` line,
+whatever the primary's setting; Ctrl+T here changes only this view and never
+writes primary settings.
 
 In Pi fullscreen mode, click a list row to select it, a heading or header
 control to run it, the message field to focus it and place its caret, and a
@@ -802,10 +848,11 @@ the reading anchor. The selected display-input cache retains at most 800 entries
 and approximately 4 MiB. Distant pages lose their input but keep cursors for
 reload. Only a contiguous loaded range appears; newer gaps load before the live
 tail joins that range. Offscreen blocks retain height and anchor measurements,
-not every rendered line. A partial transcript also shows its first input from
-the published summary, explicitly labeled historical rather than the current
-role or task. Native separators and background padding remain intact without
-extra inter-block separators. Native assistant and tool instances stay stable
+not every rendered line. A partial transcript also shows the first line of its
+first input from the published summary, as `First task · <line>`; Details keeps
+the whole text. It is history, not the current role or task. The view trims
+blank rows at each component's edges and adds the step gaps itself. Native
+assistant and tool instances stay stable
 through content, argument, and result updates. When a missing call arrives, a
 built-in fallback card rebuilds once to acquire its native renderer. Pi exposes
 no renderer replacement setter. Tool expansion choices survive
@@ -1656,20 +1703,38 @@ In `/agent`, Agents, Threads and Efforts are tabs at the top left. Threads is a
 two-pane view like the agents: every thread on the left, the selected thread on
 the right. The view follows every discovery page and every storage that reports
 omitted threads on its own, within a fixed bound per refresh, so the operator
-never pages through storages. Open threads come first, then closed ones, each
-newest first under a quiet count. Each row shows the title, the last activity
-time, the purpose and the member count. Typing over the list filters titles and
-purposes. Up/Down, PageUp/PageDown, Home and End select; the wheel scrolls the
-list. The newest thread is selected when the view opens. Selecting a thread
-reads its newest page; reading is passive and starts no model turn.
+never pages through storages. Open threads
+come first, newest first; closed threads fold into one muted row, `▸ Closed ·
+N`, after them. Enter or a click expands that row to `▾ Closed · N` and shows
+the closed threads below it; opening a closed thread directly expands the
+group. Each row has two lines and a blank line after it: the state glyph, the
+bold title and the last activity time; then the purpose in muted text. The
+member count sits in the thread header. Typing over the list (Find) searches
+open and closed threads and shows every match; clearing Find restores the
+earlier choice. Up/Down, PageUp/PageDown, Home and End select; the wheel
+scrolls the list. The list footer reads `N threads`, or one read warning. The
+newest thread is selected when the view opens. Selecting a thread reads its
+newest page; reading is passive and starts no model turn.
 
-The thread pane shows the title, Open or Closed and the member count, then the
-purpose, then the exchange: each message under its sender's name and time, with
-`↳ name` for the message it answers, a word for joins, leaves, frame revisions
-and carried operator directions, and `notified` for the members it woke. The
-newest message sits at the bottom; scrolling to the top, Home or the
-`↑ Earlier messages` line reads the page before, which keeps newer messages in
-place. All thread text is plain text: terminal sequences are removed.
+The thread pane has a two-line header, then a blank line. Line 1 holds the
+bold title, then the Members and Details controls. Line 2, in muted text,
+holds Open or Closed, the member count, the post count (`N loaded posts` when
+earlier posts exist) and a purpose preview; a read failure replaces the
+preview in the error colour. The exchange
+follows: each post starts with the sender's name in bold and the time,
+right-aligned at the end of the reading column; `↳ name` follows on its own
+muted line when the post answers another; then the post text at the reading
+width, a two-column margin and at most 100 columns; then a muted `notified`
+line for the members it woke. Event kind and operator origin show in muted
+text after the name, and one blank line separates posts. A participant
+without a known name shows as `Session` plus the first eight characters of its
+identity, in senders, reply targets, event lines and `notified`. A thread's
+creation, frame revisions, joins and leaves each show as one muted line, such
+as `Parser review created the thread · 7m ago`; the frame stays in Details and member
+contributions in Members. A close shows its muted line, then the close message
+as post text. The newest message sits at the bottom; scrolling to the top,
+Home or the `↑ Earlier messages` line reads the page before, which keeps newer
+messages in place. All thread text is plain text: terminal sequences are removed.
 
 The message field at the bottom posts to the selected thread with origin
 `operator`; a post wakes nobody unless members are ticked. Click a sender's name
@@ -1803,10 +1868,27 @@ Fleet and selected-session status do not read caller identity. An ordinary
 overview uses it only for the optional effort-awareness section. If identity
 is unavailable, that section is omitted and the agent overview remains available.
 
-`/agent` opens Related efforts with Efforts in its heading. The view leads with
-declared purpose and integration claims, or a source-labeled observed fallback
-when no intent exists. It also shows quoted operator direction with scope and
-active threads. A contact-thread read displays its frame and current member
+`/agent` opens Related efforts with Efforts in its heading. The list uses the
+same width as the Agents list. Each effort
+row has two lines and a blank line after it: the live glyph and the bold title
+(the first sentence of the purpose, declared or observed, or `Session` plus
+the first eight characters of the identity without one); then the liveness and
+last update time in muted text, aligned with the title. Active threads follow
+under their own label, with the same two-line rows. The list footer reads
+`N efforts`, then `· scan incomplete` when coverage is partial.
+
+The selected effort's header has two lines. Line 1 holds the title, then Open
+thread, Message, Observe, Details and More; More opens the remaining actions,
+such as Threads, Scan details and the exact-time toggle. Line 2, in muted
+text, holds the live state, the relation and the last update. Controls that do
+not fit move into More. The default detail
+shows short groups with muted keys and a blank line between them: Purpose,
+Integration when declared, Contact (the contact thread's title, state and
+member count) and Identity (the full session identity). A longer value shows
+its first three lines, then `…`. Details shows the full record in the same grouped form:
+authority, source, restrictions, acceptance, paths, branch scope, cwd,
+substrates, member declarations and the full contact frame. A contact-thread
+read displays its frame and current member
 contributions as declarations, not agreement or permission. Rejoin a thread to
 replace your contribution with a current hold, release or continuing condition
 and cite its source exchange. A release by one member does not clear another
@@ -1819,9 +1901,8 @@ The operator sends a direct quiet message to a live effort's primary from this
 view. `agent_send` already supports direct model contact with that primary.
 Delivery proves admission, not action, agreement, or a Durable task result. Use
 one peer thread for a real overlap or agreement. Threads remain in a participant's
-existing agent storage. The dashboard marks agents created by another session;
-that marker describes provenance, not their current requester or task owner.
-At 100 columns or wider, a narrow list sits beside the selected effort's details.
+existing agent storage. At 100 columns or wider, the list sits beside the
+selected effort's details at the shared list width.
 Press `i` to toggle coarse ages and local dates. In this side-by-side view,
 clicking a detail timestamp uses the same toggle. Ages stay fixed until the next
 presence observation; they do not tick during inactivity.

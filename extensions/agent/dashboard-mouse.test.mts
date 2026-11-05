@@ -233,14 +233,16 @@ for (const width of [80, 140]) {
 		const f = fixture(width, 30, source([row("work", { name: "Worker", modifiedAt: 3 }), row("done", { name: "Finished", state: "done", modifiedAt: 2 }), row("failed", { name: "Failure", state: "failed", error: "quota limit", modifiedAt: 1 })]));
 		try {
 			await turn();
+			// The side list shows all three agents; the 80-column strip shows the newest two.
+			const target = width >= 100 ? { name: "Failure", id: "failed" } : { name: "Finished", id: "done" };
 			const lines = f.ui.render(width).map(stripVTControlCharacters);
-			const block = point(lines, "Failure");
-			assert.equal(f.ui.handleMouse(event(5, block.y + (width >= 100 ? 2 : 0), width, 30))?.handled, true);
-			assert.equal(f.state.selected, "failed");
+			const block = point(lines, target.name);
+			assert.equal(f.ui.handleMouse(event(5, block.y + 1, width, 30))?.handled, true, "a click on the facts line selects its agent");
+			assert.equal(f.state.selected, target.id);
 			await turn();
-			const next = point(f.ui.render(width).map(stripVTControlCharacters), "Finished");
-			assert.equal(f.ui.handleMouse(event(5, next.y + (width >= 100 ? 1 : 0), width, 30))?.handled, true);
-			assert.equal(f.state.selected, "done");
+			const next = point(f.ui.render(width).map(stripVTControlCharacters), "Worker");
+			assert.equal(f.ui.handleMouse(event(5, next.y, width, 30))?.handled, true, "a click on the name line selects its agent");
+			assert.equal(f.state.selected, "work");
 		} finally { f.ui.dispose(); }
 	});
 }
@@ -268,7 +270,7 @@ for (const [width, height] of [[140, 45], [80, 32]]) for (const start of ["list"
 			const state = agentState(retained, "storage:1").view;
 			assert.equal(state.toolExpanded.get("clicked-tool"), true);
 			assert.equal(state.follow, false);
-			const thinking = point(read(), "Thinking...");
+			const thinking = point(read(), "▸ Thinking");
 			assert.ok(f.ui.handleMouse(event(thinking.x, thinking.y, width, height))?.handled);
 			assert.match(read().join("\n"), /Thinking run sentinel/u);
 			const shown = point(read(), "Thinking run sentinel");
@@ -304,7 +306,7 @@ it("dashboard reopen retains tool choices and anchor but not discarded thinking 
 		let item = point(lines, "example_tool");
 		assert.ok(f.ui.handleMouse(event(item.x, item.y, 140, 45))?.handled);
 		lines = f.ui.render(140).map(stripVTControlCharacters);
-		item = point(lines, "Thinking...");
+		item = point(lines, "▸ Thinking");
 		assert.ok(f.ui.handleMouse(event(item.x, item.y, 140, 45))?.handled);
 		const state = agentState(retained, "storage:1").view;
 		const anchor = state.anchor;
@@ -315,7 +317,7 @@ it("dashboard reopen retains tool choices and anchor but not discarded thinking 
 		assert.doesNotMatch(lines.join("\n"), /Thinking run sentinel/u);
 		assert.match(lines.join("\n"), /topic: named/u);
 		assert.equal(state.toolExpanded.get("clicked-tool"), true);
-		assert.match(lines.join("\n"), /Thinking\.\.\./u);
+		assert.match(lines.join("\n"), /▸ Thinking/u);
 		assert.deepEqual(state.anchor, anchor);
 		assert.equal(state.follow, false);
 	} finally { f.ui.dispose(); }
@@ -324,11 +326,15 @@ it("dashboard reopen retains tool choices and anchor but not discarded thinking 
 
 it("dashboard reopen uses the current runtime renderer rather than a retained definition", async () => {
 	const observed = source(); observed.snapshot = async () => ({ entries: interactiveEntries, partial: false, revision: "custom", nextBefore: null });
-	const retained = createDashboardState();
 	for (const title of ["first runtime", "second runtime", undefined]) {
+		const retained = createDashboardState();
 		const f = fixture(140, 45, observed, { toolDisplay: () => title ? { renderCall: () => new Text(title) } : undefined }, retained);
 		try {
 			await turn();
+			const lines = f.ui.render(140).map(stripVTControlCharacters);
+			assert.match(lines.join("\n"), /example_tool · /u, "the collapsed tool is one summary line");
+			const item = point(lines, "example_tool");
+			assert.ok(f.ui.handleMouse(event(item.x, item.y, 140, 45))?.handled);
 			const text = f.ui.render(140).map(stripVTControlCharacters).join("\n");
 			assert.ok(text.includes(title ?? "example_tool"));
 			if (title !== "first runtime") assert.doesNotMatch(text, /first runtime/);

@@ -33,6 +33,7 @@ it("dashboard close releases a native nested renderer timer through the console"
 	observed.frame = () => conversationFrame({ entries: [], live });
 	const f = fixture(100, 30, observed);
 	try {
+		agentState(f.state, "one").view.toolExpanded.set("parent/key", true);
 		await turn();
 		f.ui.render(100);
 		const toolTimers = intervals.mock.calls.filter((call) => call.arguments[1] === 1000);
@@ -99,7 +100,7 @@ function factSource(state: "working" | "idle" | "failed") {
 }
 for (const state of ["working", "idle", "failed"] as const) {
 	for (const width of [164, 100, 80, 60]) for (const writing of [false, true]) {
-		it(`${state} target facts appear once under the header at ${width}${writing ? " while writing" : ""}`, async () => {
+		it(`${state} target facts appear once, the state under the name and the status under the message field, at ${width}${writing ? " while writing" : ""}`, async () => {
 			const f = fixture(width, 30, factSource(state), { modelInfo: () => ({ name: "Example model", reasoning: true, contextWindow: 1000 }) });
 			try {
 				await turn();
@@ -109,14 +110,15 @@ for (const state of ["working", "idle", "failed"] as const) {
 				assert.equal(lines.length, 30); assert.ok(lines.every((line) => visibleWidth(line) === width));
 				const wide = width >= 100;
 				const paneX = wide ? (lines[1]?.indexOf("│") ?? 0) + 1 : 0;
-				const paneY = wide ? 1 : 6;
-				const pane = lines.slice(paneY, -1).map((line) => line.slice(paneX));
+				const paneY = wide ? 1 : 9;
+				const pane = lines.slice(paneY).map((line) => line.slice(paneX));
 				const right = pane.join("\n");
 				assert.match(pane[0] ?? "", /@recipient · Recipient/);
-				assert.match(pane[0] ?? "", new RegExp(sessionAppearance[state].label));
 				assert.doesNotMatch(pane[0] ?? "", /model|high|%|\$/);
-				const facts = state === "failed" ? 2 : 1;
-				assert.match(pane[facts] ?? "", /Example model \[high\].*16%.*160\/1.0k/);
+				assert.match(pane[1] ?? "", new RegExp(sessionAppearance[state].label), "the state sits on the line under the name");
+				const bottom = pane.findIndex((line) => line.includes("╰─"));
+				const facts = pane.findIndex((line) => /Example model \[high\].*16%.*160\/1.0k/.test(line));
+				assert.ok(bottom > 0 && facts > bottom, "the status lines sit under the message field, as in the main session");
 				assert.match(pane[facts + 1] ?? "", /\/work/);
 				for (const fact of ["Example model", "[high]", "16%", "160/1.0k", "~$0.42"]) assert.equal(right.split(fact).length - 1, 1, right);
 				const caption = pane.find((line) => line.includes("╭─")) ?? "";
@@ -124,7 +126,7 @@ for (const state of ["working", "idle", "failed"] as const) {
 				assert.match(caption, state === "working" ? /Steer at next step ⇄/ : /^(?!.*(Steer|Follow-up)).*$/u, "only a working agent's message field names a delivery choice");
 				assert.doesNotMatch(caption, /Working|Idle|Failed|model|high|%|\$|hit|ctx| in| out/);
 				const status = "Example model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit";
-				assert.equal(right.split("21% hit").length - 1, width - paneX >= visibleWidth(status) ? 1 : 0);
+				assert.equal(right.split("21% hit").length - 1, width - paneX > visibleWidth(status) ? 1 : 0);
 			} finally { f.ui.dispose(); }
 		});
 	}

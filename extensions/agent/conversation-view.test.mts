@@ -29,15 +29,15 @@ it("cwd replacement and repeat disposal release native parent and nested rendere
 	try {
 		view.setContent([call], live, "/one");
 		view.render(80, 30);
-		assert.equal(intervals.mock.calls.length, 2);
+		assert.equal(intervals.mock.calls.length, 1);
 		view.setContent([], [], "/two");
-		assert.equal(clears.mock.calls.length, 2);
+		assert.equal(clears.mock.calls.length, 1);
 		assert.equal(state.toolExpanded.get("parent/key"), true);
 		view.setContent([call], live, "/two");
 		view.render(80, 30);
-		assert.equal(intervals.mock.calls.length, 4);
+		assert.equal(intervals.mock.calls.length, 2);
 		view.dispose(); view.dispose();
-		assert.equal(clears.mock.calls.length, 4);
+		assert.equal(clears.mock.calls.length, 2);
 		assert.deepEqual(new Set(clears.mock.calls.map((call) => call.arguments[0])), new Set(intervals.mock.calls.map((call) => call.result)));
 		assert.equal(state.toolExpanded.get("parent/key"), true);
 		assert.deepEqual(view.render(80, 3), ["", "", ""]);
@@ -104,11 +104,9 @@ it("loaded-line positions track the visible range, tail and an empty viewport", 
 	assert.equal(earlier.end, false);
 	assert.ok(earlier.last < tail.last);
 	assert.equal(earlier.last - earlier.first, 4);
-	assert.equal(tail.estimated, true);
-	assert.equal(earlier.estimated, true);
 	view.page(-100);
 	view.render(80, 5);
-	assert.equal(view.position().estimated, false);
+	assert.equal(view.position().first, 1);
 	view.render(80, 0);
 	assert.equal(view.position().first, 0);
 	assert.equal(view.position().last, 0);
@@ -264,7 +262,7 @@ it("live thinking retains its native instance through commit but resets after ev
 	view.setContent([], [live], "/work");
 	const instance = updates.mock.calls.at(-1)?.this;
 	let lines = readText(view);
-	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("Thinking...")))));
+	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("▸ Thinking")))));
 	live = assistantEntry("live:generation", 42, [{ type: "thinking", thinking: "updated reasoning sentinel" }]);
 	view.setContent([], [live], "/work");
 	assert.equal(updates.mock.calls.at(-1)?.this, instance);
@@ -281,7 +279,7 @@ it("live thinking retains its native instance through commit but resets after ev
 	view.setContent([committed], [], "/work");
 	assert.doesNotMatch(readText(view).join("\n"), /updated reasoning sentinel/u);
 	lines = readText(view);
-	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("Thinking...")))));
+	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("▸ Thinking")))));
 	view.save(); view = new ConversationView(tui, state);
 	view.setContent([committed], [], "/work");
 	assert.doesNotMatch(readText(view).join("\n"), /updated reasoning sentinel/u);
@@ -293,7 +291,7 @@ it("a thinking run at the tail stays visible through expand, collapse and update
 	const entry = assistantEntry("long", 1, [{ type: "text", text: Array.from({ length: 70 }, (_, i) => `earlier text ${i}`).join("\n") }, { type: "thinking", thinking: `clicked reasoning\n${"detail\n".repeat(30)}` }]);
 	view.setContent([entry], [], "/work");
 	let lines = readText(view);
-	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("Thinking...")))));
+	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("▸ Thinking")))));
 	assert.ok(state.anchor);
 	const anchor = { ...state.anchor };
 	assert.equal(anchor.id, "long");
@@ -318,7 +316,7 @@ it("tool collapse clamps an anchor from the middle of a long card and disables f
 	const lines = readText(view);
 	assert.equal(state.follow, false);
 	assert.equal(state.toolExpanded.get("long-tool"), false);
-	assert.match(lines.join("\n"), /expand/u);
+	assert.match(lines.join("\n"), /example_tool → output 0/u);
 });
 
 it("transcript clicks leave selection gestures, outside blocks and stale viewport events unhandled", () => {
@@ -328,11 +326,14 @@ it("transcript clicks leave selection gestures, outside blocks and stale viewpor
 	readText(view);
 	assert.equal(view.handleMouse(itemClick(1)), undefined);
 	view.setContent([assistantEntry("thinking", 1, [{ type: "thinking", thinking: "reason" }])], [], "/work");
-	const lines = readText(view); const y = lines.findIndex((line) => line.includes("reason"));
-	for (const patch of [{ type: "press" }, { type: "drag" }, { type: "release" }, { shift: true }, { alt: true }, { ctrl: true }, { clickCount: 2 }, { button: "right" }, { width: 79 }, { height: 7 }]) assert.equal(view.handleMouse({ ...itemClick(y), ...patch } as TuiMouseEvent), undefined);
+	const lines = readText(view); const label = lines.findIndex((line) => line.includes("▸ Thinking"));
+	assert.ok(label >= 0);
+	for (const patch of [{ type: "press" }, { type: "drag" }, { type: "release" }, { shift: true }, { alt: true }, { ctrl: true }, { clickCount: 2 }, { button: "right" }, { width: 79 }, { height: 7 }]) assert.equal(view.handleMouse({ ...itemClick(label), ...patch } as TuiMouseEvent), undefined);
+	assert.doesNotMatch(readText(view).join("\n"), /reason/u);
+	assert.ok(view.handleMouse(itemClick(label)));
 	assert.match(readText(view).join("\n"), /reason/u);
-	assert.ok(view.handleMouse(itemClick(y)));
-	assert.equal(view.handleMouse(itemClick(y)), undefined, "layout must repaint after a toggle");
+	assert.ok(view.handleMouse(itemClick(label)));
+	assert.doesNotMatch(readText(view).join("\n"), /reason/u);
 });
 
 
@@ -347,10 +348,10 @@ it("collapse from the middle of thinking keeps its label visible before trailing
 	view.setContent([entry], [], "/work");
 	assert.match(readText(view).join("\n"), /thought 26/);
 	assert.ok(view.handleMouse(itemClick(2)));
-	assert.match(readText(view).join("\n"), /Thinking\.\.\./);
+	assert.match(readText(view).join("\n"), /▸ Thinking/);
 	assert.equal(state.follow, false);
 	view.setContent([{ ...entry, data: { revision: 2 } }], [], "/work");
-	assert.match(readText(view).join("\n"), /Thinking\.\.\./);
+	assert.match(readText(view).join("\n"), /▸ Thinking/);
 });
 
 
@@ -367,7 +368,7 @@ for (const header of [0, 12]) it(`a second thinking run stays visible after coll
 	assert.match(readText(view).join("\n"), /thought/);
 	assert.ok(view.handleMouse({ ...itemClick(2), screenY: header + 2 }));
 	const collapsed = readText(view);
-	const label = collapsed.findIndex((line) => line.includes("Thinking..."));
+	const label = collapsed.findIndex((line) => line.includes("▸ Thinking"));
 	assert.ok(label >= 0);
 	assert.ok(view.handleMouse({ ...itemClick(label), screenY: header + label }));
 	assert.match(readText(view).join("\n"), /thought 0/);

@@ -6,8 +6,8 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
-import { initTheme, createCodemodeExtension, AssistantMessageComponent, UserMessageComponent, ToolExecutionComponent, getMarkdownTheme, type ExtensionAPI, type ToolDefinition, type ToolRenderers } from "@earendil-works/pi-coding-agent";
-import { Container, MouseRegion, Text, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { initTheme, createCodemodeExtension, AssistantMessageComponent, ToolExecutionComponent, getMarkdownTheme, type ExtensionAPI, type ToolDefinition, type ToolRenderers } from "@earendil-works/pi-coding-agent";
+import { MouseRegion, Text, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import { AgentConversation, cleanDashboardText, firstTaskEntry, renderableEntries } from "./dashboard-conversation.ts";
@@ -72,7 +72,7 @@ it("passes native tool durations to terminal components without using transcript
 	message.timestamp = 900_000;
 	message.durationMs = 7;
 	const renderer: ToolRenderers = { renderResult: (_result, _options, _theme, context) => new Text(context.durationMs === undefined ? "Untimed result" : `Native execution: ${context.durationMs} ms`) };
-	const conversation = new AgentConversation([call, completed], "/work", tui, false, false, undefined, undefined, () => renderer);
+	const conversation = new AgentConversation([call, completed], "/work", tui, true, false, undefined, undefined, () => renderer);
 	const passed = updates.mock.calls.at(-1)?.arguments[0] as { durationMs?: number };
 	assert.equal(passed.durationMs, 7);
 	assert.match(screen(conversation), /Native execution: 7 ms/u);
@@ -90,7 +90,7 @@ it("renders retry dependency facts before generic wait lines and removes them on
 	const reference = { sessionId: "producer:2", submissionId: 23, requestId: "exact-request" };
 	const conversation = new AgentConversation([], "/work", tui, false, false);
 	conversation.setAwaiting({ runId: 10, heldInputs: [12], results: [{ result: reference, status: "pending" }], queuedInputCount: 0, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 0, results: 0 }, omittedProducers: 0, likelyCycle: [], coverage: "one hop; remote graph incomplete", producers: [{ sessionId: reference.sessionId, observedAt: 1, source: "producer await-state", execution: { state: "provider-retry", runId: 20, results: [reference], model: { provider: "synthetic", modelId: "model" }, attempt: 18, maxAttempts: 21, nextRetryAt: 1791200000000, error: "429 Weekly/Monthly Limit Exhausted", errorTruncated: false } }] });
-	const text = screen(conversation, 160);
+	const text = screen(conversation, 160).replace(/\s+/gu, " ");
 	assert.match(text, /producer:2.*submission 23/u); assert.match(text, /provider retry/u); assert.match(text, /attempt 18\/21/u); assert.match(text, /Weekly\/Monthly Limit Exhausted/u);
 	assert.ok(text.indexOf("provider retry") < text.indexOf("Awaiting"));
 	conversation.setAwaiting(); assert.doesNotMatch(screen(conversation), /provider retry|Weekly\/Monthly/u);
@@ -137,7 +137,7 @@ it("uses native built-in tools, generic unknown tools and unmatched results with
 	const conversation = new AgentConversation(entries, "/work", tui, false, false);
 	const text = screen(conversation);
 	assert.match(text, /source\.ts/);
-	assert.doesNotMatch(text, /nativeRead/);
+	assert.match(text, /read · source\.ts → 1 line/u);
 	assert.match(screen(new AgentConversation(entries, "/work", tui, true, false)), /nativeRead/);
 	assert.match(text, /example_tool/);
 	assert.match(text, /Generic result/);
@@ -148,7 +148,7 @@ it("uses native built-in tools, generic unknown tools and unmatched results with
 	assert.ok(conversation.render(50).lines.every((line) => visibleWidth(line) <= 50));
 });
 
-it("standard tool previews keep ten logical lines and native named arguments", () => {
+it("generic tools show one summary line at every width and keep the full output on expansion", () => {
 	for (const width of [30, 80, 120]) {
 		const output = Array.from({ length: 13 }, (_, i) => `row ${i + 1} ${"界🙂".repeat(20)}`).join("\n");
 		const entries = [
@@ -158,10 +158,12 @@ it("standard tool previews keep ten logical lines and native named arguments", (
 		];
 		const collapsed = new AgentConversation(entries, "/work", tui, false, false).render(width).lines.map(stripVTControlCharacters);
 		assert.ok(collapsed.every((line) => visibleWidth(line) <= width));
-		assert.match(collapsed.join("\n"), /query=/u);
-		assert.match(collapsed.join("\n"), /row 10/u);
-		assert.match(collapsed.join("\n"), /expand/u);
-		assert.doesNotMatch(collapsed.join("\n"), /row 11/u);
+		const summaries = collapsed.filter((line) => line.includes("extension_tool"));
+		assert.equal(summaries.length, 1);
+		assert.ok(summaries[0].trimStart().startsWith("extension_tool"), "the name stays whole");
+		assert.match(summaries[0], /→ row 1/u, "the outcome stays visible");
+		assert.doesNotMatch(summaries[0], /row 2/u);
+		if (width >= 120) assert.match(summaries[0], /first line second line → row 1/u);
 		const expanded = screen(new AgentConversation(entries, "/work", tui, true, false), width);
 		assert.match(expanded, /count: 23/u);
 		assert.match(expanded, /row 13/u);
@@ -189,9 +191,9 @@ it("renders tool-call-only and thinking-only assistant entries and attaches thei
 		["a", "t1", "t2"],
 	);
 	const text = screen(new AgentConversation(entries, "/work", tui, false, false));
-	assert.match(text, /\$ echo step-1/);
-	assert.match(text, /poem\.txt/);
-	assert.match(text, /Thinking\.\.\./);
+	assert.match(text, /bash · echo step-1 → step-1/u);
+	assert.match(text, /write · poem\.txt → Successfully wrote to poem\.txt/u);
+	assert.match(text, /▸ Thinking/u);
 	assert.doesNotMatch(text, /\{\}/);
 	assert.match(screen(new AgentConversation(entries, "/work", tui, false, true)), /Plan the shell steps/);
 });
@@ -208,26 +210,66 @@ it("shows a retained result whose call is absent without an empty argument objec
 	assert.doesNotMatch(text, /\{\}/);
 });
 
-it("preserves adjacent native component rows without synthetic separators", () => {
+it("renders body text at the shared reading width with a two-column margin", () => {
+	for (const [pane, expected] of [[159, 100], [89, 86], [80, 77], [60, 57]] as const) {
+		const lines = new AgentConversation([user("u", "The task")], "/work", tui, false, false).render(pane - 1).lines.map(stripVTControlCharacters);
+		const content = lines.filter((line) => line.trim().length > 0);
+		assert.ok(content.length > 0);
+		for (const line of content) {
+			assert.equal(visibleWidth(line), expected + 2, `pane ${pane}`);
+			assert.equal(line.slice(0, 2), "  ", `margin at pane ${pane}`);
+		}
+	}
+});
+
+it("reuses the cached summary on an unchanged second render", (t) => {
+	const renders = t.mock.method(ToolExecutionComponent.prototype, "render");
+	const entries = [assistant("call", [{ type: "toolCall", id: "cache", name: "example_tool", arguments: { query: "cached" } }]), result("result", "cache", "example_tool", "cached output")];
+	const conversation = new AgentConversation(entries, "/work", tui, false, false);
+	conversation.render(80);
+	const count = renders.mock.callCount();
+	assert.ok(count >= 1);
+	conversation.render(80);
+	assert.equal(renders.mock.callCount(), count, "the cached rows are sliced again, not re-rendered");
+});
+
+it("wraps a long assistant failure in full at the reading width", () => {
+	const error = `429 Usage limit reached for 5 hour. The limit resets at 03:53. Your draft and history stay. ${"detail ".repeat(20)}`;
+	const message = assistant("fail", [{ type: "text", text: "Partial answer" }]).model?.[0] as AssistantMessage;
+	message.stopReason = "error"; message.errorMessage = error;
+	const text = screen(new AgentConversation([{ id: "fail", kind: "pi.assistant", model: [message] }], "/work", tui, false, false), 120).replace(/\s+/gu, " ");
+	assert.ok(text.includes("429 Usage limit reached for 5 hour."));
+	assert.ok(text.includes("Your draft and history stay."));
+	assert.equal(text.match(/429 Usage limit reached/gu)?.length, 1, "the failure appears once in the body");
+});
+
+it("separates blocks with one blank row and owns the reading margin", () => {
 	const entries: AgentConversationEntry[] = [
 		user("u", "The task"),
 		assistant("a", [{ type: "text", text: "Working on it." }]),
 		result("t", "missing-call", "example_tool", "kept output"),
 	];
-	const native = new Container();
-	native.addChild(new UserMessageComponent("The task", getMarkdownTheme()));
-	native.addChild(new AssistantMessageComponent(entries[1].model?.[0] as AssistantMessage, true, getMarkdownTheme(), "Thinking..."));
+	const conversation = new AgentConversation(entries, "/work", tui, false, false);
+	for (const width of [30, 80, 120]) {
+		const text = conversation.render(width).lines.map(stripVTControlCharacters);
+		for (const line of text) if (line.trim()) assert.equal(line.slice(0, 2), "  ", `margin at ${width}`);
+		const task = text.findIndex((line) => line.includes("The task"));
+		const working = text.findIndex((line) => line.includes("Working on it."));
+		const kept = text.findIndex((line) => line.includes("kept output"));
+		assert.ok(task >= 0 && working > task && kept > working);
+		assert.equal(working - task, 2, "one content line and one gap");
+		assert.equal(kept - working, 2, "one content line and one gap");
+		assert.equal(text.slice(task + 1, working).filter((line) => line.trim()).length, 0);
+		assert.equal(text.slice(working + 1, kept).filter((line) => line.trim()).length, 0);
+	}
 	const tool = new ToolExecutionComponent("example_tool", "missing-call", undefined, { showImages: false }, createDashboardToolDefinitions("/work")("example_tool", false), tui, "/work");
 	tool.updateResult({ content: [{ type: "text", text: "kept output" }], isError: false });
-	native.addChild(tool);
-	for (const width of [30, 80, 120]) assert.deepEqual(new AgentConversation(entries, "/work", tui, false, false).render(width).lines, native.render(width));
 	const rows = tool.render(80);
-	assert.equal(rows[0], "");
-	assert.equal(visibleWidth(rows[1]), 80);
-	assert.equal(stripVTControlCharacters(rows[1]).trim(), "");
-	assert.notEqual(rows[1], stripVTControlCharacters(rows[1]), "background padding stays colored");
-	const bottom = rows.at(-1); assert.ok(bottom);
-	assert.equal(visibleWidth(bottom), 80);
+	assert.equal(rows[0], "", "Pi's own leading spacer stays at component level");
+	assert.doesNotMatch(rows.join("\n"), /\x1b\[48;/u, "no tool background");
+	const keptLine = conversation.render(80).lines.find((line) => stripVTControlCharacters(line).includes("kept output"));
+	assert.ok(keptLine);
+	assert.doesNotMatch(keptLine, /\x1b\[48;/u, "the summary carries no filled block");
 });
 
 it("recovers the first task from the session summary when the bounded transcript omits it", () => {
@@ -235,7 +277,12 @@ it("recovers the first task from the session summary when the bounded transcript
 	const synthetic = firstTaskEntry({ entries: late, partial: true }, { firstMessage: "Run the checks" });
 	assert.ok(synthetic);
 	const message = synthetic.model?.[0] as { content?: unknown } | undefined;
-	assert.equal(message?.content, "Historical first input:\nRun the checks");
+	assert.equal(message?.content, "First task · Run the checks");
+	const long = firstTaskEntry({ entries: late, partial: true }, { firstMessage: `# Task: review the parser\n\nRead ${"x".repeat(400)}` });
+	assert.equal((long?.model?.[0] as { content?: unknown } | undefined)?.content, "First task · Task: review the parser", "one line, without heading marks or the rest of the task");
+	const wide = firstTaskEntry({ entries: late, partial: true }, { firstMessage: "y".repeat(300) });
+	const wideText = String((wide?.model?.[0] as { content?: unknown } | undefined)?.content ?? "");
+	assert.ok(wideText.endsWith("…") && Array.from(wideText).length === "First task · ".length + 160, "a long first line is bounded");
 	assert.equal(firstTaskEntry({ entries: late, partial: true }, undefined), undefined);
 	assert.equal(firstTaskEntry({ entries: late, partial: false }, { firstMessage: "Run the checks" }), undefined);
 	assert.equal(
@@ -281,7 +328,7 @@ for (const input of taskInputs) {
 			const text = stripVTControlCharacters(lines.join("\n"));
 			assert.ok(lines.every((line) => visibleWidth(line) <= width));
 			assert.match(text, /What changed since yesterday\?/);
-			assert.doesNotMatch(text, /Host request context|Task content|requester-sentinel|recipient-sentinel|mode:.*report|Historical first input/);
+			assert.doesNotMatch(text, /Host request context|Task content|requester-sentinel|recipient-sentinel|mode:.*report|First task ·/);
 			assert.equal(text.match(/What changed since yesterday\?/g)?.length, 1);
 			if (input.image) assert.match(text, /\[Image\]/);
 		}
@@ -384,6 +431,33 @@ it("a committed result replaces its partial on the existing committed call", () 
 
 const click = (width: number, height: number, y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
 
+function checkCodemodeCase(width: number, expanded: boolean, isError: boolean, partial: boolean, args: { code: string }, details: unknown, definition: ToolDefinition): void {
+	const call = assistant("call", [{ type: "toolCall", id: "outer", name: "codemode", arguments: args }]);
+	const completed = result(partial ? "live:tool:outer" : "result", "outer", "codemode", "", isError);
+	const message = completed.model?.[0]; assert.ok(message?.role === "toolResult");
+	message.content = [{ type: "text", text: "Script failed\nWall time 1.0 seconds\nOutput:\n" }, { type: "text", text: Array.from({ length: 9 }, (_, i) => `output ${i}`).join("\n") }];
+	message.details = details as typeof message.details;
+	const native = new ToolExecutionComponent("codemode", "outer", args, { showImages: false }, { ...definition, renderShell: "self" }, tui, "/work");
+	native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
+	native.updateResult(message, partial);
+	const conversation = new AgentConversation([call, completed], "/work", tui, expanded, false);
+	const rendered = conversation.render(width).lines;
+	const visible = stripVTControlCharacters(rendered.join("\n"));
+	assert.doesNotMatch(rendered.join("\n"), /\x1b\[48;/u, "no outer tool block");
+	if (expanded) {
+		if (!partial) assert.match(visible, /output 8/u);
+		const last = stripVTControlCharacters(native.render(width).join("\n")).split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+		assert.ok(last && visible.includes(last), "expanded output keeps the self-shell native rows");
+	} else {
+		assert.equal(rendered.filter((line) => line.trim().length > 0).length, 1);
+		assert.match(visible, /→ Script failed/u, "the outcome stays visible");
+		if (width >= 80) assert.match(visible, /codemode · console/u);
+	}
+	const settled = { ...completed, id: "result" };
+	conversation.update([call, settled]);
+	native.updateResult(message, false);
+}
+
 for (const partial of [false, true]) it(`matches a real native codemode component with current details: partial=${partial}`, () => {
 	const definitions: ToolDefinition[] = [];
 	const standIn = { registerTool: ((definition: ToolDefinition) => { definitions.push(definition); }) as ExtensionAPI["registerTool"] };
@@ -395,48 +469,24 @@ for (const partial of [false, true]) it(`matches a real native codemode componen
 	assert.ok([undefined, "default", "self"].includes(definitions[0].renderShell));
 	const args = { code: Array.from({ length: 14 }, (_, i) => `console.log("code line ${i}");`).join("\n") };
 	const details = { calls: Array.from({ length: 12 }, (_, i) => ({ name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", partial ? "running" : "cancelled"][i % 4], id: i + 1, args: "a".repeat(200), error: "failure", durationMs: i * 100 })), fullOutputPath: "output.txt" };
-	for (const width of [30, 80, 120]) for (const expanded of [false, true]) for (const isError of [false, true]) {
-		const call = assistant("call", [{ type: "toolCall", id: "outer", name: "codemode", arguments: args }]);
-		const completed = result(partial ? "live:tool:outer" : "result", "outer", "codemode", "", isError);
-		const message = completed.model?.[0]; assert.ok(message?.role === "toolResult");
-		message.content = [{ type: "text", text: "Script failed\nWall time 1.0 seconds\nOutput:\n" }, { type: "text", text: Array.from({ length: 9 }, (_, i) => `output ${i}`).join("\n") }];
-		message.details = details;
-		const native = new ToolExecutionComponent("codemode", "outer", args, { showImages: false }, definitions[0], tui, "/work");
-		native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
-		native.updateResult(message, partial);
-		const conversation = new AgentConversation([call, completed], "/work", tui, expanded, false);
-		const rendered = conversation.render(width).lines;
-		assert.deepEqual(rendered, native.render(width));
-		const after = assistant("after", [{ type: "text", text: "Adjacent answer" }]);
-		const adjacent = new Container();
-		adjacent.addChild(new UserMessageComponent("Adjacent question", getMarkdownTheme()));
-		adjacent.addChild(native);
-		adjacent.addChild(new AssistantMessageComponent(after.model?.[0] as AssistantMessage, true, getMarkdownTheme(), "Thinking..."));
-		const withAdjacent = new AgentConversation([user("before", "Adjacent question"), call, completed, after], "/work", tui, expanded, false);
-		assert.deepEqual(withAdjacent.render(width).lines, adjacent.render(width));
-		assert.match(stripVTControlCharacters(rendered.join("\n")), /lookup/u);
-		assert.equal(details.calls[0].args.length, 200);
-		const settled = { ...completed, id: "result" };
-		conversation.update([call, settled]);
-		withAdjacent.update([call, settled]);
-		native.updateResult(message, false);
-	}
+	for (const width of [30, 80, 120]) for (const expanded of [false, true]) for (const isError of [false, true]) checkCodemodeCase(width, expanded, isError, partial, args, details, definitions[0]);
+	assert.equal(details.calls[0].args.length, 200);
 });
 
 it("retains whole-card and pending-card choices through result arrival and changed arguments", () => {
 	const state = agentState(createDashboardState(), "one").view;
 	let call = assistant("call", [{ type: "toolCall", id: "outer", name: "example_tool", arguments: { topic: "first" } }]);
-	const conversation = new AgentConversation([call], "/work", tui, false, false, undefined, state);
+	const conversation = new AgentConversation([user("task", "The task"), call], "/work", tui, false, false, undefined, state);
 	let document = conversation.render(80);
-	assert.equal(conversation.handleMouse(click(80, document.lines.length, 0)), undefined, "outer spacer stays outside the card");
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, 1)));
+	assert.equal(conversation.handleMouse(click(80, document.lines.length, 1)), undefined, "the shared gap row belongs to no block");
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, 2)), "the card row toggles");
 	assert.equal(state.toolExpanded.get("outer"), true);
 	call = assistant("call", [{ type: "toolCall", id: "outer", name: "example_tool", arguments: { topic: "changed" } }]);
 	conversation.update([call, result("result", "outer", "example_tool", Array.from({ length: 13 }, (_, i) => `row ${i}`).join("\n"))]);
 	document = conversation.render(80);
 	assert.match(stripVTControlCharacters(document.lines.join("\n")), /row 12/u);
 	assert.match(stripVTControlCharacters(document.lines.join("\n")), /topic: changed/u);
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, 1)));
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, 2)), "the card row toggles back");
 	assert.equal(state.toolExpanded.get("outer"), false);
 	assert.doesNotMatch(screen(conversation), /row 12/u);
 });
@@ -513,15 +563,15 @@ it("native thinking clicks retain choices only on the actual assistant instance"
 		const entries = [{ id: "runs", kind: "pi.assistant", model: [message, message] }];
 		const conversation = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
 		const document = conversation.render(80);
-		const labels = document.lines.flatMap((line, index) => stripVTControlCharacters(line).includes("Thinking...") ? [index] : []);
+		const labels = document.lines.flatMap((line, index) => stripVTControlCharacters(line).includes("▸ Thinking") ? [index] : []);
 		assert.equal(labels.length, 4);
 		assert.ok(conversation.handleMouse(click(80, document.lines.length, labels[3])));
-		assert.equal(screen(conversation).match(/Thinking\.\.\./gu)?.length, 3);
+		assert.equal(screen(conversation).match(/▸ Thinking/gu)?.length, 3);
 		assert.match(screen(conversation), /second/u);
 		const rebuilt = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
-		assert.equal(screen(rebuilt).match(/Thinking\.\.\./gu)?.length, 4);
+		assert.equal(screen(rebuilt).match(/▸ Thinking/gu)?.length, 4);
 		conversation.update([{ ...entries[0], data: { revision: 2 } }]);
-		assert.equal(screen(conversation).match(/Thinking\.\.\./gu)?.length, 3);
+		assert.equal(screen(conversation).match(/▸ Thinking/gu)?.length, 3);
 	}
 });
 
@@ -532,7 +582,7 @@ it("dashboard codemode cards fall back to standard presentation when capture fai
 		const code = 'import assert from "node:assert/strict"; import { mock } from "node:test"; import * as pi from "@earendil-works/pi-coding-agent"; import { stripVTControlCharacters } from "node:util";' +
 			'pi.initTheme("dark"); mock.module("@earendil-works/pi-coding-agent", { namedExports: { ...pi, createCodemodeExtension: () => () => {} } });' +
 			'const { AgentConversation } = await import(' + JSON.stringify(new URL("./dashboard-conversation.ts", import.meta.url).href) + ');' +
-			'const view = new AgentConversation(' + JSON.stringify(entries) + ', "/work", { requestRender() {} }, false, false); const text = stripVTControlCharacters(view.render(80).lines.join("\\n")); assert.match(text, /codemode code=/); assert.match(text, /row 10/); assert.doesNotMatch(text, /row 11/); assert.match(text, /expand/);';
+			'const view = new AgentConversation(' + JSON.stringify(entries) + ', "/work", { requestRender() {} }, false, false); const text = stripVTControlCharacters(view.render(80).lines.join("\\n")); assert.match(text, /codemode · return 42; → row 1/); assert.doesNotMatch(text, /row 2/); assert.equal(text.split("\\n").filter((line) => line.includes("codemode")).length, 1);';
 		const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--input-type=module", "-e", code], { encoding: "utf8", timeout: 30000, env: { ...process.env, PI_AGENT_DIR: join(root, "agent"), PI_AGENT_SESSIONS_DIR: join(root, "sessions") } });
 		assert.equal(child.status, 0, child.stderr || String(child.error));
 	} finally { rmSync(root, { recursive: true, force: true }); }
@@ -553,12 +603,12 @@ it("native renderer render requests clear transcript string and height caches", 
 });
 
 
-it("custom child clicks leave card choices untouched and native toggles call the setter once", (t) => {
+it("custom child clicks leave card choices untouched and a plain card click records one choice", (t) => {
 	let childClicks = 0;
 	const renderer: ToolRenderers = { renderCall: () => new MouseRegion(new Text("child action"), () => { childClicks++; return { handled: true }; }) };
 	const state = agentState(createDashboardState(), "one").view;
 	const call = assistant("call", [{ type: "toolCall", id: "custom", name: "custom", arguments: {} }]);
-	const conversation = new AgentConversation([call, result("done", "custom", "custom", "result action")], "/work", tui, false, false, undefined, state, () => renderer);
+	const conversation = new AgentConversation([call, result("done", "custom", "custom", "result action")], "/work", tui, true, false, undefined, state, () => renderer);
 	let document = conversation.render(80);
 	const setters = t.mock.method(ToolExecutionComponent.prototype, "setExpanded");
 	const y = document.lines.findIndex((line) => line.includes("child action"));
@@ -568,8 +618,7 @@ it("custom child clicks leave card choices untouched and native toggles call the
 	assert.equal(state.toolExpanded.size, 0);
 	document = conversation.render(80);
 	assert.ok(conversation.handleMouse(click(80, document.lines.length, document.lines.findIndex((line) => line.includes("result action")))));
-	assert.equal(setters.mock.callCount(), 1);
-	assert.equal(state.toolExpanded.get("custom"), true);
+	assert.equal(state.toolExpanded.get("custom"), false);
 });
 
 it("custom renderers receive sanitized initial and updated display data on the same native card", (t) => {
@@ -587,7 +636,7 @@ it("custom renderers receive sanitized initial and updated display data on the s
 		const message = done.model?.[0]; assert.ok(message?.role === "toolResult"); message.details = unsafe;
 		return [call, done];
 	};
-	const conversation = new AgentConversation(entries(1), "/work", tui, false, false, undefined, undefined, () => renderer);
+	const conversation = new AgentConversation(entries(1), "/work", tui, true, false, undefined, undefined, () => renderer);
 	conversation.render(80);
 	const native = resultUpdates.mock.calls.at(-1)?.this;
 	assert.match(JSON.stringify(received), /safe1/);
@@ -605,7 +654,7 @@ it("renderer invalidation refreshes lines and heights and remains safe after evi
 	let text = "before";
 	const renderer: ToolRenderers = { renderCall(_args, _theme, context) { invalidate = context.invalidate; return new Text(text, 0, 0); } };
 	const call = assistant("call", [{ type: "toolCall", id: "custom", name: "custom", arguments: {} }]);
-	const conversation = new AgentConversation([call], "/work", tui, false, false, undefined, undefined, () => renderer);
+	const conversation = new AgentConversation([call], "/work", tui, true, false, undefined, undefined, () => renderer);
 	const before = conversation.render(80).lines.length;
 	text = "after\nsecond\nthird"; invalidate?.();
 	assert.match(screen(conversation), /after\s+second\s+third/);
@@ -615,18 +664,18 @@ it("renderer invalidation refreshes lines and heights and remains safe after evi
 	assert.deepEqual(conversation.render(80).lines, []);
 });
 
-it("global toggles reset every native instance without replacing components", (t) => {
+it("global toggles clear every native choice without replacing components", (t) => {
 	const state = agentState(createDashboardState(), "one").view;
 	const entries = [assistant("first", [{ type: "thinking", thinking: "first reason" }, { type: "toolCall", id: "one", name: "custom", arguments: {} }]), assistant("second", [{ type: "thinking", thinking: "second reason" }, { type: "toolCall", id: "two", name: "custom", arguments: {} }])];
 	const updates = t.mock.method(AssistantMessageComponent.prototype, "updateContent");
 	const conversation = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
 	const instances = new Set(updates.mock.calls.map((call) => call.this));
 	let document = conversation.render(80);
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, document.lines.findIndex((line) => line.includes("Thinking...")))));
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, document.lines.findIndex((line) => line.includes("▸ Thinking")))));
 	assert.match(screen(conversation), /first reason/);
 	const hidden = t.mock.method(AssistantMessageComponent.prototype, "setHideThinkingBlock");
 	conversation.setShowThinking(false);
-	assert.equal(hidden.mock.callCount(), 2);
+	assert.equal(hidden.mock.callCount(), 2, "the global change reaches every retained assistant");
 	assert.deepEqual(new Set(hidden.mock.calls.map((call) => call.this)), instances);
 	assert.doesNotMatch(screen(conversation), /first reason|second reason/);
 	conversation.setShowThinking(true);
@@ -638,7 +687,7 @@ it("global toggles reset every native instance without replacing components", (t
 	conversation.setExpanded(false);
 	assert.equal(expanded.mock.callCount(), 2);
 	assert.equal(state.toolExpanded.size, 0);
-	assert.deepEqual(new Set(updates.mock.calls.map((call) => call.this)), instances);
+	assert.deepEqual(new Set(updates.mock.calls.map((call) => call.this)), instances, "no assistant instance is replaced");
 });
 
 
@@ -665,7 +714,7 @@ it("a result-first builtin acquires native presentation when its call arrives", 
 	const conversation = new AgentConversation([done], "/work", tui, false, false, undefined, state);
 	let document = conversation.render(80);
 	const unmatched = renders.mock.calls.at(-1)?.this;
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, 2)));
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, 0)));
 	assert.equal(state.toolExpanded.get("read-call"), true);
 	const call = assistant("call", [{ type: "toolCall", id: "read-call", name: "read", arguments: { path: "source.ts", offset: 3, limit: 2 } }]);
 	conversation.update([call, done]);
@@ -688,7 +737,7 @@ it("a result-first custom card keeps its instance when the call adds no renderer
 	const args = t.mock.method(ToolExecutionComponent.prototype, "updateArgs");
 	const renderer: ToolRenderers = { renderCall: () => new Text("published card") };
 	const done = result("done", "published", "custom", "output");
-	const conversation = new AgentConversation([done], "/work", tui, false, false, undefined, undefined, () => renderer);
+	const conversation = new AgentConversation([done], "/work", tui, true, false, undefined, undefined, () => renderer);
 	const instance = updates.mock.calls.at(-1)?.this;
 	conversation.update([assistant("call", [{ type: "toolCall", id: "published", name: "custom", arguments: { topic: "known" } }]), done]);
 	assert.equal(args.mock.calls.at(-1)?.this, instance);
@@ -710,9 +759,15 @@ it("passes settled native codemode rows unchanged and preserves final nested vis
 		const conversation = new AgentConversation([call, entry], "/work", tui, expanded, false);
 		assert.deepEqual(updates.mock.calls.at(-1)?.arguments, [message, false]);
 		const text = screen(conversation, width);
-		assert.match(text, /✓ lookup.*4ms/u);
-		assert.match(text, /✗ failed/u);
-		assert.match(text, /⊘ stopped/u);
+		if (expanded) {
+			assert.match(text, /✓ lookup.*4ms/u);
+			assert.match(text, /✗ failed/u);
+			assert.match(text, /⊘ stopped/u);
+		} else {
+			// A narrow line truncates the argument first, so the outcome stays visible.
+			assert.match(text, width >= 80 ? /codemode · await tools\.lookup\(\{\}\); → Script/u : /codemode · await t.*… → Script completed/u);
+			assert.doesNotMatch(text, /✓ lookup|✗ failed|⊘ stopped/u);
+		}
 		assert.doesNotMatch(text, /\$/u);
 	}
 	assert.deepEqual(entry, original);

@@ -15,8 +15,8 @@ for (const [width, height, compact] of [
 			const text = lines.join("\n");
 			assert.match(text, new RegExp(`▌ ● Agent${selected}`));
 			assert.match(text, /[↑↓↕] \d+ more/);
-			if (selected > 0) assert.match(text, new RegExp(`Agent${selected - 1}`));
-			if (selected < 99) assert.match(text, new RegExp(`Agent${selected + 1}`));
+			if (!compact && selected > 0) assert.match(text, new RegExp(`Agent${selected - 1}`));
+			if (!compact && selected < 99) assert.match(text, new RegExp(`Agent${selected + 1}`));
 			assert.ok(lines.every((line) => visibleWidth(line) <= width));
 		}
 	});
@@ -26,7 +26,7 @@ it("selected exact-time blocks close their styles before the adjacent pane", () 
 	colored.bold = (text: string) => `\x1b[1m${text}\x1b[22m`;
 	const lines = rosterLines([row("one", { name: "Recipient" })], "one", 29, 10, 0, colored, false, { exactTime: true });
 	const selected = lines.filter((line) => line.includes("▌"));
-	assert.equal(selected.length, 3);
+	assert.equal(selected.length, 2, "two painted lines; the spacing line below stays plain");
 	assert.ok(selected.every((line) => line.endsWith("\x1b[0m")));
 });
 
@@ -59,7 +59,7 @@ it("starting agents show their launch state without a group header", () => {
 	const starting = row("starting", { state: "starting", owner: "unknown" });
 	const snapshot = { observedAt: 0, sessions: [row("done", { state: "done" }), { ...starting, modifiedAt: 1 }] };
 	assert.equal(dashboardRecords(snapshot, "")[0]?.id, starting.id);
-	assert.match(rosterLines([starting], starting.id, 80, 10, 0, theme, false).join("\n"), /◌ starting[\s\S]*Starting agent/);
+	assert.match(rosterLines([starting], starting.id, 80, 10, 0, theme, false).join("\n"), /◌ starting/);
 	assert.equal(rosterTotals(snapshot), "1 working · $0.84 retained");
 	assert.match(dashboardText(snapshot), /◌ Starting/);
 	assert.doesNotMatch(dashboardText(snapshot), /Starting · stored/);
@@ -72,7 +72,9 @@ it("unknown row costs stay unknown and totals retain the known lower bound", () 
 			row("unknown", { cost: unknown }),
 		];
 		const snapshot = { observedAt: 0, sessions: rows };
-		assert.match(rosterLines(rows, "unknown", 80, 4, 0, theme, true).join("\n"), /unknown.*\$\?/);
+		const lines = rosterLines(rows, "unknown", 80, 4, 0, theme, true);
+		assert.match(lines[0] ?? "", /unknown/);
+		assert.match(lines[1] ?? "", /\$\?/);
 		assert.equal(rosterTotals(snapshot), "3 working · $1.50+ retained");
 		assert.doesNotMatch(dashboardText(snapshot), /NaN|Infinity/);
 		assert.equal(
@@ -105,13 +107,16 @@ it("roster order follows recent activity across states and breaks ties by identi
 	assert.deepEqual(dashboardRecords({ observedAt: 0, sessions: rows }, "test model").length, 4);
 	assert.match(dashboardText({ observedAt: 0, sessions: rows }), /\$0.42/);
 });
-it("narrow roster includes selection, cost, state, last-change time, and shown coverage", () => {
+it("a narrow strip keeps two content lines, one gap and the hidden-row count", () => {
 	const rows = Array.from({ length: 100 }, (_, index) => row(String(index), { name: "界".repeat(100) }));
 	const lines = rosterLines(rows, "50", 80, 4, 60000, theme, true);
 	assert.equal(lines.length, 4);
 	assert.ok(lines.some((line) => line.startsWith("▌")));
-	assert.match(lines.join("\n"), /Responding.*\$0.42.*1m ago/);
-	assert.match(lines[3], /↕ 97 more/);
+	assert.match(lines.join("\n"), /model high · \$0.42/);
+	assert.match(lines.join("\n"), /1m ago/);
+	assert.doesNotMatch(lines.join("\n"), /Responding/);
+	assert.equal(lines[2]?.trim(), "");
+	assert.match(lines[3], /↕ 99 more/);
 	assert.ok(lines.every((line) => visibleWidth(line) <= 80));
 });
 it("roster ages use coarse minutes and absolute dates stay fixed for every state", () => {
@@ -146,7 +151,7 @@ it("wide roster budgets flat blocks and timestamps before it clips the selected 
 	const lines = rosterLines(rows, "earlier", 64, 18, now, theme, false);
 	assert.match(lines.join("\n"), /▌ ✓ earlier/);
 	assert.match(lines.join("\n"), /yesterday/);
-	assert.match(lines.join("\n"), /5 loaded/);
+	assert.match(lines.join("\n"), /5 agents/);
 	assert.equal(lines.filter((line) => /\$0.42/.test(line)).length, 5);
 });
 it("timestamp hit areas do not use a name that impersonates an Updated label", () => {
@@ -205,20 +210,28 @@ it("provider errors read as plain words", () => {
 	assert.equal(attentionReason(row("x", { state: "failed", error: '429: {"message":"Usage limit"}' })), "429 Usage limit");
 });
 
-it("flat roster keeps model second, failure text third, and hit areas on each block", () => {
+it("failed rows keep only their glyph, muted model facts and one attention count", () => {
+	const colored = Object.create(theme) as typeof theme;
+	colored.fg = (color, text) => `\x1b[${color === "muted" ? 90 : color === "dim" ? 37 : 31}m${text}\x1b[39m`;
+	const lines = rosterLines([row("failed", { state: "failed", error: "429 Usage limit reached" })], undefined, 80, 10, 0, colored, false);
+	assert.match(lines[0] ?? "", /!/);
+	assert.doesNotMatch(lines.join("\n"), /429|Usage limit/);
+	assert.ok((lines[1] ?? "").includes("\x1b[90mmodel high"), "model and cost use muted");
+	assert.match(lines[3] ?? "", /1 agent · 1 need attention/);
+});
+
+it("flat roster keeps the model second, leaves failure text to the pane, and keeps hit areas on each block", () => {
 	const rows = [row("work"), row("done", { state: "done", latestReply: "Result ready" }), row("failed", { state: "failed", error: "quota limit" })];
 	for (const compact of [false, true]) {
 		const hits: Array<[string, number, number]> = [];
 		const times: Array<[string, number]> = [];
 		const lines = rosterLines(rows, "failed", 100, 15, 0, theme, compact, { row: (item, line, height) => hits.push([item.id, line, height]), timestamp: (item, line) => times.push([item.id, line]) });
-		assert.deepEqual(hits, rows.map((item, index) => [item.id, index * (compact ? 1 : 3), compact ? 1 : 3]));
-		assert.deepEqual(times, rows.map((item, index) => [item.id, index * (compact ? 1 : 3)]));
+		assert.deepEqual(hits, rows.map((item, index) => [item.id, index * 3, 3]));
+		assert.deepEqual(times, rows.map((item, index) => [item.id, index * 3]));
 		assert.doesNotMatch(lines.join("\n"), /Working ·|Attention ·|Today ·|Yesterday ·|Earlier ·|Work failed:|model_error/);
-		assert.match(lines.join("\n"), /quota limit/);
-		if (!compact) {
-			assert.match(lines[7], /model high/);
-			assert.match(lines[8], /quota limit/);
-		}
+		assert.doesNotMatch(lines.join("\n"), /quota limit/, "the failure reason belongs in Details");
+		assert.match(lines[7], /model high · \$0\.42/);
+		assert.equal(lines[8]?.trim(), "", "a spacing line follows each block");
 	}
 });
 
@@ -233,7 +246,7 @@ for (const exactTime of [false, true]) {
 			row("echo", { name: "UniqueEcho", modifiedAt: now - 4000, state: "starting" }),
 		] }, "");
 		for (const compact of [false, true]) {
-			const shown = compact ? rows.slice(0, 3) : rows;
+			const shown = compact ? rows.slice(0, 1) : rows;
 			const hits: Array<[string, number, number]> = [];
 			const timeHits: Array<[string, number]> = [];
 			const lines = rosterLines(shown, "alpha", 80, compact ? 4 : 16, now, theme, compact, { exactTime, row: (item, line, height) => hits.push([item.id, line, height]), timestamp: (item, line) => timeHits.push([item.id, line]) });
@@ -243,11 +256,11 @@ for (const exactTime of [false, true]) {
 				assert.ok(name);
 				assert.equal(lines.filter((line) => line.includes(name)).length, 1, item.id);
 			}
-			assert.deepEqual(hits, shown.map((item, index) => [item.id, index * (compact ? 1 : 3), compact ? 1 : 3]));
-			assert.deepEqual(timeHits, shown.map((item, index) => [item.id, index * (compact ? 1 : 3) + (exactTime && !compact ? 2 : 0)]));
+			assert.deepEqual(hits, shown.map((item, index) => [item.id, index * 3, 3]));
+			assert.deepEqual(timeHits, shown.map((item, index) => [item.id, index * 3 + (exactTime ? 1 : 0)]));
 			assert.ok(lines.every((line) => visibleWidth(line) <= 80));
 			assert.doesNotMatch(lines.join("\n"), /Working ·|Attention ·|Today ·/);
-			if (exactTime) assert.match(lines[compact ? 0 : 2], /Oct 5, 2026, 1:41 PM/);
+			if (exactTime) assert.match(lines[1], /Oct 5, 2026, 1:41 PM/);
 		}
 	});
 }

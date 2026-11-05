@@ -277,14 +277,16 @@ export class ConversationView {
 		this.state.follow = false;
 		this.scroll.scrollTo(viewport.top, { disableFollow: true });
 		this.state.scroll = viewport.top;
-		this.state.anchor = { id: item.id, offset: Math.min(viewport.top - item.line, item.targetOffset ?? Infinity) };
+		this.state.anchor = { id: item.id, offset: Math.max(0, Math.min(viewport.top - item.line, item.targetOffset ?? Infinity)) };
 		this.restored = false;
 		this.viewport = undefined;
 		return { handled: true, render: true };
 	}
 	page(delta: number): void {
 		this.scroll.scrollBy(delta);
-		if (delta > 0 && this.atBottom()) this.scroll.scrollToEnd();
+		// The scroll-status rule shows only away from the end and takes one row, so a page down that starts
+		// under the rule stops up to two rows short of the end. Those rows are on screen at the end anyway.
+		if (delta > 0 && this.scroll.scrollTop >= this.contentHeight - this.scroll.viewportHeight - 2) this.scroll.scrollToEnd();
 		this.save();
 	}
 	position(): { first: number; last: number; total: number; end: boolean; estimated: boolean } {

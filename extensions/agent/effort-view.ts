@@ -1,19 +1,21 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { KeybindingsManager } from "@earendil-works/pi-tui";
-import { matchesKey, wrapTextWithAnsi, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { matchesKey, visibleWidth, wrapTextWithAnsi, truncateToWidth, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import type { EffortAwareness } from "./effort-awareness.ts";
-import type { RelatedEffort, PrimaryIntentClaim } from "./effort-presence.ts";
+import type { RelatedEffort } from "./effort-presence.ts";
 import type { DashboardResult } from "./dashboard.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
 import { DashboardMouse } from "./dashboard-mouse.ts";
 import { ActionInventory, type ScreenAction } from "./action-inventory.ts";
-import { dashboardHeading, dashboardSelection, fitLine } from "./dashboard-layout.ts";
+import { dashboardHeading, dashboardSelection, fitLine, readingGeometry } from "./dashboard-layout.ts";
 import { dashboardTime } from "./dashboard-time.ts";
 import { memberDeclarationLines, threadPage, type Collaborate } from "./thread-data.ts";
 import type { CollaborationPage } from "./collaboration.ts";
 
 const plain = (text: string) => cleanDashboardText(text).replace(/\s+/g, " ").trim();
+/** Clip with one ellipsis character; the generic line fit must never add its own three dots. */
+const clip = (text: string, width: number) => truncateToWidth(text, Math.max(1, width), "…");
 /** A session identity short enough to read: long identities keep their first eight characters. */
 const shortIdentity = (id: string) => (id.length > 12 ? id.slice(0, 8) : id);
 interface EffortViewOptions {
@@ -35,6 +37,8 @@ export class EffortView {
 	private readonly inventory = new ActionInventory(() => this.actions(), (reason) => { this.notice = reason; });
 	/** First visible row of each list. Wheel scrolling moves these; selection and the message recipient stay put. */
 	private listStart: { efforts?: number; threads?: number } = {};
+	/** Whether the current layout shows the Active threads section; hidden threads are not navigable. */
+	private threadsShown = true;
 	private readonly composer: AgentComposer;
 	private view?: EffortAwareness;
 	private selected?: string;
@@ -60,6 +64,15 @@ export class EffortView {
 	private observedAt = Date.now();
 	private exactTime = false;
 	private scanOpen = false;
+	/** The complete detail view; false shows the short key and value groups. */
+	private detailsOpen = false;
+	/** A read failure for the effort list, shown in the list footer. */
+	private loadError = "";
+	/** Derived detail lines, keyed by width, disclosure state, content revision and the minute. */
+	private detailVersion = 0;
+	private detailCache?: { key: string; lines: string[] };
+	/** One cached row block per effort or thread, keyed by content, width and selection. */
+	private readonly rowCache = new Map<string, { key: string; lines: string[] }>();
 	private readonly options: EffortViewOptions;
 	constructor(options: EffortViewOptions) {
 		this.options = options;
@@ -88,6 +101,7 @@ export class EffortView {
 		if (!thread) this.selected = id;
 		this.listStart = {};
 		this.offset = 0;
+		this.detailVersion++;
 		this.clearSelectionReads();
 		void this.readContact();
 	}
@@ -112,8 +126,10 @@ export class EffortView {
 			if (!threadPage(result) || result.thread.id !== threadId) throw new Error("invalid contact thread page");
 			this.contactPage = result;
 			this.contactNotice = "";
+			this.detailVersion++;
 		} catch (error) {
 			if (current()) this.contactNotice = `Contact declarations unavailable: ${plain(String(error).slice(0, 512))}`;
+			this.detailVersion++;
 		} finally {
 			this.contactPending = false;
 			this.contactFinished(current());
@@ -138,6 +154,7 @@ export class EffortView {
 		const current = () => this.active && !this.disposed && generation === this.generation && id === this.selected && !this.selectedThread;
 		this.observing = true;
 		this.observation = "Read-only observation…";
+		this.detailVersion++;
 		this.options.redraw();
 		try {
 			const result = await this.options.observeEffort(id);
@@ -146,8 +163,10 @@ export class EffortView {
 			if (/[\uD800-\uDBFF]$/.test(excerpt)) excerpt = excerpt.slice(0, -1);
 			this.observation = cleanDashboardText(excerpt) + (result.length > excerpt.length ? "\nObservation omitted by display bound; use agent_inspect for a bounded next read." : "");
 			if (!this.observation.trim()) this.observation = "No observation text returned; coverage unknown";
+			this.detailVersion++;
 		} catch (error) {
 			if (current()) this.observation = `Read-only observation unavailable: ${plain(String(error).slice(0, 512))}`;
+			this.detailVersion++;
 		} finally {
 			if (current()) { this.observing = false; this.options.redraw(); }
 		}
@@ -160,6 +179,8 @@ export class EffortView {
 			const view = await this.options.efforts();
 			if (this.disposed) return;
 			this.view = view;
+			this.loadError = "";
+			this.detailVersion++;
 			this.observedAt = Date.now();
 			if (!view.presence.efforts.some((row) => row.id === this.selected)) {
 				this.selected = view.presence.efforts[0]?.id;
@@ -169,7 +190,7 @@ export class EffortView {
 			this.mouse.reset();
 			void this.readContact();
 		} catch (error) {
-			if (!this.disposed) this.notice = `Related efforts unavailable: ${String(error)}`;
+			if (!this.disposed) this.loadError = `Related efforts unavailable: ${String(error)}`;
 		} finally {
 			this.pending = false;
 			if (!this.disposed) {
@@ -180,7 +201,8 @@ export class EffortView {
 	}
 	private row(): RelatedEffort | undefined { return this.view?.presence.efforts.find((row) => row.id === (this.composing ? this.target : this.selected)); }
 	private threads() { return (this.view?.threads.items ?? []).filter((row) => !row.closed).toSorted((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id)); }
-	private toggleScan(): void { this.scanOpen = !this.scanOpen; this.offset = 0; }
+	private toggleScan(): void { this.scanOpen = !this.scanOpen; this.detailsOpen = false; this.offset = 0; this.detailVersion++; }
+	private toggleDetails(): void { this.detailsOpen = !this.detailsOpen; this.scanOpen = false; this.offset = 0; this.detailVersion++; }
 	private back(): void {
 		if (this.scanOpen) this.toggleScan();
 		else if (this.composing) { this.composing = false; this.composer.focused = false; }
@@ -234,7 +256,7 @@ export class EffortView {
 		}
 	}
 	private move(delta: number): void {
-		const choices = [...(this.view?.presence.efforts ?? []).map((row) => ({ id: row.id, thread: false })), ...this.threads().map((row) => ({ id: row.id, thread: true }))];
+		const choices = [...(this.view?.presence.efforts ?? []).map((row) => ({ id: row.id, thread: false })), ...(this.threadsShown ? this.threads().map((row) => ({ id: row.id, thread: true })) : [])];
 		const index = choices.findIndex((row) => row.id === (this.selectedThread ?? this.selected) && row.thread === Boolean(this.selectedThread));
 		const next = choices[Math.max(0, Math.min(choices.length - 1, index + delta))];
 		if (!next) return;
@@ -259,6 +281,7 @@ export class EffortView {
 			{ id: "contact", label: "Open thread", keys: ["enter"], main: true, disabled: contactBlocked, run: () => this.contact() },
 			{ id: "message", label: "Message", keys: ["m", "tab"], main: true, disabled: messageBlocked, run: () => this.message() },
 			{ id: "observe", label: "Observe", keys: ["o"], main: true, disabled: observeBlocked, run: () => { void this.observe(); } },
+			{ id: "details", label: this.detailsOpen ? "Summary" : "Details", keys: ["d"], main: true, run: () => this.toggleDetails() },
 			{ id: "threads", label: "Threads", keys: ["t"], main: true, run: () => this.openThreads() },
 			{ id: "scan", label: this.scanOpen ? "Hide scan" : "Scan details", keys: ["c"], run: () => this.toggleScan() },
 			{ id: "time", label: this.exactTime ? "Relative times" : "Exact times", keys: ["i"], run: () => { this.exactTime = !this.exactTime; } },
@@ -268,7 +291,12 @@ export class EffortView {
 			{ id: "read-down", label: "Read down", keys: ["pageDown"], run: () => { this.offset += 5; } },
 		];
 	}
-	private backAction(): ScreenAction { return { id: "back", label: "Back", keys: ["escape"], run: () => this.back() }; }
+	/** The four primary controls of the selected-effort header, in order. */
+	private primaryActions(): ScreenAction[] {
+		const ids = ["contact", "message", "observe", "details"];
+		const actions = this.actions();
+		return ids.flatMap((id) => actions.find((action) => action.id === id) ?? []);
+	}
 	handleInput(data: string): void {
 		if (this.inventory.open) this.inventory.handleInput(data);
 		else if (matchesKey(data, "escape")) this.back();
@@ -280,107 +308,146 @@ export class EffortView {
 		const at = new Date(value).getTime();
 		return Number.isFinite(at) ? dashboardTime(at, this.exactTime, this.observedAt) : "unknown (invalid time)";
 	}
-	private claimLines(claim: PrimaryIntentClaim): string[] {
-		return [
-			this.options.theme.fg("muted", "Stated by this effort"),
-			`Purpose: ${plain(claim.purpose)}`,
-			`Integration: ${plain(claim.integration)}`,
-			`Operator direction (quoted): ${JSON.stringify(plain(claim.authority))}`,
-			`Scope: ${claim.scope.paths.map(plain).join(", ") || "no paths"} · ${claim.scope.branches.map(plain).join(", ") || "no branches"} · full machine gates: ${claim.scope.fullGate ? "declared" : "not declared"}`,
-			...(claim.contactThread ? [`Contact thread: ${plain(claim.contactThread)}`] : []),
-			this.time(claim.updatedAt),
-		];
-	}
-	private limitedClaimLines(row: RelatedEffort): string[] {
-		const purpose = this.declaredPurpose(row);
-		return [
-			this.options.theme.fg("muted", "Stated by this effort"),
-			...(purpose ? [`Purpose: ${plain(purpose)}`] : ["No stated purpose"]),
-			...(row.contactThreadClaim ? [`Contact thread: ${plain(row.contactThreadClaim)}`] : []),
-			...(row.intentUpdatedAt ? [this.time(row.intentUpdatedAt)] : []),
-			row.relationship === "machine" ? "Purpose-only view: no shared repository or cwd" : "No stated integration plan",
-		];
-	}
-	private threadDetails(): string[] {
-		const thread = this.threads().find((row) => row.id === this.selectedThread);
-		return thread ? [`Active thread: ${plain(thread.title)}`, `Purpose: ${plain(thread.purpose)}`, this.time(thread.updatedAt), "Enter reads its current frame and exchange in Threads."] : [];
-	}
-	private detailTime(): string | number | undefined {
-		if (this.selectedThread && !this.composing) return this.threads().find((row) => row.id === this.selectedThread)?.updatedAt;
-		const row = this.row();
-		return (row?.relationship !== "machine" ? row?.intentClaim?.updatedAt : undefined) ?? row?.intentUpdatedAt;
-	}
-	private hostFacts(row: RelatedEffort): string[] {
-		return [
-			`Status: ${row.liveness} · Related by ${row.relationship}`,
-			`Shared substrates: ${row.sharedSubstrates?.map(plain).join(", ") || "none declared"}`,
-			`Directory: ${plain(row.cwd)}`,
-			...(!this.declaredPurpose(row) && row.observedPurpose ? [`Observed purpose (${row.observedPurpose.source}): ${plain(row.observedPurpose.text)}`] : []),
-		];
+	/** The first sentence of a purpose, for titles and headers. */
+	private firstSentence(text: string): string {
+		const flat = plain(text);
+		const end = flat.search(/[.!?]\s/u);
+		return end > 0 ? flat.slice(0, end + 1) : flat;
 	}
 	private declaredPurpose(row: RelatedEffort): string | undefined {
 		return row.relationship === "machine" ? row.purposeClaim : row.intentClaim?.purpose ?? row.purposeClaim;
 	}
-	private purposePreview(row: RelatedEffort): string {
-		return this.declaredPurpose(row) || (row.observedPurpose ? `Observed purpose (${row.observedPurpose.source}): ${row.observedPurpose.text}` : "No purpose claim");
-	}
-	/** A recognisable title: the effort's name or declared purpose, then a short identity. */
+	/** A recognisable title: the purpose's first sentence, then a short identity. */
 	private effortTitle(row: RelatedEffort): string {
-		const title = row.name || this.declaredPurpose(row) || row.observedPurpose?.text;
-		return plain(title ? title.replace(/\s+/g, " ").trim() : `Session ${shortIdentity(row.id)}`);
+		const text = this.declaredPurpose(row) ?? row.observedPurpose?.text;
+		const title = text ? this.firstSentence(text).replace(/[.!?]$/u, "") : "";
+		return title || `Session ${shortIdentity(row.id)}`;
 	}
+	private relationOf(row: RelatedEffort): string {
+		return { cwd: "same folder", repository: "same repository", machine: "this machine" }[row.relationship as string] ?? row.relationship;
+	}
+	private lastUpdate(row: RelatedEffort): string | number {
+		return (row.relationship !== "machine" ? row.intentClaim?.updatedAt : undefined) ?? row.intentUpdatedAt ?? row.lastActivityAt ?? row.startedAt;
+	}
+	/** Line 2 of an effort row and of the detail header. */
 	private effortFacts(row: RelatedEffort): string {
-		const relation = { cwd: "same folder", repository: "same repository", machine: "this machine" }[row.relationship as string] ?? row.relationship;
-		return `${row.liveness} · ${relation} · ${shortIdentity(row.id)}`;
+		return `${row.liveness} · ${this.time(this.lastUpdate(row))}`;
 	}
-	private contactLines(): string[] {
+	private threadDetails(): string[] {
+		const thread = this.threads().find((row) => row.id === this.selectedThread);
+		return thread ? [`Active thread: ${plain(thread.title)}`, `Purpose: ${plain(thread.purpose)}`, this.time(thread.updatedAt), "Enter reads its current frame and exchange in Threads."] : [];
+	}	private contactSummary(): string {
 		const page = this.contactPage;
-		if (!page) return [this.contactNotice];
+		if (!page) return plain(this.contactNotice) || "Reading contact…";
+		const t = page.thread;
+		return `${plain(t.title)} · ${t.closed ? "Closed" : "Open"} · ${t.members.length} member${t.members.length === 1 ? "" : "s"}`;
+	}
+	/** The short default detail: Purpose, Integration when declared, Contact, Identity. */
+	private defaultGroups(row: RelatedEffort, includeIntegration: boolean): Array<[string, string]> {
+		const groups: Array<[string, string]> = [];
+		const purpose = this.declaredPurpose(row) ?? row.observedPurpose?.text;
+		if (purpose) groups.push(["Purpose", plain(purpose)]);
+		const claim = row.relationship === "machine" ? undefined : row.intentClaim;
+		if (includeIntegration && claim?.integration) groups.push(["Integration", plain(claim.integration)]);
+		if (this.contactId()) groups.push(["Contact", this.contactSummary()]);
+		groups.push(["Identity", row.id]);
+		return groups;
+	}
+	/** The complete detail, shown only on request. Machine peers keep their purpose-only view. */
+	private fullGroups(row: RelatedEffort): Array<[string, string]> {
+		const groups: Array<[string, string]> = [];
+		if (this.observation !== undefined) groups.push(["Observation", this.observation]);
+		const purpose = this.declaredPurpose(row);
+		if (purpose) groups.push(["Purpose", plain(purpose)]);
+		return [...groups, ...this.intentGroups(row), ...this.hostGroups(row), ...this.contactGroups()];
+	}
+	/** Carried intent, or the purpose-only view for a machine peer. */
+	private intentGroups(row: RelatedEffort): Array<[string, string]> {
+		const claim = row.relationship === "machine" ? undefined : row.intentClaim;
+		if (!claim) {
+			return [
+				...(row.contactThreadClaim ? ([["Contact thread", plain(row.contactThreadClaim)]] as Array<[string, string]>) : []),
+				["Purpose-only view", row.relationship === "machine" ? "No shared repository or cwd" : "No stated integration plan"],
+			];
+		}
+		return [
+			...(claim.integration ? ([["Integration", plain(claim.integration)]] as Array<[string, string]>) : []),
+			["Operator direction", JSON.stringify(plain(claim.authority))],
+			["Scope", `${claim.scope.paths.map(plain).join(", ") || "no paths"} · ${claim.scope.branches.map(plain).join(", ") || "no branches"} · full machine gates: ${claim.scope.fullGate ? "declared" : "not declared"}`],
+			...(claim.contactThread ? ([["Contact thread", plain(claim.contactThread)]] as Array<[string, string]>) : []),
+		];
+	}
+	private hostGroups(row: RelatedEffort): Array<[string, string]> {
+		return [
+			["Status", `${row.liveness} · ${this.relationOf(row)}`],
+			["Shared substrates", row.sharedSubstrates?.map(plain).join(", ") || "none declared"],
+			["Directory", plain(row.cwd)],
+			["Started", this.time(row.startedAt)],
+			...(row.lastActivityAt ? ([["Last recorded activity", this.time(row.lastActivityAt)]] as Array<[string, string]>) : []),
+		];
+	}
+	private contactGroups(): Array<[string, string]> {
+		const page = this.contactPage;
+		if (!page) return this.contactId() ? [["Contact", plain(this.contactNotice) || "Reading contact…"]] : [];
 		const t = page.thread;
 		return [
-			`Contact frame ${t.revision} (${t.closed ? "closed" : "open"}): ${plain(t.title)}`,
-			`Purpose: ${plain(t.purpose)}`,
-			`Carried authority (claim): ${plain(t.authority)}`,
-			`Authority source: ${plain(t.source)}`,
-			`Restrictions: ${plain(t.restrictions)}`,
-			`Acceptance: ${plain(t.acceptance)}`,
-			`Integrator: ${plain(t.integrator)}`,
-			...memberDeclarationLines(t, (id) => id),
-			`Retained exchange: ${page.coverage.complete ? "page complete" : "bounded page"}${page.nextBefore !== null ? "; earlier events available" : ""}. Enter opens frame, sources and events in Threads.`,
+			["Contact", this.contactSummary()],
+			["Contact purpose", plain(t.purpose)],
+			["Carried authority", plain(t.authority)],
+			["Authority source", plain(t.source)],
+			["Restrictions", plain(t.restrictions)],
+			["Acceptance", plain(t.acceptance)],
+			["Integrator", plain(t.integrator)],
+			["Member declarations", memberDeclarationLines(t, (id) => id).slice(1).join("\n")],
+			["Retained exchange", `${page.coverage.complete ? "page complete" : "bounded page"}${page.nextBefore !== null ? "; earlier events available" : ""}. Enter opens frame, sources and events in Threads.`],
 		];
 	}
-	private observationLines(): string[] {
-		return this.observation === undefined ? [] : ["Read-only observation", ...this.observation.split("\n"), ""];
+	/** A key and value group: muted key, wrapped value, then one blank row. Callers cap summary values. */
+	private groupLines(groups: ReadonlyArray<[string, string]>, width: number, valueLimit: (key: string) => number = () => Number.MAX_SAFE_INTEGER): string[] {
+		const { margin, textWidth } = readingGeometry(width);
+		const pad = " ".repeat(margin);
+		const lines: string[] = [];
+		for (const [key, value] of groups) {
+			const text = value.trim();
+			if (!text) continue;
+			const valueLines: string[] = [];
+			for (const source of text.split("\n")) {
+				if (!source.trim()) {
+					valueLines.push("");
+					continue;
+				}
+				valueLines.push(...wrapTextWithAnsi(source, textWidth).map((part) => `${pad}${part}`));
+			}
+			const limit = valueLimit(key);
+			lines.push(this.options.theme.fg("muted", `${pad}${key}`), ...valueLines.slice(0, limit), "");
+			if (valueLines.length > limit) lines.splice(lines.length - 1, 0, `${pad}…`);
+		}
+		while (lines.at(-1) === "") lines.pop();
+		return lines;
 	}
-	private details(wide = false): string[] {
-		if (this.scanOpen) return ["Scan details", "", ...this.coverageLines()];
-		if (this.selectedThread && !this.composing) return this.threadDetails();
+	private scanLines(width: number): string[] {
+		const { margin, textWidth } = readingGeometry(width);
+		const pad = " ".repeat(margin);
+		return [`${pad}Scan details`, "", ...this.coverageLines().map((line) => `${pad}${clip(line, textWidth)}`)];
+	}
+	private detailTime(): string | number | undefined {
+		if (this.selectedThread && !this.composing) return this.threads().find((row) => row.id === this.selectedThread)?.updatedAt;
 		const row = this.row();
-		if (!row) return [this.composing ? `Message target ${plain(this.target ?? "")}: not in the current presence page` : this.view ? "No efforts in this page. See coverage below." : "Reading efforts…"];
-		const claim = row.relationship === "machine" ? undefined : row.intentClaim;
-		const facts = this.hostFacts(row);
-		const intent = claim ? this.claimLines(claim) : this.limitedClaimLines(row);
-		const times = [
-			`Started: ${this.time(row.startedAt)}`,
-			...(row.lastActivityAt ? [`Last recorded activity: ${this.time(row.lastActivityAt)}`] : []),
-		];
-		if (!wide) return [...this.observationLines(), ...intent, ...facts, ...times, "", ...this.contactLines()];
-		const theme = this.options.theme;
-		return [
-			theme.bold(plain(row.name || row.id)), "",
-			...this.observationLines(),
-			...intent.map((line) => /^(Purpose|Integration):/.test(line) ? theme.bold(line) : line), "",
-			...facts.map((line) => theme.fg("muted", line)),
-			...times.map((line) => theme.fg("muted", line)), "",
-			...this.contactLines(),
-		];
+		return row ? this.lastUpdate(row) : undefined;
 	}
-	private selfLine(): string {
-		const self = this.view?.self;
-		if (!self) return "Your effort: reading current purpose…";
-		if (self.omitted) return "Your effort: purpose omitted by source bound";
-		if (self.intentClaim) return `Your purpose claim: ${plain(self.intentClaim.purpose)}`;
-		return self.observedPurpose ? `Your observed purpose (${self.observedPurpose.source}): ${plain(self.observedPurpose.text)}` : "Your effort: no observed purpose or purpose claim";
+	private coveragePartial(): boolean {
+		if (!this.view) return false;
+		const p = this.view.presence.coverage;
+		const t = this.view.threads.coverage;
+		return !p.complete || !t.complete || p.unreadable + t.unreadable > 0;
+	}
+	/** The one list footer: effort count, then partial coverage. A read failure takes the row. */
+	private listFooter(effortCount: number, width: number): string {
+		const theme = this.options.theme;
+		if (this.loadError) return theme.fg("warning", clip(` ${plain(this.loadError)}`, width));
+		const parts = [`${effortCount} effort${effortCount === 1 ? "" : "s"}`];
+		if (this.coveragePartial()) parts.push("scan incomplete");
+		return theme.fg("muted", clip(` ${parts.join(" · ")}`, width));
 	}
 	/** The visible window of one list: the wheel offset when set, otherwise the window that shows the selection. */
 	private windowStart(kind: "efforts" | "threads", natural: number, total: number, count: number): number {
@@ -390,44 +457,87 @@ export class EffortView {
 		this.listStart[kind] = Math.min(Math.max(0, total - count), Math.max(0, this.windowStart(kind, natural, total, count) + delta));
 		this.options.redraw();
 	}
-	private rows(width: number, y: number): string[] {
+	private livenessGlyph(row: RelatedEffort): string {
+		return row.liveness === "live" ? "●" : row.liveness === "incompatible" ? "!" : "○";
+	}
+	private glyphColor(row: RelatedEffort): "accent" | "warning" | "muted" {
+		return row.liveness === "live" ? "accent" : row.liveness === "incompatible" ? "warning" : "muted";
+	}
+	/** The list pane: two lines per item, one blank row, one counts footer. */
+	private list(width: number, height: number, y: number, effortCount: number, threadCount: number): string[] {
+		const theme = this.options.theme;
 		const efforts = this.view?.presence.efforts ?? [];
-		const count = this.composing ? 1 : 2;
-		const index = Math.max(0, efforts.findIndex((row) => row.id === this.selected));
-		const lines = [this.options.theme.fg("muted", `Efforts · ${Math.min(count, efforts.length)}/${efforts.length} loaded rows visible`)];
-		const naturalStart = Math.max(0, index - count + 1);
-		const effortStart = this.windowStart("efforts", naturalStart, efforts.length, count);
-		this.mouse.add({ x: 0, y, width, height: 1 + count, wheel: (delta) => this.scrollWindow("efforts", delta, naturalStart, efforts.length, count) });
-		for (const row of efforts.slice(effortStart, effortStart + count)) {
-			this.mouse.add({ x: 0, y: y + lines.length, width, height: 1, click: () => { if (!this.composing) { this.select(row.id); } } });
-			const chosen = !this.selectedThread && row.id === this.selected;
-			lines.push(dashboardSelection(`${chosen ? "›" : " "} ${this.effortTitle(row)} · ${row.liveness}`, width, chosen, this.options.theme));
+		const threads = threadCount > 0 && !this.composing ? this.threads() : [];
+		this.threadsShown = threadCount > 0;
+		const bodyRows = Math.max(1, height - 1);
+		const showLabels = threadCount > 0;
+		const capacity = Math.max(1, Math.floor((bodyRows - (showLabels ? 2 : 1)) / 3));
+		const effortShown = efforts.length ? Math.min(Math.max(1, effortCount), capacity, efforts.length) : 0;
+		const threadShown = Math.max(0, Math.min(threadCount, capacity - effortShown));
+		const lines: string[] = [theme.fg("muted", " Efforts"), ...this.effortRows(efforts, width, y + 1, effortShown)];
+		if (showLabels) {
+			lines.push(theme.fg("muted", ` Active threads · ${threads.length}`));
+			lines.push(...this.threadRows(threads, width, y + 1 + effortShown * 3, threadShown));
 		}
-		const threads = this.threads();
-		lines.push(this.options.theme.fg("muted", `Active threads · ${this.composing ? 0 : Math.min(2, threads.length)}/${threads.length} loaded · newest covered first`));
-		if (!this.composing) {
-			const threadIndex = Math.max(0, threads.findIndex((row) => row.id === this.selectedThread));
-			const naturalThreads = Math.max(0, threadIndex - 1);
-			const threadStart = this.windowStart("threads", naturalThreads, threads.length, 2);
-			this.mouse.add({ x: 0, y: y + lines.length - 1, width, height: 3, wheel: (delta) => this.scrollWindow("threads", delta, naturalThreads, threads.length, 2) });
-			for (const thread of threads.slice(threadStart, threadStart + 2)) {
-				this.mouse.add({ x: 0, y: y + lines.length, width, height: 1, click: () => { this.select(thread.id, true); this.contact(); } });
-				lines.push(dashboardSelection(`${thread.id === this.selectedThread ? "›" : " "} ${plain(thread.title)} · ${this.time(thread.updatedAt)}`, width, thread.id === this.selectedThread, this.options.theme));
-			}
+		while (lines.length < bodyRows) lines.push("");
+		lines.length = bodyRows;
+		const footer = this.listFooter(efforts.length, width);
+		this.mouse.add({ x: 0, y: y + bodyRows, width, height: 1, click: () => this.toggleScan() });
+		return Array.from({ length: height }, (_, row) => (row < bodyRows ? lines[row] ?? "" : footer)).map((line) => fitLine(line, width));
+	}
+	private rowLines(kind: "effort" | "thread", id: string, key: string, build: () => string[]): string[] {
+		const cacheKey = `${kind}:${id}`;
+		const cached = this.rowCache.get(cacheKey);
+		if (cached?.key === key) return cached.lines;
+		const lines = build();
+		this.rowCache.set(cacheKey, { key, lines });
+		return lines;
+	}
+	/** Two lines and a gap per effort, with the window that keeps the selection visible. */
+	private effortRows(efforts: readonly RelatedEffort[], width: number, baseY: number, shown: number): string[] {
+		const theme = this.options.theme;
+		const lines: string[] = [];
+		const index = Math.max(0, efforts.findIndex((row) => row.id === this.selected));
+		const naturalStart = Math.max(0, Math.min(index - shown + 1, efforts.length - shown));
+		const start = this.windowStart("efforts", naturalStart, efforts.length, Math.max(1, shown));
+		const visible = efforts.slice(start, start + shown);
+		this.mouse.add({ x: 0, y: baseY, width, height: Math.max(1, visible.length * 3), wheel: (delta) => this.scrollWindow("efforts", delta, naturalStart, efforts.length, Math.max(1, shown)) });
+		for (const row of visible) {
+			const chosen = !this.selectedThread && row.id === (this.composing ? this.target : this.selected);
+			this.mouse.add({ x: 0, y: baseY + lines.length, width, height: 3, click: () => { if (!this.composing) this.select(row.id); } });
+			const title = clip(this.effortTitle(row), width - 4);
+			const key = [width, chosen, this.composing, this.exactTime, Math.floor(Date.now() / 60_000), title, row.liveness, String(this.lastUpdate(row))].join("#");
+			lines.push(...this.rowLines("effort", row.id, key, () => [
+				chosen ? dashboardSelection(`▌ ${this.livenessGlyph(row)} ${title}`, width, true, theme) : `  ${theme.fg(this.glyphColor(row), this.livenessGlyph(row))} ${theme.bold(theme.fg("text", title))}`,
+				theme.fg("muted", `    ${this.effortFacts(row)}`),
+				"",
+			]));
 		}
 		return lines;
 	}
-	private coverageSummary(): string[] {
-		if (!this.view || this.scanOpen) return [];
-		const p = this.view.presence.coverage;
-		const t = this.view.threads.coverage;
-		if (p.complete && t.complete) return [];
-		const unreadable = p.unreadable + t.unreadable;
-		const reasons: string[] = [];
-		if (unreadable) reasons.push(`${unreadable} unreadable record${unreadable === 1 ? "" : "s"}`);
-		else if (!p.complete) reasons.push("efforts partly scanned");
-		if (!t.complete) reasons.push(t.unvisited ? "threads partly unvisited" : "thread hints partial");
-		return [`Scan incomplete: ${reasons.join("; ")}`];
+	/** Two lines and a gap per active thread. */
+	private threadRows(threads: ReturnType<EffortView["threads"]>, width: number, baseY: number, shown: number): string[] {
+		const theme = this.options.theme;
+		const lines: string[] = [];
+		const threadIndex = Math.max(0, threads.findIndex((row) => row.id === this.selectedThread));
+		const naturalThreads = Math.max(0, Math.min(threadIndex - shown + 1, threads.length - shown));
+		const threadStart = this.windowStart("threads", naturalThreads, threads.length, Math.max(1, shown));
+		const visible = threads.slice(threadStart, threadStart + shown);
+		this.mouse.add({ x: 0, y: baseY, width, height: Math.max(1, visible.length * 3 + 1), wheel: (delta) => this.scrollWindow("threads", delta, naturalThreads, threads.length, Math.max(1, shown)) });
+		for (const thread of visible) {
+			const chosen = thread.id === this.selectedThread;
+			this.mouse.add({ x: 0, y: baseY + 1 + lines.length, width, height: 3, click: () => { if (!this.composing) { this.select(thread.id, true); this.contact(); } } });
+			const time = this.time(thread.updatedAt);
+			const title = clip(plain(thread.title), width - 6 - visibleWidth(time));
+			const purpose = clip(plain(thread.purpose), width - 4);
+			const key = [width, chosen, this.exactTime, Math.floor(Date.now() / 60_000), title, purpose, thread.updatedAt].join("#");
+			lines.push(...this.rowLines("thread", thread.id, key, () => [
+				chosen ? dashboardSelection(`▌ ● ${title}`, width, true, theme) : `  ${theme.fg("success", "●")} ${theme.bold(theme.fg("text", title))}  ${theme.fg("muted", time)}`,
+				theme.fg("muted", `    ${purpose}`),
+				"",
+			]));
+		}
+		return lines;
 	}
 	private coverageLines(): string[] {
 		if (!this.view) return ["Presence coverage: not read", "Thread coverage: not read"];
@@ -445,98 +555,147 @@ export class EffortView {
 			...(t.reasons.length ? [`Thread reasons: ${t.reasons.map(plain).join(", ")}`] : []),
 		];
 	}
-	private list(width: number, height: number, y: number): string[] {
+	/** Right-aligned header controls: the primary actions that fit, then More. */
+	private actionControls(room: number, xRight: number, y: number): { text: string; width: number } {
 		const theme = this.options.theme;
-		const efforts = this.view?.presence.efforts ?? [];
-		const threads = this.threads();
-		const count = Math.max(1, Math.floor((height - 3) / 6));
-		const index = Math.max(0, efforts.findIndex((row) => row.id === this.selected));
-		const naturalStart = Math.max(0, Math.min(index - count + 1, efforts.length - count));
-		const start = this.windowStart("efforts", naturalStart, efforts.length, count);
-		const visible = efforts.slice(start, start + count);
-		this.mouse.add({ x: 0, y, width, height: 1 + visible.length * 3, wheel: (delta) => this.scrollWindow("efforts", delta, naturalStart, efforts.length, count) });
-		const lines = [theme.fg("muted", `Efforts · ${visible.length}/${efforts.length} loaded`)];
-		for (const row of visible) {
-			const chosen = !this.selectedThread && row.id === (this.composing ? this.target : this.selected);
-			this.mouse.add({ x: 0, y: y + lines.length, width, height: 3, click: () => {
-				if (!this.composing) { this.select(row.id); }
-			} });
-			const purpose = this.purposePreview(row);
-			const title = this.effortTitle(row);
-			lines.push(
-				dashboardSelection(`${chosen ? "›" : " "} ${title}`, width, chosen, theme),
-				theme.fg(row.liveness === "live" ? "accent" : "muted", `  ${this.effortFacts(row)}`),
-				`  ${plain(purpose === title ? "" : purpose)}`,
-			);
+		const actions = this.primaryActions();
+		const more = " More… ";
+		const parts: Array<{ action?: ScreenAction; label: string }> = [];
+		let used = visibleWidth(more);
+		for (const action of actions) {
+			const label = ` ${action.label} `;
+			if (used + visibleWidth(label) > room) break;
+			parts.push({ action, label });
+			used += visibleWidth(label) + 1;
 		}
-		lines.push("");
-		const threadCount = Math.max(0, Math.floor((height - lines.length - 1) / 2));
-		const threadIndex = Math.max(0, threads.findIndex((row) => row.id === this.selectedThread));
-		const naturalThreads = Math.max(0, Math.min(threadIndex - threadCount + 1, threads.length - threadCount));
-		const threadStart = this.windowStart("threads", naturalThreads, threads.length, threadCount);
-		const visibleThreads = threads.slice(threadStart, threadStart + threadCount);
-		this.mouse.add({ x: 0, y: y + lines.length, width, height: 1 + visibleThreads.length * 2, wheel: (delta) => this.scrollWindow("threads", delta, naturalThreads, threads.length, threadCount) });
-		lines.push(theme.fg("muted", `Active threads · ${visibleThreads.length}/${threads.length} loaded`));
-		for (const thread of visibleThreads) {
-			this.mouse.add({ x: 0, y: y + lines.length, width, height: 2, click: () => {
-				if (!this.composing) { this.select(thread.id, true); this.contact(); }
+		parts.push({ label: more });
+		const width = parts.reduce((sum, part) => sum + visibleWidth(part.label), 0) + Math.max(0, parts.length - 1);
+		let cursor = Math.max(0, xRight - width);
+		let text = "";
+		for (const [index, part] of parts.entries()) {
+			if (index) {
+				text += " ";
+				cursor += 1;
+			}
+			const action = part.action;
+			text += action?.disabled ? theme.fg("muted", part.label) : theme.fg("accent", part.label);
+			const at = cursor;
+			this.mouse.add({ x: at, y, width: visibleWidth(part.label), height: 1, click: () => {
+				if (!action) {
+					this.inventory.handleInput("x");
+					return;
+				}
+				if (action.disabled) {
+					this.notice = action.disabled;
+					this.options.redraw();
+					return;
+				}
+				action.run();
 			} });
-			lines.push(
-				dashboardSelection(`${thread.id === this.selectedThread ? "›" : " "} ${plain(thread.title)}`, width, thread.id === this.selectedThread, theme),
-				theme.fg("muted", `  ${this.time(thread.updatedAt)}`),
-			);
+			cursor += visibleWidth(part.label);
 		}
-		return lines;
+		return { text, width };
 	}
-	private renderWide(width: number, height: number): string[] {
+	/** The right pane: two header lines, one blank row, then the scrolling detail. */
+	private detailPane(width: number, height: number, x: number, y: number, includeIntegration: boolean, tightActions = false): string[] {
 		const theme = this.options.theme;
-		const listWidth = Math.max(30, Math.min(36, Math.floor(width * 0.22)));
-		const x = listWidth + 3;
-		const rightWidth = width - x;
-		const paneHeight = height - 4;
-		const list = this.list(listWidth, paneHeight, 2);
-		const editor = this.composing ? this.composer.render(rightWidth, `Operator message to ${plain(this.target ?? "")} · Enter sends`) : [];
-		const footer = this.coverageSummary().map((line) => theme.fg("muted", line));
-		const bodyHeight = Math.max(0, paneHeight - editor.length - footer.length);
-		const detail = this.details(true).flatMap((line) => wrapTextWithAnsi(line, Math.min(88, rightWidth)));
-		this.offset = Math.max(0, Math.min(this.offset, detail.length - bodyHeight));
-		const body = Array.from({ length: bodyHeight }, (_, index) => detail[this.offset + index] ?? "");
-		this.mouse.add({ x, y: 2, width: rightWidth, height: bodyHeight, wheel: (delta) => {
-			this.offset = Math.max(0, this.offset + delta); this.options.redraw();
-		} });
+		const { margin } = readingGeometry(width);
+		const pad = " ".repeat(margin);
+		const section = this.detailSections(width, x, y, margin, includeIntegration, tightActions);
+		const editor = this.composing ? this.composer.render(width, `Operator message to ${plain(this.target ?? "")} · Enter sends`) : [];
+		const noticeLines = this.notice ? [theme.fg(this.notice.includes("unavailable") ? "warning" : "muted", truncateToWidth(`${pad}${plain(this.notice)}`, Math.max(1, width - 1), "…"))] : [];
+		const available = Math.max(1, height - section.preamble.length - editor.length - noticeLines.length);
+		this.offset = Math.max(0, Math.min(this.offset, Math.max(0, section.bodySource.length - available)));
+		const body = Array.from({ length: available }, (_, index) => section.bodySource[this.offset + index] ?? "");
+		if (section.bodySource.length) this.mouse.add({ x, y: y + section.preamble.length, width, height: available, wheel: (delta) => { this.offset = Math.max(0, this.offset + delta); this.options.redraw(); } });
+		if (section.timeLine >= 0) this.mouse.add({ x, y: y + section.timeLine, width, height: 1, click: () => { this.exactTime = !this.exactTime; this.options.redraw(); } });
+		this.timeHits(body, x, y + section.preamble.length, width);
+		if (editor.length) this.mouse.add({ x, y: y + section.preamble.length + available, width, height: editor.length, click: (event) => this.composer.handleMouse(event) });
+		return [...section.preamble, ...body, ...editor, ...noticeLines].slice(0, height).map((line) => fitLine(line, width));
+	}
+	/** The pane's preamble and scrolling body for its current state. */
+	private detailSections(width: number, x: number, y: number, margin: number, includeIntegration: boolean, tightActions: boolean): { preamble: string[]; bodySource: string[]; timeLine: number } {
+		const row = this.row();
+		if (this.scanOpen) return { preamble: this.scanLines(width), bodySource: [], timeLine: -1 };
+		if (!row) {
+			const message = this.composing ? `Message target ${plain(this.target ?? "")}: not in the current presence page` : this.view ? "No efforts in this page." : "Reading efforts…";
+			return { preamble: [" ".repeat(margin) + clip(message, width - margin - 1)], bodySource: [], timeLine: -1 };
+		}
+		if (this.selectedThread && !this.composing && !this.detailsOpen) return this.threadSection(width, margin);
+		return { preamble: this.detailHeaderLines(row, width, x, y, margin, tightActions), bodySource: this.detailBody(row, width, includeIntegration), timeLine: -1 };
+	}
+	/** A selected active thread, before it is opened in Threads. */
+	private threadSection(width: number, margin: number): { preamble: string[]; bodySource: string[]; timeLine: number } {
+		const preamble = this.threadDetails().map((line) => `${" ".repeat(margin)}${clip(line, width - margin - 1)}`);
+		const detailTime = this.detailTime();
+		const timeLine = detailTime !== undefined ? preamble.findIndex((line) => line.trim() === this.time(detailTime)) : -1;
+		return { preamble, bodySource: [], timeLine };
+	}
+	/** Cached key and value lines for the selected effort. */
+	private detailBody(row: RelatedEffort, width: number, includeIntegration: boolean): string[] {
+		const groups = this.detailsOpen ? this.fullGroups(row) : this.defaultGroups(row, includeIntegration);
+		if (!this.detailsOpen && this.observation !== undefined) groups.unshift(["Observation", this.observation]);
+		const key = [row.id, width, includeIntegration, this.detailsOpen, this.detailVersion, this.observedAt, Math.floor(Date.now() / 60_000), this.exactTime, this.selectedThread, this.composing, this.target ?? ""].join("#");
+		if (this.detailCache?.key !== key) this.detailCache = { key, lines: this.groupLines(groups, width, (name) => (this.detailsOpen || name === "Observation" ? Number.MAX_SAFE_INTEGER : 3)) };
+		return this.detailCache.lines;
+	}
+	/** Two header lines and one blank row; the controls carry their own hit regions. */
+	private detailHeaderLines(row: RelatedEffort, width: number, x: number, y: number, margin: number, tightActions: boolean): string[] {
+		const theme = this.options.theme;
+		const pad = " ".repeat(margin);
+		const room = Math.max(1, width - margin - 1);
+		// Leave at least 20 columns for the title; the compact layout keeps only the first action and More.
+		const budget = tightActions ? visibleWidth(" Open thread ") + visibleWidth(" More… ") + 1 : Math.max(0, room - Math.min(room, 20));
+		const controls = this.actionControls(budget, x + width, y);
+		const title = truncateToWidth(this.effortTitle(row), Math.max(1, room - controls.width - 1), "…");
+		const facts = `${row.liveness} · ${this.relationOf(row)} · updated ${this.time(this.lastUpdate(row))}`;
+		this.mouse.add({ x, y: y + 1, width, height: 1, click: () => { this.exactTime = !this.exactTime; this.options.redraw(); } });
+		return [`${fitLine(`${pad}${theme.bold(theme.fg("text", title))}`, Math.max(1, width - controls.width))}${controls.text}`, theme.fg("muted", truncateToWidth(`${pad}${facts}`, Math.max(1, width - 1), "…")), ""];
+	}
+	/** Register the exact-time toggle on any visible time row. */
+	private timeHits(body: readonly string[], x: number, y: number, width: number): void {
 		const detailTime = this.detailTime();
 		for (let index = 0; index < body.length; index++) {
-			if (/(Started:|Last recorded activity:)/.test(body[index]) || (detailTime !== undefined && body[index] === this.time(detailTime))) {
-				this.mouse.add({ x, y: 2 + index, width: rightWidth, height: 1, click: () => {
-					this.exactTime = !this.exactTime; this.options.redraw();
-				} });
+			if (/^\s*(Started:|Last recorded activity:)/.test(body[index]) || (detailTime !== undefined && body[index].trim() === this.time(detailTime))) {
+				this.mouse.add({ x, y: y + index, width, height: 1, click: () => { this.exactTime = !this.exactTime; this.options.redraw(); } });
 			}
 		}
-		if (this.composing) this.mouse.add({ x, y: 2 + bodyHeight, width: rightWidth, height: editor.length, click: (event) => this.composer.handleMouse(event) });
-		if (footer.length && !this.composing) this.mouse.add({ x, y: 2 + bodyHeight + editor.length, width: rightWidth, height: 1, click: () => this.toggleScan() });
-		const right = [...body, ...editor, ...footer];
-		const panes = Array.from({ length: paneHeight }, (_, index) => fitLine(list[index] ?? "", listWidth) + theme.fg("borderMuted", " │ ") + fitLine(right[index] ?? "", rightWidth));
-		return [dashboardHeading("Agents > Related efforts", "", width, theme), theme.fg("muted", this.selfLine()), ...panes, plain(this.notice), this.inventory.footer(this.mouse, height - 1, width, this.backAction(), theme, !this.composing)].map((line) => fitLine(line, width));
 	}
-	render(width: number, height: number): string[] {
+	private renderWide(width: number, height: number, listWidth: number): string[] {
+		const theme = this.options.theme;
+		// The same split as the Agents tab: the divider sits at column `listWidth` in every tab.
+		const x = listWidth + 1;
+		const rightWidth = Math.max(1, width - x);
+		const bodyRows = Math.max(1, height - 1);
+		const effortCount = Math.max(1, Math.floor((bodyRows - 3) / 6));
+		const threadCount = Math.max(0, Math.floor((bodyRows - 3 - effortCount * 3) / 3));
+		const list = this.list(listWidth - 1, bodyRows, 1, effortCount, threadCount);
+		const right = this.detailPane(rightWidth, bodyRows, x, 1, true);
+		const panes = Array.from({ length: bodyRows }, (_, index) => fitLine(list[index] ?? "", listWidth) + theme.fg("borderMuted", "│") + fitLine(right[index] ?? "", rightWidth));
+		return [dashboardHeading("Agents > Related efforts", "", width, theme), ...panes].map((line) => fitLine(line, width));
+	}
+	private renderTight(width: number, height: number): string[] {
+		const theme = this.options.theme;
+		const bodyRows = Math.max(1, height - 1);
+		const withThreads = width >= 80 && height >= 24 && !this.composing;
+		const stripRows = withThreads ? 9 : 5;
+		const list = this.list(width, stripRows, 1, 1, withThreads ? 1 : 0);
+		const detailHeight = Math.max(1, bodyRows - stripRows);
+		const detail = this.detailPane(width, detailHeight, 0, 1 + stripRows, withThreads, true);
+		const body = Array.from({ length: bodyRows }, (_, index) => (index < stripRows ? list[index] ?? "" : detail[index - stripRows] ?? ""));
+		return [dashboardHeading("Agents > Related efforts", "", width, theme), ...body].slice(0, height).map((line) => fitLine(line, width));
+	}
+	private fallbackListWidth(width: number): number {
+		return Math.max(30, Math.min(36, Math.floor(width * 0.22)));
+	}
+	render(width: number, height: number, listWidth?: number): string[] {
 		this.mouse.reset(width, height);
 		this.composer.focused = this.composing;
 		if (width >= 60 && height >= 20 && this.inventory.open) return this.inventory.render(width, height, "Agents > Related efforts", "efforts", this.options.theme);
 		if (width < 60 || height < 20) return Array.from({ length: height }, (_, index) => fitLine(index ? "" : "Resize to use Related efforts. Esc back.", width));
-		if (width >= 100) return this.renderWide(width, height);
-		const rows = this.rows(width, 2);
-		const editor = this.composing ? this.composer.render(width, `Operator message to ${plain(this.target ?? "")} · Enter sends`) : [];
-		const footer = this.coverageSummary().map((line) => fitLine(this.options.theme.fg("muted", line), width));
-		const bodyHeight = Math.max(0, height - rows.length - editor.length - footer.length - 4);
-		const detail = this.details().flatMap((line) => wrapTextWithAnsi(line, width));
-		this.offset = Math.max(0, Math.min(this.offset, detail.length - bodyHeight));
-		const body = Array.from({ length: bodyHeight }, (_, index) => detail[this.offset + index] ?? "");
-		this.mouse.add({ x: 0, y: rows.length + 2, width, height: bodyHeight, wheel: (delta) => { this.offset = Math.max(0, this.offset + delta); this.options.redraw(); } });
-		const editorY = 2 + rows.length + bodyHeight;
-		if (this.composing) this.mouse.add({ x: 0, y: editorY, width, height: editor.length, click: (event) => this.composer.handleMouse(event) });
-		if (footer.length && !this.composing) this.mouse.add({ x: 0, y: editorY + editor.length, width, height: 1, click: () => this.toggleScan() });
-		return [dashboardHeading("Agents > Related efforts", "", width, this.options.theme), this.selfLine(), ...rows, ...body, ...editor, ...footer, plain(this.notice), this.inventory.footer(this.mouse, height - 1, width, this.backAction(), this.options.theme, !this.composing)].slice(0, height).map((line) => fitLine(line, width));
+		if (width >= 100) return this.renderWide(width, height, listWidth ?? this.fallbackListWidth(width));
+		return this.renderTight(width, height);
 	}
-	invalidate(): void { this.mouse.reset(); this.inventory.invalidate(); this.composer.invalidate(); }
-	dispose(): void { this.disposed = true; this.active = false; this.clearSelectionReads(); this.mouse.reset(); }
+	invalidate(): void { this.mouse.reset(); this.inventory.invalidate(); this.composer.invalidate(); this.detailCache = undefined; this.rowCache.clear(); }
+	dispose(): void { this.disposed = true; this.active = false; this.clearSelectionReads(); this.mouse.reset(); this.detailCache = undefined; this.rowCache.clear(); }
 }

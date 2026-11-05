@@ -13,7 +13,7 @@ import {
 import { HitMap, TextField } from "../../operator-ui/index.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration.ts";
-import { fitLine } from "./dashboard-layout.ts";
+import { fitLine, readingGeometry } from "./dashboard-layout.ts";
 import { dashboardTime } from "./dashboard-time.ts";
 import {
 	type Collaborate,
@@ -62,14 +62,21 @@ const MAX_SOURCE_PAGES = 8;
 const DISCOVERY_INTERVAL_MS = 10_000;
 
 const KIND_LABEL: Record<string, string> = {
-	join: "joined",
-	leave: "left",
-	revise: "revised the frame",
-	close: "closed the thread",
 	"carried-authority": "carried an operator direction",
 };
 
+/** Structural events read as one muted line; their payload belongs to Details or Members. */
+const STRUCTURAL_EVENTS: Record<string, string> = {
+	create: "created the thread",
+	revise: "revised the frame",
+	join: "joined",
+	leave: "left",
+	close: "closed the thread",
+};
+
 const oneLine = (text: string) => plainThreadText(text).replace(/\s+/g, " ").trim();
+/** Clip with one ellipsis character; the generic line fit must never add its own three dots. */
+const clip = (text: string, width: number) => truncateToWidth(text, Math.max(1, width), "…");
 const reason = (error: unknown) => oneLine(String(error instanceof Error ? error.message : error));
 const bySequence = (a: CollaborationEvent, b: CollaborationEvent) => a.sequence - b.sequence;
 
@@ -108,8 +115,16 @@ export class ThreadsView {
 	private readGeneration = 0;
 	private listError?: string;
 	private notice?: { text: string; kind: "info" | "success" | "warning" | "error" };
+	/** A post or send result, shown as the composer receipt. */
+	private receipt?: { text: string; kind: "info" | "success" | "warning" | "error" };
 	private listScroll = 0;
 	private listReveal = true;
+	/** The closed-thread disclosure is view-local: expanded and keyboard-focused. */
+	private closedExpanded = false;
+	private closedFocused = false;
+	/** Derived lines, keyed by content signature, width and display state (spec 4.5). */
+	private listCache?: { key: string; value: { lines: string[]; blocks: Array<{ id: string; start: number; size: number }>; disclosure?: number } };
+	private exchangeCache?: { key: string; lines: Map<number, string[]> };
 	/** Lines scrolled up from the newest exchange line; zero follows new posts. */
 	private exchangeBack = 0;
 	private exchangeMax = 0;
@@ -256,7 +271,11 @@ export class ThreadsView {
 			this.detailsOffset = 0;
 			this.panel = "exchange";
 			this.notice = undefined;
+			this.receipt = undefined;
 		}
+		// Opening a closed thread reveals the closed group; it stays expanded until collapsed.
+		if (this.threads.get(threadId)?.closed) this.closedExpanded = true;
+		this.closedFocused = false;
 		if (openThread) this.narrowThread = true;
 		this.listReveal = true;
 		void this.readThread(threadId);
@@ -271,6 +290,7 @@ export class ThreadsView {
 			if (!current()) return;
 			if (!threadPage(result) || result.thread.id !== threadId) throw new Error("the host returned an invalid thread page");
 			this.reads.set(threadId, mergeNewest(this.reads.get(threadId), result));
+			this.notice = undefined;
 			const summary = this.threads.get(threadId);
 			if (summary) this.threads.set(threadId, { ...summary, updatedAt: result.thread.updatedAt, closed: result.thread.closed, members: result.thread.members.length });
 		} catch (error) {
@@ -294,6 +314,7 @@ export class ThreadsView {
 			const known = new Set(current.events.map((event) => event.sequence));
 			current.events = [...result.events.filter((event) => !known.has(event.sequence)), ...current.events].sort(bySequence);
 			current.nextBefore = result.nextBefore;
+			this.notice = undefined;
 		} catch (error) {
 			if (!this.disposed) this.notice = { text: `Earlier messages could not be read: ${reason(error)}`, kind: "error" };
 		} finally {
@@ -328,7 +349,7 @@ export class ThreadsView {
 		const threadId = this.options.state.selected;
 		if (!draft || !threadId || draft.pending || !message.trim()) return;
 		if (!this.canPost()) {
-			this.notice = { text: "This thread is closed; posting is off.", kind: "warning" };
+			this.receipt = { text: "This thread is closed; posting is off.", kind: "warning" };
 			this.options.redraw();
 			return;
 		}
@@ -336,7 +357,7 @@ export class ThreadsView {
 		const content = JSON.stringify([revision, message, draft.notify, draft.replyTo ?? null]);
 		if (draft.request?.content !== content) draft.request = { id: randomUUID(), content };
 		draft.pending = true;
-		this.notice = { text: "Posting…", kind: "info" };
+		this.receipt = { text: "Posting…", kind: "info" };
 		this.options.redraw();
 		try {
 			const result = await this.call({
@@ -351,7 +372,7 @@ export class ThreadsView {
 			receiptSequence(result, threadId);
 			this.posted(draft, revision, threadId);
 		} catch (error) {
-			if (!this.disposed) this.notice = { text: `The post was not confirmed: ${reason(error)}. Your draft stays; Send retries it once.`, kind: "error" };
+			if (!this.disposed) this.receipt = { text: `The post was not confirmed: ${reason(error)}. Your draft stays; Send retries it once.`, kind: "error" };
 		} finally {
 			draft.pending = false;
 			if (!this.disposed) this.options.redraw();
@@ -370,7 +391,7 @@ export class ThreadsView {
 		if (this.disposed || this.options.state.selected !== threadId) return;
 		this.composer.setText(draft.text);
 		this.exchangeBack = 0;
-		this.notice = { text: "Posted.", kind: "success" };
+		this.receipt = { text: "Posted.", kind: "success" };
 		void this.readThread(threadId);
 	}
 
@@ -393,7 +414,7 @@ export class ThreadsView {
 
 	private name(id: string): string {
 		const name = oneLine(this.options.nameFor(id));
-		return name && name !== id ? name : id.length > 12 ? id.slice(0, 8) : id;
+		return name && name !== id ? name : `Session ${id.slice(0, 8)}`;
 	}
 
 	// --- input ----------------------------------------------------------------
@@ -499,23 +520,43 @@ export class ThreadsView {
 		else if (!this.listMove(data)) this.typeFind(data);
 	}
 
-	/** Arrow, page, Home and End keys move the selection; reading the selected thread is passive. */
+	/**
+	 * Arrow, page, Home and End keys move through open threads, the closed disclosure and, when it
+	 * is expanded, the closed threads. Reading the selected thread is passive.
+	 */
 	private listMove(data: string): boolean {
-		const rows = this.sorted();
-		const index = rows.findIndex((row) => row.id === this.options.state.selected);
-		const targets: Array<[Parameters<typeof matchesKey>[1], number]> = [
-			["up", index < 0 ? 0 : index - 1],
-			["down", index + 1],
-			["pageUp", index - 8],
-			["pageDown", index + 8],
-			["home", 0],
-			["end", rows.length - 1],
+		const targets = this.listTargets();
+		if (!targets.length) return false;
+		const current = this.closedFocused
+			? targets.findIndex((target) => target.closed)
+			: targets.findIndex((target) => target.id === this.options.state.selected);
+		const moves: Array<[Parameters<typeof matchesKey>[1], number]> = [
+			["up", -1],
+			["down", 1],
+			["pageUp", -8],
+			["pageDown", 8],
+			["home", -Number.MAX_SAFE_INTEGER],
+			["end", Number.MAX_SAFE_INTEGER],
 		];
-		const target = targets.find(([key]) => matchesKey(data, key));
-		if (!target) return false;
-		const row = rows[Math.max(0, Math.min(rows.length - 1, target[1]))];
-		if (row) this.select(row.id, false);
+		const move = moves.find(([key]) => matchesKey(data, key));
+		if (!move) return false;
+		const next = targets[Math.max(0, Math.min(targets.length - 1, Math.max(0, current) + move[1]))];
+		if (!next) return false;
+		if (next.closed) this.closedFocused = true;
+		else if (next.id) this.select(next.id, false);
 		return true;
+	}
+
+	/** The navigable list targets in visual order; Find reveals open and closed matches together. */
+	private listTargets(): Array<{ id?: string; closed?: boolean }> {
+		const rows = this.sorted();
+		if (this.find.value.trim()) return rows.map((row) => ({ id: row.id }));
+		const open = rows.filter((row) => !row.closed);
+		const closed = rows.filter((row) => row.closed);
+		const targets: Array<{ id?: string; closed?: boolean }> = open.map((row) => ({ id: row.id }));
+		if (closed.length) targets.push({ closed: true });
+		if (this.closedExpanded) for (const row of closed) targets.push({ id: row.id });
+		return targets;
 	}
 
 	private listEscape(): void {
@@ -524,10 +565,16 @@ export class ThreadsView {
 			return;
 		}
 		this.find.value = "";
+		this.closedFocused = false;
 		this.listScroll = 0;
 	}
 
 	private listEnter(): void {
+		if (this.closedFocused) {
+			this.closedExpanded = !this.closedExpanded;
+			this.listReveal = true;
+			return;
+		}
 		const first = this.sorted()[0];
 		if (!this.options.state.selected && first) this.select(first.id, true);
 		const selected = Boolean(this.options.state.selected);
@@ -539,6 +586,7 @@ export class ThreadsView {
 	private typeFind(data: string): void {
 		if (data.startsWith("\u001b") && !matchesKey(data, "backspace")) return;
 		this.find.handleInput(data);
+		this.closedFocused = false;
 		this.listScroll = 0;
 		this.listReveal = true;
 	}
@@ -552,28 +600,21 @@ export class ThreadsView {
 
 	// --- render ---------------------------------------------------------------
 
-	/** The view below the dashboard heading: list, thread and a hint line. */
+	/** The view below the dashboard heading: the list and the selected thread. */
 	render(width: number, height: number, listWidth: number): string[] {
 		this.hits.begin(width, height);
-		const bodyHeight = Math.max(1, height - 1);
+		const bodyHeight = Math.max(1, height);
 		const wide = width >= 100 && listWidth > 0;
 		let body: string[];
 		if (wide) {
+			// The same split as the Agents tab: the divider sits at column `listWidth` in every tab.
 			const list = this.renderList(0, listWidth - 1, bodyHeight);
-			const pane = this.renderThread(listWidth, width - listWidth, bodyHeight);
+			const pane = this.renderThread(listWidth + 1, width - listWidth - 1, bodyHeight);
 			const divider = this.options.theme.fg(this.region === "list" ? "accent" : "borderMuted", "│");
-			body = Array.from({ length: bodyHeight }, (_, row) => fitLine(list[row] ?? "", listWidth - 1) + divider + fitLine(pane[row] ?? "", width - listWidth));
+			body = Array.from({ length: bodyHeight }, (_, row) => fitLine(list[row] ?? "", listWidth) + divider + fitLine(pane[row] ?? "", width - listWidth - 1));
 		} else if (this.narrowThread && this.options.state.selected) body = this.renderThread(0, width, bodyHeight, true);
 		else body = this.renderList(0, width, bodyHeight);
-		return [...body.map((line) => fitLine(line, width)), fitLine(this.options.theme.fg("muted", ` ${this.hints()}`), width)];
-	}
-
-	private hints(): string {
-		if (this.region === "composer") return "enter send · ctrl+j new line · esc list";
-		if (this.region === "controls") return "←→ choose · enter open · tab next · esc exchange";
-		if (this.region === "exchange" && this.panel === "members") return "↑↓ choose · enter open conversation · space wake on next post · esc exchange";
-		if (this.region === "exchange") return this.panel === "exchange" ? "↑↓ scroll · home earlier · click a name to reply · tab next · esc list" : "↑↓ scroll · esc exchange";
-		return "↑↓ select · enter write · type to find · tab next · esc back";
+		return body.map((line) => fitLine(line, width));
 	}
 
 	private renderList(x0: number, width: number, height: number): string[] {
@@ -583,57 +624,86 @@ export class ThreadsView {
 		this.hits.add({ x: x0, y: 0, width, height: 1, click: () => { this.region = "list"; } });
 		const rows = this.sorted();
 		const room = Math.max(1, height - 2);
-		const { lines, blocks } = this.listLines(rows, width);
-		this.revealSelection(blocks, room);
+		const { lines, blocks, disclosure } = this.listLines(rows, width);
+		this.revealSelection(blocks, room, disclosure);
 		this.listScroll = Math.max(0, Math.min(this.listScroll, Math.max(0, lines.length - room)));
 		for (const block of blocks) {
 			const top = block.start - this.listScroll;
 			if (top + block.size <= 0 || top >= room) continue;
 			this.hits.add({ x: x0, y: 1 + Math.max(0, top), width, height: Math.min(block.size, room - Math.max(0, top)), click: () => { this.select(block.id, true); this.region = "list"; } });
 		}
+		if (disclosure !== undefined) {
+			const top = disclosure - this.listScroll;
+			if (top >= 0 && top < room) this.hits.add({ x: x0, y: 1 + top, width, height: 1, click: () => { this.closedExpanded = !this.closedExpanded; this.closedFocused = false; this.listReveal = true; } });
+		}
 		this.hits.add({ x: x0, y: 1, width, height: room, wheel: (delta) => { this.listScroll = Math.max(0, this.listScroll + delta); } });
 		const visible = lines.slice(this.listScroll, this.listScroll + room);
-		return [findLine, ...Array.from({ length: room }, (_, row) => visible[row] ?? ""), this.listFooter(rows.length)].map((line) => fitLine(line, width));
+		return [findLine, ...Array.from({ length: room }, (_, row) => visible[row] ?? ""), this.listFooter(rows.length, width)].map((line) => fitLine(line, width));
 	}
 
-	/** Open threads first, then closed ones, each under a quiet count. */
-	private listLines(rows: readonly CollaborationSummary[], width: number): { lines: string[]; blocks: Array<{ id: string; start: number; size: number }> } {
-		const theme = this.options.theme;
+	/** Open threads first, then the closed disclosure and its expanded group. Find reveals every match. */
+	private listLines(rows: readonly CollaborationSummary[], width: number): { lines: string[]; blocks: Array<{ id: string; start: number; size: number }>; disclosure?: number } {
+		const key = this.listKey(rows, width);
+		if (this.listCache?.key === key) return this.listCache.value;
 		const lines: string[] = [];
 		const blocks: Array<{ id: string; start: number; size: number }> = [];
-		const open = rows.filter((row) => !row.closed).length;
-		let section: boolean | undefined;
-		for (const row of rows) {
-			if (section !== row.closed) {
-				section = row.closed;
-				lines.push(theme.fg("muted", row.closed ? ` Closed ${rows.length - open}` : ` Open ${open}`));
-			}
+		const searching = Boolean(this.find.value.trim());
+		const open = rows.filter((row) => !row.closed);
+		const closed = rows.filter((row) => row.closed);
+		const visible = searching ? rows : [...open, ...(this.closedExpanded ? closed : [])];
+		let disclosure: number | undefined;
+		for (const row of visible) {
 			blocks.push({ id: row.id, start: lines.length, size: 3 });
 			lines.push(...this.threadBlock(row, width));
+			if (!searching && closed.length && row === open.at(-1)) {
+				disclosure = lines.length;
+				lines.push(this.closedDisclosure(closed.length, width), "");
+			}
 		}
-		return { lines, blocks };
+		if (!searching && !open.length && closed.length) {
+			disclosure = lines.length;
+			lines.push(this.closedDisclosure(closed.length, width), "");
+		}
+		const value = { lines, blocks, disclosure };
+		this.listCache = { key, value };
+		return value;
 	}
 
-	/** After a selection change the list scrolls just enough to show the selected thread. */
-	private revealSelection(blocks: ReadonlyArray<{ id: string; start: number; size: number }>, room: number): void {
-		const selected = blocks.find((block) => block.id === this.options.state.selected);
-		if (!this.listReveal || !selected) return;
+	/** Content, width, selection, disclosure, Find, exact time and the relative-time minute. */
+	private listKey(rows: readonly CollaborationSummary[], width: number): string {
+		const contents = rows.map((row) => `${row.id}:${row.updatedAt}:${row.closed}:${row.members}:${row.title}:${row.purpose}`).join("|");
+		return [contents, width, this.options.state.selected, this.closedExpanded, this.closedFocused, this.find.value, this.options.exactTime(), Math.floor(Date.now() / 60_000)].join("#");
+	}
+
+	/** One muted disclosure row for the closed group; accent while it owns keyboard focus. */
+	private closedDisclosure(count: number, width: number): string {
+		const theme = this.options.theme;
+		const text = ` ${this.closedExpanded ? "▾" : "▸"} Closed · ${count}`;
+		if (!this.closedFocused) return theme.fg("muted", text);
+		return theme.bg("selectedBg", fitLine(theme.fg("accent", text), width));
+	}
+
+	/** After a selection change the list scrolls just enough to show the selected thread or the disclosure. */
+	private revealSelection(blocks: ReadonlyArray<{ id: string; start: number; size: number }>, room: number, disclosure?: number): void {
+		if (!this.listReveal) return;
+		const selected = this.closedFocused && disclosure !== undefined ? { start: disclosure, size: 1 } : blocks.find((block) => block.id === this.options.state.selected);
+		if (!selected) return;
 		if (selected.start < this.listScroll) this.listScroll = Math.max(0, selected.start - 1);
 		else if (selected.start + selected.size > this.listScroll + room) this.listScroll = selected.start + selected.size - room;
 		this.listReveal = false;
 	}
 
-	private listFooter(count: number): string {
+	private listFooter(count: number, width: number): string {
 		const theme = this.options.theme;
-		if (this.listError) return theme.fg("warning", this.listError);
-		if (count) return theme.fg("muted", `${count} thread${count === 1 ? "" : "s"}${this.loading ? " · reading…" : ""}`);
+		if (this.listError) return theme.fg("warning", clip(this.listError, width));
+		if (count) return theme.fg("muted", clip(`${count} thread${count === 1 ? "" : "s"}${this.loading ? " · reading…" : ""}`, width));
 		if (this.loading || !this.loadedOnce) return theme.fg("muted", "Reading threads…");
-		return theme.fg("muted", this.find.value ? `No thread matches “${oneLine(this.find.value)}”.` : "No threads yet.");
+		return theme.fg("muted", clip(this.find.value ? `No thread matches “${oneLine(this.find.value)}”.` : "No threads yet.", width));
 	}
 
 	private threadBlock(row: CollaborationSummary, width: number): string[] {
 		const theme = this.options.theme;
-		const chosen = row.id === this.options.state.selected;
+		const chosen = row.id === this.options.state.selected && !this.closedFocused;
 		const rail = chosen ? theme.fg("accent", "▌ ") : "  ";
 		const glyph = row.closed ? theme.fg("muted", "○ ") : theme.fg("success", "● ");
 		const time = dashboardTime(row.updatedAt, this.options.exactTime());
@@ -643,14 +713,14 @@ export class ThreadsView {
 		const lines = [
 			`${fitLine(first, width - visibleWidth(time) - 1)}${theme.fg("muted", time)} `,
 			`${rail}  ${theme.fg("muted", truncateToWidth(oneLine(row.purpose) || "No purpose stated", Math.max(1, width - 4), "…"))}`,
-			`${rail}  ${theme.fg("dim", `${row.members} member${row.members === 1 ? "" : "s"}`)}`,
 		];
-		return chosen ? lines.map((line) => theme.bg("selectedBg", fitLine(line, width))) : lines;
+		// Two quiet lines and a spacing line; the selected background covers only the content lines.
+		return [...(chosen ? lines.map((line) => theme.bg("selectedBg", fitLine(line, width))) : lines), ""];
 	}
 
 	private renderThread(x0: number, width: number, height: number, narrow = false): string[] {
 		const id = this.options.state.selected;
-		if (!id) return this.emptyThread(height);
+		if (!id) return this.emptyThread(width, height);
 		const read = this.reads.get(id);
 		const summary = this.threads.get(id);
 		const closed = read?.page.thread.closed ?? summary?.closed ?? false;
@@ -662,7 +732,7 @@ export class ThreadsView {
 		return [...header, ...Array.from({ length: middleHeight }, (_, row) => middle[row] ?? ""), ...composer].slice(0, height);
 	}
 
-	/** Title, state and the panel controls; the purpose line; a notice; the rule above the exchange. */
+	/** Two header lines: title and controls, then state, counts and one purpose preview. */
 	private threadHeader(read: ThreadRead | undefined, summary: CollaborationSummary | undefined, x0: number, width: number, narrow: boolean, closed: boolean): string[] {
 		const theme = this.options.theme;
 		const back = narrow ? "‹ Threads " : "";
@@ -672,8 +742,9 @@ export class ThreadsView {
 		const controls = this.panelControls();
 		const controlText = controls.map(([, label]) => ` ${label} `);
 		const controlWidth = controlText.reduce((sum, text) => sum + visibleWidth(text), 0);
-		const state = theme.fg("muted", ` · ${closed ? "Closed" : "Open"} · ${members} member${members === 1 ? "" : "s"}`);
-		const left = `${theme.fg("accent", back)} ${theme.bold(theme.fg("text", title))}${state}`;
+		const leftRoom = Math.max(1, width - controlWidth);
+		const titleRoom = Math.max(1, leftRoom - visibleWidth(back) - 1);
+		const left = `${theme.fg("accent", back)} ${theme.bold(theme.fg("text", clip(title, titleRoom)))}`;
 		let x = x0 + Math.max(0, width - controlWidth);
 		controls.forEach(([panel], index) => {
 			const w = visibleWidth(controlText[index] ?? "");
@@ -682,10 +753,14 @@ export class ThreadsView {
 		});
 		const paint = (text: string, index: number) => (this.region === "controls" && index === this.controlIndex ? theme.bg("selectedBg", theme.bold(theme.fg("accent", text))) : theme.fg("accent", text));
 		const header = [`${fitLine(left, Math.max(1, width - controlWidth))}${controlText.map(paint).join("")}`];
+		const posts = read ? `${read.events.length} ${read.nextBefore ? "loaded " : ""}post${read.events.length === 1 ? "" : "s"}` : "";
+		const counts = [closed ? "Closed" : "Open", `${members} member${members === 1 ? "" : "s"}`, posts].filter(Boolean).join(" · ");
 		const purpose = oneLine(read?.page.thread.purpose ?? summary?.purpose ?? "");
-		if (purpose) header.push(theme.fg("muted", ` ${truncateToWidth(purpose, Math.max(1, width - 2), "…")}`));
-		if (this.notice) header.push(this.noticeLine(width));
-		header.push(theme.fg("borderMuted", "─".repeat(Math.max(1, width))));
+		const detail = this.notice ? oneLine(this.notice.text) : purpose;
+		const line = ` ${counts}${detail ? ` · ${detail}` : ""}`;
+		header.push(theme.fg(this.notice ? "error" : "muted", truncateToWidth(line, Math.max(1, width - 1), "…")));
+		// One blank row separates the header from the exchange.
+		header.push("");
 		return header;
 	}
 
@@ -696,35 +771,37 @@ export class ThreadsView {
 		return this.renderExchange(read, x0, y0, width, height);
 	}
 
-	private emptyThread(height: number): string[] {
+	private emptyThread(width: number, height: number): string[] {
 		const theme = this.options.theme;
 		const lines = [
-			` ${theme.bold("No thread selected")}`,
+			` ${theme.bold(clip("No thread selected", width - 1))}`,
 			"",
-			theme.fg("muted", this.threads.size ? " Select a thread in the list to read it." : this.loadedOnce ? " No threads yet. Agents create threads when they collaborate." : " Reading threads…"),
+			theme.fg("muted", ` ${clip(this.threads.size ? "Select a thread in the list to read it." : this.loadedOnce ? "No threads yet. Agents create threads when they collaborate." : "Reading threads…", width - 1)}`),
 		];
 		return Array.from({ length: height }, (_, row) => lines[row] ?? "");
-	}
-
-	private noticeLine(width: number): string {
-		const notice = this.notice;
-		if (!notice) return "";
-		const colour = notice.kind === "error" ? "error" : notice.kind === "warning" ? "warning" : notice.kind === "success" ? "success" : "muted";
-		return this.options.theme.fg(colour, ` ${truncateToWidth(oneLine(notice.text), Math.max(1, width - 2), "…")}`);
 	}
 
 	/** The exchange, newest at the bottom. Scrolling to the top offers earlier messages. */
 	private renderExchange(read: ThreadRead, x0: number, y0: number, width: number, height: number): string[] {
 		const theme = this.options.theme;
-		const lines: string[] = [read.nextBefore ? theme.fg("accent", " ↑ Earlier messages") : theme.fg("muted", " Start of the thread")];
+		const pad = " ".repeat(readingGeometry(width).margin);
+		const lines: string[] = [read.nextBefore ? theme.fg("accent", `${pad}↑ Earlier messages`) : theme.fg("muted", `${pad}Start of the thread`)];
 		const targets: Array<{ line: number; event: CollaborationEvent }> = [];
 		const events = new Map(read.events.map((event) => [event.sequence, event]));
+		const cacheKey = this.exchangeKey(read, width);
+		if (this.exchangeCache?.key !== cacheKey) this.exchangeCache = { key: cacheKey, lines: new Map() };
 		for (const event of read.events) {
 			lines.push("");
 			targets.push({ line: lines.length, event });
-			lines.push(...this.eventLines(event, events, width));
+			const cached = this.exchangeCache.lines.get(event.sequence);
+			if (cached) lines.push(...cached);
+			else {
+				const rendered = this.eventLines(event, events, width);
+				this.exchangeCache.lines.set(event.sequence, rendered);
+				lines.push(...rendered);
+			}
 		}
-		if (!read.events.length) lines.push("", theme.fg("muted", " No messages yet."));
+		if (!read.events.length) lines.push("", theme.fg("muted", `${pad}No messages yet.`));
 		lines.push("");
 		this.exchangeMax = Math.max(0, lines.length - height);
 		this.exchangeBack = Math.min(this.exchangeBack, this.exchangeMax);
@@ -738,21 +815,77 @@ export class ThreadsView {
 		return lines.slice(start, start + height).map((line) => fitLine(line, width));
 	}
 
-	/** One message: who, what kind, which message it answers and when; then its text and who it woke. */
+	/**
+	 * One entry. Contributions and carried authority show their full post; structural events show one
+	 * muted line so the frame and member contributions stay out of the exchange.
+	 */
 	private eventLines(event: CollaborationEvent, events: ReadonlyMap<number, CollaborationEvent>, width: number): string[] {
+		// A close keeps its muted state line and shows why the thread ended as post text.
+		if (event.kind === "close") return [...(this.structuralEventLine(event, width) ?? []), ...this.postBody(event, width)];
+		const structural = this.structuralEventLine(event, width);
+		return structural ?? this.postLines(event, events, width);
+	}
+
+	/** A create, revise, join, leave or close event as one muted line. */
+	private structuralEventLine(event: CollaborationEvent, width: number): string[] | undefined {
+		const label = STRUCTURAL_EVENTS[event.kind];
+		if (!label) return undefined;
+		const { margin, textWidth } = readingGeometry(width);
+		const time = dashboardTime(event.at, this.options.exactTime());
+		const text = `${this.name(event.sender)} ${label} · ${time}`;
+		return [this.options.theme.fg("muted", `${" ".repeat(margin)}${clip(text, textWidth)}`)];
+	}
+
+	/** A contribution or carried authority: bold sender, muted metadata, then the wrapped post. */
+	private postLines(event: CollaborationEvent, events: ReadonlyMap<number, CollaborationEvent>, width: number): string[] {
 		const theme = this.options.theme;
-		const kind = event.kind === "contribution" ? "" : theme.fg("muted", ` ${KIND_LABEL[event.kind] ?? oneLine(event.kind)}`);
-		const origin = event.origin === "operator" ? theme.fg("muted", " (operator)") : "";
-		const parent = event.replyTo ? events.get(event.replyTo) : undefined;
-		const answered = parent ? this.name(parent.sender) : `#${event.replyTo}`;
-		const reply = event.replyTo ? theme.fg("dim", ` ↳ ${answered}`) : "";
-		const marked = this.draft()?.replyTo === event.sequence ? theme.fg("accent", " ◂ replying") : "";
-		const time = theme.fg("dim", dashboardTime(event.at, this.options.exactTime()));
-		const lines = [` ${theme.bold(theme.fg("accent", this.name(event.sender)))}${origin}${kind}${reply}  ${time}${marked}`];
-		const text = plainThreadText(event.message).trim();
-		for (const line of text ? text.split("\n") : []) lines.push(...wrapTextWithAnsi(line, Math.max(1, width - 3)).map((part) => `   ${part}`));
-		if (event.notify.length) lines.push(theme.fg("dim", `   notified ${event.notify.map((id) => this.name(id)).join(", ")}`));
+		const { margin, textWidth } = readingGeometry(width);
+		const pad = " ".repeat(margin);
+		const time = dashboardTime(event.at, this.options.exactTime());
+		const marked = this.draft()?.replyTo === event.sequence ? theme.fg("accent", " · replying") : "";
+		const head = `${theme.bold(theme.fg("text", this.name(event.sender)))}${this.eventMetadata(event)}${marked}`;
+		const timeText = theme.fg("muted", `  ${time}`);
+		const headWidth = Math.max(1, textWidth - visibleWidth(timeText));
+		const lines = [`${pad}${fitLine(clip(head, headWidth), headWidth)}${timeText}`];
+		if (event.replyTo) lines.push(theme.fg("muted", `${pad}${clip(`↳ ${this.replyTarget(event, events)}`, textWidth)}`));
+		lines.push(...this.postBody(event, width));
+		if (event.notify.length) lines.push(theme.fg("muted", `${pad}${clip(`notified ${event.notify.map((id) => this.name(id)).join(", ")}`, textWidth)}`));
 		return lines;
+	}
+
+	/** Post text at the shared reading width, with blank rows inside the post preserved. */
+	private postBody(event: CollaborationEvent, width: number): string[] {
+		const { margin, textWidth } = readingGeometry(width);
+		const pad = " ".repeat(margin);
+		const text = plainThreadText(event.message).trim();
+		const lines: string[] = [];
+		for (const source of text ? text.split("\n") : []) {
+			if (!source.trim()) {
+				lines.push("");
+				continue;
+			}
+			lines.push(...wrapTextWithAnsi(source, textWidth).map((part) => `${pad}${part}`));
+		}
+		return lines;
+	}
+
+	/** Operator origin and event kind, all muted. */
+	private eventMetadata(event: CollaborationEvent): string {
+		const theme = this.options.theme;
+		const kind = event.kind === "contribution" ? "" : theme.fg("muted", ` · ${KIND_LABEL[event.kind] ?? oneLine(event.kind)}`);
+		const origin = event.origin === "operator" ? theme.fg("muted", " · operator") : "";
+		return `${origin}${kind}`;
+	}
+
+	private replyTarget(event: CollaborationEvent, events: ReadonlyMap<number, CollaborationEvent>): string {
+		const parent = event.replyTo ? events.get(event.replyTo) : undefined;
+		return parent ? this.name(parent.sender) : `#${event.replyTo}`;
+	}
+
+	/** Event identities, width, reply target, names, exact time and the minute. */
+	private exchangeKey(read: ThreadRead, width: number): string {
+		const names = read.events.map((event) => `${this.name(event.sender)}:${event.notify.map((id) => this.name(id)).join(",")}`).join("|");
+		return [read.page.thread.id, width, this.options.exactTime(), this.draft()?.replyTo ?? "", names, Math.floor(Date.now() / 60_000), read.events.map((event) => event.sequence).join(",")].join("#");
 	}
 
 	private renderMembers(read: ThreadRead, x0: number, y0: number, width: number, height: number): string[] {
@@ -765,7 +898,7 @@ export class ThreadsView {
 			const y = lines.length;
 			const box = this.canPost() ? `${ticked} ` : "";
 			const marker = this.region === "exchange" && index === this.memberIndex ? theme.fg("accent", "›") : " ";
-			lines.push(`${marker}${theme.fg("accent", box)}${theme.bold(this.name(member.identity))}`);
+			lines.push(`${marker}${theme.fg("accent", box)}${theme.bold(clip(this.name(member.identity), width - 3 - visibleWidth(box)))}`);
 			lines.push(theme.fg("muted", `     ${truncateToWidth(oneLine(member.contribution) || "No contribution declared", Math.max(1, width - 6), "…")}`));
 			if (y < height) {
 				if (box) this.hits.add({ x: x0 + 1, y: y0 + y, width: 4, height: 1, click: () => this.toggleNotify(member.identity) });
@@ -806,7 +939,7 @@ export class ThreadsView {
 		if (draft?.replyTo) parts.push(`reply to #${draft.replyTo}`);
 		if (draft?.notify.length) parts.push(`wakes ${draft.notify.length}`);
 		const caption = `Post to ${title}`;
-		return this.composer.render(width, caption, parts.join(" · "), draft?.pending ? "Posting…" : "", ["Send"]);
+		return this.composer.render(width, caption, parts.join(" · "), draft?.pending ? "Posting…" : this.receipt?.text ?? "", ["Send"]);
 	}
 
 	private composerHits(x0: number, y0: number, width: number, rows: number): void {
@@ -831,6 +964,8 @@ export class ThreadsView {
 
 	invalidate(): void {
 		this.hits.clear();
+		this.listCache = undefined;
+		this.exchangeCache = undefined;
 		this.composer.invalidate();
 	}
 
@@ -838,5 +973,7 @@ export class ThreadsView {
 		this.disposed = true;
 		this.generation++;
 		this.readGeneration++;
+		this.listCache = undefined;
+		this.exchangeCache = undefined;
 	}
 }

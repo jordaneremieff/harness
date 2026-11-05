@@ -10,8 +10,9 @@ import {
 	getMarkdownTheme,
 	type ToolRenderers,
 } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth, type Component, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry } from "./dashboard-types.ts";
+import { readingGeometry } from "./dashboard-layout.ts";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import type { AgentReadingState } from "./dashboard-state.ts";
 import { awaitFactLines, type AwaitFact } from "./await-facts.ts";
@@ -24,6 +25,21 @@ export function cleanDashboardText(text: string): string {
 	return stripVTControlCharacters(text).replace(/[\p{Cc}\p{Cf}]/gu, (char) =>
 		char === "\n" || char === "\t" ? char : "",
 	);
+}
+
+/** Blank rows at a component's edge are removed; the transcript owns the one shared gap. */
+function trimBlankRows(lines: string[]): { lines: string[]; top: number } {
+	const blank = (line: string) => stripVTControlCharacters(line).trim() === "";
+	let start = 0;
+	let end = lines.length;
+	while (start < end && blank(lines[start])) start++;
+	while (end > start && blank(lines[end - 1])) end--;
+	return { lines: lines.slice(start, end), top: start };
+}
+
+function fitText(line: string, width: number): string {
+	const value = truncateToWidth(line, Math.max(1, width), "…");
+	return value + " ".repeat(Math.max(0, width - visibleWidth(value)));
 }
 
 /** Render callbacks receive sanitized display data, never signatures or image payloads. */
@@ -51,6 +67,8 @@ function displayObject(value: object, depth: number): unknown {
 export interface ConversationBlock {
 	id: string;
 	component: Component;
+	/** Blocks from one entry, and the tool calls it issued, form one visual step. */
+	step?: string;
 }
 export interface ConversationDocument {
 	lines: string[];
@@ -63,7 +81,13 @@ class ReadingToolComponent extends ToolExecutionComponent {
 	onInvalidate?: () => void;
 	override render(width: number): string[] {
 		const lines = super.render(width);
-		return this.argumentsError === undefined ? lines : [...lines, truncateToWidth(`Arguments error: ${cleanDashboardText(this.argumentsError).replace(/\s+/gu, " ")}`, width)];
+		if (this.argumentsError === undefined) return lines;
+		const note = ` · Arguments error: ${cleanDashboardText(this.argumentsError).replace(/\s+/gu, " ")}`;
+		const index = lines.findIndex((line) => stripVTControlCharacters(line).trim().length > 0);
+		if (index < 0) return [truncateToWidth(note.trim(), Math.max(1, width), "…")];
+		const next = [...lines];
+		next[index] = truncateToWidth(`${next[index]}${note}`, Math.max(1, width), "…");
+		return next;
 	}
 	override invalidate(): void {
 		super.invalidate();
@@ -122,9 +146,17 @@ export function renderableEntries(entries: readonly AgentConversationEntry[]): A
 	});
 }
 
+/** The first non-empty line of a task, without Markdown heading marks, bounded for one row. */
+function firstTaskLine(text: string): string {
+	const line = text.split("\n").map((part) => part.replace(/^#+\s*/u, "").trim()).find((part) => part.length > 0) ?? "";
+	const characters = Array.from(line);
+	return characters.length > 160 ? `${characters.slice(0, 159).join("")}…` : line;
+}
+
 /**
  * Historical first input recovered from the session summary when the bounded
  * transcript dropped the oldest entries. It is not the current task or role.
+ * It shows as one line; the agent's Details keep the whole text.
  */
 export function firstTaskEntry(
 	snapshot: { readonly entries: readonly AgentConversationEntry[]; readonly partial: boolean },
@@ -142,7 +174,7 @@ export function firstTaskEntry(
 		id: "first-task",
 		kind: AGENT_INPUT_KIND,
 		data: { author: { role: "unknown" } },
-		model: [{ role: "user", content: `Historical first input:\n${row?.firstMessage ?? first}`, timestamp: 0 }],
+		model: [{ role: "user", content: `First task · ${firstTaskLine(first)}`, timestamp: 0 }],
 	};
 }
 
@@ -165,9 +197,10 @@ export class AgentConversation {
 	private readonly unmatched = new Map<string, ReadingToolComponent>();
 	private readonly nestedTools = new Map<string, ReadingToolComponent>();
 	private readonly assistants = new Map<string, AssistantMessageComponent>();
-	private readonly rendered = new Map<Component, { width: number; lines: string[] }>();
+	private readonly rendered = new Map<Component, { width: number; lines: string[]; top: number }>();
+	/** Final rows: trimmed content at the reading width, with the shared leading gap and margin. */
+	private readonly rows = new Map<Component, { width: number; gap: number; lines: string[] }>();
 	private signatures: string[] = [];
-	private readonly heights = new Map<Component, { width: number; height: number }>();
 	private readonly definitions: ReturnType<typeof createDashboardToolDefinitions>;
 	private readonly reading: Pick<AgentReadingState, "toolExpanded">;
 	private readonly tools = new Map<string, ReadingToolComponent>();
@@ -228,7 +261,7 @@ export class AgentConversation {
 			tool.updateResult({ content: [], isError: false }, true);
 			this.resultKeys.delete(tool);
 			this.rendered.delete(tool);
-			this.heights.delete(tool);
+			this.rows.delete(tool);
 		}
 		this.entryBlocks = next;
 		this.signatures = signatures;
@@ -247,18 +280,27 @@ export class AgentConversation {
 		for (const { component } of this.blocks) {
 			if (component instanceof ToolExecutionComponent || component instanceof CustomMessageComponent) component.setExpanded(expanded);
 		}
-		this.rendered.clear();
-		this.heights.clear();
+		this.clearLayoutCache();
 	}
 	/** Observed roster facts changed: agent cards repaint through their renderers with the current lookup. */
 	refreshCards(): void {
 		for (const component of this.agentCards) component.invalidate();
 	}
+	/** A global thinking change reaches every retained native assistant and clears its per-run choices. */
 	setShowThinking(show: boolean): void {
 		this.showThinking = show;
 		for (const component of this.assistants.values()) component.setHideThinkingBlock(!show);
+		this.clearLayoutCache();
+	}
+	private clearLayoutCache(): void {
 		this.rendered.clear();
-		this.heights.clear();
+		this.rows.clear();
+	}
+	private assistant(message: AssistantMessage, live: boolean): AssistantMessageComponent {
+		const component = new AssistantMessageComponent(undefined, !this.showThinking, getMarkdownTheme(), "▸ Thinking");
+		component.setOutputPad(0);
+		component.updateContent(message, live);
+		return component;
 	}
 	/** Move a live instance to its committed entry without replaying its private choices. */
 	renameEntry(previous: string, next: string): void {
@@ -275,13 +317,13 @@ export class AgentConversation {
 		const signature = JSON.stringify(fact) ?? "";
 		if (signature === this.awaitingSignature && this.blocks.some((block) => block.id === id) === (fact !== undefined)) return;
 		this.blocks = this.blocks.filter((block) => block.id !== id);
-		if (fact !== undefined) this.blocks.push({ id, component: new Text(awaitFactLines(fact).map(cleanDashboardText).join("\n"), 1, 1) });
+		if (fact !== undefined) this.blocks.push({ id, component: new Text(awaitFactLines(fact).map(cleanDashboardText).join("\n"), 0, 0), step: id });
 		this.awaitingSignature = signature;
 		this.pruneComponents();
 	}
 	private pruneComponents(): void {
 		const retained = new Set(this.blocks.map((block) => block.component));
-		const caches: Array<{ keys(): Iterable<Component>; delete(component: Component): boolean }> = [this.agentCards, this.rendered, this.heights];
+		const caches: Array<{ keys(): Iterable<Component>; delete(component: Component): boolean }> = [this.agentCards, this.rendered, this.rows];
 		for (const cache of caches) {
 			for (const component of [...cache.keys()]) if (!retained.has(component)) cache.delete(component);
 		}
@@ -329,45 +371,52 @@ export class AgentConversation {
 		if (retained) {
 			component.updateArgs(part.arguments);
 			this.rendered.delete(component);
-			this.heights.delete(component);
+			this.rows.delete(component);
 		}
 		this.callCards.set(part.id, { signature, component });
 		return component;
 	}
+	/** Blocks from one entry share its step, so the transcript adds no blank row inside an entry. */
 	private appendEntry(source: AgentConversationEntry): void {
+		const start = this.blocks.length;
 		try {
-			const communication = parseCommunicationView(source.communication);
-			if (communication?.state === "ready") {
-				this.blocks.push({ id: source.id, component: this.communicationCard(source.id, communication.value) });
-				return;
-			}
-			if (communication?.state === "unavailable") this.blocks.push({ id: `${source.id}:communication`, component: new Text(`[Communication metadata unavailable: ${communication.reason}]`, 1, 0) });
-			const entry = displayValue(source) as AgentConversationEntry;
-			const nested = liveNestedTool(entry);
-			if (nested) {
-				this.appendNestedTool(entry.id, nested);
-				return;
-			}
-			if (entry.kind === "pi.custom_message" && this.renderCustom) {
-				const component = this.renderCustom(entry);
-				if (component) {
-					this.blocks.push({ id: entry.id, component });
-					return;
-				}
-			}
-			if (entry.kind === "pi.compaction") {
-				this.appendCompaction(entry);
-				return;
-			}
-			if (entry.kind === "pi.reset")
-				this.blocks.push({ id: `${entry.id}:reset`, component: new Text("── New context ──", 1, 1) });
-			let assistantIndex = 0;
-			for (const message of entry.model ?? []) {
-				if (message.role === "assistant") this.appendAssistant(entry.id, message, assistantIndex++);
-				else this.appendMessage(entry.id, message);
-			}
+			this.appendEntryBlocks(source);
 		} catch {
-			this.blocks.push({ id: source.id, component: new Text("[Message unavailable: invalid stored content]", 1, 1) });
+			this.blocks.push({ id: source.id, component: new Text("[Message unavailable: invalid stored content]", 0, 0) });
+		} finally {
+			for (let index = start; index < this.blocks.length; index++) this.blocks[index].step = source.id;
+		}
+	}
+	private appendEntryBlocks(source: AgentConversationEntry): void {
+		const communication = parseCommunicationView(source.communication);
+		if (communication?.state === "ready") {
+			this.blocks.push({ id: source.id, component: this.communicationCard(source.id, communication.value) });
+			return;
+		}
+		if (communication?.state === "unavailable") this.blocks.push({ id: `${source.id}:communication`, component: new Text(`[Communication metadata unavailable: ${communication.reason}]`, 0, 0) });
+		const entry = displayValue(source) as AgentConversationEntry;
+		const nested = liveNestedTool(entry);
+		if (nested) {
+			this.appendNestedTool(entry.id, nested);
+			return;
+		}
+		if (entry.kind === "pi.custom_message" && this.renderCustom) {
+			const component = this.renderCustom(entry);
+			if (component) {
+				this.blocks.push({ id: entry.id, component });
+				return;
+			}
+		}
+		if (entry.kind === "pi.compaction") {
+			this.appendCompaction(entry);
+			return;
+		}
+		if (entry.kind === "pi.reset")
+			this.blocks.push({ id: `${entry.id}:reset`, component: new Text("── New context ──", 0, 0) });
+		let assistantIndex = 0;
+		for (const message of entry.model ?? []) {
+			if (message.role === "assistant") this.appendAssistant(entry.id, message, assistantIndex++);
+			else this.appendMessage(entry.id, message);
 		}
 	}
 	/**
@@ -406,14 +455,14 @@ export class AgentConversation {
 			display: true,
 			timestamp: entryTimestamp(entry),
 		};
-		const component = new CustomMessageComponent(message, undefined, getMarkdownTheme());
+		const component = new CustomMessageComponent(message, undefined, getMarkdownTheme(), 0);
 		component.setExpanded(this.expanded);
 		this.blocks.push({ id: entry.id, component });
 	}
 	private tool(name: string, id: string, args: unknown, known = true): ReadingToolComponent {
 		const definition = this.definitions(name, known);
 		const tool = new ReadingToolComponent(name, id, args, { showImages: false }, definition, this.tui, this.cwd);
-		tool.onInvalidate = () => { this.rendered.delete(tool); this.heights.delete(tool); };
+		tool.onInvalidate = () => { this.rendered.delete(tool); this.rows.delete(tool); };
 		if (agentCardNames.has(name)) this.agentCards.add(tool);
 		tool.setExpanded(this.reading.toolExpanded.get(id) ?? this.expanded);
 		return tool;
@@ -422,12 +471,13 @@ export class AgentConversation {
 		const key = assistantIndex === 0 ? id : `${id}:assistant:${assistantIndex}`;
 		let component = this.assistants.get(key);
 		if (!component) {
-			component = new AssistantMessageComponent(undefined, !this.showThinking, getMarkdownTheme(), "Thinking...");
+			component = this.assistant(message, id.startsWith("live:"));
 			this.assistants.set(key, component);
+		} else {
+			component.updateContent(message, id.startsWith("live:"));
 		}
-		component.updateContent(message, id.startsWith("live:"));
 		this.rendered.delete(component);
-		this.heights.delete(component);
+		this.rows.delete(component);
 		this.blocks.push({ id: key, component });
 		for (const part of message.content) {
 			if (part.type !== "toolCall") continue;
@@ -461,7 +511,7 @@ export class AgentConversation {
 		if (slot.status !== "pending") tool.markExecutionStarted();
 		const status = slot.status !== "done" ? slot.status : slot.summary ? slot.summary.isError ? "error" : "ok" : "done (result unavailable)";
 		const duration = slot.summary?.durationMs === undefined ? "" : ` ${slot.summary.durationMs}ms`;
-		this.blocks.push({ id: `${id}:parent`, component: new Text(`Nested tool ${slot.callId} under ${slot.parentCallId}: ${status}${duration}`, 1, 0) });
+		this.blocks.push({ id: `${id}:parent`, component: new Text(`Nested tool ${slot.callId} under ${slot.parentCallId}: ${status}${duration}`, 0, 0) });
 		tool.updateResult({
 			content: slot.output ? [{ type: "text", text: slot.output }] : slot.summary?.error ? [{ type: "text", text: slot.summary.error }] : [],
 			details: slot.details,
@@ -471,7 +521,7 @@ export class AgentConversation {
 		this.tools.set(slot.callId, tool);
 		this.blocks.push({ id, component: tool });
 		this.rendered.delete(tool);
-		this.heights.delete(tool);
+		this.rows.delete(tool);
 	}
 
 	private appendResult(id: string, message: ToolResultMessage, partial = false): void {
@@ -489,7 +539,7 @@ export class AgentConversation {
 		tool.updateResult(message, partial);
 		this.resultKeys.set(tool, signature);
 		this.rendered.delete(tool);
-		this.heights.delete(tool);
+		this.rows.delete(tool);
 	}
 	private appendMessage(id: string, message: Message): void {
 		const markdown = getMarkdownTheme();
@@ -503,37 +553,77 @@ export class AgentConversation {
 				return;
 			case "user":
 				// Host routes live in structured request context; routing-looking user text stays user text.
-				component = new UserMessageComponent(contentText(message.content), markdown);
+				{
+					const user = new UserMessageComponent(contentText(message.content), markdown);
+					user.setOutputPad(0);
+					component = user;
+				}
 				break;
 			case "system": {
 				const text = contentText(message.content).trim();
-				if (text) component = new Text(text, 1, 1);
+				if (text) component = new Text(text, 0, 0);
 				break;
 			}
 		}
 		if (component) this.blocks.push({ id, component });
 	}
 
+	private readingWidth(width: number): { margin: number; textWidth: number } {
+		// The dashboard passes its pane width minus the scrollbar column; the helper expects the pane.
+		return readingGeometry(width + 1);
+	}
+	/** Trimmed component rows at the reading width. The margin and the shared gap are added in `blockRows`. */
 	private blockLines(component: Component, width: number): string[] {
 		const cached = this.rendered.get(component);
 		if (cached?.width === width) return cached.lines;
-		let lines: string[];
+		const { margin, textWidth } = this.readingWidth(width);
+		let trimmed: { lines: string[]; top: number };
 		try {
-			lines = component.render(width);
+			trimmed = trimBlankRows(component.render(textWidth));
 		} catch {
-			lines = ["[Message unavailable: renderer rejected stored content]"];
+			trimmed = { lines: ["[Message unavailable: renderer rejected stored content]"], top: 0 };
 		}
-		this.rendered.set(component, { width, lines });
-		this.heights.set(component, { width, height: lines.length });
+		const pad = " ".repeat(margin);
+		const lines = trimmed.lines.map((line) => pad + fitText(line, textWidth));
+		this.rendered.set(component, { width, lines, top: trimmed.top });
 		return lines;
+	}
+	/** Final rows: one shared blank row before every new step, never two. */
+	private blockRows(component: Component, width: number, gap: number): string[] {
+		const content = this.blockLines(component, width);
+		if (!content.length) return content;
+		const cached = this.rows.get(component);
+		if (cached?.width === width && cached.gap === gap) return cached.lines;
+		const lines = gap ? ["", ...content] : content;
+		this.rows.set(component, { width, gap, lines });
+		return lines;
+	}
+	private contentHeight(component: Component, width: number): number {
+		const cached = this.rendered.get(component);
+		return cached?.width === width ? cached.lines.length : 3;
+	}
+	/** One blank row between steps; blocks from one entry and its tool calls share a step. */
+	private blockGap(index: number, width: number): number {
+		const current = this.blocks[index];
+		if (this.contentHeight(current.component, width) === 0) return 0;
+		for (let previous = index - 1; previous >= 0; previous--) {
+			if (this.contentHeight(this.blocks[previous].component, width) === 0) continue;
+			return this.blocks[previous].step === current.step ? 0 : 1;
+		}
+		return 0;
+	}
+	private blockHeight(index: number, width: number): number {
+		const component = this.blocks[index].component;
+		const gap = this.blockGap(index, width);
+		const content = this.rendered.get(component);
+		if (content?.width === width) return content.lines.length ? content.lines.length + gap : 0;
+		return 3 + gap;
 	}
 	private layout(width: number): { anchors: ConversationDocument["anchors"]; height: number } {
 		let height = 0;
-		const anchors = this.blocks.map(({ id, component }) => {
-			const cached = this.heights.get(component);
-			const count = cached?.width === width ? cached.height : 3;
+		const anchors = this.blocks.map(({ id }, index) => {
 			const anchor = { id, line: height };
-			height += count;
+			height += this.blockHeight(index, width);
 			return anchor;
 		});
 		return { anchors, height };
@@ -550,10 +640,10 @@ export class AgentConversation {
 	private anchorTop(width: number, anchors: ConversationDocument["anchors"], anchor: AgentReadingState["anchor"], requested: number): number {
 		const entry = anchor ? anchors.find((item) => item.id === anchor.id) : undefined;
 		if (!entry || !anchor) return requested;
-		const block = this.blocks.find((block) => block.id === entry.id);
-		if (!block) return requested;
-		this.blockLines(block.component, width);
-		const blockHeight = this.heights.get(block.component)?.height ?? 1;
+		const index = this.blocks.findIndex((block) => block.id === entry.id);
+		if (index < 0) return requested;
+		this.blockLines(this.blocks[index].component, width);
+		const blockHeight = this.blockHeight(index, width);
 		const offset = Math.min(anchor.offset, Math.max(0, blockHeight - 1));
 		return entry.line + offset;
 	}
@@ -584,77 +674,81 @@ export class AgentConversation {
 		const lines = Array.from({ length: height }, () => "");
 		this.blocks.forEach(({ component }, index) => {
 			const start = layout.anchors[index].line;
-			const cached = this.rendered.get(component);
-			if (cached?.width !== width) return;
-			if (start + cached.lines.length <= top || start >= top + height) return;
-			for (let line = Math.max(0, top - start); line < cached.lines.length && start + line < top + height; line++)
-				lines[start + line - top] = cached.lines[line];
+			const measured = this.rendered.get(component);
+			if (measured?.width !== width) return;
+			const rows = this.blockRows(component, width, this.blockGap(index, width));
+			if (start + rows.length <= top || start >= top + height) return;
+			for (let line = Math.max(0, top - start); line < rows.length && start + line < top + height; line++)
+				lines[start + line - top] = rows[line];
 		});
 		this.blocks.forEach(({ component }, index) => {
 			const line = layout.anchors[index].line;
 			const end = layout.anchors[index + 1]?.line ?? Number.MAX_SAFE_INTEGER;
-			if (end < top - 2 * height || line > top + 3 * height) this.rendered.delete(component);
+			if (end < top - 2 * height || line > top + 3 * height) {
+				this.rendered.delete(component);
+				this.rows.delete(component);
+			}
 		});
-		const estimated = this.blocks.some(({ component }) => this.heights.get(component)?.width !== width);
+		const estimated = this.blocks.some(({ component }) => this.rendered.get(component)?.width !== width);
 		return { lines, ...layout, top, estimated };
 	}
 	render(width: number): ConversationDocument {
 		const document: ConversationDocument = { lines: [], anchors: [] };
-		for (const { id, component } of this.blocks) {
-			const lines = this.blockLines(component, width);
-			if (!lines.length) continue;
+		this.blocks.forEach(({ id, component }, index) => {
+			const lines = this.blockRows(component, width, this.blockGap(index, width));
+			if (!lines.length) return;
 			document.anchors.push({ id, line: document.lines.length });
 			document.lines.push(...lines);
-		}
+		});
 		return document;
 	}
-	private toolClick(component: ReadingToolComponent, event: TuiMouseEvent, lines: string[]): boolean {
+	private toolClick(component: ReadingToolComponent, event: TuiMouseEvent): boolean {
 		const call = [...this.tools].find(([, tool]) => tool === component)?.[0];
 		if (!call) return false;
 		const before = component.choice;
-		if (!component.handleMouse(event)?.handled) {
-			// Pi leaves pending cards and box padding unhandled. Empty spacer rows stay outside the card.
-			if (!lines[event.y]) return false;
-			component.setExpanded(!component.choice);
-		}
+		if (!component.handleMouse(event)?.handled) component.setExpanded(!component.choice);
 		if (component.choice !== before) this.reading.toolExpanded.set(call, component.choice);
 		return true;
 	}
-	/** Only measured blocks receive clicks; pending cards include their background padding. */
+	/** The item a measured block reports for one local click, in document coordinates. */
+	private itemFor(component: Component, event: TuiMouseEvent, id: string, line: number, top: number): { id: string; line: number; targetOffset?: number } | undefined {
+		if (component instanceof ReadingToolComponent) return this.toolClick(component, event) ? { id, line } : undefined;
+		if (component instanceof AssistantMessageComponent) {
+			const dispatched = component.handleMouse(event);
+			if (!dispatched?.handled) return undefined;
+			return { id, line, targetOffset: dispatched.target.originY - (event.screenY - event.y) - top };
+		}
+		if (component instanceof CustomMessageComponent) return component.handleMouse(event)?.handled ? { id, line } : undefined;
+		return undefined;
+	}
+	/** Only measured blocks receive clicks; the shared gap row belongs to no block. */
 	handleMouse(event: TuiMouseEvent): { id: string; line: number; targetOffset?: number } | undefined {
 		if (!isItemClick(event)) return;
 		const layout = this.layout(event.width);
 		const index = layout.anchors.findIndex((anchor, index) => {
 			const measured = this.rendered.get(this.blocks[index].component);
-			return measured?.width === event.width && event.y >= anchor.line && event.y < anchor.line + measured.lines.length;
+			return measured?.width === event.width && event.y >= anchor.line && event.y < anchor.line + this.blockHeight(index, event.width);
 		});
 		if (index < 0) return;
 		const { id, component } = this.blocks[index];
 		const line = layout.anchors[index].line;
 		const measured = this.rendered.get(component);
 		if (!measured) return;
-		const local = { ...event, y: event.y - line, height: measured.lines.length };
-		let item: { id: string; line: number; targetOffset?: number } | undefined;
-		if (component instanceof ReadingToolComponent) {
-			if (!this.toolClick(component, local, measured.lines)) return;
-			item = { id, line };
-		} else if (component instanceof AssistantMessageComponent) {
-			const dispatched = component.handleMouse(local);
-			if (!dispatched?.handled) return;
-			item = { id, line, targetOffset: dispatched.target.originY - (local.screenY - local.y) };
-		} else if (component instanceof CustomMessageComponent) {
-			if (!component.handleMouse(local)?.handled) return;
-			item = { id, line };
-		}
+		const gap = this.blockGap(index, event.width);
+		const localY = event.y - line - gap;
+		if (localY < 0) return;
+		const { margin, textWidth } = this.readingWidth(event.width);
+		const local = { ...event, x: event.x - margin, y: localY + measured.top, width: textWidth, height: measured.lines.length + measured.top };
+		if (local.x < 0) return;
+		const item = this.itemFor(component, local, id, line, measured.top);
 		if (!item) return;
 		this.rendered.delete(component);
-		this.heights.delete(component);
+		this.rows.delete(component);
 		this.tui.requestRender();
 		return item;
 	}
 	invalidate(): void {
-		this.rendered.clear();
-		this.heights.clear();
+		this.clearLayoutCache();
 		for (const block of this.blocks) block.component.invalidate();
 	}
 }

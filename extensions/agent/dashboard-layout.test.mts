@@ -3,7 +3,7 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, CURSOR_MARKER } from "@earendil-works/pi-tui";
-import { dashboardGeometry, dashboardHeading } from "./dashboard-layout.ts";
+import { dashboardGeometry, dashboardHeading, readingGeometry } from "./dashboard-layout.ts";
 import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 import { agentState, updateDraft } from "./dashboard-state.ts";
 
@@ -15,11 +15,20 @@ it("the roster stays narrow and owns the full body beside the conversation", () 
 		const geometry = dashboardGeometry(width, 44, 3);
 		assert.equal(geometry.rosterWidth, expected);
 		assert.equal(geometry.wide, true);
-		assert.equal(geometry.paneHeight, 42);
+		assert.equal(geometry.paneHeight, 43);
 		assert.equal(geometry.rosterWidth + geometry.conversationWidth + 1, width);
 	}
 	assert.equal(dashboardGeometry(99, 30, 3).wide, false);
 	assert.equal(dashboardGeometry(164, 44, 3, true).conversationWidth, 164);
+	assert.equal(dashboardGeometry(200, 56, 3, false, 0, 4, { rosterRatio: 0.2727 }).rosterWidth, 40);
+	assert.equal(dashboardGeometry(100, 30, 3, false, 0, 4, { rosterRatio: 0.01 }).rosterWidth, 30);
+});
+
+it("reading geometry keeps a two-column margin and a 100-column text maximum", () => {
+	for (const [paneWidth, textWidth] of [[159, 100], [89, 86], [80, 77], [60, 57]]) {
+		assert.deepEqual(readingGeometry(paneWidth), { margin: 2, textWidth });
+	}
+	assert.deepEqual(readingGeometry(2), { margin: 2, textWidth: 1 });
 });
 
 it("the target header keeps identity and state without activity", async () => {
@@ -30,10 +39,11 @@ it("the target header keeps identity and state without activity", async () => {
 		await turn();
 		f.ui.handleInput("\r");
 		const lines = visible(f.ui.render(60));
-		const header = lines.find((line) => line.includes("● Working") && line.includes("More…")) ?? "";
-		assert.match(header, /Selected recipient/);
-		assert.doesNotMatch(header, /read|long-path/);
-		assert.equal(visibleWidth(header), 60);
+		const title = lines.findIndex((line) => line.includes("Selected recipient") && line.includes("More…"));
+		assert.ok(title > 0);
+		assert.match(lines[title + 1] ?? "", /● Working/);
+		assert.doesNotMatch(lines.slice(title, title + 2).join("\n"), /read|long-path/);
+		assert.equal(visibleWidth(lines[title] ?? ""), 60);
 	} finally { f.ui.dispose(); }
 });
 
@@ -94,9 +104,10 @@ for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of
 			assert.equal(lines.length, height, `${width}x${height} ${focus}`);
 			assert.ok(plain.every((line) => visibleWidth(line) === width));
 			const text = plain.join("\n");
-			assert.match(text, /quota limit/);
-			assert.match(text, /Not connected; stored messages shown/);
-			if (notice) assert.match(text, /Layout could not be saved/);
+			assert.doesNotMatch(text, /quota limit/, "the full error stays in Details");
+			assert.match(text, notice ? /Layout could not be saved/ : /Not connected/);
+			assert.equal(text.split("Not connected").length - 1, notice ? 0 : 1, "one connection notice at most");
+			assert.doesNotMatch(text, /↑↓|pgup|pgdn|enter send|tab next/, "no navigation footer row");
 			const statusY = plain.findIndex((line) => /model │ ~\$0\.42/.test(line));
 			assert.ok(statusY > 0, "the model and cost line stays visible");
 			assert.match(plain[statusY + 1] ?? "", /\/work/);
@@ -118,6 +129,30 @@ for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of
 		} finally { f.ui.dispose(); }
 	});
 }
+it("narrow strips preserve the composer, two status lines and two conversation rows", async () => {
+	for (const [width, height, stripRows, visibleAgents] of [[80, 24, 8, 2], [60, 20, 5, 1]] as const) {
+		const f = fixture(width, height, source([row("one", { modifiedAt: 3 }), row("two", { modifiedAt: 2 }), row("three", { modifiedAt: 1 })]));
+		try {
+			await turn();
+			await turn();
+			const plain = visible(f.ui.render(width));
+			const title = plain.findIndex((line) => line.includes("More…"));
+			assert.equal(title - 1, stripRows, `${width}x${height} list strip`);
+			const strip = plain.slice(1, title).join("\n");
+			assert.match(strip, /one/);
+			assert.equal(strip.includes("two"), visibleAgents === 2);
+			assert.doesNotMatch(strip, /three/);
+			assert.match(strip, /more|\d agents/);
+			const composerTop = plain.findIndex((line) => line.startsWith("╭─ To "));
+			const composerBottom = plain.findIndex((line) => line.startsWith("╰─"));
+			assert.ok(composerTop - title - 3 >= 2, "at least two conversation rows remain");
+			assert.ok(composerBottom > composerTop);
+			assert.match(plain[composerBottom + 1] ?? "", /model │/);
+			assert.match(plain[composerBottom + 2] ?? "", /\/work/);
+		} finally { f.ui.dispose(); }
+	}
+});
+
 const painted = {
 	...theme,
 	fg: (color: string, text: string) => `\x1b[${color === "accent" ? 36 : color === "muted" ? 90 : 37}m${text}\x1b[39m`,

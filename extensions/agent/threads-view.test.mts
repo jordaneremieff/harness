@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import type { TuiMouseEvent } from "@earendil-works/pi-tui";
+import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration.ts";
-import { fixture, row, source, turn } from "./dashboard-test-fixture.mts";
+import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
+import { readingGeometry } from "./dashboard-layout.ts";
 
 const thread = (id: string, patch: Partial<CollaborationSummary> = {}): CollaborationSummary => ({ id, title: `Thread ${id}`, purpose: `Purpose of ${id}`, updatedAt: 1_000, closed: false, members: 2, ...patch });
 
@@ -43,7 +44,7 @@ function page(id: string, events: CollaborationEvent[], patch: Partial<Collabora
 
 type Collaborate = (input: Record<string, unknown>) => Promise<unknown>;
 
-function setup(collaborate: Collaborate, width = 140, height = 40) {
+function setup(collaborate: Collaborate, width = 140, height = 40, paint: typeof theme = theme) {
 	const calls: Record<string, unknown>[] = [];
 	const observed = source([row("one", { name: "Designer" }), row("two", { name: "Reviewer" })]);
 	const f = fixture(width, height, observed, {
@@ -51,7 +52,7 @@ function setup(collaborate: Collaborate, width = 140, height = 40) {
 			calls.push(input);
 			return collaborate(input);
 		},
-	});
+	}, undefined, paint);
 	const text = () => stripVTControlCharacters(f.ui.render(width).join("\n"));
 	const click = (x: number, y: number) => f.ui.handleMouse({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false } as TuiMouseEvent);
 	return { ...f, calls, text, click, width, height };
@@ -79,11 +80,19 @@ it("Threads reads every discovery page itself and lists open threads first, newe
 	await settle();
 	const lines = f.text().split("\n");
 	assert.equal(f.calls.filter((call) => call.action === "list").length, 3, "no Load more: the view follows every cursor");
-	const order = ["Thread new", "Thread old", "Thread done"].map((title) => lines.findIndex((line) => line.includes(title)));
-	assert.ok(order.every((index) => index > 0), lines.join("\n"));
-	assert.ok(order[0] < order[1] && order[1] < order[2], "open threads lead, newest first; closed threads follow");
-	assert.match(f.text(), /Open 2/);
-	assert.match(f.text(), /Closed 1/);
+	assert.ok(lines.findIndex((line) => line.includes("Thread new")) < lines.findIndex((line) => line.includes("Thread old")), "open threads lead, newest first");
+	assert.doesNotMatch(f.text(), /^\s*Open \d+\s*$/m, "no Open section header");
+	assert.doesNotMatch(f.text(), /Thread done/, "closed threads start collapsed");
+	assert.match(f.text(), /▸ Closed · 1/);
+	assert.doesNotMatch(f.text(), /↑↓|tab next|esc back/, "no navigation words");
+	const left = lines.map((line) => line.split("│")[0] ?? line);
+	const newest = left.findIndex((line) => line.includes("Thread new"));
+	assert.match(left[newest + 1] ?? "", /Purpose of new/, "two content lines");
+	assert.equal((left[newest + 2] ?? "").trim(), "", "one blank row between items");
+	f.click(3, lines.findIndex((line) => line.includes("▸ Closed · 1")));
+	await settle();
+	assert.match(f.text(), /▾ Closed · 1/);
+	assert.ok(f.text().indexOf("Thread done") > f.text().indexOf("Thread old"), "closed threads follow the open ones");
 	assert.match(f.text(), /3 threads/);
 });
 
@@ -98,11 +107,21 @@ it("selecting a thread shows its exchange with names, replies and who a post wok
 	f.ui.handleInput("\u001b[B");
 	await settle();
 	const screen = f.text();
-	assert.match(screen, /Thread t1 · Open · 2 members/);
+	const rows = screen.split("\n");
+	assert.match(rows[1] ?? "", /Thread t1/);
+	assert.match(rows[1] ?? "", /Members\s+Details/);
+	assert.match(rows[2] ?? "", /Open · 2 members · 2 posts/);
+	assert.equal(rows[3]?.split("│")[1]?.trim(), "", "one blank row under the header");
 	assert.match(screen, /Reviewer/);
 	assert.match(screen, /Challenge the boundary/);
-	assert.match(screen, /Designer ↳ Reviewer/, "a reply names the message it answers");
+	const replyLine = rows.find((line) => line.includes("↳ Reviewer"));
+	assert.ok(replyLine, "a reply names the message it answers");
+	assert.doesNotMatch(replyLine, /Designer/, "reply metadata is its own muted line");
 	assert.match(screen, /notified Reviewer/);
+	const first = rows.findIndex((line) => line.includes("Challenge the boundary"));
+	const second = rows.findIndex((line) => line.includes("Keep the restriction"));
+	const between = rows.slice(first, second).map((line) => line.split("│")[1]?.trim() ?? "");
+	assert.ok(between.includes(""), "one blank row between posts");
 	assert.ok(f.calls.some((call) => call.action === "read" && call.threadId === "t1"));
 });
 
@@ -171,6 +190,7 @@ it("earlier messages load above the newer ones without losing them", async () =>
 	f.ui.handleInput("\u001b[B");
 	await settle();
 	assert.match(f.text(), /↑ Earlier messages/);
+	assert.match(f.text(), /loaded post/, "a partial exchange count stays distinct");
 	f.ui.handleInput("\t");
 	f.ui.handleInput("\u001b[H");
 	await settle();
@@ -208,4 +228,174 @@ it("the tabs switch between agents and threads with one click", async () => {
 	await settle();
 	assert.doesNotMatch(f.text(), /1 thread/);
 	assert.match(f.text(), /Designer/);
+});
+
+it("the closed disclosure toggles by Enter and a direct selection reveals the group", async () => {
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("open", { updatedAt: 2_000 }), thread("done", { updatedAt: 1_000, closed: true })], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page(String(input.threadId), [event(1)]));
+	await turn(); f.ui.openNamedAction("threads"); await settle();
+	assert.doesNotMatch(f.text(), /Thread done/);
+	assert.match(f.text(), /▸ Closed · 1/);
+	f.ui.handleInput("\u001b[B");
+	f.ui.handleInput("\r"); await settle();
+	assert.match(f.text(), /▾ Closed · 1/);
+	assert.match(f.text(), /Thread done/);
+	f.ui.handleInput("\r"); await settle();
+	assert.match(f.text(), /▸ Closed · 1/);
+	assert.doesNotMatch(f.text(), /Thread done/);
+	f.ui.handleInput("\u001b");
+	assert.ok(f.state.threads);
+	f.state.threads.selected = "done";
+	f.ui.openNamedAction("threads"); await settle();
+	assert.match(f.text(), /▾ Closed · 1/);
+	assert.match(f.text(), /Thread done/);
+});
+
+it("Find reveals closed matches and clearing it keeps the disclosure choice", async () => {
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("open"), thread("done", { title: "Finished review", closed: true })], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page(String(input.threadId), [event(1)]));
+	await turn(); f.ui.openNamedAction("threads"); await settle();
+	for (const char of "review") f.ui.handleInput(char);
+	await settle();
+	assert.match(f.text(), /Finished rev/);
+	assert.doesNotMatch(f.text(), /▸ Closed/);
+	f.ui.handleInput("\u001b"); await settle();
+	assert.doesNotMatch(f.text(), /Finished rev/);
+	assert.match(f.text(), /▸ Closed · 1/);
+});
+
+it("create and revise events render one muted line without frame JSON", async () => {
+	const colored = Object.assign(Object.create(theme), {
+		fg: (color: string, text: string) => `\u2039${color}\u203a${text}`,
+		bg: (color: string, text: string) => `\u2039bg:${color}\u203a${text}`,
+		bold: (text: string) => `\u2039b\u203a${text}`,
+	}) as typeof theme;
+	const frame = JSON.stringify({ title: "Thread t1", purpose: "Purposes must not print" });
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(1, { kind: "create", message: frame }), event(2, { kind: "revise", message: frame }), event(3, { message: "Keep the restriction" })]), 140, 40, colored);
+	await turn(); f.ui.openNamedAction("threads"); await settle();
+	f.ui.handleInput("\u001b[B"); await settle();
+	const raw = f.ui.render(140).join("\n");
+	const screen = stripVTControlCharacters(raw);
+	assert.match(screen, /Designer created the thread/);
+	assert.match(screen, /Designer revised the frame/);
+	assert.doesNotMatch(screen, /\{"title"|Purposes must not print/);
+	assert.equal(screen.split("\n").filter((line) => line.includes("created the thread")).length, 1);
+	assert.match(raw, /\u2039muted\u203a[^\u2039]*created the thread/);
+	assert.match(raw, /\u2039muted\u203a[^\u2039]*Purpose of t1/, "thread purpose stays muted");
+	assert.doesNotMatch(raw, /\u2039dim\u203a/);
+});
+
+it("join contributions stay in Members and the exchange keeps one muted event line", async () => {
+	const f = setup(async (input) => {
+		if (input.action === "list") return { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } };
+		const p = page("t1", [event(1, { kind: "join", sender: "two", message: "JOIN_BODY" })]);
+		p.thread.members[1].contribution = "MEMBER_CONTRIBUTION";
+		return p;
+	});
+	await turn(); f.ui.openNamedAction("threads"); await settle();
+	f.ui.handleInput("\u001b[B"); await settle();
+	assert.match(f.text(), /Reviewer joined/);
+	assert.doesNotMatch(f.text(), /JOIN_BODY|MEMBER_CONTRIBUTION/, "join text is not another exchange body");
+	f.ui.handleInput("\t"); f.ui.handleInput("\t"); f.ui.handleInput("\r"); await settle();
+	assert.match(f.text(), /MEMBER_CONTRIBUTION/, "Members keeps the contribution");
+});
+
+it("the exchange keeps a readable text width and stays inside 80 and 60 columns", async () => {
+	const long = "word ".repeat(80).trim();
+	for (const [width, height] of [[200, 56], [120, 40]]) {
+		const f = setup(async (input) => input.action === "list"
+			? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+			: page("t1", [event(1, { message: long })]), width, height);
+		try {
+			await turn(); f.ui.openNamedAction("threads"); await settle();
+			f.ui.handleInput("\u001b[B"); await settle();
+			const lines = f.ui.render(width).map((line) => stripVTControlCharacters(line));
+			assert.ok(lines.every((line) => visibleWidth(line) <= width));
+			const divider = lines[1].indexOf("│");
+			const body = lines.filter((line) => line.includes("word"));
+			assert.ok(body.length > 1, "the post wraps");
+			assert.ok(body.every((line) => visibleWidth(line.slice(divider + 1).trim()) <= 100), "shared reading width");
+			if (width === 200) {
+				const sender = lines.find((line) => line.includes("Designer") && line.includes("ago"));
+				assert.ok(sender, "a post header is visible");
+				const paneDivider = sender.indexOf("│");
+				const paneWidth = width - paneDivider - 1;
+				const expected = readingGeometry(paneWidth).margin + readingGeometry(paneWidth).textWidth;
+				assert.equal(visibleWidth(sender.slice(paneDivider + 1).trimEnd()), expected, "time is right-aligned at margin plus text width");
+			}
+		} finally { f.ui.dispose(); }
+	}
+	for (const [width, height] of [[80, 24], [60, 20]]) {
+		const f = setup(async (input) => input.action === "list"
+			? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+			: page("t1", [event(1, { message: long })]), width, height);
+		try {
+			await turn(); f.ui.openNamedAction("threads"); await settle();
+			const list = f.ui.render(width).map((line) => stripVTControlCharacters(line));
+			assert.ok(list.every((line) => visibleWidth(line) <= width));
+			f.ui.handleInput("\r"); await settle();
+			const thread = f.ui.render(width).map((line) => stripVTControlCharacters(line));
+			assert.ok(thread.every((line) => visibleWidth(line) <= width));
+			assert.ok(thread.length <= height);
+			assert.match(thread.join("\n"), /Post to Thread t1/);
+		} finally { f.ui.dispose(); }
+	}
+});
+
+it("unknown long identities read as Session <8 hex> in senders and notifications", async () => {
+	const unknown = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(1, { sender: unknown, notify: [unknown], message: "Boundary note" })]));
+	await turn(); f.ui.openNamedAction("threads"); await settle();
+	f.ui.handleInput("\u001b[B"); await settle();
+	const screen = f.text();
+	assert.match(screen, /Session aaaaaaaa/);
+	assert.match(screen, /notified Session aaaaaaaa/);
+	assert.doesNotMatch(screen, /aaaaaaaa-bbbb/);
+	assert.doesNotMatch(screen, /\.\.\./);
+});
+
+it("long thread rows clip with one ellipsis, not three dots", async () => {
+	const title = "A very long thread title for clipping ".repeat(8).trim();
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1", { title })], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(1)]));
+	await turn(); f.ui.openNamedAction("threads"); await settle();
+	const lines = f.text().split("\n");
+	const row = lines.find((line) => line.includes("A very long") && line.includes("●")) ?? lines.find((line) => line.includes("A very long")) ?? "";
+	assert.match(row, /…/);
+	assert.doesNotMatch(row, /\.\.\./);
+});
+
+it("a thread read failure uses error colour in the header", async () => {
+	const colored = Object.assign(Object.create(theme), {
+		fg: (color: string, text: string) => `\u2039${color}\u203a${text}`,
+		bg: (color: string, text: string) => `\u2039bg:${color}\u203a${text}`,
+		bold: (text: string) => `\u2039b\u203a${text}`,
+	}) as typeof theme;
+	const f = setup(async (input) => {
+		if (input.action === "list") return { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } };
+		throw new Error("source unreadable");
+	}, 140, 40, colored);
+	await turn(); f.ui.openNamedAction("threads"); await settle();
+	f.ui.handleInput("\u001b[B"); await settle();
+	const raw = f.ui.render(140).join("\n");
+	assert.match(raw, /\u2039error\u203a[^\u2039]*The thread could not be read/);
+	assert.doesNotMatch(raw, /\u2039warning\u203a[^\u2039]*The thread could not be read/);
+});
+
+it("a close event keeps its state line and shows why the thread ended", async () => {
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1", { closed: true })], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(1), event(2, { kind: "close", message: "Superseded by the new thread" })], { closed: true }));
+	await turn(); f.ui.openNamedAction("threads"); await settle();
+	const screen = f.text();
+	assert.match(screen, /closed the thread ·/);
+	assert.match(screen, /Superseded by the new thread/);
+	assert.equal(screen.split("\n").filter((line) => line.includes("Superseded")).length, 1);
 });

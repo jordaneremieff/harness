@@ -51,7 +51,7 @@ export function agentState(state: DashboardState, id: string): AgentDraftState {
 			draftRevision: 0,
 			mode: "steer",
 			history: [],
-			view: { follow: true, scroll: 0, expanded: false, showThinking: !(state.hideThinkingBlock ?? false), toolExpanded: new Map() },
+			view: { follow: true, scroll: 0, expanded: false, showThinking: false, toolExpanded: new Map() },
 		};
 		state.agents.set(id, value);
 	}

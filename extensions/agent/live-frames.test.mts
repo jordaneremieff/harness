@@ -19,7 +19,7 @@ for (const width of [40, 80, 120]) it(`shows malformed arguments on one terminal
 	conversation.update(buildLiveEntries({ generation: { attempt: 1, message } }, []));
 	const lines = conversation.render(width).lines.map(stripVTControlCharacters);
 	assert.equal(lines.filter((line) => line.includes("Arguments error:")).length, 1);
-	assert.match(lines.join("\n"), /lookup call/u);
+	assert.match(lines.join("\n"), /lookup → pending/u);
 	assert.ok(lines.every((line) => !line.includes("\n")));
 	assert.deepEqual(message, before);
 	conversation.update(buildLiveEntries({ generation: { attempt: 1, message: { ...message, content: [{ type: "toolCall", id: call.id, name: call.name, arguments: {} }] } } }, []));
@@ -94,7 +94,7 @@ it("releases native nested renderer timers when a running slot disappears", (t) 
 	const intervals = t.mock.method(globalThis, "setInterval");
 	const clears = t.mock.method(globalThis, "clearInterval");
 	const slot = { callId: "parent/key", parentCallId: "parent", parentTaskId: 1, taskId: 2, name: "bash", arguments: { command: "echo synthetic" }, status: "running", output: "partial" };
-	const conversation = new AgentConversation(buildLiveEntries({ nestedTools: [slot] }, []), "/work", { requestRender() {} } as TUI, false, false);
+	const conversation = new AgentConversation(buildLiveEntries({ nestedTools: [slot] }, []), "/work", { requestRender() {} } as TUI, false, false, undefined, { toolExpanded: new Map([["parent/key", true]]) });
 	try {
 		conversation.render(80);
 		assert.equal(intervals.mock.calls.length, 1);

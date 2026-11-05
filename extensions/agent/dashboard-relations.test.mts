@@ -28,13 +28,13 @@ async function openMembers(f: ReturnType<typeof fixture>) {
 	f.ui.handleInput("\x1b[Z");
 	f.ui.handleInput("\r");
 }
-/** Click Related or All in the heading, as the operator would. */
+/** Click Related or All on the list's Find row, as the operator would. */
 function choose(f: ReturnType<typeof fixture>, label: "Related" | "All") {
 	const { columns, rows: height } = f.tui.terminal;
-	const heading = stripVTControlCharacters(f.ui.render(columns)[0] ?? "");
-	const x = heading.indexOf(` ${label} `) + 1;
-	assert.ok(x > 0, `${label} is a visible heading control`);
-	assert.equal(f.ui.handleMouse({ type: "click", button: "left", x, y: 0, screenX: x, screenY: 0, width: columns, height, shift: false, alt: false, ctrl: false, clickCount: 1 })?.handled, true);
+	const row = stripVTControlCharacters((f.ui.render(columns)[1] ?? "").replace(/\x1b_[^\x07]*\x07/g, ""));
+	const x = row.indexOf(` ${label} `) + 1;
+	assert.ok(x > 0, `${label} is a visible list control`);
+	assert.equal(f.ui.handleMouse({ type: "click", button: "left", x, y: 1, screenX: x, screenY: 1, width: columns, height, shift: false, alt: false, ctrl: false, clickCount: 1 })?.handled, true);
 }
 
 it("ordinary caller joins ownership and exact admissions, not shared cwd or unknown ownership", () => {
@@ -166,7 +166,11 @@ for (const [width, height] of [[80, 24], [140, 45]]) it(`Related, All, thread, p
 		assert.equal(f.state.selected === other, false);
 		assert.doesNotMatch(shown(f), /Unrelated/, "Related starts with this session's work");
 		choose(f, "All");
+		f.ui.handleInput("\x1b[B");
+		f.ui.handleInput("\x1b[B");
 		assert.match(shown(f), /Unrelated/);
+		f.ui.handleInput("\x1b[A");
+		f.ui.handleInput("\x1b[A");
 		choose(f, "Related");
 		assert.doesNotMatch(shown(f), /Unrelated/);
 		f.ui.openNamedAction("threads"); await turn(); await turn();
@@ -256,7 +260,7 @@ it("unknown participants retain their exact read error", async () => {
 		if (id === missing) throw new Error("Participant storage is unreadable");
 		return snapshot(id);
 	};
-	const f = fixture(100, 30, observed, { collaborate: async (input) => input.action === "list" ? discovery([current]) : current }, undefined, theme, ordinary);
+	const f = fixture(140, 30, observed, { collaborate: async (input) => input.action === "list" ? discovery([current]) : current }, undefined, theme, ordinary);
 	try {
 		await turn();
 		await openMembers(f);

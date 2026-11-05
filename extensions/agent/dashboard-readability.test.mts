@@ -21,12 +21,17 @@ it("activity summarizes string arguments without raw JSON, including published p
 	assert.equal(activityOf(agent), "any_tool review the notes");
 	assert.doesNotMatch(activityOf(agent), /[{}]/);
 });
-it("roster rows show identity, state, activity, model, thinking, cost and relative time", () => {
+it("roster rows show identity, state, model, thinking, cost and relative time", () => {
 	const agent = row("worker", { name: "Research", modifiedAt: 0, currentTool: { name: "read", argument: "notes.md" }, profile: { identity: "worker", role: "Research", handle: "@research", revision: "1", hasExpertise: false, updatedAt: 0 } });
 	const text = rosterLines([agent], agent.id, 64, 12, 15 * 60000, theme, false).join("\n");
-	for (const fact of ["@research · Research", "●", "read notes.md", "model high", "$0.42", "15m ago"]) assert.ok(text.includes(fact), fact);
+	for (const fact of ["@research · Research", "●", "model high", "$0.42", "15m ago"]) assert.ok(text.includes(fact), fact);
+	assert.doesNotMatch(text, /read notes.md/);
 	assert.ok(dashboardGeometry(160, 45, 3).rosterWidth <= 40);
-	assert.match(rosterLines([row("worker", { name: "Work", currentTool: { name: "read", argument: "file" } })], "worker", 100, 4, 0, theme, true).join("\n"), /Work.*model high.*read.*\$0.42.*just now/);
+	const compact = rosterLines([row("worker", { name: "Work", currentTool: { name: "read", argument: "file" } })], "worker", 100, 4, 0, theme, true).join("\n");
+	assert.match(compact, /Work/);
+	assert.match(compact, /model high · \$0.42/);
+	assert.match(compact, /just now/);
+	assert.doesNotMatch(compact, /read file/);
 });
 it("selected status uses the same state labels as the roster", async () => {
 	for (const state of Object.keys(sessionAppearance) as Array<keyof typeof sessionAppearance>) {
@@ -34,7 +39,7 @@ it("selected status uses the same state labels as the roster", async () => {
 		try {
 			await turn();
 			const lines = f.ui.render(100);
-			assert.ok(lines[1].includes(`${sessionAppearance[state].glyph} ${sessionAppearance[state].label}`));
+			assert.ok(lines[2]?.includes(`${sessionAppearance[state].glyph} ${sessionAppearance[state].label}`));
 		} finally { f.ui.dispose(); }
 	}
 });
@@ -54,16 +59,17 @@ for (const [width, skipped] of [[164, 18], [164, 0], [100, 18], [100, 0], [80, 1
 			const lines = read();
 			const wide = width >= 100;
 			const paneX = wide ? (lines[1]?.indexOf("│") ?? 0) + 1 : 0;
-			const headerY = wide ? 1 : 6;
-			const header = lines.slice(headerY, headerY + 4).map((line) => line.slice(paneX));
+			const headerY = wide ? 1 : 9;
+			const header = lines.slice(headerY, headerY + 3).map((line) => line.slice(paneX));
 			assert.doesNotMatch(header.join("\n"), /coverage|unreadable|omitted|incomplete/i);
-			assert.match(header[0] ?? "", /0 · work · ● Working/u, "the target header names the agent, project and state");
-			assert.match(header[3] ?? "", /^─+$/);
-			const roster = wide ? lines.slice(1, -1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 6);
+			assert.match(header[0] ?? "", /0 {2}work/u, "the target header names the agent and project");
+			assert.match(header[1] ?? "", /● Working/u, "the state occupies the second header line");
+			assert.equal((header[2] ?? "").trim(), "", "one blank row follows the two-line header");
+			const roster = wide ? lines.slice(1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 9);
 			assert.doesNotMatch(roster.join("\n"), /unreadable|omitted|incomplete/, "storage coverage stays in Details");
 			if (skipped) assert.match(roster.join("\n"), /Load more/);
 			f.ui.handleInput("\r");
-			assert.doesNotMatch(read().slice(headerY, headerY + 4).map((line) => line.slice(paneX)).join("\n"), /coverage|unreadable|incomplete/i);
+			assert.doesNotMatch(read().slice(headerY, headerY + 3).map((line) => line.slice(paneX)).join("\n"), /coverage|unreadable|incomplete/i);
 		} finally { f.ui.dispose(); }
 	});
 }
@@ -83,13 +89,17 @@ it("live usage sits under the target header and receipts stay on the message fie
 		assert.ok(state);
 		state.receipt = "Message admitted";
 		const lines = visible(f.ui.render(160));
-		assert.match(lines[0] ?? "", /agents: 1\/1 active · ~\$0\.42 {2}Close/, "session figures sit in the heading");
+		assert.match(lines[0] ?? "", /agents: 1\/1 active · ~\$0\.42/, "session figures sit in the heading");
+		assert.match(lines[0] ?? "", /Close\s*$/);
 		const paneX = (lines[1]?.indexOf("│") ?? 0) + 1;
-		const pane = lines.slice(1, 5).map((line) => line.slice(paneX));
-		assert.doesNotMatch(pane.join("\n"), /LIVE|RETAINED|Earlier messages available|Roster|Message admitted/);
-		assert.match(pane[0] ?? "", /one · work · ● Working/);
-		assert.match(pane[1] ?? "", /Example model \[high\].*16%.*160\/1\.0k.*~\$0\.42.*21% hit/);
-		assert.match(pane[2] ?? "", /\/work/);
+		const pane = lines.slice(1).map((line) => line.slice(paneX));
+		assert.doesNotMatch(pane.slice(0, 3).join("\n"), /LIVE|RETAINED|Earlier messages available|Roster|Message admitted/);
+		assert.match(pane[0] ?? "", /one {2}work/);
+		assert.match(pane[1] ?? "", /● Working/);
+		const model = pane.findIndex((line) => /Example model \[high\]/.test(line));
+		assert.ok(model > 0);
+		assert.match(pane[model] ?? "", /16%.*160\/1\.0k.*~\$0\.42.*21% hit/);
+		assert.match(pane[model + 1] ?? "", /\/work/);
 		const caption = lines.find((line) => line.includes("╭─ To one"));
 		assert.match(caption ?? "", /Steer at next step/);
 		assert.doesNotMatch(caption ?? "", /%|\$|model|high|ctx/);

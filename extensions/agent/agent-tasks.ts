@@ -234,7 +234,7 @@ export class AgentTasksView {
 	}
 
 	private fitLine(text: string, width: number): string {
-		const clipped = visibleWidth(text) > width ? truncateToWidth(text, width) : text;
+		const clipped = visibleWidth(text) > width ? truncateToWidth(text, width, "…") : text;
 		const visible = visibleWidth(clipped);
 		return visible < width ? clipped + " ".repeat(width - visible) : clipped;
 	}

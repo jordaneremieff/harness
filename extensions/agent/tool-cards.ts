@@ -38,6 +38,8 @@ export interface AgentCardContext extends Pick<KeybindingHints, "keyText"> {
 	readonly argsComplete?: boolean;
 	readonly isError?: boolean;
 	readonly lastComponent?: Component;
+	/** The dashboard owns disclosure and shows no navigation words under a collapsed card. */
+	readonly hideExpansionHint?: boolean;
 }
 
 export interface AgentToolCard {
@@ -245,6 +247,7 @@ function expansionHint(keys: Pick<KeybindingHints, "keyText"> | undefined, point
 
 /** Calls own the hint before execution; results own it after execution starts. */
 function cardHint(context: AgentCardContext, part: "call" | "result", _subject: string): string {
+	if (context.hideExpansionHint) return "";
 	if (context.expanded) return "";
 	if (part === "call") {
 		const shown = context.executionStarted !== true && context.argsComplete !== false;

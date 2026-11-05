@@ -2,20 +2,31 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { DashboardLayout } from "./dashboard-state.ts";
 type Paint = Pick<Theme, "fg" | "bg" | "bold">;
-export const MIN_ROSTER_COLUMNS = 24;
+export const MIN_ROSTER_COLUMNS = 30;
+export const MAX_ROSTER_COLUMNS = 40;
 export const MIN_DETAIL_COLUMNS = 60;
 export const MIN_COMPOSER_ROWS = 5;
 export const MIN_TRANSCRIPT_ROWS = 6;
+/** Widest readable text column in the agent views. */
+export const READING_TEXT_MAX_COLUMNS = 100;
+/**
+ * Body text column of a pane: two plain margin columns, then text up to the readable maximum.
+ * The pane's last column stays free for the scrollbar; unused space stays on the right.
+ */
+export function readingGeometry(paneWidth: number): { margin: number; textWidth: number } {
+	const margin = 2;
+	return { margin, textWidth: Math.max(1, Math.min(READING_TEXT_MAX_COLUMNS, paneWidth - margin - 1)) };
+}
 export function clamp(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(max, Math.round(value)));
 }
 export function fitLine(text: string, width: number): string {
-	const value = truncateToWidth(text, Math.max(1, width));
+	const value = truncateToWidth(text, Math.max(1, width), "…");
 	return value + " ".repeat(Math.max(0, width - visibleWidth(value)));
 }
 export function dashboardHeading(title: string, position: string, width: number, theme: Paint, bottom = false): string {
 	const right = position ? ` ${position.replace(/\s+/g, " ").trim()} ` : "";
-	const label = title ? ` ${truncateToWidth(title.replace(/\s+/g, " ").trim(), Math.max(1, width - visibleWidth(right) - 6))} ` : "";
+	const label = title ? ` ${truncateToWidth(title.replace(/\s+/g, " ").trim(), Math.max(1, width - visibleWidth(right) - 6), "…")} ` : "";
 	const fill = "─".repeat(Math.max(0, width - visibleWidth(label) - visibleWidth(right) - 3));
 	return fitLine(
 		theme.fg("borderMuted", bottom ? "╰─" : "╭─") +
@@ -27,7 +38,7 @@ export function dashboardHeading(title: string, position: string, width: number,
 	);
 }
 export function dashboardRule(label: string, width: number, theme: Paint): string {
-	const text = label ? `─ ${truncateToWidth(label, Math.max(1, width - 4))} ` : "";
+	const text = label ? `─ ${truncateToWidth(label, Math.max(1, width - 4), "…")} ` : "";
 	return fitLine(
 		theme.fg("muted", text) + theme.fg("borderMuted", "─".repeat(Math.max(0, width - visibleWidth(text)))),
 		width,
@@ -52,14 +63,14 @@ export function dashboardGeometry(
 	layout: DashboardLayout = {},
 ) {
 	const wide = width >= 100 && !console;
-	const rosterHeight = console || wide ? 0 : 4;
+	const rosterHeight = console || wide || height < 20 ? 0 : height >= 24 ? 8 : 5;
 	const ratio = layout.rosterRatio;
 	const rosterWidth = wide
 		? typeof ratio === "number" && Number.isFinite(ratio) && ratio > 0 && ratio < 1
-			? clamp(ratio * (width - 1), MIN_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS)
-			: Math.min(40, Math.max(30, Math.floor(width * 0.22)))
+			? clamp(ratio * (width - 1), MIN_ROSTER_COLUMNS, Math.min(MAX_ROSTER_COLUMNS, width - 1 - MIN_DETAIL_COLUMNS))
+			: clamp(Math.floor(width * 0.22), MIN_ROSTER_COLUMNS, MAX_ROSTER_COLUMNS)
 		: width;
-	const paneHeight = Math.max(0, height - 2 - rosterHeight - reservedRows);
+	const paneHeight = Math.max(0, height - 1 - rosterHeight - reservedRows);
 	return {
 		wide,
 		rosterWidth,

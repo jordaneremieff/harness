@@ -16,7 +16,7 @@ function controller(layout: DashboardLayout = {}) {
 	const paint = (width = 164, height = 44, screen = "roster") => {
 		resize.begin(width, height, screen);
 		const g = dashboardGeometry(width, height, 0, false, 0, 5, layout);
-		if (g.wide) resize.add({ kind: "roster", x: g.rosterWidth - 1, y: 1, width: 2, height: height - 2, value: g.rosterWidth, min: 24, max: width - 61 });
+		if (g.wide) resize.add({ kind: "roster", x: g.rosterWidth - 1, y: 1, width: 2, height: height - 1, value: g.rosterWidth, min: 30, max: Math.min(40, width - 61) });
 		resize.add({ kind: "composer", x: width - 4, y: height - 9, width: 3, height: 1, value: layout.composerRows ?? 5, min: 5, max: 25 });
 		return g;
 	};
@@ -41,17 +41,17 @@ it("gutter offset, cell coalescing, capture outside handles and one committed sa
 	assert.deepEqual(f.resize.handle(mouse("drag", 35)), { handled: true, render: false });
 	assert.deepEqual(f.saves, []);
 	f.resize.handle(mouse("drag", 51));
-	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 52);
+	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 40);
 	f.paint();
 	f.resize.handle(mouse("drag", 300, -20));
-	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 103);
+	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 40);
 	assert.equal(f.resize.handle(mouse("release", 300, -20))?.handled, true);
 	assert.equal(f.saves.length, 1);
 });
 it("cancel and abandoned gestures restore committed preferences without a write", () => {
 	for (const end of ["escape", "move", "press", "key", "dimensions", "screen", "clear"]) {
 		const f = controller({ rosterRatio: 0.4, composerRows: 8 });
-		f.resize.handle(mouse("press", 64)); f.resize.handle(mouse("drag", 90)); f.paint();
+		f.resize.handle(mouse("press", 39)); f.resize.handle(mouse("drag", 90)); f.paint();
 		if (end === "escape") assert.equal(f.resize.input("\x1b"), true);
 		if (end === "key") assert.equal(f.resize.input("x"), false);
 		if (end === "move" || end === "press") f.resize.handle(mouse(end, 90));
@@ -80,7 +80,7 @@ it("the key after a lost release starts from committed handle geometry", () => {
 });
 it("double-click resets only the selected divider", () => {
 	const f = controller({ rosterRatio: 0.4, composerRows: 8 });
-	f.resize.handle(mouse("click", 64, 8, { clickCount: 2 }));
+	f.resize.handle(mouse("click", 39, 8, { clickCount: 2 }));
 	assert.deepEqual(f.layout, { composerRows: 8 });
 	f.paint(); f.resize.handle(mouse("click", 161, 35, { clickCount: 2 }));
 	assert.deepEqual(f.layout, {});
@@ -90,7 +90,7 @@ it("a clipped preference restores after stacked and narrow windows", () => {
 	const f = controller({ rosterRatio: 0.6 });
 	assert.equal(f.paint(100).rosterWidth, 39);
 	assert.equal(f.paint(80).wide, false);
-	assert.equal(f.paint(240).rosterWidth, 143);
+	assert.equal(f.paint(240).rosterWidth, 40);
 	assert.deepEqual(f.layout, { rosterRatio: 0.6 });
 });
 
@@ -118,18 +118,18 @@ it("raw SGR drag dispatch reaches the dashboard across rerenders without changin
 		render();
 		const send = rawDispatcher(f.ui, 164, 44);
 		send(0, 35, 8); render(); send(32, 51, 8);
-		assert.match(render().at(-1) ?? "", /List 52 · conversation 111 columns · release to keep/);
+		assert.match(render().join("\n"), /List 40 · conversation 123 columns · release to keep/);
 		send(0, 51, 8, true); render();
-		assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 52);
+		assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 40);
 		assert.equal(saved.length, 1);
 		assert.equal(f.state.selected, "one"); assert.equal(f.ui.focus.region, "list");
 		assert.equal(state.draft, "literal r 🧩"); assert.equal(state.draftRevision, 7);
 		// A moved press stays a drag even after it returns to its starting cell.
-		send(0, 52, 8); send(32, 60, 8); render(); send(32, 52, 8); render(); send(0, 52, 8, true); render();
+		send(0, 39, 8); send(32, 60, 8); render(); send(32, 39, 8); render(); send(0, 39, 8, true); render();
 		assert.equal(saved.length, 1); assert.equal(f.ui.focus.region, "list");
 		// Pi's stationary completed clicks carry the reset count.
-		send(0, 52, 8); send(0, 52, 8, true); render();
-		send(0, 52, 8); send(0, 52, 8, true); render();
+		send(0, 39, 8); send(0, 39, 8, true); render();
+		send(0, 39, 8); send(0, 39, 8, true); render();
 		assert.equal(f.state.layout.rosterRatio, undefined);
 		assert.equal(saved.length, 2);
 		f.ui.handleInput("\r"); f.ui.render(164); f.ui.handleInput("r");
@@ -145,7 +145,7 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 		const send = rawDispatcher(f.ui, 164, 44);
 		send(0, 161, y); render(); send(32, 161, y - 4); const dragged = render(); send(0, 161, y - 4, true);
 		assert.equal(f.state.layout.composerRows, 9);
-		assert.match(dragged.at(-1) ?? "", /Message field 9 rows/);
+		assert.match(dragged.join("\n"), /Message field 9 rows/);
 		assert.ok(dragged.some((line) => line.includes("━━━")));
 		assert.ok(dragged.some((line) => line.includes("model │")));
 		assert.ok(dragged.some((line) => line.includes("Steer at next step")), "the delivery effect stays on the resized field");
@@ -183,9 +183,9 @@ it("short windows hide the composer grip without discarding the saved row prefer
 		const send = rawDispatcher(f.ui, 164, 44);
 		send(0, 161, y); send(32, 161, y - 1); f.ui.render(164); send(0, 161, y - 1, true);
 		assert.deepEqual(saved, [{ composerRows: 6 }]);
-		// At 80×18 the message field cannot grow while the conversation keeps its rows.
-		f.resize(80, 18); const small = f.ui.render(80);
-		assert.equal(small.length, 18); assert.ok(!small.some((line) => line.includes("┄┄┄")));
+		// At 60×16 the compact view keeps the composer and conversation but drops the optional grip.
+		f.resize(60, 16); const small = f.ui.render(60);
+		assert.equal(small.length, 16); assert.ok(!small.some((line) => line.includes("┄┄┄")));
 		assert.equal(f.state.layout.composerRows, 6);
 		f.resize(164, 44); assert.ok(f.ui.render(164).some((line) => line.includes("┄┄┄")));
 		assert.equal(f.state.layout.composerRows, 6); assert.deepEqual(saved, [{ composerRows: 6 }]);

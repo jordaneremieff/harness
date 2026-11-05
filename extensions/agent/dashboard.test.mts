@@ -81,11 +81,10 @@ const joined = (f: Fixture) =>
 		.lines.map((line) => line.replace(/[│┃]\s*$/u, "").trim())
 		.join("");
 
-/** The selected agent's header and fact lines: the pane rows from the title to the conversation rule. */
+/** The selected agent's two header lines, before one blank row and the conversation. */
 function targetHeader(f: Fixture): string[] {
 	const { lines, title } = paneLines(f);
-	const rule = lines.findIndex((line, index) => index > title && /^─{8}/u.test(line));
-	return lines.slice(title, rule);
+	return lines.slice(title, title + 2);
 }
 
 /** A forms host whose every owner call answers with `answer`. */
@@ -425,12 +424,14 @@ for (const patch of [
 	{ health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "Exhausted retry marker" } } },
 	{ state: "failed" as const, error: "Work failure marker" },
 ]) {
-	it(`the selected agent's header states its attention reason once (${JSON.stringify(patch)})`, async () => {
+	it(`the selected agent's header points to Details without its stored error (${JSON.stringify(patch)})`, async () => {
 		const f = fixture(140, 45, source([row("one", patch)]));
 		try {
 			await turn();
 			const header = targetHeader(f).join("\n");
-			assert.equal(header.split("marker").length - 1, 1);
+			assert.equal(header.split("\n").length, 2);
+			assert.doesNotMatch(header, /marker/u);
+			assert.match(header, /Details has the stored error/u);
 			assert.match(header, /Reconnect/u, "an agent that needs attention offers Reconnect");
 		} finally {
 			f.ui.dispose();
@@ -572,9 +573,9 @@ it("with no related work the list shows every agent, and a chosen Related scope 
 	const f = fixture(120, 30, source([row("unrelated", { storageId: "unrelated", creatingOwnerId: "someone-else", name: "Unrelated worker" })]), undefined, undefined, undefined, "caller-session");
 	try {
 		await settle(() => /Unrelated worker/u.test(shown(f)));
-		const heading = visible(f.ui.render(120))[0] ?? "";
-		const x = heading.indexOf("Related") + 1;
-		f.ui.handleMouse({ type: "click", button: "left", x, y: 0, screenX: x, screenY: 0, width: 120, height: 30, shift: false, alt: false, ctrl: false, clickCount: 1 });
+		const findRow = visible(f.ui.render(120))[1] ?? "";
+		const x = findRow.indexOf(" Related ") + 1;
+		f.ui.handleMouse({ type: "click", button: "left", x, y: 1, screenX: x, screenY: 1, width: 120, height: 30, shift: false, alt: false, ctrl: false, clickCount: 1 });
 		await settle(() => /No related agents yet/u.test(shown(f)));
 		const lines = visible(f.ui.render(120));
 		const divider = lines[1]?.indexOf("\u2502") ?? 0;
@@ -694,8 +695,7 @@ it("a new conversation selects its purpose and starting state before host readin
 			const screen = shown(f);
 			assert.match(screen, /◌ Starting/u);
 			assert.match(screen, /Write the startup note/u);
-			const header = targetHeader(f).join("\n");
-			assert.match(header, /model │/u);
+			assert.match(screen, /model │/u);
 			assert.doesNotMatch(screen, /Conversation unavailable|Unavailable|Attention|need attention|model \?|reasoning \?/u);
 		}
 		f.resize(140, 45);
@@ -728,7 +728,7 @@ it("a busy live frame updates the header, the list and the message field togethe
 		const screen = shown(f);
 		assert.match(screen, /Steer at next step ⇄/u);
 		assert.match(targetHeader(f).join("\n"), /● Working/u);
-		assert.match(targetHeader(f).join("\n"), /model │/u);
+		assert.match(shown(f), /model │/u);
 		assert.doesNotMatch(screen, /Done|0 working/u);
 	} finally {
 		f.ui.dispose();
@@ -866,7 +866,7 @@ it("Load more is selected before it reads, and loaded coverage survives reconcil
 						projections: { a: { skipped: 0, omitted: 0 }, b: { skipped: 0, omitted: 0 } } },
 				};
 	};
-	const f = fixture(80, 24, observed, { sessionFigures: async (roster) => sessionFigures(roster.rows, "primary", () => "primary") });
+	const f = fixture(100, 24, observed, { sessionFigures: async (roster) => sessionFigures(roster.rows, "primary", () => "primary") });
 	try {
 		await turn();
 		f.ui.handleInput("\x1b[B");
@@ -877,12 +877,12 @@ it("Load more is selected before it reads, and loaded coverage survives reconcil
 		f.ui.handleInput("\r");
 		await turn();
 		assert.deepEqual(calls, [undefined, "more"]);
-		assert.match(visible(f.ui.render(80))[0] ?? "", /agents: 3\/3 active · ~\$1\.26/u);
+		assert.match(visible(f.ui.render(100))[0] ?? "", /agents: 3\/3 active · ~\$1\.26/u);
 		rosterChange();
 		t.mock.timers.tick(250);
 		await turn();
 		assert.deepEqual(calls, [undefined, "more", undefined, "more"]);
-		assert.match(visible(f.ui.render(80))[0] ?? "", /agents: 3\/3 active · ~\$1\.26/u);
+		assert.match(visible(f.ui.render(100))[0] ?? "", /agents: 3\/3 active · ~\$1\.26/u);
 		assert.doesNotMatch(shown(f), /unreadable/u, "storage coverage stays in Details, out of the list");
 	} finally {
 		f.ui.dispose();
@@ -1021,10 +1021,13 @@ for (const width of [80, 164]) {
 		try {
 			await turn();
 			const header = targetHeader(f);
-			assert.match(header[0] ?? "", /one · work · ○ Idle/u);
-			assert.match(header[1] ?? "", /^\/work/u, "the directory follows the title without an empty metrics line");
+			assert.match(header[0] ?? "", /one {2}work/u);
+			assert.match(header[1] ?? "", /○ Idle/u);
 			assert.equal(header.length, 2);
 			assert.doesNotMatch(header.join("\n"), /Model|Tokens|Context|Cost|\$\?/u);
+			const { lines } = paneLines(f);
+			const composerBottom = lines.findIndex((line) => line.startsWith("╰─"));
+			assert.match(lines[composerBottom + 1] ?? "", /^ \/work/u, "the directory follows the composer without an empty metrics line");
 		} finally {
 			f.ui.dispose();
 		}

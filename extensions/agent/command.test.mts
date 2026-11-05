@@ -107,7 +107,8 @@ it("the dashboard gets its context window and session figures from the current p
 		assert.deepEqual(lookups, [["test", "model"]]);
 		assert.equal(reads, 1);
 		assert.match(text, /Example model \[high\].*16%.*163k\/1.0M/);
-		assert.match(text, / Related {2}All .*agents: 1\/1 active · ~\$0\.42/, "the primary's session figures sit in the heading");
+		assert.match(text, / Related {2}All /, "the scope controls stay on the Find row");
+		assert.match(text, /agents: 1\/1 active · ~\$0\.42.*New conversation.*Help.*Close/, "the primary's session figures sit in the heading");
 	} finally { dashboard?.dispose(); finish(); await opened; }
 });
 it("the dashboard collaboration adapter carries its primary context and structured read", async () => {

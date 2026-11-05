@@ -143,8 +143,8 @@ export class ActionInventory {
 			const note = action.disabled ?? action.description ?? "";
 			this.mouse.add({ x: 0, y: 1 + offset * lines, width, height: lines, click: () => { this.index = index; this.selected = action.id; } });
 			const head = `${index === this.index ? "›" : " "} ${action.label}${shortcut}${action.disabled ? " · unavailable" : ""}`;
-			if (lines === 1) return [dashboardSelection(truncateToWidth(`${head}${note ? ` · ${note}` : ""}`, width), width, index === this.index, theme)];
-			return [dashboardSelection(truncateToWidth(head, width), width, index === this.index, theme), theme.fg("muted", truncateToWidth(`  ${note}`, width))];
+			if (lines === 1) return [dashboardSelection(truncateToWidth(`${head}${note ? ` · ${note}` : ""}`, width, "…"), width, index === this.index, theme)];
+			return [dashboardSelection(truncateToWidth(head, width, "…"), width, index === this.index, theme), theme.fg("muted", truncateToWidth(`  ${note}`, width, "…"))];
 		});
 		const chosen = actions[this.index];
 		const detail = wrapTextWithAnsi(this.notice || chosen?.disabled || "", Math.max(1, width)).slice(0, 1);

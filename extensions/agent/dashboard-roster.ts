@@ -210,7 +210,7 @@ export function argumentSummary(argument: string): string {
 			try { value = JSON.parse(`"${match[1].replace(/\\$/, "")}"`); } catch { value = undefined; }
 		} else if (!argument.trim().startsWith("{") && !argument.trim().startsWith("[")) value = argument;
 	}
-	return typeof value === "string" ? truncateToWidth(oneLine(value), 60) : "";
+	return typeof value === "string" ? truncateToWidth(oneLine(value), 60, "…") : "";
 }
 export function activityOf(row: AgentConversationSummary): string {
 	const reason = attentionReason(row);
@@ -218,16 +218,6 @@ export function activityOf(row: AgentConversationSummary): string {
 	if (row.awaiting !== undefined) return `Awaiting ${row.awaiting.results.filter((item) => item.status === "pending").length} results · ${row.awaiting.queuedInputCount} queued inputs${row.awaiting.likelyCycle.length ? " · likely mutual wait" : ""}`;
 	if (row.state === "working") return row.currentTool ? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`) : "Responding";
 	return row.latestReply ? oneLine(row.latestReply) : row.state === "starting" ? "Starting agent" : "No reply yet";
-}
-function rosterActivity(row: AgentConversationSummary, size: number, theme: Theme): string {
-	const reason = attentionReason(row);
-	if (reason) return theme.fg("error", clip(reason, size));
-	const activity = activityOf(row);
-	if (row.state === "working") return theme.fg("text", clip(activity, size));
-	if (["starting", "done"].includes(row.state)) return theme.fg("muted", clip(activity, size));
-	const state = sessionAppearance[row.state];
-	const rest = activity.toLowerCase().startsWith(state.label.toLowerCase()) ? activity.slice(state.label.length) : ` · ${activity}`;
-	return theme.fg(state.color, state.label) + theme.fg("muted", clip(rest, Math.max(0, size - visibleWidth(state.label))));
 }
 function rosterModel(row: AgentConversationSummary, size: number): string {
 	if (!row.model) return "";
@@ -239,11 +229,9 @@ function highlightRow(line: string, width: number, prefix: number, theme: Theme)
 	const background = theme.bg("selectedBg", pad(sliceByColumn(line, prefix, width - prefix), width - prefix));
 	return `${sliceByColumn(line, 0, prefix)}${background}\x1b[0m`;
 }
-function paintRosterBlock(lines: string[], row: AgentConversationSummary, selected: boolean, width: number, theme: Theme): string[] {
-	return lines.map((line, index) => {
-		if (!selected || ((index === 2 || lines.length === 1) && (needsAttention(row) || row.state === "failed"))) return pad(line, width);
-		return highlightRow(line, width, index === 0 ? 4 : 2, theme);
-	});
+function paintRosterBlock(lines: string[], selected: boolean, width: number, theme: Theme): string[] {
+	// The spacing line below a block stays unpainted, so selected blocks keep the same air around them.
+	return lines.map((line, index) => (!selected || (lines.length > 1 && index === lines.length - 1) ? pad(line, width) : highlightRow(line, width, 4, theme)));
 }
 function rosterRow(
 	row: AgentConversationSummary,
@@ -251,7 +239,6 @@ function rosterRow(
 	selected: string | undefined,
 	width: number,
 	theme: Theme,
-	compact: boolean,
 	exactTime: boolean,
 	now: number,
 	primaryId?: string,
@@ -261,50 +248,37 @@ function rosterRow(
 	const chosen = row.id === selected;
 	const rail = chosen ? theme.fg("accent", "▌ ") : "  ";
 	const glyph = theme.fg(appearance.color, `${appearance.glyph} `);
-	const exactRow = exactTime && !compact;
 	const timeWidth = Math.min(visibleWidth(time), width - 4);
 	const timeX = width - timeWidth;
-	const titleWidth = compact ? Math.max(8, Math.floor((width - timeWidth - 10) * 0.3)) : Math.max(1, width - 4 - (exactRow ? 0 : timeWidth + 1));
+	const titleWidth = Math.max(1, width - 4 - (exactTime ? 0 : timeWidth + 1));
 	void primaryId;
 	const title = pad(theme.bold(theme.fg("text", uniqueName(row, rows, titleWidth))), titleWidth);
-	let lines: string[];
-	if (compact) {
-		const cost = costOf(row);
-		const modelWidth = Math.max(6, Math.floor((width - titleWidth - timeWidth - visibleWidth(cost) - 9) / 2));
-		const activityWidth = Math.max(1, width - titleWidth - timeWidth - visibleWidth(cost) - modelWidth - 8);
-		lines = [`${rail + glyph + title} ${theme.fg("muted", pad(rosterModel(row, modelWidth), modelWidth))} ${pad(rosterActivity(row, activityWidth, theme), activityWidth)} ${theme.fg("muted", `${cost} ${time}`)}`];
-	} else {
-		const identity = rail + glyph + title;
-		const cost = costOf(row);
-		const modelWidth = Math.max(1, width - visibleWidth(cost) - 3);
-		lines = [
-			exactRow ? identity : pad(identity, timeX) + theme.fg("muted", time),
-			rail + theme.fg("muted", `${pad(rosterModel(row, modelWidth), modelWidth)} ${cost}`),
-			exactRow
-				? pad(rail + rosterActivity(row, Math.max(0, timeX - 3), theme), timeX) + theme.fg("muted", time)
-				: rail + rosterActivity(row, width - 2, theme),
-		];
-	}
+	// Two content lines and an unpainted spacing line keep the roster flat and quiet at every width.
+	const identity = rail + glyph + title;
+	const facts = [rosterModel(row, Math.max(1, width - 12)), costOf(row)].filter(Boolean).join(" · ");
+	// The facts line starts under the name, not under the state glyph.
+	const factsWidth = Math.max(1, (exactTime ? timeX : width) - 5);
+	const second = `${rail}  ${theme.fg("muted", truncateToWidth(facts, factsWidth, "…"))}`;
+	const lines = [
+		exactTime ? identity : pad(identity, timeX) + theme.fg("muted", time),
+		exactTime ? pad(second, timeX) + theme.fg("muted", time) : second,
+		"",
+	];
 	return {
-		lines: paintRosterBlock(lines, row, chosen, width, theme),
-		timeX, timeWidth, timeLine: exactRow ? 2 : 0,
+		lines: paintRosterBlock(lines, chosen, width, theme),
+		timeX, timeWidth, timeLine: exactTime ? 1 : 0,
 	};
 }
 function rosterWindow(
 	rows: readonly AgentConversationSummary[],
 	selected: string | undefined,
 	height: number,
-	compact: boolean,
 	requested?: number,
 ): { capacity: number; start: number; maxStart: number } {
 	const index = Math.max(
 		0,
 		rows.findIndex((row) => row.id === selected),
 	);
-	if (compact) {
-		const maxStart = Math.max(0, rows.length - 3);
-		return { capacity: 3, maxStart, start: Math.min(maxStart, Math.max(0, requested ?? index - 1)) };
-	}
 	const capacity = Math.max(1, Math.floor((height - 1) / 3));
 	const maxStart = Math.max(0, rows.length - capacity);
 	const start = Math.min(maxStart, Math.max(0, requested ?? index - Math.floor(capacity / 2)));
@@ -314,23 +288,61 @@ interface RosterViewport {
 	primaryId?: string;
 	start?: number;
 	exactTime?: boolean;
+	footer?: { text: string; color: ThemeColor };
 	range?(start: number, maxStart: number): void;
 	row?(row: AgentConversationSummary, line: number, height: number): void;
 	timestamp?(row: AgentConversationSummary, line: number, x: number, width: number): void;
 }
-function rosterHit(
-	viewport: RosterViewport | undefined,
-	row: AgentConversationSummary,
-	block: ReturnType<typeof rosterRow>,
-	line: number,
+interface RosterHit {
+	row: AgentConversationSummary;
+	line: number;
+	height: number;
+}
+interface RosterTimeHit {
+	row: AgentConversationSummary;
+	line: number;
+	x: number;
+	width: number;
+}
+interface DerivedRoster {
+	lines: string[];
+	start: number;
+	maxStart: number;
+	hits: RosterHit[];
+	times: RosterTimeHit[];
+}
+const rosterCaches = new WeakMap<readonly AgentConversationSummary[], WeakMap<Theme, Map<string, DerivedRoster>>>();
+function deriveRoster(
+	rows: readonly AgentConversationSummary[],
+	selected: string | undefined,
 	width: number,
 	height: number,
-): void {
-	if (line >= height) return;
-	viewport?.row?.(row, line, Math.min(block.lines.length, height - line));
-	const timeLine = line + block.timeLine;
-	if (timeLine < height)
-		viewport?.timestamp?.(row, timeLine, block.timeX, Math.min(block.timeWidth, width - block.timeX));
+	now: number,
+	theme: Theme,
+	viewport?: RosterViewport,
+): DerivedRoster {
+	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, viewport?.start);
+	const lines: string[] = [];
+	const hits: RosterHit[] = [];
+	const times: RosterTimeHit[] = [];
+	for (const row of rows.slice(start, start + capacity)) {
+		const block = rosterRow(row, rows, selected, width, theme, viewport?.exactTime ?? false, now, viewport?.primaryId);
+		const line = lines.length;
+		if (line < height) {
+			hits.push({ row, line, height: Math.min(block.lines.length, height - line) });
+			const timeLine = line + block.timeLine;
+			if (timeLine < height) times.push({ row, line: timeLine, x: block.timeX, width: Math.min(block.timeWidth, width - block.timeX) });
+		}
+		lines.push(...block.lines);
+	}
+	const shown = rows.slice(start, start + capacity).length;
+	const hidden = rows.length - shown;
+	const direction = start === 0 ? "↓" : start + shown === rows.length ? "↑" : "↕";
+	const attention = rows.filter(needsAttention).length;
+	const count = hidden ? `${direction} ${hidden} more` : `${rows.length} agent${rows.length === 1 ? "" : "s"}`;
+	const footer = viewport?.footer ?? { text: `${count}${attention ? ` · ${attention} need attention` : ""}`, color: "muted" as const };
+	lines.push(theme.fg(footer.color, footer.text));
+	return { lines: lines.slice(0, height), start, maxStart, hits, times };
 }
 export function rosterLines(
 	rows: readonly AgentConversationSummary[],
@@ -342,18 +354,26 @@ export function rosterLines(
 	compact: boolean,
 	viewport?: RosterViewport,
 ): string[] {
-	const { capacity, start, maxStart } = rosterWindow(rows, selected, height, compact, viewport?.start);
-	viewport?.range?.(start, maxStart);
-	const lines: string[] = [];
-	for (const row of rows.slice(start, start + capacity)) {
-		const block = rosterRow(row, rows, selected, width, theme, compact, viewport?.exactTime ?? false, now, viewport?.primaryId);
-		rosterHit(viewport, row, block, lines.length, width, height);
-		lines.push(...block.lines);
+	void compact;
+	let themes = rosterCaches.get(rows);
+	if (!themes) {
+		themes = new WeakMap();
+		rosterCaches.set(rows, themes);
 	}
-	while (compact && lines.length < 3) lines.push("");
-	const shown = rows.slice(start, start + capacity).length;
-	const hidden = rows.length - shown;
-	const direction = start === 0 ? "↓" : start + shown === rows.length ? "↑" : "↕";
-	lines.push(theme.fg("muted", hidden ? `${direction} ${hidden} more` : `${rows.length} loaded`));
-	return lines.slice(0, height);
+	let cache = themes.get(theme);
+	if (!cache) {
+		cache = new Map();
+		themes.set(theme, cache);
+	}
+	const key = JSON.stringify([selected, width, height, Math.floor(now / 60000), viewport?.start, viewport?.exactTime, viewport?.primaryId, viewport?.footer]);
+	let derived = cache.get(key);
+	if (!derived) {
+		derived = deriveRoster(rows, selected, width, height, now, theme, viewport);
+		cache.set(key, derived);
+		if (cache.size > 24) cache.delete(cache.keys().next().value ?? "");
+	}
+	viewport?.range?.(derived.start, derived.maxStart);
+	for (const hit of derived.hits) viewport?.row?.(hit.row, hit.line, hit.height);
+	for (const hit of derived.times) viewport?.timestamp?.(hit.row, hit.line, hit.x, hit.width);
+	return [...derived.lines];
 }

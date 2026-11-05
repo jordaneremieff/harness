@@ -33,8 +33,8 @@ import { mergeAgentCoverage, type AgentConversationPage, type AgentConversationS
 import type { AgentObservationSource } from "./agent-observation.ts";
 import { AgentConsole } from "./agent-console.ts";
 import { AgentTasksView } from "./agent-tasks.ts";
-import { clamp, MIN_COMPOSER_ROWS, dashboardGeometry, dashboardRule, fitLine } from "./dashboard-layout.ts";
-import { dashboardRecords, rosterLines, sessionAppearance, titleOf, attentionReason, needsAttention } from "./dashboard-roster.ts";
+import { clamp, MAX_ROSTER_COLUMNS, MIN_COMPOSER_ROWS, MIN_ROSTER_COLUMNS, dashboardGeometry, dashboardRule, fitLine } from "./dashboard-layout.ts";
+import { dashboardRecords, rosterLines, sessionAppearance, titleOf, needsAttention } from "./dashboard-roster.ts";
 import { agentState, dashboardSessionState, updateDraft, notifyAgentState, type DashboardState, type DashboardLayout } from "./dashboard-state.ts";
 import { agentDisplayName } from "./action-outcome.ts";
 import type { TaskLabel, ConversationFrame } from "./live-frames.ts";
@@ -362,7 +362,7 @@ export class AgentDashboard implements Component, Focusable {
 		const hasRows = Boolean(this.page?.rows.length);
 		const reason = error instanceof Error ? error.message : String(error);
 		// The state leads, so a narrow list still shows it; the reason follows.
-		this.rosterNotice = !hasRows ? `Agents unavailable: ${reason}` : this.rosterFailures >= 3 ? `List kept; refresh failed: ${reason}` : undefined;
+		this.rosterNotice = !hasRows ? `Agents unavailable: ${reason}` : this.rosterFailures >= 3 ? "List kept; refresh failed" : undefined;
 	}
 
 	private reuseRoster(page: AgentConversationPage): AgentConversationPage {
@@ -793,6 +793,16 @@ export class AgentDashboard implements Component, Focusable {
 	private inspectorRows = 10;
 	/** Column widths of the list and the conversation pane at the last paint, for resize feedback. */
 	private resizeColumns = { list: 0, pane: 0 };
+	private headerCache?: {
+		row: AgentConversationSummary;
+		name: string;
+		project: string;
+		identityWidth: number;
+		room: number;
+		status: string;
+		left: string;
+		stateLine: string;
+	};
 
 	private closeInspector(): void {
 		const inspector = this.inspector;
@@ -1286,7 +1296,7 @@ export class AgentDashboard implements Component, Focusable {
 
 	private exit(): void {
 		if (this.operations.exitLabel === "Detach") {
-			this.show("Detach closes this terminal; it is the control at the bottom right.", "info");
+			this.show("Detach closes this terminal; it is the control at the top right.", "info");
 			return;
 		}
 		this.dispose();
@@ -1404,7 +1414,8 @@ export class AgentDashboard implements Component, Focusable {
 		if (width < 60 || height < 16) return Array.from({ length: height }, (_, row) => fitLine(row === 0 ? "Make the window larger to use Agents (60×16). Esc leaves." : "", width));
 		// Threads and Efforts sit under the same tabs as the agents; each owns the rows below them.
 		if (this.surface === "efforts" && this.efforts) {
-			const lines = this.efforts.render(width, height);
+			const shape = dashboardGeometry(width, height, 0, false, 0, 4, this.state.layout);
+			const lines = this.efforts.render(width, height, shape.rosterWidth);
 			return [this.renderHeading(width), ...lines.slice(1)].map((line) => fitLine(line, width));
 		}
 		if (this.surface === "threads" && this.threads) {
@@ -1444,35 +1455,47 @@ export class AgentDashboard implements Component, Focusable {
 			this.hits.add({ x: width - visibleWidth(exit), y: 0, width: visibleWidth(exit), height: 1, click: () => this.exitControl() });
 			return `${fitLine(line, Math.max(0, width - visibleWidth(exit)))}${theme.fg("accent", exit)}`;
 		}
-		if (this.primaryId) {
-			for (const [all, label] of [[false, "Related"], [true, "All"]] as const) {
-				const text = ` ${label} `;
-				const active = this.allAgents === all;
-				line += active ? theme.bg("selectedBg", theme.bold(text)) : theme.fg("muted", text);
-				this.hits.add({ x, y: 0, width: visibleWidth(text), height: 1, click: () => { this.allAgents = all; this.scopeChosen = true; this.rosterScroll = undefined; this.rows = []; this.reconcile(); } });
-				x += visibleWidth(text);
-			}
-			line += " ";
-			x += 1;
+		if (this.state.layout.listHidden) {
+			const show = " Show list ";
+			line += theme.fg("muted", show);
+			this.hits.add({ x, y: 0, width: visibleWidth(show), height: 1, click: () => this.toggleList() });
+			x += visibleWidth(show);
 		}
-		const listLabel = this.state.layout.listHidden ? " Show list " : " Hide list ";
-		line += theme.fg("muted", listLabel);
-		this.hits.add({ x, y: 0, width: visibleWidth(listLabel), height: 1, click: () => this.toggleList() });
-		x += visibleWidth(listLabel) + 1;
+		// The tabs lead on the left; the session figures, the view's actions and the way out sit at the right.
 		const actions = this.viewActions();
-		const barWidth = ActionBar.measure(actions);
 		const exit = ` ${this.operations.exitLabel ?? "Close"} `;
-		const figures = this.sessionFigures ? theme.fg("muted", ` ${plainLine(this.sessionFigures)} `) : "";
-		const right = visibleWidth(figures) + visibleWidth(exit);
+		const figures = width >= 100 && this.sessionFigures ? theme.fg("muted", ` ${plainLine(this.sessionFigures)} `) : "";
+		const barRoom = Math.max(0, Math.min(ActionBar.measure(actions), width - x - visibleWidth(figures) - visibleWidth(exit) - 2));
+		const barX = width - visibleWidth(exit) - barRoom - 1;
 		const barHits = new HitMap();
 		barHits.begin(width, 1);
-		const barRoom = Math.max(0, Math.min(barWidth, width - x - right - 1));
 		this.headingBar.focused = this.focused && this.region === "heading";
 		const bar = this.headingBar.render(actions, barRoom, theme, barHits, 0);
-		this.hits.include(barHits, x, 0);
-		const gap = Math.max(1, width - x - barRoom - right);
+		this.hits.include(barHits, barX, 0);
+		const gap = Math.max(1, barX - x - visibleWidth(figures));
 		this.hits.add({ x: width - visibleWidth(exit), y: 0, width: visibleWidth(exit), height: 1, click: () => this.exitControl() });
-		return `${line}${bar}${" ".repeat(gap)}${figures}${theme.fg("accent", exit)}`;
+		return `${line}${" ".repeat(gap)}${figures}${fitLine(bar, barRoom)} ${theme.fg("accent", exit)}`;
+	}
+
+	/** Related and All, and the control that hides the list, ending at `xEnd` on the Find row. */
+	private listScope(xEnd: number, y: number, room: number): { text: string; width: number } {
+		const theme = this.theme;
+		const parts: Array<{ text: string; active?: boolean; run(): void }> = [];
+		if (this.primaryId)
+			for (const [all, label] of [[false, "Related"], [true, "All"]] as const)
+				parts.push({ text: ` ${label} `, active: this.allAgents === all, run: () => { this.allAgents = all; this.scopeChosen = true; this.rosterScroll = undefined; this.rows = []; this.reconcile(); } });
+		if (this.console) parts.push({ text: " ‹ ", run: () => this.toggleList() });
+		const total = parts.reduce((sum, part) => sum + visibleWidth(part.text), 0);
+		if (total > room) return { text: "", width: 0 };
+		let x = xEnd - total;
+		let text = "";
+		for (const part of parts) {
+			const w = visibleWidth(part.text);
+			this.hits.add({ x, y, width: w, height: 1, click: () => part.run() });
+			text += part.active ? theme.bg("selectedBg", theme.bold(part.text)) : theme.fg("muted", part.text);
+			x += w;
+		}
+		return { text, width: total };
 	}
 
 	private exitControl(): void {
@@ -1497,7 +1520,7 @@ export class AgentDashboard implements Component, Focusable {
 
 	private renderWork(width: number, height: number): string[] {
 		const heading = this.renderHeading(width);
-		const bodyHeight = height - 2;
+		const bodyHeight = height - 1;
 		const wide = width >= 100;
 		const showList = !this.state.layout.listHidden || !this.console;
 		const shape = dashboardGeometry(width, height, 0, false, 0, 4, this.state.layout);
@@ -1505,19 +1528,19 @@ export class AgentDashboard implements Component, Focusable {
 		this.resizeColumns = { list: listWidth, pane: width - listWidth - 1 };
 		let body: string[];
 		if (listWidth) body = this.renderSplit(width, bodyHeight, listWidth);
-		else if (showList) {
-			// A narrow window stacks the list above the conversation; a short one lists fewer rows.
-			const strip = this.renderList(width, bodyHeight >= 24 ? 5 : bodyHeight >= 20 ? 4 : 3, 0, 1, true);
+		else if (showList && bodyHeight >= 19 && !this.inspector) {
+			// Two agents fit at 80x24; shorter narrow windows keep one before yielding the strip.
+			const strip = this.renderList(width, bodyHeight >= 23 ? 8 : 5, 0, 1, true);
 			body = [...strip, ...this.renderPane(0, 1 + strip.length, width, bodyHeight - strip.length)];
 		} else body = this.renderPane(0, 1, width, bodyHeight);
-		return [heading, ...body.slice(0, bodyHeight), this.renderFooter(width, height - 1)];
+		return [heading, ...body.slice(0, bodyHeight)];
 	}
 
 	/** The list beside the pane, with the divider that resizes them. */
 	private renderSplit(width: number, bodyHeight: number, listWidth: number): string[] {
 		const list = this.renderList(listWidth - 1, bodyHeight, 0, 1);
 		const pane = this.renderPane(listWidth + 1, 1, width - listWidth - 1, bodyHeight);
-		this.resize.add({ kind: "roster", x: listWidth - 1, y: 1, width: 2, height: bodyHeight, value: listWidth, min: 24, max: width - 1 - 60 });
+		this.resize.add({ kind: "roster", x: listWidth - 1, y: 1, width: 2, height: bodyHeight, value: listWidth, min: MIN_ROSTER_COLUMNS, max: Math.min(MAX_ROSTER_COLUMNS, width - 1 - 60) });
 		const active = this.resize.active("roster");
 		const lit = active || this.resize.hover === "roster" || this.region === "list";
 		const divider = this.theme.fg(lit ? "accent" : "borderMuted", active ? "┃" : "│");
@@ -1530,14 +1553,17 @@ export class AgentDashboard implements Component, Focusable {
 		// A compact strip keeps its facts beside Find, so each other row lists an agent.
 		const facts = compact ? this.listFacts() : undefined;
 		const factsWidth = facts ? Math.min(Math.floor(width / 2), visibleWidth([facts.text, facts.more].filter(Boolean).join(" "))) : 0;
-		const findWidth = factsWidth ? width - factsWidth - 1 : width;
-		const findLine = this.find.render(findWidth, theme, 6, "type to find agents");
+		const findArea = factsWidth ? width - factsWidth - 1 : width;
+		const scope = this.listScope(x0 + findArea, y0, Math.max(0, findArea - 12));
+		const findWidth = findArea - scope.width;
+		const findLine = fitLine(this.find.render(findWidth, theme, 6, "type to find agents"), findWidth) + scope.text;
 		this.hits.add({ x: x0, y: y0, width: findWidth, height: 1, click: (event) => ({ ...this.find.handleMouse(event, 6), ...this.focusRegion("list") }) });
 		const rosterHeight = Math.max(1, height - (compact ? 1 : 2));
 		const lines = rosterLines(this.rows, this.loadMore ? undefined : this.state.selected, width, rosterHeight, Date.now(), theme, compact, {
 			primaryId: this.primaryId,
 			start: this.rosterScroll,
 			exactTime: this.state.exactTime,
+			footer: this.rosterFailures >= 3 && this.rosterNotice ? { text: this.rosterNotice, color: "warning" } : undefined,
 			range: (start, maxStart) => {
 				this.rosterStart = start;
 				this.rosterMaxStart = maxStart;
@@ -1582,7 +1608,7 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** The list's coverage facts and, when more agents exist, the Load more control. */
 	private listFacts(): { readonly text: string; readonly tone: "warning" | "muted"; readonly more?: string } {
-		if (this.rosterNotice) return { text: plainLine(this.rosterNotice), tone: "warning" };
+		if (this.rosterNotice && (!this.rows.length || this.rosterNotice.startsWith("Loading"))) return { text: plainLine(this.rosterNotice), tone: "warning" };
 		const coverage = this.page?.coverage;
 		// Storage coverage counts stay in Details; the list says only what the operator can act on.
 		const text = !this.allAgents && this.relations.view().pending ? "reading related work…" : "";
@@ -1602,18 +1628,21 @@ export class AgentDashboard implements Component, Focusable {
 	private renderPane(x0: number, y0: number, width: number, height: number): string[] {
 		const console = this.console;
 		if (!console) return this.renderNoSelection(x0, y0, width, height);
-		const header = this.renderTargetHeader(console, x0, y0, width);
-		// A fact line with nothing known, such as the metrics of an agent without a model, takes no row.
-		const status = console.statusLines(width, this.modelInfo(console), this.branches.get(console.row.cwd), this.delegatedFigures()).filter((line) => visibleWidth(line) > 0);
-		const top = [...header, ...status.map((line) => fitLine(line, width))];
-		const composer = this.renderComposer(console, width, Math.max(3, height - top.length - 4));
-		const middleHeight = Math.max(1, height - top.length - composer.length);
-		const middleY = y0 + top.length;
+		// Header, a spacing row, the conversation, the message field, and under it the agent's status lines in
+		// the main session's footer layout. A fact line with nothing known takes no row.
+		const header = [...this.renderTargetHeader(console, x0, y0, width), ""];
+		const status = console
+			.statusLines(width - 1, this.modelInfo(console), this.branches.get(console.row.cwd), this.delegatedFigures())
+			.filter((line) => visibleWidth(line) > 0)
+			.map((line) => fitLine(` ${line}`, width));
+		const composer = this.renderComposer(console, width, Math.max(3, height - header.length - status.length - 4));
+		const middleHeight = Math.max(1, height - header.length - composer.length - status.length);
+		const middleY = y0 + header.length;
 		const middle = this.renderMiddle(console, x0, middleY, width, middleHeight);
 		const composerY = middleY + middle.length;
 		this.geometry = { ...this.geometry, paneX: x0, paneWidth: width, composerY, composerHeight: composer.length };
 		this.composerHits(console, x0, composerY, width, composer.length);
-		return [...top, ...middle, ...composer];
+		return [...header, ...middle, ...composer, ...status];
 	}
 
 	private modelInfo(console: AgentConsole): AgentModelInfo | undefined {
@@ -1639,29 +1668,42 @@ export class AgentDashboard implements Component, Focusable {
 	private renderTargetHeader(console: AgentConsole, x0: number, y0: number, width: number): string[] {
 		const theme = this.theme;
 		const row = console.row;
-		const appearance = sessionAppearance[row.state];
+		const status = plainLine([
+			this.resizeFeedback(),
+			this.notice?.text,
+			console.status,
+			console.warning,
+			needsAttention(row) ? "Details has the stored error" : "",
+		].find((text) => Boolean(text)) ?? "");
+		const previous = this.headerCache?.row === row ? this.headerCache : undefined;
+		const name = previous?.name ?? theme.bold(theme.fg("text", plainLine(titleOf(row))));
+		const project = previous?.project ?? theme.fg("muted", `  ${plainLine(projectOf(row))}`);
+		const identityWidth = previous?.identityWidth ?? visibleWidth(` ${name}${project}`);
 		const actions = this.targetActions();
-		const name = theme.bold(theme.fg("text", plainLine(titleOf(row))));
-		const project = theme.fg("muted", ` · ${plainLine(projectOf(row))}`);
-		const state = theme.fg("muted", " · ") + theme.fg(appearance.color, `${appearance.glyph} ${appearance.label}`);
-		// Name, project and state keep their width first; controls that do not fit move into More,
-		// and the first control with More always stays visible.
-		const need = visibleWidth(` ${name}${project}${state}`);
+		// Name and project keep their width first; controls that do not fit move into More, and the first
+		// control with More always stays visible.
 		const first = actions.find((action) => action.primary);
 		const least = first ? ActionBar.measure([first, { ...first, id: "more", primary: false }]) : 0;
-		const barWidth = Math.min(ActionBar.measure(actions), Math.max(least, width - need - 1));
-		const left = this.targetTitle(name, project, state, Math.max(1, width - barWidth - 1));
+		const barWidth = Math.min(ActionBar.measure(actions), Math.max(least, width - identityWidth - 1));
+		const room = Math.max(1, width - barWidth - 1);
+		let left: string;
+		let stateLine: string;
+		if (previous?.room === room && previous.status === status) {
+			left = previous.left;
+			stateLine = previous.stateLine;
+		} else {
+			left = this.targetTitle(name, project, "", room);
+			const appearance = sessionAppearance[row.state];
+			const state = theme.fg(appearance.color, ` ${appearance.glyph} ${appearance.label}`);
+			stateLine = fitLine(`${state}${status ? theme.fg("muted", `  ${status}`) : ""}`, width);
+		}
+		this.headerCache = { row, name, project, identityWidth, room, status, left, stateLine };
 		this.controls.focused = this.focused && this.region === "controls";
 		const barHits = new HitMap();
 		barHits.begin(this.tui.terminal.columns, this.tui.terminal.rows);
 		const bar = this.controls.render(actions, barWidth, theme, barHits, 0);
 		this.hits.include(barHits, x0 + width - barWidth, y0);
-		const lines = [`${left} ${bar}`];
-		const reason = attentionReason(row);
-		if (reason) lines.push(fitLine(theme.fg("error", ` ${plainLine(reason)}`), width));
-		if (console.warning) lines.push(fitLine(theme.fg("warning", ` ${plainLine(console.warning)}`), width));
-		if (this.notice) lines.push(fitLine(this.noticeText(this.notice), width));
-		return lines;
+		return [`${left} ${bar}`, stateLine];
 	}
 
 	/** Name, project and state in `room` columns: the project goes first, then the name shortens; the state stays. */
@@ -1672,11 +1714,6 @@ export class AgentDashboard implements Component, Focusable {
 		const stateWidth = visibleWidth(state);
 		if (visibleWidth(short) <= room || room <= stateWidth + 4) return fitLine(short, room);
 		return fitLine(` ${fitLine(name, room - stateWidth - 1)}${state}`, room);
-	}
-
-	private noticeText(notice: Notice): string {
-		const colour = notice.kind === "error" ? "error" : notice.kind === "warning" ? "warning" : notice.kind === "success" ? "success" : "muted";
-		return this.theme.fg(colour, ` ${notice.text}`);
 	}
 
 	/** Conversation, or the inspector beside or instead of it. */
@@ -1731,17 +1768,18 @@ export class AgentDashboard implements Component, Focusable {
 
 	private renderConversation(console: AgentConsole, x0: number, y0: number, width: number, height: number): string[] {
 		const boundary = this.conversationBoundary(console, width);
-		if (height <= 1) {
-			this.geometry = { ...this.geometry, conversationY: y0 + 1, conversationHeight: 0, conversationWidth: width };
-			return [boundary];
+		const boundaryRows = boundary ? 1 : 0;
+		if (height <= boundaryRows) {
+			this.geometry = { ...this.geometry, conversationY: y0 + boundaryRows, conversationHeight: 0, conversationWidth: width };
+			return boundary ? [boundary] : [];
 		}
-		const bodyHeight = Math.max(1, height - 1);
+		const bodyHeight = Math.max(1, height - boundaryRows);
 		this.bodyHeight = bodyHeight;
 		const lines = console.conversation.render(Math.max(1, width - 1), bodyHeight);
 		const position = console.conversation.position();
-		this.geometry = { ...this.geometry, conversationY: y0 + 1, conversationHeight: bodyHeight, conversationWidth: width };
-		this.hits.add({ x: x0, y: y0 + 1, width, height: bodyHeight, wheel: (delta) => this.wheelConversation(delta) });
-		this.hits.add({ x: x0, y: y0, width, height: 1, click: () => { if (this.history.earlier()) this.earlier(); return undefined; } });
+		this.geometry = { ...this.geometry, conversationY: y0 + boundaryRows, conversationHeight: bodyHeight, conversationWidth: width };
+		this.hits.add({ x: x0, y: y0 + boundaryRows, width, height: bodyHeight, wheel: (delta) => this.wheelConversation(delta) });
+		if (boundaryRows) this.hits.add({ x: x0, y: y0, width, height: 1, click: () => { if (this.history.earlier()) this.earlier(); return undefined; } });
 		const scrolled = position && position.total > bodyHeight;
 		const thumb = scrolled ? Math.max(1, Math.round((bodyHeight * bodyHeight) / position.total)) : 0;
 		const thumbTop = scrolled ? Math.round(((bodyHeight - thumb) * (position.first - 1)) / Math.max(1, position.total - bodyHeight)) : 0;
@@ -1750,17 +1788,16 @@ export class AgentDashboard implements Component, Focusable {
 			const inThumb = row >= thumbTop && row < thumbTop + thumb;
 			return fitLine(line, width - 1) + this.theme.fg(inThumb ? "scrollbarThumb" : "scrollbarTrack", inThumb ? "┃" : "│");
 		});
-		return [boundary, ...body];
+		return boundary ? [boundary, ...body] : body;
 	}
 
 	private conversationBoundary(console: AgentConsole, width: number): string {
 		const position = console.conversation.position();
 		let label = "";
-		if (console.status && console.status !== "Partial history") label = console.status;
-		else if (position && !position.end) {
+		if (position && !position.end) {
 			label = position.first <= 1 && (this.history.earlier() || console.status === "Partial history") ? "Earlier history · PageUp or click to read" : `↓ ${position.estimated ? "about " : ""}${position.total - position.last} lines below · End follows live output`;
 		} else if (this.history.newer()) label = "Newer messages available · PageDown reads them";
-		return dashboardRule(label, width, this.theme);
+		return label ? dashboardRule(label, width, this.theme) : "";
 	}
 
 	/** A compact composer that grows with the draft, unless the operator resized or expanded it. */
@@ -1813,27 +1850,6 @@ export class AgentDashboard implements Component, Focusable {
 		if (selected === "roster") return `List ${this.resizeColumns.list} · conversation ${this.resizeColumns.pane} columns · release to keep · esc restores`;
 		if (selected === "composer") return `Message field ${this.state.layout.composerRows ?? "auto"} rows · release to keep · esc restores`;
 		return undefined;
-	}
-
-	private renderFooter(width: number, y: number): string {
-		const theme = this.theme;
-		const hints: Record<Region, string> = {
-			list: "↑↓ select · enter write · type to find · tab next · esc close",
-			conversation: "↑↓ pgup pgdn read · end live · enter write · tab next · esc list",
-			composer: "enter send · ctrl+j new line · pgup earlier · tab next · esc list",
-			controls: "←→ choose · enter run · tab next · esc back",
-			inspector: "tab next field · enter next or run · esc back",
-			heading: "←→ choose · enter run · tab next · esc back",
-		};
-		let text = this.resizeFeedback() ?? hints[this.region];
-		if (this.returnSurface) text = text.replace("esc close", "esc back to the thread");
-		else if (this.operations.exitLabel === "Detach") text = text.replace("esc close", "detach at top right");
-		// The way out sits once, at the top right. A narrow footer drops middle hints first.
-		void y;
-		const room = width;
-		const parts = text.split(" · ");
-		while (parts.length > 2 && visibleWidth(` ${parts.join(" · ")}`) > room) parts.splice(parts.length - 2, 1);
-		return fitLine(theme.fg("dim", ` ${parts.join(" · ")}`), room);
 	}
 
 	private delegatedFigures(): DelegatedFigures | undefined {

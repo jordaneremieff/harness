@@ -56,7 +56,14 @@ it("the public Pi event bus completes synchronous publication responses before r
 	events.clear();
 });
 
-it("collects fake publishers in either factory load order and uses their native card", async () => {
+/** The expanded dashboard card for a definition; a collapsed dashboard tool is one summary line. */
+function expandedText(definition: ToolDefinition): string {
+	const tool = new ToolExecutionComponent(definition.name, "call", {}, { showImages: false }, definition, { requestRender() {} } as TUI, "/work");
+	tool.setExpanded(true);
+	return stripVTControlCharacters(tool.render(80).join("\n"));
+}
+
+it("collects fake publishers in either factory load order and uses their card when expanded", async () => {
 	for (const publisherFirst of [false, true]) {
 		const bus = new FakeBus();
 		const publisher = bus.scope();
@@ -69,6 +76,10 @@ it("collects fake publishers in either factory load order and uses their native 
 		await assert.rejects(definition.execute("display", {}, undefined, undefined, {} as never), /Transcript tools cannot execute/u);
 		const tool = new ToolExecutionComponent("fixture_tool", "call", {}, { showImages: false }, definition, { requestRender() {} } as TUI, "/work");
 		tool.updateResult({ content: [{ type: "text", text: "Unformatted result" }], isError: false });
+		const collapsed = stripVTControlCharacters(tool.render(80).join("\n"));
+		assert.match(collapsed, /fixture_tool → Unformatted result/u, "a collapsed published tool is one summary line");
+		assert.doesNotMatch(collapsed, /Published call|Published result/u);
+		tool.setExpanded(true);
 		const visible = stripVTControlCharacters(tool.render(80).join("\n"));
 		assert.match(visible, /Published call/u);
 		assert.match(visible, /Published result/u);
@@ -83,7 +94,7 @@ it("replaces same-name publication and reconstructs registry after tracked-handl
 	fakePublisher(publisher.events);
 	const oldLookup = collectToolDisplay(consumer.events);
 	const retainedDefinition = createDashboardToolDefinitions("/work", oldLookup)("fixture_tool");
-	assert.equal(retainedDefinition.renderCall, renderCall);
+	assert.match(expandedText(retainedDefinition), /Published call/u);
 	const replacement: NonNullable<ToolDefinition["renderCall"]> = () => new Text("Replacement", 0, 0);
 	publisher.invalidate();
 	publisher = bus.scope();
@@ -94,15 +105,15 @@ it("replaces same-name publication and reconstructs registry after tracked-handl
 	consumer = bus.scope();
 	const reloaded = collectToolDisplay(consumer.events);
 	assert.equal(reloaded("fixture_tool")?.renderCall, replacement);
-	assert.equal(createDashboardToolDefinitions("/work", reloaded)("fixture_tool").renderCall, replacement);
-	assert.equal(retainedDefinition.renderCall, renderCall);
+	assert.match(expandedText(createDashboardToolDefinitions("/work", reloaded)("fixture_tool")), /Replacement/u);
+	assert.match(expandedText(retainedDefinition), /Published call/u, "a retained definition keeps the renderer it was built with");
 	assert.equal(bus.handlers.get("harness:tool-display:publish")?.size, 1);
 	assert.equal(bus.handlers.get("harness:tool-display:request")?.size, 1);
 	consumer.invalidate();
 	publisher.invalidate();
 	const empty = collectToolDisplay(bus.scope().events);
 	assert.equal(empty("fixture_tool"), undefined);
-	assert.equal(createDashboardToolDefinitions("/work", empty)("fixture_tool").renderCall, undefined);
+	assert.doesNotMatch(expandedText(createDashboardToolDefinitions("/work", empty)("fixture_tool")), /Published call|Replacement/u);
 	fakePublisher(bus.scope().events, "fresh_tool");
 	assert.equal(empty("fresh_tool")?.renderCall, renderCall);
 	assert.equal(oldLookup("fresh_tool"), undefined);
@@ -130,14 +141,14 @@ it("native builtin, codemode and agent cards take precedence over published name
 	for (const name of ["read", "codemode", "agent_send"]) fakePublisher(events, name);
 	const define = createDashboardToolDefinitions("/work", lookup);
 	for (const name of ["read", "codemode", "agent_send"]) {
-		if (name !== "agent_send") assert.equal(define(name).renderCall, createDashboardToolDefinitions("/work")(name).renderCall);
+		if (name !== "agent_send") assert.doesNotMatch(expandedText(define(name)), /Published call/u, `${name} keeps its own card`);
 		assert.equal(typeof define(name).renderCall, "function");
 		assert.notEqual(define(name).renderCall, renderCall);
 	}
-	assert.equal(define("read", false).renderCall, undefined);
-	assert.equal(define("unpublished").renderCall, undefined);
-	assert.equal(define("unpublished").renderResult, undefined);
-	assert.equal(define("unpublished").renderShell, undefined);
+	assert.doesNotMatch(expandedText(define("read", false)), /Published call/u);
+	const unpublished = define("unpublished");
+	assert.equal(unpublished.renderShell, "self", "no dashboard tool draws an outer block");
+	assert.doesNotMatch(expandedText(unpublished), /Published call/u);
 });
 
 it("agent publication emits only card fields and responds only to current requests", () => {

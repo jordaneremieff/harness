@@ -37,12 +37,15 @@ for (const nonroot of [false, true]) it(`native terminal discovers, reads and po
 	});
 	screen.view.selectIdentity(actor);
 	await waitFor(() => text().includes("Current native work"));
-	await waitFor(() => text().includes("3 loaded"));
+	await waitFor(() => text().includes("3 agents"));
 	assert.equal(controller.selected, actor, "the terminal's target is the selected conversation");
 	screen.view.openNamedAction("threads");
 	await waitFor(() => text().includes("Native task review"));
 	screen.handleInput("\x1b[B");
+	screen.handleInput("\x1b[Z");
+	screen.handleInput("\r");
 	await waitFor(() => text().includes("Review the task"));
+	screen.handleInput("\x1b");
 	screen.handleInput("\r");
 	screen.handleInput("Operator review note");
 	screen.handleInput("\r");
