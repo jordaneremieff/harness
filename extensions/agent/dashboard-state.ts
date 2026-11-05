@@ -1,4 +1,4 @@
-import type { CollaborationViewState } from "./collaboration-view.ts";
+import type { ThreadsState } from "./thread-data.ts";
 
 export interface AgentReadingState {
 	follow: boolean;
@@ -38,7 +38,7 @@ export interface DashboardState {
 	filter: string;
 	newTask: string;
 	agents: Map<string, AgentDraftState>;
-	threads?: CollaborationViewState;
+	threads?: ThreadsState;
 }
 export function createDashboardState(): DashboardState {
 	return { filter: "", newTask: "", agents: new Map(), exactTime: false, layout: {} };

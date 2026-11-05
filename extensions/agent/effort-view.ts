@@ -10,10 +10,12 @@ import { DashboardMouse } from "./dashboard-mouse.ts";
 import { ActionInventory, type ScreenAction } from "./action-inventory.ts";
 import { dashboardHeading, dashboardSelection, fitLine } from "./dashboard-layout.ts";
 import { dashboardTime } from "./dashboard-time.ts";
-import { memberDeclarationLines, threadPage, type Collaborate } from "./collaboration-view.ts";
+import { memberDeclarationLines, threadPage, type Collaborate } from "./thread-data.ts";
 import type { CollaborationPage } from "./collaboration.ts";
 
 const plain = (text: string) => cleanDashboardText(text).replace(/\s+/g, " ").trim();
+/** A session identity short enough to read: long identities keep their first eight characters. */
+const shortIdentity = (id: string) => (id.length > 12 ? id.slice(0, 8) : id);
 interface EffortViewOptions {
 	tui: TUI;
 	theme: Theme;
@@ -322,6 +324,15 @@ export class EffortView {
 	private purposePreview(row: RelatedEffort): string {
 		return this.declaredPurpose(row) || (row.observedPurpose ? `Observed purpose (${row.observedPurpose.source}): ${row.observedPurpose.text}` : "No purpose claim");
 	}
+	/** A recognisable title: the effort's name or declared purpose, then a short identity. */
+	private effortTitle(row: RelatedEffort): string {
+		const title = row.name || this.declaredPurpose(row) || row.observedPurpose?.text;
+		return plain(title ? title.replace(/\s+/g, " ").trim() : `Session ${shortIdentity(row.id)}`);
+	}
+	private effortFacts(row: RelatedEffort): string {
+		const relation = { cwd: "same folder", repository: "same repository", machine: "this machine" }[row.relationship as string] ?? row.relationship;
+		return `${row.liveness} · ${relation} · ${shortIdentity(row.id)}`;
+	}
 	private contactLines(): string[] {
 		const page = this.contactPage;
 		if (!page) return [this.contactNotice];
@@ -390,7 +401,7 @@ export class EffortView {
 		for (const row of efforts.slice(effortStart, effortStart + count)) {
 			this.mouse.add({ x: 0, y: y + lines.length, width, height: 1, click: () => { if (!this.composing) { this.select(row.id); } } });
 			const chosen = !this.selectedThread && row.id === this.selected;
-			lines.push(dashboardSelection(`${chosen ? "›" : " "} ${plain(row.name || row.id)} · ${row.liveness}`, width, chosen, this.options.theme));
+			lines.push(dashboardSelection(`${chosen ? "›" : " "} ${this.effortTitle(row)} · ${row.liveness}`, width, chosen, this.options.theme));
 		}
 		const threads = this.threads();
 		lines.push(this.options.theme.fg("muted", `Active threads · ${this.composing ? 0 : Math.min(2, threads.length)}/${threads.length} loaded · newest covered first`));
@@ -451,10 +462,11 @@ export class EffortView {
 				if (!this.composing) { this.select(row.id); }
 			} });
 			const purpose = this.purposePreview(row);
+			const title = this.effortTitle(row);
 			lines.push(
-				dashboardSelection(`${chosen ? "›" : " "} ${plain(row.name || row.id)}`, width, chosen, theme),
-				theme.fg(row.liveness === "live" ? "accent" : "muted", `  ${row.liveness} · ${row.relationship}`),
-				`  ${plain(purpose)}`,
+				dashboardSelection(`${chosen ? "›" : " "} ${title}`, width, chosen, theme),
+				theme.fg(row.liveness === "live" ? "accent" : "muted", `  ${this.effortFacts(row)}`),
+				`  ${plain(purpose === title ? "" : purpose)}`,
 			);
 		}
 		lines.push("");

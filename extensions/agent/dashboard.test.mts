@@ -211,7 +211,7 @@ for (const [width, height] of [
 				frame = { ...frame, revision: frame.revision + 1, status: { ...frame.status, busy } };
 				notify();
 				const screen = shown(f);
-				assert.match(screen, busy ? /╭─ To one ─+ Steer at next step ⇄/u : /╭─ To one ─+ Send /u);
+				assert.match(screen, busy ? /╭─ To one ─+ Steer at next step ⇄/u : /╭─ To one ─+┄*╮/u);
 				const header = targetHeader(f).join("\n");
 				assert.match(header, busy ? /● Working/u : /Idle/u);
 				if (busy) assert.match(header, /Stop/u);
@@ -390,7 +390,7 @@ for (const [width, height] of [
 				await settle(() => f.state.selected === "branch");
 				assert.deepEqual(host.calls.map((call) => call.name), [action]);
 				const screen = await until(f, /To New branch/u);
-				assert.match(screen, /╭─ To New branch ─+ Send /u);
+				assert.match(screen, /╭─ To New branch ─+┄*╮/u);
 				assert.match(targetHeader(f).join("\n"), /Idle/u);
 				assert.equal(f.ui.focus.region, "composer");
 				assert.equal(agentState(f.state, "one").draft, "source draft");
@@ -568,9 +568,13 @@ it("a late new conversation completion respects a later list selection", async (
 	}
 });
 
-it("an empty Related list states its whole reason in a narrow list", async () => {
-	const f = fixture(120, 30, source([row("unrelated", { storageId: "unrelated", creatingOwnerId: "someone-else" })]), undefined, undefined, undefined, "caller-session");
+it("with no related work the list shows every agent, and a chosen Related scope states its whole reason", async () => {
+	const f = fixture(120, 30, source([row("unrelated", { storageId: "unrelated", creatingOwnerId: "someone-else", name: "Unrelated worker" })]), undefined, undefined, undefined, "caller-session");
 	try {
+		await settle(() => /Unrelated worker/u.test(shown(f)));
+		const heading = visible(f.ui.render(120))[0] ?? "";
+		const x = heading.indexOf("Related") + 1;
+		f.ui.handleMouse({ type: "click", button: "left", x, y: 0, screenX: x, screenY: 0, width: 120, height: 30, shift: false, alt: false, ctrl: false, clickCount: 1 });
 		await settle(() => /No related agents yet/u.test(shown(f)));
 		const lines = visible(f.ui.render(120));
 		const divider = lines[1]?.indexOf("\u2502") ?? 0;
@@ -695,7 +699,7 @@ it("a new conversation selects its purpose and starting state before host readin
 			assert.doesNotMatch(screen, /Conversation unavailable|Unavailable|Attention|need attention|model \?|reasoning \?/u);
 		}
 		f.resize(140, 45);
-		assert.match(shown(f), /╭─ To Write the startup note ─+ Send /u);
+		assert.match(shown(f), /╭─ To Write the startup note ─+┄*╮/u);
 		await turn();
 		assert.match(shown(f), /Starting/u);
 		assert.doesNotMatch(shown(f), /Conversation unavailable/u);
@@ -879,7 +883,7 @@ it("Load more is selected before it reads, and loaded coverage survives reconcil
 		await turn();
 		assert.deepEqual(calls, [undefined, "more", undefined, "more"]);
 		assert.match(visible(f.ui.render(80))[0] ?? "", /agents: 3\/3 active · ~\$1\.26/u);
-		assert.match(shown(f), /2 unreadable/u);
+		assert.doesNotMatch(shown(f), /unreadable/u, "storage coverage stays in Details, out of the list");
 	} finally {
 		f.ui.dispose();
 	}

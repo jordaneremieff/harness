@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { dashboardRecords, dashboardText, rosterLines, coverageText, rosterTotals } from "./dashboard-roster.ts";
+import { attentionReason, dashboardRecords, dashboardText, readableError, rosterLines, coverageText, rosterTotals } from "./dashboard-roster.ts";
 import { row, theme, coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
 import { mergeAgentCoverage } from "./dashboard-types.ts";
 for (const [width, height, compact] of [
@@ -183,23 +183,26 @@ it("roster identifies handles and roles separately from the historical first inp
 	assert.match(dashboardText({ observedAt: 0, sessions: [historical] }), /Historical: Original request/);
 });
 
-it("creating-session provenance stays muted while roster names retain bold emphasis", () => {
+it("roster names carry no provenance tag and keep bold emphasis", () => {
 	const colored = Object.create(theme) as typeof theme;
 	colored.fg = (color, text) => `\x1b[${color === "muted" ? 90 : 37}m${text}\x1b[39m`;
 	colored.bold = (text) => `\x1b[1m${text}\x1b[22m`;
 	for (const compact of [false, true]) {
 		const lines = rosterLines([row("other", { storageId: "other", name: "Recipient", creatingOwnerId: "peer" })], "other", 60, 20, 0, colored, compact, { primaryId: "primary" });
-		const title = lines.find((line) => line.includes("[other]"));
+		const title = lines.find((line) => line.includes("Recipient"));
 		assert.ok(title);
-		assert.ok(title.includes("\x1b[90m[other] \x1b[39m\x1b[1m"));
-		assert.ok(title.indexOf("[other]") < title.indexOf("\x1b[1m"));
+		assert.ok(title.includes("\x1b[1m\x1b[37mRecipient"), "the name stays bold");
+		assert.equal(lines.some((line) => line.includes("[other]")), false, "no tag for work another session created");
 		assert.ok(lines.every((line) => visibleWidth(line) <= 60));
 	}
 });
 
-it("storage provenance never labels an independently created nonroot conversation", () => {
-	const lines = rosterLines([row("storage:2", { creatingOwnerId: "other-primary" })], "storage:2", 60, 20, 0, theme, false, { primaryId: "primary" });
-	assert.equal(lines.some((line) => line.includes("[other]")), false);
+it("provider errors read as plain words", () => {
+	assert.equal(readableError('429: {"code":"1308","message":"Usage limit reached for 5 hour."}'), "429 Usage limit reached for 5 hour.");
+	assert.equal(readableError('{"error":{"message":"Overloaded"}}'), "Overloaded");
+	assert.equal(readableError("plain failure"), "plain failure");
+	assert.equal(readableError("400: {not json}"), "400: {not json}");
+	assert.equal(attentionReason(row("x", { state: "failed", error: '429: {"message":"Usage limit"}' })), "429 Usage limit");
 });
 
 it("flat roster keeps model second, failure text third, and hit areas on each block", () => {

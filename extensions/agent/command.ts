@@ -307,7 +307,7 @@ export function createAgentCommand(
 				messageEffort: effortWiring ? (id, text) => effortWiring.messageEffort(id, text, ctx) : undefined,
 				observeEffort: observationFor(ctx),
 				sessionFigures: sessionFigures ? (page) => sessionFigures(ctx, page) : undefined,
-				modelInfo: (provider, modelId) => ctx.modelRegistry.find(provider, modelId),
+				modelInfo: (provider, modelId) => ctx.modelRegistry?.find(provider, modelId),
 				branch: readAgentBranch,
 				collaborate: collaborate ? (input) => collaborate(input, ctx) : undefined,
 				...relationOperations(ctx),

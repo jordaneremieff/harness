@@ -145,7 +145,7 @@ it("the dashboard collaboration adapter carries its primary context and structur
 		dashboard.openNamedAction("threads");
 		await turn();
 		assert.deepEqual(calls, [{ input: { action: "list", limit: 20 }, ctx }, { input: { action: "list" }, ctx }]);
-		assert.match(stripVTControlCharacters(dashboard.render(80).join("\n")), /Agents > Threads/);
+		assert.match(stripVTControlCharacters(dashboard.render(80).join("\n")), /No threads yet\./);
 	} finally {
 		dashboard?.dispose();
 		finish();

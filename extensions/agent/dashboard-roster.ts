@@ -25,6 +25,26 @@ export const sessionAppearance: Record<AgentConversationSummary["state"], StateA
 	unavailable: { label: "Unavailable", glyph: "?", color: "error" },
 };
 const oneLine = (text: string) => cleanDashboardText(text).replace(/\s+/g, " ").trim();
+
+/**
+ * A provider error in plain words: `429: {"code":"1308","message":"Usage limit reached"}` reads
+ * as `429 Usage limit reached`. Text without a parseable JSON body stays as it is.
+ */
+export function readableError(text: string): string {
+	const flat = oneLine(text);
+	const start = flat.indexOf("{");
+	if (start < 0 || !flat.endsWith("}")) return flat;
+	try {
+		const body = JSON.parse(flat.slice(start)) as Record<string, unknown>;
+		const nested = body.error && typeof body.error === "object" ? (body.error as Record<string, unknown>).message : undefined;
+		const message = typeof body.message === "string" ? body.message : typeof nested === "string" ? nested : typeof body.error === "string" ? body.error : undefined;
+		if (!message) return flat;
+		const prefix = flat.slice(0, start).replace(/[:\s]+$/u, "");
+		return oneLine(prefix ? `${prefix} ${message}` : message);
+	} catch {
+		return flat;
+	}
+}
 export const titleOf = (row: AgentConversationSummary) =>
 	oneLine(row.profile?.handle
 		? `${row.profile.handle}${row.name ? ` · ${row.name}` : ""}`
@@ -93,12 +113,12 @@ export function needsAttention(row: AgentConversationSummary): boolean {
 export function attentionReason(row: AgentConversationSummary): string | undefined {
 	if (row.owner === "unavailable" || row.state === "unavailable")
 		return `Unavailable: ${oneLine(row.error || row.ownerLabel || "Storage cannot be read")}`;
-	if (row.health?.lastError) return `Host error: ${oneLine(row.health.lastError)}`;
+	if (row.health?.lastError) return `Host error: ${readableError(row.health.lastError)}`;
 	const failure = row.health?.compactionFailure;
-	if (failure) return `Compaction failed (${failure.trigger}): ${oneLine(failure.errorMessage || "No error text")}`;
+	if (failure) return `Compaction failed (${failure.trigger}): ${readableError(failure.errorMessage || "No error text")}`;
 	const retry = row.health?.autoRetry;
-	if (retry && retry.attempt >= retry.maxAttempts) return `Retries exhausted: ${oneLine(retry.errorMessage)}`;
-	if (row.state === "failed" && row.error) return oneLine(row.error);
+	if (retry && retry.attempt >= retry.maxAttempts) return `Retries exhausted: ${readableError(retry.errorMessage)}`;
+	if (row.state === "failed" && row.error) return readableError(row.error);
 	return undefined;
 }
 export function dashboardRecords(
@@ -245,9 +265,8 @@ function rosterRow(
 	const timeWidth = Math.min(visibleWidth(time), width - 4);
 	const timeX = width - timeWidth;
 	const titleWidth = compact ? Math.max(8, Math.floor((width - timeWidth - 10) * 0.3)) : Math.max(1, width - 4 - (exactRow ? 0 : timeWidth + 1));
-	const marker = primaryId && row.id === row.storageId && row.creatingOwnerId && row.creatingOwnerId !== primaryId ? "[other] " : "";
-	const nameWidth = Math.max(0, titleWidth - visibleWidth(marker));
-	const title = pad(theme.fg("muted", marker) + theme.bold(theme.fg("text", uniqueName(row, rows, nameWidth))), titleWidth);
+	void primaryId;
+	const title = pad(theme.bold(theme.fg("text", uniqueName(row, rows, titleWidth))), titleWidth);
 	let lines: string[];
 	if (compact) {
 		const cost = costOf(row);

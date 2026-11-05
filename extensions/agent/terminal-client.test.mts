@@ -369,11 +369,13 @@ it("the terminal opens the work view, Escape never detaches, and Detach leaves n
 	const s = screenFixture(f.controller);
 	try {
 		await settle(() => f.controller.selected === "a", "the first agent's selection");
-		assert.match(s.text(), / Detach $/mu);
+		assert.match(s.text().split("\n")[0] ?? "", / Detach\s*$/u, "the way out sits at the top right");
 		s.screen.handleInput("\x1b");
 		assert.match(s.text(), /Detach closes this terminal/u);
 		assert.equal(s.done(), 0);
-		s.click("Detach");
+		const heading = s.lines()[0] ?? "";
+		const x = heading.lastIndexOf("Detach") + 1;
+		s.screen.handleMouse({ type: "click", button: "left", x, y: 0, screenX: x, screenY: 0, width: s.terminal.columns, height: s.terminal.rows, shift: false, alt: false, ctrl: false, clickCount: 1 } as TuiMouseEvent);
 		assert.equal(s.done(), 1);
 		assert.equal(f.calls.some((call) => ["abort", "release", "submit", "attach"].includes(call.method)), false, "detaching sends no control to the native work");
 	} finally {

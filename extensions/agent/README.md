@@ -513,22 +513,26 @@ continues.
 
 The view has a heading row, the list, the selected agent's pane, and a footer:
 
-- **Heading.** Agents, Related and All (ordinary Pi only), Hide list or Show
-  list, then New conversation, Threads, Efforts (ordinary Pi only) and Help,
-  the session's delegated figures, and the way out (Close, or Detach in the
-  terminal). Controls that do not fit move into More.
+- **Heading.** The Agents, Threads and Efforts tabs (Efforts in ordinary Pi
+  only); on the Agents tab, Related and All (ordinary Pi only), Hide list or
+  Show list, New conversation and Help, and the session's delegated figures;
+  then the way out at the top right (Close, or Detach in the terminal). Controls
+  that do not fit move into More.
 - **List.** A Find field, then the agent rows. At 100 columns or more the list
   sits beside the pane at full height; narrower windows stack a strip of three
   to five rows above it, with coverage facts and Load more beside Find.
 - **Pane.** The selected agent's header (name, project, state, and its
   controls), its fact lines, any attention reason, warning or outcome line,
   then the conversation, and the message field at the bottom.
-- **Footer.** Hints for the focused region, and the way out at the right.
-  While a resize drag lasts, the footer shows the sizes it sets.
+- **Footer.** Hints for the focused region. While a resize drag lasts, the
+  footer shows the sizes it sets.
 
-The list starts in **Related** for the current session; a native terminal
-without an attached conversation starts with All. Find applies to the selected
-view.
+The list starts in **Related** for the current session when it holds related
+work; with none, it shows All, so the view never opens on an empty list. After
+the operator chooses Related or All, the list keeps that choice. A native
+terminal without an attached conversation starts with All. Find applies to the
+selected view. An idle agent's message field names no delivery choice; a
+working agent's field shows Steer at next step or Follow-up after answer.
 
 Related uses exact identities from existing evidence: the current conversation,
 successful task admissions retained by the ordinary session, its published
@@ -1123,11 +1127,14 @@ fixed during an arrow sequence. Text entry locks its recipient even while
 published metadata changes.
 
 Coverage carries `complete`, `storagesVisited`, `skipped`, `omitted`, and
-`nextCursor`. The roster footer shows short muted counts such as `18 unreadable`
-or `2 omitted`; an incomplete page also keeps the title’s `+` marker. These are
-roster facts, not selected-agent warnings. Unreadable or missing views remain
-unknown, not absent. Load more agents continues the cursor; narrow footers
-shorten the action to More. Find searches loaded
+`nextCursor`. The list shows only what the operator can act on: Load more when
+the cursor continues, and a short note while related work is still read.
+Storage counts such as unreadable or omitted records stay in Details and the
+plain-text summary; they are not selected-agent warnings. Unreadable or missing
+views remain unknown, not absent. Load more agents continues the cursor; narrow
+footers shorten the action to More. Rows carry no creating-session tag. A
+provider error that ends in a JSON body reads as its message, for example
+`429 Usage limit reached`. Find searches loaded
 handle, role hint, name, historical first input, path, model, state, and identity,
 not transcript text. Find
 previews the selected match before the filter is committed; Esc restores the
@@ -1645,48 +1652,45 @@ hints are not an exhaustive search of retained history. Explicit coverage and
 scoped continuation are part of the result, not a claim that absent matches
 do not exist.
 
-In `/agent`, choose Threads in the heading. The view starts with
-Related threads from the current session's relationship evidence; each row shows
-the state, title, peer count, last activity time and purpose. Press `v` for All
-threads from bounded catalog discovery. Select a thread or an omitted-source row
-with arrows and Enter; `s` scopes discovery to the selected agent's storage.
-Up/Down, PageUp/PageDown, Home and End select list entries; the wheel scrolls the
-list without changing the selection.
+In `/agent`, Agents, Threads and Efforts are tabs at the top left. Threads is a
+two-pane view like the agents: every thread on the left, the selected thread on
+the right. The view follows every discovery page and every storage that reports
+omitted threads on its own, within a fixed bound per refresh, so the operator
+never pages through storages. Open threads come first, then closed ones, each
+newest first under a quiet count. Each row shows the title, the last activity
+time, the purpose and the member count. Typing over the list filters titles and
+purposes. Up/Down, PageUp/PageDown, Home and End select; the wheel scrolls the
+list. The newest thread is selected when the view opens. Selecting a thread
+reads its newest page; reading is passive and starts no model turn.
 
-A thread opens on its latest events under a compact head: title, Open or Closed,
-peer count, last activity time, frame revision and a one-line purpose. The
-exchange follows in chronological order with each event's sequence, sender,
-origin, kind, frame revision, time, source, text and notify list. A revisited
-thread restores the position where you left it; a thread opened from Related
-efforts returns there on Back. `Context` (`c`) shows the complete frame: purpose,
-carried authority claim, authority source, restrictions, acceptance, integrator,
-creator, creation and update times, and the member declarations, with the
-reminder that these are attributed claims, not proof of authority or agreement.
-In a thread, `m` (Peers) opens its participants. Arrows select a participant;
-Enter opens its conversation in the work view. Escape returns through the message
-field and the list to the participants, then to the same thread position. Participant reads do not send a message or
-start a model turn. Unavailable conversations show their read error rather than
-an invented empty conversation. The standalone native terminal uses the same
-collaboration operations and attributes operator posts to its attached
-conversation.
+The thread pane shows the title, Open or Closed and the member count, then the
+purpose, then the exchange: each message under its sender's name and time, with
+`↳ name` for the message it answers, a word for joins, leaves, frame revisions
+and carried operator directions, and `notified` for the members it woke. The
+newest message sits at the bottom; scrolling to the top, Home or the
+`↑ Earlier messages` line reads the page before, which keeps newer messages in
+place. All thread text is plain text: terminal sequences are removed.
 
-`Reply` (Enter) lists the loaded events newest first; choosing one composes a
-post with `replyTo` set to that event, shown in the editor caption and status
-line, and the retained post carries the reference. `p` writes a plain post
-without a wake and clears any reply target; `n` selects notify peers first. Tab
-moves between recipient selection and the editor; Enter submits from the editor.
-A retained post clears the draft and its reply target; a failed post keeps both.
-Use `b` (Earlier) for earlier events and `r` (Latest) for the newest page. At the
-exchange tail, new events stay visible. Earlier-page reads and a position scrolled
-away from the tail keep their place. Esc returns through Threads to the roster
-and native primary. Drafts, agent selection, reply targets and focus stay intact.
-Thread event times share the [roster's time display](#roster-and-coverage).
-Catalog publishers notify open roster subscribers, including readers with no
-attached host. Those notifications refresh the open Threads view after an
-external process publishes a change.
-Observation starts no host or model turn and adds no polling loop. The observer
-closes with its last subscriber. A refreshed thread list or peer list rejects
-old mouse positions until the new rows render.
+The message field at the bottom posts to the selected thread with origin
+`operator`; a post wakes nobody unless members are ticked. Click a sender's name
+to reply to that message; the field's caption shows the reply and the number of
+members it wakes. A retained post clears the draft and its reply target. A post
+that is not confirmed keeps the draft, and sending the same content again
+reuses its request identity. A closed thread takes no posts. Drafts stay per
+thread for the session.
+
+`Members` lists the members with their declared contributions. Up/Down choose,
+Space ticks a member to wake on the next post, and Enter or a click opens that
+member's conversation in the Agents tab; Escape there returns to the thread.
+`Details` shows the frame as attributed claims: purpose, the carried operator
+direction, source, restrictions, acceptance, integrator, creator and the member
+declarations. Tab moves through the list, the exchange, the Members and Details
+controls and the message field. Escape steps back one level: from a panel to
+the exchange, from the exchange to the list, and from the list to where Threads
+opened from. A thread opened from Related efforts returns there directly.
+Catalog notices reread the selected thread at once and the thread list at most
+every ten seconds. The standalone native terminal uses the same view and
+attributes operator posts to its attached conversation.
 
 ## Efforts, presence, and intent
 

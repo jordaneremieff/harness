@@ -37,7 +37,7 @@ it("the target header keeps identity and state without activity", async () => {
 	} finally { f.ui.dispose(); }
 });
 
-it("every view occupies the exact terminal rectangle and keeps the way out last", async () => {
+it("every view occupies the exact terminal rectangle and keeps the way out at the top right", async () => {
 	for (const [width, height] of [
 		[164, 44],
 		[120, 40],
@@ -61,7 +61,7 @@ it("every view occupies the exact terminal rectangle and keeps the way out last"
 				const lines = f.ui.render(width);
 				assert.equal(lines.length, height, `step ${index}`);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width), `step ${index}`);
-				assert.match(stripVTControlCharacters(lines.at(-1) ?? ""), /Close $/, `step ${index}`);
+				assert.match(stripVTControlCharacters(lines[0] ?? ""), /Close\s*$/, `step ${index}`);
 			}
 			f.ui.handleInput("first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh\neighth");
 			const lines = f.ui.render(width);
@@ -100,7 +100,7 @@ for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of
 			const statusY = plain.findIndex((line) => /model │ ~\$0\.42/.test(line));
 			assert.ok(statusY > 0, "the model and cost line stays visible");
 			assert.match(plain[statusY + 1] ?? "", /\/work/);
-			assert.match(plain.at(-1) ?? "", /Close $/);
+			assert.match(plain[0] ?? "", /Close\s*$/);
 			const click = (y: number, x = 2) => f.ui.handleMouse({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
 			for (const y of [statusY, statusY + 1]) assert.equal(click(y), undefined, "status rows are not editor targets");
 			const top = plain.findIndex((line, index) => index > 0 && line.startsWith("╭─"));
@@ -112,8 +112,8 @@ for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of
 			assert.equal(updated.length, height);
 			assert.ok(updated.some((line) => line.includes(CURSOR_MARKER)));
 			assert.equal(state.draft, draft);
-			const footer = visible(updated).at(-1) ?? "";
-			assert.equal(click(height - 1, footer.lastIndexOf("Close"))?.handled, true, "the way out stays clickable");
+			const heading = visible(updated)[0] ?? "";
+			assert.equal(click(0, heading.lastIndexOf("Close"))?.handled, true, "the way out stays clickable");
 			assert.equal(f.counts().closes, 1);
 		} finally { f.ui.dispose(); }
 	});

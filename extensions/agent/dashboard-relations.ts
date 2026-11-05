@@ -1,6 +1,6 @@
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import type { CollaborationPage, CollaborationSummary } from "./collaboration.ts";
-import { threadDiscovery, threadPage, type Collaborate } from "./collaboration-view.ts";
+import { threadDiscovery, threadPage, type Collaborate } from "./thread-data.ts";
 import { canonicalIdentity } from "./identity.ts";
 import type { ConversationSummary } from "./durable-observation.ts";
 import type { ConversationId } from "@earendil-works/pi-durable";

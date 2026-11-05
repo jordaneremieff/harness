@@ -121,7 +121,7 @@ for (const state of ["working", "idle", "failed"] as const) {
 				for (const fact of ["Example model", "[high]", "16%", "160/1.0k", "~$0.42"]) assert.equal(right.split(fact).length - 1, 1, right);
 				const caption = pane.find((line) => line.includes("╭─")) ?? "";
 				assert.match(caption, /╭─ To Recipient /);
-				assert.match(caption, new RegExp(state === "working" ? "Steer at next step ⇄" : " Send "));
+				assert.match(caption, state === "working" ? /Steer at next step ⇄/ : /^(?!.*(Steer|Follow-up)).*$/u, "only a working agent's message field names a delivery choice");
 				assert.doesNotMatch(caption, /Working|Idle|Failed|model|high|%|\$|hit|ctx| in| out/);
 				const status = "Example model [high] │ ██░░░░░░░░ 16% │ 160/1.0k │ ~$0.42 │ ● 21% hit";
 				assert.equal(right.split("21% hit").length - 1, width - paneX >= visibleWidth(status) ? 1 : 0);

@@ -20,6 +20,14 @@ function discovery(pages: CollaborationPage[]) {
 }
 const rows = () => [row(storage, { storageId: storage, creatingOwnerId: ordinary, name: "Builder" }), row(peer, { storageId: peer.split(":")[0], creatingOwnerId: other, name: "Peer" }), row(other, { storageId: other, name: "Unrelated" })];
 const shown = (f: ReturnType<typeof fixture>) => stripVTControlCharacters(f.ui.render(f.tui.terminal.columns).join("\n"));
+/** Open Threads, select the first thread, and open its Members panel with the keyboard. */
+async function openMembers(f: ReturnType<typeof fixture>) {
+	f.ui.openNamedAction("threads"); await turn(); await turn();
+	f.ui.handleInput("\x1b[B"); await turn();
+	f.ui.handleInput("\r");
+	f.ui.handleInput("\x1b[Z");
+	f.ui.handleInput("\r");
+}
 /** Click Related or All in the heading, as the operator would. */
 function choose(f: ReturnType<typeof fixture>, label: "Related" | "All") {
 	const { columns, rows: height } = f.tui.terminal;
@@ -161,14 +169,20 @@ for (const [width, height] of [[80, 24], [140, 45]]) it(`Related, All, thread, p
 		assert.match(shown(f), /Unrelated/);
 		choose(f, "Related");
 		assert.doesNotMatch(shown(f), /Unrelated/);
-		f.ui.openNamedAction("threads"); await turn();
-		assert.match(shown(f), /Related threads/);
+		f.ui.openNamedAction("threads"); await turn(); await turn();
+		assert.match(shown(f), /Review current work/);
+		f.ui.handleInput("\x1b[B"); await turn();
 		f.ui.handleInput("\r"); await turn();
 		assert.match(shown(f), /Exchange message 20/);
-		f.ui.handleInput("c");
-		assert.match(shown(f), /Purpose: Read the useful result/);
+		f.ui.handleInput("\x1b[Z");
+		f.ui.handleInput("\x1b[C");
+		f.ui.handleInput("\r");
+		assert.match(shown(f), /Read the useful result/, "Details shows the frame");
+		assert.match(shown(f), /No live changes/);
 		f.ui.handleInput("\x1b");
-		f.ui.handleInput("m");
+		f.ui.handleInput("\t");
+		f.ui.handleInput("\x1b[D");
+		f.ui.handleInput("\r");
 		f.ui.handleInput("\x1b[B");
 		f.ui.handleInput("\r"); await turn();
 		assert.deepEqual(f.ui.focus, { region: "composer", surface: "work" }, "a participant opens its conversation with the message field");
@@ -176,11 +190,11 @@ for (const [width, height] of [[80, 24], [140, 45]]) it(`Related, All, thread, p
 		f.ui.handleInput("\x1b");
 		f.ui.handleInput("\x1b");
 		assert.equal(f.ui.focus.surface, "threads", "leaving the conversation returns to the thread it came from");
-		assert.match(shown(f), /Participants/);
+		assert.match(shown(f), /open its conversation/);
 		f.ui.handleInput("\x1b");
 		assert.match(shown(f), /Exchange message 20/);
 		f.ui.handleInput("\x1b");
-		assert.match(shown(f), /Related threads/);
+		assert.match(shown(f), /1 thread/);
 		f.ui.handleInput("\x1b");
 		assert.equal(f.ui.focus.surface, "work");
 		assert.equal(f.counts().closes, 0, "Escape steps back one level at a time");
@@ -209,9 +223,7 @@ it("alias participants retain canonical selection through roster refresh and liv
 	const f = fixture(100, 30, observed, { collaborate: async (input) => input.action === "list" ? discovery([current]) : current }, undefined, theme, ordinary);
 	try {
 		await turn();
-		f.ui.openNamedAction("threads"); await turn();
-		f.ui.handleInput("\r"); await turn();
-		f.ui.handleInput("m");
+		await openMembers(f);
 		f.ui.handleInput("\r"); await turn();
 		assert.equal(f.state.selected, storage);
 		assert.equal(f.ui.selectedRow?.id, storage);
@@ -247,25 +259,22 @@ it("unknown participants retain their exact read error", async () => {
 	const f = fixture(100, 30, observed, { collaborate: async (input) => input.action === "list" ? discovery([current]) : current }, undefined, theme, ordinary);
 	try {
 		await turn();
-		f.ui.openNamedAction("threads"); await turn();
-		f.ui.handleInput("\r"); await turn();
-		f.ui.handleInput("m");
+		await openMembers(f);
 		f.ui.handleInput("\r"); await turn();
 		assert.equal(f.state.selected, missing);
 		assert.equal(f.ui.selectedRow?.id, missing);
 		assert.equal(shown(f).includes("Participant storage is unreadable"), true);
 	} finally { f.ui.dispose(); }
 });
-it("empty and failed relation evidence keep All and Threads reachable", async () => {
-	const f = fixture(80, 24, source([row(other, { storageId: other, creatingOwnerId: undefined })]), { collaborate: async () => { throw new Error("Unreadable"); } }, undefined, theme, ordinary);
+it("empty and failed relation evidence show every agent and keep Threads reachable", async () => {
+	const f = fixture(80, 24, source([row(other, { storageId: other, creatingOwnerId: undefined, name: "Unrelated" })]), { collaborate: async () => { throw new Error("Unreadable"); } }, undefined, theme, ordinary);
 	try {
 		await turn();
-		assert.match(shown(f), /No related agents/);
-		assert.match(shown(f), /All shows every loaded agent/);
-		choose(f, "All");
-		assert.equal(f.state.selected, other);
-		f.ui.openNamedAction("threads"); await turn();
-		assert.match(shown(f), /Threads unavailable/);
+		await turn();
+		assert.match(shown(f), /Unrelated/, "with no related work the list shows every agent");
+		assert.doesNotMatch(shown(f), /No related agents/);
+		f.ui.openNamedAction("threads"); await turn(); await turn();
+		assert.match(shown(f), /Threads could not be read: Unreadable/);
 		f.ui.handleInput("\x1b");
 		assert.equal(f.ui.focus.surface, "work");
 	} finally { f.ui.dispose(); }

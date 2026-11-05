@@ -146,13 +146,9 @@ it("closing during an effort read drops late results", async () => {
 	read.resolve(awareness()); await turn();
 	assert.equal(f.counts().renders, count);
 });
-it("the creating-session marker is independent of writer availability and task requests", () => {
+it("roster rows carry no creating-session tag, whoever created or owns them", () => {
 	const rows = [row("one", { creatingOwnerId: "primary", owner: "unknown" }), row("two", { storageId: "two", creatingOwnerId: "other", owner: "here" }), row("three", { creatingOwnerId: "other" })];
-	for (const compact of [false, true]) {
-		const text = rosterLines(rows, "two", 60, 20, 0, theme, compact, { primaryId: "primary" }).join("\n");
-		assert.equal(text.match(/\[other\]/g)?.length, 1);
-	}
-	assert.doesNotMatch(rosterLines(rows, "two", 60, 20, 0, theme, false).join("\n"), /\[other\]/);
+	for (const compact of [false, true]) assert.doesNotMatch(rosterLines(rows, "two", 60, 20, 0, theme, compact, { primaryId: "primary" }).join("\n"), /\[other\]/);
 });
 
 function contactPage(): CollaborationPage {
@@ -170,7 +166,7 @@ it("keyboard and mouse contact entry read the existing Threads view without list
 				f.ui.handleMouse(click(lines[y].indexOf("Open thread"), y, 100, 30));
 			} else f.ui.handleInput("\r");
 			await turn();
-			assert.deepEqual(calls, [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/thread" }]);
+			assert.deepEqual(calls.filter((call) => call.action === "read"), [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/thread" }]);
 			assert.match(f.ui.render(100).join("\n"), /Contact exchange/);
 		} finally { f.ui.dispose(); }
 	}
@@ -186,7 +182,7 @@ it("Back from a contact thread returns to Related efforts with its selection and
 		assert.match(f.ui.render(100).join("\n"), /Contact exchange/);
 		f.ui.handleInput("\x1b"); await turn();
 		assert.equal(f.ui.focus.surface, "efforts", "the thread was opened from Related efforts, not the list");
-		assert.match(f.ui.render(100).join("\n"), /Agents > Related efforts/);
+		assert.match(f.ui.render(100).join("\n"), /Efforts · /);
 		f.ui.handleInput("m");
 		assert.match(f.ui.render(100).join("\n"), /Draft for later/);
 		f.ui.handleInput("\x1b");
@@ -212,7 +208,8 @@ it("the command adapter binds effort reads and operator messages to the unchange
 		const heading = dashboard.render(100)[0] ?? "";
 		assert.match(heading, / Related {2}All /, "Related and All are visible choices");
 		assert.equal(dashboard.handleMouse(click(heading.indexOf(" All ") + 1, 0, 100, 30))?.handled, true); await turn();
-		assert.match(dashboard.render(100).join("\n"), /\[other\]/);
+		assert.match(dashboard.render(100).join("\n"), /one/);
+		assert.doesNotMatch(dashboard.render(100).join("\n"), /\[other\]/);
 		dashboard.openNamedAction("efforts"); await turn(); dashboard.handleInput("o"); await turn();
 		assert.match(dashboard.render(100).join("\n"), /Recorded activity from source/);
 		dashboard.handleInput("m"); dashboard.handleInput("Coordinate this"); dashboard.handleInput("\r"); await turn();
@@ -278,7 +275,7 @@ it("all-local machine efforts show purpose and contact without full intent leaka
 		assert.match(text, /Purpose-only view/);
 		assert.doesNotMatch(text, /PRIVATE_|Integration:|Operator direction|Scope:/);
 		f.ui.handleInput("\r"); await turn();
-		assert.deepEqual(calls, [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/thread" }]);
+		assert.deepEqual(calls.filter((call) => call.action === "read"), [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/thread" }]);
 	} finally { f.ui.dispose(); }
 });
 it("inline active threads show covered recency and open through keyboard or mouse", async () => {
@@ -311,7 +308,7 @@ it("inline active threads show covered recency and open through keyboard or mous
 				f.ui.handleMouse(click(lines[y].indexOf("Newest active"), y, 60, 30));
 			} else { f.ui.handleInput("\x1b[B"); f.ui.handleInput("\x1b[B"); f.ui.handleInput("\r"); }
 			await turn();
-			assert.deepEqual(calls, [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/newest" }]);
+			assert.deepEqual(calls.filter((call) => call.action === "read"), [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/newest" }]);
 		} finally { f.ui.dispose(); }
 	}
 });
@@ -392,7 +389,7 @@ it("wide discovery clicks select efforts and open inline threads through existin
 		try {
 			await turn(); f.ui.openNamedAction("efforts"); await turn();
 			let lines = f.ui.render(width);
-			const uncertainY = lines.findIndex((line) => line.startsWith("  uncertain"));
+			const uncertainY = lines.findIndex((line) => line.includes("Session uncertain"));
 			assert.ok(uncertainY >= 0);
 			assert.equal(f.ui.handleMouse(click(2, uncertainY, width, 44))?.handled, true);
 			f.ui.handleInput("m");
@@ -401,7 +398,7 @@ it("wide discovery clicks select efforts and open inline threads through existin
 			const threadY = lines.findIndex((line) => line.includes("Inline contact"));
 			assert.equal(f.ui.handleMouse(click(2, threadY, width, 44))?.handled, true);
 			await turn();
-			assert.deepEqual(calls, [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/thread" }]);
+			assert.deepEqual(calls.filter((call) => call.action === "read"), [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/thread" }]);
 		} finally { f.ui.dispose(); }
 	}
 });

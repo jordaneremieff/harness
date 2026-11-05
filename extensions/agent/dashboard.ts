@@ -40,7 +40,8 @@ import { agentDisplayName } from "./action-outcome.ts";
 import type { TaskLabel, ConversationFrame } from "./live-frames.ts";
 import { firstTaskEntry, cleanDashboardText } from "./dashboard-conversation.ts";
 import { ConversationHistory } from "./conversation-view.ts";
-import { CollaborationView, createCollaborationViewState, type Collaborate } from "./collaboration-view.ts";
+import { ThreadsView } from "./threads-view.ts";
+import { createThreadsState, type Collaborate } from "./thread-data.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import { EffortView } from "./effort-view.ts";
 import { AgentBranchCache, type AgentBranchReader } from "./agent-git.ts";
@@ -134,14 +135,12 @@ const HELP = [
 	"Drag the list divider or the message field's grip to resize; double-click a handle to reset it.",
 	"",
 	"Threads and Related efforts",
-	"Threads and Efforts in the heading open full views. Their hint lines name their keys; x lists every action; Esc returns.",
+	"Agents, Threads and Efforts are the tabs at the top left. Esc in Threads or Efforts returns to where you came from.",
+	"Threads lists every thread, open ones first and newest first. Select one to read its exchange; the message field posts to it.",
+	"Click a name in the exchange to reply to that message. Members ticks who your next post wakes and opens their conversations; Details shows the frame.",
+	"A post wakes nobody unless you tick members. A closed thread takes no posts.",
 	"Related efforts shows declared intent and contact declarations, not agreement. Enter opens a contact thread; o reads observation; m sends an operator message.",
-	"Threads opens a thread on its latest exchange. c shows the frame and declarations; m selects participants; Enter in the exchange replies to an event.",
-	"p posts without a model wake.",
-	"n chooses peers to notify. Tab returns to the message. Enter posts.",
-	"i switches all times between relative age and local date and time.",
-	"[other] marks a storage root created by another session, not its current task requester.",
-	"A time shows the agent's last recorded change, not an activity timer. Click a time to switch its format.",
+	"A time shows the last recorded change, not an activity timer. Click a time to switch between age and date.",
 	"",
 	"Context tokens come from the latest assistant usage; compaction makes them unknown.",
 ];
@@ -176,7 +175,7 @@ export class AgentDashboard implements Component, Focusable {
 	private console?: AgentConsole;
 	private snapshot?: AgentConversationSnapshot & { nextBefore?: number | null };
 	private readonly find: TextField;
-	private threads?: CollaborationView;
+	private threads?: ThreadsView;
 	private efforts?: EffortView;
 	private readonly hits = new HitMap();
 	private readonly controls: ActionBar;
@@ -222,6 +221,8 @@ export class AgentDashboard implements Component, Focusable {
 	private relationMark = "";
 	private relationsDirty = true;
 	private allAgents: boolean;
+	/** The operator chose Related or All; the list no longer switches scope on its own. */
+	private scopeChosen = false;
 	private geometry = { listX: 0, listWidth: 0, listY: 0, listHeight: 0, paneX: 0, paneWidth: 0, conversationY: 0, conversationHeight: 0, conversationWidth: 0, composerY: 0, composerHeight: 0 };
 	focused = true;
 	private readonly tui: TUI;
@@ -448,7 +449,10 @@ export class AgentDashboard implements Component, Focusable {
 			this.page ? { observedAt: Date.parse(this.page.observedAt), sessions: this.page.rows, coverage: this.page.coverage } : undefined,
 			this.state.filter,
 		);
-		const identities = this.relations.view().identities;
+		const related = this.relations.view();
+		const identities = related.identities;
+		// Related work leads when there is some; with none, the list shows every agent instead of an empty pane.
+		if (!this.allAgents && !this.scopeChosen && this.page && !related.pending && !filtered.some((row) => identities.has(relationIdentity(row.id)))) this.allAgents = true;
 		this.reconcileOrder(this.allAgents ? filtered : filtered.filter((row) => identities.has(relationIdentity(row.id))));
 		this.chooseSelection();
 		const id = this.state.selected;
@@ -1041,8 +1045,8 @@ export class AgentDashboard implements Component, Focusable {
 		this.saveConsole();
 		this.threadsFrom = this.surface === "efforts" ? "efforts" : "work";
 		this.surface = "threads";
-		this.state.threads ??= createCollaborationViewState();
-		this.threads ??= new CollaborationView({
+		this.state.threads ??= createThreadsState();
+		this.threads ??= new ThreadsView({
 			tui: this.tui,
 			theme: this.theme,
 			keys: this.keys,
@@ -1053,15 +1057,15 @@ export class AgentDashboard implements Component, Focusable {
 				this.redraw();
 			},
 			collaborate: this.operations.collaborate,
-			nameFor: (id) => this.page?.rows.find((row) => row.id === id)?.name || id,
-			selectedAgent: () => this.state.selected,
-			related: this.primaryId ? () => this.relations.view() : undefined,
+			nameFor: (id) => {
+				const row = this.page?.rows.find((item) => relationIdentity(item.id) === relationIdentity(id));
+				return row ? agentDisplayName(row) : id;
+			},
 			openParticipant: (id) => this.openParticipant(id),
 			redraw: () => this.redraw(),
-			onBack: () => this.leaveThreads(),
+			onExit: () => this.leaveThreads(),
 		});
-		if (contactThread) this.threads.openContact(contactThread);
-		else this.threads.open();
+		this.threads.open(contactThread);
 		this.redraw();
 		return undefined;
 	}
@@ -1137,8 +1141,6 @@ export class AgentDashboard implements Component, Focusable {
 		const actions: Action[] = [
 			{ id: "new", label: "New conversation", primary: true, disabled: this.operations.newAgent ? undefined : (this.operations.newUnavailable ?? "Unavailable here"), run: () => this.openNew() },
 		];
-		if (this.operations.collaborate) actions.push({ id: "threads", label: "Threads", primary: true, run: () => void this.openThreads() });
-		if (this.operations.efforts) actions.push({ id: "efforts", label: "Efforts", primary: true, run: () => this.openEfforts() });
 		actions.push({ id: "help", label: "Help", primary: true, run: () => this.openHelp() });
 		return actions;
 	}
@@ -1357,7 +1359,12 @@ export class AgentDashboard implements Component, Focusable {
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.closed) return undefined;
-		if (this.surface === "threads") return this.threads?.handleMouse(event);
+		if (this.surface !== "work" && event.y === 0) {
+			const result = this.hits.handle(event);
+			if (result) this.redraw();
+			return result;
+		}
+		if (this.surface === "threads") return this.threads?.handleMouse({ ...event, y: event.y - 1, height: event.height - 1 });
 		if (this.surface === "efforts") return this.efforts?.handleMouse(event);
 		// A pointer event drawn for another size acts on nothing and ends a resize at its committed layout.
 		if (event.width !== this.tui.terminal.columns || event.height !== this.tui.terminal.rows) return this.resize.cancel() ? { handled: true, render: true } : undefined;
@@ -1394,25 +1401,55 @@ export class AgentDashboard implements Component, Focusable {
 		const height = this.tui.terminal.rows;
 		this.resize.begin(width, height, this.resizeKey());
 		this.hits.begin(width, height);
-		if (this.surface === "efforts") return this.efforts?.render(width, height) ?? [];
-		if (this.surface === "threads") return this.threads?.render(width, height) ?? [];
 		if (width < 60 || height < 16) return Array.from({ length: height }, (_, row) => fitLine(row === 0 ? "Make the window larger to use Agents (60×16). Esc leaves." : "", width));
+		// Threads and Efforts sit under the same tabs as the agents; each owns the rows below them.
+		if (this.surface === "efforts" && this.efforts) {
+			const lines = this.efforts.render(width, height);
+			return [this.renderHeading(width), ...lines.slice(1)].map((line) => fitLine(line, width));
+		}
+		if (this.surface === "threads" && this.threads) {
+			const shape = dashboardGeometry(width, height, 0, false, 0, 4, this.state.layout);
+			return [this.renderHeading(width), ...this.threads.render(width, height - 1, shape.rosterWidth)].map((line) => fitLine(line, width));
+		}
 		const body = this.renderWork(width, height);
 		this.resize.end();
 		return body.map((line) => fitLine(line, width));
 	}
 
+	/** Agents, Threads and Efforts as tabs; the agents' own scope and list controls follow on their tab. */
+	private renderTabs(): { line: string; x: number } {
+		const theme = this.theme;
+		const tabs: Array<{ surface: Surface; label: string; open(): void }> = [{ surface: "work", label: "Agents", open: () => this.backToWork() }];
+		if (this.operations.collaborate) tabs.push({ surface: "threads", label: "Threads", open: () => void this.openThreads() });
+		if (this.operations.efforts) tabs.push({ surface: "efforts", label: "Efforts", open: () => this.openEfforts() });
+		let x = 0;
+		let line = "";
+		for (const tab of tabs) {
+			const text = ` ${tab.label} `;
+			const active = this.surface === tab.surface;
+			line += active ? theme.bg("selectedBg", theme.bold(theme.fg("accent", text))) : theme.fg("muted", text);
+			if (!active) this.hits.add({ x, y: 0, width: visibleWidth(text), height: 1, click: () => tab.open() });
+			x += visibleWidth(text);
+		}
+		return { line: `${line}  `, x: x + 2 };
+	}
+
 	private renderHeading(width: number): string {
 		const theme = this.theme;
-		const title = theme.bold(theme.fg("accent", " Agents "));
-		let x = visibleWidth(" Agents ") + 1;
-		let line = `${title} `;
+		const tabs = this.renderTabs();
+		let x = tabs.x;
+		let line = tabs.line;
+		if (this.surface !== "work") {
+			const exit = ` ${this.operations.exitLabel ?? "Close"} `;
+			this.hits.add({ x: width - visibleWidth(exit), y: 0, width: visibleWidth(exit), height: 1, click: () => this.exitControl() });
+			return `${fitLine(line, Math.max(0, width - visibleWidth(exit)))}${theme.fg("accent", exit)}`;
+		}
 		if (this.primaryId) {
 			for (const [all, label] of [[false, "Related"], [true, "All"]] as const) {
 				const text = ` ${label} `;
 				const active = this.allAgents === all;
 				line += active ? theme.bg("selectedBg", theme.bold(text)) : theme.fg("muted", text);
-				this.hits.add({ x, y: 0, width: visibleWidth(text), height: 1, click: () => { this.allAgents = all; this.rosterScroll = undefined; this.reconcile(); } });
+				this.hits.add({ x, y: 0, width: visibleWidth(text), height: 1, click: () => { this.allAgents = all; this.scopeChosen = true; this.rosterScroll = undefined; this.rows = []; this.reconcile(); } });
 				x += visibleWidth(text);
 			}
 			line += " ";
@@ -1547,17 +1584,10 @@ export class AgentDashboard implements Component, Focusable {
 	private listFacts(): { readonly text: string; readonly tone: "warning" | "muted"; readonly more?: string } {
 		if (this.rosterNotice) return { text: plainLine(this.rosterNotice), tone: "warning" };
 		const coverage = this.page?.coverage;
-		const facts: string[] = [];
-		if (!this.allAgents) {
-			const related = this.relations.view();
-			if (related.pending) facts.push("reading relations");
-			else if (related.partial) facts.push("relations partial");
-		}
-		if (coverage?.skipped) facts.push(`${coverage.skipped} unreadable`);
-		if (coverage?.omitted) facts.push(`${coverage.omitted} omitted`);
-		if (coverage?.nextCursor) return { text: facts.join(" · "), tone: "muted", more: this.loadMore ? "› Load more" : "Load more" };
-		if (coverage && !coverage.complete && !facts.length) facts.push("incomplete");
-		return { text: facts.join(" · "), tone: "muted" };
+		// Storage coverage counts stay in Details; the list says only what the operator can act on.
+		const text = !this.allAgents && this.relations.view().pending ? "reading related work…" : "";
+		if (coverage?.nextCursor) return { text, tone: "muted", more: this.loadMore ? "› Load more" : "Load more" };
+		return { text, tone: "muted" };
 	}
 
 	private listFooter(width: number, x0: number, y: number): string {
@@ -1755,7 +1785,8 @@ export class AgentDashboard implements Component, Focusable {
 		composer.focused = this.focused && this.region === "composer";
 		this.sizeComposer(console, maxRows);
 		const working = console.row.state === "working";
-		const mode = working ? (console.state.mode === "steer" ? "Steer at next step ⇄" : "Follow-up after answer ⇄") : "Send";
+		// The delivery effect shows only while it is a choice; an idle agent just receives the message.
+		const mode = working ? (console.state.mode === "steer" ? "Steer at next step ⇄" : "Follow-up after answer ⇄") : "";
 		const receipt = console.state.pending ? "Sending…" : (console.state.receipt ?? "");
 		const caption = `To ${plainLine(agentDisplayName(console.row))}`;
 		const lines = composer.render(width, caption, mode, receipt, ["Send", this.expanded ? "Shrink" : "Expand"]);
@@ -1796,14 +1827,13 @@ export class AgentDashboard implements Component, Focusable {
 		};
 		let text = this.resizeFeedback() ?? hints[this.region];
 		if (this.returnSurface) text = text.replace("esc close", "esc back to the thread");
-		else if (this.operations.exitLabel === "Detach") text = text.replace("esc close", "detach at right");
-		const exit = ` ${this.operations.exitLabel ?? "Close"} `;
-		this.hits.add({ x: width - visibleWidth(exit), y, width: visibleWidth(exit), height: 1, click: () => this.exitControl() });
-		// A narrow footer drops middle hints first, so the first and the way back stay readable.
-		const room = width - visibleWidth(exit);
+		else if (this.operations.exitLabel === "Detach") text = text.replace("esc close", "detach at top right");
+		// The way out sits once, at the top right. A narrow footer drops middle hints first.
+		void y;
+		const room = width;
 		const parts = text.split(" · ");
 		while (parts.length > 2 && visibleWidth(` ${parts.join(" · ")}`) > room) parts.splice(parts.length - 2, 1);
-		return `${fitLine(theme.fg("dim", ` ${parts.join(" · ")}`), room)}${theme.fg("accent", exit)}`;
+		return fitLine(theme.fg("dim", ` ${parts.join(" · ")}`), room);
 	}
 
 	private delegatedFigures(): DelegatedFigures | undefined {

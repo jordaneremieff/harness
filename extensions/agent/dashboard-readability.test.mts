@@ -60,7 +60,7 @@ for (const [width, skipped] of [[164, 18], [164, 0], [100, 18], [100, 0], [80, 1
 			assert.match(header[0] ?? "", /0 · work · ● Working/u, "the target header names the agent, project and state");
 			assert.match(header[3] ?? "", /^─+$/);
 			const roster = wide ? lines.slice(1, -1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 6);
-			assert.match(roster.join("\n"), skipped ? /18 unreadable/ : /incomplete/);
+			assert.doesNotMatch(roster.join("\n"), /unreadable|omitted|incomplete/, "storage coverage stays in Details");
 			if (skipped) assert.match(roster.join("\n"), /Load more/);
 			f.ui.handleInput("\r");
 			assert.doesNotMatch(read().slice(headerY, headerY + 4).map((line) => line.slice(paneX)).join("\n"), /coverage|unreadable|incomplete/i);
