@@ -473,6 +473,43 @@ bounded current screen/retained scrollback, not a full transcript. Alternate
 screens expose the application's current display. Events provide no replay
 promise; reconciliation restores current facts, not lost events.
 
+## Tab names
+
+Ordinary interactive Pi projects its canonical session name into the Rex tab that contains its own
+terminal. The current working directory basename supplies the fallback when the session has no name.
+The projection never changes the canonical Pi name, the Rex workspace label, or Pi's terminal status
+reporter. Durable, RPC, JSON and print sessions do not project a label.
+
+Each update requires inherited `REX_SESSION` and `REX_BLOCK` values, the launch `REX_SERVER` when set,
+and a terminal process snapshot whose foreground PID is the Pi process. `session.view` locates the
+containing tab across all layers. A missing block, a different foreground process, or a tab with
+multiple blocks makes the update ineligible without a diagnostic. Display labels lose control and
+format characters, collapse whitespace, and retain at most 128 Unicode code points.
+
+The projector writes only a verified default label (`Window ` plus the final eight window ID
+characters) or the exact automatic label recorded for the same host, server instance, workspace,
+tab and block. It does not adopt an arbitrary existing label, even when that label equals the desired
+name. Manual divergence removes the automation record. Management resumes after the label returns
+to the verified default. On Pi exit, the last label remains in place.
+
+Records live in `<agentDir>/rex/tab-labels/`, outside Rex terminal ownership and the Pi session.
+Each SHA-256-named JSON file contains `version`, the five resource key fields, the last confirmed
+automatic `label`, an optional `pending` label, and `updatedAt`. Writes use a temporary file and an
+atomic rename. The store retains at most 256 records and prunes the oldest on write. Invalid or
+mismatched records count as absent. Before a label write, the store records `pending`; an acknowledged
+write records the confirmed label and clears `pending`. A later read reconciles a label that matches
+`pending`, which covers an uncertain CLI outcome without repeating the write.
+
+Session start, session name changes, and interactive input after an unconfirmed result trigger a
+serialized update. Triggers coalesce while a run is active. Session changes invalidate older runs
+and abort their CLI work; shutdown awaits a bounded drain. No polling, background service, focus
+watcher, or OSC output participates. A single warning notification per extension runtime reports
+real errors without adding persistent status chrome.
+
+Rex has no conditional label write. A simultaneous manual edit between the final `session.view` read
+and `session.set_window_label` can therefore receive the automatic label. The ownership check prevents
+adoption of labels observed before that narrow interval, not a concurrent edit after the read.
+
 ## Configuration and loading
 
 Load `extensions/rex/index.ts` through Pi's normal extension configuration.

@@ -178,7 +178,10 @@ test("ordinary registration publishes only identical display references and clea
 	events.on("harness:tool-display:publish", (value) => { publications.push(value as Publication); });
 	const pi = { events, on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); }, registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), appendEntry: () => {} } as unknown as ExtensionAPI;
 	let executions = 0;
-	const options = { createCore: () => { executions++; throw new Error("Display requests must not execute tools."); } };
+	const options = {
+		createCore: () => { executions++; throw new Error("Display requests must not execute tools."); },
+		createTabLabelProjector: () => ({ start: () => {}, refresh: () => {}, input: () => {}, idle: async () => {}, shutdown: async () => {} }),
+	};
 	registerRex(pi, options);
 	try {
 		assert.equal(publications.length, 1, "the factory publishes before session_start");
@@ -217,4 +220,35 @@ test("ordinary registration publishes only identical display references and clea
 		assert.equal(publications[3]?.tools[0]?.renderCall, tools.values().next().value?.renderCall);
 		assert.equal(executions, 0);
 	} finally { await handlers.get("session_shutdown")?.(); }
+});
+
+test("ordinary registration wires tab labels without changing the tool surface", async () => {
+	type Handler = (event?: unknown, ctx?: unknown) => unknown;
+	const tools = new Map<string, ToolDefinition<Schema>>();
+	const handlers = new Map<string, Handler>();
+	const events: string[] = [];
+	const projector = {
+		start: () => { events.push("start"); },
+		refresh: () => { events.push("refresh"); },
+		input: () => { events.push("input"); },
+		idle: async () => {},
+		shutdown: async () => { events.push("shutdown"); },
+	};
+	const pi = {
+		events: createEventBus(),
+		on: (name: string, handler: Handler) => { handlers.set(name, handler); return () => handlers.delete(name); },
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool),
+		appendEntry: () => {},
+		getSessionName: () => undefined,
+	} as unknown as ExtensionAPI;
+	registerRex(pi, { createTabLabelProjector: () => projector });
+	assert.deepEqual([...tools.keys()], ["rex_environment", "rex_terminal", "rex_wait", "rex_native", "rex_owned", "rex_status"]);
+	assert.deepEqual([...handlers.keys()].sort(), ["input", "session_info_changed", "session_shutdown", "session_start"]);
+	const ctx = { mode: "tui" };
+	await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
+	handlers.get("session_info_changed")?.({ type: "session_info_changed", name: "Named" }, ctx);
+	handlers.get("input")?.({ type: "input", source: "rpc" }, ctx);
+	handlers.get("input")?.({ type: "input", source: "interactive" }, ctx);
+	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
+	assert.deepEqual(events, ["start", "refresh", "input", "shutdown"]);
 });

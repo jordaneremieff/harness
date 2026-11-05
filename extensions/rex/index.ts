@@ -9,11 +9,21 @@ import { publishRexToolDisplay } from "./presentation.ts";
 import { publishSettings, readSettings } from "./settings.ts";
 import { REX_GUIDANCE, ResultSchema, toolSpecs, validateRequest, type StatusRequest } from "./schema.ts";
 import { rexStatus, type RexExecutor } from "./status.ts";
+import { createTabLabelProjector, type TabLabelProjectorOptions } from "./tab-label.ts";
 
-export function registerRex(pi: ExtensionAPI, options: RexAdapterOptions = {}): void {
+type RegistrationOptions = RexAdapterOptions & {
+	createTabLabelProjector?: (options: TabLabelProjectorOptions) => ReturnType<typeof createTabLabelProjector>;
+};
+
+export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {}): void {
 	const agentDir = getAgentDir();
 	const stopPublisher = publishSettings(pi.events, { agentDir });
 	const settings = readSettings({ agentDir }).values;
+	const tabLabels = (options.createTabLabelProjector ?? createTabLabelProjector)({
+		agentDir,
+		settings,
+		getSessionName: () => pi.getSessionName(),
+	});
 	const serialise = serialiseOwners();
 	const active = new Set<RexExecutor>();
 	const invocations = liveCalls();
@@ -54,8 +64,17 @@ export function registerRex(pi: ExtensionAPI, options: RexAdapterOptions = {}): 
 		pi.registerTool(tool);
 	}
 	const stopDisplay = publishRexToolDisplay(pi.events, tools);
-	pi.on("session_start", async () => { await stopCalls(); lifetime = new AbortController(); });
-	pi.on("session_shutdown", async () => { try { await stopCalls(); } finally { try { stopDisplay(); } finally { stopPublisher(); } } });
+	pi.on("session_start", async (_event, ctx) => { await stopCalls(); lifetime = new AbortController(); tabLabels.start(ctx); });
+	pi.on("session_info_changed", (_event, ctx) => { tabLabels.refresh(ctx); });
+	pi.on("input", (event, ctx) => { if (event.source === "interactive") tabLabels.input(ctx); });
+	pi.on("session_shutdown", async () => {
+		const labelsStopped = tabLabels.shutdown();
+		try { await stopCalls(); }
+		finally {
+			try { await labelsStopped; }
+			finally { try { stopDisplay(); } finally { stopPublisher(); } }
+		}
+	});
 	pi.events.emit("durable:contribution", rexContribution(fileURLToPath(import.meta.url), pi.events, stopPublisher, options));
 }
 
