@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { SESSION_NAME_CODE_POINTS, SESSION_NAME_WORDS, sessionNameFromInput } from "./session-name.ts";
+import { SESSION_NAME_CODE_POINTS, SESSION_NAME_WORDS, sessionNameFromInput } from "./index.ts";
 
 it("uses the leading line and removes markdown block markers", () => {
 	assert.equal(sessionNameFromInput("Fix the parser.\nMore detail follows."), "Fix the parser");
@@ -9,6 +9,17 @@ it("uses the leading line and removes markdown block markers", () => {
 	assert.equal(sessionNameFromInput("> quoted task"), "quoted task");
 	assert.equal(sessionNameFromInput("1. step one"), "step one");
 	assert.equal(sessionNameFromInput("   \n  Review\n the\tparser "), "Review");
+});
+
+it("uses task content instead of a section heading", () => {
+	assert.equal(
+		sessionNameFromInput(
+			"# Outcome\n\nRepair four confirmed defects in Pi session naming and Rex tab labels in https://github.com/example/harness. Implement, verify, commit.",
+		),
+		"Repair four confirmed defects in Pi session",
+	);
+	assert.equal(sessionNameFromInput("# Repair the parser"), "Repair the parser");
+	assert.equal(sessionNameFromInput("## Context\nFix the login redirect loop"), "Fix the login redirect loop");
 });
 
 it("uses the first sentence of the leading line", () => {

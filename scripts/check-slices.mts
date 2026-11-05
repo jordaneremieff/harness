@@ -5,7 +5,8 @@
 //   1. every extension under extensions/ is a complete vertical slice:
 //      index.ts with a default-export factory and README.md;
 //   2. no extension imports a sibling or escapes its slice except through the
-//      documented package-level evaluation interfaces in colocated suites/tests;
+//      documented package-level contracts (transport, operator-ui, session-name)
+//      or the colocated evaluation interfaces;
 //   3. no hardcoded counts of tests, tools, or files in tracked docs
 //      (AGENTS.md: "Do not hardcode counts ... in durable documentation");
 //   4. pillar corpus contract: strict frontmatter on every entry, README as
@@ -201,6 +202,9 @@ export function literalSpecifiers(source: string): string[] {
 /** Slices whose operator views use the package-level presentation entry. */
 const OPERATOR_UI_CONSUMERS = new Set(["agent", "clipboard", "pillars", "policy", "stash", "statusline"]);
 
+/** Slices that derive session names through the package-level module. */
+const SESSION_NAME_CONSUMERS = new Set(["agent", "evo"]);
+
 function publicImport(
 	root: string,
 	file: string,
@@ -211,24 +215,34 @@ function publicImport(
 	return (
 		(sliceName === "agent" && target === join(root, "transport", "index.ts")) ||
 		(OPERATOR_UI_CONSUMERS.has(sliceName) && target === join(root, "operator-ui", "index.ts")) ||
+		(SESSION_NAME_CONSUMERS.has(sliceName) && target === join(root, "session-name", "index.ts")) ||
 		evaluationImport(root, file, sliceDir, target)
 	);
 }
 
 /**
- * The shared presentation module imports only its own files, Node built-ins and packages. It never
+ * A package-level module imports only its own files, Node built-ins and packages. It never
  * reaches into an extension, so no owner's private implementation or output format leaks into it.
  */
-export function auditOperatorUiImports(root: string, file: string, source: string): string[] {
+export function auditSelfContainedImports(
+	root: string,
+	file: string,
+	source: string,
+	directory: string,
+): string[] {
 	const rel = relative(root, file);
 	if (syntaxErrors(source).length) return [`${rel}: TypeScript syntax errors prevent a complete import check`];
-	const moduleDir = join(root, "operator-ui");
+	const moduleDir = join(root, directory);
 	return literalSpecifiers(source).flatMap((specifier) => {
 		if (specifier.startsWith("/")) return [`${rel}: absolute import "${specifier}"`];
 		if (!specifier.startsWith("./") && !specifier.startsWith("../")) return [];
 		const target = relative(moduleDir, resolve(dirname(file), specifier));
-		return target.startsWith("..") ? [`${rel}: import "${specifier}" escapes operator-ui`] : [];
+		return target.startsWith("..") ? [`${rel}: import "${specifier}" escapes ${directory}`] : [];
 	});
+}
+
+export function auditOperatorUiImports(root: string, file: string, source: string): string[] {
+	return auditSelfContainedImports(root, file, source, "operator-ui");
 }
 
 function evaluationImport(root: string, file: string, sliceDir: string, target: string | undefined): boolean {
@@ -276,6 +290,13 @@ for (const entry of main && existsSync(operatorUiDir) ? readdirSync(operatorUiDi
 	if (!entry.isFile() || !/\.(ts|mts)$/.test(entry.name)) continue;
 	const file = join(operatorUiDir, entry.name);
 	for (const violation of auditOperatorUiImports(root, file, readFileSync(file, "utf8"))) fail(violation);
+}
+const sessionNameDir = join(root, "session-name");
+for (const entry of main && existsSync(sessionNameDir) ? readdirSync(sessionNameDir, { withFileTypes: true }) : []) {
+	if (!entry.isFile() || !/\.(ts|mts)$/.test(entry.name)) continue;
+	const file = join(sessionNameDir, entry.name);
+	for (const violation of auditSelfContainedImports(root, file, readFileSync(file, "utf8"), "session-name"))
+		fail(violation);
 }
 
 // --- configuration declaration and documentation contract -------------
@@ -609,7 +630,7 @@ if (main) {
 		...sourceFiles.map((file) => relative(root, file).replaceAll("\\", "/")),
 	]);
 	for (const file of owned) {
-		if (!/^(extensions|scripts|prompts|transport|operator-ui|evals)\/.*\.(ts|mts)$/.test(file)) continue;
+		if (!/^(extensions|scripts|prompts|transport|operator-ui|evals|session-name)\/.*\.(ts|mts)$/.test(file)) continue;
 		const path = join(root, file);
 		if (!existsSync(path)) continue;
 		for (const violation of auditSchemaImports(root, path, readFileSync(path, "utf8"))) fail(violation);

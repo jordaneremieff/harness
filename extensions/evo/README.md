@@ -66,6 +66,14 @@ The kickoff encodes the direction as one JSON string on one line inside
 sections. The decoded text directs the run within the authority boundary above.
 Framing is not a sandbox or proof of model compliance.
 
+When an unnamed session runs `/evo` with a direction, the command derives a
+session name from that direction and sets it through Pi's public session name API
+before the kickoff turn. The [session name convention](../../docs/conventions/session-names.md)
+owns the derivation. An existing name, a resumed name, and a later explicit name
+stay in place. Bare `/evo`, an invalid direction, and RPC-mode commands leave the
+name unchanged; an RPC client names a session with Pi's `set_session_name` RPC
+command.
+
 ## Release intake
 
 After an upgrade, start a new Pi process and run bare `/evo`. The command reads
@@ -279,8 +287,8 @@ binding, direction refusal, and the absence of model tools.
 ## Implementation and checks
 
 - `index.ts` registers `/evo`, emits the Durable contribution, resolves its
-  evidence root, reads release intake, reports invalid input, and selects
-  follow-up delivery.
+  evidence root, reads release intake, reports invalid input, names an unnamed
+  session from the direction outside RPC mode, and selects follow-up delivery.
 - `release.ts` reads published review coverage and bounds cumulative release notes.
 - `release.test.mts` checks source validation, publication boundaries, context
   limits, recovery priority, and directed focus with isolated Git fixtures.

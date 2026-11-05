@@ -265,6 +265,8 @@ documented surface:
 - [Extension configuration](conventions/extension-config.md): configuration
   ownership and the environment-variable namespace.
 - [Status keys](conventions/status-keys.md): footer publishers and consumers.
+- [Session names](conventions/session-names.md): deterministic name derivation and
+  its current consumers.
 - [Durable contributions](conventions/durable-contributions.md): native
   capability bundles supplied by extension factories to agent hosts.
 - [Tool display](conventions/tool-display.md): owner tool-card renderers for

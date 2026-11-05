@@ -49,7 +49,7 @@ import { createAgentObservationSource } from "./agent-observation.ts";
 import { promptProjectTrust } from "./trust-support.ts";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-purpose.ts";
-import { sessionNameFromInput } from "./session-name.ts";
+import { sessionNameFromInput } from "../../session-name/index.ts";
 import { formatEffortAwareness } from "./effort-awareness.ts";
 import { formatPrimaryObservation } from "./primary-observation.ts";
 import type { PrimaryIntentClaim } from "./primary-channel.ts";

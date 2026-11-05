@@ -12,7 +12,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=4 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"operator-ui/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"transport/*.test.mts\"",
+    "test": "node --test --test-concurrency=4 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"operator-ui/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"session-name/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"transport/*.test.mts\"",
     "test:coverage": "npm test -- --experimental-test-coverage",
     "evals": "node evals/cli.mts",
     "lint": "biome lint --error-on-warnings .",

@@ -333,6 +333,8 @@ test("real evo command retains pending releases despite aligned dependencies and
 	for (const file of ["index.ts", "command.ts", "kickoff.ts", "release.ts", "durable.ts"]) {
 		copyFileSync(new URL(file, import.meta.url), join(extensionDir, file));
 	}
+	mkdirSync(join(fixture.root, "session-name"), { recursive: true });
+	copyFileSync(new URL("../../session-name/index.ts", import.meta.url), join(fixture.root, "session-name", "index.ts"));
 	writeFileSync(
 		join(fixture.root, "package-lock.json"),
 		JSON.stringify({
@@ -380,5 +382,27 @@ test("real evo command retains pending releases despite aligned dependencies and
 		assert.deepEqual(runtime.errors, []);
 	} finally {
 		await runtime.close();
+	}
+});
+
+test("a direction names an unnamed session in every mode except rpc", { timeout: 30000 }, async () => {
+	for (const mode of ["tui", "print", "json", "rpc"] as const) {
+		const runtime = await ordinarySession(mode);
+		try {
+			const settled = deferred();
+			runtime.session.subscribe((event) => {
+				if (event.type === "agent_settled") settled.resolve();
+			});
+			await runtime.session.prompt("/evo Repair the parser");
+			await settled.promise;
+			assert.equal(
+				runtime.session.sessionName,
+				mode === "rpc" ? undefined : "Repair the parser",
+				mode,
+			);
+			assert.equal(runtime.requests.length, 1, mode);
+		} finally {
+			await runtime.close();
+		}
 	}
 });

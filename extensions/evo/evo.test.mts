@@ -126,6 +126,7 @@ function registeredEvo(): {
 	const commandNames: string[] = [];
 	const emissions: unknown[] = [];
 	let toolRegistrations = 0;
+	let sessionName: string | undefined;
 	const api = {
 		events: {
 			emit(channel: string, data: unknown) {
@@ -147,6 +148,10 @@ function registeredEvo(): {
 		},
 		registerTool() {
 			toolRegistrations++;
+		},
+		getSessionName: () => sessionName,
+		setSessionName(name: string) {
+			sessionName = name;
 		},
 		sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }) {
 			sent.push({ content, options });

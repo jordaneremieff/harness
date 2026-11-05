@@ -1,14 +1,39 @@
-/** Derive a concise session name from the first genuine interactive input. */
+/**
+ * Derive a concise session name from operator input text.
+ *
+ * The agent extension names an unnamed session from genuine interactive input.
+ * The evo extension names one from the direction of a registered `/evo`
+ * invocation. Both use Pi's public session name API.
+ */
 export const SESSION_NAME_CODE_POINTS = 48;
 export const SESSION_NAME_WORDS = 8;
 const MINIMUM_USEFUL_CHARACTERS = 3;
 
-function firstLine(text: string): string | undefined {
+function normalizedLine(raw: string): string {
+	return raw.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim();
+}
+
+/** A Markdown ATX heading labels a section instead of describing the work. */
+function isHeading(line: string): boolean {
+	return /^#{1,6}(?:[ \t]|$)/u.test(line);
+}
+
+/**
+ * The first nonempty line that is not a heading. When every nonempty line is a
+ * heading, the first heading supplies the name.
+ */
+function nameLine(text: string): string | undefined {
+	let heading: string | undefined;
 	for (const raw of text.split("\n")) {
-		const line = raw.replace(/[\p{Cc}\p{Cf}]+/gu, " ").replace(/\s+/gu, " ").trim();
-		if (line.length > 0) return line;
+		const line = normalizedLine(raw);
+		if (line.length === 0) continue;
+		if (isHeading(line)) {
+			heading ??= line;
+			continue;
+		}
+		return line;
 	}
-	return undefined;
+	return heading;
 }
 
 /** The first sentence of a line: text before a sentence mark that is followed by whitespace. */
@@ -43,7 +68,7 @@ function hasUsableWord(name: string): boolean {
 }
 
 /**
- * Deterministic name text for one interactive input, or undefined when the input
+ * Deterministic name text for one operator input, or undefined when the input
  * has no usable description. Fenced code, inline code and URLs do not contribute.
  */
 export function sessionNameFromInput(input: string): string | undefined {
@@ -53,7 +78,7 @@ export function sessionNameFromInput(input: string): string | undefined {
 	text = text.replace(/`+[^`\n]*`+/gu, " ");
 	text = text.replace(/\b(?:https?:\/\/|www\.)\S+/giu, " ");
 	const commandless = text.trimStart().startsWith("/") ? text.trimStart().replace(/^\/\S*[ \t]*/u, "") : text;
-	const line = firstLine(commandless);
+	const line = nameLine(commandless);
 	if (line === undefined) return undefined;
 	const name = cappedWords(firstSentence(withoutLeadingMarkers(line)))?.replace(/[\s.,;:!?…·*_~]+$/u, "");
 	if (name === undefined || name.length === 0) return undefined;

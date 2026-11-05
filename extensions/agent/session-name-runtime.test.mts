@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
+import { fileURLToPath } from "node:url";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type AgentSession } from "@earendil-works/pi-coding-agent";
 import register from "./index.ts";
@@ -15,6 +16,16 @@ function answer(): AssistantMessage {
 		content: [{ type: "text", text: "Fixture answer" }], stopReason: "stop", timestamp: Date.now(),
 		usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
 	};
+}
+
+function nextSettlement(session: AgentSession): Promise<void> {
+	return new Promise((resolve) => {
+		const unsubscribe = session.subscribe((event) => {
+			if (event.type !== "agent_settled") return;
+			unsubscribe();
+			resolve();
+		});
+	});
 }
 
 function completed() {
@@ -76,6 +87,7 @@ async function namingFixture(t: TestContext, options: { retainedName?: string } 
 	const started: Array<string | undefined> = [];
 	const loader = new DefaultResourceLoader({
 		cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+		additionalExtensionPaths: [fileURLToPath(new URL("../evo/index.ts", import.meta.url))],
 		extensionFactories: [(pi) => {
 			register(pi);
 			pi.on("session_info_changed", (event) => { changes.push(event.name); });
@@ -96,6 +108,13 @@ async function namingFixture(t: TestContext, options: { retainedName?: string } 
 		async prompt(text: string, options?: { source?: "interactive" | "rpc" | "extension" }) {
 			await session?.prompt(text, options);
 			await session?.waitForIdle();
+		},
+		/** Run a registered command and wait for the turn it starts. */
+		async command(text: string) {
+			const current = session ?? opened;
+			const done = nextSettlement(current);
+			await current.prompt(text);
+			await done;
 		},
 	};
 }
@@ -155,4 +174,60 @@ it("names from slash-command arguments and not from a command alone", { timeout:
 	await fixture.prompt("/skill:demo repair the parser");
 	assert.equal(fixture.sessionManager.getSessionName(), "repair the parser");
 	assert.equal(fixture.changes.length, 1);
+});
+
+it("names an unnamed session from a registered command direction before its turn", { timeout: 30000 }, async (t) => {
+	const fixture = await namingFixture(t);
+	await fixture.command("/evo Repair the parser");
+	assert.equal(fixture.sessionManager.getSessionName(), "Repair the parser");
+	assert.deepEqual([...fixture.changes], ["Repair the parser"]);
+	assert.deepEqual(fixture.started, ["Repair the parser"], "the name exists before agent processing");
+});
+
+it("uses substantive command content after a section heading", { timeout: 30000 }, async (t) => {
+	const fixture = await namingFixture(t);
+	await fixture.command(
+		"/evo # Outcome\n\nRepair four confirmed defects in Pi session naming and Rex tab labels in https://github.com/example/harness. Implement, verify, commit.",
+	);
+	assert.equal(fixture.sessionManager.getSessionName(), "Repair four confirmed defects in Pi session");
+	assert.equal(fixture.changes.length, 1);
+});
+
+it("keeps an explicit or resumed name at command admission", { timeout: 30000 }, async (t) => {
+	const explicit = await namingFixture(t);
+	explicit.session.setSessionName("Explicit name");
+	await explicit.changes.waitForCount(1);
+	await explicit.command("/evo Repair the parser");
+	assert.equal(explicit.sessionManager.getSessionName(), "Explicit name");
+	assert.equal(explicit.changes.length, 1);
+	const resumed = await namingFixture(t, { retainedName: "Retained name" });
+	await resumed.command("/evo Repair the parser");
+	assert.equal(resumed.sessionManager.getSessionName(), "Retained name");
+	assert.equal(resumed.changes.length, 0);
+});
+
+it("keeps the first automatic name across later commands", { timeout: 30000 }, async (t) => {
+	const fixture = await namingFixture(t);
+	await fixture.command("/evo Repair the parser");
+	await fixture.command("/evo Update the release notes");
+	assert.equal(fixture.sessionManager.getSessionName(), "Repair the parser");
+	assert.equal(fixture.changes.length, 1);
+});
+
+it("keeps a later explicit name across command and interactive input", { timeout: 30000 }, async (t) => {
+	const fixture = await namingFixture(t);
+	await fixture.command("/evo Repair the parser");
+	fixture.session.setSessionName("Operator choice");
+	await fixture.changes.waitForCount(2);
+	await fixture.command("/evo Update the release notes");
+	await fixture.prompt("Another task");
+	assert.equal(fixture.sessionManager.getSessionName(), "Operator choice");
+	assert.equal(fixture.changes.length, 2);
+});
+
+it("leaves an unnamed session unnamed for a direction-free command", { timeout: 30000 }, async (t) => {
+	const fixture = await namingFixture(t);
+	await fixture.command("/evo");
+	assert.equal(fixture.sessionManager.getSessionName(), undefined);
+	assert.equal(fixture.changes.length, 0);
 });

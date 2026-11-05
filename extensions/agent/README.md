@@ -1928,19 +1928,8 @@ existing name, including a resumed name, is never replaced. RPC input, extension
 input, model responses and effort-purpose updates do not name a session. A later
 explicit name always wins because automatic naming only fills an empty name.
 
-The derivation is deterministic and makes no model request:
-
-- Remove fenced code blocks, inline code spans and URLs.
-- Remove control and format characters, then collapse whitespace.
-- Use the first nonempty line and remove leading block markers for headings,
-  quotes, list items and emphasis. Keep the first sentence of that line: text
-  before a `.`, `!`, `?` or `…` that whitespace follows.
-- For input that starts with a slash command token, use the remaining arguments.
-  Arguments with no usable word do not name the session.
-- Reject text with fewer than three letters or digits.
-- Cap the name at 48 code points and eight words at a word boundary. A single
-  word longer than the cap yields no name.
-- Remove trailing punctuation.
+The [session name convention](../../docs/conventions/session-names.md) defines the
+derivation and lists its current consumers.
 
 `agent_intent` publishes only the invoking ordinary primary or native
 conversation. It takes no target identity. Native conversations retain claims in
