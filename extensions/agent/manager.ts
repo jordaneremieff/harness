@@ -813,8 +813,11 @@ export class AgentManager {
 			return { skipped: 1, omitted: 0, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt), owner: claimOwner(observedClaim), state: "unavailable", cost: 0, partial: true, error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state" }] };
 		}
 		const claim = observedClaim;
+		const hints = new Map((view.attention?.rows ?? []).map((hint) => [hint.identity, hint.kind]));
 		const rows = view.rows.map((source) => {
 			const row = { ...source } as AgentConversationSummary;
+			const hint = hints.get(source.id);
+			if (hint !== undefined) row.attention = hint;
 			row.owner = claimOwner(claim);
 			row.ownerLabel = `Host metadata at ${view.updatedAt}; claim observed at ${observedAt}${claim.kind === "unknown" ? `; ${claim.error}` : ""}`;
 			if (claim.kind !== "live" && row.state === "working") row.state = "interrupted";

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import { stripVTControlCharacters } from "node:util";
+import { getMarkdownTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	type KeybindingsManager,
+	Markdown,
 	matchesKey,
 	type TUI,
 	type TuiMouseEvent,
@@ -13,7 +15,7 @@ import {
 import { HitMap, TextField } from "../../operator-ui/index.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration.ts";
-import { fitLine, readingGeometry } from "./dashboard-layout.ts";
+import { LIST_BLOCK_ROWS, fitLine, listBlock, readingGeometry } from "./dashboard-layout.ts";
 import { dashboardTime } from "./dashboard-time.ts";
 import {
 	type Collaborate,
@@ -60,6 +62,36 @@ const MAX_SOURCES = 16;
 const MAX_SOURCE_PAGES = 8;
 /** A roster notice rereads the selected thread at once; the whole discovery at most this often. */
 const DISCOVERY_INTERVAL_MS = 10_000;
+/** A post longer than this many rendered lines opens as a preview of PREVIEW_LINES lines. */
+const LONG_POST_LINES = 16;
+const PREVIEW_LINES = 10;
+/** Purpose rows the thread header shows before Details. */
+const PURPOSE_ROWS = 3;
+
+/** One rendered exchange entry: its rows, the row that toggles a long post, and its post header row. */
+interface EventRows {
+	readonly lines: string[];
+	readonly toggle?: number;
+	readonly header?: number;
+}
+
+/** Where one event sits in the exchange document. */
+interface ExchangeSpan {
+	readonly start: number;
+	readonly end: number;
+	readonly header: number | undefined;
+	readonly toggle: number | undefined;
+	readonly event: CollaborationEvent;
+}
+
+/** The exchange's place on screen and its first document row. */
+interface ExchangeArea {
+	readonly x0: number;
+	readonly y0: number;
+	readonly width: number;
+	readonly height: number;
+	readonly start: number;
+}
 
 const KIND_LABEL: Record<string, string> = {
 	"carried-authority": "carried an operator direction",
@@ -124,7 +156,13 @@ export class ThreadsView {
 	private closedFocused = false;
 	/** Derived lines, keyed by content signature, width and display state (spec 4.5). */
 	private listCache?: { key: string; value: { lines: string[]; blocks: Array<{ id: string; start: number; size: number }>; disclosure?: number } };
-	private exchangeCache?: { key: string; lines: Map<number, string[]> };
+	private exchangeCache?: { key: string; lines: Map<number, EventRows> };
+	/** Long posts the operator opened or closed against the view's default; Ctrl+O flips the default. */
+	private readonly postChoices = new Set<string>();
+	private postsOpen = false;
+	/** Rows of the last exchange document, so opening a post keeps the window's first row in place. */
+	private exchangeTotal = 0;
+	private keepWindowTop = false;
 	/** Lines scrolled up from the newest exchange line; zero follows new posts. */
 	private exchangeBack = 0;
 	private exchangeMax = 0;
@@ -155,6 +193,11 @@ export class ThreadsView {
 				}
 			},
 		});
+	}
+
+	/** A thread's title from discovery or a read page, when this view has seen it. */
+	title(id: string): string | undefined {
+		return this.threads.get(id)?.title ?? this.reads.get(id)?.page.thread.title;
 	}
 
 	/** Show the view: read every thread, and open one thread when asked. */
@@ -417,11 +460,38 @@ export class ThreadsView {
 		return name && name !== id ? name : `Session ${id.slice(0, 8)}`;
 	}
 
+	/** The role the thread's own frame names for a participant. */
+	private role(id: string): string {
+		const thread = this.selectedRead()?.page.thread;
+		return thread && thread.integrator === id ? "integrator" : "";
+	}
+
+	/** Whether one long post shows in full: the view default, flipped by the operator's choice for that post. */
+	private postOpen(key: string): boolean {
+		return this.postsOpen !== this.postChoices.has(key);
+	}
+
+	private togglePost(key: string): void {
+		if (this.postChoices.has(key)) this.postChoices.delete(key);
+		else this.postChoices.add(key);
+		this.exchangeCache = undefined;
+		this.keepWindowTop = true;
+	}
+
+	/** Ctrl+O opens or closes every long post in the view. */
+	private toggleAllPosts(): void {
+		this.postsOpen = !this.postsOpen;
+		this.postChoices.clear();
+		this.exchangeCache = undefined;
+		this.keepWindowTop = true;
+	}
+
 	// --- input ----------------------------------------------------------------
 
 	handleInput(data: string): void {
 		if (this.disposed) return;
-		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) this.traverse(matchesKey(data, "shift+tab"));
+		if (matchesKey(data, "ctrl+o")) this.toggleAllPosts();
+		else if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) this.traverse(matchesKey(data, "shift+tab"));
 		else if (this.region === "composer") this.composerInput(data);
 		else if (this.region === "controls") this.controlsInput(data);
 		else if (this.region === "exchange") {
@@ -653,7 +723,7 @@ export class ThreadsView {
 		const visible = searching ? rows : [...open, ...(this.closedExpanded ? closed : [])];
 		let disclosure: number | undefined;
 		for (const row of visible) {
-			blocks.push({ id: row.id, start: lines.length, size: 3 });
+			blocks.push({ id: row.id, start: lines.length, size: LIST_BLOCK_ROWS });
 			lines.push(...this.threadBlock(row, width));
 			if (!searching && closed.length && row === open.at(-1)) {
 				disclosure = lines.length;
@@ -701,21 +771,19 @@ export class ThreadsView {
 		return theme.fg("muted", clip(this.find.value ? `No thread matches “${oneLine(this.find.value)}”.` : "No threads yet.", width));
 	}
 
+	/** The shared list block: the title wraps into the gap row before the purpose shortens it. */
 	private threadBlock(row: CollaborationSummary, width: number): string[] {
-		const theme = this.options.theme;
-		const chosen = row.id === this.options.state.selected && !this.closedFocused;
-		const rail = chosen ? theme.fg("accent", "▌ ") : "  ";
-		const glyph = row.closed ? theme.fg("muted", "○ ") : theme.fg("success", "● ");
-		const time = dashboardTime(row.updatedAt, this.options.exactTime());
-		const titleRoom = Math.max(1, width - 6 - visibleWidth(time));
-		const title = truncateToWidth(oneLine(row.title) || "Untitled thread", titleRoom, "…");
-		const first = `${rail}${glyph}${theme.bold(theme.fg(row.closed ? "muted" : "text", title))}`;
-		const lines = [
-			`${fitLine(first, width - visibleWidth(time) - 1)}${theme.fg("muted", time)} `,
-			`${rail}  ${theme.fg("muted", truncateToWidth(oneLine(row.purpose) || "No purpose stated", Math.max(1, width - 4), "…"))}`,
-		];
-		// Two quiet lines and a spacing line; the selected background covers only the content lines.
-		return [...(chosen ? lines.map((line) => theme.bg("selectedBg", fitLine(line, width))) : lines), ""];
+		const exact = this.options.exactTime();
+		return listBlock({
+			title: oneLine(row.title) || "Untitled thread",
+			glyph: row.closed ? "○" : "●",
+			glyphColor: row.closed ? "muted" : "success",
+			titleColor: row.closed ? "muted" : "text",
+			detail: oneLine(row.purpose) || "No purpose stated",
+			time: dashboardTime(row.updatedAt, exact),
+			timeOnDetail: exact,
+			selected: row.id === this.options.state.selected && !this.closedFocused,
+		}, width, this.options.theme).lines;
 	}
 
 	private renderThread(x0: number, width: number, height: number, narrow = false): string[] {
@@ -732,36 +800,65 @@ export class ThreadsView {
 		return [...header, ...Array.from({ length: middleHeight }, (_, row) => middle[row] ?? ""), ...composer].slice(0, height);
 	}
 
-	/** Two header lines: title and controls, then state, counts and one purpose preview. */
+	/**
+	 * The thread header: the full title with the Members and Details controls, then the state and counts,
+	 * then the purpose. Controls move to the counts row before they shorten the title; a title too long
+	 * for one row wraps onto a second.
+	 */
 	private threadHeader(read: ThreadRead | undefined, summary: CollaborationSummary | undefined, x0: number, width: number, narrow: boolean, closed: boolean): string[] {
 		const theme = this.options.theme;
 		const back = narrow ? "‹ Threads " : "";
 		if (narrow) this.hits.add({ x: x0, y: 0, width: visibleWidth(back), height: 1, click: () => { this.narrowThread = false; this.region = "list"; } });
-		const title = oneLine(read?.page.thread.title ?? summary?.title ?? "Thread");
-		const members = read?.page.thread.members.length ?? summary?.members ?? 0;
+		const thread = read?.page.thread;
+		const title = oneLine(thread?.title ?? summary?.title ?? "Thread");
+		const members = thread?.members.length ?? summary?.members ?? 0;
 		const controls = this.panelControls();
 		const controlText = controls.map(([, label]) => ` ${label} `);
 		const controlWidth = controlText.reduce((sum, text) => sum + visibleWidth(text), 0);
-		const leftRoom = Math.max(1, width - controlWidth);
-		const titleRoom = Math.max(1, leftRoom - visibleWidth(back) - 1);
-		const left = `${theme.fg("accent", back)} ${theme.bold(theme.fg("text", clip(title, titleRoom)))}`;
+		const lead = `${theme.fg("accent", back)} `;
+		const leadWidth = visibleWidth(lead);
+		const beside = leadWidth + visibleWidth(title) + 2 + controlWidth <= width;
+		const titleRoom = Math.max(1, width - leadWidth - 1);
+		const first = beside ? title : (wrapTextWithAnsi(title, titleRoom)[0] ?? "");
+		const rest = title.length > first.length ? clip(title.slice(first.length).trim(), titleRoom) : "";
+		const header = [`${lead}${theme.bold(theme.fg("text", first))}`, ...(rest ? [`${" ".repeat(leadWidth)}${theme.bold(theme.fg("text", rest))}`] : [])];
+		const facts = this.notice ? oneLine(this.notice.text) : this.threadFacts(read, closed, members);
+		header.push(theme.fg(this.notice ? "error" : "muted", ` ${facts}`));
+		const controlRow = beside ? 0 : header.length - 1;
 		let x = x0 + Math.max(0, width - controlWidth);
 		controls.forEach(([panel], index) => {
 			const w = visibleWidth(controlText[index] ?? "");
-			this.hits.add({ x, y: 0, width: w, height: 1, click: () => this.showPanel(panel) });
+			this.hits.add({ x, y: controlRow, width: w, height: 1, click: () => this.showPanel(panel) });
 			x += w;
 		});
 		const paint = (text: string, index: number) => (this.region === "controls" && index === this.controlIndex ? theme.bg("selectedBg", theme.bold(theme.fg("accent", text))) : theme.fg("accent", text));
-		const header = [`${fitLine(left, Math.max(1, width - controlWidth))}${controlText.map(paint).join("")}`];
-		const posts = read ? `${read.events.length} ${read.nextBefore ? "loaded " : ""}post${read.events.length === 1 ? "" : "s"}` : "";
-		const counts = [closed ? "Closed" : "Open", `${members} member${members === 1 ? "" : "s"}`, posts].filter(Boolean).join(" · ");
-		const purpose = oneLine(read?.page.thread.purpose ?? summary?.purpose ?? "");
-		const detail = this.notice ? oneLine(this.notice.text) : purpose;
-		const line = ` ${counts}${detail ? ` · ${detail}` : ""}`;
-		header.push(theme.fg(this.notice ? "error" : "muted", truncateToWidth(line, Math.max(1, width - 1), "…")));
+		header[controlRow] = `${fitLine(header[controlRow] ?? "", Math.max(1, width - controlWidth))}${controlText.map(paint).join("")}`;
+		const purpose = oneLine(thread?.purpose ?? summary?.purpose ?? "");
+		if (purpose) header.push(...this.purposeRows(purpose, width));
 		// One blank row separates the header from the exchange.
 		header.push("");
 		return header;
+	}
+
+	/** State, members and how much of the exchange is loaded, in one short muted line. */
+	private threadFacts(read: ThreadRead | undefined, closed: boolean, members: number): string {
+		const total = read?.page.thread.sequence;
+		const loaded = read?.events.length ?? 0;
+		const events = !read ? "" : read.nextBefore && total ? `latest ${loaded} of ${total} events` : `${loaded} event${loaded === 1 ? "" : "s"}`;
+		return [closed ? "Closed" : "Open", `${members} member${members === 1 ? "" : "s"}`, events].filter(Boolean).join(" · ");
+	}
+
+	/** The purpose in muted rows at the reading width; a longer purpose ends with a pointer to Details. */
+	private purposeRows(purpose: string, width: number): string[] {
+		const theme = this.options.theme;
+		const room = Math.max(1, Math.min(readingGeometry(width).textWidth, width - 2));
+		const rows = wrapTextWithAnsi(purpose, room);
+		if (rows.length > PURPOSE_ROWS) {
+			const more = "… more in Details";
+			rows.length = PURPOSE_ROWS;
+			rows[PURPOSE_ROWS - 1] = `${truncateToWidth(rows[PURPOSE_ROWS - 1] ?? "", Math.max(1, room - visibleWidth(more) - 1), "")} ${more}`;
+		}
+		return rows.map((row) => theme.fg("muted", ` ${row}`));
 	}
 
 	private threadMiddle(read: ThreadRead | undefined, x0: number, y0: number, width: number, height: number): string[] {
@@ -781,49 +878,98 @@ export class ThreadsView {
 		return Array.from({ length: height }, (_, row) => lines[row] ?? "");
 	}
 
-	/** The exchange, newest at the bottom. Scrolling to the top offers earlier messages. */
+	/**
+	 * The exchange, newest at the bottom. The first row says how many earlier events are still unread and
+	 * reads them on a click or Home. While the view sits above the newest line, the last row says how far
+	 * below it is; a window that starts inside a post names that post on its first row.
+	 */
 	private renderExchange(read: ThreadRead, x0: number, y0: number, width: number, height: number): string[] {
-		const theme = this.options.theme;
-		const pad = " ".repeat(readingGeometry(width).margin);
-		const lines: string[] = [read.nextBefore ? theme.fg("accent", `${pad}↑ Earlier messages`) : theme.fg("muted", `${pad}Start of the thread`)];
-		const targets: Array<{ line: number; event: CollaborationEvent }> = [];
-		const events = new Map(read.events.map((event) => [event.sequence, event]));
-		const cacheKey = this.exchangeKey(read, width);
-		if (this.exchangeCache?.key !== cacheKey) this.exchangeCache = { key: cacheKey, lines: new Map() };
-		for (const event of read.events) {
-			lines.push("");
-			targets.push({ line: lines.length, event });
-			const cached = this.exchangeCache.lines.get(event.sequence);
-			if (cached) lines.push(...cached);
-			else {
-				const rendered = this.eventLines(event, events, width);
-				this.exchangeCache.lines.set(event.sequence, rendered);
-				lines.push(...rendered);
-			}
-		}
-		if (!read.events.length) lines.push("", theme.fg("muted", `${pad}No messages yet.`));
-		lines.push("");
+		const { lines, spans } = this.exchangeDocument(read, width);
+		// An opened or closed post grows or shrinks below the rows already in view, not above them.
+		if (this.keepWindowTop) this.exchangeBack = Math.max(0, this.exchangeBack + lines.length - this.exchangeTotal);
+		this.keepWindowTop = false;
+		this.exchangeTotal = lines.length;
 		this.exchangeMax = Math.max(0, lines.length - height);
 		this.exchangeBack = Math.min(this.exchangeBack, this.exchangeMax);
 		const start = Math.max(0, lines.length - height - this.exchangeBack);
+		const visible = lines.slice(start, start + height);
 		if (start === 0 && read.nextBefore) this.hits.add({ x: x0, y: y0, width, height: 1, click: () => void this.earlier() });
-		for (const target of targets) {
-			const y = target.line - start;
-			if (y >= 0 && y < height) this.hits.add({ x: x0, y: y0 + y, width, height: 1, click: () => { this.replyTo(target.event); } });
-		}
+		const area = { x0, y0, width, height, start };
+		this.postHits(spans, area);
+		this.exchangeEdges(visible, spans, lines.length, area);
 		this.hits.add({ x: x0, y: y0, width, height, wheel: (delta) => { this.exchangeBack = Math.max(0, Math.min(this.exchangeMax, this.exchangeBack - delta)); if (this.exchangeBack === this.exchangeMax && read.nextBefore && delta < 0) void this.earlier(); } });
-		return lines.slice(start, start + height).map((line) => fitLine(line, width));
+		return visible.map((line) => fitLine(line, width));
+	}
+
+	/** Every exchange row, oldest first, and where each event's rows, header and long-post control sit. */
+	private exchangeDocument(read: ThreadRead, width: number): { lines: string[]; spans: ExchangeSpan[] } {
+		const theme = this.options.theme;
+		const pad = " ".repeat(readingGeometry(width).margin);
+		const earlier = read.nextBefore ? Math.max(0, read.nextBefore - 1) : 0;
+		const first = !read.nextBefore ? theme.fg("muted", `${pad}Start of the thread`)
+			: theme.fg("accent", `${pad}↑ ${earlier ? `${earlier} earlier event${earlier === 1 ? "" : "s"}` : "Earlier events"} · click or Home reads them`);
+		const lines = [first];
+		const spans: ExchangeSpan[] = [];
+		const events = new Map(read.events.map((event) => [event.sequence, event]));
+		const cacheKey = this.exchangeKey(read, width);
+		if (this.exchangeCache?.key !== cacheKey) this.exchangeCache = { key: cacheKey, lines: new Map() };
+		const cache = this.exchangeCache.lines;
+		for (const event of read.events) {
+			lines.push("");
+			const start = lines.length;
+			const rendered = cache.get(event.sequence) ?? this.eventLines(event, events, width);
+			cache.set(event.sequence, rendered);
+			lines.push(...rendered.lines);
+			spans.push({ start, end: lines.length, event, header: rendered.header === undefined ? undefined : start + rendered.header, toggle: rendered.toggle === undefined ? undefined : start + rendered.toggle });
+		}
+		if (!read.events.length) lines.push("", theme.fg("muted", `${pad}No messages yet.`));
+		lines.push("");
+		return { lines, spans };
+	}
+
+	/** A click on a post's header replies to it; a click on a long post's control opens or closes it. */
+	private postHits(spans: readonly ExchangeSpan[], area: ExchangeArea): void {
+		const row = (line: number | undefined) => (line === undefined ? -1 : line - area.start);
+		for (const span of spans) {
+			const header = row(span.header);
+			if (header >= 0 && header < area.height) this.hits.add({ x: area.x0, y: area.y0 + header, width: area.width, height: 1, click: () => { this.replyTo(span.event); } });
+			const toggle = row(span.toggle);
+			if (toggle >= 0 && toggle < area.height) this.hits.add({ x: area.x0, y: area.y0 + toggle, width: area.width, height: 1, click: () => { this.togglePost(`${this.options.state.selected ?? ""}#${span.event.sequence}`); } });
+		}
+	}
+
+	/**
+	 * The window's edges: a first row inside a post names the post it continues and a click shows its
+	 * header; a last row above the newest line says how far below it is and a click returns there.
+	 */
+	private exchangeEdges(visible: string[], spans: readonly ExchangeSpan[], total: number, area: ExchangeArea): void {
+		const theme = this.options.theme;
+		if (area.height <= 2) return;
+		const pad = " ".repeat(readingGeometry(area.width).margin);
+		const inside = spans.find((span) => span.header !== undefined && span.header < area.start && span.end > area.start);
+		if (inside) {
+			visible[0] = theme.fg("muted", `${pad}↑ ${clip(`${this.name(inside.event.sender)} · #${inside.event.sequence}, continued`, Math.max(1, area.width - pad.length - 3))}`);
+			const back = area.start - (inside.header ?? area.start);
+			this.hits.add({ x: area.x0, y: area.y0, width: area.width, height: 1, click: () => { this.exchangeBack = Math.min(this.exchangeMax, this.exchangeBack + back); } });
+		}
+		const below = total - (area.start + area.height);
+		if (below <= 0) return;
+		visible[area.height - 1] = theme.fg("muted", `${pad}↓ ${below} line${below === 1 ? "" : "s"} below · End shows the latest`);
+		this.hits.add({ x: area.x0, y: area.y0 + area.height - 1, width: area.width, height: 1, click: () => { this.exchangeBack = 0; } });
 	}
 
 	/**
 	 * One entry. Contributions and carried authority show their full post; structural events show one
 	 * muted line so the frame and member contributions stay out of the exchange.
 	 */
-	private eventLines(event: CollaborationEvent, events: ReadonlyMap<number, CollaborationEvent>, width: number): string[] {
+	private eventLines(event: CollaborationEvent, events: ReadonlyMap<number, CollaborationEvent>, width: number): EventRows {
 		// A close keeps its muted state line and shows why the thread ended as post text.
-		if (event.kind === "close") return [...(this.structuralEventLine(event, width) ?? []), ...this.postBody(event, width)];
+		if (event.kind === "close") {
+			const body = this.postBody(event, width);
+			return { lines: [...(this.structuralEventLine(event, width) ?? []), ...body.lines], ...(body.toggle === undefined ? {} : { toggle: body.toggle + 1 }) };
+		}
 		const structural = this.structuralEventLine(event, width);
-		return structural ?? this.postLines(event, events, width);
+		return structural ? { lines: structural } : this.postLines(event, events, width);
 	}
 
 	/** A create, revise, join, leave or close event as one muted line. */
@@ -836,56 +982,67 @@ export class ThreadsView {
 		return [this.options.theme.fg("muted", `${" ".repeat(margin)}${clip(text, textWidth)}`)];
 	}
 
-	/** A contribution or carried authority: bold sender, muted metadata, then the wrapped post. */
-	private postLines(event: CollaborationEvent, events: ReadonlyMap<number, CollaborationEvent>, width: number): string[] {
+	/**
+	 * A contribution or carried authority. One header row: the bold author, the role the frame names, the
+	 * post number, the reply target and, at the right, the time. Then the Markdown body and, last and muted,
+	 * who the post notified.
+	 */
+	private postLines(event: CollaborationEvent, events: ReadonlyMap<number, CollaborationEvent>, width: number): EventRows {
 		const theme = this.options.theme;
 		const { margin, textWidth } = readingGeometry(width);
 		const pad = " ".repeat(margin);
-		const time = dashboardTime(event.at, this.options.exactTime());
+		const time = theme.fg("muted", `  ${dashboardTime(event.at, this.options.exactTime())}`);
+		const role = this.role(event.sender);
+		const facts = [role, `#${event.sequence}`, event.replyTo ? `↳ ${this.replyTarget(event, events)}` : "", ...this.eventMetadata(event)].filter(Boolean).join(" · ");
 		const marked = this.draft()?.replyTo === event.sequence ? theme.fg("accent", " · replying") : "";
-		const head = `${theme.bold(theme.fg("text", this.name(event.sender)))}${this.eventMetadata(event)}${marked}`;
-		const timeText = theme.fg("muted", `  ${time}`);
-		const headWidth = Math.max(1, textWidth - visibleWidth(timeText));
-		const lines = [`${pad}${fitLine(clip(head, headWidth), headWidth)}${timeText}`];
-		if (event.replyTo) lines.push(theme.fg("muted", `${pad}${clip(`↳ ${this.replyTarget(event, events)}`, textWidth)}`));
-		lines.push(...this.postBody(event, width));
+		const head = `${theme.bold(theme.fg("text", this.name(event.sender)))}${theme.fg("muted", ` · ${facts}`)}${marked}`;
+		const headWidth = Math.max(1, textWidth - visibleWidth(time));
+		const lines = [`${pad}${fitLine(clip(head, headWidth), headWidth)}${time}`];
+		const body = this.postBody(event, width);
+		const toggle = body.toggle === undefined ? undefined : lines.length + body.toggle;
+		lines.push(...body.lines);
 		if (event.notify.length) lines.push(theme.fg("muted", `${pad}${clip(`notified ${event.notify.map((id) => this.name(id)).join(", ")}`, textWidth)}`));
-		return lines;
+		return { lines, header: 0, ...(toggle === undefined ? {} : { toggle }) };
 	}
 
-	/** Post text at the shared reading width, with blank rows inside the post preserved. */
-	private postBody(event: CollaborationEvent, width: number): string[] {
+	/**
+	 * The post as Markdown at the shared reading width. A long post opens as a preview with a row that
+	 * shows the rest; the stored message itself is never changed.
+	 */
+	private postBody(event: CollaborationEvent, width: number): EventRows {
+		const theme = this.options.theme;
 		const { margin, textWidth } = readingGeometry(width);
 		const pad = " ".repeat(margin);
 		const text = plainThreadText(event.message).trim();
-		const lines: string[] = [];
-		for (const source of text ? text.split("\n") : []) {
-			if (!source.trim()) {
-				lines.push("");
-				continue;
-			}
-			lines.push(...wrapTextWithAnsi(source, textWidth).map((part) => `${pad}${part}`));
-		}
-		return lines;
+		if (!text) return { lines: [] };
+		const rendered = new Markdown(text, 0, 0, getMarkdownTheme(), { color: (value) => theme.fg("text", value) }).render(textWidth);
+		const blank = (line: string) => stripVTControlCharacters(line).trim() === "";
+		let first = rendered.findIndex((line) => !blank(line));
+		let end = rendered.length;
+		while (end > first && blank(rendered[end - 1] ?? "")) end--;
+		if (first < 0) first = end;
+		const body = rendered.slice(first, end).map((line) => `${pad}${line}`);
+		if (body.length <= LONG_POST_LINES) return { lines: body };
+		const open = this.postOpen(`${this.options.state.selected ?? ""}#${event.sequence}`);
+		const shown = open ? body : body.slice(0, PREVIEW_LINES);
+		const control = open ? `▴ Show less` : `▸ ${body.length - PREVIEW_LINES} more lines`;
+		return { lines: [...shown, theme.fg("accent", `${pad}${control}`)], toggle: shown.length };
 	}
 
-	/** Operator origin and event kind, all muted. */
-	private eventMetadata(event: CollaborationEvent): string {
-		const theme = this.options.theme;
-		const kind = event.kind === "contribution" ? "" : theme.fg("muted", ` · ${KIND_LABEL[event.kind] ?? oneLine(event.kind)}`);
-		const origin = event.origin === "operator" ? theme.fg("muted", " · operator") : "";
-		return `${origin}${kind}`;
+	/** Operator origin and event kind, as muted header facts. */
+	private eventMetadata(event: CollaborationEvent): string[] {
+		return [event.origin === "operator" ? "operator" : "", event.kind === "contribution" ? "" : (KIND_LABEL[event.kind] ?? oneLine(event.kind))];
 	}
 
 	private replyTarget(event: CollaborationEvent, events: ReadonlyMap<number, CollaborationEvent>): string {
 		const parent = event.replyTo ? events.get(event.replyTo) : undefined;
-		return parent ? this.name(parent.sender) : `#${event.replyTo}`;
+		return parent ? `${this.name(parent.sender)} #${event.replyTo}` : `#${event.replyTo}`;
 	}
 
-	/** Event identities, width, reply target, names, exact time and the minute. */
+	/** Event identities, width, reply target, names, post disclosure, exact time and the minute. */
 	private exchangeKey(read: ThreadRead, width: number): string {
 		const names = read.events.map((event) => `${this.name(event.sender)}:${event.notify.map((id) => this.name(id)).join(",")}`).join("|");
-		return [read.page.thread.id, width, this.options.exactTime(), this.draft()?.replyTo ?? "", names, Math.floor(Date.now() / 60_000), read.events.map((event) => event.sequence).join(",")].join("#");
+		return [read.page.thread.id, width, this.options.exactTime(), this.draft()?.replyTo ?? "", names, this.postsOpen, [...this.postChoices].join(","), Math.floor(Date.now() / 60_000), read.events.map((event) => event.sequence).join(",")].join("#");
 	}
 
 	private renderMembers(read: ThreadRead, x0: number, y0: number, width: number, height: number): string[] {

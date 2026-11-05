@@ -7,3 +7,13 @@ export function dashboardTime(at: number, exact: boolean, now = Date.now()): str
 		year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", hour12: true,
 	});
 }
+
+/** A fixed local time for retained records: the clock time today, the date and time on other days. */
+export function dashboardClock(at: number, now = Date.now()): string {
+	const date = new Date(at);
+	const today = new Date(now);
+	const clock = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+	if (date.toDateString() === today.toDateString()) return clock;
+	const day = date.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(date.getFullYear() === today.getFullYear() ? {} : { year: "numeric" }) });
+	return `${day}, ${clock}`;
+}

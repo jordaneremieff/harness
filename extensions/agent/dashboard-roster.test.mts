@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { attentionReason, dashboardRecords, dashboardText, readableError, rosterLines, coverageText, rosterTotals } from "./dashboard-roster.ts";
+import { attentionReason, dashboardRecords, dashboardText, readableError, recoveryHint, rosterDetail, rosterLines, coverageText, rosterTotals } from "./dashboard-roster.ts";
 import { row, theme, coverage as rosterCoverage } from "./dashboard-test-fixture.mts";
 import { mergeAgentCoverage } from "./dashboard-types.ts";
 for (const [width, height, compact] of [
@@ -107,16 +107,15 @@ it("roster order follows recent activity across states and breaks ties by identi
 	assert.deepEqual(dashboardRecords({ observedAt: 0, sessions: rows }, "test model").length, 4);
 	assert.match(dashboardText({ observedAt: 0, sessions: rows }), /\$0.42/);
 });
-it("a narrow strip keeps two content lines, one gap and the hidden-row count", () => {
+it("a narrow strip wraps a long title and states the rows hidden above and below", () => {
 	const rows = Array.from({ length: 100 }, (_, index) => row(String(index), { name: "界".repeat(100) }));
 	const lines = rosterLines(rows, "50", 80, 4, 60000, theme, true);
 	assert.equal(lines.length, 4);
 	assert.ok(lines.some((line) => line.startsWith("▌")));
-	assert.match(lines.join("\n"), /model high · \$0.42/);
-	assert.match(lines.join("\n"), /1m ago/);
-	assert.doesNotMatch(lines.join("\n"), /Responding/);
-	assert.equal(lines[2]?.trim(), "");
-	assert.match(lines[3], /↕ 99 more/);
+	assert.match(lines[0] ?? "", /1m ago/, "the time keeps the title row");
+	assert.match(lines[1] ?? "", /界/, "the title continues on the second row");
+	assert.match(lines[2] ?? "", /Responding · model high · \$0.42/);
+	assert.match(lines[3] ?? "", /↑ 50 · ↓ 49 more/);
 	assert.ok(lines.every((line) => visibleWidth(line) <= 80));
 });
 it("roster ages use coarse minutes and absolute dates stay fixed for every state", () => {
@@ -149,10 +148,13 @@ it("wide roster budgets flat blocks and timestamps before it clips the selected 
 		row("earlier", { state: "done", modifiedAt: 0 }),
 	];
 	const lines = rosterLines(rows, "earlier", 64, 18, now, theme, false);
-	assert.match(lines.join("\n"), /▌ ✓ earlier/);
-	assert.match(lines.join("\n"), /yesterday/);
-	assert.match(lines.join("\n"), /5 agents/);
-	assert.equal(lines.filter((line) => /\$0.42/.test(line)).length, 5);
+	const text = lines.join("\n");
+	assert.match(text, /▌ ✓ earlier/);
+	assert.match(text, /yesterday/);
+	assert.match(text, /5 agents · 1 with errors/);
+	assert.equal(lines.filter((line) => /\$0.42/.test(line)).length, 4, "the failed row states its reason instead of a cost");
+	assert.match(lines[4] ?? "", /failure/);
+	assert.ok(lines.every((line) => visibleWidth(line) <= 64));
 });
 it("timestamp hit areas do not use a name that impersonates an Updated label", () => {
 	let timeX = -1;
@@ -174,18 +176,22 @@ it("duplicate titles receive distinct shortest suffixes and coverage remains exp
 		/skipped.*not loaded.*more records/,
 	);
 });
-it("roster identifies handles and roles separately from the historical first input", () => {
-	const expert = row("expert", { name: "History", firstMessage: "One old task", profile: { identity: "expert", handle: "@history", role: "Review operator decisions", revision: "one", hasExpertise: true, updatedAt: 0 } });
+it("roster titles use the name, then the handle, ahead of the historical first input", () => {
+	const profile = { identity: "expert", handle: "@history", role: "Review operator decisions", revision: "one", hasExpertise: true, updatedAt: 0 };
+	const expert = row("expert", { name: "History", firstMessage: "One old task", profile });
+	const handleOnly = row("handle", { name: undefined, firstMessage: "One old task", profile });
 	for (const [width, height, compact] of [[38, 18, false], [80, 4, true], [120, 24, false]] as const) {
 		const lines = rosterLines([expert], expert.id, width, height, 0, theme, compact);
-		assert.match(lines.join("\n"), /@history/);
+		assert.match(lines.join("\n"), /History/);
+		assert.doesNotMatch(lines.join("\n"), /@history · History/, "one label, not the handle and name pair");
 		assert.ok(lines.every((line) => visibleWidth(line) <= width));
 		if (!compact) assert.match(lines.join("\n"), /model high/);
 		assert.doesNotMatch(lines.join("\n"), /One old task/);
 	}
+	assert.match(rosterLines([handleOnly], handleOnly.id, 80, 10, 0, theme, false).join("\n"), /@history/);
 	for (const query of ["@history", "operator decisions", "History", "old task"]) assert.equal(dashboardRecords({ observedAt: 0, sessions: [expert] }, query).length, 1);
 	const historical = row("plain", { name: undefined, firstMessage: "Original request" });
-	assert.match(dashboardText({ observedAt: 0, sessions: [historical] }), /Historical: Original request/);
+	assert.match(dashboardText({ observedAt: 0, sessions: [historical] }), /“Original request”/);
 });
 
 it("roster names carry no provenance tag and keep bold emphasis", () => {
@@ -207,20 +213,25 @@ it("provider errors read as plain words", () => {
 	assert.equal(readableError('{"error":{"message":"Overloaded"}}'), "Overloaded");
 	assert.equal(readableError("plain failure"), "plain failure");
 	assert.equal(readableError("400: {not json}"), "400: {not json}");
+	assert.equal(readableError('xai API error (403): 403 "No credits available'), "xai API error 403: No credits available");
 	assert.equal(attentionReason(row("x", { state: "failed", error: '429: {"message":"Usage limit"}' })), "429 Usage limit");
 });
 
-it("failed rows keep only their glyph, muted model facts and one attention count", () => {
+it("a failed row states its reason in warning colour and the footer counts errors", () => {
 	const colored = Object.create(theme) as typeof theme;
-	colored.fg = (color, text) => `\x1b[${color === "muted" ? 90 : color === "dim" ? 37 : 31}m${text}\x1b[39m`;
+	colored.fg = (color, text) => `\x1b[${color === "muted" ? 90 : color === "warning" ? 33 : color === "error" ? 31 : 37}m${text}\x1b[39m`;
 	const lines = rosterLines([row("failed", { state: "failed", error: "429 Usage limit reached" })], undefined, 80, 10, 0, colored, false);
 	assert.match(lines[0] ?? "", /!/);
-	assert.doesNotMatch(lines.join("\n"), /429|Usage limit/);
-	assert.ok((lines[1] ?? "").includes("\x1b[90mmodel high"), "model and cost use muted");
-	assert.match(lines[3] ?? "", /1 agent · 1 need attention/);
+	assert.match(lines[1] ?? "", /429 Usage limit reached/);
+	assert.ok((lines[1] ?? "").includes("\x1b[33m429"), "a finished run's reason uses warning colour");
+	assert.match(lines[3] ?? "", /1 agent · 1 with errors/);
 });
 
-it("flat roster keeps the model second, leaves failure text to the pane, and keeps hit areas on each block", () => {
+it("a host fault marks its reason as an error rather than a finished run", () => {
+	assert.deepEqual(rosterDetail(row("now", { state: "idle", health: { lastError: "Host error marker" } })), { text: "Host error: Host error marker", color: "error" });
+});
+
+it("flat roster states each row's facts and keeps hit areas on each block", () => {
 	const rows = [row("work"), row("done", { state: "done", latestReply: "Result ready" }), row("failed", { state: "failed", error: "quota limit" })];
 	for (const compact of [false, true]) {
 		const hits: Array<[string, number, number]> = [];
@@ -229,8 +240,9 @@ it("flat roster keeps the model second, leaves failure text to the pane, and kee
 		assert.deepEqual(hits, rows.map((item, index) => [item.id, index * 3, 3]));
 		assert.deepEqual(times, rows.map((item, index) => [item.id, index * 3]));
 		assert.doesNotMatch(lines.join("\n"), /Working ·|Attention ·|Today ·|Yesterday ·|Earlier ·|Work failed:|model_error/);
-		assert.doesNotMatch(lines.join("\n"), /quota limit/, "the failure reason belongs in Details");
-		assert.match(lines[7], /model high · \$0\.42/);
+		assert.match(lines[1] ?? "", /Responding · model high · \$0.42/);
+		assert.match(lines[4] ?? "", /model high · \$0.42/);
+		assert.match(lines[7] ?? "", /quota limit/);
 		assert.equal(lines[8]?.trim(), "", "a spacing line follows each block");
 	}
 });
@@ -264,3 +276,38 @@ for (const exactTime of [false, true]) {
 		}
 	});
 }
+
+it("rosterDetail names a working agent's tool, an idle row's facts and a reason's first sentence", () => {
+	assert.deepEqual(rosterDetail(row("work", { currentTool: { name: "read", argument: "notes.md" } })), { text: "read notes.md · model high · $0.42", color: "muted" });
+	assert.deepEqual(rosterDetail(row("idle", { state: "idle", latestReply: "Result ready" })), { text: "model high · $0.42", color: "muted" });
+	assert.deepEqual(rosterDetail(row("failed", { state: "failed", error: "429 Usage limit reached. Try again later." })), { text: "429 Usage limit reached.", color: "warning" });
+});
+
+it("recovery hints name the supported next action and never a working row", () => {
+	assert.equal(recoveryHint(row("provider", { state: "failed", attention: "provider-blocked" })), "Configure another model, then send a message");
+	assert.equal(recoveryHint(row("task", { state: "idle", attention: "task-blocked" })), "The host must repair a blocked task; Reconnect starts it");
+	assert.equal(recoveryHint(row("unavailable", { owner: "unavailable", state: "unavailable" })), "Reconnect starts the host when the storage is readable");
+	assert.equal(recoveryHint(row("health", { state: "idle", health: { lastError: "Host error" } })), "Reconnect starts the host; unfinished work resumes");
+	assert.equal(recoveryHint(row("failed", { state: "failed", error: "boom" })), "A new message runs the work again");
+	assert.equal(recoveryHint(row("working", { attention: "provider-blocked" })), undefined);
+	assert.equal(recoveryHint(row("idle", { state: "idle", latestReply: "Ready" })), undefined);
+});
+
+it("the footer's error control names its column and reads Show all under the filter", () => {
+	const rows = [row("ok", { modifiedAt: 2 }), row("bad", { state: "failed", error: "quota limit", modifiedAt: 1 })];
+	const controls: Array<{ line: number; x: number; width: number }> = [];
+	const lines = rosterLines(rows, "ok", 80, 14, 0, theme, false, { errors: (line, x, width) => controls.push({ line, x, width }) });
+	assert.match(lines[6] ?? "", /2 agents · 1 with errors/);
+	assert.deepEqual(controls, [{ line: 6, x: 11, width: 13 }], "the control starts after the counts and covers the label");
+	const filtered: Array<{ line: number; x: number; width: number }> = [];
+	const only = rosterLines(rows, "bad", 80, 14, 0, theme, false, { errorsOnly: true, errors: (line, x, width) => filtered.push({ line, x, width }) });
+	assert.match(only[6] ?? "", /2 with errors · Show all/);
+	assert.deepEqual(filtered, [{ line: 6, x: 16, width: 8 }], "Show all owns its own label");
+});
+
+it("the footer names hidden rows above or below the window", () => {
+	const rows = Array.from({ length: 10 }, (_, index) => row(String(index)));
+	assert.match(rosterLines(rows, "0", 80, 7, 0, theme, false).at(-1) ?? "", /↓ 8 more/);
+	assert.match(rosterLines(rows, "5", 80, 7, 0, theme, false).at(-1) ?? "", /↑ 4 · ↓ 4 more/);
+	assert.match(rosterLines(rows, "9", 80, 7, 0, theme, false).at(-1) ?? "", /↑ 8 more/);
+});

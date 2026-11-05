@@ -3,15 +3,15 @@ import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, CURSOR_MARKER } from "@earendil-works/pi-tui";
-import { dashboardGeometry, dashboardHeading, readingGeometry } from "./dashboard-layout.ts";
+import { dashboardGeometry, dashboardHeading, LIST_BLOCK_ROWS, listBlock, readingGeometry } from "./dashboard-layout.ts";
 import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 import { agentState, updateDraft } from "./dashboard-state.ts";
 
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
 const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 
-it("the roster stays narrow and owns the full body beside the conversation", () => {
-	for (const [width, expected] of [[100, 30], [120, 30], [164, 36], [240, 40]]) {
+it("the roster keeps its share of the window and the conversation keeps the body", () => {
+	for (const [width, expected] of [[100, 32], [120, 32], [164, 44], [240, 60]]) {
 		const geometry = dashboardGeometry(width, 44, 3);
 		assert.equal(geometry.rosterWidth, expected);
 		assert.equal(geometry.wide, true);
@@ -20,8 +20,8 @@ it("the roster stays narrow and owns the full body beside the conversation", () 
 	}
 	assert.equal(dashboardGeometry(99, 30, 3).wide, false);
 	assert.equal(dashboardGeometry(164, 44, 3, true).conversationWidth, 164);
-	assert.equal(dashboardGeometry(200, 56, 3, false, 0, 4, { rosterRatio: 0.2727 }).rosterWidth, 40);
-	assert.equal(dashboardGeometry(100, 30, 3, false, 0, 4, { rosterRatio: 0.01 }).rosterWidth, 30);
+	assert.equal(dashboardGeometry(200, 56, 3, false, 0, 4, { rosterRatio: 0.2727 }).rosterWidth, 54);
+	assert.equal(dashboardGeometry(100, 30, 3, false, 0, 4, { rosterRatio: 0.01 }).rosterWidth, 32);
 });
 
 it("reading geometry keeps a two-column margin and a 100-column text maximum", () => {
@@ -104,10 +104,15 @@ for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of
 			assert.equal(lines.length, height, `${width}x${height} ${focus}`);
 			assert.ok(plain.every((line) => visibleWidth(line) === width));
 			const text = plain.join("\n");
-			assert.doesNotMatch(text, /quota limit/, "the full error stays in Details");
-			assert.match(text, notice ? /Layout could not be saved/ : /Not connected/);
-			assert.equal(text.split("Not connected").length - 1, notice ? 0 : 1, "one connection notice at most");
 			assert.doesNotMatch(text, /↑↓|pgup|pgdn|enter send|tab next/, "no navigation footer row");
+			if (notice) {
+				assert.match(text, /Layout could not be saved/);
+				assert.equal(text.split("quota limit").length - 1, 1, "the action notice takes the header line");
+			} else {
+				assert.match(text, /quota limit · A new message runs the work again/, "the header states the reason and the way forward");
+				assert.equal(text.split("quota limit").length - 1, 2, "the reason appears in the list and the header");
+				assert.doesNotMatch(text, /Not connected/, "the reason takes the line the connection warning would use");
+			}
 			const statusY = plain.findIndex((line) => /model │ ~\$0\.42/.test(line));
 			assert.ok(statusY > 0, "the model and cost line stays visible");
 			assert.match(plain[statusY + 1] ?? "", /\/work/);
@@ -200,4 +205,58 @@ it("the list labels incomplete loaded coverage rather than a global total", asyn
 	} finally {
 		f.ui.dispose();
 	}
+});
+
+it("a list block keeps a short title on one row, then its detail, then a gap", () => {
+	const block = listBlock({ title: "Recipient", glyph: "●", glyphColor: "accent", detail: "model high · $0.42", time: "5m ago", selected: false }, 40, painted);
+	assert.equal(block.lines.length, LIST_BLOCK_ROWS);
+	const plain = visible(block.lines);
+	assert.match(plain[0] ?? "", /^ {2}● Recipient +5m ago$/u);
+	assert.equal(plain[1]?.trim(), "model high · $0.42");
+	assert.equal(plain[2]?.trim(), "", "a blank gap row follows a title that fits");
+	assert.equal(block.timeLine, 0);
+	assert.equal(block.timeWidth, visibleWidth("5m ago"));
+	assert.ok(block.lines.every((line) => visibleWidth(line) === 40));
+});
+
+it("a long list title continues on the second row and the detail moves to the third", () => {
+	const title = "A very long agent name that does not fit in one list row";
+	const block = listBlock({ title, glyph: "○", glyphColor: "muted", detail: "model high", time: "5m ago", selected: false }, 32, painted);
+	assert.equal(block.lines.length, LIST_BLOCK_ROWS);
+	const plain = visible(block.lines);
+	assert.match(plain[0] ?? "", /^ {2}○ A very long agent +5m ago$/u);
+	assert.match(plain[1] ?? "", /^ {4}name that does not fit in/u, "the title continues on the second row");
+	assert.match(plain[2] ?? "", /^ {4}model high/u);
+	assert.equal(block.timeLine, 0);
+	assert.ok(block.lines.every((line) => visibleWidth(line) === 32));
+});
+
+it("timeOnDetail moves the time to the right of the detail row", () => {
+	const stamp = "Oct 3, 2026, 1:24 PM";
+	const block = listBlock({ title: "Recipient", glyph: "✓", glyphColor: "success", detail: "model high", time: stamp, timeOnDetail: true, selected: false }, 44, painted);
+	assert.equal(block.lines.length, LIST_BLOCK_ROWS);
+	const plain = visible(block.lines);
+	assert.doesNotMatch(plain[0] ?? "", /Oct 3/u);
+	assert.match(plain[1] ?? "", /Oct 3, 2026, 1:24 PM/u);
+	assert.equal(block.timeLine, 1);
+	assert.equal(block.timeX, 44 - visibleWidth(stamp));
+	assert.equal(plain[2]?.trim(), "");
+});
+
+it("the selection background covers content rows and leaves the blank row plain", () => {
+	const block = listBlock({ title: "Recipient", glyph: "●", glyphColor: "accent", detail: "model high", selected: true }, 30, painted);
+	assert.equal(block.lines.length, LIST_BLOCK_ROWS);
+	for (const line of block.lines.slice(0, 2)) {
+		assert.ok(line.includes("\x1b[44m"), "a content row carries the selection background");
+		assert.ok(line.startsWith("\x1b[36m▌ "), "the rail keeps the pane colour");
+	}
+	assert.equal(block.lines[2]?.includes("\x1b[44m"), false, "the blank row stays plain");
+	assert.ok(block.lines.every((line) => visibleWidth(line) === 30));
+});
+
+it("a saved or dragged list width stays between 32 and 60 columns", () => {
+	assert.equal(dashboardGeometry(100, 44, 3).rosterWidth, 32);
+	assert.equal(dashboardGeometry(400, 44, 3, false, 0, 4, { rosterRatio: 0.9 }).rosterWidth, 60);
+	assert.equal(dashboardGeometry(164, 44, 3, false, 0, 4, { rosterRatio: 0.9 }).rosterWidth, 60);
+	assert.equal(dashboardGeometry(100, 44, 3, false, 0, 4, { rosterRatio: 0.001 }).rosterWidth, 32);
 });

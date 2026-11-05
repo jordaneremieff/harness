@@ -17,7 +17,7 @@ import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts"
 import type { AgentReadingState } from "./dashboard-state.ts";
 import { awaitFactLines, type AwaitFact } from "./await-facts.ts";
 import { parseCommunicationView, type Communication } from "./communication.ts";
-import { bindCardDisclosure, createAgentToolCards, renderAgentCommunicationMessage, type AgentCardLookup } from "./tool-cards.ts";
+import { bindCardDisclosure, compactCommunicationRenderer, createAgentToolCards, type AgentCardLookup } from "./tool-cards.ts";
 
 const agentCardNames = new Set(Object.keys(createAgentToolCards()));
 
@@ -178,6 +178,17 @@ export function firstTaskEntry(
 	};
 }
 
+/**
+ * The row that stands in for hidden reasoning. A message that also has text, a tool call or an error
+ * shows those instead, so its hidden thinking takes no row; a thinking-only message keeps a short row,
+ * which a click opens. Ctrl+T and More › Show thinking reveal every message's reasoning.
+ */
+function thinkingLabel(message: AssistantMessage): string {
+	const visible = message.content.some((part) => (part.type === "text" && part.text.trim().length > 0) || part.type === "toolCall")
+		|| message.stopReason === "error" || message.stopReason === "aborted" || message.stopReason === "length";
+	return visible ? "" : "▸ Thinking";
+}
+
 function liveNestedTool(entry: AgentConversationEntry): NestedToolSlot | undefined {
 	return entry.id.startsWith("live:") ? (entry.data as { nestedTool?: NestedToolSlot } | undefined)?.nestedTool : undefined;
 }
@@ -206,12 +217,18 @@ export class AgentConversation {
 	private readonly tools = new Map<string, ReadingToolComponent>();
 	/** Agent cards read observed roster facts at paint; a roster change refreshes only these. */
 	private readonly agentCards = new Set<ReadingToolComponent>();
+	/** Communication cards name senders and threads from the same observed facts. */
+	private readonly noticeCards = new Set<CustomMessageComponent>();
 	private readonly cwd: string;
 	private readonly tui: TUI;
 	private expanded: boolean;
 	private showThinking: boolean;
 	private awaitingSignature = "";
 	private readonly renderCustom?: (entry: AgentConversationEntry) => Component | undefined;
+	/** Observed names and thread titles for notices; absent values keep exact identities. */
+	private readonly lookup?: AgentCardLookup;
+	/** The hidden-thinking label each assistant currently carries, so a label change reaches only that message. */
+	private readonly thinkingLabels = new WeakMap<AssistantMessageComponent, string>();
 	constructor(
 		entries: readonly AgentConversationEntry[],
 		cwd: string,
@@ -228,6 +245,7 @@ export class AgentConversation {
 		this.expanded = expanded;
 		this.showThinking = showThinking;
 		this.renderCustom = renderCustom;
+		this.lookup = rows;
 		this.definitions = createDashboardToolDefinitions(cwd, toolDisplay, rows);
 		this.reading = reading ?? { toolExpanded: new Map() };
 		this.update(entries);
@@ -285,6 +303,11 @@ export class AgentConversation {
 	/** Observed roster facts changed: agent cards repaint through their renderers with the current lookup. */
 	refreshCards(): void {
 		for (const component of this.agentCards) component.invalidate();
+		for (const component of this.noticeCards) {
+			component.invalidate();
+			this.rendered.delete(component);
+			this.rows.delete(component);
+		}
 	}
 	/** A global thinking change reaches every retained native assistant and clears its per-run choices. */
 	setShowThinking(show: boolean): void {
@@ -297,10 +320,19 @@ export class AgentConversation {
 		this.rows.clear();
 	}
 	private assistant(message: AssistantMessage, live: boolean): AssistantMessageComponent {
-		const component = new AssistantMessageComponent(undefined, !this.showThinking, getMarkdownTheme(), "▸ Thinking");
+		const label = thinkingLabel(message);
+		const component = new AssistantMessageComponent(undefined, !this.showThinking, getMarkdownTheme(), label);
+		this.thinkingLabels.set(component, label);
 		component.setOutputPad(0);
 		component.updateContent(message, live);
 		return component;
+	}
+	/** A message that gains text or a tool call drops its hidden-thinking row; Pi re-renders it once. */
+	private syncThinkingLabel(component: AssistantMessageComponent, message: AssistantMessage): void {
+		const label = thinkingLabel(message);
+		if (this.thinkingLabels.get(component) === label) return;
+		this.thinkingLabels.set(component, label);
+		component.setHiddenThinkingLabel(label);
 	}
 	/** Move a live instance to its committed entry without replaying its private choices. */
 	renameEntry(previous: string, next: string): void {
@@ -323,7 +355,7 @@ export class AgentConversation {
 	}
 	private pruneComponents(): void {
 		const retained = new Set(this.blocks.map((block) => block.component));
-		const caches: Array<{ keys(): Iterable<Component>; delete(component: Component): boolean }> = [this.agentCards, this.rendered, this.rows];
+		const caches: Array<{ keys(): Iterable<Component>; delete(component: Component): boolean }> = [this.agentCards, this.noticeCards, this.rendered, this.rows];
 		for (const cache of caches) {
 			for (const component of [...cache.keys()]) if (!retained.has(component)) cache.delete(component);
 		}
@@ -438,8 +470,9 @@ export class AgentConversation {
 			get: () => this.reading.toolExpanded.get(key),
 			set: (expanded) => { this.reading.toolExpanded.set(key, expanded); },
 		});
-		const component = new CustomMessageComponent(message, renderAgentCommunicationMessage, getMarkdownTheme(), 0);
+		const component = new CustomMessageComponent(message, compactCommunicationRenderer(this.lookup), getMarkdownTheme(), 0);
 		component.setExpanded(this.expanded);
+		this.noticeCards.add(component);
 		return component;
 	}
 	/** Native compaction entries keep their wrapped summary text under a distinct label. */
@@ -475,6 +508,7 @@ export class AgentConversation {
 			this.assistants.set(key, component);
 		} else {
 			component.updateContent(message, id.startsWith("live:"));
+			this.syncThinkingLabel(component, message);
 		}
 		this.rendered.delete(component);
 		this.rows.delete(component);
@@ -572,11 +606,20 @@ export class AgentConversation {
 		// The dashboard passes its pane width minus the scrollbar column; the helper expects the pane.
 		return readingGeometry(width + 1);
 	}
-	/** Trimmed component rows at the reading width. The margin and the shared gap are added in `blockRows`. */
+	/**
+	 * The width one block renders at: prose and agent cards keep the readable column; other tool lines
+	 * and their output use the pane, as in the main session, so commands and paths show before they shorten.
+	 */
+	private componentWidth(component: Component, width: number): { margin: number; textWidth: number } {
+		const reading = this.readingWidth(width);
+		const wide = component instanceof ReadingToolComponent && !this.agentCards.has(component);
+		return wide ? { margin: reading.margin, textWidth: Math.max(reading.textWidth, width - reading.margin) } : reading;
+	}
+	/** Trimmed component rows at the block's width. The margin and the shared gap are added in `blockRows`. */
 	private blockLines(component: Component, width: number): string[] {
 		const cached = this.rendered.get(component);
 		if (cached?.width === width) return cached.lines;
-		const { margin, textWidth } = this.readingWidth(width);
+		const { margin, textWidth } = this.componentWidth(component, width);
 		let trimmed: { lines: string[]; top: number };
 		try {
 			trimmed = trimBlankRows(component.render(textWidth));
@@ -602,13 +645,23 @@ export class AgentConversation {
 		const cached = this.rendered.get(component);
 		return cached?.width === width ? cached.lines.length : 3;
 	}
-	/** One blank row between steps; blocks from one entry and its tool calls share a step. */
+	/** A collapsed tool drawn as its one summary line. */
+	private compactTool(component: Component, width: number): boolean {
+		return component instanceof ReadingToolComponent && this.contentHeight(component, width) === 1;
+	}
+	/**
+	 * One blank row between steps; blocks from one entry and its tool calls share a step. Consecutive
+	 * one-line tool steps read as one run of activity, so no blank row separates them; commentary, notices
+	 * and open cards keep their gap.
+	 */
 	private blockGap(index: number, width: number): number {
 		const current = this.blocks[index];
 		if (this.contentHeight(current.component, width) === 0) return 0;
 		for (let previous = index - 1; previous >= 0; previous--) {
-			if (this.contentHeight(this.blocks[previous].component, width) === 0) continue;
-			return this.blocks[previous].step === current.step ? 0 : 1;
+			const block = this.blocks[previous];
+			if (this.contentHeight(block.component, width) === 0) continue;
+			if (block.step === current.step) return 0;
+			return this.compactTool(block.component, width) && this.compactTool(current.component, width) ? 0 : 1;
 		}
 		return 0;
 	}
@@ -694,6 +747,8 @@ export class AgentConversation {
 	}
 	render(width: number): ConversationDocument {
 		const document: ConversationDocument = { lines: [], anchors: [] };
+		// Gaps depend on measured neighbours, so every block is measured before any gap is chosen.
+		for (const { component } of this.blocks) this.blockLines(component, width);
 		this.blocks.forEach(({ id, component }, index) => {
 			const lines = this.blockRows(component, width, this.blockGap(index, width));
 			if (!lines.length) return;
@@ -737,7 +792,7 @@ export class AgentConversation {
 		const gap = this.blockGap(index, event.width);
 		const localY = event.y - line - gap;
 		if (localY < 0) return;
-		const { margin, textWidth } = this.readingWidth(event.width);
+		const { margin, textWidth } = this.componentWidth(component, event.width);
 		const local = { ...event, x: event.x - margin, y: localY + measured.top, width: textWidth, height: measured.lines.length + measured.top };
 		if (local.x < 0) return;
 		const item = this.itemFor(component, local, id, line, measured.top);

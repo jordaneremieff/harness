@@ -247,9 +247,12 @@ for (const width of [80, 140]) {
 	});
 }
 
+const interactiveUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const interactiveEntries: AgentConversationEntry[] = [
 	{ id: "user", kind: "pi.user", model: [{ role: "user", content: "Outside card sentinel", timestamp: 1 }] },
-	{ id: "assistant", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "thinking", thinking: "Thinking run sentinel" }, { type: "toolCall", id: "clicked-tool", name: "example_tool", arguments: { topic: "named" } }], api: "openai-responses", provider: "test", model: "test", timestamp: 2, stopReason: "toolUse", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }] },
+	// A thinking-only message keeps its hidden-thinking row; a message with a tool call shows the tool instead.
+	{ id: "thinking", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "thinking", thinking: "Thinking run sentinel" }], api: "openai-responses", provider: "test", model: "test", timestamp: 2, stopReason: "stop", usage: interactiveUsage }] },
+	{ id: "assistant", kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "toolCall", id: "clicked-tool", name: "example_tool", arguments: { topic: "named" } }], api: "openai-responses", provider: "test", model: "test", timestamp: 3, stopReason: "toolUse", usage: interactiveUsage }] },
 ];
 for (const [width, height] of [[140, 45], [80, 32]]) for (const start of ["list", "composer", "conversation"] as const) {
 	it(`single transcript clicks toggle tools and thinking from the ${start} at ${width} and move focus to the conversation`, async () => {

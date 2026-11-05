@@ -6,12 +6,15 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AssistantMessage, UserMessage } from "@earendil-works/pi-ai";
+import type { JsonValue } from "@earendil-works/chord";
 import { initTheme, createCodemodeExtension, AssistantMessageComponent, ToolExecutionComponent, getMarkdownTheme, type ExtensionAPI, type ToolDefinition, type ToolRenderers } from "@earendil-works/pi-coding-agent";
 import { MouseRegion, Text, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import { AgentConversation, cleanDashboardText, firstTaskEntry, renderableEntries } from "./dashboard-conversation.ts";
 import type { AgentConversationEntry, AgentConversationSnapshot, AgentConversationSummary } from "./dashboard-types.ts";
+import type { Communication } from "./communication.ts";
+import { dashboardClock } from "./dashboard-time.ts";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureRegistry, gateTool, hostOptions, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";
 import { profileText } from "./profile-dialog.ts";
@@ -50,10 +53,11 @@ const result = (
 	toolName: string,
 	text: string,
 	isError = false,
+	details?: JsonValue,
 ): AgentConversationEntry => ({
 	id,
 	kind: "pi.tool-result",
-	model: [{ role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], isError, timestamp: 3 }],
+	model: [{ role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], isError, timestamp: 3, ...(details === undefined ? {} : { details }) }],
 });
 const user = (id: string, content: string): AgentConversationEntry => ({
 	id,
@@ -193,9 +197,34 @@ it("renders tool-call-only and thinking-only assistant entries and attaches thei
 	const text = screen(new AgentConversation(entries, "/work", tui, false, false));
 	assert.match(text, /bash · echo step-1 → step-1/u);
 	assert.match(text, /write · poem\.txt → Successfully wrote to poem\.txt/u);
-	assert.match(text, /▸ Thinking/u);
+	assert.doesNotMatch(text, /▸ Thinking|Plan the shell steps/u, "a tool call stands in for the hidden thinking");
 	assert.doesNotMatch(text, /\{\}/);
 	assert.match(screen(new AgentConversation(entries, "/work", tui, false, true)), /Plan the shell steps/);
+	const only = assistant("only", [{ type: "thinking", thinking: "Thinking-only reasoning" }]);
+	assert.match(screen(new AgentConversation([only], "/work", tui, false, false)), /▸ Thinking/u);
+	assert.match(screen(new AgentConversation([only], "/work", tui, false, true)), /Thinking-only reasoning/u);
+});
+
+it("hides the thinking row for a message that also shows text, a tool call or a stop error", () => {
+	const entries = [
+		assistant("answer", [{ type: "thinking", thinking: "hidden text reasoning" }, { type: "text", text: "Visible answer" }]),
+		assistant("call", [{ type: "thinking", thinking: "hidden tool reasoning" }, { type: "toolCall", id: "read", name: "read", arguments: { path: "a.ts" } }]),
+	];
+	const collapsed = screen(new AgentConversation(entries, "/work", tui, false, false));
+	assert.doesNotMatch(collapsed, /▸ Thinking|hidden text reasoning|hidden tool reasoning/u);
+	assert.match(collapsed, /Visible answer/u);
+	assert.match(screen(new AgentConversation(entries, "/work", tui, false, true)), /hidden text reasoning|hidden tool reasoning/u);
+	for (const stopReason of ["error", "aborted", "length"] as const) {
+		const message = assistant("failed", [{ type: "thinking", thinking: "failed reasoning" }]).model?.[0] as AssistantMessage;
+		message.stopReason = stopReason;
+		message.errorMessage = "diagnostic sentinel";
+		const stopped = screen(new AgentConversation([{ id: "failed", kind: "pi.assistant", model: [message] }], "/work", tui, false, false));
+		assert.doesNotMatch(stopped, /▸ Thinking|failed reasoning/u, stopReason);
+		assert.match(stopped, /diagnostic sentinel|truncated before completion/u, stopReason);
+	}
+	const only = assistant("only", [{ type: "thinking", thinking: "only reasoning" }]);
+	assert.match(screen(new AgentConversation([only], "/work", tui, false, false)), /▸ Thinking/u);
+	assert.match(screen(new AgentConversation([only], "/work", tui, false, true)), /only reasoning/u);
 });
 
 it("shows a retained result whose call is absent without an empty argument object", () => {
@@ -270,6 +299,41 @@ it("separates blocks with one blank row and owns the reading margin", () => {
 	const keptLine = conversation.render(80).lines.find((line) => stripVTControlCharacters(line).includes("kept output"));
 	assert.ok(keptLine);
 	assert.doesNotMatch(keptLine, /\x1b\[48;/u, "the summary carries no filled block");
+});
+
+it("consecutive one-line tool steps share a run and commentary keeps its gap", () => {
+	const entries: AgentConversationEntry[] = [
+		assistant("first", [{ type: "toolCall", id: "read-one", name: "read", arguments: { path: "a.ts" } }]),
+		result("result-one", "read-one", "read", "line a"),
+		assistant("second", [{ type: "toolCall", id: "read-two", name: "read", arguments: { path: "b.ts" } }]),
+		result("result-two", "read-two", "read", "line b"),
+		assistant("commentary", [{ type: "text", text: "Commentary line" }]),
+	];
+	const lines = new AgentConversation(entries, "/work", tui, false, false).renderWindow(100, 0, 20, true).lines.map(stripVTControlCharacters);
+	const first = lines.findIndex((line) => line.includes("read · a.ts"));
+	const second = lines.findIndex((line) => line.includes("read · b.ts"));
+	const commentary = lines.findIndex((line) => line.includes("Commentary line"));
+	assert.equal(second, first + 1, "one-line tool steps keep no blank row between them");
+	assert.equal(commentary, second + 2, "commentary keeps one blank row");
+});
+
+it("non-agent tool lines use the wide pane while prose, notices and agent cards keep the reading column", () => {
+	const entries: AgentConversationEntry[] = [
+		user("task", "Short prose"),
+		assistant("bash", [{ type: "toolCall", id: "bash-call", name: "bash", arguments: { command: `echo ${"x".repeat(200)}` } }]),
+		result("bash-result", "bash-call", "bash", "done"),
+		assistant("send", [{ type: "toolCall", id: "send-call", name: "agent_send", arguments: { sessionId: "01a106df-0000-4000-8000-000000000001", message: "A message body" } }]),
+		communicationEntry(reportValue()),
+	];
+	const lines = new AgentConversation(entries, "/work", tui, false, false).render(158).lines;
+	const widths = (needle: string) => lines.filter((line) => stripVTControlCharacters(line).includes(needle)).map((line) => visibleWidth(line));
+	assert.deepEqual(widths("Short prose"), [102], "prose keeps the 100-column reading width plus its margin");
+	const tool = widths("bash · echo");
+	assert.equal(tool.length, 1);
+	assert.ok(tool[0] > 102, "the tool line passes the reading column");
+	assert.ok(tool[0] <= 158);
+	assert.ok(widths("A message body").every((width) => width <= 102), "agent cards keep the reading column");
+	assert.ok(widths("Report from Peer name").every((width) => width <= 102), "notices keep the reading column");
 });
 
 it("recovers the first task from the session summary when the bounded transcript omits it", () => {
@@ -491,88 +555,157 @@ it("retains whole-card and pending-card choices through result arrival and chang
 	assert.doesNotMatch(screen(conversation), /row 12/u);
 });
 
-it("retained communications render as Agent cards with click disclosure and no live model facts", () => {
-	const sender = "7f7f7f7f-1111-4222-8333-444444444444";
-	const body = `Opening line of the report. ${"Useful detail follows. ".repeat(40)}FINAL_BODY`;
-	const entry: AgentConversationEntry = {
-		id: "9", kind: "pi.user", model: [{ role: "user", content: body, timestamp: 1 }],
-		communication: { state: "ready", recordEntryId: "9", target: { mode: "input", storageId: sender, conversationId: 1, entryId: "9", submissionId: 3, requestId: "source" }, value: { format: "agent.communication/1", kind: "report", sender: { identity: sender, name: "Peer name" }, body: { text: body, complete: false, redacted: false }, recordedAt: 1_700_000_000_000, metadata: { sourceId: "report:source", requestId: "source", replyTo: sender } } },
-	};
-	const conversation = new AgentConversation([entry], "/work", tui, false, false);
-	let document = conversation.render(80);
-	const text = () => stripVTControlCharacters(conversation.render(80).lines.join("\n"));
-	assert.match(text(), /\[agent\] Report \u00b7 request source/u);
-	assert.match(text(), /from Peer name/u);
-	assert.match(text(), /Partial body/u);
-	assert.match(text(), /\(click or ctrl\+o to expand\)|\(click to expand\)/u);
-	assert.doesNotMatch(text(), /FINAL_BODY|Sender identity|1700000000000|provider|model/u);
-	const hint = document.lines.findIndex((line) => /\(click/u.test(stripVTControlCharacters(line)));
-	assert.ok(hint > 0);
-	assert.ok(conversation.handleMouse(click(80, document.lines.length, hint)));
-	document = conversation.render(80);
-	assert.match(text(), /FINAL_BODY/u);
-	assert.match(text(), /Sender identity: 7f7f7f7f-1111-4222-8333-444444444444/u);
-	assert.match(text(), /requestId: source/u);
-	assert.match(text(), /authoring model is not retained/u);
-	const reading = agentState(createDashboardState(), "one").view;
-	const kept = new AgentConversation([entry], "/work", tui, false, false, undefined, reading);
-	let keptDocument = kept.render(80);
-	const keptText = () => stripVTControlCharacters(kept.render(80).lines.join("\n"));
-	assert.ok(kept.handleMouse(click(80, keptDocument.lines.length, keptDocument.lines.findIndex((line) => /\(click/u.test(stripVTControlCharacters(line))))));
-	assert.match(keptText(), /FINAL_BODY/u);
-	const returned = new AgentConversation([entry], "/work", tui, false, false, undefined, reading);
-	assert.match(stripVTControlCharacters(returned.render(80).lines.join("\n")), /FINAL_BODY/u, "a rebuilt transcript over the same reading state keeps the disclosure");
-	kept.setExpanded(true);
-	kept.setExpanded(false);
-	assert.doesNotMatch(keptText(), /FINAL_BODY/u, "a global change owns the card again");
-	assert.doesNotMatch(stripVTControlCharacters(new AgentConversation([entry], "/work", tui, false, false, undefined, reading).render(80).lines.join("\n")), /FINAL_BODY/u, "the global change cleared the kept choice");
-	keptDocument = kept.render(80);
-	assert.ok(keptDocument.lines.length > 0);
-	conversation.setExpanded(true);
-	assert.match(text(), /FINAL_BODY/u);
-	conversation.setExpanded(false);
-	assert.doesNotMatch(text(), /FINAL_BODY/u, "a global change owns the card again");
+const noticeSender: Communication["sender"] = { identity: "7f7f7f7f-1111-4222-8333-444444444444", name: "Peer name" };
+const reportBody = "line one\nline two\nline three\nline four\nline five";
+const communicationEntry = (value: Communication): AgentConversationEntry => ({
+	id: "9",
+	kind: "pi.user",
+	model: [{ role: "user", content: value.body.text, timestamp: 1 }],
+	communication: {
+		state: "ready",
+		recordEntryId: "9",
+		target: { mode: "input", storageId: value.sender.identity, conversationId: 1, entryId: "9", submissionId: 3, requestId: "source" },
+		value,
+	},
+});
+const reportValue = (sender: Communication["sender"] = noticeSender, text = reportBody): Communication => ({
+	format: "agent.communication/1",
+	kind: "report",
+	sender,
+	body: { text, complete: false, redacted: false },
+	recordedAt: 1_700_000_000_000,
+	metadata: { sourceId: "report:source", requestId: "request-source" },
+});
+const observedLookup = (facts: { nameFor?: (identity: string) => string | undefined; threadTitle?: (id: string) => string | undefined }) =>
+	Object.assign(() => [] as readonly AgentConversationSummary[], facts);
+
+it("a retained report collapses to one header row, two preview rows and a line count", () => {
+	const shown = screen(new AgentConversation([communicationEntry(reportValue())], "/work", tui, false, false));
+	const lines = shown.split("\n").map((line) => line.trimEnd());
+	assert.equal(lines.length, 3);
+	assert.ok(lines[0].startsWith(`  ▸ Report from Peer name · ${dashboardClock(1_700_000_000_000)}`), lines[0]);
+	assert.equal(lines[1].trim(), "line one");
+	assert.equal(lines[2].trim(), "line two +3 lines");
+	assert.doesNotMatch(shown, /\[agent\]|Partial body|click or ctrl\+o|line five/u);
 });
 
-it("an expanded result communication lists every retained reference and the full request identifiers", () => {
+it("a preview skips blank rows, so a one-line first paragraph still shows two rows of text", () => {
+	const shown = screen(new AgentConversation([communicationEntry(reportValue(noticeSender, "First line.\n\n- item one\n- item two\n- item three"))], "/work", tui, false, false));
+	const lines = shown.split("\n").map((line) => line.trimEnd());
+	assert.equal(lines.length, 3);
+	assert.equal(lines[1].trim(), "First line.");
+	assert.match(lines[2] ?? "", /item one \+2 lines$/u, "the count follows text, never a blank row");
+});
+
+it("clicks on the report header or its count row open the retained copy, notes and identity", () => {
+	const conversation = new AgentConversation([communicationEntry(reportValue())], "/work", tui, false, false);
+	let document = conversation.render(80);
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, 0)), "the header row toggles");
+	const opened = screen(conversation).replace(/\s+/gu, " ");
+	assert.match(opened, /▾ Report from Peer name/u);
+	assert.match(opened, /line five/u);
+	assert.match(opened, /Retained copy; it may be shorter than the original\./u);
+	assert.match(opened, /Sender identity: 7f7f7f7f-1111-4222-8333-444444444444 Recorded: 2023-11-14T22:13:20\.000Z/u);
+	assert.match(opened, /requestId: request-source/u, "the open card keeps the retained request identifier");
+	assert.doesNotMatch(opened, /\[agent\]|Partial body|click or ctrl\+o/u);
+	document = conversation.render(80);
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, 0)), "the header row closes it again");
+	assert.doesNotMatch(screen(conversation), /line five/u);
+	document = conversation.render(80);
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, 2)), "the count row toggles");
+	assert.match(screen(conversation), /line five/u);
+});
+
+it("a report disclosure lives in the reading state and a global change clears it", () => {
+	const entry = communicationEntry(reportValue());
+	const reading = agentState(createDashboardState(), "one").view;
+	const kept = new AgentConversation([entry], "/work", tui, false, false, undefined, reading);
+	const document = kept.render(80);
+	assert.ok(kept.handleMouse(click(80, document.lines.length, 0)));
+	assert.match(screen(kept), /line five/u);
+	assert.match(screen(new AgentConversation([entry], "/work", tui, false, false, undefined, reading)), /line five/u, "a rebuilt transcript over the same reading state keeps the choice");
+	kept.setExpanded(true);
+	kept.setExpanded(false);
+	assert.doesNotMatch(screen(kept), /line five/u, "a global change owns the card again");
+	assert.doesNotMatch(screen(new AgentConversation([entry], "/work", tui, false, false, undefined, reading)), /line five/u, "the global change cleared the kept choice");
+});
+
+it("a notice names its thread, post number and copy notes when opened", () => {
+	const value: Communication = {
+		format: "agent.communication/1",
+		kind: "notice",
+		sender: noticeSender,
+		body: { text: reportBody, complete: false, redacted: false },
+		recordedAt: 1_700_000_000_000,
+		metadata: { threadId: "storage/thread-1", event: 25, passive: true },
+	};
+	const lookup = observedLookup({ threadTitle: (id) => (id === "storage/thread-1" ? "Density round" : undefined) });
+	assert.match(screen(new AgentConversation([communicationEntry(value)], "/work", tui, false, false, undefined, undefined, undefined, lookup)), /▸ Peer name in Density round · #25 · /u);
+	const opened = screen(new AgentConversation([communicationEntry(value)], "/work", tui, true, false)).replace(/\s+/gu, " ");
+	assert.match(opened, /Notice copy; the full post #25 is in Threads\./u);
+	assert.match(opened, /threadId: storage\/thread-1 event: 25/u);
+	assert.match(opened, /Recorded: 2023-11-14T22:13:20\.000Z/u);
+});
+
+it("an open result card lists every retained reference and the full request identifiers", () => {
 	const sender = "7f7f7f7f-1111-4222-8333-444444444444";
 	const longRequest = `request-${"x".repeat(600)}-END`;
 	const references = Array.from({ length: 16 }, (_, index) => ({ submissionId: index + 1, requestId: index === 15 ? longRequest : `req-${index + 1}`, entryId: String(index + 10), answerEntryId: String(index + 100) }));
-	const entry: AgentConversationEntry = {
-		id: "12", kind: "pi.user", model: [{ role: "user", content: "Result body", timestamp: 1 }],
-		communication: { state: "ready", recordEntryId: "12", target: { mode: "input", storageId: sender, conversationId: 1, entryId: "12", submissionId: 3, requestId: "source" }, value: { format: "agent.communication/1", kind: "result", sender: { identity: sender, name: "Peer" }, body: { text: "Result body", complete: true, redacted: false }, recordedAt: 1_700_000_000_000, metadata: { status: "done", references, omittedReferences: 2 } } },
-	};
-	const conversation = new AgentConversation([entry], "/work", tui, true, false);
+	const value: Communication = { format: "agent.communication/1", kind: "result", sender: { identity: sender, name: "Peer" }, body: { text: "Result body", complete: true, redacted: false }, recordedAt: 1_700_000_000_000, metadata: { status: "done", references, omittedReferences: 2 } };
+	const conversation = new AgentConversation([communicationEntry(value)], "/work", tui, true, false);
 	const text = stripVTControlCharacters(conversation.render(200).lines.join("\n"));
-	assert.match(text, /\[agent\] Result \u00b7 18 referenced submissions/u);
+	assert.match(text, /▾ Result from Peer · /u);
 	assert.match(text, /references: 16 retained \u00b7 2 omitted at retention/u);
 	for (let index = 1; index <= 16; index++) assert.match(text, new RegExp(`reference ${index}: submission ${index} \\u00b7 request `, "u"));
 	assert.match(text, /reference 15: submission 15 \u00b7 request req-15 \u00b7 entry 24 \u00b7 answer entry 114/u);
 	assert.ok(conversation.render(200).lines.map((line) => stripVTControlCharacters(line).trim()).join("").includes(longRequest), "a long valid identifier stays complete across its wrapped rows");
-	assert.doesNotMatch(text, /\u2026/u, "no field is previewed in Details");
+	assert.doesNotMatch(text, /\u2026/u, "no retained field is shortened in the open card");
+});
+
+it("names an unnamed sender by its kind and short identity until the lookup knows it", () => {
+	const agentSender: Communication["sender"] = { identity: "7f7f7f7f-1111-4222-8333-444444444444", kind: "agent" };
+	const entry = communicationEntry(reportValue(agentSender));
+	assert.match(screen(new AgentConversation([entry], "/work", tui, false, false)), /Report from Agent 7f7f7f7f · /u);
+	assert.match(screen(new AgentConversation([entry], "/work", tui, true, false)), /Sender identity: 7f7f7f7f-1111-4222-8333-444444444444 \(agent\)/u);
+	const session = communicationEntry(reportValue({ identity: "7f7f7f7f-1111-4222-8333-444444444444", kind: "session" }));
+	assert.match(screen(new AgentConversation([session], "/work", tui, false, false)), /Report from Session 7f7f7f7f · /u);
+	const lookup = observedLookup({ nameFor: (identity) => (identity === agentSender.identity ? "Lookup name" : undefined) });
+	assert.match(screen(new AgentConversation([entry], "/work", tui, false, false, undefined, undefined, undefined, lookup)), /Report from Lookup name · /u);
+});
+
+it("an agent_collaborate card uses the observed thread title and its receipt number", () => {
+	const entries = [
+		assistant("call", [{ type: "toolCall", id: "collab", name: "agent_collaborate", arguments: { action: "post", threadId: "storage/thread-1", message: "Body of the post" } }]),
+		result("done", "collab", "agent_collaborate", "posted", false, { threadId: "storage/thread-1", sequence: 25 }),
+	];
+	const lookup = observedLookup({ threadTitle: (id) => (id === "storage/thread-1" ? "Density round" : undefined) });
+	const named = screen(new AgentConversation(entries, "/work", tui, false, false, undefined, undefined, undefined, lookup), 120);
+	assert.match(named, /agent_collaborate · post · Density round/u);
+	assert.match(named, /Posted · #25/u);
+	assert.doesNotMatch(named, /thread storage/u);
+	const unnamed = screen(new AgentConversation(entries, "/work", tui, false, false), 120);
+	assert.match(unnamed, /agent_collaborate · post · thread storage\/thread-1/u);
+	assert.match(unnamed, /Posted · #25/u);
 });
 
 it("native thinking clicks retain choices only on the actual assistant instance", () => {
-	const content: AssistantMessage["content"] = [{ type: "thinking", thinking: "" }, { type: "thinking", thinking: "first" }, { type: "thinking", thinking: "adjacent" }, { type: "text", text: "intervening text" }, { type: "thinking", thinking: "" }, { type: "text", text: "more text" }, { type: "thinking", thinking: "second" }];
-	for (const stopReason of ["length", "error", "aborted"] as const) {
-		const message = assistant("runs", content).model?.[0] as AssistantMessage;
-		message.stopReason = stopReason; message.errorMessage = "diagnostic text";
-		const native = new AssistantMessageComponent(message, true, getMarkdownTheme(), "Thinking...");
-		assert.ok(native.render(80).length);
-		const state = agentState(createDashboardState(), "one").view;
-		const entries = [{ id: "runs", kind: "pi.assistant", model: [message, message] }];
-		const conversation = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
-		const document = conversation.render(80);
-		const labels = document.lines.flatMap((line, index) => stripVTControlCharacters(line).includes("▸ Thinking") ? [index] : []);
-		assert.equal(labels.length, 4);
-		assert.ok(conversation.handleMouse(click(80, document.lines.length, labels[3])));
-		assert.equal(screen(conversation).match(/▸ Thinking/gu)?.length, 3);
-		assert.match(screen(conversation), /second/u);
-		const rebuilt = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
-		assert.equal(screen(rebuilt).match(/▸ Thinking/gu)?.length, 4);
-		conversation.update([{ ...entries[0], data: { revision: 2 } }]);
-		assert.equal(screen(conversation).match(/▸ Thinking/gu)?.length, 3);
-	}
+	const content: AssistantMessage["content"] = [{ type: "thinking", thinking: "" }, { type: "thinking", thinking: "first" }, { type: "thinking", thinking: "adjacent" }, { type: "text", text: " " }, { type: "thinking", thinking: "" }, { type: "text", text: " " }, { type: "thinking", thinking: "second" }];
+	const message = assistant("runs", content).model?.[0] as AssistantMessage;
+	const native = new AssistantMessageComponent(message, true, getMarkdownTheme(), "Thinking...");
+	assert.ok(native.render(80).length);
+	const state = agentState(createDashboardState(), "one").view;
+	const entries = [{ id: "runs", kind: "pi.assistant", model: [message, message] }];
+	const conversation = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
+	const document = conversation.render(80);
+	const labels = document.lines.flatMap((line, index) => stripVTControlCharacters(line).includes("▸ Thinking") ? [index] : []);
+	assert.equal(labels.length, 4);
+	assert.ok(conversation.handleMouse(click(80, document.lines.length, labels[3])));
+	assert.equal(screen(conversation).match(/▸ Thinking/gu)?.length, 3);
+	assert.match(screen(conversation), /second/u);
+	const rebuilt = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
+	assert.equal(screen(rebuilt).match(/▸ Thinking/gu)?.length, 4);
+	conversation.update([{ ...entries[0], data: { revision: 2 } }]);
+	assert.equal(screen(conversation).match(/▸ Thinking/gu)?.length, 3);
 });
 
 it("dashboard codemode cards fall back to standard presentation when capture fails", () => {
@@ -666,7 +799,12 @@ it("renderer invalidation refreshes lines and heights and remains safe after evi
 
 it("global toggles clear every native choice without replacing components", (t) => {
 	const state = agentState(createDashboardState(), "one").view;
-	const entries = [assistant("first", [{ type: "thinking", thinking: "first reason" }, { type: "toolCall", id: "one", name: "custom", arguments: {} }]), assistant("second", [{ type: "thinking", thinking: "second reason" }, { type: "toolCall", id: "two", name: "custom", arguments: {} }])];
+	const entries = [
+		assistant("first", [{ type: "thinking", thinking: "first reason" }]),
+		assistant("first-tool", [{ type: "toolCall", id: "one", name: "custom", arguments: {} }]),
+		assistant("second", [{ type: "thinking", thinking: "second reason" }]),
+		assistant("second-tool", [{ type: "toolCall", id: "two", name: "custom", arguments: {} }]),
+	];
 	const updates = t.mock.method(AssistantMessageComponent.prototype, "updateContent");
 	const conversation = new AgentConversation(entries, "/work", tui, false, false, undefined, state);
 	const instances = new Set(updates.mock.calls.map((call) => call.this));
@@ -675,7 +813,7 @@ it("global toggles clear every native choice without replacing components", (t) 
 	assert.match(screen(conversation), /first reason/);
 	const hidden = t.mock.method(AssistantMessageComponent.prototype, "setHideThinkingBlock");
 	conversation.setShowThinking(false);
-	assert.equal(hidden.mock.callCount(), 2, "the global change reaches every retained assistant");
+	assert.equal(hidden.mock.callCount(), 4, "the global change reaches every retained assistant");
 	assert.deepEqual(new Set(hidden.mock.calls.map((call) => call.this)), instances);
 	assert.doesNotMatch(screen(conversation), /first reason|second reason/);
 	conversation.setShowThinking(true);

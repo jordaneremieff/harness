@@ -21,17 +21,16 @@ it("activity summarizes string arguments without raw JSON, including published p
 	assert.equal(activityOf(agent), "any_tool review the notes");
 	assert.doesNotMatch(activityOf(agent), /[{}]/);
 });
-it("roster rows show identity, state, model, thinking, cost and relative time", () => {
+it("roster rows show the name, state, current activity, model, thinking, cost and relative time", () => {
 	const agent = row("worker", { name: "Research", modifiedAt: 0, currentTool: { name: "read", argument: "notes.md" }, profile: { identity: "worker", role: "Research", handle: "@research", revision: "1", hasExpertise: false, updatedAt: 0 } });
 	const text = rosterLines([agent], agent.id, 64, 12, 15 * 60000, theme, false).join("\n");
-	for (const fact of ["@research · Research", "●", "model high", "$0.42", "15m ago"]) assert.ok(text.includes(fact), fact);
-	assert.doesNotMatch(text, /read notes.md/);
-	assert.ok(dashboardGeometry(160, 45, 3).rosterWidth <= 40);
+	for (const fact of ["Research", "●", "read notes.md", "model high", "$0.42", "15m ago"]) assert.ok(text.includes(fact), fact);
+	assert.doesNotMatch(text, /@research · Research/);
+	assert.ok(dashboardGeometry(160, 45, 3).rosterWidth <= 60);
 	const compact = rosterLines([row("worker", { name: "Work", currentTool: { name: "read", argument: "file" } })], "worker", 100, 4, 0, theme, true).join("\n");
 	assert.match(compact, /Work/);
-	assert.match(compact, /model high · \$0.42/);
+	assert.match(compact, /read file · model high · \$0.42/);
 	assert.match(compact, /just now/);
-	assert.doesNotMatch(compact, /read file/);
 });
 it("selected status uses the same state labels as the roster", async () => {
 	for (const state of Object.keys(sessionAppearance) as Array<keyof typeof sessionAppearance>) {

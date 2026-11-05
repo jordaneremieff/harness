@@ -99,7 +99,7 @@ it("Threads reads every discovery page itself and lists open threads first, newe
 it("selecting a thread shows its exchange with names, replies and who a post woke", async () => {
 	const f = setup(async (input) => {
 		if (input.action === "list") return { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } };
-		return page("t1", [event(1, { sender: "two", message: "Challenge the boundary" }), event(2, { sender: "one", replyTo: 1, notify: ["two"], message: "Keep the restriction" })]);
+		return page("t1", [event(1, { sender: "two", message: "Challenge the boundary" }), event(2, { sender: "one", replyTo: 1, notify: ["two"], origin: "operator", message: "Keep the restriction" })]);
 	});
 	await turn();
 	f.ui.openNamedAction("threads");
@@ -110,13 +110,14 @@ it("selecting a thread shows its exchange with names, replies and who a post wok
 	const rows = screen.split("\n");
 	assert.match(rows[1] ?? "", /Thread t1/);
 	assert.match(rows[1] ?? "", /Members\s+Details/);
-	assert.match(rows[2] ?? "", /Open · 2 members · 2 posts/);
-	assert.equal(rows[3]?.split("│")[1]?.trim(), "", "one blank row under the header");
+	assert.match(rows[2] ?? "", /Open · 2 members · 2 events/);
+	assert.match(rows[3] ?? "", /Purpose of t1/, "the purpose follows the counts");
+	assert.equal(rows[4]?.split("│")[1]?.trim(), "", "one blank row under the header");
 	assert.match(screen, /Reviewer/);
 	assert.match(screen, /Challenge the boundary/);
 	const replyLine = rows.find((line) => line.includes("↳ Reviewer"));
 	assert.ok(replyLine, "a reply names the message it answers");
-	assert.doesNotMatch(replyLine, /Designer/, "reply metadata is its own muted line");
+	assert.match(replyLine, /Designer\s+·\s+integrator\s+·\s+#2\s+·\s+↳ Reviewer #1\s+·\s+operator/, "the header carries the sender role, post number, reply target and origin");
 	assert.match(screen, /notified Reviewer/);
 	const first = rows.findIndex((line) => line.includes("Challenge the boundary"));
 	const second = rows.findIndex((line) => line.includes("Keep the restriction"));
@@ -189,8 +190,8 @@ it("earlier messages load above the newer ones without losing them", async () =>
 	await settle();
 	f.ui.handleInput("\u001b[B");
 	await settle();
-	assert.match(f.text(), /↑ Earlier messages/);
-	assert.match(f.text(), /loaded post/, "a partial exchange count stays distinct");
+	assert.match(f.text(), /↑ 2 earlier events · click or Home reads them/);
+	assert.match(f.text(), /latest 1 of 3 events/, "a partial exchange count stays distinct");
 	f.ui.handleInput("\t");
 	f.ui.handleInput("\u001b[H");
 	await settle();
@@ -366,10 +367,12 @@ it("long thread rows clip with one ellipsis, not three dots", async () => {
 		? { items: [thread("t1", { title })], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
 		: page("t1", [event(1)]));
 	await turn(); f.ui.openNamedAction("threads"); await settle();
-	const lines = f.text().split("\n");
-	const row = lines.find((line) => line.includes("A very long") && line.includes("●")) ?? lines.find((line) => line.includes("A very long")) ?? "";
-	assert.match(row, /…/);
-	assert.doesNotMatch(row, /\.\.\./);
+	const left = f.text().split("\n").map((line) => line.split("│")[0] ?? line);
+	const at = left.findIndex((line) => line.includes("A very long"));
+	assert.ok(at >= 0);
+	const block = `${left[at]} ${left[at + 1]}`;
+	assert.match(block, /…/, "the wrapped title shortens with one ellipsis");
+	assert.doesNotMatch(block, /\.\.\./);
 });
 
 it("a thread read failure uses error colour in the header", async () => {
@@ -398,4 +401,70 @@ it("a close event keeps its state line and shows why the thread ended", async ()
 	assert.match(screen, /closed the thread ·/);
 	assert.match(screen, /Superseded by the new thread/);
 	assert.equal(screen.split("\n").filter((line) => line.includes("Superseded")).length, 1);
+});
+
+it("post bodies render Markdown, so inline code shows without its backticks", async () => {
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(1, { message: "Run `npm test` before the push" })]));
+	await turn(); f.ui.openNamedAction("threads"); await settle();
+	f.ui.handleInput("\u001b[B"); await settle();
+	const screen = f.text();
+	assert.match(screen, /Run npm test before the push/);
+	assert.doesNotMatch(screen, /`/, "Markdown inline code loses its backticks");
+});
+
+it("the thread header counts loaded events and ends a long purpose with a Details pointer", async () => {
+	const purpose = `${"Wrap this purpose across several rows ".repeat(12)}TAIL_MARKER.`;
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1", { purpose })], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(4), event(5)], { purpose }, 4));
+	await turn(); f.ui.openNamedAction("threads"); await settle();
+	f.ui.handleInput("\u001b[B"); await settle();
+	const rows = f.text().split("\n");
+	assert.match(rows[2] ?? "", /Open · 2 members · latest 2 of 5 events/);
+	const header = rows.slice(1, 6).map((line) => line.split("│")[1] ?? "");
+	assert.ok(header.some((line) => line.includes("… more in Details")), "the purpose points to Details");
+	assert.doesNotMatch(header.join("\n"), /TAIL_MARKER/);
+	f.ui.handleInput("\t");
+	f.ui.handleInput("\t");
+	f.ui.handleInput("\u001b[C");
+	f.ui.handleInput("\r");
+	await settle();
+	assert.match(f.text(), /TAIL_MARKER/, "Details keeps the complete purpose");
+});
+
+it("a long post previews, keeps the window top while it grows, and names the post a window continues", async () => {
+	const paragraphs = Array.from({ length: 30 }, (_, index) => `Paragraph ${index + 1}`).join("\n\n");
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(1, { message: paragraphs })]), 140, 20);
+	try {
+		await turn(); f.ui.openNamedAction("threads"); await settle();
+		f.ui.handleInput("\u001b[B"); await settle();
+		const pane = () => f.ui.render(140).map((line) => stripVTControlCharacters(line).split("│")[1] ?? "");
+		const preview = pane();
+		const screen = preview.join("\n");
+		assert.match(screen, /▸ \d+ more lines/);
+		assert.doesNotMatch(screen, /Paragraph 30/, "the preview stops before the end");
+		assert.match(screen, /↑ Designer · #1, continued/, "a window inside a post names it");
+		const control = preview.findIndex((line) => line.includes("more lines"));
+		f.click(40, control);
+		const grown = pane();
+		assert.equal(grown[4], preview[4], "the window keeps its first row while the post grows");
+		assert.match(grown.join("\n"), /↓ \d+ lines? below · End shows the latest/);
+		const below = grown.findIndex((line) => line.includes("lines below"));
+		f.click(40, below);
+		const bottom = pane().join("\n");
+		assert.doesNotMatch(bottom, /lines below/);
+		assert.match(bottom, /Paragraph 30/);
+		assert.match(bottom, /▴ Show less/);
+		f.ui.handleInput("\t");
+		f.ui.handleInput("\u001b[A"); await settle();
+		assert.match(pane().join("\n"), /↓ \d+ lines? below · End shows the latest/);
+		f.ui.handleInput("\u000f"); await settle();
+		f.ui.handleInput("\u000f"); await settle();
+		assert.match(pane().join("\n"), /▸ \d+ more lines/, "Ctrl+O closes every long post");
+		assert.doesNotMatch(pane().join("\n"), /▴ Show less/);
+	} finally { f.ui.dispose(); }
 });

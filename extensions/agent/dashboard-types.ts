@@ -103,6 +103,8 @@ export interface AgentConversationSummary {
 	durationMs?: number;
 	/** Retained recovery detail from the host-published view; absent when the publication carries none. */
 	health?: DashboardHealth;
+	/** The host-published intervention hint for this row; absent means the publication carried none, not that none applies. */
+	attention?: "provider-blocked" | "task-blocked" | "failed-turn";
 	awaiting?: AwaitFact;
 }
 

@@ -12,11 +12,18 @@ import { ProviderBlockFactSchema, providerBlockText } from "./provider-block.ts"
 import { matchesSchema } from "./schema-check.ts";
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, type KeybindingHints } from "@earendil-works/pi-coding-agent";
-import { Box, Markdown, Spacer, Text, truncateToWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { dashboardTime } from "./dashboard-time.ts";
+import { Box, Markdown, Spacer, Text, truncateToWidth, visibleWidth, type Component, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { dashboardClock, dashboardTime } from "./dashboard-time.ts";
 import type { Communication } from "./communication.ts";
 
-export type AgentCardLookup = () => readonly AgentConversationSummary[];
+/**
+ * Observed display facts for cards: the roster rows, and in the dashboard also known thread titles and
+ * participant names. Every lookup is optional; an unknown value keeps the exact identity.
+ */
+export type AgentCardLookup = (() => readonly AgentConversationSummary[]) & {
+	readonly threadTitle?: (id: string) => string | undefined;
+	readonly nameFor?: (identity: string) => string | undefined;
+};
 
 /** Bytes/units bounds for one expanded display block. */
 export const SOURCE_DISPLAY_LIMIT = 32_000;
@@ -1106,12 +1113,20 @@ export function renderInspectResult(result: AgentToolResult<unknown>, options: T
 	return outcomeCard(result, options, theme, context, { error: "Inspect error", partial: "Inspection pending" }, inspectSummary);
 }
 
+/** A thread's known title, or its exact identity when the view has not read that thread. */
+function threadLabel(thread: string, context: AgentCardContext): string {
+	const title = context.lookup?.threadTitle?.(thread)?.trim();
+	return title ? displayPreview(title, 100) : `thread ${displayIdentity(thread)}`;
+}
+
 function renderCollaborateCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
 	const thread = text(args.threadId);
 	const source = text(args.sessionId) || thread.split("/")[0];
-	const topic = text(args.title) ? displayPreview(text(args.title), 100) : thread ? `thread ${displayIdentity(thread)}` : "";
-	const subject = [text(args.action), topic, source ? targetLabel(source, context) : ""].filter(Boolean).join(" · ");
+	const topic = text(args.title) ? displayPreview(text(args.title), 100) : thread ? threadLabel(thread, context) : "";
+	// A known thread title already names the work; the storage label adds only an identity.
+	const named = Boolean(thread && context.lookup?.threadTitle?.(thread));
+	const subject = [text(args.action), topic, source && !named ? targetLabel(source, context) : ""].filter(Boolean).join(" · ");
 	const message = text(args.message);
 	return argumentCard("agent_collaborate", subject, message ? displayPreview(message, 180) : undefined, args, theme, context, true);
 }
@@ -1122,7 +1137,7 @@ function collaborationReceiptLines(details: Record<string, unknown>, theme: Them
 	if (threadId) {
 		const actions: Record<string, string> = { create: "Thread created", join: "Joined", leave: "Left", post: "Posted", revise: "Frame revised", close: "Thread closed" };
 		const sequence = count(details.sequence);
-		return [muted(theme, `${actions[text(args.action)] || "Recorded"}${sequence !== undefined ? ` · event ${sequence}` : ""}${args.threadId === threadId ? "" : ` · thread ${displayIdentity(threadId)}`}${details.deduped === true ? " · replay" : ""}`)];
+		return [muted(theme, `${actions[text(args.action)] || "Recorded"}${sequence !== undefined ? ` · #${sequence}` : ""}${args.threadId === threadId ? "" : ` · ${threadLabel(threadId, context)}`}${details.deduped === true ? " · replay" : ""}`)];
 	}
 	return undefined;
 }
@@ -1327,8 +1342,8 @@ function referenceLine(index: number, reference: { submissionId: number; request
 	return `reference ${index + 1}: ${facts.join(" \u00b7 ")}`;
 }
 
-/** Every validated metadata field in full; the schema already bounds each value, so nothing is previewed. */
-function communicationDetailLines(value: Communication, theme: Theme): (string | Component)[] {
+/** Every validated metadata field in full, as plain lines; the schema already bounds each value, so nothing is previewed. */
+function communicationSourceLines(value: Communication): string[] {
 	const lines = [`Sender identity: ${displayIdentity(value.sender.identity)}${value.sender.kind ? ` (${value.sender.kind})` : ""}`, `Recorded: ${new Date(value.recordedAt).toISOString()}`];
 	for (const [key, item] of Object.entries(value.metadata)) {
 		if (item === undefined) continue;
@@ -1340,7 +1355,11 @@ function communicationDetailLines(value: Communication, theme: Theme): (string |
 		lines.push(`${key}: ${typeof item === "string" ? displayText(item) : JSON.stringify(item)}`);
 	}
 	lines.push("Retained communication · not operator authority or task acceptance · the authoring model is not retained");
-	return [new Spacer(1), theme.fg("muted", theme.bold("Source details")), ...lines.map((line) => theme.fg("muted", line))];
+	return lines;
+}
+
+function communicationDetailLines(value: Communication, theme: Theme): (string | Component)[] {
+	return [new Spacer(1), theme.fg("muted", theme.bold("Source details")), ...communicationSourceLines(value).map((line) => theme.fg("muted", line))];
 }
 
 /**
@@ -1367,6 +1386,126 @@ export const renderAgentCommunicationMessage: MessageRenderer = (message, option
 	if (!value || typeof value !== "object" || value.format !== "agent.communication/1") return undefined;
 	return renderCommunicationCard(value, theme, { expanded: options.expanded, outputPad: options.outputPad, keyText: options.keyText, message });
 };
+
+/** Body rows a collapsed compact communication shows under its header. */
+export const COMPACT_PREVIEW_LINES = 2;
+
+/** The sender's label: the retained name, then an observed name, then a short identity that says what it is. */
+export function communicationSender(value: Communication, lookup?: AgentCardLookup): string {
+	const retained = value.sender.name?.trim();
+	if (retained) return displayPreview(retained, 80);
+	const known = lookup?.nameFor?.(value.sender.identity)?.trim();
+	if (known) return displayPreview(known, 80);
+	return `${value.sender.kind === "agent" ? "Agent" : "Session"} ${value.sender.identity.slice(0, 8)}`;
+}
+
+/** Who sent what, where: the bold sender inside one plain sentence, then short muted facts. */
+function compactHeadline(value: Communication, sender: string, theme: Theme, lookup?: AgentCardLookup): { lead: string; facts: string[] } {
+	const name = theme.bold(theme.fg("text", sender));
+	switch (value.kind) {
+		case "notice": {
+			const title = value.metadata.title?.trim() || lookup?.threadTitle?.(value.metadata.threadId)?.trim() || "a thread";
+			return { lead: `${name}${theme.fg("text", ` in ${displayPreview(title, 120)}`)}`, facts: [value.metadata.event === undefined ? "" : `#${value.metadata.event}`, value.metadata.passive ? "" : "notified this agent"] };
+		}
+		case "report": return { lead: `${theme.fg("text", "Report from ")}${name}`, facts: [] };
+		case "result": return { lead: `${theme.fg("text", "Result from ")}${name}`, facts: [value.metadata.status === "done" ? "" : "unanswered"] };
+		case "check-in": return { lead: `${theme.fg("text", "Check-in from ")}${name}`, facts: [checkInElapsed(value.metadata.elapsedMs)] };
+	}
+}
+
+/** What the retained copy holds, said once in the open card; nothing here repeats the header. */
+function compactNotes(value: Communication): string[] {
+	const notes: string[] = [];
+	if (!value.body.complete) {
+		if (value.kind === "notice") notes.push(`Notice copy; the full post${value.metadata.event === undefined ? "" : ` #${value.metadata.event}`} is in Threads.`);
+		else notes.push("Retained copy; it may be shorter than the original.");
+	}
+	if (value.body.redacted) notes.push("Credentials were redacted from this copy.");
+	if (value.kind === "result" && value.metadata.reason) notes.push(`Reason: ${displayPreview(value.metadata.reason, 240)}`);
+	return notes;
+}
+
+/**
+ * A retained communication as the dashboard shows it: one header row (disclosure mark, sender, thread
+ * or kind, time), then a short body preview. A click on the header or on the preview's last row opens
+ * the complete retained body, the copy notes and the exact identities. No background or repeated hint.
+ */
+class CompactCommunication implements Component {
+	private expanded: boolean;
+	private layout?: { width: number; toggles: readonly number[] };
+	private readonly disclosure: CardDisclosure;
+	/** The global expansion this card was built under; a pointer choice is kept against it. */
+	private readonly global: boolean;
+	private readonly body: Component;
+	private readonly value: Communication;
+	private readonly theme: Theme;
+	private readonly lookup?: AgentCardLookup;
+	constructor(value: Communication, theme: Theme, options: { expanded: boolean; message?: object; lookup?: AgentCardLookup }) {
+		this.value = value;
+		this.theme = theme;
+		this.lookup = options.lookup;
+		this.disclosure = disclosureFor(options.message);
+		this.global = options.expanded;
+		this.expanded = this.disclosure.get(options.expanded) ?? options.expanded;
+		this.body = noticeBody(value.body.text, theme);
+	}
+	render(width: number): string[] {
+		const theme = this.theme;
+		const value = this.value;
+		const sender = communicationSender(value, this.lookup);
+		const { lead, facts } = compactHeadline(value, sender, theme, this.lookup);
+		const tail = theme.fg("muted", ` · ${[...facts.filter(Boolean), dashboardClock(value.recordedAt)].join(" · ")}`);
+		const mark = theme.fg("accent", this.expanded ? "▾ " : "▸ ");
+		// A narrow pane shortens the thread title first; the sender, post number and time stay.
+		const room = Math.max(1, width - 2 - visibleWidth(tail));
+		const header = clipCardLine(`${mark}${visibleWidth(lead) > room ? clipCardLine(lead, room) : lead}${tail}`, width);
+		const body = this.body.render(Math.max(1, width - 2)).map((line) => `  ${line}`);
+		if (this.expanded) {
+			// The open card keeps every retained identifier and metadata field, such as a result's references.
+			const notes = [...compactNotes(value), "", ...communicationSourceLines(value)].flatMap((note) => (note ? new Text(theme.fg("muted", note), 2, 0).render(width) : [""]));
+			this.layout = { width, toggles: [0] };
+			return [header, ...body, "", ...notes];
+		}
+		// The preview skips blank rows, so a one-line first paragraph still shows two rows of text; the count covers text rows left.
+		const text = (line: string) => stripVTControlCharacters(line).trim() !== "";
+		const shown: number[] = [];
+		for (let index = 0; index < body.length && shown.length < COMPACT_PREVIEW_LINES; index++) if (text(body[index] ?? "")) shown.push(index);
+		const preview = shown.map((index) => body[index] ?? "");
+		const hidden = body.slice((shown.at(-1) ?? -1) + 1).filter(text).length;
+		if (hidden && preview.length) {
+			const more = theme.fg("muted", ` +${hidden} line${hidden === 1 ? "" : "s"}`);
+			const last = preview.length - 1;
+			// Markdown pads rows to the width; the count follows the text, not the padding.
+			const row = (preview[last] ?? "").replace(/[ \t]+((?:\x1b\[[0-9;]*m)*)$/u, "$1");
+			preview[last] = `${clipCardLine(row, Math.max(1, width - visibleWidth(more)))}${more}`;
+		}
+		this.layout = { width, toggles: hidden ? [0, preview.length] : [0] };
+		return [header, ...preview];
+	}
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const layout = this.layout;
+		if (!layout || layout.width !== event.width) return undefined;
+		if (event.type !== "click" || event.button !== "left" || event.shift || event.alt || event.ctrl || (event.clickCount ?? 1) !== 1) return undefined;
+		if (!layout.toggles.includes(event.y)) return undefined;
+		this.expanded = !this.expanded;
+		this.disclosure.set(this.expanded, this.global);
+		this.invalidate();
+		return { handled: true };
+	}
+	invalidate(): void {
+		this.layout = undefined;
+		this.body.invalidate();
+	}
+}
+
+/** The dashboard's renderer for retained communications; `lookup` names senders and threads it has observed. */
+export function compactCommunicationRenderer(lookup?: AgentCardLookup): MessageRenderer {
+	return (message, options, theme) => {
+		const value = message.details as Communication | undefined;
+		if (!value || typeof value !== "object" || value.format !== "agent.communication/1") return undefined;
+		return new CompactCommunication(value, theme, { expanded: options.expanded, message, lookup });
+	};
+}
 
 // --- Factory ---------------------------------------------------------------------
 

@@ -1,10 +1,11 @@
 import { basename } from "node:path";
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { dashboardTime } from "./dashboard-time.ts";
-import { truncateToWidth, visibleWidth, sliceByColumn } from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentConversationSummary, AgentDashboardCoverage } from "./dashboard-types.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
 import { formatCost } from "./agent-footer.ts";
+import { LIST_BLOCK_ROWS, listBlock } from "./dashboard-layout.ts";
 
 export interface AgentDashboardSnapshot {
 	observedAt: number;
@@ -31,7 +32,8 @@ const oneLine = (text: string) => cleanDashboardText(text).replace(/\s+/g, " ").
  * as `429 Usage limit reached`. Text without a parseable JSON body stays as it is.
  */
 export function readableError(text: string): string {
-	const flat = oneLine(text);
+	// A provider prefix that repeats its status code reads once: `xai API error (403): 403 "No credits` is `xai API error 403: No credits`.
+	const flat = oneLine(text).replace(/\((\d{3})\):\s*\1\s+"?/u, "$1: ");
 	const start = flat.indexOf("{");
 	if (start < 0 || !flat.endsWith("}")) return flat;
 	try {
@@ -45,15 +47,9 @@ export function readableError(text: string): string {
 		return flat;
 	}
 }
+/** One label per agent: the display name, else the handle, else the quoted first input, else the folder. */
 export const titleOf = (row: AgentConversationSummary) =>
-	oneLine(row.profile?.handle
-		? `${row.profile.handle}${row.name ? ` · ${row.name}` : ""}`
-		: row.name || (row.firstMessage ? `Historical: ${row.firstMessage}` : basename(row.cwd) || row.id));
-const clip = (text: string, width: number) => cleanDashboardText(truncateToWidth(text, Math.max(0, width), "…"));
-const pad = (text: string, width: number) => {
-	const clipped = truncateToWidth(text, Math.max(0, width), "…");
-	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
-};
+	oneLine(row.name?.trim() || row.profile?.handle || (row.firstMessage?.trim() ? `“${oneLine(row.firstMessage)}”` : "") || basename(row.cwd) || row.id);
 export function elapsed(ms: number): string {
 	const seconds = Math.max(0, Math.floor(ms / 1000));
 	return seconds < 60
@@ -109,6 +105,26 @@ export function needsAttention(row: AgentConversationSummary): boolean {
 	if (retry !== undefined && retry.attempt >= retry.maxAttempts) return true;
 	return row.state === "failed" && Boolean(row.error);
 }
+/** A fault the host reports now, as opposed to the stored outcome of a finished run. */
+export function currentFault(row: AgentConversationSummary): boolean {
+	if (row.owner === "unavailable" || row.state === "unavailable") return true;
+	if (row.health?.lastError || row.health?.compactionFailure) return true;
+	const retry = row.health?.autoRetry;
+	return retry !== undefined && retry.attempt >= retry.maxAttempts;
+}
+/**
+ * The supported way forward for a row with an error. A provider block needs a model change before the
+ * next message; a failed run needs a new message, which runs the work again; a host fault needs Reconnect.
+ */
+export function recoveryHint(row: AgentConversationSummary): string | undefined {
+	if (row.state === "working") return undefined;
+	if (row.attention === "provider-blocked") return "Configure another model, then send a message";
+	if (row.attention === "task-blocked") return "The host must repair a blocked task; Reconnect starts it";
+	if (row.owner === "unavailable" || row.state === "unavailable") return "Reconnect starts the host when the storage is readable";
+	if (currentFault(row)) return "Reconnect starts the host; unfinished work resumes";
+	if (row.state === "failed" && row.error) return "A new message runs the work again";
+	return undefined;
+}
 /** One governing failure reason; full recovery records belong in Details. */
 export function attentionReason(row: AgentConversationSummary): string | undefined {
 	if (row.owner === "unavailable" || row.state === "unavailable")
@@ -129,7 +145,7 @@ export function dashboardRecords(
 	return (snapshot?.sessions ?? [])
 		.filter((row) => {
 			const text =
-				`${titleOf(row)} ${row.profile?.role ?? ""} ${row.firstMessage ?? ""} ${row.cwd} ${row.id} ${stateLabel(row)} ${row.model?.provider ?? ""} ${row.model?.modelId ?? ""} ${row.model?.thinkingLevel ?? ""}`.toLocaleLowerCase();
+				`${titleOf(row)} ${row.profile?.handle ?? ""} ${row.profile?.role ?? ""} ${row.firstMessage ?? ""} ${row.cwd} ${row.id} ${stateLabel(row)} ${row.model?.provider ?? ""} ${row.model?.modelId ?? ""} ${row.model?.thinkingLevel ?? ""}`.toLocaleLowerCase();
 			return terms.every((term) => text.includes(term));
 		})
 		.sort(compareRosterRows);
@@ -185,18 +201,18 @@ export function dashboardText(snapshot: AgentDashboardSnapshot): string {
 	].join("\n");
 }
 
-function uniqueName(row: AgentConversationSummary, rows: readonly AgentConversationSummary[], width: number): string {
+/** The row label, with the shortest identity suffix that tells duplicate labels apart. */
+function uniqueName(row: AgentConversationSummary, rows: readonly AgentConversationSummary[]): string {
 	const name = titleOf(row);
 	const duplicates = rows.filter((other) => titleOf(other) === name);
-	if (duplicates.length < 2) return clip(name, width);
+	if (duplicates.length < 2) return name;
 	let length = 4;
 	while (
 		length < row.id.length &&
 		duplicates.some((other) => other.id !== row.id && other.id.slice(-length) === row.id.slice(-length))
 	)
 		length++;
-	const suffix = ` ${row.id.slice(-length)}`;
-	return clip(name, Math.max(1, width - visibleWidth(suffix))) + suffix;
+	return `${name} ${row.id.slice(-length)}`;
 }
 /** Published arguments can end mid-JSON; extract a string value without displaying the serialized object. */
 export function argumentSummary(argument: string): string {
@@ -219,19 +235,23 @@ export function activityOf(row: AgentConversationSummary): string {
 	if (row.state === "working") return row.currentTool ? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`) : "Responding";
 	return row.latestReply ? oneLine(row.latestReply) : row.state === "starting" ? "Starting agent" : "No reply yet";
 }
-function rosterModel(row: AgentConversationSummary, size: number): string {
+function rosterModel(row: AgentConversationSummary): string {
 	if (!row.model) return "";
-	const thinking = ` ${oneLine(row.model.thinkingLevel)}`;
-	return clip(oneLine(row.model.modelId), Math.max(1, size - visibleWidth(thinking))) + thinking;
+	return `${oneLine(row.model.modelId)} ${oneLine(row.model.thinkingLevel)}`;
 }
-function highlightRow(line: string, width: number, prefix: number, theme: Theme): string {
-	// Column slices can omit closing SGR codes at the right edge.
-	const background = theme.bg("selectedBg", pad(sliceByColumn(line, prefix, width - prefix), width - prefix));
-	return `${sliceByColumn(line, 0, prefix)}${background}\x1b[0m`;
-}
-function paintRosterBlock(lines: string[], selected: boolean, width: number, theme: Theme): string[] {
-	// The spacing line below a block stays unpainted, so selected blocks keep the same air around them.
-	return lines.map((line, index) => (!selected || (lines.length > 1 && index === lines.length - 1) ? pad(line, width) : highlightRow(line, width, 4, theme)));
+/**
+ * The roster's second line. A row with an error shows its reason; a working agent shows its current
+ * tool; every other row shows its model, reasoning level and cost.
+ */
+export function rosterDetail(row: AgentConversationSummary): { text: string; color: ThemeColor } {
+	const reason = attentionReason(row);
+	// The list keeps the reason's first sentence; the selected agent's header shows all of it.
+	if (reason) return { text: reason.split(/(?<=[.!?])\s/u)[0] ?? reason, color: currentFault(row) ? "error" : "warning" };
+	const facts = [rosterModel(row), costOf(row)].filter(Boolean).join(" · ");
+	// An await names its pending results, queued inputs and a likely mutual wait; working names the current tool.
+	if (row.awaiting !== undefined) return { text: activityOf(row), color: row.awaiting.likelyCycle.length ? "warning" : "muted" };
+	if (row.state === "working") return { text: `${activityOf(row)} · ${facts}`, color: "muted" };
+	return { text: facts, color: "muted" };
 }
 function rosterRow(
 	row: AgentConversationSummary,
@@ -245,29 +265,11 @@ function rosterRow(
 ): { lines: string[]; timeX: number; timeWidth: number; timeLine: number } {
 	const appearance = sessionAppearance[row.state];
 	const time = dashboardTime(row.modifiedAt, exactTime, now);
-	const chosen = row.id === selected;
-	const rail = chosen ? theme.fg("accent", "▌ ") : "  ";
-	const glyph = theme.fg(appearance.color, `${appearance.glyph} `);
-	const timeWidth = Math.min(visibleWidth(time), width - 4);
-	const timeX = width - timeWidth;
-	const titleWidth = Math.max(1, width - 4 - (exactTime ? 0 : timeWidth + 1));
 	void primaryId;
-	const title = pad(theme.bold(theme.fg("text", uniqueName(row, rows, titleWidth))), titleWidth);
-	// Two content lines and an unpainted spacing line keep the roster flat and quiet at every width.
-	const identity = rail + glyph + title;
-	const facts = [rosterModel(row, Math.max(1, width - 12)), costOf(row)].filter(Boolean).join(" · ");
-	// The facts line starts under the name, not under the state glyph.
-	const factsWidth = Math.max(1, (exactTime ? timeX : width) - 5);
-	const second = `${rail}  ${theme.fg("muted", truncateToWidth(facts, factsWidth, "…"))}`;
-	const lines = [
-		exactTime ? identity : pad(identity, timeX) + theme.fg("muted", time),
-		exactTime ? pad(second, timeX) + theme.fg("muted", time) : second,
-		"",
-	];
-	return {
-		lines: paintRosterBlock(lines, chosen, width, theme),
-		timeX, timeWidth, timeLine: exactTime ? 1 : 0,
-	};
+	const detail = rosterDetail(row);
+	// An exact date is long, so it shares the detail row instead of shortening the name.
+	const block = listBlock({ title: uniqueName(row, rows), glyph: appearance.glyph, glyphColor: appearance.color, detail: detail.text, detailColor: detail.color, time, timeOnDetail: exactTime, selected: row.id === selected }, width, theme);
+	return { lines: block.lines, timeX: block.timeX, timeWidth: block.timeWidth, timeLine: block.timeLine };
 }
 function rosterWindow(
 	rows: readonly AgentConversationSummary[],
@@ -279,7 +281,7 @@ function rosterWindow(
 		0,
 		rows.findIndex((row) => row.id === selected),
 	);
-	const capacity = Math.max(1, Math.floor((height - 1) / 3));
+	const capacity = Math.max(1, Math.floor((height - 1) / LIST_BLOCK_ROWS));
 	const maxStart = Math.max(0, rows.length - capacity);
 	const start = Math.min(maxStart, Math.max(0, requested ?? index - Math.floor(capacity / 2)));
 	return { capacity, maxStart, start };
@@ -289,9 +291,13 @@ interface RosterViewport {
 	start?: number;
 	exactTime?: boolean;
 	footer?: { text: string; color: ThemeColor };
+	/** The rows are the error filter's result; the footer offers the way back to every row. */
+	errorsOnly?: boolean;
 	range?(start: number, maxStart: number): void;
 	row?(row: AgentConversationSummary, line: number, height: number): void;
 	timestamp?(row: AgentConversationSummary, line: number, x: number, width: number): void;
+	/** The footer's error filter control: its row, first column and width. */
+	errors?(line: number, x: number, width: number): void;
 }
 interface RosterHit {
 	row: AgentConversationSummary;
@@ -310,6 +316,7 @@ interface DerivedRoster {
 	maxStart: number;
 	hits: RosterHit[];
 	times: RosterTimeHit[];
+	errors?: { line: number; x: number; width: number };
 }
 const rosterCaches = new WeakMap<readonly AgentConversationSummary[], WeakMap<Theme, Map<string, DerivedRoster>>>();
 function deriveRoster(
@@ -336,13 +343,27 @@ function deriveRoster(
 		lines.push(...block.lines);
 	}
 	const shown = rows.slice(start, start + capacity).length;
-	const hidden = rows.length - shown;
-	const direction = start === 0 ? "↓" : start + shown === rows.length ? "↑" : "↕";
-	const attention = rows.filter(needsAttention).length;
-	const count = hidden ? `${direction} ${hidden} more` : `${rows.length} agent${rows.length === 1 ? "" : "s"}`;
-	const footer = viewport?.footer ?? { text: `${count}${attention ? ` · ${attention} need attention` : ""}`, color: "muted" as const };
+	const counted = rosterFooter(rows, start, shown, viewport?.errorsOnly ?? false);
+	const footer = viewport?.footer ?? counted;
 	lines.push(theme.fg(footer.color, footer.text));
-	return { lines: lines.slice(0, height), start, maxStart, hits, times };
+	const control = viewport?.footer ? undefined : counted.control;
+	return { lines: lines.slice(0, height), start, maxStart, hits, times, ...(control && lines.length <= height ? { errors: { line: lines.length - 1, ...control } } : {}) };
+}
+/**
+ * The list footer: how many loaded rows sit above or below the visible window, then the error filter.
+ * "N with errors" narrows the list to rows with an error reason; "Show all" returns to every row.
+ */
+function rosterFooter(rows: readonly AgentConversationSummary[], start: number, shown: number, errorsOnly: boolean): { text: string; color: ThemeColor; control?: { x: number; width: number } } {
+	const hidden = rows.length - shown;
+	const below = rows.length - start - shown;
+	const position = !hidden
+		? `${rows.length} ${errorsOnly ? "with errors" : `agent${rows.length === 1 ? "" : "s"}`}`
+		: !start ? `↓ ${below} more` : !below ? `↑ ${start} more` : `↑ ${start} · ↓ ${below} more`;
+	const errors = rows.filter(needsAttention).length;
+	const label = errorsOnly ? "Show all" : errors ? `${errors} with errors` : "";
+	if (!label) return { text: position, color: "muted" };
+	const prefix = `${position} · `;
+	return { text: `${prefix}${label}`, color: "muted", control: { x: visibleWidth(prefix), width: visibleWidth(label) } };
 }
 export function rosterLines(
 	rows: readonly AgentConversationSummary[],
@@ -365,7 +386,7 @@ export function rosterLines(
 		cache = new Map();
 		themes.set(theme, cache);
 	}
-	const key = JSON.stringify([selected, width, height, Math.floor(now / 60000), viewport?.start, viewport?.exactTime, viewport?.primaryId, viewport?.footer]);
+	const key = JSON.stringify([selected, width, height, Math.floor(now / 60000), viewport?.start, viewport?.exactTime, viewport?.primaryId, viewport?.footer, viewport?.errorsOnly]);
 	let derived = cache.get(key);
 	if (!derived) {
 		derived = deriveRoster(rows, selected, width, height, now, theme, viewport);
@@ -375,5 +396,6 @@ export function rosterLines(
 	viewport?.range?.(derived.start, derived.maxStart);
 	for (const hit of derived.hits) viewport?.row?.(hit.row, hit.line, hit.height);
 	for (const hit of derived.times) viewport?.timestamp?.(hit.row, hit.line, hit.x, hit.width);
+	if (derived.errors) viewport?.errors?.(derived.errors.line, derived.errors.x, derived.errors.width);
 	return [...derived.lines];
 }

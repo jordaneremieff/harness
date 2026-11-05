@@ -417,27 +417,93 @@ for (const [width, height] of [
 	});
 }
 
-for (const patch of [
-	{ owner: "unavailable" as const, state: "unavailable" as const, error: "Claim conflict marker" },
-	{ health: { lastError: "Host error marker" } },
-	{ health: { compactionFailure: { trigger: "manual" as const, at: "now", errorMessage: "Compaction error marker" } } },
-	{ health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "Exhausted retry marker" } } },
-	{ state: "failed" as const, error: "Work failure marker" },
-]) {
-	it(`the selected agent's header points to Details without its stored error (${JSON.stringify(patch)})`, async () => {
-		const f = fixture(140, 45, source([row("one", patch)]));
+for (const [patch, reason, recovery] of [
+	[{ owner: "unavailable" as const, state: "unavailable" as const, error: "Claim conflict marker" }, "Unavailable: Claim conflict marker", "Reconnect starts the host when the storage is readable"],
+	[{ state: "idle" as const, health: { lastError: "Host error marker" } }, "Host error: Host error marker", "Reconnect starts the host; unfinished work resumes"],
+	[{ state: "idle" as const, health: { compactionFailure: { trigger: "manual" as const, at: "now", errorMessage: "Compaction error marker" } } }, "Compaction failed (manual): Compaction error marker", "Reconnect starts the host; unfinished work resumes"],
+	[{ state: "idle" as const, health: { autoRetry: { attempt: 3, maxAttempts: 3, delayMs: 0, errorMessage: "Exhausted retry marker" } } }, "Retries exhausted: Exhausted retry marker", "Reconnect starts the host; unfinished work resumes"],
+	[{ state: "failed" as const, error: "Work failure marker" }, "Work failure marker", "A new message runs the work again"],
+] as const) {
+	it(`the selected agent's header states its stored error and the way forward (${JSON.stringify(patch)})`, async () => {
+		const f = fixture(240, 45, source([row("one", patch)]));
 		try {
 			await turn();
 			const header = targetHeader(f).join("\n");
 			assert.equal(header.split("\n").length, 2);
-			assert.doesNotMatch(header, /marker/u);
-			assert.match(header, /Details has the stored error/u);
-			assert.match(header, /Reconnect/u, "an agent that needs attention offers Reconnect");
+			assert.ok(header.includes(`${reason} · ${recovery}`), header);
+			assert.doesNotMatch(header, /Details has the stored error/u);
 		} finally {
 			f.ui.dispose();
 		}
 	});
 }
+
+it("a row without a stored error shows its specific read status instead of a generic reason", async () => {
+	const observed = source([row("one", { owner: "unavailable", state: "unavailable" })]);
+	observed.snapshot = async () => ({ entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "Check the task", timestamp: 0 }] }], partial: true, revision: "1", nextBefore: null });
+	const f = fixture(140, 45, observed);
+	try {
+		await turn();
+		await turn();
+		const header = targetHeader(f).join("\n");
+		assert.match(header, /Partial history/u);
+		assert.doesNotMatch(header, /Storage cannot be read/u);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("the error count filters the list and Show all or Escape restores every agent", async () => {
+	const rows = [row("ok", { name: "Okay", modifiedAt: 3 }), row("bad", { name: "Broken", state: "failed", error: "quota limit", modifiedAt: 2 }), row("sad", { name: "Host fault", health: { lastError: "Host error" }, modifiedAt: 1 })];
+	const f = fixture(120, 30, source(rows));
+	/** The whole screen and the list column alone; the pane keeps the selected agent while the list narrows. */
+	const read = () => {
+		const lines = visible(f.ui.render(120));
+		const divider = lines[1]?.indexOf("│") ?? -1;
+		return { all: lines.join("\n"), list: lines.map((line) => line.slice(0, divider)).join("\n") };
+	};
+	try {
+		await turn();
+		await turn();
+		assert.match(read().list, /2 with errors/u);
+		assert.match(read().list, /Okay/u);
+		clickLabel(f, "2 with errors");
+		await turn();
+		assert.doesNotMatch(read().list, /Okay/u);
+		assert.match(read().list, /Broken/u);
+		assert.match(read().list, /Show all/u);
+		assert.match(read().list, /errors · 2 of 3 loaded/u);
+		clickLabel(f, "Show all");
+		await turn();
+		assert.match(read().list, /Okay/u);
+		assert.match(read().list, /3 loaded/u);
+		clickLabel(f, "2 with errors");
+		f.ui.handleInput("\x1b");
+		await turn();
+		assert.match(read().list, /Okay/u);
+		assert.doesNotMatch(read().all, /Show all/u);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("Home and End select the first and last agent", async () => {
+	const f = fixture(120, 30, source([row("first", { modifiedAt: 3 }), row("middle", { modifiedAt: 2 }), row("last", { modifiedAt: 1 })]));
+	try {
+		await turn();
+		await turn();
+		assert.equal(f.state.selected, "first");
+		f.ui.handleInput("\x1b[F");
+		assert.equal(f.state.selected, "last");
+		f.ui.handleInput("\x1b[H");
+		assert.equal(f.state.selected, "first");
+		f.ui.handleInput("\x1b[F");
+		await turn();
+		assert.match(shown(f), /▌ .*last/u);
+	} finally {
+		f.ui.dispose();
+	}
+});
 
 it("late admission adds successful message history to the reopened composer", async () => {
 	const gate = deferred();

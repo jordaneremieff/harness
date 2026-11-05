@@ -240,20 +240,18 @@ owns it. The native-style `... (ctrl+o to expand)` hint applies to the whole
 card, not just its result. All card expansion hints use theme `muted`. Expanded
 cards show no expansion hint. Expanded messages use the plain `Message:` label.
 
-Peer notices and retained communications show `... (click or ctrl+o to expand)`
-whenever the preview hides body text or the card holds source details, so a
-short notice never hides its details silently. A plain left click on the card's
-header or on that hint discloses that one card, and a click on the header
-collapses it again; this is local reading state that sends nothing, starts no
-turn and changes no retained content. Clicks on the body text, modified clicks
-and multi-clicks pass through to text selection. Pi's global expansion
-(`ctrl+o`) rebuilds every card and resets those local choices. The same
-component serves ordinary chat notices and the dashboard and attached-terminal
-transcripts.
+Peer notices in ordinary chat show `... (click or ctrl+o to expand)` whenever
+the preview hides body text or the card holds source details, so a short notice
+never hides its details silently. A plain left click on the card's header or on
+that hint discloses that one card, and a click on the header collapses it again;
+this is local reading state that sends nothing, starts no turn and changes no
+retained content. Clicks on the body text, modified clicks and multi-clicks pass
+through to text selection. Pi's global expansion (`ctrl+o`) rebuilds every card
+and resets those local choices.
 
-Retained communications in a transcript (reports, thread notices, results and
-check-ins carried by the conversation's `communication` view) use the Agent
-card: the first line names the kind (`Report`, `Thread notice`, `Result`,
+In ordinary chat, retained communications (reports, thread notices, results and
+check-ins carried by a conversation's `communication` view) use the Agent card:
+the first line names the kind (`Report`, `Thread notice`, `Result`,
 `Result unanswered`, `Check-in`) and the thread or work it belongs to; the second
 line names the sender and the recorded local time. The body renders as Markdown
 with `Partial body` and `Redacted body` marks when they apply. Disclosure adds
@@ -263,11 +261,37 @@ submission, request, entry and answer entry identifiers. A communication retains
 no authoring provider or model, and the card never shows the current roster
 configuration as if it were.
 
+The agent work view and the attached terminal show the same communications in
+a compact form without a background. One header row holds a disclosure mark
+(`▸` closed, `▾` open), the sender in bold and what it is (`<sender> in <thread
+title>`, `Report from <sender>`, `Result from <sender>`, `Check-in from
+<sender>`), then muted facts: the post number, `notified this agent` for a
+notice that woke it, `unanswered` for an unanswered result, a check-in's elapsed
+time, and the recorded local time (the clock time today, the date and time on
+other days). Two rows of the Markdown body follow; a longer body ends its
+second row with a muted `+N lines`. A plain click on the header row or on that
+row opens the card; there is no repeated key hint, and Ctrl+O and More › Expand
+all open every card. The open card shows the complete retained body, then muted
+notes, then every retained field in full: the sender identity, the recorded
+time, the thread, event, request and source identifiers, and each retained
+reference of a result. A notice copy that is not marked complete says
+`Notice copy; the full post #N is in Threads.`; another incomplete copy says
+`Retained copy; it may be shorter than the original.`; a redacted copy says so.
+A collapsed preview never claims the copy is incomplete; the notes say it once.
+The sender is the retained name, then a name the view already knows (a roster
+name or handle, `This session` for the session that runs the view, a Pi session
+name from effort presence), then `Session` or `Agent` with the first eight
+characters of the identity. The thread title comes from the notice, then from a
+thread the view has read.
+
 Dashboard and attached-terminal agent cards resolve their targets through the
 roster rows already observed by that view (the dashboard page, or the attached
 row plus the roster the attached terminal reads again on each roster notice),
 so the same target shows the same name and applied configuration as in ordinary
-chat. A changed name or configuration repaints those cards; reads happen outside
+chat. In the agent work view an `agent_collaborate` card names its thread by
+title when the view knows it; the view reads one thread frame for a title it
+does not know, at most a fixed number per view, and the exact identity stays
+until that read returns. Receipts number events as `#N`. A changed name or configuration repaints those cards; reads happen outside
 paint, coalesce, and an answer for an earlier attachment is dropped. A card's
 retained snapshot still takes precedence for the configuration it applied.
 
@@ -519,27 +543,45 @@ The view has a heading row, the list, and the selected agent's pane:
   in the attached terminal) on the right. Controls that do not fit move into
   More.
 - **List.** A Find field, with Related, All (ordinary Pi only) and ‹ (hide the
-  list) at its right end; then the agent rows and one footer line. Line 1 of a
-  row is the state glyph, the bold name and the relative time; line 2 is the
-  model with its reasoning level and the cost, in muted text aligned under the
-  name; a blank line follows each agent. The list shows no activity, reply,
-  tool, attention or error text; the state shows through the glyph and its
-  colour. The footer reads `N agents`, or an arrow and `N more` when rows sit
-  out of view, then `· N need attention` when that count is not zero; after
-  three failed refreshes it reads `List kept; refresh failed` in the warning
-  colour. At 100 columns or more the list sits beside the pane at full height;
-  narrower windows stack a strip above the pane that holds two agents at 80x24
-  and one at 60x20, with coverage facts and Load more beside Find.
+  list) at its right end; then the agent rows and two footer lines. Each agent
+  takes three rows. Row 1 is the state glyph, one bold label and the relative
+  time. The label is the display name, else the `@handle`, else the quoted
+  first input, else the folder; duplicate labels add the shortest identity
+  suffix that tells them apart. A label too long for row 1 continues on row 2
+  instead of shortening. The next row is muted, aligned under the label: an
+  agent with an error shows the first sentence of its reason (warning colour
+  for a failed run, error colour for a current host or storage fault); a
+  working agent shows its current tool, then its model; an agent that awaits
+  others shows its pending results and queued inputs, in the warning colour for
+  a likely mutual wait; any other agent shows its model with its reasoning
+  level and the cost. A blank row follows an agent
+  whose label fits on row 1. The first footer line counts loaded agents above
+  and below the window (`↓ N more`, `↑ N more`, or `↑ A · ↓ B more`), then
+  `N with errors`, which a click turns into a filter that lists only agents
+  with an error reason; `Show all` or Escape lists every agent again. After
+  three failed refreshes the line reads `List kept; refresh failed` in the
+  warning colour. The second footer line names the scope and the active filters
+  and how many loaded agents they show, such as `Related + Find · 3 of 329
+  loaded`, then Load more when the store has more agents. At 100 columns or
+  more the list sits beside the pane at full height; narrower windows stack a
+  strip above the pane that holds two agents at 80x24 and one at 60x20, with
+  Load more beside Find.
 - **Pane.** The selected agent's header of two lines, then one blank line.
-  Line 1 holds the bold name, the project in muted text, and the agent's
-  controls. Line 2 holds the state glyph and label, then at most one status in
-  muted text: the first that applies of the sizes of a resize drag in progress,
-  a notice from the last action, the conversation load status, a connection or
-  stored-history warning, or `Details has the stored error` when the agent
-  needs attention. Full errors stay in Details. The conversation follows, then
-  the message field, then the agent's two status lines (model, context, tokens,
-  cost and cache; then cwd, branch and delegate figures) in the main session's
-  footer layout.
+  Line 1 holds the bold label, the project in muted text, and the agent's
+  controls. Line 2 holds the state glyph and label, then at most one status:
+  the first that applies of the sizes of a resize drag in progress, a notice
+  from the last action, the agent's error reason with its supported way
+  forward, or the conversation load status, connection or stored-history
+  warning. A row without a stored error or host record shows its read status
+  instead of a generic reason. The way forward is `Configure another model,
+  then send a message` for a provider block the host published, `The host must
+  repair a blocked task; Reconnect starts it` for a blocked task, `Reconnect
+  starts the host when the storage is readable` for unavailable storage,
+  `Reconnect starts the host; unfinished work resumes` for another host fault,
+  and `A new message runs the work again` for a failed run. Details keeps the
+  complete error. The conversation follows, then the message field,
+  then the agent's two status lines (model, context, tokens, cost and cache;
+  then cwd, branch and delegate figures) in the main session's footer layout.
 
 The list starts in **Related** for the current session when it holds related
 work; with none, it shows All, so the view never opens on an empty list. After
@@ -577,8 +619,9 @@ the agent's controls, the inspector, and the heading's controls. Escape leaves
 the inspector, then the message field, then the view; it never stops work.
 Letters typed over the list go to Find: the list narrows, the selection follows
 the first match, and the pane previews it without starting its host. Up and
-Down select; Enter writes to the selected agent. Escape over the list clears
-Find first and keeps the chosen agent. No letter is a shortcut for an effect.
+Down select, Home and End select the first and last agent; Enter writes to the
+selected agent. Escape over the list clears the error filter first, then Find,
+and keeps the chosen agent. No letter is a shortcut for an effect.
 
 Selection reads passively: it never starts a host and never moves a draft
 between agents. Sending a message starts a stopped host through the normal
@@ -672,9 +715,10 @@ enforcement setting, and every preset with its model.
 ### Layout and resizing
 
 At side-by-side widths, drag the list's divider to exchange width with the
-pane. The list takes 22% of the width, clamped to 30 to 40 columns; a saved
+pane. The list takes 27% of the width, clamped to 32 to 60 columns; a saved
 divider position is clamped to the same range. While a drag lasts, the list
-keeps 30 to 40 columns and the pane keeps at least 60. Drag the
+keeps 32 to 60 columns and the pane keeps at least 60. Threads and Efforts use
+the same list width. Drag the
 small grip at the message field's top-right corner upward for more draft rows
 or downward for more conversation rows; the conversation keeps at least four
 rows, and a window too short for that shows no grip. Line 2 of the pane header
@@ -695,13 +739,14 @@ Below 60 columns or 16 rows the view asks for a larger window.
 ### Header and fact lines
 
 The header holds exactly two lines. Line 1 shows the selected agent's bold
-name, the project in muted text, and the agent's controls; a narrow pane drops
-the project first, then shortens the name. Line 2 shows the state glyph and
-label, then at most one status in muted text: the first that applies of the
-sizes of a resize drag in progress, a notice from the last action, the
-conversation load status (such as `Partial history`), a connection or
-stored-history warning, or `Details has the stored error` when the agent needs
-attention. One blank line follows the header. The agent's two status lines sit
+label, the project in muted text, and the agent's controls; the label keeps its
+width first, controls that do not fit move into More, a narrow pane drops the
+project, and only then does the label shorten. Line 2 shows the state glyph and
+label, then at most one status: the first that applies of the sizes of a resize
+drag in progress, a notice from the last action, the error reason and its way
+forward (see the list above), or the conversation load status (such as
+`Partial history`), connection or stored-history warning. One blank line
+follows the header. The agent's two status lines sit
 under the message field, in the main session's footer layout. A line with
 nothing known takes no row.
 
@@ -751,12 +796,14 @@ earlier or newer range. Estimated heights say `about`.
 
 ### Conversation and pointer
 
-Conversation content uses Pi's native components. Text sits after a two-column
-margin and is at most 100 columns wide; extra width stays empty on the right.
-An assistant message and the tool calls it issued form one step with no blank
-row inside it. One blank row separates steps, and separates user, compaction
-and custom-message blocks from their neighbours. A tool result belongs to its
-call.
+Conversation content uses Pi's native components after a two-column margin.
+Prose, agent cards and communications are at most 100 columns wide; other tool
+lines and their output use the pane's width, as in the main session. An
+assistant message and the tool calls it issued form one step with no blank row
+inside it. One blank row separates steps, and separates user, compaction and
+custom-message blocks from their neighbours; consecutive steps that each show
+only one-line tools join into one run without blank rows, so commentary and
+open cards still start their own paragraph. A tool result belongs to its call.
 
 Every tool other than an agent tool shows as one line by default: the bold tool
 name, then one argument and an outcome in muted text, such as
@@ -790,10 +837,12 @@ controls keep their own actions. Unhandled clicks on pending cards and card
 padding toggle the card through Pi's public expansion setter. The clicked item
 stays in view and suspends tail-follow. Press, drag, release, modified clicks,
 and multiple clicks stay available for Pi's native text selection. Ctrl+O sets
-all tool cards and clears individual choices; Ctrl+T does the same for
-thinking. Thinking starts hidden for every agent as one `▸ Thinking` line,
-whatever the primary's setting; Ctrl+T here changes only this view and never
-writes primary settings.
+all tool cards and communications and clears individual choices; Ctrl+T does
+the same for thinking. More lists both as Expand all and Show thinking.
+Thinking starts hidden for every agent, whatever the primary's setting. A
+message that also has text, a tool call or an error hides its thinking without
+a row; a message with only thinking keeps one `▸ Thinking` row, which a click
+opens. Ctrl+T here changes only this view and never writes primary settings.
 
 In Pi fullscreen mode, click a list row to select it, a heading or header
 control to run it, the message field to focus it and place its caret, and a
@@ -1132,28 +1181,28 @@ load.
 
 The roster reads bounded host-published metadata through `dashboard-types.ts`.
 It parses no ordinary JSONL, opens no conversation database, and starts no host.
-Roster blocks show a bold name and state glyph with the last-change time at the
-right. The model and thinking level appear on the second line with cost at the
-right; activity or the latest text appears on the third line. Compact rows use
-the same fact order on one line. The provider belongs in the selected header,
-not in each roster block. A continuous marker identifies the selected block. Working activity uses normal text; finished excerpts use muted
-text. State glyphs and written state words retain their state colors. Attention
-reasons stay prominent and use the plain background for readable error text.
-Working and Done labels do not repeat the glyph. A footer distinguishes
-more loaded rows outside the viewport from the Load more agents catalog action.
+Roster blocks show the state glyph and one bold label with the last-change time
+at the right, then one muted fact line: the error reason for an agent with an
+error, the current tool and model for a working agent, otherwise the model,
+thinking level and cost. The wide list and the narrow strip use the same
+blocks. The provider belongs in the selected header, not in each roster block.
+A continuous marker and background identify the selected block. State glyphs
+retain their state colors. Working and Done labels do not repeat the glyph. The
+footer distinguishes loaded rows outside the window, the error filter, the
+scope and Find filters, and the Load more agents catalog action.
 Times default to `just now`, `15m ago`, `3h ago`, or `1d ago`, with no seconds
 counter. These ages describe recorded changes, not current activity.
 Press `i` in the roster or a thread, or click a visible time in fullscreen mode,
 to switch every dashboard time to the absolute local date and time, such as
 `Oct 4, 2026, 12:01 PM`. Neither form has an `Updated` label or a local suffix.
-Exact time shares the activity line at the right of each wide roster block;
-activity shortens to fit, and the name and model retain their own lines. Both
-time modes keep three-line wide blocks and one-line compact rows. The same
+Exact time shares the fact line at the right of each roster block; the facts
+shorten to fit, and the label keeps its own row. Both time modes keep
+three-row blocks. The same
 choice applies to thread event times and survives close and reopen in the same
-Pi session and process; it is not saved to disk. A retained
-`@handle` leads the label, followed by the display name when it fits. A historical
-first input is a labeled fallback, never a standing role. Duplicate labels receive unique
-identity suffixes. Unknown cost shows `$?`; a known partial cost shows a trailing
+Pi session and process; it is not saved to disk. The display name is the label;
+a retained `@handle` labels an agent without one and stays searchable through
+Find. A historical first input is a quoted fallback, never a standing role.
+Duplicate labels receive unique identity suffixes. Unknown cost shows `$?`; a known partial cost shows a trailing
 `+`, such as `$1.00+`, in the selected-agent footer and roster rows. Roster totals
 use the same marker, such as `$1.50+ retained`, for a known subtotal with incomplete
 cost or inventory coverage. These totals keep their roster scope.
@@ -1167,9 +1216,14 @@ unanswered submission's error detail, the last assistant error, or the native
 conversation whose newest run ended without an answer is `failed` (`stopped`
 when the run was aborted) until a later run starts. A delivery receipt defines the outcome only while no
 newer input supersedes it; an unowned report still changes the current outcome.
-Attention names unavailable or conflicted storage, a host error, failed compaction, failed work with an error, or exhausted retries. Done
-and deliberately stopped work do not require attention by themselves. The selected view shows the one concrete Attention
-reason. Selection follows identity, not roster index, and roster order stays
+An error reason exists for unavailable or conflicted storage, a host error,
+failed compaction, failed work with an error, or exhausted retries; the footer
+counts these rows `with errors`. A failed run stays failed until a new input,
+so an old failure keeps its reason and age instead of reading as a new alarm.
+Done and deliberately stopped work have no error reason by themselves. The
+manager joins the host-published intervention hint (`provider-blocked`,
+`task-blocked` or `failed-turn`) to its row; an absent hint is unknown. The
+selected agent's header shows the reason and its way forward. Selection follows identity, not roster index, and roster order stays
 fixed during an arrow sequence. Text entry locks its recipient even while
 published metadata changes.
 
@@ -1707,38 +1761,55 @@ never pages through storages. Open threads
 come first, newest first; closed threads fold into one muted row, `▸ Closed ·
 N`, after them. Enter or a click expands that row to `▾ Closed · N` and shows
 the closed threads below it; opening a closed thread directly expands the
-group. Each row has two lines and a blank line after it: the state glyph, the
-bold title and the last activity time; then the purpose in muted text. The
-member count sits in the thread header. Typing over the list (Find) searches
+group. Each row takes three rows like the agent list: the state glyph, the bold
+title and the last activity time, with a long title continuing on the second
+row; then the purpose in muted text; then a blank row when the title fits on
+one. The member count sits in the thread header. Typing over the list (Find) searches
 open and closed threads and shows every match; clearing Find restores the
 earlier choice. Up/Down, PageUp/PageDown, Home and End select; the wheel
 scrolls the list. The list footer reads `N threads`, or one read warning. The
 newest thread is selected when the view opens. Selecting a thread reads its
 newest page; reading is passive and starts no model turn.
 
-The thread pane has a two-line header, then a blank line. Line 1 holds the
-bold title, then the Members and Details controls. Line 2, in muted text,
-holds Open or Closed, the member count, the post count (`N loaded posts` when
-earlier posts exist) and a purpose preview; a read failure replaces the
-preview in the error colour. The exchange
-follows: each post starts with the sender's name in bold and the time,
-right-aligned at the end of the reading column; `↳ name` follows on its own
-muted line when the post answers another; then the post text at the reading
-width, a two-column margin and at most 100 columns; then a muted `notified`
-line for the members it woke. Event kind and operator origin show in muted
-text after the name, and one blank line separates posts. A participant
-without a known name shows as `Session` plus the first eight characters of its
-identity, in senders, reply targets, event lines and `notified`. A thread's
-creation, frame revisions, joins and leaves each show as one muted line, such
-as `Parser review created the thread · 7m ago`; the frame stays in Details and member
-contributions in Members. A close shows its muted line, then the close message
-as post text. The newest message sits at the bottom; scrolling to the top,
-Home or the `↑ Earlier messages` line reads the page before, which keeps newer
-messages in place. All thread text is plain text: terminal sequences are removed.
+The thread pane's header holds the bold title with the Members and Details
+controls, then one muted line with Open or Closed, the member count and how
+much of the exchange is loaded (`latest N of M events` while earlier events
+exist), then the purpose in muted rows, then a blank line. A title that leaves
+the controls no room moves them to the counts line and wraps onto a second row
+instead of shortening. A purpose longer than three rows ends with `… more in
+Details`. A read failure replaces the counts in the error colour.
+
+The exchange follows. Each post starts with one header row: the sender's name
+in bold, then in muted text the role the frame names (`integrator`), the post
+number `#N`, `↳ name #N` when the post answers another, operator origin and
+the event kind, and the time at the right of the reading column. The post text
+renders as Markdown (paragraphs, lists, inline code and code blocks) at the
+reading width, a two-column margin and at most 100 columns; the stored message
+is unchanged. A post longer than 16 rows opens as a preview of 10 rows with
+`▸ N more lines`; a click opens it in place, `▴ Show less` closes it, and
+Ctrl+O opens or closes every long post. Opening or closing a post keeps the
+rows above it where they are. A muted `notified` line lists the members a post
+woke, and one blank line separates posts. A participant's name comes from the
+roster (name, else handle), `This session` for the session that runs the view,
+or a Pi session name from effort presence; without one it shows as `Session`
+plus the first eight characters of its identity, in senders, reply targets,
+event lines and `notified`. A thread's creation, frame revisions, joins and
+leaves each show as one muted line, such as `Parser review created the thread ·
+7m ago`; the frame stays in Details and member contributions in Members. A
+close shows its muted line, then the close message as post text.
+
+The newest message sits at the bottom. The first row reads `↑ N earlier events
+· click or Home reads them` while earlier events exist, or `Start of the
+thread`; scrolling to the top, Home or a click on that row reads the page
+before and keeps newer messages in place. While the window sits above the
+newest line, its last row reads `↓ N lines below · End shows the latest`, and
+a click returns there. A window that starts inside a post names it on its
+first row (`↑ <name> · #N, continued`); a click shows that post's header. All
+thread text is plain text: terminal sequences are removed.
 
 The message field at the bottom posts to the selected thread with origin
-`operator`; a post wakes nobody unless members are ticked. Click a sender's name
-to reply to that message; the field's caption shows the reply and the number of
+`operator`; a post wakes nobody unless members are ticked. Click a post's header
+row to reply to that message; the field's caption shows the reply and the number of
 members it wakes. A retained post clears the draft and its reply target. A post
 that is not confirmed keeps the draft, and sending the same content again
 reuses its request identity. A closed thread takes no posts. Drafts stay per
@@ -1869,25 +1940,42 @@ overview uses it only for the optional effort-awareness section. If identity
 is unavailable, that section is omitted and the agent overview remains available.
 
 `/agent` opens Related efforts with Efforts in its heading. The list uses the
-same width as the Agents list. Each effort
-row has two lines and a blank line after it: the live glyph and the bold title
-(the first sentence of the purpose, declared or observed, or `Session` plus
-the first eight characters of the identity without one); then the liveness and
-last update time in muted text, aligned with the title. Active threads follow
-under their own label, with the same two-line rows. The list footer reads
-`N efforts`, then `· scan incomplete` when coverage is partial.
+same width and three-row blocks as the Agents list. An effort's title is its
+Pi session name, else the first sentence of its declared purpose, else its
+observed first input in quotes, else `Untitled session in <folder>`; a long
+title continues on the second row. The muted fact line says whether Pi is
+open and when the session last recorded activity: `Pi open` means its process
+runs on this machine with a compatible endpoint, not that it is working;
+`presence unknown` and `Pi open, other version` cover the other states.
+Activity is the last input, finished tool or settled turn (`last activity 5m
+ago`), or `started 6h ago, no activity recorded` when the record shows none after
+registration; activity is sampled, so the first minute after a start leaves no
+record. Active threads follow under their own label, with the same
+blocks. The list footer reads `N efforts`, when presence was read, and the
+scan's stop reasons in plain words (such as `scan limit hit`) with a Details
+control when coverage is partial; the row opens Scan details.
 
-The selected effort's header has two lines. Line 1 holds the title, then Open
-thread, Message, Observe, Details and More; More opens the remaining actions,
-such as Threads, Scan details and the exact-time toggle. Line 2, in muted
-text, holds the live state, the relation and the last update. Controls that do
-not fit move into More. The default detail
-shows short groups with muted keys and a blank line between them: Purpose,
-Integration when declared, Contact (the contact thread's title, state and
-member count) and Identity (the full session identity). A longer value shows
-its first three lines, then `…`. Details shows the full record in the same grouped form:
-authority, source, restrictions, acceptance, paths, branch scope, cwd,
-substrates, member declarations and the full contact frame. A contact-thread
+The selected effort's header shows the complete title, then a muted line with
+the same presence and activity facts, then a blank line. Open thread, Message,
+Observe, Details and More sit beside a title that leaves them room and
+otherwise on the facts line, where controls that do not fit move into More;
+they never shorten the title. A title longer than three rows ends with `…`, and
+the body then shows the whole purpose. More opens the remaining actions, such
+as Threads, Scan details, Refresh and the exact-time toggle. The default detail
+is complete and scrolls: the rest of the declared purpose (its first sentence
+is the title; a named session shows the whole purpose under `Purpose`), then
+`Integration · next shared acts, declared <age>` with the full integration
+text, then `Contact thread` with its title, state and member count. A session
+without intent shows its observed first input under a label that says it is
+observed, not declared, or states that it declares no purpose or integration
+plan. Details shows the full record in the same grouped form: purpose,
+integration, the carried operator direction, scope, status with relation,
+identity, session name, substrates, directory, start and activity times, member
+declarations and the full contact frame. Scan details states, in sentences, how
+many entries the presence scan visited, how many efforts it lists, what it
+skipped and why it stopped, and the same for active threads; efforts the scan
+did not reach are not listed, and Refresh (`r`) reads presence again within the
+same bounds. A contact-thread
 read displays its frame and current member
 contributions as declarations, not agreement or permission. Rejoin a thread to
 replace your contribution with a current hold, release or continuing condition

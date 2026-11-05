@@ -288,13 +288,14 @@ it("live thinking retains its native instance through commit but resets after ev
 it("a thinking run at the tail stays visible through expand, collapse and updates", () => {
 	const state = agentState(createDashboardState(), "one").view; state.showThinking = false;
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
-	const entry = assistantEntry("long", 1, [{ type: "text", text: Array.from({ length: 70 }, (_, i) => `earlier text ${i}`).join("\n") }, { type: "thinking", thinking: `clicked reasoning\n${"detail\n".repeat(30)}` }]);
-	view.setContent([entry], [], "/work");
+	const earlier = assistantEntry("long", 1, [{ type: "text", text: Array.from({ length: 70 }, (_, i) => `earlier text ${i}`).join("\n") }]);
+	const reasoning = assistantEntry("reason", 2, [{ type: "thinking", thinking: `clicked reasoning\n${"detail\n".repeat(30)}` }]);
+	view.setContent([earlier, reasoning], [], "/work");
 	let lines = readText(view);
 	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("▸ Thinking")))));
 	assert.ok(state.anchor);
 	const anchor = { ...state.anchor };
-	assert.equal(anchor.id, "long");
+	assert.equal(anchor.id, "reason");
 	view.save(); assert.deepEqual(state.anchor, anchor);
 	lines = readText(view);
 	assert.match(lines.join("\n"), /clicked reasoning/u);
@@ -302,7 +303,7 @@ it("a thinking run at the tail stays visible through expand, collapse and update
 	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("clicked reasoning")))));
 	lines = readText(view);
 	assert.match(lines.join("\n"), /Thinking/u);
-	view.setContent([{ ...entry, data: { updated: true } }], [], "/work");
+	view.setContent([earlier, { ...reasoning, data: { updated: true } }], [], "/work");
 	assert.match(readText(view).join("\n"), /Thinking/u);
 });
 
@@ -341,16 +342,14 @@ it("collapse from the middle of thinking keeps its label visible before trailing
 	const state = agentState(createDashboardState(), "one").view;
 	state.follow = false; state.scroll = 25; state.showThinking = true;
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
-	const entry = assistantEntry("deep", 1, [
-		{ type: "thinking", thinking: Array.from({ length: 60 }, (_, i) => `thought ${i}`).join("\n") },
-		{ type: "text", text: Array.from({ length: 100 }, (_, i) => `after ${i}`).join("\n") },
-	]);
-	view.setContent([entry], [], "/work");
+	const deep = assistantEntry("deep", 1, [{ type: "thinking", thinking: Array.from({ length: 60 }, (_, i) => `thought ${i}`).join("\n") }]);
+	const after = assistantEntry("after", 2, [{ type: "text", text: Array.from({ length: 100 }, (_, i) => `after ${i}`).join("\n") }]);
+	view.setContent([deep, after], [], "/work");
 	assert.match(readText(view).join("\n"), /thought 26/);
 	assert.ok(view.handleMouse(itemClick(2)));
 	assert.match(readText(view).join("\n"), /▸ Thinking/);
 	assert.equal(state.follow, false);
-	view.setContent([{ ...entry, data: { revision: 2 } }], [], "/work");
+	view.setContent([{ ...deep, data: { revision: 2 } }, after], [], "/work");
 	assert.match(readText(view).join("\n"), /▸ Thinking/);
 });
 
@@ -359,12 +358,11 @@ for (const header of [0, 12]) it(`a second thinking run stays visible after coll
 	const state = agentState(createDashboardState(), "one").view;
 	state.follow = false; state.scroll = 60; state.showThinking = true;
 	const view = new ConversationView({ requestRender() {} } as TUI, state);
-	view.setContent([assistantEntry("second-run", 1, [
-		{ type: "thinking", thinking: "earlier reasoning" },
-		{ type: "text", text: Array.from({ length: 30 }, (_, i) => `before ${i}`).join("\n") },
-		{ type: "thinking", thinking: Array.from({ length: 60 }, (_, i) => `thought ${i}`).join("\n") },
-		{ type: "text", text: Array.from({ length: 100 }, (_, i) => `after ${i}`).join("\n") },
-	])], [], "/work");
+	const earlier = assistantEntry("first-run", 1, [{ type: "thinking", thinking: Array.from({ length: 30 }, (_, i) => `earlier ${i}`).join("\n") }]);
+	const before = assistantEntry("before", 2, [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `before ${i}`).join("\n") }]);
+	const second = assistantEntry("second-run", 3, [{ type: "thinking", thinking: Array.from({ length: 60 }, (_, i) => `thought ${i}`).join("\n") }]);
+	const after = assistantEntry("after", 4, [{ type: "text", text: Array.from({ length: 100 }, (_, i) => `after ${i}`).join("\n") }]);
+	view.setContent([earlier, before, second, after], [], "/work");
 	assert.match(readText(view).join("\n"), /thought/);
 	assert.ok(view.handleMouse({ ...itemClick(2), screenY: header + 2 }));
 	const collapsed = readText(view);

@@ -113,7 +113,9 @@ for (const state of ["working", "idle", "failed"] as const) {
 				const paneY = wide ? 1 : 9;
 				const pane = lines.slice(paneY).map((line) => line.slice(paneX));
 				const right = pane.join("\n");
-				assert.match(pane[0] ?? "", /@recipient · Recipient/);
+				const header = pane[0] ?? "";
+				assert.equal(header.split("Recipient").length - 1, 1, "the header shows one label, not the handle pair");
+				assert.doesNotMatch(header, /@recipient/);
 				assert.doesNotMatch(pane[0] ?? "", /model|high|%|\$/);
 				assert.match(pane[1] ?? "", new RegExp(sessionAppearance[state].label), "the state sits on the line under the name");
 				const bottom = pane.findIndex((line) => line.includes("╰─"));

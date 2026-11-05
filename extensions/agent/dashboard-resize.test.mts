@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { TuiAltScreen, visibleWidth, type Terminal, type TuiMouseEvent, type Component } from "@earendil-works/pi-tui";
-import { dashboardGeometry } from "./dashboard-layout.ts";
+import { dashboardGeometry, MAX_ROSTER_COLUMNS, MIN_ROSTER_COLUMNS } from "./dashboard-layout.ts";
 import { DashboardResize } from "./dashboard-resize.ts";
 import { createDashboardState, agentState, updateDraft, type DashboardLayout } from "./dashboard-state.ts";
 import { fixture, row, source, turn } from "./dashboard-test-fixture.mts";
@@ -10,13 +10,15 @@ import { fixture, row, source, turn } from "./dashboard-test-fixture.mts";
 function mouse(type: TuiMouseEvent["type"], x = 35, y = 8, patch: Partial<TuiMouseEvent> = {}): TuiMouseEvent {
 	return { type, button: "left", x, y, screenX: x, screenY: y, width: 164, height: 44, shift: false, alt: false, ctrl: false, ...patch };
 }
+/** The roster gutter's first column for a built layout. */
+const handleX = (layout: DashboardLayout = {}, width = 164) => dashboardGeometry(width, 44, 0, false, 0, 5, layout).rosterWidth - 1;
 function controller(layout: DashboardLayout = {}) {
 	const saves: DashboardLayout[] = [];
 	const resize = new DashboardResize(layout, () => saves.push({ ...layout }));
 	const paint = (width = 164, height = 44, screen = "roster") => {
 		resize.begin(width, height, screen);
 		const g = dashboardGeometry(width, height, 0, false, 0, 5, layout);
-		if (g.wide) resize.add({ kind: "roster", x: g.rosterWidth - 1, y: 1, width: 2, height: height - 1, value: g.rosterWidth, min: 30, max: Math.min(40, width - 61) });
+		if (g.wide) resize.add({ kind: "roster", x: g.rosterWidth - 1, y: 1, width: 2, height: height - 1, value: g.rosterWidth, min: MIN_ROSTER_COLUMNS, max: Math.min(MAX_ROSTER_COLUMNS, width - 61) });
 		resize.add({ kind: "composer", x: width - 4, y: height - 9, width: 3, height: 1, value: layout.composerRows ?? 5, min: 5, max: 25 });
 		return g;
 	};
@@ -37,21 +39,22 @@ for (const width of [60, 80, 99, 100, 120, 164, 240]) {
 }
 it("gutter offset, cell coalescing, capture outside handles and one committed save", () => {
 	const f = controller();
-	assert.deepEqual(f.resize.handle(mouse("press", 35)), { handled: true, capture: true, render: true });
-	assert.deepEqual(f.resize.handle(mouse("drag", 35)), { handled: true, render: false });
+	const x = handleX();
+	assert.deepEqual(f.resize.handle(mouse("press", x)), { handled: true, capture: true, render: true });
+	assert.deepEqual(f.resize.handle(mouse("drag", x)), { handled: true, render: false });
 	assert.deepEqual(f.saves, []);
-	f.resize.handle(mouse("drag", 51));
-	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 40);
+	f.resize.handle(mouse("drag", x + 10));
+	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 54);
 	f.paint();
 	f.resize.handle(mouse("drag", 300, -20));
-	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 40);
+	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 60, "a drag past the widest list keeps its limit");
 	assert.equal(f.resize.handle(mouse("release", 300, -20))?.handled, true);
 	assert.equal(f.saves.length, 1);
 });
 it("cancel and abandoned gestures restore committed preferences without a write", () => {
 	for (const end of ["escape", "move", "press", "key", "dimensions", "screen", "clear"]) {
 		const f = controller({ rosterRatio: 0.4, composerRows: 8 });
-		f.resize.handle(mouse("press", 39)); f.resize.handle(mouse("drag", 90)); f.paint();
+		f.resize.handle(mouse("press", handleX({ rosterRatio: 0.4 }))); f.resize.handle(mouse("drag", 90)); f.paint();
 		if (end === "escape") assert.equal(f.resize.input("\x1b"), true);
 		if (end === "key") assert.equal(f.resize.input("x"), false);
 		if (end === "move" || end === "press") f.resize.handle(mouse(end, 90));
@@ -66,21 +69,22 @@ it("cancel and abandoned gestures restore committed preferences without a write"
 it("selection gestures and modifiers outside the precise strips remain unhandled", () => {
 	const f = controller();
 	for (const type of ["press", "drag", "release", "click"] as const) assert.equal(f.resize.handle(mouse(type, 10)), undefined);
-	for (const patch of [{ shift: true }, { alt: true }, { ctrl: true }, { button: "right" as const }, { clickCount: 3 }]) assert.equal(f.resize.handle(mouse("click", 35, 8, patch)), undefined);
-	assert.equal(f.resize.handle(mouse("click", 35, 8, { clickCount: 1 }))?.render, false);
+	for (const patch of [{ shift: true }, { alt: true }, { ctrl: true }, { button: "right" as const }, { clickCount: 3 }]) assert.equal(f.resize.handle(mouse("click", handleX(), 8, patch)), undefined);
+	assert.equal(f.resize.handle(mouse("click", handleX(), 8, { clickCount: 1 }))?.render, false);
 	assert.deepEqual(f.layout, {});
 });
 it("the key after a lost release starts from committed handle geometry", () => {
 	const f = controller();
-	f.resize.handle(mouse("press", 35)); f.resize.handle(mouse("drag", 52)); f.paint();
+	const x = handleX();
+	f.resize.handle(mouse("press", x)); f.resize.handle(mouse("drag", x + 16)); f.paint();
 	assert.equal(f.resize.input("r"), false);
 	assert.deepEqual(f.layout, {}); assert.equal(f.resize.selected, undefined);
-	f.resize.handle(mouse("press", 35)); f.resize.handle(mouse("drag", 36)); f.resize.handle(mouse("release", 36));
-	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 37);
+	f.resize.handle(mouse("press", x)); f.resize.handle(mouse("drag", x + 3)); f.resize.handle(mouse("release", x + 3));
+	assert.equal(Math.round((f.layout.rosterRatio ?? 0) * 163), 47, "the new gesture starts from the committed width");
 });
 it("double-click resets only the selected divider", () => {
 	const f = controller({ rosterRatio: 0.4, composerRows: 8 });
-	f.resize.handle(mouse("click", 39, 8, { clickCount: 2 }));
+	f.resize.handle(mouse("click", handleX({ rosterRatio: 0.4 }), 8, { clickCount: 2 }));
 	assert.deepEqual(f.layout, { composerRows: 8 });
 	f.paint(); f.resize.handle(mouse("click", 161, 35, { clickCount: 2 }));
 	assert.deepEqual(f.layout, {});
@@ -90,7 +94,7 @@ it("a clipped preference restores after stacked and narrow windows", () => {
 	const f = controller({ rosterRatio: 0.6 });
 	assert.equal(f.paint(100).rosterWidth, 39);
 	assert.equal(f.paint(80).wide, false);
-	assert.equal(f.paint(240).rosterWidth, 40);
+	assert.equal(f.paint(240).rosterWidth, 60);
 	assert.deepEqual(f.layout, { rosterRatio: 0.6 });
 });
 
@@ -117,19 +121,19 @@ it("raw SGR drag dispatch reaches the dashboard across rerenders without changin
 		const render = () => { const lines = f.ui.render(164); assert.equal(lines.length, 44); assert.ok(lines.every((line) => visibleWidth(line) === 164)); return lines.map(stripVTControlCharacters); };
 		render();
 		const send = rawDispatcher(f.ui, 164, 44);
-		send(0, 35, 8); render(); send(32, 51, 8);
-		assert.match(render().join("\n"), /List 40 · conversation 123 columns · release to keep/);
-		send(0, 51, 8, true); render();
-		assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 40);
+		send(0, 43, 8); render(); send(32, 53, 8);
+		assert.match(render().join("\n"), /List 54 · conversation 109 columns · release to keep/);
+		send(0, 53, 8, true); render();
+		assert.equal(Math.round((f.state.layout.rosterRatio ?? 0) * 163), 54);
 		assert.equal(saved.length, 1);
 		assert.equal(f.state.selected, "one"); assert.equal(f.ui.focus.region, "list");
 		assert.equal(state.draft, "literal r 🧩"); assert.equal(state.draftRevision, 7);
 		// A moved press stays a drag even after it returns to its starting cell.
-		send(0, 39, 8); send(32, 60, 8); render(); send(32, 39, 8); render(); send(0, 39, 8, true); render();
+		send(0, 53, 8); send(32, 70, 8); render(); send(32, 53, 8); render(); send(0, 53, 8, true); render();
 		assert.equal(saved.length, 1); assert.equal(f.ui.focus.region, "list");
 		// Pi's stationary completed clicks carry the reset count.
-		send(0, 39, 8); send(0, 39, 8, true); render();
-		send(0, 39, 8); send(0, 39, 8, true); render();
+		send(0, 53, 8); send(0, 53, 8, true); render();
+		send(0, 53, 8); send(0, 53, 8, true); render();
 		assert.equal(f.state.layout.rosterRatio, undefined);
 		assert.equal(saved.length, 2);
 		f.ui.handleInput("\r"); f.ui.render(164); f.ui.handleInput("r");
@@ -166,7 +170,7 @@ it("letters over the list type into Find and never resize the split", async () =
 		assert.equal(f.ui.focus.region, "list");
 		assert.equal(f.state.filter, "r", "the letter went to the visible Find field");
 		assert.deepEqual(f.state.layout, {}); assert.deepEqual(saved, []);
-		assert.equal(lines.at(-1), footer);
+		assert.equal(lines.at(-1)?.indexOf("│"), footer.indexOf("│"), "the divider keeps its column");
 		f.ui.handleInput("\x1b[C"); f.ui.handleInput("0");
 		assert.deepEqual(f.state.layout, {});
 		f.ui.handleInput("\x1b");
@@ -196,7 +200,7 @@ it("save failure retains the local split and gives a restart notice", async () =
 	try {
 		await turn(); f.ui.render(164);
 		const send = rawDispatcher(f.ui, 164, 44);
-		send(0, 35, 8); send(32, 51, 8); f.ui.render(164); send(0, 51, 8, true);
+		send(0, 43, 8); send(32, 53, 8); f.ui.render(164); send(0, 53, 8, true);
 		assert.ok(f.state.layout.rosterRatio);
 		assert.match(f.ui.render(164).join("\n"), /restart persistence failed/);
 	} finally { f.ui.dispose(); }
@@ -207,11 +211,11 @@ it("raw text drags use the native fallback and focus loss clears the abandoned r
 		await turn(); f.ui.render(164); const send = rawDispatcher(f.ui, 164, 44, selection);
 		send(0, 8, 8); send(32, 12, 8); send(0, 12, 8, true);
 		assert.equal(selection.length, 3); assert.deepEqual(f.state.layout, {});
-		send(0, 35, 8); send(32, 60, 8); f.ui.render(164); assert.ok(f.state.layout.rosterRatio);
+		send(0, 43, 8); send(32, 60, 8); f.ui.render(164); assert.ok(f.state.layout.rosterRatio);
 		send.input("\x1b[O"); send(35, 60, 8); f.ui.render(164);
 		assert.deepEqual(f.state.layout, {});
 		// Captured bounds are stale after a terminal resize, even before the next render.
-		send(0, 35, 8); send(32, 60, 8); f.resize(120, 32); send(32, 70, 8); send(0, 70, 8, true);
+		send(0, 43, 8); send(32, 60, 8); f.resize(120, 32); send(32, 70, 8); send(0, 70, 8, true);
 		assert.deepEqual(f.state.layout, {}); assert.equal(f.ui.focus.region, "list");
 	} finally { f.ui.dispose(); }
 });
