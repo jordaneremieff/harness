@@ -13,11 +13,17 @@ import {
 } from "@earendil-works/pi-tui";
 import {
 	type Action,
-	ActionBar,
+	actionControl,
 	type Choice,
+	type Control,
 	type Destination,
+	Footer,
 	Form,
 	HitMap,
+	keyInput,
+	keyMatches,
+	menuControl,
+	MORE_KEY,
 	NavigationFrame,
 	type Notice,
 	type OperatorView,
@@ -107,48 +113,55 @@ export interface DashboardOperations {
 	readonly exitLabel?: string;
 }
 
-export type Region = "list" | "conversation" | "composer" | "controls" | "inspector" | "heading";
+export type Region = "list" | "find" | "conversation" | "composer" | "inspector";
 export type Surface = "work" | "threads" | "efforts";
 
 const HELP = [
 	"Agents",
-	"The list starts with Related: this session's work. Related and All switch between it and every loaded agent.",
+	"The list starts with Related: this session's work. v switches between Related and All, every loaded agent.",
 	"Relations use exact creation ancestry, task targets and shared thread membership, never directory proximity.",
 	"Selecting an agent reads its conversation without starting its host. Sending a message starts a stopped host.",
 	"",
-	"Moving around",
-	"Tab and Shift+Tab move between the list, the conversation, the message field, the agent's controls, the inspector and the heading's controls.",
-	"Escape leaves the inspector, then the message field, then the view. It never stops work.",
-	"Type over the list to find agents. Up and Down select; Home and End go to the first and last agent. Enter writes to the selected agent.",
-	"The list footer counts agents above and below the window and the agents with errors. Click the error count to list only those agents;",
-	"Show all or Esc lists every agent again. The line under it names the scope and filters and how many loaded agents they show.",
+	"Keys",
+	"The footer at the bottom lists the keys that work where the focus is now. A click on a footer control does the same as its key.",
+	"x lists every other action with its key. Escape goes back one step: it clears Find, closes a form, leaves the message field, then the view.",
+	"Escape never stops work. Tab and Shift+Tab move between the list, the conversation, the message field and an open form.",
+	"n starts a new conversation; ? shows this help.",
+	"",
+	"List",
+	"Up and Down select; Home and End go to the first and last agent. Enter writes to the selected agent.",
+	"/ moves to Find, where letters narrow the list; Enter or Escape returns to the list. Outside a text field, letters are keys.",
+	"e lists only the agents with an error reason, and again every agent. The line under the list names the scope and filters.",
+	"l hides or shows the list. Drag the list divider or the message field's grip to resize; double-click a handle to reset it.",
+	"",
+	"Selected agent",
+	"s stops current work, f switches the next message between steer and follow-up, w releases an await, r reconnects a stopped host.",
+	"c configures name, model and reasoning; k shows the live tasks. x lists fork, rewind, compact, reset, schedules, commands, profile and details.",
+	"Forms open beside the conversation and bind to the agent they opened for; selecting another agent closes them without sending anything.",
 	"",
 	"Messages",
-	"Enter sends. Ctrl+J adds a new line. A working agent gets Steer at next step unless you choose Follow-up after answer:",
-	"click the effect on the message field, or choose More › Send as follow-up.",
-	"All letters, slash text and bang text are literal messages. Commands belong to the agent's controls.",
+	"Enter sends. The newline keys (Shift+Enter or Ctrl+J by default) add a line. In the message field every letter, slash and bang is text.",
+	"A working agent gets the message at its next step (steer) unless f, or a click on the effect above the message field, switches to follow-up.",
+	"Ctrl+X makes the message field taller, and again shorter.",
 	"",
 	"Reading",
 	"PageUp and PageDown read the conversation; PageUp at the top reads earlier entries. End returns to live output.",
-	"Ctrl+O expands every tool and notice; click one to expand only it. Ctrl+T shows or hides thinking. More has both switches.",
+	"Ctrl+O expands every tool and notice; click one to expand only it. Ctrl+T shows or hides thinking.",
 	"A message with text or tool calls hides its thinking without a row; a thinking-only message keeps a ▸ Thinking row.",
 	"",
-	"Controls",
-	"Stop, Configure and More act on the agent shown in the header. Forms open in the inspector beside the conversation.",
-	"Every form binds to the agent it opened for; selecting another agent closes it without sending anything.",
-	"Drag the list divider or the message field's grip to resize; double-click a handle to reset it.",
-	"",
-	"Threads and Related efforts",
-	"Agents, Threads and Efforts are the tabs at the top left. Esc in Threads or Efforts returns to where you came from.",
+	"Threads and Efforts",
+	"t opens Threads and b opens Efforts, as the tabs at the top left do. Escape returns to where you came from.",
 	"Threads lists every thread, open ones first and newest first. Select one to read its exchange; the message field posts to it.",
-	"Click a post's header to reply to it. A long post opens as a preview: click ▸ N more lines, or Ctrl+O for every post. Home reads earlier events.",
-	"Members ticks who your next post wakes and opens their conversations; Details shows the frame.",
+	"In Threads, m shows the members (tick who your next post wakes), d shows the thread's frame and Ctrl+O opens every long post.",
 	"A post wakes nobody unless you tick members. A closed thread takes no posts.",
-	"Related efforts shows declared intent and contact declarations, not agreement. Enter opens a contact thread; o reads observation; m sends an operator message.",
-	"A time shows the last recorded change, not an activity timer. Click a time to switch between age and date.",
+	"Efforts shows declared intent and contact declarations, not agreement. Enter opens a contact thread; o reads an observation; m sends a message.",
+	"A time shows the last recorded change, not an activity timer. i, or a click on a time, switches between age and date.",
 	"",
 	"Context tokens come from the latest assistant usage; compaction makes them unknown.",
 ];
+
+/** The message field's taller and shorter switch; Pi binds no key for it, and the editor leaves Ctrl+X free. */
+const EXPAND_COMPOSER_KEY = "ctrl+x";
 
 /** Conversation rows kept on screen however far the message field grows. */
 const CONVERSATION_ROWS = 4;
@@ -183,9 +196,10 @@ export class AgentDashboard implements Component, Focusable {
 	private threads?: ThreadsView;
 	private efforts?: EffortView;
 	private readonly hits = new HitMap();
-	private readonly controls: ActionBar;
-	/** The heading's own controls: New conversation, Threads, Efforts and Help. */
-	private readonly headingBar: ActionBar;
+	/** The key footer on the last row, with the More menu it opens. */
+	private readonly footer = new Footer();
+	/** First row of the open More menu at the last paint. */
+	private menuTop = 0;
 	private readonly resize: DashboardResize;
 	private inspector?: Inspector;
 	private surface: Surface = "work";
@@ -286,8 +300,6 @@ export class AgentDashboard implements Component, Focusable {
 			nameFor: (identity: string) => this.knownName(identity),
 		});
 		this.find = new TextField("Find", state.filter, (value) => this.setFilter(value));
-		this.controls = new ActionBar((reason) => this.show(reason, "warning"));
-		this.headingBar = new ActionBar((reason) => this.show(reason, "warning"));
 		this.unsubscribe.push(
 			source.subscribe(() => this.frameChanged()),
 			source.subscribeRoster(() => {
@@ -850,7 +862,9 @@ export class AgentDashboard implements Component, Focusable {
 				this.redraw();
 				then?.();
 			},
-			closeLabel: target ? "Back" : "Back to conversation",
+			closeLabel: destinations.length > 1 ? "close owner views" : `close ${plainLine(destinations[0]?.label ?? "form").toLocaleLowerCase()}`,
+			// The dashboard draws one footer for the whole screen; it shows the form's keys while the form has focus.
+			footer: false,
 		});
 		this.inspector = { frame, target: target?.id ?? row?.id ?? "" };
 		this.region = "inspector";
@@ -957,9 +971,10 @@ export class AgentDashboard implements Component, Focusable {
 			handleInput: (data) => tasks.handleInput(data),
 			handleMouse: (event) => hits.handle(event),
 			actions: () => [
-				{ id: "open", label: "Open conversation", primary: true, run: () => tasks.open() },
-				{ id: "refresh", label: "Refresh", primary: true, run: () => void tasks.refresh() },
+				{ id: "open", label: "Open conversation", key: "enter", short: "open conversation", primary: true, run: () => tasks.open() },
+				{ id: "refresh", label: "Refresh", key: "r", short: "refresh", primary: true, run: () => void tasks.refresh() },
 			],
+			keys: () => [{ keys: ["up", "down"], label: "select" }],
 			dispose: () => {
 				tasks.dispose();
 				this.source.releaseTasks();
@@ -1174,26 +1189,15 @@ export class AgentDashboard implements Component, Focusable {
 
 	// --- actions ------------------------------------------------------------
 
-	/** The selected agent's controls. Stop and configuration stay visible while they apply. */
+	/**
+	 * The selected agent's actions with their keys. Stop and configuration stay listed while they
+	 * apply; the footer shows the primary ones, and More lists the rest with any key they have.
+	 */
 	private targetActions(): Action[] {
 		const row = this.console?.row;
 		if (!row) return [];
-		const working = row.state === "working";
-		const actions: Action[] = [];
-		if (working) actions.push({ id: "abort", label: "Stop", primary: true, tone: "danger", description: "Stop current work; history stays", run: () => this.openAction("abort") });
-		if (working) {
-			const steer = this.console?.state.mode !== "followUp";
-			actions.push({ id: "mode", label: steer ? "Send as follow-up" : "Send as steer", description: steer ? "The next message waits for the current answer" : "The next message applies at the next step", run: () => this.toggleMode() });
-		}
-		if (row.awaiting !== undefined) actions.push({ id: "await-release", label: "Release await", primary: true, description: "Return partial results; producers continue", run: () => this.openAction("await-release") });
-		// Reconnect shows directly for an agent that needs attention, and stays in More while its observation is lost.
-		const attention = needsAttention(row);
-		if (attention || this.source.availability(row.id)?.state === "unavailable")
-			actions.push({ id: "attach", label: "Reconnect", primary: attention, description: "Start the host; unfinished work resumes", run: () => this.openAction("attach") });
-		actions.push({ id: "configure", label: "Configure", primary: true, disabled: working ? "Stop current work first; the owner configures idle agents only" : undefined, description: "Name, model and reasoning", run: () => this.openAction("configure") });
-		actions.push({ id: "tasks", label: "Tasks", primary: true, description: "The live tasks in this agent's storage", run: () => this.openTasks() });
-		if (this.operations.panels) actions.push({ id: "browsers", label: "Owner views", description: "Stashes, clipboard, policy and pillars bound to this agent", run: () => void this.openBrowsers() });
-		actions.push(...this.readingActions());
+		const actions = this.primaryTargetActions(row);
+		if (this.operations.panels) actions.push({ id: "browsers", label: "Owner views", key: "o", description: "Stashes, clipboard, policy and pillars bound to this agent", run: () => void this.openBrowsers() });
 		const secondary: Array<[string, string, string]> = [
 			["fork", "Fork", "An idle branch from a committed message"],
 			["rewind", "Rewind", "A corrected branch before a mistake; files stay current"],
@@ -1207,27 +1211,70 @@ export class AgentDashboard implements Component, Focusable {
 			["release", "Stop and release host", "Stop this conversation and retire its host"],
 		];
 		for (const [id, label, description] of secondary) actions.push({ id, label, description, run: () => this.openAction(id) });
-		actions.push(...(this.operations.extraActions?.(row) ?? []));
 		return actions;
 	}
 
-	/** The conversation's reading switches, with the keys that do the same. */
+	/** Stop, delivery, await, reconnect, host actions, configure and tasks for the selected agent. */
+	private primaryTargetActions(row: AgentConversationSummary): Action[] {
+		const working = row.state === "working";
+		const actions: Action[] = [];
+		if (working) actions.push({ id: "abort", label: "Stop", key: "s", short: "stop", primary: true, tone: "danger", description: "Stop current work; history stays", run: () => this.openAction("abort") });
+		if (working) {
+			const steer = this.console?.state.mode !== "followUp";
+			actions.push({ id: "mode", label: steer ? "Send as follow-up" : "Send as steer", key: "f", short: steer ? "follow-up" : "steer", primary: true, description: steer ? "The next message waits for the current answer" : "The next message applies at the next step", run: () => this.toggleMode() });
+		}
+		if (row.awaiting !== undefined) actions.push({ id: "await-release", label: "Release await", key: "w", short: "release await", primary: true, description: "Return partial results; producers continue", run: () => this.openAction("await-release") });
+		// Reconnect shows in the footer for an agent that needs attention, and stays in More while its observation is lost.
+		const attention = needsAttention(row);
+		if (attention || this.source.availability(row.id)?.state === "unavailable")
+			actions.push({ id: "attach", label: "Reconnect", key: "r", short: "reconnect", primary: attention, description: "Start the host; unfinished work resumes", run: () => this.openAction("attach") });
+		actions.push(...(this.operations.extraActions?.(row) ?? []));
+		actions.push({ id: "configure", label: "Configure", key: "c", short: "configure", primary: true, disabled: working ? "Stop current work first; the owner configures idle agents only" : undefined, description: "Name, model and reasoning", run: () => this.openAction("configure") });
+		actions.push({ id: "tasks", label: "Tasks", key: "k", short: "tasks", primary: true, description: "The live tasks in this agent's storage", run: () => this.openTasks() });
+		return actions;
+	}
+
+	/** The conversation's reading switches, on Pi's configured keys for tool expansion and thinking. */
 	private readingActions(): Action[] {
 		const view = this.console?.state.view;
 		if (!view) return [];
 		return [
-			{ id: "thinking", label: view.showThinking ? "Hide thinking" : "Show thinking", description: "Ctrl+T · the reasoning of every message", run: () => this.toggleThinking() },
-			{ id: "expand", label: view.expanded ? "Collapse all" : "Expand all", description: "Ctrl+O · every tool and notice", run: () => this.toggleExpanded() },
+			{ id: "expand", label: view.expanded ? "Collapse all" : "Expand all", key: this.keys.getKeys("app.tools.expand")[0] ?? "ctrl+o", primary: true, description: "Every tool and notice", run: () => this.toggleExpanded() },
+			{ id: "thinking", label: view.showThinking ? "Hide thinking" : "Show thinking", key: this.keys.getKeys("app.thinking.toggle")[0] ?? "ctrl+t", short: "thinking", primary: true, description: "The reasoning of every message", run: () => this.toggleThinking() },
 		];
 	}
 
-	/** Actions available without a selection, in the heading. */
+	/** Keys of the agents view that need no selection: new, scope, the other tabs, filters, layout and help. */
 	private viewActions(): Action[] {
 		const actions: Action[] = [
-			{ id: "new", label: "New conversation", primary: true, disabled: this.operations.newAgent ? undefined : (this.operations.newUnavailable ?? "Unavailable here"), run: () => this.openNew() },
+			{ id: "new", label: "New conversation", key: "n", short: "new", primary: true, disabled: this.operations.newAgent ? undefined : (this.operations.newUnavailable ?? "Unavailable here"), run: () => this.openNew() },
 		];
-		actions.push({ id: "help", label: "Help", primary: true, run: () => this.openHelp() });
+		actions.push(...this.surfaceActions());
+		if (this.errorsOnly || this.rows.some(needsAttention)) actions.push({ id: "errors", label: this.errorsOnly ? "Every agent" : "Agents with errors", key: "e", short: this.errorsOnly ? "all agents" : "errors", primary: true, run: () => this.toggleErrors() });
+		if (this.console) actions.push({ id: "list", label: this.state.layout.listHidden ? "Show list" : "Hide list", key: "l", primary: true, run: () => this.toggleList() });
+		actions.push({ id: "time", label: this.state.exactTime ? "Relative times" : "Exact times", key: "i", run: () => { this.state.exactTime = !this.state.exactTime; } });
+		actions.push({ id: "help", label: "Help", key: "?", short: "help", primary: true, run: () => this.openHelp() });
+		// The reading switches come last, so a short footer row gives them up together.
+		actions.push(...this.readingActions());
 		return actions;
+	}
+
+	/** Related or All, and the other tabs, when this host offers them. */
+	private surfaceActions(): Action[] {
+		const actions: Action[] = [];
+		if (this.primaryId) actions.push({ id: "scope", label: this.allAgents ? "Related agents" : "All agents", key: "v", short: this.allAgents ? "related" : "all", primary: true, description: this.allAgents ? "This session's work only" : "Every loaded agent", run: () => this.setScope(!this.allAgents) });
+		if (this.operations.collaborate) actions.push({ id: "threads", label: "Threads", key: "t", short: "threads", primary: true, run: () => void this.openThreads() });
+		if (this.operations.efforts) actions.push({ id: "efforts", label: "Efforts", key: "b", short: "efforts", primary: true, run: () => this.openEfforts() });
+		return actions;
+	}
+
+	/** Related or All; the operator's choice holds against the automatic default from then on. */
+	private setScope(all: boolean): void {
+		this.allAgents = all;
+		this.scopeChosen = true;
+		this.rosterScroll = undefined;
+		this.rows = [];
+		this.reconcile();
 	}
 
 	// --- input ----------------------------------------------------------------
@@ -1241,22 +1288,20 @@ export class AgentDashboard implements Component, Focusable {
 	private regions(): Region[] {
 		const order: Region[] = [];
 		if (!this.state.layout.listHidden || !this.console) order.push("list");
-		if (this.console) order.push("conversation", "composer", "controls");
+		if (this.console) order.push("conversation", "composer");
 		if (this.inspector) order.push("inspector");
-		order.push("heading");
 		return order;
 	}
 
 	private traverse(backward: boolean): void {
-		// The inspector takes Tab through its own fields and controls before focus moves on.
+		// The inspector takes Tab through its own fields before focus moves on.
 		if (this.region === "inspector" && this.inspector?.frame.focusNext(backward)) return;
 		const order = this.regions();
-		const index = order.indexOf(this.region);
+		// Find belongs to the list for Tab.
+		const index = order.indexOf(this.region === "find" ? "list" : this.region);
 		const next = order[(index + (backward ? order.length - 1 : 1)) % order.length] ?? "list";
 		this.region = next;
-		if (next === "controls") this.controls.focusEdge(backward);
-		else if (next === "heading") this.headingBar.focusEdge(backward);
-		else if (next === "inspector") this.inspector?.frame.focusEdge(backward);
+		if (next === "inspector") this.inspector?.frame.focusEdge(backward);
 	}
 
 	handleInput(data: string): void {
@@ -1264,46 +1309,77 @@ export class AgentDashboard implements Component, Focusable {
 		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeKey());
 		if (this.resize.input(data)) {
 			// The resize handle consumed the key.
-		} else if (this.surface === "threads") this.threads?.handleInput(data);
-		else if (this.surface === "efforts") this.efforts?.handleInput(data);
+		} else if (this.footer.menuShown) this.footer.menuInput(data);
+		else if (this.surface !== "work") this.surfaceKey(data);
 		else {
 			this.notice = this.notice?.kind === "pending" ? this.notice : undefined;
-			const menu = this.openMenu();
-			if (menu) menu.bar.handleInput(data, menu.actions);
-			else this.routeKey(data);
+			this.routeKey(data);
 		}
 		this.redraw();
 	}
 
-	private currentActions(): Action[] {
-		return this.console ? this.targetActions() : this.viewActions();
+	/** Threads and Efforts take their own keys; `x` opens the footer's More menu while no text field has focus. */
+	private surfaceKey(data: string): void {
+		const view = this.surface === "threads" ? this.threads : this.efforts;
+		if (!view) return;
+		if (!view.editing() && keyMatches(data, MORE_KEY) && this.footer.hasMore) this.footer.toggleMenu();
+		else view.handleInput(data);
 	}
 
-	/** The open More menu of the heading or the target controls, with the actions it lists. */
-	private openMenu(): { readonly bar: ActionBar; readonly actions: Action[] } | undefined {
-		if (this.headingBar.menuShown) return { bar: this.headingBar, actions: this.viewActions() };
-		if (this.controls.menuShown) return { bar: this.controls, actions: this.currentActions() };
-		return undefined;
+	/** Tab completes in the message field while it offers completions; otherwise it moves focus. */
+	private tabKey(data: string): boolean {
+		if (!matchesKey(data, "tab") && !matchesKey(data, "shift+tab")) return false;
+		const completing = this.region === "composer" && (this.console?.composer.autocompleteRows ?? 0) > 0;
+		if (completing) this.console?.composer.handleInput(data);
+		else this.traverse(matchesKey(data, "shift+tab"));
+		return true;
 	}
 
 	private routeKey(data: string): void {
-		const tab = matchesKey(data, "tab") || matchesKey(data, "shift+tab");
-		const completing = this.region === "composer" && (this.console?.composer.autocompleteRows ?? 0) > 0;
-		if (tab && completing) this.console?.composer.handleInput(data);
-		else if (tab) this.traverse(matchesKey(data, "shift+tab"));
-		else if (this.region === "inspector" && this.inspector) this.inspector.frame.handleInput(data);
+		if (this.tabKey(data)) return;
+		if (this.region === "inspector" && this.inspector) this.inspector.frame.handleInput(data);
 		else if (this.transcriptKeys(data)) {
-			// Expansion, thinking and paging keys apply to the conversation from any region.
+			// Expansion, thinking, paging and the message field's size apply from every region but a form.
 		} else if (this.region === "composer" && this.console) this.composerKey(data);
-		else if (this.region === "controls") this.controlsKey(data);
-		else if (this.region === "heading") this.headingKey(data);
-		else if (this.region === "conversation") this.conversationKey(data);
-		else this.listKey(data);
+		else if (this.region === "find") this.findKey(data);
+		else if (!this.commandKey(data)) {
+			if (this.region === "conversation") this.conversationKey(data);
+			else this.listKey(data);
+		}
 	}
 
-	private headingKey(data: string): void {
-		if (matchesKey(data, "escape")) this.region = this.console ? "composer" : "list";
-		else this.headingBar.handleInput(data, this.viewActions());
+	/**
+	 * Outside text fields the keys of the selected agent and of the view run their actions, `x` opens
+	 * More, and the attached terminal's exit key detaches.
+	 */
+	private commandKey(data: string): boolean {
+		const action = this.allActions().find((candidate) => candidate.key !== undefined && keyMatches(data, candidate.key));
+		if (action) {
+			this.invokeAction(action.id);
+			return true;
+		}
+		if (keyMatches(data, MORE_KEY) && this.footer.hasMore) {
+			this.footer.toggleMenu();
+			return true;
+		}
+		if (this.attached && this.keys.matches(data, "app.exit")) {
+			this.detach();
+			return true;
+		}
+		return false;
+	}
+
+	private allActions(): Action[] {
+		return [...this.targetActions(), ...this.viewActions()];
+	}
+
+	/** Run an action by identity after re-reading the current lists; a disabled one explains itself. */
+	private invokeAction(id: string): void {
+		const action = this.allActions().find((candidate) => candidate.id === id);
+		if (!action) return;
+		this.footer.closeMenu();
+		if (action.disabled) this.show(action.disabled, "warning");
+		else action.run();
 	}
 
 	private composerKey(data: string): void {
@@ -1311,12 +1387,17 @@ export class AgentDashboard implements Component, Focusable {
 		else this.console?.composer.handleInput(data);
 	}
 
-	private controlsKey(data: string): void {
+	/** Find is a text field: letters narrow the list, Up and Down still select, Enter and Escape return to the list. */
+	private findKey(data: string): void {
 		if (matchesKey(data, "escape")) {
-			this.region = this.console ? "composer" : "list";
-			return;
-		}
-		this.controls.handleInput(data, this.currentActions());
+			if (!this.find.value) this.region = "list";
+			else {
+				this.find.value = "";
+				this.setFilter("");
+			}
+		} else if (matchesKey(data, "enter")) this.region = "list";
+		else if (matchesKey(data, "up") || matchesKey(data, "down")) this.move(matchesKey(data, "up") ? -1 : 1);
+		else this.find.handleInput(data);
 	}
 
 	private conversationKey(data: string): void {
@@ -1342,8 +1423,7 @@ export class AgentDashboard implements Component, Focusable {
 		else if (matchesKey(data, "up") || matchesKey(data, "down")) this.move(matchesKey(data, "up") ? -1 : 1);
 		else if (matchesKey(data, "home") || matchesKey(data, "end")) this.move(matchesKey(data, "home") ? -this.rows.length : this.rows.length - 1 - Math.max(0, this.rows.findIndex((row) => row.id === this.state.selected)));
 		else if (matchesKey(data, "enter")) this.listEnter();
-		// Typing over the list writes into its visible Find field.
-		else if (data.length >= 1 && !data.startsWith("\u001b")) this.find.handleInput(data);
+		else if (keyMatches(data, "/")) this.region = "find";
 	}
 
 	/** Show only the rows with an error reason, or every row again; the selection stays where it is. */
@@ -1354,7 +1434,15 @@ export class AgentDashboard implements Component, Focusable {
 		this.reconcile();
 	}
 
-	/** Escape over the list clears the error filter, then an active search, then returns to Threads or leaves the view. */
+	/** What Escape over the list does now, for the footer; nothing in the attached terminal once nothing is left to undo. */
+	private listEscapeLabel(): string | undefined {
+		if (this.errorsOnly) return "all agents";
+		if (!this.state.filter && this.returnSurface) return "back";
+		if (this.state.filter) return "clear find";
+		return this.attached ? undefined : "close";
+	}
+
+	/** Escape over the list clears the error filter, then returns to Threads, then clears Find, then leaves the view. */
 	private listEscape(): void {
 		if (this.errorsOnly) {
 			this.toggleErrors();
@@ -1382,11 +1470,18 @@ export class AgentDashboard implements Component, Focusable {
 		else if (this.emptyStore()) this.openNew();
 	}
 
+	/** The attached terminal: Escape never detaches there; its exit key does. */
+	private get attached(): boolean {
+		return this.operations.exitLabel === "Detach";
+	}
+
 	private exit(): void {
-		if (this.operations.exitLabel === "Detach") {
-			this.show("Detach closes this terminal; it is the control at the top right.", "info");
-			return;
-		}
+		if (this.attached) return;
+		this.dispose();
+		this.done();
+	}
+
+	private detach(): void {
 		this.dispose();
 		this.done();
 	}
@@ -1394,14 +1489,20 @@ export class AgentDashboard implements Component, Focusable {
 	private transcriptKeys(data: string): boolean {
 		const console = this.console;
 		if (!console || this.region === "inspector") return false;
-		if (this.keys.matches(data, "app.tools.expand") || matchesKey(data, "ctrl+o")) {
-			this.toggleExpanded();
-			return true;
-		}
-		if (this.keys.matches(data, "app.thinking.toggle") || matchesKey(data, "ctrl+t")) {
-			this.toggleThinking();
-			return true;
-		}
+		return this.switchKey(data) || this.pageKey(console, data);
+	}
+
+	/** Tool expansion, thinking and the message field's size: chords that act from every region but a form. */
+	private switchKey(data: string): boolean {
+		if (this.keys.matches(data, "app.tools.expand") || matchesKey(data, "ctrl+o")) this.toggleExpanded();
+		else if (this.keys.matches(data, "app.thinking.toggle") || matchesKey(data, "ctrl+t")) this.toggleThinking();
+		else if (keyMatches(data, EXPAND_COMPOSER_KEY)) this.expanded = !this.expanded;
+		else return false;
+		return true;
+	}
+
+	/** PageUp and PageDown read the conversation; at either end they read the next page of history. */
+	private pageKey(console: AgentConsole, data: string): boolean {
 		if (!matchesKey(data, "pageUp") && !matchesKey(data, "pageDown")) return false;
 		const up = matchesKey(data, "pageUp");
 		if (up && console.conversation.atTop()) this.earlier();
@@ -1471,17 +1572,25 @@ export class AgentDashboard implements Component, Focusable {
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.closed) return undefined;
-		if (this.surface !== "work" && event.y === 0) {
-			const result = this.hits.handle(event);
-			if (result) this.redraw();
-			return result;
-		}
-		if (this.surface === "threads") return this.threads?.handleMouse({ ...event, y: event.y - 1, height: event.height - 1 });
-		if (this.surface === "efforts") return this.efforts?.handleMouse(event);
+		// A click above the open More menu closes it, so no entry runs against a selection that click changed.
+		if (this.footer.menuShown && event.type === "click" && event.y < this.menuTop) this.footer.closeMenu();
+		if (this.surface !== "work") return this.surfaceMouse(event);
 		// A pointer event drawn for another size acts on nothing and ends a resize at its committed layout.
 		if (event.width !== this.tui.terminal.columns || event.height !== this.tui.terminal.rows) return this.resize.cancel() ? { handled: true, render: true } : undefined;
 		this.resize.beginInputGeometry(this.tui.terminal.columns, this.tui.terminal.rows, this.resizeKey());
 		return this.resize.handle(event) ?? this.hits.handle(event) ?? this.paneMouse(event);
+	}
+
+	/** Threads and Efforts: the tabs, the footer and an open More menu answer first; the view gets the rows between them. */
+	private surfaceMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		const result = this.hits.handle(event);
+		if (result) {
+			this.redraw();
+			return result;
+		}
+		if (event.y === 0 || event.y >= event.height - 1) return undefined;
+		if (this.surface === "threads") return this.threads?.handleMouse({ ...event, y: event.y - 1, height: event.height - 2 });
+		return this.efforts?.handleMouse({ ...event, height: event.height - 1 });
 	}
 
 	/** Pointer events for the conversation and the composer, in their own coordinates. */
@@ -1514,19 +1623,125 @@ export class AgentDashboard implements Component, Focusable {
 		this.resize.begin(width, height, this.resizeKey());
 		this.hits.begin(width, height);
 		if (width < 60 || height < 16) return Array.from({ length: height }, (_, row) => fitLine(row === 0 ? "Make the window larger to use Agents (60×16). Esc leaves." : "", width));
-		// Threads and Efforts sit under the same tabs as the agents; each owns the rows below them.
+		// Threads and Efforts sit under the same tabs as the agents; each owns the rows between the tabs and the footer.
+		let lines: string[];
 		if (this.surface === "efforts" && this.efforts) {
 			const shape = dashboardGeometry(width, height, 0, false, 0, 4, this.state.layout);
-			const lines = this.efforts.render(width, height, shape.rosterWidth);
-			return [this.renderHeading(width), ...lines.slice(1)].map((line) => fitLine(line, width));
-		}
-		if (this.surface === "threads" && this.threads) {
+			lines = [this.renderHeading(width), ...this.efforts.render(width, height - 1, shape.rosterWidth).slice(1)];
+		} else if (this.surface === "threads" && this.threads) {
 			const shape = dashboardGeometry(width, height, 0, false, 0, 4, this.state.layout);
-			return [this.renderHeading(width), ...this.threads.render(width, height - 1, shape.rosterWidth)].map((line) => fitLine(line, width));
+			lines = [this.renderHeading(width), ...this.threads.render(width, height - 2, shape.rosterWidth)];
+		} else {
+			lines = this.renderWork(width, height - 1);
+			this.resize.end();
 		}
-		const body = this.renderWork(width, height);
-		this.resize.end();
-		return body.map((line) => fitLine(line, width));
+		const body = Array.from({ length: height - 1 }, (_, row) => fitLine(lines[row] ?? "", width));
+		// The view has laid itself out, so the footer's keys are current; the footer decides what More lists.
+		const footer = this.renderFooter(width, height - 1);
+		if (this.footer.menuShown) this.overlayMenu(body, width, height);
+		return [...body, fitLine(footer, width)];
+	}
+
+	/** The key footer on the last row: the open form's keys while it has focus, else the focused surface's. */
+	private renderFooter(width: number, y: number): string {
+		if (this.surface === "work" && this.region === "inspector" && this.inspector) return this.inspector.frame.renderFooter(width, this.hits, y);
+		const { controls, menu } = this.footer.menuShown ? { controls: Footer.menuControls(this.footer, (key) => this.sendKey(key)), menu: [] } : this.footerControls();
+		return this.footer.render(controls, width, this.theme, this.hits, y, 0, menu);
+	}
+
+	private footerControls(): { controls: Control[]; menu: Control[] } {
+		if (this.surface === "threads") return this.threads?.footer() ?? { controls: [], menu: [] };
+		if (this.surface === "efforts") return this.efforts?.footer() ?? { controls: [], menu: [] };
+		return this.workFooter();
+	}
+
+	/** The open More menu over the rows above the footer; clicks inside it never reach the view below. */
+	private overlayMenu(body: string[], width: number, height: number): void {
+		const rows = Math.min(height - 2, Math.max(2, this.footer.menuRows));
+		const y0 = height - 1 - rows;
+		this.menuTop = y0;
+		const menuHits = new HitMap();
+		menuHits.begin(width, height);
+		menuHits.add({ x: 0, y: y0, width, height: rows, click: () => ({ handled: true }) });
+		const menu = this.footer.renderMenu(width, rows, this.theme, menuHits, y0);
+		body.splice(y0, menu.length, ...menu.map((line) => fitLine(line, width)));
+		this.hits.include(menuHits, 0, 0);
+	}
+
+	/** Send one key through the dashboard's own input route; footer clicks on key controls use it. */
+	private sendKey(key: string): void {
+		const data = keyInput(key);
+		if (data !== undefined) this.handleInput(data);
+	}
+
+	private hint(keys: readonly string[], label: string, priority = 2): Control {
+		return { id: `\u0000${keys.join("/")}`, keys, label, priority, run: (key) => this.sendKey(key) };
+	}
+
+	/** Footer priorities of the view's actions; the selected agent's actions have 1. */
+	private static readonly PRIORITY: Readonly<Record<string, number>> = { new: 1, help: 1, scope: 2, threads: 2, efforts: 2, errors: 2, list: 3, expand: 3, thinking: 3 };
+
+	/** The agents view's footer for the focused region: navigation first, then actions, then the way out. */
+	private workFooter(): { controls: Control[]; menu: Control[] } {
+		const console = this.console;
+		if (this.region === "find") return { controls: [this.hint(["up", "down"], "select", 0), this.hint(["enter"], "done", 1), this.hint(["escape"], this.find.value ? "clear" : "list", 0)], menu: [] };
+		if (this.region === "composer" && console) return { controls: this.composerControls(console), menu: [] };
+		const controls: Control[] =
+			this.region === "conversation" && console
+				? [this.hint(["up", "down"], "scroll", 0), this.hint(["pageUp", "pageDown"], "read"), this.hint(["end"], "live"), this.hint(["enter"], "message", 1)]
+				: this.listControls();
+		const menu = this.actionControls(controls);
+		controls.push(...this.wayOut());
+		return { controls, menu };
+	}
+
+	/** Primary keyed actions join the row; the rest are listed in More, keys included. Returns the More entries. */
+	private actionControls(controls: Control[]): Control[] {
+		const menu: Control[] = [];
+		const invoke = (id: string) => this.invokeAction(id);
+		for (const action of this.allActions()) {
+			const control = action.primary ? actionControl(action, invoke, AgentDashboard.PRIORITY[action.id] ?? 1) : undefined;
+			if (control) controls.push(control);
+			else menu.push(menuControl(action, invoke));
+		}
+		return menu;
+	}
+
+	/** Tab, then what Escape does now, then, in the attached terminal, the exit key that detaches. */
+	private wayOut(): Control[] {
+		const controls: Control[] = [];
+		if (this.regions().length > 1) controls.push(this.hint(["tab"], "focus", 3));
+		const escapeLabel = this.region === "conversation" ? "list" : this.listEscapeLabel();
+		if (escapeLabel) controls.push(this.hint(["escape"], escapeLabel, 0));
+		if (this.attached) controls.push({ id: "\u0000detach", keys: [this.keys.getKeys("app.exit")[0] ?? "ctrl+d"], label: "detach", priority: 0, run: () => this.detach() });
+		return controls;
+	}
+
+	private listControls(): Control[] {
+		const controls = [this.hint(["up", "down"], "select", 0)];
+		if (this.console) controls.push(this.hint(["pageUp", "pageDown"], "read"));
+		const enter = this.loadMore ? "load more" : this.console ? "message" : this.emptyStore() && this.operations.newAgent ? "new" : undefined;
+		if (enter) controls.push(this.hint(["enter"], enter, 1));
+		controls.push(this.hint(["/"], "find", 1));
+		return controls;
+	}
+
+	/** The message field's keys: Enter names the delivery it makes, and every letter stays text. */
+	private composerControls(console: AgentConsole): Control[] {
+		const working = console.row.state === "working";
+		const send = !working ? "send" : console.state.mode === "steer" ? "steer" : "follow-up";
+		const newline = this.keys.getKeys("tui.input.newLine");
+		const view = console.state.view;
+		return [
+			this.hint(["enter"], send, 0),
+			...(newline.length ? [this.hint(newline, "newline")] : []),
+			this.hint(["pageUp", "pageDown"], "read"),
+			this.hint([EXPAND_COMPOSER_KEY], this.expanded ? "shrink" : "expand"),
+			this.hint([this.keys.getKeys("app.tools.expand")[0] ?? "ctrl+o"], view.expanded ? "collapse all" : "expand all", 3),
+			this.hint([this.keys.getKeys("app.thinking.toggle")[0] ?? "ctrl+t"], "thinking", 3),
+			...(this.regions().length > 1 ? [this.hint(["tab"], "focus", 3)] : []),
+			this.hint(["escape"], this.inspector ? `close ${plainLine(this.inspector.frame.viewTitle ?? "form").toLocaleLowerCase()}` : "list", 0),
+		];
 	}
 
 	/** Agents, Threads and Efforts as tabs; the agents' own scope and list controls follow on their tab. */
@@ -1547,46 +1762,21 @@ export class AgentDashboard implements Component, Focusable {
 		return { line: `${line}  `, x: x + 2 };
 	}
 
+	/** The tabs on the left and, on the agents tab, the session's agent figures at the right. Commands live in the footer. */
 	private renderHeading(width: number): string {
-		const theme = this.theme;
 		const tabs = this.renderTabs();
-		let x = tabs.x;
-		let line = tabs.line;
-		if (this.surface !== "work") {
-			const exit = ` ${this.operations.exitLabel ?? "Close"} `;
-			this.hits.add({ x: width - visibleWidth(exit), y: 0, width: visibleWidth(exit), height: 1, click: () => this.exitControl() });
-			return `${fitLine(line, Math.max(0, width - visibleWidth(exit)))}${theme.fg("accent", exit)}`;
-		}
-		if (this.state.layout.listHidden) {
-			const show = " Show list ";
-			line += theme.fg("muted", show);
-			this.hits.add({ x, y: 0, width: visibleWidth(show), height: 1, click: () => this.toggleList() });
-			x += visibleWidth(show);
-		}
-		// The tabs lead on the left; the session figures, the view's actions and the way out sit at the right.
-		const actions = this.viewActions();
-		const exit = ` ${this.operations.exitLabel ?? "Close"} `;
-		const figures = width >= 100 && this.sessionFigures ? theme.fg("muted", ` ${plainLine(this.sessionFigures)} `) : "";
-		const barRoom = Math.max(0, Math.min(ActionBar.measure(actions), width - x - visibleWidth(figures) - visibleWidth(exit) - 2));
-		const barX = width - visibleWidth(exit) - barRoom - 1;
-		const barHits = new HitMap();
-		barHits.begin(width, 1);
-		this.headingBar.focused = this.focused && this.region === "heading";
-		const bar = this.headingBar.render(actions, barRoom, theme, barHits, 0);
-		this.hits.include(barHits, barX, 0);
-		const gap = Math.max(1, barX - x - visibleWidth(figures));
-		this.hits.add({ x: width - visibleWidth(exit), y: 0, width: visibleWidth(exit), height: 1, click: () => this.exitControl() });
-		return `${line}${" ".repeat(gap)}${figures}${fitLine(bar, barRoom)} ${theme.fg("accent", exit)}`;
+		const figures = this.surface === "work" && width >= 100 && this.sessionFigures ? this.theme.fg("muted", ` ${plainLine(this.sessionFigures)} `) : "";
+		if (!figures) return fitLine(tabs.line, width);
+		return `${fitLine(tabs.line, Math.max(0, width - visibleWidth(figures)))}${figures}`;
 	}
 
-	/** Related and All, and the control that hides the list, ending at `xEnd` on the Find row. */
+	/** Related and All, ending at `xEnd` on the Find row; `v` in the footer switches them too. */
 	private listScope(xEnd: number, y: number, room: number): { text: string; width: number } {
 		const theme = this.theme;
 		const parts: Array<{ text: string; active?: boolean; run(): void }> = [];
 		if (this.primaryId)
 			for (const [all, label] of [[false, "Related"], [true, "All"]] as const)
-				parts.push({ text: ` ${label} `, active: this.allAgents === all, run: () => { this.allAgents = all; this.scopeChosen = true; this.rosterScroll = undefined; this.rows = []; this.reconcile(); } });
-		if (this.console) parts.push({ text: " ‹ ", run: () => this.toggleList() });
+				parts.push({ text: ` ${label} `, active: this.allAgents === all, run: () => this.setScope(all) });
 		const total = parts.reduce((sum, part) => sum + visibleWidth(part.text), 0);
 		if (total > room) return { text: "", width: 0 };
 		let x = xEnd - total;
@@ -1598,15 +1788,6 @@ export class AgentDashboard implements Component, Focusable {
 			x += w;
 		}
 		return { text, width: total };
-	}
-
-	private exitControl(): void {
-		if (this.operations.exitLabel === "Detach") {
-			this.dispose();
-			this.done();
-			return;
-		}
-		this.exit();
 	}
 
 	private toggleList(): void {
@@ -1631,7 +1812,7 @@ export class AgentDashboard implements Component, Focusable {
 		let body: string[];
 		if (listWidth) body = this.renderSplit(width, bodyHeight, listWidth);
 		else if (showList && bodyHeight >= 19 && !this.inspector) {
-			// Two agents fit at 80x24; shorter narrow windows keep one before yielding the strip.
+			// The pane keeps at least 14 rows below the strip: two agents from 25 rows, one from 21, none below.
 			const strip = this.renderList(width, bodyHeight >= 23 ? 8 : 5, 0, 1, true);
 			body = [...strip, ...this.renderPane(0, 1 + strip.length, width, bodyHeight - strip.length)];
 		} else body = this.renderPane(0, 1, width, bodyHeight);
@@ -1651,15 +1832,15 @@ export class AgentDashboard implements Component, Focusable {
 
 	private renderList(width: number, height: number, x0: number, y0: number, compact = false): string[] {
 		const theme = this.theme;
-		this.find.focused = this.focused && this.region === "list";
+		this.find.focused = this.focused && this.region === "find";
 		// A compact strip keeps its facts beside Find, so each other row lists an agent; the scope controls keep their room.
 		const facts = compact ? this.listFacts(false) : undefined;
 		const factsWidth = facts ? Math.min(Math.floor(width / 2), visibleWidth([facts.text, facts.more].filter(Boolean).join(" "))) : 0;
 		const findArea = factsWidth ? width - factsWidth - 1 : width;
 		const scope = this.listScope(x0 + findArea, y0, Math.max(0, findArea - 12));
 		const findWidth = findArea - scope.width;
-		const findLine = fitLine(this.find.render(findWidth, theme, 6, "type to find agents"), findWidth) + scope.text;
-		this.hits.add({ x: x0, y: y0, width: findWidth, height: 1, click: (event) => ({ ...this.find.handleMouse(event, 6), ...this.focusRegion("list") }) });
+		const findLine = fitLine(this.find.render(findWidth, theme, 6, "/ to find agents"), findWidth) + scope.text;
+		this.hits.add({ x: x0, y: y0, width: findWidth, height: 1, click: (event) => ({ ...this.find.handleMouse(event, 6), ...this.focusRegion("find") }) });
 		const rosterHeight = Math.max(1, height - (compact ? 1 : 2));
 		const lines = rosterLines(this.rows, this.loadMore ? undefined : this.state.selected, width, rosterHeight, Date.now(), theme, compact, {
 			primaryId: this.primaryId,
@@ -1744,7 +1925,7 @@ export class AgentDashboard implements Component, Focusable {
 		if (!console) return this.renderNoSelection(x0, y0, width, height);
 		// Header, a spacing row, the conversation, the message field, and under it the agent's status lines in
 		// the main session's footer layout. A fact line with nothing known takes no row.
-		const header = [...this.renderTargetHeader(console, x0, y0, width), ""];
+		const header = [...this.renderTargetHeader(console, width), ""];
 		const status = console
 			.statusLines(width - 1, this.modelInfo(console), this.branches.get(console.row.cwd), this.delegatedFigures())
 			.filter((line) => visibleWidth(line) > 0)
@@ -1770,16 +1951,14 @@ export class AgentDashboard implements Component, Focusable {
 			theme.bold("No conversation selected"),
 			"",
 			this.rows.length ? "Select an agent in the list to read its conversation." : "No agent is shown yet.",
-			this.operations.newAgent ? "New conversation starts one here." : (this.operations.newUnavailable ?? ""),
+			this.operations.newAgent ? "n starts a new conversation." : (this.operations.newUnavailable ?? ""),
 		];
 		this.geometry = { ...this.geometry, paneX: x0, paneWidth: width, conversationY: y0, conversationHeight: 0, composerY: y0 + height, composerHeight: 0 };
-		const menu = this.openMenu();
-		if (menu) return this.renderMenu(menu, x0, y0, width, height);
 		if (this.inspector) return this.renderInspector(x0, y0, width, height);
 		return Array.from({ length: height }, (_, row) => fitLine(lines[row] ? ` ${lines[row]}` : "", width));
 	}
 
-	private renderTargetHeader(console: AgentConsole, x0: number, y0: number, width: number): string[] {
+	private renderTargetHeader(console: AgentConsole, width: number): string[] {
 		const theme = this.theme;
 		const row = console.row;
 		const status = this.statusTail(console);
@@ -1787,13 +1966,8 @@ export class AgentDashboard implements Component, Focusable {
 		const name = previous?.name ?? theme.bold(theme.fg("text", plainLine(titleOf(row))));
 		const project = previous?.project ?? theme.fg("muted", `  ${plainLine(projectOf(row))}`);
 		const identityWidth = previous?.identityWidth ?? visibleWidth(` ${name}${project}`);
-		const actions = this.targetActions();
-		// Name and project keep their width first; controls that do not fit move into More, and the first
-		// control with More always stays visible.
-		const first = actions.find((action) => action.primary);
-		const least = first ? ActionBar.measure([first, { ...first, id: "more", primary: false }]) : 0;
-		const barWidth = Math.min(ActionBar.measure(actions), Math.max(least, width - identityWidth - 1));
-		const room = Math.max(1, width - barWidth - 1);
+		// The header names the agent and its state; its actions are keys in the footer.
+		const room = Math.max(1, width);
 		let left: string;
 		let stateLine: string;
 		if (previous?.room === room && previous.status === status) {
@@ -1805,12 +1979,7 @@ export class AgentDashboard implements Component, Focusable {
 			stateLine = fitLine(`${theme.fg(appearance.color, ` ${appearance.glyph} ${appearance.label}`)}${status}`, width);
 		}
 		this.headerCache = { row, name, project, identityWidth, room, status, left, stateLine };
-		this.controls.focused = this.focused && this.region === "controls";
-		const barHits = new HitMap();
-		barHits.begin(this.tui.terminal.columns, this.tui.terminal.rows);
-		const bar = this.controls.render(actions, barWidth, theme, barHits, 0);
-		this.hits.include(barHits, x0 + width - barWidth, y0);
-		return [`${left} ${bar}`, stateLine];
+		return [left, stateLine];
 	}
 
 	/**
@@ -1845,8 +2014,6 @@ export class AgentDashboard implements Component, Focusable {
 
 	/** Conversation, or the inspector beside or instead of it. */
 	private renderMiddle(console: AgentConsole, x0: number, y0: number, width: number, height: number): string[] {
-		const menu = this.openMenu();
-		if (menu) return this.renderMenu(menu, x0, y0, width, height);
 		const beside = this.inspector && width >= 120;
 		const conversationWidth = this.inspector ? (beside ? Math.floor(width * 0.52) : 0) : width;
 		if (!conversationWidth && this.inspector) {
@@ -1859,15 +2026,6 @@ export class AgentDashboard implements Component, Focusable {
 		const inspector = this.renderInspector(x0 + conversationWidth + 1, y0, inspectorWidth, height);
 		const divider = this.theme.fg(this.region === "inspector" ? "accent" : "borderMuted", "│");
 		return conversation.map((line, row) => `${fitLine(line, conversationWidth)}${divider}${fitLine(inspector[row] ?? "", inspectorWidth)}`);
-	}
-
-	private renderMenu(menu: { readonly bar: ActionBar; readonly actions: Action[] }, x0: number, y0: number, width: number, height: number): string[] {
-		const menuHits = new HitMap();
-		menuHits.begin(this.tui.terminal.columns, this.tui.terminal.rows);
-		const lines = menu.bar.renderMenu(menu.actions, width, height, this.theme, menuHits, 0);
-		this.hits.include(menuHits, x0, y0);
-		this.geometry = { ...this.geometry, conversationY: y0, conversationHeight: 0, conversationWidth: 0 };
-		return Array.from({ length: height }, (_, row) => fitLine(lines[row] ?? "", width));
 	}
 
 	private renderInspector(x0: number, y0: number, width: number, height: number): string[] {
@@ -1950,21 +2108,18 @@ export class AgentDashboard implements Component, Focusable {
 		this.sizeComposer(console, maxRows);
 		const working = console.row.state === "working";
 		// The delivery effect shows only while it is a choice; an idle agent just receives the message.
+		// It is a fact with a click; `f` in the footer switches it by key.
 		const mode = working ? (console.state.mode === "steer" ? "Steer at next step ⇄" : "Follow-up after answer ⇄") : "";
 		const receipt = console.state.pending ? "Sending…" : (console.state.receipt ?? "");
 		const caption = `To ${plainLine(agentDisplayName(console.row))}`;
-		const lines = composer.render(width, caption, mode, receipt, ["Send", this.expanded ? "Shrink" : "Expand"]);
+		const lines = composer.render(width, caption, mode, receipt);
 		return lines.length > maxRows + 2 ? lines.slice(0, maxRows + 2) : lines;
 	}
 
 	private composerHits(console: AgentConsole, x0: number, y0: number, width: number, rows: number): void {
 		if (!rows) return;
 		const spans = console.composer.spans;
-		const bottom = y0 + rows - 1;
 		if (spans.mode && console.row.state === "working") this.hits.add({ x: x0 + spans.mode.x, y: y0, width: spans.mode.width, height: 1, click: () => this.toggleMode() });
-		const [send, expand] = spans.controls;
-		if (send) this.hits.add({ x: x0 + send.x, y: bottom, width: send.width, height: 1, click: () => void this.submit(console.composer.getText()) });
-		if (expand) this.hits.add({ x: x0 + expand.x, y: bottom, width: expand.width, height: 1, click: () => { this.expanded = !this.expanded; } });
 		if (console.composer.grip === undefined) return;
 		const requested = this.state.layout.composerRows;
 		const value = requested ?? Math.max(MIN_COMPOSER_ROWS, rows - 2);

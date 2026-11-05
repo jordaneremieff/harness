@@ -73,7 +73,7 @@ class AreaEditor extends Editor {
 
 /**
  * A multiline field over the native pi-tui Editor: native cursor, paste, word movement and undo.
- * Enter inserts a line break; submission belongs to the form's labelled action.
+ * The newline keys insert a line break. A Form takes Enter first (next field, or submit on the last).
  */
 export class TextArea {
 	readonly editor: Editor;

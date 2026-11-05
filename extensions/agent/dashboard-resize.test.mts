@@ -158,23 +158,29 @@ it("raw composer grip drag increases rows, preserves its caption and resets on d
 		assert.equal(f.state.layout.composerRows, undefined);
 	} finally { f.ui.dispose(); }
 });
-it("letters over the list type into Find and never resize the split", async () => {
+it("/ sends letters to Find, and letters over the list never resize the split", async () => {
 	const saved: DashboardLayout[] = [];
 	const f = fixture(164, 44, source(), { saveLayout: (layout) => saved.push(layout) });
 	try {
 		await turn();
 		const footer = stripVTControlCharacters(f.ui.render(164).at(-1) ?? "");
 		assert.doesNotMatch(footer, /r resize/);
+		const divider = f.ui.render(164)[1]?.indexOf("│") ?? -1;
 		f.ui.handleInput("r");
 		const lines = f.ui.render(164).map(stripVTControlCharacters);
 		assert.equal(f.ui.focus.region, "list");
-		assert.equal(f.state.filter, "r", "the letter went to the visible Find field");
+		assert.equal(f.state.filter, "", "a letter over the list is not a search edit");
 		assert.deepEqual(f.state.layout, {}); assert.deepEqual(saved, []);
-		assert.equal(lines.at(-1)?.indexOf("│"), footer.indexOf("│"), "the divider keeps its column");
+		assert.equal(lines[1]?.indexOf("│"), divider, "the divider keeps its column");
+		f.ui.handleInput("/");
+		f.ui.handleInput("r");
+		assert.equal(f.state.filter, "r", "the visible Find field takes the letter");
 		f.ui.handleInput("\x1b[C"); f.ui.handleInput("0");
 		assert.deepEqual(f.state.layout, {});
 		f.ui.handleInput("\x1b");
 		assert.equal(f.state.filter, "", "Escape clears the search first");
+		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.focus.region, "list", "the next Escape leaves Find");
 		f.ui.handleInput("\r"); assert.equal(f.ui.focus.region, "composer");
 	} finally { f.ui.dispose(); }
 });

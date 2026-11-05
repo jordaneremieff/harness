@@ -160,9 +160,13 @@ from the inventory, and a detail that reads the selected source page by page.
 The detail shows the exact resource and reference digest of the page it read;
 **Read more** follows the continuation under that digest; a changed source
 refuses it, so pages of two revisions never mix, and **Read again** reads the
-source from its first page. Typing filters titles, types, and statements.
-Selecting a row reads; nothing in the view starts a check, derivation, or
-review, and nothing writes to the corpus. The command shows Pillars on its own.
+source from its first page. The footer at the bottom lists each control as its
+key and its short label: `m` reads more, `r` reads again. A click on a control
+runs the same action as its key. `/` focuses the search field, which filters
+titles, types, and statements. `x` opens the list of every other action.
+Escape goes back. Selecting a row reads; nothing in the view starts a check,
+derivation, or review, and nothing writes to the corpus. The command shows
+Pillars on its own.
 Because this extension publishes it as an operator view, `/dashboard` also
 shows it as a tab.
 The attached Agent terminal opens the same view through `operator-panel.ts`,

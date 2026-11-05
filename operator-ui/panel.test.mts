@@ -39,7 +39,6 @@ function host(controller = new AbortController()): ViewHost & { renders: number 
 		notify: () => {},
 		push: () => {},
 		back: () => {},
-		focusActions: () => {},
 		close: () => {},
 	};
 	return self;
@@ -88,4 +87,5 @@ it("a reader view shows wrapped content and the owner's actions", () => {
 	assert.ok(shown.includes("identity one"));
 	assert.ok(shown.includes("directory /work"));
 	assert.deepEqual(reader.actions().map((action) => action.label), ["Read again"]);
+	assert.deepEqual(reader.keys().map((hint) => hint.label), ["scroll", "page"], "the footer names the reader's own keys");
 });

@@ -350,8 +350,9 @@ function deriveRoster(
 	return { lines: lines.slice(0, height), start, maxStart, hits, times, ...(control && lines.length <= height ? { errors: { line: lines.length - 1, ...control } } : {}) };
 }
 /**
- * The list footer: how many loaded rows sit above or below the visible window, then the error filter.
- * "N with errors" narrows the list to rows with an error reason; "Show all" returns to every row.
+ * The list footer: how many loaded rows sit above or below the visible window, then the error count
+ * or the error filter's state. The count is a passive fact that also takes a click; the filter's
+ * control is `e` in the key footer.
  */
 function rosterFooter(rows: readonly AgentConversationSummary[], start: number, shown: number, errorsOnly: boolean): { text: string; color: ThemeColor; control?: { x: number; width: number } } {
 	const hidden = rows.length - shown;
@@ -360,7 +361,7 @@ function rosterFooter(rows: readonly AgentConversationSummary[], start: number, 
 		? `${rows.length} ${errorsOnly ? "with errors" : `agent${rows.length === 1 ? "" : "s"}`}`
 		: !start ? `↓ ${below} more` : !below ? `↑ ${start} more` : `↑ ${start} · ↓ ${below} more`;
 	const errors = rows.filter(needsAttention).length;
-	const label = errorsOnly ? "Show all" : errors ? `${errors} with errors` : "";
+	const label = errorsOnly ? "errors only" : errors ? `${errors} with errors` : "";
 	if (!label) return { text: position, color: "muted" };
 	const prefix = `${position} · `;
 	return { text: `${prefix}${label}`, color: "muted", control: { x: visibleWidth(prefix), width: visibleWidth(label) } };

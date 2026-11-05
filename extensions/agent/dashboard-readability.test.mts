@@ -66,7 +66,7 @@ for (const [width, skipped] of [[164, 18], [164, 0], [100, 18], [100, 0], [80, 1
 			assert.equal((header[2] ?? "").trim(), "", "one blank row follows the two-line header");
 			const roster = wide ? lines.slice(1).map((line) => line.slice(0, paneX - 1)) : lines.slice(1, 9);
 			assert.doesNotMatch(roster.join("\n"), /unreadable|omitted|incomplete/, "storage coverage stays in Details");
-			if (skipped) assert.match(roster.join("\n"), /Load more/);
+			if (skipped) assert.match(roster.join("\n"), /Load mo/);
 			f.ui.handleInput("\r");
 			assert.doesNotMatch(read().slice(headerY, headerY + 3).map((line) => line.slice(paneX)).join("\n"), /coverage|unreadable|incomplete/i);
 		} finally { f.ui.dispose(); }
@@ -89,7 +89,8 @@ it("live usage sits under the target header and receipts stay on the message fie
 		state.receipt = "Message admitted";
 		const lines = visible(f.ui.render(160));
 		assert.match(lines[0] ?? "", /agents: 1\/1 active · ~\$0\.42/, "session figures sit in the heading");
-		assert.match(lines[0] ?? "", /Close\s*$/);
+		assert.doesNotMatch(lines[0] ?? "", /Close/u, "the heading holds no commands");
+		assert.match((lines.at(-1) ?? "").trimEnd(), /esc close$/u, "the way out is the last footer control");
 		const paneX = (lines[1]?.indexOf("│") ?? 0) + 1;
 		const pane = lines.slice(1).map((line) => line.slice(paneX));
 		assert.doesNotMatch(pane.slice(0, 3).join("\n"), /LIVE|RETAINED|Earlier messages available|Roster|Message admitted/);

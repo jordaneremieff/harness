@@ -79,7 +79,7 @@ function drive(script: (frame: NavigationFrame) => Promise<void>) {
 			notify: () => {},
 			custom: <T,>(factory: (tui: unknown, theme: Theme, keys: unknown, done: (value: T) => void) => unknown) =>
 				new Promise<T>((resolve, reject) => {
-					const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, {}, resolve) as NavigationFrame;
+					const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, { getKeys: () => [] }, resolve) as NavigationFrame;
 					script(frame).then(
 						() => frame.close(),
 						(error: unknown) => {
@@ -119,8 +119,9 @@ function archiveScope(frame: NavigationFrame): void {
 	frame.handleInput("\r");
 }
 
-/** Type a query into the search field and press Enter, which runs the archive search. */
+/** Focus the search field with `/`, type a query, and press Enter, which runs the archive search. */
 function search(frame: NavigationFrame, query: string): void {
+	frame.handleInput("/");
 	for (const key of query) frame.handleInput(key);
 	frame.handleInput("\r");
 }

@@ -543,7 +543,7 @@ export class TerminalScreen implements Component {
 	private extraActions(target: AgentConversationSummary): Action[] {
 		const inputs = this.controller.unconfirmed(target.id);
 		if (!inputs.length) return [];
-		return [{ id: "recover", label: `Recover input (${inputs.length})`, primary: true, description: "Restore an unconfirmed input to the draft without sending", run: () => this.recover(target.id) }];
+		return [{ id: "recover", label: `Recover input (${inputs.length})`, key: "u", short: `recover input (${inputs.length})`, primary: true, description: "Restore an unconfirmed input to the draft without sending", run: () => this.recover(target.id) }];
 	}
 
 	private changed(): void {

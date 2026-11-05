@@ -65,8 +65,8 @@ export class AgentComposer implements Component, Focusable {
 	private textRows = 1;
 	autocompleteRows = 0;
 	grip?: "normal" | "hover" | "active";
-	/** Spans of the last render: the delivery effect on the top border, and each bottom-border control. */
-	spans: { mode?: ComposerSpan; controls: ComposerSpan[] } = { controls: [] };
+	/** Span of the last render's delivery effect on the top border, which takes a click. */
+	spans: { mode?: ComposerSpan } = {};
 	/** Rows of the last render, so a host can find the bottom border. */
 	get renderedBottom(): number {
 		return this.bottomRow;
@@ -183,23 +183,13 @@ export class AgentComposer implements Component, Focusable {
 		return sliceByColumn(top, 0, width - 5, true) + theme.fg(this.grip === "normal" ? "borderMuted" : "accent", `─${this.grip === "active" ? "━━━" : "┄┄┄"}╮`);
 	}
 
-	/** The bottom border: the receipt on the left, the labelled controls on the right. */
-	private bottomFrame(width: number, receipt: string, controls: readonly string[]): string {
+	/** The bottom border: the receipt on the left and how many draft lines sit below. Its keys are in the key footer. */
+	private bottomFrame(width: number, receipt: string): string {
 		const hidden = this.editor.bottomHidden ? `↓ ${this.editor.bottomHidden} lines` : "";
-		const labels = controls.join(" · ");
-		const position = [hidden, labels].filter(Boolean).join(" · ");
-		const line = dashboardHeading(receipt, position, width, this.options.theme, true);
-		const spans: ComposerSpan[] = [];
-		let x = width - 2 - visibleWidth(labels);
-		for (const control of controls) {
-			spans.push({ x, width: visibleWidth(control) });
-			x += visibleWidth(control) + 3;
-		}
-		this.spans.controls = spans;
-		return line;
+		return dashboardHeading(receipt, hidden, width, this.options.theme, true);
 	}
 
-	render(width: number, caption: string | ((width: number) => string) = "Message", mode = "", receipt = "", controls: readonly string[] = []): string[] {
+	render(width: number, caption: string | ((width: number) => string) = "Message", mode = "", receipt = ""): string[] {
 		const lines = this.editor.render(Math.max(1, width - 2));
 		const bottom = lines.findIndex((line, index) => index > 0 && line === "");
 		this.autocompleteRows = Math.max(0, lines.length - bottom - 1);
@@ -209,11 +199,11 @@ export class AgentComposer implements Component, Focusable {
 		if (this.paddingRows) lines.splice(bottom, 0, ...Array.from({ length: this.paddingRows }, () => " ".repeat(Math.max(1, width - 2))));
 		const theme = this.options.theme;
 		const border = (text: string) => theme.fg(this.focused ? "accent" : "borderMuted", text);
-		this.spans = { controls: [] };
+		this.spans = {};
 		return lines.map((line, index) => {
 			if (index === 0) return this.topFrame(width, caption, mode);
 			// Native text and autocomplete rows are padded; only our border hooks emit empty rows.
-			if (line === "") return this.bottomFrame(width, receipt, controls);
+			if (line === "") return this.bottomFrame(width, receipt);
 			return border("│") + line + border("│");
 		});
 	}

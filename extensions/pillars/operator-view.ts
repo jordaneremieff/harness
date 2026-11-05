@@ -164,8 +164,8 @@ class PillarsView {
 		const source = this.sources.get(entry.resource);
 		const more = source?.last?.nextOffset !== undefined && !source.error;
 		return [
-			{ id: "more", label: "Read more", primary: true, disabled: source?.pending ? "A read is running" : more ? undefined : "The whole source is shown", description: "Read the next page of the same source revision", run: () => void this.read(entry.resource, true) },
-			{ id: "again", label: "Read again", primary: true, disabled: source?.pending ? "A read is running" : undefined, description: "Read the source from its first page", run: () => void this.read(entry.resource, false) },
+			{ id: "more", label: "Read more", key: "m", short: "read more", primary: true, disabled: source?.pending ? "A read is running" : more ? undefined : "The whole source is shown", description: "Read the next page of the same source revision", run: () => void this.read(entry.resource, true) },
+			{ id: "again", label: "Read again", key: "r", short: "read again", primary: true, disabled: source?.pending ? "A read is running" : undefined, description: "Read the source from its first page", run: () => void this.read(entry.resource, false) },
 		];
 	}
 

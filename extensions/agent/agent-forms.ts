@@ -373,13 +373,13 @@ function profileView(host: AgentFormHost, view: ViewHost): OperatorView {
 		() => (profile ? profileText(profile, host.profileDrafts.get(profile.identity)) : error ? `The profile could not be read: ${error}` : "Reading the profile…"),
 		() => {
 			const current = profile;
-			if (!current) return [{ id: "read", label: "Read again", primary: true, run: read }];
+			if (!current) return [{ id: "read", label: "Read again", key: "r", primary: true, run: read }];
 			const draft = draftOf(current);
 			const stale = draft.expectedRevision !== current.revision && !draft.needsRead;
 			return [
-				{ id: "edit", label: hasPatch(draft) ? "Continue editing" : "Edit role or expertise", primary: true, run: () => view.push((next) => profileEditView(host, next, current, draft, read)) },
-				{ id: "read", label: "Read current profile", primary: true, run: read },
-				...(stale ? [{ id: "revision", label: "Use current revision for the draft", primary: true, run: () => { draft.expectedRevision = current.revision; view.requestRender(); } }] : []),
+				{ id: "edit", label: hasPatch(draft) ? "Continue editing" : "Edit role or expertise", key: "e", short: hasPatch(draft) ? "continue editing" : "edit", primary: true, run: () => view.push((next) => profileEditView(host, next, current, draft, read)) },
+				{ id: "read", label: "Read current profile", key: "r", short: "read again", primary: true, run: read },
+				...(stale ? [{ id: "revision", label: "Use current revision for the draft", key: "u", short: "use current revision", primary: true, run: () => { draft.expectedRevision = current.revision; view.requestRender(); } }] : []),
 				...(hasPatch(draft) ? [{ id: "discard", label: "Discard draft", run: () => { host.profileDrafts.delete(current.identity); view.requestRender(); } }] : []),
 			];
 		},

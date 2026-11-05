@@ -9,7 +9,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type TuiMouseEvent, type TuiMouseEventResult, visibleWidth } from "@earendil-works/pi-tui";
-import { type Action, Browser, type Choice, clip, Form, HitMap, LoadingView, type OperatorView, plainLine, Reader, ReaderView, type ViewHost } from "../../operator-ui/index.ts";
+import { type Action, Browser, type Choice, clip, Form, HitMap, type KeyHint, LoadingView, type OperatorView, plainLine, Reader, ReaderView, type ViewHost } from "../../operator-ui/index.ts";
 import { supplyDataRevision } from "./data-arguments.ts";
 import { candidatePermitsEffectChoice, type PendingProposal, proposalRevision, type RuleSnapshot, ruleStoreHealthLine, targetIdentity } from "./local-rules.ts";
 import { type ActivityReadResult, activityDetailLines, activityKey, filteredProposals, filteredRecords, type PolicyActivityRecord, proposalDetailLines, type RuleFireSummary, ruleDetailLines, terminalSafe } from "./panel.ts";
@@ -157,17 +157,27 @@ export class ArtifactReview implements OperatorView {
 		return this.hits.handle(event);
 	}
 
+	keys(): readonly KeyHint[] {
+		return [
+			{ keys: ["up", "down"], label: "scroll" },
+			{ keys: ["pageUp", "pageDown"], label: "page" },
+		];
+	}
+
 	actions(): readonly Action[] {
+		const label = this.deciding ? `${this.label}…` : this.label;
 		return [
 			{
 				id: "decide",
-				label: this.deciding ? `${this.label}…` : this.label,
+				label,
+				key: "enter",
+				short: label.toLocaleLowerCase(),
 				primary: true,
 				tone: this.tone,
 				disabled: this.deciding ? "The request is still running" : this.complete ? undefined : "Read every line of the artifact first",
 				run: () => void this.finish(true),
 			},
-			{ id: "cancel", label: "Cancel", primary: true, run: () => void this.finish(false) },
+			{ id: "cancel", label: "Cancel", key: "escape", short: "cancel", primary: true, run: () => void this.finish(false) },
 		];
 	}
 
@@ -368,7 +378,7 @@ class PolicyView {
 	private actions(item: Item | undefined): Action[] {
 		const actions = item ? this.itemActions(item) : [];
 		if (this.state.scope === "data") actions.push(...this.dataActions());
-		actions.push({ id: "refresh", label: "Refresh", description: "Read the registry, fire counts and activity again", run: () => void this.reload() });
+		actions.push({ id: "refresh", label: "Refresh", key: "r", short: "refresh", primary: true, description: "Read the registry, fire counts and activity again", run: () => void this.reload() });
 		return actions;
 	}
 
@@ -386,7 +396,7 @@ class PolicyView {
 			case "proposal":
 				return this.proposalActions(item.proposal);
 			case "activity":
-				return item.record.callId === undefined ? [] : [{ id: "explain", label: "Explain call", primary: true, run: () => this.host.push((next) => this.explainView(next, `call:${item.record.callId}`)) }];
+				return item.record.callId === undefined ? [] : [{ id: "explain", label: "Explain call", key: "e", short: "explain", primary: true, run: () => this.host.push((next) => this.explainView(next, `call:${item.record.callId}`)) }];
 			case "data":
 				return [{ id: "remove", label: "Remove…", tone: "danger", disabled: this.blocked(), description: "Review the removal of this binding", run: () => void this.dataChange(`remove ${item.name} ${item.revision}`) }];
 			case "state":
@@ -410,10 +420,10 @@ class PolicyView {
 		const resettable = state === "active" && record.matcherAvailable;
 		return [
 			state === "disabled"
-				? { id: "enable", label: "Enable…", primary: true, disabled: this.unavailable(record, "enable"), run: () => this.host.push((next) => this.lifecycleForm(next, record, "enable")) }
-				: { id: "disable", label: "Disable…", primary: true, disabled: this.unavailable(record, "disable"), run: () => this.host.push((next) => this.lifecycleForm(next, record, "disable")) },
-			{ id: "effect", label: "Effect…", primary: true, disabled: this.unavailable(record, "effect"), description: "Steer guides at the next tool boundary; block denies", run: () => this.host.push((next) => this.effectForm(next, record)) },
-			{ id: "explain", label: "Explain", primary: true, description: "Bounded decision evidence for this rule", run: () => this.host.push((next) => this.explainView(next, record.id)) },
+				? { id: "enable", label: "Enable…", key: "d", short: "enable", primary: true, disabled: this.unavailable(record, "enable"), run: () => this.host.push((next) => this.lifecycleForm(next, record, "enable")) }
+				: { id: "disable", label: "Disable…", key: "d", short: "disable", primary: true, disabled: this.unavailable(record, "disable"), run: () => this.host.push((next) => this.lifecycleForm(next, record, "disable")) },
+			{ id: "effect", label: "Effect…", key: "f", short: "effect", primary: true, disabled: this.unavailable(record, "effect"), description: "Steer guides at the next tool boundary; block denies", run: () => this.host.push((next) => this.effectForm(next, record)) },
+			{ id: "explain", label: "Explain", key: "e", short: "explain", primary: true, description: "Bounded decision evidence for this rule", run: () => this.host.push((next) => this.explainView(next, record.id)) },
 			{ id: "reset", label: "Reset observation…", disabled: this.pending ? `${this.pending} is running` : resettable ? undefined : "No active available observation period", run: () => this.host.push((next) => this.resetView(next, record)) },
 			{ id: "retire", label: "Retire…", tone: "danger", disabled: this.unavailable(record, "retire"), run: () => this.host.push((next) => this.lifecycleForm(next, record, "retire")) },
 		];
@@ -426,6 +436,8 @@ class PolicyView {
 			{
 				id: "approve",
 				label: "Approve…",
+				key: "a",
+				short: "approve",
 				primary: true,
 				disabled: this.blocked(),
 				description: choice ? "Choose steer or block, then read the complete artifact" : "Read the complete artifact, then approve it",
@@ -599,7 +611,7 @@ class PolicyView {
 	private dataActions(): Action[] {
 		const loaded = this.loaded;
 		return [
-			{ id: "set", label: "Set data…", primary: true, disabled: this.blocked() ?? (loaded ? undefined : "The registry is not read yet"), description: "Write one named data object; review before it applies", run: () => this.host.push((next) => this.dataForm(next, "set")) },
+			{ id: "set", label: "Set data…", key: "s", short: "set data", primary: true, disabled: this.blocked() ?? (loaded ? undefined : "The registry is not read yet"), description: "Write one named data object; review before it applies", run: () => this.host.push((next) => this.dataForm(next, "set")) },
 			{ id: "set-file", label: "Set from file…", disabled: this.blocked() ?? (loaded ? undefined : "The registry is not read yet"), description: "Bind named data to a local file; review before it applies", run: () => this.host.push((next) => this.dataForm(next, "set-file")) },
 		];
 	}

@@ -237,10 +237,16 @@ than attempting a terminal-only component. The command shows Clipboard on its
 own. Because this extension publishes it as an operator view, `/dashboard` also
 shows it as a tab.
 
-The view has two scopes. **Recent** lists the newest 200 entries and filters
-them as you type by label, id, and excerpt. **Archive** runs the same literal
+The footer at the bottom lists each control as its key and its short label. A
+click on a control runs the same action as its key. The keys of this view are
+`enter` to restore and `r` to refresh. `/` focuses the search field. `x` opens
+the list of every other action, such as Search archive and Continue. Escape
+closes the browser or goes back from a nested view.
+
+The view has two scopes. **Recent** lists the newest 200 entries; the search
+field filters them by label, id, and excerpt. **Archive** runs the same literal
 search as `clipboard_list` over full archived text, one page at a time: type the
-text, then press Enter or choose Search archive; **Continue** reads the next
+text, then press Enter in the search field; **Continue** reads the next
 page while the scan has one. A page that is empty can still have a
 continuation, and the status line shows whether the scan is partial. Recent
 rows read metadata only; a selected entry's preview is read on demand, bounded
@@ -307,9 +313,9 @@ answers a bounded recent listing as text, for `agent_command` and
 | `{ op: "restore", id, archiveDate? }` | Rereads the exact record in full, writes the host's clipboard, appends an archive record; `ok` with an optional `warning` for a failed append, or `ok: false` with the error. |
 
 Browsing, searching and previewing start no model work and change no record.
-Restore is the only effect, and only the labelled control sends it. A
-malformed request is an error, never an empty history; a malformed answer is
-reported by the browser as a read failure.
+Restore is the only effect, and only its footer control or the `enter` key
+sends it. A malformed request is an error, never an empty history; a malformed
+answer is reported by the browser as a read failure.
 
 Until the host answers, the Recent list and its status line say the entries are
 being read. A failed read says the history could not be read, with the reason

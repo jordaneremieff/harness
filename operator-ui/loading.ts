@@ -1,6 +1,6 @@
 import type { TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { plainLine } from "./text.ts";
-import type { Action, OperatorView, ViewHost } from "./view.ts";
+import type { Action, KeyHint, OperatorView, ViewHost } from "./view.ts";
 
 /**
  * A view whose content needs one read first, for example a form that lists a host's models.
@@ -49,6 +49,12 @@ export class LoadingView implements OperatorView {
 	}
 	actions(): readonly Action[] {
 		return this.inner?.actions?.() ?? [];
+	}
+	keys(): readonly KeyHint[] {
+		return this.inner?.keys?.() ?? [];
+	}
+	editing(): boolean {
+		return this.inner?.editing?.() ?? false;
 	}
 	escape(): boolean {
 		return this.inner?.escape?.() ?? false;

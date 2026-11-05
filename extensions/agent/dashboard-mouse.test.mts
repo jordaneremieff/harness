@@ -84,7 +84,7 @@ it("mouse regions leave selection gestures, modifiers, invalid cells and stale l
 	assert.equal(mouse.handle(event(3, 3, 80, 24)), undefined);
 });
 
-it("a control click opens its form beside the conversation, the inspector wheel scrolls, and Back returns", async () => {
+it("a control click opens its form beside the conversation, the inspector wheel scrolls, and the way out returns", async () => {
 	const f = fixture(140, 24, source([row("one", { state: "idle" })]));
 	const lines = () => visible(f.ui.render(140));
 	const click = (needle: string) => {
@@ -94,18 +94,20 @@ it("a control click opens its form beside the conversation, the inspector wheel 
 	try {
 		await turn();
 		await turn();
-		click("Configure");
+		click("c configure");
 		assert.equal(f.ui.focus.inspector, "Configure");
 		assert.deepEqual(f.calls, [], "opening a form sends nothing");
 		f.ui.handleInput("\x1b");
 		assert.equal(f.ui.focus.inspector, undefined);
-		click("Help");
+		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.focus.region, "list");
+		click("? help");
 		assert.equal(f.ui.focus.inspector, "Help");
 		const before = lines().join("\n");
 		const body = point(lines(), "Machine execution preferences");
 		f.ui.handleMouse(event(body.x, body.y + 1, 140, 24, { type: "wheel", wheelDelta: 5 }));
 		assert.notEqual(lines().join("\n"), before, "the wheel over the inspector reads further");
-		click("Back to conversation");
+		click("close help");
 		assert.equal(f.ui.focus.inspector, undefined);
 		assert.deepEqual(f.calls, []);
 	} finally {
@@ -119,16 +121,19 @@ it("the More menu wheel reaches Details and opens it only when chosen", async ()
 	try {
 		await turn();
 		await turn();
-		const header = lines().findIndex((line) => line.includes("Configure"));
-		const more = lines()[header]?.lastIndexOf("More…") ?? -1;
+		const footer = lines().at(-1) ?? "";
+		const more = footer.lastIndexOf("x more");
 		assert.ok(more >= 0);
-		f.ui.handleMouse(event(more + 1, header, 140, 24));
-		const menu = point(lines(), "More actions");
-		assert.equal(f.ui.handleMouse(event(menu.x + 2, menu.y + 2, 140, 24, { type: "wheel", wheelDelta: 100 }))?.handled, true);
-		assert.match(lines().join("\n"), /› Stop and release host/, "the wheel moves the menu selection only");
+		f.ui.handleMouse(event(more + 1, lines().length - 1, 140, 24));
+		const menu = lines().findIndex((line) => line.trimEnd() === "More");
+		assert.ok(menu >= 0, "the More menu shows its heading");
+		assert.equal(f.ui.handleMouse(event(2, menu + 1, 140, 24, { type: "wheel", wheelDelta: 100 }))?.handled, true);
+		assert.match(lines().join("\n"), /›\s+i\s+Exact times/, "the wheel moves the menu selection only");
 		assert.equal(f.ui.focus.inspector, undefined);
 		f.ui.handleInput("\x1b[A");
-		assert.match(lines().join("\n"), /› Details/);
+		assert.match(lines().join("\n"), /›\s+Stop and release host/);
+		f.ui.handleInput("\x1b[A");
+		assert.match(lines().join("\n"), /›\s+Details/);
 		f.ui.handleInput("\r");
 		assert.equal(f.ui.focus.inspector, "Details");
 		assert.deepEqual(f.calls, []);

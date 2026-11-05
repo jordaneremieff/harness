@@ -108,9 +108,9 @@ it("the mouse opens Related efforts and message hints without agent-control leak
 		assert.equal(f.ui.handleMouse(click(lines[y].indexOf("Efforts"), y, 100, 30))?.handled, true);
 		await turn(); await turn();
 		const pane = f.ui.render(100);
-		const messageY = pane.findIndex((line) => line.includes("Message"));
-		assert.ok(messageY >= 0);
-		f.ui.handleMouse(click(pane[messageY].indexOf("Message"), messageY, 100, 30));
+		const messageY = pane.findIndex((line) => line.includes("m message"));
+		assert.ok(messageY >= 0, "the footer shows the message key");
+		f.ui.handleMouse(click(pane[messageY].indexOf("m message"), messageY, 100, 30));
 		for (const text of ["/agent abort", "n", "a", "t", "b"]) f.ui.handleInput(text);
 		f.ui.handleInput("\r");
 		await turn();
@@ -167,8 +167,8 @@ it("keyboard and mouse contact entry read the existing Threads view without list
 			await turn(); f.ui.openNamedAction("efforts"); await turn();
 			if (mouse) {
 				const lines = f.ui.render(100);
-				const y = lines.findIndex((line) => line.includes("Open thread"));
-				f.ui.handleMouse(click(lines[y].indexOf("Open thread"), y, 100, 30));
+				const y = lines.findIndex((line) => line.includes("open thread"));
+				f.ui.handleMouse(click(lines[y].indexOf("enter open thread"), y, 100, 30));
 			} else f.ui.handleInput("\r");
 			await turn();
 			assert.deepEqual(calls.filter((call) => call.action === "read"), [{ action: "read", threadId: "store/thread", limit: 1 }, { action: "read", threadId: "store/thread" }]);
@@ -547,9 +547,9 @@ it("explicit effort observation fires no message or agent control and keeps sele
 		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		assert.deepEqual(reads, []);
 		const lines = f.ui.render(164);
-		const y = lines.findIndex((line) => line.includes("Observe"));
-		assert.ok(y >= 0);
-		f.ui.handleMouse(click(lines[y].indexOf("Observe"), y, 164, 32));
+		const y = lines.findIndex((line) => line.includes("o observe"));
+		assert.ok(y >= 0, "the footer shows the observe key");
+		f.ui.handleMouse(click(lines[y].indexOf("o observe"), y, 164, 32));
 		f.ui.handleInput("o");
 		assert.deepEqual(reads, ["effort"]);
 		assert.match(f.ui.render(164).join("\n"), /Read-only observation/);
@@ -696,7 +696,8 @@ it("roster notices coalesce contact reads into one active read and one latest re
 		pending.resolve(contactPage()); await turn();
 		assert.equal(reads, 2);
 		f.ui.handleInput("d");
-		assert.match(f.ui.render(100).join("\n"), /LATEST_DECLARATION/);
+		for (let i = 0; i < 2; i++) f.ui.handleInput("\x1b[6~");
+		assert.match(f.ui.render(100).join("\n"), /LATEST_DECLARATION/, "the refreshed declarations are readable in Details");
 		await turn(); assert.equal(reads, 2);
 	} finally { pending.resolve(contactPage()); f.ui.dispose(); }
 });
@@ -783,7 +784,7 @@ it("effort rows keep two lines and a gap and omit placeholder purposes", async (
 		assert.match(screen, /Untitled session in work/, "a title without a purpose or name uses the folder");
 		assert.doesNotMatch(screen, /No purpose claim|Session 01a1a92e/, "no placeholder purpose or bare identity");
 		assert.doesNotMatch(screen, /Your effort:/, "no self-purpose row");
-		assert.doesNotMatch(screen, /More \(x\)|Back \(Esc\)/, "no persistent action bar");
+		assert.match((screen.split("\n").at(-1) ?? "").trimEnd(), /↑↓ select · .*x more · esc back$/, "the commands sit in the key footer, not the header");
 	} finally { f.ui.dispose(); }
 });
 
@@ -832,16 +833,28 @@ it("the exact-time toggle repaints effort and thread rows", async (t) => {
 	} finally { f.ui.dispose(); }
 });
 
-it("the menu lists every Related efforts action and a disabled message names its reason", async () => {
+it("the footer shows each command with its key and More lists the rest with theirs", async () => {
+	const wide = setup(164, 44);
+	try {
+		await turn();
+		wide.ui.openNamedAction("efforts");
+		await turn();
+		const footer = (wide.ui.render(164).at(-1) ?? "").trimEnd();
+		assert.equal(footer, "↑↓ select · pgup/pgdn read · enter open thread · m message · o observe · d details · t threads · x more · esc back", "the footer shows each key before its command, with the way out last");
+		assert.doesNotMatch(wide.ui.render(164).join("\n"), /More…/, "the header holds no command cluster");
+	} finally { wide.ui.dispose(); }
 	const f = setup(60, 20);
 	try {
 		await turn();
 		f.ui.openNamedAction("efforts");
 		await turn();
-		assert.match(f.ui.render(60).join("\n"), /More…/);
+		const row = (f.ui.render(60).at(-1) ?? "").trimEnd();
+		assert.match(row, /^↑↓ select · .*x more · esc back$/, "essential navigation, More and the way out stay on a short row");
 		f.ui.handleInput("x");
 		const menu = f.ui.render(60).map(stripVTControlCharacters).join("\n");
-		for (const label of ["Open thread", "Message", "Observe", "Details", "Threads", "Scan details", "Refresh", "Exact times"]) assert.match(menu, new RegExp(label), label);
+		for (const [key, label] of [["c", "Scan details"], ["r", "Refresh"], ["i", "Exact times"], ["m", "Message"], ["t", "Threads"]]) {
+			assert.match(menu, new RegExp(`${key}\\s+${label}`, "i"), `${key} ${label}`);
+		}
 		f.ui.handleInput("\x1b");
 		f.ui.handleInput("\x1b[B");
 		f.ui.handleInput("m");
@@ -986,7 +999,44 @@ it("the message field names the target by title and the first eight identity cha
 		await turn(); f.ui.openNamedAction("efforts"); await turn();
 		f.ui.handleInput("m");
 		const text = f.ui.render(120).join("\n");
-		assert.match(text, /Operator message to Caption target · session- · Enter sends/);
+		assert.match(text, /Operator message to Caption target · session-/);
+		assert.doesNotMatch(text, /Enter sends/, "the field names its recipient; the footer owns the keys");
 		assert.doesNotMatch(text, /session-identifier-1234/, "the full identity stays in Details");
+		assert.match(text.split("\n").at(-1) ?? "", /enter send · shift\+enter\/ctrl\+j newline · esc back/, "the composer footer shows its own keys");
+	} finally { f.ui.dispose(); }
+});
+
+it("a click on a footer control runs the same command as its key on the same effort", async () => {
+	const run = async (mode: "key" | "click") => {
+		const f = fixture(164, 44, source(), { efforts: async () => awareness() });
+		try {
+			await turn(); f.ui.openNamedAction("efforts"); await turn();
+			if (mode === "key") f.ui.handleInput("d");
+			else f.ui.handleMouse(click((f.ui.render(164).at(-1) ?? "").indexOf("d details"), 43, 164, 44));
+			assert.equal(f.ui.focus.surface, "efforts", "the control acts on the selected effort");
+			return f.ui.render(164).join("\n");
+		} finally { f.ui.dispose(); }
+	};
+	assert.equal(await run("click"), await run("key"), "the click and the key open the same Details");
+});
+
+it("the way out is the last footer control and Escape leaves as its label says", async () => {
+	const f = fixture(164, 44, source(), { efforts: async () => awareness() });
+	try {
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
+		assert.match((f.ui.render(164).at(-1) ?? "").trimEnd(), /x more · esc back$/, "More and the way out close the row");
+		f.ui.handleInput("\x1b");
+		assert.equal(f.ui.focus.surface, "work", "back leaves Related efforts");
+	} finally { f.ui.dispose(); }
+});
+
+it("the footer keeps a disabled command listed and explains it when used", async () => {
+	const f = fixture(164, 44, source(), { efforts: async () => awareness() });
+	try {
+		await turn(); f.ui.openNamedAction("efforts"); await turn();
+		const row = () => f.ui.render(164).at(-1) ?? "";
+		assert.match(row(), /m message · o observe/, "message stays listed");
+		f.ui.handleMouse(click(row().indexOf("m message"), 43, 164, 44));
+		assert.match(f.ui.render(164).join("\n"), /Direct messages need a live compatible effort/, "a click names the reason");
 	} finally { f.ui.dispose(); }
 });

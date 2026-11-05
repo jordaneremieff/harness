@@ -62,7 +62,6 @@ function hostFixture(answers: Partial<Record<string, (request: Record<string, un
 			const index = layers.findIndex((layer) => layer.controller === controller);
 			for (const layer of layers.splice(Math.max(1, index))) layer.controller.abort();
 		},
-		focusActions: () => {},
 		close: () => {},
 		request: answer,
 	});

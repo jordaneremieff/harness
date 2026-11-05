@@ -137,7 +137,12 @@ function tuiContext(mounted: { frame?: NavigationFrame; done?: () => void }) {
 			notify: () => {},
 			custom: (factory: (tui: unknown, theme: Theme, keys: unknown, done: (value: undefined) => void) => NavigationFrame) =>
 				new Promise<undefined>((resolve) => {
-					mounted.frame = factory({ terminal: { rows: 40, columns: 100 }, requestRender: () => {} }, theme, {}, (value) => resolve(value));
+					mounted.frame = factory(
+						{ terminal: { rows: 40, columns: 100 }, requestRender: () => {} },
+						theme,
+						new KeybindingsManager(TUI_KEYBINDINGS),
+						(value) => resolve(value),
+					);
 					mounted.done = () => resolve(undefined);
 				}),
 		},
@@ -182,6 +187,9 @@ it("a view's command shows that view alone; the dashboard shows every view as a 
 	const dashboard = openOperatorFrame(api, tuiContext(all), undefined, { tabs: true });
 	const tabs = all.frame?.render(100)[0] ?? "";
 	assert.match(tabs, /One.*Two/, "every view is a tab, in publication order");
+	const footer = all.frame?.render(100).at(-1) ?? "";
+	assert.match(footer, /ctrl\+o expand/, "the frame's chord control shows its configured key");
+	assert.match(footer, /esc close/, "the way out is last");
 	assert.equal(all.frame?.viewTitle, "One", "the dashboard opens at the first view");
 	all.done?.();
 	await dashboard;

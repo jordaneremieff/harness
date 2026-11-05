@@ -19,7 +19,7 @@ export interface ViewTarget {
 
 /**
  * One operator action. The label names the effect; selection and focus never run it.
- * Every route that invokes it (click, Enter on the focused control, the More menu) calls `run`.
+ * Every route that invokes it (its key, a click on its footer control, the More menu) calls `run`.
  */
 export interface Action {
 	readonly id: string;
@@ -27,10 +27,33 @@ export interface Action {
 	readonly description?: string;
 	/** Why the action cannot run now. The control stays listed and explains itself. */
 	readonly disabled?: string;
-	/** Shown directly in the action bar; other actions are listed under More. */
+	/**
+	 * The key that runs this action while no text field has focus: a pi-tui key id such as "enter",
+	 * "escape" or "ctrl+o", or one printable character such as "a" or "?". The footer shows it before
+	 * the label.
+	 */
+	readonly key?: string;
+	/** Footer wording when the label is long, for example "note" for "Pick up with note…". */
+	readonly short?: string;
+	/** Shown in the footer while it fits. An action without a key, or one that does not fit, is listed under More. */
 	readonly primary?: boolean;
 	readonly tone?: "accent" | "danger";
 	run(): void;
+}
+
+/**
+ * A key the focused view handles itself, shown in the footer before the actions. Each key id gets
+ * its own click target, which sends that key, so a click and the key always do the same thing.
+ */
+export interface KeyHint {
+	/** pi-tui key ids or printable characters, for example ["up", "down"] for "↑↓ select". */
+	readonly keys: readonly string[];
+	readonly label: string;
+	/**
+	 * Lower numbers stay on a short footer row longer; 0 never leaves it. Default: 0 for a view's
+	 * first key, 2 for the others. Actions on the selected item have 1.
+	 */
+	readonly priority?: number;
 }
 
 /** What a mounted view receives from the frame that hosts it. */
@@ -50,8 +73,6 @@ export interface ViewHost {
 	push(open: (host: ViewHost) => OperatorView): void;
 	/** Leave this view: a nested view returns to the one beneath it; a destination's root leaves the frame. */
 	back(): void;
-	/** Move keyboard focus to the action bar, for example after the last field of a form. */
-	focusActions(): void;
 	/**
 	 * Return to the conversation. `then` runs after the frame is gone and the host restored its own
 	 * editor, for effects that need it: a command whose own UI opens, or text placed in the editor.
@@ -62,7 +83,7 @@ export interface ViewHost {
 /**
  * A content view inside a frame. It renders exactly the rows it is given and consumes only the
  * keys and pointer events it owns. Focus moves between its regions on Tab; at the last region
- * it returns false so the frame moves focus to the action bar.
+ * it returns false so the frame moves focus on.
  */
 export interface OperatorView {
 	readonly title: string;
@@ -70,8 +91,12 @@ export interface OperatorView {
 	/** Returns true when the key was consumed. */
 	handleInput(data: string): boolean;
 	handleMouse?(event: TuiMouseEvent): TuiMouseEventResult | undefined;
-	/** Actions for the frame's action bar, re-read at every render and every invocation. */
+	/** Actions for the frame's footer and More menu, re-read at every render and every invocation. */
 	actions?(): readonly Action[];
+	/** The keys this view handles itself in its current focus, for the footer. Read at every render. */
+	keys?(): readonly KeyHint[];
+	/** True while a text field has focus: printable keys are text, never action keys. */
+	editing?(): boolean;
 	/** Escape: close a local popup or cancel an edit. Return false to let the frame go back. */
 	escape?(): boolean;
 	/** Move focus to the next or previous region. Return false at the edge. */

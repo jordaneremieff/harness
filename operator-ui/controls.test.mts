@@ -1,10 +1,9 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { visibleWidth } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { actionControl, actionLabel, type Control, Footer, menuControl } from "./controls.ts";
 import { HitMap } from "./hits.ts";
-import { ActionBar } from "./controls.ts";
 import type { Action } from "./view.ts";
 
 const theme = {
@@ -15,13 +14,7 @@ const theme = {
 
 const plain = (line: string) => stripVTControlCharacters(line);
 
-interface MousePatch {
-	readonly type?: "click" | "wheel";
-	readonly wheelDelta?: number;
-	readonly clickCount?: number;
-}
-
-function mouse(x: number, y: number, width: number, height: number, patch: MousePatch = {}) {
+function mouse(x: number, y: number, width: number, height: number) {
 	return {
 		type: "click",
 		button: "left",
@@ -34,142 +27,176 @@ function mouse(x: number, y: number, width: number, height: number, patch: Mouse
 		shift: false,
 		alt: false,
 		ctrl: false,
-		...patch,
+		clickCount: 1,
 	} as const;
 }
 
-function action(id: string, label: string, patch: Partial<Action> = {}): Action {
-	return { id, label, run: () => runs.push(id), ...patch };
+const runs: string[] = [];
+
+function control(id: string, keys: readonly string[], label: string, patch: Partial<Control> = {}): Control {
+	return { id, keys, label, run: (key) => runs.push(`${id}:${key}`), ...patch };
 }
 
-const runs: string[] = [];
-const barActions = (): Action[] => [
-	action("save", "Save", { primary: true }),
-	action("copy", "Copy", { primary: true }),
-	action("export", "Export"),
-	action("delete", "Delete"),
-];
+const nav = () => control("nav", ["up", "down"], "select", { priority: 0 });
+const act = () => control("act", ["enter"], "run", { priority: 1 });
+const mid = () => control("mid", ["d"], "details", { priority: 2 });
+const low = () => control("low", ["tab"], "focus", { priority: 3 });
+const exit = () => control("exit", ["escape"], "close", { priority: 0 });
 
-it("primary actions render first and the rest overflow into More", () => {
-	runs.length = 0;
-	const bar = new ActionBar(() => {});
-	const hits = new HitMap();
-	hits.begin(40, 1);
-	const line = plain(bar.render(barActions(), 40, theme, hits, 0));
-	assert.ok(line.includes("Save"));
-	assert.ok(line.includes("Copy"));
-	assert.ok(line.includes("More…"));
-	assert.ok(!line.includes("Export"));
-	assert.ok(!line.includes("Delete"));
-	assert.ok(line.indexOf("Save") < line.indexOf("Copy"));
-	assert.ok(line.indexOf("Copy") < line.indexOf("More…"));
-});
-
-it("controls that do not fit move into More, never out of reach", () => {
-	runs.length = 0;
-	const bar = new ActionBar(() => {});
-	const hits = new HitMap();
-	// Save, Copy and More need 25 columns; 20 leave room for Save and More only.
-	hits.begin(20, 1);
-	const line = plain(bar.render(barActions(), 20, theme, hits, 0));
-	assert.ok(line.includes("Save"));
-	assert.ok(line.includes("More…"));
-	assert.ok(!line.includes("Copy"));
-	hits.handle(mouse(10, 0, 20, 1));
-	assert.equal(bar.menuShown, true);
-	const menuHits = new HitMap();
-	menuHits.begin(20, 6);
-	const menu = bar.renderMenu(barActions(), 20, 6, theme, menuHits, 0).map(plain);
-	assert.ok(menu.some((row) => row.includes("Copy")), "the control that did not fit is in the menu");
-});
-
-it("measure matches the width the bar renders when nothing has to overflow", () => {
-	const bar = new ActionBar(() => {});
-	const actions = barActions();
-	const width = ActionBar.measure(actions);
+function draw(footer: Footer, controls: readonly Control[], width: number, menu: readonly Control[] = []) {
 	const hits = new HitMap();
 	hits.begin(width, 1);
-	const line = bar.render(actions, width, theme, hits, 0);
-	assert.equal(visibleWidth(line), width);
-	assert.ok(plain(line).includes("Save"));
-	assert.ok(plain(line).includes("Copy"));
-	assert.ok(plain(line).includes("More…"));
+	const line = plain(footer.render(controls, width, theme, hits, 0, 0, menu)).trimEnd();
+	return { line, hits };
+}
+
+it("controls render as key label pairs, in order, with the way out last", () => {
+	runs.length = 0;
+	const { line } = draw(new Footer(), [nav(), act(), control("more-like", ["enter"], "open", { priority: 1 }), exit()], 80);
+	assert.equal(line, "↑↓ select · enter run · enter open · esc close");
+	assert.ok(line.indexOf("select") < line.indexOf("run"));
+	assert.ok(line.indexOf("open") < line.indexOf("esc close"));
 });
 
-it("a disabled action never runs and reports its reason through the refused callback", () => {
+it("a click runs the key of its control, and a gap between controls runs nothing", () => {
 	runs.length = 0;
-	const refused: string[] = [];
-	const bar = new ActionBar((reason) => refused.push(reason));
-	const actions: Action[] = [
-		{ id: "save", label: "Save", primary: true, disabled: "the draft is empty", run: () => runs.push("save") },
-		action("copy", "Copy", { primary: true }),
-	];
-	const hits = new HitMap();
-	hits.begin(30, 1);
-	const line = bar.render(actions, 30, theme, hits, 0);
-	assert.ok(plain(line).includes("Save"));
-	const clicked = hits.handle(mouse(2, 0, 30, 1));
-	assert.deepEqual(clicked, { handled: true, render: true });
+	const { line, hits } = draw(new Footer(), [nav(), act(), exit()], 80);
+	const at = line.indexOf("enter run");
+	assert.deepEqual(hits.handle(mouse(at, 0, 80, 1)), { handled: true, render: true });
+	assert.deepEqual(runs, ["act:enter"]);
+	runs.length = 0;
+	const gap = line.indexOf(" · ", line.indexOf("select"));
+	assert.equal(hits.handle(mouse(gap, 0, 80, 1)), undefined, "a separator is inert");
 	assert.deepEqual(runs, []);
-	assert.deepEqual(refused, ["the draft is empty"]);
 });
 
-it("the menu lists every action and runs only the chosen one", () => {
+it("a control with two keys has one target per token, and each token sends its own key", () => {
 	runs.length = 0;
-	const bar = new ActionBar(() => {});
-	const actions = barActions();
-	const barHits = new HitMap();
-	barHits.begin(8, 1);
-	const line = bar.render(actions, 8, theme, barHits, 0);
-	assert.equal(plain(line).trim(), "More…");
-	assert.deepEqual(barHits.handle(mouse(3, 0, 8, 1)), { handled: true, render: true });
-	assert.equal(bar.menuShown, true);
+	const select = draw(new Footer(), [nav(), exit()], 80);
+	assert.equal(select.line, "↑↓ select · esc close");
+	select.hits.handle(mouse(0, 0, 80, 1));
+	select.hits.handle(mouse(1, 0, 80, 1));
+	select.hits.handle(mouse(2, 0, 80, 1));
+	assert.deepEqual(runs, ["nav:up", "nav:down"], "a click beyond the tokens does nothing");
+	runs.length = 0;
+	const page = draw(new Footer(), [control("page", ["pageUp", "pageDown"], "read", { priority: 0 }), exit()], 80);
+	assert.equal(page.line, "pgup/pgdn read · esc close");
+	page.hits.handle(mouse(0, 0, 80, 1));
+	page.hits.handle(mouse(5, 0, 80, 1));
+	page.hits.handle(mouse(4, 0, 80, 1));
+	assert.deepEqual(runs, ["page:pageUp", "page:pageDown"], "the slash between keys is inert");
+});
+
+it("a short row drops the highest priority first and keeps priority 0 on the row", () => {
+	runs.length = 0;
+	const footer = new Footer();
+	const wide = draw(footer, [nav(), act(), mid(), low(), exit()], 120);
+	assert.equal(wide.line, "↑↓ select · enter run · d details · tab focus · esc close");
+	const narrow = draw(footer, [nav(), act(), mid(), low(), exit()], 50);
+	assert.equal(narrow.line, "↑↓ select · enter run · x more · esc close");
+	assert.ok(!narrow.line.includes("details"));
+	assert.ok(!narrow.line.includes("tab focus"));
+	assert.ok(narrow.line.startsWith("↑↓ select"), "the first navigation key never leaves the row");
+	assert.ok(narrow.line.endsWith("esc close"), "the way out never leaves the row");
+});
+
+it("the More menu lists every hidden control with its key and runs only the chosen one", () => {
+	runs.length = 0;
+	const footer = new Footer();
+	const controls = [nav(), act(), mid(), low(), exit()];
+	const narrow = draw(footer, controls, 50);
+	const at = narrow.line.indexOf("x more");
+	narrow.hits.handle(mouse(at, 0, 50, 1));
+	assert.equal(footer.menuShown, true);
 	const menuHits = new HitMap();
-	menuHits.begin(20, 6);
-	const menu = bar.renderMenu(actions, 20, 6, theme, menuHits, 0);
-	const labels = menu.map((row) => plain(row));
-	for (const name of ["Save", "Copy", "Export", "Delete"]) assert.ok(labels.some((row) => row.includes(name)), `${name} missing from menu`);
-	assert.deepEqual(menuHits.handle(mouse(0, 3, 20, 6)), { handled: true, render: true });
-	assert.deepEqual(runs, ["export"]);
-	assert.equal(bar.menuShown, false);
+	menuHits.begin(40, 4);
+	const menu = footer.renderMenu(40, 4, theme, menuHits, 0).map(plain);
+	assert.match(menu[0] ?? "", /^More/);
+	assert.ok(menu.some((row) => row.includes("d") && row.includes("details")), "the hidden control keeps its key");
+	assert.ok(menu.some((row) => row.includes("focus")));
+	assert.deepEqual(menuHits.handle(mouse(5, 2, 40, 4)), { handled: true, render: true });
+	assert.deepEqual(runs, ["low:tab"], "only the chosen entry runs");
+	assert.equal(footer.menuShown, false);
 });
 
-it("a menu taller than its rows states the hidden count, and that row reveals the rest", () => {
+it("the menu counts the entries above and below, and the count row runs nothing", () => {
 	runs.length = 0;
-	const bar = new ActionBar(() => {});
-	const actions = Array.from({ length: 8 }, (_, index) => action(`a${index}`, `Action ${index}`));
-	const barHits = new HitMap();
-	barHits.begin(8, 1);
-	bar.render(actions, 8, theme, barHits, 0);
-	barHits.handle(mouse(3, 0, 8, 1));
+	const footer = new Footer();
+	const entries = Array.from({ length: 8 }, (_, index) => control(`i${index}`, ["qwertyui"[index] ?? "q"], `Item ${index}`, { priority: 2 }));
+	const row = draw(footer, [exit()], 40, entries);
+	assert.equal(row.line, "x more · esc close");
+	row.hits.handle(mouse(0, 0, 40, 1));
 	const menuHits = new HitMap();
 	menuHits.begin(40, 5);
-	let menu = bar.renderMenu(actions, 40, 5, theme, menuHits, 0).map(plain);
+	const menu = footer.renderMenu(40, 5, theme, menuHits, 0).map(plain);
 	assert.equal(menu.length, 5);
-	assert.match(menu.at(-1) ?? "", /\u2193 5 more/u, "the last row counts the actions below");
-	assert.ok(!menu.some((row) => row.includes("Action 7")));
-	assert.deepEqual(menuHits.handle(mouse(2, 4, 40, 5)), { handled: true, render: true });
-	assert.deepEqual(runs, [], "the count row scrolls; it runs nothing");
-	menuHits.begin(40, 5);
-	menu = bar.renderMenu(actions, 40, 5, theme, menuHits, 0).map(plain);
-	assert.match(menu[0] ?? "", /\u2191 \d+ more/u, "the heading counts the actions above");
-	for (let step = 0; step < 3; step++) {
-		menuHits.handle(mouse(2, 4, 40, 5));
-		menuHits.begin(40, 5);
-		menu = bar.renderMenu(actions, 40, 5, theme, menuHits, 0).map(plain);
-	}
-	assert.ok(menu.some((row) => row.includes("Action 7")), "the last action comes into view");
+	assert.match(menu.at(-1) ?? "", /↓ 5 more/);
+	assert.equal(menuHits.handle(mouse(2, 4, 40, 5)), undefined, "the count row is informational");
+	assert.deepEqual(runs, []);
+	assert.equal(footer.menuInput("\u001b[F"), true, "End reaches the last entry");
+	const after = footer.renderMenu(40, 5, theme, menuHits, 0).map(plain);
+	assert.match(after[0] ?? "", /↑ 5 more/);
+	assert.ok(after.some((row) => row.includes("Item 7")));
+	assert.equal(footer.menuInput("\r"), true);
+	assert.deepEqual(runs, ["i7:i"]);
+	assert.equal(footer.menuShown, false);
 });
 
-it("closing the menu keeps the actions available on the bar", () => {
+it("the menu consumes its keys and closes on Escape or the More key", () => {
+	const footer = new Footer();
+	const { line, hits } = draw(footer, [control("a", ["a"], "alpha", { priority: 0 }), exit()], 80, [control("b", ["b"], "bravo")]);
+	hits.handle(mouse(line.indexOf("x more"), 0, 80, 1));
+	assert.equal(footer.menuShown, true);
+	assert.equal(footer.menuInput("\u001b[B"), true, "Down moves inside the menu");
+	assert.equal(footer.menuInput("\u001b"), true);
+	assert.equal(footer.menuShown, false);
+	footer.toggleMenu();
+	assert.equal(footer.menuShown, true);
+	footer.menuInput("x");
+	assert.equal(footer.menuShown, false, "the More key closes the menu");
+	assert.equal(footer.menuInput("a"), false, "keys pass through while the menu is closed");
+});
+
+it("footer targets come from the last render, so a resize moves them", () => {
 	runs.length = 0;
-	const bar = new ActionBar(() => {});
-	const actions = barActions();
-	const barHits = new HitMap();
-	barHits.begin(8, 1);
-	bar.render(actions, 8, theme, barHits, 0);
-	barHits.handle(mouse(3, 0, 8, 1));
-	assert.equal(bar.menuShown, true);
-	bar.closeMenu();
-	assert.equal(bar.menuShown, false);
+	const footer = new Footer();
+	const controls = [
+		nav(),
+		control("open", ["enter"], "open", { priority: 1 }),
+		control("attach", ["a"], "attach", { priority: 1 }),
+		control("config", ["c"], "configure", { priority: 1 }),
+		control("tasks", ["k"], "tasks", { priority: 1 }),
+		control("threads", ["t"], "threads", { priority: 1 }),
+		exit(),
+	];
+	const wide = draw(footer, controls, 120);
+	const threadX = wide.line.indexOf("t threads");
+	assert.ok(threadX > 0);
+	const narrow = draw(footer, controls, 70);
+	assert.ok(!narrow.line.includes("threads"), "the last item action left the short row");
+	assert.ok(narrow.line.includes("x more"));
+	narrow.hits.handle(mouse(threadX, 0, 70, 1));
+	assert.deepEqual(runs, ["exit:escape"], "the old position now belongs to the way out");
+	runs.length = 0;
+	const moreX = narrow.line.indexOf("x more");
+	narrow.hits.handle(mouse(moreX, 0, 70, 1));
+	assert.equal(footer.menuShown, true, "the drawn position of More opens the menu");
+});
+
+it("action controls carry the action's wording, key and state", () => {
+	const calls: string[] = [];
+	const disabled: Action = { id: "note", label: "Pick up with note…", short: "note", key: "a", disabled: "No stash selected", run: () => {} };
+	const controlOf = actionControl(disabled, (id) => calls.push(id));
+	assert.ok(controlOf);
+	assert.deepEqual(controlOf.keys, ["a"]);
+	assert.equal(controlOf.label, "note");
+	assert.equal(controlOf.disabled, "No stash selected");
+	controlOf.run("a");
+	assert.deepEqual(calls, ["note"], "the control re-reads the action when it runs");
+	assert.equal(actionControl({ id: "fork", label: "Fork", run: () => {} }, () => {}), undefined, "an action without a key has no footer control");
+	assert.equal(actionLabel({ label: "Apply" }), "apply");
+	assert.equal(actionLabel({ label: "Read more", short: "read more" }), "read more");
+	assert.equal(actionLabel({ label: "2 results" }), "2 results", "a label that is not a word keeps its form");
+	const menuEntry = menuControl(disabled, () => {});
+	assert.deepEqual(menuEntry.keys, ["a"], "a menu entry keeps the key it no longer shows on the row");
 });

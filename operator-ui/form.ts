@@ -1,9 +1,10 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { getKeybindings, matchesKey, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { actionLabel } from "./controls.ts";
 import { TextArea, TextField } from "./field.ts";
 import { HitMap } from "./hits.ts";
 import { fitLine, plainLine, wrap } from "./text.ts";
-import type { Action, Notice, OperatorView, ViewHost } from "./view.ts";
+import type { Action, KeyHint, Notice, OperatorView, ViewHost } from "./view.ts";
 
 export interface Choice {
 	readonly value: string;
@@ -50,7 +51,7 @@ export interface FormOptions {
 	/** The labelled submit action, named for its effect: "Apply", "Pick up", "Approve". */
 	readonly action: { readonly label: string; readonly tone?: "accent" | "danger" };
 	readonly cancelLabel?: string;
-	readonly host: Pick<ViewHost, "theme" | "signal" | "requestRender" | "notify" | "back" | "focusActions">;
+	readonly host: Pick<ViewHost, "theme" | "signal" | "requestRender" | "notify" | "back">;
 	/** Validate staged values before submission; a message keeps the form open. */
 	validate?(values: Readonly<Record<string, string>>): string | undefined;
 	/** The single owner call. A rejection keeps every staged field and shows the reason. */
@@ -94,7 +95,9 @@ function filtered(state: ChoiceState, values: Readonly<Record<string, string>>):
 
 /**
  * A staged form: every field visible at once with its current value, local edits, and one owner
- * call on the labelled submit action. Cancel and Escape send nothing.
+ * call on the labelled submit action. Enter moves to the next field and submits from the last one
+ * (a multi-line field takes the newline keys for line breaks); Tab moves between fields. Cancel and
+ * Escape run the same cancel and send nothing.
  */
 export class Form implements OperatorView {
 	readonly title: string;
@@ -204,18 +207,54 @@ export class Form implements OperatorView {
 		this.index = (backward ? order.at(-1) : order[0]) ?? 0;
 	}
 
+	/** True when Enter submits now: on the last field, or in a form without fields. */
+	private atLast(): boolean {
+		for (let next = this.index + 1; next < this.fields.length; next++) if (this.focusable(next)) return false;
+		return true;
+	}
+
+	/**
+	 * Submit carries Enter while Enter submits; before the last field it stays reachable in More,
+	 * and the footer shows Enter as "next". Cancel carries Escape.
+	 */
 	actions(): readonly Action[] {
 		return [
 			{
 				id: "submit",
 				label: this.pending ? `${this.options.action.label}…` : this.options.action.label,
+				...(this.atLast() ? { key: "enter" } : {}),
 				primary: true,
 				tone: this.options.action.tone ?? "accent",
 				disabled: this.pending ? "The request is still running" : undefined,
 				run: () => void this.submit(),
 			},
-			{ id: "cancel", label: this.options.cancelLabel ?? "Cancel", primary: true, run: () => this.cancel() },
+			{ id: "cancel", label: this.options.cancelLabel ?? "Cancel", key: "escape", primary: true, run: () => this.cancel() },
 		];
+	}
+
+	/** True while a text field or a choice filter has focus, so letters are text. */
+	editing(): boolean {
+		const field = this.fields[this.index];
+		if (!field) return false;
+		return field.kind === "text" || field.kind === "area" || (field.kind === "choice" && field.state.filter !== undefined);
+	}
+
+	/**
+	 * The focused field's keys for the footer. Enter shows as "next" until the last field; there,
+	 * while a text field has focus and the frame shows no action keys, it shows the submit label.
+	 */
+	keys(): readonly KeyHint[] {
+		const field = this.fields[this.index];
+		const hints: KeyHint[] = [];
+		if (field?.kind === "choice") hints.push({ keys: ["up", "down"], label: "choose" });
+		if (!this.atLast()) hints.push({ keys: ["enter"], label: "next" });
+		else if (this.editing()) hints.push({ keys: ["enter"], label: actionLabel(this.options.action) });
+		if (field?.kind === "area") {
+			const newline = getKeybindings().getKeys("tui.input.newLine");
+			if (newline.length) hints.push({ keys: newline, label: "newline" });
+		}
+		if (this.fields.filter((_, index) => this.focusable(index)).length > 1) hints.push({ keys: ["tab"], label: "field" });
+		return hints;
 	}
 
 	cancel(): void {
@@ -255,21 +294,20 @@ export class Form implements OperatorView {
 
 	handleInput(data: string): boolean {
 		const field = this.fields[this.index];
-		// A form without fields hands Enter to the frame, which focuses the labelled action.
+		// A form without fields leaves Enter to the frame, which runs Submit by its key.
 		if (!field || field.kind === "info") return false;
 		if (this.pending) return true;
+		// The newline keys come first: a legacy terminal sends Ctrl+J as the same byte as Enter.
+		if (field.kind === "area" && getKeybindings().matches(data, "tui.input.newLine")) return field.field.handleInput(data);
+		if (matchesKey(data, "enter")) return this.advance();
 		if (field.kind === "choice") return this.choiceInput(field.state, data);
-		if (field.kind === "text") {
-			if (matchesKey(data, "enter")) return this.advance();
-			return field.field.handleInput(data);
-		}
-		if (field.kind === "area") return field.field.handleInput(data);
-		return false;
+		return field.field.handleInput(data);
 	}
 
-	/** Enter in a single-line field moves on; after the last field it hands focus to the actions. */
+	/** Enter moves to the next field; on the last field it submits, the same call as the Submit control. */
 	private advance(): boolean {
-		if (!this.focusNext(false)) this.options.host.focusActions();
+		if (this.atLast()) void this.submit();
+		else this.focusNext(false);
 		return true;
 	}
 
@@ -284,7 +322,6 @@ export class Form implements OperatorView {
 			}
 			return true;
 		}
-		if (matchesKey(data, "enter")) return this.advance();
 		if (matchesKey(data, "left") || matchesKey(data, "right")) {
 			if (state.filter) return state.filter.handleInput(data);
 			return this.choiceInput(state, matchesKey(data, "left") ? "\u001b[A" : "\u001b[B");

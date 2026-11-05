@@ -18,37 +18,61 @@ An owner builds its content as `OperatorView` objects mounted in a
 `NavigationFrame`:
 
 - **View.** A view renders exactly the rows it is given, consumes only the
-  keys and pointer events it owns, and returns its labelled actions from
-  `actions()`. The frame re-reads them at every render and every invocation,
-  so a stale render cannot run a replaced action.
+  keys and pointer events it owns, returns its actions from `actions()`, the
+  keys it handles itself in its current focus from `keys()`, and whether a
+  text field has focus from `editing()`. The frame re-reads all three at
+  every render and every invocation, so a stale render cannot run a
+  replaced action.
 - **Host.** Each mounted view receives a `ViewHost`: the theme, the bound
   `target` (the session or conversation every effect of the view acts on;
   it never changes), an `AbortSignal` that aborts when the view is left,
-  `notify`, `push` for a nested view with its own signal, `back`,
-  `focusActions`, and `close(then)`. Late answers check the signal and are
-  dropped.
-- **Actions.** An `Action` label names its effect. Selection, focus, and
-  hover never run it; a click on the control, Enter on the focused control,
-  or the More menu runs it. A disabled action stays listed with its reason.
-  Primary actions show in the action bar in order; the rest, and primaries
-  that do not fit, move into More, never out of reach.
+  `notify`, `push` for a nested view with its own signal, `back`, and
+  `close(then)`. Late answers check the signal and are dropped.
+- **Actions.** An `Action` label names its effect; `key` is the key that
+  runs it (a pi-tui key id such as `enter` or `ctrl+o`, or one printable
+  character) and `short` is its footer wording when the label is long.
+  Selection, focus, and hover never run an action; its key, a click on its
+  footer control, or the More menu runs it, through the same function. A
+  disabled action stays listed with its reason.
+- **Footer.** The frame's last row is the key footer, the primary command
+  surface: each control reads `<key> <label>`, key in the accent colour and
+  label quieter. The view's own keys come first, then primary actions that
+  have a key, then frame controls (Expand on Pi's `app.tools.expand` key in
+  ordinary Pi), then `x more`, then the Escape control last, labelled with
+  what Escape does now (`clear`, `list`, `cancel`, `back`, `close`). A click
+  on a control runs what its key runs; a control with several keys
+  (`↑↓ select`, `pgup/pgdn read`) has one target per key; gaps do nothing.
+  When the row is short, controls leave by priority into More, which lists
+  every control the row does not show and every action without a key,
+  each with its key. Basic navigation, More and the way out stay on the row.
+- **Header.** The tab row (or the destination's title), the bound target,
+  and in a nested view a muted trail. It holds no commands.
 - **Frame.** Destinations sit in one tab row; each keeps its own views,
   query, selection, and reading position while the frame is open. Escape
-  closes a local popup, then leaves a nested view, then leaves the frame.
-  Tab moves through the view's regions, then the action bar, then the tabs.
-  One destination's failure costs only its own view.
+  closes the More menu, then lets the view leave an edit, then runs the
+  view's action whose key is `escape` (a Cancel), then leaves a nested
+  view, then leaves the frame. Tab moves through the view's regions, then
+  the tab row when the frame shows tabs. One destination's failure costs
+  only its own view.
 - **Building blocks.** `Browser` (search, scopes, list, and detail, with the
   detail as its own view below `SPLIT_MIN_WIDTH`), `ListView`, `ReaderView`,
-  `Form` (staged fields with one owner call on the labelled submit; Cancel
-  and Escape send nothing; a refusal keeps every staged field), `LoadingView`,
-  `TextField`, `TextArea`, `ActionBar`, and `HitMap` (region-local click
-  coordinates from the last render only).
+  `Form` (staged fields with one owner call on the labelled submit: Enter
+  moves to the next field and submits from the last, the newline keys break
+  lines in a multi-line field, Tab moves between fields, and Cancel and
+  Escape run the same cancel and send nothing; a refusal keeps every staged
+  field), `LoadingView`, `TextField`, `TextArea`, `Footer` with its
+  `Control` records, the key helpers (`keyText`, `keysText`, `keyMatches`,
+  `keyInput`), and `HitMap` (region-local click coordinates from the last
+  render only).
 
-Input rules hold everywhere: letters go to the focused text field, and no
-letter is a shortcut for an effect. PageUp and PageDown read. A pointer event
-reported for another terminal size acts on nothing. An owner that shows an
-artifact for approval shows the complete artifact in the review view before
-its effect-labelled final action.
+Input rules hold everywhere: while a text field has focus it takes every
+printable key, and the footer then lists only the keys that work there.
+Without a focused text field, the keys the footer shows act: an owner's
+action keys first, then `x` for More, then the view's own keys. `/` moves to
+a list's search field. PageUp and PageDown read. A pointer event reported
+for another terminal size acts on nothing. An owner that shows an artifact
+for approval shows the complete artifact in the review view before its
+effect-labelled final action.
 
 ## Ordinary destinations
 
@@ -108,7 +132,8 @@ exact registration identity; the statusline Commands view runs commands
 through it, and a changed or missing registration is refused.
 
 Each owner's own command opens its destination directly through
-`openOperatorFrame`. No footer control or menu is part of this contract.
+`openOperatorFrame`. Pi's status footer carries no control or menu for
+these destinations.
 
 Publishers: stash (Stashes), clipboard (Clipboard), policy (Policy), pillars
 (Pillars), statusline (Commands, Model, Statuses). The frame collects the
@@ -181,9 +206,10 @@ stays listed as unavailable with a bounded reason. Modules are replaced as a
 unit when the selection changes, and a late answer for an earlier selection is
 dropped.
 
-The agent's **Owner views** control (in More) opens the loaded modules as
-destinations of the work view's inspector frame, beside or in place of the
-conversation:
+The agent's **Owner views** action (key `o`, listed in More) opens the loaded
+modules as destinations of the work view's inspector frame, beside or in
+place of the conversation. The work view draws the inspector's key footer on
+its own last row while the inspector has focus:
 
 - Each view's requests carry the conversation captured when it opened and the
   descriptor's command, with a fresh `invocationId` and `origin: "operator"`.

@@ -84,7 +84,7 @@ it("Threads reads every discovery page itself and lists open threads first, newe
 	assert.doesNotMatch(f.text(), /^\s*Open \d+\s*$/m, "no Open section header");
 	assert.doesNotMatch(f.text(), /Thread done/, "closed threads start collapsed");
 	assert.match(f.text(), /▸ Closed · 1/);
-	assert.doesNotMatch(f.text(), /↑↓|tab next|esc back/, "no navigation words");
+	assert.equal((lines.at(-1) ?? "").trimEnd(), "↑↓ select · enter open · / find · m members · d details · ctrl+o open posts · tab focus · esc back", "the footer shows each key before its command, with the way out last");
 	const left = lines.map((line) => line.split("│")[0] ?? line);
 	const newest = left.findIndex((line) => line.includes("Thread new"));
 	assert.match(left[newest + 1] ?? "", /Purpose of new/, "two content lines");
@@ -109,10 +109,11 @@ it("selecting a thread shows its exchange with names, replies and who a post wok
 	const screen = f.text();
 	const rows = screen.split("\n");
 	assert.match(rows[1] ?? "", /Thread t1/);
-	assert.match(rows[1] ?? "", /Members\s+Details/);
+	assert.doesNotMatch(rows[1] ?? "", /Members|Details/, "the header holds no command cluster");
 	assert.match(rows[2] ?? "", /Open · 2 members · 2 events/);
 	assert.match(rows[3] ?? "", /Purpose of t1/, "the purpose follows the counts");
 	assert.equal(rows[4]?.split("│")[1]?.trim(), "", "one blank row under the header");
+	assert.match(rows.at(-1) ?? "", /m members · d details · ctrl\+o open posts · tab focus · esc back/, "the header's commands now sit in the footer");
 	assert.match(screen, /Reviewer/);
 	assert.match(screen, /Challenge the boundary/);
 	const replyLine = rows.find((line) => line.includes("↳ Reviewer"));
@@ -253,18 +254,31 @@ it("the closed disclosure toggles by Enter and a direct selection reveals the gr
 	assert.match(f.text(), /Thread done/);
 });
 
-it("Find reveals closed matches and clearing it keeps the disclosure choice", async () => {
+it("Find is a field reached by /, keeps letters as text and clears before it leaves the list", async () => {
 	const f = setup(async (input) => input.action === "list"
 		? { items: [thread("open"), thread("done", { title: "Finished review", closed: true })], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
 		: page(String(input.threadId), [event(1)]));
 	await turn(); f.ui.openNamedAction("threads"); await settle();
+	const footer = () => f.text().split("\n").at(-1) ?? "";
+	// Letters over the list are not a search: they run only the keys the footer shows.
+	for (const char of "review") f.ui.handleInput(char);
+	await settle();
+	assert.match(f.text(), /Thread open/);
+	assert.doesNotMatch(f.text(), /Finished rev/);
+	f.ui.handleInput("/");
+	await settle();
+	assert.match(footer(), /↑↓ select · enter done · esc list/, "a focused field shows only the keys it takes");
 	for (const char of "review") f.ui.handleInput(char);
 	await settle();
 	assert.match(f.text(), /Finished rev/);
 	assert.doesNotMatch(f.text(), /▸ Closed/);
+	assert.match(footer(), /esc clear/, "Escape clears the filter before it leaves");
 	f.ui.handleInput("\u001b"); await settle();
 	assert.doesNotMatch(f.text(), /Finished rev/);
 	assert.match(f.text(), /▸ Closed · 1/);
+	assert.match(footer(), /esc list/);
+	f.ui.handleInput("\u001b"); await settle();
+	assert.match(footer(), /\/ find · m members/);
 });
 
 it("create and revise events render one muted line without frame JSON", async () => {
@@ -287,7 +301,7 @@ it("create and revise events render one muted line without frame JSON", async ()
 	assert.equal(screen.split("\n").filter((line) => line.includes("created the thread")).length, 1);
 	assert.match(raw, /\u2039muted\u203a[^\u2039]*created the thread/);
 	assert.match(raw, /\u2039muted\u203a[^\u2039]*Purpose of t1/, "thread purpose stays muted");
-	assert.doesNotMatch(raw, /\u2039dim\u203a/);
+	assert.doesNotMatch(raw, /\u2039dim\u203a[^\u2039]*(created the thread|revised the frame|Purpose of t1)/, "events and purpose stay muted, not dim");
 });
 
 it("join contributions stay in Members and the exchange keeps one muted event line", async () => {
@@ -301,8 +315,9 @@ it("join contributions stay in Members and the exchange keeps one muted event li
 	f.ui.handleInput("\u001b[B"); await settle();
 	assert.match(f.text(), /Reviewer joined/);
 	assert.doesNotMatch(f.text(), /JOIN_BODY|MEMBER_CONTRIBUTION/, "join text is not another exchange body");
-	f.ui.handleInput("\t"); f.ui.handleInput("\t"); f.ui.handleInput("\r"); await settle();
+	f.ui.handleInput("m"); await settle();
 	assert.match(f.text(), /MEMBER_CONTRIBUTION/, "Members keeps the contribution");
+	assert.match(f.text().split("\n").at(-1) ?? "", /space wake on post · m exchange · esc exchange/, "the panel footer names the way back");
 });
 
 it("the exchange keeps a readable text width and stays inside 80 and 60 columns", async () => {
@@ -426,10 +441,7 @@ it("the thread header counts loaded events and ends a long purpose with a Detail
 	const header = rows.slice(1, 6).map((line) => line.split("│")[1] ?? "");
 	assert.ok(header.some((line) => line.includes("… more in Details")), "the purpose points to Details");
 	assert.doesNotMatch(header.join("\n"), /TAIL_MARKER/);
-	f.ui.handleInput("\t");
-	f.ui.handleInput("\t");
-	f.ui.handleInput("\u001b[C");
-	f.ui.handleInput("\r");
+	f.ui.handleInput("d");
 	await settle();
 	assert.match(f.text(), /TAIL_MARKER/, "Details keeps the complete purpose");
 });
@@ -466,5 +478,68 @@ it("a long post previews, keeps the window top while it grows, and names the pos
 		f.ui.handleInput("\u000f"); await settle();
 		assert.match(pane().join("\n"), /▸ \d+ more lines/, "Ctrl+O closes every long post");
 		assert.doesNotMatch(pane().join("\n"), /▴ Show less/);
+	} finally { f.ui.dispose(); }
+});
+
+it("the footer describes each focus and its way out keeps the outcome Escape has", async () => {
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page("t1", [event(1)]));
+	try {
+		await turn(); f.ui.openNamedAction("threads"); await settle();
+		const footer = () => (f.text().split("\n").at(-1) ?? "").trimEnd();
+		assert.equal(footer(), "↑↓ select · enter open · / find · m members · d details · ctrl+o open posts · tab focus · esc back");
+		f.ui.handleInput("\t"); await settle();
+		assert.equal(footer(), "↑↓ scroll · pgup/pgdn page · home earlier · end latest · enter write · m members · d details · ctrl+o open posts · tab focus · esc list");
+		f.ui.handleInput("m"); await settle();
+		assert.equal(footer(), "↑↓ choose · enter open conversation · space wake on post · m exchange · esc exchange");
+		f.ui.handleInput("\u001b"); await settle();
+		assert.match(footer(), /^↑↓ scroll · pgup\/pgdn page · home earlier · end latest · enter write · m members/, "the panel's way out returns to the exchange");
+		f.ui.handleInput("d"); await settle();
+		assert.equal(footer(), "↑↓ scroll · pgup/pgdn page · d exchange · esc exchange");
+		f.ui.handleInput("\u001b"); await settle();
+		f.ui.handleInput("\u001b"); await settle();
+		assert.match(footer(), /^↑↓ select · enter open · \/ find · m members/, "a further Escape returns to the list");
+		f.ui.handleInput("\t"); f.ui.handleInput("\t"); await settle();
+		assert.equal(footer(), "enter post · shift+enter/ctrl+j newline · tab focus · esc list");
+		f.ui.handleInput("\u001b"); await settle();
+		assert.match(footer(), /\/ find · m members/, "Escape leaves the message field for the list");
+		f.ui.handleInput("\u001b"); await settle();
+		assert.equal(f.ui.focus.surface, "work", "the last Escape leaves Threads, as its back label says");
+	} finally { f.ui.dispose(); }
+});
+
+it("a click on a footer control runs the same command as its key on the same thread", async () => {
+	const run = async (mode: "key" | "click") => {
+		const f = setup(async (input) => input.action === "list"
+			? { items: [thread("t1")], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+			: page("t1", [event(1, { sender: "two" })]));
+		try {
+			await turn(); f.ui.openNamedAction("threads"); await settle();
+			if (mode === "key") f.ui.handleInput("m");
+			else f.click(f.ui.render(f.width).at(-1)?.indexOf("m members") ?? -1, f.height - 1);
+			await settle();
+			assert.equal(f.state.threads?.selected, "t1", "the control acts on the selected thread");
+			return f.text();
+		} finally { f.ui.dispose(); }
+	};
+	assert.equal(await run("click"), await run("key"), "the click and the key show the same Members panel");
+});
+
+it("each key token of a footer control clicks that key alone", async () => {
+	// Reads keep each summary's own timestamp, so the order stays stable while the clicks run.
+	const updated: Record<string, number> = { one: 3_000, two: 2_000 };
+	const f = setup(async (input) => input.action === "list"
+		? { items: [thread("one", { updatedAt: 3_000 }), thread("two", { updatedAt: 2_000 })], nextCursor: null, coverage: { complete: true, visited: 1, omitted: 0 } }
+		: page(String(input.threadId), [event(1)], { updatedAt: updated[String(input.threadId)] ?? 1 }));
+	try {
+		await turn(); f.ui.openNamedAction("threads"); await settle();
+		const footer = () => stripVTControlCharacters(f.ui.render(f.width).at(-1) ?? "");
+		assert.match(footer(), /^↑↓ select/);
+		assert.equal(f.state.threads?.selected, "one");
+		f.click(footer().indexOf("↓"), f.height - 1); await settle();
+		assert.equal(f.state.threads?.selected, "two", "a click on the down arrow selects the next thread");
+		f.click(footer().indexOf("↑"), f.height - 1); await settle();
+		assert.equal(f.state.threads?.selected, "one", "a click on the up arrow selects the previous thread");
 	} finally { f.ui.dispose(); }
 });

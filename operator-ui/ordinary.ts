@@ -274,8 +274,22 @@ export async function openOperatorFrame(pi: FrameApi, ctx: ExtensionContext, sta
 		(value as unknown as FrameOpenRequest).handled = frame.activeKey === value.key;
 	});
 	try {
-		await ctx.ui.custom<void>((tui, theme, _keys, done) => {
-			const controls = (): Action[] => [{ id: "expand", label: expanded ? "Shrink" : "Expand", primary: true, run: () => { expanded = !expanded; tui.requestRender(); } }];
+		await ctx.ui.custom<void>((tui, theme, keys, done) => {
+			// Expand uses Pi's own expand binding, as configured.
+			const expandKey = keys.getKeys("app.tools.expand")[0] ?? "ctrl+o";
+			const controls = (): Action[] => [
+				{
+					id: "expand",
+					label: expanded ? "Shrink" : "Expand",
+					key: expandKey,
+					primary: true,
+					description: expanded ? "Give rows back to the conversation" : "Use most of the window",
+					run: () => {
+						expanded = !expanded;
+						tui.requestRender();
+					},
+				},
+			];
 			frame = new NavigationFrame({
 				theme,
 				target: ordinaryTarget(ctx),

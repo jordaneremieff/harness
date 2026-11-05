@@ -20,13 +20,13 @@ function discovery(pages: CollaborationPage[]) {
 }
 const rows = () => [row(storage, { storageId: storage, creatingOwnerId: ordinary, name: "Builder" }), row(peer, { storageId: peer.split(":")[0], creatingOwnerId: other, name: "Peer" }), row(other, { storageId: other, name: "Unrelated" })];
 const shown = (f: ReturnType<typeof fixture>) => stripVTControlCharacters(f.ui.render(f.tui.terminal.columns).join("\n"));
-/** Open Threads, select the first thread, and open its Members panel with the keyboard. */
+/** Open Threads, open the first thread, and show its Members panel with the keyboard: Shift+Tab leaves the message field, `m` shows the members. */
 async function openMembers(f: ReturnType<typeof fixture>) {
 	f.ui.openNamedAction("threads"); await turn(); await turn();
 	f.ui.handleInput("\x1b[B"); await turn();
 	f.ui.handleInput("\r");
 	f.ui.handleInput("\x1b[Z");
-	f.ui.handleInput("\r");
+	f.ui.handleInput("m");
 }
 /** Click Related or All on the list's Find row, as the operator would. */
 function choose(f: ReturnType<typeof fixture>, label: "Related" | "All") {
@@ -179,14 +179,11 @@ for (const [width, height] of [[80, 24], [140, 45]]) it(`Related, All, thread, p
 		f.ui.handleInput("\r"); await turn();
 		assert.match(shown(f), /Exchange message 20/);
 		f.ui.handleInput("\x1b[Z");
-		f.ui.handleInput("\x1b[C");
-		f.ui.handleInput("\r");
-		assert.match(shown(f), /Read the useful result/, "Details shows the frame");
+		f.ui.handleInput("d");
+		assert.match(shown(f), /Read the useful result/, "d shows the frame");
 		assert.match(shown(f), /No live changes/);
 		f.ui.handleInput("\x1b");
-		f.ui.handleInput("\t");
-		f.ui.handleInput("\x1b[D");
-		f.ui.handleInput("\r");
+		f.ui.handleInput("m");
 		f.ui.handleInput("\x1b[B");
 		f.ui.handleInput("\r"); await turn();
 		assert.deepEqual(f.ui.focus, { region: "composer", surface: "work" }, "a participant opens its conversation with the message field");

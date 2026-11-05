@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
+import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
-import type { OperatorView, ViewHost } from "../../operator-ui/index.ts";
+import { NavigationFrame, type OperatorView, type ViewHost } from "../../operator-ui/index.ts";
 import type { AccessError, AccessPage, AccessRequest } from "./access.ts";
 import type { BrowserEntry } from "./inventory.ts";
 import { pillarsView } from "./operator-view.ts";
@@ -31,7 +31,6 @@ function open(read: (request: AccessRequest) => Promise<AccessPage | AccessError
 		notify: () => {},
 		push: () => {},
 		back: () => {},
-		focusActions: () => {},
 		close: () => {},
 	};
 	const view: OperatorView = pillarsView(host, {
@@ -94,8 +93,49 @@ test("a source error shows its code and stops further pages; the filter narrows 
 	await turn();
 	assert.ok(v.screen().includes("source_changed"));
 	assert.equal(typeof v.action("Read more").disabled, "string");
+	v.view.handleInput("/");
 	for (const key of "frame") v.view.handleInput(key);
 	const filtered = v.screen();
 	assert.match(filtered, /1 of 3 sources match/);
 	assert.ok(!filtered.includes("Pillars Governance ·"));
+});
+
+test("the footer shows m read more and r read again, and a footer click reads as its key does", async () => {
+	const calls: AccessRequest[] = [];
+	const frame = new NavigationFrame({
+		theme,
+		target: { id: "session", label: "This session · work" },
+		destinations: () => [
+			{
+				key: "pillars",
+				label: "Pillars",
+				open: (host: ViewHost) =>
+					pillarsView(host, {
+						inventory: async () => entries,
+						read: async (request) => {
+							calls.push(request);
+							return request.offset === undefined
+								? page({ resource: request.resource ?? "inventory", text: "first ", nextOffset: 48 })
+								: page({ resource: request.resource ?? "inventory", text: "second", offset: 48, endOffset: 96 });
+						},
+					}),
+			},
+		],
+		rows: () => 24,
+		requestRender: () => {},
+		close: () => {},
+	});
+	await turn();
+	const drawn = frame.render(160);
+	const row = stripVTControlCharacters(drawn.at(-1) ?? "");
+	for (const control of ["m read more", "r read again", "esc close"]) assert.ok(row.includes(control), `${control} in: ${row}`);
+	frame.handleInput("m");
+	await turn();
+	assert.deepEqual(calls.at(-1), { resource: "inventory", offset: 48, referenceBodyDigest: digest });
+	const at = row.indexOf("r read again");
+	const event: TuiMouseEvent = { type: "click", button: "left", x: at, y: drawn.length - 1, screenX: at, screenY: drawn.length - 1, width: 160, height: drawn.length, shift: false, alt: false, ctrl: false };
+	assert.ok(frame.handleMouse(event)?.handled, "the read again control is clickable");
+	await turn();
+	assert.deepEqual(calls.at(-1), { resource: "inventory" }, "the click reads again from the first page");
+	frame.close();
 });

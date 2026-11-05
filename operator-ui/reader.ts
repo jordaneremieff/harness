@@ -2,7 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { HitMap } from "./hits.ts";
 import { fitLine, wrap } from "./text.ts";
-import type { Action, OperatorView, ViewHost } from "./view.ts";
+import type { Action, KeyHint, OperatorView, ViewHost } from "./view.ts";
 
 /** Text, display lines, or lines laid out for a given width, for example rendered Markdown. */
 export type ReaderContent = string | readonly string[] | ((width: number) => readonly string[]);
@@ -124,5 +124,11 @@ export class ReaderView implements OperatorView {
 	}
 	actions(): readonly Action[] {
 		return this.extra();
+	}
+	keys(): readonly KeyHint[] {
+		return [
+			{ keys: ["up", "down"], label: "scroll" },
+			{ keys: ["pageUp", "pageDown"], label: "page" },
+		];
 	}
 }

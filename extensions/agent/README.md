@@ -270,8 +270,8 @@ notice that woke it, `unanswered` for an unanswered result, a check-in's elapsed
 time, and the recorded local time (the clock time today, the date and time on
 other days). Two rows of the Markdown body follow; a longer body ends its
 second row with a muted `+N lines`. A plain click on the header row or on that
-row opens the card; there is no repeated key hint, and Ctrl+O and More › Expand
-all open every card. The open card shows the complete retained body, then muted
+row opens the card; there is no repeated key hint, and Ctrl+O (the footer's
+`expand all`) opens every card. The open card shows the complete retained body, then muted
 notes, then every retained field in full: the sender identity, the recorded
 time, the thread, event, request and source identifiers, and each retained
 reference of a result. A notice copy that is not marked complete says
@@ -328,17 +328,18 @@ results without canceling producers and cannot release a later request. Tab comp
 addresses without executing them. Completion searches retained role hints too.
 Without an action, `/agent` opens the work view. A TUI command that names a
 target without its other arguments, such as `/agent configure @handle`, opens
-that target's form there. In the list, Up/Down selects, typing finds loaded
-agents, and Enter writes to the selected agent. PageUp/PageDown reads the
-selected conversation. Ctrl+O expands tool output; Ctrl+T toggles thinking.
-Esc clears Find before closing the view.
+that target's form there. In the list, Up/Down selects and Enter writes to the
+selected agent. `/` moves to Find, where letters narrow the list; Enter or
+Escape returns to the list. PageUp/PageDown reads the selected conversation.
+Ctrl+O expands tool output; Ctrl+T toggles thinking. Esc clears Find before
+closing the view.
 
 In the message field, letters are message text. Enter starts an idle turn or
 steers working agents at the next step; the field's top border names the
-effect, and a click on it, or More › Send as follow-up, changes it while the
-agent works. Ctrl+J adds a newline. Esc keeps the draft and returns to the
-list. There are no F-key controls, Alt controls, letter shortcuts, or typed
-dashboard commands.
+effect, and a click on it changes it while the agent works; `f` in the footer
+does the same. Ctrl+J adds a newline. Esc keeps the draft and returns to the
+list. Outside a text field, the keys shown in the footer run their actions.
+There are no F-key controls, Alt controls or typed dashboard commands.
 
 `/agent unbind <area>` removes only the directory binding. It does not delete
 storage or abort work.
@@ -414,8 +415,8 @@ PageUp and PageDown reach the work view.
 |---|---|
 | Enter in the message field | Admit the text to the selected conversation as operator input; its answer stays in that conversation. |
 | Ctrl+J | Insert a native editor newline. |
-| Esc | Leave the inspector, then the message field. Over the list it names Detach; it never detaches or stops work. |
-| Detach (heading), `/quit`, or Ctrl+D in an empty message field | Close this terminal and its observation links, not native work. |
+| Esc | Leave the inspector, then the message field. Over the list it clears the error filter, returns to Threads, or clears Find; in the attached terminal it never detaches. |
+| `ctrl+d` (footer), `/quit`, or Ctrl+D in an empty message field | Close this terminal and its observation links, not native work. |
 | `/agent enter <identity-or-@handle>` | Select that exact conversation. |
 | `/agent new` | Open New conversation. |
 | `/agent browse` | Open the selected conversation's owner views. |
@@ -494,7 +495,7 @@ changes, and a late answer for an earlier selection is dropped. Builtin,
 codemode and Agent cards keep their precedence. A host from another release
 refuses the status read through the existing operation identity check; there
 is no older reader. Owner views (clipboard, pillars, policy, stash) load the
-same way and open from More › Owner views; see
+same way and open from `o owner views` in the footer; see
 [operator views](../../docs/conventions/operator-panels.md#attached-panels).
 
 The terminal sets the window title to the observed conversation name and the
@@ -538,12 +539,12 @@ continues.
 The view has a heading row, the list, and the selected agent's pane:
 
 - **Heading.** The Agents, Threads and Efforts tabs on the left (Efforts in
-  ordinary Pi only), with Show list when the list is hidden; the session's
-  delegated figures, New conversation, Help, and the way out (Close, or Detach
-  in the attached terminal) on the right. Controls that do not fit move into
-  More.
+  ordinary Pi only). On the Agents tab at 100 columns or more, the session's
+  delegated figures sit at the right. New conversation, Help, the list
+  controls and the way out are keys in the bottom footer; the heading holds no
+  commands.
 - **List.** A Find field, with Related, All (ordinary Pi only) and ‹ (hide the
-  list) at its right end; then the agent rows and two footer lines. Each agent
+  list) at its right end; then the agent rows and two count lines. Each agent
   takes three rows. Row 1 is the state glyph, one bold label and the relative
   time. The label is the display name, else the `@handle`, else the quoted
   first input, else the folder; duplicate labels add the shortest identity
@@ -555,20 +556,19 @@ The view has a heading row, the list, and the selected agent's pane:
   others shows its pending results and queued inputs, in the warning colour for
   a likely mutual wait; any other agent shows its model with its reasoning
   level and the cost. A blank row follows an agent
-  whose label fits on row 1. The first footer line counts loaded agents above
+  whose label fits on row 1. The first count line counts loaded agents above
   and below the window (`↓ N more`, `↑ N more`, or `↑ A · ↓ B more`), then
-  `N with errors`, which a click turns into a filter that lists only agents
-  with an error reason; `Show all` or Escape lists every agent again. After
-  three failed refreshes the line reads `List kept; refresh failed` in the
-  warning colour. The second footer line names the scope and the active filters
-  and how many loaded agents they show, such as `Related + Find · 3 of 329
-  loaded`, then Load more when the store has more agents. At 100 columns or
-  more the list sits beside the pane at full height; narrower windows stack a
-  strip above the pane that holds two agents at 80x24 and one at 60x20, with
-  Load more beside Find.
+  `N with errors`, which a click turns into the errors-only filter that lists
+  only agents with an error reason; `e` or Escape lists every agent again.
+  After three failed refreshes the line reads `List kept; refresh failed` in
+  the warning colour. The second count line names the scope and the active
+  filters and how many loaded agents they show, such as `Related + Find · 3 of
+  329 loaded`, then Load more when the store has more agents. At 100 columns
+  or more the list sits beside the pane at full height; narrower windows stack
+  a strip above the pane, with Load more beside Find.
 - **Pane.** The selected agent's header of two lines, then one blank line.
-  Line 1 holds the bold label, the project in muted text, and the agent's
-  controls. Line 2 holds the state glyph and label, then at most one status:
+  Line 1 holds the bold label and the project in muted text. Line 2 holds the
+  state glyph and label, then at most one status:
   the first that applies of the sizes of a resize drag in progress, a notice
   from the last action, the agent's error reason with its supported way
   forward, or the conversation load status, connection or stored-history
@@ -614,14 +614,15 @@ wider thread evidence. No relationship store or host protocol is added.
 
 ### Focus and input
 
-Tab and Shift+Tab move between the list, the conversation, the message field,
-the agent's controls, the inspector, and the heading's controls. Escape leaves
-the inspector, then the message field, then the view; it never stops work.
-Letters typed over the list go to Find: the list narrows, the selection follows
-the first match, and the pane previews it without starting its host. Up and
-Down select, Home and End select the first and last agent; Enter writes to the
-selected agent. Escape over the list clears the error filter first, then Find,
-and keeps the chosen agent. No letter is a shortcut for an effect.
+Tab and Shift+Tab move between the list, the conversation, the message field
+and an open form. Escape leaves an inspector form, then the message field,
+then the view; it never stops work. `/` moves to Find, where letters narrow
+the list: the selection follows the first match, and the pane previews it
+without starting its host. Up and Down select, Home and End select the first
+and last agent; Enter writes to the selected agent. Outside a text field, the
+keys in the footer run their actions; `x` lists the actions the row does not
+show, with their keys. Escape over the list clears the error filter first,
+then Find, and keeps the chosen agent.
 
 Selection reads passively: it never starts a host and never moves a draft
 between agents. Sending a message starts a stopped host through the normal
@@ -634,9 +635,11 @@ primary process. Different primary sessions have independent UI state.
 Enter sends; Ctrl+J adds a new line. The message field's caption names the
 recipient (`To Parser review`). An idle agent gets **Send**; a working agent
 gets **Steer at next step** unless you choose **Follow-up after answer**: click
-the effect on the field's top border, or choose More › Send as follow-up. After
-a send, the next message starts as steer again. All letters, slash text and
-bang text are literal messages; commands belong to the agent's controls. A
+the effect on the field's top border. In the list, `f` switches the effect too.
+After
+a send, the next message starts as steer again. In the message field, letters,
+slash text and bang text are literal messages; outside a text field, the keys
+in the footer run their actions. A
 successful admission clears only the submitted draft revision, including after
 the view reopens; newer text stays. A refused or uncertain admission keeps the
 draft and the effect and states the reason in the receipt on the field's
@@ -646,15 +649,16 @@ borders.
 
 ### Controls and forms
 
-The header's controls act on the agent shown in the header:
+The footer's controls act on the agent shown in the header:
 
-- **Stop** (while the agent works), **Release await** (while it awaits other
-  agents), **Reconnect** (when it needs attention), **Configure** (disabled with
-  its reason while the agent works) and **Tasks** show directly when they fit.
-- **More** lists the rest: the delivery effect, Owner views, Fork, Rewind,
-  Compact, Reset context, Schedule message, Scheduled messages, Run command,
-  Profile, Details, Stop and release host, and host extras such as the
-  terminal's Recover input.
+- **Stop** (`s`, while the agent works), **Release await** (`w`, while it
+  awaits other agents), **Reconnect** (`r`, when it needs attention),
+  **Configure** (`c`, disabled with its reason while the agent works) and
+  **Tasks** (`k`) show directly when they fit.
+- **x more** lists the rest with their keys: the delivery effect, Owner views
+  (`o`), Fork, Rewind, Compact, Reset context, Schedule message, Scheduled
+  messages, Run command, Profile, Details, Stop and release host, and host
+  extras such as the terminal's Recover input (`u`).
 
 Each action except the delivery effect opens a staged form or reader in the
 inspector: beside the
@@ -739,10 +743,10 @@ Below 60 columns or 16 rows the view asks for a larger window.
 ### Header and fact lines
 
 The header holds exactly two lines. Line 1 shows the selected agent's bold
-label, the project in muted text, and the agent's controls; the label keeps its
-width first, controls that do not fit move into More, a narrow pane drops the
-project, and only then does the label shorten. Line 2 shows the state glyph and
-label, then at most one status: the first that applies of the sizes of a resize
+label and the project in muted text; a narrow pane drops the project, and only
+then does the label shorten. The agent's actions are keys in the footer. Line 2
+shows the state glyph and label, then at most one status: the first that
+applies of the sizes of a resize
 drag in progress, a notice from the last action, the error reason and its way
 forward (see the list above), or the conversation load status (such as
 `Partial history`), connection or stored-history warning. One blank line
@@ -838,14 +842,14 @@ padding toggle the card through Pi's public expansion setter. The clicked item
 stays in view and suspends tail-follow. Press, drag, release, modified clicks,
 and multiple clicks stay available for Pi's native text selection. Ctrl+O sets
 all tool cards and communications and clears individual choices; Ctrl+T does
-the same for thinking. More lists both as Expand all and Show thinking.
+the same for thinking. The footer lists both as Expand all and Show thinking.
 Thinking starts hidden for every agent, whatever the primary's setting. A
 message that also has text, a tool call or an error hides its thinking without
 a row; a message with only thinking keeps one `▸ Thinking` row, which a click
 opens. Ctrl+T here changes only this view and never writes primary settings.
 
-In Pi fullscreen mode, click a list row to select it, a heading or header
-control to run it, the message field to focus it and place its caret, and a
+In Pi fullscreen mode, click a list row to select it, a footer control to run
+its key, the message field to focus it and place its caret, and a
 time to switch every time between relative age and local date and time. A
 control drawn before a refresh or resize never runs a replaced action. The
 wheel scrolls the pane under the pointer; list scroll does not change the
@@ -1232,8 +1236,9 @@ Coverage carries `complete`, `storagesVisited`, `skipped`, `omitted`, and
 the cursor continues, and a short note while related work is still read.
 Storage counts such as unreadable or omitted records stay in Details and the
 plain-text summary; they are not selected-agent warnings. Unreadable or missing
-views remain unknown, not absent. Load more agents continues the cursor; narrow
-footers shorten the action to More. Rows carry no creating-session tag. A
+views remain unknown, not absent. Load more agents continues the cursor; a
+short row puts lower-priority controls in `x more`, with their keys. Rows carry
+no creating-session tag. A
 provider error that ends in a JSON body reads as its message, for example
 `429 Usage limit reached`. Find searches loaded
 handle, role hint, name, historical first input, path, model, state, and identity,
@@ -1764,20 +1769,22 @@ the closed threads below it; opening a closed thread directly expands the
 group. Each row takes three rows like the agent list: the state glyph, the bold
 title and the last activity time, with a long title continuing on the second
 row; then the purpose in muted text; then a blank row when the title fits on
-one. The member count sits in the thread header. Typing over the list (Find) searches
-open and closed threads and shows every match; clearing Find restores the
-earlier choice. Up/Down, PageUp/PageDown, Home and End select; the wheel
-scrolls the list. The list footer reads `N threads`, or one read warning. The
+one. The member count sits in the thread header. `/` moves to Find, whose
+letters search open and closed threads and show every match; Enter keeps the
+filter and returns to the list, Escape clears it, and clearing Find restores
+the earlier choice. Over the list, letters are keys, never Find text. Up/Down,
+PageUp/PageDown, Home and End select; the wheel scrolls the list. The list footer reads `N threads`, or one read warning. The
 newest thread is selected when the view opens. Selecting a thread reads its
 newest page; reading is passive and starts no model turn.
 
-The thread pane's header holds the bold title with the Members and Details
-controls, then one muted line with Open or Closed, the member count and how
-much of the exchange is loaded (`latest N of M events` while earlier events
-exist), then the purpose in muted rows, then a blank line. A title that leaves
-the controls no room moves them to the counts line and wraps onto a second row
-instead of shortening. A purpose longer than three rows ends with `… more in
-Details`. A read failure replaces the counts in the error colour.
+The thread pane's header holds the bold title, then one muted line with Open
+or Closed, the member count and how much of the exchange is loaded (`latest N
+of M events` while earlier events exist), then the purpose in muted rows, then
+a blank line. A long title wraps onto a second row instead of shortening. A
+purpose longer than three rows ends with `… more in Details`. A read failure
+replaces the counts in the error colour. The header holds no commands: `m`
+shows the members, `d` the frame, as the key footer on the screen's last row
+says.
 
 The exchange follows. Each post starts with one header row: the sender's name
 in bold, then in muted text the role the frame names (`integrator`), the post
@@ -1815,15 +1822,17 @@ that is not confirmed keeps the draft, and sending the same content again
 reuses its request identity. A closed thread takes no posts. Drafts stay per
 thread for the session.
 
-`Members` lists the members with their declared contributions. Up/Down choose,
-Space ticks a member to wake on the next post, and Enter or a click opens that
-member's conversation in the Agents tab; Escape there returns to the thread.
-`Details` shows the frame as attributed claims: purpose, the carried operator
-direction, source, restrictions, acceptance, integrator, creator and the member
-declarations. Tab moves through the list, the exchange, the Members and Details
-controls and the message field. Escape steps back one level: from a panel to
-the exchange, from the exchange to the list, and from the list to where Threads
-opened from. A thread opened from Related efforts returns there directly.
+`m` (members) lists the members with their declared contributions. Up/Down
+choose, Space ticks a member to wake on the next post, and Enter or a click
+opens that member's conversation in the Agents tab; Escape there returns to the
+thread. `d` (details) shows the frame as attributed claims: purpose, the
+carried operator direction, source, restrictions, acceptance, integrator,
+creator and the member declarations; the same key returns to the exchange.
+The key footer lists the keys of the focused part: the list, Find, the
+exchange, a panel or the message field, where `enter post` and the newline keys
+apply and every letter is text. Tab moves through the list, the exchange and
+the message field. Escape steps back one level: from a panel to the exchange,
+from the exchange to the list, and from the list to where Threads opened from. A thread opened from Related efforts returns there directly.
 Catalog notices reread the selected thread at once and the thread list at most
 every ten seconds. The standalone native terminal uses the same view and
 attributes operator posts to its attached conversation.
@@ -1956,12 +1965,13 @@ scan's stop reasons in plain words (such as `scan limit hit`) with a Details
 control when coverage is partial; the row opens Scan details.
 
 The selected effort's header shows the complete title, then a muted line with
-the same presence and activity facts, then a blank line. Open thread, Message,
-Observe, Details and More sit beside a title that leaves them room and
-otherwise on the facts line, where controls that do not fit move into More;
-they never shorten the title. A title longer than three rows ends with `…`, and
-the body then shows the whole purpose. More opens the remaining actions, such
-as Threads, Scan details, Refresh and the exact-time toggle. The default detail
+the same presence and activity facts, then a blank line; it holds no commands.
+A title longer than three rows ends with `…`, and the body then shows the whole
+purpose. The key footer on the screen's last row lists the effort's keys:
+`enter open thread`, `m message`, `o observe`, `d details` and `t threads`,
+then `x more` for the other keys (`c` scan details, `r` refresh, `i` exact
+times), with `esc back` last. While the message field has focus, every letter
+is text and the footer shows `enter send` and the newline keys. The default detail
 is complete and scrolls: the rest of the declared purpose (its first sentence
 is the title; a named session shows the whole purpose under `Purpose`), then
 `Integration · next shared acts, declared <age>` with the full integration

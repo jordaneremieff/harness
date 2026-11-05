@@ -312,7 +312,7 @@ function makeCtx(over: CtxOverrides = {}) {
 	const onNextFrame = (script: (frame: NavigationFrame) => unknown): Promise<void> =>
 		new Promise<void>((finished, failed) => {
 			customDriver = (factory, resolve, reject) => {
-				const frame = factory(tui, theme, {}, resolve) as NavigationFrame;
+				const frame = factory(tui, theme, { getKeys: () => [] }, resolve) as NavigationFrame;
 				Promise.resolve()
 					.then(() => script(frame))
 					.then(
@@ -360,10 +360,21 @@ function typeText(frame: NavigationFrame, text: string): void {
 	for (const character of text) frame.handleInput(character);
 }
 
-/** Type over the command list to filter it, then return to the list. */
+/** Focus the search field with `/`, type to filter the command list, then return to the list. */
 function filterTo(frame: NavigationFrame, text: string): void {
+	frame.handleInput("/");
 	typeText(frame, text);
 	frame.handleInput("\r");
+}
+
+/** Click the footer control drawn as `label`, at the position the last render gave it. */
+function clickFooter(frame: NavigationFrame, label: string, width = 160): void {
+	const lines = frame.render(width);
+	const row = strip(lines.at(-1) ?? "");
+	const at = row.indexOf(label);
+	assert.ok(at >= 0, `no footer control ${label} in: ${row}`);
+	const event: TuiMouseEvent = { type: "click", button: "left", x: at, y: lines.length - 1, screenX: at, screenY: lines.length - 1, width, height: lines.length, shift: false, alt: false, ctrl: false };
+	assert.ok(frame.handleMouse(event)?.handled, `${label} is clickable`);
 }
 
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -791,6 +802,30 @@ describe("Commands view", () => {
 		assert.deepEqual(sent, [{ content: "/review:1 src/index.ts", options: { expandPromptTemplates: true } }]);
 	});
 
+	it("shows enter run in the footer, and Enter and a footer click both run the selected command", async () => {
+		const { handlers, commands, sent } = makePi(() => [registration("review:1", { description: "Review the current diff" })]);
+		const mocks = makeCtx({});
+		await handlers.get("session_start")(sessionStart, mocks.ctx);
+		const byKey = mocks.onNextFrame((frame) => {
+			filterTo(frame, "review");
+			const row = strip(frame.render(160).at(-1) ?? "");
+			for (const control of ["enter run", "a arguments", "esc close"]) assert.ok(row.includes(control), `${control} in: ${row}`);
+			frame.handleInput("\r");
+		});
+		await commands.get("commands").handler("", mocks.ctx);
+		await byKey;
+		const byClick = mocks.onNextFrame((frame) => {
+			// The query and selection survive reopening, so the list is already filtered.
+			clickFooter(frame, "enter run");
+		});
+		await commands.get("commands").handler("", mocks.ctx);
+		await byClick;
+		assert.deepEqual(sent, [
+			{ content: "/review:1", options: { expandPromptTemplates: true } },
+			{ content: "/review:1", options: { expandPromptTemplates: true } },
+		]);
+	});
+
 	it("keeps unsent arguments and the selection when the frame closes and reopens", async () => {
 		const { handlers, commands, sent } = makePi(() => [registration("evo"), registration("review:1")]);
 		const mocks = makeCtx({});
@@ -878,7 +913,7 @@ describe("Commands view", () => {
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		let frame: NavigationFrame | undefined;
 		mocks.ctx.ui.custom = (factory) => new Promise((resolve) => {
-			frame = factory(mocks.tui, mocks.theme, {}, resolve) as NavigationFrame;
+			frame = factory(mocks.tui, mocks.theme, { getKeys: () => [] }, resolve) as NavigationFrame;
 		});
 		const pending = commands.get("commands").handler("", mocks.ctx);
 		assert.ok(frame, "the frame opened");

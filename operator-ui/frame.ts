@@ -1,9 +1,10 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { matchesKey, type Component, type Focusable, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { ActionBar, renderTabs } from "./controls.ts";
+import { type Component, type Focusable, matchesKey, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { actionControl, actionLabel, type Control, Footer, MORE_KEY, menuControl, renderTabs } from "./controls.ts";
 import { HitMap } from "./hits.ts";
-import { fitLine, plainLine, visibleWidth, wrap } from "./text.ts";
-import type { Action, Notice, NoticeKind, OperatorView, ViewHost, ViewTarget } from "./view.ts";
+import { keyInput, keyMatches } from "./keys.ts";
+import { fitLine, plainLine, wrap } from "./text.ts";
+import type { Action, KeyHint, Notice, NoticeKind, OperatorView, ViewHost, ViewTarget } from "./view.ts";
 
 /** One place the frame can show: an owner's content view, or the reason it is unavailable. */
 export interface Destination {
@@ -25,12 +26,17 @@ export interface FrameOptions {
 	requestRender(): void;
 	/** Leave the frame. The host restores the conversation, then runs `then` when given. */
 	close(then?: () => unknown): void;
-	/** Frame controls beside the target, for example Expand. */
+	/** Frame controls with chord keys, for example Expand. They act whatever the view's focus. */
 	controls?(): readonly Action[];
-	/** Label of the way out, for example "Close" or "Back to conversation". */
+	/** Footer wording of the way out of a destination's first view, for example "close" or "back". */
 	readonly closeLabel?: string;
 	/** Show every destination as a tab. False shows only the active destination's title. Default true. */
 	readonly tabs?: boolean;
+	/**
+	 * Draw the key footer as the frame's last row. A host that draws one footer for its whole screen
+	 * passes false and draws `renderFooter` itself. Default true.
+	 */
+	readonly footer?: boolean;
 }
 
 interface Layer {
@@ -68,25 +74,27 @@ class FailureView implements OperatorView {
 
 /**
  * The temporary browsing surface. Destinations sit in one row; each keeps its own views, query,
- * selection and reading position while the frame is open. Escape closes a local popup, then
- * leaves a nested view, then leaves the frame. One destination's failure costs only that view.
+ * selection and reading position while the frame is open. The last row is the key footer: the
+ * view's own keys, its actions with their keys, More, and the way out. A click on a footer control
+ * runs exactly what its key runs. Escape closes the menu, then lets the view leave an edit, then
+ * runs the view's Cancel, then leaves a nested view, then the frame.
  */
 export class NavigationFrame implements Component, Focusable {
 	focused = true;
 	private readonly options: FrameOptions;
 	private readonly mounted = new Map<string, Mounted>();
 	private readonly hits = new HitMap();
-	private readonly bar: ActionBar;
+	private readonly bar = new Footer();
 	private active?: string;
-	private zone: "view" | "actions" | "tabs" = "view";
+	private zone: "view" | "tabs" = "view";
 	private tabFocus?: string;
 	private frameNotice?: Notice;
 	private closed = false;
 	private bodyY = 1;
+	private bodyHeight = 1;
 
 	constructor(options: FrameOptions) {
 		this.options = options;
-		this.bar = new ActionBar((reason) => this.show({ text: reason, kind: "warning" }));
 		const first = options.destinations().find((destination) => destination.key === options.initial) ?? options.destinations()[0];
 		if (first) this.navigate(first.key);
 	}
@@ -100,9 +108,14 @@ export class NavigationFrame implements Component, Focusable {
 		return this.top()?.view.title;
 	}
 
-	/** The labelled actions of the view the operator reads now, as the action bar offers them. */
+	/** The labelled actions of the view the operator reads now. */
 	get viewActions(): readonly Action[] {
 		return this.actions();
+	}
+
+	/** True while a text field of the view has focus, so printable keys are text. */
+	get editing(): boolean {
+		return this.zone === "view" && !this.bar.menuShown && (this.top()?.view.editing?.() ?? false);
 	}
 
 	private show(notice: Notice): void {
@@ -135,12 +148,6 @@ export class NavigationFrame implements Component, Focusable {
 			},
 			close: (then?: () => unknown) => {
 				if (!controller.signal.aborted) this.close(then);
-			},
-			focusActions: () => {
-				if (controller.signal.aborted || this.active !== key) return;
-				this.zone = "actions";
-				this.bar.focusEdge(false);
-				this.options.requestRender();
 			},
 		};
 	}
@@ -231,6 +238,15 @@ export class NavigationFrame implements Component, Focusable {
 		}
 	}
 
+	private hints(): readonly KeyHint[] {
+		try {
+			return this.top()?.view.keys?.() ?? [];
+		} catch (error) {
+			this.fail(error);
+			return [];
+		}
+	}
+
 	private fail(error: unknown): void {
 		const mounted = this.active ? this.mounted.get(this.active) : undefined;
 		if (!mounted) return;
@@ -245,81 +261,152 @@ export class NavigationFrame implements Component, Focusable {
 		this.options.close(then);
 	}
 
-	private frameControls(): Action[] {
-		const controls = [...(this.options.controls?.() ?? [])];
-		controls.push({ id: "close", label: this.options.closeLabel ?? "Close", primary: true, run: () => this.close() });
-		return controls;
+	/** Run a view action by identity after re-reading the current list; a disabled one explains itself. */
+	private invoke(id: string): void {
+		const action = this.actions().find((candidate) => candidate.id === id);
+		if (!action) return;
+		this.bar.closeMenu();
+		if (action.disabled) {
+			this.show({ text: action.disabled, kind: "warning" });
+			return;
+		}
+		action.run();
+	}
+
+	private invokeFrame(id: string): void {
+		const action = (this.options.controls?.() ?? []).find((candidate) => candidate.id === id);
+		if (!action) return;
+		if (action.disabled) this.show({ text: action.disabled, kind: "warning" });
+		else action.run();
+	}
+
+	/** Send one key through the same route a key press takes; footer clicks use this. */
+	private sendKey(key: string): void {
+		const data = keyInput(key);
+		if (data !== undefined) this.handleInput(data);
 	}
 
 	private renderHeader(width: number): string {
 		const theme = this.options.theme;
 		const shown = this.options.destinations().filter((destination) => this.options.tabs !== false || destination.key === this.active);
 		const tabs = shown.map((destination) => ({ key: destination.key, label: destination.label, unavailable: destination.unavailable }));
-		const controls = this.frameControls();
-		const controlText = controls.map((control) => ` ${plainLine(control.label)} `);
 		const target = theme.fg("muted", ` ${plainLine(this.options.target.label)} `);
-		// The way out and the frame's controls always show; the target label gives way first.
-		const separator = theme.fg("borderMuted", "─");
-		const fixed = controlText.map((text) => theme.fg("accent", text)).join(separator) + separator;
-		const { line, fixedX } = renderTabs(tabs, this.active, this.zone === "tabs" ? this.tabFocus : undefined, width, theme, this.hits, 0, (key) => this.navigate(key), target, fixed);
-		let x = fixedX;
-		controls.forEach((control, index) => {
-			const w = visibleWidth(controlText[index] ?? "");
-			if (x + w <= width) this.hits.add({ x, y: 0, width: w, height: 1, click: () => control.run() });
-			x += w + 1;
-		});
-		return line;
+		return renderTabs(tabs, this.active, this.zone === "tabs" ? this.tabFocus : undefined, width, theme, this.hits, 0, (key) => this.navigate(key), target);
 	}
 
+	/** The trail of nested views; Escape (in the footer) goes back one step. */
 	private renderCrumb(width: number, mounted: Mounted): string | undefined {
 		if (mounted.layers.length < 2) return undefined;
-		const theme = this.options.theme;
-		const back = " ‹ Back ";
 		const trail = mounted.layers.map((layer) => plainLine(layer.view.title)).join(" › ");
-		const top = mounted.layers.at(-1);
-		if (top) this.hits.add({ x: 0, y: 1, width: visibleWidth(back), height: 1, click: () => this.leave(mounted.destination.key, top.controller) });
-		return fitLine(theme.fg("accent", back) + theme.fg("muted", ` ${trail}`), width);
+		return fitLine(this.options.theme.fg("muted", ` ${trail}`), width);
 	}
 
 	private noticeText(mounted: Mounted | undefined): string {
 		const notice = mounted?.notice ?? this.frameNotice;
 		if (!notice) return "";
 		const colour = notice.kind === "error" ? "error" : notice.kind === "warning" ? "warning" : notice.kind === "success" ? "success" : "muted";
-		return this.options.theme.fg(colour, plainLine(notice.text));
+		return this.options.theme.fg(colour, ` ${plainLine(notice.text)}`);
+	}
+
+	/** The way out for the current state: the view's own Escape, its Cancel, back, or close. */
+	private exitControl(hint: KeyHint | undefined, actions: readonly Action[]): Control {
+		const cancel = actions.find((action) => action.key === "escape");
+		const mounted = this.active ? this.mounted.get(this.active) : undefined;
+		const nested = (mounted?.layers.length ?? 0) > 1;
+		const label = hint?.label ?? (cancel ? actionLabel(cancel) : nested ? "back" : (this.options.closeLabel ?? "close"));
+		return { id: "\u0000exit", keys: ["escape"], label, priority: 0, run: () => this.sendKey("escape") };
+	}
+
+	/** Footer controls for the current focus: the view's keys, its keyed actions, frame controls, then the way out. */
+	private footerControls(): { controls: Control[]; menu: Control[] } {
+		const send = (key: string) => this.sendKey(key);
+		if (this.bar.menuShown) return { controls: Footer.menuControls(this.bar, send), menu: [] };
+		if (this.zone === "tabs") return { controls: this.tabControls(send), menu: [] };
+		const hints = this.hints();
+		const escapeHint = hints.find((hint) => hint.keys.includes("escape"));
+		const controls: Control[] = hints
+			.filter((hint) => hint !== escapeHint)
+			.map((hint, index) => ({ id: `\u0000key${index}`, keys: hint.keys, label: hint.label, priority: hint.priority ?? (index === 0 ? 0 : 2), run: send }));
+		const actions = this.actions();
+		// A focused text field takes every key but Escape, Tab and the frame's chords, so the row then
+		// shows only the view's own keys: action keys and More would be text.
+		const menu = this.editing ? [] : this.actionControls(actions, controls);
+		for (const action of this.options.controls?.() ?? []) {
+			const control = actionControl(action, (id) => this.invokeFrame(id), 3);
+			if (control) controls.push(control);
+		}
+		controls.push(this.exitControl(escapeHint, actions));
+		return { controls, menu };
+	}
+
+	/** Primary keyed actions join the row; every other action is listed in More. Returns the More entries. */
+	private actionControls(actions: readonly Action[], controls: Control[]): Control[] {
+		const menu: Control[] = [];
+		const invoke = (id: string) => this.invoke(id);
+		for (const action of actions) {
+			if (action.key === "escape") continue;
+			const control = action.primary ? actionControl(action, invoke) : undefined;
+			if (control) controls.push(control);
+			else menu.push(menuControl(action, invoke));
+		}
+		return menu;
+	}
+
+	private tabControls(send: (key: string) => void): Control[] {
+		return [
+			{ id: "tabs-move", keys: ["left", "right"], label: "choose", priority: 0, run: send },
+			{ id: "tabs-open", keys: ["enter"], label: "open", priority: 0, run: send },
+			{ id: "\u0000exit", keys: ["escape"], label: "back", priority: 0, run: send },
+		];
+	}
+
+	/** Draw the key footer row at `y` and register its targets in `hits` (the host's map when embedded). */
+	renderFooter(width: number, hits: HitMap, y: number, x0 = 0): string {
+		const { controls, menu } = this.footerControls();
+		return this.bar.render(controls, width, this.options.theme, hits, y, x0, menu);
 	}
 
 	render(width: number): string[] {
 		const height = Math.max(4, Math.floor(this.options.rows()));
+		const theme = this.options.theme;
 		this.hits.begin(width, height);
 		const header = this.renderHeader(width);
 		const mounted = this.active ? this.mounted.get(this.active) : undefined;
 		const crumb = mounted ? this.renderCrumb(width, mounted) : undefined;
 		this.bodyY = crumb ? 2 : 1;
-		const bodyHeight = Math.max(1, height - this.bodyY - 1);
-		const layer = this.top();
-		let body: string[] = [];
-		if (layer) {
-			layer.view.focused = this.focused && this.zone === "view";
-			try {
-				body = layer.view.render(width, bodyHeight);
-			} catch (error) {
-				this.fail(error);
-				body = this.top()?.view.render(width, bodyHeight) ?? [];
-			}
-		} else body = [this.options.theme.fg("muted", "Nothing to show here.")];
-		body = Array.from({ length: bodyHeight }, (_, row) => fitLine(body[row] ?? "", width));
-		const actions = this.actions();
+		const notice = this.noticeText(mounted);
+		const footerRows = this.options.footer === false ? 0 : 1;
+		const bodyHeight = Math.max(1, height - this.bodyY - footerRows - (notice ? 1 : 0));
+		this.bodyHeight = bodyHeight;
+		const body = this.renderBody(width, bodyHeight);
+		// The view has laid itself out for this size, so its keys are current; the footer row then
+		// decides what the More menu lists, so it is laid out before the menu.
+		const footer = footerRows ? this.renderFooter(width, this.hits, height - 1) : undefined;
 		if (this.bar.menuShown) {
 			const menuHits = new HitMap();
 			menuHits.begin(width, height);
-			const menuRows = Math.max(2, Math.min(bodyHeight, actions.length + 1));
-			const menu = this.bar.renderMenu(actions, width, menuRows, this.options.theme, menuHits, this.bodyY + bodyHeight - menuRows);
+			const menuRows = Math.min(bodyHeight, Math.max(2, this.bar.menuRows));
+			const menu = this.bar.renderMenu(width, menuRows, theme, menuHits, this.bodyY + bodyHeight - menuRows);
 			body.splice(bodyHeight - menu.length, menu.length, ...menu.map((line) => fitLine(line, width)));
 			this.hits.include(menuHits, 0, 0);
 		}
-		this.bar.focused = this.focused && this.zone === "actions";
-		const bar = this.bar.render(actions, width, this.options.theme, this.hits, height - 1, this.noticeText(mounted));
-		return [header, ...(crumb ? [crumb] : []), ...body, bar].slice(0, height);
+		return [header, ...(crumb ? [crumb] : []), ...body, ...(notice ? [fitLine(notice, width)] : []), ...(footer === undefined ? [] : [footer])].slice(0, height);
+	}
+
+	/** The view's rows; a view that fails while drawing is replaced by its failure, at the same size. */
+	private renderBody(width: number, height: number): string[] {
+		const layer = this.top();
+		let body: string[] = [];
+		if (layer) {
+			layer.view.focused = this.focused && this.zone === "view" && !this.bar.menuShown;
+			try {
+				body = layer.view.render(width, height);
+			} catch (error) {
+				this.fail(error);
+				body = this.top()?.view.render(width, height) ?? [];
+			}
+		} else body = [this.options.theme.fg("muted", "Nothing to show here.")];
+		return Array.from({ length: height }, (_, row) => fitLine(body[row] ?? "", width));
 	}
 
 	private tabInput(data: string): void {
@@ -330,48 +417,33 @@ export class NavigationFrame implements Component, Focusable {
 	}
 
 	/**
-	 * Move focus one step inside a frame embedded in a larger view: the view's regions, then the
-	 * action bar. Returns false at either edge so the embedding view moves focus on.
+	 * Move focus one step inside a frame embedded in a larger view. Returns false at the view's edge
+	 * so the embedding view moves focus on.
 	 */
 	focusNext(backward: boolean): boolean {
-		const view = this.top()?.view;
 		this.bar.closeMenu();
-		if (this.zone === "view") {
-			if (view?.focusNext?.(backward)) return true;
-			if (backward) return false;
-			this.zone = "actions";
-			this.bar.focusEdge(false);
-			return true;
-		}
-		if (this.zone === "actions" && !backward) return false;
-		this.zone = "view";
-		view?.focusEdge?.(true);
-		return true;
+		return this.top()?.view.focusNext?.(backward) ?? false;
 	}
 
-	/** Focus enters an embedded frame: the view's first region, or the action bar going backward. */
+	/** Focus enters an embedded frame: the view's first region, or its last going backward. */
 	focusEdge(backward: boolean): void {
 		this.bar.closeMenu();
-		if (backward) {
-			this.zone = "actions";
-			this.bar.focusEdge(true);
-		} else {
-			this.zone = "view";
-			this.top()?.view.focusEdge?.(false);
-		}
+		this.zone = "view";
+		this.top()?.view.focusEdge?.(backward);
 	}
 
-	/** Tab moves through the view's regions, then the action bar, then the destination row. */
+	/** Tab moves through the view's regions, then the destination row when the frame shows tabs. */
 	private traverse(backward: boolean): void {
 		const view = this.top()?.view;
 		this.bar.closeMenu();
 		if (this.zone === "view" && view?.focusNext?.(backward)) return;
-		const ring: readonly ("view" | "actions" | "tabs")[] = this.options.tabs === false ? ["view", "actions"] : ["view", "actions", "tabs"];
-		const next = ring[(ring.indexOf(this.zone) + (backward ? ring.length - 1 : 1)) % ring.length] ?? "view";
-		this.zone = next;
-		if (next === "actions") this.bar.focusEdge(backward);
-		else if (next === "tabs") this.tabFocus = this.active;
-		else view?.focusEdge?.(backward);
+		if (this.options.tabs === false || this.zone === "tabs") {
+			this.zone = "view";
+			view?.focusEdge?.(backward);
+			return;
+		}
+		this.zone = "tabs";
+		this.tabFocus = this.active;
 	}
 
 	private escape(): void {
@@ -379,8 +451,17 @@ export class NavigationFrame implements Component, Focusable {
 			this.bar.closeMenu();
 			return;
 		}
+		if (this.zone === "tabs") {
+			this.zone = "view";
+			return;
+		}
 		const layer = this.top();
-		if (layer && this.zone === "view" && layer.view.escape?.()) return;
+		if (layer?.view.escape?.()) return;
+		const cancel = this.actions().find((action) => action.key === "escape");
+		if (cancel) {
+			this.invoke(cancel.id);
+			return;
+		}
 		const mounted = this.active ? this.mounted.get(this.active) : undefined;
 		if (mounted && layer && mounted.layers.length > 1) this.leave(mounted.destination.key, layer.controller);
 		else this.close();
@@ -394,27 +475,42 @@ export class NavigationFrame implements Component, Focusable {
 
 	private route(data: string): void {
 		if (matchesKey(data, "escape")) this.escape();
-		else if (this.bar.menuShown) this.bar.handleInput(data, this.actions());
+		else if (this.bar.menuShown) this.bar.menuInput(data);
 		else if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) this.traverse(matchesKey(data, "shift+tab"));
 		else if (this.zone === "tabs") this.tabInput(data);
-		else if (this.zone === "view") this.viewInput(data);
-		else if (!this.bar.handleInput(data, this.actions()) && (matchesKey(data, "up") || matchesKey(data, "down"))) this.zone = "view";
+		else if (!this.frameKey(data)) this.viewInput(data);
 	}
 
+	/** Frame controls such as Expand act from every focus; their keys are chords, never text. */
+	private frameKey(data: string): boolean {
+		const control = (this.options.controls?.() ?? []).find((action) => action.key && keyMatches(data, action.key));
+		if (!control) return false;
+		this.invokeFrame(control.id);
+		return true;
+	}
+
+	/**
+	 * While a text field has focus the view takes every key, so letters stay text and the footer
+	 * lists no action keys. Otherwise an action's key runs it, `x` opens More, and the view takes the rest.
+	 */
 	private viewInput(data: string): void {
 		const view = this.top()?.view;
 		if (!view) return;
-		let consumed = false;
 		try {
-			consumed = view.handleInput(data);
+			if (view.editing?.()) view.handleInput(data);
+			else if (this.actionKey(data)) return;
+			else if (keyMatches(data, MORE_KEY) && this.bar.hasMore) this.bar.toggleMenu();
+			else view.handleInput(data);
 		} catch (error) {
 			this.fail(error);
-			return;
 		}
-		if (!consumed && matchesKey(data, "enter")) {
-			this.zone = "actions";
-			this.bar.focusEdge(false);
-		}
+	}
+
+	private actionKey(data: string): boolean {
+		const action = this.actions().find((candidate) => candidate.key !== undefined && candidate.key !== "escape" && keyMatches(data, candidate.key));
+		if (!action) return false;
+		this.invoke(action.id);
+		return true;
 	}
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
@@ -425,9 +521,9 @@ export class NavigationFrame implements Component, Focusable {
 			return own;
 		}
 		const layer = this.top();
-		if (!layer?.view.handleMouse || event.y < this.bodyY || event.y >= event.height - 1) return undefined;
+		if (!layer?.view.handleMouse || event.y < this.bodyY || event.y >= this.bodyY + this.bodyHeight) return undefined;
 		try {
-			const result = layer.view.handleMouse({ ...event, y: event.y - this.bodyY, height: Math.max(1, event.height - this.bodyY - 1) });
+			const result = layer.view.handleMouse({ ...event, y: event.y - this.bodyY, height: this.bodyHeight });
 			if (result) {
 				this.zone = "view";
 				this.bar.closeMenu();

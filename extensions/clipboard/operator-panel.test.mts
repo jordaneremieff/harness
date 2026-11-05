@@ -96,7 +96,6 @@ function panelHost(request: PanelHost["request"]) {
 		notify: (text) => notices.push(text),
 		push: () => {},
 		back: () => {},
-		focusActions: () => {},
 		close: () => {
 			closed++;
 		},

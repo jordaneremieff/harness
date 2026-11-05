@@ -130,10 +130,10 @@ function prepareForm(deps: CommandDeps, command: SlashCommandInfo, host: ViewHos
 function commandActions(deps: CommandDeps, command: SlashCommandInfo | undefined): Action[] {
 	const actions: Action[] = [];
 	if (command?.source === "extension") {
-		actions.push({ id: "run", label: "Run", primary: true, description: `Send /${command.name} now`, run: () => deps.host.close(() => dispatchNow(deps, command, "")) });
-		actions.push({ id: "args", label: "Run with arguments…", primary: true, run: () => deps.host.push((host) => runForm(deps, command, host)) });
+		actions.push({ id: "run", label: "Run", key: "enter", short: "run", primary: true, description: `Send /${command.name} now`, run: () => deps.host.close(() => dispatchNow(deps, command, "")) });
+		actions.push({ id: "args", label: "Run with arguments…", key: "a", short: "arguments", primary: true, run: () => deps.host.push((host) => runForm(deps, command, host)) });
 	} else if (command) {
-		actions.push({ id: "prepare", label: "Put in editor…", primary: true, run: () => deps.host.push((host) => prepareForm(deps, command, host)) });
+		actions.push({ id: "prepare", label: "Put in editor…", key: "e", short: "put in editor", primary: true, run: () => deps.host.push((host) => prepareForm(deps, command, host)) });
 	}
 	const replaced = deps.state.replaced;
 	if (replaced !== undefined)

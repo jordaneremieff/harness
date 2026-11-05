@@ -12,7 +12,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { HitMap, TextField } from "../../operator-ui/index.ts";
+import { type Action, type Control, HitMap, TextField, actionControl, keyInput, keyMatches } from "../../operator-ui/index.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration.ts";
 import { LIST_BLOCK_ROWS, fitLine, listBlock, readingGeometry } from "./dashboard-layout.ts";
@@ -46,8 +46,10 @@ export interface ThreadsViewOptions {
 	onExit(): void;
 }
 
-type Region = "list" | "exchange" | "controls" | "composer";
+type Region = "list" | "find" | "exchange" | "composer";
 type Panel = "exchange" | "members" | "details";
+/** The focus whose keys the footer describes. */
+type Focus = "list" | "find" | "exchange" | "members" | "details" | "composer";
 
 /** One thread's loaded exchange: the newest page and every earlier page read since. */
 interface ThreadRead {
@@ -167,8 +169,7 @@ export class ThreadsView {
 	private exchangeBack = 0;
 	private exchangeMax = 0;
 	private detailsOffset = 0;
-	/** The focused header control (Members or Details) and the selected member row. */
-	private controlIndex = 0;
+	/** The selected member row of the Members panel. */
 	private memberIndex = 0;
 	/** A thread opened from elsewhere (a related effort's contact thread) returns there on Escape. */
 	private direct = false;
@@ -490,28 +491,150 @@ export class ThreadsView {
 
 	handleInput(data: string): void {
 		if (this.disposed) return;
-		if (matchesKey(data, "ctrl+o")) this.toggleAllPosts();
+		if (this.region === "find") this.findInput(data);
+		else if (this.region === "composer") this.composerKey(data);
+		else if (matchesKey(data, "escape")) this.leaveFocus();
 		else if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) this.traverse(matchesKey(data, "shift+tab"));
-		else if (this.region === "composer") this.composerInput(data);
-		else if (this.region === "controls") this.controlsInput(data);
-		else if (this.region === "exchange") {
-			if (this.panel !== "members" || matchesKey(data, "escape") || !this.membersInput(data)) this.exchangeInput(data);
-		} else this.listInput(data);
+		else if (!this.actionKey(data)) this.focusInput(data);
 		this.options.redraw();
+	}
+
+	/** The message field takes every key but Tab, which moves focus on, as its footer says. */
+	private composerKey(data: string): void {
+		if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) this.traverse(matchesKey(data, "shift+tab"));
+		else this.composerInput(data);
+	}
+
+	private focusInput(data: string): void {
+		if (this.region === "exchange") {
+			if (this.panel === "members") this.membersInput(data);
+			else if (this.panel === "details") this.detailsInput(data);
+			else this.exchangeInput(data);
+		} else this.listInput(data);
+	}
+
+	/** The focus whose keys the footer describes. */
+	private focus(): Focus {
+		if (this.region === "find" || this.region === "composer") return this.region;
+		if (this.region === "list") return "list";
+		return this.panel;
+	}
+
+	/** Every action of this view, re-read at each render and each invocation. */
+	private actions(): Action[] {
+		const closed = this.canPost() ? undefined : "This thread is closed; posting is off.";
+		const expand = this.options.keys.getKeys("app.tools.expand")[0] ?? "ctrl+o";
+		return [
+			{ id: "members", label: this.panel === "members" ? "Exchange" : "Members", key: "m", run: () => this.showPanel("members") },
+			{ id: "details", label: this.panel === "details" ? "Exchange" : "Details", key: "d", run: () => this.showPanel("details") },
+			{ id: "posts", label: this.postsOpen ? "Close posts" : "Open posts", key: expand, run: () => this.toggleAllPosts() },
+			{ id: "write", label: "Write", key: "enter", disabled: closed, run: () => { this.region = "composer"; } },
+			{ id: "wake", label: "Wake on post", key: "space", disabled: closed, run: () => this.toggleSelectedMember() },
+		];
+	}
+
+	/** The action ids whose key the footer shows in this focus. */
+	private shownActions(focus: Focus): string[] {
+		if (focus === "list") return ["members", "details", "posts"];
+		if (focus === "members") return ["wake", "members"];
+		if (focus === "details") return ["details"];
+		if (focus === "exchange") return ["write", "members", "details", "posts"];
+		return [];
+	}
+
+	private actionKey(data: string): boolean {
+		const shown = this.shownActions(this.focus());
+		const action = this.actions().find((item) => shown.includes(item.id) && item.key !== undefined && keyMatches(data, item.key));
+		if (!action) return false;
+		this.invoke(action.id);
+		return true;
+	}
+
+	/** Run one action by identity; a disabled action keeps its control and explains itself. */
+	private invoke(id: string): void {
+		const action = this.actions().find((item) => item.id === id);
+		if (!action) return;
+		if (action.disabled) {
+			this.notice = { text: action.disabled, kind: "warning" };
+			return;
+		}
+		action.run();
+	}
+
+	/** True while a text field has focus: printable keys are text, never action keys. */
+	editing(): boolean {
+		return this.region === "find" || this.region === "composer";
+	}
+
+	/**
+	 * The footer for the current focus: navigation keys first, then actions on the selection, then view
+	 * keys, and the way out last. `menu` lists entries only the More menu shows.
+	 */
+	footer(): { controls: Control[]; menu: Control[] } {
+		const focus = this.focus();
+		const controls = this.focusHints(focus);
+		for (const id of this.shownActions(focus)) {
+			const item = this.controlFor(id, id === "posts" ? 2 : 1);
+			if (item) controls.push(item);
+		}
+		if (focus === "list" || focus === "exchange" || focus === "composer") controls.push(this.hint("tab", ["tab"], "focus", 3));
+		controls.push(this.hint("escape", ["escape"], this.escapeLabel(focus), 0));
+		return { controls, menu: [] };
+	}
+
+	/** The keys this focus handles itself, in footer order. */
+	private focusHints(focus: Focus): Control[] {
+		switch (focus) {
+			case "list":
+				return [this.hint("select", ["up", "down"], "select", 0), this.hint("open", ["enter"], "open", 1), this.hint("find", ["/"], "find", 2)];
+			case "find":
+				return [this.hint("select", ["up", "down"], "select", 0), this.hint("done", ["enter"], "done", 1)];
+			case "exchange":
+				return [
+					this.hint("scroll", ["up", "down"], "scroll", 0),
+					this.hint("page", ["pageUp", "pageDown"], "page", 2),
+					this.hint("earlier", ["home"], "earlier", 2),
+					this.hint("latest", ["end"], "latest", 2),
+				];
+			case "members":
+				return [this.hint("choose", ["up", "down"], "choose", 0), this.hint("open-member", ["enter"], "open conversation", 1)];
+			case "details":
+				return [this.hint("scroll", ["up", "down"], "scroll", 0), this.hint("page", ["pageUp", "pageDown"], "page", 2)];
+			case "composer":
+				return [this.hint("post", ["enter"], "post", 1), { id: "newline", keys: this.newlineKeys(), label: "newline", priority: 2, run: (key) => this.handleInput(keyInput(key) ?? "") }];
+		}
+	}
+
+	/** One key the view handles itself; a click sends exactly that key. */
+	private hint(id: string, keys: string[], label: string, priority: number): Control {
+		return { id, keys, label, priority, run: (key) => this.handleInput(keyInput(key) ?? "") };
+	}
+
+	private controlFor(id: string, priority: number): Control | undefined {
+		const action = this.actions().find((item) => item.id === id);
+		return action ? actionControl(action, (chosen) => this.invoke(chosen), priority) : undefined;
+	}
+
+	/** The keys the resolved newline binding accepts, as the composer footer shows them. */
+	private newlineKeys(): string[] {
+		const keys = this.options.keys.getKeys("tui.input.newLine");
+		return keys.length ? [...keys] : ["shift+enter", "ctrl+j"];
+	}
+
+	/** What Escape does in this focus. */
+	private escapeLabel(focus: Focus): string {
+		if (focus === "find") return this.find.value ? "clear" : "list";
+		if (focus === "list") return this.find.value ? "clear" : "back";
+		if (focus === "members" || focus === "details") return "exchange";
+		// A thread opened from another surface returns there; otherwise Escape goes back to the list.
+		return this.direct ? "back" : "list";
 	}
 
 	private regions(): Region[] {
 		const order: Region[] = ["list"];
-		if (this.options.state.selected) order.push("exchange", "controls");
+		if (this.options.state.selected) order.push("exchange");
 		if (this.canPost() && this.panel === "exchange") order.push("composer");
 		return order;
-	}
-
-	private panelControls(): Array<[Panel, string]> {
-		return [
-			["members", this.panel === "members" ? "Exchange" : "Members"],
-			["details", this.panel === "details" ? "Exchange" : "Details"],
-		];
 	}
 
 	private showPanel(panel: Panel): void {
@@ -521,22 +644,18 @@ export class ThreadsView {
 		this.memberIndex = 0;
 	}
 
-	private controlsInput(data: string): void {
-		if (matchesKey(data, "left") || matchesKey(data, "right")) this.controlIndex = matchesKey(data, "left") ? 0 : 1;
-		else if (matchesKey(data, "enter") || data === " ") this.showPanel(this.panelControls()[this.controlIndex]?.[0] ?? "members");
-		else if (matchesKey(data, "escape")) this.region = "exchange";
-	}
-
 	/** Members: Up and Down choose, Enter opens the conversation, Space ticks a wake for the next post. */
-	private membersInput(data: string): boolean {
+	private membersInput(data: string): void {
 		const members = this.selectedRead()?.page.thread.members ?? [];
 		const member = members[this.memberIndex];
 		if (matchesKey(data, "up") || matchesKey(data, "down")) this.memberIndex = Math.max(0, Math.min(members.length - 1, this.memberIndex + (matchesKey(data, "up") ? -1 : 1)));
 		else if (matchesKey(data, "home") || matchesKey(data, "end")) this.memberIndex = matchesKey(data, "home") ? 0 : Math.max(0, members.length - 1);
 		else if (matchesKey(data, "enter") && member) this.options.openParticipant?.(member.identity);
-		else if (data === " " && member && this.canPost()) this.toggleNotify(member.identity);
-		else return false;
-		return true;
+	}
+
+	private toggleSelectedMember(): void {
+		const member = (this.selectedRead()?.page.thread.members ?? [])[this.memberIndex];
+		if (member) this.toggleNotify(member.identity);
 	}
 
 	private traverse(backward: boolean): void {
@@ -554,10 +673,15 @@ export class ThreadsView {
 		this.composer.handleInput(data);
 	}
 
+	/** Escape in the list, the exchange or a panel; the footer names the outcome this produces. */
+	private leaveFocus(): void {
+		if (this.region === "list") this.listEscape();
+		else this.exchangeEscape();
+	}
+
 	private exchangeInput(data: string): void {
 		const page = Math.max(1, this.options.tui.terminal.rows - 10);
-		if (matchesKey(data, "escape")) this.exchangeEscape();
-		else if (matchesKey(data, "up")) this.scroll(1);
+		if (matchesKey(data, "up")) this.scroll(1);
 		else if (matchesKey(data, "down")) this.scroll(-1);
 		else if (matchesKey(data, "pageUp")) this.scroll(page);
 		else if (matchesKey(data, "pageDown")) this.scroll(-page);
@@ -565,7 +689,14 @@ export class ThreadsView {
 			this.scroll(Number.MAX_SAFE_INTEGER);
 			void this.earlier();
 		} else if (matchesKey(data, "end")) this.scroll(-Number.MAX_SAFE_INTEGER);
-		else if (matchesKey(data, "enter") && this.canPost() && this.panel === "exchange") this.region = "composer";
+	}
+
+	private detailsInput(data: string): void {
+		const page = Math.max(1, this.options.tui.terminal.rows - 10);
+		if (matchesKey(data, "up")) this.scroll(1);
+		else if (matchesKey(data, "down")) this.scroll(-1);
+		else if (matchesKey(data, "pageUp")) this.scroll(page);
+		else if (matchesKey(data, "pageDown")) this.scroll(-page);
 	}
 
 	private exchangeEscape(): void {
@@ -585,9 +716,32 @@ export class ThreadsView {
 	}
 
 	private listInput(data: string): void {
-		if (matchesKey(data, "escape")) this.listEscape();
-		else if (matchesKey(data, "enter")) this.listEnter();
-		else if (!this.listMove(data)) this.typeFind(data);
+		if (matchesKey(data, "enter")) this.listEnter();
+		else if (keyMatches(data, "/")) this.focusFind();
+		else this.listMove(data);
+	}
+	/** `/` puts the cursor in Find; typing there filters, and Enter keeps the filter and returns to the list. */
+	private focusFind(): void {
+		this.region = "find";
+		this.closedFocused = false;
+	}
+
+	private findInput(data: string): void {
+		if (matchesKey(data, "escape")) this.findEscape();
+		else if (matchesKey(data, "enter")) this.region = "list";
+		else if (matchesKey(data, "up") || matchesKey(data, "down")) this.listMove(data);
+		else {
+			this.find.handleInput(data);
+			this.closedFocused = false;
+			this.listScroll = 0;
+			this.listReveal = true;
+		}
+	}
+
+	/** Escape clears the filter first; with an empty field it returns to the list. */
+	private findEscape(): void {
+		if (this.find.value) this.listEscape();
+		else this.region = "list";
 	}
 
 	/**
@@ -652,15 +806,6 @@ export class ThreadsView {
 		this.region = this.canPost() ? "composer" : selected ? "exchange" : "list";
 	}
 
-	/** Typing over the list writes into its Find field. */
-	private typeFind(data: string): void {
-		if (data.startsWith("\u001b") && !matchesKey(data, "backspace")) return;
-		this.find.handleInput(data);
-		this.closedFocused = false;
-		this.listScroll = 0;
-		this.listReveal = true;
-	}
-
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.disposed) return undefined;
 		const result = this.hits.handle(event);
@@ -689,9 +834,9 @@ export class ThreadsView {
 
 	private renderList(x0: number, width: number, height: number): string[] {
 		const theme = this.options.theme;
-		this.find.focused = this.region === "list";
-		const findLine = this.find.render(width, theme, 6, "type to find threads");
-		this.hits.add({ x: x0, y: 0, width, height: 1, click: () => { this.region = "list"; } });
+		this.find.focused = this.region === "find";
+		const findLine = this.find.render(width, theme, 6, "/ to find threads");
+		this.hits.add({ x: x0, y: 0, width, height: 1, click: () => { this.focusFind(); } });
 		const rows = this.sorted();
 		const room = Math.max(1, height - 2);
 		const { lines, blocks, disclosure } = this.listLines(rows, width);
@@ -801,9 +946,8 @@ export class ThreadsView {
 	}
 
 	/**
-	 * The thread header: the full title with the Members and Details controls, then the state and counts,
-	 * then the purpose. Controls move to the counts row before they shorten the title; a title too long
-	 * for one row wraps onto a second.
+	 * The thread header: the full title, then the state and counts, then the purpose. A title too long
+	 * for one row wraps onto a second. Commands belong to the footer.
 	 */
 	private threadHeader(read: ThreadRead | undefined, summary: CollaborationSummary | undefined, x0: number, width: number, narrow: boolean, closed: boolean): string[] {
 		const theme = this.options.theme;
@@ -812,27 +956,16 @@ export class ThreadsView {
 		const thread = read?.page.thread;
 		const title = oneLine(thread?.title ?? summary?.title ?? "Thread");
 		const members = thread?.members.length ?? summary?.members ?? 0;
-		const controls = this.panelControls();
-		const controlText = controls.map(([, label]) => ` ${label} `);
-		const controlWidth = controlText.reduce((sum, text) => sum + visibleWidth(text), 0);
 		const lead = `${theme.fg("accent", back)} `;
 		const leadWidth = visibleWidth(lead);
-		const beside = leadWidth + visibleWidth(title) + 2 + controlWidth <= width;
 		const titleRoom = Math.max(1, width - leadWidth - 1);
-		const first = beside ? title : (wrapTextWithAnsi(title, titleRoom)[0] ?? "");
-		const rest = title.length > first.length ? clip(title.slice(first.length).trim(), titleRoom) : "";
-		const header = [`${lead}${theme.bold(theme.fg("text", first))}`, ...(rest ? [`${" ".repeat(leadWidth)}${theme.bold(theme.fg("text", rest))}`] : [])];
+		const rows = wrapTextWithAnsi(title, titleRoom);
+		const header = [`${lead}${theme.bold(theme.fg("text", rows[0] ?? ""))}`];
+		const rest = rows.length > 1 ? clip(rows.slice(1).join(" "), titleRoom) : "";
+		if (rest) header.push(`${" ".repeat(leadWidth)}${theme.bold(theme.fg("text", rest))}`);
 		const facts = this.notice ? oneLine(this.notice.text) : this.threadFacts(read, closed, members);
-		header.push(theme.fg(this.notice ? "error" : "muted", ` ${facts}`));
-		const controlRow = beside ? 0 : header.length - 1;
-		let x = x0 + Math.max(0, width - controlWidth);
-		controls.forEach(([panel], index) => {
-			const w = visibleWidth(controlText[index] ?? "");
-			this.hits.add({ x, y: controlRow, width: w, height: 1, click: () => this.showPanel(panel) });
-			x += w;
-		});
-		const paint = (text: string, index: number) => (this.region === "controls" && index === this.controlIndex ? theme.bg("selectedBg", theme.bold(theme.fg("accent", text))) : theme.fg("accent", text));
-		header[controlRow] = `${fitLine(header[controlRow] ?? "", Math.max(1, width - controlWidth))}${controlText.map(paint).join("")}`;
+		const colour = this.notice?.kind === "error" ? "error" : this.notice?.kind === "warning" ? "warning" : "muted";
+		header.push(theme.fg(colour, ` ${facts}`));
 		const purpose = oneLine(thread?.purpose ?? summary?.purpose ?? "");
 		if (purpose) header.push(...this.purposeRows(purpose, width));
 		// One blank row separates the header from the exchange.
@@ -1096,12 +1229,11 @@ export class ThreadsView {
 		if (draft?.replyTo) parts.push(`reply to #${draft.replyTo}`);
 		if (draft?.notify.length) parts.push(`wakes ${draft.notify.length}`);
 		const caption = `Post to ${title}`;
-		return this.composer.render(width, caption, parts.join(" · "), draft?.pending ? "Posting…" : this.receipt?.text ?? "", ["Send"]);
+		return this.composer.render(width, caption, parts.join(" · "), draft?.pending ? "Posting…" : this.receipt?.text ?? "");
 	}
 
+	/** The composer takes focus on a click; the footer's `enter post` control posts the draft. */
 	private composerHits(x0: number, y0: number, width: number, rows: number): void {
-		const send = this.composer.spans.controls[0];
-		const bottom = this.composer.renderedBottom;
 		this.hits.add({
 			x: x0,
 			y: y0,
@@ -1109,11 +1241,6 @@ export class ThreadsView {
 			height: rows,
 			click: (event) => {
 				this.region = "composer";
-				if (send && event.y === bottom && event.x >= send.x && event.x < send.x + send.width) {
-					const text = this.composer.getText();
-					if (text.trim()) void this.post(text);
-					return undefined;
-				}
 				return this.composer.handleMouse({ ...event, width, height: rows }) ?? { handled: true, focus: true };
 			},
 		});

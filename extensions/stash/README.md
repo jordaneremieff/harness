@@ -847,19 +847,27 @@ frame below the native transcript (`docs/conventions/operator-panels.md`),
 including while the agent works. The editor draft stays in place and returns
 when the frame closes, and opening does not stop the agent. Opening, reading,
 searching, and selecting do not pick up, create, close, release, reopen, or
-rotate an artifact; each of those is its own labelled action. A second open
-while the frame is open navigates that frame instead of opening another. The
+rotate an artifact; each of those is its own action, shown in the footer with
+its key. A second open while the frame is open navigates that frame instead of
+opening another. The
 shortcut does nothing outside TUI mode; direct commands keep their existing
 mode behavior. The command shows Stashes on its own. Because this extension
 publishes it as an operator view, `/dashboard` also shows it as a tab.
 
+The footer at the bottom lists each control as its key and its short label. A
+click on a control runs the same action as its key. The keys of this view are
+`enter` for pick up or reopen, `a` for a note, `o` to close an active stash,
+`c` to copy the resume command, `h` for help, and `r` to refresh. `/`
+focuses the search field. `x` opens the list of every other action, such as
+release and rotate. Escape closes the browser or goes back from a nested view.
+
 The view has two scopes. **Recent** loads metadata for the newest 200
 artifacts; it reads no bodies. The selected row's body is read on demand, and
-moving the selection cancels the outstanding read. Filtering in Recent matches
-the loaded metadata as you type. **Search archive** runs the bounded
-`stash_list` search (`search.ts`) over full bodies, so it finds older records
-and matches beyond any preview: type the text, then press Enter or choose
-**Search**. The status line shows the page's coverage and whether more pages
+moving the selection cancels the outstanding read. `/` focuses the search
+field; in Recent it filters the loaded metadata. **Search archive** runs the
+bounded `stash_list` search (`search.ts`) over full bodies, so it finds older
+records and matches beyond any preview: type the text, then press Enter in the
+search field. The status line shows the page's coverage and whether more pages
 remain. **Continue** reads the next page and stays available after a page with
 no matches, because a partial empty page is not proof of absence. If the store
 changes under a held cursor or the cursor is rejected, the previous page stays

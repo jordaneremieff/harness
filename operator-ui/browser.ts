@@ -2,12 +2,13 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { TextField } from "./field.ts";
 import { HitMap } from "./hits.ts";
+import { keyMatches } from "./keys.ts";
 import { ListView } from "./list.ts";
 import { Reader, type ReaderContent } from "./reader.ts";
 import { fitLine, plainLine, visibleWidth } from "./text.ts";
-import type { Action, OperatorView, ViewHost } from "./view.ts";
+import type { Action, KeyHint, OperatorView, ViewHost } from "./view.ts";
 
-/** Below this width the detail moves to its own view, opened with Enter. */
+/** Below this width the detail moves to its own view, opened with Enter or Right. */
 export const SPLIT_MIN_WIDTH = 90;
 
 export interface Scope {
@@ -35,8 +36,10 @@ export interface BrowserOptions<T> {
 		readonly placeholder?: string | (() => string);
 		readonly value?: string;
 		change(query: string): void;
-		/** Enter in the field, for searches that run only on request. Without it Enter moves to the list. */
+		/** Enter in the field, for searches that run only on request. Enter then returns to the list. */
 		submit?(query: string): void;
+		/** What Enter in the field does now, for the footer, for example "search". Default "done". */
+		submitLabel?(): string | undefined;
 	};
 	/** Loading, coverage, stale or error state, shown under the search row. */
 	status?(): string | undefined;
@@ -46,6 +49,9 @@ export interface BrowserOptions<T> {
 }
 
 type Region = "search" | "scopes" | "list" | "detail";
+
+const SELECT: KeyHint = { keys: ["up", "down"], label: "select", priority: 0 };
+const FOCUS: KeyHint = { keys: ["tab"], label: "focus", priority: 3 };
 
 /** A detail of one item as its own view, for narrow windows. */
 class DetailView<T> implements OperatorView {
@@ -75,12 +81,20 @@ class DetailView<T> implements OperatorView {
 	actions(): readonly Action[] {
 		return this.browser.actionsOf(this.item);
 	}
+	keys(): readonly KeyHint[] {
+		return [
+			{ keys: ["up", "down"], label: "scroll" },
+			{ keys: ["pageUp", "pageDown"], label: "page" },
+		];
+	}
 }
 
 /**
- * Search, scopes, a list and a detail reader as one view. Selecting a row never runs an effect;
- * Enter opens the detail (focus at wide widths, a nested view at narrow widths); actions run only
- * from their labelled controls. Query, scope, selection and reading position stay with the view.
+ * Search, scopes, a list and a detail reader as one view. Selecting a row never runs an effect.
+ * Up and Down select; `/` focuses the search field, which keeps every printable key as text;
+ * Right (and Enter, unless an owner action takes Enter) opens the detail: focus at wide widths,
+ * a nested view at narrow widths. PageUp and PageDown read the detail beside the list. Query,
+ * scope, selection and reading position stay with the view.
  */
 export class Browser<T> implements OperatorView {
 	readonly title: string;
@@ -143,6 +157,10 @@ export class Browser<T> implements OperatorView {
 		return this.options.actions(this.list.selected);
 	}
 
+	editing(): boolean {
+		return this.region === "search";
+	}
+
 	private open(item: T): void {
 		if (this.split) {
 			this.region = "detail";
@@ -174,14 +192,34 @@ export class Browser<T> implements OperatorView {
 		this.region = (backward ? order.at(-1) : order.includes("list") ? "list" : order[0]) ?? "list";
 	}
 
-	/** Escape clears an active search edit; otherwise the frame leaves this view. */
+	/** Escape clears a search edit, then leaves the search field, the scope row or the detail for the list. */
 	escape(): boolean {
 		if (this.region === "search" && this.search?.value) {
 			this.search.value = "";
 			this.options.search?.change("");
 			return true;
 		}
-		return false;
+		if (this.region === "list") return false;
+		this.region = "list";
+		return true;
+	}
+
+	/** The keys of the focused region, for the footer. Owner actions follow them there. */
+	keys(): readonly KeyHint[] {
+		if (this.region === "search") {
+			return [SELECT, { keys: ["enter"], label: this.options.search?.submitLabel?.() ?? "done" }, FOCUS, { keys: ["escape"], label: this.search?.value ? "clear" : "list" }];
+		}
+		if (this.region === "scopes") return [{ keys: ["left", "right"], label: "switch" }, { keys: ["enter"], label: "list" }, FOCUS, { keys: ["escape"], label: "list" }];
+		if (this.region === "detail") return [{ keys: ["up", "down"], label: "scroll" }, { keys: ["pageUp", "pageDown"], label: "page" }, FOCUS, { keys: ["escape"], label: "list" }];
+		// When the row is short, Tab leaves first, then the detail and paging keys; search stays with the actions.
+		const hints: KeyHint[] = [SELECT, { keys: ["pageUp", "pageDown"], label: this.split ? "read" : "page" }];
+		if (this.search) hints.push({ keys: ["/"], label: plainLine(this.options.search?.label ?? "Search").toLocaleLowerCase(), priority: 1 });
+		if (this.list.selected !== undefined) {
+			const enterTaken = this.actions().some((action) => action.key === "enter");
+			hints.push({ keys: [enterTaken ? "right" : "enter"], label: this.split ? "detail" : "open" });
+		}
+		hints.push(FOCUS);
+		return hints;
 	}
 
 	private switchScope(delta: number): void {
@@ -195,18 +233,35 @@ export class Browser<T> implements OperatorView {
 		if (this.region === "search") return this.searchInput(data);
 		if (this.region === "scopes") return this.scopeInput(data);
 		if (this.region === "detail") return this.reader.handleInput(data);
-		if (this.list.handleInput(data)) return true;
-		// Typing over the list writes into the visible search field.
-		if (this.search && data.length === 1 && data >= " " && data !== "\u007f") {
+		return this.listInput(data);
+	}
+
+	private listInput(data: string): boolean {
+		if (this.search && keyMatches(data, "/")) {
 			this.region = "search";
-			return this.search.handleInput(data);
+			return true;
 		}
-		return false;
+		if (matchesKey(data, "right")) {
+			const item = this.list.selected;
+			if (item !== undefined) this.open(item);
+			return true;
+		}
+		// Beside the list, PageUp and PageDown read the detail; the selection stays.
+		if (this.split && (matchesKey(data, "pageUp") || matchesKey(data, "pageDown"))) return this.reader.handleInput(data);
+		return this.list.handleInput(data);
 	}
 
 	private searchInput(data: string): boolean {
-		if (this.search && matchesKey(data, "enter")) this.options.search?.submit?.(this.search.value);
-		if (!this.search || matchesKey(data, "down") || matchesKey(data, "enter")) {
+		if (!this.search) {
+			this.region = "list";
+			return true;
+		}
+		if (matchesKey(data, "up") || matchesKey(data, "down")) {
+			this.list.move(matchesKey(data, "up") ? -1 : 1);
+			return true;
+		}
+		if (matchesKey(data, "enter")) {
+			this.options.search?.submit?.(this.search.value);
 			this.region = "list";
 			return true;
 		}
@@ -238,7 +293,8 @@ export class Browser<T> implements OperatorView {
 
 	private placeholder(): string {
 		const value = this.options.search?.placeholder;
-		return (typeof value === "function" ? value() : value) ?? "type to search";
+		const text = (typeof value === "function" ? value() : value) ?? "";
+		return text ? `/ ${text}` : "/ to search";
 	}
 
 	private renderHeader(width: number, theme: Theme): string {

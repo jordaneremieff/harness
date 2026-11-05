@@ -41,7 +41,10 @@ claims no click.
 ## Views
 
 All three views run in the shared frame. Escape leaves a nested view, then the
-frame; Pi then restores the editor and its draft.
+frame; Pi then restores the editor and its draft. The footer at the bottom
+lists each control as its key and its short label. A click on a control runs
+the same action as its key. `/` focuses the search field. `x` opens the list of
+every other action.
 
 ### Commands
 
@@ -49,10 +52,12 @@ A searchable list of `pi.getCommands()`: extension commands, prompt templates,
 and skills under their exact invocation names, including collision suffixes
 such as `review:1`. Pi's `sourceInfo` is the provenance shown for each entry;
 ownership is never inferred from names or paths. Builtin interactive commands
-such as `/model` are not in that inventory and are not offered. The list
-filters as you type, matching every query word against the name or
+such as `/model` are not in that inventory and are not offered. The search
+field filters the list, matching every query word against the name or
 description; the detail shows the description, the kind, the source path, and
-any unsent arguments. Selection never runs anything.
+any unsent arguments. Selection never runs anything. The keys of this view are
+`enter` to run an extension command, `a` to run it with arguments, and `e` to
+put a prompt or skill in the editor.
 
 - **Run** and **Run with arguments…** (extension commands): the frame closes
   first, so the command's own UI can open. The exact registration is then
@@ -80,8 +85,9 @@ model. **Reasoning** lists the levels `getSupportedThinkingLevels(model)`
 reports for the staged model; a model without reasoning offers none. **Apply**
 calls `pi.setModel(model)` when the model changed, for this session only; a
 `false` return (authentication not configured for the provider) is shown as a
-refusal with the staged fields kept. It then calls `pi.setThinkingLevel(level)`,
-which clamps to the model. Cancel and Escape change nothing. No builtin slash
+refusal with the staged fields kept. Enter applies from any field. It then
+calls `pi.setThinkingLevel(level)`, which clamps to the model. Cancel and
+Escape change nothing. No builtin slash
 text is sent to the model to emulate these controls.
 
 ### Statuses
@@ -97,7 +103,7 @@ supplies the status provider; with the footer disabled, it says so.
 The frame sits in the editor slot and takes most of the window while keeping
 transcript rows above it: at most 60% of the rows and six rows fewer than the
 window, at least eight. **Expand** gives it all but four rows; **Shrink**
-returns. Every view reads its row budget on each render, so the action bar and
+returns. Every view reads its row budget on each render, so the footer and
 the way out stay on screen when the terminal shrinks. A pointer event reported
 for another size acts on nothing. Session shutdown closes an open frame without
 dispatch.

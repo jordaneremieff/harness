@@ -31,6 +31,9 @@ it("reading geometry keeps a two-column margin and a 100-column text maximum", (
 	assert.deepEqual(readingGeometry(2), { margin: 2, textWidth: 1 });
 });
 
+/** The target header's state line: a divider or the row start, the state glyph, then the state label. */
+const STATE_LINE = /(^|│) [◌●○✓!■↯·?] (Starting|Working|Idle|Done|Failed|Stopped|Interrupted|New|Unavailable)\b/u;
+
 it("the target header keeps identity and state without activity", async () => {
 	const observed = source([row("one", { name: "Selected recipient", state: "working", currentTool: { name: "read", argument: JSON.stringify({ path: `/${"long-path/".repeat(40)}` }) } })]);
 	const f = fixture(60, 20, observed);
@@ -39,15 +42,16 @@ it("the target header keeps identity and state without activity", async () => {
 		await turn();
 		f.ui.handleInput("\r");
 		const lines = visible(f.ui.render(60));
-		const title = lines.findIndex((line) => line.includes("Selected recipient") && line.includes("More…"));
-		assert.ok(title > 0);
-		assert.match(lines[title + 1] ?? "", /● Working/);
+		const state = lines.findIndex((line, index) => index > 0 && STATE_LINE.test(line));
+		assert.ok(state > 0);
+		const title = state - 1;
+		assert.match(lines[title] ?? "", /Selected recipient/);
 		assert.doesNotMatch(lines.slice(title, title + 2).join("\n"), /read|long-path/);
 		assert.equal(visibleWidth(lines[title] ?? ""), 60);
 	} finally { f.ui.dispose(); }
 });
 
-it("every view occupies the exact terminal rectangle and keeps the way out at the top right", async () => {
+it("every view occupies the exact terminal rectangle and keeps the way out in the footer", async () => {
 	for (const [width, height] of [
 		[164, 44],
 		[120, 40],
@@ -71,7 +75,8 @@ it("every view occupies the exact terminal rectangle and keeps the way out at th
 				const lines = f.ui.render(width);
 				assert.equal(lines.length, height, `step ${index}`);
 				assert.ok(lines.every((line) => visibleWidth(line) <= width), `step ${index}`);
-				assert.match(stripVTControlCharacters(lines[0] ?? ""), /Close\s*$/, `step ${index}`);
+				assert.doesNotMatch(stripVTControlCharacters(lines[0] ?? ""), /Close/u, `step ${index}: the header holds no commands`);
+				assert.match(stripVTControlCharacters(lines.at(-1) ?? "").trimEnd(), /(^|· )esc [^·]+$/u, `step ${index}: the way out is the last footer control`);
 			}
 			f.ui.handleInput("first\nsecond\nthird\nfourth\nfifth\nsixth\nseventh\neighth");
 			const lines = f.ui.render(width);
@@ -82,7 +87,7 @@ it("every view occupies the exact terminal rectangle and keeps the way out at th
 		}
 	}
 });
-for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of ["list", "composer", "conversation", "controls"] as const) for (const notice of [false, true]) {
+for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of ["list", "composer", "conversation"] as const) for (const notice of [false, true]) {
 	it(`compact failed conversations keep warnings, draft, status and targets at ${width}x${height} from the ${focus}, notice ${notice}`, async () => {
 		const observed = source([row("one", { state: "failed", error: "quota limit" })]);
 		observed.availability = () => ({ state: "unavailable", at: new Date(0).toISOString() });
@@ -95,7 +100,6 @@ for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of
 			updateDraft(state, draft);
 			if (focus === "composer") f.ui.handleInput("\r");
 			if (focus === "conversation") f.ui.handleInput("\t");
-			if (focus === "controls") for (let step = 0; step < 3; step++) f.ui.handleInput("\t");
 			assert.equal(f.ui.focus.region, focus);
 			if (notice) f.ui.notify("Layout could not be saved", "warning");
 			f.ui.focused = true;
@@ -104,19 +108,18 @@ for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of
 			assert.equal(lines.length, height, `${width}x${height} ${focus}`);
 			assert.ok(plain.every((line) => visibleWidth(line) === width));
 			const text = plain.join("\n");
-			assert.doesNotMatch(text, /↑↓|pgup|pgdn|enter send|tab next/, "no navigation footer row");
+			assert.match((plain.at(-1) ?? "").trimEnd(), /esc (list|close|cancel)$/u, "the way out is the last footer control");
 			if (notice) {
 				assert.match(text, /Layout could not be saved/);
-				assert.equal(text.split("quota limit").length - 1, 1, "the action notice takes the header line");
+				assert.doesNotMatch(plain[1] ?? "", /quota limit/, "the notice takes the header line");
 			} else {
 				assert.match(text, /quota limit · A new message runs the work again/, "the header states the reason and the way forward");
-				assert.equal(text.split("quota limit").length - 1, 2, "the reason appears in the list and the header");
 				assert.doesNotMatch(text, /Not connected/, "the reason takes the line the connection warning would use");
 			}
 			const statusY = plain.findIndex((line) => /model │ ~\$0\.42/.test(line));
 			assert.ok(statusY > 0, "the model and cost line stays visible");
 			assert.match(plain[statusY + 1] ?? "", /\/work/);
-			assert.match(plain[0] ?? "", /Close\s*$/);
+			assert.doesNotMatch(plain[0] ?? "", /Close/u, "the header holds no commands");
 			const click = (y: number, x = 2) => f.ui.handleMouse({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
 			for (const y of [statusY, statusY + 1]) assert.equal(click(y), undefined, "status rows are not editor targets");
 			const top = plain.findIndex((line, index) => index > 0 && line.startsWith("╭─"));
@@ -129,19 +132,26 @@ for (const width of [60, 80]) for (const height of [20, 21]) for (const focus of
 			assert.ok(updated.some((line) => line.includes(CURSOR_MARKER)));
 			assert.equal(state.draft, draft);
 			const heading = visible(updated)[0] ?? "";
-			assert.equal(click(0, heading.lastIndexOf("Close"))?.handled, true, "the way out stays clickable");
+			assert.doesNotMatch(heading, /Close/u, "the header holds no commands");
+			const composerFooter = visible(updated).at(-1) ?? "";
+			assert.equal(click(height - 1, composerFooter.lastIndexOf("esc") + 1)?.handled, true, "the way out stays clickable");
+			assert.equal(f.ui.focus.region, "list", "the composer's Escape returns to the list");
+			const listFooter = visible(f.ui.render(width)).at(-1) ?? "";
+			assert.equal(click(height - 1, listFooter.lastIndexOf("esc") + 1)?.handled, true, "the list's way out stays clickable");
 			assert.equal(f.counts().closes, 1);
 		} finally { f.ui.dispose(); }
 	});
 }
-it("narrow strips preserve the composer, two status lines and two conversation rows", async () => {
-	for (const [width, height, stripRows, visibleAgents] of [[80, 24, 8, 2], [60, 20, 5, 1]] as const) {
+it("narrow strips preserve the composer, two status lines and two conversation rows above the key footer", async () => {
+	for (const [width, height, stripRows, visibleAgents] of [[80, 25, 8, 2], [60, 21, 5, 1]] as const) {
 		const f = fixture(width, height, source([row("one", { modifiedAt: 3 }), row("two", { modifiedAt: 2 }), row("three", { modifiedAt: 1 })]));
 		try {
 			await turn();
 			await turn();
 			const plain = visible(f.ui.render(width));
-			const title = plain.findIndex((line) => line.includes("More…"));
+			const state = plain.findIndex((line, index) => index > 0 && STATE_LINE.test(line));
+			assert.ok(state > 0);
+			const title = state - 1;
 			assert.equal(title - 1, stripRows, `${width}x${height} list strip`);
 			const strip = plain.slice(1, title).join("\n");
 			assert.match(strip, /one/);

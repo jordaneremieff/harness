@@ -32,7 +32,6 @@ function hostFixture(): HostEvents {
 			requestRender: () => events.push("render"),
 			notify: (text, kind) => events.push(`notify:${kind}:${text}`),
 			back: () => events.push("back"),
-			focusActions: () => events.push("focusActions"),
 		},
 	};
 }
@@ -209,6 +208,8 @@ it("cancel calls the owner and leaves, and sends nothing", async () => {
 	});
 	const actions = form.actions();
 	assert.deepEqual(actions.map((action) => action.id), ["submit", "cancel"]);
+	assert.equal(actions[0]?.key, "enter", "a single-field form submits on Enter");
+	assert.equal(actions[1]?.key, "escape");
 	assert.equal(actions[1]?.label, "Discard");
 	form.cancel();
 	assert.deepEqual(order, ["cancel"]);
@@ -216,8 +217,9 @@ it("cancel calls the owner and leaves, and sends nothing", async () => {
 	assert.equal(ownerCalls, 0);
 });
 
-it("Enter in the last single-line field moves focus to the actions", () => {
+it("Enter moves to the next field and submits on the last one", async () => {
 	const owner = hostFixture();
+	const submitted: string[] = [];
 	const form = new Form({
 		title: "Edit",
 		heading: "Edit two fields",
@@ -227,13 +229,100 @@ it("Enter in the last single-line field moves focus to the actions", () => {
 		],
 		action: { label: "Apply" },
 		host: owner.host,
+		submit: async (values) => {
+			submitted.push(values.second ?? "");
+			return undefined;
+		},
+	});
+	assert.deepEqual(form.keys().map((hint) => hint.label), ["next", "field"]);
+	assert.equal(form.actions()[0]?.key, undefined, "Submit is in More until the last field");
+	assert.equal(form.handleInput("\r"), true);
+	assert.ok(!owner.events.includes("back"));
+	assert.deepEqual(form.keys().map((hint) => hint.label), ["apply", "field"]);
+	assert.equal(form.actions()[0]?.key, "enter");
+	assert.equal(form.handleInput("\r"), true);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.deepEqual(submitted, [""], "Enter on the last field submits once");
+});
+
+it("the newline keys insert a line break in a multi-line field instead of submitting", async () => {
+	const owner = hostFixture();
+	let calls = 0;
+	const form = new Form({
+		title: "Send",
+		heading: "Send the message",
+		fields: [{ kind: "area", id: "body", label: "Body", rows: 3 }],
+		action: { label: "Send" },
+		host: owner.host,
+		submit: async () => {
+			calls++;
+			return undefined;
+		},
+	});
+	const newline = form.keys().find((hint) => hint.label === "newline");
+	assert.ok(newline, "the footer names the newline keys");
+	assert.ok(newline.keys.includes("ctrl+j"));
+	assert.equal(form.handleInput("\n"), true);
+	assert.ok(form.values().body.includes("\n"), "the key inserted a line break");
+	assert.equal(calls, 0, "the newline key does not submit");
+	assert.equal(form.handleInput("\r"), true);
+	await new Promise((resolve) => setImmediate(resolve));
+	assert.equal(calls, 1, "Enter still submits on the last field");
+});
+
+it("a text field reports editing so the frame keeps letters as text", () => {
+	const owner = hostFixture();
+	const form = new Form({
+		title: "Edit",
+		heading: "Rename",
+		fields: [{ kind: "text", id: "name", label: "Name" }],
+		action: { label: "Apply" },
+		host: owner.host,
 		submit: async () => undefined,
 	});
-	assert.equal(form.handleInput("\r"), true);
-	assert.ok(!owner.events.includes("focusActions"));
-	assert.equal(form.handleInput("\r"), true);
-	assert.ok(owner.events.includes("focusActions"));
-	assert.ok(!owner.events.includes("back"));
+	assert.equal(form.editing(), true);
+	form.handleInput("x");
+	assert.equal(form.values().name, "x");
+});
+
+it("a choice reports its own keys and leaves letters to the frame", () => {
+	const owner = hostFixture();
+	const form = new Form({
+		title: "Pick",
+		heading: "Pick a level",
+		fields: [{ kind: "choice", id: "level", label: "Level", value: "a", choices: [{ value: "a", label: "Alpha" }] }],
+		action: { label: "Apply" },
+		host: owner.host,
+		submit: async () => undefined,
+	});
+	assert.equal(form.editing(), false);
+	assert.deepEqual(form.keys().map((hint) => hint.label), ["choose"]);
+});
+
+it("Escape runs the Cancel control's function and sends nothing", () => {
+	const owner = hostFixture();
+	const order: string[] = [];
+	let calls = 0;
+	const form = new Form({
+		title: "Apply",
+		heading: "Apply the change",
+		fields: [{ kind: "text", id: "name", label: "Name", value: "draft" }],
+		action: { label: "Apply" },
+		cancelLabel: "Discard",
+		host: owner.host,
+		cancel: () => order.push("cancel"),
+		submit: async () => {
+			calls++;
+			return undefined;
+		},
+	});
+	const cancel = form.actions().find((action) => action.id === "cancel");
+	assert.equal(cancel?.key, "escape");
+	assert.equal(form.escape(), false, "the frame runs the action, not the view");
+	cancel?.run();
+	assert.deepEqual(order, ["cancel"]);
+	assert.ok(owner.events.includes("back"));
+	assert.equal(calls, 0);
 });
 
 it("a choice takes the first available choice when its staged value disappears", () => {

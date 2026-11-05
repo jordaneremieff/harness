@@ -6,10 +6,10 @@ import { matchesKey, visibleWidth, wrapTextWithAnsi, truncateToWidth, type TUI, 
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { RelatedEffort } from "./effort-presence.ts";
 import type { DashboardResult } from "./dashboard.ts";
+import { type Action, type Control, actionControl, keyInput, keyMatches, menuControl } from "../../operator-ui/index.ts";
 import { AgentComposer } from "./agent-composer.ts";
 import { cleanDashboardText } from "./dashboard-conversation.ts";
 import { DashboardMouse } from "./dashboard-mouse.ts";
-import { ActionInventory, type ScreenAction } from "./action-inventory.ts";
 import { LIST_BLOCK_ROWS, dashboardHeading, fitLine, listBlock, readingGeometry } from "./dashboard-layout.ts";
 import { dashboardTime } from "./dashboard-time.ts";
 import { memberDeclarationLines, threadPage, type Collaborate } from "./thread-data.ts";
@@ -47,10 +47,12 @@ interface EffortViewOptions {
 	onBack(): void;
 	redraw(): void;
 }
+/** The four arrow and page actions the footer's `select` and `read` hints stand for. */
+const STEP_ACTIONS = new Set(["previous", "next", "read-up", "read-down"]);
+
 /** Presence and thread hints follow pane entry and roster notices, never an age timer. */
 export class EffortView {
 	private readonly mouse = new DashboardMouse();
-	private readonly inventory = new ActionInventory(() => this.actions(), (reason) => { this.notice = reason; });
 	/** First visible row of each list. Wheel scrolling moves these; selection and the message recipient stay put. */
 	private listStart: { efforts?: number; threads?: number } = {};
 	/** Whether the current layout shows the Active threads section; hidden threads are not navigable. */
@@ -283,44 +285,101 @@ export class EffortView {
 		this.notice = notice ?? "";
 		if (!notice) { this.active = false; this.clearSelectionReads(); }
 	}
-	/** Every action of this view. Footer, menu, shortcuts and pointer all dispatch these records. */
-	private actions(): ScreenAction[] {
+	/** Every action of this view, re-read at each render and each invocation. Footer, keys and pointer all run these. */
+	private actions(): Action[] {
 		if (this.composing) return [
-			{ id: "send", label: "Send", keys: ["enter"], main: true, run: () => this.composer.handleInput("\r") },
-			{ id: "newline", label: "Newline", keys: ["ctrl+j"], main: true, run: () => this.composer.handleInput("\n") },
+			{ id: "send", label: "Send", key: "enter", primary: true, run: () => this.composer.handleInput("\r") },
 		];
 		const row = this.row();
 		const messageBlocked = this.selectedThread || row?.liveness !== "live" || !this.options.messageEffort ? "Direct messages need a live compatible effort" : undefined;
 		const observeBlocked = this.selectedThread ? "Select an effort, not a thread" : !this.selected ? "No effort is selected" : undefined;
 		const contactBlocked = this.selectedThread || this.contactId() ? undefined : "No contact thread claim";
 		return [
-			{ id: "contact", label: "Open thread", keys: ["enter"], main: true, disabled: contactBlocked, run: () => this.contact() },
-			{ id: "message", label: "Message", keys: ["m", "tab"], main: true, disabled: messageBlocked, run: () => this.message() },
-			{ id: "observe", label: "Observe", keys: ["o"], main: true, disabled: observeBlocked, run: () => { void this.observe(); } },
-			{ id: "details", label: this.detailsOpen ? "Summary" : "Details", keys: ["d"], main: true, run: () => this.toggleDetails() },
-			{ id: "threads", label: "Threads", keys: ["t"], main: true, run: () => this.openThreads() },
-			{ id: "scan", label: this.scanOpen ? "Hide scan" : "Scan details", keys: ["c"], run: () => this.toggleScan() },
-			{ id: "refresh", label: "Refresh", keys: ["r"], run: () => { void this.refresh(); } },
-			{ id: "time", label: this.exactTime ? "Relative times" : "Exact times", keys: ["i"], run: () => { this.exactTime = !this.exactTime; } },
-			{ id: "previous", label: "Previous", keys: ["up"], run: () => this.move(-1) },
-			{ id: "next", label: "Next", keys: ["down"], run: () => this.move(1) },
-			{ id: "read-up", label: "Read up", keys: ["pageUp"], run: () => { this.offset = Math.max(0, this.offset - 5); } },
-			{ id: "read-down", label: "Read down", keys: ["pageDown"], run: () => { this.offset += 5; } },
+			{ id: "contact", label: "Open thread", key: "enter", primary: true, disabled: contactBlocked, run: () => this.contact() },
+			{ id: "message", label: "Message", key: "m", primary: true, disabled: messageBlocked, run: () => this.message() },
+			{ id: "observe", label: "Observe", key: "o", primary: true, disabled: observeBlocked, run: () => { void this.observe(); } },
+			{ id: "details", label: this.detailsOpen ? "Summary" : "Details", key: "d", primary: true, run: () => this.toggleDetails() },
+			{ id: "threads", label: "Threads", key: "t", primary: true, run: () => this.openThreads() },
+			{ id: "scan", label: this.scanOpen ? "Hide scan" : "Scan details", short: this.scanOpen ? "hide scan" : "scan", key: "c", run: () => this.toggleScan() },
+			{ id: "refresh", label: "Refresh", key: "r", run: () => { void this.refresh(); } },
+			{ id: "time", label: this.exactTime ? "Relative times" : "Exact times", short: "times", key: "i", run: () => { this.exactTime = !this.exactTime; } },
+			{ id: "previous", label: "Previous", key: "up", run: () => this.move(-1) },
+			{ id: "next", label: "Next", key: "down", run: () => this.move(1) },
+			{ id: "read-up", label: "Read up", key: "pageUp", run: () => { this.offset = Math.max(0, this.offset - 5); } },
+			{ id: "read-down", label: "Read down", key: "pageDown", run: () => { this.offset += 5; } },
 		];
 	}
-	/** The four primary controls of the selected-effort header, in order. */
-	private primaryActions(): ScreenAction[] {
-		const ids = ["contact", "message", "observe", "details"];
-		const actions = this.actions();
-		return ids.flatMap((id) => actions.find((action) => action.id === id) ?? []);
+
+	private invoke(id: string): void {
+		const action = this.actions().find((item) => item.id === id);
+		if (!action) return;
+		if (action.disabled) {
+			this.notice = action.disabled;
+			return;
+		}
+		action.run();
 	}
+
+	/** True while the message field has focus: printable keys are its text. */
+	editing(): boolean {
+		return this.composing;
+	}
+
+	/**
+	 * The footer for the current focus: navigation first, then the actions on the selection, then the
+	 * way out. Actions that do not fit or lack a place on the row are listed under More with their keys.
+	 */
+	footer(): { controls: Control[]; menu: Control[] } {
+		const actions = this.actions();
+		const byId = new Map(actions.map((action) => [action.id, action]));
+		const control = (id: string, priority: number): Control | undefined => {
+			const action = byId.get(id);
+			return action ? actionControl(action, (chosen) => this.invoke(chosen), priority) : undefined;
+		};
+		const hint = (id: string, keys: string[], label: string, priority: number): Control =>
+			({ id, keys, label, priority, run: (key) => this.handleInput(keyInput(key) ?? "") });
+		const back = hint("back", ["escape"], "back", 0);
+		if (this.composing) {
+			const send = control("send", 1);
+			return {
+				controls: [
+					...(send ? [send] : []),
+					{ id: "newline", keys: this.newlineKeys(), label: "newline", priority: 2, run: (key) => this.handleInput(keyInput(key) ?? "") },
+					back,
+				],
+				menu: [],
+			};
+		}
+		const controls: Control[] = [hint("select", ["up", "down"], "select", 0), hint("read", ["pageUp", "pageDown"], "read", 2)];
+		for (const id of ["contact", "message", "observe", "details", "threads"]) {
+			const item = control(id, 1);
+			if (item) controls.push(item);
+		}
+		controls.push(back);
+		const menu = actions
+			.filter((action) => !action.primary && !STEP_ACTIONS.has(action.id))
+			.map((action) => menuControl(action, (chosen) => this.invoke(chosen)));
+		return { controls, menu };
+	}
+
+	/** The keys the resolved newline binding accepts, as the composer footer shows them. */
+	private newlineKeys(): string[] {
+		const keys = this.options.keys.getKeys("tui.input.newLine");
+		return keys.length ? [...keys] : ["shift+enter", "ctrl+j"];
+	}
+
 	handleInput(data: string): void {
-		if (this.inventory.open) this.inventory.handleInput(data);
-		else if (matchesKey(data, "escape")) this.back();
-		else if (!this.inventory.handleInput(data, this.composing) && this.composing) this.composer.handleInput(data);
+		if (this.disposed) return;
+		if (matchesKey(data, "escape")) this.back();
+		else if (this.composing) this.composer.handleInput(data);
+		else {
+			const action = this.actions().find((item) => item.key !== undefined && keyMatches(data, item.key));
+			if (action) this.invoke(action.id);
+		}
 		this.options.redraw();
 	}
-	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined { return this.inventory.open ? this.inventory.handleMouse(event) : this.mouse.handle(event); }
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined { return this.mouse.handle(event); }
 	private time(value: string | number): string {
 		const at = new Date(value).getTime();
 		return Number.isFinite(at) ? dashboardTime(at, this.exactTime, this.observedAt) : "unknown (invalid time)";
@@ -619,53 +678,12 @@ export class EffortView {
 			`The read visited ${t.visited} of at most ${threads.limits.visits} records and lists ${threads.items.length} of at most ${threads.limits.results} active threads; ${t.omittedResults} rows and ${t.omittedHints} hints omitted, ${t.unreadable} unreadable, ${plural(t.missingHints, "record", "records")} without hints${t.unvisited ? ", and some records not visited" : ""}. The Threads tab reads every thread.`,
 		];
 	}
-	/** Right-aligned header controls: the primary actions that fit, then More. */
-	private actionControls(room: number, xRight: number, y: number): { text: string; width: number } {
-		const theme = this.options.theme;
-		const actions = this.primaryActions();
-		const more = " More… ";
-		const parts: Array<{ action?: ScreenAction; label: string }> = [];
-		let used = visibleWidth(more);
-		for (const action of actions) {
-			const label = ` ${action.label} `;
-			if (used + visibleWidth(label) > room) break;
-			parts.push({ action, label });
-			used += visibleWidth(label) + 1;
-		}
-		parts.push({ label: more });
-		const width = parts.reduce((sum, part) => sum + visibleWidth(part.label), 0) + Math.max(0, parts.length - 1);
-		let cursor = Math.max(0, xRight - width);
-		let text = "";
-		for (const [index, part] of parts.entries()) {
-			if (index) {
-				text += " ";
-				cursor += 1;
-			}
-			const action = part.action;
-			text += action?.disabled ? theme.fg("muted", part.label) : theme.fg("accent", part.label);
-			const at = cursor;
-			this.mouse.add({ x: at, y, width: visibleWidth(part.label), height: 1, click: () => {
-				if (!action) {
-					this.inventory.handleInput("x");
-					return;
-				}
-				if (action.disabled) {
-					this.notice = action.disabled;
-					this.options.redraw();
-					return;
-				}
-				action.run();
-			} });
-			cursor += visibleWidth(part.label);
-		}
-		return { text, width };
-	}
 	/** The right pane: two header lines, one blank row, then the scrolling detail. */
-	private detailPane(width: number, height: number, x: number, y: number, includeIntegration: boolean, tightActions = false): string[] {
+	private detailPane(width: number, height: number, x: number, y: number, includeIntegration: boolean): string[] {
 		const theme = this.options.theme;
 		const { margin } = readingGeometry(width);
 		const pad = " ".repeat(margin);
-		const section = this.detailSections(width, x, y, margin, includeIntegration, tightActions);
+		const section = this.detailSections(width, x, y, margin, includeIntegration);
 		const editor = this.composing ? this.composer.render(width, this.composerCaption()) : [];
 		const noticeLines = this.notice ? [theme.fg(this.notice.includes("unavailable") ? "warning" : "muted", truncateToWidth(`${pad}${plain(this.notice)}`, Math.max(1, width - 1), "…"))] : [];
 		const available = Math.max(1, height - section.preamble.length - editor.length - noticeLines.length);
@@ -678,7 +696,7 @@ export class EffortView {
 		return [...section.preamble, ...body, ...editor, ...noticeLines].slice(0, height).map((line) => fitLine(line, width));
 	}
 	/** The pane's preamble and scrolling body for its current state. */
-	private detailSections(width: number, x: number, y: number, margin: number, includeIntegration: boolean, tightActions: boolean): { preamble: string[]; bodySource: string[]; timeLine: number } {
+	private detailSections(width: number, x: number, y: number, margin: number, includeIntegration: boolean): { preamble: string[]; bodySource: string[]; timeLine: number } {
 		const row = this.row();
 		if (this.scanOpen) return { preamble: this.scanLines(width), bodySource: [], timeLine: -1 };
 		if (!row) {
@@ -686,7 +704,7 @@ export class EffortView {
 			return { preamble: [" ".repeat(margin) + clip(message, width - margin - 1)], bodySource: [], timeLine: -1 };
 		}
 		if (this.selectedThread && !this.composing && !this.detailsOpen) return this.threadSection(width, margin);
-		const header = this.detailHeaderLines(row, width, x, y, tightActions);
+		const header = this.detailHeaderLines(row, width, x, y);
 		return { preamble: header.lines, bodySource: this.detailBody(row, width, includeIntegration, header.titleCut), timeLine: -1 };
 	}
 	/** A selected active thread, before it is opened in Threads. */
@@ -705,32 +723,21 @@ export class EffortView {
 		return this.detailCache.lines;
 	}
 	/**
-	 * The header: the complete title, then presence and recorded activity, then one blank row. The
-	 * controls sit beside a title that leaves them room and otherwise move to the facts row, so they never
-	 * shorten the title. A title longer than three rows ends with an ellipsis and the body then shows the
-	 * whole purpose.
+	 * The header: the complete title, then presence and recorded activity, then one blank row. A title
+	 * longer than three rows ends with an ellipsis and the body then shows the whole purpose.
 	 */
-	private detailHeaderLines(row: RelatedEffort, width: number, x: number, y: number, tightActions: boolean): { lines: string[]; titleCut: boolean } {
+	private detailHeaderLines(row: RelatedEffort, width: number, x: number, y: number): { lines: string[]; titleCut: boolean } {
 		const theme = this.options.theme;
 		const room = Math.max(1, width - 2);
 		const title = this.effortTitle(row);
 		const facts = this.effortFacts(row);
-		const least = visibleWidth(" Open thread ") + visibleWidth(" More… ") + 1;
-		const all = this.primaryActions().reduce((sum, action) => sum + visibleWidth(` ${action.label} `) + 1, visibleWidth(" More… "));
-		const full = tightActions ? least : Math.min(all, room);
-		const beside = visibleWidth(title) + 2 + full <= room;
-		// Beside the facts, the controls take the room the facts leave and move the rest into More.
-		const budget = beside ? full : Math.max(least, Math.min(full, room - visibleWidth(facts) - 2));
-		let rows = beside ? [title] : wrapTextWithAnsi(title, room);
+		let rows = wrapTextWithAnsi(title, room);
 		const titleCut = rows.length > 3;
 		if (titleCut) rows = [...rows.slice(0, 2), truncateToWidth(`${rows[2] ?? ""} ${rows.slice(3).join(" ")}`, room, "…")];
 		const lines = rows.map((part) => ` ${theme.bold(theme.fg("text", part))}`);
 		const factsRow = lines.length;
 		lines.push(theme.fg("muted", ` ${facts}`));
-		const controlRow = beside ? 0 : factsRow;
-		const controls = this.actionControls(budget, x + width, y + controlRow);
-		lines[controlRow] = `${fitLine(lines[controlRow] ?? "", Math.max(1, width - controls.width))}${controls.text}`;
-		this.mouse.add({ x, y: y + factsRow, width: Math.max(1, width - (controlRow === factsRow ? controls.width : 0)), height: 1, click: () => { this.exactTime = !this.exactTime; this.options.redraw(); } });
+		this.mouse.add({ x, y: y + factsRow, width, height: 1, click: () => { this.exactTime = !this.exactTime; this.options.redraw(); } });
 		lines.push("");
 		return { lines, titleCut };
 	}
@@ -739,7 +746,7 @@ export class EffortView {
 		const target = this.view?.presence.efforts.find((row) => row.id === this.target);
 		const id = plain(this.target ?? "");
 		const name = target ? `${clip(this.effortTitle(target), 48)} · ${id.slice(0, 8)}` : id;
-		return `Operator message to ${name} · Enter sends`;
+		return `Operator message to ${name}`;
 	}
 	/** Register the exact-time toggle on any visible time row. */
 	private timeHits(body: readonly string[], x: number, y: number, width: number): void {
@@ -770,7 +777,7 @@ export class EffortView {
 		const stripRows = withThreads ? 9 : 5;
 		const list = this.list(width, stripRows, 1, 1, withThreads ? 1 : 0);
 		const detailHeight = Math.max(1, bodyRows - stripRows);
-		const detail = this.detailPane(width, detailHeight, 0, 1 + stripRows, withThreads, true);
+		const detail = this.detailPane(width, detailHeight, 0, 1 + stripRows, withThreads);
 		const body = Array.from({ length: bodyRows }, (_, index) => (index < stripRows ? list[index] ?? "" : detail[index - stripRows] ?? ""));
 		return [dashboardHeading("Agents > Related efforts", "", width, theme), ...body].slice(0, height).map((line) => fitLine(line, width));
 	}
@@ -780,11 +787,11 @@ export class EffortView {
 	render(width: number, height: number, listWidth?: number): string[] {
 		this.mouse.reset(width, height);
 		this.composer.focused = this.composing;
-		if (width >= 60 && height >= 20 && this.inventory.open) return this.inventory.render(width, height, "Agents > Related efforts", "efforts", this.options.theme);
-		if (width < 60 || height < 20) return Array.from({ length: height }, (_, index) => fitLine(index ? "" : "Resize to use Related efforts. Esc back.", width));
+		// The host gives the view every row above the footer, so 19 rows here is a 20-row terminal.
+		if (width < 60 || height < 19) return Array.from({ length: height }, (_, index) => fitLine(index ? "" : "Resize to use Related efforts. Esc back.", width));
 		if (width >= 100) return this.renderWide(width, height, listWidth ?? this.fallbackListWidth(width));
 		return this.renderTight(width, height);
 	}
-	invalidate(): void { this.mouse.reset(); this.inventory.invalidate(); this.composer.invalidate(); this.detailCache = undefined; this.rowCache.clear(); }
+	invalidate(): void { this.mouse.reset(); this.composer.invalidate(); this.detailCache = undefined; this.rowCache.clear(); }
 	dispose(): void { this.disposed = true; this.active = false; this.clearSelectionReads(); this.mouse.reset(); this.detailCache = undefined; this.rowCache.clear(); }
 }

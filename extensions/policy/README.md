@@ -1194,26 +1194,33 @@ publishes it as an operator view, `/dashboard` also shows it as a tab.
 
 The view shares rule and proposal details and operator gates with the command.
 Its scopes are Rules, Proposals, Activity, Data, and State. Titles come first:
-a rule shows its purpose, a proposal its candidate purpose. Typing filters the
-list; selecting a row reads it and never acts. At narrow widths the detail
-opens as its own view with Enter.
+a rule shows its purpose, a proposal its candidate purpose. `/` focuses the
+filter field; selecting a row reads it and never acts. At narrow widths the
+detail opens as its own view with Enter.
 
-Every change is a labelled action with a staged form. A rule offers
-**Disable…** or **Enable…**, **Effect…**, **Explain**, **Reset observation…**,
-and **Retire…**; a proposal offers **Approve…** and **Reject…**; Data offers
-**Set data…**, **Set from file…**, and **Remove…**; Activity offers
-**Explain call** for a recorded call. The forms ask for the reason (and the
-effect), bind the revision or target identity of the record shown, and pin the
-reset observation period before the reason is entered. They call the same owner
-functions as the command verbs. A changed definition, proposal, or observation
-period is refused with the reason and the view rereads the store; nothing is
-applied to the new content. An exact-only rule offers no effect choice. A
-result that arrives after the operator left its view does not replace that
-view.
+The footer at the bottom lists each control as its key and its short label. A
+click on a control runs the same action as its key. The keys of this view are
+`d` to enable or disable, `f` for the effect, `e` to explain, `a` to approve,
+`s` to set data, and `r` to refresh. `x` opens the list of every other action,
+such as reject, retire, reset, set from file, and remove. Escape closes the
+browser or goes back from a nested view.
+
+Every change is an action with a staged form, shown in the footer with its key.
+A rule offers **Disable…** or **Enable…**, **Effect…**, **Explain**,
+**Reset observation…**, and **Retire…**; a proposal offers **Approve…** and
+**Reject…**; Data offers **Set data…**, **Set from file…**, and **Remove…**;
+Activity offers **Explain call** for a recorded call. The forms ask for the
+reason (and the effect), bind the revision or target identity of the record
+shown, and pin the reset observation period before the reason is entered. They
+call the same owner functions as the command verbs. A changed definition,
+proposal, or observation period is refused with the reason and the view rereads
+the store; nothing is applied to the new content. An exact-only rule offers no
+effect choice. A result that arrives after the operator left its view does not
+replace that view.
 
 Proposal approval and rejection, data changes, and catalog imports end in the
 complete artifact review. It shows the exact artifact text and scrolls by key
-or wheel. The final action is labelled for the real effect, such as
+or wheel. The final action shows its effect label and the `enter` key, such as
 **Approve as block**, **Approve disable**, **Reject**, **Remove**, or
 **Import**, and stays unavailable until every line of the artifact has been on
 screen. Cancel and Escape write nothing. A decision from the review still

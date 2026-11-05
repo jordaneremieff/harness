@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { TuiMouseEvent } from "@earendil-works/pi-tui";
 import type { NavigationFrame } from "../../operator-ui/index.ts";
 import registerClipboard from "./index.ts";
 import type { SearchPage } from "./search.ts";
@@ -115,6 +117,34 @@ function registry(): {
 
 const execute = (tool: Tool, params: Record<string, unknown>) =>
 	tool.execute("call", params, new AbortController().signal, undefined, {});
+
+/** Click the footer control drawn as `label`, at the position the last render gave it. */
+function clickFooter(frame: NavigationFrame, label: string, width = 160): void {
+	const lines = frame.render(width);
+	const row = stripVTControlCharacters(lines.at(-1) ?? "");
+	const at = row.indexOf(label);
+	assert.ok(at >= 0, `no footer control ${label} in: ${row}`);
+	const event: TuiMouseEvent = { type: "click", button: "left", x: at, y: lines.length - 1, screenX: at, screenY: lines.length - 1, width, height: lines.length, shift: false, alt: false, ctrl: false };
+	assert.ok(frame.handleMouse(event)?.handled, `${label} is clickable`);
+}
+
+/** Wait for the exact record to be read, check the footer, then restore by its key or its control. */
+async function restoreFrom(frame: NavigationFrame, route: "key" | "click"): Promise<void> {
+	const screen = () => frame.render(160).join("\n");
+	for (let attempt = 0; attempt < 400; attempt++) {
+		const restore = frame.viewActions.find((action) => action.label === "Restore");
+		if (restore && restore.disabled === undefined) break;
+		screen();
+		await new Promise((settled) => setTimeout(settled, 5));
+	}
+	const lines = frame.render(160);
+	const row = stripVTControlCharacters(lines.at(-1) ?? "");
+	for (const control of ["enter restore", "r refresh", "esc close"]) assert.ok(row.includes(control), `${control} in: ${row}`);
+	if (route === "key") frame.handleInput("\r");
+	else clickFooter(frame, "enter restore");
+	for (let attempt = 0; attempt < 400 && !/Restored/.test(screen()); attempt++) await new Promise((settled) => setTimeout(settled, 5));
+	assert.match(screen(), /Restored/, "the frame shows the restore outcome");
+}
 
 const theme: MockTheme = {
 	fg: (_color: string, text: string) => text,
@@ -340,7 +370,7 @@ describe("clipboard entrypoint", () => {
 				notify: (message: string) => notifications.push(message),
 				custom: async (factory: PanelFactory) =>
 					new Promise((resolve) => {
-						const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, {}, resolve) as unknown as NavigationFrame;
+						const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, { getKeys: () => [] }, resolve) as unknown as NavigationFrame;
 						const screen = () => frame.render(120).join("\n");
 						void (async () => {
 							const restoreOf = () => frame.viewActions.find((action) => action.label === "Restore");
@@ -364,5 +394,38 @@ describe("clipboard entrypoint", () => {
 		assert.equal(await readFile(clipboardFile, "utf8"), full);
 		assert.match(frameText, /Restored/, "the frame shows the restore outcome");
 		assert.deepEqual(notifications, []);
+	});
+
+	it("shows enter restore in the footer, and Enter and a footer click both restore", async () => {
+		const { tools, commands } = registry();
+		const content = "footer restore content";
+		await execute(tools.get("clipboard_copy"), { content, label: "footer-restore" });
+		const archived = async () => {
+			let total = 0;
+			for (const name of await readdir(archiveDir)) total += (await readFile(join(archiveDir, name), "utf8")).split("\n").filter(Boolean).length;
+			return total;
+		};
+		const before = await archived();
+		const run = (route: "key" | "click") => {
+			const ctx = {
+				hasUI: true,
+				mode: "tui",
+				cwd: root,
+				sessionManager: { getSessionId: () => "session-1" },
+				ui: {
+					notify: () => {},
+					custom: async (factory: PanelFactory) =>
+						new Promise((resolve) => {
+							const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender: () => {} }, theme, { getKeys: () => [] }, resolve) as unknown as NavigationFrame;
+							void restoreFrom(frame, route).then(() => frame.close());
+						}),
+				},
+			};
+			return commands.get("clipboard").handler("", ctx as unknown as ClipboardCommandCtx);
+		};
+		await run("key");
+		assert.equal(await archived(), before + 1, "Enter restores and appends one archive record");
+		await run("click");
+		assert.equal(await archived(), before + 2, "the footer click restores the same way");
 	});
 });

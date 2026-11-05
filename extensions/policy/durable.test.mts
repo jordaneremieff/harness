@@ -1309,7 +1309,6 @@ test("the attached view's Data actions set, set-file and remove through the owne
 				const index = layers.findIndex((layer) => layer.controller === controller);
 				for (const layer of layers.splice(Math.max(1, index))) layer.controller.abort();
 			},
-			focusActions: () => {},
 			close: () => {},
 			request,
 		});

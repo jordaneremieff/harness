@@ -15,7 +15,7 @@ initTheme("dark");
 const theme = { fg: (_color: string, text: string) => text, bg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
 
 function panelHost(request: PanelHost["request"]): PanelHost {
-	return { theme, target: { id: "c", label: "Reviewer · work" }, signal: new AbortController().signal, requestRender: () => {}, notify: () => {}, push: () => {}, back: () => {}, focusActions: () => {}, close: () => {}, request };
+	return { theme, target: { id: "c", label: "Reviewer · work" }, signal: new AbortController().signal, requestRender: () => {}, notify: () => {}, push: () => {}, back: () => {}, close: () => {}, request };
 }
 const flush = async () => { for (let round = 0; round < 40; round++) await new Promise((resolve) => setTimeout(resolve, 5)); };
 

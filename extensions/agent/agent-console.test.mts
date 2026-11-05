@@ -11,18 +11,18 @@ import { buildLiveEntries } from "./live-frames.ts";
 const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
 const click = (x: number, y: number, width: number, height: number): TuiMouseEvent => ({ type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
 
-/** Choose one of the selected agent's More actions with the pointer, as the operator would. */
-function chooseMore(f: ReturnType<typeof fixture>, label: string): void {
+/** Click the visible text, as the operator would. */
+function clickText(f: ReturnType<typeof fixture>, text: string): void {
 	const { columns, rows } = f.tui.terminal;
 	const lines = visible(f.ui.render(columns));
-	const header = lines.findIndex((line, index) => index > 0 && line.includes("More…"));
-	const more = lines[header]?.lastIndexOf("More…") ?? -1;
-	assert.ok(more >= 0, "the selected agent's controls show More");
-	f.ui.handleMouse(click(more + 1, header, columns, rows));
-	const menu = visible(f.ui.render(columns));
-	const y = menu.findIndex((line) => line.includes(label));
-	assert.ok(y >= 0, `More lists ${label}`);
-	f.ui.handleMouse(click((menu[y]?.indexOf(label) ?? 0) + 1, y, columns, rows));
+	for (let y = 0; y < lines.length; y++) {
+		const x = lines[y]?.indexOf(text) ?? -1;
+		if (x >= 0) {
+			f.ui.handleMouse(click(x + 1, y, columns, rows));
+			return;
+		}
+	}
+	assert.fail(`no visible ${text}`);
 }
 
 it("dashboard close releases a native nested renderer timer through the console", async (t) => {
@@ -60,7 +60,7 @@ it("the message field takes every letter and slash text literally for the select
 	assert.equal(f.ui.focus.region, "composer");
 	f.ui.render(80);
 	f.ui.handleInput("/help n a ? !literal");
-	chooseMore(f, "Send as follow-up");
+	clickText(f, "Steer at next step ⇄");
 	assert.equal(agentState(f.state, "storage:1").mode, "followUp");
 	assert.equal(f.ui.focus.region, "composer", "choosing the delivery effect keeps the message field");
 	f.ui.handleInput("\r");
@@ -80,7 +80,7 @@ it("refused admission retains the draft and disposition", async () => {
 	await turn();
 	f.ui.handleInput("\r");
 	f.ui.handleInput("retained");
-	chooseMore(f, "Send as follow-up");
+	clickText(f, "Steer at next step ⇄");
 	f.ui.handleInput("\r");
 	await turn();
 	const state = agentState(f.state, "storage:1");
@@ -139,7 +139,7 @@ it("the delivery effect and a long draft stay on the message field without other
 		await turn(); await turn();
 		const state = agentState(f.state, "one");
 		f.ui.handleInput("\r");
-		chooseMore(f, "Send as follow-up");
+		clickText(f, "Steer at next step ⇄");
 		updateDraft(state, Array.from({ length: 30 }, (_, index) => `draft ${index}`).join("\n"));
 		const caption = () => visible(f.ui.render(f.tui.terminal.columns)).slice(1).find((line) => line.includes("╭─")) ?? "";
 		assert.match(caption(), /Follow-up after answer/); assert.match(caption(), /↑ \d+ lines/);

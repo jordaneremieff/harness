@@ -293,7 +293,7 @@ it("recovery hints name the supported next action and never a working row", () =
 	assert.equal(recoveryHint(row("idle", { state: "idle", latestReply: "Ready" })), undefined);
 });
 
-it("the footer's error control names its column and reads Show all under the filter", () => {
+it("the list's error count names its column and reads errors only under the filter", () => {
 	const rows = [row("ok", { modifiedAt: 2 }), row("bad", { state: "failed", error: "quota limit", modifiedAt: 1 })];
 	const controls: Array<{ line: number; x: number; width: number }> = [];
 	const lines = rosterLines(rows, "ok", 80, 14, 0, theme, false, { errors: (line, x, width) => controls.push({ line, x, width }) });
@@ -301,8 +301,8 @@ it("the footer's error control names its column and reads Show all under the fil
 	assert.deepEqual(controls, [{ line: 6, x: 11, width: 13 }], "the control starts after the counts and covers the label");
 	const filtered: Array<{ line: number; x: number; width: number }> = [];
 	const only = rosterLines(rows, "bad", 80, 14, 0, theme, false, { errorsOnly: true, errors: (line, x, width) => filtered.push({ line, x, width }) });
-	assert.match(only[6] ?? "", /2 with errors · Show all/);
-	assert.deepEqual(filtered, [{ line: 6, x: 16, width: 8 }], "Show all owns its own label");
+	assert.match(only[6] ?? "", /2 with errors · errors only/);
+	assert.deepEqual(filtered, [{ line: 6, x: 16, width: 11 }], "the filter state owns its own label");
 });
 
 it("the footer names hidden rows above or below the window", () => {

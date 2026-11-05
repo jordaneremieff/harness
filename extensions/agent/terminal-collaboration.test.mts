@@ -42,8 +42,7 @@ for (const nonroot of [false, true]) it(`native terminal discovers, reads and po
 	screen.view.openNamedAction("threads");
 	await waitFor(() => text().includes("Native task review"));
 	screen.handleInput("\x1b[B");
-	screen.handleInput("\x1b[Z");
-	screen.handleInput("\r");
+	screen.handleInput("m");
 	await waitFor(() => text().includes("Review the task"));
 	screen.handleInput("\x1b");
 	screen.handleInput("\r");
@@ -55,7 +54,7 @@ for (const nonroot of [false, true]) it(`native terminal discovers, reads and po
 	assert.equal(note?.sender, actor, "a terminal post comes from the selected conversation");
 	assert.equal(note?.origin, "operator");
 	screen.handleInput("\x1b[Z");
-	screen.handleInput("\r");
+	screen.handleInput("m");
 	screen.handleInput("\x1b[F");
 	screen.handleInput("\r");
 	assert.equal(controller.state.selected, nonroot ? host.record.storageId : child, "a participant opens as the selected conversation");

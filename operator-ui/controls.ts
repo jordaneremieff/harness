@@ -1,196 +1,246 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import type { HitMap } from "./hits.ts";
-import { clip, fitLine, plainLine, visibleWidth } from "./text.ts";
+import { keysText, keyText } from "./keys.ts";
+import { fitLine, plainLine, visibleWidth } from "./text.ts";
 import type { Action } from "./view.ts";
 
-const GAP = "   ";
-const MORE_ID = "\u0000more";
-
-interface Placed {
+/**
+ * One footer control: its keys, its label, and what each key does. A key press and a click on the
+ * control call the same `run`, so the two can never mean different things.
+ */
+export interface Control {
 	readonly id: string;
+	/** pi-tui key ids or printable characters. A control with several keys gets one click target per key. */
+	readonly keys: readonly string[];
 	readonly label: string;
-	readonly x: number;
-	readonly width: number;
+	readonly description?: string;
+	/** Why the control cannot run now. It stays listed, dimmed, and explains itself when used. */
+	readonly disabled?: string;
+	readonly tone?: "accent" | "danger";
+	/** Run the control for one of its keys. */
+	run(key: string): void;
+	/**
+	 * Lower numbers stay on the row longer when it is short. Priority 0 never leaves the row: basic
+	 * navigation, More and the way out. Default 2.
+	 */
+	readonly priority?: number;
 }
 
-function controlText(action: Pick<Action, "label" | "disabled" | "tone">, focused: boolean, theme: Theme): string {
-	const label = plainLine(action.label);
-	if (focused) return theme.bg("selectedBg", theme.bold(theme.fg(action.disabled ? "dim" : "text", ` ${label} `)));
-	if (action.disabled) return theme.fg("dim", ` ${label} `);
-	return theme.fg(action.tone === "danger" ? "error" : "accent", ` ${label} `);
+/** The key that opens the More menu everywhere a footer shows it. */
+export const MORE_KEY = "x";
+const SEPARATOR = " · ";
+
+/** Footer wording of an action: its short form, or its label with a lower-case first letter. */
+export function actionLabel(action: Pick<Action, "label" | "short">): string {
+	const text = plainLine(action.short ?? action.label);
+	return /^\p{Lu}\p{Ll}/u.test(text) ? `${text.charAt(0).toLocaleLowerCase()}${text.slice(1)}` : text;
+}
+
+/** The footer control of an action with a key; `invoke` re-reads the action by identity when it runs. */
+export function actionControl(action: Action, invoke: (id: string) => void, priority = 1): Control | undefined {
+	if (!action.key) return undefined;
+	return {
+		id: action.id,
+		keys: [action.key],
+		label: actionLabel(action),
+		...(action.description ? { description: action.description } : {}),
+		...(action.disabled ? { disabled: action.disabled } : {}),
+		...(action.tone ? { tone: action.tone } : {}),
+		priority,
+		run: () => invoke(action.id),
+	};
+}
+
+/** The More menu entry of an action without a key. */
+export function menuControl(action: Action, invoke: (id: string) => void): Control {
+	return {
+		id: action.id,
+		keys: action.key ? [action.key] : [],
+		label: plainLine(action.label),
+		...(action.description ? { description: action.description } : {}),
+		...(action.disabled ? { disabled: action.disabled } : {}),
+		...(action.tone ? { tone: action.tone } : {}),
+		run: () => invoke(action.id),
+	};
+}
+
+function controlWidth(control: Control): number {
+	return visibleWidth(`${keysText(control.keys)} ${plainLine(control.label)}`);
+}
+
+function paintControl(control: Control, theme: Theme): string {
+	const keys = keysText(control.keys);
+	const label = plainLine(control.label);
+	if (control.disabled) return theme.fg("dim", `${keys} ${label}`);
+	return `${theme.fg("accent", keys)} ${theme.fg(control.tone === "danger" ? "error" : "muted", label)}`;
+}
+
+/** The index of the control that leaves a short row next: the highest priority number, the last of equals. Priority 0 stays. */
+function nextToDrop(shown: readonly Control[]): number {
+	let drop = -1;
+	let worst = 0;
+	shown.forEach((control, index) => {
+		const priority = control.priority ?? 2;
+		if (priority > 0 && priority >= worst) {
+			drop = index;
+			worst = priority;
+		}
+	});
+	return drop;
+}
+
+/** One More menu row: marker, key column, label and the reason or description. */
+function menuRow(item: Control, chosen: boolean, keyColumn: number, width: number, theme: Theme): string {
+	const marker = chosen ? theme.fg("accent", "›") : " ";
+	const keys = fitLine(item.keys.length ? theme.fg(item.disabled ? "dim" : "accent", keysText(item.keys)) : "", keyColumn);
+	const label = theme.fg(item.disabled ? "dim" : item.tone === "danger" ? "error" : "text", plainLine(item.label));
+	const note = item.disabled ? `unavailable: ${item.disabled}` : (item.description ?? "");
+	const text = `${marker} ${keys}  ${label}${note ? theme.fg("muted", `  ${plainLine(note)}`) : ""}`;
+	return chosen ? theme.bg("selectedBg", fitLine(text, width)) : fitLine(text, width);
+}
+
+/** Menu moves by key: Up and Down one entry, PageUp and PageDown five, Home and End to either end. */
+const MENU_MOVES: ReadonlyArray<readonly [string, (index: number, count: number) => number]> = [
+	["up", (index) => index - 1],
+	["down", (index) => index + 1],
+	["pageUp", (index) => index - 5],
+	["pageDown", (index) => index + 5],
+	["home", () => 0],
+	["end", (_index, count) => count - 1],
+];
+
+/** Column spans of each key token inside a control's key text, for one click target per key. */
+function keySpans(keys: readonly string[]): Array<{ key: string; x: number; width: number }> {
+	const arrows = keys.every((key) => /^[↑↓←→]$/u.test(keyText(key)));
+	const spans: Array<{ key: string; x: number; width: number }> = [];
+	let x = 0;
+	for (const key of keys) {
+		const width = visibleWidth(keyText(key));
+		spans.push({ key, x, width });
+		x += width + (arrows ? 0 : 1);
+	}
+	return spans;
 }
 
 /**
- * The labelled controls for one view: primary actions in order, then More for the rest. Controls
- * that do not fit move into More, never out of reach. Actions are re-read on every render and
- * every invocation, so a stale render cannot run a replaced action.
+ * The key footer of one view: controls as `key label` pairs on one row, the way out last. When the
+ * row is short, the highest-numbered priority leaves first, into the More menu, which lists every
+ * control the row does not show together with its key. Click targets come from the row as drawn.
  */
-export class ActionBar {
-	focused = false;
-	private focusId?: string;
-	private menuOpen = false;
-	private menuIndex = 0;
-	private placed: Placed[] = [];
-	private readonly refused: (reason: string) => void;
-
-	constructor(refused: (reason: string) => void) {
-		this.refused = refused;
-	}
+export class Footer {
+	private open = false;
+	private index = 0;
+	/** Controls of the last render that the More menu lists. */
+	private listed: Control[] = [];
 
 	get menuShown(): boolean {
-		return this.menuOpen;
+		return this.open;
+	}
+
+	/** Whether the last render had anything for the More menu to list. */
+	get hasMore(): boolean {
+		return this.listed.length > 0;
+	}
+
+	/** Rows the open menu needs: a heading and one row per entry. */
+	get menuRows(): number {
+		return this.listed.length + 1;
 	}
 
 	closeMenu(): void {
-		this.menuOpen = false;
+		this.open = false;
 	}
 
-	/** Every primary control when all of them fit; otherwise the ones that fit before More. */
-	private layout(actions: readonly Action[], room: number): Placed[] {
-		const primary = actions.filter((action) => action.primary);
-		const more = primary.length < actions.length || ActionBar.measure(actions) > room;
-		const moreWidth = visibleWidth(" More… ");
-		const placed: Placed[] = [];
+	toggleMenu(): void {
+		this.open = !this.open;
+		this.index = 0;
+	}
+
+	/**
+	 * Draw the row and register its targets. The last control is the way out; More goes before it
+	 * when the menu has entries. `menu` lists entries that never take a place on the row.
+	 */
+	render(controls: readonly Control[], width: number, theme: Theme, hits: HitMap, y: number, x0 = 0, menu: readonly Control[] = []): string {
+		const exit = controls.at(-1);
+		const shown = controls.slice(0, -1);
+		const hidden: Control[] = [];
+		const more: Control = { id: "\u0000more", keys: [MORE_KEY], label: "more", priority: 0, description: "Every action and key this row does not show", run: () => this.toggleMenu() };
+		const row = () => [...shown, ...(hidden.length || menu.length ? [more] : []), ...(exit ? [exit] : [])];
+		const measure = () => row().reduce((total, control, index) => total + controlWidth(control) + (index ? SEPARATOR.length : 0), 0);
+		for (let drop = nextToDrop(shown); measure() > width && drop >= 0; drop = nextToDrop(shown)) hidden.unshift(...shown.splice(drop, 1));
+		// While the menu shows, the row lists the menu's own keys and the menu keeps its entries.
+		if (!this.open) this.listed = [...hidden, ...menu];
 		let x = 0;
-		for (const action of primary) {
-			const w = visibleWidth(` ${plainLine(action.label)} `);
-			if (more && x + w + GAP.length + moreWidth > room) break;
-			placed.push({ id: action.id, label: action.label, x, width: w });
-			x += w + GAP.length;
+		const parts: string[] = [];
+		for (const control of row()) {
+			const w = controlWidth(control);
+			if (x + w <= width) this.target(control, hits, x0 + x, y, w);
+			parts.push(paintControl(control, theme));
+			x += w + SEPARATOR.length;
 		}
-		if (more && x + moreWidth <= room) placed.push({ id: MORE_ID, label: "More…", x, width: moreWidth });
-		return placed;
+		return fitLine(parts.join(theme.fg("dim", SEPARATOR)), width);
 	}
 
-	/** Columns the primary controls and More take when nothing has to overflow. */
-	static measure(actions: readonly Action[]): number {
-		const primary = actions.filter((action) => action.primary);
-		const labels = primary.map((action) => visibleWidth(` ${plainLine(action.label)} `));
-		if (primary.length < actions.length) labels.push(visibleWidth(" More… "));
-		return labels.reduce((total, width) => total + width, 0) + Math.max(0, labels.length - 1) * GAP.length;
-	}
-
-	/** Lay out the bar and register its targets; `right` is a muted trailing segment such as a notice. */
-	render(actions: readonly Action[], width: number, theme: Theme, hits: HitMap, y: number, right = ""): string {
-		const rightWidth = right ? Math.min(visibleWidth(right), Math.floor(width / 2)) : 0;
-		const room = Math.max(0, width - rightWidth - (rightWidth ? 1 : 0));
-		const placed = this.layout(actions, room);
-		this.placed = placed;
-		if (this.focusId && !placed.some((item) => item.id === this.focusId)) this.focusId = placed[0]?.id;
-		if (this.focused && !this.focusId) this.focusId = placed[0]?.id;
-		let line = "";
-		for (const item of placed) {
-			const action = item.id === MORE_ID ? { label: "More…" } : actions.find((candidate) => candidate.id === item.id);
-			if (!action) continue;
-			line += (line ? GAP : "") + controlText(action, this.focused && this.focusId === item.id, theme);
-			hits.add({ x: item.x, y, width: item.width, height: 1, click: () => this.invoke(item.id, actions) });
+	private target(control: Control, hits: HitMap, x: number, y: number, width: number): void {
+		if (control.keys.length <= 1) {
+			hits.add({ x, y, width, height: 1, click: () => control.run(control.keys[0] ?? "") });
+			return;
 		}
-		const left = fitLine(line, room);
-		return rightWidth ? `${left} ${clip(right, rightWidth)}` : left;
+		for (const span of keySpans(control.keys)) hits.add({ x: x + span.x, y, width: span.width, height: 1, click: () => control.run(span.key) });
 	}
 
-	/** The open More menu, drawn by the frame over the lower body rows. */
-	renderMenu(actions: readonly Action[], width: number, height: number, theme: Theme, hits: HitMap, y0: number): string[] {
-		const items = this.menuItems(actions);
-		this.menuIndex = Math.max(0, Math.min(items.length - 1, this.menuIndex));
-		// A menu taller than its rows keeps one row that says how many actions are below.
+	/** The open More menu over the lower body rows: every control the row does not show, with its key. */
+	renderMenu(width: number, height: number, theme: Theme, hits: HitMap, y0: number, x0 = 0): string[] {
+		const items = this.listed;
+		this.index = Math.max(0, Math.min(items.length - 1, this.index));
 		const room = Math.max(1, height - 1);
 		const overflow = items.length > room;
 		const rows = overflow ? Math.max(1, room - 1) : items.length;
-		const start = Math.max(0, Math.min(items.length - rows, this.menuIndex - Math.floor(rows / 2)));
-		const above = start > 0 ? ` · ↑ ${start} more` : "";
-		const lines = [fitLine(theme.fg("muted", `More actions${above} · Enter runs · Esc closes`), width)];
-		if (above) hits.add({ x: 0, y: y0, width, height: 1, click: () => this.moveMenu(-rows, items.length) });
-		items.slice(start, start + rows).forEach((action, offset) => {
+		const start = Math.max(0, Math.min(items.length - rows, this.index - Math.floor(rows / 2)));
+		const keyColumn = Math.min(14, Math.max(0, ...items.map((item) => visibleWidth(keysText(item.keys)))));
+		const lines = [fitLine(theme.fg("muted", `More${start > 0 ? ` · ↑ ${start} more` : ""}`), width)];
+		items.slice(start, start + rows).forEach((item, offset) => {
 			const index = start + offset;
-			const note = action.disabled ? `unavailable: ${action.disabled}` : (action.description ?? "");
-			const marker = index === this.menuIndex ? "›" : " ";
-			const label = action.disabled ? theme.fg("dim", plainLine(action.label)) : theme.fg("text", plainLine(action.label));
-			const text = `${marker} ${label}${note ? theme.fg("muted", `  ${plainLine(note)}`) : ""}`;
-			lines.push(index === this.menuIndex ? theme.bg("selectedBg", fitLine(text, width)) : fitLine(text, width));
-			hits.add({
-				x: 0,
-				y: y0 + 1 + offset,
-				width,
-				height: 1,
-				click: () => {
-					this.menuIndex = index;
-					this.invoke(action.id, actions);
-				},
-			});
+			lines.push(menuRow(item, index === this.index, keyColumn, width, theme));
+			hits.add({ x: x0, y: y0 + 1 + offset, width, height: 1, click: () => this.choose(index) });
 		});
 		const below = items.length - start - rows;
-		if (overflow) {
-			lines.push(fitLine(theme.fg("muted", below > 0 ? `↓ ${below} more · click, ↓ or wheel` : `${items.length} actions`), width));
-			if (below > 0) hits.add({ x: 0, y: y0 + lines.length - 1, width, height: 1, click: () => this.moveMenu(rows, items.length) });
-		}
-		hits.add({ x: 0, y: y0, width, height: lines.length, wheel: (delta) => this.moveMenu(delta, items.length) });
+		if (overflow) lines.push(fitLine(theme.fg("muted", below > 0 ? `↓ ${below} more` : `${items.length} entries`), width));
+		hits.add({ x: x0, y: y0, width, height: lines.length, wheel: (delta) => this.move(delta, items.length) });
 		return lines;
 	}
 
-	private menuItems(actions: readonly Action[]): Action[] {
-		const shown = new Set(this.placed.map((item) => item.id));
-		return actions.filter((action) => !shown.has(action.id));
+	/** The keys of the open menu, for the footer row while it shows. */
+	static menuControls(footer: Footer, run: (key: string) => void): Control[] {
+		return [
+			{ id: "menu-move", keys: ["up", "down"], label: "choose", priority: 0, run },
+			{ id: "menu-run", keys: ["enter"], label: "run", priority: 0, run },
+			{ id: "menu-close", keys: ["escape"], label: "close menu", priority: 0, run: () => footer.closeMenu() },
+		];
 	}
 
-	private moveMenu(delta: number, count: number): void {
-		this.menuIndex = Math.max(0, Math.min(count - 1, this.menuIndex + delta));
+	private move(delta: number, count: number): void {
+		this.index = Math.max(0, Math.min(count - 1, this.index + delta));
 	}
 
-	/** Run an action by identity after re-reading the current list. */
-	invoke(id: string, actions: readonly Action[]): void {
-		if (id === MORE_ID) {
-			this.menuOpen = !this.menuOpen;
-			this.menuIndex = 0;
-			return;
-		}
-		const action = actions.find((candidate) => candidate.id === id);
-		if (!action) return;
-		this.menuOpen = false;
-		if (action.disabled) {
-			this.refused(action.disabled);
-			return;
-		}
-		action.run();
+	private choose(index: number): void {
+		const item = this.listed[index];
+		this.index = index;
+		if (!item) return;
+		this.open = false;
+		item.run(item.keys[0] ?? "");
 	}
 
-	/** Keys while the bar or its menu owns focus. Returns true when consumed. */
-	handleInput(data: string, actions: readonly Action[]): boolean {
-		if (this.menuOpen) return this.menuInput(data, actions);
-		if (!this.focused) return false;
-		const index = this.placed.findIndex((item) => item.id === this.focusId);
-		if (matchesKey(data, "left") || matchesKey(data, "right")) {
-			const next = index + (matchesKey(data, "left") ? -1 : 1);
-			this.focusId = this.placed[Math.max(0, Math.min(this.placed.length - 1, next))]?.id;
-			return true;
-		}
-		if (matchesKey(data, "home") || matchesKey(data, "end")) {
-			this.focusId = (matchesKey(data, "home") ? this.placed[0] : this.placed.at(-1))?.id;
-			return true;
-		}
-		if ((matchesKey(data, "enter") || data === " ") && this.focusId) {
-			this.invoke(this.focusId, actions);
-			return true;
-		}
-		return false;
-	}
-
-	private menuInput(data: string, actions: readonly Action[]): boolean {
-		const items = this.menuItems(actions);
-		if (matchesKey(data, "escape")) this.menuOpen = false;
-		else if (matchesKey(data, "up") || matchesKey(data, "down")) this.moveMenu(matchesKey(data, "up") ? -1 : 1, items.length);
-		else if (matchesKey(data, "enter")) {
-			const action = items[this.menuIndex];
-			if (action) this.invoke(action.id, actions);
-		}
+	/** Keys while the menu shows. Returns true when consumed; every key is consumed while it shows. */
+	menuInput(data: string): boolean {
+		if (!this.open) return false;
+		const count = this.listed.length;
+		const move = MENU_MOVES.find(([key]) => matchesKey(data, key as "up"));
+		if (matchesKey(data, "escape") || data === MORE_KEY) this.open = false;
+		else if (move) this.index = Math.max(0, Math.min(count - 1, move[1](this.index, count)));
+		else if (matchesKey(data, "enter")) this.choose(this.index);
 		return true;
-	}
-
-	/** Focus the first control (or the last, when entering backward). */
-	focusEdge(backward: boolean): void {
-		this.focused = true;
-		this.focusId = (backward ? this.placed.at(-1) : this.placed[0])?.id;
 	}
 }
 
@@ -216,9 +266,9 @@ function tabCap(labels: readonly string[], room: number): number {
 }
 
 /**
- * The destination row: every tab on the left, a muted segment that gives way first, and the
- * fixed controls at the right. Tabs shorten evenly before any drops out of reach. The active tab
- * is emphasised; a focused tab row highlights the tab that Enter would open.
+ * The destination row: every tab on the left and a muted context segment that gives way first.
+ * Tabs shorten evenly before any drops out of reach. The active tab is emphasised; a focused tab
+ * row highlights the tab that Enter would open.
  */
 export function renderTabs(
 	tabs: readonly Tab[],
@@ -230,13 +280,11 @@ export function renderTabs(
 	y: number,
 	pick: (key: string) => void,
 	right = "",
-	fixed = "",
-): { line: string; fixedX: number } {
-	const space = Math.max(0, width - visibleWidth(fixed));
+): string {
 	const labels = tabs.map((tab) => ` ${plainLine(tab.label)} `);
 	const natural = labels.reduce((sum, label) => sum + visibleWidth(label) + 1, 1);
-	const rightWidth = right ? Math.max(0, Math.min(visibleWidth(right), Math.floor(space / 2), space - natural - 2)) : 0;
-	const room = Math.max(0, space - (rightWidth ? rightWidth + 2 : 0));
+	const rightWidth = right ? Math.max(0, Math.min(visibleWidth(right), Math.floor(width / 2), width - natural - 2)) : 0;
+	const room = Math.max(0, width - (rightWidth ? rightWidth + 2 : 0));
 	const cell = tabCap(labels, room);
 	let x = 1;
 	let line = theme.fg("borderMuted", "─");
@@ -251,6 +299,5 @@ export function renderTabs(
 	}
 	const fill = theme.fg("borderMuted", "─".repeat(Math.max(0, room - x)));
 	const head = fitLine(line + fill, room);
-	const middle = rightWidth ? `${head} ${clip(right, rightWidth)}${theme.fg("borderMuted", "─")}` : head;
-	return { line: fitLine(middle, space) + fixed, fixedX: space };
+	return rightWidth ? fitLine(`${head} ${truncateToWidth(right, rightWidth)}${theme.fg("borderMuted", "─")}`, width) : head;
 }

@@ -108,7 +108,10 @@ it("the dashboard gets its context window and session figures from the current p
 		assert.equal(reads, 1);
 		assert.match(text, /Example model \[high\].*16%.*163k\/1.0M/);
 		assert.match(text, / Related {2}All /, "the scope controls stay on the Find row");
-		assert.match(text, /agents: 1\/1 active · ~\$0\.42.*New conversation.*Help.*Close/, "the primary's session figures sit in the heading");
+		const heading = stripVTControlCharacters(dashboard.render(160)[0] ?? "");
+		assert.match(heading, /agents: 1\/1 active · ~\$0\.42/, "the primary's session figures sit in the heading");
+		assert.doesNotMatch(heading, /New conversation|Help|Close/, "the heading holds no commands");
+		assert.match(text, /n new/u, "the commands are keys in the footer");
 	} finally { dashboard?.dispose(); finish(); await opened; }
 });
 it("the dashboard collaboration adapter carries its primary context and structured read", async () => {
@@ -232,21 +235,21 @@ it("the New conversation purpose is literal text even when it is a help flag", a
 		const opened = command.openDashboard(ctx);
 		await turn();
 		assert.ok(ui);
+		const board = ui;
 		try {
-			ui.render(80);
-			ui.openNamedAction("new");
-			ui.handleInput(text);
-			assert.equal(ui.state.newTask, text, "the purpose draft is kept while the form is open");
-			for (const key of ["\t", "\t", "\r"]) {
-				ui.render(80);
-				ui.handleInput(key);
-			}
-			for (let attempt = 0; attempt < 10 && ui.state.newTask; attempt++) await turn();
+			board.render(80);
+			board.openNamedAction("new");
+			board.handleInput(text);
+			assert.equal(board.state.newTask, text, "the purpose draft is kept while the form is open");
+			const footer = () => stripVTControlCharacters(board.render(80).at(-1) ?? "").trimEnd();
+			for (let step = 0; step < 4 && !/enter start/u.test(footer()); step++) board.handleInput("\r");
+			board.handleInput("\r");
+			for (let attempt = 0; attempt < 10 && board.state.newTask; attempt++) await turn();
 			assert.deepEqual(admitted, [text]);
-			assert.equal(ui.state.newTask, "");
-			assert.equal(ui.selectedRow?.id, "created", "the created conversation is selected");
+			assert.equal(board.state.newTask, "");
+			assert.equal(board.selectedRow?.id, "created", "the created conversation is selected");
 		} finally {
-			ui.dispose();
+			board.dispose();
 			finish();
 			await opened;
 		}

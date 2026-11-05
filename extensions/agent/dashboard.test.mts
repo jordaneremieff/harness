@@ -66,11 +66,25 @@ async function settle(condition: () => boolean): Promise<void> {
 	assert.ok(condition(), "the condition never held");
 }
 
+/** The visible screen plus the open More menu, so a control the short row hides is still found. */
+function actionText(f: Fixture): string {
+	const screen = shown(f);
+	if (!/x more/u.test(screen)) return screen;
+	press(f, "x");
+	const menu = shown(f);
+	press(f, "\x1b");
+	return `${screen}\n${menu}`;
+}
+
+/** The target header's state line: a divider or the row start, the state glyph, then the state label. */
+const STATE_LINE = /(^|│) [◌●○✓!■↯·?] (Starting|Working|Idle|Done|Failed|Stopped|Interrupted|New|Unavailable)\b/u;
+
 /** The rows right of the list divider, or every row when the list is a strip above the pane. */
 function paneLines(f: Fixture): { lines: string[]; title: number } {
 	const lines = visible(f.ui.render(f.tui.terminal.columns));
-	const title = lines.findIndex((line, index) => index > 0 && line.includes("More…"));
-	assert.ok(title > 0, "the selected agent's header is shown");
+	const state = lines.findIndex((line, index) => index > 0 && STATE_LINE.test(line));
+	assert.ok(state > 0, "the selected agent's header is shown");
+	const title = state - 1;
 	const divider = lines[title]?.indexOf("│") ?? -1;
 	return { lines: lines.map((line) => (divider >= 0 ? line.slice(divider + 1) : line)), title };
 }
@@ -170,7 +184,7 @@ for (const [width, height] of [[120, 36], [60, 24]]) {
 			assert.match(text, /123/u);
 			assert.match(text, /Coverage: one hop/u);
 			assert.match(text, /omitted 1 held requests/u);
-			assert.match(targetHeader(f).join("\n") + shown(f), /Release await/u, "an await offers its release");
+			assert.match(actionText(f), /release await/u, "an await offers its release");
 			const next = { ...fact, results: [{ ...fact.results[0], status: "done" as const }], producers: [{ sessionId: "exact-peer:2", source: "producer await-state" as const, observedAt: 456 }] };
 			frame = { ...frame, revision: 2, status: { ...frame.status, awaiting: next } };
 			notify();
@@ -182,7 +196,7 @@ for (const [width, height] of [[120, 36], [60, 24]]) {
 			notify();
 			text = read();
 			assert.doesNotMatch(text, /exact-peer:2|Coverage: one hop|producer await-state/u);
-			assert.doesNotMatch(text, /Release await/u, "a retired await offers no release");
+			assert.doesNotMatch(actionText(f), /release await/u, "a retired await offers no release");
 		} finally {
 			f.ui.dispose();
 		}
@@ -213,8 +227,9 @@ for (const [width, height] of [
 				assert.match(screen, busy ? /╭─ To one ─+ Steer at next step ⇄/u : /╭─ To one ─+┄*╮/u);
 				const header = targetHeader(f).join("\n");
 				assert.match(header, busy ? /● Working/u : /Idle/u);
-				if (busy) assert.match(header, /Stop/u);
-				else assert.doesNotMatch(header, /Stop/u, "Stop shows only while work runs");
+				assert.doesNotMatch(header, /Stop/u, "the header holds no commands");
+				if (busy) assert.match(shown(f), /s stop/u);
+				else assert.doesNotMatch(shown(f), /s stop/u, "Stop shows only while work runs");
 			}
 		} finally {
 			f.ui.dispose();
@@ -275,6 +290,7 @@ for (const [width, height] of [
 		try {
 			await turn();
 			assert.equal(f.state.selected, "one");
+			press(f, "/");
 			type(f, "Build");
 			await turn();
 			assert.equal(f.state.filter, "Build");
@@ -304,6 +320,7 @@ for (const [width, height] of [
 			const f = fixture(width, height, source(records));
 			try {
 				await turn();
+				press(f, "/");
 				type(f, "Build");
 				await turn();
 				const lines = f.ui.render(width);
@@ -328,6 +345,7 @@ for (const [width, height] of [
 		});
 		try {
 			await turn();
+			press(f, "/");
 			type(f, "no-match");
 			await turn();
 			assert.match(shown(f), /No agent matches “no-match”/u);
@@ -384,7 +402,7 @@ for (const [width, height] of [
 				if (action === "rewind") {
 					press(f, "\r");
 					type(f, "Use the other parser");
-					press(f, "\t", "\r");
+					press(f, "\r");
 				} else press(f, "\r", "\r");
 				await settle(() => f.state.selected === "branch");
 				assert.deepEqual(host.calls.map((call) => call.name), [action]);
@@ -471,9 +489,9 @@ it("the error count filters the list and Show all or Escape restores every agent
 		await turn();
 		assert.doesNotMatch(read().list, /Okay/u);
 		assert.match(read().list, /Broken/u);
-		assert.match(read().list, /Show all/u);
+		assert.match(read().list, /errors only/u);
 		assert.match(read().list, /errors · 2 of 3 loaded/u);
-		clickLabel(f, "Show all");
+		press(f, "e");
 		await turn();
 		assert.match(read().list, /Okay/u);
 		assert.match(read().list, /3 loaded/u);
@@ -481,7 +499,7 @@ it("the error count filters the list and Show all or Escape restores every agent
 		f.ui.handleInput("\x1b");
 		await turn();
 		assert.match(read().list, /Okay/u);
-		assert.doesNotMatch(read().all, /Show all/u);
+		assert.doesNotMatch(read().all, /errors only/u);
 	} finally {
 		f.ui.dispose();
 	}
@@ -617,7 +635,8 @@ it("a late new conversation completion respects a later list selection", async (
 		await turn();
 		f.ui.openNamedAction("new");
 		type(f, "task");
-		clickLabel(f, "Start");
+		press(f, "\r", "\r");
+		clickLabel(f, "start");
 		await settle(() => f.state.selected === "two");
 		f.ui.handleInput("\x1b");
 		f.ui.handleInput("\x1b");
@@ -678,7 +697,7 @@ it("roster publication preserves arrow order during a navigation sequence", asyn
 	}
 });
 
-it("the view opens on the list, letters find agents, and Escape clears Find before it closes", async () => {
+it("the view opens on the list, / focuses Find, and Escape clears Find before it closes", async () => {
 	const sent: string[] = [];
 	const f = fixture(80, 24, source([row("one"), row("two")]), {
 		submit: async (input) => {
@@ -690,11 +709,24 @@ it("the view opens on the list, letters find agents, and Escape clears Find befo
 	assert.equal(f.ui.focus.region, "list");
 	assert.match(shown(f), /one/u);
 	type(f, "two");
+	assert.equal(f.state.filter, "", "letters over the list do not reach Find");
+	assert.equal(f.state.selected, "one");
+	press(f, "/");
+	type(f, "two");
 	assert.equal(f.state.filter, "two");
 	assert.equal(f.state.selected, "two");
 	f.ui.handleInput("\x1b");
 	assert.equal(f.state.filter, "");
 	assert.equal(f.counts().closes, 0);
+	f.ui.handleInput("\x1b");
+	assert.equal(f.ui.focus.region, "list", "the second Escape leaves Find");
+	press(f, "n");
+	assert.equal(f.ui.focus.inspector, "New conversation", "a letter over the list is a key");
+	press(f, "\x1b");
+	assert.equal(f.ui.focus.inspector, undefined);
+	assert.equal(f.counts().closes, 0);
+	f.ui.handleInput("\x1b");
+	assert.equal(f.ui.focus.region, "list");
 	f.ui.handleInput("\x1b");
 	assert.equal(f.counts().closes, 1);
 	assert.deepEqual(sent, [], "typing over the list never sends a message");
@@ -751,7 +783,8 @@ it("a new conversation selects its purpose and starting state before host readin
 		await turn();
 		f.ui.openNamedAction("new");
 		type(f, "Write the startup note");
-		clickLabel(f, "Start");
+		press(f, "\r", "\r");
+		clickLabel(f, "start");
 		await settle(() => f.state.selected === "two");
 		for (const [width, height] of [
 			[140, 45],
@@ -846,7 +879,8 @@ it("a new conversation without a creation callback selects the created identity"
 		await turn();
 		f.ui.openNamedAction("new");
 		type(f, "task");
-		clickLabel(f, "Start");
+		press(f, "\r", "\r");
+		clickLabel(f, "start");
 		await settle(() => f.state.selected === "two");
 		await settle(() => f.ui.focus.inspector === undefined);
 		assert.equal(f.state.newTask, "");
@@ -983,13 +1017,13 @@ it("Tasks Refresh retries a declined attachment without reopening the view", asy
 		assert.equal(f.ui.focus.inspector, "Tasks");
 		assert.equal(attaches, 1);
 		assert.equal((await observed.tasks(storageId)).coverage.live, false);
-		clickLabel(f, "Refresh");
+		clickLabel(f, "refresh");
 		await turn();
 		assert.equal(f.ui.focus.inspector, "Tasks");
 		assert.equal(attaches, 2);
 		assert.equal((await observed.tasks(storageId)).coverage.live, true);
 		assert.match(await until(f, /No live tasks/u), /No live tasks/u);
-		clickLabel(f, "Refresh");
+		clickLabel(f, "refresh");
 		await turn();
 		assert.equal(attaches, 2, "a live attachment is not attached again");
 		f.ui.handleInput("\x1b");
@@ -1099,3 +1133,85 @@ for (const width of [80, 164]) {
 		}
 	});
 }
+
+it("c configure opens the same form by its key and by a click on its footer control", async () => {
+	for (const mode of ["key", "click"] as const) {
+		const f = fixture(140, 45, source([row("one", { state: "idle" })]));
+		try {
+			await turn();
+			if (mode === "key") f.ui.handleInput("c");
+			else {
+				const rows = visible(f.ui.render(140));
+				const footer = rows.at(-1) ?? "";
+				f.ui.handleMouse(click(footer.indexOf("c configure") + 1, rows.length - 1, 140, 45));
+			}
+			assert.equal(f.ui.focus.inspector, "Configure", mode);
+		} finally {
+			f.ui.dispose();
+		}
+	}
+});
+
+it("x and a click on the footer's More control show the same actions", async () => {
+	const menus: string[] = [];
+	for (const mode of ["key", "click"] as const) {
+		const f = fixture(120, 30, source([row("one", { state: "idle" })]));
+		try {
+			await turn();
+			f.ui.render(120);
+			if (mode === "key") f.ui.handleInput("x");
+			else {
+				const rows = visible(f.ui.render(120));
+				const footer = rows.at(-1) ?? "";
+				f.ui.handleMouse(click(footer.indexOf("x more") + 1, rows.length - 1, 120, 30));
+			}
+			const rows = visible(f.ui.render(120));
+			const heading = rows.findIndex((line) => line.trimEnd().startsWith("More"));
+			assert.ok(heading >= 0, `${mode} opens More`);
+			menus.push(rows.slice(heading, heading + 3).map((line) => line.trim()).join("|"));
+		} finally {
+			f.ui.dispose();
+		}
+	}
+	assert.equal(menus[0], menus[1], "the key and the click show the same entries");
+});
+
+it("the footer follows the focused region", async () => {
+	const f = fixture(164, 45, source([row("one")]));
+	try {
+		await turn();
+		const footer = () => (visible(f.ui.render(164)).at(-1) ?? "").trimEnd();
+		assert.match(footer(), /↑↓ select.*esc (close|list)$/u);
+		press(f, "/");
+		assert.match(footer(), /↑↓ select · enter done · esc list$/u);
+		press(f, "\x1b");
+		press(f, "\r");
+		assert.match(footer(), /enter (send|steer).*esc list$/u);
+		press(f, "\x1b");
+		press(f, "\t");
+		assert.match(footer(), /↑↓ scroll.*esc list$/u);
+	} finally {
+		f.ui.dispose();
+	}
+});
+
+it("footer targets follow a resize", async () => {
+	const f = fixture(140, 40, source([row("one", { state: "idle" })]));
+	try {
+		await turn();
+		const wide = visible(f.ui.render(140));
+		const oldX = (wide.at(-1) ?? "").indexOf("? help");
+		assert.ok(oldX > 0, "the wide row shows Help");
+		f.resize(80, 24);
+		const narrow = visible(f.ui.render(80));
+		const narrowFooter = (narrow.at(-1) ?? "").trimEnd();
+		assert.ok(!narrowFooter.includes("? help"), "the narrow row hides Help in More");
+		f.ui.handleMouse(click(oldX, narrow.length - 1, 80, 24));
+		assert.equal(f.ui.focus.inspector, undefined, "the old position opens nothing");
+		f.ui.handleMouse(click(narrowFooter.indexOf("x more") + 1, narrow.length - 1, 80, 24));
+		const menu = visible(f.ui.render(80));
+		assert.ok(menu.some((line) => line.includes("help")), "the drawn More control lists the hidden action");
+	} finally {
+		f.ui.dispose();
+	}
+});

@@ -7,7 +7,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Markdown, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { type Action, Browser, Form, type OperatorView, plainLine, type ViewHost } from "../../operator-ui/index.ts";
+import { type Action, Browser, Form, type OperatorView, plainLine, ReaderView, type ViewHost } from "../../operator-ui/index.ts";
 import type { BrowserView } from "./browser-views.ts";
 import { resumeCommand, stateLabel } from "./format.ts";
 import type { StashEntry } from "./store.ts";
@@ -86,6 +86,17 @@ function headLines(entry: StashEntry): string[] {
 	].filter((value) => value !== "");
 }
 
+const helpText = [
+	"What this is",
+	"A browser over stashed handovers. Select one on the left and read it on the right. /stash new <hint> creates another.",
+	"",
+	"What the keys do",
+	"Enter picks up the selected stash: it activates the stash and delivers its handover to the bound conversation. On a closed stash, Enter reopens it. a picks up with a note that goes ahead of the handover. o closes an active stash with an outcome. c copies the resume command. r reads the list again. x lists every other action (release and rotate). / filters the newest stashes or, in Search archive, searches full bodies.",
+	"",
+	"Closing",
+	"Escape closes the browser. Closing discards nothing. No lifecycle state changes unless you choose an action, and cancelling a note picks nothing up.",
+].join("\n");
+
 function markdownLines(theme: Theme, text: string, width: number): string[] {
 	const rendered = new Markdown(safe(text), 0, 0, {
 		heading: (value) => theme.bold(value),
@@ -150,6 +161,7 @@ class StashView {
 			search: {
 				value: state.scope === "archive" ? state.query : state.filter,
 				placeholder: () => (this.state.scope === "archive" ? "text to find in full bodies, then Enter" : "filter the newest stashes"),
+				submitLabel: () => (this.state.scope === "archive" ? "search" : undefined),
 				change: (text) => this.textChanged(text),
 				submit: (text) => {
 					if (this.state.scope === "archive" && text.trim()) void this.search(undefined);
@@ -315,12 +327,13 @@ class StashView {
 
 	private actions(listed: StashEntry | undefined): Action[] {
 		const actions: Action[] = listed ? this.recordActions(this.current(listed)) : [];
+		actions.push({ id: "help", label: "Help", key: "h", short: "help", primary: true, run: () => this.host.push((next) => new ReaderView("Help", next, () => helpText)) });
 		if (this.state.scope === "archive") {
 			const view = this.state.archive;
-			actions.push({ id: "search", label: "Search", primary: !listed, disabled: this.state.query.trim() ? undefined : "Type text to search for", description: "Search full bodies with the bounded stash search", run: () => void this.search(undefined) });
+			actions.push({ id: "search", label: "Search", disabled: this.state.query.trim() ? undefined : "Type text to search for", description: "Search full bodies with the bounded stash search", run: () => void this.search(undefined) });
 			actions.push({ id: "continue", label: "Continue", disabled: view?.nextCursor && !view.stale ? undefined : "No further page", description: "Read the next bounded page", run: () => void this.search(view?.nextCursor ?? undefined) });
 		}
-		actions.push({ id: "refresh", label: "Refresh", description: this.state.scope === "archive" ? "Run the search again from its first page" : "Read the newest stashes again", run: () => void (this.state.scope === "archive" ? this.search(undefined) : this.loadRecent()) });
+		actions.push({ id: "refresh", label: "Refresh", key: "r", short: "refresh", primary: true, description: this.state.scope === "archive" ? "Run the search again from its first page" : "Read the newest stashes again", run: () => void (this.state.scope === "archive" ? this.search(undefined) : this.loadRecent()) });
 		return actions;
 	}
 
@@ -330,16 +343,16 @@ class StashView {
 		const state = entry.meta.state;
 		const actions: Action[] = [];
 		if (state === "open" || state === "active") {
-			actions.push({ id: "pickup", label: "Pick up", primary: true, disabled: blocked, description: `Activate it and deliver its handover to ${this.host.target.label}`, run: () => void this.pickup(entry, undefined) });
-			actions.push({ id: "note", label: "Pick up with note…", primary: true, disabled: blocked, description: "Add a note that goes ahead of the handover", run: () => this.host.push((next) => this.noteForm(next, entry)) });
+			actions.push({ id: "pickup", label: "Pick up", key: "enter", short: "pick up", primary: true, disabled: blocked, description: `Activate it and deliver its handover to ${this.host.target.label}`, run: () => void this.pickup(entry, undefined) });
+			actions.push({ id: "note", label: "Pick up with note…", key: "a", short: "note", primary: true, disabled: blocked, description: "Add a note that goes ahead of the handover", run: () => this.host.push((next) => this.noteForm(next, entry)) });
 		}
 		if (state === "active") {
-			actions.push({ id: "close", label: "Close with outcome…", disabled: blocked, run: () => this.host.push((next) => this.closeForm(next, entry)) });
+			actions.push({ id: "close", label: "Close with outcome…", key: "o", short: "close stash", primary: true, disabled: blocked, run: () => this.host.push((next) => this.closeForm(next, entry)) });
 			actions.push({ id: "release", label: "Release…", disabled: blocked, description: "Return it to open", run: () => this.host.push((next) => this.confirmForm(next, entry, "release")) });
 		}
-		if (state === "closed") actions.push({ id: "reopen", label: "Reopen…", primary: true, disabled: blocked, run: () => this.host.push((next) => this.confirmForm(next, entry, "reopen")) });
+		if (state === "closed") actions.push({ id: "reopen", label: "Reopen…", key: "enter", short: "reopen", primary: true, disabled: blocked, run: () => this.host.push((next) => this.confirmForm(next, entry, "reopen")) });
 		if (state === "open" || state === "closed") actions.push({ id: "rotate", label: "Rotate…", tone: "danger", disabled: blocked, description: "Move it to the store's .trash directory", run: () => this.host.push((next) => this.confirmForm(next, entry, "rotate")) });
-		actions.push({ id: "copy", label: "Copy resume command", description: `Copy ${resumeCommand(id)} for a new session`, run: () => void this.copy(id) });
+		actions.push({ id: "copy", label: "Copy resume command", key: "c", short: "copy", primary: true, description: `Copy ${resumeCommand(id)} for a new session`, run: () => void this.copy(id) });
 		return actions;
 	}
 

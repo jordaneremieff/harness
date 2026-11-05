@@ -98,6 +98,7 @@ class ClipboardView {
 			search: {
 				value: state.query,
 				placeholder: () => (this.state.scope === "archive" ? "text to find in the archive" : "filter recent entries"),
+				submitLabel: () => (this.state.scope === "archive" ? "search" : undefined),
 				change: (query) => this.queryChanged(query),
 				submit: (query) => {
 					if (this.state.scope === "archive" && query.trim()) void this.search(false);
@@ -252,6 +253,8 @@ class ClipboardView {
 			{
 				id: "restore",
 				label: this.restoring ? "Restoring…" : "Restore",
+				key: "enter",
+				short: "restore",
 				primary: true,
 				disabled: this.restoreBlocker(entry),
 				description: "Write the complete record to the clipboard",
@@ -261,10 +264,10 @@ class ClipboardView {
 			},
 		];
 		if (this.state.scope === "archive") {
-			actions.push({ id: "search", label: "Search archive", primary: true, disabled: this.state.query.trim() ? undefined : "Type text to search for", run: () => void this.search(false) });
-			actions.push({ id: "continue", label: "Continue", primary: Boolean(this.cursor), disabled: this.cursor && !this.stale ? undefined : "The scan has no further page", run: () => void this.search(true) });
+			actions.push({ id: "search", label: "Search archive", disabled: this.state.query.trim() ? undefined : "Type text to search for", run: () => void this.search(false) });
+			actions.push({ id: "continue", label: "Continue", disabled: this.cursor && !this.stale ? undefined : "The scan has no further page", run: () => void this.search(true) });
 		}
-		actions.push({ id: "refresh", label: "Refresh", description: this.state.scope === "archive" ? "Run the search again" : "Read recent entries again", run: () => void (this.state.scope === "archive" ? this.search(false) : this.loadRecent()) });
+		actions.push({ id: "refresh", label: "Refresh", key: "r", short: "refresh", primary: true, description: this.state.scope === "archive" ? "Run the search again" : "Read recent entries again", run: () => void (this.state.scope === "archive" ? this.search(false) : this.loadRecent()) });
 		return actions;
 	}
 

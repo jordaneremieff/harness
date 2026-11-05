@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/prom
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, mock } from "node:test";
+import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { TuiMouseEvent } from "@earendil-works/pi-tui";
 import { PACKAGE_CATALOG } from "./catalog.ts";
 import registerPolicy from "./index.ts";
 import { RULES_FILE, type RuleEvent, RuleRegistry, validateRuleEvent } from "./local-rules.ts";
@@ -152,7 +154,7 @@ function context(notifications: Array<{ message: string; type?: string }>, overr
 				factory: (tui: unknown, theme: unknown, keybindings: unknown, done: (result: T) => void) => unknown,
 			): Promise<T> {
 				return new Promise<T>((resolve) => {
-					const component = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, {}, resolve) as {
+					const component = factory({ terminal: { rows: 40 }, requestRender() {} }, theme, { getKeys: () => [] }, resolve) as {
 						handleInput(data: string): void;
 					};
 					component.handleInput("\u001b");
@@ -211,7 +213,7 @@ async function callTool(tool: RegisteredTool, params: unknown, ctx: unknown): Pr
 async function driveFrame(ctx: { ui: Record<string, unknown> }, open: () => unknown, script: (frame: NavigationFrame) => Promise<void>): Promise<void> {
 	ctx.ui.custom = async <T,>(factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown): Promise<T> =>
 		new Promise<T>((resolve, reject) => {
-			const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender() {} }, theme, {}, resolve) as NavigationFrame;
+			const frame = factory({ terminal: { rows: 40, columns: 120 }, requestRender() {} }, theme, { getKeys: () => [] }, resolve) as NavigationFrame;
 			script(frame).then(
 				() => frame.close(),
 				(error: unknown) => {
@@ -247,8 +249,9 @@ function typeText(frame: NavigationFrame, text: string): void {
 	for (const character of text) frame.handleInput(character);
 }
 
-/** Type over the list to filter it, then return to the list. */
+/** Focus the filter field with `/`, type to filter the list, then return to the list. */
 function filterTo(frame: NavigationFrame, text: string): void {
+	frame.handleInput("/");
 	typeText(frame, text);
 	frame.handleInput("\r");
 }
@@ -268,6 +271,27 @@ async function readArtifact(frame: NavigationFrame): Promise<void> {
 		await turn();
 	}
 	throw new Error("the review never reported a complete read");
+}
+
+/** The footer row as drawn, without colour codes. */
+function footer(frame: NavigationFrame, width = 200): string {
+	const lines = frame.render(width);
+	return stripVTControlCharacters(lines.at(-1) ?? "");
+}
+
+/** Click the footer control drawn as `label`, at the position the last render gave it. */
+function clickFooter(frame: NavigationFrame, label: string, width = 200): void {
+	const lines = frame.render(width);
+	const row = stripVTControlCharacters(lines.at(-1) ?? "");
+	const at = row.indexOf(label);
+	assert.ok(at >= 0, `no footer control ${label} in: ${row}`);
+	const event: TuiMouseEvent = { type: "click", button: "left", x: at, y: lines.length - 1, screenX: at, screenY: lines.length - 1, width, height: lines.length, shift: false, alt: false, ctrl: false };
+	assert.ok(frame.handleMouse(event)?.handled, `${label} is clickable`);
+}
+
+/** The final action of an open artifact review. */
+function decideAction(frame: NavigationFrame) {
+	return frame.viewActions.find((action) => action.id === "decide");
 }
 
 describe("registration and lazy catalog use", () => {
@@ -1179,7 +1203,7 @@ describe("catalog command controls", () => {
 			factory: (tui: unknown, theme: unknown, keys: unknown, done: (value: T) => void) => unknown,
 		): Promise<T> =>
 			new Promise<T>((resolve) => {
-				const frame = factory({ terminal: { rows: 24, columns: 80 }, requestRender() {} }, theme, {}, resolve) as NavigationFrame;
+				const frame = factory({ terminal: { rows: 24, columns: 80 }, requestRender() {} }, theme, { getKeys: () => [] }, resolve) as NavigationFrame;
 				for (; pages < 1000; pages++) {
 					assert.ok(frame.render(80).length <= 24);
 					const final = frame.viewActions.find((action) => action.label === "Import");
@@ -1424,6 +1448,8 @@ describe("view controls reach the owner operations", () => {
 			frame.handleInput("\u001b[D");
 			frame.handleInput("\r");
 			await until(frame, /\d+ named data/);
+			const data = footer(frame);
+			for (const control of ["s set data", "r refresh", "esc close"]) assert.ok(data.includes(control), `${control} in: ${data}`);
 		});
 		assert.deepEqual(notifications.filter((entry) => entry.type === "error"), []);
 	});
@@ -1442,6 +1468,48 @@ describe("view controls reach the owner operations", () => {
 			assert.deepEqual(labels, ["Reject", "Cancel"]);
 			act(frame, "Cancel");
 			await until(frame, /Cancelled\. No rule changed\./);
+		});
+	});
+
+	it("shows the keyed rule and proposal controls, and approve opens the review by key or click", async () => {
+		const { pi, ctx } = await setup();
+		const proposed = await callTool(pi.tool("policy_propose"), { operation: "disable", id: "routing.cat-read", reason: "Footer approve" }, ctx);
+		assert.ok((proposed.details as { proposalId?: string }).proposalId);
+		await driveFrame(ctx, open(pi, ctx), async (frame) => {
+			await until(frame, /\d+ rules/);
+			const rules = footer(frame);
+			for (const control of ["f effect", "e explain", "r refresh", "x more", "esc close"]) assert.ok(rules.includes(control), `${control} in: ${rules}`);
+			assert.ok(rules.includes("d disable") || rules.includes("d enable"), rules);
+			scopeRight(frame, 1);
+			await until(frame, /Footer approve/);
+			const proposals = footer(frame);
+			for (const control of ["a approve", "r refresh", "esc close"]) assert.ok(proposals.includes(control), `${control} in: ${proposals}`);
+			frame.handleInput("a");
+			await until(frame, /Read the artifact|Read \d+ of \d+ lines/);
+			if (frame.viewActions.some((action) => action.label === "Read the artifact")) frame.handleInput("\r");
+			await until(frame, /Read \d+ of \d+ lines/);
+			assert.equal(decideAction(frame)?.disabled, "Read every line of the artifact first", "Enter cannot decide before every line was read");
+			const review = footer(frame);
+			assert.ok(review.includes("enter approve disable"), review);
+			assert.ok(review.includes("esc cancel"), review);
+			frame.handleInput("\r");
+			await until(frame, /Read every line of the artifact first/);
+			frame.handleInput("\u001b");
+			await until(frame, /Cancelled\. No rule changed\./);
+		});
+		await driveFrame(ctx, open(pi, ctx), async (frame) => {
+			await until(frame, /\d+ rules/);
+			scopeRight(frame, 1);
+			await until(frame, /Footer approve/);
+			clickFooter(frame, "a approve");
+			await until(frame, /Read the artifact|Read \d+ of \d+ lines/);
+			if (frame.viewActions.some((action) => action.label === "Read the artifact")) frame.handleInput("\r");
+			await until(frame, /Read \d+ of \d+ lines/);
+			assert.equal(decideAction(frame)?.disabled, "Read every line of the artifact first");
+			await readArtifact(frame);
+			assert.equal(decideAction(frame)?.disabled, undefined, "every line was read");
+			frame.handleInput("\r");
+			await until(frame, /Approved/);
 		});
 	});
 });

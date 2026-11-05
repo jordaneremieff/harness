@@ -364,18 +364,19 @@ it("configured interrupt keeps its native route without introducing Alt or F app
 	assert.equal(escaped, 2);
 });
 
-it("the terminal opens the work view, Escape never detaches, and Detach leaves native work running", async () => {
+it("the terminal opens the work view, Escape never detaches, and the footer detaches", async () => {
 	const f = fixture();
 	const s = screenFixture(f.controller);
 	try {
 		await settle(() => f.controller.selected === "a", "the first agent's selection");
-		assert.match(s.text().split("\n")[0] ?? "", / Detach\s*$/u, "the way out sits at the top right");
-		s.screen.handleInput("\x1b");
-		assert.match(s.text(), /Detach closes this terminal/u);
-		assert.equal(s.done(), 0);
 		const heading = s.lines()[0] ?? "";
-		const x = heading.lastIndexOf("Detach") + 1;
-		s.screen.handleMouse({ type: "click", button: "left", x, y: 0, screenX: x, screenY: 0, width: s.terminal.columns, height: s.terminal.rows, shift: false, alt: false, ctrl: false, clickCount: 1 } as TuiMouseEvent);
+		assert.doesNotMatch(heading, /Detach/u, "the header holds no commands");
+		assert.match((s.lines().at(-1) ?? "").trimEnd(), /ctrl\+d detach$/u, "the way out is the last footer control");
+		s.screen.handleInput("\x1b");
+		assert.equal(s.done(), 0, "Escape never detaches");
+		const footer = s.lines().at(-1) ?? "";
+		const x = footer.lastIndexOf("detach") + 1;
+		s.screen.handleMouse({ type: "click", button: "left", x, y: s.terminal.rows - 1, screenX: x, screenY: s.terminal.rows - 1, width: s.terminal.columns, height: s.terminal.rows, shift: false, alt: false, ctrl: false, clickCount: 1 } as TuiMouseEvent);
 		assert.equal(s.done(), 1);
 		assert.equal(f.calls.some((call) => ["abort", "release", "submit", "attach"].includes(call.method)), false, "detaching sends no control to the native work");
 	} finally {
@@ -384,13 +385,21 @@ it("the terminal opens the work view, Escape never detaches, and Detach leaves n
 	}
 });
 
-it("Ctrl+D closes the terminal from an empty message field and deletes forward in a draft", async () => {
+it("Ctrl+D detaches from the list and deletes forward in a draft", async () => {
+	const listed = fixture();
+	const overList = screenFixture(listed.controller);
+	try {
+		await settle(() => listed.controller.selected === "a", "the first agent's selection");
+		overList.screen.handleInput("\x04");
+		assert.equal(overList.done(), 1, "the list's detach key closes the terminal");
+	} finally {
+		overList.screen.dispose();
+		await listed.controller.close();
+	}
 	const f = fixture();
 	const s = screenFixture(f.controller);
 	try {
 		await settle(() => f.controller.selected === "a", "the first agent's selection");
-		s.screen.handleInput("\x04");
-		assert.equal(s.done(), 0, "over the list Ctrl+D does nothing");
 		s.screen.handleInput("\r");
 		s.type("ab");
 		s.screen.handleInput("\x01");
@@ -451,11 +460,16 @@ it("Recover input restores an unconfirmed message to the captured target's draft
 		assert.equal(state.draft, "original", "a failed admission keeps the draft");
 		assert.match(state.receipt ?? "", /Delivery not confirmed for a/u);
 		updateDraft(state, "");
-		s.click("More…");
-		s.click("Recover input (1)");
+		s.screen.handleInput("\x1b");
+		assert.equal(s.screen.view.focus.region, "list");
+		if ((s.lines().at(-1) ?? "").includes("recover input")) s.click("recover input (1)");
+		else {
+			s.click("x more");
+			s.click("Recover input (1)");
+		}
 		await settle(() => s.screen.view.focus.inspector === "Recover input", "the recovery form");
 		assert.match(s.text(), /requested followUp · original/u);
-		s.click("Restore to the draft");
+		s.click("restore to the draft");
 		await settle(() => state.draft === "original", "the restored draft");
 		assert.equal(f.calls.filter((call) => call.method === "submit").length, 1, "recovery sends nothing");
 	} finally {
@@ -479,11 +493,15 @@ it("New conversation in the terminal reuses one request identity until creation 
 		await settle(() => controller.selected === "a", "the first agent's selection");
 		s.screen.view.openNamedAction("new");
 		s.type("Write the plan");
-		s.click("Start");
+		const submit = () => {
+			for (let step = 0; step < 4 && !/enter start/u.test(s.lines().at(-1) ?? ""); step++) s.screen.handleInput("\r");
+			s.screen.handleInput("\r");
+		};
+		submit();
 		await settle(() => /quota wall/u.test(s.text()), "the refusal");
 		assert.equal(s.screen.view.focus.inspector, "New conversation", "a refused start keeps the form and its purpose");
 		fail = false;
-		s.click("Start");
+		submit();
 		await settle(() => s.screen.view.focus.inspector === undefined, "the started conversation");
 		assert.equal(requests.length, 2);
 		assert.equal(requests[0], requests[1], "a retry carries the same request identity");
