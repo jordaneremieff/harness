@@ -178,6 +178,8 @@ export class ConversationView {
 	private showThinking?: boolean;
 	private liveIdentity?: { id: string; timestamp: number };
 	private toolDisplay?: (name: string) => ToolRenderers | undefined;
+	/** What the current transcript was built from, so a new renderer lookup can rebuild it. */
+	private retained?: { entries: readonly AgentConversationEntry[]; cwd: string; awaiting?: AwaitFact };
 	private viewport?: { width: number; height: number; top: number };
 	private readonly tui: TUI;
 	private readonly rows?: AgentCardLookup;
@@ -197,15 +199,23 @@ export class ConversationView {
 		this.transcript?.refreshCards();
 		this.viewport = undefined;
 	}
-	/** A different lookup rebuilds the transcript, so no card keeps a renderer from a previous source. */
+	/**
+	 * A different lookup rebuilds the transcript at once, so no card keeps a renderer from a previous
+	 * source and the reading position and disclosure survive. Without retained content the next
+	 * `setContent` builds with the new lookup.
+	 */
 	setToolDisplay(lookup: ((name: string) => ToolRenderers | undefined) | undefined): void {
 		if (lookup === this.toolDisplay) return;
 		this.toolDisplay = lookup;
-		if (!this.transcript) return;
+		const retained = this.retained;
+		if (!retained) return;
 		this.save();
-		this.transcript.dispose();
-		this.transcript = undefined;
-		this.cwd = "";
+		this.transcript?.dispose();
+		this.cwd = retained.cwd;
+		this.expanded = this.state.expanded;
+		this.showThinking = this.state.showThinking;
+		this.transcript = new AgentConversation(retained.entries, retained.cwd, this.tui, this.state.expanded, this.state.showThinking, undefined, this.state, this.toolDisplay, this.rows);
+		this.transcript.setAwaiting(retained.awaiting);
 		this.viewport = undefined;
 		this.restored = false;
 	}
@@ -234,6 +244,7 @@ export class ConversationView {
 		const ids = new Set(committed.map((entry) => entry.id));
 		this.transferLiveInstance(entries);
 		const merged = [...committed, ...this.liveEntries(committed, live, ids)];
+		this.retained = { entries: merged, cwd, awaiting };
 		if (!this.transcript || this.cwd !== cwd) {
 			this.transcript?.dispose();
 			this.transcript = new AgentConversation(merged, cwd, this.tui, this.state.expanded, this.state.showThinking, undefined, this.state, this.toolDisplay, this.rows);
@@ -323,6 +334,7 @@ export class ConversationView {
 		this.save();
 		this.transcript?.dispose();
 		this.transcript = undefined;
+		this.retained = undefined;
 		this.viewport = undefined;
 		this.liveIdentity = undefined;
 		this.restored = false;

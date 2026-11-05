@@ -214,6 +214,58 @@ it("a late display answer from an earlier selection never replaces the current s
 	await f.controller.close();
 });
 
+it("a late owner-card inventory keeps the transcript and its reading position", async () => {
+	const root = mkdtempSync(join(tmpdir(), "agent-terminal-lookup-"));
+	try {
+		mkdirSync(join(root, "one"));
+		writeFileSync(join(root, "one", "index.ts"), "");
+		writeFileSync(join(root, "one", "display.ts"), "");
+		const inventory = {
+			contributions: [{ name: "one", source: join(root, "one", "index.ts"), commands: [], display: { version: 1, entry: "./display.ts", export: "toolDisplay" } }],
+			ordinaryOnly: [],
+		};
+		const gate = deferred<unknown>();
+		const f = fixture();
+		const control = f.manager.control;
+		let statusReads = 0;
+		// Only the selected host's inventory read is late; lineage and model reads answer normally.
+		f.manager.control = async (method, input, caller) =>
+			method === "status" && ++statusReads === 1 ? gate.promise : control(method, input, caller);
+		f.manager.snapshot = async () => ({
+			...snapshot(),
+			entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: Array.from({ length: 80 }, (_, index) => `Conversation line ${index + 1}`).join("\n"), timestamp: 0 }] }],
+		});
+		const controller = new TerminalController({
+			manager: f.manager,
+			caller: { id: "terminal", cwd: "/work" },
+			importModule: async () => ({ toolDisplay: () => ({ version: 1, tools: [{ name: "owner_tool", renderCall: () => ({ render: () => [], invalidate() {} }) }] }) }),
+		});
+		const s = screenFixture(controller, 80, 24);
+		try {
+			await settle(() => /Conversation line 80/u.test(s.text()), "the conversation tail");
+			s.screen.handleInput("\x1b[5~");
+			const visible = () => s.lines().filter((line) => /Conversation line \d+/u.test(line));
+			const before = visible();
+			assert.ok(before.length > 5, "paging shows earlier lines");
+			assert.doesNotMatch(before.join("\n"), /Conversation line 80/u, "paging left the tail");
+			const reading = agentState(controller.state, "a").view;
+			const position = { scroll: reading.scroll, anchor: reading.anchor ? { ...reading.anchor } : undefined, follow: reading.follow };
+			gate.resolve({ inventory });
+			await settle(() => controller.display.lookup("owner_tool") !== undefined, "the owner lookup");
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.deepEqual(visible(), before, "the transcript text and reading position survive the lookup change");
+			assert.deepEqual({ scroll: reading.scroll, anchor: reading.anchor ? { ...reading.anchor } : undefined, follow: reading.follow }, position);
+			s.screen.handleInput("\x1b[6~");
+			assert.match(visible().join("\n"), /Conversation line 80/u, "paging still reaches the tail after the rebuild");
+		} finally {
+			s.screen.dispose();
+			await controller.close();
+		}
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 it("model metadata comes from the selected host's model list, read once per selection", async () => {
 	const f = fixture();
 	f.responses.set("models", {

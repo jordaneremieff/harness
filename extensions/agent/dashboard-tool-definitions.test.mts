@@ -90,6 +90,46 @@ it("shows one plain summary line for a generic tool and no tool background", () 
 	assert.match(summary(failed), /\x1b\[38;/u, "the error outcome keeps a foreground colour");
 });
 
+it("shows a visible failure for plain, JSON, nested JSON and empty error payloads", () => {
+	const definition = createDashboardToolDefinitions(cwd)("unregistered_tool");
+	const args = { topic: "named argument" };
+	const summaryLine = (payload: string | undefined, isError = true, expanded = false) => {
+		const result = { content: payload === undefined ? [] : [{ type: "text", text: payload }], isError };
+		return rendered(definition, args, result, expanded).filter((line) => line.trim());
+	};
+	const visible = (line: string) => stripVTControlCharacters(line).trim();
+	/** The last SGR parameters before a marker: the colour that wraps that part of the line. */
+	const colourBefore = (line: string, marker: string): string =>
+		[...line.slice(0, line.indexOf(marker)).matchAll(/\x1b\[([0-9;]*)m/gu)].at(-1)?.[1] ?? "";
+
+	const plain = summaryLine("first error line\nstack line");
+	assert.match(visible(plain.at(-1) ?? ""), /→ first error line$/u);
+	const errorColour = colourBefore(plain.at(-1) ?? "", "→");
+	assert.notEqual(errorColour, "", "the failure keeps the error colour");
+
+	const json = summaryLine('{"message":"Owner unavailable","code":"E_OFFLINE"}');
+	assert.match(visible(json.at(-1) ?? ""), /→ Owner unavailable$/u);
+	assert.equal(colourBefore(json.at(-1) ?? "", "→"), errorColour, "a JSON failure uses the same error colour as plain text");
+	assert.doesNotMatch(json.join("\n"), background, "the self-render shell leaves no tool background; the foreground marks the failure");
+
+	const nested = summaryLine('{"error":{"message":"Owner unavailable","code":"E_OFFLINE"}}');
+	assert.match(visible(nested.at(-1) ?? ""), /→ Owner unavailable$/u);
+
+	const empty = summaryLine(undefined);
+	assert.match(visible(empty.at(-1) ?? ""), /→ failed$/u);
+
+	const unnamed = summaryLine('{"code":"E_OFFLINE"}');
+	assert.match(visible(unnamed.at(-1) ?? ""), /→ \{"code":"E_OFFLINE"\}$/u, "an error payload without a message still shows its text");
+
+	const detail = summaryLine('{"message":"Owner unavailable","code":"E_OFFLINE"}', true, true);
+	assert.match(text(detail), /E_OFFLINE/u, "expansion keeps the full error detail");
+
+	const success = summaryLine('{"message":"Owner unavailable","code":"E_OFFLINE"}', false);
+	assert.doesNotMatch(visible(success.at(-1) ?? ""), /→/u, "a successful JSON result without a status field adds no outcome");
+	const nestedSuccess = summaryLine('{"error":{"message":"Owner unavailable"}}', false);
+	assert.doesNotMatch(visible(nestedSuccess.at(-1) ?? ""), /→/u, "a successful nested error object adds no outcome");
+});
+
 it("shortens display paths, counts read lines and drops an edit path suffix", () => {
 	const definition = createDashboardToolDefinitions("/work")("read");
 	const summary = (args: unknown, text: string, isError = false) => stripVTControlCharacters(rendered(definition, args, { content: [{ type: "text", text }], isError }, false).filter((line) => line.trim()).at(-1) ?? "").trim();

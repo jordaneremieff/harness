@@ -226,6 +226,53 @@ function assistantEntry(id: string, timestamp: number, content: AssistantMessage
 const itemClick = (y: number, width = 80, height = 8): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
 const readText = (view: ConversationView, height = 8) => view.render(80, height).map(stripVTControlCharacters);
 
+it("a failed tool in the transcript shows its failure text and error colour", () => {
+	const state = agentState(createDashboardState(), "one").view;
+	const view = new ConversationView({ requestRender() {} } as TUI, state);
+	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "tool-id", name: "example_tool", arguments: { topic: "first" } }]);
+	const failed: AgentConversationEntry = { id: "result", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tool-id", toolName: "example_tool", content: [{ type: "text", text: '{"message":"Owner unavailable","code":"E_OFFLINE"}' }], isError: true, timestamp: 2 }] };
+	view.setContent([call, failed], [], "/work");
+	const raw = view.render(80, 8).filter((line) => line.trim());
+	assert.equal(stripVTControlCharacters(raw.at(-1) ?? "").trim(), "example_tool · first → Owner unavailable");
+	assert.match(raw.at(-1) ?? "", /\x1b\[[0-9;]*m → Owner unavailable/u, "the failure keeps the error colour");
+	view.dispose();
+});
+
+it("a renderer lookup change rebuilds the cards and keeps each tool's disclosure", () => {
+	const state = agentState(createDashboardState(), "one").view;
+	const view = new ConversationView({ requestRender() {} } as TUI, state);
+	const call = assistantEntry("call", 1, [{ type: "toolCall", id: "tool-id", name: "example_tool", arguments: { topic: "first" } }]);
+	const done: AgentConversationEntry = { id: "result", kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: "tool-id", toolName: "example_tool", content: [{ type: "text", text: Array.from({ length: 30 }, (_, i) => `output ${i}`).join("\n") }], isError: false, timestamp: 2 }] };
+	view.setContent([call, done], [], "/work");
+	const lines = readText(view);
+	assert.ok(view.handleMouse(itemClick(lines.findIndex((line) => line.includes("example_tool")))));
+	assert.equal(state.toolExpanded.get("tool-id"), true);
+	assert.match(readText(view, 40).join("\n"), /output 29/u);
+	view.setToolDisplay((name) =>
+		name === "example_tool" ? { renderShell: "self", renderCall: () => ({ render: () => ["OWNER CARD"], invalidate() {} }) } : undefined,
+	);
+	const rebuilt = readText(view, 40).join("\n");
+	assert.match(rebuilt, /OWNER CARD/u, "the new lookup reaches the rebuilt cards");
+	assert.match(rebuilt, /output 29/u, "the expanded detail survives the new lookup");
+	assert.equal(state.toolExpanded.get("tool-id"), true);
+	view.dispose();
+});
+
+it("a renderer lookup change keeps the visible lines and the saved reading anchor", () => {
+	const state = agentState(createDashboardState(), "one").view;
+	const view = new ConversationView({ requestRender() {} } as TUI, state);
+	view.setContent(Array.from({ length: 40 }, (_, index) => user(index)), [], "/work");
+	view.render(80, 8);
+	view.page(-10);
+	const before = readText(view);
+	assert.equal(state.follow, false);
+	assert.ok(state.anchor);
+	const anchor = { ...state.anchor };
+	view.setToolDisplay(() => undefined);
+	assert.deepEqual(readText(view), before);
+	assert.deepEqual(state.anchor, anchor);
+});
+
 it("individual tool choices survive live updates, eviction, rebuild and view reopen", () => {
 	const state = agentState(createDashboardState(), "one").view;
 	const tui = { requestRender() {} } as TUI;

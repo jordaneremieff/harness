@@ -491,7 +491,9 @@ inventory and imports those modules locally, without running any extension
 factory or tool. A stored or stopped host advertises none. A module that is
 missing, malformed or throws costs only its own cards, which fall back to Pi's
 standard card. The renderer lookup is replaced as a unit when the selection
-changes, and a late answer for an earlier selection is dropped. Builtin,
+changes, and a late answer for an earlier selection is dropped. A replacement
+lookup rebuilds the selected transcript from its retained entries at once, so
+the reading position and each card's disclosure survive it. Builtin,
 codemode and Agent cards keep their precedence. A host from another release
 refuses the status read through the existing operation identity check; there
 is no older reader. Owner views (clipboard, pillars, policy, stash) load the
@@ -820,8 +822,11 @@ object result shows its `outcome`, `status`, `state` or `error` field; `read`
 shows the line count, or `image`. A running tool ends in `→ pending`, and
 partial output ends in `…`. A long line shortens the argument first and keeps
 up to 40 columns of the outcome. A failed tool keeps the same line in the error
-colour. A click or Ctrl+O expands the tool to its native call and result,
-without the outer coloured block of the main transcript. Codemode, published
+colour and always names the failure: a `message` field, including a nested one,
+the first line of plain text, or the payload text itself; empty content reads
+`failed`. Expansion still shows the full output. A click or Ctrl+O expands the
+tool to its native call and result, without the outer coloured block of the
+main transcript. Codemode, published
 custom tools and unpublished tools follow the same rule. Agent tools keep the
 shared agent card's two-line header and collapse only its body, without an
 expansion hint line; the main transcript keeps its hint.

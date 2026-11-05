@@ -130,21 +130,58 @@ function argumentText(name: string, args: unknown, cwd: string): string {
 	return "";
 }
 
+/** A result whose whole text is one JSON object; other text keeps the plain-text presentation. */
+function jsonObject(text: string): Record<string, unknown> | undefined {
+	const trimmed = text.trim();
+	if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return undefined;
+	try {
+		const value: unknown = JSON.parse(trimmed);
+		return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 /** A JSON object result shows its first named status field; no field means no outcome. */
 function jsonOutcome(text: string): { found: boolean; value?: string } {
-	const trimmed = text.trim();
-	if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return { found: false };
-	try {
-		const value = JSON.parse(trimmed) as unknown;
-		if (!value || typeof value !== "object" || Array.isArray(value)) return { found: false };
-		for (const key of JSON_OUTCOME_KEYS) {
-			const field = (value as Record<string, unknown>)[key];
-			if (typeof field === "string" && field.trim()) return { found: true, value: singleLine(field) };
-		}
-		return { found: true };
-	} catch {
-		return { found: false };
+	const value = jsonObject(text);
+	if (!value) return { found: false };
+	for (const key of JSON_OUTCOME_KEYS) {
+		const field = value[key];
+		if (typeof field === "string" && field.trim()) return { found: true, value: singleLine(field) };
 	}
+	return { found: true };
+}
+
+const ERROR_DETAIL_KEYS = ["message", "detail", "reason", "description", "error", "errors"] as const;
+
+/** The message inside an error payload, including a nested error object or array. */
+function errorDetail(value: unknown, depth = 0): string | undefined {
+	if (typeof value === "string") return singleLine(value) || undefined;
+	if (depth >= 4 || !value || typeof value !== "object") return undefined;
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const found = errorDetail(item, depth + 1);
+			if (found) return found;
+		}
+		return undefined;
+	}
+	const record = value as Record<string, unknown>;
+	for (const key of ERROR_DETAIL_KEYS) {
+		const found = errorDetail(record[key], depth + 1);
+		if (found) return found;
+	}
+	return undefined;
+}
+
+/**
+ * A failure always shows a message, whatever its payload: a message field, including a nested one, or
+ * the payload text itself. The error colour marks the failure, and expansion keeps the full detail.
+ */
+function errorOutcome(text: string, partial: boolean): { text: string; error: boolean } {
+	const object = jsonObject(text);
+	const detail = object ? errorDetail(object) : firstMeaningfulLine(text)?.replace(/^\[error\]\s*/u, "");
+	return { text: marked(detail || (object ? singleLine(text) : "") || "failed", partial), error: true };
 }
 
 function resultText(result: SummaryResult): string {
@@ -190,10 +227,12 @@ function resultOutcome(name: string, result: SummaryResult, partial: boolean, is
 	if (name === "read" && !isError) return readOutcome(result, partial);
 	const text = resultText(result);
 	const json = jsonOutcome(text);
-	if (json.found) return json.value ? { text: marked(json.value, partial), error: isError } : undefined;
+	if (json.found) {
+		if (json.value) return { text: marked(json.value, partial), error: isError };
+		return isError ? errorOutcome(text, partial) : undefined;
+	}
+	if (isError) return errorOutcome(text, partial);
 	const first = firstMeaningfulLine(text);
-	// The error colour already marks a failure, so a leading `[error]` adds nothing.
-	if (isError) return { text: first?.replace(/^\[error\]\s*/u, "") || "failed", error: true };
 	return first ? { text: marked(first, partial), error: false } : undefined;
 }
 
