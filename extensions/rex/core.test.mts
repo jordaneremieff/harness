@@ -97,7 +97,7 @@ function resolveReply(data: Record<string, unknown>): CliResult {
 		],
 	});
 }
-function fixture(options: { server?: string; maxRecords?: number; maxOutputBytes?: number; maxWaitMs?: number; isCallActive?: (ownerId: string, callId: string) => boolean } = {}) {
+function fixture(options: { server?: string; maxRecords?: number; maxOutputBytes?: number; maxWaitMs?: number; isCallActive?: (ownerId: string, callId: string) => boolean; env?: Readonly<Record<string, string | undefined>> } = {}) {
 	const store = storeFixture();
 	const transport = new FakeTransport();
 	const core = new RexCore({
@@ -105,9 +105,24 @@ function fixture(options: { server?: string; maxRecords?: number; maxOutputBytes
 		transport,
 		isCallActive: () => false,
 		...options,
-		env: { REX_SERVER: "launch", REX_SESSION: session, REX_BLOCK: block },
+		env: options.env ?? { REX_SERVER: "launch", REX_SESSION: session, REX_BLOCK: block },
 	});
 	return { core, store, transport };
+}
+
+/** A JSON response whose UTF-8 bytes equal the requested size. */
+function sizedReply(bytes: number): CliResult {
+	const base = JSON.stringify({ padding: "" });
+	const response = { ...reply(null), stdout: JSON.stringify({ padding: "x".repeat(bytes - Buffer.byteLength(base)) }) };
+	assert.equal(Buffer.byteLength(response.stdout), bytes);
+	return response;
+}
+
+/** Apply a transport's configured capture limit to a synthetic CLI response. */
+function limited(response: CliResult, maxOutputBytes: number): CliResult {
+	return Buffer.byteLength(response.stdout) > maxOutputBytes
+		? { ...response, outcome: "output_limit", exitCode: null, truncated: true }
+		: response;
 }
 
 test("creation retains pending intent before its external effect and refuses same-call replay", async () => {
@@ -844,6 +859,194 @@ test("native actions distinguish absent arguments from explicit objects without 
 		assert.ok(position >= 0);
 		assert.deepEqual(JSON.parse(command[position + 1] ?? ""), args ?? {});
 	}
+});
+
+test("the shared default accepts a full discovery response and an explicit low limit still fails", async () => {
+	const f = fixture();
+	f.transport.handler = (method, _data, call) =>
+		method === "block_creator.list" ? limited(sizedReply(52579), call.maxOutputBytes) : undefined;
+	const broad = await f.core.execute({ op: "native", kind: "api", method: "block_creator.list", args: {}, target }, context);
+	assert.equal(broad.ok, true, broad.error);
+	assert.equal(broad.outcome, "acknowledged");
+	const value = (broad.data as { value: unknown }).value;
+	assert.equal(Buffer.byteLength(JSON.stringify(value)), 52579);
+
+	f.transport.handler = (method, _data, call) =>
+		method === "block_creator.list" ? limited(sizedReply(65536), call.maxOutputBytes) : undefined;
+	assert.equal(
+		(await f.core.execute({ op: "native", kind: "api", method: "block_creator.list", args: {}, target }, { ...context, callId: "read-fit" })).ok,
+		true,
+		"the default retains exactly 65536 bytes",
+	);
+	f.transport.handler = (method, _data, call) =>
+		method === "block_creator.list" ? limited(sizedReply(65537), call.maxOutputBytes) : undefined;
+	const over = await f.core.execute({ op: "native", kind: "api", method: "block_creator.list", args: {}, target }, { ...context, callId: "read-over" });
+	assert.equal(over.ok, false);
+	assert.equal(over.outcome, "output_limit", "one byte above the default still fails rather than truncating");
+
+	const low = fixture({ maxOutputBytes: 4096 });
+	low.transport.handler = (method, _data, call) =>
+		method === "block_creator.list" ? limited(sizedReply(52579), call.maxOutputBytes) : undefined;
+	const refused = await low.core.execute({ op: "native", kind: "api", method: "block_creator.list", args: {}, target }, context);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.outcome, "output_limit");
+	assert.deepEqual(low.store.state.records, []);
+});
+
+test("native Lua and actions resolve explicit inherited context for the CLI", async () => {
+	const f = fixture();
+	for (const lua of [true, false]) {
+		const request = lua
+			? { op: "native" as const, kind: "lua" as const, code: "return rex.args", args: {}, target: { source: "inherited" as const } }
+			: { op: "native" as const, kind: "action" as const, action: "com.superlogical.terminal.reset", target: { source: "inherited" as const } };
+		const response = await f.core.execute(request, { ...context, callId: `inherited-${lua}` });
+		assert.equal(response.ok, true, response.error);
+		assert.equal(response.target?.source, "inherited");
+		assert.equal(response.target?.sessionId, session);
+		assert.equal(response.target?.blockId, block);
+		const command = f.transport.calls.at(-1)?.args ?? [];
+		assert.deepEqual(command.slice(command.indexOf("-s"), command.indexOf("-s") + 2), ["-s", session]);
+		assert.deepEqual(command.slice(command.indexOf("-b"), command.indexOf("-b") + 2), ["-b", block]);
+		assert.equal(command.includes("--client"), false);
+	}
+});
+
+test("focused native context resolves the focused block within the named session", async () => {
+	const f = fixture();
+	const response = await f.core.execute(
+		{ op: "native", kind: "lua", code: "return 1", target: { session, source: "focus" } },
+		{ ...context, callId: "focused" },
+	);
+	assert.equal(response.ok, true, response.error);
+	const lookups = f.transport.calls.filter((call) => call.method === "target.resolve");
+	assert.deepEqual(lookups.map((call) => call.data.kinds), [["session"], ["block"]]);
+	const focusLookup = lookups.at(-1);
+	assert.deepEqual(focusLookup?.data.queries, [""]);
+	assert.deepEqual(focusLookup?.data.scope, { session });
+	const command = f.transport.calls.at(-1)?.args ?? [];
+	assert.deepEqual(command.slice(command.indexOf("-s"), command.indexOf("-s") + 2), ["-s", session]);
+	assert.deepEqual(command.slice(command.indexOf("-b"), command.indexOf("-b") + 2), ["-b", block]);
+});
+
+test("missing inherited context fails instead of falling back to focus", async () => {
+	const f = fixture({ env: { REX_SERVER: "launch" } });
+	const response = await f.core.execute(
+		{ op: "native", kind: "action", action: "com.superlogical.terminal.reset", target: { source: "inherited" } },
+		context,
+	);
+	assert.equal(response.ok, false);
+	assert.match(response.error ?? "", /No inherited Rex session exists/);
+	assert.equal(f.transport.calls.some((call) => call.method === "target.resolve"), false);
+	assert.equal(f.transport.calls.some((call) => call.args.includes("do")), false);
+});
+
+test("explicit native IDs stay authoritative over the launch context", async () => {
+	const f = fixture();
+	const response = await f.core.execute(
+		{ op: "native", kind: "lua", code: "return 1", target: { source: "inherited", block } },
+		{ ...context, callId: "explicit-block" },
+	);
+	assert.equal(response.ok, true, response.error);
+	assert.equal(response.target?.source, "explicit");
+	assert.deepEqual(f.transport.calls.filter((call) => call.method === "target.resolve").map((call) => call.data.kinds), [["block"]]);
+	const focused = await f.core.execute(
+		{ op: "native", kind: "lua", code: "return 1", target: { source: "focus", block } },
+		{ ...context, callId: "explicit-focus" },
+	);
+	assert.equal(focused.ok, true, focused.error);
+	assert.equal(focused.target?.source, "explicit");
+	assert.deepEqual(f.transport.calls.filter((call) => call.method === "target.resolve").map((call) => call.data.kinds), [["block"], ["block"]]);
+});
+
+test("API arguments stay unchanged while requested native context is used only for conflict checks", async () => {
+	const f = fixture();
+	const args = { session_id: session, block_id: block, nested: { absent: null, empty: {} } };
+	const response = await f.core.execute(
+		{ op: "native", kind: "api", method: "new.capability", args, target: { source: "inherited" } },
+		{ ...context, callId: "api-inherited" },
+	);
+	assert.equal(response.ok, true, response.error);
+	assert.equal(response.target?.source, "inherited");
+	const call = f.transport.calls.find((entry) => entry.method === "new.capability");
+	assert.ok(call);
+	assert.equal(call.args[call.args.indexOf("call") + 2], JSON.stringify(args));
+	assert.equal(call.args.includes("-s"), false);
+	assert.equal(call.args.includes("-b"), false);
+	const conflict = await f.core.execute(
+		{ op: "native", kind: "api", method: "new.capability", args: { block_id: "block:55555555-5555-4555-8555-555555555555" }, target: { source: "inherited" } },
+		{ ...context, callId: "api-conflict" },
+	);
+	assert.equal(conflict.ok, false);
+	assert.match(conflict.error ?? "", /conflicts with the resolved target/);
+});
+
+test("verified read-only API methods never touch ownership admission", async () => {
+	const f = fixture();
+	const before = structuredClone(f.store.state);
+	f.store.read = async () => {
+		throw new Error("A verified read must not read ownership state.");
+	};
+	f.store.update = async () => {
+		throw new Error("A verified read must not write ownership state.");
+	};
+	for (const method of ["block_creator.list", "session.view", "com.superlogical.terminal.process", "com.superlogical.terminal.list_dir", "com.superlogical.onboarding.state"]) {
+		f.transport.handler = (candidate) => (candidate === method ? reply({ method }) : undefined);
+		const read = await f.core.execute({ op: "native", kind: "api", method, args: {}, target }, { ...context, callId: `read-${method}` });
+		assert.equal(read.ok, true, read.error);
+		assert.equal(read.effects.state, "none");
+		assert.equal(read.effects.recordId, undefined);
+	}
+	const failures: Array<{ response: CliResult; outcome: string }> = [
+		{ response: { ...reply({}), exitCode: 1 }, outcome: "cli_failure" },
+		{ response: { ...reply({}), outcome: "timeout" as const, exitCode: null }, outcome: "timeout" },
+		{ response: { ...reply({}), outcome: "cancelled" as const, exitCode: null }, outcome: "cancelled" },
+	];
+	for (const [index, failure] of failures.entries()) {
+		f.transport.handler = (candidate) => (candidate === "block_creator.list" ? failure.response : undefined);
+		const read = await f.core.execute(
+			{ op: "native", kind: "api", method: "block_creator.list", args: {}, target },
+			{ ...context, callId: `failed-${index}` },
+		);
+		assert.equal(read.ok, false);
+		assert.equal(read.outcome, failure.outcome);
+		assert.equal(read.effects.state, "none");
+		assert.match(read.effects.note ?? "", /Verified read-only API method/);
+	}
+	const cancelled = new AbortController();
+	cancelled.abort();
+	const stopped = await f.core.execute(
+		{ op: "native", kind: "api", method: "block_creator.list", args: {}, target },
+		{ ...context, callId: "cancelled-before", signal: cancelled.signal },
+	);
+	assert.equal(stopped.outcome, "cancelled");
+	assert.deepEqual(f.store.state, before);
+});
+
+test("verified reads work at the effect capacity while other native effects still refuse a full store", async () => {
+	const f = fixture({ maxRecords: 2 });
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	assert.equal(f.store.state.records.length, 1);
+	const read = await f.core.execute(
+		{ op: "native", kind: "api", method: "block_creator.list", args: {}, target },
+		{ ...context, callId: "verified" },
+	);
+	assert.equal(read.ok, true, read.error);
+	assert.equal(f.store.state.records.length, 1);
+	for (const request of [
+		{ op: "native" as const, kind: "api" as const, method: "new.capability", args: {}, target },
+		{ op: "native" as const, kind: "lua" as const, code: "return 1", target },
+		{ op: "native" as const, kind: "action" as const, action: "com.superlogical.terminal.reset", target },
+	]) {
+		const refused = await f.core.execute(request, { ...context, callId: `full-${request.kind}` });
+		assert.equal(refused.ok, false);
+		assert.match(refused.error ?? "", /record limit reached/);
+	}
+	assert.equal(f.transport.calls.some((call) => call.method === "new.capability" || call.args.includes("do")), false);
+	assert.equal(f.store.state.records.length, 1);
+	const fresh = fixture();
+	await fresh.core.execute({ op: "native", kind: "api", method: "new.capability", args: {}, target }, context);
+	assert.equal(fresh.store.state.records[0]?.phase, "confirmed");
+	assert.equal(fresh.store.state.records[0]?.operation, "native:api");
 });
 
 test("default summary uses narrow metadata at the configured default byte budget", async () => {

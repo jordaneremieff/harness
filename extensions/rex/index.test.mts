@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createEventBus, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createEventBus, SessionManager, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Schema } from "@earendil-works/pi-schema";
 import { registerRex } from "./index.ts";
 import { toolDisplay } from "./display.ts";
-import { resultByteLimit, type RexResult } from "./core.ts";
+import { RexCore, resultByteLimit, type RexResult } from "./core.ts";
+import type { CliResult, RexTransport } from "./transport.ts";
 
 test("ordinary shutdown drains owned calls before reload replaces live-call state", async () => {
 	const tools = new Map<string, ToolDefinition<Schema>>();
@@ -123,6 +124,48 @@ test("ordinary owned observation preserves the shared request and canonical read
 		assert.equal(JSON.stringify(response.structuredContent), JSON.stringify(expected));
 		assert.equal(response.content.filter((part) => part.type === "text").map((part) => part.text).join(""), JSON.stringify(expected));
 		assert.equal(writes, 0);
+	} finally { await handlers.get("session_shutdown")?.(); }
+});
+
+test("ordinary native verified reads leave ownership storage untouched", async () => {
+	const tools = new Map<string, ToolDefinition<Schema>>();
+	const handlers = new Map<string, () => unknown>();
+	let writes = 0;
+	const sessionManager = SessionManager.inMemory("/test");
+	sessionManager.getSessionId = () => "native-read-session";
+	sessionManager.getSessionFile = () => undefined;
+	const pi = {
+		events: createEventBus(),
+		on: (name: string, handler: () => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
+		registerTool: (tool: ToolDefinition<Schema>) => tools.set(tool.name, tool), appendEntry: (customType: string, data: unknown) => { writes++; sessionManager.appendCustomEntry(customType, data); },
+	} as unknown as ExtensionAPI;
+	const cliReply = (value: unknown): CliResult => ({ outcome: "exited", exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "", bytes: 0, truncated: false, started: true });
+	const padding = "x".repeat(40000);
+	const transport: RexTransport = {
+		dispose: () => {},
+		run: async (args) => {
+			if (args.includes("whoami")) return cliReply({ endpoint: "unix:///test-rex", host_id: "host", instance_id: "instance" });
+			const index = args.indexOf("call");
+			return index >= 0 && args[index + 1] === "block_creator.list" ? cliReply({ creators: [], padding }) : cliReply({});
+		},
+	};
+	registerRex(pi, { createCore: (options) => new RexCore({ ...options, transport }) });
+	const ctx = { cwd: "/test", isIdle: () => false, sessionManager } as unknown as ExtensionToolContext;
+	try {
+		const tool = tools.get("rex_native");
+		assert.ok(tool);
+		const read = await tool.execute("read-call", { op: "native", kind: "api", method: "block_creator.list", args: {} }, undefined, undefined, ctx);
+		assert.equal(read.isError, false);
+		const readText = read.content.filter((part) => part.type === "text").map((part) => part.text).join("");
+		assert.ok(Buffer.byteLength(readText, "utf8") > 32768, "the ordinary channel keeps a verified read above the previous capture default");
+		const readModel = JSON.parse(readText) as RexResult;
+		assert.equal(readModel.effects.state, "none");
+		assert.equal((readModel.data as { value: { padding: string } }).value.padding.length, 40000);
+		assert.deepEqual(read.structuredContent, readModel);
+		assert.equal(writes, 0, "a verified read writes no ordinary ownership entry");
+		const mutation = await tool.execute("mutate-call", { op: "native", kind: "api", method: "new.capability", args: {} }, undefined, undefined, ctx);
+		assert.equal((mutation.structuredContent as unknown as RexResult).effects.state, "confirmed");
+		assert.ok(writes > 0, "an unclassified native API call keeps effect admission");
 	} finally { await handlers.get("session_shutdown")?.(); }
 });
 

@@ -21,7 +21,9 @@ Each request includes a visible `op`. Native execution also exposes `kind`,
 `method`, `args`, `code` and `action` in the tool arguments. These are the real
 ordinary and native policy boundaries. No arbitrary API or Lua operation receives
 a read-only annotation. Policy remains the decision owner; terminal content and
-program reports never grant permission.
+program reports never grant permission. The ownership classification of verified
+read-only methods changes only this extension's effect admission; policy sees the
+same arguments and supplies no read-only permission.
 
 Each tool's provider declaration is one plain object root whose `op` (and `kind`
 or `condition`) field enumerates the accepted values and whose other fields are
@@ -240,13 +242,52 @@ or truncated discovery remains a failure, not an empty match. Other native kinds
 reject `query`, `offset` and `limit` rather than ignore them.
 
 Use `kind: "describe"` with an exact `method` for its current schemas and validation
-notes. Use `kind: "api"` with the exact method and JSON arguments. The API receives
-`args` directly; target fields do not rewrite arbitrary native arguments. This
-preserves JSON nulls and empty objects without a Lua conversion.
+notes. `catalog` and `describe` always address the selected server and never
+receive inherited context.
+
+Use `kind: "api"` with the exact method and JSON arguments. The API receives
+`args` directly and byte-for-byte; target fields do not rewrite arbitrary native
+arguments. This preserves JSON nulls and empty objects without a Lua conversion.
+An explicit target with IDs, `source: "inherited"` or `source: "focus"` is resolved
+for conflict detection only. The method's required target IDs remain explicit JSON
+arguments; the extension never injects them.
 
 Use `kind: "lua"` with `code` and JSON `args` for composed native workflows.
 Use `kind: "action"` for an existing configured action, not an arbitrary script
-path. The extension does not freeze Rex's full API into handwritten wrappers.
+path. For these two kinds, `source: "inherited"` and `source: "focus"` resolve even
+when the request names no IDs. The CLI then receives `-s`, `-b` and `--client` for
+the resolved session, block and client. Inherited context uses the launch
+environment and fails when it names no session; it never falls back to focus.
+Explicit IDs stay authoritative, and no arbitrary block is selected. A focused
+block resolves the same way as other focus requests. The extension does not freeze
+Rex's full API into handwritten wrappers.
+
+### Verified read-only methods
+
+`api describe` carries no read-only marker for any installed method. The extension
+keeps a small exact list of methods whose installed contracts only return current
+server, session, client or terminal state:
+
+- discovery: `block_creator.list`, `help.all`, `session.help`, `session.list`,
+  `session.view`, `session.list_blocks`, `session.describe_block`,
+  `session.list_clients`, `target.resolve`, `target.complete`, `client.list`,
+  `client.inspect`, `server.version`, `server.whoami`, `server.status`,
+  `hosts.list`;
+- terminal readback: `com.superlogical.terminal.process`,
+  `com.superlogical.terminal.program_status`, `com.superlogical.terminal.modes`,
+  `com.superlogical.terminal.input_mode`, `com.superlogical.terminal.size`,
+  `com.superlogical.terminal.title`, `com.superlogical.terminal.pwd`;
+- filesystem and onboarding state: `com.superlogical.terminal.list_dir`,
+  `com.superlogical.onboarding.state`.
+
+Calls to these methods write no ownership record on success, CLI failure, timeout
+or cancellation, so a full ownership store does not refuse them. They keep target
+checks, the configured output limit and the deadline cap. A failed read keeps its
+real CLI outcome and does not become an unknown mutation. Every other API method,
+Lua script and action keeps effect admission, replay protection and uncertainty
+semantics. Generic invokers, methods that produce snapshots or blobs, retained
+clipboard or blob reads, and methods that change focus, labels or input are not
+in the list.
 The installed Rex skill supplies broader application guidance through Pi's normal
 resource discovery. No extra skill loader or copied guide exists here.
 
@@ -266,7 +307,10 @@ work may survive a later failure or CLI cancellation.
 
 Before an effect, the core awaits a retained `pending` record. It then records
 acknowledged resources or an unknown outcome. A repeated call ID never blindly
-repeats the effect. A fresh call ID is not proof that a retry is safe.
+repeats the effect. A fresh call ID is not proof that a retry is safe. Verified
+read-only native API methods are not effects: they read no ownership state and
+write no record. Other native API methods, Lua scripts and actions keep this
+admission.
 
 Ordinary Pi stores claims in `rex.ownership` custom session entries, outside model
 context. Updates serialise the entire read/change/append operation. Persistent
@@ -447,13 +491,15 @@ fresh configuration snapshots, not proof of runtime application.
 | Key | Environment | Type | Default | Constraints | Description |
 |---|---|---|---|---|---|
 | executable | `PI_REX_EXECUTABLE` | string | "rex" | minLength 1; maxLength 4096 | Installed Rex executable name or path. The extension uses the supported CLI without a shell. |
-| maxOutputBytes | `PI_REX_MAX_OUTPUT_BYTES` | integer | 32768 | min 4096; max 1048576 | Maximum combined stdout/stderr bytes retained from one Rex CLI process. Core results have a separate aggregate bound. Capture is not a complete transcript. |
+| maxOutputBytes | `PI_REX_MAX_OUTPUT_BYTES` | integer | 65536 | min 4096; max 1048576 | Maximum combined stdout/stderr bytes retained from one Rex CLI process. Core results have a separate aggregate bound. Capture is not a complete transcript. |
 | maxWaitMs | `PI_REX_MAX_WAIT_MS` | integer | 120000 | min 1000; max 300000 | Deadline cap for each Rex CLI process, in milliseconds. A request above the cap uses the cap and reports it. An operation can use several processes. Deadline cancellation does not stop persistent terminal work. |
 | maxRecords | `PI_REX_MAX_RECORDS` | integer | 128 | min 2; max 256 | Maximum retained ownership and operation records per caller. |
 <!-- harness:settings:end -->
 
-Combined CLI stdout/stderr retention is bounded per subprocess. Core results also
-bound the JSON-encoded aggregate envelope. Every emitted resource ID remains whole.
+Combined CLI stdout/stderr retention is bounded per subprocess, with one shared
+default of 65536 bytes for the settings declaration and the core. Core results
+also bound the JSON-encoded aggregate envelope. Every emitted resource ID remains
+whole.
 Coverage reports data omission, diagnostic truncation and whole-reference omission;
 record pagination and full omitted record IDs preserve access to later claims.
 Capture and nested results can add framing. The request itself has a byte limit. Each wait bounds its

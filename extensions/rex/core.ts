@@ -82,6 +82,8 @@ export type RexRequest =
 			limit?: number;
 	  })
 	| (RequestBase & { op: "cleanup"; recordId: string; forget?: boolean });
+/** Requests that select or run work; retained-record operations are handled before target selection. */
+type DispatchingRequest = Exclude<RexRequest, { op: "owned" | "observe" | "reconcile" | "cleanup" }>;
 export interface RexCallContext {
 	ownerId: string;
 	callId: string;
@@ -130,6 +132,9 @@ export function resultByteLimit(maxOutputBytes: number): number {
 	return maxOutputBytes + 98304;
 }
 
+/** Default retained bytes from one Rex CLI process when the configured value is absent. */
+export const DEFAULT_MAX_OUTPUT_BYTES = 65536;
+
 /**
  * A bounded slice of a terminal's screen and scrollback: bytes `start` to `end` of `total`.
  * Content that reaches `total` ends with the most recent output, which is what readiness
@@ -152,7 +157,7 @@ export class RexCore {
 		this.options = options;
 		this.env = options.env ?? process.env;
 		this.transport = options.transport ?? new CliTransport(options.executable, this.env);
-		this.maxOutputBytes = boundedInteger(options.maxOutputBytes ?? 65536, 4096, 1048576, "output bytes");
+		this.maxOutputBytes = boundedInteger(options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 4096, 1048576, "output bytes");
 		this.maxWaitMs = boundedInteger(options.maxWaitMs ?? 120000, 1000, 300000, "wait duration");
 		this.maxRecords = boundedInteger(options.maxRecords ?? 128, 2, 256, "ownership records");
 	}
@@ -197,12 +202,28 @@ export class RexCore {
 		}
 		if (request.op === "native" && ["catalog", "describe"].includes(request.kind))
 			return this.native(request, { server, source: "server" }, context);
-		const need = targetNeed(request);
-		const target =
-			need || hasResources(request.target)
-				? await this.resolve(request.target, server, context, need)
-				: { server, source: "server" as const };
+		const target = await this.requestedTarget(request, server, context);
+		this.validateNativeContext(request, target);
 		return this.dispatchTarget(request, target, context);
+	}
+
+	private async requestedTarget(request: DispatchingRequest, server: ServerRef, context: RexCallContext): Promise<ResolvedTarget> {
+		const need = targetNeed(request);
+		if (request.op === "native") {
+			if (request.kind === "catalog" || request.kind === "describe") return { server, source: "server" };
+			const focus = request.target?.source === "focus";
+			if (focus || request.target?.source === "inherited" || hasResources(request.target))
+				return this.resolve(request.target, server, context, focus ? "block" : need);
+			return { server, source: "server" };
+		}
+		if (need || hasResources(request.target)) return this.resolve(request.target, server, context, need);
+		return { server, source: "server" };
+	}
+
+	/** Lua and actions need a real session when they take inherited context; they never fall back to focus. */
+	private validateNativeContext(request: RexRequest, target: ResolvedTarget): void {
+		if (request.op !== "native" || (request.kind !== "lua" && request.kind !== "action")) return;
+		if (target.source === "inherited" && !target.sessionId) validateDefaultTarget(target.source, "session");
 	}
 
 	private dispatchTarget(request: RexRequest, target: ResolvedTarget, context: RexCallContext): Promise<RexResult> {
@@ -820,13 +841,40 @@ export class RexCore {
 		}
 		const { timeoutMs, capped } = this.deadline(request.timeoutMs, "native duration");
 		const cli = nativeCommand(request, target);
-		const response = await this.effect(request, target, context, async () => {
-			const raw = await this.cli(cli, target.server.endpoint, context, timeoutMs);
-			if (raw.outcome !== "exited" || raw.exitCode !== 0) throw new NativeFailure(cliResult(raw));
-			return nativeResponse(raw, request.kind);
-		});
-		if (response.ok) response.effects.note = "Outer CLI success only. No inner application outcome was established. Returned failure tables and child results remain application data, even if bulk data is omitted.";
+		const verifiedRead = request.kind === "api" && VERIFIED_READ_METHODS.has(request.method ?? "");
+		const response = verifiedRead
+			? await this.verifiedRead(request, target, context, cli, timeoutMs)
+			: await this.effect(request, target, context, async () => {
+					const raw = await this.cli(cli, target.server.endpoint, context, timeoutMs);
+					if (raw.outcome !== "exited" || raw.exitCode !== 0) throw new NativeFailure(cliResult(raw));
+					return nativeResponse(raw, request.kind);
+				});
+		if (response.ok)
+			response.effects.note = verifiedRead
+				? "Verified read-only API method: no ownership record was retained. Outer CLI success only; returned data is not an application outcome."
+				: "Outer CLI success only. No inner application outcome was established. Returned failure tables and child results remain application data, even if bulk data is omitted.";
 		return capped ? this.cappedDeadline(response, request.timeoutMs) : response;
+	}
+
+	/** A verified read keeps its real CLI outcome and leaves the ownership store untouched. */
+	private async verifiedRead(
+		request: Extract<RexRequest, { op: "native" }>,
+		target: ResolvedTarget,
+		context: RexCallContext,
+		cli: string[],
+		timeoutMs: number,
+	): Promise<RexResult> {
+		const raw = await this.cli(cli, target.server.endpoint, context, timeoutMs);
+		if (raw.outcome === "exited" && raw.exitCode === 0)
+			return result(true, "acknowledged", target, nativeResponse(raw, request.kind));
+		return {
+			...cliResult(raw),
+			target,
+			effects: {
+				state: "none",
+				note: "Verified read-only API method: no ownership record was created. The reported outcome is the CLI result, not an unknown mutation.",
+			},
+		};
 	}
 
 	private async catalog(
@@ -1606,6 +1654,40 @@ function validateInput(request: Extract<RexRequest, { op: "input" }>): void {
 }
 
 type NativeRequest = Extract<RexRequest, { op: "native" }>;
+/**
+ * Exact API methods whose installed contracts only return current server, session,
+ * client, terminal, filesystem or onboarding state. `api describe` exposes no
+ * read-only annotation, so the list is maintained here. Generic invokers, snapshot
+ * or blob producers, retained clipboard reads, focus, label and input methods stay
+ * effects.
+ */
+const VERIFIED_READ_METHODS: ReadonlySet<string> = new Set([
+	"block_creator.list",
+	"help.all",
+	"session.help",
+	"session.list",
+	"session.view",
+	"session.list_blocks",
+	"session.describe_block",
+	"session.list_clients",
+	"target.resolve",
+	"target.complete",
+	"client.list",
+	"client.inspect",
+	"server.version",
+	"server.whoami",
+	"server.status",
+	"hosts.list",
+	"com.superlogical.terminal.process",
+	"com.superlogical.terminal.program_status",
+	"com.superlogical.terminal.modes",
+	"com.superlogical.terminal.input_mode",
+	"com.superlogical.terminal.size",
+	"com.superlogical.terminal.title",
+	"com.superlogical.terminal.pwd",
+	"com.superlogical.terminal.list_dir",
+	"com.superlogical.onboarding.state",
+]);
 function validateNativeTarget(request: NativeRequest, target: ResolvedTarget): void {
 	const args = request.args ?? {};
 	if (!args || typeof args !== "object" || Array.isArray(args))

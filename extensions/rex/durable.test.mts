@@ -11,11 +11,27 @@ import * as Durable from "@earendil-works/pi-durable";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { rexContribution } from "./durable.ts";
 import { beginOwnership, requestDigest } from "./ownership.ts";
-import type { RexRequest, RexResult } from "./core.ts";
+import { RexCore, type RexRequest, type RexResult } from "./core.ts";
+import type { CliResult, RexTransport } from "./transport.ts";
 
 const server = { endpoint: "unix:///synthetic-rex", hostId: "host", instanceId: "instance", selection: "test" };
 const target = { server, source: "explicit" as const, sessionId: "session:00000000-0000-0000-0000-000000000001", blockId: "block:00000000-0000-0000-0000-000000000002" };
 const ok = (data: unknown): RexResult => ({ ok: true, outcome: "test_snapshot", data, effects: { state: "none" }, coverage: { bounded: true } });
+
+function cliReply(value: unknown): CliResult {
+	return { outcome: "exited", exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "", bytes: 0, truncated: false, started: true };
+}
+
+/** Answers only server discovery and one verified read, so the real core can run without a Rex server. */
+const readTransport: RexTransport = {
+	dispose: () => {},
+	run: async (args) => {
+		if (args.includes("whoami"))
+			return cliReply({ endpoint: server.endpoint, host_id: server.hostId, instance_id: server.instanceId });
+		const index = args.indexOf("call");
+		return index >= 0 && args[index + 1] === "block_creator.list" ? cliReply({ creators: [] }) : cliReply({});
+	},
+};
 
 function resultValues(entries: readonly Durable.EntryRecord[]): RexResult[] {
 	return entries.flatMap((entry) => (entry.model ?? []).flatMap((message) => {
@@ -69,6 +85,10 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 					const retained = await options.store.read(context.ownerId);
 					assert.equal(retained.records[0]?.phase, "pending", "native commit resolves before the external-effect boundary");
 				}
+				if (request.op === "native" && request.kind === "api" && request.method === "block_creator.list") {
+					const core = new RexCore({ ...options, transport: readTransport });
+					try { return await core.execute(request, context); } finally { core.dispose(); }
+				}
 				if (request.op === "owned") return ok(await options.store.read(context.ownerId));
 				return mockResult(request, context.callId);
 			},
@@ -82,6 +102,8 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		let nested: Durable.NestedToolExecutionResult | undefined;
 		let invalidCleanup: Durable.NestedToolExecutionResult | undefined;
 		let observedWork: Durable.NestedToolExecutionResult | undefined;
+		let verifiedRead: Durable.NestedToolExecutionResult | undefined;
+		let verifiedRecords = -1;
 		let concurrentRecords = 0;
 		registry.install(Durable.defineExtension({ name: "test-caller", tools: [Durable.defineTool({
 			name: "test_nested", description: "Exercise concurrent commits and the native structured error channel.", parameters: obj({}, { open: true }), replay: "safe",
@@ -94,6 +116,9 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 				const owned = await api.executeTool("rex_owned", { op: "owned" }, context);
 				concurrentRecords = ((owned.structuredOutput as unknown as RexResult).data as { records: unknown[] }).records.length;
 				observedWork = await api.executeTool("rex_owned", { op: "observe", recordId: "retained-call", maxBytes: 256 }, context);
+				verifiedRead = await api.executeTool("rex_native", { op: "native", kind: "api", method: "block_creator.list", args: {} }, context);
+				const recheck = await api.executeTool("rex_owned", { op: "owned" }, context);
+				verifiedRecords = ((recheck.structuredOutput as unknown as RexResult).data as { records: unknown[] }).records.length;
 				invalidCleanup = await api.executeTool("rex_owned", { op: "cleanup" }, context);
 				nested = await api.executeTool("rex_native", { op: "native", kind: "lua", code: "fail" }, context);
 				return { output: [{ type: "text", text: "Nested results inspected." }] };
@@ -155,6 +180,12 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		assert.equal(observed.effects.state, "none");
 		assert.equal(JSON.stringify(observed), JSON.stringify(mockResult({ op: "observe" }, "unused")));
 		assert.ok(executed.includes("observe"));
+		assert.ok(verifiedRead);
+		assert.equal(verifiedRead.isError, false);
+		const verified = verifiedRead.structuredOutput as unknown as RexResult;
+		assert.equal(verified.effects.state, "none");
+		assert.equal(verified.effects.recordId, undefined);
+		assert.equal(verifiedRecords, concurrentRecords, "a verified native read adds no ownership record");
 		assert.ok(nested);
 		assert.equal(nested.isError, true);
 		assert.equal((nested.structuredOutput as unknown as RexResult).outcome, "script_failed");

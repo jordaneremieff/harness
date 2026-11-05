@@ -3,13 +3,19 @@ import test from "node:test";
 import { compile } from "@earendil-works/pi-schema";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ordinaryOwnershipStore, ordinaryStatusStore, resultChannels, serialiseOwners } from "./config.ts";
-import { boundResult, resultByteLimit, type RexResult } from "./core.ts";
+import { boundResult, DEFAULT_MAX_OUTPUT_BYTES, resultByteLimit, type RexResult } from "./core.ts";
+import { settings } from "./settings.ts";
 import { beginOwnership, initialOwnershipState, requestDigest, type OwnershipRecord } from "./ownership.ts";
 import { ResultSchema } from "./schema.ts";
 
 function record(callId: string): OwnershipRecord {
 	return { ownerId: "ordinary:one", callId, requestDigest: requestDigest(callId), server: { endpoint: "unix:///synthetic-rex", hostId: "host", instanceId: "instance", selection: "test" }, operation: "create", phase: "pending", resources: [], createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" };
 }
+
+test("settings and core share one CLI capture default", () => {
+	assert.equal(settings.fields.maxOutputBytes.default, DEFAULT_MAX_OUTPUT_BYTES);
+	assert.equal(DEFAULT_MAX_OUTPUT_BYTES, 65536);
+});
 
 test("canonical result bounds bulk data and preserves metadata across result channels", () => {
 	const server = { endpoint: `unix:///${"界".repeat(2000)}`, hostId: "host", instanceId: "instance", selection: "界".repeat(2048) };
