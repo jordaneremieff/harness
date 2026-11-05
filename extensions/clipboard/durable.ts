@@ -9,8 +9,8 @@
  *
  * Replay classification: paste, list, and get only read the clipboard or the
  * archive, so a rerun after process loss repeats no external effect. Copy and
- * restore write the clipboard and append an archive record, so a rerun would
- * overwrite newer clipboard content and duplicate a record.
+ * restore write the clipboard, so a rerun would overwrite newer clipboard
+ * content; copy also appends an archive record.
  *
  * The ordinary tools expose presentation details but no structured content, so
  * the native tools map content to output and keep the details object.
@@ -123,7 +123,7 @@ function answerSummary(request: ClipboardPanelRequest, answer: ClipboardPanelAns
 		case "preview": return `entry ${answer.entry.id} (${answer.entry.chars}c)`;
 		case "restore": {
 			const id = request.op === "restore" ? request.id : "";
-			return answer.ok ? `restored ${id}${answer.warning ? ` with archive warning: ${safeLine(answer.warning)}` : ""}` : `restore failed: ${safeLine(answer.error)}`;
+			return answer.ok ? `restored ${id}` : `restore failed: ${safeLine(answer.error)}`;
 		}
 	}
 }

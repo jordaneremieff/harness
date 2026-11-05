@@ -73,8 +73,11 @@ class ClipboardView {
 	private cursor?: string;
 	private stale = false;
 	private searching?: AbortController;
+	/** Monotonic search generation: a late older search never marks the current query fresh. */
+	private searchLoad = 0;
 	private previews = new Map<string, Read<ClipboardEntry>>();
-	private previewing?: AbortController;
+	/** The exact-record read in flight, so a superseded read is discarded with its own cache entry. */
+	private previewing?: { key: string; controller: AbortController };
 	private restoring = false;
 
 	constructor(host: ViewHost, ops: ClipboardOperations, state: ClipboardViewState) {
@@ -110,7 +113,7 @@ class ClipboardView {
 		});
 		host.signal.addEventListener("abort", () => {
 			this.searching?.abort();
-			this.previewing?.abort();
+			this.previewing?.controller.abort();
 		});
 		void this.loadRecent();
 	}
@@ -155,11 +158,12 @@ class ClipboardView {
 		const controller = new AbortController();
 		this.searching = controller;
 		const signal = AbortSignal.any([controller.signal, this.host.signal]);
+		const load = ++this.searchLoad;
 		this.archiveStatus = "Searching the archive…";
 		this.host.requestRender();
 		try {
 			const page = await this.ops.search(query, continuation ? this.cursor : undefined, signal);
-			if (signal.aborted) return;
+			if (signal.aborted || load !== this.searchLoad) return;
 			const existing = continuation ? this.archive : [];
 			const seen = new Set(existing.map(identity));
 			this.archive = [...existing, ...page.matches.map(matchEntry).filter((entry) => !seen.has(identity(entry)))];
@@ -168,7 +172,7 @@ class ClipboardView {
 			this.stale = false;
 			this.archiveStatus = coverageText(page);
 		} catch (error) {
-			if (signal.aborted) return;
+			if (signal.aborted || load !== this.searchLoad) return;
 			this.stale = true;
 			this.archiveStatus = `Archive read failed; Refresh retries: ${message(error)}`;
 		}
@@ -177,13 +181,15 @@ class ClipboardView {
 
 	private queryChanged(query: string): void {
 		this.state.query = query;
-		if (this.state.scope === "archive") {
-			this.searching?.abort();
-			if (query !== this.searched) {
-				this.stale = this.archive.length > 0;
-				this.cursor = undefined;
-				this.archiveStatus = query.trim() ? "Query changed · press Enter or choose Search archive" : "Type text, then press Enter or choose Search archive.";
-			}
+		// A query change invalidates the archive state from either scope: the field is shared, so an
+		// in-flight search for the old query must not come back fresh for the new one.
+		this.searching?.abort();
+		if (query !== this.searched) {
+			this.stale = this.archive.length > 0;
+			this.cursor = undefined;
+			this.archiveStatus = query.trim()
+				? "Query changed · press Enter or choose Search archive"
+				: "Type text, then press Enter or choose Search archive.";
 		}
 		this.refreshItems();
 	}
@@ -197,30 +203,52 @@ class ClipboardView {
 
 	private selected(entry: ClipboardEntry | undefined): void {
 		this.state.selected = entry ? identity(entry) : undefined;
-		this.previewing?.abort();
-		if (!entry) return;
+		if (!entry) {
+			this.previewing?.controller.abort();
+			this.previewing = undefined;
+			return;
+		}
 		const key = identity(entry);
 		const known = this.previews.get(key);
 		if (known?.state === "ready" || known?.state === "pending") return;
+		this.readPreview(entry);
+	}
+
+	/** Start one exact-record read, discarding any earlier read it supersedes. */
+	private readPreview(entry: ClipboardEntry): void {
+		const prior = this.previewing;
+		prior?.controller.abort();
+		if (prior && this.previews.get(prior.key)?.state === "pending") this.previews.delete(prior.key);
+		const key = identity(entry);
 		const controller = new AbortController();
-		this.previewing = controller;
+		this.previewing = { key, controller };
 		const signal = AbortSignal.any([controller.signal, this.host.signal]);
 		this.previews.set(key, { state: "pending" });
 		this.ops.preview(entry, signal).then(
 			(value) => {
-				if (signal.aborted) return;
+				if (signal.aborted || this.previewing?.controller !== controller) return;
 				this.previews.set(key, { state: "ready", value });
 				this.host.requestRender();
 			},
 			(error: unknown) => {
-				if (signal.aborted) {
-					this.previews.delete(key);
-					return;
-				}
+				if (signal.aborted || this.previewing?.controller !== controller) return;
 				this.previews.set(key, { state: "failed", error: message(error) });
 				this.host.requestRender();
 			},
 		);
+	}
+
+	/**
+	 * Retry the selected record's read after an explicit refresh. The selection callbacks do not
+	 * fire when the id is unchanged, so a failed read retries here, not from a cleared cache alone.
+	 */
+	private rereadSelected(): void {
+		const key = this.state.selected;
+		if (!key) return;
+		const known = this.previews.get(key);
+		if (known && known.state !== "failed") return;
+		const entry = this.items().find((item) => identity(item) === key);
+		if (entry) this.readPreview(entry);
 	}
 
 	private detail(entry: ClipboardEntry | undefined): string {
@@ -267,8 +295,15 @@ class ClipboardView {
 			actions.push({ id: "search", label: "Search archive", disabled: this.state.query.trim() ? undefined : "Type text to search for", run: () => void this.search(false) });
 			actions.push({ id: "continue", label: "Continue", disabled: this.cursor && !this.stale ? undefined : "The scan has no further page", run: () => void this.search(true) });
 		}
-		actions.push({ id: "refresh", label: "Refresh", key: "r", short: "refresh", primary: true, description: this.state.scope === "archive" ? "Run the search again" : "Read recent entries again", run: () => void (this.state.scope === "archive" ? this.search(false) : this.loadRecent()) });
+		actions.push({ id: "refresh", label: "Refresh", key: "r", short: "refresh", primary: true, description: this.state.scope === "archive" ? "Run the search again and reread the selected record" : "Read recent entries again and reread the selected record", run: () => void this.refresh() });
 		return actions;
+	}
+
+	/** An explicit refresh rereads the list, then retries the selected record's failed read. */
+	private async refresh(): Promise<void> {
+		if (this.state.scope === "archive") await this.search(false);
+		else await this.loadRecent();
+		this.rereadSelected();
 	}
 
 	private async restore(entry: ClipboardEntry): Promise<void> {
@@ -286,9 +321,8 @@ class ClipboardView {
 			this.host.notify(`Restore failed: ${safeLine(outcome.error)}`, "error");
 			return;
 		}
-		const notice = restoredNotice(entry, outcome.warning);
-		this.host.notify(notice.text, notice.type === "warning" ? "warning" : "success");
-		if (this.state.scope === "recent") void this.loadRecent();
+		const notice = restoredNotice(entry);
+		this.host.notify(notice.text, "success");
 	}
 
 	private status(): string {

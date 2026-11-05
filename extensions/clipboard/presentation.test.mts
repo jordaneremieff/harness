@@ -237,18 +237,18 @@ describe("clipboard_restore cards", () => {
 		assert.equal(screen(result), "restored · 30 chars · 2 lines");
 	});
 
-	it("surfaces an archive warning and styles errors", () => {
-		const warned = renderRestoreResult(
-			text("Restored entry-1 to clipboard (2 lines, 30 chars). Warning: archive write failed: disk full", {
+	it("ignores an archive note and styles errors", () => {
+		const stale = renderRestoreResult(
+			text("Restored entry-1 to clipboard (2 lines, 30 chars).", {
 				lines: 2,
 				chars: 30,
-				archiveError: "disk full is not available",
+				archiveError: "not part of a restore",
 			}),
 			{ expanded: false, isPartial: false },
 			theme,
 			collapsed,
 		);
-		assert.match(screen(warned), /archive write failed: disk full/);
+		assert.equal(screen(stale), "restored · 30 chars · 2 lines", "a restore writes no archive record, so it reports no archive note");
 		const error = renderRestoreResult(text("pbcopy failed"), { expanded: false, isPartial: false }, theme, {
 			...collapsed,
 			isError: true,

@@ -245,6 +245,30 @@ describe("clipboard entrypoint", () => {
 		assert.equal(await readFile(clipboardFile, "utf8"), "first");
 	});
 
+	it("a restore writes the clipboard only and adds no archive record", async () => {
+		const { tools } = registry();
+		const id = `restore-contract-${Date.now()}`;
+		const full = `${"payload ".repeat(80000)}FULL_TAIL`;
+		assert.equal(await appendEntry(archiveDir, makeEntry(full, "contract", new Date(), id)), null);
+		const recordIds = async () => {
+			const ids: string[] = [];
+			for (const name of await readdir(archiveDir)) {
+				for (const line of (await readFile(join(archiveDir, name), "utf8")).split("\n")) {
+					if (line) ids.push((JSON.parse(line) as { id: string }).id);
+				}
+			}
+			return ids.sort();
+		};
+		const before = await recordIds();
+		const result = await execute(tools.get("clipboard_restore"), { id });
+		assert.match(result.content[0].text, new RegExp(`Restored ${id} to clipboard`));
+		assert.equal(await readFile(clipboardFile, "utf8"), full, "the clipboard holds the exact full content, not the preview bound");
+		const after = await recordIds();
+		assert.equal(after.length, before.length, "the archive record count is unchanged");
+		assert.deepEqual(after, before, "the archive holds the same ids as before the restore");
+		assert.equal((result.details as { archiveError?: string }).archiveError, undefined, "no archive outcome is reported");
+	});
+
 	it("aborts a restore promptly instead of waiting out the pbcopy timeout", async () => {
 		const { tools } = registry();
 		const list = tools.get("clipboard_list");
@@ -406,6 +430,19 @@ describe("clipboard entrypoint", () => {
 			return total;
 		};
 		const before = await archived();
+		const recordIds = async () => {
+			const ids: string[] = [];
+			for (const name of await readdir(archiveDir)) {
+				for (const line of (await readFile(join(archiveDir, name), "utf8")).split("\n")) {
+					if (line) ids.push((JSON.parse(line) as { id: string }).id);
+				}
+			}
+			return ids;
+		};
+		const idsBefore = await recordIds();
+		const selected = await execute(tools.get("clipboard_list"), { limit: 1 });
+		const restoredId = (selected.details as { ids: string[] }).ids[0];
+		assert.ok(restoredId, "the copied record is listed");
 		const run = (route: "key" | "click") => {
 			const ctx = {
 				hasUI: true,
@@ -424,8 +461,15 @@ describe("clipboard entrypoint", () => {
 			return commands.get("clipboard").handler("", ctx as unknown as ClipboardCommandCtx);
 		};
 		await run("key");
-		assert.equal(await archived(), before + 1, "Enter restores and appends one archive record");
+		assert.equal(await readFile(clipboardFile, "utf8"), content, "a restore writes the exact full content to the clipboard");
+		assert.equal(await archived(), before, "Enter restores and appends no archive record");
+		assert.deepEqual(await recordIds(), idsBefore, "the archive holds the same records as before the restore");
 		await run("click");
-		assert.equal(await archived(), before + 2, "the footer click restores the same way");
+		assert.equal(await readFile(clipboardFile, "utf8"), content, "the footer click restores the same way");
+		assert.equal(await archived(), before, "the footer click appends no archive record either");
+		assert.deepEqual(await recordIds(), idsBefore, "the archive still holds the same records");
+		const record = await execute(tools.get("clipboard_get"), { id: restoredId });
+		assert.match(record.content[0].text, new RegExp(content.slice(0, 10)), "the restored record keeps its own content");
+		assert.equal(record.details.truncated, false, "the restored record reads in one page");
 	});
 });

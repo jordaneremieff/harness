@@ -268,7 +268,7 @@ export function renderGetResult(
 	return textComponent(text, context.lastComponent);
 }
 
-/** Restore requests name the entry id; the result states size and any archive warning. */
+/** Restore requests name the entry id; the result states the restored size. */
 export function renderRestoreCall(value: unknown, theme: Theme, context: CardContext): Component {
 	const args = asRecord(value);
 	const lines = [heading("clipboard_restore", stringField(args, "id"), theme)];
@@ -291,7 +291,6 @@ export function renderRestoreResult(
 		return errorCard("clipboard_restore", output, "restore failed", theme, options.expanded, context);
 	const details = asRecord(result.details);
 	let text = `\n${theme.fg("success", `restored · ${sizeLine(numberField(details, "lines"), numberField(details, "chars"))}`)}`;
-	text += archiveNote(details, theme);
 	if (options.expanded) text += `\n${theme.fg("toolOutput", boundedDisplay(output))}`;
 	return textComponent(text, context.lastComponent);
 }

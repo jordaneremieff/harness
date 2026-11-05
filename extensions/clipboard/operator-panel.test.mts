@@ -9,7 +9,7 @@ import { clipboardContribution, type DurableCommandCall } from "./durable.ts";
 import type { JsonValue, PanelHost } from "../../operator-ui/index.ts";
 import { operatorPanel } from "./operator-panel.ts";
 import { readPanelAnswer, readPanelRequest } from "./panel-protocol.ts";
-import { appendEntry, makeEntry } from "./store.ts";
+import { appendEntry, makeEntry, readEntries } from "./store.ts";
 
 const theme = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as PanelHost["theme"];
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -71,13 +71,16 @@ describe("clipboard native browser route", () => {
 		assert.throws(() => readPanelRequest({ op: "search", query: "x".repeat(300) }), /bounded query/);
 	});
 
-	it("restore rewrites the full exact record and keeps success distinct from an archive warning", async () => {
+	it("restore rewrites the full exact record and adds no archive record", async () => {
 		const run = command();
+		const before = (await readEntries(join(root, "archive"), { limit: 10 })).map((entry) => entry.id);
 		const restored = await run({ op: "restore", id: "entry-one" }) as { text: string; data: unknown };
 		const answer = readPanelAnswer({ op: "restore", id: "entry-one" }, restored.data);
 		assert.ok(answer.op === "restore" && answer.ok === true);
-		assert.equal(await readFile(clipboardFile, "utf8"), "first body\nsecond line");
+		assert.equal(await readFile(clipboardFile, "utf8"), "first body\nsecond line", "the clipboard holds the exact full content");
 		assert.match(restored.text, /restored entry-one/);
+		const after = (await readEntries(join(root, "archive"), { limit: 10 })).map((entry) => entry.id);
+		assert.deepEqual(after, before, "the archive holds the same records as before the restore");
 		const missing = await run({ op: "restore", id: "absent" }) as { text: string; data: unknown };
 		const failed = readPanelAnswer({ op: "restore", id: "absent" }, missing.data);
 		assert.ok(failed.op === "restore" && failed.ok === false && /no longer available/.test(failed.error));

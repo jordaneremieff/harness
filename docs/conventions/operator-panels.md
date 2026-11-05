@@ -267,7 +267,7 @@ Each owner documents its request union and effects in its README:
 
 | Owner | Reads | Effects |
 |---|---|---|
-| clipboard | recent entries, bounded archive search with continuation, exact preview | restore: rereads the exact `id` + `archiveDate` record, writes the host's clipboard, appends an archive record; success and archive warning stay distinct |
+| clipboard | recent entries, bounded archive search with continuation, exact preview | restore: rereads the exact `id` + `archiveDate` record and writes the host's clipboard; it adds no archive record |
 | stash | recent and archive views, exact preview, lifecycle and coverage | pickup (optionally with a note) activates the record and submits one follow-up to the bound conversation, keyed by the invocation; close, release, reopen, rotate through the owner's lifecycle rules |
 | policy | registry, fire summary, recent activity, inspection views, exact review artifacts, data list and show | approve, reject, lifecycle, effect, reset; data set, set-file and remove answer first with the complete review and an exact approval that the view sends only after the effect-labelled final action; revisions, file rereads and the view audit are checked again on apply |
 | pillars | inventory and source pages with resource identity, offset, continuation, and digest | none; browsing never starts a judgment run or corpus mutation |

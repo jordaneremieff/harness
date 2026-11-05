@@ -14,7 +14,7 @@ the payload contains no execution functions. The renderers live in `display.ts`,
 | `clipboard_paste` | tool | Read the current clipboard in bounded pages. |
 | `clipboard_list` | tool | List recent entries or search full archived text, with bounded continuation and stable ids. |
 | `clipboard_get` | tool | Read one archived entry by stable id, in bounded pages. |
-| `clipboard_restore` | tool | Copy one archived entry back to the clipboard; the restore is archived as a new entry. |
+| `clipboard_restore` | tool | Copy one archived entry back to the clipboard; it adds no archive entry. |
 | `/clipboard` | command | Browse recent entries or search the archive, preview, and restore in the shared browsing frame. |
 
 Each tool is one operation; there is no action multiplexer, and the model-facing
@@ -37,7 +37,8 @@ Call `clipboard_paste` only when you need the current clipboard:
 
 If a read returns `nextOffset`, pass it as `offset` to continue. Use
 `clipboard_list` to find archived text, then `clipboard_get` to inspect it
-or `clipboard_restore` to write it back. Archive search alone does not
+or `clipboard_restore` to write it back. Restore writes the clipboard only and
+adds no archive entry. Archive search alone does not
 access the clipboard.
 
 ## Configuration
@@ -216,9 +217,9 @@ archive directory, default `<agentDir>/clipboard/YYYY-MM-DD.jsonl`.
 - Reads reject a symlinked store, ignore symlinked archives, skip blank or malformed records, and recompute derived metadata from validated content.
 - Readers scan files and records newest-first in bounded chunks and check cancellation between reads and records. Lists stop after the requested page and retain no body content; the browser reads no body content for list rows and at most 32,768 characters for a selected preview. Stable-id lookup refetches the full selected record without materializing a whole daily archive.
 - Individual JSONL records are capped at 64 MiB. This contains malformed or unexpectedly large historical data while accommodating the tool's string-length input limit of 8 × 1024 × 1024 and JSON escaping.
-- Restores append a new `(restored)` entry because they are real clipboard writes.
+- Restores add no archive entry: a restore writes the clipboard from an existing record and changes the archive only by that read.
 
-A successful `pbcopy` followed by an archive failure is reported as a successful copy or restore with a warning. A `pbcopy` failure remains an error and does not append a false history event. Archival continues after a confirmed copy even if cancellation arrives afterward.
+A successful `pbcopy` followed by an archive failure is reported as a successful copy with a warning. A `pbcopy` failure remains an error and does not append a false history event. Archival continues after a confirmed copy even if cancellation arrives afterward.
 
 Clipboard subprocesses use asynchronous, shell-free I/O with a 30-second timeout and caller cancellation. Early stdin closure rejects the copy instead of raising an unhandled stream error. Pi's native `copyToClipboard(text)` helper has no cancellation parameter and emits OSC 52 in remote sessions. This extension retains its subprocess adapter to preserve cancellation, confirmed local-copy outcomes, and clean RPC output.
 
@@ -251,7 +252,9 @@ page while the scan has one. A page that is empty can still have a
 continuation, and the status line shows whether the scan is partial. Recent
 rows read metadata only; a selected entry's preview is read on demand, bounded
 to 32,768 characters. Preview reads are cancelled when the selection moves, and
-late results are discarded.
+late results are discarded. A query change invalidates the archive state from
+either scope, and a late result for the old query never marks the new one
+fresh.
 
 Selecting a row reads it and never restores it. **Restore** is the one effect:
 it stays unavailable, with its reason, until the exact record has been read,
@@ -259,9 +262,10 @@ while another restore runs, and while archive results are stale after a query
 change or a read failure. Restore resolves the selected stable id again and
 writes the full archived content, so preview bounds never truncate the
 clipboard result; a truncated preview says so. **Refresh** reads recent entries
-again or reruns the search and never changes a record. A completed copy remains
-a success if leaving the view arrives only during archival; the archive warning
-stays distinct. Leaving the view cancels active reads and drops late answers.
+again or reruns the search and never changes a record; it also retries the
+selected record's failed read, and Restore stays unavailable until that read
+succeeds. Restore adds no archive entry: it writes the clipboard and leaves the
+history unchanged. Leaving the view cancels active reads and drops late answers.
 The query, scope, and selection survive leaving and reopening the view within
 the session. Labels, previews, content, and error text have terminal and bidi
 controls escaped before rendering.
@@ -286,7 +290,7 @@ no Durable documents.
 | `clipboard_paste` | safe | A rerun only reads the clipboard. |
 | `clipboard_list` | safe | A rerun only reads the archive. |
 | `clipboard_get` | safe | A rerun only reads the archive. |
-| `clipboard_restore` | unsafe | A rerun overwrites newer clipboard content and appends a duplicate archive record. |
+| `clipboard_restore` | unsafe | A rerun overwrites newer clipboard content. An interrupted unsafe call returns an interrupted result instead of rerunning. |
 
 An interrupted unsafe call returns an interrupted result instead of rerunning.
 Model-facing guidance renders as the prompt section `clipboard`, composed from
@@ -310,7 +314,7 @@ answers a bounded recent listing as text, for `agent_command` and
 | `{ op: "recent" }` | Reads the newest 200 entries, metadata only. |
 | `{ op: "search", query, cursor? }` | One bounded literal archive page, the same search as `clipboard_list`. |
 | `{ op: "preview", id, archiveDate? }` | The exact record with a 32,768-character content prefix. |
-| `{ op: "restore", id, archiveDate? }` | Rereads the exact record in full, writes the host's clipboard, appends an archive record; `ok` with an optional `warning` for a failed append, or `ok: false` with the error. |
+| `{ op: "restore", id, archiveDate? }` | Rereads the exact record in full and writes the host's clipboard; it adds no archive record. It answers `ok`, or `ok: false` with the error. |
 
 Browsing, searching and previewing start no model work and change no record.
 Restore is the only effect, and only its footer control or the `enter` key
@@ -337,7 +341,7 @@ in every collapsed value.
   whether more is available, and whether a continuation exists.
 - `clipboard_get` names the entry id and page bounds, then the entry size, any
   continuation offset, and the escaped-control note.
-- `clipboard_restore` names the entry id, then the restored size and any archive warning.
+- `clipboard_restore` names the entry id, then the restored size.
 
 A result that hides content carries the expansion hint; a restore result, which repeats no
 hidden content, carries none. An error card shows the first diagnostic line when collapsed and

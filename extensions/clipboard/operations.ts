@@ -29,7 +29,7 @@ export const GET_DESCRIPTION =
 	"Read one archived clipboard entry by stable id from clipboard_list. Output is paged and capped; use offset from a truncated response to continue.";
 export const GET_SNIPPET = "Read one archived clipboard entry by stable id";
 export const RESTORE_DESCRIPTION =
-	"Copy one archived entry back to the macOS clipboard by stable id from clipboard_list. The restore is archived as a new entry.";
+	"Copy one archived entry back to the macOS clipboard by stable id from clipboard_list. This writes the clipboard only; it adds no archive entry.";
 export const RESTORE_SNIPPET = "Restore an archived entry to the macOS clipboard";
 
 /**
@@ -384,23 +384,17 @@ export async function clipboardRestore(
 	} catch (error) {
 		throw new Error(`pbcopy failed: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	const archiveError = await appendEntry(
-		dir,
-		makeEntry(entry.content, entry.label ? `${entry.label} (restored)` : "restored"),
-	);
-	const warning = archiveError ? ` Warning: archive write failed: ${safeLine(archiveError)}` : "";
 	return {
 		content: [
 			{
 				type: "text" as const,
-				text: `Restored ${entry.id} to clipboard (${entry.lines} lines, ${entry.chars} chars).${warning}`,
+				text: `Restored ${entry.id} to clipboard (${entry.lines} lines, ${entry.chars} chars).`,
 			},
 		],
 		details: {
 			id: entry.id,
 			lines: entry.lines,
 			chars: entry.chars,
-			...(archiveError === null ? {} : { archiveError }),
 		},
 	};
 }

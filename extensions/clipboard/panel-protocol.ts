@@ -17,7 +17,7 @@ export type ClipboardPanelAnswer =
 	| { op: "recent"; entries: ClipboardEntry[]; hasMore: boolean }
 	| { op: "search"; page: SearchPage }
 	| { op: "preview"; entry: ClipboardEntry }
-	| { op: "restore"; ok: true; warning?: string }
+	| { op: "restore"; ok: true }
 	| { op: "restore"; ok: false; error: string };
 
 const MAX_QUERY_CHARS = 256;
@@ -58,7 +58,7 @@ function page(value: unknown): value is SearchPage {
 }
 
 function restoreAnswer(value: Record<string, unknown>): ClipboardPanelAnswer {
-	if (value.ok === true) return { op: "restore", ok: true, ...(typeof value.warning === "string" ? { warning: value.warning } : {}) };
+	if (value.ok === true) return { op: "restore", ok: true };
 	if (value.ok === false && typeof value.error === "string") return { op: "restore", ok: false, error: value.error };
 	throw new Error("the host answered an unreadable restore outcome");
 }

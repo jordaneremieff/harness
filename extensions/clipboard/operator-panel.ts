@@ -30,7 +30,7 @@ function operations(host: PanelHost): ClipboardOperations {
 		restore: async (entry, signal) => {
 			const answer = await ask({ op: "restore", ...key(entry) }, signal);
 			if (answer.op !== "restore") throw new Error("unexpected answer");
-			return answer.ok ? { ok: true, ...(answer.warning === undefined ? {} : { warning: answer.warning }) } : { ok: false, error: answer.error };
+			return answer.ok ? { ok: true } : { ok: false, error: answer.error };
 		},
 	};
 }

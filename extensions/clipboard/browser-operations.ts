@@ -2,10 +2,10 @@
 
 import { pbCopy } from "./pb.ts";
 import { searchEntries, type SearchPage } from "./search.ts";
-import { appendEntry, type ClipboardEntry, makeEntry, readEntries } from "./store.ts";
-import { safeLine, shortField } from "./text.ts";
+import { type ClipboardEntry, readEntries } from "./store.ts";
+import { shortField } from "./text.ts";
 
-export type RestoreOutcome = { ok: true; warning?: string } | { ok: false; error: string };
+export type RestoreOutcome = { ok: true } | { ok: false; error: string };
 
 /** Browser previews carry this content prefix; restore always reads the full archived record. */
 export const PREVIEW_CONTENT_CHARS = 32 * 1024;
@@ -30,28 +30,23 @@ export async function readExactEntry(
 	return archived;
 }
 
-/** Restore rereads the exact record in full, writes the clipboard, then appends the archive record; a failed append is a warning, not a failed restore. */
+/** Restore rereads the exact record in full and writes the clipboard; it adds no archive record. */
 export async function restoreFromArchive(dir: string, entry: Pick<ClipboardEntry, "id" | "archiveDate">, signal?: AbortSignal): Promise<RestoreOutcome> {
-	let archived: ClipboardEntry;
 	try {
-		archived = await readExactEntry(dir, entry, Number.POSITIVE_INFINITY, signal);
+		const archived = await readExactEntry(dir, entry, Number.POSITIVE_INFINITY, signal);
 		await pbCopy(archived.content, signal);
 	} catch (error) {
 		return { ok: false, error: error instanceof Error ? error.message : String(error) };
 	}
-	const warning = await appendEntry(dir, makeEntry(archived.content, archived.label ? `${archived.label} (restored)` : "restored"));
-	return warning ? { ok: true, warning } : { ok: true };
+	return { ok: true };
 }
 
 export function searchArchive(dir: string, query: string, cursor: string | undefined, signal?: AbortSignal): Promise<SearchPage> {
 	return searchEntries(dir, { query, cursor, limit: SEARCH_PAGE_LIMIT, signal });
 }
 
-/** One line for the operator after a successful restore; the archive warning stays distinct from success. */
-export function restoredNotice(restored: Pick<ClipboardEntry, "lines" | "chars" | "label">, warning?: string): { text: string; type: "info" | "warning" } {
+/** One line for the operator after a successful restore. */
+export function restoredNotice(restored: Pick<ClipboardEntry, "lines" | "chars" | "label">): { text: string } {
 	const label = restored.label ? ` | ${shortField(restored.label)}` : "";
-	return {
-		text: `Restored (${restored.lines}L/${restored.chars}c)${label}${warning ? `. Archive warning: ${safeLine(warning)}` : ""}`,
-		type: warning ? "warning" : "info",
-	};
+	return { text: `Restored (${restored.lines}L/${restored.chars}c)${label}` };
 }
