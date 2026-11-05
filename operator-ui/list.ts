@@ -35,6 +35,11 @@ export class ListView<T> {
 		return this.items.length;
 	}
 
+	/** The current items in list order, read-only. */
+	entries(): readonly T[] {
+		return this.items;
+	}
+
 	get selected(): T | undefined {
 		return this.items.find((item) => this.options.key(item) === this.selectedKey);
 	}

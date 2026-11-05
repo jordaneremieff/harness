@@ -39,12 +39,20 @@ An owner builds its content as `OperatorView` objects mounted in a
   label quieter. The view's own keys come first, then primary actions that
   have a key, then frame controls (Expand on Pi's `app.tools.expand` key in
   ordinary Pi), then `x more`, then the Escape control last, labelled with
-  what Escape does now (`clear`, `list`, `cancel`, `back`, `close`). A click
-  on a control runs what its key runs; a control with several keys
+  what Escape does now (`clear`, `list`, `cancel`, `back`, `close`). One key
+  never means two things in one focus: an action whose key the view's current
+  hints claim moves into More without that key, and the hint keeps the key.
+  A click on a control runs what its key runs; a control with several keys
   (`↑↓ select`, `pgup/pgdn read`) has one target per key; gaps do nothing.
   When the row is short, controls leave by priority into More, which lists
-  every control the row does not show and every action without a key,
-  each with its key. Basic navigation, More and the way out stay on the row.
+  every control the row does not show, one entry per key of a multi-key
+  control, and every action without a key, each with its key. Basic
+  navigation, More and the way out stay on the row. While a text field has
+  focus every plain key is text, so the row's More control shows the More
+  chord (`ctrl+n`) instead of `x`: the chord opens and closes More from any
+  focus whenever the row has hidden entries, and typing `x` stays text.
+  Footer hosts that draw the row themselves pass the editing state to
+  `Footer.render` and route the chord themselves.
 - **Header.** The tab row (or the destination's title), the bound target,
   and in a nested view a muted trail. It holds no commands.
 - **Frame.** Destinations sit in one tab row; each keeps its own views,
@@ -55,24 +63,37 @@ An owner builds its content as `OperatorView` objects mounted in a
   the tab row when the frame shows tabs. One destination's failure costs
   only its own view.
 - **Building blocks.** `Browser` (search, scopes, list, and detail, with the
-  detail as its own view below `SPLIT_MIN_WIDTH`), `ListView`, `ReaderView`,
-  `Form` (staged fields with one owner call on the labelled submit: Enter
-  moves to the next field and submits from the last, the newline keys break
-  lines in a multi-line field, Tab moves between fields, and Cancel and
-  Escape run the same cancel and send nothing; a refusal keeps every staged
-  field), `LoadingView`, `TextField`, `TextArea`, `Footer` with its
-  `Control` records, the key helpers (`keyText`, `keysText`, `keyMatches`,
-  `keyInput`), and `HitMap` (region-local click coordinates from the last
-  render only).
+  detail as its own view below `SPLIT_MIN_WIDTH`; item actions push through
+  `Browser.push`, which opens from the visible detail while one is open, and
+  the detail re-resolves its record by key on every render and action, so a
+  refreshed record shows its current state and a removed record explains
+  itself instead of acting on another), `ListView`, `ReaderView`, `Form`
+  (staged fields with one owner call on the labelled submit: Enter moves to
+  the next field and submits from the last, the newline keys break lines in
+  a multi-line field, Tab moves between fields, and Cancel and Escape run
+  the same cancel and send nothing; the body scrolls to keep the focused
+  field's caret or highlighted choice visible, with the heading fixed at
+  the top and the hint, pending and error rows at the bottom; the wheel
+  moves the body until the next key press reveals the caret again, and a
+  choice list keeps its own scroll until a key that moves the highlight, a
+  click or a filter change moves it), `LoadingView`, `TextField`,
+  `TextArea`, `Footer` with its `Control` records, the key helpers
+  (`keyText`, `keysText`, `keyMatches`, `keyInput`, which encodes the whole
+  key syntax Pi accepts, including modified chords, so every displayed
+  binding has a working click equivalent, or a notice naming the key when
+  the terminal has no encoding for it), and `HitMap` (region-local click
+  coordinates from the last render only).
 
 Input rules hold everywhere: while a text field has focus it takes every
 printable key, and the footer then lists only the keys that work there.
-Without a focused text field, the keys the footer shows act: an owner's
-action keys first, then `x` for More, then the view's own keys. `/` moves to
-a list's search field. PageUp and PageDown read. A pointer event reported
-for another terminal size acts on nothing. An owner that shows an artifact
-for approval shows the complete artifact in the review view before its
-effect-labelled final action.
+Without a focused text field, the keys the focused view's current hints
+claim are the view's binding and reach the view first; only unclaimed keys
+run an owner's action, then `x` for More, then the view's own remaining
+keys. `/` moves to a list's search field. PageUp and PageDown read. A
+pointer event reported for another terminal size acts on nothing, and a
+disallowed or modified gesture changes no focus. An owner that shows an
+artifact for approval shows the complete artifact in the review view
+before its effect-labelled final action.
 
 ## Ordinary destinations
 

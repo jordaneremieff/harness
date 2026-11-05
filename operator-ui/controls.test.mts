@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { actionControl, actionLabel, type Control, Footer, menuControl } from "./controls.ts";
+import { actionControl, actionLabel, type Control, Footer, menuControl, MORE_CHORD } from "./controls.ts";
 import { HitMap } from "./hits.ts";
+import { keyInput, keyMatches } from "./keys.ts";
 import type { Action } from "./view.ts";
 
 const theme = {
@@ -43,10 +44,10 @@ const mid = () => control("mid", ["d"], "details", { priority: 2 });
 const low = () => control("low", ["tab"], "focus", { priority: 3 });
 const exit = () => control("exit", ["escape"], "close", { priority: 0 });
 
-function draw(footer: Footer, controls: readonly Control[], width: number, menu: readonly Control[] = []) {
+function draw(footer: Footer, controls: readonly Control[], width: number, menu: readonly Control[] = [], editing = false) {
 	const hits = new HitMap();
 	hits.begin(width, 1);
-	const line = plain(footer.render(controls, width, theme, hits, 0, 0, menu)).trimEnd();
+	const line = plain(footer.render(controls, width, theme, hits, 0, 0, menu, editing)).trimEnd();
 	return { line, hits };
 }
 
@@ -181,6 +182,38 @@ it("footer targets come from the last render, so a resize moves them", () => {
 	const moreX = narrow.line.indexOf("x more");
 	narrow.hits.handle(mouse(moreX, 0, 70, 1));
 	assert.equal(footer.menuShown, true, "the drawn position of More opens the menu");
+});
+
+it("the More menu lists one entry per key of a multi-key control, and a click runs exactly that key", () => {
+	runs.length = 0;
+	const footer = new Footer();
+	const controls = [nav(), control("page", ["pageUp", "pageDown"], "read", { priority: 3 }), exit()];
+	const narrow = draw(footer, controls, 32);
+	assert.equal(narrow.line, "↑↓ select · x more · esc close");
+	narrow.hits.handle(mouse(narrow.line.indexOf("x more"), 0, 32, 1));
+	const menuHits = new HitMap();
+	menuHits.begin(40, 4);
+	const menu = footer.renderMenu(40, 4, theme, menuHits, 0).map(plain);
+	assert.ok(menu.some((row) => row.includes("pgup") && row.includes("read")), "page up keeps its own entry");
+	assert.ok(menu.some((row) => row.includes("pgdn") && row.includes("read")), "page down keeps its own entry");
+	const down = menu.findIndex((row) => row.includes("pgdn"));
+	menuHits.handle(mouse(10, down, 40, 4));
+	assert.deepEqual(runs, ["page:pageDown"], "the pgdn entry pages down, never up");
+});
+
+it("while a field has focus the row shows the More chord, and the chord closes the menu again", () => {
+	runs.length = 0;
+	const footer = new Footer();
+	const row = draw(footer, [nav(), exit()], 40, [control("fork", ["f"], "fork", { priority: 2 })]);
+	assert.equal(row.line, "↑↓ select · x more · esc close");
+	const editing = draw(footer, [nav(), exit()], 40, [control("fork", ["f"], "fork", { priority: 2 })], true);
+	assert.equal(editing.line, "↑↓ select · ctrl+n more · esc close", "the chord replaces the plain More key while editing");
+	editing.hits.handle(mouse(editing.line.indexOf("ctrl+n more"), 0, 40, 1));
+	assert.equal(footer.menuShown, true, "a click on the chord control opens More");
+	const chord = keyInput(MORE_CHORD);
+	assert.ok(chord !== undefined && keyMatches(chord, MORE_CHORD));
+	footer.menuInput(chord as string);
+	assert.equal(footer.menuShown, false, "the chord closes the menu");
 });
 
 it("action controls carry the action's wording, key and state", () => {

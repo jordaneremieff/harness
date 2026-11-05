@@ -1,8 +1,8 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, type Focusable, matchesKey, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { actionControl, actionLabel, type Control, Footer, MORE_KEY, menuControl, renderTabs } from "./controls.ts";
+import { actionControl, actionLabel, type Control, Footer, MORE_CHORD, MORE_KEY, menuControl, renderTabs } from "./controls.ts";
 import { HitMap } from "./hits.ts";
-import { keyInput, keyMatches } from "./keys.ts";
+import { keyInput, keyMatches, keyText } from "./keys.ts";
 import { fitLine, plainLine, wrap } from "./text.ts";
 import type { Action, KeyHint, Notice, NoticeKind, OperatorView, ViewHost, ViewTarget } from "./view.ts";
 
@@ -92,6 +92,8 @@ export class NavigationFrame implements Component, Focusable {
 	private closed = false;
 	private bodyY = 1;
 	private bodyHeight = 1;
+	/** Size of the last render: a pointer event drawn for another size acts on nothing. */
+	private size = { width: 0, height: 0 };
 
 	constructor(options: FrameOptions) {
 		this.options = options;
@@ -283,7 +285,11 @@ export class NavigationFrame implements Component, Focusable {
 	/** Send one key through the same route a key press takes; footer clicks use this. */
 	private sendKey(key: string): void {
 		const data = keyInput(key);
-		if (data !== undefined) this.handleInput(data);
+		if (data === undefined) {
+			this.show({ text: `The ${keyText(key)} key has no clickable form here.`, kind: "warning" });
+			return;
+		}
+		this.handleInput(data);
 	}
 
 	private renderHeader(width: number): string {
@@ -330,7 +336,7 @@ export class NavigationFrame implements Component, Focusable {
 		const actions = this.actions();
 		// A focused text field takes every key but Escape, Tab and the frame's chords, so the row then
 		// shows only the view's own keys: action keys and More would be text.
-		const menu = this.editing ? [] : this.actionControls(actions, controls);
+		const menu = this.editing ? [] : this.actionControls(actions, controls, hints);
 		for (const action of this.options.controls?.() ?? []) {
 			const control = actionControl(action, (id) => this.invokeFrame(id), 3);
 			if (control) controls.push(control);
@@ -339,15 +345,20 @@ export class NavigationFrame implements Component, Focusable {
 		return { controls, menu };
 	}
 
-	/** Primary keyed actions join the row; every other action is listed in More. Returns the More entries. */
-	private actionControls(actions: readonly Action[], controls: Control[]): Control[] {
+	/**
+	 * Primary keyed actions join the row; every other action is listed in More. A key the view's
+	 * current hints already claims belongs to the view, so that action lists in More without the
+	 * key: one key never means two things in one focus. Returns the More entries.
+	 */
+	private actionControls(actions: readonly Action[], controls: Control[], hints: readonly KeyHint[]): Control[] {
 		const menu: Control[] = [];
 		const invoke = (id: string) => this.invoke(id);
+		const claimed = (key: string | undefined) => key !== undefined && key !== "escape" && hints.some((hint) => hint.keys.includes(key));
 		for (const action of actions) {
 			if (action.key === "escape") continue;
-			const control = action.primary ? actionControl(action, invoke) : undefined;
+			const control = !claimed(action.key) && action.primary ? actionControl(action, invoke) : undefined;
 			if (control) controls.push(control);
-			else menu.push(menuControl(action, invoke));
+			else menu.push(claimed(action.key) ? { ...menuControl(action, invoke), keys: [] } : menuControl(action, invoke));
 		}
 		return menu;
 	}
@@ -363,12 +374,13 @@ export class NavigationFrame implements Component, Focusable {
 	/** Draw the key footer row at `y` and register its targets in `hits` (the host's map when embedded). */
 	renderFooter(width: number, hits: HitMap, y: number, x0 = 0): string {
 		const { controls, menu } = this.footerControls();
-		return this.bar.render(controls, width, this.options.theme, hits, y, x0, menu);
+		return this.bar.render(controls, width, this.options.theme, hits, y, x0, menu, this.editing);
 	}
 
 	render(width: number): string[] {
 		const height = Math.max(4, Math.floor(this.options.rows()));
 		const theme = this.options.theme;
+		this.size = { width, height };
 		this.hits.begin(width, height);
 		const header = this.renderHeader(width);
 		const mounted = this.active ? this.mounted.get(this.active) : undefined;
@@ -478,6 +490,7 @@ export class NavigationFrame implements Component, Focusable {
 		else if (this.bar.menuShown) this.bar.menuInput(data);
 		else if (matchesKey(data, "tab") || matchesKey(data, "shift+tab")) this.traverse(matchesKey(data, "shift+tab"));
 		else if (this.zone === "tabs") this.tabInput(data);
+		else if (keyMatches(data, MORE_CHORD) && this.bar.hasMore) this.bar.toggleMenu();
 		else if (!this.frameKey(data)) this.viewInput(data);
 	}
 
@@ -491,19 +504,25 @@ export class NavigationFrame implements Component, Focusable {
 
 	/**
 	 * While a text field has focus the view takes every key, so letters stay text and the footer
-	 * lists no action keys. Otherwise an action's key runs it, `x` opens More, and the view takes the rest.
+	 * lists no action keys. Otherwise a key of the view's current hints is the view's binding and
+	 * never reaches an owner action; only unclaimed keys run actions, open More, or reach the view.
 	 */
 	private viewInput(data: string): void {
 		const view = this.top()?.view;
 		if (!view) return;
 		try {
-			if (view.editing?.()) view.handleInput(data);
+			if (view.editing?.() || this.hintKey(data)) view.handleInput(data);
 			else if (this.actionKey(data)) return;
 			else if (keyMatches(data, MORE_KEY) && this.bar.hasMore) this.bar.toggleMenu();
 			else view.handleInput(data);
 		} catch (error) {
 			this.fail(error);
 		}
+	}
+
+	/** True when one of the view's current hints claims this key: that key is the view's binding. */
+	private hintKey(data: string): boolean {
+		return this.hints().some((hint) => hint.keys.some((key) => keyMatches(data, key)));
 	}
 
 	private actionKey(data: string): boolean {
@@ -515,6 +534,7 @@ export class NavigationFrame implements Component, Focusable {
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		if (this.closed) return undefined;
+		if (event.width !== this.size.width || event.height !== this.size.height) return undefined;
 		const own = this.hits.handle(event);
 		if (own) {
 			this.options.requestRender();

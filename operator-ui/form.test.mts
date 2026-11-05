@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
+import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { Form, type FormOptions, type FormResult } from "./form.ts";
+import { NavigationFrame } from "./frame.ts";
+import { keyInput } from "./keys.ts";
 
 initTheme("dark");
 setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
@@ -410,4 +412,87 @@ it("a filter with no match keeps the form open on no match", () => {
 	assert.ok(screen(form).includes("No match"));
 	assert.equal(form.handleInput("\r"), true);
 	assert.ok(!owner.events.includes("back"));
+});
+
+/** A wheel turn over one row, for the form's own pointer map. */
+function wheel(x: number, y: number, width: number, height: number, delta: number): TuiMouseEvent {
+	return { type: "wheel", button: "none", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, wheelDelta: delta } as TuiMouseEvent;
+}
+
+function click(x: number, y: number, width: number, height: number): TuiMouseEvent {
+	return { type: "click", button: "left", x, y, screenX: x, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 } as TuiMouseEvent;
+}
+
+it("a choice list keeps the scroll a wheel turn gave it, and Down reveals the highlight", () => {
+	const owner = hostFixture();
+	const choices = Array.from({ length: 20 }, (_, index) => ({ value: `c${index + 1}`, label: `Choice ${String(index + 1).padStart(2, "0")}` }));
+	const form = new Form({
+		title: "Pick",
+		heading: "Pick a value",
+		fields: [{ kind: "choice", id: "pick", label: "Value", choices, rows: 6 }],
+		action: { label: "Apply" },
+		host: owner.host,
+		submit: async () => undefined,
+	});
+	form.focused = true;
+	const rows = () => form.render(60, 20).map(plain);
+	const firstChoice = rows().findIndex((line) => /[●○] Choice/.test(line));
+	assert.ok(firstChoice > 0, "the first choice is on screen");
+	// The list rows start below the field's current-value row, which keeps naming the staged value.
+	const list = () => rows().slice(firstChoice);
+	form.handleMouse(wheel(20, firstChoice, 60, 20, 2));
+	assert.match(list()[0] ?? "", /Choice 03/, "the wheel moved the list");
+	assert.ok(!list().some((line) => line.includes("Choice 01")), "and moved it past the first choice");
+	assert.match(list()[0] ?? "", /Choice 03/, "the next render keeps the wheel position");
+	form.handleInput("\u001b[B");
+	assert.match(list()[0] ?? "", /Choice 02/, "Down revealed the highlight");
+});
+
+it("a click on the configured newline hint inserts a newline, as the physical chord does", async () => {
+	setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS, { "tui.input.newLine": "alt+enter" }));
+	try {
+		const submitted: Array<Record<string, string>> = [];
+		let form: Form | undefined;
+		const frame = new NavigationFrame({
+			theme,
+			target: { id: "session", label: "This session" },
+			destinations: () => [
+				{
+					key: "form",
+					label: "Form",
+					open: (host) => {
+						form = new Form({
+							title: "Note",
+							heading: "Write a note",
+							fields: [{ kind: "area", id: "text", label: "Text", rows: 4 }],
+							action: { label: "Save" },
+							host,
+							submit: async (values) => {
+								submitted.push(values);
+								return undefined;
+							},
+						});
+						return form;
+					},
+				},
+			],
+			rows: () => 12,
+			requestRender: () => {},
+			close: () => {},
+		});
+		const row = () => plain(frame.render(80).at(-1) ?? "").trimEnd();
+		frame.render(80);
+		assert.match(row(), /alt\+enter newline/, "the footer shows the configured chord as a hint");
+		const x = row().indexOf("alt+enter newline");
+		frame.handleInput("a");
+		frame.handleMouse(click(x, 11, 80, 12));
+		frame.handleInput("b");
+		frame.handleInput(keyInput("alt+enter") ?? "");
+		frame.handleInput("c");
+		form?.actions().find((action) => action.id === "submit")?.run();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(submitted[0]?.text, "a\nb\nc", "the click and the physical chord each inserted a line break");
+	} finally {
+		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
+	}
 });

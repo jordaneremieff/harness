@@ -2,7 +2,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { getKeybindings, matchesKey, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { actionLabel } from "./controls.ts";
 import { TextArea, TextField } from "./field.ts";
-import { HitMap } from "./hits.ts";
+import { HitMap, type HitRegion } from "./hits.ts";
 import { fitLine, plainLine, wrap } from "./text.ts";
 import type { Action, KeyHint, Notice, OperatorView, ViewHost } from "./view.ts";
 
@@ -70,6 +70,8 @@ interface ChoiceState {
 	highlight: number;
 	readonly filter?: TextField;
 	top: number;
+	/** True after a wheel turn: the list keeps its scroll until the keyboard or a filter moves it. */
+	manual: boolean;
 }
 
 type FieldState =
@@ -77,6 +79,19 @@ type FieldState =
 	| { readonly kind: "area"; readonly spec: Extract<FieldSpec, { kind: "area" }>; readonly field: TextArea }
 	| { readonly kind: "choice"; readonly spec: Extract<FieldSpec, { kind: "choice" }>; readonly state: ChoiceState }
 	| { readonly kind: "info"; readonly spec: Extract<FieldSpec, { kind: "info" }> };
+
+/** One field's rows for this render: the lines, where its caret or highlight sits, and its pointer targets. */
+interface FieldLayout {
+	readonly lines: string[];
+	readonly caret?: number;
+	readonly hits: readonly HitRegion[];
+}
+
+/** One field's rows inside the body: where it starts, and its own layout. */
+interface LaidField {
+	readonly start: number;
+	readonly layout: FieldLayout;
+}
 
 function choicesOf(state: ChoiceState, values: Readonly<Record<string, string>>): readonly Choice[] {
 	return typeof state.spec.choices === "function" ? state.spec.choices(values) : state.spec.choices;
@@ -94,10 +109,11 @@ function filtered(state: ChoiceState, values: Readonly<Record<string, string>>):
 }
 
 /**
- * A staged form: every field visible at once with its current value, local edits, and one owner
- * call on the labelled submit action. Enter moves to the next field and submits from the last one
- * (a multi-line field takes the newline keys for line breaks); Tab moves between fields. Cancel and
- * Escape run the same cancel and send nothing.
+ * A staged form: every field laid out in one body that scrolls to keep the focused field's caret
+ * or highlighted choice visible; the heading stays at the top and the hint, pending and error
+ * rows at the bottom. Enter moves to the next field and submits from the last one (a multi-line
+ * field takes the newline keys for line breaks); Tab moves between fields. Cancel and Escape run
+ * the same cancel and send nothing.
  */
 export class Form implements OperatorView {
 	readonly title: string;
@@ -108,6 +124,9 @@ export class Form implements OperatorView {
 	private error?: string;
 	private pending = false;
 	private readonly hits = new HitMap();
+	/** Top row of the field body's window; the wheel moves it, focus and typing recentre it. */
+	private top = 0;
+	private manual = false;
 
 	constructor(options: FormOptions) {
 		this.options = options;
@@ -123,6 +142,7 @@ export class Form implements OperatorView {
 					value: spec.value ?? "",
 					highlight: 0,
 					top: 0,
+					manual: false,
 					...(spec.filter ? { filter: new TextField("Filter", "", () => this.refilter(state)) } : {}),
 				};
 				return { kind: "choice", spec, state };
@@ -178,6 +198,7 @@ export class Form implements OperatorView {
 		const first = list[state.highlight];
 		if (first) state.value = first.value;
 		state.top = 0;
+		state.manual = false;
 		this.changed();
 	}
 
@@ -193,18 +214,26 @@ export class Form implements OperatorView {
 		});
 	}
 
+	/** Focus moved: the window and every choice list reveal their highlight again. */
+	private revealFocus(): void {
+		this.manual = false;
+		for (const field of this.fields) if (field.kind === "choice") field.state.manual = false;
+	}
+
 	focusNext(backward: boolean): boolean {
 		let next = this.index;
 		do next += backward ? -1 : 1;
 		while (next >= 0 && next < this.fields.length && !this.focusable(next));
 		if (next < 0 || next >= this.fields.length) return false;
 		this.index = next;
+		this.revealFocus();
 		return true;
 	}
 
 	focusEdge(backward: boolean): void {
 		const order = this.fields.map((_, index) => index).filter((index) => this.focusable(index));
 		this.index = (backward ? order.at(-1) : order[0]) ?? 0;
+		this.revealFocus();
 	}
 
 	/** True when Enter submits now: on the last field, or in a form without fields. */
@@ -297,6 +326,7 @@ export class Form implements OperatorView {
 		// A form without fields leaves Enter to the frame, which runs Submit by its key.
 		if (!field || field.kind === "info") return false;
 		if (this.pending) return true;
+		this.manual = false;
 		// The newline keys come first: a legacy terminal sends Ctrl+J as the same byte as Enter.
 		if (field.kind === "area" && getKeybindings().matches(data, "tui.input.newLine")) return field.field.handleInput(data);
 		if (matchesKey(data, "enter")) return this.advance();
@@ -314,6 +344,7 @@ export class Form implements OperatorView {
 	private choiceInput(state: ChoiceState, data: string): boolean {
 		const list = filtered(state, this.values());
 		if (matchesKey(data, "up") || matchesKey(data, "down")) {
+			state.manual = false;
 			state.highlight = Math.max(0, Math.min(list.length - 1, state.highlight + (matchesKey(data, "up") ? -1 : 1)));
 			const choice = list[state.highlight];
 			if (choice) {
@@ -334,26 +365,30 @@ export class Form implements OperatorView {
 		return this.hits.handle(event);
 	}
 
-	private renderChoice(field: Extract<FieldState, { kind: "choice" }>, index: number, width: number, y: number, theme: Theme): string[] {
+	private layoutChoice(field: Extract<FieldState, { kind: "choice" }>, index: number, width: number, theme: Theme): FieldLayout {
 		const state = field.state;
 		const active = this.focused && index === this.index;
 		const labelColumns = Math.min(LABEL_COLUMNS, Math.max(6, Math.floor(width / 4)));
 		const label = fitLine(theme.fg(active ? "accent" : "muted", plainLine(field.spec.label)), labelColumns);
 		const current = choicesOf(state, this.values()).find((choice) => choice.value === state.value);
 		const lines: string[] = [];
+		const hits: HitRegion[] = [];
 		lines.push(label + fitLine(theme.bold(plainLine(current?.label ?? state.value ?? "")), Math.max(1, width - labelColumns)));
-		this.hits.add({ x: 0, y, width, height: 1, click: () => this.focusField(index) });
-		if (!active) return lines;
+		hits.push({ x: 0, y: 0, width, height: 1, click: () => this.focusField(index) });
+		if (!active) return { lines, hits };
 		if (state.filter) {
 			lines.push(" ".repeat(labelColumns) + state.filter.render(Math.max(1, width - labelColumns), theme, 8, "type to narrow"));
-			this.hits.add({ x: labelColumns, y: y + 1, width: width - labelColumns, height: 1, click: (event) => state.filter?.handleMouse(event, 8) });
+			hits.push({ x: labelColumns, y: 1, width: width - labelColumns, height: 1, click: (event) => state.filter?.handleMouse(event, 8) });
 		}
 		const list = filtered(state, this.values());
 		const rows = Math.max(1, Math.min(field.spec.rows ?? 6, list.length || 1));
 		state.top = Math.max(0, Math.min(Math.max(0, list.length - rows), state.top));
-		if (state.highlight < state.top) state.top = state.highlight;
-		if (state.highlight >= state.top + rows) state.top = state.highlight - rows + 1;
-		const listY = y + lines.length;
+		// A wheel turn keeps the window; the keyboard, a click or a filter change reveals the highlight.
+		if (!state.manual) {
+			if (state.highlight < state.top) state.top = state.highlight;
+			if (state.highlight >= state.top + rows) state.top = state.highlight - rows + 1;
+		}
+		const listY = lines.length;
 		if (!list.length) lines.push(" ".repeat(labelColumns) + theme.fg("dim", "No match"));
 		list.slice(state.top, state.top + rows).forEach((choice, offset) => {
 			const at = state.top + offset;
@@ -361,12 +396,13 @@ export class Form implements OperatorView {
 			const text = `${chosen ? theme.fg("accent", "●") : theme.fg("dim", "○")} ${plainLine(choice.label)}${choice.description ? theme.fg("muted", `  ${plainLine(choice.description)}`) : ""}`;
 			const line = " ".repeat(labelColumns) + fitLine(text, Math.max(1, width - labelColumns));
 			lines.push(at === state.highlight ? theme.bg("selectedBg", line) : line);
-			this.hits.add({
+			hits.push({
 				x: labelColumns,
 				y: listY + offset,
 				width: width - labelColumns,
 				height: 1,
 				click: () => {
+					state.manual = false;
 					state.highlight = at;
 					state.value = choice.value;
 					this.changed();
@@ -374,50 +410,64 @@ export class Form implements OperatorView {
 				},
 			});
 		});
-		this.hits.add({
+		hits.push({
 			x: labelColumns,
 			y: listY,
 			width: width - labelColumns,
 			height: rows,
 			wheel: (delta) => {
+				state.manual = true;
 				state.top = Math.max(0, Math.min(Math.max(0, list.length - rows), state.top + delta));
 			},
 		});
-		return lines;
+		return { lines, hits, ...(state.highlight >= state.top && state.highlight < state.top + rows ? { caret: listY + state.highlight - state.top } : {}) };
 	}
 
 	private focusField(index: number): TuiMouseEventResult {
 		this.index = index;
+		this.revealFocus();
 		return { handled: true, focus: true };
 	}
 
-	private renderField(field: FieldState, index: number, width: number, y: number, theme: Theme): string[] {
+	private layoutField(field: FieldState, index: number, width: number, theme: Theme): FieldLayout {
 		const labelColumns = Math.min(LABEL_COLUMNS, Math.max(6, Math.floor(width / 4)));
 		if (field.kind === "info") {
 			const label = fitLine(theme.fg("muted", plainLine(field.spec.label)), labelColumns);
 			const value = typeof field.spec.value === "function" ? field.spec.value(this.values()) : field.spec.value;
-			return wrap(plainLine(value), Math.max(1, width - labelColumns)).map(
-				(line, row) => (row === 0 ? label : " ".repeat(labelColumns)) + fitLine(line, Math.max(1, width - labelColumns)),
-			);
+			return {
+				lines: wrap(plainLine(value), Math.max(1, width - labelColumns)).map(
+					(line, row) => (row === 0 ? label : " ".repeat(labelColumns)) + fitLine(line, Math.max(1, width - labelColumns)),
+				),
+				hits: [],
+			};
 		}
-		if (field.kind === "choice") return this.renderChoice(field, index, width, y, theme);
+		if (field.kind === "choice") return this.layoutChoice(field, index, width, theme);
 		if (field.kind === "text") {
-			this.hits.add({ x: 0, y, width, height: 1, click: (event) => ({ ...field.field.handleMouse(event, labelColumns), ...this.focusField(index) }) });
-			return [field.field.render(width, theme, labelColumns, field.spec.placeholder ?? "")];
+			const line = field.field.render(width, theme, labelColumns, field.spec.placeholder ?? "");
+			return {
+				lines: [line],
+				hits: [{ x: 0, y: 0, width, height: 1, click: (event) => ({ ...field.field.handleMouse(event, labelColumns), ...this.focusField(index) }) }],
+				...(this.focused && index === this.index ? { caret: field.field.caretRow } : {}),
+			};
 		}
 		const lines = field.field.render(width, theme);
-		this.hits.add({
-			x: 0,
-			y,
-			width,
-			height: lines.length,
-			click: (event) => {
-				this.focusField(index);
-				if (event.y > 0) field.field.handleMouse({ ...event, x: Math.max(0, event.x - 1), y: event.y - 1, width: Math.max(1, width - 2), height: lines.length - 1 });
-				return { handled: true, focus: true };
-			},
-		});
-		return lines;
+		return {
+			lines,
+			hits: [
+				{
+					x: 0,
+					y: 0,
+					width,
+					height: lines.length,
+					click: (event) => {
+						this.focusField(index);
+						if (event.y > 0) field.field.handleMouse({ ...event, x: Math.max(0, event.x - 1), y: event.y - 1, width: Math.max(1, width - 2), height: lines.length - 1 });
+						return { handled: true, focus: true };
+					},
+				},
+			],
+			...(field.field.caretRow !== undefined ? { caret: field.field.caretRow } : {}),
+		};
 	}
 
 	private hint(field: FieldState | undefined): string | undefined {
@@ -425,23 +475,89 @@ export class Form implements OperatorView {
 		return field.spec.hint;
 	}
 
+	/**
+	 * The heading on the first row, a window of the field body under it, and the hint, pending and
+	 * error rows at the bottom. The window keeps the focused field's caret or highlighted choice
+	 * visible and shows as much of that field as fits; the wheel moves it and the next focus change
+	 * or key press reveals the caret again. Pointer targets are registered only for visible rows.
+	 */
 	render(width: number, height: number): string[] {
 		const theme = this.options.host.theme;
 		this.hits.begin(width, height);
 		this.applyFocus();
-		const lines: string[] = [fitLine(theme.bold(plainLine(this.options.heading)), width)];
-		if (this.options.intro) for (const line of wrap(plainLine(this.options.intro), width)) lines.push(fitLine(theme.fg("muted", line), width));
-		lines.push("");
-		this.fields.forEach((field, index) => {
-			for (const line of this.renderField(field, index, width, lines.length, theme)) lines.push(fitLine(line, width));
+		this.addBodyWheel(width, height);
+		const { body, laid } = this.layoutBody(width, theme);
+		const shown = this.visibleStatus(this.statusRows(width, theme), height, width, theme);
+		const windowRows = Math.max(1, height - 1 - shown.length);
+		this.scrollTo(windowRows, body.length, laid[this.index]);
+		const rows = [fitLine(theme.bold(plainLine(this.options.heading)), width)];
+		for (let row = 0; row < windowRows; row++) rows.push(fitLine(body[this.top + row] ?? "", width));
+		this.registerHits(laid, windowRows);
+		return [...rows, ...shown].slice(0, Math.max(1, height));
+	}
+
+	/** The body's wheel moves the whole field window; a choice list claims the wheel over its rows. */
+	private addBodyWheel(width: number, height: number): void {
+		this.hits.add({
+			x: 0,
+			y: 0,
+			width,
+			height: Math.max(1, height),
+			wheel: (delta) => {
+				this.manual = true;
+				this.top += delta;
+			},
 		});
+	}
+
+	/** Every field row in one body, with the row each field starts on and its pointer targets. */
+	private layoutBody(width: number, theme: Theme): { body: string[]; laid: LaidField[] } {
+		const body: string[] = [];
+		if (this.options.intro) for (const line of wrap(plainLine(this.options.intro), width)) body.push(fitLine(theme.fg("muted", line), width));
+		body.push("");
+		const laid = this.fields.map((field, index) => {
+			const start = body.length;
+			const layout = this.layoutField(field, index, width, theme);
+			for (const line of layout.lines) body.push(fitLine(line, width));
+			return { start, layout };
+		});
+		return { body, laid };
+	}
+
+	/** The hint, pending and error rows, which stay at the bottom of the body. */
+	private statusRows(width: number, theme: Theme): string[] {
+		const status: string[] = [];
 		const hint = this.hint(this.fields[this.index]);
-		if (hint && this.focused) lines.push(fitLine(theme.fg("dim", plainLine(hint)), width));
-		if (this.pending) lines.push(fitLine(theme.fg("warning", "Sending… the form stays until the owner answers."), width));
-		if (this.error) for (const line of wrap(plainLine(this.error), width)) lines.push(fitLine(theme.fg("error", line), width));
-		const visible = lines.slice(0, height);
-		while (visible.length < height) visible.push(" ".repeat(Math.max(0, width)));
-		return visible;
+		if (hint && this.focused) status.push(fitLine(theme.fg("dim", plainLine(hint)), width));
+		if (this.pending) status.push(fitLine(theme.fg("warning", "Sending… the form stays until the owner answers."), width));
+		if (this.error) for (const line of wrap(plainLine(this.error), width)) status.push(fitLine(theme.fg("error", line), width));
+		return status;
+	}
+
+	/** A short body keeps the first error line; the heading and status rows never scroll away. */
+	private visibleStatus(status: readonly string[], height: number, width: number, theme: Theme): string[] {
+		if (status.length <= Math.max(0, height - 2)) return [...status];
+		return this.error ? [fitLine(theme.fg("error", plainLine(this.error)), width)] : status.slice(-1);
+	}
+
+	/** A wheel position stays until a focus change or a key press; otherwise the caret or highlight is shown. */
+	private scrollTo(windowRows: number, bodyLength: number, focused: LaidField | undefined): void {
+		const limit = Math.max(0, bodyLength - windowRows);
+		this.top = Math.max(0, Math.min(limit, this.top));
+		if (this.manual || !focused) return;
+		const caret = focused.layout.caret === undefined ? focused.start : focused.start + focused.layout.caret;
+		const top = caret >= focused.start + windowRows ? caret - windowRows + 1 : focused.start;
+		this.top = Math.max(0, Math.min(limit, top));
+	}
+
+	/** Pointer targets only for the rows the window shows, at their screen rows. */
+	private registerHits(laid: readonly LaidField[], windowRows: number): void {
+		for (const { start, layout } of laid) {
+			for (const region of layout.hits) {
+				const y = 1 + start + region.y - this.top;
+				if (y >= 1 && y < 1 + windowRows) this.hits.add({ ...region, y });
+			}
+		}
 	}
 
 	invalidate(): void {
@@ -451,5 +567,4 @@ export class Form implements OperatorView {
 	dispose(): void {
 		this.hits.clear();
 	}
-
 }

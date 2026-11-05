@@ -3,9 +3,14 @@
  * forms and navigation in ordinary Pi and in the attached Agent terminal. It owns no operation,
  * store, approval, model catalogue or trust decision; owners bind their own effects to it.
  * See docs/conventions/operator-panels.md.
+ *
+ * One effective binding per key: outside a text field, the keys of the focused view's current
+ * hints are that view's binding and never reach an owner action; a hint key shown by an action
+ * moves that action into More without the key. While a text field has focus every printable key
+ * is text, so More opens on its chord (`MORE_CHORD`, ctrl+n) instead of its plain key.
  */
 export { Browser, type BrowserOptions, type Scope, SPLIT_MIN_WIDTH } from "./browser.ts";
-export { actionControl, actionLabel, type Control, Footer, MORE_KEY, menuControl, renderTabs, type Tab } from "./controls.ts";
+export { actionControl, actionLabel, type Control, Footer, MORE_CHORD, MORE_KEY, menuControl, renderTabs, type Tab } from "./controls.ts";
 export { TextArea, TextField } from "./field.ts";
 export { type Choice, type FieldSpec, Form, type FormOptions, type FormResult } from "./form.ts";
 export { type Destination, type FrameOptions, NavigationFrame } from "./frame.ts";

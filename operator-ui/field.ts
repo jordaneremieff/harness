@@ -1,5 +1,5 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { Editor, Input, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, Editor, Input, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { fitLine, plainLine, visibleWidth } from "./text.ts";
 
 /** A single-line field: a label column, then the native pi-tui Input with its cursor and editing keys. */
@@ -60,6 +60,11 @@ export class TextField {
 		const [line = ""] = this.input.render(room);
 		return label + fitLine(line, room);
 	}
+
+	/** Row of the caret within the rendered row: the field's only row. */
+	get caretRow(): number {
+		return 0;
+	}
 }
 
 class AreaEditor extends Editor {
@@ -79,6 +84,7 @@ export class TextArea {
 	readonly editor: Editor;
 	label: string;
 	private visible: number;
+	private caret?: number;
 	private readonly change?: (value: string) => void;
 
 	constructor(label: string, theme: Theme, requestRender: () => void, value = "", rows = 4, change?: (value: string) => void) {
@@ -147,12 +153,22 @@ export class TextArea {
 
 	/** The label line, then the editor's rows. */
 	render(width: number, theme: Theme): string[] {
+		const shown = Math.max(1, this.visible);
 		const rows = this.editor.render(Math.max(1, width - 2)).filter((line) => line !== "");
+		const caret = rows.findIndex((line) => line.includes(CURSOR_MARKER));
+		// The editor lays out at least five rows; the window keeps the caret inside the rows shown.
+		const top = caret < 0 ? 0 : Math.max(0, Math.min(Math.max(0, rows.length - shown), caret - shown + 1));
+		this.caret = caret < 0 ? undefined : 1 + caret - top;
 		const label = fitLine(theme.fg(this.focused ? "accent" : "muted", plainLine(this.label)), width);
 		const edge = theme.fg(this.focused ? "accent" : "borderMuted", "▏");
-		const body = rows.slice(0, Math.max(this.visible, 1)).map((line) => `${edge}${fitLine(line, Math.max(1, width - 1))}`);
-		while (body.length < this.visible) body.push(`${edge}${" ".repeat(Math.max(0, width - 1))}`);
+		const body = rows.slice(top, top + shown).map((line) => `${edge}${fitLine(line, Math.max(1, width - 1))}`);
+		while (body.length < shown) body.push(`${edge}${" ".repeat(Math.max(0, width - 1))}`);
 		return [label, ...body];
+	}
+
+	/** Row of the caret within the rendered rows, when the field has focus. */
+	get caretRow(): number | undefined {
+		return this.caret;
 	}
 
 	/** Column width of the rendered label line, for pointer offsets. */

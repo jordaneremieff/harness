@@ -60,32 +60,47 @@ class DetailView<T> implements OperatorView {
 	private readonly reader = new Reader();
 	private readonly hits = new HitMap();
 	private readonly browser: Browser<T>;
-	private readonly item: T;
-	constructor(browser: Browser<T>, item: T, title: string) {
+	/** The item's key: the record is re-resolved from the browser's list on every use. */
+	private readonly key: string;
+	constructor(browser: Browser<T>, key: string, title: string) {
 		this.browser = browser;
-		this.item = item;
+		this.key = key;
 		this.title = title;
+	}
+	/** The listed record this detail shows, or undefined once the key is no longer listed. */
+	private current(): T | undefined {
+		return this.browser.itemOf(this.key);
 	}
 	render(width: number, height: number): string[] {
 		this.hits.begin(width, height);
+		const item = this.current();
+		if (item === undefined) {
+			const text = this.browser.theme.fg("muted", "This record is no longer listed.");
+			return Array.from({ length: height }, (_, row) => fitLine(row === 0 ? text : "", width));
+		}
 		this.reader.focused = this.focused;
-		this.reader.setContent(this.browser.detailOf(this.item), this.browser.detailKeyOf(this.item));
+		this.reader.setContent(this.browser.detailOf(item), this.browser.detailKeyOf(item));
 		return this.reader.render(width, height, this.browser.theme, this.hits, 0, 0);
 	}
 	handleInput(data: string): boolean {
-		return this.reader.handleInput(data);
+		return this.current() === undefined ? true : this.reader.handleInput(data);
 	}
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		return this.hits.handle(event);
 	}
 	actions(): readonly Action[] {
-		return this.browser.actionsOf(this.item);
+		const item = this.current();
+		return item === undefined ? [] : this.browser.actionsOf(item);
 	}
 	keys(): readonly KeyHint[] {
+		if (this.current() === undefined) return [];
 		return [
 			{ keys: ["up", "down"], label: "scroll" },
 			{ keys: ["pageUp", "pageDown"], label: "page" },
 		];
+	}
+	dispose(): void {
+		this.hits.clear();
 	}
 }
 
@@ -107,6 +122,8 @@ export class Browser<T> implements OperatorView {
 	private region: Region;
 	private split = true;
 	private areas = { top: 0, listWidth: 0, height: 0 };
+	/** Host of the narrow detail view that is open now; its actions push from it. */
+	private detailHost?: ViewHost;
 
 	constructor(options: BrowserOptions<T>) {
 		this.options = options;
@@ -141,6 +158,21 @@ export class Browser<T> implements OperatorView {
 		this.list.select(key);
 	}
 
+	/** The listed item of one key, or undefined when that key is no longer listed. */
+	itemOf(key: string): T | undefined {
+		return this.list.entries().find((item) => this.options.key(item) === key);
+	}
+
+	/**
+	 * Open a nested view from wherever this browser shows now: the narrow detail's host while that
+	 * detail is open, otherwise the browser's own host. Item actions use this, so a form opens from
+	 * the visible detail and Cancel returns to the same record.
+	 */
+	push(open: (host: ViewHost) => OperatorView): void {
+		const host = this.detailHost && !this.detailHost.signal.aborted ? this.detailHost : this.options.host;
+		host.push(open);
+	}
+
 	detailOf(item: T): ReaderContent {
 		return this.options.detail(item);
 	}
@@ -166,8 +198,13 @@ export class Browser<T> implements OperatorView {
 			this.region = "detail";
 			return;
 		}
+		const key = this.options.key(item);
 		const title = plainLine(this.options.line(item, 60, this.theme)).slice(0, 48);
-		this.options.host.push(() => new DetailView(this, item, title || "Detail"));
+		this.options.host.push((child) => {
+			const view = new DetailView(this, key, title || "Detail");
+			this.detailHost = child;
+			return view;
+		});
 	}
 
 	private regions(): Region[] {
@@ -287,8 +324,13 @@ export class Browser<T> implements OperatorView {
 
 	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
 		const { top, listWidth, height } = this.areas;
-		if (event.type === "click" && event.y >= top && event.y < top + height) this.region = event.x < listWidth || !this.split ? "list" : "detail";
-		return this.hits.handle(event);
+		const result = this.hits.handle(event);
+		// The focused region follows only an accepted click, so a declined, modified or stale event
+		// changes nothing.
+		if (result?.handled && event.type === "click" && event.y >= top && event.y < top + height) {
+			this.region = event.x < listWidth || !this.split ? "list" : "detail";
+		}
+		return result;
 	}
 
 	private placeholder(): string {

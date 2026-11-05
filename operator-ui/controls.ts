@@ -29,6 +29,11 @@ export interface Control {
 
 /** The key that opens the More menu everywhere a footer shows it. */
 export const MORE_KEY = "x";
+/**
+ * The chord that opens More while a text field has focus, where every plain key is text. Footer
+ * hosts route it to More themselves, from any focus, whenever the row has hidden entries.
+ */
+export const MORE_CHORD = "ctrl+n";
 const SEPARATOR = " · ";
 
 /** Footer wording of an action: its short form, or its label with a lower-case first letter. */
@@ -126,7 +131,8 @@ function keySpans(keys: readonly string[]): Array<{ key: string; x: number; widt
 /**
  * The key footer of one view: controls as `key label` pairs on one row, the way out last. When the
  * row is short, the highest-numbered priority leaves first, into the More menu, which lists every
- * control the row does not show together with its key. Click targets come from the row as drawn.
+ * control the row does not show, one entry per key of a multi-key control, together with its key.
+ * Click targets come from the row as drawn.
  */
 export class Footer {
 	private open = false;
@@ -159,18 +165,30 @@ export class Footer {
 
 	/**
 	 * Draw the row and register its targets. The last control is the way out; More goes before it
-	 * when the menu has entries. `menu` lists entries that never take a place on the row.
+	 * when the menu has entries. `menu` lists entries that never take a place on the row. While a
+	 * text field has focus, More shows `MORE_CHORD`, because the plain More key would be text.
 	 */
-	render(controls: readonly Control[], width: number, theme: Theme, hits: HitMap, y: number, x0 = 0, menu: readonly Control[] = []): string {
+	render(controls: readonly Control[], width: number, theme: Theme, hits: HitMap, y: number, x0 = 0, menu: readonly Control[] = [], editing = false): string {
 		const exit = controls.at(-1);
 		const shown = controls.slice(0, -1);
 		const hidden: Control[] = [];
-		const more: Control = { id: "\u0000more", keys: [MORE_KEY], label: "more", priority: 0, description: "Every action and key this row does not show", run: () => this.toggleMenu() };
+		const more: Control = {
+			id: "\u0000more",
+			keys: [editing ? MORE_CHORD : MORE_KEY],
+			label: "more",
+			priority: 0,
+			description: "Every action and key this row does not show",
+			run: () => this.toggleMenu(),
+		};
 		const row = () => [...shown, ...(hidden.length || menu.length ? [more] : []), ...(exit ? [exit] : [])];
 		const measure = () => row().reduce((total, control, index) => total + controlWidth(control) + (index ? SEPARATOR.length : 0), 0);
 		for (let drop = nextToDrop(shown); measure() > width && drop >= 0; drop = nextToDrop(shown)) hidden.unshift(...shown.splice(drop, 1));
 		// While the menu shows, the row lists the menu's own keys and the menu keeps its entries.
-		if (!this.open) this.listed = [...hidden, ...menu];
+		// A control with several keys lists one entry per key, so a choice runs exactly that key.
+		if (!this.open)
+			this.listed = [...hidden, ...menu].flatMap((control) =>
+				control.keys.length > 1 ? control.keys.map((key) => ({ ...control, id: `${control.id}:${key}`, keys: [key] })) : [control],
+			);
 		let x = 0;
 		const parts: string[] = [];
 		for (const control of row()) {
@@ -237,7 +255,7 @@ export class Footer {
 		if (!this.open) return false;
 		const count = this.listed.length;
 		const move = MENU_MOVES.find(([key]) => matchesKey(data, key as "up"));
-		if (matchesKey(data, "escape") || data === MORE_KEY) this.open = false;
+		if (matchesKey(data, "escape") || data === MORE_KEY || matchesKey(data, MORE_CHORD)) this.open = false;
 		else if (move) this.index = Math.max(0, Math.min(count - 1, move[1](this.index, count)));
 		else if (matchesKey(data, "enter")) this.choose(this.index);
 		return true;
