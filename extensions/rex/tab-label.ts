@@ -27,7 +27,13 @@ interface StoredRecord extends ResourceKey {
 	version: 1;
 	label?: string;
 	pending?: string;
+	attempt?: string;
 	updatedAt: string;
+}
+
+interface Claim extends StoredRecord {
+	pending: string;
+	attempt: string;
 }
 
 interface Run {
@@ -58,7 +64,7 @@ export interface TabLabelProjectorOptions {
 
 export function sanitizeTabLabel(value: string): string {
 	const clean = value.replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, "").replace(/\s+/gu, " ").trim();
-	return Array.from(clean).slice(0, 128).join("");
+	return Array.from(clean).slice(0, 128).join("").trim();
 }
 
 export function createTabLabelProjector(options: TabLabelProjectorOptions): TabLabelProjector {
@@ -79,7 +85,6 @@ class Projector implements TabLabelProjector {
 	private transport: RexTransport | undefined;
 	private running: Promise<void> | undefined;
 	private dirty = false;
-	private confirmed: { sessionId: string; blockId: string; label: string } | undefined;
 	private warned = false;
 	private readonly options: TabLabelProjectorOptions;
 
@@ -111,14 +116,6 @@ class Projector implements TabLabelProjector {
 	}
 
 	input(ctx: ExtensionContext): void {
-		if (!this.active) return;
-		const desired = this.desired(ctx);
-		if (
-			this.confirmed &&
-			this.confirmed.sessionId === this.env.REX_SESSION &&
-			this.confirmed.blockId === this.env.REX_BLOCK &&
-			this.confirmed.label === desired
-		) return;
 		this.refresh(ctx);
 	}
 
@@ -146,7 +143,6 @@ class Projector implements TabLabelProjector {
 
 	private invalidate(): void {
 		this.generation++;
-		this.confirmed = undefined;
 		this.controller?.abort();
 		this.transport?.dispose();
 		this.controller = undefined;
@@ -186,7 +182,6 @@ class Projector implements TabLabelProjector {
 	}
 
 	private async update(run: Run): Promise<void> {
-		this.confirmed = undefined;
 		if (run.ctx.mode !== "tui") return;
 		const sessionId = this.env.REX_SESSION;
 		const blockId = this.env.REX_BLOCK;
@@ -231,32 +226,65 @@ class Projector implements TabLabelProjector {
 			return;
 		}
 		if (currentLabel === desired) {
-			await this.confirmExisting(run, key, desired, record);
+			await this.confirmExisting(key, desired, record);
 			return;
 		}
 		await this.writeLabel(run, key, currentLabel, desired, managed === true);
 	}
 
-	private async confirmExisting(run: Run, key: ResourceKey, desired: string, record: StoredRecord | undefined): Promise<void> {
+	private async confirmExisting(key: ResourceKey, desired: string, record: StoredRecord | undefined): Promise<void> {
 		if (record?.pending !== undefined || (record && record.label !== desired)) {
 			await this.writeRecord({ ...key, version: 1, label: desired, updatedAt: this.now().toISOString() });
 		}
-		if (this.current(run)) this.confirmed = { sessionId: key.sessionId, blockId: key.blockId, label: desired };
 	}
 
 	private async writeLabel(run: Run, key: ResourceKey, currentLabel: string, desired: string, managed: boolean): Promise<void> {
-		await this.writeRecord({
+		const claim: Claim = {
 			...key,
 			version: 1,
 			...(managed ? { label: currentLabel } : {}),
 			pending: desired,
+			attempt: randomUUID(),
 			updatedAt: this.now().toISOString(),
-		});
-		if (!this.current(run)) return;
-		await this.api(run, "session.set_window_label", { session_id: key.sessionId, window_id: key.windowId, label: desired });
+		};
+		try {
+			await this.writeRecord(claim);
+		} catch (error) {
+			// A failed claim write can still leave the renamed claim behind. Withdraw it, and keep
+			// the store failure as the diagnostic.
+			await this.withdrawClaim(key, claim.attempt).catch(() => {});
+			throw error;
+		}
+		if (!this.current(run)) {
+			await this.withdrawClaim(key, claim.attempt);
+			return;
+		}
+		try {
+			await this.api(run, "session.set_window_label", { session_id: key.sessionId, window_id: key.windowId, label: desired });
+		} catch (error) {
+			if (!(error instanceof CliCallError) || error.started) throw error;
+			let withdrawal: unknown;
+			try {
+				await this.withdrawClaim(key, claim.attempt);
+			} catch (withdrawalError) {
+				withdrawal = withdrawalError;
+			}
+			if (this.current(run)) throw withdrawal ?? error;
+			return;
+		}
 		if (!this.current(run)) return;
 		await this.writeRecord({ ...key, version: 1, label: desired, updatedAt: this.now().toISOString() });
-		if (this.current(run)) this.confirmed = { sessionId: key.sessionId, blockId: key.blockId, label: desired };
+	}
+
+	// Withdraws one attempt only. A record with a different attempt, or no record, belongs to newer state.
+	private async withdrawClaim(key: ResourceKey, attempt: string): Promise<void> {
+		const record = await this.readRecord(key);
+		if (record?.attempt !== attempt) return;
+		if (record.label === undefined) {
+			await this.removeRecord(key);
+			return;
+		}
+		await this.writeRecord({ ...key, version: 1, label: record.label, updatedAt: this.now().toISOString() });
 	}
 
 	private desired(ctx: ExtensionContext): string {
@@ -279,7 +307,7 @@ class Projector implements TabLabelProjector {
 			timeoutMs: this.options.settings.maxWaitMs,
 			maxOutputBytes: this.options.settings.maxOutputBytes,
 		});
-		if (response.outcome !== "exited" || response.exitCode !== 0 || response.truncated) throw new Error(cliError(response));
+		if (response.outcome !== "exited" || response.exitCode !== 0 || response.truncated) throw new CliCallError(cliError(response), response.started);
 		try {
 			return JSON.parse(response.stdout);
 		} catch {
@@ -402,7 +430,12 @@ function validRecord(value: unknown, key: ResourceKey): value is StoredRecord {
 		record.sessionId === key.sessionId && record.windowId === key.windowId && record.blockId === key.blockId &&
 		text(record.updatedAt) && record.updatedAt.length <= 64 &&
 		(record.label === undefined || validStoredLabel(record.label)) &&
-		(record.pending === undefined || validStoredLabel(record.pending));
+		(record.pending === undefined || validStoredLabel(record.pending)) &&
+		(record.attempt === undefined || validAttempt(record.attempt));
+}
+
+function validAttempt(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= 64;
 }
 
 function validStoredLabel(value: unknown): value is string {
@@ -411,6 +444,16 @@ function validStoredLabel(value: unknown): value is string {
 
 function sanitizeDiagnostic(value: string): string {
 	return Array.from(value.replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, " ").replace(/\s+/gu, " ").trim()).slice(0, 240).join("");
+}
+
+/** A failed Rex CLI call. `started` separates a write that never began from an uncertain one. */
+class CliCallError extends Error {
+	readonly started: boolean;
+
+	constructor(message: string, started: boolean) {
+		super(message);
+		this.started = started;
+	}
 }
 
 function cliError(response: CliResult): string {

@@ -484,7 +484,9 @@ Each update requires inherited `REX_SESSION` and `REX_BLOCK` values, the launch 
 and a terminal process snapshot whose foreground PID is the Pi process. `session.view` locates the
 containing tab across all layers. A missing block, a different foreground process, or a tab with
 multiple blocks makes the update ineligible without a diagnostic. Display labels lose control and
-format characters, collapse whitespace, and retain at most 128 Unicode code points.
+format characters, collapse whitespace, cut to at most 128 Unicode code points, and trim the cut
+result. Every recorded label and pending value meets the same rule, so a cut that lands on whitespace
+leaves no trailing space.
 
 The projector writes only a verified default label (`Window ` plus the final eight window ID
 characters) or the exact automatic label recorded for the same host, server instance, workspace,
@@ -494,21 +496,43 @@ to the verified default. On Pi exit, the last label remains in place.
 
 Records live in `<agentDir>/rex/tab-labels/`, outside Rex terminal ownership and the Pi session.
 Each SHA-256-named JSON file contains `version`, the five resource key fields, the last confirmed
-automatic `label`, an optional `pending` label, and `updatedAt`. Writes use a temporary file and an
-atomic rename. The store retains at most 256 records and prunes the oldest on write. Invalid or
-mismatched records count as absent. Before a label write, the store records `pending`; an acknowledged
-write records the confirmed label and clears `pending`. A later read reconciles a label that matches
-`pending`, which covers an uncertain CLI outcome without repeating the write.
+automatic `label`, an optional `pending` label, an optional `attempt` identifier, and `updatedAt`.
+A record without `attempt` remains valid. Writes use a temporary file and an atomic rename. The
+store retains at most 256 records and prunes the oldest on write. Invalid or mismatched records
+count as absent.
 
-Session start, session name changes, and interactive input after an unconfirmed result trigger a
-serialized update. Triggers coalesce while a run is active. Session changes invalidate older runs
-and abort their CLI work; shutdown awaits a bounded drain. No polling, background service, focus
-watcher, or OSC output participates. A single warning notification per extension runtime reports
-real errors without adding persistent status chrome.
+Before dispatching a label write, the store records a claim: the prior automatic `label` when the
+tab was already managed, the desired `pending` value, a new `attempt` identifier, and `updatedAt`.
+A result that proves the write never began withdraws only that attempt. This covers a run replaced
+or cancelled after the claim and before dispatch, a failed claim write, and a setter result whose
+process never started, such as a spawn error, a concurrency refusal or cancellation before spawn.
+The withdrawal rereads the record and acts only when it still carries the same `attempt`; it restores
+the prior label, or removes the record when the claim held no label. The original failure keeps the
+existing single warning while the run is current. If the withdrawal itself fails, that warning
+reports the store failure instead, because the claim then remains. A replaced or cancelled run warns
+nothing.
 
-Rex has no conditional label write. A simultaneous manual edit between the final `session.view` read
-and `session.set_window_label` can therefore receive the automatic label. The ownership check prevents
-adoption of labels observed before that narrow interval, not a concurrent edit after the read.
+Every other outcome after dispatch is uncertain: a timeout after the process started, cancellation
+after start, a nonzero exit, an output limit, incomplete JSON or a transport error. The claim stays,
+and a later read reconciles a label that matches `pending` without repeating the write. An
+acknowledged write records the confirmed label and clears `pending` and `attempt`.
+
+Session start, session name changes and every interactive input trigger a serialized update. Each
+update rechecks the server identity, the foreground process, the containing tab and its current
+label, so a tab reset to its default label or changed to a manual label is observed without a
+preceding name change. Triggers coalesce while a run is active. Session changes invalidate older
+runs and abort their CLI work; shutdown awaits a bounded drain. No polling, background service,
+focus watcher, or OSC output participates. A single warning notification per extension runtime
+reports real errors without adding persistent status chrome.
+
+A withdrawal compares `attempt` and then writes in separate steps, without a cross-process lock.
+One process serializes its own updates. A delayed withdrawal leaves a newer record from another
+process in place when it reads that record, because their attempts differ; a write from another
+process between the comparison and the withdrawal's own write can still be replaced. Rex has no
+conditional label write. A simultaneous
+manual edit between the final `session.view` read and `session.set_window_label` can therefore
+receive the automatic label. The ownership check prevents adoption of labels observed before that
+narrow interval, not a concurrent edit after the read.
 
 ## Configuration and loading
 

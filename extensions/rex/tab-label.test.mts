@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { type TestContext } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { createTabLabelProjector, sanitizeTabLabel } from "./tab-label.ts";
-import type { CliCall, CliResult, RexTransport } from "./transport.ts";
+import { createTabLabelProjector, sanitizeTabLabel, type TabLabelProjector } from "./tab-label.ts";
+import type { CliCall, CliResult, RexTransport, TransportOutcome } from "./transport.ts";
 
 const WINDOW_ID = "window:00000000c5f1edd9";
 const DEFAULT_LABEL = "Window c5f1edd9";
@@ -22,50 +22,80 @@ function deferred(): Deferred {
 	return { promise, resolve };
 }
 
+interface TabState {
+	label: string;
+}
+
+interface SetterPlan {
+	outcome: TransportOutcome;
+	started: boolean;
+	exitCode?: number | null;
+	apply: boolean;
+}
+
 function response(value: unknown): CliResult {
 	return { outcome: "exited", exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "", bytes: 0, truncated: false, started: true };
 }
 
 class FakeTransport implements RexTransport {
 	readonly calls: Array<{ method: string; args: readonly string[]; signal?: AbortSignal }> = [];
-	label = DEFAULT_LABEL;
+	readonly tab: TabState;
 	processPid = 4242;
 	extraBlocks = 0;
 	failWhoami = false;
-	failNextSet = false;
 	disposals = 0;
 	onMethod: ((method: string) => void | Promise<void>) | undefined;
 	readonly env: NodeJS.ProcessEnv;
+	private readonly setPlans: SetterPlan[] = [];
 
-	constructor(env: NodeJS.ProcessEnv) { this.env = env; }
+	constructor(env: NodeJS.ProcessEnv, tab: TabState = { label: DEFAULT_LABEL }) {
+		this.env = env;
+		this.tab = tab;
+	}
+
+	get label(): string { return this.tab.label; }
+	set label(value: string) { this.tab.label = value; }
+
+	queueSet(plan: SetterPlan): void { this.setPlans.push(plan); }
 
 	async run(args: readonly string[], call: CliCall): Promise<CliResult> {
 		const method = args.includes("whoami") ? "whoami" : args.at(-2) ?? "";
 		this.calls.push({ method, args, signal: call.signal });
 		await this.onMethod?.(method);
 		if (call.signal?.aborted) return { ...response({}), outcome: "cancelled", exitCode: null };
-		if (method === "whoami") {
-			if (this.failWhoami) return { ...response({}), exitCode: 1, stderr: "unavailable" };
-			return response({ host_id: "host", instance_id: "instance" });
-		}
+		if (method === "whoami") return this.whoami();
 		if (method === "com.superlogical.terminal.process") return response({ foreground: { pid: this.processPid }, last_exit: null });
-		if (method === "session.view") {
-			const blocks = [
-				{ block_id: this.env.REX_BLOCK },
-				...Array.from({ length: this.extraBlocks }, (_, index) => ({ block_id: `block:extra-${index}` })),
-			];
-			return response({ revision: 1, session_id: this.env.REX_SESSION, windows: [{ window_id: WINDOW_ID, label: this.label, layers: [{ blocks }] }] });
-		}
-		if (method === "session.set_window_label") {
-			const input = JSON.parse(args.at(-1) ?? "{}") as { label: string };
-			this.label = input.label;
-			if (this.failNextSet) {
-				this.failNextSet = false;
-				return { ...response({}), outcome: "timeout", exitCode: null, stderr: "uncertain" };
-			}
-			return response({ revision: 2 });
-		}
+		if (method === "session.view") return this.view();
+		if (method === "session.set_window_label") return this.setLabel(args);
 		throw new Error(`Unexpected Rex method: ${method}`);
+	}
+
+	private whoami(): CliResult {
+		if (this.failWhoami) return { ...response({}), exitCode: 1, stderr: "unavailable" };
+		return response({ host_id: "host", instance_id: "instance" });
+	}
+
+	private view(): CliResult {
+		const blocks = [
+			{ block_id: this.env.REX_BLOCK },
+			...Array.from({ length: this.extraBlocks }, (_, index) => ({ block_id: `block:extra-${index}` })),
+		];
+		return response({ revision: 1, session_id: this.env.REX_SESSION, windows: [{ window_id: WINDOW_ID, label: this.tab.label, layers: [{ blocks }] }] });
+	}
+
+	private setLabel(args: readonly string[]): CliResult {
+		const input = JSON.parse(args.at(-1) ?? "{}") as { label: string };
+		const plan = this.setPlans.shift();
+		if (plan?.apply !== false) this.tab.label = input.label;
+		if (!plan) return response({ revision: 2 });
+		return {
+			...response({}),
+			outcome: plan.outcome,
+			exitCode: plan.exitCode ?? null,
+			stdout: "",
+			stderr: plan.outcome === "exited" ? "" : "setter did not complete",
+			started: plan.started,
+		};
 	}
 
 	dispose(): void { this.disposals++; }
@@ -75,20 +105,20 @@ class FakeTransport implements RexTransport {
 	}
 }
 
-async function fixture(t: TestContext, options: { mode?: ExtensionContext["mode"]; block?: boolean; maxRecords?: number } = {}) {
+function context(mode: ExtensionContext["mode"] = "tui", notify: (message: string) => void = () => {}): ExtensionContext {
+	return { mode, cwd: "/work/fallback", ui: { notify } } as unknown as ExtensionContext;
+}
+
+async function fixture(t: TestContext, options: { mode?: ExtensionContext["mode"]; block?: boolean; maxRecords?: number; now?: () => Date; tab?: TabState } = {}) {
 	const agentDir = await mkdtemp(join(tmpdir(), "rex-tab-label-"));
 	const env: NodeJS.ProcessEnv = {
 		REX_SERVER: "unix:///launch",
 		REX_SESSION: "session:test",
 		...(options.block === false ? {} : { REX_BLOCK: "block:test" }),
 	};
-	const transport = new FakeTransport(env);
+	const transport = new FakeTransport(env, options.tab);
 	const notices: string[] = [];
-	const ctx = {
-		mode: options.mode ?? "tui",
-		cwd: "/work/fallback",
-		ui: { notify: (message: string) => { notices.push(message); } },
-	} as ExtensionContext;
+	const ctx = context(options.mode ?? "tui", (message: string) => { notices.push(message); });
 	const state = { name: undefined as string | undefined };
 	const projector = createTabLabelProjector({
 		agentDir,
@@ -96,6 +126,7 @@ async function fixture(t: TestContext, options: { mode?: ExtensionContext["mode"
 		env,
 		pid: 4242,
 		maxRecords: options.maxRecords,
+		now: options.now,
 		getSessionName: () => state.name,
 		createTransport: () => transport,
 	});
@@ -111,13 +142,14 @@ async function recordFiles(agentDir: string): Promise<StoredForTest[]> {
 	let names: string[];
 	try { names = await readdir(directory); }
 	catch { return []; }
-	return Promise.all(names.map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8")) as StoredForTest));
+	return Promise.all(names.filter((name) => name.endsWith(".json")).map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8")) as StoredForTest));
 }
 
 interface StoredForTest {
 	version: number;
 	label?: string;
 	pending?: string;
+	attempt?: string;
 	hostId: string;
 	instanceId: string;
 	sessionId: string;
@@ -132,7 +164,20 @@ test("sanitizes control and format characters and bounds code points", () => {
 	assert.equal(sanitizeTabLabel("\u200b\u202e\n"), "");
 });
 
-test("default and recorded automatic labels accept updates while confirmed input stays idle", async (t) => {
+test("a label cut at whitespace ends without a trailing space", () => {
+	assert.equal(sanitizeTabLabel(`${"a".repeat(127)} rest`), "a".repeat(127));
+	assert.equal(sanitizeTabLabel(`${"a".repeat(127)}  `), "a".repeat(127));
+	assert.equal(sanitizeTabLabel(` ${"😀".repeat(127)} tail`), "😀".repeat(127));
+});
+
+test("sanitising a label twice returns the first result", () => {
+	for (const input of [`${"a".repeat(127)} rest`, "x\u200b\u202e\ty", "😀".repeat(129), "  A   B  ", "\u0000\u007f"]) {
+		const once = sanitizeTabLabel(input);
+		assert.equal(sanitizeTabLabel(once), once);
+	}
+});
+
+test("default and recorded automatic labels accept updates and repeated input observes without writing", async (t) => {
 	const f = await fixture(t);
 	f.projector.start(f.ctx);
 	await f.projector.idle();
@@ -142,7 +187,8 @@ test("default and recorded automatic labels accept updates while confirmed input
 	const settledCalls = f.transport.calls.length;
 	f.projector.input(f.ctx);
 	await f.projector.idle();
-	assert.equal(f.transport.calls.length, settledCalls);
+	assert.deepEqual(f.transport.calls.slice(settledCalls).map((call) => call.method), ["whoami", "com.superlogical.terminal.process", "session.view"]);
+	assert.deepEqual(f.transport.writes, ["fallback"]);
 
 	f.state.name = "Named";
 	f.projector.refresh(f.ctx);
@@ -151,6 +197,7 @@ test("default and recorded automatic labels accept updates while confirmed input
 	const [record] = await recordFiles(f.agentDir);
 	assert.equal(record?.label, "Named");
 	assert.equal(record?.pending, undefined);
+	assert.equal(record?.attempt, undefined);
 	assert.equal(record?.hostId, "host");
 	assert.equal(record?.instanceId, "instance");
 	assert.equal(record?.sessionId, "session:test");
@@ -223,7 +270,7 @@ test("noninteractive modes and a missing inherited block make no CLI calls", asy
 
 test("an uncertain write reconciles from pending without a repeated effect", async (t) => {
 	const f = await fixture(t);
-	f.transport.failNextSet = true;
+	f.transport.queueSet({ outcome: "timeout", started: true, apply: true });
 	f.projector.start(f.ctx);
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, ["fallback"]);
@@ -231,6 +278,7 @@ test("an uncertain write reconciles from pending without a repeated effect", asy
 	const [pending] = await recordFiles(f.agentDir);
 	assert.equal(pending?.pending, "fallback");
 	assert.equal(pending?.label, undefined);
+	assert.ok(pending?.attempt);
 
 	f.projector.refresh(f.ctx);
 	await f.projector.idle();
@@ -238,6 +286,226 @@ test("an uncertain write reconciles from pending without a repeated effect", asy
 	const [confirmed] = await recordFiles(f.agentDir);
 	assert.equal(confirmed?.label, "fallback");
 	assert.equal(confirmed?.pending, undefined);
+	assert.equal(confirmed?.attempt, undefined);
+});
+
+test("a setter that never started does not grant management of a manual label", async (t) => {
+	const f = await fixture(t);
+	f.state.name = "Attempted name";
+	f.transport.queueSet({ outcome: "spawn_error", started: false, apply: false });
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["Attempted name"]);
+	assert.equal(f.transport.label, DEFAULT_LABEL);
+	assert.deepEqual(await recordFiles(f.agentDir), []);
+	assert.equal(f.notices.length, 1);
+
+	f.transport.label = "Attempted name";
+	f.state.name = "New Pi name";
+	f.projector.input(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["Attempted name"]);
+	assert.equal(f.transport.label, "Attempted name");
+	assert.deepEqual(await recordFiles(f.agentDir), []);
+});
+
+test("a never-started setter keeps the earlier confirmed projection", async (t) => {
+	const f = await fixture(t);
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["fallback"]);
+
+	f.state.name = "Attempted name";
+	f.transport.queueSet({ outcome: "cancelled", started: false, apply: false });
+	f.projector.refresh(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["fallback", "Attempted name"]);
+	const [record] = await recordFiles(f.agentDir);
+	assert.equal(record?.label, "fallback");
+	assert.equal(record?.pending, undefined);
+	assert.equal(record?.attempt, undefined);
+
+	f.state.name = "Next name";
+	f.projector.input(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["fallback", "Attempted name", "Next name"]);
+	assert.equal(f.transport.label, "Next name");
+	const [confirmed] = await recordFiles(f.agentDir);
+	assert.equal(confirmed?.label, "Next name");
+});
+
+test("a claim write that fails after persistence withdraws the claim before dispatch", async (t) => {
+	const f = await fixture(t, { maxRecords: 1 });
+	const directory = join(f.agentDir, "rex", "tab-labels");
+	// An older entry that cannot be unlinked makes pruning fail after the claim's atomic rename.
+	const blocker = join(directory, `${"0".repeat(64)}.json`);
+	await mkdir(blocker, { recursive: true });
+	await utimes(blocker, new Date(1000), new Date(1000));
+	f.state.name = "Attempted name";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, []);
+	assert.equal(f.transport.label, DEFAULT_LABEL);
+	assert.deepEqual((await readdir(directory)).filter((name) => join(directory, name) !== blocker), []);
+	assert.equal(f.notices.length, 1);
+
+	f.transport.label = "Attempted name";
+	f.state.name = "New Pi name";
+	f.projector.input(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, []);
+	assert.equal(f.transport.label, "Attempted name");
+});
+
+test("a cancelled run withdraws its claim before dispatch", async (t) => {
+	let projector: TabLabelProjector | undefined;
+	let fired = false;
+	const f = await fixture(t, {
+		now: () => {
+			if (!fired) {
+				fired = true;
+				void projector?.shutdown();
+			}
+			return new Date();
+		},
+	});
+	projector = f.projector;
+	f.state.name = "Attempted name";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.equal(fired, true);
+	assert.deepEqual(f.transport.writes, []);
+	assert.equal(f.transport.label, DEFAULT_LABEL);
+	assert.deepEqual(await recordFiles(f.agentDir), []);
+	assert.deepEqual(f.notices, []);
+
+	f.transport.label = "Attempted name";
+	f.state.name = "New Pi name";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, []);
+	assert.equal(f.transport.label, "Attempted name");
+	assert.deepEqual(await recordFiles(f.agentDir), []);
+});
+
+test("a delayed no-effect cleanup leaves a newer valid claim intact", async (t) => {
+	const tab: TabState = { label: DEFAULT_LABEL };
+	const f = await fixture(t, { tab });
+	const secondTransport = new FakeTransport(f.env, tab);
+	const secondState = { name: "Shared name" };
+	const second = createTabLabelProjector({
+		agentDir: f.agentDir,
+		settings: SETTINGS,
+		env: f.env,
+		pid: 4242,
+		getSessionName: () => secondState.name,
+		createTransport: () => secondTransport,
+	});
+	t.after(() => second.shutdown());
+
+	const entered = deferred();
+	const release = deferred();
+	let firstSetter = true;
+	f.transport.onMethod = async (method) => {
+		if (method === "session.set_window_label" && firstSetter) {
+			firstSetter = false;
+			entered.resolve();
+			await release.promise;
+		}
+	};
+	f.state.name = "Shared name";
+	f.transport.queueSet({ outcome: "spawn_error", started: false, apply: false });
+	f.projector.start(f.ctx);
+	await entered.promise;
+
+	secondTransport.queueSet({ outcome: "timeout", started: true, apply: true });
+	second.start(f.ctx);
+	await second.idle();
+	const [newer] = await recordFiles(f.agentDir);
+	assert.equal(newer?.pending, "Shared name");
+	assert.ok(newer?.attempt);
+	assert.equal(tab.label, "Shared name");
+
+	release.resolve();
+	await f.projector.idle();
+	const [retained] = await recordFiles(f.agentDir);
+	assert.deepEqual(retained, newer);
+
+	second.refresh(f.ctx);
+	await second.idle();
+	const [reconciled] = await recordFiles(f.agentDir);
+	assert.equal(reconciled?.label, "Shared name");
+	assert.equal(reconciled?.pending, undefined);
+
+	secondState.name = "Later name";
+	second.input(f.ctx);
+	await second.idle();
+	assert.deepEqual(secondTransport.writes, ["Shared name", "Later name"]);
+	assert.equal(tab.label, "Later name");
+	await second.shutdown();
+});
+
+test("a name cut at whitespace keeps a valid record and later management", async (t) => {
+	const f = await fixture(t);
+	const truncated = "a".repeat(127);
+	f.state.name = `${truncated} rest`;
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, [truncated]);
+	const [record] = await recordFiles(f.agentDir);
+	assert.equal(record?.label, truncated);
+	assert.equal(record?.pending, undefined);
+
+	f.state.name = "Next name";
+	f.projector.input(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, [truncated, "Next name"]);
+
+	const secondTransport = new FakeTransport(f.env);
+	secondTransport.label = f.transport.label;
+	const second = createTabLabelProjector({
+		agentDir: f.agentDir,
+		settings: SETTINGS,
+		env: f.env,
+		pid: 4242,
+		getSessionName: () => "Later name",
+		createTransport: () => secondTransport,
+	});
+	second.start(f.ctx);
+	await second.idle();
+	assert.deepEqual(secondTransport.writes, ["Later name"]);
+	await second.shutdown();
+});
+
+test("an interactive input restores the default label after an external reset", async (t) => {
+	const f = await fixture(t);
+	f.state.name = "Named";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["Named"]);
+
+	f.transport.label = DEFAULT_LABEL;
+	f.projector.input(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["Named", "Named"]);
+	assert.equal(f.transport.label, "Named");
+	const [record] = await recordFiles(f.agentDir);
+	assert.equal(record?.label, "Named");
+});
+
+test("an interactive input leaves a manual label in place", async (t) => {
+	const f = await fixture(t);
+	f.state.name = "Named";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["Named"]);
+
+	f.transport.label = "Manual";
+	f.projector.input(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["Named"]);
+	assert.equal(f.transport.label, "Manual");
+	assert.deepEqual(await recordFiles(f.agentDir), []);
 });
 
 test("a name change during an in-flight fallback write finishes with the new name", async (t) => {
