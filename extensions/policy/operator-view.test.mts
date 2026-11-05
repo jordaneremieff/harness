@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { stripVTControlCharacters } from "node:util";
 import { describe, it } from "node:test";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { proposalRevision, type RuleSnapshot, targetIdentity } from "./local-rules.ts";
 import { ArtifactReview, artifactLines, type PolicyOperations, type PolicyResult, policyView } from "./operator-view.ts";
-import { data, localRule, packageRule, scopeContext, snapshot, viewStack as stack } from "./view-fixture.mts";
+import { data, localRule, operatorAudit, packageRule, scopeContext, snapshot, viewStack as stack, viewTheme } from "./view-fixture.mts";
+import { NavigationFrame } from "../../operator-ui/index.ts";
 
 initTheme("dark");
 setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
@@ -232,5 +234,121 @@ describe("policy view", () => {
 		await turn();
 		assert.deepEqual(calls.filter(([name]) => name === "data").map(([, args]) => args), ["set {}", "set {} APPROVED"]);
 		assert.equal(frame.depth(), 1, "the review and the form both leave after the change applies");
+	});
+});
+
+/** Owner operations over one replaceable registry fixture, as a store read would return it. */
+function replaceableOperations() {
+	let shown = snapshot();
+	const calls: Call[] = [];
+	const refused = async (): Promise<never> => {
+		throw new Error("unexpected policy change");
+	};
+	const ops: PolicyOperations = {
+		load: async () => {
+			calls.push(["load"]);
+			return { snapshot: shown, fireSummary: data().fireSummary, activity: data().activity, scope: scopeContext };
+		},
+		refresh: async () => {
+			calls.push(["refresh"]);
+			return shown;
+		},
+		inspect: async (view) => ({ text: `${view} evidence`, snapshot: shown }),
+		approve: refused,
+		reject: refused,
+		lifecycle: refused,
+		effect: refused,
+		resetRevision: async () => "abcdefabcdef",
+		reset: refused,
+		data: refused,
+	};
+	return { ops, calls, replace(next: RuleSnapshot) { shown = next; } };
+}
+
+/** The real frame at 80 columns: below the split width, with the rows an ordinary 24-row terminal leaves. */
+function narrowFrame(ops: PolicyOperations) {
+	return new NavigationFrame({
+		theme: viewTheme,
+		target: { id: "session", label: "This session · work" },
+		destinations: () => [{ key: "policy", label: "Policy", open: (host) => policyView(host, ops) }],
+		rows: () => 14,
+		requestRender: () => {},
+		close: () => {},
+	});
+}
+
+const drawn = (frame: NavigationFrame) => frame.render(80).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
+
+/** Wait for the loaded list, open the selected rule's narrow detail, and return the screen. */
+async function openNarrowDetail(frame: NavigationFrame): Promise<string> {
+	for (let attempt = 0; attempt < 400 && !/Read complete file content/.test(drawn(frame)); attempt++) await turn();
+	frame.render(80);
+	frame.handleInput(RIGHT_KEY);
+	for (let attempt = 0; attempt < 400 && !/id: routing\.cat-read/.test(drawn(frame)); attempt++) await turn();
+	frame.render(80);
+	return drawn(frame);
+}
+
+/** Page the open detail until the pattern is on screen, as an operator reading to it. */
+async function pageTo(frame: NavigationFrame, pattern: RegExp): Promise<string> {
+	const pageDown = "\u001b[6~";
+	for (let page = 0; page < 60; page++) {
+		const screen = drawn(frame);
+		if (pattern.test(screen)) return screen;
+		frame.handleInput(pageDown);
+		await turn();
+	}
+	return drawn(frame);
+}
+
+const RIGHT_KEY = "\u001b[C";
+
+describe("narrow policy detail", () => {
+	it("opens the disable form from the visible detail, and Cancel returns to the same rule", async () => {
+		const { ops } = replaceableOperations();
+		const frame = narrowFrame(ops);
+		const screen = await openNarrowDetail(frame);
+		assert.match(screen, /id: routing\.cat-read/, "the detail reads the selected rule");
+		assert.match(frame.viewTitle ?? "", /routing\.cat-read/, "the detail names the rule");
+		assert.match(await pageTo(frame, /effective state: active/), /effective state: active/, "the detail shows the current state");
+		assert.match(frame.viewActions.map((action) => action.label).join(", "), /Disable…/, "the detail offers the current action");
+		frame.handleInput("d");
+		await turn();
+		assert.equal(frame.viewTitle, "Disable rule", `d opens the disable form from the detail: ${drawn(frame)}`);
+		assert.match(drawn(frame), /Disable rule routing\.cat-read/);
+		const cancel = frame.viewActions.find((action) => action.label === "Cancel");
+		assert.ok(cancel, "the form offers Cancel");
+		cancel.run();
+		await turn();
+		assert.match(frame.viewTitle ?? "", /routing\.cat-read/, "Cancel returns to the same rule's detail");
+		assert.match(await pageTo(frame, /effective state: active/), /effective state: active/, "the detail is shown again");
+		assert.doesNotMatch(drawn(frame), /Write the reason first/);
+		assert.ok(frame.viewActions.some((action) => action.label === "Disable…"), "the rule's own actions are back");
+	});
+
+	it("shows the current state and actions after a refresh changes the selected rule", async () => {
+		const { ops, calls, replace } = replaceableOperations();
+		const frame = narrowFrame(ops);
+		await openNarrowDetail(frame);
+		const changed = snapshot();
+		const record = changed.records.get("routing.cat-read");
+		assert.ok(record);
+		replace({
+			...changed,
+			records: new Map([
+				["routing.cat-read", { ...record, override: { state: "disabled", effect: "block", reason: "Paused elsewhere", audit: operatorAudit, againstDefinitionRevision: "000000000000" } }],
+				["local.scan", changed.records.get("local.scan") ?? record],
+			]),
+		});
+		const loads = calls.filter(([name]) => name === "load").length;
+		frame.handleInput("r");
+		for (let attempt = 0; attempt < 400 && calls.filter(([name]) => name === "load").length === loads; attempt++) await turn();
+		assert.equal(calls.filter(([name]) => name === "load").length, loads + 1, "Refresh asks the owner again");
+		const screen = await pageTo(frame, /effective state: disabled/);
+		assert.match(screen, /effective state: disabled/, "the detail shows the current state");
+		assert.match(frame.viewTitle ?? "", /routing\.cat-read/, "the same rule stays selected");
+		const labels = frame.viewActions.map((action) => action.label);
+		assert.ok(labels.includes("Enable…"), `the detail offers the current action: ${labels.join(", ")}`);
+		assert.ok(!labels.includes("Disable…"), "the old action is gone");
 	});
 });

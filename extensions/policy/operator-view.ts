@@ -396,9 +396,9 @@ class PolicyView {
 			case "proposal":
 				return this.proposalActions(item.proposal);
 			case "activity":
-				return item.record.callId === undefined ? [] : [{ id: "explain", label: "Explain call", key: "e", short: "explain", primary: true, run: () => this.host.push((next) => this.explainView(next, `call:${item.record.callId}`)) }];
+				return item.record.callId === undefined ? [] : [{ id: "explain", label: "Explain call", key: "e", short: "explain", primary: true, run: () => this.browser.push((next) => this.explainView(next, `call:${item.record.callId}`)) }];
 			case "data":
-				return [{ id: "remove", label: "Remove…", tone: "danger", disabled: this.blocked(), description: "Review the removal of this binding", run: () => void this.dataChange(`remove ${item.name} ${item.revision}`) }];
+				return [{ id: "remove", label: "Remove…", tone: "danger", disabled: this.blocked(), description: "Review the removal of this binding", run: () => void this.dataChange(`remove ${item.name} ${item.revision}`, { push: (open) => this.browser.push(open) }) }];
 			case "state":
 				return [];
 		}
@@ -420,12 +420,12 @@ class PolicyView {
 		const resettable = state === "active" && record.matcherAvailable;
 		return [
 			state === "disabled"
-				? { id: "enable", label: "Enable…", key: "d", short: "enable", primary: true, disabled: this.unavailable(record, "enable"), run: () => this.host.push((next) => this.lifecycleForm(next, record, "enable")) }
-				: { id: "disable", label: "Disable…", key: "d", short: "disable", primary: true, disabled: this.unavailable(record, "disable"), run: () => this.host.push((next) => this.lifecycleForm(next, record, "disable")) },
-			{ id: "effect", label: "Effect…", key: "f", short: "effect", primary: true, disabled: this.unavailable(record, "effect"), description: "Steer guides at the next tool boundary; block denies", run: () => this.host.push((next) => this.effectForm(next, record)) },
-			{ id: "explain", label: "Explain", key: "e", short: "explain", primary: true, description: "Bounded decision evidence for this rule", run: () => this.host.push((next) => this.explainView(next, record.id)) },
-			{ id: "reset", label: "Reset observation…", disabled: this.pending ? `${this.pending} is running` : resettable ? undefined : "No active available observation period", run: () => this.host.push((next) => this.resetView(next, record)) },
-			{ id: "retire", label: "Retire…", tone: "danger", disabled: this.unavailable(record, "retire"), run: () => this.host.push((next) => this.lifecycleForm(next, record, "retire")) },
+				? { id: "enable", label: "Enable…", key: "d", short: "enable", primary: true, disabled: this.unavailable(record, "enable"), run: () => this.browser.push((next) => this.lifecycleForm(next, record, "enable")) }
+				: { id: "disable", label: "Disable…", key: "d", short: "disable", primary: true, disabled: this.unavailable(record, "disable"), run: () => this.browser.push((next) => this.lifecycleForm(next, record, "disable")) },
+			{ id: "effect", label: "Effect…", key: "f", short: "effect", primary: true, disabled: this.unavailable(record, "effect"), description: "Steer guides at the next tool boundary; block denies", run: () => this.browser.push((next) => this.effectForm(next, record)) },
+			{ id: "explain", label: "Explain", key: "e", short: "explain", primary: true, description: "Bounded decision evidence for this rule", run: () => this.browser.push((next) => this.explainView(next, record.id)) },
+			{ id: "reset", label: "Reset observation…", disabled: this.pending ? `${this.pending} is running` : resettable ? undefined : "No active available observation period", run: () => this.browser.push((next) => this.resetView(next, record)) },
+			{ id: "retire", label: "Retire…", tone: "danger", disabled: this.unavailable(record, "retire"), run: () => this.browser.push((next) => this.lifecycleForm(next, record, "retire")) },
 		];
 	}
 
@@ -441,9 +441,9 @@ class PolicyView {
 				primary: true,
 				disabled: this.blocked(),
 				description: choice ? "Choose steer or block, then read the complete artifact" : "Read the complete artifact, then approve it",
-				run: () => this.host.push((next) => (choice ? this.effectChoice(next, proposal, revision) : this.approvalReview(next, proposal, undefined, revision, () => next.back()))),
+				run: () => this.browser.push((next) => (choice ? this.effectChoice(next, proposal, revision) : this.approvalReview(next, proposal, undefined, revision, () => next.back()))),
 			},
-			{ id: "reject", label: "Reject…", tone: "danger", disabled: this.blocked(), description: "Read the complete artifact, then reject it", run: () => this.host.push((next) => this.rejectReview(next, proposal, revision)) },
+			{ id: "reject", label: "Reject…", tone: "danger", disabled: this.blocked(), description: "Read the complete artifact, then reject it", run: () => this.browser.push((next) => this.rejectReview(next, proposal, revision)) },
 		];
 	}
 
@@ -611,8 +611,8 @@ class PolicyView {
 	private dataActions(): Action[] {
 		const loaded = this.loaded;
 		return [
-			{ id: "set", label: "Set data…", key: "s", short: "set data", primary: true, disabled: this.blocked() ?? (loaded ? undefined : "The registry is not read yet"), description: "Write one named data object; review before it applies", run: () => this.host.push((next) => this.dataForm(next, "set")) },
-			{ id: "set-file", label: "Set from file…", disabled: this.blocked() ?? (loaded ? undefined : "The registry is not read yet"), description: "Bind named data to a local file; review before it applies", run: () => this.host.push((next) => this.dataForm(next, "set-file")) },
+			{ id: "set", label: "Set data…", key: "s", short: "set data", primary: true, disabled: this.blocked() ?? (loaded ? undefined : "The registry is not read yet"), description: "Write one named data object; review before it applies", run: () => this.browser.push((next) => this.dataForm(next, "set")) },
+			{ id: "set-file", label: "Set from file…", disabled: this.blocked() ?? (loaded ? undefined : "The registry is not read yet"), description: "Bind named data to a local file; review before it applies", run: () => this.browser.push((next) => this.dataForm(next, "set-file")) },
 		];
 	}
 
@@ -636,14 +636,24 @@ class PolicyView {
 				const snapshot = this.loaded?.snapshot;
 				const json = verb === "set" && snapshot ? supplyDataRevision(values.json ?? "", snapshot) : (values.json ?? "");
 				// Leaving the review also leaves this form, so the operator returns to the data list.
-				await this.dataChange(`${verb} ${json}`, host, () => host.back());
+				await this.dataChange(`${verb} ${json}`, { host, leave: () => host.back() });
 				return undefined;
 			},
 		});
 	}
 
-	/** Prepare one data change; a review opens before anything applies, and only its exact approval applies. */
-	private async dataChange(args: string, host: ViewHost = this.host, leave?: () => void): Promise<void> {
+	/**
+	 * Prepare one data change; a review opens before anything applies, and only its exact approval applies.
+	 * `push` names the layer the review opens from: the browser's current layer for an item action, so it
+	 * opens above the visible detail, and the form's own host when the change starts from that form.
+	 */
+	private async dataChange(
+		args: string,
+		options: { host?: ViewHost; leave?: () => void; push?: (open: (host: ViewHost) => OperatorView) => void } = {},
+	): Promise<void> {
+		const host = options.host ?? this.host;
+		const push = options.push ?? ((open) => host.push(open));
+		const leave = options.leave;
 		this.pending = "Data change";
 		let answer: Awaited<ReturnType<PolicyOperations["data"]>>;
 		try {
@@ -661,7 +671,7 @@ class PolicyView {
 			return;
 		}
 		const review = answer.review;
-		host.push((next) =>
+		push((next) =>
 			new ArtifactReview({
 				host: next,
 				title: review.title,

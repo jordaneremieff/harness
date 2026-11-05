@@ -10,7 +10,9 @@ import { PACKAGE_CATALOG } from "./catalog.ts";
 import registerPolicy from "./index.ts";
 import { RULES_FILE, type RuleEvent, RuleRegistry, validateRuleEvent } from "./local-rules.ts";
 import { fileURLToPath } from "node:url";
-import type { NavigationFrame } from "../../operator-ui/index.ts";
+import type { NavigationFrame, OperatorView, ViewHost } from "../../operator-ui/index.ts";
+import { OPERATOR_VIEW_PUBLISH, OPERATOR_VIEW_REQUEST } from "../../operator-ui/index.ts";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import { PolicyProposeParams } from "./tools.ts";
 
 /** The policy entrypoint; the ordinary frame binds the published view to this registration of /policy. */
@@ -458,6 +460,54 @@ describe("panel command and shortcut", () => {
 			notifications.every(({ message, type }) => /mode configuration is invalid/.test(message) && type === "error"),
 		);
 		await assert.rejects(stat(dir), /ENOENT/);
+	});
+
+	/** The destinations this owner published, as the dashboard and the frame read them. */
+	function publishedDestinations(pi: FakePi): Array<{ id: string; view: (ctx: unknown, host: ViewHost) => OperatorView }> {
+		const views: Array<{ id: string; view: (ctx: unknown, host: ViewHost) => OperatorView }> = [];
+		pi.events.on(OPERATOR_VIEW_PUBLISH, (value) => {
+			const publication = value as { views: Array<{ id: string; view: (ctx: unknown, host: ViewHost) => OperatorView }> };
+			views.push(...publication.views);
+		});
+		pi.events.emit(OPERATOR_VIEW_REQUEST, { version: 2 });
+		return views;
+	}
+
+	function destinationHost(): ViewHost {
+		return {
+			theme: theme as unknown as Theme,
+			target: { id: "session-1", label: "This session · work" },
+			signal: new AbortController().signal,
+			requestRender: () => {},
+			notify: () => {},
+			push: () => {},
+			back: () => {},
+			close: () => {},
+		};
+	}
+
+	it("refuses the published destination on an invalid mode before creating the view or the store", async () => {
+		const { dir, pi, ctx } = await setup("invalid");
+		const policy = publishedDestinations(pi).find((view) => view.id === "policy");
+		assert.ok(policy, "the policy destination is published");
+		const view = policy.view(ctx as unknown, destinationHost());
+		const text = (view.render(120, 20) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
+		assert.match(text, /Policy is stopped because its mode configuration is invalid\./);
+		await assert.rejects(stat(dir), /ENOENT/, "the store directory is never created");
+	});
+
+	it("opens the published destination with a valid mode and loads the store", async () => {
+		const { dir, pi, ctx } = await setup("observe");
+		const policy = publishedDestinations(pi).find((view) => view.id === "policy");
+		assert.ok(policy, "the policy destination is published");
+		const view = policy.view(ctx as unknown, destinationHost());
+		let text = "";
+		for (let attempt = 0; attempt < 400 && !/\d+ rules/.test(text); attempt++) {
+			text = (view.render(120, 20) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
+			await turn();
+		}
+		assert.match(text, /\d+ rules/, "the destination loads the registry");
+		assert.ok((await stat(dir)).isDirectory(), "the store directory is created on first use");
 	});
 
 	for (const [mode, hasUI] of [

@@ -878,8 +878,8 @@ Rows show the date, title, lifecycle glyph (`○` open, `◐` active, `●` clos
 `◈` unknown), lifecycle label, project, and branch. The detail adds the full
 id, session, artifact path, timestamps, outcome, and tags, and wraps long lines
 so no text is lost to horizontal truncation. Stored terminal and bidi controls
-render as inert escape text. At narrow widths the detail opens as its own view
-with Enter.
+render as inert escape text. Right moves to the detail; at narrow widths it
+opens the detail as its own view.
 
 The actions follow the real lifecycle:
 
@@ -897,7 +897,9 @@ A record with an unknown state offers no lifecycle action. A record that is
 unreadable, a running action, or stale search results make the record actions
 unavailable with the reason. The store remains the final authority on every
 transition. **Refresh** reads the newest stashes again or reruns the search
-from its first page. The query, scope, and selection survive leaving and
+from its first page, then rereads the selected record even when its id is
+unchanged; a lifecycle effect rereads it the same way, so the shown preview and
+its actions always follow the store. The query, scope, and selection survive leaving and
 reopening the view within the session.
 
 The view (`operator-view.ts`) and the reads it shows (`browser-views.ts`) are

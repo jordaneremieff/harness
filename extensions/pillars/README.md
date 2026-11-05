@@ -160,7 +160,9 @@ from the inventory, and a detail that reads the selected source page by page.
 The detail shows the exact resource and reference digest of the page it read;
 **Read more** follows the continuation under that digest; a changed source
 refuses it, so pages of two revisions never mix, and **Read again** reads the
-source from its first page. The footer at the bottom lists each control as its
+source from its first page. A read cancelled by a newer selection never
+leaves the view waiting, and a cancelled continuation keeps the pages already
+read. The footer at the bottom lists each control as its
 key and its short label: `m` reads more, `r` reads again. A click on a control
 runs the same action as its key. `/` focuses the search field, which filters
 titles, types, and statements. `x` opens the list of every other action.

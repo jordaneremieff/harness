@@ -25,7 +25,7 @@ import { POLICY_MODES, type PolicyMode, resolvePolicyModeValue } from "./mode.ts
 import { capText, formatPolicyList, formatPolicyShow, readFireSummary, readRecentActivity, terminalSafe } from "./panel.ts";
 import { ArtifactReview, createPolicyViewState, type PolicyOperations, type PolicyResult, type PolicyViewState, policyView } from "./operator-view.ts";
 import { effectiveState, selectableForAction, type SessionRuleAudit } from "./rule.ts";
-import { frameRows, NavigationFrame, openOperatorFrame, ordinaryTarget, publishOperatorViews } from "../../operator-ui/index.ts";
+import { frameRows, NavigationFrame, openOperatorFrame, ordinaryTarget, publishOperatorViews, ReaderView } from "../../operator-ui/index.ts";
 import { PolicyRuntime } from "./runtime.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
 import {
@@ -995,10 +995,23 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		handler: openPanel,
 	});
 	// Package contract: docs/conventions/operator-panels.md. The view opens harmlessly; every change is its own labelled action inside.
+	// The owner's mode admission runs before the view or its store loads, so every entry route
+	// (command, shortcut, or a published destination) refuses an invalid configuration alike.
 	publishOperatorViews(pi, {
 		version: 2,
 		owner: OWNER,
-		views: [{ id: "policy", label: "Policy", command: { name: "policy" }, order: 30, view: (ctx, host) => policyView(host, ordinaryOperations(commandEnv, ctx), viewState(ctx)) }],
+		views: [
+			{
+				id: "policy",
+				label: "Policy",
+				command: { name: "policy" },
+				order: 30,
+				view: (ctx, host) =>
+					ensureMode()
+						? policyView(host, ordinaryOperations(commandEnv, ctx), viewState(ctx))
+						: new ReaderView("Policy", host, () => "Policy is stopped because its mode configuration is invalid."),
+			},
+		],
 	});
 	const commandEnv: PolicyCommandEnv = {
 		output,

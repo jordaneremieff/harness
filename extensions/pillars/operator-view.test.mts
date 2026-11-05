@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { NavigationFrame, type OperatorView, type ViewHost } from "../../operator-ui/index.ts";
-import type { AccessError, AccessPage, AccessRequest } from "./access.ts";
-import type { BrowserEntry } from "./inventory.ts";
+import { access, type AccessError, type AccessPage, type AccessRequest } from "./access.ts";
+import { loadCatalog, type Catalog } from "./catalog.ts";
+import { browserEntries, type BrowserEntry } from "./inventory.ts";
 import { pillarsView } from "./operator-view.ts";
 
 initTheme("dark");
@@ -138,4 +142,164 @@ test("the footer shows m read more and r read again, and a footer click reads as
 	await turn();
 	assert.deepEqual(calls.at(-1), { resource: "inventory" }, "the click reads again from the first page");
 	frame.close();
+});
+
+/** A real corpus in a private temporary directory, read through the real catalog and accessor. */
+async function tempCorpus(): Promise<{ catalog: Catalog; root: string }> {
+	const root = await mkdtemp(join(tmpdir(), "pillars-view-"));
+	const long = `${"filler line for a multi-page source\n".repeat(900)}PAGE-TWO-TAIL`;
+	await writeFile(join(root, "README.md"), "# Pillars\n\n| [Frame Inspection](pattern-frame-inspection.md) | At an option set, name the frame. |\n\n| [Made Up Heuristic](heuristic-made-up.md) | Quoted index statement. |\n");
+	await writeFile(join(root, "GOVERNANCE.md"), "Governance rules for the corpus.\n");
+	await writeFile(join(root, "pattern-frame-inspection.md"), `PAGE-ONE-HEAD\n${long}`);
+	await writeFile(join(root, "heuristic-made-up.md"), "A short heuristic body.\n");
+	const catalog = await loadCatalog(undefined, { agentDir: root, env: { PI_PILLARS_CORPUS: root } });
+	return { catalog, root };
+}
+
+/** Wait for every settled promise the view started, within a bounded number of event-loop turns. */
+const settle = async (rounds = 50) => {
+	for (let round = 0; round < rounds; round++) await new Promise((resolve) => setImmediate(resolve));
+};
+
+/**
+ * One held read: the caller decides when the accessor runs. `skip` lets earlier matching reads
+ * pass through, so the held read is the one the selection started, not the inventory listing. A
+ * read released after its abortion answers as the real accessor does, with an error value;
+ * `rejectWith` models a route that rejects instead.
+ */
+interface Gate {
+	matches: (request: AccessRequest) => boolean;
+	used: boolean;
+	release: () => void;
+	rejectWith?: Error;
+	promise: Promise<void>;
+}
+
+function gate(resource: string, options: { skip?: number; offset?: boolean; rejectWith?: Error } = {}): Gate {
+	let seen = 0;
+	let release: () => void = () => {};
+	const promise = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return {
+		matches: (request) =>
+				request.resource === resource && (!options.offset || request.offset !== undefined) && ++seen > (options.skip ?? 0),
+		used: false,
+		release,
+		promise,
+		...(options.rejectWith ? { rejectWith: options.rejectWith } : {}),
+	};
+}
+
+/** The real accessor behind the view's operations, with chosen reads held until the test releases them. */
+function gatedAccess(catalog: Catalog, gates: Gate[]) {
+	const calls: AccessRequest[] = [];
+	const read = async (request: AccessRequest, signal?: AbortSignal): Promise<AccessPage | AccessError> => {
+		calls.push(request);
+		const held = gates.find((candidate) => !candidate.used && candidate.matches(request));
+		if (held) {
+			held.used = true;
+			await held.promise;
+			if (held.rejectWith) throw held.rejectWith;
+		}
+		return access(catalog, request, signal);
+	};
+	return { calls, read };
+}
+
+function viewHost(): ViewHost {
+	return {
+		theme,
+		target: { id: "session", label: "This session · work" },
+		signal: new AbortController().signal,
+		requestRender: () => {},
+		notify: () => {},
+		push: () => {},
+		back: () => {},
+		close: () => {},
+	};
+}
+
+test("a late read that fulfils with an error value after cancellation leaves no pending state", async () => {
+	const { catalog } = await tempCorpus();
+	// The listing reads the inventory source once; the held read is the one the selection started.
+	const held = gate("inventory", { skip: 1 });
+	const { calls, read } = gatedAccess(catalog, [held]);
+	const view = pillarsView(viewHost(), { inventory: (signal) => browserEntries(catalog, read, signal), read });
+	await settle();
+	assert.ok(calls.some((request) => request.resource === "inventory"), "selection reads the inventory source");
+	view.handleInput("\u001b[B");
+	await settle();
+	assert.ok(calls.some((request) => request.resource === "governance"), "the next row reads its own source");
+	held.release();
+	await settle();
+	const again = calls.filter((request) => request.resource === "inventory").length;
+	view.handleInput("\u001b[A");
+	await settle();
+	assert.ok(
+		calls.filter((request) => request.resource === "inventory").length > again,
+		"reselecting the withdrawn source starts a new read",
+	);
+	const screen = (view.render(120, 30) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
+	assert.ok(screen.includes("# Pillars"), "the reread inventory page is shown");
+	assert.ok(!screen.includes("Reading the source…"), "no read stays pending forever");
+	const actions = view.actions?.() ?? [];
+	const readAgain = actions.find((action) => action.label === "Read again");
+	assert.ok(readAgain);
+	assert.equal(readAgain.disabled, undefined, "Read again works after the late cancelled read");
+});
+
+test("a late read that rejects after cancellation also leaves no pending state", async () => {
+	const { catalog } = await tempCorpus();
+	const held = gate("inventory", { skip: 1, rejectWith: new Error("route rejected the read") });
+	const { read } = gatedAccess(catalog, [held]);
+	const view = pillarsView(viewHost(), { inventory: (signal) => browserEntries(catalog, read, signal), read });
+	await settle();
+	view.handleInput("\u001b[B");
+	await settle();
+	held.release();
+	await settle();
+	view.handleInput("\u001b[A");
+	await settle();
+	const screen = (view.render(120, 30) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
+	assert.ok(screen.includes("# Pillars"), "the reread inventory page is shown");
+	assert.ok(!screen.includes("Reading the source…"), "no read stays pending forever");
+});
+
+test("a cancelled continuation keeps the pages already read and stays retryable", async () => {
+	const { catalog } = await tempCorpus();
+	const held = gate("pattern-frame-inspection", { offset: true });
+	const { calls, read } = gatedAccess(catalog, [held]);
+	const view = pillarsView(viewHost(), { inventory: (signal) => browserEntries(catalog, read, signal), read });
+	await settle();
+	view.handleInput("\u001b[B");
+	view.handleInput("\u001b[B");
+	await settle();
+	const screen = (view.render(120, 30) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
+	assert.ok(screen.includes("PAGE-ONE-HEAD"), "the first page is shown");
+	const more = view.actions?.().find((action) => action.label === "Read more");
+	assert.ok(more);
+	assert.equal(more.disabled, undefined, "the first page has a continuation to read");
+	more.run();
+	await settle();
+	view.handleInput("\u001b[A");
+	await settle();
+	held.release();
+	await settle();
+	view.handleInput("\u001b[B");
+	await settle();
+	const kept = (view.render(120, 30) ?? []).map((line) => stripVTControlCharacters(line)).join("\n");
+	assert.ok(kept.includes("PAGE-ONE-HEAD"), "the cancelled continuation keeps its first page");
+	assert.ok(!kept.includes("Reading the next page…"), "no continuation stays pending forever");
+	const actions = view.actions?.() ?? [];
+	for (const label of ["Read more", "Read again"]) {
+		const action = actions.find((candidate) => candidate.label === label);
+		assert.ok(action);
+		assert.notEqual(action.disabled, "A read is running", `${label} stays available`);
+	}
+	const before = calls.length;
+	const readAgain = actions.find((candidate) => candidate.label === "Read again");
+	readAgain?.run();
+	await settle();
+	assert.ok(calls.length > before, "Read again starts a fresh read after the cancelled continuation");
 });

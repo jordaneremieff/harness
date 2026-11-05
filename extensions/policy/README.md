@@ -1195,8 +1195,8 @@ publishes it as an operator view, `/dashboard` also shows it as a tab.
 The view shares rule and proposal details and operator gates with the command.
 Its scopes are Rules, Proposals, Activity, Data, and State. Titles come first:
 a rule shows its purpose, a proposal its candidate purpose. `/` focuses the
-filter field; selecting a row reads it and never acts. At narrow widths the
-detail opens as its own view with Enter.
+filter field; selecting a row reads it and never acts. Right moves to the
+detail; at narrow widths it opens the detail as its own view.
 
 The footer at the bottom lists each control as its key and its short label. A
 click on a control runs the same action as its key. The keys of this view are

@@ -91,7 +91,7 @@ const helpText = [
 	"A browser over stashed handovers. Select one on the left and read it on the right. /stash new <hint> creates another.",
 	"",
 	"What the keys do",
-	"Enter picks up the selected stash: it activates the stash and delivers its handover to the bound conversation. On a closed stash, Enter reopens it. a picks up with a note that goes ahead of the handover. o closes an active stash with an outcome. c copies the resume command. r reads the list again. x lists every other action (release and rotate). / filters the newest stashes or, in Search archive, searches full bodies.",
+	"Enter picks up the selected stash: it activates the stash and delivers its handover to the bound conversation. On a closed stash, Enter reopens it. Right moves to the detail; at narrow widths it opens the detail as its own view. a picks up with a note that goes ahead of the handover. o closes an active stash with an outcome. c copies the resume command. r reads the list and the selected record again. x lists every other action (release and rotate). / filters the newest stashes or, in Search archive, searches full bodies.",
 	"",
 	"Closing",
 	"Escape closes the browser. Closing discards nothing. No lifecycle state changes unless you choose an action, and cancelling a note picks nothing up.",
@@ -136,7 +136,10 @@ class StashView {
 	private archiveNotice?: string;
 	/** Records read on selection, by id; a read replaces the listed row's facts. */
 	private readonly loaded = new Map<string, Read<StashEntry>>();
-	private previewing?: AbortController;
+	/** The preview read in flight, so a superseded read is discarded with its own cache entry. */
+	private previewing?: { id: string; controller: AbortController };
+	/** Monotonic list-read generation: a late older list read never replaces a newer one. */
+	private listLoad = 0;
 	private busy?: string;
 	private rendered?: { key: string; width: number; lines: readonly string[] };
 
@@ -173,7 +176,7 @@ class StashView {
 		});
 		host.signal.addEventListener("abort", () => {
 			this.searching?.abort();
-			this.previewing?.abort();
+			this.previewing?.controller.abort();
 		});
 		void this.loadRecent();
 		if (state.scope === "archive") this.refreshItems();
@@ -204,14 +207,15 @@ class StashView {
 	}
 
 	private async loadRecent(): Promise<void> {
+		const load = ++this.listLoad;
 		this.recent = { state: "pending" };
 		this.host.requestRender();
 		try {
 			const value = await this.ops.recent(this.host.signal);
-			if (this.host.signal.aborted) return;
+			if (this.host.signal.aborted || load !== this.listLoad) return;
 			this.recent = { state: "ready", value };
 		} catch (error) {
-			if (this.host.signal.aborted) return;
+			if (this.host.signal.aborted || load !== this.listLoad) return;
 			this.recent = { state: "failed", error: message(error) };
 		}
 		this.refreshItems();
@@ -225,16 +229,17 @@ class StashView {
 		const controller = new AbortController();
 		this.searching = controller;
 		const signal = AbortSignal.any([controller.signal, this.host.signal]);
+		const load = ++this.listLoad;
 		this.archiveNotice = "Searching full bodies…";
 		this.host.requestRender();
 		try {
 			const prior = cursor === undefined ? undefined : this.state.archive;
 			const view = await this.ops.archive(query, cursor, prior, signal);
-			if (signal.aborted) return;
+			if (signal.aborted || load !== this.listLoad) return;
 			this.state.archive = view;
 			this.archiveNotice = undefined;
 		} catch (error) {
-			if (signal.aborted) return;
+			if (signal.aborted || load !== this.listLoad) return;
 			this.archiveNotice = `Search could not run: ${message(error)}`;
 		}
 		this.refreshItems();
@@ -245,13 +250,14 @@ class StashView {
 		if (this.state.scope === "recent") return this.loadRecent();
 		const view = this.state.archive;
 		if (!view) return;
+		const load = ++this.listLoad;
 		const signal = this.host.signal;
 		try {
 			const next = await this.ops.archive(view.query, view.cursor, view, signal);
-			if (signal.aborted) return;
+			if (signal.aborted || load !== this.listLoad) return;
 			this.state.archive = next;
 		} catch (error) {
-			if (signal.aborted) return;
+			if (signal.aborted || load !== this.listLoad) return;
 			this.archiveNotice = `Search could not run: ${message(error)}`;
 		}
 		this.refreshItems();
@@ -276,29 +282,48 @@ class StashView {
 
 	private selected(entry: StashEntry | undefined): void {
 		this.state.selected = entry?.meta.id;
-		this.previewing?.abort();
-		if (!entry) return;
+		if (!entry) {
+			this.previewing?.controller.abort();
+			this.previewing = undefined;
+			return;
+		}
 		const known = this.loaded.get(entry.meta.id);
 		if (known?.state === "ready" || known?.state === "pending") return;
+		this.readPreview(entry);
+	}
+
+	/** Start one preview read, discarding any earlier read it supersedes. */
+	private readPreview(entry: StashEntry): void {
+		const prior = this.previewing;
+		prior?.controller.abort();
+		if (prior && this.loaded.get(prior.id)?.state === "pending") this.loaded.delete(prior.id);
 		const controller = new AbortController();
-		this.previewing = controller;
+		this.previewing = { id: entry.meta.id, controller };
 		const signal = AbortSignal.any([controller.signal, this.host.signal]);
 		this.loaded.set(entry.meta.id, { state: "pending" });
 		this.ops.preview(entry, signal).then(
 			(value) => {
-				if (signal.aborted) return;
+				if (signal.aborted || this.previewing?.controller !== controller) return;
 				this.loaded.set(entry.meta.id, { state: "ready", value });
 				this.host.requestRender();
 			},
 			(error: unknown) => {
-				if (signal.aborted) {
-					this.loaded.delete(entry.meta.id);
-					return;
-				}
+				if (signal.aborted || this.previewing?.controller !== controller) return;
 				this.loaded.set(entry.meta.id, { state: "failed", error: message(error) });
 				this.host.requestRender();
 			},
 		);
+	}
+
+	/**
+	 * Reread the selected record after an effect or an explicit refresh. The selection callbacks do
+	 * not fire when the id is unchanged, so the read starts here, not from a cleared cache alone.
+	 */
+	private rereadSelected(): void {
+		const id = this.state.selected;
+		if (!id) return;
+		const entry = this.items().find((item) => item.meta.id === id);
+		if (entry) this.readPreview(entry);
 	}
 
 	private body(entry: StashEntry, width: number): readonly string[] {
@@ -327,13 +352,13 @@ class StashView {
 
 	private actions(listed: StashEntry | undefined): Action[] {
 		const actions: Action[] = listed ? this.recordActions(this.current(listed)) : [];
-		actions.push({ id: "help", label: "Help", key: "h", short: "help", primary: true, run: () => this.host.push((next) => new ReaderView("Help", next, () => helpText)) });
+		actions.push({ id: "help", label: "Help", key: "h", short: "help", primary: true, run: () => this.browser.push((next) => new ReaderView("Help", next, () => helpText)) });
 		if (this.state.scope === "archive") {
 			const view = this.state.archive;
 			actions.push({ id: "search", label: "Search", disabled: this.state.query.trim() ? undefined : "Type text to search for", description: "Search full bodies with the bounded stash search", run: () => void this.search(undefined) });
 			actions.push({ id: "continue", label: "Continue", disabled: view?.nextCursor && !view.stale ? undefined : "No further page", description: "Read the next bounded page", run: () => void this.search(view?.nextCursor ?? undefined) });
 		}
-		actions.push({ id: "refresh", label: "Refresh", key: "r", short: "refresh", primary: true, description: this.state.scope === "archive" ? "Run the search again from its first page" : "Read the newest stashes again", run: () => void (this.state.scope === "archive" ? this.search(undefined) : this.loadRecent()) });
+		actions.push({ id: "refresh", label: "Refresh", key: "r", short: "refresh", primary: true, description: this.state.scope === "archive" ? "Run the search again from its first page and reread the selected record" : "Read the newest stashes again and reread the selected record", run: () => void this.refresh() });
 		return actions;
 	}
 
@@ -344,16 +369,23 @@ class StashView {
 		const actions: Action[] = [];
 		if (state === "open" || state === "active") {
 			actions.push({ id: "pickup", label: "Pick up", key: "enter", short: "pick up", primary: true, disabled: blocked, description: `Activate it and deliver its handover to ${this.host.target.label}`, run: () => void this.pickup(entry, undefined) });
-			actions.push({ id: "note", label: "Pick up with note…", key: "a", short: "note", primary: true, disabled: blocked, description: "Add a note that goes ahead of the handover", run: () => this.host.push((next) => this.noteForm(next, entry)) });
+			actions.push({ id: "note", label: "Pick up with note…", key: "a", short: "note", primary: true, disabled: blocked, description: "Add a note that goes ahead of the handover", run: () => this.browser.push((next) => this.noteForm(next, entry)) });
 		}
 		if (state === "active") {
-			actions.push({ id: "close", label: "Close with outcome…", key: "o", short: "close stash", primary: true, disabled: blocked, run: () => this.host.push((next) => this.closeForm(next, entry)) });
-			actions.push({ id: "release", label: "Release…", disabled: blocked, description: "Return it to open", run: () => this.host.push((next) => this.confirmForm(next, entry, "release")) });
+			actions.push({ id: "close", label: "Close with outcome…", key: "o", short: "close stash", primary: true, disabled: blocked, run: () => this.browser.push((next) => this.closeForm(next, entry)) });
+			actions.push({ id: "release", label: "Release…", disabled: blocked, description: "Return it to open", run: () => this.browser.push((next) => this.confirmForm(next, entry, "release")) });
 		}
-		if (state === "closed") actions.push({ id: "reopen", label: "Reopen…", key: "enter", short: "reopen", primary: true, disabled: blocked, run: () => this.host.push((next) => this.confirmForm(next, entry, "reopen")) });
-		if (state === "open" || state === "closed") actions.push({ id: "rotate", label: "Rotate…", tone: "danger", disabled: blocked, description: "Move it to the store's .trash directory", run: () => this.host.push((next) => this.confirmForm(next, entry, "rotate")) });
+		if (state === "closed") actions.push({ id: "reopen", label: "Reopen…", key: "enter", short: "reopen", primary: true, disabled: blocked, run: () => this.browser.push((next) => this.confirmForm(next, entry, "reopen")) });
+		if (state === "open" || state === "closed") actions.push({ id: "rotate", label: "Rotate…", tone: "danger", disabled: blocked, description: "Move it to the store's .trash directory", run: () => this.browser.push((next) => this.confirmForm(next, entry, "rotate")) });
 		actions.push({ id: "copy", label: "Copy resume command", key: "c", short: "copy", primary: true, description: `Copy ${resumeCommand(id)} for a new session`, run: () => void this.copy(id) });
 		return actions;
+	}
+
+	/** An explicit refresh rereads the list, then the selected record, even when its id is unchanged. */
+	private async refresh(): Promise<void> {
+		if (this.state.scope === "archive") await this.search(undefined);
+		else await this.loadRecent();
+		this.rereadSelected();
 	}
 
 	/** Pick up once; the answer is the receipt or the refusal, never a rejection. */
@@ -364,6 +396,7 @@ class StashView {
 			const receipt = await this.ops.pickup(entry.meta.id, note, (then) => this.host.close(then));
 			if (this.host.signal.aborted) return { receipt };
 			this.host.notify(receipt || `Picked up ${entry.meta.id}`, "success");
+			this.rereadSelected();
 			void this.reload();
 			return { receipt };
 		} catch (error) {
@@ -422,9 +455,10 @@ class StashView {
 		});
 	}
 
-	/** Run one lifecycle effect, show its receipt, and read the view again. */
+	/** Run one lifecycle effect, show its receipt, and read the list and the selected record again. */
 	private async effect(run: () => Promise<string>) {
 		const text = await run();
+		this.rereadSelected();
 		void this.reload();
 		return { close: true, notice: { text, kind: "success" as const } };
 	}

@@ -130,7 +130,8 @@ class PillarsView {
 		const request: AccessRequest = last ? { resource, offset: last.nextOffset, referenceBodyDigest: last.referenceBodyDigest } : { resource };
 		try {
 			const page = await this.ops.read(request, signal);
-			if (signal.aborted) return;
+			// The real accessor answers a cancelled read with an error value, not a rejection.
+			if (signal.aborted) return this.withdrawn(resource, source, continuation);
 			receive(source, page);
 		} catch (error) {
 			if (signal.aborted) return this.withdrawn(resource, source, continuation);
@@ -140,8 +141,12 @@ class PillarsView {
 		this.host.requestRender();
 	}
 
-	/** A withdrawn first read leaves nothing to keep; a withdrawn continuation keeps the pages read. */
+	/**
+	 * A superseded read leaves the newer state untouched: only its own record stops or disappears.
+	 * A first read leaves nothing to keep; a superseded continuation keeps the pages already read.
+	 */
 	private withdrawn(resource: string, source: SourceRead, continuation: boolean): void {
+		if (this.sources.get(resource) !== source) return;
 		if (continuation) source.pending = false;
 		else this.sources.delete(resource);
 	}
