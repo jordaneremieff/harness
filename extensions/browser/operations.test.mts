@@ -675,18 +675,33 @@ const windowReply =
 	() =>
 		ok({ ...WINDOW, ...overrides });
 
-function captureFixture(facts: Handler, options: FakeOptions = {}): Fixture & { captured: number[] } {
+function captureFixture(
+	facts: Handler,
+	options: FakeOptions = {},
+): Fixture & { captured: number[]; events: string[] } {
 	const captured: number[] = [];
-	const run = runFrom({ inventory: () => inventoryOf([{ pid: 5 }]), window: facts });
-	const fixture = fakes(run, {
-		access: { chrome: "interact" },
-		...options,
-		capture: async (windowNumber) => {
-			captured.push(windowNumber);
-			return Buffer.from("png");
+	const events: string[] = [];
+	const handler = runFrom({ inventory: () => inventoryOf([{ pid: 5 }]), window: facts });
+	const fixture = fakes(
+		async (request, runOptions) => {
+			if (request.op === "window") events.push("window-read");
+			return handler(request, runOptions);
 		},
-	});
-	return { ...fixture, captured };
+		{
+			access: { chrome: "interact" },
+			...options,
+			capture: async (windowNumber) => {
+				events.push("capture");
+				captured.push(windowNumber);
+				return Buffer.from("png");
+			},
+		},
+	);
+	return { ...fixture, captured, events };
+}
+
+function hasImage(result: BrowserResult): boolean {
+	return result.content.some((item) => item.type === "image");
 }
 
 const CAPTURE_PARAMS = { browser: "chrome" as const, pid: 5, tab: "42", origin: "https://a.example" };
@@ -774,6 +789,7 @@ it("decodes a QuickDraw rectangle by its corners", () => {
 });
 
 it("captures the matched window and returns the resized image", async () => {
+	const saved: string[] = [];
 	const fixture = captureFixture(windowReply(), {
 		resize: async () => ({
 			data: "ZmFrZQ==",
@@ -783,12 +799,23 @@ it("captures the matched window and returns the resized image", async () => {
 			originalWidth: 1200,
 			originalHeight: 800,
 		}),
+		save: async (path) => {
+			saved.push(path);
+		},
 	});
-	const result = await browserCapture(CAPTURE_PARAMS, undefined, fixture.deps);
+	const result = await browserCapture({ ...CAPTURE_PARAMS, savePath: "/captures/example.png" }, undefined, fixture.deps);
 	const report = reportOf(result);
 	assert.equal(result.isError, false);
 	assert.equal(result.details.status, "ok");
 	assert.deepEqual(fixture.captured, [77]);
+	assert.deepEqual(fixture.events, ["window-read", "capture", "window-read"]);
+	assert.equal(
+		fixture.requests.filter((request) => request.op === "window").length,
+		2,
+	);
+	assert.deepEqual(saved, ["/captures/example.png"]);
+	assert.equal(report.savedPath, "/captures/example.png");
+	assert.equal(obj(report.identity).status, "unchanged");
 	assert.equal(obj(report.window).windowNumber, 77);
 	assert.deepEqual(obj(report.window).bounds, FRAME);
 	assert.match(String(report.method), /screencapture/);
@@ -799,6 +826,90 @@ it("captures the matched window and returns the resized image", async () => {
 		assert.equal(image.data, "ZmFrZQ==");
 		assert.equal(image.mimeType, "image/png");
 	}
+});
+
+it("discards the capture when the active tab changes during pixel acquisition", async () => {
+	const saved: string[] = [];
+	let reads = 0;
+	const fixture = captureFixture(
+		() => {
+			reads += 1;
+			return ok(reads === 1 ? { ...WINDOW } : { ...WINDOW, activeTab: "43" });
+		},
+		{
+			save: async (path) => {
+				saved.push(path);
+			},
+		},
+	);
+	const result = await browserCapture({ ...CAPTURE_PARAMS, savePath: "/captures/switched.png" }, undefined, fixture.deps);
+	assert.equal(result.details.status, "blocked");
+	assert.equal(blockedReason(result), "capture-changed");
+	assert.equal(result.isError, true);
+	assert.equal(hasImage(result), false);
+	assert.deepEqual(saved, []);
+	assert.deepEqual(fixture.captured, [77]);
+	assert.deepEqual(fixture.events, ["window-read", "capture", "window-read"]);
+	assert.deepEqual(obj(reportOf(result).blocked).changed, ["active tab"]);
+});
+
+it("discards the capture when the selected tab navigates during pixel acquisition", async () => {
+	const saved: string[] = [];
+	let reads = 0;
+	const navigated = { ...WINDOW, url: "https://b.example/other", tabTitle: "Other" };
+	const fixture = captureFixture(
+		() => {
+			reads += 1;
+			return ok(reads === 1 ? { ...WINDOW } : navigated);
+		},
+		{
+			save: async (path) => {
+				saved.push(path);
+			},
+		},
+	);
+	const result = await browserCapture({ ...CAPTURE_PARAMS, savePath: "/captures/navigated.png" }, undefined, fixture.deps);
+	assert.equal(result.details.status, "blocked");
+	assert.equal(blockedReason(result), "capture-changed");
+	assert.equal(hasImage(result), false);
+	assert.deepEqual(saved, []);
+	assert.deepEqual(fixture.captured, [77]);
+	assert.deepEqual(fixture.events, ["window-read", "capture", "window-read"]);
+	assert.deepEqual(obj(reportOf(result).blocked).changed, ["URL"]);
+});
+
+it("discards the capture when the window is minimized during pixel acquisition", async () => {
+	let reads = 0;
+	const fixture = captureFixture(() => {
+		reads += 1;
+		return ok(reads === 1 ? { ...WINDOW } : { ...WINDOW, minimized: true });
+	});
+	const result = await browserCapture(CAPTURE_PARAMS, undefined, fixture.deps);
+	assert.equal(blockedReason(result), "capture-changed");
+	assert.equal(hasImage(result), false);
+	assert.deepEqual(fixture.events, ["window-read", "capture", "window-read"]);
+});
+
+it("discards the capture when the subject cannot be read after pixel acquisition", async () => {
+	const saved: string[] = [];
+	let reads = 0;
+	const fixture = captureFixture(
+		() => {
+			reads += 1;
+			return reads === 1 ? ok({ ...WINDOW }) : fail(null, -1728, "No open tab has this id in the selected browser process.");
+		},
+		{
+			save: async (path) => {
+				saved.push(path);
+			},
+		},
+	);
+	const result = await browserCapture({ ...CAPTURE_PARAMS, savePath: "/captures/closed.png" }, undefined, fixture.deps);
+	assert.equal(result.details.status, "blocked");
+	assert.equal(blockedReason(result), "capture-unverified");
+	assert.equal(hasImage(result), false);
+	assert.deepEqual(saved, []);
+	assert.deepEqual(fixture.events, ["window-read", "capture", "window-read"]);
 });
 
 it("refuses a relative save path before any Apple Event", async () => {

@@ -178,6 +178,16 @@ or not on screen (for example on another Space), the application is hidden, or
 the window cannot be matched exactly. It never renders the page elsewhere,
 copies storage, or captures the whole screen.
 
+Before it returns or saves an image, `browser_capture` reads the selected tab's
+window facts again. The browser process, scripting window, matched
+window-server window, on-screen state, active tab, URL, and visibility must
+match the read taken before the pixels. A change, a closed tab, or an unreadable
+second read discards the image: the result reports `capture-changed` or
+`capture-unverified`, returns no image content, and writes no `savePath` file.
+The two reads bracket the capture, so a change visible at either read is
+detected. This is not an atomic guarantee: a change that reverts between the
+two reads is not detected.
+
 ## Authority
 
 Configured access and a signed-in session are reach, not permission. The model

@@ -1064,6 +1064,92 @@ async function captureWindowNumber(
 	return named[0].id;
 }
 
+/** The parts of the window facts that identify the captured subject and its visible state. */
+interface CaptureSubject {
+	window: string;
+	windowNumber: number | null;
+	onScreen: boolean | null;
+	activeTab: string | null;
+	url: string | null;
+	minimized: boolean;
+	visible: boolean;
+	hidden: boolean;
+}
+
+function captureSubject(facts: WindowFacts): CaptureSubject {
+	const named = matchWindows(facts);
+	const matched = named.length === 1 ? named[0] : null;
+	return {
+		window: facts.window,
+		windowNumber: matched ? matched.id : null,
+		onScreen: matched ? matched.onScreen : null,
+		activeTab: facts.activeTab,
+		url: facts.url,
+		minimized: facts.minimized,
+		visible: facts.visible,
+		hidden: facts.hidden,
+	};
+}
+
+/** Names each identity field that differs between the reads, or is no longer capturable. */
+function identityChanges(before: CaptureSubject, after: CaptureSubject): string[] {
+	const changed: string[] = [];
+	if (before.window !== after.window) changed.push("scripting window");
+	if (before.windowNumber === null || before.windowNumber !== after.windowNumber)
+		changed.push("window-server window");
+	if (after.onScreen !== true) changed.push("on-screen state");
+	if (before.activeTab !== after.activeTab) changed.push("active tab");
+	if (before.url !== after.url) changed.push("URL");
+	if (before.minimized !== after.minimized) changed.push("minimized state");
+	if (before.visible !== after.visible) changed.push("visible state");
+	if (before.hidden !== after.hidden) changed.push("application hidden state");
+	return changed;
+}
+
+async function readWindowFacts(
+	resolved: Resolved,
+	deps: BrowserDeps,
+	signal?: AbortSignal,
+): Promise<WindowFacts> {
+	const { spec, target } = resolved;
+	return expectValue<WindowFacts>(
+		await call(deps, { op: "window", bundleId: spec.bundleId, pid: target.pid, tab: target.tab }, signal),
+	);
+}
+
+/**
+ * Compares the subject read before pixel acquisition with a second read after it.
+ * A change, a lost tab, or an unavailable second read discards the image.
+ */
+async function requireUnchangedSubject(
+	resolved: Resolved,
+	before: CaptureSubject,
+	deps: BrowserDeps,
+	signal?: AbortSignal,
+): Promise<void> {
+	let facts: WindowFacts;
+	try {
+		facts = await readWindowFacts(resolved, deps, signal);
+	} catch (error) {
+		if (error instanceof TransportError && error.kind === "cancelled") throw error;
+		const cause = error instanceof Blocked ? error.reason : String((error as Error).message).slice(0, 300);
+		throw new Blocked(
+			"capture-unverified",
+			`The capture was discarded because the window identity could not be read after pixel acquisition (${cause}). The tab may have closed or the browser did not answer; inspect the session again and capture a stable tab.`,
+			{ before, after: null, cause },
+		);
+	}
+	const after = captureSubject(facts);
+	const changed = identityChanges(before, after);
+	if (changed.length > 0) {
+		throw new Blocked(
+			"capture-changed",
+			`The capture was discarded because the ${changed.join(", ")} changed between the reads before and after pixel acquisition, so the image may show another tab, page, or window state. The tool does not switch tabs or substitute another image; select the tab again and capture when it is stable.`,
+			{ before, after, changed },
+		);
+	}
+}
+
 async function saveCapture(deps: BrowserDeps, path: string | undefined, png: Buffer): Promise<Facts> {
 	if (!path) return {};
 	try {
@@ -1090,13 +1176,13 @@ export async function browserCapture(
 			if (params.savePath !== undefined && !isAbsolute(params.savePath))
 				throw new Blocked("invalid-arguments", "savePath must be an absolute path.");
 			const resolved = await resolveTarget(params, "inspect", deps, signal);
-			const { spec, target } = resolved;
-			const facts = expectValue<WindowFacts>(
-				await call(deps, { op: "window", bundleId: spec.bundleId, pid: target.pid, tab: target.tab }, signal),
-			);
+			const { target } = resolved;
+			const facts = await readWindowFacts(resolved, deps, signal);
 			subject.update(target, { url: facts.url, title: facts.tabTitle }, facts.window);
 			const windowNumber = await captureWindowNumber(facts, resolved, params, deps, signal);
+			const before = captureSubject(facts);
 			const png = await deps.capture(windowNumber, signal);
+			await requireUnchangedSubject(resolved, before, deps, signal);
 			const resized = await deps.resize(png, params.maxDimension ?? 1600);
 			if (!resized) throw new Blocked("image-too-large", "The capture could not be reduced to a model-sized image.");
 			const report = {
@@ -1104,6 +1190,13 @@ export async function browserCapture(
 				method:
 					"macOS screencapture of one window by its window-server number (-l), without shadow; the window is not raised or activated",
 				window: { bounds: decodeRect(facts.bounds), windowNumber, activeTab: facts.activeTab },
+				identity: {
+					reads: "before and after pixel acquisition",
+					status: "unchanged",
+					compared: "scripting window, window-server window, on-screen state, active tab, URL, and visibility",
+					assurance:
+						"A change visible at either read discards the image; a change that reverts between the reads is not detected.",
+				},
 				image: {
 					width: resized.width,
 					height: resized.height,
