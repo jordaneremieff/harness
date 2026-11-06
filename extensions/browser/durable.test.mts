@@ -111,6 +111,7 @@ interface FakeState {
 	active: number;
 	maxActive: number;
 	actionDelayMs: number;
+	fulfilled?: unknown;
 }
 
 function pageReply(envelope: unknown): OsaReply {
@@ -181,17 +182,22 @@ async function scriptReply(script: string, state: FakeState, signal?: AbortSigna
 	}
 	if (script.includes("S.runs.get(id)")) {
 		state.counts.evaluatePoll += 1;
-		return pageReply(FULFILLED);
+		return pageReply(state.fulfilled ?? FULFILLED);
 	}
 	if (script.includes("__pbRun")) {
 		state.counts.evaluateStart += 1;
-		return pageReply(FULFILLED);
+		return pageReply(state.fulfilled ?? FULFILLED);
 	}
 	throw new Error(`unexpected page script: ${script.slice(0, 40)}`);
 }
 
 /** Answers the browser side of one Apple Events request from a fixed script table. */
-function fakeDeps(hooks: { hang?: "action" | "inspect"; onReached?: () => void; actionDelayMs?: number } = {}): {
+function fakeDeps(hooks: {
+	hang?: "action" | "inspect";
+	onReached?: () => void;
+	actionDelayMs?: number;
+	fulfilled?: unknown;
+} = {}): {
 	deps: BrowserDeps;
 	counts: { inspect: number; action: number; poll: number; evaluateStart: number; evaluatePoll: number };
 	state: FakeState;
@@ -203,6 +209,7 @@ function fakeDeps(hooks: { hang?: "action" | "inspect"; onReached?: () => void; 
 		active: 0,
 		maxActive: 0,
 		actionDelayMs: hooks.actionDelayMs ?? 0,
+		fulfilled: hooks.fulfilled,
 	};
 	const reply = (value: unknown): OsaReply => ({ ok: true, value });
 	const deps: BrowserDeps = {
@@ -475,6 +482,25 @@ describe("browser durable contribution", () => {
 		const actions = (await toolResults(root)).filter((result) => result.toolName === "browser_act");
 		assert.equal(actions.length, 2);
 		assert.ok(actions.every((result) => result.isError === false));
+	});
+
+	it("keeps an own __proto__ key in native tool details", async () => {
+		const fulfilled = JSON.parse(
+			`{"kind":"settled","page":${JSON.stringify(PAGE)},"outcome":{"state":"fulfilled","awaited":false,"valueType":"object","value":{"__proto__":{"note":"value"},"other":1}}}`,
+		);
+		const extension = await nativeExtension(fakeDeps({ fulfilled }).deps);
+		const tool = [...(extension.tools ?? [])].find((item) => item.name === "browser_evaluate");
+		assert.ok(tool);
+		const toolResult = await tool.execute(ARGS.evaluate as never, {} as never, { abortSignal: undefined } as never);
+		assert.equal(toolResult.isError, false);
+		const details = toolResult.details as unknown as { report: { execution: { value: Record<string, unknown> } } };
+		const value = details.report.execution.value;
+		assert.equal(Object.getPrototypeOf(value), Object.prototype);
+		const descriptor = Object.getOwnPropertyDescriptor(value, "__proto__");
+		assert.ok(descriptor, "own __proto__ key is retained");
+		assert.equal(descriptor.enumerable, true);
+		assert.deepEqual(descriptor.value, { note: "value" });
+		assert.equal(value.other, 1);
 	});
 
 	it("does not rerun an interrupted browser_act and delivers an interrupted result", async () => {

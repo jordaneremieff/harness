@@ -118,9 +118,10 @@ tabs again after a browser restart.
 
 Inspection runs fixed extraction scripts maintained in `page.ts`. Values of
 password, hidden, one-time-code, and payment fields are redacted, and the
-`html` view replaces those values and token-like `meta` contents. Redaction
-does not guarantee that page markup holds no secret. Views are bounded by
-`maxChars`, `limit`, and `offset`, and report `nextOffset` for continuation.
+`html` view replaces those values and token-like `meta` contents, including on
+the selected element itself. Redaction does not guarantee that page markup
+holds no secret. Views are bounded by `maxChars`, `limit`, and `offset`, and
+report `nextOffset` for continuation.
 
 The `network` view and every `browser_act` result report HTTP statuses from
 the page's Resource Timing entries. Status `0` or `null` means the browser did
@@ -188,9 +189,9 @@ changes, the tab closes, the browser process exits, or the caller cancels.
 
 | Status | Meaning |
 |---|---|
-| `fulfilled` | The value, as JSON, with `valueType` and `awaited`. `undefined` is `valueType: "undefined"` with no value; `-0`, `NaN`, `Infinity`, and bigint values use `special`. |
+| `fulfilled` | The value, as JSON, with `valueType` and `awaited`. `undefined` is `valueType: "undefined"` with no value; `-0`, `NaN`, and `Infinity` use `special`; a bigint uses `special` with its decimal text. |
 | `unserializable` | The value has no JSON form (DOM nodes, `Map`, functions, cycles, nested non-finite numbers); `unserializable.path` names the first problem. |
-| `too-large` | The JSON exceeds `maxBytes`; a `preview` prefix is returned. |
+| `too-large` | The value exceeds `maxBytes`; a `preview` prefix is returned. A bigint's decimal text counts toward the same budget. |
 | `threw` | The expression threw synchronously; `error` keeps name, message, and stack. |
 | `rejected` | The promise rejected; a non-`Error` reason is in `error.thrown`. |
 | `timeout`, `cancelled` | The tool stopped waiting. Page-side work can continue; the tool forgets the pending result so a late settlement stores nothing. |

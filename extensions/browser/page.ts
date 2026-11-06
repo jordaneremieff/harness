@@ -148,11 +148,22 @@ if (O.view === "summary") {
   view = { total: all.length, offset: O.offset, elements: all.slice(O.offset, O.offset + O.limit).map(describe), nextOffset: O.offset + O.limit < all.length ? O.offset + O.limit : null };
 } else if (O.view === "html") {
   const copy = root.cloneNode(true);
-  const scope = copy.querySelectorAll ? copy : null;
-  if (scope) {
-    for (const input of scope.querySelectorAll("input")) if (sensitive(input) && input.hasAttribute("value")) input.setAttribute("value", "[redacted]");
-    for (const meta of scope.querySelectorAll("meta[name]")) if (/csrf|token|nonce/i.test(meta.getAttribute("name"))) meta.setAttribute("content", "[redacted]");
+  const under = (selector) => (copy.querySelectorAll ? Array.from(copy.querySelectorAll(selector)) : []);
+  const itself = (selector) => (typeof copy.matches === "function" && copy.matches(selector) ? [copy] : []);
+  const fields = [...itself("input, textarea, select"), ...under("input, textarea, select")];
+  for (const field of fields) {
+    if (!sensitive(field)) continue;
+    if (field.localName === "input") { if (field.hasAttribute("value")) field.setAttribute("value", "[redacted]"); }
+    else if (field.localName === "textarea") { field.textContent = "[redacted]"; }
+    else {
+      const options = Array.from(field.querySelectorAll("option"));
+      const chosen = options.filter((option) => option.hasAttribute("selected"));
+      for (const option of options) if (option.hasAttribute("value")) option.setAttribute("value", "[redacted]");
+      for (const option of chosen.length > 0 ? chosen : options.slice(0, 1)) option.textContent = "[redacted]";
+    }
   }
+  const metas = [...itself("meta[name]"), ...under("meta[name]")];
+  for (const meta of metas) if (/csrf|token|nonce/i.test(meta.getAttribute("name") || "")) meta.setAttribute("content", "[redacted]");
   view = window_(copy.outerHTML || "");
 } else {
   const nav = performance.getEntriesByType("navigation")[0];
@@ -324,7 +335,16 @@ const encodeValue = (value, maxBytes) => {
     if (Number.isFinite(value) && !Object.is(value, -0)) return { valueType: "number", value };
     return { valueType: "number", special: Object.is(value, -0) ? "-0" : String(value) };
   }
-  if (type === "bigint") return { valueType: "bigint", special: String(value) };
+  if (type === "bigint") {
+    const text = String(value);
+    const encoded = new TextEncoder().encode(text);
+    const base = { valueType: "bigint", bytes: encoded.length };
+    if (encoded.length > maxBytes) {
+      const preview = new TextDecoder().decode(encoded.slice(0, maxBytes)).replace(/\uFFFD$/, "");
+      return { ...base, tooLarge: true, preview };
+    }
+    return { ...base, special: text };
+  }
   if (type === "symbol" || type === "function") return { valueType: type, unserializable: { path: "$", reason: type + " values have no JSON form." } };
   let problem = null;
   let undefinedDropped = 0;
@@ -344,7 +364,7 @@ const encodeValue = (value, maxBytes) => {
       if (item instanceof Date) { if (Number.isNaN(item.getTime())) { problem = { path, reason: "Invalid Date." }; return null; } return item.toISOString(); }
       const proto = Object.getPrototypeOf(item);
       if (proto === Object.prototype || proto === null) {
-        const out = {};
+        const out = Object.create(null); // Null prototype keeps an own __proto__ key as data.
         for (const key of Object.keys(item)) { const v = walk(item[key], path + "." + key, depth + 1); if (v !== undefined) out[key] = v; }
         return out;
       }

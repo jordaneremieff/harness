@@ -834,6 +834,41 @@ it("returns a synchronous settled value", async () => {
 	assert.equal(execution.value, 2);
 });
 
+it("keeps an own __proto__ key in a fulfilled value", async () => {
+	const envelope = `{"kind":"settled","page":${JSON.stringify(PAGE)},"outcome":{"state":"fulfilled","awaited":false,"valueType":"object","value":{"__proto__":{"note":"value"},"other":1}}}`;
+	const run = evaluateRunner(() => ok({ window: "1", url: PAGE.url, title: "Example", result: envelope }));
+	const { deps } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserEvaluate(EVALUATE_PARAMS, undefined, deps);
+	assert.equal(result.details.status, "fulfilled");
+	const value = obj(obj(reportOf(result).execution).value);
+	assert.equal(Object.getPrototypeOf(value), Object.prototype);
+	const descriptor = Object.getOwnPropertyDescriptor(value, "__proto__");
+	assert.ok(descriptor, "own __proto__ key is retained");
+	assert.equal(descriptor.enumerable, true);
+	assert.deepEqual(descriptor.value, { note: "value" });
+	assert.equal(value.other, 1);
+});
+
+it("reports an oversized bigint as too large with its byte count", async () => {
+	const preview = `1${"0".repeat(1023)}`;
+	const run = evaluateRunner(() =>
+		executed({
+			kind: "settled",
+			page: PAGE,
+			outcome: { state: "fulfilled", awaited: false, valueType: "bigint", bytes: 2049, tooLarge: true, preview },
+		}),
+	);
+	const { deps } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserEvaluate({ ...EVALUATE_PARAMS, maxBytes: 1024 }, undefined, deps);
+	assert.equal(result.isError, true);
+	assert.equal(result.details.status, "too-large");
+	const execution = obj(reportOf(result).execution);
+	assert.equal(execution.status, "too-large");
+	assert.equal(execution.bytes, 2049);
+	assert.equal(execution.preview, preview);
+	assert.equal("special" in execution, false);
+});
+
 it("returns an awaited settled value after a pending start", async () => {
 	const run = evaluateRunner(
 		() => executed({ kind: "pending", page: PAGE }),
