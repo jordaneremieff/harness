@@ -201,6 +201,8 @@ export interface ExecuteReply {
 	url: string | null;
 	title: string | null;
 	result: string | null;
+	/** Why the tab URL or title is absent; the script result above is unaffected. */
+	metadataError?: { number: number | null; message: string } | null;
 }
 
 /** Runs one page script in the tab, identified by id inside the selected process. */

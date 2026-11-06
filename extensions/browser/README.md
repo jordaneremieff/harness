@@ -117,14 +117,15 @@ timing permission). The tools do not invent a status they cannot observe.
 several elements refuses with candidates unless `index` selects one. Hidden or
 disabled elements refuse. The action is scheduled in a new page task, so a
 JavaScript dialog opened by a page handler blocks later reads, not the
-dispatch. Each result keeps four layers apart:
+dispatch. Each result keeps these layers apart:
 
 | Layer | Field | Meaning |
 |---|---|---|
 | Transport | `transport` | Whether Apple Events delivered the request and answered. |
 | Dispatch | `dispatch.status` | `dispatched`, `failed`, `not-needed`, `unknown`, or `not-dispatched`. Dispatch is not a task result. |
 | Application | `application` | Page identity, document replacement, navigation status, and HTTP statuses observed after the action. A 401 or 500 stays here; it is not a transport failure. |
-| Goal | `postcondition.status` | `verified` when every `waitFor` check held, `failed` when the wait ended without it, `unknown` without a condition or after cancellation. |
+| Observation | `observation` | Present when a read after the dispatch could not answer: `status: "failed"`, `phase: "read-after-dispatch"`, `kind`, and the reason. |
+| Goal | `postcondition.status` | `verified` when every `waitFor` check held, `failed` when the wait ended without it, `unknown` without a condition, after cancellation, or when a read could not establish the outcome. |
 
 Actions use DOM events created in the page (`isTrusted` is false). Pages that
 accept only trusted input, file choosers, and implicit form submission by
@@ -132,16 +133,42 @@ pressing Enter do not respond to them; use `submit` for forms. `fill` refuses
 password fields: the operator signs in through the browser. `navigate` sets the
 tab URL through Apple Events after checking the current origin.
 
-The tool sends each action once. After a transport failure, timeout, or
-cancellation it reports the dispatch as `unknown` or `not-dispatched` and never
-repeats the action; inspect the page before any retry.
+`check` and `uncheck` dispatch nothing when the element already has the
+requested state: `dispatch.status` is `not-needed` and no DOM event is sent.
+With `waitFor`, the tool then runs the ordinary observation path against the
+page without dispatching an event, so `postcondition.status` is `verified`,
+`failed`, or `unknown` as for any action. Without a condition it returns the
+immediate result.
+
+After a dispatch, a failed page read never becomes a refusal. The result keeps
+what is known: `dispatch` stays `dispatched` or `unknown`, the failure appears
+in `observation` or in `transport.unansweredReads`, and `postcondition.status`
+is `unknown` with the reason. A tab that closes during the wait reports status
+`target-closed`; a browser process that exits reports the same status with
+`observation.reason: "not-running"`; lost Automation permission or unavailable
+Apple Events JavaScript reports `observation-failed`. Only a failure before the
+dispatch, or one that proves the page script never ran, is `blocked`.
+
+`navigate` sets the URL through Apple Events and checks the origin inside the
+browser, so it needs no page JavaScript to dispatch. When page reads are
+unavailable (JavaScript from Apple Events is off, or developer tools are
+disallowed), it still navigates and reports `dispatch.status: dispatched` with
+the unavailable observation and an unknown postcondition. The element actions
+and `browser_evaluate` need page JavaScript; when it is unavailable they refuse
+before anything runs.
+
+The tool sends each action once. After a transport failure, timeout,
+cancellation, or a failed read after the dispatch it reports the dispatch as
+`unknown`, `not-dispatched`, or `dispatched` as observed, and never repeats the
+action; inspect the page before any retry.
 
 ## Evaluation
 
 `browser_evaluate` checks the expression's syntax locally, then runs it once in
 the tab's main frame. A promise result is awaited inside the same tool call; the
 tool polls the page until it settles, the `timeoutMs` limit passes, the document
-changes, the tab closes, or the caller cancels. `execution.status` is one of:
+changes, the tab closes, the browser process exits, or the caller cancels.
+`execution.status` is one of:
 
 | Status | Meaning |
 |---|---|
@@ -151,7 +178,9 @@ changes, the tab closes, or the caller cancels. `execution.status` is one of:
 | `threw` | The expression threw synchronously; `error` keeps name, message, and stack. |
 | `rejected` | The promise rejected; a non-`Error` reason is in `error.thrown`. |
 | `timeout`, `cancelled` | The tool stopped waiting. Page-side work can continue; the tool forgets the pending result so a late settlement stores nothing. |
-| `document-replaced`, `target-closed` | The page changed or closed before the result was read; the outcome is unknown. |
+| `document-replaced`, `target-closed` | The page changed, the tab closed, or the browser process exited before the result was read; the outcome is unknown. |
+| `observation-failed` | A page read could not answer during the wait (lost permission, changed JavaScript settings, or no readable reply); the outcome is unknown. |
+| `unknown` | The start reply held no readable result after the expression was delivered; the expression may have run. |
 | `syntax-error` | The expression did not parse; nothing was sent. |
 
 Chromium runs Apple Events JavaScript in an isolated world of the main frame.

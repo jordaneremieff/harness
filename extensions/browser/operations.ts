@@ -25,6 +25,7 @@ import {
 	envelope,
 	executeInTab,
 	expectValue,
+	type ExecuteReply,
 	decodeRect,
 	guidance,
 	inventory,
@@ -444,6 +445,14 @@ const POLL_TIMEOUT_MS = 5_000;
 const DEFAULT_WAIT_MS = 5_000;
 const DEFAULT_OBSERVE_MS = 1_000;
 
+/** Failures that stop page reads until the operator changes a setting or restores permission. */
+const OBSERVATION_UNAVAILABLE = new Set([
+	"javascript-from-apple-events-off",
+	"devtools-disallowed",
+	"automation-denied",
+	"automation-not-determined",
+]);
+
 function pollInterval(attempt: number): number {
 	return POLL_INTERVALS[Math.min(attempt, POLL_INTERVALS.length - 1)];
 }
@@ -487,11 +496,15 @@ interface Dispatched {
 	actionId: string | null;
 	dispatch: Facts;
 	element: unknown;
-	mark: number;
+	/** Time from which resource responses are reported; null when no dispatch happened. */
+	mark: number | null;
 	startDoc: unknown;
 }
 
-/** Reads the current document token without changing the page. */
+/**
+ * Reads the current document token without changing the page. A read that cannot
+ * answer yields no token; the navigate request itself decides whether to refuse.
+ */
 async function currentDoc(deps: BrowserDeps, resolved: Resolved, signal?: AbortSignal): Promise<unknown> {
 	try {
 		const data = envelope(
@@ -499,9 +512,20 @@ async function currentDoc(deps: BrowserDeps, resolved: Resolved, signal?: AbortS
 		);
 		return record(data.page)?.doc ?? null;
 	} catch (error) {
-		if (error instanceof Blocked && error.reason === "javascript-from-apple-events-off") return null;
+		if (error instanceof Blocked) return null;
 		throw error;
 	}
+}
+
+/** A page read before the navigation got no answer; the URL was never set. */
+function navigationReadFailure(params: ActParams, subject: Subject, error: TransportError): BrowserResult {
+	return transportResult("browser_act", error, {
+		target: subject.facts,
+		action: describeAction(params),
+		dispatch: { status: "not-dispatched", note: "A page read before the navigation got no answer; the URL was not set." },
+		postcondition: { status: "unknown" },
+		replay: "not attempted; the navigation was not sent",
+	});
 }
 
 async function dispatchNavigate(
@@ -510,9 +534,15 @@ async function dispatchNavigate(
 	subject: Subject,
 	deps: BrowserDeps,
 	signal?: AbortSignal,
-): Promise<Dispatched> {
+): Promise<Dispatched | BrowserResult> {
 	const { spec, target, expectOrigin } = resolved;
-	const startDoc = await currentDoc(deps, resolved, signal);
+	let startDoc: unknown;
+	try {
+		startDoc = await currentDoc(deps, resolved, signal);
+	} catch (error) {
+		if (!(error instanceof TransportError)) throw error;
+		return navigationReadFailure(params, subject, error);
+	}
 	const mark = deps.now() - 2;
 	const reply = await call(
 		deps,
@@ -528,6 +558,28 @@ async function dispatchNavigate(
 		mark,
 		startDoc,
 	};
+}
+
+/** The action script reached the page but its reply held no readable result; the action may have run. */
+function unreadableAction(params: ActParams, subject: Subject): BrowserResult {
+	return result(
+		"browser_act",
+		"observation-failed",
+		`${params.action} sent, but the page returned no readable result; the outcome is unknown. ${UNTRUSTED}`,
+		{
+			target: subject.facts,
+			action: describeAction(params),
+			transport: { status: "ok" },
+			dispatch: {
+				status: "unknown",
+				note: "The page script was delivered but returned no readable result; the action may have run.",
+			},
+			observation: { status: "failed", phase: "read-after-dispatch", reason: "no-page-result" },
+			postcondition: { status: "unknown" },
+			replay: "not attempted; inspect the page before any repeat",
+		},
+		true,
+	);
 }
 
 async function dispatchElementAction(
@@ -548,17 +600,28 @@ async function dispatchElementAction(
 		key: params.key ?? null,
 	});
 	const reply = await executeInTab(deps, spec, target, script, signal);
-	const data = envelope(reply);
+	let data: Facts;
+	try {
+		data = envelope(reply);
+	} catch (error) {
+		if (!(error instanceof Blocked) || error.reason !== "no-page-result") throw error;
+		subject.update(target, { url: reply.url, title: reply.title }, reply.window);
+		return unreadableAction(params, subject);
+	}
 	const page = record(data.page);
 	subject.update(target, page, reply.window);
 	if (data.kind === "unchanged") {
-		return result("browser_act", "ok", "not dispatched: the element already had the requested state.", {
-			target: subject.facts,
-			action: describeAction(params),
-			dispatch: { status: "not-needed" },
+		// No event is dispatched. The caller observes a requested condition through the ordinary wait.
+		return {
+			actionId: null,
+			dispatch: {
+				status: "not-needed",
+				note: "The element already had the requested state; no DOM event was dispatched.",
+			},
 			element: data.element,
-			postcondition: { status: "unknown", note: "No action was needed; check the intended outcome separately." },
-		});
+			mark: null,
+			startDoc: page?.doc ?? null,
+		};
 	}
 	if (data.kind !== "scheduled") throw pageRefusal(data, expectOrigin);
 	return {
@@ -578,7 +641,8 @@ interface Observation {
 	lastReadAnswered: boolean;
 	met: boolean;
 	cancelled: boolean;
-	closed: boolean;
+	/** Why the last post-dispatch read could not observe the page, when it could not. */
+	failedRead: { kind: "closed" | "exited" | "unavailable"; reason: string; message?: string } | null;
 }
 
 function applyPoll(state: Observation, data: Facts, sent: Dispatched): void {
@@ -607,7 +671,7 @@ async function observeStep(
 	attempt: number,
 	deadline: number,
 	signal?: AbortSignal,
-): Promise<ReturnType<typeof readFailure> | null> {
+): Promise<ReadFailure | null> {
 	try {
 		await delay(pollInterval(attempt), signal);
 		const timeoutMs = Math.min(POLL_TIMEOUT_MS, Math.max(1_000, deadline - deps.now()));
@@ -617,7 +681,7 @@ async function observeStep(
 		return null;
 	} catch (error) {
 		const failure = readFailure(error);
-		if (failure === "unanswered") state.lastReadAnswered = false;
+		if (failure.kind === "unanswered") state.lastReadAnswered = false;
 		return failure;
 	}
 }
@@ -639,19 +703,34 @@ async function observe(
 		lastReadAnswered: false,
 		met: false,
 		cancelled: false,
-		closed: false,
+		failedRead: null,
 	};
 	const script = pollScript(sent.actionId, condition, sent.mark);
 	for (let attempt = 0; ; attempt++) {
 		const failure = await observeStep(deps, resolved, sent, script, state, attempt, deadline, signal);
-		if (failure === "cancelled") state.cancelled = true;
-		if (failure === "closed") state.closed = true;
-		if (failure === "cancelled" || failure === "closed") break;
-		if (failure === "unanswered") state.unanswered += 1;
+		if (failure && applyReadFailure(state, failure)) break;
 		if ((condition && state.met) || deps.now() >= deadline) break;
 	}
 	settleDispatch(state);
 	return state;
+}
+
+/** Applies one failed read to the wait state; true means the wait cannot continue. */
+function applyReadFailure(state: Observation, failure: ReadFailure): boolean {
+	if (failure.kind === "cancelled") {
+		state.cancelled = true;
+		return true;
+	}
+	if (failure.kind === "unanswered") {
+		state.unanswered += 1;
+		return false;
+	}
+	state.failedRead = {
+		kind: failure.kind,
+		reason: failure.reason,
+		...(failure.kind === "unavailable" ? { message: failure.message } : {}),
+	};
+	return true;
 }
 
 /** A dispatch that no page read confirmed is unknown, not pending. */
@@ -664,11 +743,29 @@ function settleDispatch(state: Observation): void {
 	};
 }
 
-/** Classifies a failed page read during a wait; unexpected errors propagate. */
-function readFailure(error: unknown): "cancelled" | "closed" | "unanswered" {
-	if (error instanceof TransportError) return error.kind === "cancelled" ? "cancelled" : "unanswered";
-	if (error instanceof Blocked && error.reason === "tab-not-found") return "closed";
-	if (error instanceof Blocked && error.reason === "no-page-result") return "unanswered";
+/**
+ * A post-dispatch read failure by kind. None of these is a refusal: the action was
+ * already sent, so the caller reports the read failure beside the known dispatch.
+ */
+type ReadFailure =
+	| { kind: "cancelled" }
+	| { kind: "unanswered"; reason: string }
+	| { kind: "closed"; reason: string }
+	| { kind: "exited"; reason: string }
+	| { kind: "unavailable"; reason: string; message: string };
+
+function readFailure(error: unknown): ReadFailure {
+	if (error instanceof TransportError) {
+		return error.kind === "cancelled" ? { kind: "cancelled" } : { kind: "unanswered", reason: error.kind };
+	}
+	if (error instanceof Blocked) {
+		if (error.reason === "tab-not-found") return { kind: "closed", reason: error.reason };
+		if (error.reason === "not-running" || error.reason === "pid-mismatch")
+			return { kind: "exited", reason: error.reason };
+		if (OBSERVATION_UNAVAILABLE.has(error.reason))
+			return { kind: "unavailable", reason: error.reason, message: error.message };
+		return { kind: "unanswered", reason: error.reason };
+	}
 	throw error;
 }
 
@@ -677,12 +774,24 @@ function postconditionOf(condition: Condition | null, state: Observation, waited
 		return { status: "unknown", note: "No waitFor condition was given; the tool reports observations only." };
 	if (state.met)
 		return { status: "verified", condition, checks: record(state.lastPoll?.condition)?.checks ?? null, waitedMs };
-	if (state.cancelled || state.closed || !state.lastReadAnswered) {
-		let note = "The last page read got no answer, so the outcome was not observed.";
-		if (state.closed) note = "The tab closed during the wait.";
-		if (state.cancelled) note = "Cancellation stopped the wait; page-side effects may continue.";
-		return { status: "unknown", condition, note };
+	if (state.cancelled)
+		return {
+			status: "unknown",
+			condition,
+			note: "Cancellation stopped the wait; page-side effects may continue.",
+		};
+	if (state.failedRead) {
+		let note = "The page could not be read during the wait, so the outcome was not observed.";
+		if (state.failedRead.kind === "closed") note = "The tab closed during the wait.";
+		if (state.failedRead.kind === "exited")
+			note =
+				state.failedRead.reason === "pid-mismatch"
+					? "The selected pid now belongs to another application, so the target was lost."
+					: "The browser process exited during the wait.";
+		return { status: "unknown", condition, reason: state.failedRead.reason, note };
 	}
+	if (!state.lastReadAnswered)
+		return { status: "unknown", condition, note: "The last page read got no answer, so the outcome was not observed." };
 	return { status: "failed", condition, checks: record(state.lastPoll?.condition)?.checks ?? null, waitedMs };
 }
 
@@ -712,7 +821,7 @@ async function dispatchAct(
 
 function actStatus(state: Observation, postcondition: Facts): string {
 	if (state.cancelled) return "cancelled";
-	if (state.closed) return "target-closed";
+	if (state.failedRead) return state.failedRead.kind === "unavailable" ? "observation-failed" : "target-closed";
 	return postcondition.status === "failed" ? "postcondition-failed" : "ok";
 }
 
@@ -735,6 +844,17 @@ function actResult(
 		...(sent.element ? { element: sent.element } : {}),
 		transport: { status: "ok", ...unanswered },
 		dispatch: state.dispatch,
+		...(state.failedRead
+			? {
+					observation: {
+						status: "failed",
+						phase: "read-after-dispatch",
+						kind: state.failedRead.kind,
+						reason: state.failedRead.reason,
+						...(state.failedRead.message ? { message: state.failedRead.message } : {}),
+					},
+				}
+			: {}),
 		application: {
 			page: record(state.lastPoll?.page),
 			documentReplaced: state.documentReplaced,
@@ -745,7 +865,21 @@ function actResult(
 		postcondition,
 	};
 	const headline = `${params.action} ${String(state.dispatch.status)}; postcondition ${String(postcondition.status)}. ${UNTRUSTED}`;
-	return result("browser_act", actStatus(state, postcondition), headline, report, state.cancelled || state.closed);
+	return result("browser_act", actStatus(state, postcondition), headline, report, state.cancelled || Boolean(state.failedRead));
+}
+
+/** An unchanged check or uncheck with no requested condition: no dispatch and no wait. */
+function notNeededResult(params: ActParams, subject: Subject, sent: Dispatched): BrowserResult {
+	return result("browser_act", "ok", "not dispatched: the element already had the requested state.", {
+		target: subject.facts,
+		action: describeAction(params),
+		dispatch: sent.dispatch,
+		element: sent.element,
+		postcondition: {
+			status: "unknown",
+			note: "No action was needed; pass waitFor to verify the intended outcome, or check it separately.",
+		},
+	});
 }
 
 export async function browserAct(
@@ -766,6 +900,7 @@ export async function browserAct(
 			const startedAt = deps.now();
 			const sent = await dispatchAct(params, resolved, subject, deps, signal);
 			if ("content" in sent) return sent;
+			if (sent.dispatch.status === "not-needed" && !condition) return notNeededResult(params, subject, sent);
 			const waitMs = condition
 				? (params.waitFor?.timeoutMs ?? DEFAULT_WAIT_MS)
 				: (params.observeMs ?? DEFAULT_OBSERVE_MS);
@@ -802,7 +937,9 @@ interface Settlement {
 	note?: string;
 }
 
-/** One read of a pending evaluation; null means still pending or a read went unanswered. */
+type EvaluationStep = Settlement | { step: "pending" | "unreadable" };
+
+/** One read of a pending evaluation. */
 async function evaluationStep(
 	deps: BrowserDeps,
 	resolved: Resolved,
@@ -810,7 +947,7 @@ async function evaluationStep(
 	startDoc: unknown,
 	attempt: number,
 	signal?: AbortSignal,
-): Promise<Settlement | null> {
+): Promise<EvaluationStep> {
 	let poll: Facts;
 	try {
 		await delay(pollInterval(attempt), signal);
@@ -818,17 +955,28 @@ async function evaluationStep(
 		poll = envelope(await executeInTab(deps, resolved.spec, resolved.target, script, signal, POLL_TIMEOUT_MS));
 	} catch (error) {
 		const failure = readFailure(error);
-		if (failure === "cancelled") {
+		if (failure.kind === "cancelled") {
 			return {
 				status: "cancelled",
 				outcome: null,
 				note: "Cancellation stopped the wait; page-side work may continue.",
 			};
 		}
-		if (failure === "closed") {
+		if (failure.kind === "closed")
 			return { status: "target-closed", outcome: null, note: "The tab closed before the result was read." };
-		}
-		return null;
+		if (failure.kind === "exited")
+			return {
+				status: "target-closed",
+				outcome: null,
+				note: "The browser process exited before the result was read.",
+			};
+		if (failure.kind === "unavailable")
+			return {
+				status: "observation-failed",
+				outcome: null,
+				note: `The page could not be read (${failure.reason}); the outcome is unknown.`,
+			};
+		return { step: "unreadable" };
 	}
 	if (poll.kind === "settled") {
 		const outcome = record(poll.outcome);
@@ -841,7 +989,7 @@ async function evaluationStep(
 			note: "The page document changed before the result was read; the outcome is unknown.",
 		};
 	}
-	return null;
+	return { step: "pending" };
 }
 
 /** Polls the page for a pending evaluation until it settles, the time limit passes, or the document changes. */
@@ -853,10 +1001,21 @@ async function awaitEvaluation(
 	deadline: number,
 	signal?: AbortSignal,
 ): Promise<Settlement> {
+	let last: "pending" | "unreadable" | null = null;
 	for (let attempt = 0; deps.now() < deadline; attempt++) {
-		const settled = await evaluationStep(deps, resolved, runId, startDoc, attempt, signal);
-		if (settled) return settled;
+		const step = await evaluationStep(deps, resolved, runId, startDoc, attempt, signal);
+		if ("step" in step) {
+			last = step.step;
+			continue;
+		}
+		return step;
 	}
+	if (last === "unreadable")
+		return {
+			status: "observation-failed",
+			outcome: null,
+			note: "No page read answered during the wait; the outcome is unknown.",
+		};
 	return {
 		status: "timeout",
 		outcome: null,
@@ -872,6 +1031,22 @@ function settledStatus(settlement: Settlement): string {
 	return "fulfilled";
 }
 
+/** The start script reached the page but its reply held no readable result; the expression may have run. */
+function unreadableEvaluation(subject: Subject, note: string): BrowserResult {
+	return result(
+		"browser_evaluate",
+		"observation-failed",
+		`expression sent, but the page returned no readable result; the outcome is unknown. ${UNTRUSTED}`,
+		{
+			target: subject.facts,
+			transport: { status: "ok" },
+			execution: { status: "unknown", note },
+			replay: "not attempted; the expression may have run",
+		},
+		true,
+	);
+}
+
 /** Sends the start script once; a transport failure reports the run as not started or unknown and is never retried. */
 async function startEvaluation(
 	params: EvaluateParams,
@@ -883,12 +1058,10 @@ async function startEvaluation(
 	signal?: AbortSignal,
 ): Promise<{ data: Facts } | { early: BrowserResult }> {
 	const { spec, target, expectOrigin } = resolved;
-	let data: Facts;
+	let reply: ExecuteReply;
 	try {
 		const script = evaluationStartScript(expectOrigin as string, runId, params.expression, params.maxBytes ?? 32_768);
-		const reply = await executeInTab(deps, spec, target, script, signal, Math.max(CALL_TIMEOUT_MS, timeoutMs));
-		data = envelope(reply);
-		subject.update(target, record(data.page), reply.window);
+		reply = await executeInTab(deps, spec, target, script, signal, Math.max(CALL_TIMEOUT_MS, timeoutMs));
 	} catch (error) {
 		if (!(error instanceof TransportError)) throw error;
 		const early = transportResult("browser_evaluate", error, {
@@ -898,9 +1071,25 @@ async function startEvaluation(
 		});
 		return { early };
 	}
+	let data: Facts;
+	try {
+		data = envelope(reply);
+	} catch (error) {
+		if (!(error instanceof Blocked) || error.reason !== "no-page-result") throw error;
+		subject.update(target, { url: reply.url, title: reply.title }, reply.window);
+		return {
+			early: unreadableEvaluation(
+				subject,
+				"The page script was delivered but returned no readable result; the expression may have run.",
+			),
+		};
+	}
+	subject.update(target, record(data.page), reply.window);
 	if (data.kind === "origin-mismatch") throw originMismatch(expectOrigin, record(data.page));
 	if (data.kind !== "settled" && data.kind !== "pending") {
-		throw new Blocked("no-page-result", "The page did not start the evaluation.");
+		return {
+			early: unreadableEvaluation(subject, "The page did not report a started or settled evaluation."),
+		};
 	}
 	return { data };
 }

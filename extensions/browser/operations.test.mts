@@ -411,10 +411,98 @@ it("reports an action whose target already had the requested state", async () =>
 		},
 		() => executed({ kind: "unchanged", element: { selector: "#save" }, page: PAGE }),
 	);
-	const { deps } = fakes(run, { access: { chrome: "interact" } });
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
 	const result = await browserAct(ACT_PARAMS, undefined, deps);
 	assert.equal(result.isError, false);
 	assert.equal(obj(reportOf(result).dispatch).status, "not-needed");
+	assert.equal(pollRequests(requests).length, 0);
+	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
+});
+
+const CHECK_PARAMS = { ...ACT_PARAMS, action: "check" as const };
+const UNCHECK_PARAMS = { ...ACT_PARAMS, action: "uncheck" as const };
+const UNCHANGED_ACTION = () => executed({ kind: "unchanged", element: { selector: "#save", checked: true }, page: PAGE });
+
+function conditionPoll(met: boolean): Handler {
+	return () =>
+		executed({
+			kind: "ok",
+			page: PAGE,
+			action: null,
+			condition: { met, checks: [{ check: "selector", met, observed: { count: met ? 1 : 0, visible: met } }] },
+			responses: [],
+			navigation: null,
+		});
+}
+
+/** One unchanged read, then only read-only polls: no event is sent and no second action script runs. */
+function assertNoSecondMutation(requests: OsaRequest[]): void {
+	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
+	for (const request of pollRequests(requests)) assert.equal(String(request.script).includes("dispatchEvent"), false);
+}
+
+it("verifies an unchanged check whose condition already holds without dispatching", async () => {
+	const run = actRunner(conditionPoll(true), UNCHANGED_ACTION);
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct({ ...CHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 500 } }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "ok");
+	assert.equal(result.isError, false);
+	assert.equal(obj(report.dispatch).status, "not-needed");
+	assert.equal(obj(report.postcondition).status, "verified");
+	assert.ok(pollRequests(requests).length >= 1);
+	assertNoSecondMutation(requests);
+});
+
+it("verifies an unchanged uncheck when the condition becomes true later", async () => {
+	let polls = 0;
+	const run = actRunner(
+		(request) => {
+			polls += 1;
+			return conditionPoll(polls >= 2)(request);
+		},
+		() => executed({ kind: "unchanged", element: { selector: "#save", checked: false }, page: PAGE }),
+	);
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct({ ...UNCHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(obj(report.dispatch).status, "not-needed");
+	assert.equal(obj(report.postcondition).status, "verified");
+	assert.ok(polls >= 2);
+	assertNoSecondMutation(requests);
+});
+
+it("fails an unchanged check whose condition never holds", async () => {
+	const run = actRunner(conditionPoll(false), UNCHANGED_ACTION);
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct({ ...CHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 120 } }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "postcondition-failed");
+	assert.equal(obj(report.dispatch).status, "not-needed");
+	assert.equal(obj(report.postcondition).status, "failed");
+	assertNoSecondMutation(requests);
+});
+
+it("reports a closed tab while waiting on an unchanged check", async () => {
+	const run = actRunner(() => fail("tab-not-found", -1728, "no such tab"), UNCHANGED_ACTION);
+	const { deps } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct({ ...CHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "target-closed");
+	assert.equal(obj(report.dispatch).status, "not-needed");
+	assert.equal(obj(report.postcondition).status, "unknown");
+	assert.match(String(obj(report.postcondition).note), /closed/);
+});
+
+it("reports unavailable page reads while waiting on an unchanged check", async () => {
+	const run = actRunner(() => fail(null, 12, "The command cannot be executed."), UNCHANGED_ACTION);
+	const { deps } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct({ ...CHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "observation-failed");
+	assert.equal(obj(report.dispatch).status, "not-needed");
+	assert.equal(obj(report.observation).reason, "javascript-from-apple-events-off");
+	assert.equal(obj(report.postcondition).status, "unknown");
 });
 
 it("marks the dispatch unknown when the document is replaced before the action state is read", async () => {
@@ -471,6 +559,62 @@ it("reports a target that closes during the wait", async () => {
 	assert.match(String(obj(report.postcondition).note), /closed/);
 });
 
+it("keeps the scheduled action when the browser exits during the wait", async () => {
+	const run = actRunner(() => fail("not-running", -600, "The process exited."));
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct({ ...ACT_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "target-closed");
+	assert.equal(result.isError, true);
+	assert.equal(blockedReason(result), undefined);
+	assert.equal(obj(report.observation).status, "failed");
+	assert.equal(obj(report.observation).reason, "not-running");
+	assert.equal(obj(report.dispatch).status, "unknown");
+	assert.match(String(obj(report.postcondition).note), /browser process exited/);
+	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
+});
+
+it("keeps the scheduled action when automation permission is lost during the wait", async () => {
+	const run = actRunner(() => fail("automation-denied", -1743, "denied"));
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct({ ...ACT_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "observation-failed");
+	assert.equal(obj(report.observation).reason, "automation-denied");
+	assert.equal(obj(report.dispatch).status, "unknown");
+	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
+});
+
+it("keeps the scheduled action when a page read returns no result", async () => {
+	const run = actRunner(() => ok({ window: "1", url: "https://a.example/page", title: "Example", result: null }));
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct({ ...ACT_PARAMS, waitFor: { selector: "#done", timeoutMs: 120 } }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(blockedReason(result), undefined);
+	assert.equal(obj(report.dispatch).status, "unknown");
+	assert.equal(obj(report.postcondition).status, "unknown");
+	assert.ok(Number(obj(report.transport).unansweredReads) >= 1);
+	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
+});
+
+it("keeps the action unknown when its own page reply has no readable result", async () => {
+	const run = actRunner(
+		() => {
+			throw new Error("poll must not be sent");
+		},
+		() => ok({ window: "1", url: "https://a.example/page", title: "Example", result: null }),
+	);
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct({ ...ACT_PARAMS, waitFor: { selector: "#done", timeoutMs: 500 } }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "observation-failed");
+	assert.equal(result.isError, true);
+	assert.equal(obj(report.dispatch).status, "unknown");
+	assert.equal(obj(report.observation).reason, "no-page-result");
+	assert.equal(typeof report.replay, "string");
+	assert.equal(requests.filter((request) => scriptKind(request) === "action").length, 1);
+});
+
 it("navigates with the expected origin and refuses a page origin mismatch", async () => {
 	const run = runFrom({
 		inventory: () => inventoryOf([{ pid: 5 }]),
@@ -489,6 +633,57 @@ it("navigates with the expected origin and refuses a page origin mismatch", asyn
 	assert.equal(navigate.expectOrigin, "https://a.example");
 	assert.equal(result.details.status, "blocked");
 	assert.equal(blockedReason(result), "origin-mismatch");
+});
+
+it("keeps a dispatched navigation when page reads are unavailable before and after it", async () => {
+	const run = runFrom({
+		inventory: () => inventoryOf([{ pid: 5 }]),
+		execute: () => fail(null, 12, "The command cannot be executed."),
+		navigate: () => ok({ window: "1", before: "https://a.example/page" }),
+	});
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct(
+		{
+			...ACT_PARAMS,
+			action: "navigate",
+			selector: undefined,
+			url: "https://a.example/next",
+			waitFor: { selector: "#done", timeoutMs: 200 },
+		},
+		undefined,
+		deps,
+	);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "observation-failed");
+	assert.equal(result.isError, true);
+	assert.equal(blockedReason(result), undefined);
+	assert.equal(obj(report.dispatch).status, "dispatched");
+	assert.equal(obj(report.dispatch).from, "https://a.example/page");
+	assert.equal(obj(report.observation).reason, "javascript-from-apple-events-off");
+	assert.equal(obj(report.postcondition).status, "unknown");
+	assert.equal(requests.filter((request) => request.op === "navigate").length, 1);
+});
+
+it("reports a navigation as not dispatched when the read before it gets no answer", async () => {
+	const run = runFrom({
+		inventory: () => inventoryOf([{ pid: 5 }]),
+		execute: () => {
+			throw new TransportError("timeout", "unknown", "No reply.");
+		},
+		navigate: () => {
+			throw new Error("navigate must not be sent");
+		},
+	});
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserAct(
+		{ ...ACT_PARAMS, action: "navigate", selector: undefined, url: "https://a.example/next" },
+		undefined,
+		deps,
+	);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "transport-failed");
+	assert.equal(obj(report.dispatch).status, "not-dispatched");
+	assert.equal(requests.filter((request) => request.op === "navigate").length, 0);
 });
 
 /* ---------------------------------------------------------------- evaluate */
@@ -575,6 +770,40 @@ it("reports a missing run as a replaced document", async () => {
 	const result = await browserEvaluate({ ...EVALUATE_PARAMS, timeoutMs: 400 }, undefined, deps);
 	assert.equal(result.details.status, "document-replaced");
 	assert.equal(result.isError, true);
+});
+
+it("reports an unreadable evaluation start as an unknown execution, not a refusal", async () => {
+	const run = evaluateRunner(() =>
+		ok({
+			window: "1",
+			url: null,
+			title: null,
+			result: null,
+			metadataError: { number: -1728, message: "Can't get tab." },
+		}),
+	);
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserEvaluate(EVALUATE_PARAMS, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(result.details.status, "observation-failed");
+	assert.equal(result.isError, true);
+	assert.equal(blockedReason(result), undefined);
+	assert.equal(obj(report.execution).status, "unknown");
+	assert.equal(typeof report.replay, "string");
+	assert.equal(requests.filter((request) => scriptKind(request) === "start").length, 1);
+});
+
+it("reports a browser exit during an evaluation wait as target-closed", async () => {
+	const run = evaluateRunner(
+		() => executed({ kind: "pending", page: PAGE }),
+		() => fail("not-running", -600, "The process exited."),
+	);
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserEvaluate({ ...EVALUATE_PARAMS, timeoutMs: 400 }, undefined, deps);
+	const execution = obj(reportOf(result).execution);
+	assert.equal(result.details.status, "target-closed");
+	assert.match(String(execution.note), /browser process exited/);
+	assert.equal(requests.filter((request) => scriptKind(request) === "start").length, 1);
 });
 
 it("reports a fulfilled value that has no JSON form as unserializable", async () => {

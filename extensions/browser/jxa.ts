@@ -100,6 +100,21 @@ function getAll(pid, code, from) {
     throw error;
   }
 }
+function optionalGet(pid, code, from) {
+  // A metadata read can fail after the page script ran, for example when the tab closes.
+  // The script result stays valid, so the failure is returned beside it, not thrown.
+  try {
+    return { value: get(pid, code, from), error: null };
+  } catch (error) {
+    return {
+      value: null,
+      error: {
+        number: typeof error.errorNumber === 'number' ? error.errorNumber : null,
+        message: String(error && error.message ? error.message : error).slice(0, 500),
+      },
+    };
+  }
+}
 
 function installed(bundleId) {
   const url = $.NSWorkspace.sharedWorkspace.URLForApplicationWithBundleIdentifier(bundleId);
@@ -210,7 +225,12 @@ const operations = {
     ready(request);
     const found = locate(request.pid, request.tab);
     const result = value(send(request.pid, 'CrSu', 'ExJa', found.tab, { JvSc: D.descriptorWithString(request.script) }, request.seconds));
-    return { window: found.windowId, url: get(request.pid, 'URL ', found.tab), title: get(request.pid, 'pnam', found.tab), result: result === null ? null : String(result) };
+    const url = optionalGet(request.pid, 'URL ', found.tab);
+    const title = optionalGet(request.pid, 'pnam', found.tab);
+    return {
+      window: found.windowId, url: url.value, title: title.value, result: result === null ? null : String(result),
+      metadataError: url.error || title.error,
+    };
   },
   navigate: function (request) {
     ready(request);
