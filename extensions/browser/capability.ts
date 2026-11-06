@@ -23,7 +23,12 @@ const browser = StringEnum(BROWSER_KEYS, {
 	description:
 		"Browser application: chrome (Google Chrome), brave (Brave Browser), or chrome-for-testing. Each is a separate application.",
 });
-const pid = opt(
+const pid = int({
+	description:
+		"Process id from browser_tabs for the process that listed the tab. A tab id belongs to one browser process, so this tool never selects a process for you.",
+	minimum: 1,
+});
+const anyPid = opt(
 	int({
 		description: "Process id from browser_tabs. Required when the browser has more than one running process.",
 		minimum: 1,
@@ -44,7 +49,7 @@ const origin = str({
 export const TABS_PARAMETERS = obj(
 	{
 		browser: opt(browser),
-		pid,
+		pid: anyPid,
 		match: opt(
 			str({
 				description:
@@ -285,6 +290,7 @@ export const TOOL_TEXT = {
 
 export const GUIDELINES: readonly string[] = [
 	"Use browser_tabs before other browser tools to find the running process and tab ids; select the tab the operator named, and ask when more than one tab plausibly matches. Never pick the foreground or first matching tab by assumption.",
+	"Pass the pid and tab from the same browser_tabs result to browser_inspect, browser_act, browser_evaluate, and browser_capture. A tab id is valid only in that browser process, so the tool never selects a process for you; after a browser restart, list tabs again and use the new pid.",
 	"Browser tools never launch, restart, activate, or quit a browser and never switch tabs; a closed tab, exited process, or changed origin refuses the operation instead of retargeting it.",
 	`Browser tools address only browsers listed in ${ACCESS_TEXT}. Treat configured access and a signed-in session as reach, not task authority: use browser_act and browser_evaluate only for changes the operator's task authorises, and ask before changes to external services that the task does not cover.`,
 	"Use browser_inspect for reading pages; use browser_evaluate only when extraction views cannot answer. browser_evaluate runs unrestricted JavaScript in an isolated world of the page and is not read-only.",

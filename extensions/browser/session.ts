@@ -138,7 +138,12 @@ export function userDataDir(args: string | null): string | null {
 	return match ? match[1].trim() : null;
 }
 
-/** Selects the running process for an explicit browser. More than one process requires an explicit pid. */
+/**
+ * Selects the running process for an explicit browser. Discovery may omit pid
+ * when the browser has one process. Targeted operations always pass the pid
+ * that was listed with the tab, so a tab id never resolves against a different
+ * process.
+ */
 export async function resolveProcess(
 	deps: SessionDeps,
 	browser: BrowserKey,

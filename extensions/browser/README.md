@@ -44,7 +44,8 @@ still checks the access of the browser it names. After changing access, run
 "search":"browser"}` shows the `browser.access` setting.
 
 `browser_act` and `browser_evaluate` run one at a time (`executionMode:
-"sequential"`). Results are text: a headline, then a JSON report. Text and HTML
+"sequential"`) in both the ordinary and Durable forms. Results are text: a
+headline, then a JSON report. Text and HTML
 views put the page content after the report, marked as untrusted. The capture
 result adds the image.
 
@@ -80,16 +81,21 @@ missing; they never change any of them.
 - `browser` is always explicit. No tool chooses a browser, falls back to
   another one, or starts one; a browser that is not running is reported as
   `not-running`.
-- Several running processes of one application (for example, instances with
-  separate `--user-data-dir` profiles) require `pid`. `browser_tabs` lists each
-  process with its `--user-data-dir` argument when one exists.
+- `pid` is required for `browser_inspect`, `browser_act`, `browser_evaluate`,
+  and `browser_capture`. Take it from the same `browser_tabs` call that
+  reported `tab`; no tool chooses a process for a tab. `browser_tabs` takes
+  an optional `pid` to select one running process; it is required when several
+  run (for example, instances with separate `--user-data-dir` profiles). An
+  ambiguous listing reports each running pid with its `--user-data-dir`
+  argument when one exists.
 - Apple Events go to that process ID. JXA's `Application(pid)` is not used,
   because with several processes of one application it delivered events to a
   different process than the one named.
-- `tab` is the tab ID from `browser_tabs`. The ID is stable for the life of the
-  tab in that process. A closed tab or a tab of another process reports
-  `tab-not-found`; operations never move to another tab, the active tab, or a
-  URL-prefix match.
+- `tab` is the tab ID from `browser_tabs`, valid only in the process that
+  listed it. The ID is stable for the life of the tab in that process. A
+  closed tab reports `tab-not-found`; a pid that is not a current process of
+  the named browser reports `not-running`. Operations never move to another
+  tab, another process, the active tab, or a URL-prefix match.
 - `origin` (required for `browser_act` and `browser_evaluate`, optional
   elsewhere) is checked inside the page immediately before the operation. A
   tab that navigated elsewhere reports `origin-mismatch` and nothing runs.
@@ -97,6 +103,16 @@ missing; they never change any of them.
   every profile in one process are listed together, with `mode` (`normal` or
   `incognito`). Identify the subject by window, URL, and title, and ask the
   operator when two tabs plausibly match.
+
+Before an Apple Event goes to a tab, runs page code, or captures a window, the
+tool reads the operating system's current running processes for the named
+browser and refuses a pid that is absent. That check establishes that the pid
+names a running process of that browser at that moment. It does not prove that
+the process is the same instance that answered the earlier `browser_tabs` call:
+macOS can reuse a pid after a process exits, so a browser that restarted with
+the same pid passes the check. The tab lookup in that process then refuses a tab
+id it does not have. Keep the pid with the tab id from one listing, and list
+tabs again after a browser restart.
 
 ## Inspection
 
@@ -233,7 +249,9 @@ tools and a `browser-guidance` prompt section. `browser_tabs`,
 `browser_inspect`, and `browser_capture` declare `replay: "safe"` (a rerun
 repeats a read; a `savePath` file is never overwritten). `browser_act` and
 `browser_evaluate` declare `replay: "unsafe"`: an interrupted call reaches the
-model as interrupted and never runs again.
+model as interrupted and never runs again. They also declare
+`executionMode: "sequential"`, so a message that contains both calls, or two
+calls of one of them, runs them one at a time.
 
 ## Configuration
 

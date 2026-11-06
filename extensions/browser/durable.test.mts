@@ -14,7 +14,7 @@ import { beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Models, ToolResultMessage } from "@earendil-works/pi-ai";
+import type { Models, ToolCall, ToolResultMessage } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createEventBus, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -68,17 +68,24 @@ const IMAGE = "ZmFrZS1wbmc=";
 
 const ARGS = {
 	tabs: { browser: "chrome-for-testing" },
-	inspect: { browser: "chrome-for-testing", tab: "t1" },
+	inspect: { browser: "chrome-for-testing", pid: 42, tab: "t1" },
 	act: {
 		browser: "chrome-for-testing",
+		pid: 42,
 		tab: "t1",
 		origin: "https://app.example",
 		action: "click",
 		selector: "#go",
 		waitFor: { selector: "#done" },
 	},
-	evaluate: { browser: "chrome-for-testing", tab: "t1", origin: "https://app.example", expression: "1 + 1" },
-	capture: { browser: "chrome-for-testing", tab: "t1" },
+	evaluate: {
+		browser: "chrome-for-testing",
+		pid: 42,
+		tab: "t1",
+		origin: "https://app.example",
+		expression: "1 + 1",
+	},
+	capture: { browser: "chrome-for-testing", pid: 42, tab: "t1" },
 };
 
 beforeEach((t) => {
@@ -100,6 +107,10 @@ interface FakeState {
 	counts: { inspect: number; action: number; poll: number; evaluateStart: number; evaluatePoll: number };
 	hang?: "action" | "inspect";
 	onReached?: () => void;
+	/** Action dispatches currently inside the fake browser boundary, and the largest count seen. */
+	active: number;
+	maxActive: number;
+	actionDelayMs: number;
 }
 
 function pageReply(envelope: unknown): OsaReply {
@@ -144,14 +155,21 @@ function inspectReply(state: FakeState, signal?: AbortSignal): OsaReply | Promis
 	});
 }
 
-function actionReply(state: FakeState, signal?: AbortSignal): OsaReply | Promise<never> {
+async function actionReply(state: FakeState, signal?: AbortSignal): Promise<OsaReply> {
 	state.counts.action += 1;
-	if (state.hang === "action") {
-		state.hang = undefined;
-		state.onReached?.();
-		return neverUnlessAborted(signal);
+	state.active += 1;
+	state.maxActive = Math.max(state.maxActive, state.active);
+	try {
+		if (state.actionDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, state.actionDelayMs));
+		if (state.hang === "action") {
+			state.hang = undefined;
+			state.onReached?.();
+			return await neverUnlessAborted(signal);
+		}
+		return pageReply({ kind: "scheduled", element: { selector: "#go" }, matched: 1, mark: 1, page: PAGE });
+	} finally {
+		state.active -= 1;
 	}
-	return pageReply({ kind: "scheduled", element: { selector: "#go" }, matched: 1, mark: 1, page: PAGE });
 }
 
 async function scriptReply(script: string, state: FakeState, signal?: AbortSignal): Promise<OsaReply> {
@@ -173,14 +191,18 @@ async function scriptReply(script: string, state: FakeState, signal?: AbortSigna
 }
 
 /** Answers the browser side of one Apple Events request from a fixed script table. */
-function fakeDeps(hooks: { hang?: "action" | "inspect"; onReached?: () => void } = {}): {
+function fakeDeps(hooks: { hang?: "action" | "inspect"; onReached?: () => void; actionDelayMs?: number } = {}): {
 	deps: BrowserDeps;
 	counts: { inspect: number; action: number; poll: number; evaluateStart: number; evaluatePoll: number };
+	state: FakeState;
 } {
 	const state: FakeState = {
 		counts: { inspect: 0, action: 0, poll: 0, evaluateStart: 0, evaluatePoll: 0 },
 		hang: hooks.hang,
 		onReached: hooks.onReached,
+		active: 0,
+		maxActive: 0,
+		actionDelayMs: hooks.actionDelayMs ?? 0,
 	};
 	const reply = (value: unknown): OsaReply => ({ ok: true, value });
 	const deps: BrowserDeps = {
@@ -231,7 +253,7 @@ function fakeDeps(hooks: { hang?: "action" | "inspect"; onReached?: () => void }
 		save: async () => {},
 		now: () => Date.now(),
 	};
-	return { deps, counts: state.counts };
+	return { deps, counts: state.counts, state };
 }
 
 function neverUnlessAborted(signal: AbortSignal | undefined): Promise<never> {
@@ -312,6 +334,10 @@ describe("browser durable contribution", () => {
 			tools.map((tool) => tool.replay),
 			["safe", "safe", "unsafe", "unsafe", "safe"],
 		);
+		assert.deepEqual(
+			tools.map((tool) => tool.executionMode),
+			[undefined, undefined, "sequential", "sequential", undefined],
+		);
 		assert.ok(tools.every((tool) => tool.structuredOutputSchema === undefined));
 		assert.equal(extension.hooks, undefined);
 		const guidance = extension.sections?.[0];
@@ -373,6 +399,82 @@ describe("browser durable contribution", () => {
 		const image = results[4]?.content.find((part) => part.type === "image");
 		assert.equal(image?.type === "image" ? image.data : undefined, IMAGE);
 		assert.equal(image?.type === "image" ? image.mimeType : undefined, "image/png");
+	});
+
+	it("rejects a targeted call that omits pid through native argument validation", async (t) => {
+		const { deps, counts } = fakeDeps();
+		const extension = await nativeExtension(deps);
+		const { faux, models, registry } = nativeModels();
+		registry.install(extension);
+		const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+		t.after(() => harness.close(BACKGROUND_CONTEXT));
+		const root = await harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: { provider: "faux", modelId: "faux-1" } },
+		});
+
+		const withoutPid = (args: object): ToolCall["arguments"] => {
+			const { pid: _pid, ...rest } = args as { pid?: number };
+			return rest as ToolCall["arguments"];
+		};
+		faux.setResponses([
+			fauxAssistantMessage(
+				[
+					fauxToolCall("browser_inspect", withoutPid(ARGS.inspect)),
+					fauxToolCall("browser_act", withoutPid(ARGS.act)),
+					fauxToolCall("browser_evaluate", withoutPid(ARGS.evaluate)),
+					fauxToolCall("browser_capture", withoutPid(ARGS.capture)),
+				],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("Done."),
+		]);
+
+		const settled = await (await root.submit({ type: "input", content: "browse" }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
+		assert.equal(settled.status, "done");
+		const results = await toolResults(root);
+		assert.deepEqual(
+			results.map((result) => result.toolName),
+			["browser_inspect", "browser_act", "browser_evaluate", "browser_capture"],
+		);
+		for (const result of results) {
+			assert.equal(result.isError, true, result.toolName);
+			assert.match(toolText(result), /pid/, result.toolName);
+			assert.match(toolText(result), /Validation failed/, result.toolName);
+		}
+		assert.equal(counts.inspect, 0);
+		assert.equal(counts.action, 0);
+		assert.equal(counts.evaluateStart, 0);
+	});
+
+	it("runs two browser_act calls of one message one at a time", async (t) => {
+		const { deps, counts, state } = fakeDeps({ actionDelayMs: 25 });
+		const extension = await nativeExtension(deps);
+		const { faux, models, registry } = nativeModels();
+		registry.install(extension);
+		const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
+		t.after(() => harness.close(BACKGROUND_CONTEXT));
+		const root = await harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: { provider: "faux", modelId: "faux-1" } },
+		});
+
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("browser_act", ARGS.act), fauxToolCall("browser_act", ARGS.act)], {
+				stopReason: "toolUse",
+			}),
+			fauxAssistantMessage("Done."),
+		]);
+
+		const settled = await (await root.submit({ type: "input", content: "act twice" }, BACKGROUND_CONTEXT)).wait(
+			BACKGROUND_CONTEXT,
+		);
+		assert.equal(settled.status, "done");
+		assert.equal(counts.action, 2);
+		assert.equal(state.maxActive, 1, "the second action must wait for the first action to finish");
+		const actions = (await toolResults(root)).filter((result) => result.toolName === "browser_act");
+		assert.equal(actions.length, 2);
+		assert.ok(actions.every((result) => result.isError === false));
 	});
 
 	it("does not rerun an interrupted browser_act and delivers an interrupted result", async () => {

@@ -122,14 +122,18 @@ function pollRequests(requests: OsaRequest[]): OsaRequest[] {
 it("refuses before any Apple Event when access is not configured", async () => {
 	const { deps, requests } = fakes(async () => inventoryOf([{ pid: 1 }]), { access: {} });
 	const results = await Promise.all([
-		browserInspect({ browser: "chrome", tab: "1" }, undefined, deps),
+		browserInspect({ browser: "chrome", pid: 5, tab: "1" }, undefined, deps),
 		browserAct(
-			{ browser: "chrome", tab: "1", origin: "https://a.example", action: "click", selector: "#a" },
+			{ browser: "chrome", pid: 5, tab: "1", origin: "https://a.example", action: "click", selector: "#a" },
 			undefined,
 			deps,
 		),
-		browserEvaluate({ browser: "chrome", tab: "1", origin: "https://a.example", expression: "1 + 1" }, undefined, deps),
-		browserCapture({ browser: "chrome", tab: "1" }, undefined, deps),
+		browserEvaluate(
+			{ browser: "chrome", pid: 5, tab: "1", origin: "https://a.example", expression: "1 + 1" },
+			undefined,
+			deps,
+		),
+		browserCapture({ browser: "chrome", pid: 5, tab: "1" }, undefined, deps),
 	]);
 	for (const result of results) {
 		assert.equal(result.details.status, "blocked");
@@ -146,9 +150,9 @@ it("refuses on a non-macOS platform before any Apple Event", async () => {
 	});
 	const results = await Promise.all([
 		browserTabs({ browser: "chrome" }, undefined, deps),
-		browserInspect({ browser: "chrome", tab: "1" }, undefined, deps),
+		browserInspect({ browser: "chrome", pid: 1, tab: "1" }, undefined, deps),
 		browserAct(
-			{ browser: "chrome", tab: "1", origin: "https://a.example", action: "click", selector: "#a" },
+			{ browser: "chrome", pid: 1, tab: "1", origin: "https://a.example", action: "click", selector: "#a" },
 			undefined,
 			deps,
 		),
@@ -160,12 +164,12 @@ it("refuses on a non-macOS platform before any Apple Event", async () => {
 it("refuses an origin with a path before any Apple Event", async () => {
 	const { deps, requests } = fakes(async () => inventoryOf([{ pid: 1 }]), { access: { chrome: "interact" } });
 	const inspect = await browserInspect(
-		{ browser: "chrome", tab: "1", origin: "https://a.example/path" },
+		{ browser: "chrome", pid: 1, tab: "1", origin: "https://a.example/path" },
 		undefined,
 		deps,
 	);
 	const capture = await browserCapture(
-		{ browser: "chrome", tab: "1", origin: "https://a.example/path" },
+		{ browser: "chrome", pid: 1, tab: "1", origin: "https://a.example/path" },
 		undefined,
 		deps,
 	);
@@ -178,7 +182,7 @@ it("refuses an origin with a path before any Apple Event", async () => {
 
 it("refuses when the browser is not running and sends only an inventory read", async () => {
 	const { deps, requests } = fakes(async () => inventoryOf([]), { access: { chrome: "interact" } });
-	const result = await browserInspect({ browser: "chrome", tab: "1" }, undefined, deps);
+	const result = await browserInspect({ browser: "chrome", pid: 1, tab: "1" }, undefined, deps);
 	assert.equal(result.details.status, "blocked");
 	assert.equal(blockedReason(result), "not-running");
 	assert.equal(requests.length, 1);
@@ -192,7 +196,7 @@ it("refuses an ambiguous process and lists both pids with their user data direct
 		access: { chrome: "interact" },
 		processArgs,
 	});
-	const result = await browserInspect({ browser: "chrome", tab: "1" }, undefined, deps);
+	const result = await browserTabs({ browser: "chrome" }, undefined, deps);
 	assert.equal(blockedReason(result), "ambiguous-process");
 	assert.deepEqual(list(obj(reportOf(result).blocked).instances), [
 		{ pid: 10, userDataDir: "/tmp/x" },
@@ -205,6 +209,72 @@ it("refuses a pid that the inventory does not list", async () => {
 	const result = await browserInspect({ browser: "chrome", pid: 99, tab: "1" }, undefined, deps);
 	assert.equal(blockedReason(result), "not-running");
 	assert.deepEqual(obj(reportOf(result).blocked).running, [10]);
+});
+
+it("refuses every targeted operation when another process now owns the tab id", async () => {
+	let running = [5];
+	const run = runFrom({
+		inventory: () => inventoryOf(running.map((pid) => ({ pid }))),
+		windows: () =>
+			windowsOf([
+				{
+					id: "1",
+					index: 1,
+					title: "Window",
+					mode: "normal",
+					minimized: false,
+					visible: true,
+					activeTabIndex: 1,
+					tabs: [{ id: "42", url: "https://a.example/page", title: "Example", loading: false }],
+				},
+			]),
+	});
+	const captured: number[] = [];
+	const saves: string[] = [];
+	const { deps, requests } = fakes(run, {
+		access: { chrome: "interact" },
+		capture: async (windowNumber) => {
+			captured.push(windowNumber);
+			return Buffer.from("png");
+		},
+		save: async (path) => {
+			saves.push(path);
+		},
+	});
+
+	const first = await browserTabs({ browser: "chrome" }, undefined, deps);
+	assert.equal(obj(reportOf(first)).pid, 5);
+	const discovered = list(list(reportOf(first).windows)[0].tabs)[0];
+	assert.equal(discovered.tab, "42");
+
+	running = [9];
+	const second = await browserTabs({ browser: "chrome" }, undefined, deps);
+	assert.equal(obj(reportOf(second)).pid, 9, "the same tab id now belongs to another process");
+
+	const before = requests.length;
+	const target = { browser: "chrome" as const, pid: 5, tab: String(discovered.tab), origin: "https://a.example" };
+	const results = [
+		await browserInspect(target, undefined, deps),
+		await browserAct({ ...target, action: "click", selector: "#save" }, undefined, deps),
+		await browserEvaluate({ ...target, expression: "1 + 1" }, undefined, deps),
+		await browserCapture({ ...target, savePath: "/tmp/browser-target-must-not-save.png" }, undefined, deps),
+	];
+	for (const result of results) {
+		assert.equal(result.details.status, "blocked");
+		assert.equal(blockedReason(result), "not-running");
+		assert.deepEqual(obj(reportOf(result).blocked).running, [9]);
+		assert.equal(obj(reportOf(result).target).pid, 5);
+	}
+	const after = requests.slice(before);
+	assert.equal(
+		after.filter(
+			(request) =>
+				request.op === "execute" || request.op === "window" || request.op === "windows" || request.op === "navigate",
+		).length,
+		0,
+	);
+	assert.deepEqual(captured, []);
+	assert.deepEqual(saves, []);
 });
 
 /* ---------------------------------------------------------------- Apple Events failures */

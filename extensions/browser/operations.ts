@@ -289,7 +289,7 @@ export async function browserTabs(
 
 export interface TargetParams {
 	browser: BrowserKey;
-	pid?: number;
+	pid: number;
 	tab: string;
 	origin?: string;
 }
@@ -300,6 +300,7 @@ interface Resolved {
 	expectOrigin: string | null;
 }
 
+/** Resolves the named process and tab. Targeted operations always supply pid, so the tab id stays bound to one browser process. */
 async function resolveTarget(
 	params: TargetParams,
 	required: "inspect" | "interact",
@@ -317,7 +318,7 @@ async function resolveTarget(
 class Subject {
 	facts: Facts;
 	constructor(params: TargetParams) {
-		this.facts = { browser: params.browser, tab: params.tab };
+		this.facts = { browser: params.browser, pid: params.pid, tab: params.tab };
 	}
 	update(target: Target, page: Facts | null, window?: string): void {
 		this.facts = {

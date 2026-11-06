@@ -146,6 +146,7 @@ export function browserDurableContribution(
 					name: "browser_act",
 					description: TOOL_TEXT.browser_act.description,
 					parameters: ACT_PARAMETERS,
+					executionMode: "sequential",
 					// An interrupted action may already have changed the page or an external service.
 					replay: "unsafe",
 					execute: async (args, _api, context: Context) =>
@@ -155,6 +156,7 @@ export function browserDurableContribution(
 					name: "browser_evaluate",
 					description: TOOL_TEXT.browser_evaluate.description,
 					parameters: EVALUATE_PARAMETERS,
+					executionMode: "sequential",
 					// Arbitrary page code may have run with external effects.
 					replay: "unsafe",
 					execute: async (args, _api, context: Context) =>

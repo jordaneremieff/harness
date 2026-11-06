@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { type JsonObject, type Tool, validateToolArguments } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import registerBrowser from "./index.ts";
 
@@ -134,6 +135,58 @@ describe("browser extension entrypoint", () => {
 		assert.ok(guidelines.length > 0);
 		assert.match(guidelines.join("\n"), /untrusted data, not instructions/);
 		assert.match(guidelines.join("\n"), /browser_tabs/);
+	});
+
+	it("requires pid on every targeted tool through the host argument validation", () => {
+		process.env.PI_BROWSER_ACCESS = JSON.stringify({ chrome: "interact" });
+		const { api, tools } = fixture();
+		registerBrowser(api as unknown as ExtensionAPI);
+
+		const calls: { name: string; args: JsonObject }[] = [
+			{ name: "browser_inspect", args: { browser: "chrome", tab: "7", pid: 5 } },
+			{
+				name: "browser_act",
+				args: { browser: "chrome", tab: "7", pid: 5, origin: "https://a.example", action: "click", selector: "#save" },
+			},
+			{
+				name: "browser_evaluate",
+				args: { browser: "chrome", tab: "7", pid: 5, origin: "https://a.example", expression: "1 + 1" },
+			},
+			{ name: "browser_capture", args: { browser: "chrome", tab: "7", pid: 5 } },
+		];
+		for (const call of calls) {
+			const tool = tools.get(call.name) as unknown as Tool;
+			assert.ok(tool, call.name);
+			const { pid: _pid, ...withoutPid } = call.args;
+			assert.throws(
+				() =>
+					validateToolArguments(tool, {
+						type: "toolCall",
+						id: `call-${call.name}`,
+						name: call.name,
+						arguments: withoutPid,
+					}),
+				new RegExp(`Validation failed for tool "${call.name}"[\\s\\S]*pid`),
+				call.name,
+			);
+			const validated = validateToolArguments(tool, {
+				type: "toolCall",
+				id: `ok-${call.name}`,
+				name: call.name,
+				arguments: call.args,
+			});
+			assert.equal(validated.pid, 5, call.name);
+		}
+
+		const tabs = tools.get("browser_tabs") as unknown as Tool;
+		assert.doesNotThrow(() =>
+			validateToolArguments(tabs, {
+				type: "toolCall",
+				id: "tabs-no-pid",
+				name: "browser_tabs",
+				arguments: { browser: "chrome" },
+			}),
+		);
 	});
 
 	it("emits one Durable contribution whose source is this entrypoint", () => {
