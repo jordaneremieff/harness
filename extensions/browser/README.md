@@ -281,6 +281,7 @@ node scripts/extension-load-check.mts extensions/browser/index.ts
 npm run typecheck && npm run lint && npm run check
 ```
 
-The tests use fake Apple Events replies and run page scripts in a Node
-sandbox; they do not contact a browser. Browser behaviour itself needs a live
+The tests use fake Apple Events replies, run page scripts against a small
+fake DOM in a Node sandbox, and run the JXA program against a stand-in
+scripting object model; they do not contact a browser. Browser behaviour itself needs a live
 run against the selected application, with its permissions granted.
