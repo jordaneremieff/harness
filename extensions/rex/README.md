@@ -526,42 +526,45 @@ focus watcher, or OSC output participates. A single warning notification per ext
 reports real errors without adding persistent status chrome.
 
 Every claim write, confirmation, manual-divergence removal, withdrawal (restoration or removal) and
-pruning removal holds the lock of the one record it changes. The lock is a `<record file>.lock`
-directory in the same store. Its scope is the local file step, so this extension never holds a
-record lock across a Rex CLI call. The same lock coordinates replacement instances in one process
-and separate processes that use the same store. Inside the lock the step reads the record, compares it, and performs its single
-mutation, so no other holder can change the record between the comparison and its write. A
-withdrawal therefore acts only while the record still carries its own `attempt`, a confirmation
-writes only while the record still carries the claim's `attempt`, and a pruning removal acts on the
-state it reads under that lock.
+pruning removal holds the lock of the one record it changes. A record's lock path is
+`<sha256>.lock` beside its `<sha256>.json` record in the same store, and an open file description
+holds the lock. Its scope is the local file step, so this extension never holds a record lock across
+a Rex CLI call. The same lock coordinates replacement instances in one process and separate
+processes that use the same store. Inside the lock the step reads the record, compares it, and
+performs its single mutation, so no other holder can change the record between the comparison and
+its write. A withdrawal therefore acts only while the record still carries its own `attempt`, a
+confirmation writes only while the record still carries the claim's `attempt`, and a pruning removal
+acts on the state it reads under that lock.
 
-Acquisition is bounded to about two seconds of retries. When another step keeps the lock for that
-whole time, the step fails with an error and changes nothing. Lock contention or a store failure is
-an error, never evidence that no record exists. Immediately before each mutation and before
-release, the step checks that it still owns the lock directory: it compares the directory identity
-with the identity captured after acquisition and checks the lease state reported by proper-lockfile.
-A lost lease aborts the step with an error. The release path and proper-lockfile's process-exit
-cleanup both go through this holder's file adapter, which removes a lock directory only while its
-identity still matches the holder that acquired it. An old cleanup therefore cannot release a
-successor's lock. Pruning runs after the writer's own lock is released, takes one victim's lock at a
-time without retries, and skips a victim that another step holds. Inside that lock it removes the
-record only when the record's modification time still equals the time listed before locking. The
-store keeps at most 256 records. A lock left by a killed process blocks that one record until the
-lock is older than the ten-second stale period; the next step then takes it over.
+The kernel grants the lock atomically with the open and ties it to that open file description, so
+elapsed time never transfers it. A holder
+that stops, suspends or loses its event loop keeps the lock until it resumes and finishes its step.
+When the holder process dies, the kernel releases the lock at once and the record becomes available
+immediately. A lock file exists only while a step holds it: the release removes the path while the
+open description still holds the lock, then closes the description. A crash can leave an unlocked
+lock file, which the next step on that record locks, reuses and removes.
 
-Shutdown waits at most two seconds for the active run. A lock stays held until its step's file
-mutation settles; shutdown never releases it. A step that belongs to a run makes no mutation once
-that run is cancelled, including a step that acquires the lock after cancellation: it releases the
-lock and changes nothing. Withdrawal of a claim whose write never began is cleanup. It still runs
-after cancellation, within the same bounded acquisition, and changes only a record that still
-carries its own `attempt`.
+Acquisition is bounded to about two seconds of attempts, one hundred milliseconds apart. While
+another holder keeps the lock, each attempt fails without waiting, and a whole interval of such
+failures makes the step fail with an error that changes nothing. Lock contention or a store failure
+is an error, never evidence that no record exists. After an attempt opens the lock file, the step
+compares the opened file's device and inode with the file now at the lock path. A removed or replaced
+path is a mismatch: the step closes its description and retries, so it never acts under a successor's
+lock. Any other failure to open or identify the lock path refuses that record. Record locks use the
+macOS `O_EXLOCK` open flag; on another platform the step fails with an error. Pruning runs after the
+writer's own lock is released, takes one victim's lock with a single attempt, and skips a victim
+that another step holds. Inside that lock it removes the record only when the record's
+modification time still equals the time listed before locking. The store keeps at most 256 records.
 
-Two limits remain. A process that stalls longer than the ten-second stale period between its
-ownership check and its mutation can still act after another holder takes the lock over. The same
-window exists between the identity check and the removal of the lock directory. Rex also exposes no
-conditional label setter, so a simultaneous manual edit between the final `session.view` read and
-`session.set_window_label` can receive the automatic label. The ownership check prevents adoption
-of labels observed before that narrow interval, not a concurrent edit after the read.
+Shutdown waits at most two seconds for the active run. A lock stays held while its step's file
+operation can still complete; shutdown never releases it. A step that belongs to a run makes no
+mutation once that run is cancelled, including a step that acquires the lock after cancellation: it
+releases the lock and changes nothing. Withdrawal of a claim whose write never began is cleanup. It
+still runs after cancellation, within the same bounded acquisition, and changes only a record that
+still carries its own `attempt`.
+
+One limit remains. Rex exposes no conditional label setter, so a simultaneous manual edit between
+the final `session.view` read and `session.set_window_label` can receive the automatic label.
 
 ## Configuration and loading
 

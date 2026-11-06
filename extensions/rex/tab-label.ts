@@ -1,19 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
-import fs from "node:fs";
-import { mkdir, open, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { constants } from "node:fs";
+import { type FileHandle, mkdir, open, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import lockfile, { type LockOptions } from "proper-lockfile";
 import type { RexSettings } from "./settings.ts";
 import { CliTransport, type CliResult, type RexTransport } from "./transport.ts";
 
 const MAX_RECORD_BYTES = 16384;
 const MAX_STORE_RECORDS = 256;
 const SHUTDOWN_DRAIN_MS = 2000;
-// A live holder refreshes its lease; a lease older than the stale period is taken over as abandoned.
-const LOCK_STALE_MS = 10_000;
+// `open(2)` on macOS takes a flock-style exclusive lock atomically with O_EXLOCK.
+// Node's fs.constants does not expose the flag.
+const O_EXLOCK = 0x20;
 // About two seconds of bounded acquisition.
-const LOCK_RETRIES: NonNullable<LockOptions["retries"]> = { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 };
+const LOCK_ATTEMPTS = 20;
+const LOCK_RETRY_MS = 100;
 
 type Settings = Pick<RexSettings, "executable" | "maxOutputBytes" | "maxWaitMs">;
 
@@ -319,36 +320,34 @@ class Projector implements TabLabelProjector {
 
 	/**
 	 * Runs one decision and its local file mutations for one record under that record's
-	 * lock. Another instance, in this process or another, cannot change the record between
-	 * the decision's read and its write. A step never holds the lock across a Rex call and
-	 * never acquires a second record's lock.
+	 * kernel-held lock. Another instance, in this process or another, cannot change the
+	 * record between the decision's read and its write. A step never holds the lock across
+	 * a Rex call and never acquires a second record's lock.
 	 */
 	private async withRecordStep<T>(key: ResourceKey, run: Run | undefined, decide: (step: RecordStep) => Promise<T>): Promise<StepOutcome<T>> {
 		await mkdir(this.directory, { recursive: true, mode: 0o700 });
 		const recordPath = this.path(key);
-		const lock = await RecordLock.acquire(recordPath, LOCK_RETRIES);
+		const lock = await RecordLock.acquire(recordPath, LOCK_ATTEMPTS);
 		if (!lock) throw new Error("Rex tab label record lock is held by another update.");
 		let wrote = false;
 		let outcome: StepOutcome<T>;
 		try {
-			const guard = async (): Promise<void> => {
+			const guard = (): void => {
 				if (run && !this.current(run)) throw new CancelledStep();
-				if (!await lock.owned()) throw lockLost();
 			};
-			await guard();
+			guard();
 			const value = await decide({
 				read: () => this.readRecord(key),
 				write: async (record) => {
-					await guard();
+					guard();
 					wrote = true;
 					await this.writeRecord(record);
 				},
 				remove: async () => {
-					await guard();
+					guard();
 					await this.removeRecord(key);
 				},
 			});
-			if (!await lock.owned()) throw lockLost();
 			outcome = { done: true, value };
 		} catch (error) {
 			if (!(error instanceof CancelledStep)) throw error;
@@ -466,13 +465,12 @@ class Projector implements TabLabelProjector {
 
 	// A locked record belongs to another step, and a changed record is newer than the listed one.
 	private async pruneRecord(path: string, mtime: number): Promise<boolean> {
-		const lock = await RecordLock.acquire(path, 0);
+		const lock = await RecordLock.acquire(path, 1);
 		if (!lock) return false;
 		try {
 			const listed = await recordMtime(path);
 			if (listed === undefined) return true;
 			if (listed !== mtime) return false;
-			if (!await lock.owned()) throw lockLost();
 			await unlink(path);
 			return true;
 		} finally {
@@ -488,17 +486,12 @@ class Projector implements TabLabelProjector {
 /** A step gave up because its run is no longer current; it made no mutation. */
 class CancelledStep extends Error {}
 
-function lockLost(): Error {
-	return new Error("Rex tab label record lock was lost to another update.");
+function lockPathFor(recordPath: string): string {
+	return `${recordPath.slice(0, -".json".length)}.lock`;
 }
 
-async function lockDirectoryInode(path: string): Promise<number | undefined> {
-	try {
-		return (await stat(path)).ino;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-		throw error;
-	}
+function wait(ms: number): Promise<void> {
+	return new Promise<void>((settle) => { setTimeout(settle, ms); });
 }
 
 async function recordMtime(path: string): Promise<number | undefined> {
@@ -511,89 +504,67 @@ async function recordMtime(path: string): Promise<number | undefined> {
 }
 
 /**
- * One held record lock. The lock directory's inode and the lease identify this holder.
- * Release and proper-lockfile's process-exit cleanup both go through this holder's file
- * adapter, so neither removes a directory that a successor has since created.
+ * One held record lock. The open file description owns the kernel lock, so exclusion holds
+ * while that description stays open and the kernel releases it when the process dies. No
+ * elapsed time, heartbeat or ownership check participates.
  */
 class RecordLock {
-	private compromised = false;
-	private inode: number | undefined;
-	private guardRemoval = false;
 	private readonly lockPath: string;
-	private readonly lockFs: Record<string, unknown>;
-	private releaseLock: (() => Promise<void>) | undefined;
+	private readonly handle: FileHandle;
 
-	private constructor(recordPath: string) {
-		this.lockPath = `${resolve(recordPath)}.lock`;
-		this.lockFs = {
-			...fs,
-			rmdir: (path: string, callback: (error?: NodeJS.ErrnoException | null) => void) => {
-				let allowed: boolean;
-				try {
-					allowed = this.removalAllowed(path);
-				} catch (error) {
-					callback(error as NodeJS.ErrnoException);
-					return;
-				}
-				if (!allowed) {
-					callback();
-					return;
-				}
-				fs.rmdir(path, callback);
-			},
-			rmdirSync: (path: string, options?: Parameters<typeof fs.rmdirSync>[1]) => {
-				if (this.removalAllowed(path)) fs.rmdirSync(path, options);
-			},
-		};
+	private constructor(lockPath: string, handle: FileHandle) {
+		this.lockPath = lockPath;
+		this.handle = handle;
 	}
 
 	/**
-	 * True while a removal may proceed. Acquisition runs before the holder records its
-	 * directory, so a stale takeover and the library's probe cleanup stay unguarded there.
+	 * Locks one record, or returns undefined when another holder keeps it for every attempt.
 	 */
-	private removalAllowed(path: string): boolean {
-		if (!this.guardRemoval || path !== this.lockPath) return true;
+	static async acquire(recordPath: string, attempts: number): Promise<RecordLock | undefined> {
+		if (process.platform !== "darwin") throw new Error("Rex tab label record locks need macOS file locks.");
+		const lockPath = lockPathFor(recordPath);
+		for (let attempt = 0; attempt < attempts; attempt++) {
+			if (attempt > 0) await wait(LOCK_RETRY_MS);
+			const lock = await RecordLock.attempt(lockPath);
+			if (lock) return lock;
+		}
+		return undefined;
+	}
+
+	/**
+	 * One acquisition attempt. The open file description owns the lock. A lock path that no
+	 * longer names the opened file means a successor took the path: the attempt closes its
+	 * description and reports a retry, so it never acts under a successor's lock.
+	 */
+	private static async attempt(lockPath: string): Promise<RecordLock | undefined> {
+		let handle: FileHandle;
 		try {
-			return fs.statSync(this.lockPath).ino === this.inode;
+			handle = await open(lockPath, constants.O_RDWR | constants.O_CREAT | O_EXLOCK | constants.O_NONBLOCK, 0o600);
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+			if ((error as NodeJS.ErrnoException).code === "EAGAIN") return undefined;
 			throw error;
 		}
-	}
-
-	/** Acquires one record's lock directory, or returns undefined when a holder keeps it. */
-	static async acquire(recordPath: string, retries: NonNullable<LockOptions["retries"]>): Promise<RecordLock | undefined> {
-		const lock = new RecordLock(recordPath);
 		try {
-			lock.releaseLock = await lockfile.lock(recordPath, {
-				realpath: false,
-				stale: LOCK_STALE_MS,
-				retries,
-				fs: lock.lockFs,
-				onCompromised: () => { lock.compromised = true; },
-			});
+			const locked = await handle.stat();
+			const named = await stat(lockPath);
+			if (named.dev === locked.dev && named.ino === locked.ino) return new RecordLock(lockPath, handle);
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ELOCKED") return undefined;
+			await handle.close().catch(() => {});
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
 			throw error;
 		}
-		lock.inode = await lockDirectoryInode(lock.lockPath);
-		lock.guardRemoval = true;
-		return lock;
+		await handle.close();
+		return undefined;
 	}
 
-	/** True while the lease and the lock directory still belong to this holder. */
-	async owned(): Promise<boolean> {
-		return this.inode !== undefined && !this.compromised && await lockDirectoryInode(this.lockPath) === this.inode;
-	}
-
-	/** Removes the lock directory only while this holder still owns it. */
+	/** Removes the lock path while this description still holds its lock, then closes it. */
 	async release(): Promise<void> {
-		if (!this.releaseLock || !await this.owned()) return;
 		try {
-			await this.releaseLock();
-		} catch (error) {
-			// An already released lease means a takeover; the directory belongs to the successor.
-			if ((error as NodeJS.ErrnoException).code !== "ERELEASED") throw error;
+			await unlink(this.lockPath).catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "ENOENT") throw error;
+			});
+		} finally {
+			await this.handle.close();
 		}
 	}
 }

@@ -1,6 +1,6 @@
-// Runs a real tab-label projector in a separate process. The projector claims a label,
-// the label write reports that it never started, and the withdrawal's record read pauses
-// while the record lock is held. The parent process releases the read through stdin.
+// Runs a real tab-label projector in a separate process. The projector claims a label, the
+// label write reports that it never started, and the withdrawal pauses at the record unlink
+// while its record lock is held. The parent process releases the unlink through stdin.
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -17,26 +17,19 @@ if (!agentDir || !name) {
 	process.exit(2);
 }
 
-let releaseRead: () => void = () => {};
-const release = new Promise<void>((resolve) => { releaseRead = resolve; });
 let paused: () => void = () => {};
 const reached = new Promise<void>((resolve) => { paused = resolve; });
+let releaseUnlink: () => void = () => {};
+const release = new Promise<void>((resolve) => { releaseUnlink = resolve; });
 
-const mutable = fs.promises as unknown as { open: typeof import("node:fs/promises").open };
-const originalOpen = mutable.open;
-let armed = false;
-mutable.open = async (...args) => {
-	const handle = await originalOpen(...args);
-	if (!armed || !String(args[0]).endsWith(".json")) return handle;
-	armed = false;
-	const close = handle.close.bind(handle);
-	handle.close = async () => {
-		paused();
-		process.stdout.write("paused\n");
-		await release;
-		await close();
-	};
-	return handle;
+const mutable = fs.promises as unknown as { unlink: typeof import("node:fs/promises").unlink };
+const originalUnlink = mutable.unlink;
+mutable.unlink = async (path) => {
+	if (!String(path).endsWith(".json")) return originalUnlink(path);
+	paused();
+	process.stdout.write("paused\n");
+	await release;
+	return originalUnlink(path);
 };
 syncBuiltinESMExports();
 
@@ -58,8 +51,6 @@ class FixtureTransport implements RexTransport {
 			});
 		}
 		if (method === "session.set_window_label") {
-			// The next record read is the withdrawal's decision read.
-			armed = true;
 			return { ...response({}), outcome: "spawn_error", exitCode: null, stdout: "", stderr: "setter did not start", started: false };
 		}
 		throw new Error(`Unexpected Rex method: ${method}`);
@@ -81,7 +72,7 @@ const ctx = { mode: "tui", cwd: "/work/fixture", ui: { notify: () => {} } } as u
 projector.start(ctx);
 await reached;
 await new Promise<void>((resolve) => process.stdin.once("data", () => resolve()));
-releaseRead();
+releaseUnlink();
 await projector.idle();
 await projector.shutdown();
 process.stdin.destroy();

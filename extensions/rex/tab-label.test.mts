@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, utimes } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, unlink, utimes, writeFile, type FileHandle } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -149,6 +149,12 @@ async function recordFiles(agentDir: string): Promise<StoredForTest[]> {
 	return Promise.all(names.filter((name) => name.endsWith(".json")).map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8")) as StoredForTest));
 }
 
+async function lockFiles(agentDir: string): Promise<string[]> {
+	const directory = join(agentDir, "rex", "tab-labels");
+	try { return (await readdir(directory)).filter((name) => name.endsWith(".lock")); }
+	catch { return []; }
+}
+
 interface StoredForTest {
 	version: number;
 	label?: string;
@@ -179,6 +185,9 @@ const MUTABLE_PROMISES = fs.promises as unknown as {
 	rename: typeof import("node:fs/promises").rename;
 };
 
+// macOS open(2) flag: take a flock-style exclusive lock atomically with the open.
+const O_EXLOCK = 0x20;
+
 interface Fault {
 	armed: boolean;
 	restore(): void;
@@ -198,6 +207,29 @@ function pauseNextRecordRead(entered: () => void, release: Promise<void>): Fault
 			await release;
 			await close();
 		};
+		return handle;
+	};
+	MUTABLE_PROMISES.open = patched;
+	syncBuiltinESMExports();
+	fault.restore = () => { MUTABLE_PROMISES.open = original; syncBuiltinESMExports(); };
+	return fault;
+}
+
+/**
+ * Replaces the lock path with a successor's locked file right after an acquirer opens it.
+ * The successor's handle stays open, so later attempts meet its lock.
+ */
+function stealNextLock(held: { handle?: FileHandle }): Fault {
+	const fault: Fault = { armed: false, restore: () => {} };
+	const original = MUTABLE_PROMISES.open;
+	const patched: typeof original = async (...args) => {
+		const handle = await original(...args);
+		if (fault.armed && String(args[0]).endsWith(".lock")) {
+			fault.armed = false;
+			const lockPath = String(args[0]);
+			await unlink(lockPath);
+			held.handle = await original(lockPath, fs.constants.O_RDWR | fs.constants.O_CREAT | O_EXLOCK | fs.constants.O_NONBLOCK, 0o600);
+		}
 		return handle;
 	};
 	MUTABLE_PROMISES.open = patched;
@@ -826,33 +858,37 @@ test("a delayed withdrawal after reload cannot replace a replacement record", as
 	await delayedWithdrawalAfterReload(t, "Earlier label");
 });
 
-test("a separate process holding a record lock refuses a replacement update", async (t) => {
-	const agentDir = await mkdtemp(join(tmpdir(), "rex-tab-label-process-"));
+interface ChildProjector {
+	agentDir: string;
+	env: NodeJS.ProcessEnv;
+	child: ChildProcessWithoutNullStreams;
+	exited: Promise<[number | null, NodeJS.Signals | null]>;
+	lines: ChildLines;
+}
+
+/** Starts a real projector in a child process and stops it when the test ends. */
+async function startChildProjector(t: TestContext, prefix: string, name: string): Promise<ChildProjector> {
+	const agentDir = await mkdtemp(join(tmpdir(), prefix));
 	const env: NodeJS.ProcessEnv = { REX_SERVER: "unix:///launch", REX_SESSION: "session:test", REX_BLOCK: "block:test" };
-	const child = spawn(process.execPath, [join(import.meta.dirname, "tab-label-process-fixture.mts"), agentDir, "Failed name"], {
+	const child = spawn(process.execPath, [join(import.meta.dirname, "tab-label-process-fixture.mts"), agentDir, name], {
 		env: { ...process.env, ...env },
 		stdio: ["pipe", "pipe", "pipe"],
 	}) as ChildProcessWithoutNullStreams;
-	const exited = once(child, "exit");
+	const exited = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
 	const lines = childLines(child.stdout);
-	const killed = setTimeout(() => child.kill("SIGKILL"), 20_000);
+	const killed = setTimeout(() => child.kill("SIGKILL"), 60_000);
 	t.after(async () => {
 		clearTimeout(killed);
 		child.kill("SIGKILL");
 		await rm(agentDir, { recursive: true, force: true });
 	});
+	return { agentDir, env, child, exited, lines };
+}
 
-	await lines.next("paused");
-	const [claim] = await recordFiles(agentDir);
-	assert.ok(claim);
-	assert.equal(claim.pending, "Failed name");
-	assert.ok(claim.attempt);
-
-	const tab: TabState = { label: DEFAULT_LABEL };
+/** A second projector on the same store, driven by the test and never started before it is ready. */
+function replacementProjector(agentDir: string, env: NodeJS.ProcessEnv, tab: TabState, notices: string[], state: { name: string }) {
 	const transport = new FakeTransport(env, tab);
-	const notices: string[] = [];
 	const ctx = context("tui", (message: string) => { notices.push(message); });
-	const state = { name: "New name" };
 	const projector = createTabLabelProjector({
 		agentDir,
 		settings: SETTINGS,
@@ -861,24 +897,48 @@ test("a separate process holding a record lock refuses a replacement update", as
 		getSessionName: () => state.name,
 		createTransport: () => transport,
 	});
+	return { transport, ctx, projector };
+}
+
+test("a suspended holder keeps its record lock and every replacement update is refused", async (t) => {
+	const child = await startChildProjector(t, "rex-tab-label-suspended-", "Failed name");
+	await child.lines.next("paused");
+	const [claim] = await recordFiles(child.agentDir);
+	assert.ok(claim);
+	assert.equal(claim.pending, "Failed name");
+	assert.ok(claim.attempt);
+
+	child.child.kill("SIGSTOP");
+	const stoppedAt = Date.now();
+
+	const tab: TabState = { label: DEFAULT_LABEL };
+	const notices: string[] = [];
+	const state = { name: "New name" };
+	const { transport, ctx, projector } = replacementProjector(child.agentDir, child.env, tab, notices, state);
 	t.after(() => projector.shutdown());
 
+	// Each refused acquisition takes the bounded acquisition time, which advances the clock.
 	projector.start(ctx);
-	await projector.idle();
-	assert.deepEqual(transport.writes, []);
-	assert.deepEqual(await recordFiles(agentDir), [claim]);
-	assert.equal(notices.length, 1);
+	do {
+		state.name = "New name";
+		projector.refresh(ctx);
+		await projector.idle();
+		assert.deepEqual(transport.writes, []);
+		assert.deepEqual(await recordFiles(child.agentDir), [claim]);
+	} while (Date.now() - stoppedAt <= 11_000);
+	assert.ok(Date.now() - stoppedAt > 11_000);
 
-	child.stdin.write("go\n");
-	await lines.next("done");
-	await exited;
-	assert.deepEqual(await recordFiles(agentDir), []);
+	child.child.kill("SIGCONT");
+	child.child.stdin.write("go\n");
+	await child.lines.next("done");
+	const [code] = await child.exited;
+	assert.equal(code, 0);
+	assert.deepEqual(await recordFiles(child.agentDir), []);
 
-	state.name = "New name";
 	projector.refresh(ctx);
 	await projector.idle();
 	assert.deepEqual(transport.writes, ["New name"]);
-	const [confirmed] = await recordFiles(agentDir);
+	const [confirmed] = await recordFiles(child.agentDir);
 	assert.equal(confirmed?.label, "New name");
 	assert.equal(confirmed?.pending, undefined);
 
@@ -887,6 +947,42 @@ test("a separate process holding a record lock refuses a replacement update", as
 	await projector.idle();
 	assert.deepEqual(transport.writes, ["New name", "Later name"]);
 	assert.equal(tab.label, "Later name");
+	await projector.shutdown();
+});
+
+test("a killed holder releases its record lock at once", async (t) => {
+	const child = await startChildProjector(t, "rex-tab-label-killed-", "Failed name");
+	await child.lines.next("paused");
+	const [claim] = await recordFiles(child.agentDir);
+	assert.ok(claim);
+	assert.equal(claim.pending, "Failed name");
+
+	child.child.kill("SIGKILL");
+	const [code, signal] = await child.exited;
+	assert.equal(code, null);
+	assert.equal(signal, "SIGKILL");
+
+	const tab: TabState = { label: DEFAULT_LABEL };
+	const notices: string[] = [];
+	const state = { name: "New name" };
+	const { transport, ctx, projector } = replacementProjector(child.agentDir, child.env, tab, notices, state);
+	t.after(() => projector.shutdown());
+
+	projector.start(ctx);
+	await projector.idle();
+	assert.deepEqual(transport.writes, ["New name"]);
+	assert.deepEqual(notices, []);
+	const [confirmed] = await recordFiles(child.agentDir);
+	assert.equal(confirmed?.label, "New name");
+	assert.equal(confirmed?.pending, undefined);
+	assert.deepEqual(await lockFiles(child.agentDir), []);
+
+	state.name = "Later name";
+	projector.input(ctx);
+	await projector.idle();
+	assert.deepEqual(transport.writes, ["New name", "Later name"]);
+	assert.equal(tab.label, "Later name");
+	await projector.shutdown();
 });
 
 test("a cancelled update waiting for a record lock makes no change", async (t) => {
@@ -917,7 +1013,7 @@ test("a cancelled update waiting for a record lock makes no change", async (t) =
 	readPause.armed = true;
 	holder.refresh(holderCtx);
 	await readEntered.promise;
-	assert.deepEqual((await readdir(directory)).filter((name) => name.endsWith(".lock")).length, 1);
+	assert.equal((await lockFiles(first.agentDir)).length, 1);
 
 	const createEntered = deferred();
 	const createRelease = deferred();
@@ -948,98 +1044,79 @@ test("a cancelled update waiting for a record lock makes no change", async (t) =
 	assert.equal(record?.pending, undefined);
 	assert.deepEqual(waiterNotices, []);
 	assert.deepEqual(holderNotices, []);
-	assert.deepEqual((await readdir(directory)).filter((name) => name.endsWith(".lock")), []);
+	assert.deepEqual(await lockFiles(first.agentDir), []);
 });
 
-/** Stands in for a successor holder by replacing the lock directory with a new one. */
-async function replaceLockDirectory(directory: string): Promise<string> {
-	const lockName = (await readdir(directory)).find((name) => name.endsWith(".json.lock"));
-	assert.ok(lockName);
-	const path = join(directory, lockName);
-	const before = (await stat(path)).ino;
-	await rm(path, { recursive: true, force: true });
-	await mkdir(path);
-	assert.notEqual((await stat(path)).ino, before);
-	return lockName;
+/** Uses the store's record name to derive the path of its lock file. */
+function lockPathOf(directory: string, recordName: string): string {
+	return join(directory, `${recordName.slice(0, -".json".length)}.lock`);
 }
 
-test("a step that lost its record lock leaves a successor directory in place", async (t) => {
+test("an acquisition that finds its lock path replaced refuses without a mutation", async (t) => {
 	const f = await fixture(t);
-	f.state.name = "Holder name";
+	const directory = join(f.agentDir, "rex", "tab-labels");
+	const held: { handle?: FileHandle } = {};
+	const fault = stealNextLock(held);
+	t.after(fault.restore);
+	t.after(async () => { await held.handle?.close(); });
+	fault.armed = true;
+
+	f.state.name = "New name";
 	f.projector.start(f.ctx);
 	await f.projector.idle();
-	assert.deepEqual(f.transport.writes, ["Holder name"]);
-	const [confirmed] = await recordFiles(f.agentDir);
-	assert.ok(confirmed);
 
-	const directory = join(f.agentDir, "rex", "tab-labels");
-	const entered = deferred();
-	const release = deferred();
-	t.after(release.resolve);
-	const pause = pauseNextRecordRead(entered.resolve, release.promise);
-	t.after(pause.restore);
-	pause.armed = true;
-	f.projector.refresh(f.ctx);
-	await entered.promise;
-
-	const lockName = await replaceLockDirectory(directory);
-	release.resolve();
-	await f.projector.idle();
-
-	assert.deepEqual(await recordFiles(f.agentDir), [confirmed]);
+	assert.deepEqual(f.transport.writes, []);
+	assert.deepEqual(await recordFiles(f.agentDir), []);
 	assert.equal(f.notices.length, 1);
-	assert.equal((await readdir(directory)).includes(lockName), true);
+	assert.match(f.notices[0] ?? "", /held by another update/);
+	const [lockName] = await lockFiles(f.agentDir);
+	assert.ok(lockName);
+	assert.ok(held.handle);
+	assert.equal((await stat(join(directory, lockName))).ino, (await held.handle.stat()).ino);
 });
 
-test("a child process that lost its record lock leaves the successor directory at exit", async (t) => {
-	const agentDir = await mkdtemp(join(tmpdir(), "rex-tab-label-exit-"));
-	const env: NodeJS.ProcessEnv = { REX_SERVER: "unix:///launch", REX_SESSION: "session:test", REX_BLOCK: "block:test" };
-	const child = spawn(process.execPath, [join(import.meta.dirname, "tab-label-process-fixture.mts"), agentDir, "Failed name"], {
-		env: { ...process.env, ...env },
-		stdio: ["pipe", "pipe", "pipe"],
-	}) as ChildProcessWithoutNullStreams;
-	const exited = once(child, "exit");
-	const lines = childLines(child.stdout);
-	const killed = setTimeout(() => child.kill("SIGKILL"), 20_000);
-	t.after(async () => {
-		clearTimeout(killed);
-		child.kill("SIGKILL");
-		await rm(agentDir, { recursive: true, force: true });
-	});
-
-	await lines.next("paused");
-	const [claim] = await recordFiles(agentDir);
-	assert.ok(claim);
-	assert.equal(claim.pending, "Failed name");
-	const directory = join(agentDir, "rex", "tab-labels");
-	const lockName = await replaceLockDirectory(directory);
-
-	child.stdin.write("go\n");
-	await lines.next("done");
-	const [code] = await exited;
-	assert.equal(code, 0);
-
-	assert.deepEqual(await recordFiles(agentDir), [claim]);
-	assert.equal((await readdir(directory)).includes(lockName), true);
-});
-
-test("a step takes over an abandoned record lock and leaves no lock directory", async (t) => {
+test("a directory at the lock path refuses the update without changing the record", async (t) => {
 	const f = await fixture(t);
 	f.state.name = "First";
 	f.projector.start(f.ctx);
 	await f.projector.idle();
 	await f.projector.shutdown();
+
 	const directory = join(f.agentDir, "rex", "tab-labels");
 	const recordName = (await readdir(directory)).find((name) => name.endsWith(".json"));
 	assert.ok(recordName);
-	const lockPath = join(directory, `${recordName}.lock`);
+	const lockPath = lockPathOf(directory, recordName);
 	await mkdir(lockPath);
-	await utimes(lockPath, new Date(1000), new Date(1000));
+	const before = await readFile(join(directory, recordName), "utf8");
+
+	f.state.name = "Second";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+
+	assert.deepEqual(f.transport.writes, ["First"]);
+	assert.equal(f.notices.length, 1);
+	assert.equal(await readFile(join(directory, recordName), "utf8"), before);
+	assert.equal((await stat(lockPath)).isDirectory(), true);
+});
+
+test("an unlocked lock file left by a dead holder does not block an update", async (t) => {
+	const f = await fixture(t);
+	f.state.name = "First";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	await f.projector.shutdown();
+
+	const directory = join(f.agentDir, "rex", "tab-labels");
+	const recordName = (await readdir(directory)).find((name) => name.endsWith(".json"));
+	assert.ok(recordName);
+	await writeFile(lockPathOf(directory, recordName), "");
 
 	f.state.name = "Second";
 	f.projector.start(f.ctx);
 	await f.projector.idle();
 
 	assert.deepEqual(f.transport.writes, ["First", "Second"]);
-	assert.deepEqual((await readdir(directory)).filter((name) => name.endsWith(".lock")), []);
+	const [record] = await recordFiles(f.agentDir);
+	assert.equal(record?.label, "Second");
+	assert.deepEqual(await lockFiles(f.agentDir), []);
 });
