@@ -192,12 +192,9 @@ async function scriptReply(script: string, state: FakeState, signal?: AbortSigna
 }
 
 /** Answers the browser side of one Apple Events request from a fixed script table. */
-function fakeDeps(hooks: {
-	hang?: "action" | "inspect";
-	onReached?: () => void;
-	actionDelayMs?: number;
-	fulfilled?: unknown;
-} = {}): {
+function fakeDeps(
+	hooks: { hang?: "action" | "inspect"; onReached?: () => void; actionDelayMs?: number; fulfilled?: unknown } = {},
+): {
 	deps: BrowserDeps;
 	counts: { inspect: number; action: number; poll: number; evaluateStart: number; evaluatePoll: number };
 	state: FakeState;

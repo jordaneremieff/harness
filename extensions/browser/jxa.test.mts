@@ -15,11 +15,7 @@ import { type BrowserDeps, browserEvaluate } from "./operations.ts";
 import type { OsaReply, OsaRequest } from "./osa.ts";
 
 const fcc = (text: string) =>
-	((text.charCodeAt(0) << 24) |
-		(text.charCodeAt(1) << 16) |
-		(text.charCodeAt(2) << 8) |
-		text.charCodeAt(3)) >>>
-	0;
+	((text.charCodeAt(0) << 24) | (text.charCodeAt(1) << 16) | (text.charCodeAt(2) << 8) | text.charCodeAt(3)) >>> 0;
 
 const KEY = {
 	want: fcc("want"),
@@ -95,7 +91,10 @@ function longDescriptor(value: number): Descriptor {
 }
 
 function listDescriptor(items: Descriptor[]): Descriptor {
-	return describe("list", { numberOfItems: items.length, descriptorAtIndex: (index) => items[index - 1] ?? nilDescriptor() });
+	return describe("list", {
+		numberOfItems: items.length,
+		descriptorAtIndex: (index) => items[index - 1] ?? nilDescriptor(),
+	});
 }
 
 function replyDescriptor(params: Record<number, Descriptor>): Descriptor {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { BROWSERS, type AccessMap } from "./browsers.ts";
+import { type AccessMap, BROWSERS } from "./browsers.ts";
 import {
 	type BrowserDeps,
 	type BrowserResult,
@@ -521,7 +521,8 @@ it("reports an action whose target already had the requested state", async () =>
 
 const CHECK_PARAMS = { ...ACT_PARAMS, action: "check" as const };
 const UNCHECK_PARAMS = { ...ACT_PARAMS, action: "uncheck" as const };
-const UNCHANGED_ACTION = () => executed({ kind: "unchanged", element: { selector: "#save", checked: true }, page: PAGE });
+const UNCHANGED_ACTION = () =>
+	executed({ kind: "unchanged", element: { selector: "#save", checked: true }, page: PAGE });
 
 function conditionPoll(met: boolean): Handler {
 	return () =>
@@ -564,7 +565,11 @@ it("verifies an unchanged uncheck when the condition becomes true later", async 
 		() => executed({ kind: "unchanged", element: { selector: "#save", checked: false }, page: PAGE }),
 	);
 	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
-	const result = await browserAct({ ...UNCHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } }, undefined, deps);
+	const result = await browserAct(
+		{ ...UNCHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } },
+		undefined,
+		deps,
+	);
 	const report = reportOf(result);
 	assert.equal(obj(report.dispatch).status, "not-needed");
 	assert.equal(obj(report.postcondition).status, "verified");
@@ -586,7 +591,11 @@ it("fails an unchanged check whose condition never holds", async () => {
 it("reports a closed tab while waiting on an unchanged check", async () => {
 	const run = actRunner(() => fail("tab-not-found", -1728, "no such tab"), UNCHANGED_ACTION);
 	const { deps } = fakes(run, { access: { chrome: "interact" } });
-	const result = await browserAct({ ...CHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } }, undefined, deps);
+	const result = await browserAct(
+		{ ...CHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } },
+		undefined,
+		deps,
+	);
 	const report = reportOf(result);
 	assert.equal(result.details.status, "target-closed");
 	assert.equal(obj(report.dispatch).status, "not-needed");
@@ -597,7 +606,11 @@ it("reports a closed tab while waiting on an unchanged check", async () => {
 it("reports unavailable page reads while waiting on an unchanged check", async () => {
 	const run = actRunner(() => fail(null, 12, "The command cannot be executed."), UNCHANGED_ACTION);
 	const { deps } = fakes(run, { access: { chrome: "interact" } });
-	const result = await browserAct({ ...CHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } }, undefined, deps);
+	const result = await browserAct(
+		{ ...CHECK_PARAMS, waitFor: { selector: "#done", timeoutMs: 1000 } },
+		undefined,
+		deps,
+	);
 	const report = reportOf(result);
 	assert.equal(result.details.status, "observation-failed");
 	assert.equal(obj(report.dispatch).status, "not-needed");
@@ -1039,10 +1052,7 @@ const windowReply =
 	() =>
 		ok({ ...WINDOW, ...overrides });
 
-function captureFixture(
-	facts: Handler,
-	options: FakeOptions = {},
-): Fixture & { captured: number[]; events: string[] } {
+function captureFixture(facts: Handler, options: FakeOptions = {}): Fixture & { captured: number[]; events: string[] } {
 	const captured: number[] = [];
 	const events: string[] = [];
 	const handler = runFrom({ inventory: () => inventoryOf([{ pid: 5 }]), window: facts });
@@ -1167,16 +1177,17 @@ it("captures the matched window and returns the resized image", async () => {
 			saved.push(path);
 		},
 	});
-	const result = await browserCapture({ ...CAPTURE_PARAMS, savePath: "/captures/example.png" }, undefined, fixture.deps);
+	const result = await browserCapture(
+		{ ...CAPTURE_PARAMS, savePath: "/captures/example.png" },
+		undefined,
+		fixture.deps,
+	);
 	const report = reportOf(result);
 	assert.equal(result.isError, false);
 	assert.equal(result.details.status, "ok");
 	assert.deepEqual(fixture.captured, [77]);
 	assert.deepEqual(fixture.events, ["window-read", "capture", "window-read"]);
-	assert.equal(
-		fixture.requests.filter((request) => request.op === "window").length,
-		2,
-	);
+	assert.equal(fixture.requests.filter((request) => request.op === "window").length, 2);
 	assert.deepEqual(saved, ["/captures/example.png"]);
 	assert.equal(report.savedPath, "/captures/example.png");
 	assert.equal(obj(report.identity).status, "unchanged");
@@ -1206,7 +1217,11 @@ it("discards the capture when the active tab changes during pixel acquisition", 
 			},
 		},
 	);
-	const result = await browserCapture({ ...CAPTURE_PARAMS, savePath: "/captures/switched.png" }, undefined, fixture.deps);
+	const result = await browserCapture(
+		{ ...CAPTURE_PARAMS, savePath: "/captures/switched.png" },
+		undefined,
+		fixture.deps,
+	);
 	assert.equal(result.details.status, "blocked");
 	assert.equal(blockedReason(result), "capture-changed");
 	assert.equal(result.isError, true);
@@ -1232,7 +1247,11 @@ it("discards the capture when the selected tab navigates during pixel acquisitio
 			},
 		},
 	);
-	const result = await browserCapture({ ...CAPTURE_PARAMS, savePath: "/captures/navigated.png" }, undefined, fixture.deps);
+	const result = await browserCapture(
+		{ ...CAPTURE_PARAMS, savePath: "/captures/navigated.png" },
+		undefined,
+		fixture.deps,
+	);
 	assert.equal(result.details.status, "blocked");
 	assert.equal(blockedReason(result), "capture-changed");
 	assert.equal(hasImage(result), false);
@@ -1260,7 +1279,9 @@ it("discards the capture when the subject cannot be read after pixel acquisition
 	const fixture = captureFixture(
 		() => {
 			reads += 1;
-			return reads === 1 ? ok({ ...WINDOW }) : fail(null, -1728, "No open tab has this id in the selected browser process.");
+			return reads === 1
+				? ok({ ...WINDOW })
+				: fail(null, -1728, "No open tab has this id in the selected browser process.");
 		},
 		{
 			save: async (path) => {

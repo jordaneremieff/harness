@@ -4,12 +4,12 @@ import { createContext, runInContext, Script } from "node:vm";
 import { syntaxError } from "./operations.ts";
 import {
 	ACTION_TYPES,
-	type ElementAction,
-	INSPECT_VIEWS,
 	actionScript,
+	type ElementAction,
 	evaluationForgetScript,
 	evaluationPollScript,
 	evaluationStartScript,
+	INSPECT_VIEWS,
 	inspectScript,
 	pollScript,
 } from "./page.ts";
@@ -151,7 +151,10 @@ class FakeElement {
 }
 
 function selectorParts(selector: string): string[] {
-	const parts = selector.split(",").map((part) => part.trim()).filter((part) => part.length > 0);
+	const parts = selector
+		.split(",")
+		.map((part) => part.trim())
+		.filter((part) => part.length > 0);
 	if (parts.length === 0) throw new Error(`empty selector: ${selector}`);
 	return parts;
 }
@@ -249,7 +252,13 @@ it("masks sensitive fields and token meta inside a selected container", () => {
 	]) {
 		assert.equal(html.includes(sentinel), false, `${sentinel} leaked`);
 	}
-	for (const expected of ["Account settings", "ordinary-value", "ordinary description", "Ordinary option", "[redacted]"]) {
+	for (const expected of [
+		"Account settings",
+		"ordinary-value",
+		"ordinary description",
+		"Ordinary option",
+		"[redacted]",
+	]) {
 		assert.equal(html.includes(expected), true, `${expected} missing`);
 	}
 	assert.equal(card.getAttribute("value"), "sentinel-card");

@@ -21,12 +21,12 @@ import {
 	CALL_TIMEOUT_MS,
 	call,
 	checkPlatform,
+	decodeRect,
 	delay,
+	type ExecuteReply,
 	envelope,
 	executeInTab,
 	expectValue,
-	type ExecuteReply,
-	decodeRect,
 	guidance,
 	inventory,
 	normalOrigin,
@@ -313,7 +313,10 @@ async function resolveTarget(
 	checkPlatform(deps.platform);
 	requireAccess(deps, params.browser, required);
 	if (!Number.isInteger(params.pid) || params.pid < 1)
-		throw new Blocked("invalid-arguments", "pid is required: pass the pid from the browser_tabs result that listed the tab.");
+		throw new Blocked(
+			"invalid-arguments",
+			"pid is required: pass the pid from the browser_tabs result that listed the tab.",
+		);
 	const expectOrigin = params.origin === undefined ? null : normalOrigin(params.origin);
 	const { spec, pid } = await resolveProcess(deps, params.browser, params.pid, signal);
 	return { spec, target: { browser: params.browser, pid, tab: params.tab }, expectOrigin };
@@ -528,7 +531,10 @@ function navigationReadFailure(params: ActParams, subject: Subject, error: Trans
 	return transportResult("browser_act", error, {
 		target: subject.facts,
 		action: describeAction(params),
-		dispatch: { status: "not-dispatched", note: "A page read before the navigation got no answer; the URL was not set." },
+		dispatch: {
+			status: "not-dispatched",
+			note: "A page read before the navigation got no answer; the URL was not set.",
+		},
 		postcondition: { status: "unknown" },
 		replay: "not attempted; the navigation was not sent",
 	});
@@ -871,7 +877,13 @@ function actResult(
 		postcondition,
 	};
 	const headline = `${params.action} ${String(state.dispatch.status)}; postcondition ${String(postcondition.status)}. ${UNTRUSTED}`;
-	return result("browser_act", actStatus(state, postcondition), headline, report, state.cancelled || Boolean(state.failedRead));
+	return result(
+		"browser_act",
+		actStatus(state, postcondition),
+		headline,
+		report,
+		state.cancelled || Boolean(state.failedRead),
+	);
 }
 
 /** An unchanged check or uncheck with no requested condition: no dispatch and no wait. */
@@ -1290,8 +1302,7 @@ function captureSubject(facts: WindowFacts): CaptureSubject {
 function identityChanges(before: CaptureSubject, after: CaptureSubject): string[] {
 	const changed: string[] = [];
 	if (before.window !== after.window) changed.push("scripting window");
-	if (before.windowNumber === null || before.windowNumber !== after.windowNumber)
-		changed.push("window-server window");
+	if (before.windowNumber === null || before.windowNumber !== after.windowNumber) changed.push("window-server window");
 	if (after.onScreen !== true) changed.push("on-screen state");
 	if (before.activeTab !== after.activeTab) changed.push("active tab");
 	if (before.url !== after.url) changed.push("URL");
@@ -1301,11 +1312,7 @@ function identityChanges(before: CaptureSubject, after: CaptureSubject): string[
 	return changed;
 }
 
-async function readWindowFacts(
-	resolved: Resolved,
-	deps: BrowserDeps,
-	signal?: AbortSignal,
-): Promise<WindowFacts> {
+async function readWindowFacts(resolved: Resolved, deps: BrowserDeps, signal?: AbortSignal): Promise<WindowFacts> {
 	const { spec, target } = resolved;
 	return expectValue<WindowFacts>(
 		await call(deps, { op: "window", bundleId: spec.bundleId, pid: target.pid, tab: target.tab }, signal),

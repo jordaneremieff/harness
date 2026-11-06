@@ -83,7 +83,12 @@ function jsonDetails(value: unknown): JsonValue {
 		for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
 			if (item !== undefined) {
 				// A plain assignment for an own `__proto__` key would set the prototype instead of a data property.
-				Object.defineProperty(result, key, { value: jsonDetails(item), enumerable: true, writable: true, configurable: true });
+				Object.defineProperty(result, key, {
+					value: jsonDetails(item),
+					enumerable: true,
+					writable: true,
+					configurable: true,
+				});
 			}
 		}
 		return result;
