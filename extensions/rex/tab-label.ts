@@ -1,13 +1,19 @@
 import { createHash, randomUUID } from "node:crypto";
+import fs from "node:fs";
 import { mkdir, open, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import lockfile, { type LockOptions } from "proper-lockfile";
 import type { RexSettings } from "./settings.ts";
 import { CliTransport, type CliResult, type RexTransport } from "./transport.ts";
 
 const MAX_RECORD_BYTES = 16384;
 const MAX_STORE_RECORDS = 256;
 const SHUTDOWN_DRAIN_MS = 2000;
+// A live holder refreshes its lease; a lease older than the stale period is taken over as abandoned.
+const LOCK_STALE_MS = 10_000;
+// About two seconds of bounded acquisition.
+const LOCK_RETRIES: NonNullable<LockOptions["retries"]> = { retries: 20, factor: 1, minTimeout: 100, maxTimeout: 100 };
 
 type Settings = Pick<RexSettings, "executable" | "maxOutputBytes" | "maxWaitMs">;
 
@@ -42,6 +48,14 @@ interface Run {
 	controller: AbortController;
 	transport: RexTransport;
 }
+
+interface RecordStep {
+	read(): Promise<StoredRecord | undefined>;
+	write(record: StoredRecord): Promise<void>;
+	remove(): Promise<void>;
+}
+
+type StepOutcome<T> = { done: true; value: T } | { done: false };
 
 export interface TabLabelProjector {
 	start(ctx: ExtensionContext): void;
@@ -217,44 +231,49 @@ class Projector implements TabLabelProjector {
 
 	private async applyLabel(run: Run, attachment: Attachment, desired: string): Promise<void> {
 		const { currentLabel, ...key } = attachment;
-		const record = await this.readRecord(key);
-		if (!this.current(run)) return;
 		const defaultLabel = `Window ${key.windowId.slice(-8)}`;
-		const managed = record && (currentLabel === record.label || currentLabel === record.pending);
-		if (currentLabel !== defaultLabel && !managed) {
-			await this.removeRecord(key);
-			return;
-		}
-		if (currentLabel === desired) {
-			await this.confirmExisting(key, desired, record);
-			return;
-		}
-		await this.writeLabel(run, key, currentLabel, desired, managed === true);
-	}
-
-	private async confirmExisting(key: ResourceKey, desired: string, record: StoredRecord | undefined): Promise<void> {
-		if (record?.pending !== undefined || (record && record.label !== desired)) {
-			await this.writeRecord({ ...key, version: 1, label: desired, updatedAt: this.now().toISOString() });
-		}
-	}
-
-	private async writeLabel(run: Run, key: ResourceKey, currentLabel: string, desired: string, managed: boolean): Promise<void> {
-		const claim: Claim = {
-			...key,
-			version: 1,
-			...(managed ? { label: currentLabel } : {}),
-			pending: desired,
-			attempt: randomUUID(),
-			updatedAt: this.now().toISOString(),
-		};
+		const attempt = randomUUID();
+		let claimAttempted = false;
+		let claim: Claim | undefined;
 		try {
-			await this.writeRecord(claim);
+			const outcome = await this.withRecordStep(key, run, async (step) => {
+				const record = await step.read();
+				const managed = record && (currentLabel === record.label || currentLabel === record.pending);
+				if (currentLabel !== defaultLabel && !managed) {
+					await step.remove();
+					return undefined;
+				}
+				if (currentLabel === desired) {
+					if (record && (record.pending !== undefined || record.label !== desired)) {
+						await step.write({ ...key, version: 1, label: desired, updatedAt: this.now().toISOString() });
+					}
+					return undefined;
+				}
+				const next: Claim = {
+					...key,
+					version: 1,
+					...(managed ? { label: currentLabel } : {}),
+					pending: desired,
+					attempt,
+					updatedAt: this.now().toISOString(),
+				};
+				claimAttempted = true;
+				await step.write(next);
+				return next;
+			});
+			if (!outcome.done) return;
+			claim = outcome.value;
 		} catch (error) {
-			// A failed claim write can still leave the renamed claim behind. Withdraw it, and keep
-			// the store failure as the diagnostic.
-			await this.withdrawClaim(key, claim.attempt).catch(() => {});
+			// A failed step can still leave the renamed claim behind. Withdraw it, and keep
+			// the step failure as the diagnostic.
+			if (claimAttempted) await this.withdrawClaim(key, attempt).catch(() => {});
 			throw error;
 		}
+		if (!claim) return;
+		await this.writeLabel(run, key, claim, desired);
+	}
+
+	private async writeLabel(run: Run, key: ResourceKey, claim: Claim, desired: string): Promise<void> {
 		if (!this.current(run)) {
 			await this.withdrawClaim(key, claim.attempt);
 			return;
@@ -273,18 +292,73 @@ class Projector implements TabLabelProjector {
 			return;
 		}
 		if (!this.current(run)) return;
-		await this.writeRecord({ ...key, version: 1, label: desired, updatedAt: this.now().toISOString() });
+		await this.confirmLabel(run, key, claim.attempt, desired);
+	}
+
+	// Confirms one successful write only while the record still carries its attempt.
+	private async confirmLabel(run: Run, key: ResourceKey, attempt: string, desired: string): Promise<void> {
+		await this.withRecordStep(key, run, async (step) => {
+			const record = await step.read();
+			if (record?.attempt !== attempt) return;
+			await step.write({ ...key, version: 1, label: desired, updatedAt: this.now().toISOString() });
+		});
 	}
 
 	// Withdraws one attempt only. A record with a different attempt, or no record, belongs to newer state.
 	private async withdrawClaim(key: ResourceKey, attempt: string): Promise<void> {
-		const record = await this.readRecord(key);
-		if (record?.attempt !== attempt) return;
-		if (record.label === undefined) {
-			await this.removeRecord(key);
-			return;
+		await this.withRecordStep(key, undefined, async (step) => {
+			const record = await step.read();
+			if (record?.attempt !== attempt) return;
+			if (record.label === undefined) {
+				await step.remove();
+				return;
+			}
+			await step.write({ ...key, version: 1, label: record.label, updatedAt: this.now().toISOString() });
+		});
+	}
+
+	/**
+	 * Runs one decision and its local file mutations for one record under that record's
+	 * lock. Another instance, in this process or another, cannot change the record between
+	 * the decision's read and its write. A step never holds the lock across a Rex call and
+	 * never acquires a second record's lock.
+	 */
+	private async withRecordStep<T>(key: ResourceKey, run: Run | undefined, decide: (step: RecordStep) => Promise<T>): Promise<StepOutcome<T>> {
+		await mkdir(this.directory, { recursive: true, mode: 0o700 });
+		const recordPath = this.path(key);
+		const lock = await RecordLock.acquire(recordPath, LOCK_RETRIES);
+		if (!lock) throw new Error("Rex tab label record lock is held by another update.");
+		let wrote = false;
+		let outcome: StepOutcome<T>;
+		try {
+			const guard = async (): Promise<void> => {
+				if (run && !this.current(run)) throw new CancelledStep();
+				if (!await lock.owned()) throw lockLost();
+			};
+			await guard();
+			const value = await decide({
+				read: () => this.readRecord(key),
+				write: async (record) => {
+					await guard();
+					wrote = true;
+					await this.writeRecord(record);
+				},
+				remove: async () => {
+					await guard();
+					await this.removeRecord(key);
+				},
+			});
+			if (!await lock.owned()) throw lockLost();
+			outcome = { done: true, value };
+		} catch (error) {
+			if (!(error instanceof CancelledStep)) throw error;
+			outcome = { done: false };
+		} finally {
+			await lock.release();
 		}
-		await this.writeRecord({ ...key, version: 1, label: record.label, updatedAt: this.now().toISOString() });
+		if (!outcome.done) return outcome;
+		if (wrote) await this.prune(recordPath);
+		return outcome;
 	}
 
 	private desired(ctx: ExtensionContext): string {
@@ -360,7 +434,6 @@ class Projector implements TabLabelProjector {
 	}
 
 	private async writeRecord(record: StoredRecord): Promise<void> {
-		await mkdir(this.directory, { recursive: true, mode: 0o700 });
 		const path = this.path(record);
 		const temporary = join(this.directory, `.${randomUUID()}.tmp`);
 		try {
@@ -370,9 +443,10 @@ class Projector implements TabLabelProjector {
 			await unlink(temporary).catch(() => {});
 			throw error;
 		}
-		await this.prune(path);
 	}
 
+	// Runs after the writer's own step released its lock. Each victim is locked alone and
+	// removed only when it is still the one listed and no other step holds it.
 	private async prune(current: string): Promise<void> {
 		const names = (await readdir(this.directory)).filter((name) => /^[a-f0-9]{64}\.json$/.test(name));
 		if (names.length <= this.maxRecords) return;
@@ -386,13 +460,141 @@ class Projector implements TabLabelProjector {
 			if (remaining === 0) break;
 			const path = join(this.directory, record.name);
 			if (path === current) continue;
-			await unlink(path).catch((error) => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
-			remaining--;
+			if (await this.pruneRecord(path, record.mtime)) remaining--;
+		}
+	}
+
+	// A locked record belongs to another step, and a changed record is newer than the listed one.
+	private async pruneRecord(path: string, mtime: number): Promise<boolean> {
+		const lock = await RecordLock.acquire(path, 0);
+		if (!lock) return false;
+		try {
+			const listed = await recordMtime(path);
+			if (listed === undefined) return true;
+			if (listed !== mtime) return false;
+			if (!await lock.owned()) throw lockLost();
+			await unlink(path);
+			return true;
+		} finally {
+			await lock.release();
 		}
 	}
 
 	private async removeRecord(key: ResourceKey): Promise<void> {
 		await unlink(this.path(key)).catch((error) => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
+	}
+}
+
+/** A step gave up because its run is no longer current; it made no mutation. */
+class CancelledStep extends Error {}
+
+function lockLost(): Error {
+	return new Error("Rex tab label record lock was lost to another update.");
+}
+
+async function lockDirectoryInode(path: string): Promise<number | undefined> {
+	try {
+		return (await stat(path)).ino;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+async function recordMtime(path: string): Promise<number | undefined> {
+	try {
+		return (await stat(path)).mtimeMs;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+		throw error;
+	}
+}
+
+/**
+ * One held record lock. The lock directory's inode and the lease identify this holder.
+ * Release and proper-lockfile's process-exit cleanup both go through this holder's file
+ * adapter, so neither removes a directory that a successor has since created.
+ */
+class RecordLock {
+	private compromised = false;
+	private inode: number | undefined;
+	private guardRemoval = false;
+	private readonly lockPath: string;
+	private readonly lockFs: Record<string, unknown>;
+	private releaseLock: (() => Promise<void>) | undefined;
+
+	private constructor(recordPath: string) {
+		this.lockPath = `${resolve(recordPath)}.lock`;
+		this.lockFs = {
+			...fs,
+			rmdir: (path: string, callback: (error?: NodeJS.ErrnoException | null) => void) => {
+				let allowed: boolean;
+				try {
+					allowed = this.removalAllowed(path);
+				} catch (error) {
+					callback(error as NodeJS.ErrnoException);
+					return;
+				}
+				if (!allowed) {
+					callback();
+					return;
+				}
+				fs.rmdir(path, callback);
+			},
+			rmdirSync: (path: string, options?: Parameters<typeof fs.rmdirSync>[1]) => {
+				if (this.removalAllowed(path)) fs.rmdirSync(path, options);
+			},
+		};
+	}
+
+	/**
+	 * True while a removal may proceed. Acquisition runs before the holder records its
+	 * directory, so a stale takeover and the library's probe cleanup stay unguarded there.
+	 */
+	private removalAllowed(path: string): boolean {
+		if (!this.guardRemoval || path !== this.lockPath) return true;
+		try {
+			return fs.statSync(this.lockPath).ino === this.inode;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+			throw error;
+		}
+	}
+
+	/** Acquires one record's lock directory, or returns undefined when a holder keeps it. */
+	static async acquire(recordPath: string, retries: NonNullable<LockOptions["retries"]>): Promise<RecordLock | undefined> {
+		const lock = new RecordLock(recordPath);
+		try {
+			lock.releaseLock = await lockfile.lock(recordPath, {
+				realpath: false,
+				stale: LOCK_STALE_MS,
+				retries,
+				fs: lock.lockFs,
+				onCompromised: () => { lock.compromised = true; },
+			});
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ELOCKED") return undefined;
+			throw error;
+		}
+		lock.inode = await lockDirectoryInode(lock.lockPath);
+		lock.guardRemoval = true;
+		return lock;
+	}
+
+	/** True while the lease and the lock directory still belong to this holder. */
+	async owned(): Promise<boolean> {
+		return this.inode !== undefined && !this.compromised && await lockDirectoryInode(this.lockPath) === this.inode;
+	}
+
+	/** Removes the lock directory only while this holder still owns it. */
+	async release(): Promise<void> {
+		if (!this.releaseLock || !await this.owned()) return;
+		try {
+			await this.releaseLock();
+		} catch (error) {
+			// An already released lease means a takeover; the directory belongs to the successor.
+			if ((error as NodeJS.ErrnoException).code !== "ERELEASED") throw error;
+		}
 	}
 }
 

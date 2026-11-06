@@ -498,8 +498,8 @@ Records live in `<agentDir>/rex/tab-labels/`, outside Rex terminal ownership and
 Each SHA-256-named JSON file contains `version`, the five resource key fields, the last confirmed
 automatic `label`, an optional `pending` label, an optional `attempt` identifier, and `updatedAt`.
 A record without `attempt` remains valid. Writes use a temporary file and an atomic rename. The
-store retains at most 256 records and prunes the oldest on write. Invalid or mismatched records
-count as absent.
+store retains at most 256 records and prunes the oldest on write, subject to the record locks
+described below. Invalid or mismatched records count as absent.
 
 Before dispatching a label write, the store records a claim: the prior automatic `label` when the
 tab was already managed, the desired `pending` value, a new `attempt` identifier, and `updatedAt`.
@@ -525,14 +525,43 @@ runs and abort their CLI work; shutdown awaits a bounded drain. No polling, back
 focus watcher, or OSC output participates. A single warning notification per extension runtime
 reports real errors without adding persistent status chrome.
 
-A withdrawal compares `attempt` and then writes in separate steps, without a cross-process lock.
-One process serializes its own updates. A delayed withdrawal leaves a newer record from another
-process in place when it reads that record, because their attempts differ; a write from another
-process between the comparison and the withdrawal's own write can still be replaced. Rex has no
-conditional label write. A simultaneous
-manual edit between the final `session.view` read and `session.set_window_label` can therefore
-receive the automatic label. The ownership check prevents adoption of labels observed before that
-narrow interval, not a concurrent edit after the read.
+Every claim write, confirmation, manual-divergence removal, withdrawal (restoration or removal) and
+pruning removal holds the lock of the one record it changes. The lock is a `<record file>.lock`
+directory in the same store. Its scope is the local file step, so this extension never holds a
+record lock across a Rex CLI call. The same lock coordinates replacement instances in one process
+and separate processes that use the same store. Inside the lock the step reads the record, compares it, and performs its single
+mutation, so no other holder can change the record between the comparison and its write. A
+withdrawal therefore acts only while the record still carries its own `attempt`, a confirmation
+writes only while the record still carries the claim's `attempt`, and a pruning removal acts on the
+state it reads under that lock.
+
+Acquisition is bounded to about two seconds of retries. When another step keeps the lock for that
+whole time, the step fails with an error and changes nothing. Lock contention or a store failure is
+an error, never evidence that no record exists. Immediately before each mutation and before
+release, the step checks that it still owns the lock directory: it compares the directory identity
+with the identity captured after acquisition and checks the lease state reported by proper-lockfile.
+A lost lease aborts the step with an error. The release path and proper-lockfile's process-exit
+cleanup both go through this holder's file adapter, which removes a lock directory only while its
+identity still matches the holder that acquired it. An old cleanup therefore cannot release a
+successor's lock. Pruning runs after the writer's own lock is released, takes one victim's lock at a
+time without retries, and skips a victim that another step holds. Inside that lock it removes the
+record only when the record's modification time still equals the time listed before locking. The
+store keeps at most 256 records. A lock left by a killed process blocks that one record until the
+lock is older than the ten-second stale period; the next step then takes it over.
+
+Shutdown waits at most two seconds for the active run. A lock stays held until its step's file
+mutation settles; shutdown never releases it. A step that belongs to a run makes no mutation once
+that run is cancelled, including a step that acquires the lock after cancellation: it releases the
+lock and changes nothing. Withdrawal of a claim whose write never began is cleanup. It still runs
+after cancellation, within the same bounded acquisition, and changes only a record that still
+carries its own `attempt`.
+
+Two limits remain. A process that stalls longer than the ten-second stale period between its
+ownership check and its mutation can still act after another holder takes the lock over. The same
+window exists between the identity check and the removal of the lock directory. Rex also exposes no
+conditional label setter, so a simultaneous manual edit between the final `session.view` read and
+`session.set_window_label` can receive the automatic label. The ownership check prevents adoption
+of labels observed before that narrow interval, not a concurrent edit after the read.
 
 ## Configuration and loading
 
