@@ -277,6 +277,36 @@ it("refuses every targeted operation when another process now owns the tab id", 
 	assert.deepEqual(saves, []);
 });
 
+it("refuses a targeted operation without pid even when one process runs", async () => {
+	const run = runFrom({ inventory: () => inventoryOf([{ pid: 5 }]) });
+	const captured: number[] = [];
+	const { deps, requests } = fakes(run, {
+		access: { chrome: "interact" },
+		capture: async (windowNumber) => {
+			captured.push(windowNumber);
+			return Buffer.from("png");
+		},
+	});
+	const target = { browser: "chrome" as const, tab: "42", origin: "https://a.example" } as unknown as {
+		browser: "chrome";
+		pid: number;
+		tab: string;
+		origin: string;
+	};
+	const results = [
+		await browserInspect(target, undefined, deps),
+		await browserAct({ ...target, action: "click", selector: "#save" }, undefined, deps),
+		await browserEvaluate({ ...target, expression: "1 + 1" }, undefined, deps),
+		await browserCapture(target, undefined, deps),
+	];
+	for (const result of results) {
+		assert.equal(result.details.status, "blocked");
+		assert.equal(blockedReason(result), "invalid-arguments");
+	}
+	assert.deepEqual(requests, []);
+	assert.deepEqual(captured, []);
+});
+
 /* ---------------------------------------------------------------- Apple Events failures */
 
 it("maps a tab-not-found reply to a refusal", async () => {

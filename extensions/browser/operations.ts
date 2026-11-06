@@ -300,7 +300,10 @@ interface Resolved {
 	expectOrigin: string | null;
 }
 
-/** Resolves the named process and tab. Targeted operations always supply pid, so the tab id stays bound to one browser process. */
+/**
+ * Resolves the named process and tab. The pid is checked here as well as in the
+ * tool schema, so no host path lets a tab id resolve against an implicitly chosen process.
+ */
 async function resolveTarget(
 	params: TargetParams,
 	required: "inspect" | "interact",
@@ -309,6 +312,8 @@ async function resolveTarget(
 ): Promise<Resolved> {
 	checkPlatform(deps.platform);
 	requireAccess(deps, params.browser, required);
+	if (!Number.isInteger(params.pid) || params.pid < 1)
+		throw new Blocked("invalid-arguments", "pid is required: pass the pid from the browser_tabs result that listed the tab.");
 	const expectOrigin = params.origin === undefined ? null : normalOrigin(params.origin);
 	const { spec, pid } = await resolveProcess(deps, params.browser, params.pid, signal);
 	return { spec, target: { browser: params.browser, pid, tab: params.tab }, expectOrigin };
