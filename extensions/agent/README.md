@@ -986,7 +986,8 @@ any state an attention row; a deliberate stop alone does not. Summary counts
 are semantic groups, not state totals: `working` counts working or starting rows
 without an attention reason, `attention` counts every attention row, and `quiet`
 counts the remaining rows. Summary groups remain independent of roster priority.
-Excerpts have visible shortening markers. Working and attention rows retain
+Each overview row keeps the catalogue's optional `attention` hint
+(`provider-blocked`, `task-blocked`, or `failed-turn`). Excerpts have visible shortening markers. Working and attention rows retain
 identity, cwd, ownership, model, update time, state, cost, partial-cost flag,
 current tool, tool count, duration, latest reply, errors, and recovery health
 when those fields exist. Live or caller-owned quiet rows are not restricted to
@@ -2992,6 +2993,39 @@ omission counts. `ToolStatusSchema` adds these local overview facts to tool outp
 `StatusOutputSchema` describes host responses and contains none of those facts.
 Local roster fields do not belong in the host schema. If an actual host response
 schema changes, its generated operation identity changes with it.
+
+The tool status schema is a product of independent parts, not one closed object
+per combination, so each large part (the conversation status, the effort
+awareness, the overview row) appears once in the schema and in the declaration
+that scripts read. The parts are: optional `awareness`, shared by every
+result; an overview, or a selected status; and, for a selected status, a
+single (`conversation`) or plural (`conversations`, with optional
+`createdAgents`) payload combined with a live (`inventory`, `pid`,
+`storageId`), cold (`live: false`, `storageId`) or absent envelope. A bare
+`{conversation}` from the attach path is the single payload with no envelope
+and permits only `conversation` and `awareness`. Component objects stay open
+so they can coexist; a final property-name guard closes each complete result,
+and properties declared `never` state the exclusions between components:
+`conversation` with `conversations`, `createdAgents` on a single result, and
+`live` with `inventory` or `pid`. Validation stays exact: unknown keys, missing
+required fields, mixed envelopes and non-finite numbers are all refused.
+`StatusOutputSchema` and `AgentConversationSummarySchema` keep their serialized
+form, so their contract hashes do not change.
+
+The overview row is `ToolOverviewRowSchema`: the native row plus the optional
+catalogue `attention` hint (`provider-blocked`, `task-blocked`, or
+`failed-turn`). The overview drops `profile`, `creatingOwnerId` and
+`rosterOrder` from each row because the row schema does not declare them, and
+keeps `attention`.
+
+When a tool observation fails validation, `observationDiagnostic(schema, value,
+limit)` returns the `variant` it compared against and at most five JSON Pointer
+errors. For the tool status it selects the variant from the value's own
+discriminators (`kind`, `view`, overview fields, single or plural payload, live
+or cold envelope) and reports conflicting shapes directly, so a bad overview
+`attention` value names `/sessions/0/attention` instead of missing fleet fields.
+Other schemas keep the validator's own errors. A schema mismatch says nothing about
+Pi or agent versions.
 
 Typed observation results use schema hashes, so a changed published schema
 changes its contract without a manual stamp. Opaque native results and native

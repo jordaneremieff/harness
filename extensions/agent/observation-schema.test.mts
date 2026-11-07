@@ -15,7 +15,7 @@ import { LiveDoc, UsageDoc, type ConversationId, type EntryId, type SubmissionId
 import type { AssistantMessage, Usage } from "@earendil-works/pi-ai";
 import { LiveObservationService } from "./live-observation.ts";
 import { AgentManager } from "./manager.ts";
-import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, NativeListOutputSchema, StatusOutputSchema, StatusToolOutputSchema, nativeStructuredObservation, structuredObservation } from "./observation-schema.ts";
+import { ActivityOutputSchema, LiveStateSchema, AgentConversationSummarySchema, AssistantMessageSchema, ConversationStatusSchema, DurableEntryRowSchema, InspectOutputSchema, ListRowSchema, NativeListOutputSchema, StatusOutputSchema, StatusToolOutputSchema, nativeStructuredObservation, observationDiagnostic, structuredObservation, ToolOverviewRowSchema } from "./observation-schema.ts";
 import { page as rosterPage } from "./dashboard-test-fixture.mts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
@@ -460,4 +460,162 @@ it("validates every status variant, including unavailable rows", async (t) => {
 	assert.ok(unavailableRow);
 	assert.equal(unavailableRow?.partial, true);
 	assert.match(unavailableRow?.error ?? "", /unavailable/u);
+});
+
+const minimalConversation = { conversationId: 1, identity: "storage:1", busy: false, lastText: null, live: null, inbox: null, agent: { thinkingLevel: "off", extensions: [], tools: [] }, tasks: [], submissions: [] };
+const minimalInventory = { contributions: [], ordinaryOnly: [] as string[] };
+const createdAgents = { agents: [{ identity: "storage:2", kind: "conversation" }], omitted: 0 };
+const minimalAwareness = {
+	self: { id: "primary", cwd: "/work" },
+	presence: { efforts: [], coverage: { visited: 0, unreadable: 0, dead: 0, unrelated: 0, omitted: 0, complete: true, reasons: [] }, limits: { visits: 256, results: 20, bytes: 16384 } },
+	threads: { items: [], coverage: { visited: 0, records: 0, unreadable: 0, missingHints: 0, omittedHints: 0, omittedResults: 0, unvisited: false, complete: true, reasons: [] }, limits: { visits: 256, results: 12, bytes: 8192, hintsPerRecord: 8 } },
+};
+const toolOverview = () => buildStatusOverview(rosterPage([{ id: "a", storageId: "a", cwd: "/work", modifiedAt: 1, owner: "here", state: "working", cost: 0, partial: false, rosterOrder: { priority: true, modifiedAt: 1 } }]), [], []) as unknown as Record<string, unknown>;
+const liveEnvelope = { inventory: minimalInventory, pid: 4242, storageId: "storage" };
+const coldEnvelope = { live: false, storageId: "storage" };
+
+const validStatusVariants: Record<string, Record<string, unknown>> = {
+	overview: toolOverview(),
+	"overview with awareness": { ...toolOverview(), awareness: minimalAwareness },
+	"overview row with attention": { ...toolOverview(), sessions: [{ ...(toolOverview().sessions as object[])[0], attention: "provider-blocked" }] },
+	bare: { conversation: minimalConversation },
+	"bare with awareness": { conversation: minimalConversation, awareness: minimalAwareness },
+	"single live": { conversation: minimalConversation, ...liveEnvelope },
+	"single live with delivery error": { conversation: minimalConversation, ...liveEnvelope, deliveryError: "owner unreachable" },
+	"single cold": { conversation: minimalConversation, ...coldEnvelope },
+	"single cold with awareness": { conversation: minimalConversation, ...coldEnvelope, awareness: minimalAwareness },
+	"plural live": { conversations: [minimalConversation], ...liveEnvelope },
+	"plural live with created agents": { conversations: [minimalConversation], ...liveEnvelope, createdAgents },
+	"plural cold": { conversations: [], ...coldEnvelope },
+	"plural cold with created agents and awareness": { conversations: [minimalConversation], ...coldEnvelope, createdAgents, awareness: minimalAwareness },
+};
+
+it("accepts every status variant and keeps each one unchanged through the JSON round trip", () => {
+	for (const [name, value] of Object.entries(validStatusVariants)) {
+		assert.deepEqual(structuredObservation(StatusToolOutputSchema, value), value, name);
+	}
+});
+
+it("rejects missing required fields, unknown keys and mixed envelopes in every status variant", () => {
+	const invalid: Record<string, unknown> = {};
+	for (const [name, value] of Object.entries(validStatusVariants)) {
+		invalid[`${name} with an unknown key`] = { ...value, unexpected: true };
+		for (const key of Object.keys(value)) {
+			if (key === "awareness" || key === "deliveryError" || key === "createdAgents") continue;
+			const { [key]: _removed, ...rest } = value;
+			invalid[`${name} without ${key}`] = rest;
+		}
+	}
+	Object.assign(invalid, {
+		"conversation with conversations": { conversation: minimalConversation, conversations: [], ...liveEnvelope },
+		"bare conversation with conversations": { conversation: minimalConversation, conversations: [] },
+		"bare plural": { conversations: [minimalConversation] },
+		"plural without an envelope": { conversations: [] , createdAgents },
+		"created agents on a single conversation": { conversation: minimalConversation, ...liveEnvelope, createdAgents },
+		"created agents on a bare conversation": { conversation: minimalConversation, createdAgents },
+		"live with live false": { conversation: minimalConversation, ...liveEnvelope, live: false },
+		"live false with inventory": { conversation: minimalConversation, ...coldEnvelope, inventory: minimalInventory },
+		"live false with pid": { conversation: minimalConversation, ...coldEnvelope, pid: 4242 },
+		"live true": { conversation: minimalConversation, live: true, storageId: "storage" },
+		"bare with storage": { conversation: minimalConversation, storageId: "storage" },
+		"bare with delivery error": { conversation: minimalConversation, deliveryError: "owner unreachable" },
+		"live without storage": { conversation: minimalConversation, inventory: minimalInventory, pid: 4242 },
+		"overview with a conversation": { ...toolOverview(), conversation: minimalConversation },
+		"overview with an envelope": { ...toolOverview(), ...liveEnvelope },
+		"overview with created agents": { ...toolOverview(), createdAgents },
+		"selected status with overview fields": { conversation: minimalConversation, ...liveEnvelope, sessions: [] },
+		"pid of zero": { conversation: minimalConversation, ...liveEnvelope, pid: 0 },
+		"empty object": {},
+		"null": null,
+		"array": [],
+	});
+	for (const [name, value] of Object.entries(invalid)) {
+		assert.equal(matchesSchema(StatusToolOutputSchema, value), false, name);
+		assert.throws(() => structuredObservation(StatusToolOutputSchema, value), /does not match its schema/u, name);
+	}
+});
+
+it("rejects invalid attention values and unknown fields on overview rows", () => {
+	const overview = toolOverview();
+	const [row] = overview.sessions as Record<string, unknown>[];
+	for (const attention of ["provider-blocked", "task-blocked", "failed-turn"]) {
+		structuredObservation(StatusToolOutputSchema, { ...overview, sessions: [{ ...row, attention }] });
+	}
+	for (const attention of ["other", "", null, 3, ["failed-turn"]]) {
+		assert.equal(matchesSchema(StatusToolOutputSchema, { ...overview, sessions: [{ ...row, attention }] }), false, JSON.stringify(attention));
+	}
+	for (const extra of [{ profile: { identity: "a" } }, { creatingOwnerId: "owner" }, { rosterOrder: { priority: true, modifiedAt: 1 } }, { unexpected: 1 }]) {
+		assert.equal(matchesSchema(StatusToolOutputSchema, { ...overview, sessions: [{ ...row, ...extra }] }), false, JSON.stringify(extra));
+	}
+	assert.equal(matchesSchema(StatusOutputSchema, { ...overview, sessions: [{ ...row, attention: "failed-turn" }] }), false, "host rows carry no attention hint");
+});
+
+it("rejects non-finite numbers, malformed timers and usage, and unknown nested live state in status results", () => {
+	const usage = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, cost: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, total: 10 } };
+	const timer = { id: 1, target: "storage:1", deadline: 5, mode: "followUp", status: "pending", overdue: false };
+	const withConversation = (fields: Record<string, unknown>) => ({ conversation: { ...minimalConversation, ...fields }, ...liveEnvelope });
+	structuredObservation(StatusToolOutputSchema, withConversation({ usage: { models: { fixture: usage }, tools: {} }, timers: [timer], live: { tools: [{ callId: "c", name: "read", status: "running", details: { nested: [null, true, { leaf: "text" }] } }] } }));
+	const invalid: Record<string, unknown> = {
+		"infinite usage": withConversation({ usage: { models: { fixture: { ...usage, input: Infinity } }, tools: {} } }),
+		"not-a-number cost": withConversation({ usage: { models: { fixture: { ...usage, cost: { ...usage.cost, total: NaN } } }, tools: {} } }),
+		"usage without cost": withConversation({ usage: { models: { fixture: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10 } }, tools: {} } }),
+		"unknown usage field": withConversation({ usage: { models: { fixture: { ...usage, extra: 1 } }, tools: {} } }),
+		"timer status": withConversation({ timers: [{ ...timer, status: "done" }] }),
+		"timer without overdue": withConversation({ timers: [{ id: 1, target: "t", deadline: 5, mode: "steer", status: "pending" }] }),
+		"timer id zero": withConversation({ timers: [{ ...timer, id: 0 }] }),
+		"unknown live field": withConversation({ live: { unexpected: true } }),
+		"tool slot status": withConversation({ live: { tools: [{ callId: "c", name: "read", status: "finished" }] } }),
+		"nested slot without parent": withConversation({ live: { nestedTools: [{ callId: "c/1", name: "read", taskId: 2, parentTaskId: 1, arguments: {}, status: "running" }] } }),
+	};
+	for (const [name, value] of Object.entries(invalid)) {
+		assert.equal(matchesSchema(StatusToolOutputSchema, value), false, name);
+		assert.throws(() => structuredObservation(StatusToolOutputSchema, value), /does not match its schema/u, name);
+	}
+	assert.equal(matchesSchema(StatusToolOutputSchema, { ...toolOverview(), summary: { ...(toolOverview().summary as object), sessions: { observed: Infinity, working: 0, attention: 0, quiet: 0, summarizedQuiet: 0 } } }), false);
+});
+
+it("explains status mismatches from the variant the discriminators select", () => {
+	const overview = toolOverview();
+	const [row] = overview.sessions as Record<string, unknown>[];
+	const invalidAttention = observationDiagnostic(StatusToolOutputSchema, { ...overview, sessions: [{ ...row, attention: "other" }] });
+	assert.equal(invalidAttention.variant, "overview");
+	assert.ok(invalidAttention.errors.some((error) => error.startsWith("/sessions/0/attention ")), invalidAttention.errors.join("; "));
+	assert.ok(!invalidAttention.errors.some((error) => /conversation|inventory|fleet/u.test(error)));
+
+	const conflict = observationDiagnostic(StatusToolOutputSchema, { conversation: minimalConversation, conversations: [], ...liveEnvelope });
+	assert.match(conflict.errors[0], /^\/conversations cannot be combined with \/conversation/u);
+	const mixedEnvelope = observationDiagnostic(StatusToolOutputSchema, { conversation: minimalConversation, ...liveEnvelope, live: false });
+	assert.equal(mixedEnvelope.variant, "single-live");
+	assert.match(mixedEnvelope.errors[0], /^\/live cannot be combined with \/inventory or \/pid/u);
+	const created = observationDiagnostic(StatusToolOutputSchema, { conversation: minimalConversation, ...liveEnvelope, createdAgents });
+	assert.ok(created.errors.some((error) => error.startsWith("/createdAgents ")), created.errors.join("; "));
+	const task = observationDiagnostic(StatusToolOutputSchema, { conversations: [{ ...minimalConversation, tasks: [{ id: 1, kind: "k", status: "bad", background: false, abortRequested: false }] }], ...coldEnvelope });
+	assert.equal(task.variant, "plural-cold");
+	assert.ok(task.errors.some((error) => error.startsWith("/conversations/0/tasks/0/status ")), task.errors.join("; "));
+	assert.equal(observationDiagnostic(StatusToolOutputSchema, { conversation: { ...minimalConversation, busy: "yes" } }).variant, "single-bare");
+	assert.equal(observationDiagnostic(StatusToolOutputSchema, { conversations: [] }).variant, "plural-cold");
+	assert.equal(observationDiagnostic(StatusToolOutputSchema, { view: "fleet" }).variant, "fleet");
+	assert.equal(observationDiagnostic(StatusToolOutputSchema, { kind: "ordinary-primary" }).variant, "ordinary-primary");
+	assert.equal(observationDiagnostic(StatusToolOutputSchema, {}).variant, "unrecognized");
+	assert.equal(observationDiagnostic(StatusToolOutputSchema, { ...overview, extra: 1 }, 1).errors.length, 1);
+	const many = observationDiagnostic(StatusToolOutputSchema, { conversation: Object.fromEntries(Object.keys(minimalConversation).map((key) => [key, Symbol.iterator.toString()])) });
+	assert.ok(many.errors.length <= 5);
+	for (const diagnostic of [invalidAttention, conflict, mixedEnvelope, created, task, many]) assert.doesNotMatch(diagnostic.errors.join(" "), /version|Pi |incompatib/iu);
+});
+
+it("leaves diagnostics for unrelated schemas on the ordinary validator errors", () => {
+	const schema = obj({ first: str(), second: str() });
+	const diagnostic = observationDiagnostic(schema, { first: 1, second: 2 }, 1);
+	assert.equal(diagnostic.variant, "schema");
+	assert.equal(diagnostic.errors.length, 1);
+	assert.match(diagnostic.errors[0], /^\/first /u);
+	assert.deepEqual(observationDiagnostic(StatusOutputSchema, { conversation: { ...minimalConversation, tasks: [{ id: 1, kind: "k", status: "bad", background: false, abortRequested: false }] }, ...liveEnvelope }).errors.slice(0, 1).map((error) => error.split(" ")[0]), ["/conversation/tasks/0/status"]);
+});
+
+it("serializes the host status and roster schemas to their published identities", () => {
+	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
+	assert.equal(hash(StatusOutputSchema), "a41cd066d24faf50cd6357c1e18c7e25b6071bebf92a2187193b04b8407d8c0c");
+	assert.equal(hash(AgentConversationSummarySchema), "9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04");
+	assert.equal(JSON.stringify(ToolOverviewRowSchema).includes('"attention"'), true);
+	assert.equal(JSON.stringify(AgentConversationSummarySchema).includes('"attention"'), false);
 });

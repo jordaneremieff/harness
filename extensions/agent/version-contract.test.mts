@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { StatusOutputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
+import { AgentConversationSummarySchema, StatusOutputSchema, StatusToolOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { page as rosterPage } from "./dashboard-test-fixture.mts";
 import { buildStatusOverview } from "./status-overview.ts";
 import { HOST_CONTRACT, contractRefusal, operationContractMismatch, parseOperationContract, parseRuntimeContract, type RuntimeContract } from "./version-contract.ts";
@@ -50,6 +50,7 @@ it("keeps roster coverage local without changing the published host status ident
 	assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, coverage: { ...local.coverage, inventory: { ...inventory, inspected: -1 } } }), /does not match its schema/u);
 	assert.throws(() => structuredObservation(StatusToolOutputSchema, { ...local, coverage: { ...local.coverage, unexpected: true } }), /does not match its schema/u);
 	assert.equal(hash(StatusOutputSchema), published, "local output validation does not alter the wire schema");
+	assert.equal(hash(AgentConversationSummarySchema), /^H-dashboard\s+([a-f0-9]{64})$/mu.exec(docs)?.[1], "the tool overview row does not alter the roster identity");
 	assert.equal(contractRefusal("status", { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, status: { ...HOST_CONTRACT.operations.status, response: published } } }), undefined);
 });
 

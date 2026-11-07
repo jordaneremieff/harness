@@ -661,3 +661,19 @@ it("ignores source cursor size and explains the fresh discovery route", () => {
 	);
 	check(result);
 });
+
+it("keeps the intervention hint and drops catalog-local fields so the overview validates", () => {
+	const profile = { identity: "agent-1", handle: "reviewer", role: "Review parser changes", revision: "r1", hasExpertise: false, updatedAt: null };
+	const rows = [
+		summary(1, { state: "failed", attention: "failed-turn", profile, creatingOwnerId: "owner" }),
+		summary(2, { state: "working", attention: "provider-blocked", profile }),
+		summary(3, { state: "idle", attention: "task-blocked" }),
+	];
+	const result = buildStatusOverview(page(rows), [], []);
+	assert.deepEqual(new Set(result.sessions.map((row) => row.attention)), new Set(["failed-turn", "provider-blocked", "task-blocked"]));
+	for (const row of result.sessions) {
+		for (const key of ["profile", "creatingOwnerId", "rosterOrder"]) assert.equal(Object.hasOwn(row, key), false, key);
+	}
+	check(result);
+	assert.throws(() => structuredObservation(StatusOutputSchema, result), "the host schema carries no attention hint");
+});

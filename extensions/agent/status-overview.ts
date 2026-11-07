@@ -2,6 +2,7 @@
 import type { AgentPriorityPage, AgentConversationSummary } from "./dashboard-types.ts";
 import type { EffortAwareness } from "./effort-awareness.ts";
 import type { CatalogPriorityCoverage } from "./catalog.ts";
+import type { ToolOverviewRow } from "./observation-schema.ts";
 
 export interface StatusOverviewPrimary {
 	readonly sessionId: string;
@@ -41,7 +42,7 @@ export interface StatusOverviewCoverage {
 
 export interface StatusOverview {
 	readonly awareness?: EffortAwareness;
-	readonly sessions: readonly AgentConversationSummary[];
+	readonly sessions: readonly ToolOverviewRow[];
 	readonly primaries: readonly StatusOverviewPrimary[];
 	readonly failures: readonly StatusOverviewFailure[];
 	readonly summary: {
@@ -107,8 +108,9 @@ function compactHealth(
 	return result;
 }
 
-function compact(row: AgentConversationSummary): AgentConversationSummary {
-	const { creatingOwnerId: _creatingOwnerId, rosterOrder: _rosterOrder, ...result } = row;
+/** Drops catalog-local fields the overview row schema does not declare; the intervention hint stays. */
+function compact(row: AgentConversationSummary): ToolOverviewRow {
+	const { creatingOwnerId: _creatingOwnerId, rosterOrder: _rosterOrder, profile: _profile, ...result } = row;
 	for (const key of ["name", "firstMessage", "latestReply", "ownerLabel", "error"] as const) {
 		const text = row[key];
 		if (text !== undefined) result[key] = excerpt(text);
@@ -274,7 +276,7 @@ function excludeRow(value: MutableOverview, dropped: ByteOmissions, priorityIds:
 		dropped.rows++;
 		return;
 	} else if (value.sessions.length > 0) {
-		const row = value.sessions.pop() as AgentConversationSummary;
+		const row = value.sessions.pop() as ToolOverviewRow;
 		dropped.priority += Number(priorityIds.has(row.id));
 		dropped.sessions++;
 		value.coverage.omitted++;

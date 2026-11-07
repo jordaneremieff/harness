@@ -1,4 +1,4 @@
-import { str, num, int, bool, nul, lit, union, arr, opt, obj, nullable, map, type Static, type Schema } from "@earendil-works/pi-schema";
+import { str, num, int, bool, nul, lit, union, arr, opt, obj, nullable, map, type Static, type StaticObject, type Properties, type Schema } from "@earendil-works/pi-schema";
 /**
  * Exact JSON schemas for the native Durable observation surface.
  *
@@ -218,7 +218,7 @@ const autoRetry = obj({ attempt: count, maxAttempts: count, delayMs: count, erro
 const dashboardHealth = obj({ lastError: opt(string), compactionFailure: opt(compactionFailure), autoRetry: opt(autoRetry) });
 
 /** One dashboard roster row, including host startup and unavailable storage. */
-export const AgentConversationSummarySchema = obj({
+export const AgentConversationSummaryProperties = {
 	id: string,
 	storageId: string,
 	name: opt(string),
@@ -238,7 +238,15 @@ export const AgentConversationSummarySchema = obj({
 	durationMs: opt(number),
 	health: opt(dashboardHealth),
 	awaiting: opt(AwaitFactSchema),
+};
+export const AgentConversationSummarySchema = obj(AgentConversationSummaryProperties);
+
+/** The overview row: the native row plus the catalog's intervention hint, which no native publication carries. */
+export const ToolOverviewRowSchema = obj({
+	...AgentConversationSummaryProperties,
+	attention: opt(union([lit("provider-blocked"), lit("task-blocked"), lit("failed-turn")])),
 });
+export type ToolOverviewRow = Static<typeof ToolOverviewRowSchema>;
 
 /** What one session host installed, as reported by status. */
 export const DurableInventorySchema = obj({
@@ -308,8 +316,35 @@ export type ListOutput = Static<typeof ListOutputSchema>;
 const catalogPriorityCoverage = obj({ candidates: count, inspected: count, unreadable: count, unknownClaims: count, returned: count, remaining: count, priorityRemaining: count,
 	remainingRows: count, priorityRemainingRows: count, recordByteLimit: count, claimByteLimit: count, outputLimit: count });
 
+const statusOverviewCoverage = { complete: boolean, storagesVisited: count, skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: nul(), reasons: arr(string) };
+const overviewProperties = {
+	sessions: arr(AgentConversationSummarySchema),
+	primaries: arr(
+		obj({
+			sessionId: string,
+			cwd: string,
+			name: opt(string),
+			model: opt(obj({ provider: string, modelId: string })),
+			thinkingLevel: opt(thinkingLevel),
+		}),
+	),
+	failures: arr(obj({ storageId: string, error: string })),
+	summary: obj({
+		sessions: obj({ observed: count, working: count, attention: count, quiet: count, summarizedQuiet: count }),
+		primaries: obj({ observed: count, summarized: count }),
+		failures: obj({ observed: count, summarized: count }),
+	}),
+	coverage: obj(statusOverviewCoverage),
+	observedAt: string,
+	discovery: string,
+};
+const singlePayload = { conversation: ConversationStatusSchema };
+const pluralPayload = { conversations: arr(ConversationStatusSchema) };
+const liveEnvelope = { inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: opt(string) };
+const coldEnvelope = { live: lit(false), storageId: string, deliveryError: opt(string) };
+
 /**
- * `agent_status` union:
+ * `agent_status` host response:
  * - compact manager overview: priority rows, bounded samples, summary counts, and explicit coverage;
  * - live host status with inventory: `{conversation|conversations, inventory, pid, storageId}`;
  * - cold storage status: retained conversations with `live: false` and `storageId`;
@@ -320,51 +355,59 @@ const catalogPriorityCoverage = obj({ candidates: count, inspected: count, unrea
  * A conversation status carries `timers`: its bounded pending scheduled inputs,
  * nearest deadline first, with `overdue` set when the deadline has passed.
  */
-const statusOverviewCoverage = { complete: boolean, storagesVisited: count, skipped: count, omitted: count, omittedPrimaries: count, omittedFailures: count, bytes: count, byteLimitReached: boolean, nextCursor: nul(), reasons: arr(string) };
-const statusProperties = [
-	{
-		sessions: arr(AgentConversationSummarySchema),
-		primaries: arr(
-			obj({
-				sessionId: string,
-				cwd: string,
-				name: opt(string),
-				model: opt(obj({ provider: string, modelId: string })),
-				thinkingLevel: opt(thinkingLevel),
-			}),
-		),
-		failures: arr(obj({ storageId: string, error: string })),
-		summary: obj({
-			sessions: obj({ observed: count, working: count, attention: count, quiet: count, summarizedQuiet: count }),
-			primaries: obj({ observed: count, summarized: count }),
-			failures: obj({ observed: count, summarized: count }),
-		}),
-		coverage: obj(statusOverviewCoverage),
-		observedAt: string,
-		discovery: string,
-	},
-	{ conversation: ConversationStatusSchema, inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: opt(string) },
-	{ conversation: ConversationStatusSchema, live: lit(false), storageId: string, deliveryError: opt(string) },
-	{ conversations: arr(ConversationStatusSchema), inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: opt(string) },
-	{ conversations: arr(ConversationStatusSchema), live: lit(false), storageId: string, deliveryError: opt(string) },
-	{ conversation: ConversationStatusSchema }
-] as const;
 export const StatusOutputSchema = union([
-	obj(statusProperties[0]), obj(statusProperties[1]), obj(statusProperties[2]),
-	obj(statusProperties[3]), obj(statusProperties[4]), obj(statusProperties[5]),
+	obj(overviewProperties),
+	obj({ ...singlePayload, ...liveEnvelope }),
+	obj({ ...singlePayload, ...coldEnvelope }),
+	obj({ ...pluralPayload, ...liveEnvelope }),
+	obj({ ...pluralPayload, ...coldEnvelope }),
+	obj(singlePayload),
 ]);
 export type StatusOutput = Static<typeof StatusOutputSchema>;
 
-/** Tool-only local observations extend status without changing the host response contract. */
+/**
+ * Tool-only local observations extend status without changing the host response contract. The tool status
+ * is a product of independent dimensions instead of one closed object per combination, so each large
+ * component is described once:
+ * - optional `awareness`, shared by every alternative;
+ * - an overview, or a selected status;
+ * - a selected status combines a single or plural payload with a live, cold or absent envelope.
+ * Component objects are open so they can coexist; a `propertyNames` guard closes each complete alternative,
+ * and properties declared `never` state the exclusions between components.
+ */
+type Intersection<S extends readonly Schema[]> = S extends readonly [infer Head extends Schema, ...infer Tail extends readonly Schema[]] ? Static<Head> & Intersection<Tail> : unknown;
+
+/** An object whose listed properties are required unless `opt()`, and which tolerates other properties. */
+function partial<const P extends Properties>(properties: P): Schema<StaticObject<P>> {
+	const { additionalProperties: _closed, ...open } = obj(properties);
+	return open as Schema<StaticObject<P>>;
+}
+function all<const S extends readonly Schema[]>(parts: S): Schema<Intersection<S>> {
+	return { allOf: parts };
+}
+/** Rejects every property outside `keys`, closing the product of open components. */
+function onlyKeys(keys: readonly string[]): Schema {
+	return { propertyNames: { enum: keys } };
+}
+/** A property that must be absent. */
+const absent = opt(false as unknown as Schema<never>);
+
+const toolCoverageProperties = { ...statusOverviewCoverage, inventory: catalogPriorityCoverage, omittedPriorityRows: count, omittedPriorityRecords: count };
+const toolOverviewProperties = { ...overviewProperties, sessions: arr(ToolOverviewRowSchema), coverage: obj(toolCoverageProperties) };
 const awarenessProperties = { awareness: opt(EffortAwarenessSchema) };
-const ToolStatusSchema = union([
-	obj({ ...statusProperties[0], ...awarenessProperties, coverage: obj({ ...statusOverviewCoverage, inventory: catalogPriorityCoverage, omittedPriorityRows: count, omittedPriorityRecords: count }) }),
-	obj({ ...statusProperties[1], ...awarenessProperties }),
-	obj({ ...statusProperties[2], ...awarenessProperties }),
-	obj({ ...statusProperties[3], ...awarenessProperties, createdAgents: opt(CreatedAgentsSchema) }),
-	obj({ ...statusProperties[4], ...awarenessProperties, createdAgents: opt(CreatedAgentsSchema) }),
-	obj({ ...statusProperties[5], ...awarenessProperties }),
+const singleProperties = { ...singlePayload, conversations: absent, createdAgents: absent };
+const pluralProperties = { ...pluralPayload, storageId: string, conversation: absent, createdAgents: opt(CreatedAgentsSchema) };
+const liveProperties = { ...liveEnvelope, live: absent };
+const coldProperties = { ...coldEnvelope, inventory: absent, pid: absent };
+const bareProperties = { inventory: absent, pid: absent, live: absent, storageId: absent, deliveryError: absent };
+
+const toolOverview = all([partial(toolOverviewProperties), onlyKeys([...Object.keys(toolOverviewProperties), "awareness"])]);
+const toolSelected = all([
+	union([partial(singleProperties), partial(pluralProperties)]),
+	union([partial(liveProperties), partial(coldProperties), partial(bareProperties)]),
+	onlyKeys(["awareness", "conversation", "conversations", "createdAgents", "inventory", "pid", "live", "storageId", "deliveryError"]),
 ]);
+const ToolStatusSchema = all([partial(awarenessProperties), union([toolOverview, toolSelected])]);
 export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema, OrdinaryPrimaryObservationSchema]);
 
 const entrySource = union([lit("user"), lit("assistant"), lit("toolResult"), lit("summary"), lit("custom")]);
@@ -545,12 +588,83 @@ function diagnosticScore(schema: DiagnosticBranch, record: Record<string, unknow
 	return score;
 }
 
+/** The variant a failed observation was compared against, and its JSON Pointer mismatches. */
+export interface ObservationDiagnostic {
+	readonly variant: string;
+	readonly errors: readonly string[];
+}
+
+type DiagnosticResolver = (value: Record<string, unknown>, limit: number) => ObservationDiagnostic;
+const diagnosticResolvers = new WeakMap<object, DiagnosticResolver>();
+
+function has(value: Record<string, unknown>, key: string): boolean {
+	return Object.hasOwn(value, key);
+}
+
+/**
+ * Flat closed candidates for the tool status, built from the same property definitions as the product
+ * schema and only after a mismatch, so a valid observation never pays for them.
+ */
+const statusCandidates = new Map<string, Schema>();
+function statusCandidate(name: string, properties: () => Properties): Schema {
+	let candidate = statusCandidates.get(name);
+	if (candidate === undefined) {
+		candidate = obj({ ...properties(), ...awarenessProperties }) as Schema;
+		statusCandidates.set(name, candidate);
+	}
+	return candidate;
+}
+
+const OVERVIEW_KEYS = ["sessions", "summary", "primaries", "coverage"] as const;
+
+function statusEnvelope(value: Record<string, unknown>, plural: boolean): "live" | "cold" | "bare" {
+	if (has(value, "inventory") || has(value, "pid")) return "live";
+	return plural || has(value, "live") || has(value, "storageId") ? "cold" : "bare";
+}
+
+function selectedStatusDiagnostic(value: Record<string, unknown>, limit: number): ObservationDiagnostic {
+	const plural = has(value, "conversations");
+	if (!plural && !has(value, "conversation")) {
+		return { variant: "unrecognized", errors: ["/ expected sessions (overview), conversation or conversations (selected status), view \"fleet\", or kind \"ordinary-primary\""] };
+	}
+	const conflicts: string[] = [];
+	if (plural && has(value, "conversation")) conflicts.push("/conversations cannot be combined with /conversation");
+	if (statusEnvelope(value, plural) === "live" && has(value, "live")) conflicts.push("/live cannot be combined with /inventory or /pid");
+	const envelope = statusEnvelope(value, plural);
+	const variant = `${plural ? "plural" : "single"}-${envelope}`;
+	const payload = plural ? { ...pluralPayload, createdAgents: opt(CreatedAgentsSchema) } : singlePayload;
+	const envelopeProperties = envelope === "live" ? liveEnvelope : envelope === "bare" ? {} : coldEnvelope;
+	const candidate = statusCandidate(variant, () => ({ ...payload, ...envelopeProperties }));
+	return { variant, errors: [...conflicts, ...schemaErrors(candidate, value, limit)].slice(0, limit) };
+}
+
+function statusToolDiagnostic(value: Record<string, unknown>, limit: number): ObservationDiagnostic {
+	if (value.kind === "ordinary-primary") return { variant: "ordinary-primary", errors: schemaErrors(OrdinaryPrimaryObservationSchema, value, limit) };
+	if (value.view === "fleet") return { variant: "fleet", errors: schemaErrors(FleetStatusSchema, value, limit) };
+	if (OVERVIEW_KEYS.some((key) => has(value, key))) {
+		return { variant: "overview", errors: schemaErrors(statusCandidate("overview", () => toolOverviewProperties), value, limit) };
+	}
+	return selectedStatusDiagnostic(value, limit);
+}
+diagnosticResolvers.set(StatusToolOutputSchema, statusToolDiagnostic);
+
+/**
+ * Explain a failed observation. Schemas with a registered resolver choose the one variant their
+ * discriminators select and report conflicting shapes directly; any other schema reports its own
+ * validator errors, narrowed to the structurally closest union member.
+ */
+export function observationDiagnostic(schema: object, value: unknown, limit = 5): ObservationDiagnostic {
+	const resolver = diagnosticResolvers.get(schema);
+	if (resolver !== undefined && value !== null && typeof value === "object" && !Array.isArray(value)) return resolver(value as Record<string, unknown>, limit);
+	return { variant: "schema", errors: schemaErrors(diagnosticSchema(schema, value), value, limit) };
+}
+
 /** JSON-round-trip and validate an observation, with schema paths on mismatch. */
 export function structuredObservation<T extends object>(schema: T, value: unknown): Static<T> {
 	const parsed: unknown = JSON.parse(JSON.stringify(value ?? null));
 	if (!matchesSchema(schema, parsed)) {
-		const detail = schemaErrors(diagnosticSchema(schema, parsed), parsed, 5);
-		throw new Error(`Observation output does not match its schema: ${detail.join("; ")}`);
+		const { errors } = observationDiagnostic(schema, parsed, 5);
+		throw new Error(`Observation output does not match its schema: ${errors.join("; ")}`);
 	}
 	return parsed as Static<T>;
 }
