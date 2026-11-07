@@ -212,15 +212,15 @@ function fakeDeps(
 	const deps: BrowserDeps = {
 		async run(request, { signal }) {
 			switch (request.op) {
-				case "inventory":
+				case "tabs":
 					return reply({
-						installed: { path: "/x", version: "1" },
-						instances: [{ pid: 42, hidden: false, active: false }],
-					});
-				case "permission":
-					return reply({ automation: "granted" });
-				case "windows":
-					return reply({
+						kind: "ok",
+						inventory: {
+							installed: { path: "/x", version: "1" },
+							instances: [{ pid: 42, hidden: false, active: false }],
+						},
+						pid: 42,
+						automation: null,
 						windows: [
 							{
 								id: "1",
@@ -233,6 +233,8 @@ function fakeDeps(
 								tabs: [{ id: "t1", url: "https://app.example/", title: "T", loading: false }],
 							},
 						],
+						blocked: null,
+						instances: [],
 					});
 				case "window":
 					return reply(WINDOW_FACTS);

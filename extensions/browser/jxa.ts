@@ -209,17 +209,70 @@ function cgWindows(pid) {
     return { id: item.kCGWindowNumber, onScreen: Boolean(item.kCGWindowIsOnscreen), name: item.kCGWindowName === undefined ? null : String(item.kCGWindowName), bounds: { x: b.X, y: b.Y, width: b.Width, height: b.Height } };
   });
 }
+function readWindows(pid) {
+  try {
+    return windowList(pid);
+  } catch (error) {
+    // A column read can disagree with the window ids when the browser changes
+    // during the listing. One repeated read-only listing resolves that race.
+    if (!error || error.pbCode !== 'changed') throw error;
+    return windowList(pid);
+  }
+}
+function inventoryOf(bundleId) {
+  return { installed: installed(bundleId), instances: instances(bundleId) };
+}
+function tabsResult(kind, found, extra) {
+  return Object.assign(
+    { kind: kind, inventory: found, pid: null, automation: null, windows: [], blocked: null, instances: [] },
+    extra || {},
+  );
+}
+function blockedResult(kind, found, reason, message, extra) {
+  return tabsResult(kind, found, Object.assign({ blocked: { reason: reason, message: message } }, extra || {}));
+}
 const operations = {
-  inventory: function (request) {
-    return { installed: installed(request.bundleId), instances: instances(request.bundleId) };
+  availability: function (request) {
+    const browsers = (request.queries || []).map(function (query) {
+      const found = inventoryOf(query.bundleId);
+      return {
+        browser: query.browser,
+        installed: found.installed,
+        instances: found.instances,
+        automation:
+          query.checkAutomation && found.instances.length > 0
+            ? permission(D.descriptorWithBundleIdentifier(query.bundleId), false)
+            : 'not-checked',
+      };
+    });
+    return { browsers: browsers };
   },
-  permission: function (request) {
-    const target = request.pid ? D.descriptorWithProcessIdentifier(request.pid) : D.descriptorWithBundleIdentifier(request.bundleId);
-    return { automation: permission(target, request.ask) };
-  },
-  windows: function (request) {
-    ready(request);
-    return { windows: windowList(request.pid) };
+  tabs: function (request) {
+    const found = inventoryOf(request.bundleId);
+    if (!request.inspectAllowed) return blockedResult('blocked', found, 'access-missing', 'Apple Events are not configured for this browser.');
+    if (found.instances.length === 0)
+      return blockedResult('blocked', found, 'not-running', 'The browser is not running. The tool never starts a browser.');
+    let pid = request.pid;
+    if (pid === undefined) {
+      if (found.instances.length > 1)
+        return tabsResult('ambiguous-process', found, { instances: found.instances });
+      pid = found.instances[0].pid;
+    } else if (!found.instances.some(function (item) { return item.pid === pid; })) {
+      return blockedResult('blocked', found, 'not-running', 'No running process has this pid.', { pid: pid });
+    }
+    let automation = null;
+    if (request.requestPermission) {
+      automation = permission(D.descriptorWithProcessIdentifier(pid), true);
+      if (automation !== 'granted')
+        return blockedResult('blocked', found, 'automation-' + automation, 'Automation permission is ' + automation + '.', { pid: pid, automation: automation });
+    }
+    try {
+      ready({ pid: pid, bundleId: request.bundleId });
+    } catch (error) {
+      if (!error || !error.pbCode) throw error;
+      return blockedResult('blocked', found, error.pbCode, error.message, { pid: pid });
+    }
+    return tabsResult('ok', found, { pid: pid, automation: automation, windows: readWindows(pid) });
   },
   execute: function (request) {
     ready(request);

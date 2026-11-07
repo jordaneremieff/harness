@@ -77,9 +77,23 @@ const fail = (
 	ok: false,
 	error: { code, number, message, extra: null },
 });
-const inventoryOf = (instances: Array<{ pid: number }>): OsaReply =>
-	ok({ installed: null, instances: instances.map((item) => ({ hidden: false, active: false, ...item })) });
-const windowsOf = (windows: unknown[]): OsaReply => ok({ windows });
+const inventoryValue = (instances: Array<{ pid: number }>) => ({
+	installed: null,
+	instances: instances.map((item) => ({ hidden: false, active: false, ...item })),
+});
+const inventoryOf = (instances: Array<{ pid: number }>): OsaReply => ok(inventoryValue(instances));
+const availabilityOf = (browsers: unknown[]): OsaReply => ok({ browsers });
+const tabsOf = (value: Record<string, unknown> = {}): OsaReply =>
+	ok({
+		kind: "ok",
+		inventory: inventoryValue([{ pid: 5 }]),
+		pid: 5,
+		automation: null,
+		windows: [],
+		blocked: null,
+		instances: [],
+		...value,
+	});
 const executed = (envelopeValue: unknown): OsaReply =>
 	ok({ window: "1", url: "https://a.example/page", title: "Example", result: JSON.stringify(envelopeValue) });
 
@@ -178,24 +192,33 @@ it("refuses an origin with a path before any Apple Event", async () => {
 	assert.equal(requests.length, 0);
 });
 
-/* ---------------------------------------------------------------- process inventory */
+/* ---------------------------------------------------------------- process discovery */
 
-it("refuses when the browser is not running and sends only an inventory read", async () => {
-	const { deps, requests } = fakes(async () => inventoryOf([]), { access: { chrome: "interact" } });
-	const result = await browserInspect({ browser: "chrome", pid: 1, tab: "1" }, undefined, deps);
+it("maps a not-running reply from the operation to a refusal", async () => {
+	const run = runFrom({ execute: () => fail("not-running", -600, "No running process has this pid.") });
+	const { deps, requests } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserInspect({ browser: "chrome", pid: 5, tab: "1" }, undefined, deps);
 	assert.equal(result.details.status, "blocked");
 	assert.equal(blockedReason(result), "not-running");
 	assert.equal(requests.length, 1);
-	assert.equal(requests[0].op, "inventory");
-	assert.equal(requests[0].bundleId, BROWSERS.chrome.bundleId);
+	assert.equal(requests[0].op, "execute");
 });
 
 it("refuses an ambiguous process and lists both pids with their user data directories", async () => {
 	const processArgs = async (pid: number) => (pid === 10 ? "--user-data-dir=/tmp/x --flag" : null);
-	const { deps } = fakes(async () => inventoryOf([{ pid: 10 }, { pid: 11 }]), {
-		access: { chrome: "interact" },
-		processArgs,
+	const run = runFrom({
+		tabs: () =>
+			tabsOf({
+				kind: "ambiguous-process",
+				pid: null,
+				inventory: inventoryValue([{ pid: 10 }, { pid: 11 }]),
+				instances: [
+					{ pid: 10, hidden: false, active: false },
+					{ pid: 11, hidden: false, active: false },
+				],
+			}),
 	});
+	const { deps } = fakes(run, { access: { chrome: "interact" }, processArgs });
 	const result = await browserTabs({ browser: "chrome" }, undefined, deps);
 	assert.equal(blockedReason(result), "ambiguous-process");
 	assert.deepEqual(list(obj(reportOf(result).blocked).instances), [
@@ -204,30 +227,45 @@ it("refuses an ambiguous process and lists both pids with their user data direct
 	]);
 });
 
-it("refuses a pid that the inventory does not list", async () => {
-	const { deps } = fakes(async () => inventoryOf([{ pid: 10 }]), { access: { chrome: "interact" } });
-	const result = await browserInspect({ browser: "chrome", pid: 99, tab: "1" }, undefined, deps);
+it("reports the running pids when discovery rejects the named pid", async () => {
+	const run = runFrom({
+		tabs: () =>
+			tabsOf({
+				kind: "blocked",
+				pid: 99,
+				blocked: { reason: "not-running", message: "No running process has this pid." },
+				inventory: inventoryValue([{ pid: 10 }]),
+			}),
+	});
+	const { deps } = fakes(run, { access: { chrome: "interact" } });
+	const result = await browserTabs({ browser: "chrome", pid: 99 }, undefined, deps);
 	assert.equal(blockedReason(result), "not-running");
 	assert.deepEqual(obj(reportOf(result).blocked).running, [10]);
 });
 
 it("refuses every targeted operation when another process now owns the tab id", async () => {
 	let running = [5];
+	const windows = [
+		{
+			id: "1",
+			index: 1,
+			title: "Window",
+			mode: "normal",
+			minimized: false,
+			visible: true,
+			activeTabIndex: 1,
+			tabs: [{ id: "42", url: "https://a.example/page", title: "Example", loading: false }],
+		},
+	];
 	const run = runFrom({
-		inventory: () => inventoryOf(running.map((pid) => ({ pid }))),
-		windows: () =>
-			windowsOf([
-				{
-					id: "1",
-					index: 1,
-					title: "Window",
-					mode: "normal",
-					minimized: false,
-					visible: true,
-					activeTabIndex: 1,
-					tabs: [{ id: "42", url: "https://a.example/page", title: "Example", loading: false }],
-				},
-			]),
+		tabs: () =>
+			tabsOf({
+				pid: running[0],
+				inventory: inventoryValue(running.map((pid) => ({ pid }))),
+				windows,
+			}),
+		execute: () => fail("not-running", -600, "No running process has this pid."),
+		window: () => fail("not-running", -600, "No running process has this pid."),
 	});
 	const captured: number[] = [];
 	const saves: string[] = [];
@@ -262,15 +300,11 @@ it("refuses every targeted operation when another process now owns the tab id", 
 	for (const result of results) {
 		assert.equal(result.details.status, "blocked");
 		assert.equal(blockedReason(result), "not-running");
-		assert.deepEqual(obj(reportOf(result).blocked).running, [9]);
 		assert.equal(obj(reportOf(result).target).pid, 5);
 	}
 	const after = requests.slice(before);
 	assert.equal(
-		after.filter(
-			(request) =>
-				request.op === "execute" || request.op === "window" || request.op === "windows" || request.op === "navigate",
-		).length,
+		after.filter((request) => request.op === "navigate" || request.op === "windows").length,
 		0,
 	);
 	assert.deepEqual(captured, []);
@@ -278,7 +312,7 @@ it("refuses every targeted operation when another process now owns the tab id", 
 });
 
 it("refuses a targeted operation without pid even when one process runs", async () => {
-	const run = runFrom({ inventory: () => inventoryOf([{ pid: 5 }]) });
+	const run = runFrom({});
 	const captured: number[] = [];
 	const { deps, requests } = fakes(run, {
 		access: { chrome: "interact" },
@@ -311,19 +345,32 @@ it("refuses a targeted operation without pid even when one process runs", async 
 
 it("maps a tab-not-found reply to a refusal", async () => {
 	const run = runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: () => fail("tab-not-found", null, "no such tab"),
 	});
 	const { deps, requests } = fakes(run, { access: { chrome: "inspect" } });
 	const result = await browserInspect({ browser: "chrome", pid: 5, tab: "7" }, undefined, deps);
 	assert.equal(result.details.status, "blocked");
 	assert.equal(blockedReason(result), "tab-not-found");
-	assert.equal(requests.length, 2);
+	assert.equal(requests.length, 1);
+	assert.equal(requests[0].op, "execute");
+});
+
+it("inspects a named tab in one operation without a discovery call", async () => {
+	const run = runFrom({
+		execute: () => executed({ kind: "ok", page: PAGE, view: { heading: "Example", text: "hello" } }),
+	});
+	const { deps, requests } = fakes(run, { access: { chrome: "inspect" } });
+	const result = await browserInspect({ browser: "chrome", pid: 5, tab: "7" }, undefined, deps);
+	assert.equal(result.isError, false);
+	assert.equal(result.details.status, "ok");
+	assert.equal(requests.length, 1);
+	assert.equal(requests[0].op, "execute");
+	assert.equal(requests[0].pid, 5);
+	assert.equal(obj(reportOf(result).target).url, "https://a.example/page");
 });
 
 it("maps Apple Events error 12 to the JavaScript setting with menu guidance", async () => {
 	const run = runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: () => fail(null, 12, "The command cannot be executed."),
 	});
 	const { deps } = fakes(run, { access: { chrome: "inspect" } });
@@ -335,7 +382,6 @@ it("maps Apple Events error 12 to the JavaScript setting with menu guidance", as
 
 it("maps an automation-denied reply to a refusal", async () => {
 	const run = runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: () => fail("automation-denied", -1743, "denied"),
 	});
 	const { deps } = fakes(run, { access: { chrome: "inspect" } });
@@ -351,7 +397,6 @@ function actRunner(
 	action: Handler = () => executed({ kind: "scheduled", mark: 1000, element: { selector: "#save" }, page: PAGE }),
 ): Run {
 	return runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: (request) => {
 			const kind = scriptKind(request);
 			if (kind === "action") return action(request);
@@ -428,7 +473,6 @@ it("reports a failed postcondition with the observed 500 response", async () => 
 
 it("reports an unknown dispatch after a transport timeout and never replays the action", async () => {
 	const run = runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: () => {
 			throw new TransportError("timeout", "unknown", "No reply within 300 ms.");
 		},
@@ -472,7 +516,6 @@ it("leaves the postcondition unknown when the last page read gets no answer", as
 
 it("reports a dispatch that was known not to happen when delivery is none", async () => {
 	const run = runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: () => {
 			throw new TransportError("spawn", "none", "osascript is not available on this system.");
 		},
@@ -730,7 +773,6 @@ it("keeps the action unknown when its own page reply has no readable result", as
 
 it("navigates with the expected origin and refuses a page origin mismatch", async () => {
 	const run = runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: () => executed({ kind: "ok", page: PAGE }),
 		navigate: () => fail("origin-mismatch", null, "The tab shows another origin."),
 	});
@@ -750,7 +792,6 @@ it("navigates with the expected origin and refuses a page origin mismatch", asyn
 
 it("keeps a dispatched navigation when page reads are unavailable before and after it", async () => {
 	const run = runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: () => fail(null, 12, "The command cannot be executed."),
 		navigate: () => ok({ window: "1", before: "https://a.example/page" }),
 	});
@@ -779,7 +820,6 @@ it("keeps a dispatched navigation when page reads are unavailable before and aft
 
 it("reports a navigation as not dispatched when the read before it gets no answer", async () => {
 	const run = runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: () => {
 			throw new TransportError("timeout", "unknown", "No reply.");
 		},
@@ -803,7 +843,6 @@ it("reports a navigation as not dispatched when the read before it gets no answe
 
 function evaluateRunner(start: Handler, poll?: Handler, forget?: Handler): Run {
 	return runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: (request) => {
 			const kind = scriptKind(request);
 			if (kind === "start") return start(request);
@@ -1007,7 +1046,6 @@ it("keeps the error name and message of a rejected promise and of a thrown value
 
 it("reports an unknown start after a transport failure and never starts the expression twice", async () => {
 	const run = runFrom({
-		inventory: () => inventoryOf([{ pid: 5 }]),
 		execute: () => {
 			throw new TransportError("timeout", "unknown", "No reply within 400 ms.");
 		},
@@ -1055,7 +1093,7 @@ const windowReply =
 function captureFixture(facts: Handler, options: FakeOptions = {}): Fixture & { captured: number[]; events: string[] } {
 	const captured: number[] = [];
 	const events: string[] = [];
-	const handler = runFrom({ inventory: () => inventoryOf([{ pid: 5 }]), window: facts });
+	const handler = runFrom({ window: facts });
 	const fixture = fakes(
 		async (request, runOptions) => {
 			if (request.op === "window") events.push("window-read");
@@ -1307,14 +1345,79 @@ it("refuses a relative save path before any Apple Event", async () => {
 
 /* ---------------------------------------------------------------- tabs */
 
-it("reports every browser and asks for permission only where access and a process exist", async () => {
+it("lists a named process's windows from one discovery invocation", async () => {
 	const run = runFrom({
-		inventory: (request) => {
-			if (request.bundleId === BROWSERS.chrome.bundleId) return inventoryOf([{ pid: 1 }]);
-			if (request.bundleId === BROWSERS.brave.bundleId) return inventoryOf([{ pid: 2 }]);
-			return inventoryOf([]);
-		},
-		permission: () => ok({ automation: "granted" }),
+		tabs: () =>
+			tabsOf({
+				pid: 5,
+				windows: [
+					{
+						id: "1",
+						index: 1,
+						title: "Window",
+						mode: "normal",
+						minimized: false,
+						visible: true,
+						activeTabIndex: 1,
+						tabs: [{ id: "t1", url: "https://a.example/", title: "A", loading: false }],
+					},
+				],
+			}),
+	});
+	const { deps, requests } = fakes(run, { access: { chrome: "inspect" } });
+	const result = await browserTabs({ browser: "chrome" }, undefined, deps);
+	assert.equal(result.isError, false);
+	assert.equal(requests.length, 1, "one JXA invocation lists the named process");
+	assert.equal(requests[0].op, "tabs");
+	assert.equal(requests[0].bundleId, BROWSERS.chrome.bundleId);
+	assert.equal(requests[0].inspectAllowed, true);
+	assert.equal(requests[0].requestPermission, false);
+	assert.equal(requests[0].pid, undefined);
+});
+
+it("reports static facts without window reads when access is absent", async () => {
+	const run = runFrom({
+		tabs: () =>
+			tabsOf({
+				kind: "blocked",
+				pid: null,
+				blocked: { reason: "access-missing", message: "Apple Events are not configured for this browser." },
+				inventory: inventoryValue([{ pid: 5 }]),
+			}),
+	});
+	const { deps, requests } = fakes(run, { access: {} });
+	const result = await browserTabs({ browser: "chrome" }, undefined, deps);
+	const report = reportOf(result);
+	assert.equal(blockedReason(result), "access-not-configured");
+	assert.deepEqual(report.running, [5]);
+	assert.equal(requests.length, 1);
+	assert.equal(requests[0].op, "tabs");
+	assert.equal(requests[0].inspectAllowed, false);
+});
+
+it("requests Automation permission only when asked", async () => {
+	const run = runFrom({ tabs: () => tabsOf({ pid: 5, automation: "granted" }) });
+	const { deps, requests } = fakes(run, { access: { chrome: "inspect" } });
+	const result = await browserTabs({ browser: "chrome", requestPermission: true }, undefined, deps);
+	assert.equal(result.isError, false);
+	assert.equal(reportOf(result).automation, "granted");
+	assert.equal(requests.length, 1);
+	assert.equal(requests[0].requestPermission, true);
+});
+
+it("reports every browser from one discovery invocation", async () => {
+	const run = runFrom({
+		availability: () =>
+			availabilityOf([
+				{ browser: "chrome", installed: { path: "/x", version: "1" }, instances: [{ pid: 1 }], automation: "granted" },
+				{ browser: "brave", installed: null, instances: [], automation: "not-checked" },
+				{
+					browser: "chrome-for-testing",
+					installed: { path: "/y", version: "2" },
+					instances: [{ pid: 2 }],
+					automation: "not-checked",
+				},
+			]),
 	});
 	const { deps, requests } = fakes(run, { access: { chrome: "inspect", "chrome-for-testing": "interact" } });
 	const result = await browserTabs({}, undefined, deps);
@@ -1328,38 +1431,42 @@ it("reports every browser and asks for permission only where access and a proces
 	assert.equal(browsers[0].automation, "granted");
 	assert.equal(browsers[1].access, "none");
 	assert.equal(browsers[1].automation, "not-checked");
+	assert.deepEqual(browsers[1].running, []);
 	assert.equal(browsers[2].automation, "not-checked");
-	const permissions = requests.filter((request) => request.op === "permission");
-	assert.equal(permissions.length, 1);
-	assert.equal(permissions[0].bundleId, BROWSERS.chrome.bundleId);
-	assert.equal(
-		requests.every((request) => request.op === "inventory" || request.op === "permission"),
-		true,
+	assert.equal(requests.length, 1, "one JXA invocation reports every application");
+	assert.equal(requests[0].op, "availability");
+	const queries = list(requests[0].queries);
+	assert.deepEqual(
+		queries.map((query) => query.checkAutomation),
+		[true, false, true],
 	);
 });
 
-it("lists only matching tabs and derives the active flag from activeTabIndex", async () => {
+it("lists only matching tabs from one discovery invocation", async () => {
 	const run = runFrom({
-		inventory: () => inventoryOf([{ pid: 7 }]),
-		windows: () =>
-			windowsOf([
-				{
-					id: "1",
-					index: 1,
-					title: "Window",
-					mode: "normal",
-					minimized: false,
-					visible: true,
-					activeTabIndex: 3,
-					tabs: [
-						{ id: "t1", url: "https://a.example/one", title: "One", loading: false },
-						{ id: "t2", url: "https://b.example/two", title: "Two", loading: true },
-						{ id: "t3", url: "https://a.example/three", title: "Three", loading: false },
-					],
-				},
-			]),
+		tabs: () =>
+			tabsOf({
+				pid: 7,
+				inventory: inventoryValue([{ pid: 7 }]),
+				windows: [
+					{
+						id: "1",
+						index: 1,
+						title: "Window",
+						mode: "normal",
+						minimized: false,
+						visible: true,
+						activeTabIndex: 3,
+						tabs: [
+							{ id: "t1", url: "https://a.example/one", title: "One", loading: false },
+							{ id: "t2", url: "https://b.example/two", title: "Two", loading: true },
+							{ id: "t3", url: "https://a.example/three", title: "Three", loading: false },
+						],
+					},
+				],
+			}),
 	});
-	const { deps } = fakes(run, { access: { chrome: "inspect" } });
+	const { deps, requests } = fakes(run, { access: { chrome: "inspect" } });
 	const result = await browserTabs({ browser: "chrome", match: "a.example" }, undefined, deps);
 	const report = reportOf(result);
 	const rows = list(report.windows);
@@ -1375,4 +1482,6 @@ it("lists only matching tabs and derives the active flag from activeTabIndex", a
 	);
 	assert.equal(report.tabCount, 2);
 	assert.equal(report.userDataDir, null);
+	assert.equal(requests.length, 1, "one JXA invocation lists the matching tabs");
+	assert.equal(requests[0].op, "tabs");
 });

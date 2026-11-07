@@ -116,6 +116,8 @@ interface Event {
 interface JxaEvent {
 	eventClass: number;
 	eventId: number;
+	property?: number;
+	container?: "windows" | "tabs" | null;
 }
 
 const tabId = 42;
@@ -128,24 +130,141 @@ function valueReply(value: Descriptor): Descriptor {
 	return replyDescriptor({ [KEY.direct]: value });
 }
 
-/** Answers the window and tab id reads that locate() sends before the page script. */
-function readReply(direct: Descriptor): Descriptor {
-	const params = direct.params ?? {};
-	const isIdRead = params[KEY.want]?.__typeCode === CODE.property && params[KEY.selector]?.__typeCode === CODE.id;
-	if (isIdRead) {
-		const fromWant = params[KEY.from]?.params?.[KEY.want]?.__typeCode;
-		if (fromWant === CODE.cwin) return valueReply(listDescriptor([longDescriptor(1)]));
-		if (fromWant === CODE.tab) return valueReply(listDescriptor([listDescriptor([longDescriptor(tabId)])]));
-	}
-	// Every other read in these tests is the tab URL or title, which fails once the tab is gone.
-	return errorReply(-1728, "Can't get tab.");
+interface WindowModel {
+	id: number;
+	title: string;
+	mode: string;
+	minimized: boolean;
+	visible: boolean;
+	activeTabIndex: number;
+	tabs: { id: number; url: string; title: string; loading: boolean }[];
 }
 
-function runJxa(request: OsaRequest, options: { scriptResult: string; events: JxaEvent[] }): OsaReply {
+const DEFAULT_WINDOWS: WindowModel[] = [
+	{
+		id: 1,
+		title: "Window",
+		mode: "normal",
+		minimized: false,
+		visible: true,
+		activeTabIndex: 1,
+		tabs: [{ id: tabId, url: "https://a.example/page", title: "Example", loading: false }],
+	},
+];
+
+interface JxaOptions {
+	/** The page script result for an execute request. */
+	scriptResult?: string;
+	events: JxaEvent[];
+	/** Running process ids when every bundle uses the same list. */
+	running?: number[];
+	runningByBundle?: Record<string, number[]>;
+	/** The bundle identifier that the running processes report. */
+	bundleId?: string;
+	installed?: boolean;
+	automation?: number | ((target: { __bundleId?: string; __pid?: number }) => number);
+	windows?: WindowModel[];
+	/** Return one over-long window column on the first listing pass. */
+	inconsistentFirstListing?: boolean;
+}
+
+function boolDescriptor(value: boolean): Descriptor {
+	return describe("bool", { booleanValue: value });
+}
+
+function textList(values: string[]): Descriptor {
+	return listDescriptor(values.map(textDescriptor));
+}
+
+function boolList(values: boolean[]): Descriptor {
+	return listDescriptor(values.map(boolDescriptor));
+}
+
+function longList(values: number[]): Descriptor {
+	return listDescriptor(values.map(longDescriptor));
+}
+
+function containerOf(from: Descriptor | undefined): "windows" | "tabs" | null {
+	const want = from?.params?.[KEY.want]?.__typeCode;
+	if (want === CODE.cwin) return "windows";
+	if (want === CODE.tab) return "tabs";
+	return null;
+}
+
+function runJxa(request: OsaRequest, options: JxaOptions): OsaReply {
+	const windows = options.windows ?? DEFAULT_WINDOWS;
+	let inconsistent = options.inconsistentFirstListing === true;
+
+	const windowColumn = (property: number): Descriptor => {
+		const readers: Record<number, () => Descriptor> = {
+			[CODE.id]: () => valueReply(longList(windows.map((window) => window.id))),
+			[fcc("pnam")]: () => {
+				const titles = windows.map((window) => window.title);
+				if (inconsistent) {
+					inconsistent = false;
+					return valueReply(textList([...titles, "unexpected"]));
+				}
+				return valueReply(textList(titles));
+			},
+			[fcc("mode")]: () => valueReply(textList(windows.map((window) => window.mode))),
+			[fcc("pmnd")]: () => valueReply(boolList(windows.map((window) => window.minimized))),
+			[fcc("pvis")]: () => valueReply(boolList(windows.map((window) => window.visible))),
+			[fcc("pbnd")]: () => valueReply(listDescriptor(windows.map(() => nilDescriptor()))),
+			[fcc("acTI")]: () => valueReply(longList(windows.map((window) => window.activeTabIndex))),
+		};
+		const reader = readers[property];
+		return reader ? reader() : errorReply(-1728, "Can't get window column.");
+	};
+
+	const tabsColumn = (property: number): Descriptor => {
+		if (property === CODE.id)
+			return valueReply(
+				listDescriptor(windows.map((window) => longList(window.tabs.map((tab) => tab.id)))),
+			);
+		if (property === fcc("URL "))
+			return valueReply(
+				listDescriptor(windows.map((window) => textList(window.tabs.map((tab) => tab.url)))),
+			);
+		if (property === fcc("pnam"))
+			return valueReply(
+				listDescriptor(windows.map((window) => textList(window.tabs.map((tab) => tab.title)))),
+			);
+		if (property === fcc("ldng"))
+			return valueReply(
+				listDescriptor(windows.map((window) => boolList(window.tabs.map((tab) => tab.loading)))),
+			);
+		return errorReply(-1728, "Can't get tab column.");
+	};
+
+	const answerGet = (direct: Descriptor): Descriptor => {
+		const params = direct.params ?? {};
+		const want = params[KEY.want]?.__typeCode;
+		const property = params[KEY.selector]?.__typeCode;
+		const from = params[KEY.from];
+		const container = containerOf(from);
+		// A by-identifier specifier selects one window or tab; these tests only model
+		// the every-window reads. The remaining reads fail as a closed tab does.
+		if (want !== CODE.property || property === undefined || container === null) {
+			return errorReply(-1728, "Can't get tab.");
+		}
+		if (from?.params?.[KEY.selector]?.__typeCode === undefined) {
+			return errorReply(-1728, "Can't get tab.");
+		}
+		return container === "windows" ? windowColumn(property) : tabsColumn(property);
+	};
+
 	const respond = (event: Event): Descriptor => {
-		options.events.push({ eventClass: event.cls, eventId: event.id });
-		if (event.cls === fcc("CrSu") && event.id === CODE.execute) return valueReply(textDescriptor(options.scriptResult));
-		if (event.cls === fcc("core") && event.id === fcc("getd") && event.direct) return readReply(event.direct);
+		const container = event.direct ? containerOf(event.direct.params?.[KEY.from]) : null;
+		options.events.push({
+			eventClass: event.cls,
+			eventId: event.id,
+			...(event.id === fcc("getd") && event.direct
+				? { property: event.direct.params?.[KEY.selector]?.__typeCode, container }
+				: {}),
+		});
+		if (event.cls === fcc("CrSu") && event.id === CODE.execute)
+			return valueReply(textDescriptor(options.scriptResult ?? ""));
+		if (event.cls === fcc("core") && event.id === fcc("getd") && event.direct) return answerGet(event.direct);
 		throw new Error(`unexpected Apple Event ${event.cls}/${event.id}`);
 	};
 
@@ -165,6 +284,11 @@ function runJxa(request: OsaRequest, options: { scriptResult: string; events: Jx
 			...describe("pid "),
 			__pid: pid,
 			aeDesc: { __pid: pid },
+		}),
+		descriptorWithBundleIdentifier: (bundleId: string) => ({
+			...describe("bund"),
+			__bundleId: bundleId,
+			aeDesc: { __bundleId: bundleId },
 		}),
 		nullDescriptor: nilDescriptor(),
 		get recordDescriptor(): Descriptor {
@@ -197,6 +321,19 @@ function runJxa(request: OsaRequest, options: { scriptResult: string; events: Jx
 		},
 	};
 
+	const runningFor = (bundleId: string) => options.runningByBundle?.[bundleId] ?? options.running ?? [5];
+	const running = new Set(Object.values(options.runningByBundle ?? {}).flat().concat(options.running ?? [5]));
+	const appBundleId = options.bundleId ?? request.bundleId ?? BROWSERS.chrome.bundleId;
+	const app = (pid: number) => ({
+		...describe("app "),
+		isNil: () => false,
+		terminated: false,
+		hidden: false,
+		active: false,
+		processIdentifier: pid,
+		bundleIdentifier: { isNil: () => false, js: appBundleId },
+	});
+
 	const dollar = Object.assign(
 		(value?: unknown) => {
 			if (value === undefined) return nilDescriptor();
@@ -208,17 +345,32 @@ function runJxa(request: OsaRequest, options: { scriptResult: string; events: Jx
 			NSFileHandle: { fileHandleWithStandardInput: { readDataToEndOfFile: { text: JSON.stringify(request) } } },
 			NSString: { alloc: { initWithDataEncoding: (data: { text: string }) => ({ js: data.text }) } },
 			NSRunningApplication: {
-				runningApplicationWithProcessIdentifier: (pid: number) => ({
-					...describe("app "),
+				runningApplicationWithProcessIdentifier: (pid: number) =>
+					running.has(pid) ? app(pid) : nilDescriptor(),
+				runningApplicationsWithBundleIdentifier: (bundleId: string) => {
+					const pids = runningFor(bundleId);
+					return {
+						count: pids.length,
+						objectAtIndex: (index: number) => app(pids[index]),
+					};
+				},
+			},
+			NSWorkspace: {
+				sharedWorkspace: {
+					URLForApplicationWithBundleIdentifier: (): Descriptor =>
+						options.installed === false
+							? nilDescriptor()
+							: ({ ...describe("url "), path: { js: "/Applications/Test Browser.app" } } as Descriptor),
+				},
+			},
+			NSBundle: {
+				bundleWithPath: () => ({
 					isNil: () => false,
-					terminated: false,
-					hidden: false,
-					active: false,
-					processIdentifier: pid,
-					bundleIdentifier: { isNil: () => false, js: BROWSERS.chrome.bundleId },
+					objectForInfoDictionaryKey: () => ({ isNil: () => false, js: "1.0" }),
 				}),
 			},
-			AEDeterminePermissionToAutomateTarget: () => 0,
+			AEDeterminePermissionToAutomateTarget: (target: { __bundleId?: string; __pid?: number }) =>
+				typeof options.automation === "function" ? options.automation(target) : (options.automation ?? 0),
 			NSUTF8StringEncoding: 4,
 			NSASCIIStringEncoding: 1,
 			NSAppleEventDescriptor: D,
@@ -237,6 +389,7 @@ function runJxa(request: OsaRequest, options: { scriptResult: string; events: Jx
 	const output = runInContext(`${JXA_PROGRAM}\nrun();`, context);
 	return JSON.parse(String(output)) as OsaReply;
 }
+
 
 function obj(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -269,12 +422,7 @@ it("delivers a fulfilled evaluation value from the program's own reply", async (
 	const events: JxaEvent[] = [];
 	const deps: BrowserDeps = {
 		run: async (request) => {
-			if (request.op === "inventory")
-				return {
-					ok: true,
-					value: { installed: null, instances: [{ pid: 5, hidden: false, active: true }] },
-				};
-			return runJxa(request, { scriptResult: SETTLED_ENVELOPE, events });
+		return runJxa(request, { scriptResult: SETTLED_ENVELOPE, events });
 		},
 		readAccess: () => ({ chrome: "interact" }),
 		platform: "darwin",
@@ -295,4 +443,146 @@ it("delivers a fulfilled evaluation value from the program's own reply", async (
 	assert.equal(obj(report.execution).value, 2);
 	assert.equal(obj(report.target).url, "https://a.example/page");
 	assert.equal(events.filter((event) => event.eventId === CODE.execute).length, 1);
+});
+
+const CHROME = BROWSERS.chrome.bundleId;
+const BRAVE = BROWSERS.brave.bundleId;
+const TESTING = BROWSERS["chrome-for-testing"].bundleId;
+
+function okValue(reply: OsaReply): Record<string, unknown> {
+	assert.equal(reply.ok, true, JSON.stringify(reply));
+	return reply.ok ? obj(reply.value) : {};
+}
+
+function items(value: unknown): Array<Record<string, unknown>> {
+	return Array.isArray(value) ? value.map((item) => obj(item)) : [];
+}
+
+function tabsRequest(overrides: Record<string, unknown> = {}): OsaRequest {
+	return {
+		op: "tabs",
+		bundleId: CHROME,
+		inspectAllowed: true,
+		requestPermission: false,
+		...overrides,
+	};
+}
+
+it("reports availability for every application in one reply without an Apple Event", () => {
+	const events: JxaEvent[] = [];
+	const reply = runJxa(
+		{
+			op: "availability",
+			queries: [
+				{ browser: "chrome", bundleId: CHROME, checkAutomation: true },
+				{ browser: "brave", bundleId: BRAVE, checkAutomation: true },
+				{ browser: "chrome-for-testing", bundleId: TESTING, checkAutomation: false },
+			],
+		},
+		{ events, runningByBundle: { [CHROME]: [1], [BRAVE]: [], [TESTING]: [2] } },
+	);
+	const browsers = items(okValue(reply).browsers);
+	assert.deepEqual(
+		browsers.map((entry) => entry.browser),
+		["chrome", "brave", "chrome-for-testing"],
+	);
+	assert.deepEqual(
+		browsers.map((entry) => entry.automation),
+		["granted", "not-checked", "not-checked"],
+	);
+	assert.equal(items(browsers[0].instances).length, 1);
+	assert.equal(items(browsers[1].instances).length, 0);
+	assert.equal(events.length, 0, "availability sends no Apple Event to a browser");
+});
+
+it("lists windows and tabs in one reply after fresh process checks", () => {
+	const events: JxaEvent[] = [];
+	const reply = runJxa(tabsRequest({ pid: 5 }), { events });
+	const value = okValue(reply);
+	assert.equal(value.kind, "ok");
+	assert.equal(value.pid, 5);
+	const windows = items(value.windows);
+	assert.equal(windows.length, 1);
+	assert.equal(windows[0].id, "1");
+	assert.equal(items(windows[0].tabs)[0].id, String(tabId));
+	assert.equal(
+		events.filter((event) => event.property === CODE.id && event.container === "windows").length,
+		1,
+	);
+});
+
+it("returns static facts and sends no Apple Event when access is absent", () => {
+	const events: JxaEvent[] = [];
+	const reply = runJxa(tabsRequest({ inspectAllowed: false }), { events });
+	const value = okValue(reply);
+	assert.equal(value.kind, "blocked");
+	assert.equal(obj(value.blocked).reason, "access-missing");
+	assert.equal(items(obj(value.inventory).instances).length, 1);
+	assert.equal(events.length, 0, "no Apple Event reaches a browser without access");
+});
+
+it("returns inventory and sends no Apple Event for a pid that is not running", () => {
+	const events: JxaEvent[] = [];
+	const reply = runJxa(tabsRequest({ pid: 99 }), { events });
+	const value = okValue(reply);
+	assert.equal(value.kind, "blocked");
+	assert.equal(obj(value.blocked).reason, "not-running");
+	assert.equal(value.pid, 99);
+	assert.equal(events.length, 0, "no Apple Event reaches an exited process");
+});
+
+it("returns inventory and sends no Apple Event for a pid of another application", () => {
+	const events: JxaEvent[] = [];
+	const reply = runJxa(tabsRequest({ pid: 5 }), { events, bundleId: BRAVE });
+	const value = okValue(reply);
+	assert.equal(value.kind, "blocked");
+	assert.equal(obj(value.blocked).reason, "pid-mismatch");
+	assert.equal(events.length, 0, "no Apple Event reaches a process of another application");
+});
+
+it("reports several running processes instead of choosing one", () => {
+	const events: JxaEvent[] = [];
+	const reply = runJxa(tabsRequest(), { events, running: [5, 6] });
+	const value = okValue(reply);
+	assert.equal(value.kind, "ambiguous-process");
+	assert.deepEqual(
+		items(value.instances).map((item) => item.pid),
+		[5, 6],
+	);
+	assert.equal(events.length, 0);
+});
+
+it("asks for Automation permission only when requested", () => {
+	const events: JxaEvent[] = [];
+	const reply = runJxa(tabsRequest({ pid: 5, requestPermission: true }), { events });
+	const value = okValue(reply);
+	assert.equal(value.kind, "ok");
+	assert.equal(value.automation, "granted");
+	assert.ok(events.length > 0, "an authorised request reads the windows");
+});
+
+it("reports a refused permission request without reading windows", () => {
+	const events: JxaEvent[] = [];
+	const reply = runJxa(tabsRequest({ pid: 5, requestPermission: true }), { events, automation: -1743 });
+	const value = okValue(reply);
+	assert.equal(value.kind, "blocked");
+	assert.equal(obj(value.blocked).reason, "automation-denied");
+	assert.equal(value.automation, "denied");
+	assert.equal(events.length, 0, "no Apple Event is sent without Automation permission");
+});
+
+it("repeats one inconsistent window listing and no more", () => {
+	const retried: JxaEvent[] = [];
+	const first = okValue(runJxa(tabsRequest({ pid: 5 }), { events: retried, inconsistentFirstListing: true }));
+	assert.equal(first.kind, "ok");
+	assert.equal(
+		retried.filter((event) => event.property === CODE.id && event.container === "windows").length,
+		2,
+	);
+	const once: JxaEvent[] = [];
+	okValue(runJxa(tabsRequest({ pid: 5 }), { events: once }));
+	assert.equal(
+		once.filter((event) => event.property === CODE.id && event.container === "windows").length,
+		1,
+	);
 });

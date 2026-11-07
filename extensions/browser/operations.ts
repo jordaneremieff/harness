@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { Script } from "node:vm";
-import { type AccessMap, BROWSER_KEYS, BROWSERS, type BrowserKey, type BrowserSpec } from "./browsers.ts";
+import { type AccessMap, accessCovers, BROWSER_KEYS, BROWSERS, type BrowserKey, type BrowserSpec } from "./browsers.ts";
 import { TransportError } from "./osa.ts";
 import {
 	actionScript,
@@ -23,19 +23,21 @@ import {
 	checkPlatform,
 	decodeRect,
 	delay,
+	discoverAvailability,
+	discoverTabs,
 	type ExecuteReply,
 	envelope,
 	executeInTab,
 	expectValue,
 	guidance,
-	inventory,
 	normalOrigin,
 	type Rect,
 	requireAccess,
-	resolveProcess,
 	type SessionDeps,
+	type TabsDiscovery,
 	type Target,
 	userDataDir,
+	type WindowRow,
 } from "./session.ts";
 
 export interface CaptureDeps {
@@ -135,64 +137,26 @@ export interface TabsParams {
 	requestPermission?: boolean;
 }
 
-interface WindowRow {
-	id: string;
-	index: number;
-	title: string | null;
-	mode: string | null;
-	minimized: boolean;
-	visible: boolean;
-	activeTabIndex: number;
-	tabs: { id: string; url: string | null; title: string | null; loading: boolean }[];
-}
-
 const TAB_LIMIT = 200;
 
-async function automationState(
-	deps: BrowserDeps,
-	spec: BrowserSpec,
-	ask: boolean,
-	signal?: AbortSignal,
-): Promise<string> {
-	const reply = await call(
-		deps,
-		{ op: "permission", bundleId: spec.bundleId, ask },
-		signal,
-		ask ? 120_000 : CALL_TIMEOUT_MS,
-	);
-	return reply.ok ? String(record(reply.value)?.automation ?? "unknown") : "unknown";
-}
-
 async function availability(deps: BrowserDeps, access: AccessMap, signal?: AbortSignal): Promise<Facts[]> {
-	const browsers: Facts[] = [];
-	for (const key of BROWSER_KEYS) {
-		const spec = BROWSERS[key];
-		const found = await inventory(deps, spec, signal);
-		const checkable = access[key] !== undefined && found.instances.length > 0;
-		browsers.push({
-			browser: key,
-			name: spec.name,
-			installed: found.installed ? { version: found.installed.version } : null,
-			running: found.instances.map((item) => item.pid),
-			access: access[key] ?? "none",
-			automation: checkable ? await automationState(deps, spec, false, signal) : "not-checked",
-		});
-	}
-	return browsers;
-}
-
-async function readWindows(
-	deps: BrowserDeps,
-	spec: BrowserSpec,
-	pid: number,
-	signal?: AbortSignal,
-): Promise<WindowRow[]> {
-	const first = await call(deps, { op: "windows", bundleId: spec.bundleId, pid }, signal);
-	const reply =
-		!first.ok && first.error.code === "changed"
-			? await call(deps, { op: "windows", bundleId: spec.bundleId, pid }, signal)
-			: first;
-	return expectValue<{ windows: WindowRow[] }>(reply).windows;
+	const queries = BROWSER_KEYS.map((key) => ({
+		browser: key,
+		bundleId: BROWSERS[key].bundleId,
+		checkAutomation: access[key] !== undefined,
+	}));
+	const found = await discoverAvailability(deps, queries, signal);
+	return queries.map((query, index) => {
+		const entry = found[index];
+		return {
+			browser: query.browser,
+			name: BROWSERS[query.browser].name,
+			installed: entry?.installed ? { version: entry.installed.version } : null,
+			running: (entry?.instances ?? []).map((item) => item.pid),
+			access: access[query.browser] ?? "none",
+			automation: entry?.automation ?? "unknown",
+		};
+	});
 }
 
 function tabRows(windows: WindowRow[], match: string | undefined) {
@@ -218,19 +182,49 @@ function tabRows(windows: WindowRow[], match: string | undefined) {
 	return { rows: needle ? rows.filter((row) => row.tabs.length > 0) : rows, tabCount, omitted: tabCount - shown };
 }
 
-/** Asks macOS for Automation permission; the system prompt waits for the operator. */
-async function requestAutomation(
+/** Builds the refusal for a discovery result that stopped before reading tabs. */
+function tabsRefusal(found: TabsDiscovery, spec: BrowserSpec): Blocked {
+	const reason = found.blocked?.reason ?? "apple-events-error";
+	const facts: Facts = {};
+	if (reason === "not-running") {
+		facts.installed = found.inventory.installed;
+		if (found.pid !== null) facts.running = found.inventory.instances.map((item) => item.pid);
+	}
+	const message =
+		reason === "not-running" && found.pid !== null
+			? `No running ${spec.name} process has pid ${found.pid}.`
+			: reason === "not-running"
+				? `${spec.name} is not running. The tool never starts a browser; the operator opens it and the intended tab.`
+				: (guidance(reason) ?? found.blocked?.message ?? reason);
+	return new Blocked(reason, message, facts);
+}
+
+/** Returns the selected process and its windows, or raises the matching refusal. */
+async function requireTabsProcess(
+	found: TabsDiscovery,
 	deps: BrowserDeps,
 	spec: BrowserSpec,
-	running: number,
+	inspectAllowed: boolean,
 	signal?: AbortSignal,
-): Promise<string> {
-	if (running === 0)
-		throw new Blocked("not-running", `${spec.name} is not running; macOS asks only for a running browser.`);
-	const automation = await automationState(deps, spec, true, signal);
-	if (automation === "granted") return automation;
-	const reason = `automation-${automation}`;
-	throw new Blocked(reason, guidance(reason) ?? `Automation permission is ${automation}.`);
+): Promise<{ pid: number; windows: WindowRow[] }> {
+	if (found.kind === "ambiguous-process") {
+		const instances = await Promise.all(
+			found.instances.map(async (item) => ({
+				pid: item.pid,
+				userDataDir: userDataDir(await deps.processArgs(item.pid, signal).catch(() => null)),
+			})),
+		);
+		throw new Blocked(
+			"ambiguous-process",
+			`${spec.name} has ${found.inventory.instances.length} running processes; pass pid to select one.`,
+			{ instances },
+		);
+	}
+	if (found.kind === "blocked") {
+		if (!inspectAllowed) requireAccess(deps, spec.key, "inspect");
+		throw tabsRefusal(found, spec);
+	}
+	return { pid: found.pid as number, windows: found.windows };
 }
 
 export async function browserTabs(
@@ -250,20 +244,29 @@ export async function browserTabs(
 				return result(tool, "ok", "browser availability. Pass browser to list windows and tabs.", { browsers });
 			}
 			const spec = BROWSERS[params.browser];
-			const found = await inventory(deps, spec, signal);
+			const inspectAllowed = accessCovers(access[params.browser], "inspect");
+			const found = await discoverTabs(
+				deps,
+				{
+					op: "tabs",
+					bundleId: spec.bundleId,
+					pid: params.pid,
+					inspectAllowed,
+					requestPermission: params.requestPermission === true,
+				},
+				signal,
+			);
 			Object.assign(summary, {
 				browser: params.browser,
 				name: spec.name,
-				installed: found.installed ? { version: found.installed.version } : null,
-				running: found.instances.map((item) => item.pid),
+				installed: found.inventory.installed ? { version: found.inventory.installed.version } : null,
+				running: found.inventory.instances.map((item) => item.pid),
 				access: access[params.browser] ?? "none",
 			});
-			requireAccess(deps, params.browser, "inspect");
-			if (params.requestPermission)
-				summary.automation = await requestAutomation(deps, spec, found.instances.length, signal);
-			const { pid } = await resolveProcess(deps, params.browser, params.pid, signal);
+			const { pid, windows } = await requireTabsProcess(found, deps, spec, inspectAllowed, signal);
+			if (found.automation !== null) summary.automation = found.automation;
 			const args = await deps.processArgs(pid, signal).catch(() => null);
-			const { rows, tabCount, omitted } = tabRows(await readWindows(deps, spec, pid, signal), params.match);
+			const { rows, tabCount, omitted } = tabRows(windows, params.match);
 			const report = {
 				...summary,
 				pid,
@@ -301,15 +304,10 @@ interface Resolved {
 }
 
 /**
- * Resolves the named process and tab. The pid is checked here as well as in the
- * tool schema, so no host path lets a tab id resolve against an implicitly chosen process.
+ * Validates the process arguments and access. The JXA program repeats the
+ * process, bundle, and permission checks immediately before Apple Events.
  */
-async function resolveTarget(
-	params: TargetParams,
-	required: "inspect" | "interact",
-	deps: BrowserDeps,
-	signal?: AbortSignal,
-): Promise<Resolved> {
+function resolveTarget(params: TargetParams, required: "inspect" | "interact", deps: BrowserDeps): Resolved {
 	checkPlatform(deps.platform);
 	requireAccess(deps, params.browser, required);
 	if (!Number.isInteger(params.pid) || params.pid < 1)
@@ -318,8 +316,11 @@ async function resolveTarget(
 			"pid is required: pass the pid from the browser_tabs result that listed the tab.",
 		);
 	const expectOrigin = params.origin === undefined ? null : normalOrigin(params.origin);
-	const { spec, pid } = await resolveProcess(deps, params.browser, params.pid, signal);
-	return { spec, target: { browser: params.browser, pid, tab: params.tab }, expectOrigin };
+	return {
+		spec: BROWSERS[params.browser],
+		target: { browser: params.browser, pid: params.pid, tab: params.tab },
+		expectOrigin,
+	};
 }
 
 /** Mutable identity of the subject, filled in as the operation learns it. */
@@ -397,7 +398,7 @@ export async function browserInspect(
 	return guarded(
 		tool,
 		async () => {
-			const { spec, target, expectOrigin } = await resolveTarget(params, "inspect", deps, signal);
+			const { spec, target, expectOrigin } = resolveTarget(params, "inspect", deps);
 			subject.update(target, null);
 			const options = inspectOptions(params);
 			const view = options.view;
@@ -913,7 +914,7 @@ export async function browserAct(
 		async () => {
 			checkActArguments(params);
 			const condition = conditionOf(params.waitFor);
-			const resolved = await resolveTarget(params, "interact", deps, signal);
+			const resolved = resolveTarget(params, "interact", deps);
 			subject.update(resolved.target, null);
 			const startedAt = deps.now();
 			const sent = await dispatchAct(params, resolved, subject, deps, signal);
@@ -1141,7 +1142,7 @@ export async function browserEvaluate(
 				const report = { target: subject.facts, execution: { status: "syntax-error", message: problem } };
 				return result(tool, "syntax-error", `not sent: the expression does not parse (${problem}).`, report, true);
 			}
-			const resolved = await resolveTarget(params, "interact", deps, signal);
+			const resolved = resolveTarget(params, "interact", deps);
 			const { spec, target } = resolved;
 			subject.update(target, null);
 			const runId = randomUUID();
@@ -1377,7 +1378,7 @@ export async function browserCapture(
 		async () => {
 			if (params.savePath !== undefined && !isAbsolute(params.savePath))
 				throw new Blocked("invalid-arguments", "savePath must be an absolute path.");
-			const resolved = await resolveTarget(params, "inspect", deps, signal);
+			const resolved = resolveTarget(params, "inspect", deps);
 			const { target } = resolved;
 			const facts = await readWindowFacts(resolved, deps, signal);
 			subject.update(target, { url: facts.url, title: facts.tabTitle }, facts.window);

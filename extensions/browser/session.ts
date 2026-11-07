@@ -125,64 +125,84 @@ export async function call(
 	return deps.run(request, { signal, timeoutMs });
 }
 
-/** Static installation facts and running processes, read through the operating system without Apple Events to the browser. */
-export async function inventory(deps: SessionDeps, spec: BrowserSpec, signal?: AbortSignal): Promise<Inventory> {
-	const reply = await call(deps, { op: "inventory", bundleId: spec.bundleId }, signal);
-	if (!reply.ok) throw new Blocked(failureReason(reply.error), reply.error.message);
-	return reply.value as Inventory;
+export interface AvailabilityQuery {
+	browser: BrowserKey;
+	bundleId: string;
+	checkAutomation: boolean;
+}
+
+export interface AvailabilityEntry {
+	browser: BrowserKey;
+	installed: { path: string; version: string | null } | null;
+	instances: Instance[];
+	automation: string;
+}
+
+/**
+ * Installation and running facts for several applications in one JXA invocation.
+ * Automation is checked only for an application that is configured and running.
+ */
+export async function discoverAvailability(
+	deps: SessionDeps,
+	queries: readonly AvailabilityQuery[],
+	signal?: AbortSignal,
+): Promise<AvailabilityEntry[]> {
+	if (queries.length === 0) return [];
+	const reply = await call(deps, { op: "availability", queries }, signal);
+	return expectValue<{ browsers: AvailabilityEntry[] }>(reply).browsers;
+}
+
+export interface WindowRow {
+	id: string;
+	index: number;
+	title: string | null;
+	mode: string | null;
+	minimized: boolean;
+	visible: boolean;
+	activeTabIndex: number;
+	tabs: { id: string; url: string | null; title: string | null; loading: boolean }[];
+}
+
+export type TabsDiscoveryRequest = {
+	op: "tabs";
+	bundleId: string;
+	pid?: number;
+	inspectAllowed: boolean;
+	requestPermission: boolean;
+};
+
+/**
+ * One discovery invocation: inventory, process selection, optional permission
+ * request, fresh execution-time checks, and the window reads.
+ */
+export interface TabsDiscovery {
+	inventory: Inventory;
+	kind: "ok" | "blocked" | "ambiguous-process";
+	pid: number | null;
+	automation: string | null;
+	windows: WindowRow[];
+	blocked: { reason: string; message: string } | null;
+	instances: Instance[];
+}
+
+export async function discoverTabs(
+	deps: SessionDeps,
+	request: TabsDiscoveryRequest,
+	signal?: AbortSignal,
+): Promise<TabsDiscovery> {
+	const reply = await call(
+		deps,
+		request,
+		signal,
+		request.requestPermission ? 120_000 : CALL_TIMEOUT_MS,
+	);
+	return expectValue<TabsDiscovery>(reply);
 }
 
 export function userDataDir(args: string | null): string | null {
 	if (!args) return null;
 	const match = /--user-data-dir=(.+?)(?=\s--|$)/.exec(args);
 	return match ? match[1].trim() : null;
-}
-
-/**
- * Selects the running process for an explicit browser. Discovery may omit pid
- * when the browser has one process. Targeted operations always pass the pid
- * that was listed with the tab, so a tab id never resolves against a different
- * process.
- */
-export async function resolveProcess(
-	deps: SessionDeps,
-	browser: BrowserKey,
-	pid: number | undefined,
-	signal?: AbortSignal,
-): Promise<{ spec: BrowserSpec; pid: number; inventory: Inventory }> {
-	const spec = BROWSERS[browser];
-	const found = await inventory(deps, spec, signal);
-	if (found.instances.length === 0) {
-		throw new Blocked(
-			"not-running",
-			`${spec.name} is not running. The tool never starts a browser; the operator opens it and the intended tab.`,
-			{ installed: found.installed },
-		);
-	}
-	if (pid === undefined) {
-		if (found.instances.length > 1) {
-			const instances = await Promise.all(
-				found.instances.map(async (item) => ({
-					pid: item.pid,
-					userDataDir: userDataDir(await deps.processArgs(item.pid, signal).catch(() => null)),
-				})),
-			);
-			throw new Blocked(
-				"ambiguous-process",
-				`${spec.name} has ${found.instances.length} running processes; pass pid to select one.`,
-				{
-					instances,
-				},
-			);
-		}
-		return { spec, pid: found.instances[0].pid, inventory: found };
-	}
-	if (!found.instances.some((item) => item.pid === pid)) {
-		throw new Blocked("not-running", `No running ${spec.name} process has pid ${pid}.`, {
-			running: found.instances.map((item) => item.pid),
-		});
-	}
-	return { spec, pid, inventory: found };
 }
 
 /** Raises Blocked for a failed reply; returns the value otherwise. */

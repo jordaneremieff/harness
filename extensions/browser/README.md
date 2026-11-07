@@ -105,14 +105,28 @@ missing; they never change any of them.
   operator when two tabs plausibly match.
 
 Before an Apple Event goes to a tab, runs page code, or captures a window, the
-tool reads the operating system's current running processes for the named
-browser and refuses a pid that is absent. That check establishes that the pid
-names a running process of that browser at that moment. It does not prove that
-the process is the same instance that answered the earlier `browser_tabs` call:
-macOS can reuse a pid after a process exits, so a browser that restarted with
-the same pid passes the check. The tab lookup in that process then refuses a tab
-id it does not have. Keep the pid with the tab id from one listing, and list
-tabs again after a browser restart.
+JXA operation that performs the work checks the running process, its bundle
+identity, and Automation permission immediately before sending it. A targeted
+operation does not list processes first: Pi validates the arguments and the
+configured access, and the operation itself refuses an absent process or a
+missing permission. That check establishes that the pid names a running
+process of that browser at that moment. It does not prove that the process is
+the same instance that answered the earlier `browser_tabs` call: macOS can
+reuse a pid after a process exits, so a browser that restarted with the same
+pid passes the check. The tab lookup in that process then refuses a tab id it
+does not have. Keep the pid with the tab id from one listing, and list tabs
+again after a browser restart.
+
+One JXA invocation serves a discovery request. Availability for every
+supported application, and the windows and tabs of one named process, are each
+gathered in one invocation with no separate inventory call. Availability reads
+installation and running facts and checks Automation only for an application
+that is configured and running; it never prompts. A named listing resolves the
+explicit `pid`, or the only running process, and reports ambiguity rather than
+choosing. It asks macOS for Automation permission only when the call sets
+`requestPermission: true`. Without configured access it returns the static
+installation and running facts and sends no Apple Event. An inconsistent
+read-only column result is repeated once within the same invocation.
 
 ## Inspection
 
@@ -269,7 +283,7 @@ calls of one of them, runs them one at a time.
 - `capability.ts` holds schemas, model-facing text, and production
   dependencies (`osascript`, `screencapture`, `ps`, Pi's image resizer).
 - `operations.ts` implements the five operations over injectable dependencies;
-  `session.ts` resolves processes and maps Apple Events failures.
+  `session.ts` builds discovery requests and maps Apple Events failures.
 - `jxa.ts` is the JavaScript for Automation program; `osa.ts` runs it with a
   deadline and cancellation.
 - `page.ts` builds the page-side scripts.
