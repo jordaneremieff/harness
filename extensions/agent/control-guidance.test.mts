@@ -122,6 +122,13 @@ it("distinguishes normal follow-up timing from admitted await interaction", () =
 	assert.match(awaiting, /Explicit release also returns control on the original request/u);
 });
 
+it("teaches spawning from a script and awaiting directly", () => {
+	const awaiting = AGENT_CONTROL_GUIDANCE.agent_await.guidelines?.join("\n") ?? "";
+	assert.match(awaiting, /short codemode script to spawn or send work/u);
+	assert.match(awaiting, /call agent_await directly/u);
+	assert.match(awaiting, /A script cannot call agent_await/u);
+});
+
 it("describes retained delivery and opt-in unfinished-task check-ins", () => {
 	const all = JSON.stringify(AGENT_CONTROL_GUIDANCE);
 	assert.doesNotMatch(all, /ordinary terminal response/u);

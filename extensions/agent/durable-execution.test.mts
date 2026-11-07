@@ -20,7 +20,8 @@ import type { readEffortAwareness } from "./effort-awareness.ts";
 import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
 import { createDurableExecution, loadMcpConfig, type DurableExecutionHost } from "./durable-execution.ts";
 import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
-import { answerRuntime, codemodeStream, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, streamRuntime, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension } from "./durable-execution-fixture.mts";
+import { answerRuntime, answerMessage, codemodeStream, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, streamRuntime, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension } from "./durable-execution-fixture.mts";
+import { DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS } from "./codemode-source.ts";
 import { createDurableServices } from "./durable-services.ts";
 import type { DurableHost } from "./durable-host.ts";
 import { testModel } from "./test-runtime.mts";
@@ -586,6 +587,35 @@ it("hides direct tool declarations in codemode only mode while scripts still rea
 	assert.match(section, /### `read`/u);
 });
 
+it("keeps the model-only agent coordination declarations in codemode only mode", { timeout: 30000 }, async (t) => {
+	const control = (host: DurableExecutionHost, name: string, modelOnly: boolean) => host.durable.defineTool({
+		name,
+		description: `${name} fixture`,
+		parameters: obj({}, { open: true }),
+		execute: async () => ({ output: [{ type: "text" as const, text: "ok" }] }),
+		...(modelOnly ? { callers: ["model"] as const } : {}),
+	});
+	const f = await executionFixture(t, {
+		stream: () => answerMessage(),
+		settings: { defaultTools: ["+codemode", "+tool_search"], codemode: { mode: "only" } },
+		builtinExtensions: (host) => [host.durable.defineExtension({ name: "fixture.agent-controls", tools: [
+			control(host, "agent_await", true),
+			control(host, "agent_compact", true),
+			control(host, "agent_status", false),
+		] })],
+	});
+	await f.submit("say hi");
+	assert.deepEqual(declaredTools(f.requests[0]).sort(), ["agent_await", "agent_compact", "codemode", "tool_search"]);
+});
+
+it("prepares a finite execution budget on the registered native codemode tool", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, { stream: () => answerMessage() });
+	const tool = f.execution.extensions.find((extension) => extension.name === "codemode")?.tools?.find((candidate) => candidate.name === "codemode");
+	assert.ok(tool?.prepareArguments);
+	const prepared = tool.prepareArguments({ code: 'return "ok";' }) as { code: string };
+	assert.match(prepared.code, new RegExp(`^// @options: \\{"timeout_ms":${DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS}\\}\\nreturn "ok";$`, "u"));
+});
+
 it("sends stored OAuth tokens to an HTTP server and reads its resources", { timeout: 60000 }, async (t) => {
 	const token = `token-${randomUUID()}`;
 	const server = await httpMcpServer(token);
@@ -1074,6 +1104,33 @@ it("does not wait for an indirect server that never answers", { timeout: 30000 }
 	assert.ok(f.readyElapsedMs !== undefined && f.readyElapsedMs < 1000, `ready took ${String(f.readyElapsedMs)}ms`);
 	const result = await f.submit("say hi");
 	assert.equal(result.answer, "durable answer");
+});
+
+it("ends the MCP preflight at the script's explicit budget and records a stable diagnostic", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: `// @options: {"timeout_ms": 200}\nreturn await tools.mcp__silent_docs__anything({});`,
+		mcpServers: { "silent-docs": { command: process.execPath, args: [fixtureServerPath], env: { MCP_FIXTURE_MODE: "silent" }, exposure: "codemode" } },
+	});
+	const started = Date.now();
+	const result = await f.submit("call the silent server");
+	assert.ok(Date.now() - started < 10000, "the wait is bounded by the script budget");
+	const output = result.toolResults.at(-1);
+	assert.equal(output?.isError, true);
+	assert.match(toolResultText(output), /CODEMODE_ADMISSION_TIMEOUT|timed out while waiting for MCP servers/u);
+});
+
+it("persists a finite deadline for a script that names no timeout", { timeout: 30000 }, async (t) => {
+	const { harness, conversation } = await nativeClockFixture(t, () => 5000, "return 7;");
+	const starts: { startedAt: number; deadline?: number }[] = [];
+	onStoredCommit(harness, (publication) => {
+		for (const change of publication.changes) {
+			if (change.type === "document" && change.kind === "change" && change.record.kind === "pi.codemode.run" && change.value.start !== undefined) starts.push(change.value.start as unknown as { startedAt: number; deadline?: number });
+		}
+	});
+	const outcome = await (await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+	assert.equal(outcome.status, "done");
+	assert.ok(starts.length > 0);
+	assert.equal(starts[0].deadline, starts[0].startedAt + DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS);
 });
 
 async function nativeClockFixture(t: TestContext, now: () => number, code = '// @options: {"timeout_ms": 2000}\nreturn 42;') {

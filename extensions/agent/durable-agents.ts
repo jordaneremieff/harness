@@ -1833,17 +1833,21 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		),
 	});
 
-	const awaitTool = durable.defineTool({
-		name: "agent_await",
-		description: `Keep the original request open until exact admitted results arrive. Native waiting uses no model calls. The first exact producer retry releases by default with partial outcomes, unresolved references and retry facts; releaseOnProviderRetry.minAttempt deliberately selects a later attempt. Unchanged retry evidence does not repeatedly release the same held request. ${AWAIT_INPUT_DELIVERY_BOUNDARY} Release does not stop producers. Abort stops the original request, not its producers.`,
-		parameters: AwaitParams,
-		replay: "safe",
-		execute: async (args, api, context) => {
-			if (dispatch === undefined) return errorResult("Await requires the current native host control binding");
-			const response = await executeAwait(args, api, context, host.storageId, dispatch);
-			return textResult(JSON.stringify(response), response);
-		},
-	});
+	const awaitTool = {
+		...durable.defineTool({
+			name: "agent_await",
+			description: `Keep the original request open until exact admitted results arrive. Native waiting uses no model calls. The first exact producer retry releases by default with partial outcomes, unresolved references and retry facts; releaseOnProviderRetry.minAttempt deliberately selects a later attempt. Unchanged retry evidence does not repeatedly release the same held request. ${AWAIT_INPUT_DELIVERY_BOUNDARY} Release does not stop producers. Abort stops the original request, not its producers.`,
+			parameters: AwaitParams,
+			replay: "safe",
+			execute: async (args, api, context) => {
+				if (dispatch === undefined) return errorResult("Await requires the current native host control binding");
+				const response = await executeAwait(args, api, context, host.storageId, dispatch);
+				return textResult(JSON.stringify(response), response);
+			},
+		}),
+		/** The model calls this directly; a script cannot nest a wait. */
+		callers: ["model"] as const,
+	};
 
 	const guidance = durable.section("agent-controls", (input) => {
 		const selected = input.agent.tools.map((tool) => tool.name);

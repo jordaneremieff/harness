@@ -1452,8 +1452,12 @@ results. Creation records do not define dependencies or authorize cancellation.
 
 ### Await exact peer results
 
-Dispatch work in the background, retain each `result`, then call
-`agent_await({ results: [resultA, resultB] })` in a native Durable conversation.
+Use a short codemode script to spawn or send work and return the exact admitted
+`result` references. Then call
+`agent_await({ results: [resultA, resultB] })` directly in a native Durable
+conversation. The tool is model-only: a script cannot nest a wait, so waiting
+holds no codemode worker. In `codemode.mode: "only"` the direct declarations
+the model keeps are `codemode`, `tool_search`, `agent_await` and `agent_compact`.
 The request remains placed while its generation waits on the live tool. The
 same request resumes with retained outcomes and eventually receives one final
 answer. The wait retains a host process, tool invocation, native documents, and
@@ -2449,9 +2453,22 @@ Its FIFO queue retains at most 64 waiting calls. A full
 queue refuses the next call explicitly without displacing existing waiters.
 Each native tool task persists a wait deadline on the Harness clock. An
 unfinished wait expires after 60 seconds, including interruption; an admitted
-script gets a fresh wait budget if replay needs another worker. The native
-script deadline still includes queue time. No explicit script deadline means
-no added execution deadline.
+script gets a fresh wait budget if replay needs another worker. The admission
+wait is separate from the execution budget and ends at the earlier of the two.
+Stable diagnostic codes `CODEMODE_QUEUE_FULL`, `CODEMODE_ADMISSION_TIMEOUT` and
+`CODEMODE_CANCELLED` mark a full queue, an expired wait and a cancelled wait.
+
+Every native script has a finite execution budget. The registration's
+`prepareArguments` adds `timeout_ms: 300000` to the options line when the script
+names none, keeping `max_output_tokens`, or prepends one options line; an
+explicit valid `timeout_ms` stays as written and invalid or misplaced directives
+stay errors. Preparation is idempotent. The tool retains an absolute deadline
+once (`api.memo` on the Harness clock). MCP server discovery before worker
+construction spends this same budget through a cancellable waiter that clears
+its timer and listener when it settles; cancelling it never closes a shared MCP
+connection. Replay keeps the original outer and native deadlines. There is no
+reader for calls admitted without a deadline before this behaviour: drain
+active codemode work before replacing a release.
 
 The queue converts the remaining Harness-clock duration to a live wall-clock
 timer. It rechecks the native script budget after admission and immediately

@@ -538,6 +538,13 @@ it("declares every control tool with an explicit replay classification", () => {
 	assert.equal(contribution.source, "/abs/extensions/agent/index.ts");
 });
 
+it("offers agent_await to the model only, so a script cannot nest a wait", () => {
+	const { extension } = buildRegistry();
+	assert.deepEqual(extension.tools?.find((tool) => tool.name === "agent_await")?.callers, ["model"]);
+	assert.deepEqual(extension.tools?.find((tool) => tool.name === "agent_compact")?.callers, ["model"]);
+	for (const tool of extension.tools ?? []) if (tool.name !== "agent_await" && tool.name !== "agent_compact") assert.equal(tool.callers, undefined, `${tool.name} stays callable by scripts`);
+});
+
 it("describes normal follow-up timing and active await release in both tool registrations", async () => {
 	const ordinary: { name: string; description: string }[] = [];
 	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: { name: string; description: string }) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);

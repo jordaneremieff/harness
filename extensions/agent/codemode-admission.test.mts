@@ -246,3 +246,52 @@ it("releases capacity after worker construction and wasm failures", { timeout: 5
 		await sandbox.close();
 	}
 });
+
+it("reports a full waiter queue with its stable failure code and state", async () => {
+	const failures: unknown[] = [];
+	const sandbox = new QueuedCodemodeSandbox(admission(), new CodemodeWorkerQueue(1, 0), {}, (failure) => failures.push(failure));
+	const result = await sandbox.start("return 'never';", runOptions()).result;
+	assert.equal(result.ok, false);
+	if (!result.ok) assert.equal(result.error.kind, "sandbox");
+	assert.deepEqual(failures, [{ code: "CODEMODE_QUEUE_FULL", message: "The codemode worker queue is full (0 waiting calls).", active: 0, waiting: 0, limit: 1 }]);
+	await sandbox.close();
+});
+
+it("reports an expired admission deadline with its stable failure code and state", async () => {
+	const failures: unknown[] = [];
+	const sandbox = new QueuedCodemodeSandbox(admission(Date.now() - 1), new CodemodeWorkerQueue(1), {}, (failure) => failures.push(failure));
+	const result = await sandbox.start("return 'never';", runOptions()).result;
+	assert.equal(result.ok, false);
+	if (!result.ok) assert.equal(result.error.kind, "timeout");
+	assert.deepEqual(failures, [{ code: "CODEMODE_ADMISSION_TIMEOUT", message: "The codemode worker wait timed out.", active: 0, waiting: 1, limit: 1 }]);
+	await sandbox.close();
+});
+
+it("reports a cancelled waiter immediately with its stable failure code and state", { timeout: 5000 }, async () => {
+	const queue = new CodemodeWorkerQueue(1);
+	const release = await queue.reserve(new AbortController().signal, Date.now() + 5000);
+	const failures: unknown[] = [];
+	const sandbox = new QueuedCodemodeSandbox(admission(), queue, {}, (failure) => failures.push(failure));
+	const controller = new AbortController();
+	const run = sandbox.start("return 'never';", { ...runOptions(), signal: controller.signal });
+	await nextTurn();
+	controller.abort();
+	const result = await run.result;
+	assert.equal(result.ok, false);
+	if (!result.ok) assert.equal(result.error.kind, "aborted");
+	assert.deepEqual(failures, [{ code: "CODEMODE_CANCELLED", message: "The codemode worker wait was aborted.", active: 1, waiting: 1, limit: 1 }]);
+	release();
+	await sandbox.close();
+});
+
+it("reports no admission failure for a successful run or a storage failure", { timeout: 5000 }, async () => {
+	const failures: unknown[] = [];
+	const queue = new CodemodeWorkerQueue(1);
+	const sandbox = new QueuedCodemodeSandbox(admission(), queue, { wasm: {}, workerUrl }, (failure) => failures.push(failure));
+	assert.equal((await sandbox.start("return 'ok';", runOptions()).result).ok, true);
+	await sandbox.close();
+	const failing = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { throw new Error("storage failed"); }, now: Date.now }, queue, {}, (failure) => failures.push(failure));
+	await assert.rejects(failing.start("return 'never';", runOptions()).result, /storage failed/u);
+	await failing.close();
+	assert.deepEqual(failures, []);
+});

@@ -8,6 +8,7 @@ import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { JsonValue } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord";
+import { awaitWithContext, withCancel } from "@earendil-works/chord/context";
 import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode";
 import { CodemodeSandbox, parseCodemodeSource } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension, createCodemodeTool, type CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
@@ -21,7 +22,8 @@ import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { obj, opt, str, type Schema } from "@earendil-works/pi-schema";
-import { QueuedCodemodeSandbox } from "./codemode-admission.ts";
+import { QueuedCodemodeSandbox, type CodemodeAdmissionFailure } from "./codemode-admission.ts";
+import { DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS, prepareNativeCodemodeArguments, replaceCodemodeTimeout } from "./codemode-source.ts";
 import { guardStdio, McpGuardian } from "./mcp-guardian.ts";
 import { NativeMcpAuth } from "./mcp-auth.ts";
 
@@ -70,6 +72,9 @@ const LIST_MCP_RESOURCE_TEMPLATES_TOOL = "list_mcp_resource_templates";
 const READ_MCP_RESOURCE_TOOL = "read_mcp_resource";
 const CODEMODE_MEMORY_LIMIT_BYTES = 256 * 1024 * 1024;
 const CODEMODE_WORKER_WAIT_MS = 60_000;
+const CODEMODE_DEADLINE_MEMO = "agent.codemode.deadline";
+/** Declarations the model keeps when `codemode.mode` is `only`: Pi's code mode and discovery tools, and the Agent's model-only coordination tools that scripts cannot call. */
+const CODEMODE_ONLY_DECLARATIONS = new Set([CODEMODE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME, "agent_await", "agent_compact"]);
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
 const MCP_OUTPUT_MAX_BYTES = 20 * 1024;
 const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
@@ -802,9 +807,13 @@ function computeActivation(host: DurableExecutionHost): Activation {
 	};
 }
 
+type AdmissionDoc = Durable.TaskDocToken<{ deadline?: number; admitted: boolean }>;
+
 // ─── Native execution host ────────────────────────────────────────────────
 
 function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+/** The invocation budget expired while an MCP connection was still being discovered. */
+class CodemodeDiscoveryTimeoutError extends Error {}
 function hasIndirectTools(config: McpServerConfig): boolean {
 	const exposures = configuredExposures(config);
 	return exposures.has("codemode") || exposures.has("deferred");
@@ -867,36 +876,15 @@ class DurableExecutionRuntime implements DurableExecution {
 			const native = createCodemodeExtension({ sandbox: this.sandbox, namespaces: this.namespaces });
 			const tools = (native.tools ?? []).map((tool) => tool.name !== CODEMODE_TOOL_NAME ? tool : {
 				...tool,
-				execute: async (args: { code: string }, api: Durable.ToolExecutionApi, context: Context) => {
-					await this.waitForScriptServers(parseCodemodeSource(args.code).code, context);
-					const sandbox = new QueuedCodemodeSandbox({
-						deadline: () => api.commit(async (tx) => {
-							const state = await tx.doc(Admission, api.taskId);
-							if (state.deadline === undefined || state.admitted) {
-								state.deadline = api.now() + CODEMODE_WORKER_WAIT_MS;
-								state.admitted = false;
-							}
-							return state.deadline;
-						}, context).then((deadline) => Date.now() + Math.max(0, deadline - api.now())),
-						admitted: () => api.commit(async (tx) => { (await tx.doc(Admission, api.taskId)).admitted = true; }, context),
-						now: () => api.now(),
-					}, undefined, { memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES });
-					this.queuedSandboxes.add(sandbox);
-					if (this.closed) await sandbox.close();
-					try {
-						return await createCodemodeTool({ sandbox, namespaces: this.namespaces }).execute(args, this.catalogApi(api), context);
-					} finally {
-						this.queuedSandboxes.delete(sandbox);
-						await sandbox.close();
-					}
-				},
+				prepareArguments: prepareNativeCodemodeArguments,
+				execute: (args: { code: string }, api: Durable.ToolExecutionApi, context: Context) => this.executeCodemode(args, api, context, Admission),
 			});
 			result.push({ ...native, tools, hooks: [this.host.durable.hook(this.host.durable.GenerationTask, {
 				beforeRequest: (request) => {
 					if (this.host.services.settingsManager.getSettings().codemode?.mode !== "only") return;
 					return { messages: request.messages.map((message) => message.role !== "system" ? message : {
 						...message,
-						...(message.toolsAdded === undefined ? {} : { toolsAdded: message.toolsAdded.filter((tool) => tool.name === CODEMODE_TOOL_NAME || tool.name === TOOL_SEARCH_TOOL_NAME) }),
+						...(message.toolsAdded === undefined ? {} : { toolsAdded: message.toolsAdded.filter((tool) => CODEMODE_ONLY_DECLARATIONS.has(tool.name)) }),
 					}) };
 				},
 			})] });
@@ -911,6 +899,54 @@ class DurableExecutionRuntime implements DurableExecution {
 			sections: activation.indirect ? [this.host.durable.section(MCP_SERVERS_SECTION, () => this.renderServersSection())] : [],
 		}));
 		return result;
+	}
+
+	/** Run one native script inside its persisted execution budget and queued worker admission. */
+	private async executeCodemode(args: { code: string }, api: Durable.ToolExecutionApi, context: Context, Admission: AdmissionDoc) {
+		const parsed = parseCodemodeSource(args.code);
+		const deadline = await api.memo(CODEMODE_DEADLINE_MEMO, api.now() + (parsed.options.timeoutMs ?? DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS), context);
+		await this.preflightCodemode(parsed.code, deadline, api, context);
+		const sandbox = new QueuedCodemodeSandbox({
+			deadline: () => api.commit(async (tx) => {
+				const state = await tx.doc(Admission, api.taskId);
+				if (state.deadline === undefined || state.admitted) {
+					state.deadline = api.now() + CODEMODE_WORKER_WAIT_MS;
+					state.admitted = false;
+				}
+				return Math.min(state.deadline, deadline);
+			}, context).then((admissionDeadline) => Date.now() + Math.max(0, admissionDeadline - api.now())),
+			admitted: () => api.commit(async (tx) => { (await tx.doc(Admission, api.taskId)).admitted = true; }, context),
+			now: () => api.now(),
+		}, undefined, { memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES }, (failure: CodemodeAdmissionFailure) => api.diagnostic({
+			severity: failure.code === "CODEMODE_CANCELLED" ? "warn" : "error",
+			code: failure.code,
+			message: failure.message,
+		}));
+		this.queuedSandboxes.add(sandbox);
+		if (this.closed) await sandbox.close();
+		try {
+			const remainingBudget = Math.max(1, Math.ceil(deadline - api.now()));
+			return await createCodemodeTool({ sandbox, namespaces: this.namespaces }).execute({ ...args, code: replaceCodemodeTimeout(args.code, remainingBudget) }, this.catalogApi(api), context);
+		} finally {
+			this.queuedSandboxes.delete(sandbox);
+			await sandbox.close();
+		}
+	}
+
+	/** MCP discovery spends the script's own budget; expiry or cancellation records a stable diagnostic. */
+	private async preflightCodemode(code: string, deadline: number, api: Durable.ToolExecutionApi, context: Context): Promise<void> {
+		try {
+			await this.waitForScriptServers(code, context, deadline - api.now());
+		} catch (error) {
+			if (error instanceof CodemodeDiscoveryTimeoutError) api.diagnostic({ severity: "error", code: "CODEMODE_ADMISSION_TIMEOUT", message: error.message });
+			else if (context.abortSignal?.aborted === true) api.diagnostic({ severity: "warn", code: "CODEMODE_CANCELLED", message: errorText(error) });
+			throw error;
+		}
+		if (deadline - api.now() <= 0) {
+			const message = "The codemode script timed out before worker admission.";
+			api.diagnostic({ severity: "error", code: "CODEMODE_ADMISSION_TIMEOUT", message });
+			throw new Error(message);
+		}
 	}
 
 	close(): Promise<void> {
@@ -983,20 +1019,29 @@ class DurableExecutionRuntime implements DurableExecution {
 		} };
 	}
 
-	private async waitForScriptServers(code: string, context: Context): Promise<void> {
+	private async waitForScriptServers(code: string, context: Context, timeoutMs: number): Promise<void> {
 		const wantsAll = /\b(searchTools|describeNamespace|describeTool|ALL_TOOLS)\b/.test(code);
 		const waiting = this.servers.filter((server) => wantsAll || new RegExp(`\\b${mcpNamespace(server.entry.name)}(?:__|\\b)`, "u").test(code) || /\b(list_mcp_resources|list_mcp_resource_templates|read_mcp_resource)\b/.test(code));
-		await this.waitForServers(waiting, context);
+		await this.waitForServers(waiting, context, timeoutMs);
 	}
 	private async waitForAllServers(context: Context): Promise<void> { await this.waitForServers(this.servers, context); }
-	private async waitForServers(servers: readonly McpServerConnection[], context: Context): Promise<void> {
+	private async waitForServers(servers: readonly McpServerConnection[], context: Context, timeoutMs?: number): Promise<void> {
+		if (servers.length === 0) return;
 		const signal = context.abortSignal;
 		signal?.throwIfAborted();
-		await new Promise<void>((resolve, reject) => {
-			const abort = () => reject(signal?.reason ?? new Error("MCP wait aborted"));
-			signal?.addEventListener("abort", abort, { once: true });
-			void Promise.all(servers.map((server) => server.ready)).then(() => resolve(), reject).finally(() => signal?.removeEventListener("abort", abort));
-		});
+		if (timeoutMs !== undefined && timeoutMs <= 0) throw new CodemodeDiscoveryTimeoutError("The codemode script timed out while waiting for MCP servers.");
+		// Cancelling this waiter ends only the wait: a shared MCP connection keeps its own lifetime.
+		const waiter = timeoutMs === undefined ? undefined : withCancel(context);
+		const timer = waiter === undefined ? undefined : setTimeout(
+			() => waiter.cancel(new CodemodeDiscoveryTimeoutError("The codemode script timed out while waiting for MCP servers.")),
+			timeoutMs,
+		);
+		timer?.unref?.();
+		try {
+			await awaitWithContext(Promise.all(servers.map((server) => server.ready)), waiter?.context ?? context);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
 		signal?.throwIfAborted();
 	}
 
