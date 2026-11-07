@@ -7,9 +7,38 @@ import type { Action, KeyHint, OperatorView, ViewHost } from "./view.ts";
 /** Text, display lines, or lines laid out for a given width, for example rendered Markdown. */
 export type ReaderContent = string | readonly string[] | ((width: number) => readonly string[]);
 
+/** One laid-out string: the content it came from, the effective body width, and its lines. */
+export interface TextLayout {
+	readonly text: string;
+	readonly width: number;
+	readonly lines: readonly string[];
+}
+
+/** The one retained layout holds at most this input and this many display lines. */
+const MAX_LAYOUT_INPUT = 1_048_576;
+const MAX_LAYOUT_LINES = 32_768;
+
+/**
+ * Lay out one immutable string at the effective body width, reusing `cached` when both match.
+ * Equal content at an equal width keeps its layout even when it arrives as a new string. An
+ * input or a result beyond the retained bounds is returned but not kept.
+ */
+export function layoutText(
+	cached: TextLayout | undefined,
+	text: string,
+	width: number,
+): { layout: TextLayout | undefined; lines: readonly string[] } {
+	if (cached && cached.text === text && cached.width === width) return { layout: cached, lines: cached.lines };
+	const lines = wrap(text, width);
+	return text.length <= MAX_LAYOUT_INPUT && lines.length <= MAX_LAYOUT_LINES
+		? { layout: { text, width, lines }, lines }
+		: { layout: undefined, lines };
+}
+
 /**
  * Read-only scrolling text. Content is wrapped to the width it is given; the reading position
  * stays while the content key stays the same, so a refresh of the same record does not jump.
+ * One string layout is retained between renders; a changed text or width replaces it.
  */
 export class Reader {
 	focused = false;
@@ -18,12 +47,14 @@ export class Reader {
 	private offset = 0;
 	private height = 1;
 	private total = 0;
+	private layout?: TextLayout;
 
 	/** Replace the content. A different `key` starts at the top; the same key keeps the position. */
 	setContent(content: ReaderContent, key?: string): void {
 		if (key === undefined || key !== this.key) this.offset = 0;
 		this.key = key;
 		this.source = content;
+		if (typeof content !== "string") this.layout = undefined;
 	}
 
 	get position(): { first: number; last: number; total: number } {
@@ -34,8 +65,13 @@ export class Reader {
 		this.offset = Math.max(0, Math.min(Math.max(0, this.total - this.height), this.offset + delta));
 	}
 
-	private lines(width: number): string[] {
-		if (typeof this.source === "string") return wrap(this.source, width);
+	private lines(width: number): readonly string[] {
+		if (typeof this.source === "string") {
+			const laid = layoutText(this.layout, this.source, width);
+			this.layout = laid.layout;
+			return laid.lines;
+		}
+		this.layout = undefined;
 		const lines = typeof this.source === "function" ? this.source(width) : this.source;
 		return lines.flatMap((line) => wrap(line, width));
 	}

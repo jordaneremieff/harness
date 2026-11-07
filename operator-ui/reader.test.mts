@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import { setKeybindings, KeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { initTheme, type Theme } from "@earendil-works/pi-coding-agent";
 import { HitMap } from "./hits.ts";
-import { Reader } from "./reader.ts";
+import { layoutText, Reader } from "./reader.ts";
 
 initTheme("dark");
 setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
@@ -96,4 +96,53 @@ it("long text is wrapped to the given width", () => {
 	const narrow = page(reader, 4, 7);
 	assert.equal(narrow.rows[0]?.trim(), "aaa bbb");
 	assert.equal(narrow.rows[1]?.trim(), "ccc ddd");
+});
+
+it("equal content at an equal width keeps its layout, and a different key still starts at the top", () => {
+	const first = layoutText(undefined, "alpha beta gamma", 8);
+	assert.ok(first.layout);
+	const again = layoutText(first.layout, `alpha beta ${["gamma"].join("")}`, 8);
+	assert.equal(again.layout, first.layout, "equal strings reuse the retained layout");
+	assert.equal(again.lines, first.layout.lines);
+
+	const resized = layoutText(first.layout, "alpha beta gamma", 12);
+	assert.notEqual(resized.layout, first.layout, "a different width rebuilds the layout");
+	const changed = layoutText(first.layout, "alpha beta delta", 8);
+	assert.notEqual(changed.layout, first.layout, "different text rebuilds the layout");
+
+	const reader = new Reader();
+	reader.setContent("one\ntwo\nthree\nfour\nfive", "record");
+	page(reader, 2);
+	reader.scroll(2);
+	assert.equal(reader.position.first, 3);
+	reader.setContent("one\ntwo\nthree\nfour\nfive", "record");
+	page(reader, 2);
+	assert.equal(reader.position.first, 3, "the same key keeps the position with the reused layout");
+	reader.setContent("six\nseven\neight\nnine\nten", "next");
+	const after = page(reader, 2);
+	assert.equal(reader.position.first, 1, "the key, not the content, decides the scroll reset");
+	assert.deepEqual(after.rows.map((row) => row.trim()), ["six", "seven"]);
+});
+
+it("retains no layout beyond the input and line bounds", () => {
+	const long = "x".repeat(1_048_577);
+	assert.equal(layoutText(undefined, long, 10).layout, undefined, "input above 1 Mi UTF-16 units is not retained");
+	assert.ok(layoutText(undefined, "x".repeat(1_048_576), 1024).layout, "input at the bound is retained");
+	const manyLines = "\n".repeat(32_768);
+	assert.equal(layoutText(undefined, manyLines, 80).layout, undefined, "more than 32,768 display lines is not retained");
+	assert.ok(layoutText(undefined, "\n".repeat(32_767), 80).layout, "32,768 display lines is retained");
+});
+
+it("array and callback content is laid out on every render", () => {
+	let supplier = 0;
+	const reader = new Reader();
+	reader.setContent((width) => {
+		supplier += 1;
+		return [`${width}`];
+	}, "dynamic");
+	assert.equal(page(reader, 1, 20).rows[0]?.trim(), "19");
+	assert.equal(page(reader, 1, 20).rows[0]?.trim(), "19", "a callback supplier is read again with the new width");
+	assert.equal(supplier, 2);
+	reader.setContent(["plain", "array"], "array");
+	assert.deepEqual(page(reader, 2, 20).rows.map((row) => row.trim()), ["plain", "array"]);
 });
