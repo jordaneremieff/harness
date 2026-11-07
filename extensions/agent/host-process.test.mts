@@ -13,6 +13,7 @@ import { HostError, hostPaths, parseHostMetadata, type HostMetadata } from "./ho
 import { HostClaimRefusedError, resolveIdleMs, runHost, type HostProcess, type HostRuntime } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { eventLog } from "./host-fixture.mts";
+import { manualClock } from "./observation-clock-fixture.mts";
 
 function noop(): void {}
 
@@ -436,4 +437,129 @@ it("keeps a deep agent directory working with a short socket path", { timeout: 1
 	const client = await connectClient(config);
 	assert.deepEqual(await call(client, config, "timer-list", "deep"), { method: "timer-list", params: "deep" });
 	await client.dispose();
+});
+
+/** A runtime whose observation frames are counted and whose revision the test advances. */
+function observedRuntime(config: () => HostMetadata) {
+	const listeners = new Set<() => void>();
+	const state = { revision: 1, frames: 0, failFrames: false, gate: undefined as Promise<void> | undefined, closes: 0 };
+	const frame = () => ({ scope: "conversation", storageId: config().storageId, conversationId: 1, revision: state.revision, entries: [], live: [], status: { busy: true } });
+	const runtime: HostRuntime = {
+		request: async (method) => {
+			if (method === "observe-open") return { token: "pump-token" };
+			if (method === "observe-close") { state.closes++; return {}; }
+			if (method === "observe-frame") {
+				state.frames++;
+				const gate = state.gate;
+				if (gate) await gate;
+				if (state.failFrames && state.frames > 1) throw new Error("watch lost");
+				return frame();
+			}
+			return {};
+		},
+		close: async () => {}, isIdle: () => true,
+		onObservationChange: (listener) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+	};
+	return { runtime, state, change: () => { for (const listener of [...listeners]) listener(); }, listeners };
+}
+
+async function observedHost(t: { after(fn: () => void): void }) {
+	const root = fixtureRoot(t), config = metadata(root), clock = manualClock();
+	const fixture = observedRuntime(() => config);
+	const host = await runHost(() => fixture.runtime, { metadata: config, idleMs: 0, announceReady: noop, observationClock: clock });
+	t.after(() => host.close().catch(() => {}));
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
+	await call(client, config, "observe-open", { token: "pump-token", scope: "conversation", sessionId: config.storageId });
+	const updates = eventLog<unknown>();
+	const subscription = await client.subscribe("observation", "pump-token", (update) => { updates.push(update); });
+	return { host, clock, client, config, updates, subscription, ...fixture };
+}
+
+it("constructs one observation frame per interval during sustained updates and publishes the final state", { timeout: 15000 }, async (t) => {
+	const h = await observedHost(t);
+	assert.equal(h.state.frames, 1, "the baseline frame is built immediately");
+	h.clock.advance(0);
+	await new Promise<void>(setImmediate);
+	assert.equal(h.state.frames, 2, "the subscription marks once to cover a racing update");
+	assert.equal(h.updates.length, 0, "an unchanged revision publishes nothing");
+	const before = h.state.frames;
+	for (let tick = 0; tick < 100; tick++) {
+		h.state.revision++;
+		h.change();
+		h.clock.advance(10);
+		await new Promise<void>(setImmediate);
+	}
+	const constructed = h.state.frames - before;
+	assert.ok(constructed <= 10, `one simulated second built ${constructed} frames`);
+	h.clock.advance(100);
+	await h.updates.waitFor((values) => values.some((value) => (value as { revision: number }).revision === h.state.revision));
+	assert.equal((h.updates.at(-1) as { revision: number }).revision, h.state.revision, "the last revision is published");
+});
+
+it("keeps a change that arrives during a construction for one trailing pass", { timeout: 15000 }, async (t) => {
+	const h = await observedHost(t);
+	h.clock.advance(0);
+	await new Promise<void>(setImmediate);
+	let release = () => {};
+	h.state.gate = new Promise<void>((resolve) => { release = resolve; });
+	h.state.revision = 2;
+	h.change();
+	h.clock.advance(100);
+	await new Promise<void>(setImmediate);
+	const during = h.state.frames;
+	h.state.revision = 3;
+	h.change();
+	h.change();
+	h.clock.advance(1000);
+	await new Promise<void>(setImmediate);
+	assert.equal(h.state.frames, during, "no second construction starts while one is in flight");
+	h.state.gate = undefined;
+	release();
+	await new Promise<void>(setImmediate);
+	h.clock.advance(100);
+	await h.updates.waitFor((values) => values.some((value) => (value as { revision: number }).revision === 3));
+	assert.equal(h.state.frames, during + 1, "the trailing state costs one construction");
+});
+
+it("closing the last subscription cancels the waiting pass and later changes build nothing", { timeout: 15000 }, async (t) => {
+	const h = await observedHost(t);
+	h.clock.advance(0);
+	await new Promise<void>(setImmediate);
+	h.state.revision = 2;
+	h.change();
+	assert.equal(h.clock.pending, 1, "the change waits for the scheduler");
+	await h.subscription.dispose();
+	await new Promise<void>(setImmediate);
+	assert.equal(h.clock.pending, 0, "the pending timer is cancelled");
+	const frames = h.state.frames;
+	h.change();
+	h.clock.advance(1000);
+	await new Promise<void>(setImmediate);
+	assert.equal(h.state.frames, frames);
+});
+
+it("publishes unavailable and closes the subscription when a construction fails", { timeout: 15000 }, async (t) => {
+	const h = await observedHost(t);
+	h.clock.advance(0);
+	await new Promise<void>(setImmediate);
+	h.state.failFrames = true;
+	h.state.revision = 2;
+	h.change();
+	h.clock.advance(100);
+	await h.updates.waitFor((values) => values.includes(null));
+	assert.equal(h.state.closes, 1, "the failed subscription releases its token");
+});
+
+it("shutdown cancels the scheduler before the runtime closes", { timeout: 15000 }, async (t) => {
+	const h = await observedHost(t);
+	h.state.revision = 2;
+	h.change();
+	assert.equal(h.clock.pending >= 1, true);
+	await h.host.close();
+	assert.equal(h.clock.pending, 0);
+	assert.equal(h.listeners.size, 0);
+	const frames = h.state.frames;
+	h.clock.advance(1000);
+	assert.equal(h.state.frames, frames, "no construction runs after shutdown");
 });

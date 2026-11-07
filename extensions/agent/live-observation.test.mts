@@ -399,3 +399,33 @@ it("keeps the task watch alive across tokens and stops it with the last close", 
 	await service.close("b");
 	assert.equal(service.watches, 0);
 });
+
+it("invalidation is cheap: many changes cost one construction at the next read", { timeout: 15000 }, async (t) => {
+	const host = await DurableHost.open(hostOptions(join(fixtureRoot(t), "coalesced.sqlite"), await scriptedRuntime([]), fixtureRegistry()));
+	t.after(() => host.close());
+	const service = new LiveObservationService(host.harness, { storageId: fixtureStorageId }, BACKGROUND_CONTEXT);
+	t.after(() => service.closeAll());
+	const first = await service.open("watch", { scope: "conversation", conversationId: ROOT });
+	let wakes = 0;
+	t.after(service.onChange(() => { wakes++; }));
+	const conversation = host.harness.conversation.bind(host.harness);
+	let constructions = 0;
+	t.mock.method(host.harness, "conversation", async (...args: Parameters<typeof conversation>) => {
+		constructions++;
+		return conversation(...args);
+	});
+	service.invalidate();
+	await service.frame("watch");
+	const perConstruction = constructions;
+	assert.ok(perConstruction > 0, "a dirty read constructs a frame");
+	constructions = 0;
+	wakes = 0;
+	for (let index = 0; index < 50; index++) service.invalidate();
+	assert.equal(wakes, 50, "every change wakes listeners");
+	assert.equal(constructions, 0, "invalidation builds no frame");
+	const latest = await service.frame("watch");
+	assert.ok(latest && latest.revision === first.revision + 51, "the read carries the newest revision");
+	assert.equal(constructions, perConstruction, "one construction covers all pending changes");
+	await service.frame("watch");
+	assert.equal(constructions, perConstruction, "an unchanged frame is reused");
+});

@@ -10,6 +10,7 @@ import type { ConversationFrame } from "./live-frames.ts";
 import { AgentDashboard, type DashboardOperations } from "./dashboard.ts";
 import { createDashboardState, type DashboardState } from "./dashboard-state.ts";
 import type { ActionResult, AgentFormHost } from "./agent-forms.ts";
+import type { ObservationClock } from "./observation-pump.ts";
 const previousPreferences = process.env.PI_HARNESS_FILE;
 let preferencesRoot: string | undefined;
 before(() => {
@@ -188,6 +189,7 @@ export function fixture(
 	retained?: DashboardState,
 	paint: Theme = theme,
 	caller?: string,
+	clock?: ObservationClock,
 ) {
 	const calls: FormCall[] = [];
 	let renders = 0;
@@ -217,6 +219,7 @@ export function fixture(
 			...operations,
 		},
 		caller,
+		clock,
 	);
 	return {
 		ui,

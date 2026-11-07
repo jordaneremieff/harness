@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
+import { manualClock } from "./observation-clock-fixture.mts";
 import { fixture, formsHost, source, row, page, turn, deferred, conversationFrame, type FormCall } from "./dashboard-test-fixture.mts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import type { ConversationFrame } from "./live-frames.ts";
@@ -163,7 +164,8 @@ for (const [width, height] of [[120, 36], [60, 24]]) {
 		frame = { ...frame, status: { ...frame.status, awaiting: fact } };
 		observed.frame = () => frame;
 		observed.availability = () => ({ state: "live", at: frame.observedAt });
-		const f = fixture(width, height, observed);
+		const clock = manualClock();
+		const f = fixture(width, height, observed, undefined, undefined, undefined, undefined, clock);
 		const read = () => {
 			let text = "";
 			for (let index = 0; index < 5; index++) {
@@ -188,12 +190,16 @@ for (const [width, height] of [[120, 36], [60, 24]]) {
 			const next = { ...fact, results: [{ ...fact.results[0], status: "done" as const }], producers: [{ sessionId: "exact-peer:2", source: "producer await-state" as const, observedAt: 456 }] };
 			frame = { ...frame, revision: 2, status: { ...frame.status, awaiting: next } };
 			notify();
+			clock.advance(50);
+			await turn();
 			text = read();
 			assert.match(text, /submission 9.*done/u);
 			assert.match(text, /456/u);
 			assert.doesNotMatch(text, /Producer endpoint closed/u);
 			frame = { ...frame, revision: 3, status: { ...frame.status, awaiting: undefined } };
 			notify();
+			clock.advance(50);
+			await turn();
 			text = read();
 			assert.doesNotMatch(text, /exact-peer:2|Coverage: one hop|producer await-state/u);
 			assert.doesNotMatch(actionText(f), /release await/u, "a retired await offers no release");
@@ -217,12 +223,15 @@ for (const [width, height] of [
 		let frame = conversationFrame();
 		observed.frame = () => frame;
 		observed.availability = () => ({ state: "live", at: frame.observedAt });
-		const f = fixture(width, height, observed);
+		const clock = manualClock();
+		const f = fixture(width, height, observed, undefined, undefined, undefined, undefined, clock);
 		try {
 			await turn();
 			for (const busy of [false, true, false]) {
 				frame = { ...frame, revision: frame.revision + 1, status: { ...frame.status, busy } };
 				notify();
+				clock.advance(50);
+			await turn();
 				const screen = shown(f);
 				assert.match(screen, busy ? /╭─ To one ─+ Steer at next step ⇄/u : /╭─ To one ─+┄*╮/u);
 				const header = targetHeader(f).join("\n");

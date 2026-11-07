@@ -57,6 +57,7 @@ import { AgentBranchCache, type AgentBranchReader } from "./agent-git.ts";
 import type { AgentModelInfo, DelegatedFigures } from "./agent-footer.ts";
 import { DashboardRelations, relationIdentity, type ReadRelationLineage } from "./dashboard-relations.ts";
 import { actionView, type ActionResult, type AgentFormHost } from "./agent-forms.ts";
+import { createObservationPump, type ObservationClock, type ObservationPump } from "./observation-pump.ts";
 
 export interface DashboardResult {
 	text: string;
@@ -164,6 +165,8 @@ const HELP = [
 
 /** The message field's taller and shorter switch; Pi binds no key for it, and the editor leaves Ctrl+X free. */
 const EXPAND_COMPOSER_KEY = "ctrl+x";
+/** The work view applies the newest observed state at most once per interval. */
+const FRAME_APPLY_INTERVAL_MS = 50;
 
 /** Conversation rows kept on screen however far the message field grows. */
 const CONVERSATION_ROWS = 4;
@@ -232,8 +235,11 @@ export class AgentDashboard implements Component, Focusable {
 	private readonly unsubscribe: Array<() => void> = [];
 	private readonly reconciliation: ReturnType<typeof setInterval>;
 	private rosterTimer?: ReturnType<typeof setTimeout>;
-	private streamTimer?: ReturnType<typeof setTimeout>;
-	private lastStreamPaint = 0;
+	private readonly frames: ObservationPump;
+	/** The selection generation captured for the next scheduled application. */
+	private pendingGeneration = 0;
+	/** The current selection has no applied frame yet; its first frame skips the interval. */
+	private frameStarted = false;
 	private bodyHeight = 10;
 	private expanded = false;
 	/** An identity chosen explicitly (remembered, created or named by a command); a refresh never replaces it. */
@@ -276,6 +282,7 @@ export class AgentDashboard implements Component, Focusable {
 		source: AgentObservationSource,
 		operations: DashboardOperations,
 		primaryId?: string,
+		observationClock?: ObservationClock,
 	) {
 		this.tui = tui;
 		this.theme = theme;
@@ -294,6 +301,12 @@ export class AgentDashboard implements Component, Focusable {
 			}
 		});
 		this.branches = new AgentBranchCache(operations.branch, () => this.redraw());
+		this.frames = createObservationPump({
+			intervalMs: FRAME_APPLY_INTERVAL_MS,
+			run: () => this.applyLatestFrame(this.pendingGeneration),
+			onError: (error) => this.show(`Live update failed: ${String(error)}`, "warning"),
+			clock: observationClock,
+		});
 		this.relations = new DashboardRelations(operations.collaborate, () => {
 			if (this.closed) return;
 			this.reconcile();
@@ -564,6 +577,8 @@ export class AgentDashboard implements Component, Focusable {
 		this.console?.dispose();
 		this.console = undefined;
 		this.closeInspector();
+		this.frames.cancelPending();
+		this.frameStarted = false;
 		this.source.select(undefined);
 		this.sourceGeneration++;
 		this.operations.observed?.(undefined);
@@ -600,6 +615,8 @@ export class AgentDashboard implements Component, Focusable {
 		);
 		this.console.conversation.setToolDisplay(this.operations.toolDisplay);
 		this.snapshot = undefined;
+		this.frames.cancelPending();
+		this.frameStarted = false;
 		this.source.select(undefined);
 		const generation = ++this.sourceGeneration;
 		this.branches.refresh(row.cwd, `selection:${row.id}:${generation}`);
@@ -731,10 +748,26 @@ export class AgentDashboard implements Component, Focusable {
 		this.operations.observed?.(console.row);
 	}
 
+	/** A live notification only marks the selected view dirty; the newest frame applies on a schedule. */
 	private frameChanged(): void {
 		const console = this.console;
 		if (!console || this.closed) return;
+		this.pendingGeneration = this.sourceGeneration;
+		if (!this.frameStarted && this.source.frame(console.row.id) !== undefined) {
+			this.frameStarted = true;
+			this.applyLatestFrame(this.pendingGeneration);
+			return;
+		}
+		this.frames.markDirty();
+	}
+
+	/** Apply the newest frame for the captured selection generation, then render. */
+	private applyLatestFrame(generation: number): void {
+		const console = this.console;
+		if (this.closed || generation !== this.sourceGeneration || !console) return;
 		const frame = this.source.frame(console.row.id);
+		// A selection change during the read owns the pane; this application is stale.
+		if (this.closed || generation !== this.sourceGeneration || this.console !== console) return;
 		if (frame) {
 			console.save();
 			this.history.tail({ entries: frame.entries, partial: !frame.coverage.complete, revision: `r${frame.revision}`, nextBefore: frame.nextBefore }, console.state.view.anchor?.id);
@@ -748,13 +781,7 @@ export class AgentDashboard implements Component, Focusable {
 			this.branches.refresh(console.row.cwd, `${console.row.id}:${frame.entries.at(-1)?.id ?? "empty"}`);
 		}
 		if (!frame && this.source.availability(console.row.id)?.state === "unavailable") console.warning = "Not connected; stored messages shown";
-		const wait = Math.max(0, 50 - (Date.now() - this.lastStreamPaint));
-		if (!this.streamTimer)
-			this.streamTimer = setTimeout(() => {
-				this.streamTimer = undefined;
-				this.lastStreamPaint = Date.now();
-				this.redraw();
-			}, wait);
+		this.redraw();
 	}
 
 	private saveConsole(): void {
@@ -2280,6 +2307,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.resize.clear();
 		this.saveConsole();
 		this.closed = true;
+		this.frames.dispose();
 		this.closeInspector();
 		this.branches.dispose();
 		this.relations.dispose();
@@ -2292,7 +2320,6 @@ export class AgentDashboard implements Component, Focusable {
 		this.efforts?.dispose();
 		clearInterval(this.reconciliation);
 		clearTimeout(this.rosterTimer);
-		clearTimeout(this.streamTimer);
 	}
 }
 

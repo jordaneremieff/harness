@@ -19,6 +19,7 @@ import { type ClaimIdentity, type ClaimObservation, classifyClaim, readClaimFile
 import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
 import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from "./version-contract.ts";
 import { isObservationFrame } from "./live-frames.ts";
+import { createObservationPump, type ObservationClock, type ObservationPump } from "./observation-pump.ts";
 
 function hostOperationError(error: unknown): ChordError {
 	if (isChordError(error)) return error;
@@ -77,6 +78,8 @@ export interface RunHostOptions {
 	readonly exit?: () => never;
 	/** Schedule one idle check and return its cancellation function. Defaults to a wall-clock timer. */
 	readonly scheduleIdleCheck?: (check: () => void, delayMs: number) => () => void;
+	/** Waiting used by the observation scheduler. Defaults to a wall-clock timer. */
+	readonly observationClock?: ObservationClock;
 }
 
 /** Owner of one storage for the process lifetime. */
@@ -128,6 +131,8 @@ interface AttachmentState {
 }
 
 const IDLE_MINUTES_MAX = 35791;
+/** Observation frames are rebuilt at most once per interval, regardless of how often the storage changes. */
+const OBSERVATION_INTERVAL_MS = 100;
 /** Bound the response grace when the transport exposes no per-response flush signal. */
 const RELEASE_RESPONSE_GRACE_MS = 100;
 
@@ -230,21 +235,26 @@ class HostProcessServer implements HostProcess {
 	private rejectDone: (error: Error) => void = () => {};
 	/** Live observation subscriptions across every attachment; frames publish on actual host writes. */
 	private readonly observations = new Set<ObservationSubscription>();
-	private observationPumpScheduled = false;
-	private observationPumping = false;
-	private observationAgain = false;
+	private readonly observationPump: ObservationPump;
 	private unsubscribeObservation: (() => void) | undefined;
 	private unsubscribeActivity: (() => void) | undefined;
 	private unsubscribeQuiescent: (() => void) | undefined;
 
 	private readonly exit: (() => never) | undefined;
 
-	constructor(runtime: HostRuntime, paths: HostPaths, claim: HeldClaim, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"], exit?: () => never) {
+	constructor(runtime: HostRuntime, paths: HostPaths, claim: HeldClaim, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"], observationClock?: ObservationClock, exit?: () => never) {
 		this.exit = exit;
 		this.runtime = runtime;
 		this.paths = paths;
 		this.claim = claim;
 		this.idleMs = idleMs;
+		this.observationPump = createObservationPump({
+			intervalMs: OBSERVATION_INTERVAL_MS,
+			run: () => this.pumpObservations(),
+			// A failed pass loses no subscription state; later invalidation retries.
+			onError: () => undefined,
+			clock: observationClock,
+		});
 		this.scheduleIdleCheck = scheduleIdleCheck ?? ((check, delayMs) => {
 			const timer = setTimeout(check, delayMs);
 			return () => clearTimeout(timer);
@@ -292,7 +302,7 @@ class HostProcessServer implements HostProcess {
 			throw error;
 		}
 		const subscribeObservation = this.runtime.onObservationChange ?? this.runtime.onChange;
-		this.unsubscribeObservation = subscribeObservation?.call(this.runtime, () => this.scheduleObservationPump());
+		this.unsubscribeObservation = subscribeObservation?.call(this.runtime, () => { if (this.observations.size > 0) this.observationPump.markDirty(); });
 		const subscribeActivity = this.runtime.onActivity ?? this.runtime.onChange;
 		this.unsubscribeActivity = subscribeActivity?.call(this.runtime, () => {
 			this.shutdownIfRequired();
@@ -374,7 +384,8 @@ class HostProcessServer implements HostProcess {
 		entry.close = () => this.closeObservationSubscription(entry, state);
 		state.observations.set(entry.subscriptionId, entry);
 		this.observations.add(entry);
-		this.scheduleObservationPump();
+		// Cover an update that raced the baseline read; revision equality suppresses a duplicate frame.
+		this.observationPump.markDirty();
 		return { value: baseline, close: entry.close };
 	}
 
@@ -384,6 +395,7 @@ class HostProcessServer implements HostProcess {
 		this.observations.delete(entry);
 		state.observations.delete(entry.subscriptionId);
 		this.closeObservationToken(entry.token, state);
+		if (this.observations.size === 0) this.observationPump.cancelPending();
 	}
 
 	/** Release one runtime token; the runtime stops the watch when the last token closes. */
@@ -399,37 +411,10 @@ class HostProcessServer implements HostProcess {
 		});
 	}
 
-	/** Coalesce native observation notifications into one frame check per turn. */
-	private scheduleObservationPump(): void {
-		if (this.closing || this.observations.size === 0) return;
-		if (this.observationPumping) {
-			this.observationAgain = true;
-			return;
-		}
-		if (this.observationPumpScheduled) return;
-		this.observationPumpScheduled = true;
-		queueMicrotask(() => {
-			this.observationPumpScheduled = false;
-			void this.pumpObservations().catch(() => undefined);
-		});
-	}
-
 	/** Publish one state update per subscription whose frame revision advanced. */
 	private async pumpObservations(): Promise<void> {
 		if (this.closing) return;
-		if (this.observationPumping) {
-			this.observationAgain = true;
-			return;
-		}
-		this.observationPumping = true;
-		try {
-			do {
-				this.observationAgain = false;
-				await Promise.all([...this.observations].map((entry) => this.publishObservation(entry)));
-			} while (this.observationAgain && !this.closing);
-		} finally {
-			this.observationPumping = false;
-		}
+		await Promise.all([...this.observations].map((entry) => this.publishObservation(entry)));
 	}
 
 	/** Read one subscription's frame and publish it when its revision advanced. */
@@ -444,6 +429,8 @@ class HostProcessServer implements HostProcess {
 		}
 		if (entry.closed) return;
 		if (!isObservationFrame(frame)) { await this.failObservation(entry); return; }
+		// The subscription or the host may have closed while the frame was built.
+		if (this.closing || entry.closed || !this.observations.has(entry)) return;
 		if (frame.revision === entry.revision) return;
 		entry.revision = frame.revision;
 		entry.publish(frame);
@@ -670,6 +657,8 @@ class HostProcessServer implements HostProcess {
 		this.unsubscribeQuiescent = undefined;
 		this.unsubscribeRelease?.();
 		this.unsubscribeRelease = undefined;
+		// Stop admitting observation work before the runtime that answers it closes.
+		this.observationPump.dispose();
 		this.cancelableRequests.abort(new Error("The durable host process is shutting down"));
 		try {
 			await closeRuntime(this.runtime, this.exit);
@@ -724,7 +713,7 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	let runtime: HostRuntime | undefined;
 	try {
 		runtime = await createRuntime();
-		const host = new HostProcessServer(runtime, paths, claim, idleMs, options.scheduleIdleCheck, options.exit);
+		const host = new HostProcessServer(runtime, paths, claim, idleMs, options.scheduleIdleCheck, options.observationClock, options.exit);
 		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
 		return host;
 	} catch (error) {

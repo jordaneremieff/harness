@@ -899,6 +899,23 @@ that set a final stop reason before their text stream ends. Committed output
 replaces its partial. Hidden native messages stay hidden.
 Display limits remain explicit; missing content is not a fabricated answer.
 
+Live frames are built and applied from the newest state, not once per change.
+The host marks its observation scheduler dirty on every native publication, which
+is cheap, and builds frames at most once per 100 ms; a change that arrives while
+a frame is being built leaves one trailing pass, so the final state is always
+published. A new subscription gets its baseline frame at once and then marks the
+scheduler once to cover a racing update; an unchanged revision publishes
+nothing. The last closed subscription cancels the waiting pass, and host
+shutdown stops the scheduler before the runtime closes. The work view marks the
+selected conversation dirty on each frame notification and applies the newest
+frame (history reconciliation, snapshot, usage, branch refresh and render) at
+most once per 50 ms. The first frame of a new selection applies at once; a
+selection change cancels pending work, and an application scheduled for an
+earlier selection never updates the new one. After the baseline, presentation
+lags a change by at most about 150 ms plus construction and transport. Control
+responses, durable commits, catalogue publication, history persistence and
+report delivery are not delayed by this scheduling.
+
 One dashboard observes one selected conversation. Selection changes release the
 previous watch. Tasks acquires a separate storage task-graph watch only while
 its view is open. A task with several conversations offers a conversation
@@ -1321,8 +1338,10 @@ Exact handle resolution does not depend on roster or list completeness.
 
 Host notifications coalesce roster refreshes. A bounded metadata reconciliation
 while the dashboard is visible discovers hosts created elsewhere and dead
-claims. Neither path repeatedly reads transcripts. Streaming paints coalesce;
-local input paints immediately. Closing the dashboard releases its listeners and
+claims. Neither path repeatedly reads transcripts. Streaming frames coalesce
+before application and paint (see
+[live conversation and history](#live-conversation-and-history)); local input
+paints immediately. Closing the dashboard releases its listeners and
 UI timers. A registered primary keeps the shared catalog observer active.
 A failed refresh keeps the last good roster. A transient failure stays quiet
 when rows remain available; repeated failures or an empty roster show a notice

@@ -11,7 +11,7 @@ import { acquireHost, connectHost, type HostConnection } from "./host-client.ts"
 import type { HostMetadata } from "./host-protocol.ts";
 import { createAgentObservationSource, type AgentObservationHost } from "./agent-observation.ts";
 import type { ObservationFrame, TasksFrame } from "./live-frames.ts";
-import { page, row, turn, deferred } from "./dashboard-test-fixture.mts";
+import { conversationFrame, page, row, turn, deferred } from "./dashboard-test-fixture.mts";
 it("selects a manager spawn before storage exists and attaches to its real host", { timeout: 60000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "agent-startup-"));
 	let cleanup: () => Promise<void> = async () => {};
@@ -363,5 +363,21 @@ it("roster notifications are distinct from frame changes and repeated revisions 
 	assert.equal(source.availability("one")?.state, "unavailable");
 	assert.equal(frames, 1);
 	rosterOff();
+	off();
+});
+
+it("a repeated revision notifies once and the source always holds the newest frame", async () => {
+	const f = fixture();
+	const source = createAgentObservationSource(f.host);
+	let notifications = 0;
+	const off = source.subscribe(() => { notifications++; });
+	source.select("one");
+	await turn();
+	const listener = f.listeners.get("one:conversation");
+	assert.ok(listener);
+	const frame = (revision: number) => ({ ...conversationFrame({ revision }), conversationId: 1 }) as ObservationFrame;
+	for (const revision of [1, 1, 2, 2, 2, 3]) listener(frame(revision), true, "live");
+	assert.equal(notifications, 3, "only distinct revisions notify");
+	assert.equal(source.frame("one")?.revision, 3, "the newest frame is the one read");
 	off();
 });
