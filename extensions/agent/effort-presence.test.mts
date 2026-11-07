@@ -3,13 +3,15 @@ import { randomUUID } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { AgentCatalog } from "./catalog.ts";
-import { boundCatalogView } from "./catalog-view.ts";
+import { boundCatalogView, withIntentClaims } from "./catalog-view.ts";
 import { PRIMARY_ENDPOINT_VERSION, primaryEndpointPath } from "./primary-channel.ts";
 import { discoverPrimaryLocation, createPrimaryLocationResolver } from "./effort-location.ts";
 import { readRelatedEfforts, type EffortReadResources, type PrimaryIntentClaim } from "./effort-presence.ts";
+import { hostPaths } from "./host-protocol.ts";
+import type { NativeIntentMetadata } from "./durable-controls.ts";
 
 function rootFor(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "efforts-"));
@@ -256,6 +258,30 @@ it("does not count an omitted native claim again as an unsupported producer", as
 	assert.equal(page.coverage.omitted, 1);
 	assert.equal(page.coverage.complete, false);
 	assert.deepEqual(page.coverage.reasons, ["native-intent-incomplete"]);
+});
+
+it("observes one writer claim once for several native rows in a storage", async (t) => {
+	const root = rootFor(t);
+	const native = unsupportedNative(root);
+	const catalog = new AgentCatalog(root);
+	const metadata: NativeIntentMetadata = { claim: intent(), cwd: native.cwd, repository: null, repositoryState: "outside-git", hostname: hostname(), startedAt: "2026-01-01T00:00:00.000Z", taskId: 2 };
+	const rows = [
+		{ id: native.storageId, storageId: native.storageId, cwd: native.cwd, modifiedAt: 1, owner: "here", state: "idle", cost: 0, partial: false },
+		{ id: `${native.storageId}:2`, storageId: native.storageId, cwd: native.cwd, modifiedAt: 2, owner: "here", state: "idle", cost: 0, partial: false },
+	];
+	const view = withIntentClaims(boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: native.storageId, rows }), {
+		rows: Object.fromEntries(rows.map(row => [row.id, metadata])),
+		coverage: { complete: true, omitted: 0 },
+	});
+	writeFileSync(catalog.path(native.storageId), JSON.stringify({ ...native, view }));
+	const paths = hostPaths(native);
+	mkdirSync(dirname(paths.claim), { recursive: true });
+	writeFileSync(paths.claim, JSON.stringify({ sessionId: native.storageId, cwd: native.cwd, host: hostname(), createdAt: new Date().toISOString(), pid: process.pid }));
+	const spy = t.mock.method(process, "kill", () => true);
+	const page = await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() });
+	assert.equal(page.efforts.length, 2);
+	assert.ok(page.efforts.every(row => row.liveness === "live"));
+	assert.equal(spy.mock.callCount(), 1, "one writer claim observation serves both rows");
 });
 
 it("shares visit, result and byte caps across ordinary and native roots without counting unsupported claims as omissions", async t => {
