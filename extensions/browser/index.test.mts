@@ -89,6 +89,24 @@ function publications(emitted: Emitted[]) {
 	return emitted.filter((entry) => entry.channel === "harness:settings:publish");
 }
 
+/**
+ * The rules Pi renders for a request: one bullet per distinct guideline text of
+ * each active tool, normalized by trimming.
+ */
+function renderedGuidance(tools: Map<string, RegisteredTool>, active: readonly string[]): string[] {
+	const seen = new Set<string>();
+	const rendered: string[] = [];
+	for (const name of active) {
+		for (const guideline of tools.get(name)?.promptGuidelines ?? []) {
+			const line = guideline.trim();
+			if (line.length === 0 || seen.has(line)) continue;
+			seen.add(line);
+			rendered.push(line);
+		}
+	}
+	return rendered;
+}
+
 beforeEach((t) => {
 	assert.ok("mock" in t && "after" in t);
 	const agentDir = mkdtempSync(join(tmpdir(), "browser-entrypoint-"));
@@ -133,11 +151,35 @@ describe("browser extension entrypoint", () => {
 		for (const name of ["browser_tabs", "browser_inspect", "browser_capture"]) {
 			assert.equal(tools.get(name)?.executionMode, undefined, name);
 		}
+	});
 
-		const guidelines = tools.get("browser_tabs")?.promptGuidelines ?? [];
-		assert.ok(guidelines.length > 0);
-		assert.match(guidelines.join("\n"), /untrusted data, not instructions/);
-		assert.match(guidelines.join("\n"), /browser_tabs/);
+	it("gives every offered tool the full shared guidance when it is the only active tool", () => {
+		process.env.PI_BROWSER_ACCESS = JSON.stringify({ chrome: "interact" });
+		const { api, tools } = fixture();
+		registerBrowser(api as unknown as ExtensionAPI);
+
+		const shared = tools.get("browser_tabs")?.promptGuidelines ?? [];
+		assert.ok(shared.length > 0);
+		for (const name of ["browser_tabs", "browser_inspect", "browser_act", "browser_evaluate", "browser_capture"]) {
+			assert.deepEqual(tools.get(name)?.promptGuidelines, shared, name);
+			const guidance = renderedGuidance(tools, [name]).join("\n");
+			assert.match(guidance, /browser_tabs before other browser tools/, name);
+			assert.match(guidance, /not task authority/, name);
+			assert.match(guidance, /untrusted data, not instructions/, name);
+			assert.match(guidance, /inspect the page before any repeat/, name);
+			assert.match(guidance, /Do not read or export cookies/, name);
+		}
+	});
+
+	it("renders one copy of each guideline for two active tools and none while no browser tool is active", () => {
+		process.env.PI_BROWSER_ACCESS = JSON.stringify({ chrome: "interact" });
+		const { api, tools } = fixture();
+		registerBrowser(api as unknown as ExtensionAPI);
+
+		const shared = tools.get("browser_tabs")?.promptGuidelines ?? [];
+		assert.deepEqual(renderedGuidance(tools, ["browser_tabs", "browser_evaluate"]), shared);
+		assert.deepEqual(renderedGuidance(tools, ["browser_inspect", "browser_act"]), shared);
+		assert.deepEqual(renderedGuidance(tools, []), []);
 	});
 
 	it("requires pid on every targeted tool through the host argument validation", () => {

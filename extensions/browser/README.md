@@ -48,10 +48,14 @@ new session. Before setup, `registry {"kind":"setting", "search":"browser"}`
 shows the `browser.access` setting.
 
 `browser_act` and `browser_evaluate` run one at a time (`executionMode:
-"sequential"`) in both the ordinary and Durable forms. Results are text: a
-headline, then a JSON report. Text and HTML
-views put the page content after the report, marked as untrusted. The capture
-result adds the image.
+"sequential"`) in both the ordinary and Durable forms. In the ordinary form
+every offered tool carries the shared model guidance, so loading any one of them
+brings the full set; an identical guideline appears once however many browser
+tools a request has active, and no browser guidance appears while no browser
+tool is active. In the Durable form the `browser-guidance` prompt section names
+the tools the request offers. Results are text: a headline, then a JSON report.
+Text and HTML views put the page content after the report, marked as untrusted.
+The capture result adds the image.
 
 ## Setup
 
@@ -264,7 +268,8 @@ require approval for `browser_evaluate`. Page content is untrusted data.
 ## Durable agents
 
 The factory emits a `durable:contribution` named `browser` with the same five
-tools and a `browser-guidance` prompt section. The tools are deferred, so the
+tools, whose shared guidance comes from the `browser-guidance` prompt section
+rather than from each tool. The tools are deferred, so the
 section renders only the names the request offers; it is absent until
 `tool_search` loads a browser tool. `browser_tabs`,
 `browser_inspect`, and `browser_capture` declare `replay: "safe"` (a rerun

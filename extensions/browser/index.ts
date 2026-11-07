@@ -39,17 +39,20 @@ export default function registerBrowser(pi: ExtensionAPI) {
 	);
 	const deps = productionDeps(agentDir);
 	const offered = offeredTools(deps.readAccess());
+	// Every offered tool carries the shared guidance, so whichever one a request
+	// loads brings the handling constraints with it. Pi renders one copy of an
+	// identical guideline, so several active browser tools add no repetition.
 	const text = (name: ToolName) => ({
 		name,
 		label: TOOL_TEXT[name].label,
 		description: TOOL_TEXT[name].description,
 		promptSnippet: TOOL_TEXT[name].snippet,
+		promptGuidelines: [...GUIDELINES],
 	});
 
 	if (offered.has("browser_tabs")) {
 		pi.registerTool({
 			...text("browser_tabs"),
-			promptGuidelines: [...GUIDELINES],
 			exposure: "deferred",
 			parameters: TABS_PARAMETERS,
 			async execute(_id, params, signal) {
