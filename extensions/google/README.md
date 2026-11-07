@@ -99,26 +99,33 @@ another way bypasses it.
 
 ## Setup
 
-1. Install `gws` 0.22.5 at a fixed absolute path and set `google.executable`.
-   The extension checks the version on first use.
-2. Create the dedicated configuration directory (`google.configDir`) and place
-   the Google Cloud Desktop app OAuth client JSON in it as
-   `client_secret.json`. Enable the Google APIs for the services you use in that
-   Cloud project.
-3. Sign in once from a terminal with the same directory, keyring backend and
-   the scopes you want, for example:
+The extension installs and signs in to `gws` itself. Run the `/google`
+command in Pi, or the same verbs from a shell with
+`node extensions/google/cli.ts <verb>`:
 
-   ```bash
-   GOOGLE_WORKSPACE_CLI_CONFIG_DIR=<configDir> GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND=keyring \
-     <executable> auth login --scopes https://www.googleapis.com/auth/gmail.readonly
-   ```
+| Verb | Effect |
+|---|---|
+| `setup [--client <file>] [--account <email>] [--services gmail,drive,sheets,calendar] [--access read\|write]` | Installs the pinned `gws` release when the managed copy is in use, imports a Google Cloud Desktop app OAuth client JSON into the configuration directory, signs out locally, signs in with the scopes for the chosen services, and records the signed-in account. Services default to all four and access to `read`. |
+| `update` | Installs the pinned `gws` release again if the managed copy is missing or reports another version, and names the newest upstream release. |
+| `status` | Shows the backend, account, granted scopes and capabilities. |
+| `logout` | Removes local `gws` credentials and the recorded account. The grant at Google stays until you remove the app's access in your Google Account. |
 
-4. Set `google.expectedAccount` to the account address. Every operation checks
-   the signed-in account against it.
+The managed copy lives at `<agentDir>/google/bin/<version>/gws`. Setup
+downloads the macOS archive for the running architecture from the
+`googleworkspace/cli` GitHub release and refuses it unless its SHA-256 matches
+the digest pinned in `release.ts`. A new `gws` version therefore arrives with
+a change to `release.ts`, followed by `/google update`.
 
-To change scopes, sign out with `gws auth logout` in the same directory and
-sign in again with the complete scope set. `gws auth logout` removes local
-credentials only; it does not revoke the grant at Google.
+Before the first setup, create the OAuth client in a Google Cloud project:
+an External consent screen with your account as a test user, a Desktop app
+client, and the Gmail, Drive, Sheets and Calendar APIs enabled for the services
+you use. In testing mode Google expires refresh tokens after seven days; run
+setup again when that happens, or publish the consent screen to production.
+
+Setup signs in through Google's consent page in the browser. To change
+services or access later, run setup again with the complete set you want; it
+signs out locally first. `/google logout` and setup do not revoke an earlier
+broader grant at Google.
 
 The extension runs `gws` with a fixed environment: the configured directory,
 the Keychain backend, a nonexistent `GOOGLE_APPLICATION_CREDENTIALS` path (so
@@ -140,9 +147,9 @@ offered tools only.
 <!-- harness:settings:start -->
 | Key | Environment | Type | Default | Constraints | Description |
 |---|---|---|---|---|---|
-| executable | `PI_GOOGLE_EXECUTABLE` | path | unset | absolute input | Absolute path to the pinned gws 0.22.5 native executable. |
+| executable | `PI_GOOGLE_EXECUTABLE` | path | &lt;agentDir&gt;/google/bin/&lt;pinned version&gt;/gws | absolute input | Absolute path to the gws executable. The default is the copy that /google setup installs. |
 | configDir | `PI_GOOGLE_CONFIG_DIR` | path | &lt;agentDir&gt;/google/gws | none | Dedicated gws configuration directory for the personal Google account. |
-| expectedAccount | `PI_GOOGLE_EXPECTED_ACCOUNT` | string | unset | minLength 3; maxLength 320 | Exact Google account email address that every authenticated operation must use. |
+| expectedAccount | `PI_GOOGLE_EXPECTED_ACCOUNT` | string | unset | minLength 3; maxLength 320 | Google account address that every operation must use. When unset, the account that /google setup signed in applies. |
 <!-- harness:settings:end -->
 
 ## Files and checks
@@ -150,6 +157,9 @@ offered tools only.
 - `index.ts` registers the tools, publishes settings and emits the Durable
   contribution; `durable.ts` is the native form; `tools.ts` holds the shared
   tool shape and guidance.
+- `setup.ts` installs `gws`, imports the OAuth client, signs in and records
+  the account; `release.ts` pins the version and archive digests;
+  `command.ts` implements the `/google` verbs for the command and `cli.ts`.
 - `gws.ts` runs `gws` (environment, limits, exit-code mapping, version and
   account checks, the account lock).
 - `gmail.ts`, `drive.ts`, `sheets.ts` and `calendar.ts` define the tools.

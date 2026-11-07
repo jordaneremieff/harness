@@ -61,7 +61,8 @@ test("settings: environment overrides, the default config directory and absolute
 		const missing = join(agentDir, "missing.json");
 		const defaults = readSettings({ agentDir, env: { PI_HARNESS_FILE: missing } });
 		assert.equal(defaults.values.configDir, join(agentDir, "google", "gws"));
-		assert.equal(defaults.values.executable, undefined);
+		const managed = join(agentDir, "google", "bin", "0.22.5", "gws");
+		assert.equal(defaults.values.executable, managed);
 		const set = readSettings({
 			agentDir,
 			env: { PI_HARNESS_FILE: missing, PI_GOOGLE_EXECUTABLE: "/opt/gws/gws", PI_GOOGLE_EXPECTED_ACCOUNT: ACCOUNT },
@@ -69,7 +70,7 @@ test("settings: environment overrides, the default config directory and absolute
 		assert.equal(set.values.executable, "/opt/gws/gws");
 		assert.equal(set.values.expectedAccount, ACCOUNT);
 		const relative = readSettings({ agentDir, env: { PI_HARNESS_FILE: missing, PI_GOOGLE_EXECUTABLE: "bin/gws" } });
-		assert.equal(relative.values.executable, undefined);
+		assert.equal(relative.values.executable, managed);
 		assert.ok(relative.diagnostics.some((item) => item.field === "google.executable"));
 	} finally {
 		await rm(agentDir, { recursive: true, force: true });

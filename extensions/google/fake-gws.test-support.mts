@@ -40,6 +40,10 @@ const fs = require("node:fs");
 const path = require("node:path");
 const dir = process.env.GOOGLE_WORKSPACE_CLI_CONFIG_DIR;
 const args = process.argv.slice(2);
+if (!dir) {
+	process.stdout.write(args[0] === "--version" ? "gws 0.22.5\n" : "");
+	process.exit(args[0] === "--version" ? 0 : 5);
+}
 const scenario = JSON.parse(fs.readFileSync(path.join(dir, "fake-scenario.json"), "utf8"));
 const env = {};
 for (const key of ["GOOGLE_WORKSPACE_CLI_CONFIG_DIR", "GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND", "GOOGLE_APPLICATION_CREDENTIALS", "PI_TEST_MARKER", "PATH", "HOME"]) {
@@ -74,6 +78,7 @@ if (!response && key === "auth status") {
 		has_refresh_token: true, token_valid: true, user: scenario.user || "person@example.com", scopes: scenario.scopes || [],
 	}, scenario.auth || {}) };
 }
+if (!response && (key === "auth login" || key === "auth logout")) response = { stdout: "done" };
 if (!response && key === "gmail users getProfile") response = { stdout: { emailAddress: scenario.user || "person@example.com" } };
 if (!response) {
 	process.stderr.write("no fake response for " + key);

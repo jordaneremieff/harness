@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { Static } from "@earendil-works/pi-schema";
 import { calendarTools } from "./calendar.ts";
+import { googleCommand, USAGE } from "./command.ts";
 import { driveTools } from "./drive.ts";
 import { googleContribution } from "./durable.ts";
 import { gmailTools } from "./gmail.ts";
@@ -18,6 +19,12 @@ export default function (pi: ExtensionAPI) {
 	const stopSettings = publishSettings(pi.events, { agentDir });
 	pi.on("session_shutdown", () => stopSettings());
 	pi.events.emit("durable:contribution", googleContribution(fileURLToPath(import.meta.url), pi.events, stopSettings));
+	pi.registerCommand("google", {
+		description: `Set up, update, inspect or sign out of Google access: ${USAGE}`,
+		handler: async (args, ctx) => {
+			await googleCommand(args, agentDir, process.env, (line, level) => ctx.ui.notify(line, level ?? "info"));
+		},
+	});
 	for (const tool of googleTools) {
 		pi.registerTool<typeof tool.parameters, Record<string, unknown>>({
 			name: tool.name,

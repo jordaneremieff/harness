@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
+import { GWS_VERSION } from "./release.ts";
 
 export const settings = {
 	slice: "google",
@@ -9,7 +10,8 @@ export const settings = {
 			type: "path",
 			env: "PI_GOOGLE_EXECUTABLE",
 			absolute: true,
-			description: "Absolute path to the pinned gws 0.22.5 native executable.",
+			defaultText: "<agentDir>/google/bin/<pinned version>/gws",
+			description: "Absolute path to the gws executable. The default is the copy that /google setup installs.",
 		},
 		configDir: {
 			type: "path",
@@ -22,7 +24,8 @@ export const settings = {
 			env: "PI_GOOGLE_EXPECTED_ACCOUNT",
 			minLength: 3,
 			maxLength: 320,
-			description: "Exact Google account email address that every authenticated operation must use.",
+			description:
+				"Google account address that every operation must use. When unset, the account that /google setup signed in applies.",
 		},
 	},
 } as const;
@@ -176,12 +179,19 @@ function checked(key: Key, input: unknown, agentDir: string): string | undefined
 	if (path.length > 4096) throw new Error("Resolved path exceeds length bound");
 	return path;
 }
+export function managedExecutable(agentDir: string): string {
+	return resolve(agentDir, "google", "bin", GWS_VERSION, "gws");
+}
 function fallback(key: Key, agentDir: string): string | undefined {
-	if (key !== "configDir") return undefined;
+	if (key === "expectedAccount") return undefined;
 	try {
-		return checked(key, resolve(agentDir, "google", "gws"), agentDir);
+		return checked(
+			key,
+			key === "executable" ? managedExecutable(agentDir) : resolve(agentDir, "google", "gws"),
+			agentDir,
+		);
 	} catch {
-		throw new Error("Invalid default for google.configDir");
+		throw new Error(`Invalid default for google.${key}`);
 	}
 }
 type Selection = { value: string | undefined; origin: Origin; invalid: boolean };

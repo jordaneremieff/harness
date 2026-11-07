@@ -4,10 +4,11 @@ import { lstat, mkdir, open, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { ensureEmptyDotEnv, ensurePrivateDir } from "./files.ts";
+import { GWS_VERSION } from "./release.ts";
 import { errorResult, GoogleError, ok, type Result } from "./result.ts";
 import { type Environment, readSettings, type Snapshot } from "./settings.ts";
 
-export const GWS_VERSION = "0.22.5";
+export { GWS_VERSION };
 export const STDOUT_LIMITS = {
 	metadata: 2 * 1024 * 1024,
 	message: 16 * 1024 * 1024,
@@ -290,31 +291,17 @@ export class GoogleRuntime {
 	}
 
 	private controlledEnvironment(configDir: string, stateDir: string): NodeJS.ProcessEnv {
-		if (!this.env.HOME) throw new GoogleError("CONFIG_ERROR", "HOME is required for the gws Keychain backend.");
-		return {
-			HOME: this.env.HOME,
-			PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-			LANG: "en_US.UTF-8",
-			...(this.env.USER ? { USER: this.env.USER } : {}),
-			...(this.env.LOGNAME ? { LOGNAME: this.env.LOGNAME } : {}),
-			GOOGLE_WORKSPACE_CLI_CONFIG_DIR: configDir,
-			GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND: "keyring",
-			GOOGLE_APPLICATION_CREDENTIALS: join(stateDir, "no-application-default-credentials.json"),
-			NO_COLOR: "1",
-		};
+		return gwsEnvironment(this.env, configDir, stateDir);
 	}
 
 	private async prepare(snapshot: Snapshot) {
-		const { executable, configDir, expectedAccount } = snapshot.values;
-		if (!executable || !expectedAccount)
-			throw new GoogleError(
-				"CONFIG_REQUIRED",
-				"Set google.executable and google.expectedAccount before Google operations.",
-			);
+		const { executable, configDir } = snapshot.values;
 		const configInfo = await lstat(configDir).catch(() => undefined);
-		if (!configInfo?.isDirectory() || configInfo.isSymbolicLink())
-			throw new GoogleError("CONFIG_ERROR", `The dedicated gws config directory is unavailable: ${configDir}`);
+		if (!executable || !configInfo?.isDirectory() || configInfo.isSymbolicLink())
+			throw new GoogleError("SETUP_REQUIRED", "Google access is not set up. Run /google setup.");
 		const stateDir = join(configDir, "pi-extension");
+		const expectedAccount = snapshot.values.expectedAccount ?? (await recordedAccount(stateDir));
+		if (!expectedAccount) throw new GoogleError("SETUP_REQUIRED", "No Google account is recorded. Run /google setup.");
 		const workDir = join(stateDir, "work");
 		await ensurePrivateDir(workDir);
 		await ensureEmptyDotEnv(workDir);
@@ -449,7 +436,12 @@ export class GoogleRuntime {
 		handler: (operation: Operation) => Promise<Result<T>>,
 	): Promise<Result<T>> {
 		const snapshot = this.settings();
-		const prepared = await this.prepare(snapshot);
+		let prepared: Prepared;
+		try {
+			prepared = await this.prepare(snapshot);
+		} catch (error) {
+			return errorResult(error);
+		}
 		const release = await acquireLock(prepared.lockTarget);
 		try {
 			if (signal?.aborted) throw abortError();
@@ -473,7 +465,7 @@ export class GoogleRuntime {
 			configDir: snapshot.values.configDir,
 		};
 		try {
-			return await this.run<Record<string, unknown>>({}, signal, async ({ auth }) =>
+			const result = await this.run<Record<string, unknown>>({}, signal, async ({ auth }) =>
 				ok({
 					...base,
 					ready: true,
@@ -494,6 +486,7 @@ export class GoogleRuntime {
 					},
 				}),
 			);
+			return result.status === "error" ? ok({ ...base, ready: false, error: result.error }) : result;
 		} catch (error) {
 			return ok({ ...base, ready: false, error: errorResult(error).error });
 		}
@@ -505,6 +498,32 @@ type Prepared = Awaited<ReturnType<GoogleRuntime["prepare"]>>;
 const noCall: Operation["call"] = async () => {
 	throw new GoogleError("CONFIG_ERROR", "This local operation has no gws call.");
 };
+
+/** The fixed child environment: no inherited credentials, tokens, proxies or .env discovery outside the work directory. */
+export function gwsEnvironment(env: Environment, configDir: string, stateDir: string): NodeJS.ProcessEnv {
+	if (!env.HOME) throw new GoogleError("CONFIG_ERROR", "HOME is required for the gws Keychain backend.");
+	return {
+		HOME: env.HOME,
+		PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+		LANG: "en_US.UTF-8",
+		...(env.USER ? { USER: env.USER } : {}),
+		...(env.LOGNAME ? { LOGNAME: env.LOGNAME } : {}),
+		GOOGLE_WORKSPACE_CLI_CONFIG_DIR: configDir,
+		GOOGLE_WORKSPACE_CLI_KEYRING_BACKEND: "keyring",
+		GOOGLE_APPLICATION_CREDENTIALS: join(stateDir, "no-application-default-credentials.json"),
+		NO_COLOR: "1",
+	};
+}
+
+export const ACCOUNT_FILE = "account.json";
+
+/** The account that /google setup signed in, used when google.expectedAccount is unset. */
+export async function recordedAccount(stateDir: string): Promise<string | undefined> {
+	const value: unknown = await readFile(join(stateDir, ACCOUNT_FILE), "utf8")
+		.then((text) => JSON.parse(text) as unknown)
+		.catch(() => undefined);
+	return object(value) && typeof value.account === "string" ? value.account : undefined;
+}
 
 function credentialProfileKey(auth: Auth): string {
 	return `${auth.account}:${auth.scopes.slice().sort().join(",")}`;
