@@ -209,6 +209,53 @@ test("accounts parse products, not the note body", () => {
 	assert.ok(Buffer.byteLength(text) > 100_000);
 });
 
+test("returns a cyclic mapping parse product uncached and counts it as skipped", () => {
+	const cache = createMemorySourceCache();
+	const directory = root();
+	const text = "---\ntitle: Cyclic\nmeta: &a\n  self: *a\nstatus: active\nsuperseded_by: null\n---\n# Cyclic\n";
+	const header = headerOf(cache, directory, text);
+	assert.equal(header.metadata, "ok");
+	assert.equal(header.status, "active");
+	const meta = (header.parsed as { meta: Record<string, unknown> }).meta;
+	assert.equal(meta.self, meta);
+	assert.equal(cache.statistics().entries, 0);
+	assert.equal(cache.statistics().bytes, 0);
+	assert.equal(cache.statistics().skipped, 1);
+	assert.equal(headerOf(cache, directory, text).status, "active");
+	assert.equal(cache.statistics().skipped, 2);
+	assert.equal(cache.statistics().misses, 2);
+	assert.equal(headerOf(cache, directory, HEADER).pointer("title"), "Alpha");
+	assert.equal(cache.statistics().entries, 1);
+	assert.equal(cache.statistics().skipped, 2);
+});
+
+test("returns a cyclic sequence parse product uncached and counts it as skipped", () => {
+	const cache = createMemorySourceCache();
+	const directory = root();
+	const text = "---\ntitle: Cyclic\ntags: &b\n  - *b\nstatus: active\nsuperseded_by: null\n---\n# Cyclic\n";
+	const header = headerOf(cache, directory, text);
+	assert.equal(header.metadata, "ok");
+	const tags = (header.parsed as { tags: unknown[] }).tags;
+	assert.equal(tags[0], tags);
+	assert.equal(cache.statistics().entries, 0);
+	assert.equal(cache.statistics().bytes, 0);
+	assert.equal(cache.statistics().skipped, 1);
+	assert.equal(headerOf(cache, directory, text).metadata, "ok");
+	assert.equal(cache.statistics().skipped, 2);
+});
+
+test("returns a header that cannot round-trip exactly without retaining it", () => {
+	const cache = createMemorySourceCache();
+	const directory = root();
+	const text = "---\ntitle: A\uD800B\nstatus: active\n---\n# Body\n";
+	const header = headerOf(cache, directory, text);
+	assert.ok(header.header.includes("\uD800"));
+	assert.equal(cache.statistics().entries, 0);
+	assert.equal(cache.statistics().skipped, 1);
+	assert.equal(headerOf(cache, directory, text).header.includes("\uD800"), true);
+	assert.equal(cache.statistics().skipped, 2);
+});
+
 test("computes freshness and its UTC day outside the cached parse", () => {
 	const cache = createMemorySourceCache();
 	const directory = root();

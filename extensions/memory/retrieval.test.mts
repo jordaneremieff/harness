@@ -286,6 +286,24 @@ test("search and every note page expose source-specific freshness without renewi
 	assert.deepEqual(readFileSync(join(root, "subject.md")), before);
 });
 
+test("a valid cyclic alias in one note does not suppress the corpus index or search", async () => {
+	const cyclic =
+		"---\ntitle: Cyclic\nmeta: &a\n  self: *a\nstatus: active\nsuperseded_by: null\n---\n\n# Cyclic\n\ncyclicneedle body.\n";
+	const healthy =
+		"---\ntitle: Healthy\nstatus: active\nsuperseded_by: null\n---\n\n# Healthy\n\nhealthyneedle body.\n";
+	const root = corpus({ "README.md": README, "cyclic.md": cyclic, "healthy.md": healthy });
+	const index = await memoryIndex(root);
+	assert.match(index ?? "", /^cyclic:/m);
+	assert.match(index ?? "", /^healthy:/m);
+	const found = notes(await search(root, { query: "healthyneedle" }));
+	assert.deepEqual(
+		found.map((note) => note.slug),
+		["healthy"],
+	);
+	assert.equal(string(notes(await search(root, { query: "cyclicneedle" }))[0].slug), "cyclic");
+	assert.equal(object((await read(root, { slug: "cyclic" })).freshness).concern, null);
+});
+
 test("freshness preserves declarations and qualifies absent or malformed current metadata", async (t) => {
 	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-29T00:00:00.000Z") });
 	const cases: Array<[string, string, string, RegExp | null]> = [
@@ -318,6 +336,30 @@ test("freshness preserves declarations and qualifies absent or malformed current
 	const freshness = object((await read(future, { slug: "subject" })).freshness);
 	assert.equal(freshness.verifiedDate, "2027-01-01");
 	assert.match(array(freshness.problems).join("; "), /in the future/);
+});
+
+test("mutating returned freshness records cannot change later reads or searches", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: new Date("2026-09-29T00:00:00.000Z") });
+	const concern = { date: "2026-09-28", reason: "One claim is disputed.", sources: "Conflicting synthetic source." };
+	const lastReview = { date: "2026-09-27", digest: "a".repeat(64), sources: "Synthetic prior source." };
+	const retirement = { date: "2026-09-26", reason: "Evidence no longer applies.", sources: "Synthetic retirement source." };
+	const source = ACTIVE.replace(
+		"---\n\n#",
+		`review_flag: ${JSON.stringify(concern)}\nlast_review: ${JSON.stringify(lastReview)}\nretirement: ${JSON.stringify(retirement)}\n---\n\n#`,
+	);
+	const root = corpus({ "README.md": README, "subject.md": source });
+	const first = object((await read(root, { slug: "subject" })).freshness);
+	const expected = structuredClone(first);
+	object(first.concern).reason = "Mutated concern reason.";
+	object(first.lastReview).digest = "b".repeat(64);
+	object(first.retirement).sources = "Mutated retirement source.";
+	array(first.problems).push("Mutated problem.");
+	const second = object((await read(root, { slug: "subject" })).freshness);
+	assert.deepEqual(second, expected);
+	assert.notEqual(second.concern, first.concern);
+	const found = object(notes(await search(root, { query: "theme" }))[0].freshness);
+	assert.deepEqual(found, expected);
+	assert.notEqual(found.lastReview, first.lastReview);
 });
 
 test("freshness enforces the original header byte bound with BOM and CRLF intact", async () => {

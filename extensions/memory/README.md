@@ -537,16 +537,21 @@ verified source text: metadata and its state, cue lines, unusable fields, lifecy
 status and isolated scalar pointer fields such as the title. It retains the bounded
 header region and those parse products only; it stores no separate note body, scan,
 cursor, descriptor or abort signal, and adds no timestamp, watcher, background task
-or write side effect.
+or write side effect. On a miss the header region is copied into its own storage, so
+a cache entry does not retain the complete read window behind a smaller header.
 
 The cache keys each entry by canonical root, filename, truncation interpretation,
 body offset and the exact raw header bytes. It holds at most 2,048 entries and 8 MiB
 of accounted parse data, evicts least-recently-used entries, and does not retain an
-entry whose accounted size exceeds 256 KiB. A changed root or changed header cannot
-reuse another corpus's or note's products. A successful owned publication invalidates
-that root and filename, including an earlier success in a partly failed multi-write
-operation. Final ordinary and Durable teardown clear the cache. Freshness and UTC-day
-calculations run outside the cache. Identical cues produce identical section bytes;
+entry whose accounted size exceeds 256 KiB. A parse product that cannot be accounted
+for, for example a valid header whose aliases form a cycle, is returned to the caller
+uncached and counted as skipped; such a note stays readable and cannot suppress the
+corpus. A changed root or changed header cannot reuse another corpus's or note's
+products. A successful owned publication invalidates that root and filename, including
+an earlier success in a partly failed multi-write operation. Final ordinary and Durable
+teardown clear the cache. Freshness and UTC-day calculations run outside the cache and
+report copies of the small review records, so a caller cannot change cached parse
+products. Identical cues produce identical section bytes;
 body-only or date-only changes produce no index delta. A change to visible cues or
 membership updates the next run's section. Title changes that leave the same compact
 pointer list and form produce no index delta.

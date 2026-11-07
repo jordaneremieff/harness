@@ -139,6 +139,15 @@ function readReviewTiming(
 	return { policy, reviewAfter: null, deadline: "unknown" };
 }
 
+/** Cached parse products stay private; each read reports owned copies. */
+function copyConcern(record: Concern): Concern {
+	return { date: record.date, reason: record.reason, sources: record.sources };
+}
+
+function copyReviewRecord(record: ReviewRecord): ReviewRecord {
+	return { date: record.date, digest: record.digest, sources: record.sources };
+}
+
 function readReviewRecords(meta: Record<string, unknown>, usable: UsableField, result: Freshness): void {
 	for (const [key, output] of [
 		["review_flag", "concern"],
@@ -146,10 +155,11 @@ function readReviewRecords(meta: Record<string, unknown>, usable: UsableField, r
 		["retirement", "retirement"],
 	] as const) {
 		if (!Object.hasOwn(meta, key) || !usable(key) || meta[key] === null) continue;
-		if (!reviewRecord(meta[key], key === "last_review" ? "confirmation" : "concern")) continue;
-		if (output === "lastReview") result.lastReview = meta[key] as ReviewRecord;
-		else result[output] = meta[key] as Concern;
-		if ((meta[key] as Concern).date > result.evaluatedOn) result.problems.push(`${key} date is in the future`);
+		const record = meta[key];
+		if (!reviewRecord(record, key === "last_review" ? "confirmation" : "concern")) continue;
+		if (output === "lastReview") result.lastReview = copyReviewRecord(record as ReviewRecord);
+		else result[output] = copyConcern(record as Concern);
+		if ((record as Concern).date > result.evaluatedOn) result.problems.push(`${key} date is in the future`);
 	}
 }
 

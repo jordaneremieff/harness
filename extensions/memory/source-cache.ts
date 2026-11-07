@@ -285,8 +285,37 @@ function accountedSize(root: string, file: string, header: ParsedMemoryHeader): 
 	);
 }
 
+/** An unaccountable parse product is skipped rather than failing the read. */
+function accountedBytes(root: string, file: string, header: ParsedMemoryHeader): number | undefined {
+	try {
+		return accountedSize(root, file, header);
+	} catch {
+		return undefined;
+	}
+}
+
 function pointerSize(key: string, value: string | undefined): number {
 	return Buffer.byteLength(key) + (value === undefined ? 0 : Buffer.byteLength(value)) + 8;
+}
+
+/**
+ * Copy a bounded region into its own storage.
+ *
+ * A slice keeps its complete parent string alive, so a retained header slice
+ * would retain the whole read window. A UTF-8 round trip creates independent
+ * storage; text that cannot round-trip exactly is left for the caller to skip.
+ */
+function detach(text: string): string | undefined {
+	const copy = Buffer.from(text, "utf8").toString("utf8");
+	return copy === text ? copy : undefined;
+}
+
+function detachedSkeleton(skeleton: HeaderSkeleton): HeaderSkeleton | undefined {
+	const header = detach(skeleton.header);
+	if (header === undefined) return undefined;
+	if (skeleton.block === undefined) return { ...skeleton, header };
+	const block = detach(skeleton.block);
+	return block === undefined ? undefined : { ...skeleton, header, block };
 }
 
 /**
@@ -294,7 +323,10 @@ function pointerSize(key: string, value: string | undefined): number {
  *
  * A key binds the canonical root, filename, truncation interpretation, body offset
  * and exact raw header bytes. A changed root or changed header cannot reuse another
- * corpus's or note's products. Accounts include the retained parse products.
+ * corpus's or note's products. Accounts include the retained parse products. A miss
+ * copies the header region into its own storage, so an entry does not retain the read
+ * window it was parsed from. A parse product that cannot be accounted for is returned
+ * uncached and counted as skipped.
  *
  * A source without a closing delimiter has no separable body region: its header
  * interpretation is the bounded read window, which is what an entry retains.
@@ -349,7 +381,8 @@ export function createMemorySourceCache(
 		}
 		misses += 1;
 		const pointers = new Map<string, string | undefined>();
-		const parsed = buildHeader(skeleton, () => {
+		const retained = detachedSkeleton(skeleton);
+		const parsed = buildHeader(retained ?? skeleton, () => {
 			yamlParses += 1;
 		});
 		let entry: Entry | undefined;
@@ -369,7 +402,12 @@ export function createMemorySourceCache(
 				return value;
 			},
 		};
-		const bytes = accountedSize(canonical, file, header);
+		const bytes = accountedBytes(canonical, file, header);
+		if (retained === undefined || bytes === undefined) {
+			// A product outside the accounting contract stays readable but is never retained.
+			skipped += 1;
+			return header;
+		}
 		if (bytes > maxEntryBytes || bytes > maxBytes) {
 			skipped += 1;
 			return header;
