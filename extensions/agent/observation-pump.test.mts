@@ -6,6 +6,16 @@ import { createObservationPump } from "./observation-pump.ts";
 /** Let the pump's asynchronous pass settle without using a clock timer. */
 const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+/** Wait for one pump event, failing instead of hanging when it is never delivered. */
+async function within<T>(promise: Promise<T>, label: string, ms = 2000): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), ms); })]);
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
+	}
+}
+
 function deferred() {
 	let resolve!: () => void;
 	const promise = new Promise<void>((done) => { resolve = done; });
@@ -124,6 +134,42 @@ it("disposal stops later marks and a pass in flight schedules nothing", async ()
 	assert.equal(runs, 1);
 	await settle();
 	assert.equal(runs, 1);
+});
+
+it("keeps cadence and the final state when the wall clock moves", async (t) => {
+	const realNow = Date.now.bind(Date);
+	let offset = 0;
+	t.mock.method(Date, "now", () => realNow() + offset);
+	let resolvePass: (() => void) | undefined;
+	let state = 0;
+	let applied = -1;
+	const nextPass = () => new Promise<void>((resolve) => { resolvePass = resolve; });
+	const pump = createObservationPump({
+		intervalMs: 25,
+		run: () => {
+			applied = state;
+			resolvePass?.();
+			resolvePass = undefined;
+		},
+		onError: () => assert.fail("unexpected failure"),
+	});
+	t.after(() => pump.dispose());
+	const first = nextPass();
+	pump.markDirty();
+	await within(first, "the first pass");
+	assert.equal(applied, 0);
+	offset = -60_000;
+	state = 1;
+	const backward = nextPass();
+	pump.markDirty();
+	await within(backward, "a pass after a backward wall-clock correction");
+	assert.equal(applied, 1);
+	offset = 60_000;
+	state = 2;
+	const forward = nextPass();
+	pump.markDirty();
+	await within(forward, "a pass after a forward wall-clock correction");
+	assert.equal(applied, 2, "the final dirty state is delivered");
 });
 
 it("sustained marks stay within the cadence and apply the final state", async () => {

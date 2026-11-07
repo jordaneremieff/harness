@@ -5,7 +5,9 @@
  * never overlaps another pass. Work that arrives during a pass keeps the dirty
  * bit, so the next pass carries the newest state instead of rebuilding for
  * every intermediate change. The caller's clock supplies waiting, which keeps
- * the cadence testable without wall-clock timers.
+ * the cadence testable without wall-clock timers. The default clock measures
+ * elapsed time with the monotonic clock, so a wall-clock correction does not
+ * delay or rush a pass.
  */
 
 export interface ObservationClock {
@@ -31,8 +33,8 @@ export interface ObservationPumpOptions {
 	readonly clock?: ObservationClock;
 }
 
-const wallClock: ObservationClock = {
-	now: () => Date.now(),
+const monotonicClock: ObservationClock = {
+	now: () => performance.now(),
 	after(delayMs, run) {
 		const timer = setTimeout(run, delayMs);
 		return () => clearTimeout(timer);
@@ -46,7 +48,7 @@ const wallClock: ObservationClock = {
  */
 export function createObservationPump(options: ObservationPumpOptions): ObservationPump {
 	if (!Number.isFinite(options.intervalMs) || options.intervalMs < 0) throw new RangeError("observation pump intervalMs must be a finite nonnegative number");
-	const clock = options.clock ?? wallClock;
+	const clock = options.clock ?? monotonicClock;
 	let dirty = false;
 	let pending: (() => void) | undefined;
 	let inFlight = false;
