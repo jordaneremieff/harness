@@ -366,7 +366,7 @@ export class GoogleRuntime {
 		const credentialKey = await this.checkCredentialFiles(prepared.configDir);
 		if (this.authCache && this.authCache.key === credentialKey && this.authCache.expires > Date.now())
 			return this.authCache.auth;
-		const result = await executeProcess(prepared.executable, ["auth", "status", "--format", "json"], {
+		const result = await executeProcess(prepared.executable, ["auth", "status"], {
 			cwd: prepared.workDir,
 			env: this.controlledEnvironment(prepared.configDir, prepared.stateDir),
 			stdoutLimit: STDOUT_LIMITS.metadata,

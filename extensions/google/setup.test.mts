@@ -23,6 +23,7 @@ function deps(overrides: Partial<SetupDeps> = {}): SetupDeps {
 		platformKey: "test",
 		release: { version: "0.22.5", assets: {} },
 		log: () => undefined,
+		openUrl: () => undefined,
 		...overrides,
 	};
 }

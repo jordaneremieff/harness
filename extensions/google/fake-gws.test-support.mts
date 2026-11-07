@@ -63,6 +63,10 @@ if (args[0] === "--version") {
 }
 const paramsAt = args.indexOf("--params");
 const key = args[0] === "auth" ? "auth " + args[1] : args.slice(0, paramsAt).join(" ");
+if (key === "auth status" && args.length > 2) {
+	process.stdout.write(JSON.stringify({ error: { code: 400, message: "unexpected argument", reason: "validationError" } }));
+	process.exit(3);
+}
 const params = paramsAt >= 0 ? JSON.parse(args[paramsAt + 1]) : {};
 const responses = scenario.responses || {};
 let response = responses[key + " " + (params.id || params.fileId || "")] || responses[key];

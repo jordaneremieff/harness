@@ -33,10 +33,19 @@ export type SetupDeps = {
 	platformKey: string;
 	release: Release;
 	log: (line: string) => void;
+	openUrl: (url: string) => void;
 };
 
 export function productionDeps(log: (line: string) => void): SetupDeps {
-	return { fetch: globalThis.fetch, platformKey: `${platform()}-${arch()}`, release: GWS_RELEASE, log };
+	return {
+		fetch: globalThis.fetch,
+		platformKey: `${platform()}-${arch()}`,
+		release: GWS_RELEASE,
+		log,
+		openUrl: (url) => {
+			spawn("/usr/bin/open", [url], { shell: false, stdio: "ignore" }).on("error", () => undefined);
+		},
+	};
 }
 
 /** Write scopes include read access, so each service needs only one scope set. */
@@ -157,7 +166,7 @@ function paths(agentDir: string, env: Environment): Paths {
 }
 
 async function authStatus(executable: string, env: NodeJS.ProcessEnv, stateDir: string) {
-	const result = await runCommand(executable, ["auth", "status", "--format", "json"], {
+	const result = await runCommand(executable, ["auth", "status"], {
 		env,
 		cwd: stateDir,
 		timeoutMs: COMMAND_TIMEOUT_MS,
@@ -208,7 +217,11 @@ export async function setup(options: SetupOptions, deps: SetupDeps): Promise<Set
 		env,
 		cwd: target.stateDir,
 		timeoutMs: LOGIN_TIMEOUT_MS,
-		onLine: deps.log,
+		onLine: (line) => {
+			deps.log(line);
+			const url = /^\s*(https:\/\/accounts\.google\.com\/\S+)\s*$/.exec(line)?.[1];
+			if (url) deps.openUrl(url);
+		},
 	});
 	if (login.code !== 0)
 		throw new GoogleError(
