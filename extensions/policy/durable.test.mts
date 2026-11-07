@@ -1399,3 +1399,34 @@ test("the attached view's Data actions set, set-file and remove through the owne
 		await fixture.close();
 	}
 });
+
+test("a running host applies a committed rule change to the next call", async () => {
+	const counter = { executed: 0 };
+	const fixture = await openFixture({ mode: "enforce", extension: probeExtension(counter) });
+	try {
+		await submit(
+			fixture,
+			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("first")],
+			"run the probe",
+		);
+		assert.equal((await toolResults(fixture.root, "probe")).at(-1)?.isError, false);
+		await addRule(fixture.policy, "durable.deny-probe", {
+			phase: "input",
+			selector: { tools: ["probe"] },
+			when: { op: "exists", path: ["input"] },
+			action: { kind: "deny" },
+			onUnavailable: "skip",
+		});
+		await submit(
+			fixture,
+			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("second")],
+			"run the probe again",
+		);
+		const denied = (await toolResults(fixture.root, "probe")).at(-1);
+		assert.equal(denied?.isError, true);
+		assert.match(textOf(denied), /Rule durable\.deny-probe/);
+		assert.equal(counter.executed, 1);
+	} finally {
+		await fixture.close();
+	}
+});

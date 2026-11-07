@@ -6,6 +6,21 @@ import { createHash } from "node:crypto";
 export type Scalar = string | number | boolean | null;
 export type Truth = true | false | "unknown";
 export const UNKNOWN = Symbol("policy-unavailable");
+declare const ownedInput: unique symbol;
+/** Bounded JSON copied at one boundary. Evaluation treats it as immutable. */
+export type OwnedInput = Record<string, unknown> & { readonly [ownedInput]: true };
+const ownedValues = new WeakSet<object>();
+
+/** One boundary copy. Later evaluation passes reuse it without cloning again. */
+export function ownInput(value: unknown): OwnedInput {
+	const copied = cloneJson(value);
+	if (copied !== null && typeof copied === "object") ownedValues.add(copied);
+	return copied as OwnedInput;
+}
+
+export function isOwnedInput(value: unknown): value is OwnedInput {
+	return value !== null && typeof value === "object" && ownedValues.has(value);
+}
 export const DATA_LIMITS = { bindings: 64, rows: 2048, bytes: 262144, depth: 32, nodes: 16384 } as const;
 export const ScalarSchema: Schema<Scalar> = { type: ["string", "number", "boolean", "null"], maxLength: 4096 };
 export const DataNameSchema = str({
@@ -157,22 +172,70 @@ export function readPath(value: unknown, path: readonly string[]): { exists: boo
 export const SCHEMA_CACHE_LIMIT = 64;
 const schemaValidators = new Map<string, ReturnType<typeof compile>>();
 
+function validatorFor(copied: JsonSchema): { revision: string; validator: ReturnType<typeof compile> } | undefined {
+	const revision = createHash("sha256").update(JSON.stringify(copied)).digest("hex");
+	let validator = schemaValidators.get(revision);
+	if (!validator) {
+		validator = compile(copied);
+		const oldest = schemaValidators.keys().next().value;
+		if (schemaValidators.size >= SCHEMA_CACHE_LIMIT && oldest !== undefined) schemaValidators.delete(oldest);
+		schemaValidators.set(revision, validator);
+	}
+	return { revision, validator };
+}
+
+/** One tool schema copied and compiled at a boundary, then checked per owned candidate. */
+export interface PreparedSchema {
+	readonly revision: string;
+	checkOwned(value: OwnedInput): Truth;
+}
+const unavailableSchema: PreparedSchema = { revision: "unavailable", checkOwned: () => "unknown" };
+
+/**
+ * Copy and compile one registered tool schema. Evaluations reuse the compiled
+ * validator for every rule and every candidate in their frame.
+ */
+export function prepareSchema(schema: JsonSchema | undefined): PreparedSchema {
+	if (schema === undefined) return unavailableSchema;
+	try {
+		const compiled = validatorFor(cloneJson(schema));
+		if (!compiled) return unavailableSchema;
+		return {
+			revision: compiled.revision,
+			checkOwned(value) {
+				if ((value as unknown) === UNKNOWN) return "unknown";
+				try {
+					return compiled.validator.check(value);
+				} catch {
+					return "unknown";
+				}
+			},
+		};
+	} catch {
+		return unavailableSchema;
+	}
+}
+
 /** Check a registered tool contract without conversion, property removal, or defaults. */
 export function checkToolSchema(schema: JsonSchema | undefined, value: unknown): Truth {
 	if (schema === undefined) return "unknown";
 	try {
-		const copied = cloneJson(schema);
-		const key = createHash("sha256").update(JSON.stringify(copied)).digest("hex");
-		if (!schemaValidators.has(key)) {
-			const validator = compile(copied);
-			const oldest = schemaValidators.keys().next().value;
-			if (schemaValidators.size >= SCHEMA_CACHE_LIMIT && oldest !== undefined) schemaValidators.delete(oldest);
-			schemaValidators.set(key, validator);
-		}
-		const validator = schemaValidators.get(key);
-		return validator ? validator.check(cloneJson(value)) : "unknown";
+		const compiled = validatorFor(cloneJson(schema));
+		return compiled ? compiled.validator.check(cloneJson(value)) : "unknown";
 	} catch {
 		return "unknown";
+	}
+}
+
+/** One validated copy of a data binding, or undefined when the shape is invalid. */
+function copyNamedData(value: unknown): NamedData | undefined {
+	try {
+		const copied = cloneJson(value);
+		if (!dataValidator.check(copied)) return undefined;
+		if (Buffer.byteLength(JSON.stringify(copied), "utf8") > DATA_LIMITS.bytes) return undefined;
+		return copied as NamedData;
+	} catch {
+		return undefined;
 	}
 }
 
@@ -188,33 +251,65 @@ export function validateNamedData(value: unknown): string | undefined {
 	}
 }
 
-/** Data copies belong to this evaluation, not to the mutable control store. */
-export function snapshotData(bindings: readonly NamedData[], now: number): Record<string, DataSnapshot> {
-	const result: Record<string, DataSnapshot> = Object.create(null);
+interface PreparedBinding {
+	readonly name: string;
+	/** Present only for a valid, uniquely named binding. */
+	readonly data?: NamedData;
+}
+
+/** Validated data bindings whose contents are reused by later evaluation frames. */
+export interface PreparedNamedData {
+	readonly revision: string;
+	snapshot(now: number): Record<string, DataSnapshot>;
+}
+
+/** Copy and validate each binding once; expiry status is computed for each phase time. */
+export function prepareNamedData(bindings: readonly NamedData[]): PreparedNamedData {
 	if (bindings.length > DATA_LIMITS.bindings) throw new Error("Too many named data bindings");
+	const entries = new Map<string, PreparedBinding>();
 	for (const binding of bindings) {
 		if (!binding || typeof binding.name !== "string" || !safeKey(binding.name)) continue;
 		const name = binding.name;
-		if (Object.hasOwn(result, name)) {
-			result[name] = { name, status: "invalid" };
+		if (entries.has(name)) {
+			entries.set(name, { name });
 			continue;
 		}
-		if (validateNamedData(binding) || !Number.isFinite(now) || binding.capturedAt > now) {
-			result[name] = { name, status: "invalid" };
-			continue;
-		}
-		const ageMs = now - binding.capturedAt;
-		result[name] = {
-			name,
-			revision: binding.revision,
-			source: binding.source,
-			capturedAt: binding.capturedAt,
-			ageMs,
-			status: binding.maxAgeMs !== undefined && ageMs >= binding.maxAgeMs ? "stale" : "ready",
-			data: cloneJson(binding),
-		};
+		const copied = copyNamedData(binding);
+		entries.set(name, copied ? { name, data: copied } : { name });
 	}
-	return result;
+	const revision = createHash("sha256")
+		.update(JSON.stringify([...entries.values()].map((entry) => [entry.name, entry.data ?? null])))
+		.digest("hex")
+		.slice(0, 16);
+	return {
+		revision,
+		snapshot(now) {
+			const result: Record<string, DataSnapshot> = Object.create(null);
+			for (const entry of entries.values()) {
+				const binding = entry.data;
+				if (!binding || !Number.isFinite(now) || binding.capturedAt > now) {
+					result[entry.name] = { name: entry.name, status: "invalid" };
+					continue;
+				}
+				const ageMs = now - binding.capturedAt;
+				result[entry.name] = {
+					name: binding.name,
+					revision: binding.revision,
+					source: binding.source,
+					capturedAt: binding.capturedAt,
+					ageMs,
+					status: binding.maxAgeMs !== undefined && ageMs >= binding.maxAgeMs ? "stale" : "ready",
+					data: binding,
+				};
+			}
+			return result;
+		},
+	};
+}
+
+/** Data copies belong to this evaluation, not to the mutable control store. */
+export function snapshotData(bindings: readonly NamedData[], now: number): Record<string, DataSnapshot> {
+	return prepareNamedData(bindings).snapshot(now);
 }
 
 export function lookupData(snapshot: DataSnapshot | undefined, key: unknown): LookupResult {

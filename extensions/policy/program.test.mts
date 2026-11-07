@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { compile } from "@earendil-works/pi-schema";
-import { snapshotData, UNKNOWN, type NamedData } from "./data.ts";
+import { ownInput, snapshotData, UNKNOWN, type NamedData } from "./data.ts";
 import { ObservationState } from "./state.ts";
 import {
+	createEvaluationFrame,
 	evaluateCondition,
 	evaluatePrograms,
 	FactsProgramSchema,
@@ -30,6 +31,28 @@ const table = (name: string, rows: { key: string; value: string }[]): NamedData 
 	rows,
 });
 const context = { tool: "dispatch", schema: { type: "object", additionalProperties: true } };
+
+test("one frame reuses facts, applicability truth, and schema checks per candidate", () => {
+	const scoped = rule("frame", { kind: "deny" }, {
+		selector: { tools: ["dispatch"] },
+		when: { op: "eq", path: ["input", "mode"], value: "strict" },
+	});
+	scoped.applicability = { op: "eq", path: ["input", "mode"], value: "strict" };
+	const candidate = ownInput({ mode: "strict" });
+	const frame = createEvaluationFrame(
+		{ tool: "dispatch", schema: { type: "object", properties: { mode: { type: "string" } }, required: ["mode"] } },
+		candidate,
+	);
+	const facts = frame.factsFor(scoped, candidate);
+	assert.equal(frame.factsFor(scoped, candidate), facts);
+	assert.equal(frame.applicabilityFor(scoped, candidate), true);
+	assert.deepEqual(facts.schema, { valid: true });
+	const corrected = ownInput({ mode: 7 });
+	const correctedFacts = frame.factsFor(scoped, corrected);
+	assert.notEqual(correctedFacts, facts);
+	assert.equal(frame.applicabilityFor(scoped, corrected), false);
+	assert.deepEqual(correctedFacts.schema, { valid: false });
+});
 
 test("closed grammar accepts nested facts through the public schema", () => {
 	const program = rule(
@@ -266,19 +289,14 @@ test("validates the complete final candidate rather than only corrected properti
 	assert.deepEqual(accepted.candidate, { team: "team-2", count: 2 });
 });
 
-test("decoded correction rules are rejected even when the outer tool schema accepts the envelope", () => {
+test("decoded correction programs fail store admission even when the outer tool schema accepts the envelope", () => {
 	const selector = { codec: { argumentsPath: ["arguments"], operationPath: ["operation"] }, operations: ["send"] };
-	const input = { operation: "send", arguments: '{"oldTeam":"blue"}' };
 	for (const action of [
 		{ kind: "rename-key" as const, path: [], from: "oldTeam", to: "team" },
 		{ kind: "substitute" as const, path: ["team"], table: "teams" },
 	]) {
 		const rejected = rule("inner", action, { selector, data: ["teams"] });
 		assert.match(validateFactsProgram(rejected.program) ?? "", /Decoded argument corrections are unsupported/);
-		const plan = planInput([rejected], input, context);
-		assert.equal(plan.valid, false);
-		assert.equal(plan.changed, false);
-		assert.deepEqual(plan.candidate, input);
 	}
 });
 

@@ -6,6 +6,9 @@ import {
 	DATA_LIMITS,
 	lookupData,
 	type NamedData,
+	ownInput,
+	prepareNamedData,
+	prepareSchema,
 	readPath,
 	snapshotData,
 	UNKNOWN,
@@ -118,6 +121,45 @@ test("data snapshots own independent copies and reject repeated names", () => {
 		),
 	);
 	assert.ok(validateNamedData({ ...binding(), command: "execute" }));
+});
+
+test("prepared named data copies once and applies expiry at each phase time", () => {
+	const table = binding({ maxAgeMs: 100 });
+	const prepared = prepareNamedData([table]);
+	assert.equal(prepared.snapshot(150).teams.status, "ready");
+	assert.equal(prepared.snapshot(199).teams.status, "ready");
+	assert.equal(prepared.snapshot(200).teams.status, "stale");
+	assert.equal(prepared.snapshot(99).teams.status, "invalid");
+	assert.equal(prepared.snapshot(Number.NaN).teams.status, "invalid");
+	assert.equal(prepared.snapshot(150).teams.ageMs, 50);
+	if (table.kind === "table") table.rows[0].value = "altered";
+	assert.deepEqual(lookupData(prepared.snapshot(150).teams, "blue"), { status: "unique", value: "team-2" });
+	assert.equal(prepareNamedData([binding(), binding()]).snapshot(200).teams.status, "invalid");
+	assert.notEqual(prepareNamedData([binding()]).revision, prepareNamedData([binding({ source: "other" })]).revision);
+});
+
+test("prepared schemas compile at a boundary and report unavailable contracts", () => {
+	const schema = {
+		type: "object",
+		properties: { size: { type: "integer", minimum: 2 } },
+		required: ["size"],
+		additionalProperties: false,
+	};
+	const prepared = prepareSchema(schema);
+	assert.equal(prepared.revision, prepareSchema({ ...schema }).revision);
+	assert.notEqual(prepared.revision, prepareSchema({ ...schema, required: [] }).revision);
+	assert.equal(prepared.checkOwned(ownInput({ size: 2 })), true);
+	assert.equal(prepared.checkOwned(ownInput({ size: "2" })), false);
+	assert.equal(prepared.checkOwned(ownInput({ size: 2, extra: true })), false);
+	assert.equal(prepareSchema(undefined).checkOwned(ownInput({})), "unknown");
+	const unsafe = {
+		type: "object",
+		get properties(): never {
+			throw new Error("unsafe schema");
+		},
+	};
+	assert.equal(prepareSchema(unsafe as never).revision, "unavailable");
+	assert.equal(prepareSchema(unsafe as never).checkOwned(ownInput({})), "unknown");
 });
 
 test("registered tool checks do not convert, remove properties, or insert defaults", () => {

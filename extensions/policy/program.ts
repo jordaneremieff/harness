@@ -3,11 +3,13 @@
 import { arr, compile, int, obj, opt, str, type JsonSchema, type Schema, type Static, union } from "@earendil-works/pi-schema";
 import { type CommandEvidence, captureEvidence, type RuleEvidence } from "./compiler.ts";
 import {
-	checkToolSchema,
 	cloneJson,
 	DataNameSchema,
 	type DataSnapshot,
+	isOwnedInput,
 	lookupData,
+	type OwnedInput,
+	ownInput,
 	readPath,
 	type Scalar,
 	ScalarSchema,
@@ -15,6 +17,9 @@ import {
 	type Truth,
 	UNKNOWN,
 	validPath,
+	type PreparedNamedData,
+	type PreparedSchema,
+	prepareSchema,
 } from "./data.ts";
 import type { PolicyMode } from "./mode.ts";
 import type { RuleMatchContext } from "./rule.ts";
@@ -537,6 +542,12 @@ export interface EvaluationContext {
 	data?: Record<string, DataSnapshot>;
 	states?: Record<string, StateView>;
 	schema?: JsonSchema;
+	/** Boundary-prepared schema; absent for direct evaluation calls. */
+	preparedSchema?: PreparedSchema;
+	/** One schema-truth cache shared by every phase of one tool operation. */
+	schemaTruth?: Map<unknown, Truth>;
+	/** Boundary-prepared named data; absent for direct evaluation calls. */
+	namedData?: PreparedNamedData;
 	now?: number;
 	/** False keeps candidate effects hypothetical and checks effective gates on actual input. */
 	applyCorrections?: boolean;
@@ -591,35 +602,129 @@ function decoded(input: unknown, codec: ArgumentCodec | undefined): unknown {
 		return UNKNOWN;
 	}
 }
+
+export type ProgramFacts = Record<string, unknown>;
+
+/** Facts, schema truth, and applicability reused across one evaluation phase. */
+export interface EvaluationFrame {
+	readonly now: number;
+	readonly turn: number;
+	/** Input before any correction in this frame. */
+	readonly original: OwnedInput | undefined;
+	readonly schema: PreparedSchema;
+	readonly namedData: Readonly<Record<string, DataSnapshot>>;
+	factsFor(rule: ProgramRule, candidate?: OwnedInput, original?: OwnedInput): ProgramFacts;
+	applicabilityFor(rule: ProgramRule, candidate?: OwnedInput, original?: OwnedInput): Truth;
+	checkSchema(value: unknown): Truth;
+}
+
+class PreparedFrame implements EvaluationFrame {
+	readonly now: number;
+	readonly turn: number;
+	readonly original: OwnedInput | undefined;
+	readonly schema: PreparedSchema;
+	readonly namedData: Readonly<Record<string, DataSnapshot>>;
+	private readonly context: EvaluationContext;
+	private readonly facts = new Map<unknown, Map<unknown, Map<string, ProgramFacts>>>();
+	private readonly applicability = new Map<unknown, Map<unknown, Map<string, Truth>>>();
+	private readonly schemaTruth = new Map<unknown, Truth>();
+
+	constructor(context: EvaluationContext, original?: OwnedInput) {
+		this.context = context;
+		this.now = context.now ?? 0;
+		const turnFact = context.facts?.turn;
+		this.turn = typeof turnFact === "number" ? turnFact : 0;
+		this.original = original ?? (context.facts?.original as OwnedInput | undefined);
+		this.schema = context.preparedSchema ?? prepareSchema(context.schema);
+		this.namedData = context.data ?? {};
+	}
+
+	checkSchema(value: unknown): Truth {
+		if (value === undefined || (value as unknown) === UNKNOWN) return "unknown";
+		const shared = this.context.schemaTruth;
+		const cached = shared ? shared.get(value) : this.schemaTruth.get(value);
+		if (cached !== undefined) return cached;
+		const truth = this.schema.checkOwned(value as OwnedInput);
+		if (shared) shared.set(value, truth);
+		else this.schemaTruth.set(value, truth);
+		return truth;
+	}
+
+	private keys(
+		candidate: OwnedInput | undefined,
+		original: OwnedInput | undefined,
+	): { outer: unknown; originalOuter: unknown } {
+		const outer = candidate === undefined ? this.context.facts?.input : candidate;
+		const originalOuter = original ?? (this.context.facts?.original !== undefined ? this.original : outer);
+		return { outer, originalOuter };
+	}
+
+	private cache<T>(
+		entries: Map<unknown, Map<unknown, Map<string, T>>>,
+		originalOuter: unknown,
+		outer: unknown,
+	): Map<string, T> {
+		const byOriginal = entries.get(originalOuter) ?? new Map<unknown, Map<string, T>>();
+		const byCandidate = byOriginal.get(outer) ?? new Map<string, T>();
+		byOriginal.set(outer, byCandidate);
+		entries.set(originalOuter, byOriginal);
+		return byCandidate;
+	}
+
+	factsFor(rule: ProgramRule, candidate?: OwnedInput, original?: OwnedInput): ProgramFacts {
+		const context = this.context;
+		const { outer, originalOuter } = this.keys(candidate, original);
+		const cache = this.cache(this.facts, originalOuter, outer);
+		const cached = cache.get(rule.id);
+		if (cached) return cached;
+		const codec = rule.program.selector?.codec;
+		const args = decoded(outer, codec);
+		const operation = codec?.operationPath ? readPath(outer, codec.operationPath).value : context.operation;
+		const schemaTruth = codec ? "unknown" : this.checkSchema(args);
+		const facts: ProgramFacts = {
+			...context.facts,
+			tool: context.tool || UNKNOWN,
+			operation: operation ?? UNKNOWN,
+			input: args ?? UNKNOWN,
+			original: decoded(originalOuter, codec) ?? UNKNOWN,
+			outer: outer ?? UNKNOWN,
+			originalOuter: originalOuter ?? UNKNOWN,
+			state: context.states?.[rule.id] ?? context.facts?.state ?? UNKNOWN,
+			data: context.data ?? {},
+			schema: { valid: schemaTruth === "unknown" ? UNKNOWN : schemaTruth },
+		};
+		cache.set(rule.id, facts);
+		return facts;
+	}
+
+	applicabilityFor(rule: ProgramRule, candidate?: OwnedInput, original?: OwnedInput): Truth {
+		if (!rule.applicability) return true;
+		const { outer, originalOuter } = this.keys(candidate, original);
+		const cache = this.cache(this.applicability, originalOuter, outer);
+		const cached = cache.get(rule.id);
+		if (cached !== undefined) return cached;
+		const truth = evaluateCondition(rule.applicability, this.factsFor(rule, candidate, original));
+		cache.set(rule.id, truth);
+		return truth;
+	}
+}
+
+/** Build one frame from a boundary context, or a direct evaluation call. */
+export function createEvaluationFrame(context: EvaluationContext, original?: OwnedInput): EvaluationFrame {
+	return new PreparedFrame(context, original);
+}
+
 export function programFacts(
 	rule: ProgramRule,
 	context: EvaluationContext,
 	input?: unknown,
 	original?: unknown,
-): Record<string, unknown> {
-	const outer = input ?? context.facts?.input;
-	const originalOuter = original ?? context.facts?.original ?? outer;
-	const codec = rule.program.selector?.codec;
-	const args = decoded(outer, codec);
-	const operation = codec?.operationPath ? readPath(outer, codec.operationPath).value : context.operation;
-	const schemaTruth = codec ? "unknown" : checkToolSchema(context.schema, args);
-	return {
-		...context.facts,
-		tool: context.tool || UNKNOWN,
-		operation: operation ?? UNKNOWN,
-		input: args ?? UNKNOWN,
-		original: decoded(originalOuter, codec) ?? UNKNOWN,
-		outer: outer ?? UNKNOWN,
-		originalOuter: originalOuter ?? UNKNOWN,
-		state: context.states?.[rule.id] ?? context.facts?.state ?? UNKNOWN,
-		data: context.data ?? {},
-		schema: { valid: schemaTruth === "unknown" ? UNKNOWN : schemaTruth },
-	};
-}
-function applicabilityTruth(rule: ProgramRule, context: EvaluationContext, input?: unknown, original?: unknown): Truth {
-	return rule.applicability
-		? evaluateCondition(rule.applicability, programFacts(rule, context, input, original))
-		: true;
+): ProgramFacts {
+	return createEvaluationFrame(context, original as OwnedInput | undefined).factsFor(
+		rule,
+		input as OwnedInput | undefined,
+		original as OwnedInput | undefined,
+	);
 }
 
 /** Capture only rules whose applicability facts authorize this snapshot. */
@@ -628,8 +733,15 @@ export function captureProgramEvidence(
 	context: EvaluationContext,
 	input?: unknown,
 	original?: unknown,
+	frame?: EvaluationFrame,
 ): CommandEvidence {
-	const applicable = new Map(rules.map((rule) => [rule.id, applicabilityTruth(rule, context, input, original)]));
+	const evaluator = frame ?? createEvaluationFrame(context, original as OwnedInput | undefined);
+	const applicable = new Map(
+		rules.map((rule) => [
+			rule.id,
+			evaluator.applicabilityFor(rule, input as OwnedInput | undefined, original as OwnedInput | undefined),
+		]),
+	);
 	const evidence = captureEvidence(
 		rules.filter((rule) => applicable.get(rule.id) === true),
 		context.tool,
@@ -715,10 +827,14 @@ function evaluateRule(
 	context: EvaluationContext,
 	input?: unknown,
 	original?: unknown,
+	frame?: EvaluationFrame,
 ): ProgramEvaluation {
 	const program = rule.program;
-	const facts = programFacts(rule, context, input, original);
-	const applicable = applicabilityTruth(rule, context, input, original);
+	const evaluator = frame ?? createEvaluationFrame(context, original as OwnedInput | undefined);
+	const candidate = input as OwnedInput | undefined;
+	const sourceInput = original as OwnedInput | undefined;
+	const facts = evaluator.factsFor(rule, candidate, sourceInput);
+	const applicable = evaluator.applicabilityFor(rule, candidate, sourceInput);
 	let truth: Truth = applicable;
 	if (truth !== false) {
 		const selected = selectorTruth(rule, context, facts);
@@ -732,7 +848,7 @@ function evaluateRule(
 	}
 	return evaluationResult(rule, context, applicable, truth);
 }
-export function observationSelected(rule: ProgramRule, context: EvaluationContext): Truth {
+export function observationSelected(rule: ProgramRule, context: EvaluationContext, frame?: EvaluationFrame): Truth {
 	return evaluateRule(
 		{
 			...rule,
@@ -745,19 +861,24 @@ export function observationSelected(rule: ProgramRule, context: EvaluationContex
 			},
 		},
 		context,
+		undefined,
+		undefined,
+		frame,
 	).truth;
 }
 export function evaluatePrograms(
 	rules: readonly ProgramRule[],
 	phase: ProgramPhase,
 	context: EvaluationContext,
+	frame?: EvaluationFrame,
 ): ProgramEvaluation[] {
 	if (rules.length > PROGRAM_LIMITS.rules) throw new Error("Too many facts programs");
+	const evaluator = frame ?? createEvaluationFrame(context);
 	return rules
 		.flatMap(programSteps)
 		.filter((rule) => rule.program.phase === phase)
 		.sort((left, right) => left.id.localeCompare(right.id))
-		.map((rule) => evaluateRule(rule, context));
+		.map((rule) => evaluateRule(rule, context, undefined, undefined, evaluator));
 }
 function overlap(left: readonly string[], right: readonly string[]): boolean {
 	return left.slice(0, Math.min(left.length, right.length)).every((part, index) => part === right[index]);
@@ -784,12 +905,14 @@ interface Patch {
 
 interface PlanState {
 	plan: InputPlan;
-	original: Record<string, unknown>;
+	original: OwnedInput;
 	ordered: ProgramRule[];
 	captured: ProgramRule[];
 	rules: readonly ProgramRule[];
 	context: EvaluationContext;
+	frame: EvaluationFrame;
 	matches: Set<string>;
+	evidence: Map<unknown, CommandEvidence>;
 	originalEvidence: ReadonlyMap<string, Truth>;
 }
 
@@ -807,12 +930,17 @@ function freshPlan(): InputPlan {
 }
 
 function captureEvidenceFor(state: PlanState, candidate: Record<string, unknown>): ReadonlyMap<string, Truth> {
-	const evidence = captureProgramEvidence(
-		state.rules.filter((rule) => !state.context.staleRules?.has(rule.id)),
-		state.context,
-		candidate,
-		state.original,
-	);
+	const cached = state.evidence.get(candidate);
+	const evidence =
+		cached ??
+		captureProgramEvidence(
+			state.rules.filter((rule) => !state.context.staleRules?.has(rule.id)),
+			state.context,
+			candidate,
+			state.original,
+			state.frame,
+		);
+	if (!cached) state.evidence.set(candidate, evidence);
 	for (const [id, truth] of evidence) if (truth === true) state.matches.add(id);
 	state.plan.matches = [...state.matches];
 	return evidence;
@@ -829,6 +957,7 @@ function recordRule(
 		{ ...state.context, evidence: evidence ?? state.originalEvidence },
 		candidate,
 		state.original,
+		state.frame,
 	);
 	state.plan.evaluations.push(evaluation);
 	if (evaluation.truth === true) state.matches.add(rule.id);
@@ -889,7 +1018,7 @@ function buildStagePatch(
 	if (actionStage !== stage) return undefined;
 	const evaluation = recordRule(state, rule, snapshot);
 	if (evaluation.truth !== true) return undefined;
-	if (checkToolSchema(state.context.schema, null) === "unknown") {
+	if (state.frame.checkSchema(null) === "unknown") {
 		evaluation.truth = "unknown";
 		evaluation.unavailable = true;
 		evaluation.deny = rule.program.onUnavailable === "deny";
@@ -921,35 +1050,36 @@ function buildStagePatch(
 function planCorrectionStage(state: PlanState, stage: "logical-target" | "keys" | "values"): void {
 	const plan = state.plan;
 	if (plan.denied || !plan.valid) return;
-	const snapshot = cloneJson(plan.candidate);
+	const snapshot = plan.candidate;
 	const patches: Patch[] = [];
 	for (const rule of state.ordered) {
 		const patch = buildStagePatch(state, stage, rule, snapshot, patches);
 		if (patch) patches.push(patch);
 	}
-	if (!plan.valid || plan.denied) return;
+	if (!plan.valid || plan.denied || !patches.length) return;
+	let next: Record<string, unknown>;
+	try {
+		next = cloneJson(plan.candidate);
+	} catch {
+		plan.valid = false;
+		plan.problems.push("Corrected input exceeds JSON bounds");
+		return;
+	}
 	for (const patch of patches) {
-		if (!patch.apply(plan.candidate)) {
+		if (!patch.apply(next)) {
 			plan.valid = false;
 			plan.problems.push(`${patch.rule.id}: invalid correction target`);
-			break;
+			return;
 		}
 		plan.corrections.push({ id: patch.rule.id, stage, path: patch.paths[0] });
 	}
+	plan.candidate = next;
 }
 
 function finalizePlan(state: PlanState): void {
 	const plan = state.plan;
-	if (plan.valid) {
-		try {
-			plan.candidate = cloneJson(plan.candidate);
-		} catch {
-			plan.valid = false;
-			plan.problems.push("Corrected input exceeds JSON bounds");
-		}
-	}
 	plan.changed = plan.corrections.length > 0;
-	if (plan.valid && plan.changed && checkToolSchema(state.context.schema, plan.candidate) !== true) {
+	if (plan.valid && plan.changed && state.frame.checkSchema(plan.candidate) !== true) {
 		plan.valid = false;
 		plan.problems.push("Corrected input fails or lacks the tool schema");
 	}
@@ -961,14 +1091,14 @@ function finalizePlan(state: PlanState): void {
 				state.context.staleRules?.has(rule.id) &&
 				rule.program.action.kind === "deny" &&
 				rule.program.inputView === "effective" &&
-				applicabilityTruth(rule, state.context, plan.candidate, state.original) === true &&
+				state.frame.applicabilityFor(rule, plan.candidate as OwnedInput, state.original) === true &&
 				(!rule.program.selector?.tools || rule.program.selector.tools.includes(state.context.tool)),
 		)
 	) {
 		plan.valid = false;
 		plan.problems.push("Captured final-input rule observation periods changed before candidate validation");
 	}
-	const effective = state.context.applyCorrections === false || !plan.valid || plan.denied ? state.original : plan.candidate;
+	const effective = state.context.applyCorrections === false || !plan.valid || plan.denied ? state.original : (plan.candidate as OwnedInput);
 	const effectiveEvidence = captureEvidenceFor(state, effective);
 	for (const rule of state.ordered.filter(
 		(entry) =>
@@ -977,7 +1107,7 @@ function finalizePlan(state: PlanState): void {
 	))
 		recordRule(state, rule, effective, effectiveEvidence);
 	if (!plan.valid || plan.denied) {
-		plan.candidate = cloneJson(state.original);
+		plan.candidate = state.original;
 		plan.changed = false;
 	}
 }
@@ -994,10 +1124,10 @@ export function planInput(
 		plan.problems.push("Too many facts programs");
 		return plan;
 	}
-	let original: Record<string, unknown>;
+	let original: OwnedInput;
 	try {
-		original = cloneJson(input);
-		plan.candidate = cloneJson(original);
+		original = isOwnedInput(input) ? input : ownInput(input);
+		plan.candidate = original as Record<string, unknown>;
 	} catch {
 		plan.valid = false;
 		plan.problems.push("Input is unavailable or exceeds JSON bounds");
@@ -1007,17 +1137,7 @@ export function planInput(
 	const ordered = captured
 		.filter((rule) => !context.staleRules?.has(rule.id))
 		.sort((left, right) => left.id.localeCompare(right.id));
-	if (
-		ordered.some(
-			(rule) =>
-				validateFactsProgram(rule.program) ||
-				(rule.applicability && validateApplicability(rule.applicability, rule.program)),
-		)
-	) {
-		plan.valid = false;
-		plan.problems.push("Invalid facts program");
-		return plan;
-	}
+	const frame = createEvaluationFrame(context, original);
 	const state: PlanState = {
 		plan,
 		original,
@@ -1025,7 +1145,9 @@ export function planInput(
 		captured,
 		rules,
 		context,
+		frame,
 		matches: new Set(),
+		evidence: new Map(),
 		originalEvidence: new Map(),
 	};
 	state.originalEvidence = captureEvidenceFor(state, original);

@@ -34,6 +34,7 @@ import {
 	packageRowRevision,
 	type SessionRuleAudit,
 } from "./rule.ts";
+import { preparedPolicyFor } from "./prepared.ts";
 
 const sessionAudit = (surface: "agent-tool" | "command" | "panel" = "command"): SessionRuleAudit => ({
 	at: "2026-09-01T10:00:00.000Z",
@@ -128,13 +129,47 @@ describe("byte-identified rule reductions", () => {
 	it("replays changed bytes even when size and timestamps stay the same", async (t) => {
 		const dir = await directory(t);
 		const reg = registry(dir, [row("sample.rule", "First note.")]);
-		await reg.snapshot();
+		const beforePolicy = preparedPolicyFor(await reg.snapshot());
 		const before = await stat(reg.path);
 		const changed = `${JSON.stringify(catalog(row("sample.rule", "Other note.")))}\n`;
 		assert.equal(Buffer.byteLength(changed), before.size);
 		await writeFile(reg.path, changed);
 		await utimes(reg.path, before.atime, before.mtime);
-		assert.equal((await reg.snapshot()).records.get("sample.rule")?.definition.note, "Other note.");
+		const after = await reg.snapshot();
+		assert.equal(after.records.get("sample.rule")?.definition.note, "Other note.");
+		const afterPolicy = preparedPolicyFor(after);
+		assert.notEqual(afterPolicy.revision, beforePolicy.revision);
+		assert.match(JSON.stringify(afterPolicy.compiled.get("sample.rule")?.program.action), /Other note/);
+	});
+	it("reuses one prepared generation until bytes or matcher availability change", async (t) => {
+		const dir = await directory(t);
+		let available = true;
+		const reg = new RuleRegistry(dir, { catalog: [row("sample.rule")], matcherAvailable: () => available, onNotice: assert.fail });
+		const first = preparedPolicyFor(await reg.snapshot());
+		assert.ok(first.revision);
+		assert.equal(first.rules.length, 1);
+		assert.equal(preparedPolicyFor(await reg.snapshot()), first);
+		available = false;
+		const unavailable = preparedPolicyFor(await reg.snapshot());
+		assert.notEqual(unavailable, first);
+		assert.equal(unavailable.rules.length, 0);
+		assert.equal(unavailable.records.get("sample.rule")?.matcherAvailable, false);
+		available = true;
+		const restored = preparedPolicyFor(await reg.snapshot());
+		assert.notEqual(restored, unavailable);
+		assert.equal(restored.rules.length, 1);
+	});
+	it("keeps the prepared generation apart from mutable public snapshot copies", async (t) => {
+		const dir = await directory(t);
+		const reg = registry(dir, [row("sample.rule", "Bound note.")]);
+		const snapshot = await reg.snapshot();
+		const policy = preparedPolicyFor(snapshot);
+		const record = snapshot.records.get("sample.rule");
+		assert.ok(record);
+		record.definition.note = "changed by caller";
+		snapshot.records.clear();
+		assert.equal(policy.records.get("sample.rule")?.definition.note, "Bound note.");
+		assert.match(JSON.stringify(policy.compiled.get("sample.rule")?.program.action), /Bound note/);
 	});
 	it("checks private file permissions again for identical cached bytes", async (t) => {
 		const dir = await directory(t);

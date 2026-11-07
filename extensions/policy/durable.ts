@@ -50,7 +50,6 @@ import type { Message, ToolCall } from "@earendil-works/pi-ai";
 
 import { authoringGuide, checkDraft, type DraftCheckContext } from "./authoring.ts";
 import { captureFor, ruleScopeMatches } from "./classify.ts";
-import { compileRule } from "./compiler.ts";
 import {
 	applyControl,
 	controlResult,
@@ -59,7 +58,7 @@ import {
 	previewControl,
 	validateControl,
 } from "./control.ts";
-import { cloneJson, snapshotData, UNKNOWN } from "./data.ts";
+import { isOwnedInput, ownInput, prepareSchema, snapshotData, UNKNOWN } from "./data.ts";
 import {
 	makeRuleAudit,
 	PolicyMutationCancelledError,
@@ -70,18 +69,19 @@ import {
 	type RuleSnapshot,
 } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
+import { type PreparedPolicy, preparedPolicyFor } from "./prepared.ts";
 import { readSettings } from "./settings.ts";
 import { readFireSummary, readRecentActivity, terminalSafe } from "./panel.ts";
 import { readPanelRequest, serializeFireSummary, serializeSnapshot, type PolicyPanelAnswer, type PolicyPanelRequest } from "./panel-protocol.ts";
 import {
 	type EvaluationContext,
+	createEvaluationFrame,
 	evaluatePrograms,
 	type InputPlan,
 	observationSelected,
 	planInput,
 	type ProgramEvaluation,
 	type ProgramRule,
-	programFacts,
 	programSteps,
 	captureProgramEvidence,
 } from "./program.ts";
@@ -352,6 +352,31 @@ const toolScope = (scope: RuleMatchContext, model: Durable.Agent["model"]): Poli
 	model: model ? { provider: model.provider, id: model.modelId } : null,
 });
 
+function gatherConditionNames(condition: ProgramRule["program"]["when"], names: Set<string>): void {
+	if ("all" in condition) for (const child of condition.all) gatherConditionNames(child, names);
+	else if ("any" in condition) for (const child of condition.any) gatherConditionNames(child, names);
+	else if ("not" in condition) gatherConditionNames(condition.not, names);
+	else if (condition.path[0] === "context" && condition.path[1] === "tools" && condition.path[2])
+		names.add(condition.path[2]);
+}
+
+function collectProgramNames(policy: PreparedPolicy, names: Set<string>): boolean {
+	for (const record of policy.records.values()) {
+		if (effectiveState(record) !== "active") continue;
+		const compiled = policy.compiled.get(record.id);
+		if (!compiled) continue;
+		const spec = compiled.program;
+		if (compiled.applicability) gatherConditionNames(compiled.applicability, names);
+		gatherConditionNames(spec.when, names);
+		if (spec.state) {
+			gatherConditionNames(spec.state.observe, names);
+			if (spec.state.resetWhen) gatherConditionNames(spec.state.resetWhen, names);
+		}
+		if (names.size > MAX_CATALOG_TOOLS) return false;
+	}
+	return true;
+}
+
 /**
  * Build the native extension for one host. Runtime values come from
  * `host.durable`; the package is imported for types only. The policy store
@@ -384,9 +409,9 @@ export async function createPolicyDurableExtension(host: PolicyDurableHost): Pro
 		initial: initialPolicyStateValue,
 	});
 	const loaded = await registry.snapshot();
-	const wrappedTools = new Set([...loaded.records.values()].flatMap((record) => {
-		const program = compileRule(record).program;
-		return program.action.kind === "require-approval" ? program.selector?.tools ?? [] : [];
+	const loadedPolicy = preparedPolicyFor(loaded);
+	const wrappedTools = new Set([...loadedPolicy.compiled.values()].flatMap((program) => {
+		return program.program.action.kind === "require-approval" ? program.program.selector?.tools ?? [] : [];
 	}));
 	const runtime = new DurablePolicyRuntime({
 		wrappedTools,
@@ -494,7 +519,7 @@ function inputSnapshot(value: unknown): Record<string, unknown> | undefined {
 	const source = objectValue(value);
 	if (!source) return undefined;
 	try {
-		return cloneJson(source);
+		return ownInput(source);
 	} catch {
 		return undefined;
 	}
@@ -818,14 +843,18 @@ class DurablePolicyRuntime {
 			model: model ? `${model.provider}/${model.modelId}` : undefined,
 			cwd: agent.cwd ?? this.cwd,
 		};
-		const rules = [...snapshot.records.values()]
+		const policy = preparedPolicyFor(snapshot);
+		const rules = [...policy.records.values()]
 			.filter(
 				(record) =>
 					effectiveState(record) === "active" &&
 					record.matcherAvailable &&
 					ruleScopeMatches(record.definition.scope, scope),
 			)
-			.map(compileRule);
+			.flatMap((record) => {
+				const compiled = policy.compiled.get(record.id);
+				return compiled ? [compiled] : [];
+			});
 		return { scope, rules, installed };
 	}
 
@@ -838,25 +867,8 @@ class DurablePolicyRuntime {
 		if (installed.length > MAX_CATALOG_TOOLS || agent.tools.length > MAX_CATALOG_TOOLS)
 			return { turn, catalogAvailable: false, tools: UNKNOWN };
 		const names = new Set<string>();
-		const gather = (condition: ProgramRule["program"]["when"]): void => {
-			if ("all" in condition) for (const child of condition.all) gather(child);
-			else if ("any" in condition) for (const child of condition.any) gather(child);
-			else if ("not" in condition) gather(condition.not);
-			else if (condition.path[0] === "context" && condition.path[1] === "tools" && condition.path[2])
-				names.add(condition.path[2]);
-		};
-		for (const record of snapshot.records.values()) {
-			if (effectiveState(record) !== "active") continue;
-			const compiled = compileRule(record);
-			const spec = compiled.program;
-			if (compiled.applicability) gather(compiled.applicability);
-			gather(spec.when);
-			if (spec.state) {
-				gather(spec.state.observe);
-				if (spec.state.resetWhen) gather(spec.state.resetWhen);
-			}
-			if (names.size > MAX_CATALOG_TOOLS) return { turn, catalogAvailable: false, tools: UNKNOWN };
-		}
+		const policy = preparedPolicyFor(snapshot);
+		if (!collectProgramNames(policy, names)) return { turn, catalogAvailable: false, tools: UNKNOWN };
 		const configured = new Set(installed);
 		const active = new Set(agent.tools.map((tool) => tool.name));
 		return {
@@ -879,12 +891,17 @@ class DurablePolicyRuntime {
 		now: number,
 		installed: readonly string[],
 	): EvaluationContext {
+		const policy = preparedPolicyFor(snapshot);
+		const schema = [...agent.tools, ...agent.callable].find((entry) => entry.name === tool)?.parameters;
 		return {
 			tool,
 			facts: { input, context: this.publicContext(snapshot, agent, turn, installed) },
 			states: this.statesOf(state, now, turn),
-			schema: [...agent.tools, ...agent.callable].find((entry) => entry.name === tool)?.parameters,
-			data: snapshotData([...snapshot.data.values()], now),
+			schema,
+			preparedSchema: prepareSchema(schema),
+			schemaTruth: new Map(),
+			namedData: policy.data,
+			data: policy.data.snapshot(now),
 			now,
 			mode: this.effectiveMode(snapshot),
 			scope,
@@ -927,10 +944,9 @@ class DurablePolicyRuntime {
 		result?: PolicyResult,
 		outcome?: CallOutcome,
 	): EvaluationContext {
-		const data = snapshotData(
-			Object.values(call.context.data ?? {}).flatMap((source) => (source.data ? [source.data] : [])),
-			now,
-		);
+		const data = call.context.namedData
+			? call.context.namedData.snapshot(now)
+			: snapshotData(Object.values(call.context.data ?? {}).flatMap((source) => (source.data ? [source.data] : [])), now);
 		return {
 			...call.context,
 			data,
@@ -955,7 +971,7 @@ class DurablePolicyRuntime {
 		conversationId: Durable.ConversationId,
 		installed: readonly string[],
 	): ObservedCall {
-		const input = inputSnapshot(args);
+		const input = isOwnedInput(args) ? args : inputSnapshot(args);
 		const captured = input ? captureFor(tool, input) : undefined;
 		const context = this.evaluationContext(tool, input, snapshot, agent, scope, state, turn, now, installed);
 		const matches = new Set(
@@ -1092,7 +1108,7 @@ class DurablePolicyRuntime {
 
 	/** Guidance lines and safe command segments for the rules behind one denied input plan. */
 	private refusalText(call: ObservedCall, plan: InputPlan, snapshot: RuleSnapshot): string | undefined {
-		return refusalText(plan, snapshot, call.classes);
+		return refusalText(plan, preparedPolicyFor(snapshot).records, call.classes);
 	}
 
 	/** Eligible guide text; projects every selected rule into the observation state. */
@@ -1162,17 +1178,18 @@ class DurablePolicyRuntime {
 		now: number,
 		state: PolicyStateValue,
 	): { evaluations: ProgramEvaluation[]; guides: ProgramEvaluation[]; stale: number } {
-		const evaluations = evaluatePrograms(current, "completion", context).filter(
+		const frame = createEvaluationFrame(context);
+		const evaluations = evaluatePrograms(current, "completion", context, frame).filter(
 			(evaluation) => evaluation.action.kind !== "guide",
 		);
 		let stale = 0;
 		for (const rule of current) {
-			const selected = observationSelected(rule, context);
+			const selected = observationSelected(rule, context, frame);
 			const pin = call.pins.get(rule.id);
-			if (pin && selected === true && !observation.complete(pin, programFacts(rule, context), call.turn, now))
+			if (pin && selected === true && !observation.complete(pin, frame.factsFor(rule), call.turn, now))
 				stale += 1;
 		}
-		const guides = evaluatePrograms(current, "completion", context).filter(
+		const guides = evaluatePrograms(current, "completion", context, frame).filter(
 			(evaluation) => evaluation.action.kind === "guide",
 		);
 		if (PROJECTION_MODES.includes(mode)) this.retainGuidance(state, observation, guides, now, call.turn);
@@ -1606,11 +1623,13 @@ class DurablePolicyRuntime {
 		const { snapshot, agent, scope, rules, installed, mode, turn, now } = input;
 		const retained = this.validRetained(state, observation, rules);
 		state.retainedGuidance = retained;
+		const policy = preparedPolicyFor(snapshot);
 		const contextPrograms = evaluatePrograms(rules, "context", {
 			tool: "",
 			facts: { context: this.publicContext(snapshot, agent, turn, installed) },
 			states: this.statesOf(observation, now, turn),
-			data: snapshotData([...snapshot.data.values()], now),
+			namedData: policy.data,
+			data: policy.data.snapshot(now),
 			now,
 			mode,
 			scope,
@@ -2095,12 +2114,14 @@ class DurablePolicyRuntime {
 		}
 		const record = typeof params.id === "string" ? snapshot.records.get(params.id) : undefined;
 		if (!record) throw new Error("An existing rule id is required");
+		const compiled = preparedPolicyFor(snapshot).compiled.get(record.id);
+		if (!compiled) throw new Error("The selected rule has no compiled program");
 		const period = observation.view(record.id, now, state.turn);
 		return {
 			id: record.id,
 			revision: record.definition.revision,
 			active: effectiveState(record),
-			programs: programSteps(compileRule(record)).map((rule) => rule.program),
+			programs: programSteps(compiled).map((rule) => rule.program),
 			scope: record.definition.scope,
 			observationPeriod: period ? publicState([period])[0] : undefined,
 		};
@@ -2121,14 +2142,18 @@ class DurablePolicyRuntime {
 			throw new Error("A bounded preview tool name is required");
 		const input = inputSnapshot(params.input);
 		if (!input) throw new Error("Preview input must be bounded JSON");
-		const rules = [...snapshot.records.values()]
+		const policy = preparedPolicyFor(snapshot);
+		const rules = [...policy.records.values()]
 			.filter(
 				(record) =>
 					effectiveState(record) === "active" &&
 					record.matcherAvailable &&
 					ruleScopeMatches(record.definition.scope, scope),
 			)
-			.map(compileRule);
+			.flatMap((record) => {
+				const compiled = policy.compiled.get(record.id);
+				return compiled ? [compiled] : [];
+			});
 		const call = this.makeObservedCall(
 			params.tool,
 			"preview",

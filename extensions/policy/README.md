@@ -585,6 +585,26 @@ corrections. Rule ids provide stable order within a stage; conflicting writes
 invalidate the plan rather than depend on extension load order. An invalid or
 conflicting plan does not partially modify the original arguments.
 
+### Evaluation freshness
+
+Every hook invocation reads the authoritative rule file as complete bytes and
+compares those bytes with the previous read. Unchanged bytes reuse the parsed
+reduction. Changed bytes, including an edit that keeps the file size and
+timestamps, produce a new reduction. Matcher availability and derived override
+state are refreshed on every read. A changed generation compiles its rules once;
+calls already in flight keep the generation they captured until they finish.
+
+Runtime evaluation receives one prepared generation: compiled rules grouped by
+phase, validated named data, and a read-only record view. Public inspection
+continues to receive isolated copies. At each tool boundary Policy copies the
+input once and prepares the registered tool schema once. It checks that schema
+per owned candidate. Within one evaluation frame Policy reuses decoded
+arguments, base facts, applicability evidence, schema truth, and named-data
+contents. A committed correction creates a new candidate and recomputes the
+facts that depend on it. Approved program structure is validated at proposal,
+import, and store admission rather than again for every call. The bounded
+compiled-schema cache remains.
+
 Result corrections precede stateless annotations. Completed-call counters and
 records update once at `tool_execution_end`, after the result chain. Calls that
 skip `tool_result` still reach this observation path. Partial progress does not
@@ -821,11 +841,14 @@ append transaction. There are no chunks, external blobs, compression, or
 automatic compaction. Calls already admitted retain their captured data revision;
 the next call receives the replacement.
 
-Direct-tool schemas come from `pi.getAllTools().parameters`. Policy checks the
-complete bounded candidate with `@earendil-works/pi-schema` `compile().check()`.
-It does not convert values, insert defaults, or remove properties. Missing
-schemas, unsafe copies, and thrown validation errors produce unavailable
-validation. The compiled schema cache is bounded. Internal data, recursive
+Direct-tool schemas come from `pi.getAllTools().parameters`. Policy copies and
+compiles one schema at a tool boundary, then checks each owned candidate with
+that validator. `@earendil-works/pi-schema` `compile().check()` performs the
+check. Policy does not convert values, insert defaults, or remove properties.
+Missing schemas, unsafe copies, and thrown validation errors produce unavailable
+validation. The compiled schema cache is bounded. A policy generation validates
+and copies each approved data binding once; each phase computes only age and
+expiry status from that copy. Internal data, recursive
 conditions, closed control variants, and registered tool parameters use
 pi-schema builders and typed plain JSON Schema. Objects are closed unless
 explicitly open. Record schemas retain their key patterns and property-count

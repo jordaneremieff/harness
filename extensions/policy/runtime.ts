@@ -3,14 +3,15 @@ import { randomUUID } from "node:crypto";
 import { ActionApprovals, actionAuthority, type ActionBinding, type ActionControl, sameActionInput, sealActionInput } from "./action-approval.ts";
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
 import { captureFor, ruleScopeMatches as scopeMatches } from "./classify.ts";
-import { compileRule } from "./compiler.ts";
-import { cloneJson, snapshotData, UNKNOWN } from "./data.ts";
+import { isOwnedInput, ownInput, prepareSchema, snapshotData, UNKNOWN } from "./data.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
+import { type PreparedPolicy, attachedPreparedPolicy, preparedPolicyFor } from "./prepared.ts";
 import type { PolicyMode } from "./mode.ts";
 import { readRecentActivity } from "./panel.ts";
 import {
 	type Condition,
 	captureProgramEvidence,
+	createEvaluationFrame,
 	type EvaluationContext,
 	evaluatePrograms,
 	GUIDANCE_BYTES,
@@ -20,7 +21,6 @@ import {
 	type ProgramEvaluation,
 	type ProgramRule,
 	planInput,
-	programFacts,
 	programSteps,
 } from "./program.ts";
 import {
@@ -34,7 +34,7 @@ import {
 	textContentBytes,
 	trackPending,
 } from "./record.ts";
-import { contentRevision, effectiveEffect, effectiveState, ruleGuidance } from "./rule.ts";
+import { contentRevision, type RuleRecord, effectiveEffect, effectiveState, ruleGuidance } from "./rule.ts";
 import { shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin } from "./state.ts";
 import { PolicyWriter } from "./store.ts";
@@ -84,7 +84,7 @@ function inputSnapshot(value: unknown): Record<string, unknown> | undefined {
 	const source = object(value);
 	if (!source) return undefined;
 	try {
-		return cloneJson({ ...source });
+		return ownInput({ ...source });
 	} catch {
 		return undefined;
 	}
@@ -214,12 +214,12 @@ function commitInput(target: Record<string, unknown>, candidate: Record<string, 
 }
 
 /** Preserve stored guidance and append bounded evidence for both policy runtimes. */
-export function refusalText(plan: InputPlan, snapshot: RuleSnapshot, fallbackIds: readonly string[]): string | undefined {
+export function refusalText(plan: InputPlan, records: ReadonlyMap<string, RuleRecord>, fallbackIds: readonly string[]): string | undefined {
 	const denials = plan.evaluations.filter((evaluation) => evaluation.deny);
 	const ids = new Set(denials.length ? denials.map((evaluation) => evaluation.id) : fallbackIds);
 	const suggestions = new Set<string>();
 	const lines = [...ids].flatMap((id) => {
-		const record = snapshot.records.get(id);
+		const record = records.get(id);
 		if (!record) return [];
 		const evidence = new Set(
 			denials.filter((entry) => entry.id === id).flatMap((entry) => {
@@ -248,6 +248,8 @@ export class PolicyRuntime {
 	private readonly ended = new Set<string>();
 	private readonly retainedGuidance = new Map<string, { pin: StatePin; evaluation: ProgramEvaluation }>();
 	private snapshot?: RuleSnapshot;
+	private policy?: PreparedPolicy;
+	private ownedPolicy = false;
 	private effectiveActions = new Map<string, ReturnType<typeof effectiveEffect>>();
 	private generation = 0;
 	private turn = 0;
@@ -295,19 +297,17 @@ export class PolicyRuntime {
 		}
 	}
 	sync(snapshot: RuleSnapshot): void {
+		const policy = preparedPolicyFor(snapshot);
 		const prior = this.effectiveActions;
 		this.effectiveActions = new Map(
-			[...snapshot.records.values()].map((record) => [record.id, effectiveEffect(record)]),
+			[...policy.records].map(([id, record]) => [id, effectiveEffect(record)]),
 		);
+		this.policy = policy;
+		this.ownedPolicy = attachedPreparedPolicy(snapshot) !== undefined;
 		this.snapshot = snapshot;
 		if (this.effectiveMode() !== "enforce") this.actions.clear();
-		this.state.sync(
-			[...snapshot.records.values()]
-				.filter((r) => effectiveState(r) === "active" && r.matcherAvailable)
-				.map(compileRule),
-			this.now(),
-		);
-		for (const record of snapshot.records.values()) {
+		this.state.sync(policy.rules, this.now());
+		for (const record of policy.records.values()) {
 			const previous = prior.get(record.id);
 			if (previous !== undefined && previous !== effectiveEffect(record))
 				this.state.reset("effective-action-change", this.now(), record.id);
@@ -315,6 +315,11 @@ export class PolicyRuntime {
 		if (this.effectiveMode() !== "annotate" && this.effectiveMode() !== "enforce") this.retainedGuidance.clear();
 		for (const [id, notice] of this.retainedGuidance)
 			if (!samePin(notice.pin, this.state.pin(id))) this.retainedGuidance.delete(id);
+	}
+	private prepared(): PreparedPolicy {
+		if (this.ownedPolicy && this.policy) return this.policy;
+		if (!this.snapshot) throw new Error("Policy evaluation requires a loaded rule snapshot");
+		return preparedPolicyFor(this.snapshot);
 	}
 	private readonly resetIdentity = randomUUID();
 	resetRevision(id: string): string {
@@ -390,7 +395,7 @@ export class PolicyRuntime {
 			return { tools: [], active: [], available: false };
 		}
 	}
-	private publicContext(snapshot: RuleSnapshot, catalog = this.catalog()): Record<string, unknown> {
+	private publicContext(catalog = this.catalog()): Record<string, unknown> {
 		if (!catalog.available) return { turn: this.turn, catalogAvailable: false, tools: UNKNOWN };
 		const names = new Set(catalog.tools.map((tool) => tool.name));
 		const gather = (condition: Condition): void => {
@@ -400,9 +405,11 @@ export class PolicyRuntime {
 			else if (condition.path[0] === "context" && condition.path[1] === "tools" && condition.path[2])
 				names.add(condition.path[2]);
 		};
-		for (const record of snapshot.records.values()) {
+		const policy = this.prepared();
+		for (const record of policy.records.values()) {
 			if (effectiveState(record) !== "active") continue;
-			const compiled = compileRule(record);
+			const compiled = policy.compiled.get(record.id);
+			if (!compiled) continue;
 			const spec = compiled.program;
 			if (compiled.applicability) gather(compiled.applicability);
 			gather(spec.when);
@@ -425,16 +432,21 @@ export class PolicyRuntime {
 	private evaluationContext(
 		tool: string,
 		input: Record<string, unknown> | undefined,
-		snapshot: RuleSnapshot,
 	): EvaluationContext {
 		const catalog = this.catalog();
+		const schema = catalog.tools.find((t) => t.name === tool)?.parameters;
+		const now = this.now();
+		const policy = this.prepared();
 		return {
 			tool,
-			facts: { input, context: this.publicContext(snapshot, catalog) },
+			facts: { input, context: this.publicContext(catalog) },
 			states: this.states(),
-			schema: catalog.tools.find((t) => t.name === tool)?.parameters,
-			data: snapshotData([...snapshot.data.values()], this.now()),
-			now: this.now(),
+			schema,
+			preparedSchema: prepareSchema(schema),
+			schemaTruth: new Map(),
+			namedData: policy.data,
+			data: policy.data.snapshot(now),
+			now,
 		};
 	}
 	private currentRules(call: ObservedCall): ProgramRule[] {
@@ -479,10 +491,9 @@ export class PolicyRuntime {
 	}
 	private contextFor(call: ObservedCall, result?: Result, outcome?: CallOutcome): EvaluationContext {
 		const now = this.now();
-		const data = snapshotData(
-			Object.values(call.context.data ?? {}).flatMap((source) => (source.data ? [source.data] : [])),
-			now,
-		);
+		const data = call.context.namedData
+			? call.context.namedData.snapshot(now)
+			: snapshotData(Object.values(call.context.data ?? {}).flatMap((source) => (source.data ? [source.data] : [])), now);
 		return {
 			...call.context,
 			data,
@@ -500,14 +511,18 @@ export class PolicyRuntime {
 		ctx: ExtensionContext,
 		snapshot: RuleSnapshot,
 	): ObservedCall {
-		const input = inputSnapshot(args);
+		const input = isOwnedInput(args) ? args : inputSnapshot(args);
 		const captured = input ? captureFor(tool, input) : undefined;
 		const scope = sessionScope(ctx);
-		const active = [...snapshot.records.values()].filter(
+		const policy = this.prepared();
+		const active = [...policy.records.values()].filter(
 			(r) => effectiveState(r) === "active" && r.matcherAvailable && scopeMatches(r.definition.scope, scope),
 		);
-		const rules = active.map(compileRule);
-		const context = { ...this.evaluationContext(tool, input, snapshot), scope };
+		const rules = active.flatMap((record) => {
+			const compiled = policy.compiled.get(record.id);
+			return compiled ? [compiled] : [];
+		});
+		const context = { ...this.evaluationContext(tool, input), scope };
 		const matches = new Set(
 			[...captureProgramEvidence(rules, context, input)].filter(([, truth]) => truth === true).map(([id]) => id),
 		);
@@ -581,8 +596,10 @@ export class PolicyRuntime {
 			call = this.makeCall(event.toolName, event.toolCallId, event.input, ctx, snapshot);
 			this.track(call);
 		} else {
-			const approvalRules = [...snapshot.records.values()].some((record) => compileRule(record).program.action.kind === "require-approval") ||
-				call.rules.some((rule) => rule.program.action.kind === "require-approval");
+			const approvalRules =
+				[...this.prepared().compiled.values()].some(
+					(rule) => rule.program.action.kind === "require-approval",
+				) || call.rules.some((rule) => rule.program.action.kind === "require-approval");
 			if (approvalRules) {
 				const fresh = this.makeCall(event.toolName, event.toolCallId, event.input, ctx, snapshot);
 				fresh.requested = call.requested;
@@ -621,7 +638,7 @@ export class PolicyRuntime {
 		const denied = this.applyInputCorrections(call, event, plan, approvalReason !== undefined || plan.denied || !plan.valid);
 		if (activeMode === "enforce" && denied) {
 			call.decision = approvalReason ??
-				refusalText(plan, snapshot, call.classes) ??
+				refusalText(plan, this.prepared().records, call.classes) ??
 				"[policy] The approved input checks refused this call.";
 			this.notice(call, ctx);
 			return { block: true, reason: call.decision };
@@ -817,18 +834,19 @@ export class PolicyRuntime {
 	/** Run completion-phase evaluations and observation completion once. */
 	private completeCall(call: ObservedCall, result: Result, outcome: CallOutcome): ProgramEvaluation[] {
 		const rules = this.currentRules(call);
-		const completion = evaluatePrograms(rules, "completion", this.contextFor(call, result, outcome)).filter(
+		const completionContext = this.contextFor(call, result, outcome);
+		const completionFrame = createEvaluationFrame(completionContext);
+		const completion = evaluatePrograms(rules, "completion", completionContext, completionFrame).filter(
 			(entry) => entry.action.kind !== "guide",
 		);
-		const completionContext = this.contextFor(call, result, outcome);
 		this.stale += call.rules.length - rules.length;
 		for (const rule of rules) {
-			const selected = observationSelected(rule, completionContext);
+			const selected = observationSelected(rule, completionContext, completionFrame);
 			const pin = call.pins.get(rule.id);
 			if (
 				pin &&
 				selected === true &&
-				!this.state.complete(pin, programFacts(rule, completionContext), call.turn, this.now())
+				!this.state.complete(pin, completionFrame.factsFor(rule), call.turn, this.now())
 			)
 				this.stale++;
 		}
@@ -928,32 +946,38 @@ export class PolicyRuntime {
 		if (this.closed || !this.enabled() || this.shellCardSent) return;
 		if (this.mode() !== "annotate" && this.mode() !== "enforce") return;
 		const generation = this.generation;
-		const snapshot = await this.load(ctx);
+		await this.load(ctx);
 		if (!this.live(generation) || this.shellCardSent) return;
 		if (this.effectiveMode() !== "annotate" && this.effectiveMode() !== "enforce") return;
 		const catalog = this.catalog();
 		if (!catalog.available || !catalog.active.includes("bash")) return;
-		const text = shellContractCard(snapshot.records.values(), sessionScope(ctx), this.publicContext(snapshot, catalog));
+		const text = shellContractCard(this.prepared().records.values(), sessionScope(ctx), this.publicContext(catalog));
 		if (text) this.shellCardSent = true;
 		return text;
 	}
 	async context(ctx: ExtensionContext): Promise<string | undefined> {
 		if (this.closed || !this.enabled()) return;
 		const generation = this.generation;
-		const snapshot = await this.load(ctx);
+		await this.load(ctx);
 		if (!this.live(generation)) return;
-		const rules = [...snapshot.records.values()]
+		const policy = this.prepared();
+		const rules = [...policy.records.values()]
 			.filter(
 				(r) =>
 					effectiveState(r) === "active" && r.matcherAvailable && scopeMatches(r.definition.scope, sessionScope(ctx)),
 			)
-			.map(compileRule);
+			.flatMap((record) => {
+				const compiled = policy.compiled.get(record.id);
+				return compiled ? [compiled] : [];
+			});
+		const now = this.now();
 		const evaluation = evaluatePrograms(rules, "context", {
 			tool: "",
-			facts: { context: this.publicContext(snapshot) },
+			facts: { context: this.publicContext() },
 			states: this.states(),
-			data: snapshotData([...snapshot.data.values()], this.now()),
-			now: this.now(),
+			namedData: policy.data,
+			data: policy.data.snapshot(now),
+			now,
 			mode: this.effectiveMode(),
 		});
 		if (this.effectiveMode() === "notice" && ctx.mode === "tui") {
@@ -1047,12 +1071,14 @@ export class PolicyRuntime {
 		}
 		const record = typeof params.id === "string" ? snapshot.records.get(params.id) : undefined;
 		if (!record) throw new Error("An existing rule id is required");
+		const compiled = this.prepared().compiled.get(record.id);
+		if (!compiled) throw new Error("The selected rule has no compiled program");
 		const period = this.state.view(record.id, this.now(), this.turn);
 		return {
 			id: record.id,
 			revision: record.definition.revision,
 			active: effectiveState(record),
-			programs: programSteps(compileRule(record)).map((rule) => rule.program),
+			programs: programSteps(compiled).map((rule) => rule.program),
 			scope: record.definition.scope,
 			observationPeriod: period ? publicState([period])[0] : undefined,
 		};

@@ -1,6 +1,6 @@
 /** Unified append-only rule store, strict event validation, and reduction. */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { link, lstat, open, unlink } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
@@ -45,6 +45,7 @@ import {
 	type SessionRuleAudit,
 } from "./rule.ts";
 import { hasCodeMatcher } from "./shell-rules.ts";
+import { attachPreparedPolicy, preparePolicy, type PreparedPolicy } from "./prepared.ts";
 import { ensurePrivateDirectory } from "./store.ts";
 
 export const RULES_FILE = "rules.jsonl";
@@ -1616,6 +1617,14 @@ export interface RuleRegistryOptions {
 	onNotice?: (message: string) => void;
 }
 
+interface CachedStore {
+	readonly bytes: Buffer;
+	readonly revision: string;
+	readonly reduction: RuleReduction;
+	readonly incompleteFinalLine?: number;
+	prepared?: { records: ReadonlyMap<string, RuleRecord>; policy: PreparedPolicy };
+}
+
 export class RuleRegistry {
 	readonly path: string;
 	private readonly dir: string;
@@ -1626,11 +1635,7 @@ export class RuleRegistry {
 	private mutationTail: Promise<void> = Promise.resolve();
 	private degradedHealth: RuleStoreHealth | undefined;
 	private incompleteReported = false;
-	private cachedReduction: {
-		readonly bytes: Buffer;
-		readonly reduction: RuleReduction;
-		readonly incompleteFinalLine?: number;
-	} | undefined;
+	private cachedStore: CachedStore | undefined;
 
 	constructor(dir: string, options: RuleRegistryOptions = {}) {
 		this.dir = dir;
@@ -1663,7 +1668,7 @@ export class RuleRegistry {
 	/** Record the first failure as degraded health and return the stored health. */
 	private degrade(error: unknown): RuleStoreHealth {
 		if (this.degradedHealth) return this.degradedHealth;
-		this.cachedReduction = undefined;
+		this.cachedStore = undefined;
 		const reason = error instanceof Error ? error.message : String(error);
 		const line = error instanceof RuleLineError ? error.line : undefined;
 		const property = line === undefined ? (error instanceof RuleFileError ? error.property : "file access") : undefined;
@@ -1699,24 +1704,63 @@ export class RuleRegistry {
 		return message;
 	}
 
-	private async readReduction(signal?: AbortSignal): Promise<{ reduction: RuleReduction; incompleteFinalLine?: number }> {
+	/**
+	 * Fresh authoritative bytes, compared with the complete previous bytes.
+	 * One parsed reduction is shared until real bytes change.
+	 */
+	private async readStore(signal?: AbortSignal): Promise<CachedStore> {
 		const bytes = await readStoreBytes(this.dir, this.path, signal);
 		checkCancellation(signal);
-		if (!this.cachedReduction?.bytes.equals(bytes)) {
-			this.cachedReduction = undefined;
-			const read = parseEventLines(bytes);
-			this.cachedReduction = {
-				bytes,
-				reduction: reduceRuleEvents(read.events, () => false, read.eventLines),
-				...(read.incompleteFinalLine ? { incompleteFinalLine: read.incompleteFinalLine } : {}),
-			};
+		const cached = this.cachedStore;
+		if (cached?.bytes.equals(bytes)) return cached;
+		const read = parseEventLines(bytes);
+		const store: CachedStore = {
+			bytes,
+			revision: createHash("sha256").update(bytes).digest("hex").slice(0, 16),
+			reduction: reduceRuleEvents(read.events, () => false, read.eventLines),
+			...(read.incompleteFinalLine ? { incompleteFinalLine: read.incompleteFinalLine } : {}),
+		};
+		this.cachedStore = store;
+		return store;
+	}
+
+	/** Reuse derived records whose matcher availability and override state did not change. */
+	private derivedRecords(
+		reduction: RuleReduction,
+		prior?: ReadonlyMap<string, RuleRecord>,
+	): ReadonlyMap<string, RuleRecord> {
+		let changed = !prior || prior.size !== reduction.records.size;
+		const records = new Map<string, RuleRecord>();
+		for (const [id, record] of reduction.records) {
+			const available = record.matcher.kind === "declarative" ? true : this.matcherAvailable(record.matcher.key);
+			const stale = record.override !== undefined && record.override.againstDefinitionRevision !== record.definition.revision;
+			const previous = prior?.get(id);
+			if (previous && previous.matcherAvailable === available && previous.staleOverride === stale) {
+				records.set(id, previous);
+				continue;
+			}
+			records.set(id, { ...record, matcherAvailable: available, staleOverride: stale });
+			changed = true;
 		}
-		const cached = this.cachedReduction;
-		const reduction = clone(cached.reduction);
+		return changed ? records : (prior as ReadonlyMap<string, RuleRecord>);
+	}
+
+	/** The owner-held prepared generation for these bytes. */
+	private preparedFor(store: CachedStore): PreparedPolicy {
+		const records = this.derivedRecords(store.reduction, store.prepared?.records);
+		if (store.prepared && store.prepared.records === records) return store.prepared.policy;
+		const policy = preparePolicy({ revision: store.revision, records, data: store.reduction.data }, store.prepared?.policy);
+		store.prepared = { records, policy };
+		return policy;
+	}
+
+	private async readReduction(signal?: AbortSignal): Promise<{ reduction: RuleReduction; incompleteFinalLine?: number }> {
+		const store = await this.readStore(signal);
+		const reduction = clone(store.reduction);
 		for (const [id, record] of reduction.records) reduction.records.set(id, refreshDerived(record, this.matcherAvailable));
 		return {
 			reduction,
-			...(cached.incompleteFinalLine ? { incompleteFinalLine: cached.incompleteFinalLine } : {}),
+			...(store.incompleteFinalLine ? { incompleteFinalLine: store.incompleteFinalLine } : {}),
 		};
 	}
 
@@ -1903,19 +1947,42 @@ export class RuleRegistry {
 		return this.firstUse;
 	}
 
+	/** Copy one inspected snapshot's records only when a caller reads them. */
+	private publicRecords(store: CachedStore): Map<string, RuleRecord> {
+		const records = new Map<string, RuleRecord>();
+		for (const [id, record] of store.reduction.records)
+			records.set(id, refreshDerived(clone(record), this.matcherAvailable));
+		return records;
+	}
+
 	async snapshot(): Promise<RuleSnapshot> {
 		await this.ensureFirstUse();
 		if (this.degradedHealth)
 			return { records: new Map(), pending: [], data: new Map(), health: clone(this.degradedHealth) };
 		try {
-			const read = await this.readReduction();
-			const reduction = read.reduction;
+			const store = await this.readStore();
+			const policy = this.preparedFor(store);
 			const health: RuleStoreHealth = { status: "ok", path: this.path };
-			if (read.incompleteFinalLine) {
-				health.incompleteFinalLine = read.incompleteFinalLine;
-				health.message = this.reportIncomplete(read.incompleteFinalLine);
+			if (store.incompleteFinalLine) {
+				health.incompleteFinalLine = store.incompleteFinalLine;
+				health.message = this.reportIncomplete(store.incompleteFinalLine);
 			}
-			return { ...reduction, health };
+			const snapshot = {
+				pending: clone(store.reduction.pending),
+				data: clone(store.reduction.data),
+				health,
+			} as unknown as RuleSnapshot;
+			let records: Map<string, RuleRecord> | undefined;
+			Object.defineProperty(snapshot, "records", {
+				enumerable: true,
+				configurable: true,
+				get: () => {
+					records ??= this.publicRecords(store);
+					return records;
+				},
+			});
+			attachPreparedPolicy(snapshot, policy);
+			return snapshot;
 		} catch (error) {
 			return { records: new Map(), pending: [], data: new Map(), health: clone(this.degrade(error)) };
 		}

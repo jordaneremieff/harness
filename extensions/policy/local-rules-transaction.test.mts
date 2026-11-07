@@ -5,10 +5,11 @@ import fsPromises, { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeF
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, type TestContext } from "node:test";
+import { describe, it, test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { NamedData } from "./data.ts";
 import { namedDataRevision, PolicyMutationCancelledError, type RuleEvent, RuleRegistry } from "./local-rules.ts";
+import { preparedPolicyFor } from "./prepared.ts";
 import { constants } from "node:fs";
 import { type PackageDefinitionRow, packageRowRevision } from "./rule.ts";
 
@@ -698,3 +699,17 @@ if (process.argv[2] === "--transaction-child") {
 		});
 	});
 }
+
+test("a committed append prepares new bytes while in-flight snapshots retain their generation", async (t) => {
+	const dir = await directory(t);
+	const reg = registry(dir);
+	const before = await reg.snapshot();
+	const beforePolicy = preparedPolicyFor(before);
+	await reg.setData(binding("kept"), null, audit);
+	const after = await reg.snapshot();
+	const afterPolicy = preparedPolicyFor(after);
+	assert.notEqual(afterPolicy.revision, beforePolicy.revision);
+	assert.equal(afterPolicy.data.snapshot(Date.now()).synthetic?.status, "ready");
+	assert.equal(beforePolicy.data.snapshot(Date.now()).synthetic, undefined);
+	assert.equal(preparedPolicyFor(before), beforePolicy);
+});

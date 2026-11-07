@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { describe, it, test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
@@ -1676,4 +1676,21 @@ describe("final observations and guidance", () => {
 		await f.call("second", input);
 		assert.deepEqual(input, { name: "y" });
 	});
+});
+
+test("prepares the registered schema at each tool boundary", async () => {
+	const schema: Record<string, unknown> = { type: "object", additionalProperties: true };
+	const gate = rule("schema.gate", {
+		phase: "input",
+		selector: { tools: ["sample"] },
+		when: { op: "eq", path: ["schema", "valid"], value: false },
+		action: { kind: "deny" },
+		onUnavailable: "skip",
+	});
+	const f = fixture([gate], "enforce", schema);
+	assert.equal(await f.call("allowed", { extra: true }), undefined);
+	schema.additionalProperties = false;
+	const denied = await f.call("denied", { extra: true });
+	assert.equal(denied?.block, true);
+	await f.writer.close();
 });
