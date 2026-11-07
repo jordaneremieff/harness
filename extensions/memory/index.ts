@@ -12,6 +12,7 @@ import { registerProactive } from "./proactive-ordinary.ts";
 import { createMemoryContribution } from "./durable.ts";
 import { toolDisplay } from "./display.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
+import { memorySourceCache } from "./source-cache.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
 import { editMemory, memoryRoot, retireMemory, reviewMemory, writeMemory } from "./store.ts";
 import {
@@ -34,7 +35,10 @@ export default function memory(pi: ExtensionAPI): void {
 	const configuredDir = () => configuration().dir;
 	registerProactive(pi, configuration);
 	const disposeSettings = publishSettings(pi.events, { agentDir: getAgentDir() });
-	pi.on("session_shutdown", disposeSettings);
+	pi.on("session_shutdown", () => {
+		disposeSettings();
+		memorySourceCache.clear();
+	});
 	const displays = new Map(toolDisplay().tools.map((tool) => [tool.name, tool]));
 	const registerTool: ExtensionAPI["registerTool"] = (tool) => {
 		pi.registerTool({ ...tool, ...displays.get(tool.name) });

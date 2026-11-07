@@ -469,6 +469,7 @@ test("native codemode receives memory pages and errors through nested tool tasks
 			assert.match(sections.memory ?? "", /Consult memory before/);
 			assert.match(sections.memory_index ?? "", /editor-choice: Editor choice/);
 		}
+		assert.equal(new Set(requests.map((request) => sectionsOf(request.messages).memory_index)).size, 1);
 		assert.deepEqual(reports, []);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { memoryNotice, noteKey, recallCandidate, storageCue } from "./proactive.ts";
 import { memoryIndex, recallSources } from "./retrieval.ts";
+import { memorySourceCache } from "./source-cache.ts";
 import { readSettings } from "./settings.ts";
 
 import { proactiveCorpus, recallText, writeRecall } from "./proactive-fixture.mts";
@@ -123,6 +124,22 @@ test("unknown lifecycle qualifies delivered recall while retired and superseded 
 			header,
 		);
 	}
+});
+
+test("warm proactive discovery reuses verified headers and observes changed cues", async (t) => {
+	const corpus = proactiveCorpus(fixture(t));
+	const first = await recallSources(corpus);
+	assert.ok(first);
+	const warm = memorySourceCache.statistics();
+	assert.deepEqual(await recallSources(corpus), first);
+	assert.equal(memorySourceCache.statistics().yamlParses, warm.yamlParses);
+	writeFileSync(
+		join(corpus, "subject-0.md"),
+		"---\nstatus: active\nsuperseded_by: null\ntitle: Renamed subject\n---\n## Summary\nUnrelated discovery text.\n## Details\nDetails.\n",
+	);
+	const changed = await recallSources(corpus);
+	assert.equal(changed?.notes.find((note) => note.slug === "subject-0")?.title, "Renamed subject");
+	assert.ok(memorySourceCache.statistics().yamlParses > warm.yamlParses);
 });
 
 test("proactive setting accepts explicit environment and file booleans and uses its safe default", (t) => {

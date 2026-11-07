@@ -5,6 +5,7 @@ import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
 import { durableRecall } from "./proactive-durable.ts";
 import { historyMemory, memoryIndex, readMemory, searchMemory } from "./retrieval.ts";
+import { memorySourceCache } from "./source-cache.ts";
 import { memorySearchOutputSchema } from "./search-output.ts";
 import { editMemory, memoryRoot, retireMemory, reviewMemory, type WriteReceipt, writeMemory } from "./store.ts";
 import {
@@ -84,6 +85,7 @@ export function createMemoryContribution(
 		create(host) {
 			disposeOrdinarySettings();
 			host.onClose(publishSettings(bus, { agentDir: host.agentDir }));
+			host.onClose(() => memorySourceCache.clear());
 			const { defineExtension, defineTool, section } = host.durable;
 			const configuration = () => readSettings({ agentDir: host.agentDir }).values;
 			const configuredDir = () => configuration().dir;

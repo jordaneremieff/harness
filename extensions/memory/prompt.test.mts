@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MEMORY_INDEX_BYTES, memoryIndex } from "./retrieval.ts";
+import { memorySourceCache } from "./source-cache.ts";
 
 function corpus(t: { after(fn: () => void): void }) {
 	const root = mkdtempSync(join(tmpdir(), "memory-prompt-"));
@@ -207,6 +208,46 @@ test("compact pointers preserve all subjects, qualifiers, order and body/date st
 		`---\nstatus: active\nsuperseded_by: null\ntitle: ${"界😀".repeat(80)}\nupdated: 2026-01-01\n---\nDIFFERENT PRIVATE BODY`,
 	);
 	assert.equal(await memoryIndex(first), text);
+});
+
+test("warm index reuses verified header parsing and sees same-size external edits", async (t) => {
+	const root = corpus(t);
+	note(root, "subject", "status: active\ntitle: Alpha");
+	const path = join(root, "subject.md");
+	const fixed = new Date("2020-01-01T00:00:00.000Z");
+	fs.utimesSync(path, fixed, fixed);
+	const before = section(await memoryIndex(root));
+	const warm = memorySourceCache.statistics();
+	assert.deepEqual(pointers(before), ["subject: Alpha"]);
+	assert.equal(await memoryIndex(root), before);
+	assert.equal(memorySourceCache.statistics().yamlParses, warm.yamlParses);
+
+	const source = fs.readFileSync(path, "utf8");
+	writeFileSync(path, source.replace("PRIVATE BODY MARKER", "PRIVATE BODY SECRET"));
+	fs.utimesSync(path, fixed, fixed);
+	assert.equal(fs.statSync(path).size, Buffer.byteLength(source));
+	assert.equal(await memoryIndex(root), before);
+	assert.equal(memorySourceCache.statistics().yamlParses, warm.yamlParses);
+
+	writeFileSync(path, source.replace("title: Alpha", "title: Bravo"));
+	fs.utimesSync(path, fixed, fixed);
+	assert.equal(fs.statSync(path).size, Buffer.byteLength(source));
+	assert.equal(fs.statSync(path).mtimeMs, fixed.getTime());
+	assert.deepEqual(pointers(section(await memoryIndex(root))), ["subject: Bravo"]);
+	assert.ok(memorySourceCache.statistics().yamlParses > warm.yamlParses);
+});
+
+test("a replaced root reuses no other corpus's parse products", async (t) => {
+	const first = corpus(t);
+	const second = corpus(t);
+	note(first, "subject", "status: active\ntitle: Subject");
+	note(second, "subject", "status: active\ntitle: Subject");
+	const text = section(await memoryIndex(first));
+	const afterFirst = memorySourceCache.statistics();
+	assert.equal(await memoryIndex(second), text);
+	const afterSecond = memorySourceCache.statistics();
+	assert.equal(afterSecond.misses - afterFirst.misses, 1);
+	assert.equal(afterSecond.hits, afterFirst.hits);
 });
 
 test("empty corpus retains the title frame and search guidance", async (t) => {

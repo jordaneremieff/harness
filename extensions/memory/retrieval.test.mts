@@ -26,7 +26,6 @@ import {
 	type ReadOptions,
 	type SearchOptions,
 	addressableSlug,
-	extractCue,
 	openRegular,
 	readMemory,
 	searchMemory,
@@ -863,7 +862,9 @@ test("source reads refuse offsets beyond the note's code-point end", async () =>
 
 test("real symbolic links remain excluded from browse and search", async () => {
 	const root = corpus({ "README.md": README, "target.md": "needle" });
+	await search(root);
 	symlinkSync(join(root, "target.md"), join(root, "linked.md"));
+	mkdirSync(join(root, "directory.md"));
 	for (const query of [undefined, "needle", ["needle", "target"]]) {
 		const result = await search(root, { query });
 		assert.deepEqual(
@@ -871,8 +872,9 @@ test("real symbolic links remain excluded from browse and search", async () => {
 			["target"],
 		);
 		assert.ok(issues(result).includes("note.symlink"));
+		assert.ok(issues(result).includes("note.nonregular"));
 		assert.equal(object(result.scan).complete, true);
-		assert.equal(object(result.scan).unavailableNotes, 1);
+		assert.equal(object(result.scan).unavailableNotes, 2);
 		if (query) assert.equal(object(result.search).complete, false);
 	}
 });
@@ -960,25 +962,6 @@ test("bounds escaped source output under a long root", async () => {
 	assert.equal(result.hasMore, true);
 	const collected = await collect(root, "control");
 	assert.equal(collected.text, readFileSync(join(root, "control.md"), "utf8"));
-});
-
-test("extracts literal cue lines without YAML interpretation", () => {
-	assert.equal(extractCue("# Title\n", false).metadata, "absent");
-	const cue = extractCue(
-		'---\ntitle: "A: B"\ntags: [x, y]\nstatus: active\nsuperseded_by: null\ncreated: 2025-01-01\n---\n# A\n',
-		false,
-	);
-	assert.equal(cue.metadata, "ok");
-	assert.equal(cue.lines.get("title"), 'title: "A: B"');
-	assert.equal(cue.lines.get("tags"), "tags: [x, y]");
-	assert.equal(cue.lines.get("superseded_by"), "superseded_by: null");
-	assert.equal(cue.lines.has("created"), false);
-	assert.equal(extractCue("---\ntitle: A\ntitle: B\n---\n", false).duplicate, true);
-	assert.equal(extractCue("---\ntags:\n  - a\n---\n", false).multiline, true);
-	assert.equal(extractCue("---\ntitle: A\n", false).metadata, "malformed");
-	const partial = extractCue(`---\ntitle: A\n${"y".repeat(9000)}`, true);
-	assert.equal(partial.metadata, "partial");
-	assert.equal(partial.issue, "frontmatter not closed within the read window");
 });
 
 test("keeps original locations through lowercase expansion, contextual casing, and multibyte text", async () => {

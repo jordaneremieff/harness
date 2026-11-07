@@ -177,6 +177,9 @@ for (const form of ["titles", "slugs", "partial"] as const) {
 			await session.prompt("Unchanged request");
 			assert.equal(promptSection(), first);
 			assert.deepEqual(patches(), [first]);
+			await session.prompt("Unchanged request again");
+			assert.equal(promptSection(), first);
+			assert.deepEqual(patches(), [first]);
 			writeFileSync(join(corpus, "editor-choice.md"), source("Editor choice", "DIFFERENT PRIVATE BODY"));
 			await session.prompt("Body-only change");
 			assert.deepEqual(patches(), [first]);
@@ -211,7 +214,7 @@ for (const form of ["titles", "slugs", "partial"] as const) {
 			await session.prompt("Missing contract");
 			assert.equal(promptSection(), unavailable);
 			assert.deepEqual(patches(), [first, changed, unavailable, changed, unavailable]);
-			assert.equal(requests.length, form === "titles" ? 8 : 9);
+			assert.equal(requests.length, form === "titles" ? 9 : 10);
 			assert.deepEqual(errors, []);
 		} finally {
 			if (session) {

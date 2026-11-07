@@ -19,6 +19,7 @@ import { isDeepStrictEqual } from "node:util";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { findMarkdownHeading } from "./headings.ts";
 import { HISTORY_DIRECTORY, historyDirectory, newRevision, revisionIdentity } from "./history.ts";
+import { memorySourceCache } from "./source-cache.ts";
 import {
 	independentField,
 	isDate,
@@ -892,6 +893,8 @@ function mutate(
 			checkAbort(signal);
 			hooks.beforePublish?.(plan.file);
 			publish(root, plan);
+			memorySourceCache.invalidate(root, plan.file);
+			if (root !== rootValue) memorySourceCache.invalidate(rootValue, plan.file);
 			receipt.written.push(plan.file);
 			receipt.notWritten.shift();
 			if (plan.file === "README.md") receipt.initialized = true;

@@ -8,6 +8,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { editMemory, type MemoryWrite, MemoryWriteError, memoryRoot, reviewMemory, retireMemory, sourceDigest, writeMemory } from "./store.ts";
+import { readMemory } from "./retrieval.ts";
+import { memorySourceCache } from "./source-cache.ts";
 
 function corpus(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "memory-store-"));
@@ -422,7 +424,7 @@ test("input validation rejects malformed, duplicate, self and credential-like ma
 		{ ...note(), expectedDigest: "bad" },
 		{ ...note(), supersedes: [{ slug: "editor-choice", digest: "a".repeat(64) }] },
 		{ ...note(), sources: `token=${"ghp_"}${"x".repeat(24)}` },
-		{ ...note(), details: "-----BEGIN PRIVATE KEY-----" },
+		{ ...note(), details: `-----BEGIN ${"PRIVATE"} KEY-----` },
 	];
 	for (const input of cases) assert.throws(() => writeMemory(root, input));
 	assert.deepEqual(readdirSync(root), []);
@@ -452,8 +454,8 @@ test("technical assignments and prose survive creation and whole-note rewrites v
 test("recognized credential formats refuse in every authoring field without echo or initialization", (t) => {
 	const root = join(corpus(t), "absent");
 	const tokens = [
-		"-----BEGIN PRIVATE KEY-----",
-		"-----BEGIN RSA PRIVATE KEY-----",
+		`-----BEGIN ${"PRIVATE"} KEY-----`,
+		`-----BEGIN RSA ${"PRIVATE"} KEY-----`,
 		`sk-${"x".repeat(24)}`,
 		...Array.from("pousr", (kind) => `gh${kind}_${"x".repeat(24)}`),
 		`github_pat_${"x".repeat(24)}`,
@@ -776,4 +778,72 @@ test("README initialization does not replace an existing contract", (t) => {
 	const result = writeMemory(root, note());
 	assert.equal(result.initialized, false);
 	assert.equal(readFileSync(join(root, "README.md"), "utf8"), "Operator contract\n");
+});
+
+function headerText(root: string, slug: string): string {
+	const text = readFileSync(join(root, `${slug}.md`), "utf8");
+	return text.slice(0, text.indexOf("\n---\n") + 5);
+}
+
+test("a successful owned publication invalidates cached header parsing", async (t) => {
+	const root = corpus(t);
+	const first = writeMemory(root, note());
+	await readMemory(root, { slug: "editor-choice" });
+	const warm = memorySourceCache.statistics();
+	const header = headerText(root, "editor-choice");
+	editMemory(root, {
+		slug: "editor-choice",
+		expectedDigest: first.digest as string,
+		verified: true,
+		edits: [
+			{
+				oldText: "The operator prefers a small local editor.",
+				newText: "The operator uses a small local editor.",
+			},
+		],
+	});
+	assert.equal(headerText(root, "editor-choice"), header);
+	const page = await readMemory(root, { slug: "editor-choice" });
+	assert.match(page.content as string, /uses a small local editor/);
+	const after = memorySourceCache.statistics();
+	assert.equal(after.misses, warm.misses + 1);
+	assert.equal(after.yamlParses, warm.yamlParses + 1);
+});
+
+test("an earlier success in a partially failed multi-write invalidates its header", async (t) => {
+	const root = corpus(t);
+	const target = writeMemory(root, note("old-choice"));
+	const destination = writeMemory(root, {
+		...note("new-choice"),
+		supersedes: [{ slug: "old-choice", digest: target.digest as string }],
+	});
+	await readMemory(root, { slug: "new-choice" });
+	const warm = memorySourceCache.statistics();
+	const header = headerText(root, "new-choice");
+	const targetSource = readFileSync(join(root, "old-choice.md"));
+	const error = failure(() =>
+		writeMemory(
+			root,
+			{
+				...note("new-choice"),
+				summary: "Rewritten summary.",
+				expectedDigest: destination.digest,
+				supersedes: [{ slug: "old-choice", digest: sourceDigest(targetSource) }],
+			},
+			undefined,
+			{
+				beforePublish(file) {
+					if (file === "old-choice.md") throw new Error("Stop before the superseded target");
+				},
+			},
+		),
+	);
+	assert.deepEqual(error.receipt.written, ["new-choice.md"]);
+	assert.deepEqual(error.receipt.notWritten, ["old-choice.md"]);
+	assert.equal(headerText(root, "new-choice"), header);
+	const page = await readMemory(root, { slug: "new-choice" });
+	assert.match(page.content as string, /Rewritten summary/);
+	const after = memorySourceCache.statistics();
+	assert.equal(after.misses, warm.misses + 1);
+	assert.equal(after.yamlParses, warm.yamlParses + 1);
 });

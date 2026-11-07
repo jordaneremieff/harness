@@ -504,7 +504,8 @@ The section counts retired notes separately, not as unknown. Due dates and unres
 concerns do not remove active pointers or add date-derived text to the index.
 
 Titles come only from frontmatter cues. The public Pi frontmatter parser decodes
-isolated scalar fields, including YAML and JSON quotes. Within a valid header,
+isolated scalar fields, including YAML and JSON quotes. The same isolated scalar
+rules apply to a fresh parse and to a reused verified header. Within a valid header,
 missing or unusable titles fall back to the slug. Controls and format characters
 become spaces, whitespace collapses to one line, and angle brackets become non-markup
 characters. Titles remain untrusted even after display sanitization.
@@ -529,11 +530,27 @@ that exact boundary without pointers or an invented subject count. Search report
 the same inventory refusal. Direct source reads remain available by known slug.
 
 The hook rebuilds from disk at each `before_agent_start`, not each model request
-within that run. It has no cache, timestamp, persistent state, or write side effect.
-Identical cues produce identical section bytes; body-only or date-only changes
-produce no index delta. A change to visible cues or membership updates the next
-run's section. Title changes that leave the same compact pointer list and form
-produce no index delta.
+within that run. Every call repeats the root and contract validation, directory
+inventory, no-follow regular-file opens, bounded reads, and before/after file
+evidence checks. A bounded process cache reuses only the header parse products of
+verified source text: metadata and its state, cue lines, unusable fields, lifecycle
+status and isolated scalar pointer fields such as the title. It retains the bounded
+header region and those parse products only; it stores no separate note body, scan,
+cursor, descriptor or abort signal, and adds no timestamp, watcher, background task
+or write side effect.
+
+The cache keys each entry by canonical root, filename, truncation interpretation,
+body offset and the exact raw header bytes. It holds at most 2,048 entries and 8 MiB
+of accounted parse data, evicts least-recently-used entries, and does not retain an
+entry whose accounted size exceeds 256 KiB. A changed root or changed header cannot
+reuse another corpus's or note's products. A successful owned publication invalidates
+that root and filename, including an earlier success in a partly failed multi-write
+operation. Final ordinary and Durable teardown clear the cache. Freshness and UTC-day
+calculations run outside the cache. Identical cues produce identical section bytes;
+body-only or date-only changes produce no index delta. A change to visible cues or
+membership updates the next run's section. Title changes that leave the same compact
+pointer list and form produce no index delta.
+
 If configuration, the root, the contract, or the scan is unavailable, the hook adds
 no section and never blocks the run. A later unavailable run removes a prior section.
 
@@ -621,7 +638,8 @@ notices and change old prompt bytes. Session changes, tree changes and compactio
 clear transient state. Process restart permits a repeated bounded notice.
 
 Proactive discovery shares explicit retrieval's regular-file checks and lifecycle
-parser. It inventories at most 16,384 directory entries and examines at most 512
+parser. It reuses the same bounded verified-header parse cache but repeats every
+inventory, open, read and evidence check. It inventories at most 16,384 directory entries and examines at most 512
 candidate notes, with at most 8 KiB per prefix and 4 MiB total prefix reads. A
 complete eligible header and Summary section must fit that prefix. It reads only
 the selected full note, up to 64 KiB, to bind the digest and current review state.
