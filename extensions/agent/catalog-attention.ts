@@ -3,7 +3,12 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Harness } from "@earendil-works/pi-durable";
 import { arr, bool, compile, int, lit, obj, oneOf, str, union, type Static } from "@earendil-works/pi-schema";
-import { readProviderBlock } from "./provider-block.ts";
+
+let providerBlockPromise: Promise<typeof import("./provider-block.ts")> | undefined;
+function loadProviderBlock(): Promise<typeof import("./provider-block.ts")> {
+	providerBlockPromise ??= import("./provider-block.ts");
+	return providerBlockPromise;
+}
 
 const identity = str({ minLength: 1, maxLength: 512 });
 /** Why no registered definition can take a live task; restart-limited work ends instead of blocking. */
@@ -45,6 +50,7 @@ export async function projectCatalogAttention(
 	sources: readonly CatalogAttentionSource[],
 	context: Context = BACKGROUND_CONTEXT,
 ): Promise<CatalogAttentionHints> {
+	const { readProviderBlock } = await loadProviderBlock();
 	const inspection = await harness.inspect(context);
 	const blocks = await harness.commit(async (tx) => {
 		const result = new Map<ConversationId, string>();

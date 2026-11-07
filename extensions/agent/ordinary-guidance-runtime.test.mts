@@ -91,8 +91,8 @@ async function guidanceFixture(t: TestContext, holdStartup = false) {
 	let sessionManager = SessionManager.create(cwd, sessionsRoot);
 	const loader = new DefaultResourceLoader({
 		cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-		extensionFactories: [(pi) => {
-			register(pi);
+		extensionFactories: [async (pi) => {
+			await register(pi);
 			pi.registerTool({
 				name: "guidance_evidence", label: "Guidance evidence", description: "Return evidence for the peer result", parameters: obj({}, { open: true }),
 				async execute() { toolCalls++; return { content: [{ type: "text", text: "PEER_TOOL_EVIDENCE" }], details: {} }; },

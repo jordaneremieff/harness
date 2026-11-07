@@ -10,7 +10,14 @@ import { validateToolArguments } from "@earendil-works/pi-ai";
 import { LiveDoc, ROOT_CONVERSATION_ID, type LiveState, type Session } from "@earendil-works/pi-durable";
 import { AgentCatalog } from "./catalog.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
-import { CollaborationParams, CollaborationEvents, CollaborationIndex, CollaborationReadError, CollaborationThreads, type CollaborationEvent, type CollaborationPage, type CollaborationThread, collaborationIdentity, listCollaboration, mutateCollaboration, projectCollaboration, readCollaboration } from "./collaboration.ts";
+import {
+	CollaborationParams,
+	CollaborationReadError,
+	type CollaborationEvent,
+	type CollaborationPage,
+	type CollaborationThread,
+} from "./collaboration-contract.ts";
+import { CollaborationEvents, CollaborationIndex, CollaborationThreads, collaborationIdentity, listCollaboration, mutateCollaboration, projectCollaboration, readCollaboration } from "./collaboration.ts";
 import { ThreadDeliveryDoc, acknowledgeReports } from "./durable-controls.ts";
 import { DurableHost } from "./durable-host.ts";
 import { DurableObservation, readConversationStatus } from "./durable-observation.ts";

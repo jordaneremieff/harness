@@ -17,7 +17,8 @@
 import { randomUUID } from "node:crypto";
 import { DeliveryRowDoc, automaticDeliveryPage, deliveryState, migrateDeliveryStore, operationReceipts, readDeliveryDraft, receiptKey, reportKey, retainedIntent, retainedReceipt, retainedReport, retainedReportRequest, storeDeliveryRow, writeDeliveryDraft } from "./delivery-store.ts";
 import { inputEntry } from "./input-entry.ts";
-import { configureProviderRecovery, captureProviderRecovery, linkProviderRecovery, readInputRecovery, readInputProviderBlock, readProviderBlock, type ProviderBlockFact, type ProviderRetryNotice } from "./provider-block.ts";
+import { configureProviderRecovery, captureProviderRecovery, linkProviderRecovery, readInputRecovery, readInputProviderBlock, readProviderBlock, type ProviderRetryNotice } from "./provider-block.ts";
+import type { ProviderBlockFact } from "./provider-block-facts.ts";
 import { AwaitDoc, acknowledgeProviderRetry, classifyAwaitInput, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
 import { createCheckIn } from "./durable-checkins.ts";
@@ -28,7 +29,7 @@ import type { PrimaryIntentClaim } from "./effort-presence.ts";
 import type { PrimaryRepositoryState } from "./primary-channel.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
-import { canonicalIdentity } from "./identity.ts";
+import { canonicalIdentity } from "./native-identity.ts";
 import type { CatalogIntentClaims, CatalogViewRow } from "./catalog-view.ts";
 import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";

@@ -60,10 +60,10 @@ it("/agent mounts one dashboard, not a primary projection, and releases the open
 	ui.handleInput("\x1b");
 	await reopened;
 });
-it("the sole entry shortcut names the dashboard and registers no primary observers", () => {
+it("the sole entry shortcut names the dashboard and registers no primary observers", async () => {
 	const shortcuts: Array<{ key: string; description: string }> = [];
 	const events: string[] = [];
-	register({
+	await register({
 		events: { emit() {}, on: () => () => {} },
 		registerTool() {},
 		registerMessageRenderer() {}, registerToolRenderer() {},

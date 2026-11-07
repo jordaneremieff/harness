@@ -1,29 +1,16 @@
-import { str, int, bool, lit, union, arr, obj, type Static } from "@earendil-works/pi-schema";
 /** Retained provider-limit evidence and explicit recovery, independent of native submission settlement. */
 import { createHash } from "node:crypto";
 import { AgentDoc, LiveDoc, ProviderDoc, defineDocFamily, configure, type ConversationId, type SubmissionId, type Tx, type ModelRef, type AgentChange, type Harness, type Cursor } from "@earendil-works/pi-durable";
 import type { Context } from "@earendil-works/chord";
 import type { DeferredHandle, Api, Model } from "@earendil-works/pi-ai";
-import { ResultReferenceSchema } from "./result-reference.ts";
 import type { ProducerAwaitFact } from "./await-facts.ts";
+import { canonicalIdentity } from "./native-identity.ts";
+import { safeProviderError } from "./primary-observation.ts";
+import type { ProviderBlockFact } from "./provider-block-facts.ts";
 
 /** Typed retry evidence delivered independently of a producer's terminal result. */
 export type ProviderRetryNotice = { requesterSubmissionId?: number; fact: ProducerAwaitFact };
-import { canonicalIdentity } from "./identity.ts";
-import { safeProviderError } from "./primary-observation.ts";
 
-export const PROVIDER_BLOCK_ERROR = "Agent host: quota exceeded; explicit recovery required.";
-export const STALE_PROVIDER_ERROR = "Agent host: request superseded by explicit model configuration.";
-export const ProviderBlockFactSchema = obj({
-	blockId: str({ minLength: 1, maxLength: 128 }),
-	conversationId: int({ minimum: 1 }), providerSessionId: str({ minLength: 1, maxLength: 256 }),
-	epoch: int({ minimum: 0 }),
-	model: obj({ provider: str({ maxLength: 256 }), modelId: str({ maxLength: 256 }) }),
-	error: str({ maxLength: 4096 }), errorRedacted: bool(), errorTruncated: bool(),
-	source: union([lit("provider"), lit("host-block")]), timestamp: int({ minimum: 0 }),
-	originalResults: arr(ResultReferenceSchema, { maxItems: 16 }), omittedOriginalResults: int({ minimum: 0 }),
-});
-export type ProviderBlockFact = Static<typeof ProviderBlockFactSchema>;
 export type ProviderControlState = { conversationId?: number; epoch: number; block?: ProviderBlockFact; recoveredFrom?: string };
 // Chord documents are proxies; JSON detachment preserves their public JSON values.
 function detached<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
@@ -164,6 +151,4 @@ export async function captureProviderRecovery(tx: Tx, conversationId: Conversati
 export async function linkProviderRecovery(tx: Tx, submissionId: SubmissionId, recoveryOf: string | undefined): Promise<void> {
 	if (recoveryOf !== undefined) (await tx.doc(ProviderInputDoc, String(submissionId), null)).recoveryOf ??= recoveryOf;
 }
-export function providerBlockText(block: ProviderBlockFact): string {
-	return `${PROVIDER_BLOCK_ERROR} Provider evidence: ${block.error}${block.errorRedacted ? " [credential redacted]" : ""}${block.errorTruncated ? " [truncated]" : ""} Block ${block.blockId}. Use explicit validated model configuration before a new recovery send.`;
-}
+

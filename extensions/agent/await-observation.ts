@@ -1,9 +1,9 @@
 /** Read and release only the selected native run; producer facts never recurse. */
 import { AgentDoc, InboxDoc, LiveDoc, type ConversationId, type TaskId, type SubmissionId, type Tx, type Harness } from "@earendil-works/pi-durable";
 import { AwaitDoc, referenceKey, releaseCohort, claimProviderRetryVisibility, olderProviderRetry, sameRetryResult, type AwaitState, type AwaitDeclaration } from "./awaited-results.ts";
-import { canonicalIdentity } from "./identity.ts";
+import { canonicalIdentity } from "./native-identity.ts";
 import type { AwaitFact, OwnAwaitFact, ProducerAwaitFact, ProducerRetry } from "./await-facts.ts";
-import type { ResultReference } from "./result-reference.ts";
+import type { ResultReference } from "./result-schema.ts";
 
 import type { Context } from "@earendil-works/chord";
 

@@ -1,6 +1,6 @@
 import type * as Durable from "@earendil-works/pi-durable";
 import type { ExecutionSelection } from "./agent-preferences.ts";
-import type { ResultReference } from "./result-reference.ts";
+import type { ResultReference } from "./result-schema.ts";
 
 export type AgentChild = {
 	readonly selection?: ExecutionSelection;

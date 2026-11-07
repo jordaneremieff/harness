@@ -11,7 +11,7 @@ import { hostPaths } from "./host-protocol.ts";
 import { observeClaim } from "./claims.ts";
 import { eventLog } from "./host-fixture.mts";
 import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
-import type { ProviderBlockFact } from "./provider-block.ts";
+import type { ProviderBlockFact } from "./provider-block-facts.ts";
 import { runtimeFixture, trackHost, waitForReceipt, type RuntimeFixture } from "./durable-runtime-fixture.mts";
 
 interface Submission { submissionId: number; deduped: boolean }

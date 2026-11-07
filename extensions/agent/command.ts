@@ -2,8 +2,7 @@ import { basename } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionContext, RegisteredCommand } from "@earendil-works/pi-coding-agent";
 import { fuzzyFilter, type AutocompleteItem } from "@earendil-works/pi-tui";
-import { dashboardSessionState } from "./dashboard-state.ts";
-import { readAgentBranch } from "./agent-git.ts";
+import type { DashboardState } from "./dashboard-state.ts";
 import type { DashboardPreferences } from "./dashboard-preferences.ts";
 import { randomUUID } from "node:crypto";
 import type { JsonValue } from "../../operator-ui/index.ts";
@@ -16,6 +15,32 @@ import type { ProfileDraft } from "./profile-dialog.ts";
 import type { TimerListRow, TimerMode } from "./durable-timers.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentObservationSources } from "./dashboard-types.ts";
 import { actionOutcomeText, agentDisplayName, outcomeSessionId } from "./action-outcome.ts";
+
+interface DashboardRuntime {
+	readonly showAgentDashboard: typeof import("./dashboard.ts").showAgentDashboard;
+	readonly dashboardSessionState: typeof import("./dashboard-state.ts").dashboardSessionState;
+	readonly readAgentBranch: typeof import("./agent-git.ts").readAgentBranch;
+}
+
+let dashboardRuntimePromise: Promise<DashboardRuntime> | undefined;
+function loadDashboardRuntime(): Promise<DashboardRuntime> {
+	dashboardRuntimePromise ??= Promise.all([
+		import("./dashboard.ts"),
+		import("./dashboard-state.ts"),
+		import("./agent-git.ts"),
+	]).then(([dashboard, state, git]) => ({
+		showAgentDashboard: dashboard.showAgentDashboard,
+		dashboardSessionState: state.dashboardSessionState,
+		readAgentBranch: git.readAgentBranch,
+	}));
+	return dashboardRuntimePromise;
+}
+
+let panelModulesPromise: Promise<typeof import("./panel-modules.ts")> | undefined;
+function loadPanelModulesRuntime(): Promise<typeof import("./panel-modules.ts")> {
+	panelModulesPromise ??= import("./panel-modules.ts");
+	return panelModulesPromise;
+}
 
 interface CommandArgument {
 	name: string;
@@ -258,7 +283,7 @@ export function createAgentCommand(
 		const commands = status.inventory.contributions?.flatMap((contribution) => contribution.commands ?? []) ?? [];
 		return [...commands.map((command) => ({ value: command.name, label: command.name, description: command.description })), { value: "reload", label: "reload", description: "Reload host registrations (needs an idle storage)" }];
 	};
-	const formsHost = (ctx: ExtensionContext, state: ReturnType<typeof dashboardSessionState>) => (row: AgentConversationSummary): AgentFormHost => ({
+	const formsHost = (ctx: ExtensionContext, state: DashboardState) => (row: AgentConversationSummary): AgentFormHost => ({
 		row,
 		state,
 		source: sources,
@@ -285,7 +310,7 @@ export function createAgentCommand(
 		const status = (await wiring.control("status", { sessionId: row.id }, ctx)) as { inventory?: unknown };
 		if (status?.inventory === undefined) return [];
 		// Owner views load with their first use, like the work view itself.
-		const { loadPanelModules, panelDestinations } = await import("./panel-modules.ts");
+		const { loadPanelModules, panelDestinations } = await loadPanelModulesRuntime();
 		const loaded = await loadPanelModules(status.inventory);
 		return panelDestinations(loaded, row.id, async (command, data: JsonValue, signal) => {
 			const answer = (await wiring.control("command", { sessionId: row.id, name: command, data, origin: "operator", invocationId: randomUUID() }, ctx, signal)) as { text?: unknown; data?: JsonValue };
@@ -296,10 +321,10 @@ export function createAgentCommand(
 	const openDashboard = async (ctx: ExtensionContext, open: { select?: string; action?: string } = {}): Promise<void> => {
 		if (!ctx.hasUI || dashboardOpen) return;
 		dashboardOpen = true;
-		const state = dashboardSessionState(ctx.sessionManager.getSessionId(), preferences?.load);
-		state.hideThinkingBlock = readHideThinkingBlock?.() ?? false;
 		try {
-			const { showAgentDashboard } = await import("./dashboard.ts");
+			const { showAgentDashboard, dashboardSessionState, readAgentBranch } = await loadDashboardRuntime();
+			const state = dashboardSessionState(ctx.sessionManager.getSessionId(), preferences?.load);
+			state.hideThinkingBlock = readHideThinkingBlock?.() ?? false;
 			const operations: DashboardOperations = {
 				toolDisplay,
 				saveLayout: preferences ? (layout) => preferences.save(layout) : undefined,

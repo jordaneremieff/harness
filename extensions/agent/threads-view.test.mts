@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import { KeybindingsManager, TUI_KEYBINDINGS, visibleWidth, type TUI, type TuiMouseEvent } from "@earendil-works/pi-tui";
-import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration.ts";
+import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration-contract.ts";
 import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 import { readingGeometry } from "./dashboard-layout.ts";
 import { ThreadsView } from "./threads-view.ts";

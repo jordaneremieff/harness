@@ -27,6 +27,7 @@ import { defineDoc, defineDocFamily, defineTask, type ConversationId, type Curso
 import { linkDeliveryIntent, recordDeliveryIntent, type DeliveryIntentState, type DeliveryOrigin } from "./durable-controls.ts";
 import { reconcileProfile } from "./profile.ts";
 import { validateRequestContext, type RequestContext } from "./request-context.ts";
+import { parseDeliverAt } from "./timer-input.ts";
 
 /** Registered task kind of one scheduled input. */
 export const TIMER_TASK_NAME = "agent.timer";
@@ -116,20 +117,6 @@ export const AgentTimerDoc = defineDoc<AgentTimerState>({
 	initial: () => ({ timers: [] }),
 	checkpointWhen: () => true,
 });
-
-/** Parse one requested deadline: epoch milliseconds or an ISO 8601 date-time string. */
-export function parseDeliverAt(value: unknown): number {
-	const parsed =
-		typeof value === "number"
-			? value
-			: typeof value === "string" && value.trim() !== ""
-				? Date.parse(value)
-				: Number.NaN;
-	if (!Number.isFinite(parsed) || !Number.isSafeInteger(parsed) || parsed <= 0) {
-		throw new Error("deliverAt must be an epoch-millisecond time or an ISO 8601 date-time string");
-	}
-	return parsed;
-}
 
 /** Message preview retained for listing. */
 export function timerPreview(message: string): string {

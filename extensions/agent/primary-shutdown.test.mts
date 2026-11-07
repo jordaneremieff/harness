@@ -54,7 +54,7 @@ test("ordinary shutdown awaits close even when the status callback throws", asyn
 		rmSync(root, { recursive: true, force: true });
 	});
 	const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
-	register({ events: { emit() {}, on: () => () => {} }, on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => { events.set(name, handler); return () => {}; },
+	await register({ events: { emit() {}, on: () => () => {} }, on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => { events.set(name, handler); return () => {}; },
 		registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "off",
 	} as unknown as ExtensionAPI);
 	let throwStatus = false;

@@ -88,8 +88,8 @@ async function namingFixture(t: TestContext, options: { retainedName?: string } 
 	const loader = new DefaultResourceLoader({
 		cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 		additionalExtensionPaths: [fileURLToPath(new URL("../evo/index.ts", import.meta.url))],
-		extensionFactories: [(pi) => {
-			register(pi);
+		extensionFactories: [async (pi) => {
+			await register(pi);
 			pi.on("session_info_changed", (event) => { changes.push(event.name); });
 			pi.on("before_agent_start", () => { started.push(pi.getSessionName()); });
 		}],

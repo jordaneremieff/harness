@@ -16,7 +16,7 @@ const settingsManager = SettingsManager.create(cwd, agentDir), sessionManager = 
 let started!: () => void;
 const entered = new Promise<void>((resolve) => { started = resolve; });
 const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
-	extensionFactories: [(pi) => { register(pi); pi.on("before_agent_start", async () => { started(); await new Promise<void>(() => {}); }); }],
+	extensionFactories: [async (pi) => { await register(pi); pi.on("before_agent_start", async () => { started(); await new Promise<void>(() => {}); }); }],
 });
 await loader.reload();
 const session = (await createAgentSession({ cwd, agentDir, modelRuntime: await createTestRuntime(), settingsManager, sessionManager, model: testModel, resourceLoader: loader, tools: [] })).session;

@@ -16,10 +16,11 @@ async function nativeResult(host: DurableHost, reference: ResultReference, conte
 }
 import type { Context } from "@earendil-works/chord";
 import type { SubmissionId } from "@earendil-works/pi-durable";
-import type { ResultReference } from "./result-reference.ts";
+import type { ResultReference } from "./result-schema.ts";
 import type { ProducerAwaitFact } from "./await-facts.ts";
 import { observeProducerAwait } from "./await-producer-observer.ts";
-import { projectCollaboration, collaborationStorage } from "./collaboration.ts";
+import { collaborationStorage } from "./collaboration-contract.ts";
+import { projectCollaboration } from "./collaboration.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";

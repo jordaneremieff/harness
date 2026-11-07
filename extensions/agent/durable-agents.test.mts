@@ -538,9 +538,9 @@ it("declares every control tool with an explicit replay classification", () => {
 	assert.equal(contribution.source, "/abs/extensions/agent/index.ts");
 });
 
-it("describes normal follow-up timing and active await release in both tool registrations", () => {
+it("describes normal follow-up timing and active await release in both tool registrations", async () => {
 	const ordinary: { name: string; description: string }[] = [];
-	registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: { name: string; description: string }) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: { name: string; description: string }) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
 	const { extension } = buildRegistry();
 	for (const tools of [ordinary, extension.tools ?? []]) {
 		const send = tools.find((tool) => tool.name === "agent_send");
@@ -575,7 +575,7 @@ it("describes normal follow-up timing and active await release in both tool regi
 
 it("saves an explicit handle-less creation role and documents it in both schemas", async (t) => {
 	const ordinary: { name: string; parameters: { properties: Record<string, { description?: string }> } }[] = [];
-	registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
 	const { extension, registry } = buildRegistry();
 	for (const tools of [ordinary, extension.tools ?? []]) {
 		const spawn = tools.find((tool) => tool.name === "agent_spawn");
@@ -601,10 +601,10 @@ it("saves an explicit handle-less creation role and documents it in both schemas
 	assert.match((await child.agent(context)).instructions ?? "", /Your role: Review source/u);
 });
 
-it("preserves closed control objects, optional fields, enums and inspect cursors", () => {
+it("preserves closed control objects, optional fields, enums and inspect cursors", async () => {
 	const { extension } = buildRegistry();
 	const ordinary: Array<{ name: string; parameters: object }> = [];
-	registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on() {}, registerTool(tool: typeof ordinary[number]) { ordinary.push(tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
 	for (const tools of [ordinary, extension.tools ?? []]) {
 		const schemaFor = (name: string) => {
 			const tool = tools.find((candidate) => candidate.name === name);
@@ -664,8 +664,8 @@ it("accepts every shared thinking level in native spawn, configure, and attach s
 });
 
 it("forwards native await cancellation through the registered entrypoint contribution", { timeout: 30000 }, async (t) => {
-	let contribution: ReturnType<typeof createAgentContribution> | undefined;
-	registerAgentExtension({ events: { on: () => () => {}, emit(event: string, value: unknown) { if (event === "durable:contribution") contribution = value as ReturnType<typeof createAgentContribution>; } }, on() {}, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	let contribution: { create(host: AgentContributionHost): Durable.Extension | Promise<Durable.Extension> } | undefined;
+	await registerAgentExtension({ events: { on: () => () => {}, emit(event: string, value: unknown) { if (event === "durable:contribution") contribution = value as { create(host: AgentContributionHost): Durable.Extension | Promise<Durable.Extension> }; } }, on() {}, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
 	assert.ok(contribution);
 	let observed!: () => void;
 	const observing = new Promise<void>((resolve) => { observed = resolve; });
@@ -679,7 +679,7 @@ it("forwards native await cancellation through the registered entrypoint contrib
 	});
 	t.after(restore);
 	const registry = Durable.createRegistry();
-	registry.install(contribution.create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir: testAgentDir, services: testServices }));
+	registry.install(await contribution.create({ onClose() {}, durable: Durable, storageId, cwd: testCwd, agentDir: testAgentDir, services: testServices }));
 	const route = createRoute();
 	route.script.push({ tool: "agent_await", args: { results: [{ sessionId: "remote-storage", submissionId: 77 }] } });
 	const { harness, root } = await openHarness(new Durable.MemoryStorage(), registry, createTestModels(route.route));

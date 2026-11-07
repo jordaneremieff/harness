@@ -1,6 +1,6 @@
 import { str, int, bool, nul, union, arr, opt, obj } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -409,3 +409,32 @@ it("validates real retired storage status, every inspect view, snapshot and dash
 	assert.equal(existsSync(paths.socket), false, "cold reads never launch a host");
 	await closeColdObservations();
 });
+
+it("loads the native observation runtime only when opening a real cold snapshot", () => {
+	const script = `
+		import assert from "node:assert/strict";
+		import { registerHooks } from "node:module";
+		const loaded = [];
+		registerHooks({ load(url, context, next) {
+			if (url.endsWith("/durable-observation.ts")) loaded.push(url);
+			return next(url, context);
+		} });
+		const { createColdObservationCache } = await import(${JSON.stringify(new URL("./cold-observation.ts", import.meta.url).href)});
+		const cache = createColdObservationCache();
+		assert.deepEqual(loaded, []);
+		const value = await cache.observe(
+			{ storagePath: "/tmp/nonexistent-cold-storage.sqlite", storageId: "cold-hook", cwd: "/tmp", agentDir: "/tmp", packageDir: "/tmp", model: { provider: "p", modelId: "m" }, thinkingLevel: "off" },
+			"status",
+			{},
+			{ hooks: { open: async () => ({ request: async () => ({ conversations: [] }), close: async () => {} }) } },
+		);
+		assert.deepEqual(loaded, []);
+		assert.equal((value).storageId, "cold-hook");
+		await cache.close();
+	`;
+	const child = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+		encoding: "utf8", timeout: 15_000, maxBuffer: 512 * 1024,
+	});
+	assert.equal(child.status, 0, child.stderr || child.error?.message);
+});
+

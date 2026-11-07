@@ -1,6 +1,6 @@
 import { opendir } from "node:fs/promises";
 import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
-import type { CollaborationList, CollaborationSummary } from "./collaboration.ts";
+import type { CollaborationList, CollaborationSummary } from "./collaboration-contract.ts";
 
 export interface RecentCollaborationPage {
 	items: CollaborationSummary[];

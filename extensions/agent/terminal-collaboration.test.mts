@@ -5,7 +5,8 @@ import type { TUI } from "@earendil-works/pi-tui";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { TerminalController, TerminalScreen, terminalKeys } from "./terminal-client.ts";
 import { AgentCatalog } from "./catalog.ts";
-import { projectCollaboration, type CollaborationPage } from "./collaboration.ts";
+import type { CollaborationPage } from "./collaboration-contract.ts";
+import { projectCollaboration } from "./collaboration.ts";
 import { createSibling, terminalHostFixture } from "./terminal-host-fixture.mts";
 import { theme } from "./dashboard-test-fixture.mts";
 

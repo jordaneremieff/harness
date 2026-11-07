@@ -3,14 +3,12 @@ import { createColdObservationCache } from "./cold-observation.ts";
 import { nativeRecipientAvailability, readDeliveryWake } from "./delivery-wake.ts";
 import { launchIndependentCommand, type IndependentCommandInput, type IndependentCommandReceipt } from "./independent-launch.ts";
 import { REPORT_DELIVERY_BOUNDARY } from "./control-guidance.ts";
-import { admittedResult } from "./result-reference.ts";
 import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
 import { handleSlug, handleStorageId } from "./identity.ts";
-import type { AgentProfile } from "./profile-schema.ts";
-import { profileText } from "./profile.ts";
+import { profileText, type AgentProfile } from "./profile-schema.ts";
 import { NativeListOutputSchema, observationSchema, structuredObservation } from "./observation-schema.ts";
 import { composeListRow, matchesListRow, enrichDashboardRow } from "./profile-discovery.ts";
-import { checkInMinutes } from "./durable-checkins.ts";
+import { checkInMinutes } from "./check-in-options.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AgentCatalog, CatalogObservation, projectCatalogPriority, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
@@ -30,14 +28,32 @@ import { hostRequestVersionError, hostPaths, type HostMetadata } from "./host-pr
 import { observeClaim, type ClaimObservation } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentPriorityPage, AgentPrioritySummary } from "./dashboard-types.ts";
-import { emptyConversationSnapshot, type ConversationSnapshotPage } from "./durable-observation.ts";
+import type { ConversationSnapshotPage } from "./durable-observation.ts";
 import type { HostObservationScope } from "./host-client.ts";
 
 import { HOST_CONTRACT, MANAGER_CONTRACT, operationContractMismatch, type RuntimeContract } from "./version-contract.ts";
-import { collaborationIdentity, collaborationStorage, validateCollaborationTextLimits } from "./collaboration.ts";
+import { collaborationStorage, validateCollaborationTextLimits } from "./collaboration-contract.ts";
 import { discoverCollaboration } from "./collaboration-discovery.ts";
 
 import { readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, parseExecutionSelection, parsePreferenceSnapshot, executionInputDigest, type ExecutionSelection, type ExecutionFields, type PreferenceCatalog, type PreferenceSnapshot } from "./agent-preferences.ts";
+
+let resultReferencePromise: Promise<typeof import("./result-reference.ts")> | undefined;
+function loadResultReference(): Promise<typeof import("./result-reference.ts")> {
+	resultReferencePromise ??= import("./result-reference.ts");
+	return resultReferencePromise;
+}
+
+let collaborationPromise: Promise<typeof import("./collaboration.ts")> | undefined;
+function loadCollaboration(): Promise<typeof import("./collaboration.ts")> {
+	collaborationPromise ??= import("./collaboration.ts");
+	return collaborationPromise;
+}
+
+let durableObservationPromise: Promise<typeof import("./durable-observation.ts")> | undefined;
+function loadDurableObservation(): Promise<typeof import("./durable-observation.ts")> {
+	durableObservationPromise ??= import("./durable-observation.ts");
+	return durableObservationPromise;
+}
 
 export const MANAGER_PROTOCOL = MANAGER_CONTRACT;
 export interface AgentCaller {
@@ -465,7 +481,7 @@ export class AgentManager {
 		if (profile.handle !== `@${handle}`) throw new Error("Handle address belongs to a different retained agent");
 		const requestId = input.requestId ?? randomUUID();
 		const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: id, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", whenBusy: "followUp", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) });
-		const result = admission === undefined ? undefined : this.sentWorkResult(caller.id, id, admission, requestId);
+		const result = admission === undefined ? undefined : await this.sentWorkResult(caller.id, id, admission, requestId);
 		this.rosterChanged();
 		return { sessionId: id, cwd: retained.cwd, handle: `@${handle}`, created, profile, selection: input.selection, ...(created ? this.spawnThinking(input, retained) : {}), ...(admission === undefined ? {} : { admission, result }) };
 	}
@@ -549,7 +565,7 @@ export class AgentManager {
 			const requestId = input.requestId ?? randomUUID();
 			await this.saveSpawnRole(client, record.storageId, created, input.role, requestId, caller.id);
 			const admission = input.prompt === undefined ? undefined : await client.request("task-submit", { sessionId: record.storageId, message: input.prompt, requestId, requester: caller.id, origin: input.origin ?? "operator", checkInMinutes: checkInMinutes(input.checkInMinutes, input.origin ?? "operator", this.options.agentDir) });
-			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: this.sentWorkResult(caller.id, record.storageId, admission, requestId) }) };
+			const outcome = { sessionId: record.storageId, cwd: record.cwd, selection: input.selection, ...this.spawnThinking(input, record), lifetime: "independent host process", ...(admission === undefined ? {} : { admission, result: await this.sentWorkResult(caller.id, record.storageId, admission, requestId) }) };
 			const result = await this.mutationSnapshot(client, outcome, record.storageId);
 			this.launchRows.set(record.storageId, { ...row, owner: "here" });
 			this.rosterChanged();
@@ -635,7 +651,7 @@ export class AgentManager {
 		}
 		if (["submit", "rewind", "fork"].includes(method)) params.requestId ??= randomUUID();
 		const outcome = await this.forwardControl(client, method, requested, params, caller, signal);
-		if (requested === "task-submit") return { ...outcome as object, result: this.sentWorkResult(caller.id, sessionId, outcome, String(params.requestId)) };
+		if (requested === "task-submit") return { ...outcome as object, result: await this.sentWorkResult(caller.id, sessionId, outcome, String(params.requestId)) };
 		const values = record(outcome);
 		if ((method === "rewind" && Number.isSafeInteger(values.submissionId) && Number(values.submissionId) > 0) || (method === "timer-schedule" && Number.isSafeInteger(values.timerId) && Number(values.timerId) > 0)) this.rememberSentWork(caller.id, values.identity);
 		return ["fork", "rewind", "configure"].includes(method) ? this.mutationSnapshot(client, outcome, sessionId) : outcome;
@@ -829,7 +845,10 @@ export class AgentManager {
 
 	async snapshot(sessionId: string, params: { before?: number; limit?: number; maxBytes?: number } = {}): Promise<ConversationSnapshotPage> {
 		sessionId = await this.resolveTarget(sessionId);
-		if (this.launchRows.has(storageIdOf(sessionId)) && this.opening.has(storageIdOf(sessionId))) return emptyConversationSnapshot();
+		if (this.launchRows.has(storageIdOf(sessionId)) && this.opening.has(storageIdOf(sessionId))) {
+			const { emptyConversationSnapshot } = await loadDurableObservation();
+			return emptyConversationSnapshot();
+		}
 		return this.observe(this.nativeTarget(sessionId), "snapshot", { sessionId, ...params }) as Promise<ConversationSnapshotPage>;
 	}
 
@@ -860,6 +879,7 @@ export class AgentManager {
 	}
 
 	async collaborationTargets(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+		const { collaborationIdentity } = await loadCollaboration();
 		const params = { ...input };
 		const resolveIdentity = async (value: unknown, field: string): Promise<string> => {
 			let resolved = value;
@@ -1298,7 +1318,8 @@ export class AgentManager {
 		else this.subscriptions.set(storageId, unsubscribe);
 	}
 
-	private sentWorkResult(ownerId: string, sessionId: string, admission: unknown, requestId: string) {
+	private async sentWorkResult(ownerId: string, sessionId: string, admission: unknown, requestId: string) {
+		const { admittedResult } = await loadResultReference();
 		const result = admittedResult(sessionId, admission, requestId);
 		this.rememberSentWork(ownerId, result.sessionId);
 		return result;

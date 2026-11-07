@@ -7,7 +7,7 @@ import type { EffortAwareness } from "./effort-awareness.ts";
 import type { EffortPresencePage } from "./effort-presence.ts";
 import { fixture, source, row, turn, deferred, theme } from "./dashboard-test-fixture.mts";
 import { rosterLines } from "./dashboard-roster.ts";
-import type { CollaborationPage } from "./collaboration.ts";
+import type { CollaborationPage } from "./collaboration-contract.ts";
 import { createAgentCommand } from "./command.ts";
 import { EffortView } from "./effort-view.ts";
 import type { AgentDashboard } from "./dashboard.ts";

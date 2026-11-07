@@ -30,12 +30,30 @@
 import { statSync } from "node:fs";
 import { resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createModels } from "@earendil-works/pi-ai";
-import { createRegistry } from "@earendil-works/pi-durable";
 import { observeClaim } from "./claims.ts";
-import { DurableObservation } from "./durable-observation.ts";
 import { hostPaths } from "./host-protocol.ts";
 import type { HostMetadata } from "./host-protocol.ts";
+
+interface ColdObservationRuntime {
+	readonly createModels: typeof import("@earendil-works/pi-ai").createModels;
+	readonly createRegistry: typeof import("@earendil-works/pi-durable").createRegistry;
+	readonly DurableObservation: typeof import("./durable-observation.ts").DurableObservation;
+}
+
+let coldObservationRuntimePromise: Promise<ColdObservationRuntime> | undefined;
+
+function loadColdObservationRuntime(): Promise<ColdObservationRuntime> {
+	coldObservationRuntimePromise ??= Promise.all([
+		import("@earendil-works/pi-ai"),
+		import("@earendil-works/pi-durable"),
+		import("./durable-observation.ts"),
+	]).then(([ai, durable, observation]) => ({
+		createModels: ai.createModels,
+		createRegistry: durable.createRegistry,
+		DurableObservation: observation.DurableObservation,
+	}));
+	return coldObservationRuntimePromise;
+}
 
 const MAX_STORAGES = 8;
 const MAX_RESULTS_PER_STORAGE = 64;
@@ -155,6 +173,7 @@ function claimState(metadata: HostMetadata): { readonly pin: string; readonly cl
 
 /** The default public snapshot opener: no services, no model runtime, no resume. */
 export async function openColdObservationSnapshot(input: ColdOpenInput): Promise<ColdObservationHandle> {
+	const { createModels, createRegistry, DurableObservation } = await loadColdObservationRuntime();
 	const observation = await DurableObservation.open({
 		backupFrom: input.storagePath,
 		storageId: input.storageId,

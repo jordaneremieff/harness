@@ -1,5 +1,5 @@
 import { stripVTControlCharacters } from "node:util";
-import type { CollaborationList, CollaborationPage } from "./collaboration.ts";
+import type { CollaborationList, CollaborationPage } from "./collaboration-contract.ts";
 
 /** One call to the collaboration owner, through the host's agent_collaborate route. */
 export type Collaborate = (input: Record<string, unknown>) => Promise<unknown>;

@@ -38,9 +38,9 @@ const extras: AgentViewWiring = {
 	newAgent: async () => ({ text: "created" }),
 	newDefaults: () => ({ cwd: "/work", presets: [], ownership: "The answer to the purpose comes back to this session." }),
 };
-function registration() {
+async function registration() {
 	let command!: Omit<RegisteredCommand, "name" | "sourceInfo">;
-	registerAgentExtension({
+	await registerAgentExtension({
 		events: { emit() {}, on: () => () => {} },
 		registerShortcut() {},
 		registerTool() {},
@@ -66,7 +66,7 @@ function context() {
 	};
 }
 const signal = new AbortController().signal;
-function provider(command: ReturnType<typeof registration>) {
+function provider(command: Awaited<ReturnType<typeof registration>>) {
 	return new CombinedAutocompleteProvider([{ name: "agent", ...command }], process.cwd());
 }
 async function suggest(native: CombinedAutocompleteProvider, line: string, col = line.length) {
@@ -323,10 +323,10 @@ function completionFixture(sessions: () => Promise<readonly AgentConversationSum
 }
 
 describe("agent command discovery and help", () => {
-	it("registers restart only as a top-level command without an exit listener at load", () => {
+	it("registers restart only as a top-level command without an exit listener at load", async () => {
 		const commands = new Map<string, unknown>();
 		const listeners = process.listenerCount("exit");
-		registerAgentExtension({
+		await registerAgentExtension({
 			events: { emit() {}, on: () => () => {} },
 			registerShortcut() {},
 			registerTool() {},
@@ -341,7 +341,7 @@ describe("agent command discovery and help", () => {
 		assert.equal(process.listenerCount("exit"), listeners);
 	});
 	it("uses a short slash description and lists real actions with outcome descriptions", async () => {
-		const native = provider(registration());
+		const native = provider(await registration());
 		const slash = await suggest(native, "/agent");
 		assert.equal(slash?.items.length, 1);
 		assert.equal(slash.items[0].description, "Open the agent dashboard; add a space for a control action");
@@ -382,7 +382,7 @@ describe("agent command discovery and help", () => {
 		assert.ok(!actions.items.some((item) => item.label === "runs" || item.label === "detach"));
 		const { ctx, notices } = context();
 		for (const item of actions.items) {
-			await registration().handler(`help ${item.label}`, ctx);
+			await (await registration()).handler(`help ${item.label}`, ctx);
 			const notice = defined(notices.at(-1));
 			assert.ok(notice.text.startsWith(`/agent ${item.label}`));
 			assert.ok(notice.text.includes(defined(item.description)));
@@ -390,7 +390,7 @@ describe("agent command discovery and help", () => {
 	});
 
 	it("completes partial action names, intent words and help topics", async () => {
-		const native = provider(registration());
+		const native = provider(await registration());
 		for (const [input, choice, expected] of [
 			["/agent ne", "new", "/agent new "],
 			["/agent abo", "abort", "/agent abort "],
@@ -410,7 +410,7 @@ describe("agent command discovery and help", () => {
 		const runtime = t.mock.method(ModelRuntime, "create", async () => {
 			throw new Error("runtime must stay unopened");
 		});
-		const command = registration();
+		const command = await registration();
 		const { ctx, notices } = context();
 		for (const input of ["help", "--help", "-h"]) {
 			await command.handler(input, ctx);
@@ -445,7 +445,7 @@ describe("agent command discovery and help", () => {
 	});
 
 	it("leaves prompts, messages, directory arguments and entry IDs as text, not invented choices", async () => {
-		const complete = defined(registration().getArgumentCompletions);
+		const complete = defined((await registration()).getArgumentCompletions);
 		for (const text of ["new ", "new check errors", "place ", "place . check errors", "unbind "]) {
 			assert.equal(await complete(text), null, text);
 		}
@@ -604,7 +604,7 @@ describe("native agent command editor", () => {
 		editor.onSubmit = () => {
 			submitted = true;
 		};
-		editor.setAutocompleteProvider(provider(registration()));
+		editor.setAutocompleteProvider(provider(await registration()));
 		editor.handleInput("/");
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		editor.handleInput("agent");

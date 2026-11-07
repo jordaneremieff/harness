@@ -164,7 +164,7 @@ it("agent publication emits only card fields and responds only to current reques
 	assert.equal(bus.emitted.filter((event) => event.channel === first.channel).length, 2);
 });
 
-it("agent factory collects before requests and publishes actual registered card references", (t) => {
+it("agent factory collects before requests and publishes actual registered card references", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "agent-tool-display-"));
 	const previousAgentDir = process.env.PI_AGENT_DIR;
 	const previousHarnessFile = process.env.PI_HARNESS_FILE;
@@ -184,7 +184,7 @@ it("agent factory collects before requests and publishes actual registered card 
 		collectorsAtRequest.push(bus.handlers.get("harness:tool-display:publish")?.size ?? 0);
 	});
 	const definitions: ToolDefinition[] = [];
-	registerAgentExtension({
+	await registerAgentExtension({
 		events,
 		on() {}, registerToolRenderer() {}, registerShortcut() {}, registerMessageRenderer() {}, registerCommand() {},
 		registerTool: (definition: ToolDefinition) => definitions.push(definition),

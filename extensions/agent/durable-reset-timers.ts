@@ -20,7 +20,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { str, opt, obj, type Static } from "@earendil-works/pi-schema";
 import type { AgentCommandAction } from "./command.ts";
 import { AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
-import { parseDeliverAt, type CancelTimerResult, type ScheduleTimerResult, type TimerListRow, type TimerMode } from "./durable-timers.ts";
+import type { CancelTimerResult, ScheduleTimerResult, TimerListRow, TimerMode } from "./durable-timers.ts";
+import { parseDeliverAt } from "./timer-input.ts";
 import type { ResetResult } from "./durable-reset.ts";
 import { createAgentToolCards, type AgentToolCard } from "./tool-cards.ts";
 

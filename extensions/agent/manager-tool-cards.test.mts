@@ -67,7 +67,7 @@ it("reload refuses a retained manager without dashboard task targets before any 
 		registerCommand: (name: string, command: Omit<RegisteredCommand, "name" | "sourceInfo">) => { commands.set(name, command); },
 		registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getSettings: () => ({}),
 	} as unknown as ExtensionAPI;
-	registerAgentExtension(pi);
+	await registerAgentExtension(pi);
 	const notices: string[] = [];
 	const ctx = { mode: "tui", hasUI: true, cwd: root, sessionManager: { getSessionId: () => "reloaded-primary" },
 		ui: { notify: (text: string) => { notices.push(text); },
@@ -102,7 +102,7 @@ for (const retained of ["manager/0.0.0", "manager/999.0.0"]) it(`refuses a retai
 	});
 	const tools = new Map<string, ToolDefinition>();
 	const pi = { events: { emit: () => {}, on: () => () => {} }, on: () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), registerCommand: () => {}, registerShortcut: () => {}, registerMessageRenderer: () => {}, registerToolRenderer: () => {} } as unknown as ExtensionAPI;
-	registerAgentExtension(pi);
+	await registerAgentExtension(pi);
 	const status = tools.get("agent_status");
 	assert.ok(status);
 	assert.notEqual(MANAGER_CONTRACT, retained);

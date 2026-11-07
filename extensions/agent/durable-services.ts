@@ -26,7 +26,7 @@
  */
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context, JsonValue } from "@earendil-works/chord";
 import * as Durable from "@earendil-works/pi-durable";
@@ -52,7 +52,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createProjectTrustResolver, type ProjectTrustDecision } from "./trust-support.ts";
 import { CheckInTask, CheckInDeadlineTask } from "./durable-checkins.ts";
+import { AGENT_ENTRY_CHANNEL, type AgentEntryRequest } from "./entry-binding.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
+import { createNativeAgentEntry } from "./native-entry.ts";
 import { readDisplayDescriptor, readPanelDescriptor, resolveDisplayEntry, resolvePanelEntry, type DisplayDescriptor, type PanelDescriptor } from "./display-descriptor.ts";
 
 /** One command invocation as the host dispatches it. */
@@ -704,6 +706,13 @@ function providerStreamSettings(settings: SettingsManager): NonNullable<Durable.
 	};
 }
 
+const defaultAgentEntrypoint = realpathSync(fileURLToPath(new URL("./index.ts", import.meta.url)));
+
+function realpathOrExact(path: string): string {
+	try { return realpathSync(path); }
+	catch { return path; }
+}
+
 /**
  * Create cwd-bound Pi services, collect native Durable contributions from the
  * loaded configured extensions, and install the Durable registry.
@@ -714,11 +723,28 @@ export async function createDurableServices(options: CreateDurableServicesOption
 	const agentDir = options.agentDir === undefined ? pi.getAgentDir() : resolve(options.agentDir);
 	const report = options.onReport ?? (() => {});
 	const { settingsManager, extensionPaths, selectedAgent } = selectedAgentResources(pi, options, cwd, agentDir, report);
+	const canonicalAgent = selectedAgent ?? defaultAgentEntrypoint;
 
 	const bus = pi.createEventBus();
 	const contributions: DurableContribution[] = [];
 	const collectionErrors: Error[] = [];
 	let selectionError: Error | undefined;
+	const unsubscribeEntry = bus.on(AGENT_ENTRY_CHANNEL, (data) => {
+		if (typeof data !== "object" || data === null) return;
+		const request = data as AgentEntryRequest;
+		if (request.version !== 1 || typeof request.source !== "string" || request.source === "") return;
+		const resolvedSource = realpathOrExact(request.source);
+		const accepted = selectedAgent === undefined
+			? resolvedSource === canonicalAgent
+			: request.source === selectedAgent || resolvedSource === selectedAgent;
+		if (!accepted) {
+			const reason = `An unselected Agent contribution was emitted from ${request.source}`;
+			selectionError ??= new Error(reason);
+			request.result = { kind: "rejected", reason };
+			return;
+		}
+		request.result = { kind: "native", register: createNativeAgentEntry(request.source) };
+	});
 	const unsubscribe = bus.on("durable:contribution", (data) => {
 		try {
 			selectionError ??= unselectedAgentContribution(data, selectedAgent);
@@ -749,10 +775,12 @@ export async function createDurableServices(options: CreateDurableServicesOption
 			resourceLoaderReloadOptions: { resolveProjectTrust: resolveTrust },
 		});
 	} catch (error) {
+		unsubscribeEntry();
 		unsubscribe();
 		options.signal?.removeEventListener("abort", forwardAbort);
 		throw error;
 	}
+	unsubscribeEntry();
 	unsubscribe();
 
 	const envs = new Map<string, NodeExecutionEnv>();

@@ -2,7 +2,7 @@ import { compile, num, str, opt, obj, type Schema } from "@earendil-works/pi-sch
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { AgentPreferencesSchema, validPreferences, validPresets } from "./preference-schema.ts";
 import { AwaitOutputSchema } from "./awaited-results.ts";
-import { DispatchOutputSchema } from "./result-reference.ts";
+import { DispatchOutputSchema } from "./result-schema.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";

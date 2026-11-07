@@ -24,7 +24,7 @@ import { EffortAwarenessSchema } from "./effort-schema.ts";
 import { CreatedAgentsSchema } from "./agent-lineage.ts";
 import { CommunicationViewSchema } from "./communication.ts";
 import { AwaitFactSchema } from "./await-facts.ts";
-import { ProviderBlockFactSchema } from "./provider-block.ts";
+import { ProviderBlockFactSchema } from "./provider-block-facts.ts";
 
 const string = str();
 const boolean = bool();

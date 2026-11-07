@@ -40,7 +40,7 @@ function collectViolations(tools: readonly DeclaredTool[], surface: string): str
 	return violations;
 }
 
-it("declares an explicit JSON Schema type on every agent tool parameter, ordinary and native", (t) => {
+it("declares an explicit JSON Schema type on every agent tool parameter, ordinary and native", async (t) => {
 	const priorAgentDir = process.env.PI_AGENT_DIR;
 	const agentDir = mkdtempSync(join(tmpdir(), "tool-schema-types-agent-"));
 	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "tool-schema-types-cwd-")));
@@ -53,7 +53,7 @@ it("declares an explicit JSON Schema type on every agent tool parameter, ordinar
 	});
 
 	const ordinary: DeclaredTool[] = [];
-	registerAgentExtension({
+	await registerAgentExtension({
 		events: { on: () => () => {}, emit() {} },
 		on() {},
 		registerTool(tool: DeclaredTool) { ordinary.push(tool); },

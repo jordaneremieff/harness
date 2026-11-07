@@ -21,9 +21,9 @@ import { MODEL_SELECTION_GUIDANCE } from "./control-guidance.ts";
 import { page as rosterPage } from "./dashboard-test-fixture.mts";
 import type { FleetStatus } from "./fleet-status.ts";
 
-function primaryTools(): Map<string, ToolDefinition> {
+async function primaryTools(): Promise<Map<string, ToolDefinition>> {
 	const tools = new Map<string, ToolDefinition>();
-	register({ events: { emit() {}, on: () => () => {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
+	await register({ events: { emit() {}, on: () => () => {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {} } as unknown as ExtensionAPI);
 	return tools;
 }
 
@@ -53,7 +53,7 @@ it("publishes real host evidence and reads fleet status locally from ordinary an
 	assert.ok(view?.modelEvidence);
 	assert.ok(view.modelEvidence.models.some((item) => item.model === `${f.metadata.model.provider}/${f.metadata.model.modelId}` && item.reportedCost > 0 && item.lastResponseAt !== undefined));
 
-	const tools = primaryTools();
+	const tools = await primaryTools();
 	const status = tools.get("agent_status");
 	assert.ok(status);
 	const sessionManager = SessionManager.inMemory(f.cwd);

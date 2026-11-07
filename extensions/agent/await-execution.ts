@@ -4,13 +4,13 @@ import { inputEntry } from "./input-entry.ts";
 import { withCancel } from "@earendil-works/chord/context";
 import { InboxDoc, type ToolExecutionApi, type TaskId, type DocumentWatch } from "@earendil-works/pi-durable";
 import { AwaitDoc, boundedAwaitAnswer, declareAwait, commitAwaitOutcome, localProducer, referenceKey, type AwaitDeclaration, type AwaitOutcome, type AwaitInput, type AwaitDelivery } from "./awaited-results.ts";
-import type { ResultReference } from "./result-reference.ts";
+import type { ResultReference } from "./result-schema.ts";
 import type { ProducerAwaitFact } from "./await-facts.ts";
 import { safeFactText } from "./primary-observation.ts";
 import { recordProducerAwait, queuedAwaitInputCount } from "./await-observation.ts";
 import type { AgentControlDispatch } from "./durable-agents.ts";
 import { matchesSchema } from "./schema-check.ts";
-import { ProviderBlockFactSchema, type ProviderBlockFact } from "./provider-block.ts";
+import { ProviderBlockFactSchema, type ProviderBlockFact } from "./provider-block-facts.ts";
 
 export type AwaitReply = { decision: AwaitDeclaration["decision"]; results: AwaitOutcome[]; unresolved: ResultReference[]; originalInputs: number[]; queuedInputCount: number; queueSnapshot: { source: "committed InboxDoc"; conversationId: number; runId: number }; releaseReason?: string; producerRetries?: ProducerAwaitFact[] };
 function declaration(value: { declarations: AwaitDeclaration[] } | null | undefined, taskId: TaskId): AwaitDeclaration | undefined { return value?.declarations.find((item) => item.taskId === taskId); }

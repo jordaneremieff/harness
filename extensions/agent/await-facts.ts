@@ -1,6 +1,6 @@
 import { str, int, bool, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
 /** Bounded semantic wait facts, separate from native task scheduling state. */
-import { ResultReferenceSchema } from "./result-reference.ts";
+import { ResultReferenceSchema } from "./result-schema.ts";
 import { safeFactText } from "./primary-observation.ts";
 
 export const ProducerRetrySchema = obj({

@@ -5,9 +5,15 @@ import type { JsonValue } from "@earendil-works/chord";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { acquireHost } from "./host-client.ts";
 import { hostRequestVersionError, type HostMetadata } from "./host-protocol.ts";
-import { resolveConfiguredAgent } from "./durable-services.ts";
+import type { resolveConfiguredAgent } from "./durable-services.ts";
 import { connectPrimaryChannel } from "./primary-channel.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
+
+let configuredAgentResolverPromise: Promise<typeof resolveConfiguredAgent> | undefined;
+function loadResolveConfiguredAgent(): Promise<typeof resolveConfiguredAgent> {
+	configuredAgentResolverPromise ??= import("./durable-services.ts").then((module) => module.resolveConfiguredAgent);
+	return configuredAgentResolverPromise;
+}
 
 export interface IndependentCommandInput {
 	readonly invocationId: string;
@@ -78,7 +84,8 @@ export async function launchIndependentCommand(input: IndependentCommandInput, o
 	let record = catalog.readRequest(input.creatorId, requestId);
 	let created = false;
 	if (record === undefined) {
-		const selected = await (options.resolveDefaults ?? resolveConfiguredAgent)({
+		const resolveDefaults = options.resolveDefaults ?? await loadResolveConfiguredAgent();
+		const selected = await resolveDefaults({
 			cwd, agentDir: options.agentDir, packageDir: options.packageDir,
 			command: command.name,
 			askPrimary: options.askPrimary ?? ((target) => askCreatorTrust(options.root, input.creatorId, target)),

@@ -46,7 +46,7 @@ it("ordinary and native callers share machine preferences and receive advisory s
 	const entries: Array<{ type: "custom"; customType: string; data: unknown }> = [];
 	type StartEvent = { systemPromptOptions: { sections: Record<string, string> } };
 	let beforeStart: ((event: StartEvent, ctx: ExtensionContext) => Promise<void>) | undefined;
-	registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on(name: string, handler: typeof beforeStart) { if (name === "before_agent_start") beforeStart = handler; }, registerTool(tool: RegisteredTool) { tools.set(tool.name, tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data: structuredClone(data) }); }, getThinkingLevel: () => "off" } as unknown as ExtensionAPI);
+	await registerAgentExtension({ events: { on: () => () => {}, emit() {} }, on(name: string, handler: typeof beforeStart) { if (name === "before_agent_start") beforeStart = handler; }, registerTool(tool: RegisteredTool) { tools.set(tool.name, tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, appendEntry(customType: string, data: unknown) { entries.push({ type: "custom", customType, data: structuredClone(data) }); }, getThinkingLevel: () => "off" } as unknown as ExtensionAPI);
 	const ctx = { cwd: directory, sessionManager: { getSessionId: () => "primary", getSessionName: () => undefined, getBranch: () => entries }, modelRegistry: { find: () => undefined, getAll: () => [] } } as unknown as ExtensionContext;
 	for (const name of ["agent_spawn", "agent_place", "agent_configure"]) {
 		const tool = tools.get(name); assert.ok(tool);

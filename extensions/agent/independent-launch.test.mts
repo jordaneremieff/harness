@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -219,3 +220,45 @@ it("reuses a denied project decision at native startup without loading project e
 		assert.equal(existsSync(projectMarker), false, "denied project code never executes at selector or worker startup");
 	} finally { await killHost(client.pid); }
 });
+
+it("does not load durable-services when an injected resolver supplies defaults", (t) => {
+	const f = fixture(t);
+	const script = `
+		import assert from "node:assert/strict";
+		import { registerHooks } from "node:module";
+		const loaded = [];
+		registerHooks({ load(url, context, next) {
+			if (url.endsWith("/durable-services.ts")) loaded.push(url);
+			return next(url, context);
+		} });
+		const { launchIndependentCommand } = await import(${JSON.stringify(new URL("./independent-launch.ts", import.meta.url).href)});
+		const receipt = await launchIndependentCommand(
+			${JSON.stringify(f.input)},
+			{
+				root: ${JSON.stringify(f.root)},
+				agentDir: ${JSON.stringify(f.options.agentDir)},
+				packageDir: ${JSON.stringify(f.options.packageDir)},
+				resolveDefaults: async () => ({ model: { provider: "agent-test", modelId: "first" }, thinkingLevel: "high", projectTrusted: false }),
+				acquire: async (host) => ({
+					metadata: host,
+					storageId: host.storageId,
+					pid: 4242,
+					socketPath: "unused",
+					closed: false,
+					runtimeContract: ${JSON.stringify(HOST_CONTRACT)},
+					request: async () => ({ identity: host.storageId, conversationId: 1, name: "fixture-independent", text: "committed" }),
+					onClose: () => () => {},
+					subscribeChanges: async () => () => {},
+					close: async () => {},
+				}),
+			},
+		);
+		assert.equal(receipt.admission.text, "committed");
+		assert.deepEqual(loaded, []);
+	`;
+	const child = spawnSync(process.execPath, ["--input-type=module", "--eval", script], {
+		encoding: "utf8", timeout: 15_000, maxBuffer: 512 * 1024,
+	});
+	assert.equal(child.status, 0, child.stderr || child.error?.message);
+});
+

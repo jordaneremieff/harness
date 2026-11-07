@@ -12,7 +12,7 @@ import { CheckInTask, CheckInDeadlineTask, createCheckIn } from "./durable-check
 import { Harness, MemoryStorage, createRegistry, defineExtension, AssistantEntry, CompactionEntry, LiveDoc, UserEntry, type ConversationId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
 import { testModel } from "./test-runtime.mts";
 import { scheduleFixture } from "./durable-schedule-fixture.mts";
-import { checkInMinutes } from "./durable-checkins.ts";
+import { checkInMinutes } from "./check-in-options.ts";
 import { AwaitDoc } from "./awaited-results.ts";
 
 function settingsDirectory(t: { after(fn: () => void): void }): string {

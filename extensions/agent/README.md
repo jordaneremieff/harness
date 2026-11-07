@@ -2122,6 +2122,32 @@ settings files. Settings load errors retain their global or project scope and
 source path in reports and returned SDK errors. Untrusted project settings stay
 deferred until Pi grants project trust.
 
+`extensions/agent/index.ts` is a thin asynchronous dispatcher. Before
+`createDurableServices()` invokes Pi's resource loader, it registers a
+synchronous `durable:agent-entry` handler on the service `EventBus`
+(`entry-binding.ts`) and removes that handler after resource loading, including
+on failure. The handler accepts only the canonical Agent entrypoint selected for
+that host, supplies the native registration factory (`native-entry.ts`) for that
+exact path, and explicitly rejects any other Agent entrypoint. The native
+factory publishes settings and the Agent contribution with the original
+`extensions/agent/index.ts` `source` path, without loading or constructing
+ordinary managers, tool cards, commands, or `SelfCompaction`. When no
+entry-binding handler is present in an ordinary launcher, `index.ts` awaits a
+memoised import of `ordinary-entry.ts`. Ordinary registration synchronously
+emits a lightweight contribution descriptor whose `source` remains
+`extensions/agent/index.ts` and whose asynchronous `create()` loads
+`durable-agents.ts` only if a host installs the contribution. Ordinary
+registration keeps pure schemas, result formatters, check-in/timer validators,
+and collaboration contracts in lightweight modules (`control-result.ts`,
+`provider-block-facts.ts`, `result-schema.ts`, `native-identity.ts`,
+`check-in-options.ts`, `timer-input.ts`, `profile-schema.ts`,
+`collaboration-contract.ts`), defers cold-observation snapshot runtime
+(`cold-observation.ts`), independent-launch default resolution
+(`independent-launch.ts`), and native result/identity helpers until use, and
+loads profile and dashboard dialog presentation (`profile-dialog.ts`,
+`dashboard.ts`, `dashboard-state.ts`, `agent-git.ts`) at command time rather
+than at registration.
+
 Trust uses the explicit decision when supplied, then the loaded extension
 handlers, saved decision, and settings default. A headless unresolved `ask`
 decision does not grant trust. Project-local resources remain subject to that

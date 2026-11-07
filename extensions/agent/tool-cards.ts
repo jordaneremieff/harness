@@ -8,7 +8,7 @@
 import { stripVTControlCharacters } from "node:util";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { awaitFactLines, AwaitFactSchema } from "./await-facts.ts";
-import { ProviderBlockFactSchema, providerBlockText } from "./provider-block.ts";
+import { ProviderBlockFactSchema, providerBlockText } from "./provider-block-facts.ts";
 import { matchesSchema } from "./schema-check.ts";
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, type KeybindingHints } from "@earendil-works/pi-coding-agent";

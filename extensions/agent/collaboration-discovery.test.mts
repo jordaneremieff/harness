@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { AgentCatalog } from "./catalog.ts";
-import { CollaborationIndex, CollaborationThreads, type CollaborationSummary, type CollaborationThread, listCollaboration, projectCollaboration } from "./collaboration.ts";
+import type { CollaborationSummary, CollaborationThread } from "./collaboration-contract.ts";
+import { CollaborationIndex, CollaborationThreads, listCollaboration, projectCollaboration } from "./collaboration.ts";
 import { discoverCollaboration, readRecentCollaboration, RECENT_COLLABORATION_LIMITS } from "./collaboration-discovery.ts";
 
 function fixture(t: { after(fn: () => void): void }) {

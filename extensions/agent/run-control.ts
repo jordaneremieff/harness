@@ -4,8 +4,8 @@ import * as native from "@earendil-works/pi-durable";
 import type { CommitPublication, ConversationId, Harness, SubmissionId, TaskId, Tx } from "@earendil-works/pi-durable";
 import { matchesSchema } from "./schema-check.ts";
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
-import { canonicalIdentity } from "./identity.ts";
-import { ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
+import { canonicalIdentity } from "./native-identity.ts";
+import { ResultReferenceSchema, type ResultReference } from "./result-schema.ts";
 import { agentRunControlDoc } from "./run-control-state.ts";
 import { onStoredCommit } from "./commit-observation.ts";
 

@@ -26,7 +26,8 @@ import { AgentMetaDoc, settleDeliveries, type AgentDeliveryState, type DeliveryR
 import { snapshotDeliveryState, deliveryState, latestReceipt, migrateDeliveryStore } from "./delivery-store.ts";
 import { timerStatusRows } from "./durable-timers.ts";
 import { readAwaitFact } from "./await-observation.ts";
-import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, PROVIDER_BLOCK_ERROR, readProviderBlock, readInputProviderBlock, readInputRecovery, type ProviderBlockFact } from "./provider-block.ts";
+import { snapshotProviderBlock, snapshotInputProviderBlock, snapshotInputRecovery, readProviderBlock, readInputProviderBlock, readInputRecovery } from "./provider-block.ts";
+import { PROVIDER_BLOCK_ERROR, type ProviderBlockFact } from "./provider-block-facts.ts";
 import type { AwaitFact } from "./await-facts.ts";
 import type { CommunicationView } from "./communication.ts";
 import { captureCommunicationReader, type CapturedCommunicationReader } from "./communication-observation.ts";

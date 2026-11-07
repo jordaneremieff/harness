@@ -15,6 +15,8 @@ import { completed, toolCallMessage } from "./durable-host-fixture.mts";
 import { createDurableRuntime } from "./durable-runtime.ts";
 import { createDurableServices } from "./durable-services.ts";
 import type { RunScope, RunStop } from "./run-control.ts";
+import { AGENT_ENTRY_CHANNEL, type AgentEntryRequest } from "./entry-binding.ts";
+import registerAgentExtension from "./index.ts";
 import { machineConfig } from "./settings-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
 
@@ -269,3 +271,61 @@ test("selected native Agent retains delegation ownership across generation hando
 		await runtime?.close();
 	}
 });
+
+test("entry dispatcher selects native or ordinary registration, preserves original source, and removes its bootstrap listener", async t => {
+	const f = fixture(t);
+	const services = await createDurableServices({
+		cwd: f.cwd, agentDir: f.agentDir, storageId: "entry-binding-selection", packageDir: getPackageDir(),
+		modelRuntime: await createTestRuntime(), trusted: false, agentExtensionPath: selectedAgent,
+	});
+	try {
+		const agentContributions = services.inventory.contributions.filter(item => item.name === "agent");
+		assert.equal(agentContributions.length, 1);
+		assert.equal(agentContributions[0]?.source, selectedAgent);
+		const loadedAgent = services.services.resourceLoader.getExtensions().extensions.find(item => item.resolvedPath === selectedAgent);
+		assert.ok(loadedAgent);
+		assert.equal(loadedAgent.tools.size, 0, "native entry does not register ordinary tools");
+		assert.equal(loadedAgent.commands.size, 0, "native entry does not register ordinary commands");
+	} finally {
+		await services.close();
+	}
+
+	await assert.rejects(
+		registerAgentExtension({
+			events: {
+				emit(channel: string, data: unknown) {
+					if (channel === AGENT_ENTRY_CHANNEL) {
+						(data as AgentEntryRequest).result = { kind: "rejected", reason: "Rejected fixture Agent entrypoint" };
+					}
+				},
+				on: () => () => {},
+			},
+		} as never),
+		/Rejected fixture Agent entrypoint/u,
+	);
+
+	let ordinaryContribution: { name: string; source: string } | undefined;
+	const ordinaryTools: string[] = [];
+	await registerAgentExtension({
+		events: {
+			emit(channel: string, data: unknown) {
+				if (channel === "durable:contribution") ordinaryContribution = data as { name: string; source: string };
+			},
+			on: () => () => {},
+		},
+		on: () => () => {},
+		registerTool(tool: { name: string }) { ordinaryTools.push(tool.name); },
+		registerCommand() {},
+		registerShortcut() {},
+		registerMessageRenderer() {},
+		registerToolRenderer() {},
+		getThinkingLevel: () => "off",
+		getSettings: () => ({}),
+	} as never);
+	assert.deepEqual(ordinaryContribution && { name: ordinaryContribution.name, source: ordinaryContribution.source }, {
+		name: "agent",
+		source: selectedAgent,
+	});
+	assert.ok(ordinaryTools.includes("agent_spawn"));
+});
+

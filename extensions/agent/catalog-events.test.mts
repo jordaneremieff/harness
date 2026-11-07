@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { mutateCollaboration, projectCollaboration, type CollaborationPage } from "./collaboration.ts";
+import type { CollaborationPage } from "./collaboration-contract.ts";
+import { mutateCollaboration, projectCollaboration } from "./collaboration.ts";
 import { DurableHost } from "./durable-host.ts";
 import { fixtureRegistry, fixtureRuntime, hostOptions } from "./durable-host-fixture.mts";
 import { spawn, spawnSync } from "node:child_process";

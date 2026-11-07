@@ -5,12 +5,12 @@ import { AgentDoc, LiveDoc, DEFAULT_RETRY_POLICY, defineDoc, type Harness, type 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ProducerAwaitFactSchema } from "./await-facts.ts";
 import { safeFactText } from "./primary-observation.ts";
-import type { ResultReference } from "./result-reference.ts";
+import type { ResultReference } from "./result-schema.ts";
 import { providerRetryRevision } from "./awaited-results.ts";
 import type { AgentDeliveryState, DeliveryReport } from "./durable-controls.ts";
 import { readDeliveryDraft, retainedReportRequest, writeDeliveryDraft } from "./delivery-store.ts";
 import { RequestContextDoc, type RequestContext } from "./request-context.ts";
-import { canonicalIdentity } from "./identity.ts";
+import { canonicalIdentity } from "./native-identity.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
 import { onStoredCommit } from "./commit-observation.ts";
 

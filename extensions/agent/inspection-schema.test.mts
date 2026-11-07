@@ -10,9 +10,9 @@ import { AGENT_CONTROL_TOOL_NAMES, AGENT_CONTROL_GUIDANCE } from "./control-guid
 import { StatusToolOutputSchema, InspectToolOutputSchema } from "./observation-schema.ts";
 
 interface ToolDeclaration { name: string; parameters: Schema; outputSchema?: Schema; promptSnippet?: string; promptGuidelines?: string[] }
-function declarations(): Map<string, ToolDeclaration> {
+async function declarations(): Promise<Map<string, ToolDeclaration>> {
 	const tools = new Map<string, ToolDeclaration>();
-	register({
+	await register({
 		events: { emit() {}, on: () => () => {} }, on: () => () => {},
 		registerTool: (tool: ToolDeclaration) => tools.set(tool.name, tool),
 		registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {},
@@ -20,8 +20,8 @@ function declarations(): Map<string, ToolDeclaration> {
 	return tools;
 }
 
-it("declares shared task guidance and exact observation results on primary tools", () => {
-	const tools = declarations();
+it("declares shared task guidance and exact observation results on primary tools", async () => {
+	const tools = await declarations();
 	assert.equal(tools.has("agent_await"), false, "native await is absent from ordinary primaries");
 	for (const name of AGENT_CONTROL_TOOL_NAMES.filter((name) => name !== "agent_await")) {
 		const declaration = tools.get(name);
@@ -34,8 +34,8 @@ it("declares shared task guidance and exact observation results on primary tools
 	assert.deepEqual(tools.get("agent_inspect")?.outputSchema, InspectToolOutputSchema);
 });
 
-it("declares native result, exact-entry, and cursor inspection inputs on the primary", () => {
-	const schema = declarations().get("agent_inspect")?.parameters;
+it("declares native result, exact-entry, and cursor inspection inputs on the primary", async () => {
+	const schema = (await declarations()).get("agent_inspect")?.parameters;
 	assert.ok(schema);
 	const inputs = [
 		{ sessionId: "storage", view: "result", submissionId: 7 },

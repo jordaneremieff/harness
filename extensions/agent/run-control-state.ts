@@ -1,6 +1,6 @@
 import type * as Native from "@earendil-works/pi-durable";
 import type { JsonValue } from "@earendil-works/chord";
-import type { ResultReference } from "./result-reference.ts";
+import type { ResultReference } from "./result-schema.ts";
 
 export type RunControlState = {
 	recorded: boolean;

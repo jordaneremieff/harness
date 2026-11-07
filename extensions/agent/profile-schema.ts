@@ -33,3 +33,10 @@ export const ProfileUpdateSchema = obj({
 	outcome: union([lit("applied"), lit("conflict")]), deduped: bool(), profile: AgentProfileSchema,
 });
 export const ProfileOutputSchema = union([AgentProfileSchema, ProfileUpdateSchema]);
+
+export function profileText(value: unknown, field: "role" | "expertise"): string {
+	const limit = field === "role" ? 2000 : 16384;
+	if (typeof value !== "string" || /[\u0000\ud800-\udfff]/u.test(value) || (field === "role" ? [...value].length : Buffer.byteLength(value)) > limit) throw new Error(`${field} must be well-formed text within ${limit} ${field === "role" ? "characters" : "UTF-8 bytes"}`);
+	return value;
+}
+

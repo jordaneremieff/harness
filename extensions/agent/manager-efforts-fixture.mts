@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { createAssistantMessageEventStream, type AssistantMessage, type JsonObject, type TranscriptContext } from "@earendil-works/pi-ai";
 import { DefaultResourceLoader, SessionManager, SettingsManager, createAgentSession, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
-import { agentRestartHosts } from "./index.ts";
+import { agentRestartHosts } from "./ordinary-entry.ts";
 
 interface Command { readonly id: number; readonly type: string; readonly [key: string]: unknown }
 interface FixtureMessage { readonly type: string; readonly [key: string]: unknown }
@@ -26,7 +26,7 @@ interface FixtureServices {
 }
 
 const indexPath = fileURLToPath(new URL("./index.ts", import.meta.url));
-const wrapper = `import register from ${JSON.stringify(indexPath)};\nexport default function (pi) { register(pi); }\n`;
+const wrapper = `import register from ${JSON.stringify(indexPath)};\nexport default async function (pi) { await register(pi); }\n`;
 
 function send(message: FixtureMessage): void {
 	if (process.send) process.send(message);

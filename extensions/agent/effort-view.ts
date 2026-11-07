@@ -13,7 +13,7 @@ import { DashboardMouse } from "./dashboard-mouse.ts";
 import { LIST_BLOCK_ROWS, dashboardHeading, fitLine, listBlock, readingGeometry } from "./dashboard-layout.ts";
 import { dashboardTime } from "./dashboard-time.ts";
 import { memberDeclarationLines, threadPage, type Collaborate } from "./thread-data.ts";
-import type { CollaborationPage } from "./collaboration.ts";
+import type { CollaborationPage } from "./collaboration-contract.ts";
 
 const plain = (text: string) => cleanDashboardText(text).replace(/\s+/g, " ").trim();
 /** Clip with one ellipsis character; the generic line fit must never add its own three dots. */

@@ -2,11 +2,12 @@ import { str, int, bool, lit, union, arr, opt, obj, type Static } from "@earendi
 /** Native await ownership, exact outcomes, and control-provenance release. */
 import { createHash } from "node:crypto";
 import { defineDoc, LiveDoc, InboxDoc, ROOT_CONVERSATION_ID, type ConversationId, type TaskId, type SubmissionId, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
-import { canonicalIdentity } from "./identity.ts";
+import { canonicalIdentity } from "./native-identity.ts";
 import { prepareCommunication } from "./communication-retention.ts";
-import { ResultReferenceSchema, type ResultReference } from "./result-reference.ts";
+import { ResultReferenceSchema, type ResultReference } from "./result-schema.ts";
 import { ProducerAwaitFactSchema, type ProducerAwaitFact, type ProducerRetry } from "./await-facts.ts";
-import { ProviderBlockFactSchema, type ProviderBlockFact, type ProviderRetryNotice } from "./provider-block.ts";
+import type { ProviderRetryNotice } from "./provider-block.ts";
+import { ProviderBlockFactSchema, type ProviderBlockFact } from "./provider-block-facts.ts";
 
 export const AwaitParams = obj({
 	results: arr(ResultReferenceSchema, { minItems: 1, maxItems: 16, uniqueItems: true }),

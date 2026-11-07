@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import type { ConversationId, EntryId } from "@earendil-works/pi-durable";
 import { DashboardRelations, relatedWork, relationSeeds, relationIdentity } from "./dashboard-relations.ts";
 import { fixture, source, row, turn, theme, deferred, page as rosterPage, conversationFrame } from "./dashboard-test-fixture.mts";
-import type { CollaborationPage } from "./collaboration.ts";
+import type { CollaborationPage } from "./collaboration-contract.ts";
 
 const ordinary = "11111111-1111-1111-1111-111111111111";
 const storage = "22222222-2222-2222-2222-222222222222";

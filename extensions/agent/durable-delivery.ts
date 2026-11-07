@@ -25,8 +25,8 @@
 import { createHash } from "node:crypto";
 import { COMMUNICATION_BODY_BYTES, COMMUNICATION_VALUE_BYTES, communicationSerializedBytes, parseCommunication, type Communication } from "./communication.ts";
 import type { InputProvenance } from "./awaited-results.ts";
-import { canonicalIdentity } from "./identity.ts";
-import { providerBlockText } from "./provider-block.ts";
+import { canonicalIdentity } from "./native-identity.ts";
+import { providerBlockText } from "./provider-block-facts.ts";
 import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord";

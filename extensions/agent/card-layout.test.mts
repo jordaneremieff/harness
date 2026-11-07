@@ -25,9 +25,9 @@ const row: AgentConversationSummary = { id: identity, storageId: identity, name:
 const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
 const clean = (component: { render(width: number): string[] }, width = 240) => component.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
 const text = (component: { render(width: number): string[] }, width = 240) => clean(component, width).join("\n");
-function registeredTools(): Map<string, ToolDefinition> {
+async function registeredTools(): Promise<Map<string, ToolDefinition>> {
 	const tools = new Map<string, ToolDefinition>();
-	register({ events: { emit() {}, on: () => () => {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => { assert.equal(tools.has(tool.name), false, tool.name); tools.set(tool.name, tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "xhigh" } as unknown as ExtensionAPI);
+	await register({ events: { emit() {}, on: () => () => {} }, on: () => () => {}, registerTool: (tool: ToolDefinition) => { assert.equal(tools.has(tool.name), false, tool.name); tools.set(tool.name, tool); }, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "xhigh" } as unknown as ExtensionAPI);
 	return tools;
 }
 
@@ -66,8 +66,8 @@ it("all native tool rows share two-tier known headers, native padding and one hi
 	}
 });
 
-it("every registered agent tool has shared factory coverage and both renderer registrations", () => {
-	const tools = registeredTools();
+it("every registered agent tool has shared factory coverage and both renderer registrations", async () => {
+	const tools = await registeredTools();
 	assert.ok(tools.has("agent_intent"));
 	const cards = createAgentToolCards();
 	assert.equal(tools.has("agent_await"), false, "ordinary primaries do not register native await");
@@ -80,8 +80,8 @@ it("every registered agent tool has shared factory coverage and both renderer re
 	}
 });
 
-it("registered intent cards show observed publish and clear outcomes and expanded raw details", () => {
-	const tool = registeredTools().get("agent_intent");
+it("registered intent cards show observed publish and clear outcomes and expanded raw details", async () => {
+	const tool = (await registeredTools()).get("agent_intent");
 	assert.ok(tool);
 	const claim = { purpose: "Review the parser", integration: "Return the checked change", authority: "Operator permits review", scope: { paths: ["src"], branches: ["work"], fullGate: true }, updatedAt: "2026-01-01T00:00:00.000Z" };
 	for (const action of ["publish", "clear"]) {

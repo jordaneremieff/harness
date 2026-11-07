@@ -14,7 +14,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { type Action, type Control, HitMap, TextField, actionControl, keyInput, keyMatches, keyText, menuControl } from "../../operator-ui/index.ts";
 import { AgentComposer } from "./agent-composer.ts";
-import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration.ts";
+import type { CollaborationEvent, CollaborationPage, CollaborationSummary } from "./collaboration-contract.ts";
 import { LIST_BLOCK_ROWS, fitLine, listBlock, readingGeometry } from "./dashboard-layout.ts";
 import { dashboardTime } from "./dashboard-time.ts";
 import {

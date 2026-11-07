@@ -33,7 +33,7 @@ import { renderAgentPeerMessage } from "./tool-cards.ts";
 
 
 const INDEX_PATH = fileURLToPath(new URL("./index.ts", import.meta.url));
-const WRAPPER = `import register from ${JSON.stringify(INDEX_PATH)};\nexport default function (pi) {\n\tregister(pi);\n}\n`;
+const WRAPPER = `import register from ${JSON.stringify(INDEX_PATH)};\nexport default async function (pi) {\n\tawait register(pi);\n}\n`;
 const MESSAGE_LIMIT_MS = 10_000;
 
 for (const tool of ["agent_send", "agent_place"] as const) it(`admits a model-issued primary ${tool} and delivers its automatic check-in`, { timeout: 60000 }, async (t) => {
@@ -399,7 +399,7 @@ it("refreshes the registered primary identity on model, thinking, and name chang
 		rmSync(root, { recursive: true, force: true });
 	});
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
-	registerAgentExtension({
+	await registerAgentExtension({
 		events: { emit() {}, on: () => () => {} },
 		registerTool() {},
 		registerMessageRenderer() {}, registerToolRenderer() {},

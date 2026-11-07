@@ -39,7 +39,7 @@ test("ordinary shutdown preserves primary and roster owners and awaits final col
 	await source.close();
 	const start = async () => {
 		const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
-		register({ events: { emit() {}, on: () => () => {} }, on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => { events.set(name, handler); }, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "off", appendEntry() {} } as unknown as ExtensionAPI);
+		await register({ events: { emit() {}, on: () => () => {} }, on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => { events.set(name, handler); }, registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "off", appendEntry() {} } as unknown as ExtensionAPI);
 		const ctx = { cwd: root, sessionManager: SessionManager.create(root, join(root, "sessions")), ui: { setStatus() {} }, modelRegistry: { getAll: () => [] } } as unknown as ExtensionContext;
 		await events.get("session_start")?.({ reason: "resume" }, ctx);
 		return async () => { await events.get("session_shutdown")?.({}, ctx); };
@@ -103,7 +103,7 @@ test("ordinary fleet calls forward exact selection and reject incompatible query
 		model: { provider: "sample", modelId, thinkingLevel: "off" },
 	})), coverage: { complete: true, omitted: 0 } });
 	const tools = new Map<string, ToolDefinition>();
-	register({ events: { emit() {}, on: () => () => {} }, on() {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
+	await register({ events: { emit() {}, on: () => () => {} }, on() {}, registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
 		registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "off" } as unknown as ExtensionAPI);
 	const tool = tools.get("agent_status"); assert.ok(tool);
 	const input = { view: "fleet", model: "sample/a", provider: "sample" };
@@ -172,7 +172,7 @@ test("session start restores sent-work figures in a fresh manager and admissions
 		const events = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
 		const tools = new Map<string, ToolDefinition>();
 		const statuses: Array<string | undefined> = [];
-		register({
+		await register({
 			events: { emit() {}, on: () => () => {} },
 			on: (name: string, handler: (event: unknown, ctx: ExtensionContext) => Promise<void>) => { events.set(name, handler); return () => {}; },
 			registerTool: (tool: ToolDefinition) => tools.set(tool.name, tool),
@@ -206,7 +206,7 @@ test("session start restores sent-work figures in a fresh manager and admissions
 	session = SessionManager.open(path, join(root, "sessions"));
 	let startHandler: ((event: unknown, ctx: ExtensionContext) => Promise<void>) | undefined;
 	const statuses: Array<string | undefined> = [];
-	register({
+	await register({
 		events: { emit() {}, on: () => () => {} }, on: (name: string, handler: typeof startHandler) => { if (name === "session_start") startHandler = handler; return () => {}; },
 		registerTool() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "off",
 		appendEntry: (kind: string, data: unknown) => session.appendCustomEntry(kind, data),

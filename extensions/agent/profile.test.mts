@@ -4,7 +4,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage, createRegistry } from "@earendil-works/pi-durable";
 import { AgentMetaDoc, writeConversationName } from "./durable-controls.ts";
-import { initializeProfile, readProfile, updateProfile, projectProfiles, profileText } from "./profile.ts";
+import { initializeProfile, readProfile, updateProfile, projectProfiles } from "./profile.ts";
+import { profileText } from "./profile-schema.ts";
 import { handleSlug, handleStorageId } from "./identity.ts";
 
 const context = BACKGROUND_CONTEXT;

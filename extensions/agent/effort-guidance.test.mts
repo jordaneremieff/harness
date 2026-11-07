@@ -4,9 +4,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import register from "./index.ts";
 import { AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
 
-it("gives ordinary coordination tools completion and low-message guidance", () => {
+it("gives ordinary coordination tools completion and low-message guidance", async () => {
 	const descriptions = new Map<string, string>();
-	register({
+	await register({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
 		registerTool: (tool: { name: string; description: string }) => descriptions.set(tool.name, tool.description),
@@ -19,9 +19,9 @@ it("gives ordinary coordination tools completion and low-message guidance", () =
 	assert.match(descriptions.get("agent_send") ?? "", /agreements that others must see in a thread when a participant storage exists/u);
 });
 
-it("keeps native await off ordinary primaries and treats waiting as a capability, not staffing", () => {
+it("keeps native await off ordinary primaries and treats waiting as a capability, not staffing", async () => {
 	const tools = new Set<string>();
-	register({
+	await register({
 		events: { emit() {}, on: () => () => {} }, on: () => () => {},
 		registerTool: (tool: { name: string }) => { tools.add(tool.name); },
 		registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, registerCommand() {},

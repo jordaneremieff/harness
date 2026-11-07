@@ -46,11 +46,11 @@ function wrapperSource(scenario: PrimaryScenario, indexPath: string): string {
 	const after = scenario === "abort-after" ? '\t\t\tpi.on("turn_end", (_event, ctx) => { ctx.abort(); });' : "";
 	return `import register from ${JSON.stringify(indexPath)};
 import { obj } from ${JSON.stringify(fileURLToPath(import.meta.resolve("@earendil-works/pi-schema")))};
-export default function (pi) {
+export default async function (pi) {
 ${before}
 ${priorDrafts}
 ${collision}
-	register(pi);
+	await register(pi);
 	pi.registerTool({
 		name: "batch_evidence",
 		label: "Batch evidence",

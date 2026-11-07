@@ -32,7 +32,7 @@ it("admits /agent send as a follow-up and /agent steer as steering", async (t) =
 		rmSync(root, { recursive: true, force: true });
 	});
 	const commands = new Map<string, Omit<RegisteredCommand, "name" | "sourceInfo">>();
-	registerAgentExtension({
+	await registerAgentExtension({
 		events: { emit() {}, on: () => () => {} },
 		on: () => () => {},
 		registerTool() {},

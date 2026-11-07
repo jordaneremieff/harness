@@ -17,13 +17,13 @@ import {
 import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { type CatalogView, parseCatalogView } from "./catalog-view.ts";
-import { parseCollaborationProjection, type CollaborationProjection } from "./collaboration.ts";
+import { parseCollaborationProjection, type CollaborationProjection } from "./collaboration-contract.ts";
 import { CLAIM_BYTES, observeClaim, observeClaimAsync, type ClaimObservation } from "./claims.ts";
 import { isThinkingLevel } from "./configuration.ts";
 import { type HostMetadata, hostPaths, parseHostMetadata } from "./host-protocol.ts";
 
 import { handleSlug, handleStorageId } from "./identity.ts";
-import { profileText } from "./profile.ts";
+import { profileText } from "./profile-schema.ts";
 
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
 export const MAX_RECORD_BYTES = 32_768;

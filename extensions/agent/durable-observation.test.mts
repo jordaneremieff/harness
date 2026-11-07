@@ -13,7 +13,7 @@ import { createTestRuntime, testModel } from "./test-runtime.mts";
 import { DeliveryArchiveDoc, DeliveryStoreDoc } from "./delivery-store.ts";
 import { completed } from "./durable-host-fixture.mts";
 import { settleDeliveries } from "./durable-controls.ts";
-import { PROVIDER_BLOCK_ERROR } from "./provider-block.ts";
+import { PROVIDER_BLOCK_ERROR } from "./provider-block-facts.ts";
 import { InspectOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { ACTIVITY_DIGEST_BYTES, ACTIVITY_SCAN_BYTES, DurableObservation, entryRow, fragment, projectEntry, dashboardHealth, readConversationStatus, readDashboard, reduceActivityMetadata, SNAPSHOT_BYTE_LIMIT, SNAPSHOT_MAX_SOURCE_BYTES } from "./durable-observation.ts";
 import { answerMessage, failingTool, fixtureRegistry, fixtureRuntime, fixtureStorageId, fixtureProvider, fixtureModelId, gateTool, hostOptions, redactedAnswerMessage, scriptedRuntime, toolCallMessage } from "./durable-host-fixture.mts";

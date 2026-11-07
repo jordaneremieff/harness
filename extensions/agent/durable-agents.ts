@@ -24,21 +24,24 @@ import { discoverPrimaryLocation } from "./effort-presence.ts";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { agentRunControlDoc } from "./run-control-state.ts";
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
-import { readInputProviderBlock, providerBlockText, captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
+import { readInputProviderBlock, captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
+import { providerBlockText } from "./provider-block-facts.ts";
 import { PresetParameter, presetParameter, readAgentPreferences, resolveExecutionPreset, effectiveExecutionSelection, renderAgentPreferences, type PreferenceSnapshot, type ExecutionSelection } from "./agent-preferences.ts";
 import { AwaitParams, AwaitOutputSchema, forgetFailedAdmission, recordInputProvenance, reconcileInputRelease } from "./awaited-results.ts";
 import { executeAwait } from "./await-execution.ts";
 import { readCreatedAgents, renderCreatedAgents, type CreatedAgents } from "./agent-lineage.ts";
-import { initializeProfile, reconcileProfile, ProfileDoc, profileText, refreshManagedInstructions } from "./profile.ts";
+import { initializeProfile, reconcileProfile, ProfileDoc, refreshManagedInstructions } from "./profile.ts";
 import { AgentMetaDoc, publishConversationIntent, recordAdmissionMeta } from "./durable-controls.ts";
-import { ProfileParams, ProfileOutputSchema, HandleSchema } from "./profile-schema.ts";
+import { ProfileParams, ProfileOutputSchema, HandleSchema, profileText } from "./profile-schema.ts";
 import { recordRequestContext, cleanupRequestContexts } from "./request-context.ts";
 import { prepareAdmittedCapture } from "./communication-retention.ts";
 import { taskInputSender, type TaskInputSender } from "./task-senders.ts";
 import { targetIdentity } from "./identity.ts";
-import { admittedResult, dispatchFacts, DispatchOutputSchema, type ResultReference } from "./result-reference.ts";
+import { admittedResult, dispatchFacts } from "./result-reference.ts";
+import { DispatchOutputSchema, type ResultReference } from "./result-schema.ts";
 import { ProfiledListOutputSchema } from "./profile-discovery.ts";
-import { CollaborationParams } from "./collaboration.ts";
+import { CollaborationParams } from "./collaboration-contract.ts";
+import { controlText } from "./control-result.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { AgentCatalog } from "./catalog.ts";
 import { readFleetStatus, FleetSelectionProperties, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
@@ -54,8 +57,10 @@ import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines } from "./control-guidance.ts";
 import { abortScopeContains } from "./abort-scope.ts";
-import { parseDeliverAt, TimerTask, type TimerMode } from "./durable-timers.ts";
-import { CheckInTask, checkInMinutes, createCheckIn } from "./durable-checkins.ts";
+import { TimerTask, type TimerMode } from "./durable-timers.ts";
+import { parseDeliverAt } from "./timer-input.ts";
+import { CheckInTask, createCheckIn } from "./durable-checkins.ts";
+import { checkInMinutes } from "./check-in-options.ts";
 import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
 import {
 	InspectToolOutputSchema,
@@ -289,20 +294,6 @@ function structuredControl<P extends Schema, D extends JsonValue>(
 			return { ...result, output: native.output, structuredOutput: native.structuredOutput };
 		},
 	};
-}
-
-/** Render a host control result for the model without losing structure. */
-export function controlText(value: unknown): string {
-	if (value === undefined) return "Host control completed without a result.";
-	if (typeof value === "string") return value;
-	try {
-		const state = value as { retiring?: unknown; live?: unknown } | null;
-		const cold = typeof state?.retiring === "boolean" && state?.live === false;
-		const text = JSON.stringify(value);
-		return cold ? `The agent is not running.\n${text}` : text;
-	} catch {
-		return "Host control returned a result that cannot be printed.";
-	}
 }
 
 function conversationIdOf(value: unknown): Durable.ConversationId {

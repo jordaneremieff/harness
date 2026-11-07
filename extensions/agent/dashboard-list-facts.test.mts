@@ -4,7 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import { visibleWidth, type TuiMouseEvent } from "@earendil-works/pi-tui";
 import { fixture, source, row, turn, deferred } from "./dashboard-test-fixture.mts";
 import type { AgentConversationPage } from "./dashboard-types.ts";
-import type { CollaborationPage } from "./collaboration.ts";
+import type { CollaborationPage } from "./collaboration-contract.ts";
 
 const ordinary = "11111111-1111-1111-1111-111111111111";
 const storage = "22222222-2222-2222-2222-222222222222";

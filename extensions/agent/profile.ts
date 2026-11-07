@@ -3,10 +3,10 @@ import type { Context } from "@earendil-works/chord";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { configure, defineDoc, type ConversationId, type Cursor, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
-import { canonicalIdentity, handleSlug } from "./identity.ts";
+import { handleSlug } from "./identity.ts";
+import { canonicalIdentity } from "./native-identity.ts";
 import { readRequestContextPage } from "./request-context.ts";
-import type { AgentProfile, ProfileHints } from "./profile-schema.ts";
-export type { AgentProfile, ProfileHint, ProfileHints } from "./profile-schema.ts";
+import { profileText, type AgentProfile, type ProfileHints } from "./profile-schema.ts";
 
 export type ProfileState = {
 	identity: string | null;
@@ -22,11 +22,6 @@ const emptyProfile = (): ProfileState => ({ identity: null, handle: null, role: 
 export const ProfileDoc = defineDoc<ProfileState>({ kind: "agent.profile", version: 1, scope: "conversation", history: "latest", fork: "initial", checkpointWhen: () => false, initial: emptyProfile });
 export type ProfileSeed = { handle: string; role: string };
 
-export function profileText(value: unknown, field: "role" | "expertise"): string {
-	const limit = field === "role" ? 2000 : 16384;
-	if (typeof value !== "string" || /[\u0000\ud800-\udfff]/u.test(value) || (field === "role" ? [...value].length : Buffer.byteLength(value)) > limit) throw new Error(`${field} must be well-formed text within ${limit} ${field === "role" ? "characters" : "UTF-8 bytes"}`);
-	return value;
-}
 export function profileRevision(state: ProfileState): string {
 	return createHash("sha256").update(JSON.stringify([state.identity, state.handle, state.role, state.expertise, state.revision])).digest("hex");
 }

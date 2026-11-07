@@ -2,10 +2,11 @@
 import type { Api, AssistantMessage, Model, Models, ModelsSimpleStreamOptions, ModelsApiStreamOptions, ModelsDeferredFetchOptions, DeferredHandle, Context as ModelContext } from "@earendil-works/pi-ai";
 import { createAssistantMessageEventStream, type AssistantMessageEventStream } from "@earendil-works/pi-ai/utils/event-stream";
 import { onStoredCommit } from "./commit-observation.ts";
-import { canonicalIdentity } from "./identity.ts";
+import { canonicalIdentity } from "./native-identity.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Harness } from "@earendil-works/pi-durable";
-import { associateProviderBlock, captureProviderAttempt, isProviderExhaustion, providerAttemptCurrent, retainProviderBlock, readProviderAttemptBlock, retainDeferredAttempt, readDeferredAttempt, PROVIDER_BLOCK_ERROR, STALE_PROVIDER_ERROR, type ProviderAttempt } from "./provider-block.ts";
+import { associateProviderBlock, captureProviderAttempt, isProviderExhaustion, providerAttemptCurrent, retainProviderBlock, readProviderAttemptBlock, retainDeferredAttempt, readDeferredAttempt, type ProviderAttempt } from "./provider-block.ts";
+import { PROVIDER_BLOCK_ERROR, STALE_PROVIDER_ERROR } from "./provider-block-facts.ts";
 
 const STATE_ERROR = "Agent host: provider state failure; inspect retained state.";
 function failure(model: Model<Api>, errorMessage: string, timestamp: number): AssistantMessage {

@@ -18,8 +18,9 @@ import { ownAwaitFact, producerRetryFact, releaseAwait, recordProducerAwait } fr
 import { AwaitDoc, AwaitOutputSchema, type AwaitInput, type AwaitState } from "./awaited-results.ts";
 import type { ProducerAwaitFact } from "./await-facts.ts";
 import type { AwaitReply } from "./await-execution.ts";
-import type { ResultReference } from "./result-reference.ts";
-import { associateProviderBlock, type ProviderBlockFact } from "./provider-block.ts";
+import type { ResultReference } from "./result-schema.ts";
+import { associateProviderBlock } from "./provider-block.ts";
+import type { ProviderBlockFact } from "./provider-block-facts.ts";
 
 const preferenceOverride = process.env.PI_HARNESS_FILE;
 delete process.env.PI_HARNESS_FILE;

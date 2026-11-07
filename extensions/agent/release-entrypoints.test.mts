@@ -28,7 +28,7 @@ it("the ordinary abort tool dispatches release and rejects timer combinations", 
 	const tools = new Map<string, { execute: (...args: never[]) => Promise<unknown> }>();
 	let command: { handler: (input: string, ctx: never) => Promise<void> } | undefined;
 	const pi = { events: { on: () => () => {}, emit() {} }, on() {}, registerShortcut() {}, registerToolRenderer() {}, registerMessageRenderer() {}, registerCommand(name: string, value: typeof command) { if (name === "agent") command = value; }, getThinkingLevel: () => "off", registerTool(tool: { name: string }) { tools.set(tool.name, tool as never); } } as unknown as ExtensionAPI;
-	registerAgentExtension(pi);
+	await registerAgentExtension(pi);
 	const execute = tools.get("agent_abort")?.execute;
 	assert.ok(execute);
 	const ctx = { cwd: root, sessionManager: { getSessionId: () => "primary", getSessionName: () => undefined }, modelRegistry: { find: () => undefined, getAll: () => [] } };

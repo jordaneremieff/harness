@@ -13,10 +13,10 @@ import {
 	resolveExecutionPreset,
 	renderAgentPreferences,
 } from "./agent-preferences.ts";
-import { checkInMinutes } from "./durable-checkins.ts";
+import { checkInMinutes } from "./check-in-options.ts";
 import { resolveIdleMs } from "./host-process.ts";
 import registerAgentExtension from "./index.ts";
-import type { AgentContribution } from "./durable-agents.ts";
+import type { AgentContributionHost } from "./durable-agents.ts";
 
 function fixture(t: { after(fn: () => void): void }) {
 	const agentDir = mkdtempSync(join(tmpdir(), "agent-settings-"));
@@ -250,7 +250,7 @@ it("publishes fresh protocol data without local values and stops after disposal"
 	assert.equal(publications.length, 2);
 });
 
-it("replaces the factory publisher with the native host directory and keeps cleanup ownership separate", (t) => {
+it("replaces the factory publisher with the native host directory and keeps cleanup ownership separate", async (t) => {
 	const ordinaryDir = fixture(t);
 	const nativeDir = fixture(t);
 	writeFileSync(join(ordinaryDir, "harness.json"), JSON.stringify({ version: 1, agent: { checkInMinutes: 9 } }));
@@ -265,12 +265,12 @@ it("replaces the factory publisher with the native host directory and keeps clea
 		else process.env.PI_AGENT_DIR = prior;
 	});
 	const events = bus();
-	let contribution: AgentContribution | undefined;
+	let contribution: { create(host: AgentContributionHost): Durable.Extension | Promise<Durable.Extension> } | undefined;
 	events.on("durable:contribution", (value) => {
-		contribution = value as AgentContribution;
+		contribution = value as { create(host: AgentContributionHost): Durable.Extension | Promise<Durable.Extension> };
 	});
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => void>();
-	registerAgentExtension({
+	await registerAgentExtension({
 		events,
 		on(name: string, handler: (event: unknown, ctx: unknown) => void) {
 			handlers.set(name, handler);
@@ -296,7 +296,7 @@ it("replaces the factory publisher with the native host directory and keeps clea
 	assert.equal(collector.snapshots()[0].source.path, join(ordinaryDir, "harness.json"));
 	let dispose: (() => void) | undefined;
 	assert.ok(contribution);
-	contribution.create({
+	await contribution.create({
 		durable: Durable,
 		storageId: "fixture",
 		cwd: nativeDir,
