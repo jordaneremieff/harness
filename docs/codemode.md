@@ -13,15 +13,24 @@ Each extension still owns its data, bounds, errors, and continuation rules.
 
 ## Enable the native tool
 
-The CLI supplies the built-in extension. Add `+codemode` to the existing
-`defaultTools` selection without removing its other entries. For otherwise
-default settings:
+The CLI supplies the built-in extensions. Add `+codemode` and `+tool_search` to
+the existing `defaultTools` selection without removing its other entries. For
+otherwise default settings:
 
 ```json
 {
-  "defaultTools": ["+codemode"]
+  "defaultTools": ["+codemode", "+tool_search"]
 }
 ```
+
+Tool discovery is part of this configuration. Harness extensions register
+infrequent controls with `deferred` exposure, and `tool_search` loads the ones a
+task needs. Its discovery covers inactive `codemode` and `deferred` tools. Leave
+both settings entries in place: without `tool_search`, a deferred harness tool
+is not discoverable. An explicit `-builtin:tool_search` extension removal stays
+authoritative, and the recommended configuration does not disable it. Discovery
+works with no MCP server configured, so it does not depend on another
+capability enabling it.
 
 Activation decides adoption. The built-in registers `codemode` inactive, and an
 inactive tool is not declared to the model, so the model cannot call it and
@@ -67,20 +76,21 @@ Text reads resolve to a string; image reads resolve to an image block. Use
 also retain image blocks. Activating codemode does not require an MCP server or
 `tool_search`.
 
-Leave `tool_search` inactive for this workflow. Its discovery covers inactive
-`codemode` and `deferred` tools, not these direct harness tools. Inside a script,
+Leave `tool_search` active for this workflow. Its discovery covers inactive
+`codemode` and `deferred` tools. Inside a script,
 `describeTool(name)` and `searchTools(query)` inspect callable tools, and
 `describeNamespace(name)` reads a namespace such as an MCP server. The script
 catalog and its discovery helpers are distinct from the `tool_search` tool. See
 [Find MCP and deferred tools](#find-mcp-and-deferred-tools).
 
-SDK hosts must supply the native factory themselves. With the normal resource
+SDK hosts must supply the native factories themselves. With the normal resource
 loader, the essential setup is:
 
 ```typescript
 import {
   createAgentSession,
   createCodemodeExtension,
+  createToolSearchExtension,
   DefaultResourceLoader,
   getAgentDir,
   SessionManager,
@@ -90,12 +100,12 @@ import {
 const cwd = process.cwd();
 const agentDir = getAgentDir();
 const settingsManager = SettingsManager.create(cwd, agentDir);
-settingsManager.applyOverrides({ defaultTools: ["+codemode"] });
+settingsManager.applyOverrides({ defaultTools: ["+codemode", "+tool_search"] });
 const resourceLoader = new DefaultResourceLoader({
   cwd,
   agentDir,
   settingsManager,
-  extensionFactories: [createCodemodeExtension({ mode: "on" })],
+  extensionFactories: [createCodemodeExtension({ mode: "on" }), createToolSearchExtension()],
 });
 await resourceLoader.reload();
 const { session } = await createAgentSession({

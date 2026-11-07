@@ -30,6 +30,14 @@ provides revision-checked controls and their read-only inspection steps.
 Approval does not change the policy mode. Use the [authoring guide](AUTHORING.md)
 for the author, check, propose, and approve workflow.
 
+All four management tools are deferred in both forms. They stay registered and
+callable from other tools, but the model sees them only after Pi's `tool_search`
+loads them. Enable discovery with `"defaultTools": ["+codemode", "+tool_search"]`
+in Pi settings, or add the public `createToolSearchExtension()` factory in an SDK
+host. Runtime hooks, policy enforcement, and shell-contract guidance stay active
+regardless of whether a management tool is offered. Management-tool guidance
+accompanies the tools that the request offers.
+
 In an ordinary session, the operator uses `/policy` for the TUI Policy view or
 explicit commands:
 

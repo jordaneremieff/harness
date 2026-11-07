@@ -185,6 +185,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 		description: REGISTRY_DESCRIPTION,
 		promptSnippet: REGISTRY_PROMPT_SNIPPET,
 		promptGuidelines: [...REGISTRY_PROMPT_GUIDELINES],
+		exposure: "deferred",
 		parameters: RegistryParams,
 		outputSchema: RegistryOutputSchema,
 		renderCall: registryDisplay.renderCall,

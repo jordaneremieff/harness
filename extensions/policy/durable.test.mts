@@ -188,6 +188,18 @@ function probeExtension(counter: { executed: number }): DurableModule.Extension 
 	});
 }
 
+test("defers the management tools without changing enforcement sections or replay classes", async (t) => {
+	const fixture = await openFixture();
+	t.after(fixture.close);
+	const extension = fixture.registry.snapshot().installed().find((candidate) => candidate.name === "policy");
+	assert.ok(extension, "the policy contribution is installed");
+	const tools = extension.tools ?? [];
+	assert.deepEqual(tools.map((tool) => tool.name).sort(), ["policy_approve", "policy_control", "policy_propose", "policy_rules"]);
+	assert.ok(tools.every((tool) => tool.deferred === true), "every management tool is discovered on demand");
+	assert.deepEqual(tools.map((tool) => tool.replay).sort(), ["safe", "unsafe", "unsafe", "unsafe"]);
+	assert.deepEqual((extension.sections ?? []).map((section) => section.key), ["policy", "policy_shell"]);
+});
+
 async function toolResults(
 	root: DurableModule.Conversation,
 	toolName: string,
@@ -238,6 +250,11 @@ interface FixtureOptions {
 	append?: AppendTelemetry;
 }
 
+/** The policy management tools start undeclared; a fixture that calls them loads them explicitly. */
+function policyTools(registry: DurableModule.Registry): readonly DurableModule.ToolRegistration[] {
+	return registry.snapshot().installed().filter((entry) => entry.name === "policy").flatMap((entry) => entry.tools ?? []);
+}
+
 async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 	const directory = await mkdtemp(join(tmpdir(), "policy-durable-"));
 	const storeDir = join(directory, options.configuration?.dir ?? "policy");
@@ -277,7 +294,7 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 		if (options.block) contribution = blockOnce(contribution, options.block.name, options.block.started);
 		registry.install(contribution);
 		if (options.extension) registry.install(options.extension);
-		const root = await harness.root(context, { agent: { model: MODEL } });
+		const root = await harness.root(context, { agent: { model: MODEL, modelTools: { add: policyTools(registry) } } });
 		return {
 			harness,
 			root,
@@ -736,7 +753,7 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 				started.resolve,
 			),
 		);
-		const root = await first.root(context, { agent: { model: MODEL } });
+		const root = await first.root(context, { agent: { model: MODEL, modelTools: { add: policyTools(registry) } } });
 		const submission = await root.submit({ type: "input", content: "propose" }, context);
 		await started.promise;
 		await first.close(context);
@@ -816,7 +833,7 @@ test("an interrupted safe tool reruns and answers after reopen", async () => {
 		]);
 		const first = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
 		registry.install(blockOnce(await createPolicyDurableExtension(hostFor(fixtureDirectory, first)), "policy_rules", started.resolve));
-		const root = await first.root(context, { agent: { model: MODEL } });
+		const root = await first.root(context, { agent: { model: MODEL, modelTools: { add: policyTools(registry) } } });
 		const submission = await root.submit({ type: "input", content: "list" }, context);
 		await started.promise;
 		await first.close(context);
@@ -1233,7 +1250,7 @@ test("a reset revision survives process loss", async () => {
 			context,
 		);
 		registry.install(await createPolicyDurableExtension(hostFor(directory, first)));
-		const firstRoot = await first.root(context, { agent: { model: MODEL } });
+		const firstRoot = await first.root(context, { agent: { model: MODEL, modelTools: { add: policyTools(registry) } } });
 		faux.appendResponses([
 			fauxAssistantMessage(fauxToolCall("policy_control", { operation: "reset-preview", id: "--all" }), {
 				stopReason: "toolUse",

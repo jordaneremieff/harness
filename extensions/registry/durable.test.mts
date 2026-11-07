@@ -196,7 +196,7 @@ async function open(models: Fixture["models"], extension: Durable.Extension) {
 	const registry = Durable.createRegistry();
 	registry.install(extension);
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
-	const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+	const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: extension.tools ?? [] } } });
 	return { harness, root };
 }
 
@@ -212,6 +212,7 @@ test("durable registry answers model-issued queries from native Durable facts", 
 	assert.ok(registration);
 	assert.equal(registration.name, "registry");
 	assert.equal(registration.replay, "safe");
+	assert.equal(registration.deferred, true, "the lookup is discovered on demand");
 	for (const listed of extension.tools ?? []) assert.equal(listed.replay, "safe");
 	assert.equal(registration.structuredOutputSchema, RegistryOutputSchema);
 	assert.equal(Object.hasOwn(registration, "outputSchema"), false);
@@ -490,7 +491,7 @@ test("reports the Durable agent identity for the root and a non-root conversatio
 	const { harness, root } = await open(models, extension);
 	try {
 		const other = await harness.createConversation(
-			{ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" } } },
+			{ ownership: { kind: "ownerless" }, agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: extension.tools ?? [] } } },
 			BACKGROUND_CONTEXT,
 		);
 		faux.setResponses([

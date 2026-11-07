@@ -31,10 +31,12 @@ import { CollaborationParams } from "./collaboration-contract.ts";
 import { createAgentCommand, type AgentCommandAction } from "./command.ts";
 import { THINKING_LEVELS, isThinkingLevel, parseConfigurationArguments } from "./configuration.ts";
 import {
+	AGENT_CONTROL_EXPOSURE,
 	AGENT_CONTROL_GUIDANCE,
 	FOLLOW_UP_DELIVERY_BOUNDARY,
 	MODEL_SELECTION_GUIDANCE,
 	REPORT_DELIVERY_BOUNDARY,
+	type AgentControlExposure,
 	type AgentControlToolName,
 } from "./control-guidance.ts";
 import { controlText } from "./control-result.ts";
@@ -315,9 +317,9 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		description: string,
 		parameters: Schema<Record<string, unknown>>,
 		execute: (input: Record<string, unknown>, ctx: ExtensionContext, callId: string, admissionCaller?: AgentCaller) => Promise<unknown>,
-		modelOnly = false,
 	): void => {
 		const guidance = AGENT_CONTROL_GUIDANCE[name];
+		const exposure: AgentControlExposure = AGENT_CONTROL_EXPOSURE[name];
 		const schema = observationSchemas[name];
 		const presetAware = ["agent_spawn", "agent_place", "agent_configure"].includes(name);
 		const registerDefinition = (snapshot: PreferenceSnapshot): void => pi.registerTool({
@@ -328,7 +330,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			promptGuidelines: [...(guidance.guidelines ?? [])],
 			parameters: presetAware ? { ...parameters, properties: { ...(parameters.properties as Record<string, Schema>), preset: presetParameter(snapshot).schema } } : parameters,
 			outputSchema: schema ?? unknown(),
-			...(modelOnly ? { exposure: "model-only" as const } : {}),
+			...(exposure === "direct" ? {} : { exposure }),
 			async execute(callId, input: Static<typeof parameters>, _signal, _update, ctx) {
 				let admitted = input;
 				let admissionCaller: AgentCaller | undefined;
@@ -539,7 +541,6 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 			if (input.summary !== undefined) throw new Error("Another agent's compaction accepts instructions, not summary");
 			return control("compact", input, ctx);
 		},
-		true,
 	);
 
 	const sessionHelp = "Type part of a session name or directory, then press Tab to insert its ID.";

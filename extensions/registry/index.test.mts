@@ -51,6 +51,7 @@ describe("Pi adapter", () => {
 	it("registers the tool and executes without a UI or model", async () => {
 		const { tool } = fixture();
 		assert.equal(tool.name, "registry");
+		assert.equal(tool.exposure, "deferred");
 		assert.equal(tool.label, "Registry");
 		assert.ok(tool.description.trim().length > 0);
 		assert.ok(tool.promptSnippet?.trim().length);

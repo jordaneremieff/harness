@@ -427,7 +427,8 @@ async function openHarness(
 		context,
 	);
 	harness.resume();
-	const root = await harness.root(context, { agent: { model } });
+	const deferred = registry.snapshot().installed().flatMap((entry) => (entry.tools ?? []).filter((tool) => tool.deferred === true));
+	const root = await harness.root(context, { agent: { model, modelTools: { add: deferred } } });
 	return { harness, root };
 }
 
@@ -2209,7 +2210,7 @@ it("renders the delegation guidance into the model-facing section", async () => 
 	} as unknown as Durable.PromptInput["read"];
 	const input = {
 		conversationId: Durable.ROOT_CONVERSATION_ID,
-		agent: { thinkingLevel: "off" as const, extensions: [], tools: extension.tools ?? [], callable: (extension.tools ?? []).filter((tool) => tool.callers === undefined || tool.callers.includes("tools")), deferred: [], sections: [] },
+		agent: { thinkingLevel: "off" as const, extensions: [], tools: (extension.tools ?? []).filter((tool) => tool.deferred !== true), callable: (extension.tools ?? []).filter((tool) => tool.callers === undefined || tool.callers.includes("tools")), deferred: [], sections: [] },
 		env: undefined,
 		shown: {},
 		read,
@@ -2221,6 +2222,21 @@ it("renders the delegation guidance into the model-facing section", async () => 
 	assert.match(text, /Never poll with sleeps/u);
 	assert.match(text, /Every conversation has an external identity/u);
 	assert.doesNotMatch(text, /agent_detach/u);
+	const exposed = extension.tools ?? [];
+	assert.deepEqual(
+		exposed.filter((tool) => tool.deferred === true).map((tool) => tool.name).sort(),
+		["agent_attach", "agent_command", "agent_configure", "agent_fork", "agent_inspect", "agent_list", "agent_place", "agent_profile", "agent_reset", "agent_rewind"],
+	);
+	assert.deepEqual(exposed.filter((tool) => tool.callers?.includes("model") && !tool.callers.includes("tools")).map((tool) => tool.name).sort(), ["agent_await", "agent_compact"]);
+	for (const name of ["agent_inspect", "agent_list", "agent_attach", "agent_place", "agent_fork", "agent_rewind", "agent_reset", "agent_configure", "agent_profile", "agent_command"])
+		assert.doesNotMatch(text ?? "", new RegExp(`^- ${name}:`, "mu"), `${name} contributes no guidance until offered`);
+	const deferredOnly = await section.render(
+		{ ...input, agent: { ...input.agent, tools: exposed.filter((tool) => tool.name === "agent_list") } },
+		context,
+	);
+	assert.ok(deferredOnly, "an offered deferred control renders its guidance");
+	assert.match(deferredOnly, /^- agent_list: Find retained agent sessions$/mu);
+	assert.doesNotMatch(deferredOnly, /- agent_spawn:/u);
 	const withoutSpawn = await section.render(
 		{
 			...input,

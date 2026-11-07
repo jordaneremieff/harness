@@ -22,6 +22,7 @@ const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 interface RegisteredTool {
 	name: string;
 	description: string;
+	exposure?: string;
 	promptGuidelines?: readonly string[];
 	executionMode?: string;
 	parameters?: unknown;
@@ -113,10 +114,11 @@ describe("browser extension entrypoint", () => {
 
 	it("registers only the reading tools for inspect access", () => {
 		process.env.PI_BROWSER_ACCESS = JSON.stringify({ chrome: "inspect" });
-		const { api, order } = fixture();
+		const { api, order, tools } = fixture();
 		registerBrowser(api as unknown as ExtensionAPI);
 
 		assert.deepEqual(order, ["browser_tabs", "browser_inspect", "browser_capture"]);
+		for (const tool of tools.values()) assert.equal(tool.exposure, "deferred");
 	});
 
 	it("registers the five tools for interact access, with sequential mode on the mutating tools only", () => {
@@ -125,6 +127,7 @@ describe("browser extension entrypoint", () => {
 		registerBrowser(api as unknown as ExtensionAPI);
 
 		assert.deepEqual(order, ["browser_tabs", "browser_inspect", "browser_act", "browser_evaluate", "browser_capture"]);
+		for (const tool of tools.values()) assert.equal(tool.exposure, "deferred");
 		assert.equal(tools.get("browser_act")?.executionMode, "sequential");
 		assert.equal(tools.get("browser_evaluate")?.executionMode, "sequential");
 		for (const name of ["browser_tabs", "browser_inspect", "browser_capture"]) {

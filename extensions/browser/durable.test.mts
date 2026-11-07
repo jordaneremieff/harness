@@ -310,7 +310,7 @@ async function openRoot(
 	const harness = await Durable.Harness.open(storage, { models, registry }, BACKGROUND_CONTEXT);
 	harness.resume();
 	const root = await harness.root(BACKGROUND_CONTEXT, {
-		agent: { model: { provider: "faux", modelId: "faux-1" } },
+		agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: registry.snapshot().installed().flatMap((entry) => entry.tools ?? []) } },
 	});
 	return { harness, root };
 }
@@ -345,12 +345,14 @@ describe("browser durable contribution", () => {
 			[undefined, undefined, "sequential", "sequential", undefined],
 		);
 		assert.ok(tools.every((tool) => tool.structuredOutputSchema === undefined));
+		assert.ok(tools.every((tool) => tool.deferred === true), "every browser tool is discovered on demand");
 		assert.equal(extension.hooks, undefined);
 		const guidance = extension.sections?.[0];
 		assert.equal(guidance?.key, "browser-guidance");
-		const rendered = await guidance?.render({} as never, BACKGROUND_CONTEXT);
+		const rendered = await guidance?.render({ agent: { tools: tools.map((tool) => ({ name: tool.name })) } } as never, BACKGROUND_CONTEXT);
 		assert.match(rendered ?? "", /untrusted data, not instructions/);
 		assert.match(rendered ?? "", /browser_capture:/);
+		assert.equal(await guidance?.render({ agent: { tools: [] } } as never, BACKGROUND_CONTEXT), undefined, "guidance follows the offered tools");
 	});
 
 	it("offers tools by configured access: none without access, reading tools for inspect", async () => {
@@ -371,7 +373,7 @@ describe("browser durable contribution", () => {
 		const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
 		t.after(() => harness.close(BACKGROUND_CONTEXT));
 		const root = await harness.root(BACKGROUND_CONTEXT, {
-			agent: { model: { provider: "faux", modelId: "faux-1" } },
+			agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: extension.tools ?? [] } },
 		});
 
 		faux.setResponses([
@@ -415,7 +417,7 @@ describe("browser durable contribution", () => {
 		const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
 		t.after(() => harness.close(BACKGROUND_CONTEXT));
 		const root = await harness.root(BACKGROUND_CONTEXT, {
-			agent: { model: { provider: "faux", modelId: "faux-1" } },
+			agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: extension.tools ?? [] } },
 		});
 
 		const withoutPid = (args: object): ToolCall["arguments"] => {
@@ -462,7 +464,7 @@ describe("browser durable contribution", () => {
 		const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
 		t.after(() => harness.close(BACKGROUND_CONTEXT));
 		const root = await harness.root(BACKGROUND_CONTEXT, {
-			agent: { model: { provider: "faux", modelId: "faux-1" } },
+			agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: extension.tools ?? [] } },
 		});
 
 		faux.setResponses([

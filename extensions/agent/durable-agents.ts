@@ -56,7 +56,7 @@ import { inputEntry } from "./input-entry.ts";
 import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
-import { AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines } from "./control-guidance.ts";
+import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
 import { abortScopeContains } from "./abort-scope.ts";
 import { TimerTask, type TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
@@ -581,6 +581,14 @@ const SECTION_PREAMBLE = [
 	"Every conversation has an external identity: the bare storage id for the root, storageId:conversationId otherwise. Use the identity from agent_status or agent_list as sessionId for agent_send, agent_steer, agent_abort, agent_configure, agent_compact, agent_rewind, and agent_command.",
 	"Final answers route to each request's reply recipient. Use agent_send mode: report for interim notices; the creating owner is provenance, not every request's recipient.",
 ];
+
+/** Apply this slice's exposure table to one native registration. */
+function exposedControl<T extends Durable.ToolRegistration>(tool: T): T {
+	const exposure = AGENT_CONTROL_EXPOSURE[tool.name as AgentControlToolName];
+	if (exposure === "deferred") return { ...tool, deferred: true };
+	if (exposure === "model-only") return { ...tool, callers: ["model"] };
+	return tool;
+}
 
 /**
  * Build the structural contribution. `index.ts` emits the result on the
@@ -1897,7 +1905,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			placeTool,
 			resetTool,
 			collaborateTool,
-		],
+		].map(exposedControl),
 		sections: [guidance, efforts, preferences],
 	});
 }

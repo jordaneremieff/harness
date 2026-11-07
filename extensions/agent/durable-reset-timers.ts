@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { str, opt, obj, type Static } from "@earendil-works/pi-schema";
 import type { AgentCommandAction } from "./command.ts";
-import { AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
+import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_GUIDANCE } from "./control-guidance.ts";
 import type { CancelTimerResult, ScheduleTimerResult, TimerListRow, TimerMode } from "./durable-timers.ts";
 import { parseDeliverAt } from "./timer-input.ts";
 import type { ResetResult } from "./durable-reset.ts";
@@ -188,6 +188,7 @@ export function registerResetTimerTools(pi: ExtensionAPI, bind: (ctx: ExtensionC
 	const paramsSchema = obj({ sessionId: str({ minLength: 1, maxLength: 256 }), handoff: opt(str()) });
 	pi.registerTool({
 		name: "agent_reset",
+		...(AGENT_CONTROL_EXPOSURE.agent_reset === "direct" ? {} : { exposure: AGENT_CONTROL_EXPOSURE.agent_reset }),
 		renderCall: card.renderCall,
 		renderResult: card.renderResult,
 		label: "Agent Reset",

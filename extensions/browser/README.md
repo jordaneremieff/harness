@@ -38,10 +38,14 @@ another.
 The extension offers tools for the access configured when it loads: none
 without any configured browser, the three reading tools when every configured
 browser has `inspect`, and all five when one has `interact`. A session that
-never uses a browser therefore carries no browser tool declarations. Each call
-still checks the access of the browser it names. After changing access, run
-`/reload` or start a new session. Before setup, `registry {"kind":"setting",
-"search":"browser"}` shows the `browser.access` setting.
+never uses a browser therefore carries no browser tool declarations. Every
+offered tool is deferred: it stays registered and callable from other tools, and
+`tool_search` loads the ones the model needs. Enable discovery with
+`"defaultTools": ["+codemode", "+tool_search"]` in Pi settings, or add the public
+`createToolSearchExtension()` factory in an SDK host. Each call still checks the
+access of the browser it names. After changing access, run `/reload` or start a
+new session. Before setup, `registry {"kind":"setting", "search":"browser"}`
+shows the `browser.access` setting.
 
 `browser_act` and `browser_evaluate` run one at a time (`executionMode:
 "sequential"`) in both the ordinary and Durable forms. Results are text: a
@@ -260,7 +264,9 @@ require approval for `browser_evaluate`. Page content is untrusted data.
 ## Durable agents
 
 The factory emits a `durable:contribution` named `browser` with the same five
-tools and a `browser-guidance` prompt section. `browser_tabs`,
+tools and a `browser-guidance` prompt section. The tools are deferred, so the
+section renders only the names the request offers; it is absent until
+`tool_search` loads a browser tool. `browser_tabs`,
 `browser_inspect`, and `browser_capture` declare `replay: "safe"` (a rerun
 repeats a read; a `savePath` file is never overwritten). `browser_act` and
 `browser_evaluate` declare `replay: "unsafe"`: an interrupted call reaches the

@@ -6,7 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { AGENT_CONTROL_GUIDANCE, AGENT_CONTROL_TOOL_NAMES, agentControlGuidanceLines } from "./control-guidance.ts";
+import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_GUIDANCE, AGENT_CONTROL_TOOL_NAMES, agentControlGuidanceLines } from "./control-guidance.ts";
 
 const CURRENT_TOOLS = [
 	"agent_abort",
@@ -179,6 +179,31 @@ it("gives every control a snippet", () => {
 		const snippet = AGENT_CONTROL_GUIDANCE[name].snippet;
 		assert.ok(snippet !== undefined && snippet.length > 0, `${name} has a snippet`);
 	}
+});
+
+it("keeps frequent controls direct and defers infrequent ones", () => {
+	assert.deepEqual(
+		Object.entries(AGENT_CONTROL_EXPOSURE)
+			.filter(([, exposure]) => exposure === "direct")
+			.map(([name]) => name)
+			.sort(),
+		["agent_abort", "agent_collaborate", "agent_intent", "agent_send", "agent_spawn", "agent_status", "agent_steer"],
+	);
+	assert.deepEqual(
+		Object.entries(AGENT_CONTROL_EXPOSURE)
+			.filter(([, exposure]) => exposure === "deferred")
+			.map(([name]) => name)
+			.sort(),
+		["agent_attach", "agent_command", "agent_configure", "agent_fork", "agent_inspect", "agent_list", "agent_place", "agent_profile", "agent_reset", "agent_rewind"],
+	);
+	assert.deepEqual(
+		Object.entries(AGENT_CONTROL_EXPOSURE)
+			.filter(([, exposure]) => exposure === "model-only")
+			.map(([name]) => name)
+			.sort(),
+		["agent_await", "agent_compact"],
+	);
+	assert.deepEqual(Object.keys(AGENT_CONTROL_EXPOSURE).sort(), CURRENT_TOOLS);
 });
 
 it("renders the compact, command, and inspect snippets", () => {

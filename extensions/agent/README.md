@@ -89,6 +89,44 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `contribution` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
 
+### Default exposure and discovery
+
+Both forms register every Agent control, but only the frequent ones are declared
+by default. The Agent slice owns this table in `control-guidance.ts`; Pi's
+exposure fields carry it.
+
+- Direct controls are declared and callable: `agent_spawn`, `agent_send`,
+  `agent_steer`, `agent_abort`, `agent_status`, `agent_intent` and
+  `agent_collaborate`.
+- Model-only controls are declared while active and never callable from a
+  script: `agent_await` and `agent_compact`.
+- Deferred controls stay registered and callable from other tools, and are not
+  declared until tool discovery loads them: `agent_inspect`, `agent_list`,
+  `agent_attach`, `agent_place`, `agent_fork`, `agent_rewind`, `agent_reset`,
+  `agent_configure`, `agent_profile` and `agent_command`.
+
+Discovery uses Pi's public `tool_search`. The recommended Pi setting adds it
+without replacing other selections:
+
+```json
+{
+  "defaultTools": ["+codemode", "+tool_search"]
+}
+```
+
+The CLI supplies the built-in `tool_search` extension. An SDK host that does not
+receive it adds the public `createToolSearchExtension()` factory to its resource
+loader and enables it through the same `defaultTools` setting. An explicit
+`-builtin:tool_search` removal stays authoritative; the harness does not
+reactivate a disabled built-in. Discovery needs no MCP server, so Radius or
+another server does not have to enable it.
+
+Control guidance follows the offered tools. Ordinary sessions keep
+`promptGuidelines` on each registration; native sections render only names in
+`PromptInput.agent.tools`. A deferred control therefore adds its guidance when
+discovery has loaded it. Policy enforcement and shell guidance do not depend on
+whether these controls are offered.
+
 An explicit spawn `role` is saved on the new agent's profile with or without
 a `handle`, before its prompt starts. Later role changes use `agent_profile`.
 A busy configuration refusal

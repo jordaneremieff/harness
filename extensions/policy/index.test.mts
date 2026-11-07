@@ -38,6 +38,7 @@ function eventBus() {
 
 interface RegisteredTool {
 	name: string;
+	exposure?: string;
 	parameters: unknown;
 	execute(toolCallId: string, params: unknown, signal: unknown, onUpdate: unknown, ctx: unknown): Promise<unknown>;
 }
@@ -323,6 +324,7 @@ describe("registration and lazy catalog use", () => {
 			"policy_propose",
 			"policy_rules",
 		]);
+		for (const tool of pi.tools.values()) assert.equal(tool.exposure, "deferred", `${tool.name} is discovered on demand`);
 		assert.deepEqual([...pi.commands.keys()], ["policy"]);
 		assert.equal(pi.handlers.has("user_bash"), false, "Operator shell commands remain outside model-tool policy");
 		await pi.emit("session_start", { type: "session_start" }, ctx);

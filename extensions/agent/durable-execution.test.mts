@@ -19,8 +19,9 @@ import type { CreatedAgents } from "./agent-lineage.ts";
 import type { readEffortAwareness } from "./effort-awareness.ts";
 import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
 import { createDurableExecution, loadMcpConfig, type DurableExecutionHost } from "./durable-execution.ts";
+import { createAgentContribution, type AgentContributionHost } from "./durable-agents.ts";
 import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
-import { answerRuntime, answerMessage, codemodeStream, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, streamRuntime, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension } from "./durable-execution-fixture.mts";
+import { answerRuntime, answerMessage, codemodeStream, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, streamRuntime, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension, type FixtureStream } from "./durable-execution-fixture.mts";
 import { DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS } from "./codemode-source.ts";
 import { createDurableServices } from "./durable-services.ts";
 import type { DurableHost } from "./durable-host.ts";
@@ -606,6 +607,58 @@ it("keeps the model-only agent coordination declarations in codemode only mode",
 	});
 	await f.submit("say hi");
 	assert.deepEqual(declaredTools(f.requests[0]).sort(), ["agent_await", "agent_compact", "codemode", "tool_search"]);
+});
+
+/** The harness Agent contribution as a native extension for one execution fixture host. */
+function agentContribution(host: Parameters<NonNullable<Parameters<typeof executionFixture>[1]["builtinExtensions"]>>[0], dispatched: string[] = []): ReturnType<ReturnType<typeof createAgentContribution>["create"]> {
+	return createAgentContribution({ configureSettings: () => {}, source: "/abs/extensions/agent/index.ts", dispatch: async (method) => { dispatched.push(method); return { items: [], next: undefined }; } }).create(host as unknown as AgentContributionHost);
+}
+
+it("declares direct controls, defers infrequent ones, and discovers a deferred control without MCP", { timeout: 30000 }, async (t) => {
+	const dispatched: string[] = [];
+	const stream: FixtureStream = (context) => {
+		const results = context.messages.filter((message) => message.role === "toolResult");
+		if (!results.some((result) => result.toolName === "tool_search"))
+			return { role: "assistant", api: "openai-completions", provider: fixtureProvider, model: fixtureModelId, content: [{ type: "toolCall", id: "search-agents", name: "tool_search", arguments: { query: "list retained agent sessions" } }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: Date.now() };
+		if (!results.some((result) => result.toolName === "agent_list"))
+			return { role: "assistant", api: "openai-completions", provider: fixtureProvider, model: fixtureModelId, content: [{ type: "toolCall", id: "list-agents", name: "agent_list", arguments: {} }], usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason: "toolUse", timestamp: Date.now() };
+		return answerMessage();
+	};
+	const f = await executionFixture(t, { settings: { defaultTools: ["+codemode", "+tool_search"] }, stream, builtinExtensions: (host) => [agentContribution(host, dispatched)] });
+	const result = await f.submit("find the retained agent tools and use them");
+	const first = declaredTools(f.requests[0]);
+	for (const name of ["agent_spawn", "agent_send", "agent_steer", "agent_abort", "agent_status", "agent_intent", "agent_collaborate", "agent_await", "agent_compact", "tool_search"])
+		assert.ok(first.includes(name), `${name} is declared directly`);
+	for (const name of ["agent_inspect", "agent_list", "agent_attach", "agent_place", "agent_fork", "agent_rewind", "agent_reset", "agent_configure", "agent_profile", "agent_command"])
+		assert.ok(!first.includes(name), `${name} starts undeclared`);
+	assert.match(systemSection(f.requests[0], "agent-controls") ?? "", /^- agent_spawn:/mu);
+	assert.doesNotMatch(systemSection(f.requests[0], "agent-controls") ?? "", /^- agent_list:/mu);
+	assert.match(toolResultText(result.toolResults.find((entry) => entry.toolName === "tool_search")), /agent_list/u);
+	assert.ok(declaredTools(f.requests[1]).includes("agent_list"), "tool_search declares the loaded control on the next request");
+	const listed = result.toolResults.find((entry) => entry.toolName === "agent_list");
+	assert.ok(listed, "the loaded control executes");
+	assert.ok(dispatched.includes("profile-list"), `the loaded control reached the host dispatch: ${dispatched.join()}`);
+});
+
+it("keeps explicit builtin tool-search disablement authoritative without MCP", { timeout: 30000 }, async (t) => {
+	const f = await executionFixture(t, { settings: { defaultTools: ["+codemode", "+tool_search"], extensions: ["-builtin:tool_search"] }, stream: () => answerMessage() });
+	await f.submit("say hi");
+	assert.ok(declaredTools(f.requests[0]).includes("codemode"));
+	assert.ok(!declaredTools(f.requests[0]).includes("tool_search"), "the configured removal stays authoritative");
+});
+
+it("keeps model-only await and compact out of script callables", { timeout: 60000 }, async (t) => {
+	const f = await executionFixture(t, {
+		code: "return ALL_TOOLS.map((tool) => tool.name).sort();",
+		settings: { defaultTools: ["+codemode", "+tool_search"] },
+		builtinExtensions: (host) => [agentContribution(host)],
+	});
+	const result = await f.submit("list the script-visible tools");
+	const names = toolResultBody(result.toolResults.at(-1));
+	assert.match(names, /agent_status/u);
+	assert.match(names, /agent_list/u, "deferred controls remain callable from scripts");
+	assert.doesNotMatch(names, /agent_await/u);
+	assert.doesNotMatch(names, /agent_compact/u);
 });
 
 it("prepares a finite execution budget on the registered native codemode tool", { timeout: 30000 }, async (t) => {

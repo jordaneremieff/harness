@@ -488,6 +488,7 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 				name: "registry",
 				description: REGISTRY_DESCRIPTION,
 				parameters: RegistryParams,
+				deferred: true,
 				structuredOutputSchema: RegistryOutputSchema,
 				replay: "safe",
 				execute: async (args, api, context) => {

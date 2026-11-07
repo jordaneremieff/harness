@@ -50,6 +50,7 @@ export default function registerBrowser(pi: ExtensionAPI) {
 		pi.registerTool({
 			...text("browser_tabs"),
 			promptGuidelines: [...GUIDELINES],
+			exposure: "deferred",
 			parameters: TABS_PARAMETERS,
 			async execute(_id, params, signal) {
 				return browserTabs(params as TabsParams, signal, deps);
@@ -59,6 +60,7 @@ export default function registerBrowser(pi: ExtensionAPI) {
 	if (offered.has("browser_inspect")) {
 		pi.registerTool({
 			...text("browser_inspect"),
+			exposure: "deferred",
 			parameters: INSPECT_PARAMETERS,
 			async execute(_id, params, signal) {
 				return browserInspect(params as InspectParams, signal, deps);
@@ -68,6 +70,7 @@ export default function registerBrowser(pi: ExtensionAPI) {
 	if (offered.has("browser_act")) {
 		pi.registerTool({
 			...text("browser_act"),
+			exposure: "deferred",
 			parameters: ACT_PARAMETERS,
 			executionMode: "sequential",
 			async execute(_id, params, signal) {
@@ -78,6 +81,7 @@ export default function registerBrowser(pi: ExtensionAPI) {
 	if (offered.has("browser_evaluate")) {
 		pi.registerTool({
 			...text("browser_evaluate"),
+			exposure: "deferred",
 			parameters: EVALUATE_PARAMETERS,
 			executionMode: "sequential",
 			async execute(_id, params, signal) {
@@ -88,6 +92,7 @@ export default function registerBrowser(pi: ExtensionAPI) {
 	if (offered.has("browser_capture")) {
 		pi.registerTool({
 			...text("browser_capture"),
+			exposure: "deferred",
 			parameters: CAPTURE_PARAMETERS,
 			async execute(_id, params, signal) {
 				return browserCapture(params as CaptureParams, signal, deps);

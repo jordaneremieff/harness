@@ -153,7 +153,8 @@ async function fixture(
 				],
 			}),
 		);
-	const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+	const policyTools = registry.snapshot().installed().filter((entry) => entry.name === "policy").flatMap((entry) => entry.tools ?? []);
+	const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, modelTools: { add: policyTools } } });
 	const call = async (name: string, args: Durable.JsonObject, prompt = "Use the selected operation.") => {
 		faux.appendResponses([
 			fauxAssistantMessage(fauxToolCall(name, args, { id: `action-${++sequence}` }), { stopReason: "toolUse" }),

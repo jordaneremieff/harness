@@ -32,6 +32,36 @@ export const AGENT_CONTROL_TOOL_NAMES = [
 
 export type AgentControlToolName = (typeof AGENT_CONTROL_TOOL_NAMES)[number];
 
+/**
+ * How the model reaches a control. `direct` tools are declared while active;
+ * `deferred` tools start undeclared and are loaded through public tool discovery;
+ * `model-only` tools are declared while active and never callable from a script.
+ */
+export type AgentControlExposure = "direct" | "deferred" | "model-only";
+
+/** The Agent slice owns the exposure of every control it registers. */
+export const AGENT_CONTROL_EXPOSURE: Readonly<Record<AgentControlToolName, AgentControlExposure>> = {
+	agent_abort: "direct",
+	agent_attach: "deferred",
+	agent_await: "model-only",
+	agent_collaborate: "direct",
+	agent_command: "deferred",
+	agent_compact: "model-only",
+	agent_configure: "deferred",
+	agent_fork: "deferred",
+	agent_inspect: "deferred",
+	agent_intent: "direct",
+	agent_list: "deferred",
+	agent_place: "deferred",
+	agent_profile: "deferred",
+	agent_reset: "deferred",
+	agent_rewind: "deferred",
+	agent_send: "direct",
+	agent_spawn: "direct",
+	agent_status: "direct",
+	agent_steer: "direct",
+};
+
 export interface AgentToolGuidance {
 	/** Short model-facing phrase for delegation menus. */
 	readonly snippet?: string;

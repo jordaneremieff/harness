@@ -100,10 +100,10 @@ function native(result: BrowserResult) {
 	return { output: result.content, details: jsonDetails(result.details), isError: result.isError };
 }
 
-/** Model-facing tool guidance; the ordinary session carries the same text as prompt guidelines. */
-function guidanceSection(): string {
+/** Model-facing tool guidance for the browser tools offered in one request. */
+function guidanceSection(names: readonly ToolName[]): string {
 	return [
-		...Object.entries(TOOL_TEXT).map(([name, text]) => `${name}: ${text.snippet}`),
+		...names.map((name) => `${name}: ${TOOL_TEXT[name].snippet}`),
 		"Guidelines:",
 		...GUIDELINES.map((guideline) => `- ${guideline}`),
 	].join("\n");
@@ -136,6 +136,7 @@ export function browserDurableContribution(
 					name: "browser_tabs",
 					description: TOOL_TEXT.browser_tabs.description,
 					parameters: TABS_PARAMETERS,
+					deferred: true,
 					// A rerun repeats a read of window and tab state. A permission request is answered once and then remembered by macOS.
 					replay: "safe",
 					execute: async (args, _api, context: Context) =>
@@ -145,6 +146,7 @@ export function browserDurableContribution(
 					name: "browser_inspect",
 					description: TOOL_TEXT.browser_inspect.description,
 					parameters: INSPECT_PARAMETERS,
+					deferred: true,
 					// A rerun repeats a bounded read-only extraction from the same tab.
 					replay: "safe",
 					execute: async (args, _api, context: Context) =>
@@ -154,6 +156,7 @@ export function browserDurableContribution(
 					name: "browser_act",
 					description: TOOL_TEXT.browser_act.description,
 					parameters: ACT_PARAMETERS,
+					deferred: true,
 					executionMode: "sequential",
 					// An interrupted action may already have changed the page or an external service.
 					replay: "unsafe",
@@ -164,6 +167,7 @@ export function browserDurableContribution(
 					name: "browser_evaluate",
 					description: TOOL_TEXT.browser_evaluate.description,
 					parameters: EVALUATE_PARAMETERS,
+					deferred: true,
 					executionMode: "sequential",
 					// Arbitrary page code may have run with external effects.
 					replay: "unsafe",
@@ -174,6 +178,7 @@ export function browserDurableContribution(
 					name: "browser_capture",
 					description: TOOL_TEXT.browser_capture.description,
 					parameters: CAPTURE_PARAMETERS,
+					deferred: true,
 					// A rerun captures the window again. A requested savePath refuses to overwrite an earlier file.
 					replay: "safe",
 					execute: async (args, _api, context: Context) =>
@@ -183,7 +188,11 @@ export function browserDurableContribution(
 			return defineExtension({
 				name: "browser",
 				tools,
-				sections: tools.length > 0 ? [section("browser-guidance", () => guidanceSection())] : [],
+				sections: tools.length === 0 ? [] : [section("browser-guidance", (input) => {
+					const offered = new Set(input.agent.tools.map((tool) => tool.name));
+					const names = (Object.keys(TOOL_TEXT) as ToolName[]).filter((name) => offered.has(name));
+					return names.length === 0 ? undefined : guidanceSection(names);
+				})],
 			});
 		},
 	};

@@ -939,6 +939,7 @@ function registerApprovalTool(pi: Pick<ExtensionAPI, "registerTool">, deps: Tool
 		renderCall: toolDisplayRecord("policy_approve").renderCall,
 		renderResult: toolDisplayRecord("policy_approve").renderResult,
 		promptSnippet: "Activate a pending policy proposal under clear contextual operator approval",
+		exposure: "deferred",
 		promptGuidelines: [
 			"Use policy_approve after clear contextual operator approval, including faithfully carried decisions. Resolve the exact pending proposal, revision, and authorized effect yourself; do not require a slash command, rigid phrase, ID, or extra confirmation from the operator. Do not treat your own proposal, inference, or recommendation as operator approval. Ask only when a material authorization, target, or effect remains unresolved.",
 			"Inspect policy_rules with the rule ID or proposal ID if the pending artifact is not fully in context. After a stale-revision refusal, inspect the changed artifact and reassess the scope of approval; do not silently approve a different revision. Report the returned state and mode without equating approval with enforcement.",
@@ -994,6 +995,7 @@ export function registerRuleTools(
 		label: "Policy propose",
 		description: POLICY_PROPOSE_DESCRIPTION,
 		promptSnippet: "Propose an inert policy rule for operator review",
+		exposure: "deferred",
 		promptGuidelines: [
 			"Use policy_propose when the operator asks for a rule change, or when automatic policy diagnostics identify a verified repeatable recovery that warrants a narrowly scoped candidate. Diagnose the actual failed assumption or tool contract first; do not propose a rule from an unverified guess. A proposal is inert until explicit operator approval.",
 			"Use policy_rules to inspect all rules, pending proposals, health, and exact session scope values before proposing a change.",
@@ -1036,6 +1038,7 @@ export function registerRuleTools(
 		label: "Policy rules",
 		description: POLICY_RULES_DESCRIPTION,
 		promptSnippet: "Inspect unified policy rules, pending proposals, and health",
+		exposure: "deferred",
 		promptGuidelines: [
 			"Read policy_rules view=authoring before authoring policies. Use view=check for read-only draft admission and bounded synthetic cases before proposal submission; checks never grant approval.",
 		],

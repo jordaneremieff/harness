@@ -18,6 +18,13 @@ store.
 The read-only `registry` tool discovers resources, chat model capabilities, tool
 parameters, observed context paths, and harness settings with explicit evidence boundaries.
 
+The lookup is deferred by default in both forms. It stays registered and is
+callable from other tools, but the model sees it only after Pi's `tool_search`
+loads it. Enable discovery with `"defaultTools": ["+codemode", "+tool_search"]`
+in Pi settings, or add the public `createToolSearchExtension()` factory in an SDK
+host. The tool's prompt guidance renders only when the request offers it. Result
+annotations and the bounded observer stay active while the tool is undeclared.
+
 The main description covers ordinary Pi sessions. See [Durable agents](#durable-agents)
 for the native contribution to hosts with persistent conversations, including
 its unavailable fields and different result carrier.
@@ -381,9 +388,11 @@ scan, or separate context estimator is added.
 ## Agent discovery
 
 Tool activation, model declaration, and nested-call access are separate facts.
-Use a visible tool directly when its purpose and arguments fit the task. The registry supplies discovery when a resource name, tool argument,
+Use a visible tool directly when its purpose and arguments fit the task. The
+registry supplies discovery when a resource name, tool argument,
 model capability, or instruction source is uncertain; it is not a required
-lookup before every action.
+lookup before every action. When the tool is not declared yet, `tool_search`
+loads it; registry discovery does not require another lookup first.
 
 Search includes the usage guidelines Pi already registers for each tool, so
 operator phrases recorded there are discoverable without duplicating keyword

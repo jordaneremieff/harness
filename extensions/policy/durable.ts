@@ -471,6 +471,7 @@ export async function createPolicyDurableExtension(
 		name: "policy_rules",
 		description: POLICY_RULES_DESCRIPTION,
 		parameters: PolicyRulesParams,
+		deferred: true,
 		replay: "safe",
 		execute: (args, api, context) => runtime.executeRules(args, api, context),
 		structuredOutputSchema: obj({
@@ -484,6 +485,7 @@ export async function createPolicyDurableExtension(
 		name: "policy_propose",
 		description: POLICY_PROPOSE_DESCRIPTION,
 		parameters: PolicyProposeParams,
+		deferred: true,
 		replay: "unsafe",
 		execute: (args, api, context) => runtime.executePropose(args, api, context),
 		structuredOutputSchema: obj({
@@ -498,6 +500,7 @@ export async function createPolicyDurableExtension(
 		name: "policy_approve",
 		description: POLICY_APPROVE_DESCRIPTION,
 		parameters: PolicyApproveParams,
+		deferred: true,
 		replay: "unsafe",
 		execute: (args, api, context) => runtime.executeApprove(args, api, context),
 		structuredOutputSchema: obj({
@@ -521,6 +524,7 @@ export async function createPolicyDurableExtension(
 		name: "policy_control",
 		description: POLICY_CONTROL_DESCRIPTION,
 		parameters: PolicyControlParams,
+		deferred: true,
 		replay: "unsafe",
 		execute: (args, api, context) => runtime.executeControl(args, api, context),
 		structuredOutputSchema: ({ type: "object", patternProperties: { "^.*$": {} } } as Schema<Record<string, unknown>>),
