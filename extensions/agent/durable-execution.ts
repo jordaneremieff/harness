@@ -22,7 +22,7 @@ import { VERSION } from "@earendil-works/pi-coding-agent";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { obj, opt, str, type Schema } from "@earendil-works/pi-schema";
-import { QueuedCodemodeSandbox, type CodemodeAdmissionFailure } from "./codemode-admission.ts";
+import { QueuedCodemodeSandbox, type CodemodeAdmissionFailure, type CodemodeAdmissionFailureCode } from "./codemode-admission.ts";
 import { DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS, prepareNativeCodemodeArguments, replaceCodemodeTimeout } from "./codemode-source.ts";
 import { guardStdio, McpGuardian } from "./mcp-guardian.ts";
 import { NativeMcpAuth } from "./mcp-auth.ts";
@@ -807,6 +807,7 @@ function computeActivation(host: DurableExecutionHost): Activation {
 	};
 }
 
+type CodemodeRefusal = { readonly code: CodemodeAdmissionFailureCode; readonly message: string };
 type AdmissionDoc = Durable.TaskDocToken<{ deadline?: number; admitted: boolean }>;
 
 // ─── Native execution host ────────────────────────────────────────────────
@@ -905,7 +906,7 @@ class DurableExecutionRuntime implements DurableExecution {
 	private async executeCodemode(args: { code: string }, api: Durable.ToolExecutionApi, context: Context, Admission: AdmissionDoc) {
 		const parsed = parseCodemodeSource(args.code);
 		const deadline = await api.memo(CODEMODE_DEADLINE_MEMO, api.now() + (parsed.options.timeoutMs ?? DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS), context);
-		await this.preflightCodemode(parsed.code, deadline, api, context);
+		const refusal = await this.preflightCodemode(parsed.code, deadline, api, context);
 		const sandbox = new QueuedCodemodeSandbox({
 			deadline: () => api.commit(async (tx) => {
 				const state = await tx.doc(Admission, api.taskId);
@@ -917,15 +918,19 @@ class DurableExecutionRuntime implements DurableExecution {
 			}, context).then((admissionDeadline) => Date.now() + Math.max(0, admissionDeadline - api.now())),
 			admitted: () => api.commit(async (tx) => { (await tx.doc(Admission, api.taskId)).admitted = true; }, context),
 			now: () => api.now(),
+			executionDeadline: deadline,
+			...(refusal === undefined ? {} : { refusal }),
 		}, undefined, { memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES }, (failure: CodemodeAdmissionFailure) => api.diagnostic({
 			severity: failure.code === "CODEMODE_CANCELLED" ? "warn" : "error",
 			code: failure.code,
-			message: failure.message,
+			message: `${failure.message} (active ${failure.active}, waiting ${failure.waiting}, limit ${failure.limit})`,
 		}));
 		this.queuedSandboxes.add(sandbox);
 		if (this.closed) await sandbox.close();
 		try {
-			const remainingBudget = Math.max(1, Math.ceil(deadline - api.now()));
+			// A pending refusal ends the script at its sandbox start whatever the budget; the full budget keeps Pi from
+			// ending it earlier with an unrecorded timeout, so the refusal reaches its diagnostic.
+			const remainingBudget = refusal === undefined ? Math.max(1, Math.ceil(deadline - api.now())) : parsed.options.timeoutMs ?? DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS;
 			return await createCodemodeTool({ sandbox, namespaces: this.namespaces }).execute({ ...args, code: replaceCodemodeTimeout(args.code, remainingBudget) }, this.catalogApi(api), context);
 		} finally {
 			this.queuedSandboxes.delete(sandbox);
@@ -933,20 +938,20 @@ class DurableExecutionRuntime implements DurableExecution {
 		}
 	}
 
-	/** MCP discovery spends the script's own budget; expiry or cancellation records a stable diagnostic. */
-	private async preflightCodemode(code: string, deadline: number, api: Durable.ToolExecutionApi, context: Context): Promise<void> {
+	/**
+	 * MCP discovery spends the script's own budget. An expired budget or a cancellation is returned, not thrown: it
+	 * refuses execution only when the native tool asks for a sandbox, so a result it already retained still returns.
+	 */
+	private async preflightCodemode(code: string, deadline: number, api: Durable.ToolExecutionApi, context: Context): Promise<CodemodeRefusal | undefined> {
 		try {
 			await this.waitForScriptServers(code, context, deadline - api.now());
 		} catch (error) {
-			if (error instanceof CodemodeDiscoveryTimeoutError) api.diagnostic({ severity: "error", code: "CODEMODE_ADMISSION_TIMEOUT", message: error.message });
-			else if (context.abortSignal?.aborted === true) api.diagnostic({ severity: "warn", code: "CODEMODE_CANCELLED", message: errorText(error) });
+			if (error instanceof CodemodeDiscoveryTimeoutError) return { code: "CODEMODE_ADMISSION_TIMEOUT", message: error.message };
+			if (context.abortSignal?.aborted === true) return { code: "CODEMODE_CANCELLED", message: errorText(error) };
 			throw error;
 		}
-		if (deadline - api.now() <= 0) {
-			const message = "The codemode script timed out before worker admission.";
-			api.diagnostic({ severity: "error", code: "CODEMODE_ADMISSION_TIMEOUT", message });
-			throw new Error(message);
-		}
+		if (deadline - api.now() <= 0) return { code: "CODEMODE_ADMISSION_TIMEOUT", message: "The codemode script timed out before worker admission." };
+		return undefined;
 	}
 
 	close(): Promise<void> {

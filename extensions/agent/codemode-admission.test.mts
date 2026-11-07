@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { Worker } from "node:worker_threads";
 import { it } from "node:test";
+import { CodemodeSandbox, type CodemodeRunOptions } from "@earendil-works/pi-codemode";
 import { CodemodeWorkerQueue, QueuedCodemodeSandbox } from "./codemode-admission.ts";
 
 function deferred<T>() {
@@ -11,7 +12,7 @@ function deferred<T>() {
 }
 
 const runOptions = () => ({ startedAt: Date.now(), seed: 1, onCall: () => {} });
-const admission = (deadline = Date.now() + 60_000) => ({ deadline: async () => deadline, admitted: async () => {}, now: Date.now });
+const admission = (deadline = Date.now() + 60_000, executionDeadline = Infinity) => ({ deadline: async () => deadline, admitted: async () => {}, now: Date.now, executionDeadline });
 const workerUrl = new URL(`data:text/javascript,${encodeURIComponent(`import { parentPort } from "node:worker_threads";
 parentPort.on("message", () => {});
 parentPort.postMessage({type: "done", ok: true, value: '"ok"', writes: "[]"});`)}`);
@@ -165,7 +166,7 @@ it("fences late wasm launch after cancellation and returns the unclaimed reserva
 	const wasm = deferred<object>();
 	const admitted = deferred<void>();
 	let launched = false;
-	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { admitted.resolve(); }, now: Date.now }, queue, { wasm: wasm.promise, workerUrl, onWorkerStarted: () => { launched = true; } });
+	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { admitted.resolve(); }, now: Date.now, executionDeadline: Infinity }, queue, { wasm: wasm.promise, workerUrl, onWorkerStarted: () => { launched = true; } });
 	const controller = new AbortController();
 	const run = sandbox.start("return 'never';", { ...runOptions(), signal: controller.signal });
 	await admitted.promise;
@@ -187,7 +188,7 @@ it("fences late wasm launch after the host closes", { timeout: 5000 }, async () 
 	const wasm = deferred<object>();
 	const admitted = deferred<void>();
 	let launched = false;
-	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { admitted.resolve(); }, now: Date.now }, queue, { wasm: wasm.promise, workerUrl, onWorkerStarted: () => { launched = true; } });
+	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { admitted.resolve(); }, now: Date.now, executionDeadline: Infinity }, queue, { wasm: wasm.promise, workerUrl, onWorkerStarted: () => { launched = true; } });
 	const run = sandbox.start("return 'never';", runOptions());
 	await admitted.promise;
 	await nextTurn();
@@ -212,6 +213,7 @@ it("fences late wasm launch after the persisted script clock expires", { timeout
 		deadline: async () => Date.now() + 5000,
 		admitted: async () => { admitted.resolve(); },
 		now: () => clock,
+		executionDeadline: Infinity,
 	}, queue, { wasm: wasm.promise, workerUrl, onWorkerStarted: () => { launched = true; } });
 	const run = sandbox.start("return 'never';", { ...runOptions(), startedAt: 1000, timeoutMs: 2000 });
 	await admitted.promise;
@@ -228,7 +230,7 @@ it("fences late wasm launch after the persisted script clock expires", { timeout
 
 it("propagates admission storage failures and releases reserved capacity", async () => {
 	const queue = new CodemodeWorkerQueue(1);
-	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { throw new Error("storage failed"); }, now: Date.now }, queue);
+	const sandbox = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { throw new Error("storage failed"); }, now: Date.now, executionDeadline: Infinity }, queue);
 	await assert.rejects(sandbox.start("return 'never';", runOptions()).result, /storage failed/u);
 	const release = await queue.reserve(new AbortController().signal, Date.now() + 1000);
 	release();
@@ -290,8 +292,53 @@ it("reports no admission failure for a successful run or a storage failure", { t
 	const sandbox = new QueuedCodemodeSandbox(admission(), queue, { wasm: {}, workerUrl }, (failure) => failures.push(failure));
 	assert.equal((await sandbox.start("return 'ok';", runOptions()).result).ok, true);
 	await sandbox.close();
-	const failing = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { throw new Error("storage failed"); }, now: Date.now }, queue, {}, (failure) => failures.push(failure));
+	const failing = new QueuedCodemodeSandbox({ deadline: async () => Date.now() + 5000, admitted: async () => { throw new Error("storage failed"); }, now: Date.now, executionDeadline: Infinity }, queue, {}, (failure) => failures.push(failure));
 	await assert.rejects(failing.start("return 'never';", runOptions()).result, /storage failed/u);
 	await failing.close();
 	assert.deepEqual(failures, []);
+});
+
+it("refuses execution at start with a refusal found before the sandbox was requested", { timeout: 5000 }, async () => {
+	const failures: unknown[] = [];
+	let launched = false;
+	const sandbox = new QueuedCodemodeSandbox({ ...admission(), refusal: { code: "CODEMODE_ADMISSION_TIMEOUT", message: "The codemode script timed out before worker admission." } }, new CodemodeWorkerQueue(1), { wasm: {}, workerUrl, onWorkerStarted: () => { launched = true; } }, (failure) => failures.push(failure));
+	assert.deepEqual(failures, [], "constructing the sandbox reports nothing");
+	const result = await sandbox.start("return 'never';", runOptions()).result;
+	assert.equal(result.ok, false);
+	if (!result.ok) assert.equal(result.error.kind, "timeout");
+	assert.equal(launched, false);
+	assert.deepEqual(failures, [{ code: "CODEMODE_ADMISSION_TIMEOUT", message: "The codemode script timed out before worker admission.", active: 0, waiting: 0, limit: 1 }]);
+	await sandbox.close();
+});
+
+it("caps the worker timeout by the original execution deadline", { timeout: 5000 }, async (t) => {
+	const queue = new CodemodeWorkerQueue(1);
+	const timeouts: (number | undefined)[] = [];
+	const sandbox = new QueuedCodemodeSandbox({
+		deadline: async () => Date.now() + 5000,
+		admitted: async () => {},
+		now: () => 2000,
+		executionDeadline: 3000,
+	}, queue, { wasm: {}, workerUrl });
+	const nativeStart = CodemodeSandbox.prototype.start;
+	t.mock.method(CodemodeSandbox.prototype, "start", function(this: CodemodeSandbox, code: string, options: CodemodeRunOptions) { timeouts.push(options.timeoutMs); return nativeStart.call(this, code, options); });
+	assert.equal((await sandbox.start("return 'ok';", { ...runOptions(), startedAt: 2000, timeoutMs: 2000 }).result).ok, true);
+	assert.equal(timeouts.length, 1);
+	assert.ok(timeouts[0] !== undefined && timeouts[0] > 0 && timeouts[0] <= 1000, `worker timeout ${String(timeouts[0])}`);
+	await sandbox.close();
+});
+
+it("refuses worker launch once the original execution deadline passes", { timeout: 5000 }, async () => {
+	let launched = false;
+	const sandbox = new QueuedCodemodeSandbox({
+		deadline: async () => Date.now() + 5000,
+		admitted: async () => {},
+		now: () => 3001,
+		executionDeadline: 3000,
+	}, new CodemodeWorkerQueue(1), { wasm: {}, workerUrl, onWorkerStarted: () => { launched = true; } });
+	const result = await sandbox.start("return 'never';", { ...runOptions(), startedAt: 3001, timeoutMs: 2000 }).result;
+	assert.equal(result.ok, false);
+	if (!result.ok) assert.equal(result.error.kind, "timeout");
+	assert.equal(launched, false);
+	await sandbox.close();
 });

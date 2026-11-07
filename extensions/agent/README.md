@@ -2562,15 +2562,24 @@ stay errors. Preparation is idempotent. The tool retains an absolute deadline
 once (`api.memo` on the Harness clock). MCP server discovery before worker
 construction spends this same budget through a cancellable waiter that clears
 its timer and listener when it settles; cancelling it never closes a shared MCP
-connection. Replay keeps the original outer and native deadlines. There is no
+connection. The tool rewrites the options line with the remaining budget before
+Pi's codemode implementation runs, but that implementation prepares its agent
+before it persists its own deadline, so the native deadline can be later than the
+original one. The original absolute deadline therefore caps the running script
+independently, across preparation and every replay. An expired budget or a
+cancelled discovery wait refuses execution only when Pi requests a sandbox start;
+a result Pi already retained is returned unchanged, even after the deadline. There is no
 reader for calls admitted without a deadline before this behaviour: drain
 active codemode work before replacing a release.
 
 The queue converts the remaining Harness-clock duration to a live wall-clock
 timer. It rechecks the native script budget after admission and immediately
 before worker creation, including after asynchronous wasm loading. The worker
-timeout uses the smaller Harness-clock and wall-clock remainder. Replay retains
-the original native script deadline. Cancellation and host close remove waiting
+timeout uses the smallest of the Harness-clock native remainder, the wall-clock
+remainder and the remainder of the original absolute deadline. Replay retains
+both the native script deadline and the original deadline. The admission
+diagnostic message carries the active, waiting and limit counts of the queue.
+Cancellation and host close remove waiting
 calls. The synchronous public `acquireWorker` callback fences a late launch after
 cancellation or asynchronous wasm load. Capacity remains charged until actual
 worker exit or construction failure, not result settlement. Close requests worker termination without waiting

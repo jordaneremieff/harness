@@ -108,6 +108,13 @@ type CodemodeAdmission = {
 	admitted(): Promise<void>;
 	/** The clock that supplied the native run's remaining timeout budget. */
 	now(): number;
+	/** The original absolute execution deadline on that clock; no preparation delay or replay moves it. */
+	executionDeadline: number;
+	/**
+	 * A failure found before the native tool asked for a sandbox. It refuses execution only when `start` is called,
+	 * so a result the native tool already retained is returned without it.
+	 */
+	refusal?: { readonly code: CodemodeAdmissionFailureCode; readonly message: string };
 };
 
 /** Queue at the native start boundary, after Durable records its replay data and deadline. */
@@ -132,7 +139,7 @@ export class QueuedCodemodeSandbox extends CodemodeSandbox {
 		const scriptDeadline = options.timeoutMs === undefined ? Infinity : started + options.timeoutMs;
 		const nativeStarted = this.admission.now();
 		const nativeDeadline = options.timeoutMs === undefined ? Infinity : nativeStarted + options.timeoutMs;
-		const remainingScriptMs = () => Math.min(scriptDeadline - Date.now(), nativeDeadline - this.admission.now());
+		const remainingScriptMs = () => Math.min(scriptDeadline - Date.now(), nativeDeadline - this.admission.now(), this.admission.executionDeadline - this.admission.now());
 		let finished = false;
 		let run: CodemodeRun | undefined;
 		const result = (async (): Promise<CodemodeResult> => {
@@ -140,6 +147,7 @@ export class QueuedCodemodeSandbox extends CodemodeSandbox {
 			let claimed = false;
 			let sandbox: CodemodeSandbox | undefined;
 			try {
+				if (this.admission.refusal !== undefined) throw new WorkerWaitError({ ...this.admission.refusal, ...this.queue.snapshot() });
 				const deadline = Math.min(await this.admission.deadline(), scriptDeadline);
 				release = await this.queue.reserve(signal, deadline);
 				await this.admission.admitted();

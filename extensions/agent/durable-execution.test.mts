@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { str, bool, obj } from "@earendil-works/pi-schema";
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
-import { Harness, MemoryStorage, LiveDoc, UsageDoc, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
+import { Harness, MemoryStorage, LiveDoc, UsageDoc, type Extension, type ToolExecutionApi, type ToolExecutionResult } from "@earendil-works/pi-durable";
 import type { CodemodeToolDetails } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox, type CodemodeRunOptions, type CodemodeSandboxOptions } from "@earendil-works/pi-codemode";
 import { StdioTransport } from "@earendil-works/pi-mcp";
@@ -23,7 +23,7 @@ import { createAgentContribution, type AgentContributionHost } from "./durable-a
 import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
 import { answerRuntime, answerMessage, codemodeStream, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, streamRuntime, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension, type FixtureStream } from "./durable-execution-fixture.mts";
 import { DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS } from "./codemode-source.ts";
-import { createDurableServices } from "./durable-services.ts";
+import { createDurableServices, type DurableContributionHost } from "./durable-services.ts";
 import type { DurableHost } from "./durable-host.ts";
 import { testModel } from "./test-runtime.mts";
 
@@ -1186,7 +1186,7 @@ it("persists a finite deadline for a script that names no timeout", { timeout: 3
 	assert.equal(starts[0].deadline, starts[0].startedAt + DEFAULT_NATIVE_CODEMODE_TIMEOUT_MS);
 });
 
-async function nativeClockFixture(t: TestContext, now: () => number, code = '// @options: {"timeout_ms": 2000}\nreturn 42;') {
+async function nativeClockFixture(t: TestContext, now: () => number, code = '// @options: {"timeout_ms": 2000}\nreturn 42;', extensions?: (host: DurableContributionHost, execution: ReturnType<typeof createDurableExecution>) => readonly Extension[]) {
 	const root = mkdtempSync(join(tmpdir(), "durable-codemode-clock-"));
 	const agentDir = join(root, "agent");
 	mkdirSync(agentDir);
@@ -1205,7 +1205,10 @@ async function nativeClockFixture(t: TestContext, now: () => number, code = '// 
 	});
 	const { runtime } = await streamRuntime(codemodeStream(code));
 	const open = async () => {
-		services = await createDurableServices({ cwd: root, agentDir, storageId: "fixture-clock", extensionPaths: [], trusted: true, buildBuiltin: createDurableExecution, modelRuntime: runtime });
+		services = await createDurableServices({ cwd: root, agentDir, storageId: "fixture-clock", extensionPaths: [], trusted: true, buildBuiltin: (host) => {
+			const execution = createDurableExecution(host);
+			return { ...execution, extensions: [...execution.extensions, ...(extensions?.(host, execution) ?? [])] };
+		}, modelRuntime: runtime });
 		harness = await Harness.open(storage, { models: runtime, registry: services.registry, settings: services.settings, env: services.env, now }, BACKGROUND_CONTEXT);
 		await services.install(harness);
 		harness.resume();
@@ -1476,4 +1479,134 @@ it("does not repeat an interrupted unsafe nested call after a crash", { timeout:
 		delete (globalThis as Record<string, unknown>).__execFixture;
 		rmSync(root, { recursive: true, force: true });
 	}
+});
+
+/** Holds codemode tool settlement after the native tool returns, so a restart finds its outcome committed but the task unsettled. */
+function interruptCodemodeSettlement(host: DurableContributionHost, gate: { interrupt: boolean; entered: ReturnType<typeof deferred> }): readonly Extension[] {
+	return [host.durable.defineExtension({ name: "fixture.interrupted-settlement", hooks: [host.durable.hook(host.durable.ToolTask, {
+		afterTool: async (call, _result, _api, context) => {
+			if (call.name !== "codemode" || !gate.interrupt) return undefined;
+			gate.entered.resolve();
+			await new Promise<never>((_, reject) => context.abortSignal?.addEventListener("abort", () => reject(context.abortSignal?.reason), { once: true }));
+			return undefined;
+		},
+	})] })];
+}
+
+const RETAINED_CODEMODE_RESULTS = [
+	{ name: "success", code: '// @options: {"timeout_ms": 2000}\nstore("runs", 1);\nreturn 42;', isError: false, text: /42/u, storeWrites: 1 },
+	{ name: "error", code: '// @options: {"timeout_ms": 2000}\nthrow new Error("retained failure");', isError: true, text: /retained failure/u, storeWrites: 0 },
+];
+
+for (const scenario of RETAINED_CODEMODE_RESULTS)
+	it(`returns the retained codemode ${scenario.name} after the deadline passes during interrupted settlement`, { timeout: 30000 }, async (t) => {
+		const observed = observeQueuedWorkers(t, new CodemodeWorkerQueue(1));
+		let clock = 1000;
+		const gate = { interrupt: true, entered: deferred() };
+		const f = await nativeClockFixture(t, () => clock, scenario.code, (host) => interruptCodemodeSettlement(host, gate));
+		let storeWrites = 0;
+		const countStoreWrites = (harness: Harness) => onStoredCommit(harness, (publication) => {
+			for (const change of publication.changes) if (change.type === "document" && change.kind === "change" && change.record.kind === "pi.codemode.store" && "runs" in (change.value as { values: object }).values) storeWrites++;
+		});
+		countStoreWrites(f.harness);
+		const submission = await f.conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT);
+		await gate.entered.promise;
+		assert.equal(observed.workers, 1);
+		clock = 5000;
+		gate.interrupt = false;
+		const reopened = await f.reopen();
+		countStoreWrites(reopened.harness);
+		const restored = await reopened.harness.submission(submission.id, BACKGROUND_CONTEXT);
+		assert.ok(restored);
+		assert.equal((await restored.wait(BACKGROUND_CONTEXT)).status, "done");
+		const view = await reopened.conversation.context(BACKGROUND_CONTEXT);
+		const output = view.messages.find((message) => message.role === "toolResult");
+		assert.ok(output?.role === "toolResult");
+		assert.equal(output.isError, scenario.isError);
+		assert.match(toolResultBody(output), scenario.text);
+		assert.doesNotMatch(toolResultBody(output), /timed out/u);
+		assert.equal(observed.attempts.length, 1, "the retained outcome starts no second sandbox");
+		assert.equal(observed.workers, 1, "no second worker launches");
+		assert.equal(storeWrites, scenario.storeWrites, "the script's store mutation is committed once");
+	});
+
+/** Advances the injected clock once while the native tool prepares its agent, after the harness computed the script's remaining budget. */
+function delayNativePreparation(t: TestContext, execution: ReturnType<typeof createDurableExecution>, delay: { ms: number; advance: (ms: number) => void }): readonly Extension[] {
+	const catalogApi = (execution as unknown as { catalogApi(api: ToolExecutionApi): ToolExecutionApi }).catalogApi.bind(execution);
+	t.mock.method(execution, "catalogApi" as never, ((api: ToolExecutionApi) => Object.create(catalogApi(api), { agent: { value: async (context: Parameters<ToolExecutionApi["agent"]>[0]) => {
+		const ms = delay.ms;
+		delay.ms = 0;
+		delay.advance(ms);
+		return api.agent(context);
+	} } })) as never);
+	return [];
+}
+
+it("caps the running native script by the original deadline when preparation takes time", { timeout: 30000 }, async (t) => {
+	const queue = new CodemodeWorkerQueue(1);
+	const release = await queue.reserve(new AbortController().signal, Date.now() + 10000);
+	t.after(release);
+	const observed = observeQueuedWorkers(t, queue);
+	let clock = 1000;
+	const delay = { ms: 1000, advance: (ms: number) => { clock += ms; } };
+	const { conversation } = await nativeClockFixture(t, () => clock, undefined, (_host, execution) => delayNativePreparation(t, execution, delay));
+	const submission = await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT);
+	await observed.queued;
+	assert.deepEqual(observed.attempts, [{ startedAt: 2000, timeoutMs: 2000 }], "preparation moved the native start and deadline");
+	release();
+	assert.equal((await submission.wait(BACKGROUND_CONTEXT)).status, "done");
+	assert.equal(observed.workers, 1);
+	assert.ok(observed.timeouts[0] !== undefined && observed.timeouts[0] > 0 && observed.timeouts[0] <= 1000, `worker timeout ${String(observed.timeouts[0])}`);
+});
+
+it("refuses a native script whose preparation outlasts the original deadline", { timeout: 30000 }, async (t) => {
+	const observed = observeQueuedWorkers(t, new CodemodeWorkerQueue(1));
+	let clock = 1000;
+	const delay = { ms: 2500, advance: (ms: number) => { clock += ms; } };
+	const { conversation } = await nativeClockFixture(t, () => clock, undefined, (_host, execution) => delayNativePreparation(t, execution, delay));
+	assert.equal((await (await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT)).status, "done");
+	assert.equal(observed.workers, 0);
+	const view = await conversation.context(BACKGROUND_CONTEXT);
+	const output = view.messages.find((message) => message.role === "toolResult");
+	assert.ok(output?.role === "toolResult");
+	assert.equal(output.isError, true);
+	assert.match(toolResultBody(output), /timed out/u);
+});
+
+it("keeps the original deadline cap on the replayed script after a reopen", { timeout: 30000 }, async (t) => {
+	const queue = new CodemodeWorkerQueue(1);
+	const release = await queue.reserve(new AbortController().signal, Date.now() + 10000);
+	t.after(release);
+	const observed = observeQueuedWorkers(t, queue);
+	let clock = 1000;
+	const delay = { ms: 1000, advance: (ms: number) => { clock += ms; } };
+	const f = await nativeClockFixture(t, () => clock, undefined, (_host, execution) => delayNativePreparation(t, execution, delay));
+	const submission = await f.conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT);
+	await observed.queued;
+	const queuedAgain = deferred();
+	observed.onQueued = () => queuedAgain.resolve();
+	clock = 2600;
+	const reopened = await f.reopen();
+	await queuedAgain.promise;
+	assert.deepEqual(observed.attempts, [{ startedAt: 2000, timeoutMs: 2000 }, { startedAt: 2000, timeoutMs: 1400 }]);
+	clock = 2800;
+	release();
+	const restored = await reopened.harness.submission(submission.id, BACKGROUND_CONTEXT);
+	assert.ok(restored);
+	assert.equal((await restored.wait(BACKGROUND_CONTEXT)).status, "done");
+	assert.equal(observed.workers, 1);
+	assert.ok(observed.timeouts[0] !== undefined && observed.timeouts[0] > 0 && observed.timeouts[0] <= 200, `worker timeout ${String(observed.timeouts[0])}`);
+});
+
+it("includes worker-capacity counts in the emitted admission diagnostic", { timeout: 30000 }, async (t) => {
+	const queue = new CodemodeWorkerQueue(1, 0);
+	const observed = observeQueuedWorkers(t, queue);
+	const { conversation } = await nativeClockFixture(t, () => 1000);
+	assert.equal((await (await conversation.submit({ type: "input", content: "Run the script." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT)).status, "done");
+	assert.equal(observed.workers, 0);
+	const view = await conversation.context(BACKGROUND_CONTEXT);
+	const output = view.messages.find((message) => message.role === "toolResult");
+	assert.ok(output?.role === "toolResult");
+	assert.equal(output.isError, true);
+	assert.match(toolResultBody(output), /\[error\] The codemode worker queue is full \(0 waiting calls\)\. \(active 0, waiting 0, limit 1\)/u);
 });
