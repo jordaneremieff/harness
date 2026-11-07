@@ -92,7 +92,7 @@ function fixture(mode: PolicyMode = "enforce", records = rules()) {
 		"/unused",
 		(reason) => assert.fail(reason),
 		async (_dir, batch) => {
-			telemetry.push(...batch);
+			telemetry.push(...batch.map((item) => JSON.parse(item.json) as PolicyRecord));
 		},
 	);
 	const ctx = {

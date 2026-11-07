@@ -362,3 +362,25 @@ test("only actual result facts support structural error assertions", () => {
 	assert.equal(error.isError, false);
 	assert.ok(validateFactsProgram({ ...correction.program, action: { kind: "assert-error", value: false } }));
 });
+
+test("a final corrected candidate is held to the JSON bounds", () => {
+	const wide = "w".repeat(4096);
+	const data = snapshotData([table("wide", [{ key: "blue", value: wide }])], 2);
+	const build = (count: number) => {
+		const keys = Array.from({ length: count }, (_, index) => `k${String(index).padStart(2, "0")}`);
+		const rules = keys.map((key) =>
+			rule(`sub-${key}`, { kind: "substitute", path: [key], table: "wide" }, { data: ["wide"] }),
+		);
+		const input = Object.fromEntries(keys.map((key) => [key, "blue"]));
+		return planInput(rules, input, { ...context, data });
+	};
+	const within = build(63);
+	assert.equal(within.valid, true);
+	assert.equal(within.changed, true);
+	assert.doesNotThrow(() => ownInput(within.candidate));
+	const over = build(64);
+	assert.equal(over.valid, false);
+	assert.equal(over.changed, false);
+	assert.match(over.problems.join("\n"), /exceeds JSON bounds/);
+	assert.equal((over.candidate as Record<string, unknown>).k00, "blue");
+});

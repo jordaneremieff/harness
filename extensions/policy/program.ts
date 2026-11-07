@@ -1079,6 +1079,14 @@ function planCorrectionStage(state: PlanState, stage: "logical-target" | "keys" 
 function finalizePlan(state: PlanState): void {
 	const plan = state.plan;
 	plan.changed = plan.corrections.length > 0;
+	if (plan.valid && plan.changed) {
+		try {
+			plan.candidate = ownInput(plan.candidate);
+		} catch {
+			plan.valid = false;
+			plan.problems.push("Corrected input exceeds JSON bounds");
+		}
+	}
 	if (plan.valid && plan.changed && state.frame.checkSchema(plan.candidate) !== true) {
 		plan.valid = false;
 		plan.problems.push("Corrected input fails or lacks the tool schema");

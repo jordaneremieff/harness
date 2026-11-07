@@ -225,7 +225,7 @@ describe("PolicyWriter", () => {
 			(reason) => failures.push(reason),
 			async (_dir, batch) => {
 				written += batch.length;
-				for (const item of batch) writtenBytes += Buffer.byteLength(JSON.stringify(item)) + 2;
+				for (const item of batch) writtenBytes += item.bytes;
 			},
 		);
 		const large = { ...entry(), captured: "x".repeat(200 * 1024) };
@@ -240,9 +240,9 @@ describe("PolicyWriter", () => {
 	});
 
 	it("groups queued records into bounded batches and runs an oversized permitted record alone", async () => {
-		const batches: PolicyRecord[][] = [];
+		const batches: string[][] = [];
 		const writer = new PolicyWriter("/unused", assert.fail, async (_dir, batch) => {
-			batches.push([...batch]);
+			batches.push(batch.map((item) => item.json));
 		});
 		for (let index = 0; index < TELEMETRY_BATCH_RECORDS * 2 + 5; index++) writer.enqueue(entry());
 		const big = { ...entry(), captured: "x".repeat(TELEMETRY_BATCH_BYTES) };
@@ -251,9 +251,53 @@ describe("PolicyWriter", () => {
 		writer.enqueue(entry());
 		await writer.close();
 		assert.ok(batches.every((batch) => batch.length <= TELEMETRY_BATCH_RECORDS));
-		const bigBatch = batches.find((batch) => batch.includes(big));
-		assert.deepEqual(bigBatch, [big]);
+		const bigBatch = batches.find((batch) => batch.includes(JSON.stringify(big)));
+		assert.deepEqual(bigBatch, [JSON.stringify(big)]);
 		assert.equal(batches.reduce((total, batch) => total + batch.length, 0), TELEMETRY_BATCH_RECORDS * 2 + 8);
+	});
+
+	it("queues an owned snapshot serialised once and appends those exact bytes", async () => {
+		const original = JSON.stringify;
+		const seen: Array<{ day: string; json: string; bytes: number }> = [];
+		const writer = new PolicyWriter("/unused", assert.fail, async (_dir, batch) => {
+			seen.push(...batch);
+		});
+		const mutable = { ...entry(), captured: "before" };
+		const snapshot = original(mutable);
+		let calls = 0;
+		JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+			if (args[0] === mutable) calls++;
+			return original(...args);
+		}) as typeof JSON.stringify;
+		try {
+			assert.equal(writer.enqueue(mutable), true);
+		} finally {
+			JSON.stringify = original;
+		}
+		mutable.captured = "after-admission-and-much-longer";
+		await writer.close();
+		assert.equal(calls, 1, "the record is serialised once");
+		assert.equal(seen.length, 1);
+		assert.equal(seen[0].json, snapshot);
+		assert.equal(seen[0].bytes, Buffer.byteLength(snapshot, "utf8") + 2);
+	});
+
+	it("keeps queue accounting equal to the admitted bytes after the caller mutates the record", async () => {
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const sizes: number[] = [];
+		const writer = new PolicyWriter("/unused", assert.fail, async (_dir, batch) => {
+			for (const item of batch) sizes.push(item.bytes, Buffer.byteLength(item.json, "utf8") + 2);
+			await gate;
+		});
+		const mutable = entry();
+		writer.enqueue(mutable);
+		mutable.captured = "x".repeat(1000);
+		release();
+		await writer.close();
+		assert.equal(sizes[0], sizes[1]);
 	});
 
 	it("rejects new records after close admission", async () => {

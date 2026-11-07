@@ -378,3 +378,65 @@ describe("telemetry across processes", () => {
 		assert.ok((await readTelemetryInventory(dir)).totalBytes <= 48 * MIB);
 	});
 });
+
+describe("telemetry segment ownership and identity", () => {
+	it("marks a foreign-owned recognised segment unsafe in the inventory", async (t) => {
+		const dir = await policyDir(t);
+		const foreign = await seed(dir, "2026-07-01.000001.jsonl", 10);
+		await seed(dir, "2026-07-02.000001.jsonl", 5);
+		const inventory = await readTelemetryInventory(dir, { foreignOwner: (path) => path === foreign });
+		assert.equal(inventory.incomplete, true);
+		assert.equal(inventory.totalBytes, 5);
+		assert.deepEqual(
+			inventory.entries.map((entry) => [entry.name, entry.unsafe]),
+			[
+				["2026-07-01.000001.jsonl", "foreign-owner"],
+				["2026-07-02.000001.jsonl", null],
+			],
+		);
+	});
+
+	it("fails a write without deleting a foreign-owned segment", async (t) => {
+		const dir = await policyDir(t);
+		const foreign = await seed(dir, "2026-07-01.000001.jsonl", 10);
+		await assert.rejects(
+			appendTelemetryRecords(dir, [record("a")], RETENTION, { foreignOwner: (path) => path === foreign }),
+			/foreign-owned segment/,
+		);
+		assert.deepEqual(await names(dir), ["2026-07-01.000001.jsonl"]);
+	});
+
+	it("rechecks ownership immediately before removal", async (t) => {
+		const dir = await policyDir(t);
+		const old = await seed(dir, "2026-07-01.000001.jsonl", 10);
+		let swapped = false;
+		await assert.rejects(
+			appendTelemetryRecords(dir, [record("a")], RETENTION, {
+				afterInventory: async () => {
+					swapped = true;
+				},
+				foreignOwner: (path) => swapped && path === old,
+			}),
+			/changed after inspection/,
+		);
+		assert.deepEqual(await names(dir), ["2026-07-01.000001.jsonl"]);
+	});
+
+	it("retires a segment created earlier in the same batch under a one-day age budget", async (t) => {
+		const dir = await policyDir(t);
+		const next = new Date(2026, 8, 4, 12).toISOString();
+		await appendTelemetryRecords(dir, [record("a"), record("b", next)], { maxBytes: 1024 * MIB, maxAgeDays: 1 });
+		assert.deepEqual(await names(dir), ["2026-09-04.000001.jsonl"]);
+	});
+
+	it("retires a segment created earlier in the same batch to fit the byte budget", { timeout: 60_000 }, async (t) => {
+		const dir = await policyDir(t);
+		const next = new Date(2026, 8, 4, 12).toISOString();
+		const big = (id: string, at: string): PolicyRecord => ({ ...record(id, at), captured: "x".repeat(250_000) });
+		const first = Array.from({ length: 100 }, (_, index) => big(`a${index}`, AT));
+		const second = Array.from({ length: 50 }, (_, index) => big(`b${index}`, next));
+		await appendTelemetryRecords(dir, [...first, ...second], { maxBytes: TELEMETRY_SEGMENT_BYTES, maxAgeDays: 30 });
+		assert.deepEqual(await names(dir), ["2026-09-04.000001.jsonl"]);
+		assert.ok((await readTelemetryInventory(dir)).totalBytes <= TELEMETRY_SEGMENT_BYTES);
+	});
+});

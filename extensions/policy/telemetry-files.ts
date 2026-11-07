@@ -44,10 +44,17 @@ export interface TelemetryWriter {
 	close(): Promise<void>;
 }
 
-/** One bounded batch written to the telemetry store under its own lock. */
+/** One record serialised once at admission, before it enters a write queue or batch. */
+export interface SerializedTelemetryRecord {
+	readonly day: string;
+	readonly json: string;
+	readonly bytes: number;
+}
+
+/** One bounded batch of admitted record bytes written to the telemetry store under its own lock. */
 export type AppendTelemetry = (
 	dir: string,
-	records: readonly PolicyRecord[],
+	records: readonly SerializedTelemetryRecord[],
 	retention: TelemetryRetention,
 ) => Promise<void>;
 
@@ -85,7 +92,7 @@ function retiredDay(day: string, maxAgeDays: number): string {
 	return Number.isFinite(first) ? new Date(first).toISOString().slice(0, 10) : "0000-01-01";
 }
 
-export type TelemetryInventoryIssue = "symlink" | "nonregular" | "inspect-error";
+export type TelemetryInventoryIssue = "symlink" | "nonregular" | "inspect-error" | "foreign-owner";
 
 export interface TelemetryInventoryEntry extends TelemetrySegment {
 	readonly dev: number;
@@ -109,14 +116,25 @@ const EMPTY_INVENTORY: TelemetryInventory = {
 	incomplete: false,
 };
 
+/** Whether one inspected file belongs to another user. */
+function foreignOwner(path: string, uid: number, hooks: TelemetryFileHooks | undefined): boolean {
+	if (hooks?.foreignOwner) return hooks.foreignOwner(path, uid);
+	return typeof process.getuid === "function" && uid !== process.getuid();
+}
+
 /** One recognised segment name, inspected without following links. Other names return undefined. */
-async function inspectSegment(dir: string, name: string): Promise<TelemetryInventoryEntry | undefined> {
+async function inspectSegment(
+	dir: string,
+	name: string,
+	hooks: TelemetryFileHooks | undefined,
+): Promise<TelemetryInventoryEntry | undefined> {
 	const match = SEGMENT_NAME.exec(name);
 	if (!match) return undefined;
 	const base = { name, day: match[1], ordinal: Number(match[2]), size: 0, dev: 0, ino: 0 };
+	const path = join(dir, name);
 	let info: Awaited<ReturnType<typeof lstat>>;
 	try {
-		info = await lstat(join(dir, name));
+		info = await lstat(path);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
 		return { ...base, unsafe: "inspect-error" };
@@ -124,14 +142,18 @@ async function inspectSegment(dir: string, name: string): Promise<TelemetryInven
 	const identity = { ...base, dev: info.dev, ino: info.ino };
 	if (info.isSymbolicLink()) return { ...identity, unsafe: "symlink" };
 	if (!info.isFile()) return { ...identity, unsafe: "nonregular" };
+	if (foreignOwner(path, info.uid, hooks)) return { ...identity, unsafe: "foreign-owner" };
 	return { ...identity, size: info.size, unsafe: null };
 }
 
 /**
  * Read one bounded inventory of the telemetry directory. Stat calls inspect recognised names only;
- * every other name is ignored and retained.
+ * every other name is ignored and retained. A foreign owner is unsafe.
  */
-export async function readTelemetryInventory(policyDir: string): Promise<TelemetryInventory> {
+export async function readTelemetryInventory(
+	policyDir: string,
+	hooks?: TelemetryFileHooks,
+): Promise<TelemetryInventory> {
 	const dir = telemetryDirectory(policyDir);
 	try {
 		const info = await lstat(dir);
@@ -151,7 +173,7 @@ export async function readTelemetryInventory(policyDir: string): Promise<Telemet
 	const entries: TelemetryInventoryEntry[] = [];
 	let totalBytes = 0;
 	for (const name of names.slice(0, TELEMETRY_INVENTORY_ENTRIES)) {
-		const entry = await inspectSegment(dir, name);
+		const entry = await inspectSegment(dir, name, hooks);
 		if (!entry) continue;
 		entries.push(entry);
 		if (entry.unsafe !== null) incomplete = true;
@@ -208,24 +230,20 @@ async function releaseLock(handle: Awaited<ReturnType<typeof open>>, path: strin
 	await unlink(path);
 }
 
-interface SerializedRecord {
-	readonly json: string;
-	readonly bytes: number;
-}
-
 /** Bytes one batch occupies in a segment: a leading newline, each record, and its newline. */
-function batchBytes(batch: readonly SerializedRecord[]): number {
+function batchBytes(batch: readonly SerializedTelemetryRecord[]): number {
 	return batch.reduce((total, record) => total + record.bytes - 1, 1);
 }
 
-function serialize(record: PolicyRecord): SerializedRecord {
+/** Serialise and bound one record. The returned bytes are what a queue or append persists. */
+export function serializeTelemetryRecord(record: PolicyRecord): SerializedTelemetryRecord {
 	const timestamp = new Date(record.at);
 	if (Number.isNaN(timestamp.getTime())) throw new Error(`invalid policy timestamp: ${record.at}`);
 	const json = JSON.stringify(record);
 	const bytes = Buffer.byteLength(json, "utf8") + 2;
 	if (bytes > MAX_TELEMETRY_RECORD_BYTES)
 		throw new Error(`policy record exceeds ${MAX_TELEMETRY_RECORD_BYTES} bytes`);
-	return { json, bytes };
+	return { day: localDate(timestamp), json, bytes };
 }
 
 /** Test seams for failures that a real directory cannot produce on demand. */
@@ -234,6 +252,8 @@ export interface TelemetryFileHooks {
 	readonly afterInventory?: () => Promise<void>;
 	/** Replaces the removal of one inspected segment. */
 	readonly unlinkSegment?: (path: string) => Promise<void>;
+	/** Reports whether one inspected path belongs to another user, overriding this process's owner. */
+	readonly foreignOwner?: (path: string, uid: number) => boolean;
 }
 
 async function removeSegment(
@@ -243,17 +263,29 @@ async function removeSegment(
 ): Promise<void> {
 	const path = join(dir, entry.name);
 	const info = await lstat(path);
-	if (info.isSymbolicLink() || !info.isFile() || info.dev !== entry.dev || info.ino !== entry.ino)
+	if (
+		info.isSymbolicLink() ||
+		!info.isFile() ||
+		info.dev !== entry.dev ||
+		info.ino !== entry.ino ||
+		foreignOwner(path, info.uid, hooks)
+	)
 		throw new Error(`policy telemetry segment changed after inspection: ${entry.name}`);
 	await (hooks?.unlinkSegment ?? unlink)(path);
+}
+
+interface SegmentFile {
+	readonly dev: number;
+	readonly ino: number;
+	readonly size: number;
 }
 
 async function appendSegment(
 	dir: string,
 	target: TelemetryInventoryEntry,
 	created: boolean,
-	batch: readonly SerializedRecord[],
-): Promise<void> {
+	batch: readonly SerializedTelemetryRecord[],
+): Promise<SegmentFile> {
 	const path = join(dir, target.name);
 	const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 	const flags = created
@@ -276,6 +308,8 @@ async function appendSegment(
 				throw new Error(`policy record write stopped at ${written} of ${buffer.length} bytes`);
 			written += bytesWritten;
 		}
+		const after = await handle.stat();
+		return { dev: after.dev, ino: after.ino, size: after.size };
 	} finally {
 		await handle.close();
 	}
@@ -286,24 +320,29 @@ interface Ledger {
 	totalBytes: number;
 }
 
-function groupByDay(records: readonly PolicyRecord[]): Map<string, SerializedRecord[]> {
-	const groups = new Map<string, SerializedRecord[]>();
+function groupByDay(
+	records: readonly SerializedTelemetryRecord[],
+): Map<string, SerializedTelemetryRecord[]> {
+	const groups = new Map<string, SerializedTelemetryRecord[]>();
 	for (const record of records) {
-		const day = localDate(new Date(record.at));
-		const serialized = serialize(record);
-		const group = groups.get(day);
-		if (group) group.push(serialized);
-		else groups.set(day, [serialized]);
+		const group = groups.get(record.day);
+		if (group) group.push(record);
+		else groups.set(record.day, [record]);
 	}
 	return groups;
 }
 
-async function readSafeInventory(policyDir: string): Promise<TelemetryInventory> {
-	const inventory = await readTelemetryInventory(policyDir);
+async function readSafeInventory(
+	policyDir: string,
+	hooks: TelemetryFileHooks | undefined,
+): Promise<TelemetryInventory> {
+	const inventory = await readTelemetryInventory(policyDir, hooks);
 	const dir = telemetryDirectory(policyDir);
 	if (inventory.directory !== "available")
 		throw new Error(`policy telemetry directory is ${inventory.directory}: ${dir}`);
 	const unsafe = inventory.entries.find((entry) => entry.unsafe !== null);
+	if (unsafe?.unsafe === "foreign-owner")
+		throw new Error(`policy telemetry inventory contains a foreign-owned segment: ${unsafe.name}`);
 	if (unsafe) throw new Error(`policy telemetry inventory contains a nonregular or symbolic link: ${unsafe.name}`);
 	if (inventory.incomplete) throw new Error(`policy telemetry inventory is incomplete: ${dir}`);
 	return inventory;
@@ -341,11 +380,19 @@ async function applyRetention(
 		throw new Error(`policy telemetry byte budget cannot hold the next batch: ${retention.maxBytes} bytes`);
 }
 
+function insertEntry(ledger: Ledger, entry: TelemetryInventoryEntry): void {
+	const index = ledger.entries.findIndex(
+		(candidate) => candidate.day > entry.day || (candidate.day === entry.day && candidate.ordinal > entry.ordinal),
+	);
+	if (index < 0) ledger.entries.push(entry);
+	else ledger.entries.splice(index, 0, entry);
+}
+
 async function appendGroup(
 	dir: string,
 	ledger: Ledger,
 	day: string,
-	batch: readonly SerializedRecord[],
+	batch: readonly SerializedTelemetryRecord[],
 	retention: TelemetryRetention,
 	hooks: TelemetryFileHooks | undefined,
 ): Promise<void> {
@@ -356,9 +403,10 @@ async function appendGroup(
 	const fits =
 		current !== undefined && current.size + bytes <= TELEMETRY_SEGMENT_BYTES && current.size + bytes <= retention.maxBytes;
 	await applyRetention(dir, ledger, day, bytes, fits ? current : undefined, retention, hooks);
-	if (fits) {
-		await appendSegment(dir, current, false, batch);
-		ledger.entries = ledger.entries.map((entry) => (entry === current ? { ...entry, size: entry.size + bytes } : entry));
+	if (fits && current) {
+		const file = await appendSegment(dir, current, false, batch);
+		ledger.totalBytes += file.size - current.size;
+		ledger.entries = ledger.entries.map((entry) => (entry === current ? { ...entry, size: file.size } : entry));
 	} else {
 		const ordinal = (current?.ordinal ?? 0) + 1;
 		if (ordinal > 999_999) throw new Error(`policy telemetry segment ordinal exceeded for ${day}`);
@@ -371,33 +419,34 @@ async function appendGroup(
 			ino: 0,
 			unsafe: null,
 		};
-		await appendSegment(dir, target, true, batch);
-		ledger.entries.push({ ...target, size: bytes });
+		const file = await appendSegment(dir, target, true, batch);
+		ledger.totalBytes += file.size;
+		insertEntry(ledger, { ...target, size: file.size, dev: file.dev, ino: file.ino });
 	}
-	ledger.totalBytes += bytes;
 }
 
 async function appendUnderLock(
 	policyDir: string,
-	groups: Map<string, SerializedRecord[]>,
+	groups: Map<string, SerializedTelemetryRecord[]>,
 	retention: TelemetryRetention,
 	hooks: TelemetryFileHooks | undefined,
 ): Promise<void> {
-	const inventory = await readSafeInventory(policyDir);
+	const inventory = await readSafeInventory(policyDir, hooks);
 	await hooks?.afterInventory?.();
 	const ledger: Ledger = { entries: [...inventory.entries], totalBytes: inventory.totalBytes };
 	const dir = telemetryDirectory(policyDir);
-	for (const [day, batch] of groups) await appendGroup(dir, ledger, day, batch, retention, hooks);
+	const ordered = [...groups].sort(([left], [right]) => left.localeCompare(right));
+	for (const [day, batch] of ordered) await appendGroup(dir, ledger, day, batch, retention, hooks);
 }
 
 /**
- * Append one bounded batch to `<policyDir>/telemetry`. The telemetry lock serialises rotation,
- * retention and append across processes. Unrecognised names, symbolic links, nonregular files and
- * segments whose identity changed are never removed.
+ * Append one bounded batch of admitted record bytes to `<policyDir>/telemetry`. The telemetry lock
+ * serialises rotation, retention and append across processes. Unrecognised names, symbolic links,
+ * nonregular files, foreign-owned segments and segments whose identity changed are never removed.
  */
-export async function appendTelemetryRecords(
+export async function appendSerializedTelemetryRecords(
 	policyDir: string,
-	records: readonly PolicyRecord[],
+	records: readonly SerializedTelemetryRecord[],
 	retention: TelemetryRetention = DEFAULT_TELEMETRY_RETENTION,
 	hooks?: TelemetryFileHooks,
 ): Promise<void> {
@@ -424,4 +473,14 @@ export async function appendTelemetryRecords(
 		}
 	}
 	if (failure !== undefined) throw failure;
+}
+
+/** Serialise each record once, then append the admitted bytes. */
+export async function appendTelemetryRecords(
+	policyDir: string,
+	records: readonly PolicyRecord[],
+	retention: TelemetryRetention = DEFAULT_TELEMETRY_RETENTION,
+	hooks?: TelemetryFileHooks,
+): Promise<void> {
+	await appendSerializedTelemetryRecords(policyDir, records.map(serializeTelemetryRecord), retention, hooks);
 }

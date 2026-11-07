@@ -1693,7 +1693,7 @@ test("native tool execution does not wait for telemetry persistence", async () =
 	const release = deferred();
 	const batches: PolicyRecord[][] = [];
 	const append: AppendTelemetry = async (_dir, records) => {
-		batches.push([...records]);
+		batches.push(records.map((item) => JSON.parse(item.json) as PolicyRecord));
 		started.resolve();
 		await release.promise;
 	};
@@ -1723,7 +1723,7 @@ test("host shutdown drains the final accepted telemetry batch", async () => {
 	const gate = deferred();
 	const batches: PolicyRecord[][] = [];
 	const append: AppendTelemetry = async (_dir, records) => {
-		batches.push([...records]);
+		batches.push(records.map((item) => JSON.parse(item.json) as PolicyRecord));
 		await gate.promise;
 	};
 	const fixture = await openFixture({ mode: "observe", extension: probeExtension(counter), append });

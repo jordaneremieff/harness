@@ -3,10 +3,11 @@
 import { chmod, lstat, mkdir } from "node:fs/promises";
 import type { PolicyRecord } from "./record.ts";
 import {
-	appendTelemetryRecords,
+	appendSerializedTelemetryRecords,
 	type AppendTelemetry,
 	DEFAULT_TELEMETRY_RETENTION,
-	MAX_TELEMETRY_RECORD_BYTES,
+	type SerializedTelemetryRecord,
+	serializeTelemetryRecord,
 	TELEMETRY_BATCH_BYTES,
 	TELEMETRY_BATCH_RECORDS,
 	TELEMETRY_QUEUE_BYTES,
@@ -51,22 +52,17 @@ export async function appendRecord(
 	retention: TelemetryRetention = DEFAULT_TELEMETRY_RETENTION,
 ): Promise<string | null> {
 	try {
-		await appendTelemetryRecords(dir, [record], retention);
+		await appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record)], retention);
 		return null;
 	} catch (error) {
 		return errorMessage(error);
 	}
 }
 
-interface QueueEntry {
-	readonly record: PolicyRecord;
-	readonly bytes: number;
-}
-
 /**
- * Bounded serial writer that keeps filesystem work outside tool-result
- * handlers. Every queued promise handles its own failure, so no rejection can
- * escape in the background.
+ * Bounded serial writer that keeps filesystem work outside tool-result handlers. Each accepted
+ * record is serialised once, and the queue holds only those bytes. Every queued promise handles
+ * its own failure, so no rejection can escape in the background.
  */
 export class PolicyWriter implements TelemetryWriter {
 	private accepting = true;
@@ -74,7 +70,7 @@ export class PolicyWriter implements TelemetryWriter {
 	private failureReported = false;
 	private queuedBytes = 0;
 	private queuedRecords = 0;
-	private pending: QueueEntry[] = [];
+	private pending: SerializedTelemetryRecord[] = [];
 	private drainPromise: Promise<void> | undefined;
 	private readonly dir: string;
 	private readonly onFailure: (reason: string) => void;
@@ -84,7 +80,7 @@ export class PolicyWriter implements TelemetryWriter {
 	constructor(
 		dir: string,
 		onFailure: (reason: string) => void,
-		append: AppendTelemetry = appendTelemetryRecords,
+		append: AppendTelemetry = appendSerializedTelemetryRecords,
 		retention: TelemetryRetention = DEFAULT_TELEMETRY_RETENTION,
 	) {
 		this.dir = dir;
@@ -113,29 +109,23 @@ export class PolicyWriter implements TelemetryWriter {
 	/** Queue telemetry only. Refusal never changes an approved policy decision. */
 	enqueue(record: PolicyRecord): boolean {
 		if (!this.accepting) return false;
-		let bytes: number;
+		let admitted: SerializedTelemetryRecord;
 		try {
-			const timestamp = new Date(record.at);
-			if (Number.isNaN(timestamp.getTime())) throw new Error(`invalid policy timestamp: ${record.at}`);
-			bytes = Buffer.byteLength(JSON.stringify(record), "utf8") + 2;
+			admitted = serializeTelemetryRecord(record);
 		} catch (error) {
 			this.fail(errorMessage(error), true);
-			return false;
-		}
-		if (bytes > MAX_TELEMETRY_RECORD_BYTES) {
-			this.fail(`policy record exceeds ${MAX_TELEMETRY_RECORD_BYTES} bytes`, true);
 			return false;
 		}
 		if (this.queuedRecords >= TELEMETRY_QUEUE_RECORDS) {
 			this.fail(`policy writer queue reached ${TELEMETRY_QUEUE_RECORDS} records`, false);
 			return false;
 		}
-		if (this.queuedBytes + bytes > TELEMETRY_QUEUE_BYTES) {
+		if (this.queuedBytes + admitted.bytes > TELEMETRY_QUEUE_BYTES) {
 			this.fail(`policy writer queue reached ${TELEMETRY_QUEUE_BYTES} bytes`, false);
 			return false;
 		}
-		this.pending.push({ record, bytes });
-		this.queuedBytes += bytes;
+		this.pending.push(admitted);
+		this.queuedBytes += admitted.bytes;
 		this.queuedRecords++;
 		this.schedule();
 		return true;
@@ -146,8 +136,8 @@ export class PolicyWriter implements TelemetryWriter {
 		this.drainPromise = this.drain();
 	}
 
-	private takeBatch(): QueueEntry[] {
-		const batch: QueueEntry[] = [];
+	private takeBatch(): SerializedTelemetryRecord[] {
+		const batch: SerializedTelemetryRecord[] = [];
 		let bytes = 0;
 		while (this.pending.length > 0 && batch.length < TELEMETRY_BATCH_RECORDS) {
 			const next = this.pending[0];
@@ -169,11 +159,7 @@ export class PolicyWriter implements TelemetryWriter {
 				let bytes = 0;
 				for (const entry of batch) bytes += entry.bytes;
 				try {
-					await this.append(
-						this.dir,
-						batch.map((entry) => entry.record),
-						this.retention,
-					);
+					await this.append(this.dir, batch, this.retention);
 				} catch (error) {
 					this.fail(errorMessage(error), true);
 					return;

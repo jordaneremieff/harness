@@ -95,7 +95,7 @@ function fixture(
 		(reason) => failures.push(reason),
 		async (_dir, batch) => {
 			if (fail) throw new Error("disk unavailable");
-			records.push(...batch);
+			records.push(...batch.map((item) => JSON.parse(item.json) as PolicyRecord));
 		},
 	);
 	const session = SessionManager.inMemory("/project", { id: "session" });

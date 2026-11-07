@@ -1555,7 +1555,9 @@ the policy directory.
 - **Safety.** The inventory lists at most 512 entries. Names that do not match the
   segment pattern are ignored and never removed. A symbolic link, nonregular file, or
   segment whose identity changed after inspection is never followed or removed, and
-  makes the write fail with a health error. A truncated or unreadable listing does
+  makes the write fail with a health error. A segment owned by another user is unsafe
+  at inventory and is checked again for ownership and identity just before removal;
+  Policy never changes or replaces it. A truncated or unreadable listing does
   the same.
 - **Lock.** A `.telemetry-lock` file in the telemetry directory serialises rotation,
   retention, and append across processes. It is separate from the rule transaction
@@ -1563,7 +1565,9 @@ the policy directory.
   fails. Policy never removes a lock because of its age; if a process stopped while
   holding it, stop all policy writers before removing `.telemetry-lock` by hand.
 - **Queue.** The writer holds at most 512 accepted records and 4 MiB of serialized
-  records that are not yet written. Each record is serialized once, when it is queued.
+  records that are not yet written. Each record is serialized once, when it is queued; the queue holds those bytes, and
+  the append writes them unchanged, so later changes to the caller's object do not
+  alter the record.
   Records go to disk in batches of at most 32 records or 64 KiB; a permitted record
   larger than a batch runs alone. A record over 256 KiB is refused.
 - **Failure.** A full queue, an invalid or oversized record, a held lock, an unsafe
