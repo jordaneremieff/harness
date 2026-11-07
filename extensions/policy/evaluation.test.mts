@@ -42,13 +42,18 @@ function harness(mode: "enforce" | "observe") {
 	const hooks = new Map<string, Handler[]>();
 	const tools = new Map<string, FixtureTool>();
 	let active: string[] = [];
+	const entries: Array<{ id: string; type: "custom"; customType: string; data?: unknown }> = [];
+	let transcript: Array<Record<string, unknown>> = [
+		{ role: "system", content: "", sections: { preamble: "fixture" }, timestamp: 0 },
+		{ role: "user", content: [{ type: "text", text: "Run the scripted scenario." }], timestamp: 1 },
+	];
 	const ctx = {
 		cwd: "/virtual/evals/policy",
 		mode: "rpc",
 		hasUI: false,
 		model: { provider: "test", id: "fixture" },
 		thinkingLevel: "off",
-		sessionManager: { getSessionId: () => "synthetic-session" },
+		sessionManager: { getSessionId: () => "synthetic-session", buildContextEntries: () => entries },
 		getSystemPrompt: () => "",
 		ui: { notify: () => {} },
 	} as unknown as ExtensionContext;
@@ -66,6 +71,9 @@ function harness(mode: "enforce" | "observe") {
 		getFlag: () => mode,
 		getAllTools: () => [...tools.values()].map(({ name, parameters }) => ({ name, parameters })),
 		getActiveTools: () => active,
+		appendEntry: (customType: string, data?: unknown) => {
+			entries.push({ id: `entry-${entries.length + 1}`, type: "custom", customType, data });
+		},
 		setActiveTools: (names: string[]) => {
 			active = [...names];
 		},
@@ -81,14 +89,19 @@ function harness(mode: "enforce" | "observe") {
 	const events: TranscriptEvent[] = [];
 	const guidance: string[] = [];
 	const inputs: Record<string, unknown>[] = [];
+	let recorded = 0;
 	const context = async () => {
-		const projection = await emit("context", { messages: [] });
-		for (const message of projection.messages as Array<{ content: string | Array<{ type: string; text?: string }> }>)
-			guidance.push(
-				typeof message.content === "string"
-					? message.content
-					: message.content.map((part) => part.text ?? "").join("\n"),
-			);
+		await emit("context_with_system", { messages: transcript });
+		for (const entry of entries.slice(recorded)) guidance.push((entry.data as { text: string }).text);
+		recorded = entries.length;
+	};
+	const advance = () => {
+		const turn = transcript.length;
+		transcript = [
+			...transcript,
+			{ role: "assistant", content: [{ type: "text", text: `Step ${turn}.` }], timestamp: turn * 10 },
+			{ role: "user", content: [{ type: "text", text: `Continue ${turn}.` }], timestamp: turn * 10 + 1 },
+		];
 	};
 	return {
 		tools,
@@ -101,6 +114,7 @@ function harness(mode: "enforce" | "observe") {
 		active: () => active,
 		async call(step: FixtureStep) {
 			await emit("turn_start");
+			advance();
 			await context();
 			const tool = tools.get(step.name);
 			assert.ok(tool, step.name);

@@ -64,6 +64,11 @@ function harness(mode: PolicyMode) {
 	const commands = new Map<string, Command>();
 	const notices: string[] = [];
 	let active: string[] = [];
+	const entries: Array<{ id: string; type: "custom"; customType: string; data?: unknown }> = [];
+	let transcript: Array<Record<string, unknown>> = [
+		{ role: "system", content: "", sections: { preamble: "fixture" }, timestamp: 0 },
+		{ role: "user", content: [{ type: "text", text: "Run the scripted scenario." }], timestamp: 1 },
+	];
 	let catalog: "ready" | "missing-schema" | "unavailable" = "ready";
 	const ctx = {
 		cwd: "/virtual/evals/policy-product",
@@ -71,7 +76,7 @@ function harness(mode: PolicyMode) {
 		hasUI: true,
 		model: { provider: "test", id: "fixture" },
 		thinkingLevel: "off",
-		sessionManager: { getSessionId: () => "synthetic-product-session" },
+		sessionManager: { getSessionId: () => "synthetic-product-session", buildContextEntries: () => entries },
 		getSystemPrompt: () => "",
 		ui: { notify: (text: string) => notices.push(text) },
 	} as unknown as ExtensionContext;
@@ -98,6 +103,9 @@ function harness(mode: PolicyMode) {
 				}));
 			},
 			getActiveTools: () => active,
+			appendEntry(customType: string, data?: unknown) {
+				entries.push({ id: `entry-${entries.length + 1}`, type: "custom", customType, data });
+			},
 			setActiveTools(names: string[]) {
 				active = [...names];
 			},
@@ -126,10 +134,18 @@ function harness(mode: PolicyMode) {
 	const guidance: string[] = [];
 	const inputs: Record<string, unknown>[] = [];
 	let lastEnd: Event | undefined;
+	let recorded = 0;
+	/** One model request over a transcript that grows by a turn; returns the guidance records it added. */
 	const project = async () => {
-		const projected = await emit("context", { messages: [] });
-		const messages = projected.messages as Array<{ content: Array<{ text: string }> }>;
-		const text = messages.map((message) => message.content.map((part) => part.text).join("\n"));
+		const turn = transcript.length;
+		transcript = [
+			...transcript,
+			{ role: "assistant", content: [{ type: "text", text: `Step ${turn}.` }], timestamp: turn * 10 },
+			{ role: "user", content: [{ type: "text", text: `Continue ${turn}.` }], timestamp: turn * 10 + 1 },
+		];
+		await emit("context_with_system", { messages: transcript });
+		const text = entries.slice(recorded).map((entry) => (entry.data as { text: string }).text);
+		recorded = entries.length;
 		guidance.push(...text);
 		return text;
 	};
