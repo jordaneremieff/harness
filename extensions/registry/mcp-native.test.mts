@@ -120,6 +120,8 @@ async function observe(repeat: number): Promise<{ instructionsLength: number; li
 		await session.prompt("/mcp");
 		const mcpTools = session.getAllTools().filter((tool) => tool.name.startsWith("mcp__"));
 		assert.equal(mcpTools.length, 3);
+		// The registry tool is deferred; activating it declares it to the model.
+		session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "registry"])]);
 		assert.deepEqual(mcpTools[0].namespace?.aliases, [SERVER_NAME]);
 		const nativeInstructions = mcpTools[0].namespace?.instructions;
 		assert.ok(nativeInstructions !== undefined, "Pi supplies the server instructions on the tool");

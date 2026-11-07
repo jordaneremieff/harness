@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { getCurrentTools } from "@earendil-works/pi-ai";
 import { connectTransport } from "../../transport/index.ts";
 import { existsSync, writeFileSync } from "node:fs";
 import { it } from "node:test";
@@ -79,6 +80,9 @@ it("retains a standing profile across native boundaries and routes reused work b
 	const self = instructions(request);
 	for (const value of [identity, "@archive-guide", "Archive guide", "Explain archive evidence with sources.", "agent_profile"]) assert.ok(self.includes(value), value);
 	assert.ok(JSON.stringify(request.context).includes(a.identity), "host-authored request names its requester");
+	request.tool("tool_search", { query: "read or update the saved agent profile" });
+	request = await f.next();
+	assert.ok(getCurrentTools(request.context.messages).some((tool) => tool.name === "agent_profile"), "tool discovery declares the profile tool");
 	request.tool("agent_profile", { action: "read" });
 	request = await f.next();
 	const initial = toolData<AgentProfile>(request, "agent_profile");

@@ -197,7 +197,7 @@ export function hostOptions(storagePath: string, models: Models, registry: Regis
 		...(cwd === undefined ? {} : { cwd }),
 		models,
 		registry,
-		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } },
+		agent: { model: { provider: fixtureProvider, modelId: fixtureModelId }, modelTools: { add: registry.snapshot().installed().flatMap(entry => (entry.tools ?? []).filter(tool => tool.deferred === true)) } },
 	};
 }
 

@@ -102,7 +102,7 @@ export async function profileFixture(t: TestContext): Promise<{
 	writeFileSync(source, "The current archive region is east.\n");
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
 		extensions: [fileURLToPath(new URL("./testdata/profile-process/provider.ts", import.meta.url)), fileURLToPath(new URL("./index.ts", import.meta.url))],
-		cacheWarming: { mode: "off" }, retry: { enabled: false }, compaction: { enabled: false, keepRecentTokens: 1 },
+		defaultTools: ["+tool_search"], cacheWarming: { mode: "off" }, retry: { enabled: false }, compaction: { enabled: false, keepRecentTokens: 1 },
 	}));
 	const requests = eventLog<ProviderRequest>();
 	const sockets = new Set<Socket>();

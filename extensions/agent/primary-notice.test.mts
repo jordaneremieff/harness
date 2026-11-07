@@ -202,6 +202,8 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 	promptHandlers.push(async () => { promptStarts++; });
 	session = (await createAgentSession({ cwd, agentDir, modelRuntime: runtime, settingsManager, sessionManager, model: testModel, resourceLoader: loader })).session;
 	await session.bindExtensions({});
+	// Placement and configuration controls are deferred; activating them declares them to the model.
+	session.setActiveToolsByName([...new Set([...session.getActiveToolNames(), "agent_place", "agent_configure"])]);
 	const id = sessionManager.getSessionId();
 	assert.equal(existsSync(join(sessionsRoot, ".primaries", `${id}.json`)), true, "bindExtensions awaits primary registration");
 
