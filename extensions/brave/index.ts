@@ -17,8 +17,12 @@ import {
 	runWebSearch,
 } from "./capability.ts";
 import { braveDurableContribution } from "./durable.ts";
-import { readWebPage, type WebReadResult } from "./page-reader.ts";
+import type { WebReadResult } from "./page-reader.ts";
 import { toolDisplay } from "./display.ts";
+
+/** The page reader and its HTML parser load on the first web_read call; later calls reuse it. */
+let pageReader: Promise<typeof import("./page-reader.ts")> | undefined;
+const loadPageReader = () => (pageReader ??= import("./page-reader.ts"));
 
 export default function registerBraveSearch(pi: ExtensionAPI) {
 	const agentDir = getAgentDir();
@@ -39,6 +43,9 @@ export default function registerBraveSearch(pi: ExtensionAPI) {
 		promptGuidelines: [...BRAVE_WEB_READ_GUIDELINES],
 		parameters: BRAVE_WEB_READ_PARAMETERS,
 		async execute(_toolCallId, params: Static<typeof BRAVE_WEB_READ_PARAMETERS>, signal): Promise<WebReadResult> {
+			if (signal?.aborted) throw new Error("Web reader cancelled.");
+			const { readWebPage } = await loadPageReader();
+			if (signal?.aborted) throw new Error("Web reader cancelled.");
 			return readWebPage(params, signal);
 		},
 	});

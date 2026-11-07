@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { PAGE_NETWORK_LIMITS, parsePublicPageUrl } from "./page-network.ts";
 import { cleanPageText, type PageExcerptOptions, type PageText, validateExcerptOptions } from "./page-text.ts";
 
-export const PAGE_LINK_LIMITS = Object.freeze({ records: 2048, bytes: 256 * 1024, labelCharacters: 512, perPage: 160 });
+import { PAGE_LINK_LIMITS } from "./page-link-limits.ts";
 
 type Region = Exclude<PageText["method"], "plain-text">;
 type LabelSource = "text" | "aria-label" | "title" | "none";

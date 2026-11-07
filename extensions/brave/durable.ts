@@ -21,7 +21,10 @@ import {
 	BRAVE_WEB_SEARCH_SNIPPET,
 	runWebSearch,
 } from "./capability.ts";
-import { readWebPage } from "./page-reader.ts";
+
+/** The page reader and its HTML parser load on the first web_read call; later calls reuse it. */
+let pageReader: Promise<typeof import("./page-reader.ts")> | undefined;
+const loadPageReader = () => (pageReader ??= import("./page-reader.ts"));
 
 /** Everything the host installs, complete before the first `create()` call. */
 export interface DurableInventory {
@@ -114,6 +117,9 @@ export function braveDurableContribution(
 						// A rerun repeats one idempotent public GET with no credential and no external mutation.
 						replay: "safe",
 						execute: async (args, _api, context: Context) => {
+							if (context.abortSignal?.aborted) throw new Error("Web reader cancelled.");
+							const { readWebPage } = await loadPageReader();
+							if (context.abortSignal?.aborted) throw new Error("Web reader cancelled.");
 							const result = await readWebPage(args, context.abortSignal);
 							return { output: result.content, details: jsonDetails(result.details) };
 						},

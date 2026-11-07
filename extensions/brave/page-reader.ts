@@ -1,7 +1,7 @@
 import { responseDiagnostic } from "./diagnostics.ts";
+import { PAGE_LINK_LIMITS } from "./page-link-limits.ts";
 import {
 	makeLinkPage,
-	PAGE_LINK_LIMITS,
 	PageLinkCollector,
 	type PageLinkOptions,
 	type PageLinks,

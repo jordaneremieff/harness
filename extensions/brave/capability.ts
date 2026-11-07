@@ -2,8 +2,8 @@
 
 import { bool, int, obj, opt, str, type Schema } from "@earendil-works/pi-schema";
 import { type BraveClientOptions, searchBraveWeb, type BraveWebSearchRequest } from "./client.ts";
+import { PAGE_LINK_LIMITS } from "./page-link-limits.ts";
 import { formatSearchResults } from "./format.ts";
-import { PAGE_LINK_LIMITS } from "./page-links.ts";
 
 /** Plain `{ type: "string", enum: [...] }` so providers without anyOf/const support accept the declaration. */
 const StringEnum = <T extends readonly string[]>(values: T, options?: { description?: string; default?: T[number] }): Schema<T[number]> =>

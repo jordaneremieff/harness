@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
 import { describe, it } from "node:test";
-import { makeLinkPage, PAGE_LINK_LIMITS, PageLinkCollector, type PageLinkOptions } from "./page-links.ts";
+import { PAGE_LINK_LIMITS } from "./page-link-limits.ts";
+import { makeLinkPage, PageLinkCollector, type PageLinkOptions } from "./page-links.ts";
 import { readWebPage, type WebReadRequest } from "./page-reader.ts";
 import { extractPageText, makePageExcerpts } from "./page-text.ts";
 
