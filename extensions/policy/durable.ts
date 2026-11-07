@@ -127,7 +127,8 @@ import {
 } from "./rule.ts";
 import { SHELL_CARD_BYTES, shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin, type StateView } from "./state.ts";
-import { appendRecord } from "./store.ts";
+import { PolicyWriter } from "./store.ts";
+import type { AppendTelemetry, TelemetryRetention } from "./telemetry-files.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
 import {
 	approvalReadback,
@@ -399,10 +400,22 @@ function collectProgramNames(policy: PreparedPolicy, names: Set<string>): boolea
  * directory and mode use the local settings reader with the host's agent
  * directory. Ordinary session flags do not apply.
  */
-export async function createPolicyDurableExtension(host: PolicyDurableHost): Promise<Durable.Extension> {
+export interface PolicyDurableOptions {
+	/** Replace the telemetry persistence boundary that receives queued records. */
+	readonly append?: AppendTelemetry;
+}
+
+export async function createPolicyDurableExtension(
+	host: PolicyDurableHost,
+	options: PolicyDurableOptions = {},
+): Promise<Durable.Extension> {
 	const { defineDoc, defineExtension, defineTool, hook, section, GenerationTask, ToolTask } = host.durable;
 	const configured = readSettings({ agentDir: host.agentDir });
 	const dir = configured.values.dir;
+	const retention: TelemetryRetention = {
+		maxBytes: configured.values.telemetryMaxBytes,
+		maxAgeDays: configured.values.telemetryMaxAgeDays,
+	};
 	for (const diagnostic of configured.diagnostics) {
 		console.warn(`[policy] ${diagnostic.field} (${diagnostic.source}): ${diagnostic.message}`);
 	}
@@ -448,7 +461,10 @@ export async function createPolicyDurableExtension(host: PolicyDurableHost): Pro
 		mode: configured.values.mode,
 		stateDoc: StateDoc,
 		guidanceDoc: GuidanceDoc,
+		retention,
+		append: options.append,
 	});
+	host.onClose(() => runtime.closeTelemetry());
 	runtimes.set(host, runtime);
 
 	const rulesTool = defineTool({
@@ -678,6 +694,8 @@ interface DurablePolicyRuntimeOptions {
 	mode: PolicyMode;
 	stateDoc: Durable.ConversationDocToken<PolicyStateValue>;
 	guidanceDoc: Durable.ConversationDocToken<GuidanceDocValue>;
+	retention: TelemetryRetention;
+	append?: AppendTelemetry;
 }
 
 class DurablePolicyRuntime {
@@ -692,6 +710,7 @@ class DurablePolicyRuntime {
 	private readonly mode: PolicyMode;
 	private readonly stateDoc: Durable.ConversationDocToken<PolicyStateValue>;
 	private readonly guidanceDoc: Durable.ConversationDocToken<GuidanceDocValue>;
+	private readonly writer: PolicyWriter;
 	private stateTail: Promise<unknown> = Promise.resolve();
 	private telemetryFailure?: string;
 
@@ -705,6 +724,27 @@ class DurablePolicyRuntime {
 		this.mode = options.mode;
 		this.stateDoc = options.stateDoc;
 		this.guidanceDoc = options.guidanceDoc;
+		this.writer = new PolicyWriter(
+			options.dir,
+			(reason) => this.recordingFailed(reason),
+			options.append,
+			options.retention,
+		);
+	}
+
+	private recordingFailed(reason: string): void {
+		if (this.telemetryFailure !== undefined) return;
+		this.telemetryFailure = reason;
+		try {
+			console.warn(`[policy] telemetry persistence stopped: ${reason}`);
+		} catch {
+			/* Failure reporting must not create an unhandled rejection. */
+		}
+	}
+
+	/** Stop telemetry admission and wait for the last accepted batch. */
+	async closeTelemetry(): Promise<void> {
+		await this.writer.close();
 	}
 
 	private actionBinding(conversationId: Durable.ConversationId, snapshot: RuleSnapshot, agent: Durable.Agent, scope: RuleMatchContext): ActionBinding {
@@ -1455,17 +1495,9 @@ class DurablePolicyRuntime {
 		);
 	}
 
-	private async writeTelemetry(record: PolicyRecord | undefined): Promise<void> {
-		if (!record) return;
-		const failure = await appendRecord(this.dir, record);
-		if (failure && this.telemetryFailure === undefined) {
-			this.telemetryFailure = failure;
-			try {
-				console.warn(`[policy] telemetry persistence stopped: ${failure}`);
-			} catch {
-				/* Failure reporting must not create an unhandled rejection. */
-			}
-		}
+	/** Queue one record; persistence runs on the writer and never delays the tool call. */
+	private writeTelemetry(record: PolicyRecord | undefined): void {
+		if (record) this.writer.enqueue(record);
 	}
 
 	private preflightActionReason(plan: InputPlan, name: string, snapshot: RuleSnapshot, agent: Durable.Agent, scope: RuleMatchContext, conversationId: Durable.ConversationId): string | undefined {
@@ -1543,7 +1575,7 @@ class DurablePolicyRuntime {
 				context,
 				now,
 			);
-			await this.writeTelemetry(update.record);
+			this.writeTelemetry(update.record);
 			return { block: update.guidance ? `${reason}\n${update.guidance}` : reason };
 		}
 		return this.checkedArguments(plan, mode, observed);
@@ -1608,7 +1640,7 @@ class DurablePolicyRuntime {
 			context,
 			now,
 		);
-		await this.writeTelemetry(update.record);
+		this.writeTelemetry(update.record);
 		// A completed input refusal already included its recorded guidance in the block.
 		if (disposition.diagnostic === "blocked" && memo?.decision !== undefined && update.record === undefined)
 			return undefined;

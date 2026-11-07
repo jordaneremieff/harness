@@ -61,7 +61,7 @@ const POLICY_USAGE = [
 	"  /policy reset <id|--all> <reason...>          Start a new observation period",
 	"  /policy data list|show <name>|set <JSON>|remove <name> <revision>",
 	"  /policy data set-file <JSON>                 Review and import one complete local data file",
-	"  /policy telemetry <from> <to>                Summarize local day files (YYYY-MM-DD, inclusive)",
+	"  /policy telemetry <from> <to>                Summarize retained segments (YYYY-MM-DD, inclusive)",
 	"  /policy mode                                Report the session mode",
 	"  /policy help                                Show this usage",
 ].join("\n");
@@ -909,6 +909,10 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		description: `Policy mode (${POLICY_MODES.join(", ")}); overrides configured machine mode`,
 	});
 	const dir = configured.values.dir;
+	const retention = {
+		maxBytes: configured.values.telemetryMaxBytes,
+		maxAgeDays: configured.values.telemetryMaxAgeDays,
+	};
 	let noticeContext: ExtensionContext | undefined;
 	const registry = new RuleRegistry(dir, {
 		onNotice(message) {
@@ -953,7 +957,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		}
 		return valid;
 	};
-	runtime = new PolicyRuntime(pi, loadRegistry, () => mode, dir, ensureMode);
+	runtime = new PolicyRuntime(pi, loadRegistry, () => mode, dir, ensureMode, undefined, undefined, true, retention);
 	registerRuleTools(pi, {
 		registry,
 		loadRegistry,

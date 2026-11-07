@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it, mock } from "node:test";
+import { describe, it, mock, test } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { TuiMouseEvent } from "@earendil-works/pi-tui";
@@ -1563,4 +1563,42 @@ describe("view controls reach the owner operations", () => {
 			await until(frame, /Approved/);
 		});
 	});
+});
+
+test("captures the configured telemetry retention when its writer starts", async () => {
+	const base = await mkdtemp(join(tmpdir(), "policy-index-retention-"));
+	const priorHarness = process.env.PI_HARNESS_FILE;
+	const priorDir = process.env.PI_POLICY_DIR;
+	const path = join(base, "harness.json");
+	await writeFile(path, JSON.stringify({ version: 1, policy: { mode: "observe", telemetryMaxBytes: 33554432, telemetryMaxAgeDays: 1 } }));
+	process.env.PI_HARNESS_FILE = path;
+	let fixture: Awaited<ReturnType<typeof setup>>;
+	const priorHarnessFile = process.env.PI_HARNESS_FILE;
+	try {
+		fixture = await setup("observe");
+	} finally {
+		if (priorHarnessFile === undefined) delete process.env.PI_HARNESS_FILE;
+		else process.env.PI_HARNESS_FILE = priorHarnessFile;
+	}
+	try {
+		await mkdir(join(fixture.dir, "telemetry"), { recursive: true, mode: 0o700 });
+		await writeFile(join(fixture.dir, "telemetry", "2020-01-01.000001.jsonl"), "", { mode: 0o600 });
+		await fixture.pi.emit("tool_call", { toolName: "bash", toolCallId: "retention", input: { command: "ls" } }, fixture.ctx);
+		await fixture.pi.emit(
+			"tool_execution_end",
+			{ toolCallId: "retention", isError: false, result: { content: [{ type: "text", text: "listed" }] } },
+			fixture.ctx,
+		);
+		await fixture.pi.emit("session_shutdown", {}, fixture.ctx);
+		const day = new Date();
+		const name = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}.000001.jsonl`;
+		assert.deepEqual((await readdir(join(fixture.dir, "telemetry"))).sort(), [name]);
+		assert.equal((await telemetry(fixture.dir)).length, 1);
+	} finally {
+		await rm(base, { recursive: true, force: true });
+		if (priorHarness === undefined) delete process.env.PI_HARNESS_FILE;
+		else process.env.PI_HARNESS_FILE = priorHarness;
+		if (priorDir === undefined) delete process.env.PI_POLICY_DIR;
+		else process.env.PI_POLICY_DIR = priorDir;
+	}
 });

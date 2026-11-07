@@ -173,6 +173,14 @@ shutdown removes only the factory publisher. Host shutdown removes its native
 publisher. A new runtime reads new configuration; publication requests do not
 change an existing runtime.
 
+Each ordinary runtime and each native host owns one telemetry writer. It reads
+`telemetryMaxBytes` and `telemetryMaxAgeDays` once, when it starts, and keeps
+those values for its lifetime. Ordinary session shutdown closes the writer after
+the last accepted batch. A native host registers the same drain with its close
+callbacks. After close, the writer refuses new records. Registration of the
+writer is independent of the settings publisher: a later publication does not
+change a running writer.
+
 Rule definitions, proposals, approvals, and approved data remain application
 state in the private policy directory. Telemetry lives in its `telemetry/`
 subdirectory under its own byte and age budget (see
@@ -1580,9 +1588,16 @@ explicit header-argument syntax, remains ambiguous and receives conservative
 redaction. Arbitrary unlabelled secrets and unsupported syntax are not guaranteed
 to be removed.
 
-Telemetry failure stops persistence and reports health without stopping approved
-rules, corrections, or counters. A successful policy decision does not prove its
-record reached disk. Rule-authority health remains a separate boundary.
+Native tool execution queues a telemetry record and does not wait for the disk
+write. A successful policy decision does not prove its record reached disk.
+
+Telemetry failure stops further admission and reports health once. The reported
+reason names the cause: queue overflow, an invalid or oversized record, a held
+or changed lock, an unsafe or incomplete inventory, or a failed write or removal.
+The `health` inspection view reports `telemetry` as `ready` or `failed` with
+that reason. Telemetry state never stops approved rules, corrections, or counters,
+and it never changes an approved tool decision. Rule-authority health remains a
+separate boundary.
 
 ## Maintained evaluations
 

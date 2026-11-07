@@ -55,6 +55,7 @@ import { contentRevision, type RuleRecord, effectiveEffect, effectiveState, rule
 import { shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin } from "./state.ts";
 import { PolicyWriter } from "./store.ts";
+import { DEFAULT_TELEMETRY_RETENTION, type TelemetryRetention } from "./telemetry-files.ts";
 
 const MAX_CATALOG_TOOLS = 1024;
 const MAX_FINAL_IDS = 8192;
@@ -284,6 +285,7 @@ export class PolicyRuntime {
 		writer?: Pick<PolicyWriter, "enqueue" | "close">,
 		now: () => number = () => Date.now(),
 		createActionState = true,
+		retention: TelemetryRetention = DEFAULT_TELEMETRY_RETENTION,
 	) {
 		this.dir = dir;
 		this.pi = pi;
@@ -295,7 +297,7 @@ export class PolicyRuntime {
 		this.enabled = enabled;
 		this.now = now;
 		this.createActionState = createActionState;
-		this.writer = writer ?? new PolicyWriter(dir, (reason) => this.recordingFailed(reason));
+		this.writer = writer ?? new PolicyWriter(dir, (reason) => this.recordingFailed(reason), undefined, retention);
 	}
 	private recordingFailed(reason: string): void {
 		this.telemetryFailure = reason;

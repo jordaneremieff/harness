@@ -1952,3 +1952,18 @@ test("prepares the registered schema at each tool boundary", async () => {
 	assert.equal(denied?.block, true);
 	await f.writer.close();
 });
+
+describe("telemetry writer lifecycle", () => {
+	it("closes the writer on shutdown, drains accepted records, and refuses later ones", async () => {
+		const f = fixture([], "observe", obj({}, { open: true }));
+		await f.call("trace", {});
+		await f.finish("trace");
+		const accepted = f.records.length;
+		assert.ok(accepted > 0);
+		await f.handlers.get("session_shutdown")?.({}, f.ctx);
+		assert.equal(f.records.length, accepted, "shutdown waits for the accepted batch");
+		assert.equal(f.writer.enqueue({ ...f.records[0], callId: "late" }), false);
+		await f.handlers.get("session_shutdown")?.({}, f.ctx);
+		assert.equal(f.records.length, accepted);
+	});
+});

@@ -24,6 +24,8 @@ import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 
 import { createPolicyDurableExtension, durableResultDisposition, policyPanelCommand, type PolicyDurableHost } from "./durable.ts";
+import type { PolicyRecord } from "./record.ts";
+import type { AppendTelemetry } from "./telemetry-files.ts";
 import { makeRuleAudit, proposalRevision, RuleRegistry, targetIdentity } from "./local-rules.ts";
 import { deserializeSnapshot, readPanelAnswer } from "./panel-protocol.ts";
 import type { OperatorView, PanelHost } from "../../operator-ui/index.ts";
@@ -67,6 +69,14 @@ async function telemetryLines(dir: string, day: string): Promise<string[]> {
 	return lines;
 }
 
+async function waitFor(check: () => boolean, label: string): Promise<void> {
+	for (let attempt = 0; attempt < 300; attempt++) {
+		if (check()) return;
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.fail(`timed out waiting for ${label}`);
+}
+
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve: () => void = () => {};
 	const promise = new Promise<void>((done) => {
@@ -96,7 +106,13 @@ function reportHarnessError(error: unknown): void {
 	console.error("[policy-durable-test] harness report:", error);
 }
 
-function hostFor(directory: string, harness: DurableModule.Harness): PolicyDurableHost {
+type HostCleanup = () => void | Promise<void>;
+
+function hostFor(
+	directory: string,
+	harness: DurableModule.Harness,
+	cleanups: HostCleanup[] = [],
+): PolicyDurableHost {
 	return {
 		durable: DurableModule,
 		services: {} as PolicyDurableHost["services"],
@@ -105,7 +121,7 @@ function hostFor(directory: string, harness: DurableModule.Harness): PolicyDurab
 		storageId: "durable-test-storage",
 		harness,
 		signal: new AbortController().signal,
-		onClose: () => {},
+		onClose: (dispose) => { cleanups.push(dispose); },
 		inventory: {
 			contributions: [
 				{
@@ -205,6 +221,8 @@ interface Fixture {
 	directory: string;
 	storeDir: string;
 	policy: RuleRegistry;
+	/** Run the host close callbacks once, which drains telemetry. */
+	closeHost: () => Promise<void>;
 	close: () => Promise<void>;
 }
 
@@ -216,6 +234,8 @@ interface FixtureOptions {
 	block?: { name: string; started: () => void };
 	/** Prepare the rule store before the host creates the contribution. */
 	prepare?: (storeDir: string) => Promise<void>;
+	/** Replace the telemetry persistence boundary. */
+	append?: AppendTelemetry;
 }
 
 async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
@@ -238,6 +258,7 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 		models.setProvider(faux.provider);
 		const registry = DurableModule.createRegistry();
 		const reports: unknown[] = [];
+		const cleanups: HostCleanup[] = [];
 		const harness = await DurableModule.Harness.open(
 			options.storage ?? new DurableModule.MemoryStorage(),
 			{
@@ -251,7 +272,8 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 			context,
 		);
 		await options.prepare?.(storeDir);
-		let contribution = await createPolicyDurableExtension(hostFor(directory, harness));
+		const factoryOptions = options.append ? { append: options.append } : {};
+		let contribution = await createPolicyDurableExtension(hostFor(directory, harness, cleanups), factoryOptions);
 		if (options.block) contribution = blockOnce(contribution, options.block.name, options.block.started);
 		registry.install(contribution);
 		if (options.extension) registry.install(options.extension);
@@ -264,7 +286,11 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 			directory,
 			storeDir,
 			policy: new RuleRegistry(storeDir),
+			closeHost: async () => {
+				for (const dispose of cleanups.splice(0)) await dispose();
+			},
 			close: async () => {
+				for (const dispose of cleanups.splice(0)) await dispose();
 				await harness.close(context);
 				assert.equal(
 					reports.length,
@@ -596,6 +622,7 @@ test("native telemetry preserves the full call interval from the input memo", as
 			fauxAssistantMessage(fauxToolCall("clock_probe", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
 		], "measure the isolated fixture interval");
+		await fixture.closeHost();
 		const records = (await telemetryLines(fixture.storeDir, localDate(new Date(start))))
 			.map((line) => JSON.parse(line));
 		const record = records.find((entry) => entry.tool === "clock_probe");
@@ -700,17 +727,24 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 			fauxAssistantMessage(fauxToolCall("policy_propose", proposeArgs), { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
 		]);
+		const firstCleanups: HostCleanup[] = [];
 		const first = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
 		registry.install(
-			blockOnce(await createPolicyDurableExtension(hostFor(directory, first)), "policy_propose", started.resolve),
+			blockOnce(
+				await createPolicyDurableExtension(hostFor(directory, first, firstCleanups)),
+				"policy_propose",
+				started.resolve,
+			),
 		);
 		const root = await first.root(context, { agent: { model: MODEL } });
 		const submission = await root.submit({ type: "input", content: "propose" }, context);
 		await started.promise;
 		await first.close(context);
+		for (const dispose of firstCleanups.splice(0)) await dispose();
 
+		const secondCleanups: HostCleanup[] = [];
 		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
-		registry.install(await createPolicyDurableExtension(hostFor(directory, second)));
+		registry.install(await createPolicyDurableExtension(hostFor(directory, second, secondCleanups)));
 		second.resume();
 		const reacquired = await second.submission(submission.id, context);
 		assert.ok(reacquired);
@@ -722,6 +756,7 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 		assert.match(textOf(result), /interrupted/);
 		assert.match(textOf(result), /may have partially run/);
 		await second.close(context);
+		for (const dispose of secondCleanups.splice(0)) await dispose();
 		const store = await readFile(join(storeDir, "rules.jsonl"), "utf8");
 		assert.equal(store.includes('"kind":"proposal"'), false);
 		const records = (await telemetryLines(storeDir, localDate(new Date())))
@@ -750,6 +785,7 @@ test("an aborted call records an uncertain execution without a completed executi
 		await submission.wait(context);
 		const result = (await toolResults(fixture.root, "policy_rules")).at(-1);
 		assert.equal(result?.isError, true);
+		await fixture.closeHost();
 		const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
 			.map((line) => JSON.parse(line)).filter((record) => record.tool === "policy_rules");
 		assert.equal(records.length, 1);
@@ -872,6 +908,7 @@ test("enforce mode completes a denied call and projects result guidance once", a
 		assert.match(textOf(result), /Rule durable-deny-probe\./);
 		assert.equal(textOf(result).split("Inspect the refusal before another call.").length - 1, 1);
 		assert.equal(counter.executed, 0);
+		await fixture.closeHost();
 		const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
 			.map((line) => JSON.parse(line));
 		assert.equal(records.filter((entry) => entry.tool === "probe").length, 1);
@@ -959,6 +996,7 @@ for (const scenario of ["tool_unavailable", "invalid_arguments", "blocked"] as c
 			assert.equal(result?.isError, true);
 			assert.match(textOf(result), /Inspect the rejected call/);
 			assert.equal(executed, 0);
+			await fixture.closeHost();
 			const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
 				.map((line) => JSON.parse(line)).filter((record) => record.tool === name);
 			assert.equal(records.length, 1);
@@ -1481,6 +1519,134 @@ test("a running host applies a committed rule change to the next call", async ()
 		assert.match(textOf(denied), /Rule durable\.deny-probe/);
 		assert.equal(counter.executed, 1);
 	} finally {
+		await fixture.close();
+	}
+});
+
+test("native tool execution does not wait for telemetry persistence", async () => {
+	const counter = { executed: 0 };
+	const started = deferred();
+	const release = deferred();
+	const batches: PolicyRecord[][] = [];
+	const append: AppendTelemetry = async (_dir, records) => {
+		batches.push([...records]);
+		started.resolve();
+		await release.promise;
+	};
+	const fixture = await openFixture({ mode: "observe", extension: probeExtension(counter), append });
+	try {
+		await submit(
+			fixture,
+			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("done")],
+			"run the probe",
+		);
+		await started.promise;
+		assert.equal(counter.executed, 1);
+		assert.equal((await toolResults(fixture.root, "probe")).length, 1);
+		assert.equal(batches.length, 1, "the accepted batch is still held open");
+		assert.equal(batches[0].some((record) => record.tool === "probe"), true);
+		release.resolve();
+		await fixture.closeHost();
+		assert.equal(batches.length, 1);
+	} finally {
+		release.resolve();
+		await fixture.close();
+	}
+});
+
+test("host shutdown drains the final accepted telemetry batch", async () => {
+	const counter = { executed: 0 };
+	const gate = deferred();
+	const batches: PolicyRecord[][] = [];
+	const append: AppendTelemetry = async (_dir, records) => {
+		batches.push([...records]);
+		await gate.promise;
+	};
+	const fixture = await openFixture({ mode: "observe", extension: probeExtension(counter), append });
+	let drained = false;
+	try {
+		await submit(
+			fixture,
+			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("done")],
+			"run the probe",
+		);
+		const closing = fixture.closeHost().then(() => {
+			drained = true;
+		});
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(drained, false, "close waits for the held batch");
+		gate.resolve();
+		await closing;
+		assert.equal(drained, true);
+		assert.equal(batches.length, 1);
+	} finally {
+		gate.resolve();
+		await fixture.close();
+	}
+});
+
+test("native telemetry failure reports once in health without changing an approved denial", async () => {
+	const counter = { executed: 0 };
+	let attempts = 0;
+	const fixture = await openFixture({
+		mode: "enforce",
+		extension: probeExtension(counter),
+		append: async () => {
+			attempts++;
+			throw new Error("disk unavailable");
+		},
+	});
+	const warnings: string[] = [];
+	const warn = console.warn;
+	console.warn = (...args: unknown[]) => {
+		warnings.push(args.map((value) => String(value)).join(" "));
+	};
+	try {
+		await addRule(fixture.policy, "telemetry-failure-deny", {
+			phase: "input",
+			when: { op: "eq", path: ["tool"], value: "probe" },
+			action: { kind: "deny" },
+			onUnavailable: "deny",
+		});
+		await submit(
+			fixture,
+			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("stopped")],
+			"run the probe",
+		);
+		const denied = (await toolResults(fixture.root, "probe")).at(-1);
+		assert.equal(denied?.isError, true);
+		assert.match(textOf(denied), /telemetry-failure-deny/);
+		assert.equal(counter.executed, 0);
+		await waitFor(() => warnings.some((line) => line.includes("telemetry persistence stopped")), "telemetry failure");
+		const reports = warnings.filter((line) => line.includes("telemetry persistence stopped"));
+		assert.equal(reports.length, 1);
+		assert.match(reports[0], /disk unavailable/);
+		assert.ok(attempts >= 1);
+
+		await submit(
+			fixture,
+			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("stopped again")],
+			"run the probe again",
+		);
+		const deniedAgain = (await toolResults(fixture.root, "probe")).at(-1);
+		assert.equal(deniedAgain?.isError, true);
+		assert.equal(counter.executed, 0);
+		assert.equal(warnings.filter((line) => line.includes("telemetry persistence stopped")).length, 1);
+
+		await submit(
+			fixture,
+			[fauxAssistantMessage(fauxToolCall("policy_rules", { view: "health" }), { stopReason: "toolUse" }), fauxAssistantMessage("done")],
+			"inspect health",
+		);
+		const health = JSON.parse(textOf((await toolResults(fixture.root, "policy_rules")).at(-1))) as {
+			telemetry: { status: string; reason?: string };
+			authority: { status: string };
+		};
+		assert.equal(health.telemetry.status, "failed");
+		assert.match(health.telemetry.reason ?? "", /disk unavailable/);
+		assert.equal(health.authority.status, "ok");
+	} finally {
+		console.warn = warn;
 		await fixture.close();
 	}
 });

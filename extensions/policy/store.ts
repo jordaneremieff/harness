@@ -4,6 +4,7 @@ import { chmod, lstat, mkdir } from "node:fs/promises";
 import type { PolicyRecord } from "./record.ts";
 import {
 	appendTelemetryRecords,
+	type AppendTelemetry,
 	DEFAULT_TELEMETRY_RETENTION,
 	MAX_TELEMETRY_RECORD_BYTES,
 	TELEMETRY_BATCH_BYTES,
@@ -38,12 +39,6 @@ function errorMessage(error: unknown): string {
 		return "unknown policy store failure";
 	}
 }
-
-export type AppendTelemetry = (
-	dir: string,
-	records: readonly PolicyRecord[],
-	retention: TelemetryRetention,
-) => Promise<void>;
 
 /**
  * Append one record to the day's segment.

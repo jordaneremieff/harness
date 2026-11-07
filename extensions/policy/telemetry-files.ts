@@ -44,6 +44,13 @@ export interface TelemetryWriter {
 	close(): Promise<void>;
 }
 
+/** One bounded batch written to the telemetry store under its own lock. */
+export type AppendTelemetry = (
+	dir: string,
+	records: readonly PolicyRecord[],
+	retention: TelemetryRetention,
+) => Promise<void>;
+
 export const DEFAULT_TELEMETRY_RETENTION: TelemetryRetention = Object.freeze({
 	maxBytes: TELEMETRY_DEFAULT_MAX_BYTES,
 	maxAgeDays: TELEMETRY_DEFAULT_MAX_AGE_DAYS,

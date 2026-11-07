@@ -60,13 +60,16 @@ Start with these local public surfaces where present; verify their current
 README and defining source under the owning repository's `extensions/<name>/`
 (`../../../extensions/` relative to this reference):
 
-- **Policy:** `/policy telemetry FROM TO` summarizes retained writer-local day
-  files. Its calendar is not a UTC timestamp filter. Read `policy/telemetry.ts`
-  for reader caps, and `policy/record.ts`, `policy/runtime.ts`, and
-  `policy/store.ts` for fields and writer boundaries. Check whether observation
-  includes unmatched calls, disabled modes, nested calls, unfinished calls,
-  correlation limits, and failed writes. Do not assume a universal call log.
-  `policy_rules` health and rules are current state, not historical coverage.
+- **Policy:** `/policy telemetry FROM TO` summarizes retained writer-local
+  calendar segments under `<policy dir>/telemetry/`. Its calendar is not a UTC
+  timestamp filter. Segments are bounded by the configured byte and age budgets
+  and by segment size, so the report covers only what retention kept; read
+  `policy/telemetry.ts` for reader caps, `policy/telemetry-files.ts` for
+  retention and inventory bounds, and `policy/record.ts`, `policy/runtime.ts`,
+  and `policy/store.ts` for fields and writer boundaries. Check whether
+  observation includes unmatched calls, disabled modes, nested calls, unfinished
+  calls, correlation limits, and failed writes. Do not assume a universal call
+  log. `policy_rules` health and rules are current state, not historical coverage.
 - **Pillars:** `pillars_usage` exposes retained read observations. For a fixed
   window, use the revisions view over a containing supported interval, follow
   every cursor, then filter UTC days. Request and result stages are separate
