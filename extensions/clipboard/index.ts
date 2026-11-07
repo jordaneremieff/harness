@@ -29,10 +29,9 @@ import {
 	RESTORE_SNIPPET,
 	RestoreParams,
 } from "./operations.ts";
-import { openOperatorFrame, publishOperatorViews, type ViewHost } from "../../operator-ui/index.ts";
-import { loadRecentEntries, PREVIEW_CONTENT_CHARS, readExactEntry, restoreFromArchive, searchArchive } from "./browser-operations.ts";
+import { LoadingView, openOperatorFrame, publishOperatorViews, type OperatorView, type ViewHost } from "../../operator-ui/registration.ts";
 import { toolDisplay } from "./display.ts";
-import { type ClipboardOperations, clipboardView, createClipboardViewState } from "./operator-view.ts";
+import type { ClipboardOperations, ClipboardViewState } from "./operator-view.ts";
 import { readEntries, resolveClipboardDir } from "./store.ts";
 import { safeLine } from "./text.ts";
 
@@ -41,12 +40,14 @@ const storeDir = () => resolveClipboardDir(process.env, getAgentDir());
 const errorText = (error: unknown) => safeLine(error instanceof Error ? error.message : String(error));
 
 /** The archive operations behind the ordinary view, read at the moment of each call. */
-const archiveOperations: ClipboardOperations = {
-	recent: (signal) => loadRecentEntries(storeDir(), signal),
-	search: (query, cursor, signal) => searchArchive(storeDir(), query, cursor, signal),
-	preview: (entry, signal) => readExactEntry(storeDir(), entry, PREVIEW_CONTENT_CHARS, signal),
-	restore: (entry, signal) => restoreFromArchive(storeDir(), entry, signal),
-};
+function archiveOperations(archive: typeof import("./browser-operations.ts")): ClipboardOperations {
+	return {
+		recent: (signal) => archive.loadRecentEntries(storeDir(), signal),
+		search: (query, cursor, signal) => archive.searchArchive(storeDir(), query, cursor, signal),
+		preview: (entry, signal) => archive.readExactEntry(storeDir(), entry, archive.PREVIEW_CONTENT_CHARS, signal),
+		restore: (entry, signal) => archive.restoreFromArchive(storeDir(), entry, signal),
+	};
+}
 
 async function notifyRecent(ctx: ExtensionContext): Promise<void> {
 	try {
@@ -63,11 +64,19 @@ async function notifyRecent(ctx: ExtensionContext): Promise<void> {
 }
 
 export default function (pi: ExtensionAPI) {
-	const viewState = createClipboardViewState();
+	let viewState: ClipboardViewState | undefined;
+	let operations: ClipboardOperations | undefined;
+	/** The archive reader and its view load when the destination opens, not when this factory runs. */
+	const loadView = async (host: ViewHost): Promise<OperatorView> => {
+		const [archive, module] = await Promise.all([import("./browser-operations.ts"), import("./operator-view.ts")]);
+		operations ??= archiveOperations(archive);
+		viewState ??= module.createClipboardViewState();
+		return module.clipboardView(host, operations, viewState);
+	};
 	publishOperatorViews(pi, {
 		version: 2,
 		owner: OWNER,
-		views: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" }, order: 20, view: (_ctx, host: ViewHost) => clipboardView(host, archiveOperations, viewState) }],
+		views: [{ id: "clipboard", label: "Clipboard", command: { name: "clipboard" }, order: 20, view: (_ctx, host) => new LoadingView("Clipboard", host, () => loadView(host)) }],
 	});
 	const stopSettings = publishSettings(pi.events, { agentDir: getAgentDir() });
 	pi.on("session_shutdown", () => stopSettings());

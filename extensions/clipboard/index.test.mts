@@ -398,7 +398,7 @@ describe("clipboard entrypoint", () => {
 						const screen = () => frame.render(120).join("\n");
 						void (async () => {
 							const restoreOf = () => frame.viewActions.find((action) => action.label === "Restore");
-							for (let attempt = 0; attempt < 400 && restoreOf()?.disabled !== undefined; attempt++) {
+							for (let attempt = 0; attempt < 400 && (!restoreOf() || restoreOf()?.disabled !== undefined); attempt++) {
 								screen();
 								await new Promise((settled) => setTimeout(settled, 5));
 							}

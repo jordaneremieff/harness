@@ -170,7 +170,8 @@ Escape goes back. Selecting a row reads; nothing in the view starts a check,
 derivation, or review, and nothing writes to the corpus. The command shows
 Pillars on its own.
 Because this extension publishes it as an operator view, `/dashboard` also
-shows it as a tab.
+shows it as a tab. The view module loads when the destination opens; until it
+is ready the frame shows a reading placeholder.
 The attached Agent terminal opens the same view through `operator-panel.ts`,
 a presentation-only module that routes the inventory and every page read
 through the host's `pillars` contribution command. Outside the terminal UI, or when the

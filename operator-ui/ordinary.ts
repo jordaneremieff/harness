@@ -1,7 +1,7 @@
 import { realpathSync } from "node:fs";
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext, SlashCommandInfo } from "@earendil-works/pi-coding-agent";
-import { type Destination, NavigationFrame } from "./frame.ts";
+import type { Destination, NavigationFrame } from "./frame.ts";
 import type { Action, OperatorView, ViewHost, ViewTarget } from "./view.ts";
 
 export const OPERATOR_VIEW_PUBLISH = "harness:operator-view:publish";
@@ -232,6 +232,9 @@ export async function openOperatorFrame(pi: FrameApi, ctx: ExtensionContext, sta
 		pi.events.emit(OPERATOR_FRAME_OPEN, request);
 		if (request.handled) return;
 	}
+	// The frame implementation, its controls and its building blocks load when a frame opens, so
+	// announcing destinations and answering a refused open stay cheap.
+	const { NavigationFrame: Frame } = await import("./frame.ts");
 	let cached: Destination[] | undefined;
 	const registry = collectOperatorViews(pi.events, () => {
 		cached = undefined;
@@ -290,7 +293,7 @@ export async function openOperatorFrame(pi: FrameApi, ctx: ExtensionContext, sta
 					},
 				},
 			];
-			frame = new NavigationFrame({
+			frame = new Frame({
 				theme,
 				target: ordinaryTarget(ctx),
 				destinations,

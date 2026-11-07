@@ -276,7 +276,8 @@ function publicImport(
 ): boolean {
 	return (
 		(sliceName === "agent" && target === join(root, "transport", "index.ts")) ||
-		(OPERATOR_UI_CONSUMERS.has(sliceName) && target === join(root, "operator-ui", "index.ts")) ||
+		(OPERATOR_UI_CONSUMERS.has(sliceName) &&
+			(target === join(root, "operator-ui", "index.ts") || target === join(root, "operator-ui", "registration.ts"))) ||
 		(SESSION_NAME_CONSUMERS.has(sliceName) && target === join(root, "session-name", "index.ts")) ||
 		evaluationImport(root, file, sliceDir, target)
 	);

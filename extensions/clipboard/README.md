@@ -236,7 +236,8 @@ native transcript (`docs/conventions/operator-panels.md`), in TUI mode. RPC
 receives a notification that directs the caller to `clipboard_list`, rather
 than attempting a terminal-only component. The command shows Clipboard on its
 own. Because this extension publishes it as an operator view, `/dashboard` also
-shows it as a tab.
+shows it as a tab. The view module loads when the destination opens; until it
+is ready the frame shows a reading placeholder.
 
 The footer at the bottom lists each control as its key and its short label. A
 click on a control runs the same action as its key. The keys of this view are

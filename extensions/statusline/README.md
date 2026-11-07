@@ -10,7 +10,8 @@ views of the shared browsing frame below the native transcript
 Commands and Statuses open on their own from their commands; the Model view
 opens from the footer's model and level segments and has no command of its
 own. `/dashboard` shows every published view, including other extensions'
-views, as tabs of one frame.
+views, as tabs of one frame. The three view modules load when a destination
+opens; until one is ready the frame shows a reading placeholder.
 
 ## Surfaces
 

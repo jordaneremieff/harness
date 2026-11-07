@@ -13,9 +13,9 @@ import {
 import { Markdown } from "@earendil-works/pi-tui";
 import { int, obj, opt, str, type Schema, type Static } from "@earendil-works/pi-schema";
 import { ACCESS_DESCRIPTION, access, parseAccess } from "./access.ts";
-import { openOperatorFrame, publishOperatorViews } from "../../operator-ui/index.ts";
+import { LoadingView, openOperatorFrame, publishOperatorViews, type OperatorView, type ViewHost } from "../../operator-ui/registration.ts";
 import { browserEntries } from "./inventory.ts";
-import { createPillarsViewState, type PillarsViewState, pillarsView } from "./operator-view.ts";
+import type { PillarsViewState } from "./operator-view.ts";
 import { InputError } from "./input.ts";
 import { type Catalog, loadCatalog, readBody, type Resource, resourceById, resourceByPath } from "./catalog.ts";
 import { Collector, utcDay } from "./collector.ts";
@@ -321,14 +321,16 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		},
 	};
 	const viewStates = new Map<string, PillarsViewState>();
-	const viewState = (ctx: ExtensionContext) => {
+	/** The view module loads when the destination opens, not when this factory runs. */
+	const loadView = async (ctx: ExtensionContext, host: ViewHost): Promise<OperatorView> => {
+		const module = await import("./operator-view.ts");
 		const id = ctx.sessionManager.getSessionId();
 		let state = viewStates.get(id);
 		if (!state) {
-			state = createPillarsViewState();
+			state = module.createPillarsViewState();
 			viewStates.set(id, state);
 		}
-		return state;
+		return module.pillarsView(host, browserOperations, state);
 	};
 	/** Open the read-only browser in the interactive terminal; it returns false when only the text route applies. */
 	async function openBrowser(ctx: ExtensionContext): Promise<boolean> {
@@ -387,7 +389,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	publishOperatorViews(pi, {
 		version: 2,
 		owner: OWNER,
-		views: [{ id: "pillars", label: "Pillars", command: { name: "pillars", args: "browse" }, order: 40, view: (ctx, host) => pillarsView(host, browserOperations, viewState(ctx)) }],
+		views: [{ id: "pillars", label: "Pillars", command: { name: "pillars", args: "browse" }, order: 40, view: (ctx, host) => new LoadingView("Pillars", host, () => loadView(ctx, host)) }],
 	});
 }
 

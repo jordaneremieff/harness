@@ -21,7 +21,7 @@ import type {
 	ThemeColor,
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { openOperatorFrame, publishOperatorViews } from "../../operator-ui/index.ts";
+import { LoadingView, openOperatorFrame, publishOperatorViews } from "../../operator-ui/registration.ts";
 import {
 	buildBar,
 	composeLine1,
@@ -36,7 +36,7 @@ import {
 	type Line2Layout,
 } from "./format.ts";
 import { MetricsCache, type SessionMetrics } from "./metrics.ts";
-import { commandsView, createCommandsState, modelView, statusesView } from "./views.ts";
+import type { CommandsState } from "./views.ts";
 
 const OWNER = fileURLToPath(import.meta.url);
 const TICK_MS = 5_000;
@@ -168,16 +168,44 @@ export default function registerStatusline(pi: ExtensionAPI) {
 	let requestRender = () => {};
 	/** The installed footer's status provider; the Statuses view reads through it. */
 	let readStatuses: (() => ReadonlyMap<string, string>) | undefined;
-	const commandState = createCommandsState();
+
+	/** Browsing state of the command list; the views module loads when a destination opens. */
+	let commandState: CommandsState | undefined;
+	let viewsPromise: Promise<typeof import("./views.ts")> | undefined;
+	const loadViews = () => (viewsPromise ??= import("./views.ts"));
 
 	publishOperatorViews(pi, {
 		version: 2,
 		owner: OWNER,
 		views: [
-			{ id: "commands", label: "Commands", command: { name: "commands" }, order: 80, view: (ctx, host) => commandsView(pi, ctx, host, commandState) },
+			{
+				id: "commands",
+				label: "Commands",
+				command: { name: "commands" },
+				order: 80,
+				view: (ctx, host) =>
+					new LoadingView("Commands", host, async () => {
+						const module = await loadViews();
+						commandState ??= module.createCommandsState();
+						return module.commandsView(pi, ctx, host, commandState);
+					}),
+			},
 			// Model has no command of its own: the footer's model and level segments and /dashboard open it.
-			{ id: "model", label: "Model", command: { name: "dashboard" }, order: 85, view: (ctx, host) => modelView(pi, ctx, host, () => requestRender()) },
-			{ id: "statuses", label: "Statuses", command: { name: "statuses" }, order: 90, view: (_ctx, host) => statusesView(host, readStatuses) },
+			{
+				id: "model",
+				label: "Model",
+				command: { name: "dashboard" },
+				order: 85,
+				view: (ctx, host) =>
+					new LoadingView("Model", host, async () => (await loadViews()).modelView(pi, ctx, host, () => requestRender())),
+			},
+			{
+				id: "statuses",
+				label: "Statuses",
+				command: { name: "statuses" },
+				order: 90,
+				view: (_ctx, host) => new LoadingView("Statuses", host, async () => (await loadViews()).statusesView(host, readStatuses)),
+			},
 		],
 	});
 

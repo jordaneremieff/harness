@@ -607,7 +607,9 @@ agent remains discoverable through the host's existing agent controls; use those
 controls for explicit inspection or cancellation, including background work.
 The artifact appears through `stash_list` discovery without a follow-up caller turn.
 
-Only TUI mode opens the Stashes view. RPC uses the public `ctx.ui.select`
+Only TUI mode opens the Stashes view, and the view module loads when the
+destination opens; until it is ready the frame shows a reading placeholder. RPC
+uses the public `ctx.ui.select`
 dialog for bare `/stash`, without custom terminal components or client-specific
 behavior. Callers without UI can use `stash_list` to discover ids; the explicit
 `get` and lifecycle verbs remain usable without the browser. Bare JSON/print

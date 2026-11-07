@@ -314,7 +314,10 @@ function makeCtx(over: CtxOverrides = {}) {
 			customDriver = (factory, resolve, reject) => {
 				const frame = factory(tui, theme, { getKeys: () => [] }, resolve) as NavigationFrame;
 				Promise.resolve()
-					.then(() => script(frame))
+					.then(async () => {
+						await loaded(frame);
+						return script(frame);
+					})
 					.then(
 						() => {
 							frame.close();
@@ -347,6 +350,11 @@ function installFooter(mocks: ReturnType<typeof makeCtx>) {
 }
 
 const frameText = (frame: NavigationFrame, width = 100) => frame.render(width).map(strip).join("\n");
+
+/** A destination shows a reading placeholder until its view module loads. */
+async function loaded(frame: NavigationFrame): Promise<void> {
+	for (let attempt = 0; attempt < 400 && /Reading…/.test(frameText(frame)); attempt++) await turn();
+}
 
 /** Run one labelled action of the view the operator reads, as its control would. */
 function act(frame: NavigationFrame, label: string): void {
@@ -917,7 +925,9 @@ describe("Commands view", () => {
 			frame = factory(mocks.tui, mocks.theme, { getKeys: () => [] }, resolve) as NavigationFrame;
 		});
 		const pending = commands.get("commands").handler("", mocks.ctx);
+		await turn();
 		assert.ok(frame, "the frame opened");
+		await loaded(frame);
 		filterTo(frame, "review");
 		await handlers.get("session_shutdown")({ type: "session_shutdown", reason: "quit" }, mocks.ctx);
 		await pending;
@@ -968,6 +978,7 @@ describe("Model view", () => {
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const done = mocks.onNextFrame(async (frame) => {
 			frame.navigate(viewKey(ENTRY, "model"));
+			await loaded(frame);
 			assert.match(frameText(frame), /Model and reasoning for this session/);
 			frame.handleInput("\r");
 			frame.handleInput("\u001b[B");
@@ -988,6 +999,7 @@ describe("Model view", () => {
 		await handlers.get("session_start")(sessionStart, mocks.ctx);
 		const done = mocks.onNextFrame(async (frame) => {
 			frame.navigate(viewKey(ENTRY, "model"));
+			await loaded(frame);
 			typeText(frame, "needs");
 			frame.handleInput("\u001b[B");
 			act(frame, "Apply");

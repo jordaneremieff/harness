@@ -42,9 +42,9 @@ import {
 } from "./guidance.ts";
 import { captureHint, creationRequest, independentLauncher } from "./launch.ts";
 import { emptyListText, ListOutputSchema, recentListResult } from "./list-result.ts";
-import { openOperatorFrame, publishOperatorViews } from "../../operator-ui/index.ts";
+import { LoadingView, openOperatorFrame, publishOperatorViews, type OperatorView, type ViewHost } from "../../operator-ui/registration.ts";
 import { loadArchive, loadRecent, loadSelectedPreview } from "./browser-views.ts";
-import { createStashViewState, type StashOperations, type StashViewState, stashView } from "./operator-view.ts";
+import type { StashOperations, StashViewState } from "./operator-view.ts";
 import { CompleteParams, EditParams, ListParams, ReadParams, RotateParams, WriteParams } from "./params.ts";
 import { buildPickupMessage } from "./pickup.ts";
 import {
@@ -685,20 +685,22 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	};
 	/** Browsing position per session, kept while the extension instance lives. */
 	const viewStates = new Map<string, StashViewState>();
-	const viewState = (ctx: ExtensionContext) => {
+	/** The view module loads when the destination opens, not when this factory runs. */
+	const loadView = async (ctx: ExtensionContext, host: ViewHost): Promise<OperatorView> => {
+		const module = await import("./operator-view.ts");
 		const id = ctx.sessionManager.getSessionId();
 		let state = viewStates.get(id);
 		if (!state) {
-			state = createStashViewState();
+			state = module.createStashViewState();
 			viewStates.set(id, state);
 		}
-		return state;
+		return module.stashView(host, ordinaryOperations(pi, ctx, failFor(ctx), overrides?.copyText), state);
 	};
 	// Package contract: docs/conventions/operator-panels.md. Opening is a harmless read; pickup and lifecycle changes are labelled actions inside.
 	publishOperatorViews(pi, {
 		version: 2,
 		owner: OWNER,
-		views: [{ id: "stash", label: "Stashes", command: { name: "stash" }, order: 10, view: (ctx, host) => stashView(host, ordinaryOperations(pi, ctx, failFor(ctx), overrides?.copyText), viewState(ctx)) }],
+		views: [{ id: "stash", label: "Stashes", command: { name: "stash" }, order: 10, view: (ctx, host) => new LoadingView("Stashes", host, () => loadView(ctx, host)) }],
 	});
 	async function openBrowser(ctx: ExtensionContext): Promise<void> {
 		if (ctx.mode === "tui") await openOperatorFrame(pi, ctx, { owner: OWNER, id: "stash" });

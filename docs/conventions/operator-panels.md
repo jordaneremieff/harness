@@ -7,10 +7,13 @@ keeps its operations, its store, its approvals, and its validation. A host never
 parses an owner's output, imports an owner's source, or runs an owner's closures
 outside the owner's own process.
 
-The shared presentation lives in `operator-ui/`. Its one public entry is
-`operator-ui/index.ts`; extensions import from that file only, and
-`scripts/check-slices.mts` names the extensions that may. The package owns no
-operation, store, approval, model catalogue, or trust decision.
+The shared presentation lives in `operator-ui/`. It has two public entries.
+`operator-ui/registration.ts` carries the factory-time primitives: announcing
+destinations, opening the frame, the loading view, and the view type
+contracts. `operator-ui/index.ts` carries the presentation itself: the frame,
+controls, building blocks and readers. Extensions import from those two files
+only, and `scripts/check-slices.mts` names the extensions that may. The package
+owns no operation, store, approval, model catalogue, or trust decision.
 
 ## Interaction model
 
@@ -162,6 +165,34 @@ Publishers: stash (Stashes), clipboard (Clipboard), policy (Policy), pillars
 (Pillars), statusline (Commands, Model, Statuses). The frame collects the
 publications each time it opens.
 
+### Loading a view
+
+A published view returns at once: the factory's `view` function builds a
+`LoadingView` and starts the owner's import and read inside its load callback.
+The implementation module, not the factory, owns everything the view renders.
+
+```ts
+view: (ctx, host) =>
+  new LoadingView("Stashes", host, async () => {
+    const module = await import("./operator-view.ts");
+    state ??= module.createStashViewState();
+    return module.stashView(host, operations(ctx), state);
+  })
+```
+
+- A published view is synchronous. The frame mounts the loading view and
+  renders `Reading…` until the loaded view replaces it in place.
+- State belongs to the extension instance, not the loading view, so a query
+  and a selection survive closing and reopening the destination.
+- The loading view drops a late result when its host signal aborted, and shows
+  a load failure in place with the way to retry.
+- No renderer, action or key handler starts an import. The owner imports at
+  open time or at command time, never from a render path.
+- A factory that publishes a view imports only `operator-ui/registration.ts`,
+  so evaluating its entrypoint does not evaluate the frame and its building
+  blocks. A view implementation may import `operator-ui/index.ts` when it
+  loads.
+
 ## Attached panels
 
 The attached Agent terminal is a separate process without ordinary command UI.
@@ -278,7 +309,10 @@ Each owner documents its request union and effects in its README:
 
 `operator-ui/*.test.mts` tests the frame, controls, list, reader, forms,
 browser, loading view, publication handshake, owner resolution, guarded
-dispatch, and module shape checks. The Agent slice tests descriptor admission
+dispatch, and module shape checks. It also tests the registration entry's
+module boundary and a destination that loads behind a loading view: a first
+open, a repeated open, a close during the load, and a failed load. The Agent
+slice tests descriptor admission
 (refused entry, absent command, unloaded source), the command result shape,
 origin propagation, module loading through the real resolver (missing module,
 throwing export, wrong shape, source replacement), and the binding of requests

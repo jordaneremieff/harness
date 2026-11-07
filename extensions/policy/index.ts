@@ -23,9 +23,9 @@ import {
 } from "./local-rules.ts";
 import { POLICY_MODES, type PolicyMode, resolvePolicyModeValue } from "./mode.ts";
 import { capText, formatPolicyList, formatPolicyShow, readFireSummary, readRecentActivity, terminalSafe } from "./panel.ts";
-import { ArtifactReview, createPolicyViewState, type PolicyOperations, type PolicyResult, type PolicyViewState, policyView } from "./operator-view.ts";
+import type { PolicyOperations, PolicyResult, PolicyViewState } from "./operator-view.ts";
 import { effectiveState, selectableForAction, type SessionRuleAudit } from "./rule.ts";
-import { frameRows, NavigationFrame, openOperatorFrame, ordinaryTarget, publishOperatorViews, ReaderView } from "../../operator-ui/index.ts";
+import { LoadingView, openOperatorFrame, publishOperatorViews, type OperatorView, type ViewHost } from "../../operator-ui/registration.ts";
 import { PolicyRuntime } from "./runtime.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
 import {
@@ -303,6 +303,15 @@ function ordinaryOperations(env: PolicyCommandEnv, ctx: ExtensionContext): Polic
  */
 function reviewInFrame(ctx: ExtensionContext, title: string, artifact: string, label: string): Promise<boolean> {
 	if (ctx.mode !== "tui" || !ctx.hasUI) return Promise.resolve(false);
+	return openArtifactReview(ctx, title, artifact, label);
+}
+
+/** The review frame and artifact presentation load when an actual review opens. */
+async function openArtifactReview(ctx: ExtensionContext, title: string, artifact: string, label: string): Promise<boolean> {
+	const [{ NavigationFrame, frameRows, ordinaryTarget }, { ArtifactReview }] = await Promise.all([
+		import("../../operator-ui/index.ts"),
+		import("./operator-view.ts"),
+	]);
 	return ctx.ui.custom<boolean>((tui, theme, _keys, done) => {
 		let approved = false;
 		return new NavigationFrame({
@@ -958,14 +967,23 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 	publish();
 	runtime.attach();
 	const viewStates = new Map<string, PolicyViewState>();
-	const viewState = (ctx: ExtensionContext) => {
+	/** The invalid-configuration refusal shows at once and loads no presentation module. */
+	const stoppedView = (): OperatorView => ({
+		title: "Policy",
+		render: (_width, height) =>
+			Array.from({ length: height }, (_, row) => (row === 0 ? "Policy is stopped because its mode configuration is invalid." : "")),
+		handleInput: () => false,
+	});
+	/** The view module loads when the destination opens, not when this factory runs. */
+	const loadView = async (ctx: ExtensionContext, host: ViewHost): Promise<OperatorView> => {
+		const module = await import("./operator-view.ts");
 		const id = ctx.sessionManager.getSessionId();
 		let state = viewStates.get(id);
 		if (!state) {
-			state = createPolicyViewState();
+			state = module.createPolicyViewState();
 			viewStates.set(id, state);
 		}
-		return state;
+		return module.policyView(host, ordinaryOperations(commandEnv, ctx), state);
 	};
 	const output = (ctx: ExtensionContext, text: string, error = false): void => {
 		const safe = capText(terminalSafe(text), 32768);
@@ -1006,10 +1024,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 				label: "Policy",
 				command: { name: "policy" },
 				order: 30,
-				view: (ctx, host) =>
-					ensureMode()
-						? policyView(host, ordinaryOperations(commandEnv, ctx), viewState(ctx))
-						: new ReaderView("Policy", host, () => "Policy is stopped because its mode configuration is invalid."),
+				view: (ctx, host) => (ensureMode() ? new LoadingView("Policy", host, () => loadView(ctx, host)) : stoppedView()),
 			},
 		],
 	});

@@ -64,6 +64,9 @@ function pi(commands: SlashCommandInfo[] = []) {
 
 const view = (title: string): OperatorView => ({ title, render: (_width, height) => Array.from({ length: height }, () => title), handleInput: () => false });
 
+/** The frame implementation loads on first open, so the mounted frame arrives after a turn. */
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
 it("a publication of another version or a malformed view is refused, never guessed", () => {
 	assert.equal(readPublication({ version: 1, owner: "/x", views: [] }), undefined);
 	assert.equal(readPublication({ version: 2, owner: "", views: [] }), undefined);
@@ -156,6 +159,7 @@ it("an open frame navigates instead of opening a second one, and close runs its 
 	const mounted: { frame?: NavigationFrame } = {};
 	const ctx = tuiContext(mounted);
 	const opened = openOperatorFrame(host.api, ctx, { owner: "/one.ts", id: "one" });
+	await settle();
 	assert.equal(mounted.frame?.viewTitle, "One");
 	const frame = mounted.frame;
 	await openOperatorFrame(host.api, ctx, { owner: "/two.ts", id: "two" });
@@ -176,6 +180,7 @@ it("a view's command shows that view alone; the dashboard shows every view as a 
 	publishOperatorViews(api, { version: 2, owner: "/two.ts", views: [{ id: "two", label: "Two", command: { name: "two" }, order: 2, view: () => view("Two") }] });
 	const own: { frame?: NavigationFrame; done?: () => void } = {};
 	const opened = openOperatorFrame(api, tuiContext(own), { owner: "/two.ts", id: "two" });
+	await settle();
 	for (let paint = 0; paint < 5; paint++) own.frame?.render(100);
 	const header = own.frame?.render(100)[0] ?? "";
 	assert.match(header, /Two/);
@@ -185,6 +190,7 @@ it("a view's command shows that view alone; the dashboard shows every view as a 
 	await opened;
 	const all: { frame?: NavigationFrame; done?: () => void } = {};
 	const dashboard = openOperatorFrame(api, tuiContext(all), undefined, { tabs: true });
+	await settle();
 	const tabs = all.frame?.render(100)[0] ?? "";
 	assert.match(tabs, /One.*Two/, "every view is a tab, in publication order");
 	const footer = all.frame?.render(100).at(-1) ?? "";
@@ -207,6 +213,7 @@ it("session shutdown closes an open frame", async () => {
 	publishOperatorViews(host.api, { version: 2, owner: "/one.ts", views: [{ id: "one", label: "One", command: { name: "one" }, view: () => view("One") }] });
 	const mounted: { frame?: NavigationFrame } = {};
 	const opened = openOperatorFrame(host.api, tuiContext(mounted), { owner: "/one.ts", id: "one" });
+	await settle();
 	assert.equal(host.shutdown.length, 1);
 	host.shutdown[0]?.();
 	await opened;
