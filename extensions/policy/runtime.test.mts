@@ -1,6 +1,6 @@
 import { obj, opt, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, test } from "node:test";
@@ -62,6 +62,12 @@ it("binds reset revisions to runtime instance, exact selector, and current perio
 	assert.throws(() => first.runtime.reset(["sample"], "Repeated.", single), /revision changed/);
 });
 
+async function writeTelemetrySegment(dir: string, lines: string[]): Promise<void> {
+	const segments = join(dir, "telemetry");
+	await mkdir(segments, { recursive: true, mode: 0o700 });
+	await writeFile(join(segments, "2026-01-01.000001.jsonl"), `${lines.join("\n")}\n`, { mode: 0o600 });
+}
+
 function fixture(
 	programs: RuleRecord[],
 	mode: PolicyMode = "enforce",
@@ -86,10 +92,9 @@ function fixture(
 	const writer = new PolicyWriter(
 		"/unused",
 		(reason) => failures.push(reason),
-		async (_dir, record) => {
-			if (fail) return "disk unavailable";
-			records.push(record);
-			return null;
+		async (_dir, batch) => {
+			if (fail) throw new Error("disk unavailable");
+			records.push(...batch);
 		},
 	);
 	const ctx = {
@@ -995,7 +1000,7 @@ describe("recorded call explanations", () => {
 		assert.equal((await f.call("unknown", input))?.block, true);
 		await f.finish("unknown", true);
 		await f.writer.close();
-		await writeFile(join(dir, "2026-01-01.jsonl"), `${JSON.stringify(f.records[0])}\n`);
+		await writeTelemetrySegment(dir, [JSON.stringify(f.records[0])]);
 		const explained = (await f.runtime.inspect("explain", { id: "call:unknown" }, f.ctx)) as {
 			records: Array<{ policy: { evaluations: Evaluation[] } }>;
 		};
@@ -1023,10 +1028,10 @@ describe("recorded call explanations", () => {
 		await f.finish("trace");
 		await f.writer.close();
 		const record = { ...f.records[0], policy: { ...f.records[0].policy, rawInput: "unretained-example-marker" } };
-		await writeFile(
-			join(dir, "2026-01-01.jsonl"),
-			`${[JSON.stringify(record), JSON.stringify({ ...record, session: "another-session" })].join("\n")}\n`,
-		);
+		await writeTelemetrySegment(dir, [
+			JSON.stringify(record),
+			JSON.stringify({ ...record, session: "another-session" }),
+		]);
 		const explained = (await f.runtime.inspect("explain", { id: "call:trace" }, f.ctx)) as {
 			records: Array<{
 				session: string;

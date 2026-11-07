@@ -160,6 +160,8 @@ input uses `<agentDir>/policy` and retains its rejected-source diagnostic.
 |---|---|---|---|---|---|
 | dir | `PI_POLICY_DIR` | path | &lt;agentDir&gt;/policy | none | Private directory for rules, approved data, and telemetry. |
 | mode | `PI_POLICY_MODE` | enum | "observe" | observe, notice, annotate, enforce | Machine mode. observe records facts and candidate effects only; notice adds operator notices; annotate adds model guidance; enforce also applies approved denials and corrections. No mode unloads the extension. An ordinary --policy-mode flag overrides it for that session. |
+| telemetryMaxBytes | `PI_POLICY_TELEMETRY_MAX_BYTES` | integer | 1073741824 | min 33554432 | Byte budget for retained telemetry segments. A write removes the oldest segments to stay within it. A rotated segment needs at least one segment of room. |
+| telemetryMaxAgeDays | `PI_POLICY_TELEMETRY_MAX_AGE_DAYS` | integer | 30 | min 1 | Retention age for telemetry segments, in writer-local calendar days. A write removes older segments. |
 <!-- harness:settings:end -->
 
 `--policy-mode` is an ordinary per-invocation/session override, not a document
@@ -171,9 +173,13 @@ shutdown removes only the factory publisher. Host shutdown removes its native
 publisher. A new runtime reads new configuration; publication requests do not
 change an existing runtime.
 
-Rule definitions, proposals, approvals, approved data, and telemetry remain
-application state in the private policy directory. `harness.json` neither stores
-nor approves that state.
+Rule definitions, proposals, approvals, and approved data remain application
+state in the private policy directory. Telemetry lives in its `telemetry/`
+subdirectory under its own byte and age budget (see
+[telemetry storage](#telemetry-storage-and-retention)). `harness.json` neither
+stores nor approves that state. A writer reads the two retention settings once when
+it starts. A published value is configuration, not proof that a running writer
+applies it.
 
 `PI_POLICY_TEST_PI_ROOT` is a test-only explicit Pi package root for
 `pi-hooks.test.mts`, `nested-guidance.test.mts`, `proposal-schema.test.mts`, and
@@ -1159,7 +1165,9 @@ authority and the current revision.
 ### Date-bounded telemetry
 
 Use `/policy telemetry 2026-09-01 2026-09-07` to read an inclusive date range.
-The dates name the writer's local-calendar day files, not UTC timestamp filters.
+The dates name the writer's local-calendar day segments, not UTC timestamp filters.
+Builtin reporting covers only the `telemetry/` directory; files elsewhere in the
+policy directory are neither read nor counted.
 The command reports retained tool volume, error classes, confirmed denials and
 rule attribution, text-output bytes, truncation, and coverage gaps in plain text.
 Intentional removal of irrelevant evaluations is counted separately from missing
@@ -1168,7 +1176,10 @@ It reads existing files only. It neither seeds a missing rule registry nor
 creates telemetry files, aggregate stores, background work, or retention changes.
 
 [telemetry.ts](telemetry.ts) defines date, byte, line, metadata, group, and output
-limits. Reads proceed newest day first and select each file's tail. Within each
+limits. Reads proceed newest day first and, within a day, newest segment first. Each
+segment contributes its tail. Coverage names the selected byte range, unread bytes,
+and issues of every segment. An incomplete inventory, a segment that retention removes
+during a read, and an unsafe entry all make the report partial evidence. Within each
 bounded snapshot, denials precede other records, with newest records first in
 each group. The report names the selected byte ranges, unread bytes, unprocessed
 bytes, malformed lines, and skipped days. Denials outside those byte snapshots
@@ -1401,8 +1412,8 @@ registry.
 The store directory must be current-user-owned, non-symlink, and private (0700).
 The registry must be a current-user-owned regular file with mode 0600. Reads and
 writes use no-follow protections where available and checked append writes.
-Each telemetry append uses one buffer with a leading newline, the JSON record,
-and a trailing newline. Both separators count towards its byte limit. A torn
+Each telemetry append uses one buffer with a leading newline, then each JSON
+record followed by a newline. Both separators count towards the record byte limit. A torn
 prior tail remains malformed without absorbing the next complete record;
 readers ignore blank lines.
 Existing rule and telemetry paths open without waiting for pipe peers. Nonregular
@@ -1453,6 +1464,41 @@ including disabled and retired definitions. Competing pending additions never
 reserve capacity; a refused approval remains pending and leaves the log unchanged.
 Oversized declarations are rejected rather than silently truncated.
 
+### Telemetry storage and retention
+
+Telemetry segments are named `YYYY-MM-DD.NNNNNN.jsonl` (writer-local day, six-digit
+ordinal) in `<policy dir>/telemetry/`, a private (0700) directory of 0600 regular
+files. Writers, the `/policy` activity and fire-count readers, and the date report
+use only that directory. Telemetry code reads, rotates, and deletes nothing else in
+the policy directory.
+
+- **Segments.** A segment holds at most 32 MiB. A batch that would pass that size
+  starts the next ordinal for the same day.
+- **Retention.** Each write removes segments older than `telemetryMaxAgeDays` local
+  days (the current day counts as day one) and then removes the oldest segments until
+  the retained total plus the batch fits `telemetryMaxBytes`. The segment being
+  appended to is kept unless a rotated segment needs its room. The byte budget must
+  hold at least one segment.
+- **Safety.** The inventory lists at most 512 entries. Names that do not match the
+  segment pattern are ignored and never removed. A symbolic link, nonregular file, or
+  segment whose identity changed after inspection is never followed or removed, and
+  makes the write fail with a health error. A truncated or unreadable listing does
+  the same.
+- **Lock.** A `.telemetry-lock` file in the telemetry directory serialises rotation,
+  retention, and append across processes. It is separate from the rule transaction
+  lock and the observation-state lock. Acquisition waits at most 500 ms and then
+  fails. Policy never removes a lock because of its age; if a process stopped while
+  holding it, stop all policy writers before removing `.telemetry-lock` by hand.
+- **Queue.** The writer holds at most 512 accepted records and 4 MiB of serialized
+  records that are not yet written. Each record is serialized once, when it is queued.
+  Records go to disk in batches of at most 32 records or 64 KiB; a permitted record
+  larger than a batch runs alone. A record over 256 KiB is refused.
+- **Failure.** A full queue, an invalid or oversized record, a held lock, an unsafe
+  entry, or a failed write or removal stops further admission and reports health once.
+  A full queue still writes what it accepted; a persistence failure discards the
+  queued records. Telemetry failure never changes an approved tool decision. Closing
+  the writer stops admission and waits for the last accepted batch.
+
 Daily telemetry records tool/call identity, session context, duration, text output
 size, truncation, reported tokens, observed outcome, mode, rule revisions,
 metadata labels, changed field paths, and requested/applied effects. Named data
@@ -1462,8 +1508,8 @@ while retaining that data revision. Each metadata group reports omissions.
 Evaluation records retain matched,
 denying, guiding, correcting, and unavailable facts, not the non-matching rule
 inventory. Generation pins are limited to those rules. Coverage counts distinguish
-irrelevant evaluations and pins from facts omitted by the byte bound. Older day
-files remain readable as tool records, but evaluation coverage without the current
+irrelevant evaluations and pins from facts omitted by the byte bound. Records
+from older shapes remain readable as tool records, but evaluation coverage without the current
 irrelevant-count field is unknown; no older-shape reader or migration is supplied.
 Correlation
 loss is explicit. Records do not invent a terminal result for an unfinished call.

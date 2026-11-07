@@ -1,19 +1,18 @@
 /** Append-only, private filesystem persistence for policy records. */
 
-import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, lstat, mkdir } from "node:fs/promises";
 import type { PolicyRecord } from "./record.ts";
-
-const MAX_RECORD_BYTES = 256 * 1024;
-export const MAX_QUEUED_RECORDS = 512;
-
-const pad = (value: number) => String(value).padStart(2, "0");
-
-/** YYYY-MM-DD in the local timezone. */
-export function localDate(date: Date): string {
-	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
+import {
+	appendTelemetryRecords,
+	DEFAULT_TELEMETRY_RETENTION,
+	MAX_TELEMETRY_RECORD_BYTES,
+	TELEMETRY_BATCH_BYTES,
+	TELEMETRY_BATCH_RECORDS,
+	TELEMETRY_QUEUE_BYTES,
+	TELEMETRY_QUEUE_RECORDS,
+	type TelemetryRetention,
+	type TelemetryWriter,
+} from "./telemetry-files.ts";
 
 export async function ensurePrivateDirectory(dir: string): Promise<void> {
 	const created = await mkdir(dir, { recursive: true, mode: 0o700 });
@@ -40,44 +39,33 @@ function errorMessage(error: unknown): string {
 	}
 }
 
+export type AppendTelemetry = (
+	dir: string,
+	records: readonly PolicyRecord[],
+	retention: TelemetryRetention,
+) => Promise<void>;
+
 /**
- * Append one record to the day's file.
+ * Append one record to the day's segment.
  * The error is returned rather than thrown: a store failure must never reach
  * the tool call that produced the record.
  */
-export async function appendRecord(dir: string, record: PolicyRecord): Promise<string | null> {
+export async function appendRecord(
+	dir: string,
+	record: PolicyRecord,
+	retention: TelemetryRetention = DEFAULT_TELEMETRY_RETENTION,
+): Promise<string | null> {
 	try {
-		const serialized = Buffer.from(`\n${JSON.stringify(record)}\n`, "utf8");
-		if (serialized.length > MAX_RECORD_BYTES) {
-			throw new Error(`policy record exceeds ${MAX_RECORD_BYTES} bytes`);
-		}
-		const timestamp = new Date(record.at);
-		if (Number.isNaN(timestamp.getTime())) throw new Error(`invalid policy timestamp: ${record.at}`);
-		await ensurePrivateDirectory(dir);
-		const path = join(dir, `${localDate(timestamp)}.jsonl`);
-		const noFollow = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
-		const handle = await open(
-			path,
-			constants.O_WRONLY | constants.O_CREAT | constants.O_APPEND | constants.O_NONBLOCK | noFollow,
-			0o600,
-		);
-		try {
-			const info = await handle.stat();
-			if (!info.isFile()) throw new Error(`policy record store is not a regular file: ${path}`);
-			if (typeof process.getuid === "function" && info.uid !== process.getuid())
-				throw new Error(`policy record store is not owned by this user: ${path}`);
-			await handle.chmod(0o600);
-			const { bytesWritten } = await handle.write(serialized, 0, serialized.length, null);
-			if (bytesWritten !== serialized.length) {
-				throw new Error(`policy record write stopped at ${bytesWritten} of ${serialized.length} bytes`);
-			}
-		} finally {
-			await handle.close();
-		}
+		await appendTelemetryRecords(dir, [record], retention);
 		return null;
 	} catch (error) {
 		return errorMessage(error);
 	}
+}
+
+interface QueueEntry {
+	readonly record: PolicyRecord;
+	readonly bytes: number;
 }
 
 /**
@@ -85,25 +73,39 @@ export async function appendRecord(dir: string, record: PolicyRecord): Promise<s
  * handlers. Every queued promise handles its own failure, so no rejection can
  * escape in the background.
  */
-export class PolicyWriter {
-	private tail: Promise<void> = Promise.resolve();
-	private queued = 0;
+export class PolicyWriter implements TelemetryWriter {
 	private accepting = true;
 	private discardQueued = false;
 	private failureReported = false;
+	private queuedBytes = 0;
+	private queuedRecords = 0;
+	private pending: QueueEntry[] = [];
+	private drainPromise: Promise<void> | undefined;
 	private readonly dir: string;
 	private readonly onFailure: (reason: string) => void;
-	private readonly write: typeof appendRecord;
+	private readonly append: AppendTelemetry;
+	private readonly retention: TelemetryRetention;
 
-	constructor(dir: string, onFailure: (reason: string) => void, write: typeof appendRecord = appendRecord) {
+	constructor(
+		dir: string,
+		onFailure: (reason: string) => void,
+		append: AppendTelemetry = appendTelemetryRecords,
+		retention: TelemetryRetention = DEFAULT_TELEMETRY_RETENTION,
+	) {
 		this.dir = dir;
 		this.onFailure = onFailure;
-		this.write = write;
+		this.append = append;
+		this.retention = retention;
 	}
 
 	private fail(reason: string, discardQueued: boolean): void {
 		this.accepting = false;
-		if (discardQueued) this.discardQueued = true;
+		if (discardQueued) {
+			this.discardQueued = true;
+			this.pending = [];
+			this.queuedBytes = 0;
+			this.queuedRecords = 0;
+		}
 		if (this.failureReported) return;
 		this.failureReported = true;
 		try {
@@ -116,27 +118,82 @@ export class PolicyWriter {
 	/** Queue telemetry only. Refusal never changes an approved policy decision. */
 	enqueue(record: PolicyRecord): boolean {
 		if (!this.accepting) return false;
-		if (this.queued >= MAX_QUEUED_RECORDS) {
-			this.fail(`policy writer queue reached ${MAX_QUEUED_RECORDS} records`, false);
+		let bytes: number;
+		try {
+			const timestamp = new Date(record.at);
+			if (Number.isNaN(timestamp.getTime())) throw new Error(`invalid policy timestamp: ${record.at}`);
+			bytes = Buffer.byteLength(JSON.stringify(record), "utf8") + 2;
+		} catch (error) {
+			this.fail(errorMessage(error), true);
 			return false;
 		}
-		this.queued++;
-		this.tail = this.tail
-			.then(async () => {
-				if (this.discardQueued) return;
-				const failure = await this.write(this.dir, record);
-				if (failure) this.fail(failure, true);
-			})
-			.catch((error: unknown) => this.fail(errorMessage(error), true))
-			.finally(() => {
-				this.queued--;
-			});
+		if (bytes > MAX_TELEMETRY_RECORD_BYTES) {
+			this.fail(`policy record exceeds ${MAX_TELEMETRY_RECORD_BYTES} bytes`, true);
+			return false;
+		}
+		if (this.queuedRecords >= TELEMETRY_QUEUE_RECORDS) {
+			this.fail(`policy writer queue reached ${TELEMETRY_QUEUE_RECORDS} records`, false);
+			return false;
+		}
+		if (this.queuedBytes + bytes > TELEMETRY_QUEUE_BYTES) {
+			this.fail(`policy writer queue reached ${TELEMETRY_QUEUE_BYTES} bytes`, false);
+			return false;
+		}
+		this.pending.push({ record, bytes });
+		this.queuedBytes += bytes;
+		this.queuedRecords++;
+		this.schedule();
 		return true;
 	}
 
-	/** Stop admission and wait for the final accepted write. */
+	private schedule(): void {
+		if (this.drainPromise) return;
+		this.drainPromise = this.drain();
+	}
+
+	private takeBatch(): QueueEntry[] {
+		const batch: QueueEntry[] = [];
+		let bytes = 0;
+		while (this.pending.length > 0 && batch.length < TELEMETRY_BATCH_RECORDS) {
+			const next = this.pending[0];
+			if (batch.length > 0 && bytes + next.bytes > TELEMETRY_BATCH_BYTES) break;
+			this.pending.shift();
+			batch.push(next);
+			bytes += next.bytes;
+			if (next.bytes > TELEMETRY_BATCH_BYTES) break;
+		}
+		return batch;
+	}
+
+	/** Clears its own handle in the turn that finds the queue empty, so no accepted record is stranded. */
+	private async drain(): Promise<void> {
+		await Promise.resolve();
+		try {
+			while (!this.discardQueued && this.pending.length > 0) {
+				const batch = this.takeBatch();
+				let bytes = 0;
+				for (const entry of batch) bytes += entry.bytes;
+				try {
+					await this.append(
+						this.dir,
+						batch.map((entry) => entry.record),
+						this.retention,
+					);
+				} catch (error) {
+					this.fail(errorMessage(error), true);
+					return;
+				}
+				this.queuedBytes = Math.max(0, this.queuedBytes - bytes);
+				this.queuedRecords = Math.max(0, this.queuedRecords - batch.length);
+			}
+		} finally {
+			this.drainPromise = undefined;
+		}
+	}
+
+	/** Stop admission and wait for the final accepted batch. */
 	async close(): Promise<void> {
 		this.accepting = false;
-		await this.tail;
+		while (this.drainPromise) await this.drainPromise;
 	}
 }

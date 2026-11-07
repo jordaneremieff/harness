@@ -4,10 +4,11 @@
  */
 
 import { constants } from "node:fs";
-import { open, readdir } from "node:fs/promises";
+import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { ruleScopeVisibility } from "./classify.ts";
 import { type PendingProposal, proposalRevision, type RuleSnapshot, ruleStoreHealthLine } from "./local-rules.ts";
+import { readTelemetryInventory, TELEMETRY_DIRECTORY } from "./telemetry-files.ts";
 import {
 	declaredAction,
 	effectiveEffect,
@@ -23,7 +24,6 @@ export const MAX_FIRE_SCAN_BYTES = 4 * 1024 * 1024;
 export const MAX_ACTIVITY_SCAN_BYTES = 4 * 1024 * 1024;
 export const MAX_ACTIVITY_RECORDS = 200;
 const READ_CHUNK_BYTES = 64 * 1024;
-const DAILY_STORE_FILE = /^\d{4}-\d{2}-\d{2}\.jsonl$/;
 
 type ModelFireMap = ReadonlyMap<string | null, number>;
 
@@ -495,16 +495,15 @@ function normalizeBound(value: number, fallback: number): number {
 	return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
 }
 
-/** Daily store files newest first; undefined means the directory itself could not be read. */
-async function listDailyFiles(dir: string): Promise<string[] | undefined> {
-	try {
-		return (await readdir(dir))
-			.filter((name) => DAILY_STORE_FILE.test(name))
-			.sort()
-			.reverse();
-	} catch (error) {
-		return (error as NodeJS.ErrnoException | undefined)?.code === "ENOENT" ? [] : undefined;
-	}
+/** Segment names oldest first; an undefined result means the directory itself could not be read. */
+async function listDailyFiles(dir: string): Promise<{ names: string[]; partial: boolean } | undefined> {
+	const inventory = await readTelemetryInventory(dir);
+	if (inventory.directory === "missing") return { names: [], partial: false };
+	if (inventory.directory !== "available") return undefined;
+	return {
+		names: inventory.entries.filter((entry) => entry.unsafe === null).map((entry) => entry.name),
+		partial: inventory.incomplete || inventory.entries.some((entry) => entry.unsafe !== null),
+	};
 }
 
 /** Record matching the activity filter, or undefined for malformed or filtered lines. */
@@ -547,11 +546,13 @@ export async function readRecentActivity(
 ): Promise<ActivityReadResult> {
 	const normalizedBytes = normalizeBound(byteBound, MAX_ACTIVITY_SCAN_BYTES);
 	const normalizedRecords = normalizeBound(recordLimit, MAX_ACTIVITY_RECORDS);
-	const files = await listDailyFiles(dir);
-	if (files === undefined)
+	const listed = await listDailyFiles(dir);
+	if (listed === undefined)
 		return { records: [], partial: true, byteLimited: false, recordLimited: false, bytesRead: 0 };
+	const files = [...listed.names].reverse();
 	if (files.length === 0)
-		return { records: [], partial: false, byteLimited: false, recordLimited: false, bytesRead: 0 };
+		return { records: [], partial: listed.partial, byteLimited: false, recordLimited: false, bytesRead: 0 };
+	const segments = join(dir, TELEMETRY_DIRECTORY);
 	const matched: PolicyActivityRecord[] = [];
 	let remaining = normalizedBytes;
 	let bytesRead = 0;
@@ -563,7 +564,7 @@ export async function readRecentActivity(
 		}
 		let tail: Awaited<ReturnType<typeof readFileTail>>;
 		try {
-			tail = await readFileTail(join(dir, files[fileIndex]), remaining);
+			tail = await readFileTail(join(segments, files[fileIndex]), remaining);
 		} catch {
 			sortByTimeDescending(matched);
 			return {
@@ -588,7 +589,7 @@ export async function readRecentActivity(
 	const recordLimited = matched.length > normalizedRecords;
 	return {
 		records: matched.slice(0, normalizedRecords),
-		partial: byteLimited || recordLimited,
+		partial: listed.partial || byteLimited || recordLimited,
 		byteLimited,
 		recordLimited,
 		bytesRead,
@@ -709,19 +710,19 @@ export async function readFireSummary(dir: string, byteBound: number = MAX_FIRE_
 	const fires = new Map<string, number>();
 	const firesByModel = new Map<string, Map<string | null, number>>();
 	const countLine = makeFireCounter(fires, firesByModel);
+	const listed = await listDailyFiles(dir);
+	if (listed === undefined) return { fires, firesByModel, partial: true };
 	try {
-		const files = (await readdir(dir))
-			.filter((name) => DAILY_STORE_FILE.test(name))
-			.sort();
+		const segments = join(dir, TELEMETRY_DIRECTORY);
 		let remaining = normalizeBound(byteBound, MAX_FIRE_SCAN_BYTES);
-		for (const file of files) {
-			const scanned = await scanJsonlPrefix(join(dir, file), remaining, countLine);
+		for (const file of listed.names) {
+			const scanned = await scanJsonlPrefix(join(segments, file), remaining, countLine);
 			remaining -= scanned.bytesRead;
 			if (!scanned.complete) return { fires, firesByModel, partial: true };
 		}
-		return { fires, firesByModel, partial: false };
-	} catch (error) {
-		return { fires, firesByModel, partial: (error as NodeJS.ErrnoException | undefined)?.code !== "ENOENT" };
+		return { fires, firesByModel, partial: listed.partial };
+	} catch {
+		return { fires, firesByModel, partial: true };
 	}
 }
 

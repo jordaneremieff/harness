@@ -1,18 +1,20 @@
-/** Bounded summaries of retained policy day files, without input or session payloads. */
+/** Bounded summaries of retained policy telemetry segments, without input or session payloads. */
 
 import { constants, type Stats } from "node:fs";
-import { type FileHandle, lstat, open } from "node:fs/promises";
+import { type FileHandle, open } from "node:fs/promises";
 import { join } from "node:path";
 import type { CallOutcome } from "./record.ts";
+import { readTelemetryInventory, type TelemetryInventoryEntry, telemetryDirectory } from "./telemetry-files.ts";
 
 export const TELEMETRY_LIMITS = Object.freeze({
 	days: 31,
 	bytes: 8 * 1024 * 1024,
-	fileBytes: 4 * 1024 * 1024,
+	segmentBytes: 4 * 1024 * 1024,
 	lineBytes: 256 * 1024,
 	lines: 20_000,
 	entriesPerRecord: 512,
 	groups: 64,
+	coverageLines: 64,
 	outputBytes: 24 * 1024 - 1,
 });
 const CHUNK_BYTES = 64 * 1024;
@@ -38,23 +40,35 @@ export type TelemetryDayIssue =
 	| "symlink"
 	| "read-error"
 	| "source-changed"
-	| "file-byte-limit"
+	| "segment-byte-limit"
 	| "total-byte-limit"
 	| "line-limit"
 	| "incomplete-line"
 	| "cutoff-line"
 	| "malformed-line"
 	| "oversized-line";
-export interface TelemetryDay {
-	day: string;
+export interface TelemetrySegmentRead {
+	name: string;
+	ordinal: number;
 	status: "complete" | "partial" | "missing" | "unavailable" | "skipped";
 	bytesRead: number;
+	/** Snapshot size, or null when the segment could not be inspected. */
+	size: number | null;
 	/** Byte range selected from the snapshot, newest tail first. */
 	startOffset: number | null;
 	endOffset: number | null;
-	/** Snapshot bytes not read; null means the file size was not available. */
+	/** Snapshot bytes not read; null means the size was not available. */
 	bytesNotRead: number | null;
 	/** Bytes read but not parsed after the complete-line limit. */
+	unprocessedBytes: number;
+	issues: TelemetryDayIssue[];
+}
+export interface TelemetryDay {
+	day: string;
+	status: "complete" | "partial" | "missing" | "unavailable" | "skipped";
+	/** Segments read newest first; coverage records the offsets selected per segment. */
+	segments: TelemetrySegmentRead[];
+	bytesRead: number;
 	unprocessedBytes: number;
 	issues: TelemetryDayIssue[];
 }
@@ -88,6 +102,7 @@ export interface TelemetrySummary {
 		status: CoverageStatus;
 		order: "newest-days-tail-denials-first";
 		directory: "available" | "missing" | "nonregular" | "symlink" | "unreadable";
+		inventory: "complete" | "incomplete";
 		days: TelemetryDay[];
 		bytesRead: number;
 		completeLines: number;
@@ -181,13 +196,12 @@ function initialSummary(from: string, to: string, days: string[]): TelemetrySumm
 			status: "complete",
 			order: "newest-days-tail-denials-first",
 			directory: "available",
+			inventory: "complete",
 			days: days.map((day) => ({
 				day,
 				status: "skipped",
+				segments: [],
 				bytesRead: 0,
-				startOffset: null,
-				endOffset: null,
-				bytesNotRead: null,
 				unprocessedBytes: 0,
 				issues: [],
 			})),
@@ -419,9 +433,13 @@ class Aggregator {
 	}
 }
 
-function issue(day: TelemetryDay, reason: TelemetryDayIssue): void {
-	if (!day.issues.includes(reason)) day.issues.push(reason);
-	if (day.status === "complete") day.status = "partial";
+interface IssueTarget {
+	status: string;
+	issues: TelemetryDayIssue[];
+}
+function issue(target: IssueTarget, reason: TelemetryDayIssue): void {
+	if (!target.issues.includes(reason)) target.issues.push(reason);
+	if (target.status === "complete") target.status = "partial";
 }
 function parseRecord(buffer: Buffer): RecordFields | undefined {
 	if (buffer.length === 0) return undefined;
@@ -432,49 +450,72 @@ function parseRecord(buffer: Buffer): RecordFields | undefined {
 		return undefined;
 	}
 }
-function completeLineRange(buffer: Buffer, day: TelemetryDay, coverage: TelemetrySummary["coverage"], reachesEnd: boolean) {
+function completeLineRange(
+	buffer: Buffer,
+	segment: TelemetrySegmentRead,
+	coverage: TelemetrySummary["coverage"],
+	reachesEnd: boolean,
+) {
 	let first = 0;
 	let last = buffer.length;
-	if ((day.startOffset ?? 0) > 0) {
+	if ((segment.startOffset ?? 0) > 0) {
 		first = buffer.indexOf(10) + 1;
 		if (first === 0) first = buffer.length;
 		coverage.cutoffLines++;
-		issue(day, "cutoff-line");
+		issue(segment, "cutoff-line");
 	}
 	if (last > first && buffer[last - 1] !== 10) {
 		last = Math.max(first, buffer.lastIndexOf(10) + 1);
 		if (reachesEnd) {
 			coverage.incompleteLines++;
-			issue(day, "incomplete-line");
+			issue(segment, "incomplete-line");
 		} else {
 			coverage.cutoffLines++;
-			issue(day, "cutoff-line");
+			issue(segment, "cutoff-line");
 		}
 	}
 	return { first, last };
 }
-function acceptLine(day: TelemetryDay, aggregate: Aggregator, oversized: boolean, value: RecordFields | undefined): void {
+function acceptLine(
+	segment: TelemetrySegmentRead,
+	aggregate: Aggregator,
+	oversized: boolean,
+	value: RecordFields | undefined,
+): void {
 	const coverage = aggregate.summary.coverage;
 	coverage.completeLines++;
 	if (oversized) {
 		coverage.oversizedLines++;
-		issue(day, "oversized-line");
+		issue(segment, "oversized-line");
 	} else if (value) aggregate.accept(value);
 	else {
 		coverage.malformedLines++;
-		issue(day, "malformed-line");
+		issue(segment, "malformed-line");
 	}
 }
-function parsePassLine(buffer: Buffer, start: number, end: number, day: TelemetryDay, aggregate: Aggregator, denials: boolean): number {
+function parsePassLine(
+	buffer: Buffer,
+	start: number,
+	end: number,
+	segment: TelemetrySegmentRead,
+	aggregate: Aggregator,
+	denials: boolean,
+): number {
 	if (aggregate.summary.coverage.completeLines >= TELEMETRY_LIMITS.lines) return 0;
 	const oversized = end - start + 1 > TELEMETRY_LIMITS.lineBytes;
 	const value = oversized ? undefined : parseRecord(buffer.subarray(start, end));
 	if ((value?.outcome === "denied") !== denials) return 0;
-	acceptLine(day, aggregate, oversized, value);
+	acceptLine(segment, aggregate, oversized, value);
 	return end - start + 1;
 }
 
-function parsePass(buffer: Buffer, range: { first: number; last: number }, day: TelemetryDay, aggregate: Aggregator, denials: boolean): number {
+function parsePass(
+	buffer: Buffer,
+	range: { first: number; last: number },
+	segment: TelemetrySegmentRead,
+	aggregate: Aggregator,
+	denials: boolean,
+): number {
 	let processed = 0;
 	let end = range.last - 1;
 	while (end >= range.first) {
@@ -482,117 +523,172 @@ function parsePass(buffer: Buffer, range: { first: number; last: number }, day: 
 		if (start === end) {
 			// Both passes visit separators; only the second accounts for their bytes.
 			if (!denials) processed += 1;
-		} else processed += parsePassLine(buffer, start, end, day, aggregate, denials);
+		} else processed += parsePassLine(buffer, start, end, segment, aggregate, denials);
 		end = start - 1;
 	}
 	return processed;
 }
 /** Two bounded passes prioritise denials without retaining a second record inventory. */
-function parseLines(buffer: Buffer, day: TelemetryDay, aggregate: Aggregator, reachesEnd: boolean): void {
-	const range = completeLineRange(buffer, day, aggregate.summary.coverage, reachesEnd);
-	const processed = parsePass(buffer, range, day, aggregate, true) + parsePass(buffer, range, day, aggregate, false);
-	day.unprocessedBytes = Math.max(0, range.last - range.first - processed);
-	if (day.unprocessedBytes > 0) issue(day, "line-limit");
+function parseLines(
+	buffer: Buffer,
+	segment: TelemetrySegmentRead,
+	aggregate: Aggregator,
+	reachesEnd: boolean,
+): void {
+	const range = completeLineRange(buffer, segment, aggregate.summary.coverage, reachesEnd);
+	const processed =
+		parsePass(buffer, range, segment, aggregate, true) + parsePass(buffer, range, segment, aggregate, false);
+	segment.unprocessedBytes = Math.max(0, range.last - range.first - processed);
+	if (segment.unprocessedBytes > 0) issue(segment, "line-limit");
 }
-async function readSnapshot(handle: FileHandle, info: Stats, day: TelemetryDay, aggregate: Aggregator): Promise<void> {
+async function readSnapshot(
+	handle: FileHandle,
+	info: Stats,
+	segment: TelemetrySegmentRead,
+	aggregate: Aggregator,
+): Promise<void> {
 	const coverage = aggregate.summary.coverage;
-	day.status = "complete";
+	segment.status = "complete";
 	const remaining = TELEMETRY_LIMITS.bytes - coverage.bytesRead;
-	const length = Math.min(info.size, TELEMETRY_LIMITS.fileBytes, remaining);
+	const length = Math.min(info.size, TELEMETRY_LIMITS.segmentBytes, remaining);
 	const buffer = Buffer.alloc(length);
 	const startOffset = Math.max(0, info.size - length);
-	day.startOffset = startOffset;
+	segment.startOffset = startOffset;
 	try {
-		while (day.bytesRead < length) {
+		while (segment.bytesRead < length) {
 			const result = await handle.read(
 				buffer,
-				day.bytesRead,
-				Math.min(CHUNK_BYTES, length - day.bytesRead),
-				startOffset + day.bytesRead,
+				segment.bytesRead,
+				Math.min(CHUNK_BYTES, length - segment.bytesRead),
+				startOffset + segment.bytesRead,
 			);
 			if (result.bytesRead === 0) break;
-			day.bytesRead += result.bytesRead;
+			segment.bytesRead += result.bytesRead;
 			coverage.bytesRead += result.bytesRead;
 		}
 	} catch {
-		issue(day, "read-error");
+		issue(segment, "read-error");
 	}
-	day.endOffset = startOffset + day.bytesRead;
-	day.bytesNotRead = Math.max(0, info.size - day.bytesRead);
-	if (info.size > TELEMETRY_LIMITS.fileBytes) issue(day, "file-byte-limit");
-	if (info.size > remaining) issue(day, "total-byte-limit");
-	if (day.bytesRead < length) issue(day, "read-error");
+	segment.endOffset = startOffset + segment.bytesRead;
+	segment.bytesNotRead = Math.max(0, info.size - segment.bytesRead);
+	if (info.size > TELEMETRY_LIMITS.segmentBytes) issue(segment, "segment-byte-limit");
+	if (info.size > remaining) issue(segment, "total-byte-limit");
+	if (segment.bytesRead < length) issue(segment, "read-error");
 	const after = await handle.stat();
-	if (after.size !== info.size || after.mtimeMs !== info.mtimeMs) issue(day, "source-changed");
-	parseLines(buffer.subarray(0, day.bytesRead), day, aggregate, day.endOffset === info.size);
+	if (after.size !== info.size || after.mtimeMs !== info.mtimeMs) issue(segment, "source-changed");
+	parseLines(buffer.subarray(0, segment.bytesRead), segment, aggregate, segment.endOffset === info.size);
 }
-async function readDay(dir: string, day: TelemetryDay, aggregate: Aggregator): Promise<void> {
-	const coverage = aggregate.summary.coverage;
-	if (coverage.bytesRead >= TELEMETRY_LIMITS.bytes || coverage.completeLines >= TELEMETRY_LIMITS.lines) {
-		issue(day, coverage.bytesRead >= TELEMETRY_LIMITS.bytes ? "total-byte-limit" : "line-limit");
-		return;
-	}
-	let handle: Awaited<ReturnType<typeof open>> | undefined;
+async function readSegment(
+	entry: TelemetryInventoryEntry,
+	path: string,
+	segment: TelemetrySegmentRead,
+	aggregate: Aggregator,
+): Promise<void> {
+	let handle: FileHandle | undefined;
 	try {
-		const path = join(dir, `${day.day}.jsonl`);
-		const before = await lstat(path);
-		if (before.isSymbolicLink()) {
-			day.status = "unavailable";
-			issue(day, "symlink");
-			return;
-		}
-		if (!before.isFile()) {
-			day.status = "unavailable";
-			issue(day, "nonregular");
-			return;
-		}
 		handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
 		const info = await handle.stat();
-		if (!info.isFile() || info.ino !== before.ino || info.dev !== before.dev) {
-			day.status = "unavailable";
-			issue(day, "source-changed");
+		if (!info.isFile() || info.ino !== entry.ino || info.dev !== entry.dev) {
+			segment.status = "unavailable";
+			issue(segment, "source-changed");
 			return;
 		}
-		await readSnapshot(handle, info, day, aggregate);
+		await readSnapshot(handle, info, segment, aggregate);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-			day.status = "missing";
-			issue(day, "missing");
+			segment.status = "missing";
+			issue(segment, "missing");
 		} else {
-			day.status = "unavailable";
-			issue(day, "read-error");
+			segment.status = "unavailable";
+			issue(segment, "read-error");
 		}
 	} finally {
 		try {
 			await handle?.close();
 		} catch {
-			issue(day, "read-error");
+			issue(segment, "read-error");
 		}
 	}
 }
+function newSegment(entry: TelemetryInventoryEntry, issues: TelemetryDayIssue[]): TelemetrySegmentRead {
+	return {
+		name: entry.name,
+		ordinal: entry.ordinal,
+		status: "skipped",
+		bytesRead: 0,
+		size: entry.unsafe ? null : entry.size,
+		startOffset: null,
+		endOffset: null,
+		bytesNotRead: null,
+		unprocessedBytes: 0,
+		issues,
+	};
+}
+function budgetIssue(coverage: TelemetrySummary["coverage"]): TelemetryDayIssue | undefined {
+	if (coverage.bytesRead >= TELEMETRY_LIMITS.bytes) return "total-byte-limit";
+	return coverage.completeLines >= TELEMETRY_LIMITS.lines ? "line-limit" : undefined;
+}
+function summarizeDay(day: TelemetryDay): void {
+	for (const segment of day.segments) {
+		day.bytesRead += segment.bytesRead;
+		day.unprocessedBytes += segment.unprocessedBytes;
+		for (const reason of segment.issues) if (!day.issues.includes(reason)) day.issues.push(reason);
+	}
+	const statuses = day.segments.map((segment) => segment.status);
+	if (statuses.every((status) => status === "skipped")) day.status = "skipped";
+	else if (statuses.every((status) => status === "unavailable")) day.status = "unavailable";
+	else day.status = statuses.every((status) => status === "complete") ? "complete" : "partial";
+}
+async function readDay(
+	dir: string,
+	entries: readonly TelemetryInventoryEntry[],
+	day: TelemetryDay,
+	aggregate: Aggregator,
+): Promise<void> {
+	if (entries.length === 0) {
+		day.status = "missing";
+		issue(day, "missing");
+		return;
+	}
+	for (const entry of [...entries].reverse()) {
+		const exhausted = budgetIssue(aggregate.summary.coverage);
+		const segment = newSegment(entry, exhausted ? [exhausted] : []);
+		day.segments.push(segment);
+		if (exhausted) continue;
+		if (entry.unsafe) {
+			segment.status = "unavailable";
+			issue(segment, entry.unsafe === "symlink" ? "symlink" : "nonregular");
+		} else await readSegment(entry, join(dir, entry.name), segment, aggregate);
+	}
+	summarizeDay(day);
+}
 
-/** Read an inclusive range of writer-local calendar files. No directories or files are created. */
+/** Read an inclusive range of writer-local calendar segments. No directories or files are created. */
 export async function readTelemetry(dir: string, from: string, to: string): Promise<TelemetrySummary> {
 	const days = dayRange(from, to).reverse();
 	if (typeof dir !== "string" || dir.length === 0 || dir.length > 4096 || dir.includes("\0"))
 		throw new RangeError("Policy telemetry needs a bounded directory path.");
 	const summary = initialSummary(from, to, days);
-	try {
-		const info = await lstat(dir);
-		if (info.isSymbolicLink()) summary.coverage.directory = "symlink";
-		else if (!info.isDirectory()) summary.coverage.directory = "nonregular";
-	} catch (error) {
-		summary.coverage.directory = (error as NodeJS.ErrnoException)?.code === "ENOENT" ? "missing" : "unreadable";
-	}
+	const inventory = await readTelemetryInventory(dir);
+	summary.coverage.directory = inventory.directory;
+	summary.coverage.inventory = inventory.incomplete ? "incomplete" : "complete";
 	if (summary.coverage.directory !== "available") {
 		summary.coverage.status = "unavailable";
 		return summary;
 	}
+	const byDay = new Map<string, TelemetryInventoryEntry[]>();
+	for (const entry of inventory.entries) {
+		const group = byDay.get(entry.day);
+		if (group) group.push(entry);
+		else byDay.set(entry.day, [entry]);
+	}
 	const aggregate = new Aggregator(summary);
-	for (const day of summary.coverage.days) await readDay(dir, day, aggregate);
+	const segments = telemetryDirectory(dir);
+	for (const day of summary.coverage.days) await readDay(segments, byDay.get(day.day) ?? [], day, aggregate);
 	aggregate.finish();
 	const readable = summary.coverage.days.some((day) => day.status === "complete" || day.status === "partial");
 	const incomplete =
+		summary.coverage.inventory === "incomplete" ||
 		summary.coverage.days.some((day) => day.status !== "complete") ||
 		summary.observations.incomplete > 0 ||
 		summary.observations.unavailable > 0 ||
@@ -610,14 +706,37 @@ export async function readTelemetry(dir: string, from: string, to: string): Prom
 	return summary;
 }
 
+function segmentLine(segment: TelemetrySegmentRead): string {
+	const range = `${segment.startOffset ?? "unknown"}..${segment.endOffset ?? "unknown"}`;
+	return `    ${segment.name}: ${segment.status}; read ${segment.bytesRead} (range ${range}); unread ${segment.bytesNotRead ?? "unknown"}; unprocessed ${segment.unprocessedBytes}; ${segment.issues.join(", ") || "no file gaps"}`;
+}
+/** Day lines always show; clean segments are omitted and segment lines stop at the display bound. */
+function dayCoverageLines(days: readonly TelemetryDay[]): string[] {
+	const lines: string[] = [];
+	let omitted = 0;
+	for (const day of days) {
+		lines.push(
+			`  ${day.day}: ${day.status}; ${day.segments.length} segments; read ${day.bytesRead}; unprocessed ${day.unprocessedBytes}; ${day.issues.join(", ") || "no file gaps"}`,
+		);
+		for (const segment of day.segments) {
+			if (segment.status === "complete" && segment.issues.length === 0) continue;
+			if (lines.length >= TELEMETRY_LIMITS.coverageLines) omitted++;
+			else lines.push(segmentLine(segment));
+		}
+	}
+	if (omitted > 0) lines.push(`  Coverage omits ${omitted} segment lines at the display bound.`);
+	return lines;
+}
+
 /** Plain bounded text. Counts describe retained records, never live coverage or worker success. */
 export function formatTelemetry(summary: TelemetrySummary): string {
 	const c = summary.coverage;
 	const e = summary.evaluations;
 	const d = summary.denials;
 	const bytes = (value: number | null) => (value === null ? "unavailable (integer overflow)" : String(value));
+	const coverageLines = dayCoverageLines(c.days);
 	const introduction = [
-		`Policy telemetry: ${summary.from} through ${summary.to} (inclusive writer-local day files)`,
+		`Policy telemetry: ${summary.from} through ${summary.to} (inclusive writer-local calendar segments)`,
 		`Retained evidence: ${c.status}; ${summary.records} tool records; ${d.confirmed} confirmed denials; ${summary.errors.total} errors; ${summary.truncated} truncated outputs.`,
 		`Confirmed denials: ${d.confirmed}; policy-confirmed ${d.policyConfirmed}; with rule attribution ${d.withRuleAttribution}; without ${d.withoutRuleAttribution}.`,
 		`Errors: ${summary.errors.total}; inferred text classes: timeout ${summary.errors.timeout}; aborted ${summary.errors.aborted}; other ${summary.errors.other}; unavailable ${summary.errors.unavailable}.`,
@@ -628,9 +747,9 @@ export function formatTelemetry(summary: TelemetrySummary): string {
 	const details = [
 		"",
 		"Evidence coverage:",
-		`Directory: ${c.directory}.`,
-		"Files use the writer's local calendar, not UTC timestamp filtering. Files are read newest first, from their tails; denials precede other records within each bounded snapshot.",
-		"These are per-file snapshots, not an atomic snapshot or proof of complete live activity. Lost writes are unknown.",
+		`Directory: ${c.directory}. Inventory: ${c.inventory}.`,
+		"Segments use the writer's local calendar and a per-day ordinal, not UTC timestamp filtering. Segments are read newest first, from their tails; denials precede other records within each bounded snapshot.",
+		"These are per-segment snapshots, not an atomic snapshot or proof of complete live activity. Retention can remove segments during a read; every skipped, vanished, or partially read segment stays visible.",
 		`Read: ${c.bytesRead} bytes; ${c.completeLines} complete lines; ${summary.records} accepted records.`,
 		`Excluded lines: malformed ${c.malformedLines}; oversized ${c.oversizedLines}; incomplete ${c.incompleteLines}; byte cutoff ${c.cutoffLines}.`,
 		`Outcomes: ${Object.entries(summary.outcomes)
@@ -645,10 +764,7 @@ export function formatTelemetry(summary: TelemetrySummary): string {
 		`Matched call-rule pairs: ${summary.matches.retained}; malformed entries ${summary.matches.malformed}; reader omitted ${summary.matches.readerOmitted}.`,
 		"Matches and denial evaluations do not prove enforcement. Attribution requires a confirmed policy denial and an applicable input deny evaluation.",
 		"Day coverage:",
-		...c.days.map(
-			(day) =>
-				`  ${day.day}: ${day.status}; read ${day.bytesRead} (range ${day.startOffset ?? "unknown"}..${day.endOffset ?? "unknown"}); unread ${day.bytesNotRead ?? "unknown"}; unprocessed ${day.unprocessedBytes}; ${day.issues.join(", ") || "no file gaps"}`,
-		),
+		...coverageLines,
 	].join("\n");
 	let output = `${introduction.join("\n")}\n`;
 	const reservedBytes = Buffer.byteLength(details) + 300;

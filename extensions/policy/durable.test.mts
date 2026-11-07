@@ -9,7 +9,7 @@
  */
 import { compile, int, num, obj, opt, str } from "@earendil-works/pi-schema";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -29,7 +29,7 @@ import { deserializeSnapshot, readPanelAnswer } from "./panel-protocol.ts";
 import type { OperatorView, PanelHost } from "../../operator-ui/index.ts";
 import { operatorPanel } from "./operator-panel.ts";
 import type { FactsProgram } from "./program.ts";
-import { localDate } from "./store.ts";
+import { localDate } from "./telemetry-files.ts";
 import { PolicyProposeParams, PolicyRulesParams, validateProposal } from "./tools.ts";
 import { PolicyControlParams } from "./control.ts";
 import { DraftCasesSchema } from "./authoring.ts";
@@ -58,6 +58,14 @@ test("host diagnostics distinguish rejected calls from uncertain execution and t
 	assert.deepEqual(durableResultDisposition({ isError: true, diagnostics: [{ code: "tool_error", severity: "error", message: "Execution failed." }] }),
 		{ outcome: "execution-error", executed: true });
 });
+
+async function telemetryLines(dir: string, day: string): Promise<string[]> {
+	const segments = join(dir, "telemetry");
+	const names = (await readdir(segments)).filter((name) => name.startsWith(`${day}.`)).sort();
+	const lines: string[] = [];
+	for (const name of names) lines.push(...(await readFile(join(segments, name), "utf8")).split("\n").filter(Boolean));
+	return lines;
+}
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
 	let resolve: () => void = () => {};
@@ -588,8 +596,8 @@ test("native telemetry preserves the full call interval from the input memo", as
 			fauxAssistantMessage(fauxToolCall("clock_probe", {}), { stopReason: "toolUse" }),
 			fauxAssistantMessage("done"),
 		], "measure the isolated fixture interval");
-		const records = (await readFile(join(fixture.storeDir, `${localDate(new Date(start))}.jsonl`), "utf8"))
-			.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+		const records = (await telemetryLines(fixture.storeDir, localDate(new Date(start))))
+			.map((line) => JSON.parse(line));
 		const record = records.find((entry) => entry.tool === "clock_probe");
 		assert.equal(record?.durationMs, 750);
 		assert.equal(record?.at, new Date(start).toISOString());
@@ -716,8 +724,8 @@ test("an interrupted unsafe tool yields the interrupted result instead of rerunn
 		await second.close(context);
 		const store = await readFile(join(storeDir, "rules.jsonl"), "utf8");
 		assert.equal(store.includes('"kind":"proposal"'), false);
-		const records = (await readFile(join(storeDir, `${localDate(new Date())}.jsonl`), "utf8"))
-			.split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((record) => record.tool === "policy_propose");
+		const records = (await telemetryLines(storeDir, localDate(new Date())))
+			.map((line) => JSON.parse(line)).filter((record) => record.tool === "policy_propose");
 		assert.equal(records.length, 1);
 		assert.equal(records[0].outcome, "incomplete");
 		assert.equal(records[0].observationComplete, false);
@@ -742,8 +750,8 @@ test("an aborted call records an uncertain execution without a completed executi
 		await submission.wait(context);
 		const result = (await toolResults(fixture.root, "policy_rules")).at(-1);
 		assert.equal(result?.isError, true);
-		const records = (await readFile(join(fixture.storeDir, `${localDate(new Date())}.jsonl`), "utf8"))
-			.split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((record) => record.tool === "policy_rules");
+		const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
+			.map((line) => JSON.parse(line)).filter((record) => record.tool === "policy_rules");
 		assert.equal(records.length, 1);
 		assert.equal(records[0].outcome, "aborted");
 		assert.equal(records[0].abortRequested, true);
@@ -864,8 +872,8 @@ test("enforce mode completes a denied call and projects result guidance once", a
 		assert.match(textOf(result), /Rule durable-deny-probe\./);
 		assert.equal(textOf(result).split("Inspect the refusal before another call.").length - 1, 1);
 		assert.equal(counter.executed, 0);
-		const records = (await readFile(join(fixture.storeDir, `${localDate(new Date())}.jsonl`), "utf8"))
-			.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+		const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
+			.map((line) => JSON.parse(line));
 		assert.equal(records.filter((entry) => entry.tool === "probe").length, 1);
 		const record = records.find((entry) => entry.tool === "probe");
 		assert.equal(record.outcome, "denied");
@@ -951,8 +959,8 @@ for (const scenario of ["tool_unavailable", "invalid_arguments", "blocked"] as c
 			assert.equal(result?.isError, true);
 			assert.match(textOf(result), /Inspect the rejected call/);
 			assert.equal(executed, 0);
-			const records = (await readFile(join(fixture.storeDir, `${localDate(new Date())}.jsonl`), "utf8"))
-				.split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((record) => record.tool === name);
+			const records = (await telemetryLines(fixture.storeDir, localDate(new Date())))
+				.map((line) => JSON.parse(line)).filter((record) => record.tool === name);
 			assert.equal(records.length, 1);
 			assert.equal(records[0].outcome, scenario === "invalid_arguments" ? "invalid" : scenario === "blocked" ? "denied" : "unexecuted");
 			assert.equal(records[0].policy.hostDiagnostic, scenario);

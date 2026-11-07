@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { PolicyRecord } from "./record.ts";
-import { appendRecord, localDate } from "./store.ts";
+import { appendRecord } from "./store.ts";
+import { localDate, TELEMETRY_INVENTORY_ENTRIES } from "./telemetry-files.ts";
 import { telemetryDecisionRows } from "./runtime.ts";
 import { formatTelemetry, readTelemetry, TELEMETRY_LIMITS } from "./telemetry.ts";
 
@@ -56,10 +57,14 @@ function policy(evaluations: unknown[], decision = "deny", omitted = 0) {
 async function directory(t: TestContext): Promise<string> {
 	const dir = await mkdtemp(join(tmpdir(), "policy-telemetry-"));
 	t.after(() => rm(dir, { recursive: true, force: true }));
+	await mkdir(join(dir, "telemetry"), { mode: 0o700 });
 	return dir;
 }
-async function records(dir: string, values: unknown[], day = DAY): Promise<void> {
-	await writeFile(join(dir, `${day}.jsonl`), values.map((value) => `${JSON.stringify(value)}\n`).join(""));
+function segment(dir: string, day: string, ordinal = 1): string {
+	return join(dir, "telemetry", `${day}.${String(ordinal).padStart(6, "0")}.jsonl`);
+}
+async function records(dir: string, values: unknown[], day = DAY, ordinal = 1): Promise<void> {
+	await writeFile(segment(dir, day, ordinal), values.map((value) => `${JSON.stringify(value)}\n`).join(""));
 }
 
 function accounting(summary: Awaited<ReturnType<typeof readTelemetry>>): void {
@@ -235,7 +240,7 @@ describe("policy telemetry aggregation", () => {
 		const at = new Date(2026, 8, 3, 0, 1);
 		assert.equal(await appendRecord(dir, fixture({ at: at.toISOString() })), null);
 		assert.equal((await readTelemetry(dir, localDate(at), localDate(at))).records, 1);
-		await records(dir, [fixture({ at: "2026-09-04T02:00:00.000Z" })]);
+		await records(dir, [fixture({ at: "2026-09-04T02:00:00.000Z" })], "2026-09-04");
 		const result = await readTelemetry(dir, DAY, DAY);
 		assert.equal(result.records, 1);
 		assert.equal(result.calendar, "writer-local-day-files");
@@ -320,7 +325,7 @@ describe("policy telemetry aggregation", () => {
 describe("policy telemetry input and filesystem bounds", () => {
 	it("selects denials before a saturated line budget, then newest records", async (t) => {
 		const dir = await directory(t);
-		await writeFile(join(dir, `${DAY}.jsonl`),
+		await writeFile(segment(dir, DAY),
 			`${JSON.stringify(fixture({ outcome: "denied", policy: policy([evalRow("deny-first")]) }))}\n${"null\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture({ tool: "newest" }))}\n`);
 		const result = await readTelemetry(dir, DAY, DAY);
 		assert.equal(result.denials.withRuleAttribution, 1);
@@ -371,22 +376,51 @@ describe("policy telemetry input and filesystem bounds", () => {
 		await assert.rejects(lstat(path), { code: "ENOENT" });
 	});
 
-	it("rejects nonregular and symlink source directories and day files", async (t) => {
+	it("rejects nonregular and symlink telemetry directories and segments", async (t) => {
 		const dir = await directory(t);
 		const target = join(dir, "target");
 		await mkdir(target);
-		await records(target, [fixture()]);
-		const linked = join(dir, "linked");
-		await symlink(target, linked);
-		assert.equal((await readTelemetry(linked, DAY, DAY)).coverage.directory, "symlink");
-		assert.equal((await readTelemetry(join(target, `${DAY}.jsonl`), DAY, DAY)).coverage.directory, "nonregular");
-		await symlink(join(target, `${DAY}.jsonl`), join(dir, `${DAY}.jsonl`));
+		await writeFile(join(target, "2026-09-03.000001.jsonl"), `${JSON.stringify(fixture())}\n`);
+		const linkedPolicy = await mkdtemp(join(tmpdir(), "policy-telemetry-link-"));
+		t.after(() => rm(linkedPolicy, { recursive: true, force: true }));
+		await symlink(target, join(linkedPolicy, "telemetry"));
+		assert.equal((await readTelemetry(linkedPolicy, DAY, DAY)).coverage.directory, "symlink");
+		const filePolicy = await mkdtemp(join(tmpdir(), "policy-telemetry-file-"));
+		t.after(() => rm(filePolicy, { recursive: true, force: true }));
+		await writeFile(join(filePolicy, "telemetry"), "not a directory");
+		assert.equal((await readTelemetry(filePolicy, DAY, DAY)).coverage.directory, "nonregular");
+		await symlink(join(target, "2026-09-03.000001.jsonl"), segment(dir, DAY));
 		let result = await readTelemetry(dir, DAY, DAY);
 		assert.equal(result.records, 0);
 		assert.deepEqual(result.coverage.days[0].issues, ["symlink"]);
-		await mkdir(join(dir, "2026-09-04.jsonl"));
+		assert.equal(result.coverage.inventory, "incomplete");
+		await mkdir(segment(dir, "2026-09-04"));
 		result = await readTelemetry(dir, "2026-09-04", "2026-09-04");
 		assert.deepEqual(result.coverage.days[0].issues, ["nonregular"]);
+	});
+
+	it("reads ordered segments of one day newest first and ignores unrecognised names", async (t) => {
+		const dir = await directory(t);
+		await records(dir, [fixture({ tool: "first" })], DAY);
+		await writeFile(segment(dir, DAY, 2), `${JSON.stringify(fixture({ tool: "second" }))}\n`);
+		await writeFile(join(dir, "telemetry", `${DAY}.jsonl`), `${JSON.stringify(fixture({ tool: "legacy" }))}\n`);
+		await writeFile(join(dir, `${DAY}.jsonl`), `${JSON.stringify(fixture({ tool: "root" }))}\n`);
+		const result = await readTelemetry(dir, DAY, DAY);
+		assert.deepEqual(result.tools.map((row) => row.name).sort(), ["first", "second"]);
+		assert.deepEqual(result.coverage.days[0].segments.map((entry) => entry.ordinal), [2, 1]);
+		assert.equal(result.coverage.status, "complete");
+		const text = formatTelemetry(result);
+		assert.doesNotMatch(text, /legacy|root/);
+	});
+
+	it("reports an inventory beyond the entry bound as incomplete", async (t) => {
+		const dir = await directory(t);
+		await records(dir, [fixture()]);
+		for (let index = 0; index < TELEMETRY_INVENTORY_ENTRIES; index++)
+			await writeFile(join(dir, "telemetry", `extra-${index}`), "");
+		const result = await readTelemetry(dir, DAY, DAY);
+		assert.equal(result.coverage.inventory, "incomplete");
+		assert.equal(result.coverage.status, "partial");
 	});
 
 	it("rejects a pipe without waiting for a writer", {
@@ -394,7 +428,7 @@ describe("policy telemetry input and filesystem bounds", () => {
 		timeout: 3000,
 	}, async (t) => {
 		const dir = await directory(t);
-		execFileSync("mkfifo", [join(dir, `${DAY}.jsonl`)]);
+		execFileSync("mkfifo", [segment(dir, DAY)]);
 		const result = await readTelemetry(dir, DAY, DAY);
 		assert.equal(result.coverage.days[0].status, "unavailable");
 		assert.deepEqual(result.coverage.days[0].issues, ["nonregular"]);
@@ -405,7 +439,7 @@ describe("policy telemetry input and filesystem bounds", () => {
 	}, async (t) => {
 		const dir = await directory(t);
 		await records(dir, [fixture()]);
-		await chmod(join(dir, `${DAY}.jsonl`), 0);
+		await chmod(segment(dir, DAY), 0);
 		const result = await readTelemetry(dir, DAY, DAY);
 		assert.equal(result.coverage.status, "unavailable");
 		assert.deepEqual(result.coverage.days[0].issues, ["read-error"]);
@@ -415,7 +449,7 @@ describe("policy telemetry input and filesystem bounds", () => {
 	it("ignores separators, counts nonempty malformed lines and skips the unterminated final line", async (t) => {
 		const dir = await directory(t);
 		await writeFile(
-			join(dir, `${DAY}.jsonl`),
+			segment(dir, DAY),
 			[
 				JSON.stringify(fixture()),
 				"{private-malformed",
@@ -441,7 +475,7 @@ describe("policy telemetry input and filesystem bounds", () => {
 		const encoded = Buffer.from(`${JSON.stringify(fixture())}\n`);
 		const marker = encoded.indexOf("private-command-sentinel");
 		encoded[marker] = 0xff;
-		await writeFile(join(dir, `${DAY}.jsonl`), encoded);
+		await writeFile(segment(dir, DAY), encoded);
 		const result = await readTelemetry(dir, DAY, DAY);
 		assert.equal(result.records, 0);
 		assert.equal(result.coverage.malformedLines, 1);
@@ -451,7 +485,7 @@ describe("policy telemetry input and filesystem bounds", () => {
 	it("skips oversized lines and resumes at the next complete record", async (t) => {
 		const dir = await directory(t);
 		await writeFile(
-			join(dir, `${DAY}.jsonl`),
+			segment(dir, DAY),
 			`${JSON.stringify(fixture({ captured: "x".repeat(TELEMETRY_LIMITS.lineBytes) }))}\n${JSON.stringify(fixture())}\n`,
 		);
 		const result = await readTelemetry(dir, DAY, DAY);
@@ -462,9 +496,9 @@ describe("policy telemetry input and filesystem bounds", () => {
 
 	it("enforces per-file and total byte limits with explicit skipped days", async (t) => {
 		const dir = await directory(t);
-		const content = `${"x".repeat(TELEMETRY_LIMITS.fileBytes)}\n${JSON.stringify(fixture({ outcome: "denied" }))}\n`;
-		await writeFile(join(dir, `${DAY}.jsonl`), content);
-		await writeFile(join(dir, "2026-09-04.jsonl"), content);
+		const content = `${"x".repeat(TELEMETRY_LIMITS.segmentBytes)}\n${JSON.stringify(fixture({ outcome: "denied" }))}\n`;
+		await writeFile(segment(dir, DAY), content);
+		await writeFile(segment(dir, "2026-09-04"), content);
 		await records(dir, [fixture()], "2026-09-05");
 		const result = await readTelemetry(dir, DAY, "2026-09-05");
 		assert.equal(result.coverage.bytesRead, TELEMETRY_LIMITS.bytes);
@@ -472,16 +506,16 @@ describe("policy telemetry input and filesystem bounds", () => {
 		assert.equal(result.denials.confirmed, 2);
 		assert.equal(result.coverage.cutoffLines, 2);
 		assert.deepEqual(result.coverage.days.map((day) => day.day), ["2026-09-05", "2026-09-04", DAY]);
-		assert.equal(result.coverage.days[1].bytesRead, TELEMETRY_LIMITS.fileBytes);
-		assert.ok(result.coverage.days[1].issues.includes("file-byte-limit"));
+		assert.equal(result.coverage.days[1].bytesRead, TELEMETRY_LIMITS.segmentBytes);
+		assert.ok(result.coverage.days[1].issues.includes("segment-byte-limit"));
 		assert.ok(result.coverage.days[2].issues.includes("total-byte-limit"));
-		assert.ok((result.coverage.days[2].startOffset ?? 0) > 0);
+		assert.ok((result.coverage.days[2].segments[0].startOffset ?? 0) > 0);
 		accounting(result);
 	});
 
 	it("enforces the complete-line budget independently of byte and valid-record counts", async (t) => {
 		const dir = await directory(t);
-		await writeFile(join(dir, `${DAY}.jsonl`), `${"null\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture())}\n`);
+		await writeFile(segment(dir, DAY), `${"null\n".repeat(TELEMETRY_LIMITS.lines)}${JSON.stringify(fixture())}\n`);
 		await records(dir, [fixture()], "2026-09-04");
 		const result = await readTelemetry(dir, DAY, "2026-09-04");
 		assert.equal(result.records, 2);

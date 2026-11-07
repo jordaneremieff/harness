@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -15,6 +16,11 @@ import {
 	terminalSafe,
 } from "./panel.ts";
 import { activity, data, scopeContext, snapshot } from "./view-fixture.mts";
+
+function segmentPath(dir: string, day: string, ordinal = 1): string {
+	mkdirSync(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
+	return join(dir, "telemetry", `${day}.${String(ordinal).padStart(6, "0")}.jsonl`);
+}
 
 const recordLine = (record: PolicyActivityRecord) => `${JSON.stringify(record)}\n`;
 
@@ -102,7 +108,7 @@ describe("bounded telemetry readers", () => {
 	it("counts every unified id by model and marks a byte-bounded prefix partial", async () => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
 		await writeFile(
-			join(dir, "2026-09-03.jsonl"),
+			segmentPath(dir, "2026-09-03"),
 			[
 				recordLine(activity({ classes: ["routing.cat-read"], model: "p/a" })),
 				recordLine(activity({ classes: ["routing.cat-read", "local.scan"], model: null })),
@@ -120,9 +126,9 @@ describe("bounded telemetry readers", () => {
 		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
 		const old = { ...activity({ at: "2026-09-01T00:00:00.000Z" }) } as Record<string, unknown>;
 		delete old.ruleStoreDegraded;
-		await writeFile(join(dir, "2026-09-01.jsonl"), `${JSON.stringify(old)}\n`);
+		await writeFile(segmentPath(dir, "2026-09-01"), `${JSON.stringify(old)}\n`);
 		await writeFile(
-			join(dir, "2026-09-02.jsonl"),
+			segmentPath(dir, "2026-09-02"),
 			Array.from({ length: MAX_ACTIVITY_RECORDS + 2 }, (_, index) =>
 				recordLine(
 					activity({ at: `2026-09-02T00:${String(index % 60).padStart(2, "0")}:00.000Z`, session: `s-${index}` }),
@@ -158,7 +164,7 @@ describe("bounded telemetry readers", () => {
 				unavailable: true,
 			},
 		];
-		await writeFile(join(dir, "2026-01-01.jsonl"), recordLine(activity({ policy: { evaluations } })));
+		await writeFile(segmentPath(dir, "2026-01-01"), recordLine(activity({ policy: { evaluations } })));
 		const result = await readRecentActivity(dir);
 		assert.deepEqual(result.records[0].policy?.evaluations, evaluations);
 	});
@@ -178,7 +184,7 @@ describe("bounded telemetry readers", () => {
 			"x",
 		];
 		await writeFile(
-			join(dir, "2026-01-01.jsonl"),
+			segmentPath(dir, "2026-01-01"),
 			recordLine(
 				activity({
 					policy: {
@@ -199,7 +205,7 @@ describe("bounded telemetry readers", () => {
 		t.after(() => rm(dir, { recursive: true, force: true }));
 		const metadata = { name: "rooms", revision: "123456abcdef", status: "ready", snapshotAt: 1 };
 		await writeFile(
-			join(dir, "2026-01-01.jsonl"),
+			segmentPath(dir, "2026-01-01"),
 			recordLine(
 				activity({
 					policy: {
@@ -225,5 +231,43 @@ describe("bounded telemetry readers", () => {
 			bytesRead: 0,
 		});
 		assert.equal((await readFireSummary(dir)).partial, false);
+	});
+});
+
+describe("telemetry directory boundary", () => {
+	it("reads only the telemetry directory, across ordered segments of one day", async (t) => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		await writeFile(join(dir, "2026-09-03.jsonl"), recordLine(activity({ classes: ["root.rule"] })));
+		await writeFile(join(dir, "2026-09-03.000001.jsonl"), recordLine(activity({ classes: ["root.rule"] })));
+		await writeFile(segmentPath(dir, "2026-09-03", 1), recordLine(activity({ classes: ["old.rule"], at: "2026-09-03T01:00:00.000Z" })));
+		await writeFile(segmentPath(dir, "2026-09-03", 2), recordLine(activity({ classes: ["new.rule"], at: "2026-09-03T02:00:00.000Z" })));
+		const fires = await readFireSummary(dir);
+		assert.deepEqual([...fires.fires.keys()].sort(), ["new.rule", "old.rule"]);
+		assert.equal(fires.partial, false);
+		const result = await readRecentActivity(dir);
+		assert.deepEqual(result.records.map((entry) => entry.classes[0]), ["new.rule", "old.rule"]);
+		assert.equal(result.partial, false);
+	});
+
+	it("marks both readers partial when the inventory holds an unsafe entry, and still reads safe segments", async (t) => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		await writeFile(segmentPath(dir, "2026-09-03"), recordLine(activity({ classes: ["safe.rule"] })));
+		await symlink("/nonexistent", join(dir, "telemetry", "2026-09-02.000001.jsonl"));
+		const fires = await readFireSummary(dir);
+		assert.equal(fires.fires.get("safe.rule"), 1);
+		assert.equal(fires.partial, true);
+		const result = await readRecentActivity(dir);
+		assert.equal(result.records.length, 1);
+		assert.equal(result.partial, true);
+	});
+
+	it("reports an unreadable telemetry path as partial rather than empty", async (t) => {
+		const dir = await mkdtemp(join(tmpdir(), "policy-panel-"));
+		t.after(() => rm(dir, { recursive: true, force: true }));
+		await writeFile(join(dir, "telemetry"), "not a directory");
+		assert.equal((await readFireSummary(dir)).partial, true);
+		assert.equal((await readRecentActivity(dir)).partial, true);
 	});
 });

@@ -19,6 +19,20 @@ export const settings = {
 			default: "observe",
 			description: "Machine mode. observe records facts and candidate effects only; notice adds operator notices; annotate adds model guidance; enforce also applies approved denials and corrections. No mode unloads the extension. An ordinary --policy-mode flag overrides it for that session.",
 		},
+		telemetryMaxBytes: {
+			type: "integer",
+			env: "PI_POLICY_TELEMETRY_MAX_BYTES",
+			default: 1073741824,
+			min: 33554432,
+			description: "Byte budget for retained telemetry segments. A write removes the oldest segments to stay within it. A rotated segment needs at least one segment of room.",
+		},
+		telemetryMaxAgeDays: {
+			type: "integer",
+			env: "PI_POLICY_TELEMETRY_MAX_AGE_DAYS",
+			default: 30,
+			min: 1,
+			description: "Retention age for telemetry segments, in writer-local calendar days. A write removes older segments.",
+		},
 	},
 } as const;
 
@@ -28,8 +42,8 @@ export const SETTINGS_REQUEST = "harness:settings:request";
 export type Environment = Readonly<Record<string, string | undefined>>;
 export type Origin = "env" | "file" | "default";
 export type ReadOptions = { agentDir: string; env?: Environment };
-type Key = "dir" | "mode";
-type Values = { dir: string; mode: PolicyMode };
+type Key = "dir" | "mode" | "telemetryMaxBytes" | "telemetryMaxAgeDays";
+type Values = { dir: string; mode: PolicyMode; telemetryMaxBytes: number; telemetryMaxAgeDays: number };
 export type Diagnostic = {
 	field: string;
 	source: Origin;
@@ -45,13 +59,13 @@ export type Source = {
 export type SettingRecord = {
 	name: string;
 	key: string;
-	type: "path" | "enum";
+	type: "path" | "enum" | "integer";
 	description: string;
 	env: string;
 	secret: boolean;
 	origin: Origin;
 	status: "valid" | "unset" | "invalid";
-	value?: string;
+	value?: string | number;
 };
 export type SettingsPublication = {
 	version: 1;
@@ -141,24 +155,33 @@ function readDocument(options: ReadOptions): {
 	}
 }
 
-function checked(key: Key, value: unknown, agentDir: string): string {
-	if (!textValid(value) || !value.length || value.length > 4096) throw new Error("Invalid setting value");
+function checked(key: Key, value: unknown, agentDir: string): string | number {
 	if (key === "mode") {
-		if (!(settings.fields.mode.choices as readonly string[]).includes(value)) throw new Error("Invalid mode");
+		if (!textValid(value) || !(settings.fields.mode.choices as readonly string[]).includes(value))
+			throw new Error("Invalid mode");
 		return value;
 	}
+	if (key === "telemetryMaxBytes" || key === "telemetryMaxAgeDays") {
+		if (typeof value !== "number" || !Number.isSafeInteger(value) || value < settings.fields[key].min)
+			throw new Error("Invalid integer setting");
+		return value;
+	}
+	if (!textValid(value) || !value.length || value.length > 4096) throw new Error("Invalid setting value");
 	const path = resolve(agentDir, value);
 	if (path.length > 4096) throw new Error("Resolved path exceeds length bound");
 	return path;
 }
-function defaultValue(key: Key, agentDir: string): string {
+function defaultValue(key: Key, agentDir: string): string | number {
 	try {
-		return checked(key, key === "mode" ? settings.fields.mode.default : resolve(agentDir, "policy"), agentDir);
+		if (key === "dir") return checked("dir", resolve(agentDir, "policy"), agentDir);
+		if (key === "mode") return checked("mode", settings.fields.mode.default, agentDir);
+		if (key === "telemetryMaxBytes") return checked(key, settings.fields.telemetryMaxBytes.default, agentDir);
+		return checked(key, settings.fields.telemetryMaxAgeDays.default, agentDir);
 	} catch {
 		throw new Error(`Invalid default for policy.${key}`);
 	}
 }
-type Selection = { value: string; origin: Origin; invalid: boolean };
+type Selection = { value: string | number; origin: Origin; invalid: boolean };
 function readSection(options: ReadOptions) {
 	const { source, document, diagnostics } = readDocument(options);
 	const sectionValue = document && Object.hasOwn(document, settings.slice) ? document[settings.slice] : undefined;
@@ -194,14 +217,18 @@ function selectField(
 	if (origin === undefined) return { value: fallback, origin: "default", invalid };
 	try {
 		const input = origin === "env" ? env[field.env] : section[key];
-		const value = checked(key, input, options.agentDir);
+		const value = checked(key, origin === "env" ? selectInput(key, input) : input, options.agentDir);
 		return { value, origin, invalid };
 	} catch {
 		add(diagnostic(name, origin, "invalid"));
 		return { value: fallback, origin: "default", invalid: true };
 	}
 }
-function settingRecord(key: Key, selected: Selection): SettingRecord {
+/** Environment numbers use JSON number syntax; document integers must already be numbers. */
+function selectInput(key: Key, input: unknown): unknown {
+	if (typeof input !== "string" || (key !== "telemetryMaxBytes" && key !== "telemetryMaxAgeDays")) return input;
+	return /^(?:0|[1-9]\d*)$/.test(input) ? Number(input) : Number.NaN;
+}function settingRecord(key: Key, selected: Selection): SettingRecord {
 	const field = settings.fields[key];
 	const record: SettingRecord = {
 		name: `${settings.slice}.${key}`,
@@ -224,7 +251,8 @@ export function readSettings(options: ReadOptions): Snapshot {
 		const fallback = defaultValue(key, options.agentDir);
 		const selected = selectField(key, fallback, section, options, add);
 		if (key === "mode") values.mode = selected.value as PolicyMode;
-		else values.dir = selected.value;
+		else if (key === "dir") values.dir = selected.value as string;
+		else values[key] = selected.value as number;
 		records.push(settingRecord(key, selected));
 	}
 	return { version: 1, slice: settings.slice, source, values, records, diagnostics };

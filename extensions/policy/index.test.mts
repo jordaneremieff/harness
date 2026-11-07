@@ -197,10 +197,11 @@ async function storedEvents(dir: string): Promise<RuleEvent[]> {
 }
 
 async function telemetry(dir: string): Promise<Array<Record<string, unknown>>> {
-	const files = (await readdir(dir)).filter((name) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name));
+	const segments = join(dir, "telemetry");
+	const files = (await readdir(segments).catch(() => [] as string[])).filter((name) => /^\d{4}-\d{2}-\d{2}\.\d{6}\.jsonl$/.test(name)).sort();
 	const records: Array<Record<string, unknown>> = [];
 	for (const file of files) {
-		for (const line of (await readFile(join(dir, file), "utf8")).trim().split("\n")) {
+		for (const line of (await readFile(join(segments, file), "utf8")).trim().split("\n")) {
 			if (line) records.push(JSON.parse(line) as Record<string, unknown>);
 		}
 	}

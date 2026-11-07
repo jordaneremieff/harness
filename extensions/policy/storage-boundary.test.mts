@@ -1,7 +1,7 @@
 /** Nonregular storage paths must return health evidence rather than wait for a peer. */
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { chmod, mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -15,7 +15,8 @@ it("refuses FIFO rule and telemetry files without a blocked reader, writer, or p
 	const dir = await mkdtemp(join(tmpdir(), "policy-storage-type-"));
 	t.after(() => rm(dir, { recursive: true, force: true }));
 	await chmod(dir, 0o700);
-	await execute("mkfifo", ["-m", "600", join(dir, "rules.jsonl"), join(dir, "2026-09-20.jsonl")], {
+	await mkdir(join(dir, "telemetry"), { mode: 0o700 });
+	await execute("mkfifo", ["-m", "600", join(dir, "rules.jsonl"), join(dir, "telemetry", "2026-09-20.000001.jsonl")], {
 		timeout: 5000,
 		maxBuffer: 16384,
 	});
@@ -29,7 +30,7 @@ it("refuses FIFO rule and telemetry files without a blocked reader, writer, or p
 		const registry = new RuleRegistry(dir, { onNotice() {} });
 		const snapshot = await registry.snapshot();
 		const writeError = await appendRecord(dir, { at: "2026-09-20T12:00:00" });
-		const reader = await open(dir + "/2026-09-20.jsonl", constants.O_RDONLY | constants.O_NONBLOCK);
+		const reader = await open(dir + "/telemetry/2026-09-20.000001.jsonl", constants.O_RDONLY | constants.O_NONBLOCK);
 		const connectedWriteError = await appendRecord(dir, { at: "2026-09-20T12:00:00" });
 		await reader.close();
 		const activity = await readRecentActivity(dir);
@@ -46,7 +47,8 @@ it("refuses FIFO rule and telemetry files without a blocked reader, writer, or p
 	assert.match(result.health.message, /regular non-symlink file/);
 	assert.equal(result.rules, 0);
 	assert.ok(result.writeError, "A FIFO is never a successful telemetry append");
-	assert.match(result.connectedWriteError, /not a regular file/);
+	assert.match(result.writeError, /nonregular or symbolic link/);
+	assert.match(result.connectedWriteError, /nonregular or symbolic link/);
 	assert.equal(result.activity.partial, true);
 	assert.equal(result.activity.bytesRead, 0);
 	assert.equal(result.partial, true);

@@ -313,12 +313,13 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 	};
 	const telemetry = async () => {
 		await runner.emit({ type: "session_shutdown", reason: "quit" });
-		const names = (await readdir(dir)).filter((name) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name));
+		const segments = join(dir, "telemetry");
+		const names = (await readdir(segments).catch(() => [] as string[])).filter((name) => /^\d{4}-\d{2}-\d{2}\.\d{6}\.jsonl$/.test(name)).sort();
 		return (
 			await Promise.all(
 				names.map(async (name) =>
 					(
-						await readFile(join(dir, name), "utf8")
+						await readFile(join(segments, name), "utf8")
 					)
 						.trim()
 						.split("\n")

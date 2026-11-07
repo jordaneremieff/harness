@@ -91,9 +91,8 @@ function fixture(mode: PolicyMode = "enforce", records = rules()) {
 	const writer = new PolicyWriter(
 		"/unused",
 		(reason) => assert.fail(reason),
-		async (_dir, record) => {
-			telemetry.push(record);
-			return null;
+		async (_dir, batch) => {
+			telemetry.push(...batch);
 		},
 	);
 	const ctx = {

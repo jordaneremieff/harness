@@ -77,19 +77,20 @@ test("policy settings select environment, file, and portable defaults with rejec
 	const agentDir = await fixture(t);
 	const path = join(agentDir, "harness.json");
 	const defaults = readSettings({ agentDir, env: {} });
-	assert.deepEqual({ ...defaults.values }, { dir: join(agentDir, "policy"), mode: "observe" });
+	assert.deepEqual({ ...defaults.values }, { dir: join(agentDir, "policy"), mode: "observe", telemetryMaxBytes: 1073741824, telemetryMaxAgeDays: 30 });
 	assert.ok(defaults.records.every((entry) => entry.origin === "default"));
 	await writeFile(path, JSON.stringify({ version: 1, policy: { dir: "file-store", mode: "enforce" } }));
 	const file = readSettings({ agentDir, env: {} });
-	assert.deepEqual({ ...file.values }, { dir: join(agentDir, "file-store"), mode: "enforce" });
-	assert.ok(file.records.every((entry) => entry.origin === "file"));
+	assert.deepEqual({ ...file.values }, { ...defaults.values, dir: join(agentDir, "file-store"), mode: "enforce" });
+	assert.ok(file.records.filter((entry) => entry.key === "dir" || entry.key === "mode").every((entry) => entry.origin === "file"));
 	const env = readSettings({ agentDir, env: { PI_POLICY_DIR: "env-store", PI_POLICY_MODE: "notice" } });
-	assert.deepEqual({ ...env.values }, { dir: join(agentDir, "env-store"), mode: "notice" });
-	assert.ok(env.records.every((entry) => entry.origin === "env"));
+	assert.deepEqual({ ...env.values }, { ...defaults.values, dir: join(agentDir, "env-store"), mode: "notice" });
+	assert.ok(env.records.filter((entry) => entry.key === "dir" || entry.key === "mode").every((entry) => entry.origin === "env"));
 	for (const value of ["", "   ", "Observe", "invalid"]) {
 		const rejected = readSettings({ agentDir, env: { PI_POLICY_MODE: value, PI_POLICY_DIR: "" } });
 		assert.deepEqual(rejected.values, defaults.values);
-		assert.ok(rejected.records.every((entry) => entry.origin === "default" && entry.status === "invalid"));
+		assert.ok(rejected.records.every((entry) => entry.origin === "default"));
+		assert.deepEqual(rejected.records.filter((entry) => entry.status === "invalid").map((entry) => entry.key), ["dir", "mode"]);
 		assert.deepEqual(rejected.diagnostics.map(({ field, source }) => ({ field, source })), [
 			{ field: "policy.dir", source: "env" }, { field: "policy.mode", source: "env" },
 		]);
@@ -99,6 +100,37 @@ test("policy settings select environment, file, and portable defaults with rejec
 	assert.deepEqual(rejectedFile.values, defaults.values);
 	assert.ok(rejectedFile.diagnostics.some((entry) => entry.field === "policy.mode" && entry.source === "file"));
 	assert.ok(rejectedFile.diagnostics.some((entry) => entry.field === "policy.rules" && entry.code === "unknown"));
+});
+
+test("telemetry retention settings select environment, file, and defaults and reject non-integers and small budgets", async (t) => {
+	const agentDir = await fixture(t);
+	const path = join(agentDir, "harness.json");
+	const defaults = readSettings({ agentDir, env: {} });
+	assert.equal(defaults.values.telemetryMaxBytes, 1073741824);
+	assert.equal(defaults.values.telemetryMaxAgeDays, 30);
+	assert.equal(record(defaults, "telemetryMaxBytes").value, 1073741824);
+	assert.equal(record(defaults, "telemetryMaxAgeDays").status, "valid");
+	await writeFile(path, JSON.stringify({ version: 1, policy: { telemetryMaxBytes: 67108864, telemetryMaxAgeDays: 7 } }));
+	const file = readSettings({ agentDir, env: {} });
+	assert.equal(file.values.telemetryMaxBytes, 67108864);
+	assert.equal(file.values.telemetryMaxAgeDays, 7);
+	assert.equal(record(file, "telemetryMaxBytes").origin, "file");
+	const env = readSettings({ agentDir, env: { PI_POLICY_TELEMETRY_MAX_BYTES: "33554432", PI_POLICY_TELEMETRY_MAX_AGE_DAYS: "3" } });
+	assert.equal(env.values.telemetryMaxBytes, 33554432);
+	assert.equal(env.values.telemetryMaxAgeDays, 3);
+	assert.equal(record(env, "telemetryMaxAgeDays").origin, "env");
+	for (const bad of ["", "0", "-1", "1.5", "1e3", "abc", "33554431"]) {
+		const rejected = readSettings({ agentDir, env: { PI_POLICY_TELEMETRY_MAX_BYTES: bad, PI_POLICY_TELEMETRY_MAX_AGE_DAYS: bad === "33554431" ? "0" : bad } });
+		assert.equal(rejected.values.telemetryMaxBytes, 1073741824, bad);
+		assert.equal(rejected.values.telemetryMaxAgeDays, 30, bad);
+		assert.equal(record(rejected, "telemetryMaxBytes").status, "invalid");
+		assert.ok(rejected.diagnostics.some((entry) => entry.field === "policy.telemetryMaxBytes" && entry.code === "invalid"));
+	}
+	await writeFile(path, JSON.stringify({ version: 1, policy: { telemetryMaxBytes: "67108864", telemetryMaxAgeDays: 1.5 } }));
+	const rejectedFile = readSettings({ agentDir, env: {} });
+	assert.equal(rejectedFile.values.telemetryMaxBytes, 1073741824);
+	assert.equal(rejectedFile.values.telemetryMaxAgeDays, 30);
+	assert.equal(rejectedFile.diagnostics.filter((entry) => entry.code === "invalid").length, 2);
 });
 
 test("ordinary flag overrides applied mode but publication stays a fresh machine snapshot", async (t) => {
