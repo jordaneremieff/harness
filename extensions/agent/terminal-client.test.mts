@@ -14,9 +14,13 @@ function snapshot(revision = "initial"): Awaited<ReturnType<TerminalManager["sna
 	return { entries: [], revision, partial: false, nextBefore: null, coverage: conversationFrame().coverage };
 }
 
-/** Wait on asynchronous work with an attempt cap, so a broken path fails instead of hanging. */
+/**
+ * Wait on asynchronous work, including the work view's bounded presentation interval, with a
+ * deadline so a broken path fails instead of hanging.
+ */
 async function settle(condition: () => boolean, what = "the condition"): Promise<void> {
-	for (let attempt = 0; attempt < 200 && !condition(); attempt++) await new Promise<void>((resolve) => setImmediate(resolve));
+	const deadline = Date.now() + 2_000;
+	while (!condition() && Date.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 1));
 	assert.ok(condition(), `${what} never held`);
 }
 
@@ -577,7 +581,8 @@ it("program status and title follow the selected conversation's live state and c
 		await settle(() => s.statuses.at(-1)?.state === "idle", "idle status");
 		const count = s.statuses.length;
 		f.observers.get("a")?.(busy(4, false), true, "live");
-		await new Promise<void>((resolve) => setImmediate(resolve));
+		// Longer than the work view's presentation interval, so a repeated publication would have landed.
+		await new Promise<void>((resolve) => setTimeout(resolve, 150));
 		assert.equal(s.statuses.length, count, "an unchanged state is not published again");
 		f.observers.get("a")?.(undefined, false, "unavailable");
 		await settle(() => s.statuses.at(-1)?.state === "clear", "a cleared status");

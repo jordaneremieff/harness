@@ -33,7 +33,7 @@ interface Pending {
 	revision: string;
 }
 let sequence = 0;
-function host(directory: string, harness: Durable.Harness): PolicyDurableHost {
+function host(directory: string, harness: Durable.Harness, closers: Array<() => unknown>): PolicyDurableHost {
 	return {
 		durable: Durable,
 		services: {} as PolicyDurableHost["services"],
@@ -42,7 +42,9 @@ function host(directory: string, harness: Durable.Harness): PolicyDurableHost {
 		storageId: "synthetic-policy",
 		harness,
 		signal: new AbortController().signal,
-		onClose: () => {},
+		onClose: (close) => {
+			closers.push(close);
+		},
 		inventory: { contributions: [], ordinaryOnly: [] },
 	};
 }
@@ -105,7 +107,9 @@ async function fixture(
 				hooks: [Durable.hook(Durable.ToolTask, { beforeTool: options.beforeHook(harness) })],
 			}),
 		);
-	registry.install(await createPolicyDurableExtension(host(directory, harness)));
+	// Host close drains the telemetry writer before a test removes the policy directory.
+	const closers: Array<() => unknown> = [];
+	registry.install(await createPolicyDurableExtension(host(directory, harness, closers)));
 	const writes: Array<{ tool: string; arguments: unknown }> = [];
 	registry.install(
 		Durable.defineExtension({
@@ -206,6 +210,7 @@ async function fixture(
 		approve,
 		close: async (remove = true) => {
 			await harness.close(context);
+			for (const close of closers.splice(0)) await close();
 			assert.deepEqual(reports, []);
 			if (remove) await rm(directory, { recursive: true, force: true });
 		},
