@@ -950,9 +950,10 @@ Live frames are built and applied from the newest state, not once per change.
 The host marks its observation scheduler dirty on every native publication, which
 is cheap, and builds frames at most once per 100 ms; a change that arrives while
 a frame is being built leaves one trailing pass, so the final state is always
-published. A new subscription gets its baseline frame at once and then marks the
-scheduler once to cover a racing update; an unchanged revision publishes
-nothing. The last closed subscription cancels the waiting pass, and host
+published. Elapsed cadence uses monotonic time, so a wall-clock correction does
+not delay or rush a pass. A new subscription gets its baseline frame at once and
+then marks the scheduler once to cover a racing update; an unchanged revision
+publishes nothing. The last closed subscription cancels the waiting pass, and host
 shutdown stops the scheduler before the runtime closes. The work view marks the
 selected conversation dirty on each frame notification and applies the newest
 frame (history reconciliation, snapshot, usage, branch refresh and render) at
@@ -1977,9 +1978,14 @@ per working directory. Git remains the authority on a miss, with its existing
 timeout and output bound. A completed explicit `git` or `outside-git` result is
 reused only while the canonical cwd, the sanitised Git environment and `PATH`,
 the nearest `.git` marker (or its absence along the ancestors, and bare
-repository markers) and the resolved common directory keep their identities. A
-new nested repository, `git init`, a replaced worktree pointer or a changed
-common directory therefore produces a fresh Git read. An `unknown` result
+repository markers), the common-directory pointer and the markers Git requires
+before it accepts a directory as a repository keep their identities. For an
+ordinary `.git` directory those markers are a valid `HEAD` and the `objects` and
+`refs` directories; a `commondir` target keeps its own `objects` and `refs`.
+Inputs are captured before and after Git runs, so a result whose inputs changed
+during discovery is not retained. A new nested repository, `git init`, a
+replaced worktree pointer, a changed common directory or a changed repository
+marker therefore produces a fresh Git read. An `unknown` result
 (for example a missing directory or a Git timeout) is shared only while in
 flight and is never retained. When a trustworthy marker identity cannot be
 established the caller receives a fresh uncached result. One presence pass

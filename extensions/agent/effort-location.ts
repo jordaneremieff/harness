@@ -3,12 +3,15 @@
  *
  * Git owns repository discovery. A completed result is reused only while every
  * input that can change its answer keeps the same identity: the canonical cwd,
- * the discovery environment, the nearest `.git` marker and the resolved common
- * directory. An unknown result is shared only while its resolution is in flight.
+ * the discovery environment, the nearest `.git` marker, the common-directory
+ * pointer and the markers Git requires before it accepts a directory as a
+ * repository. An unknown result is shared only while its resolution is in flight.
  *
  * The cache never answers with a result that a fresh Git invocation could
- * contradict. When the marker identity cannot be established, the caller gets a
- * fresh uncached result instead of a guess.
+ * contradict. Inputs are captured before and after discovery, so a result is
+ * never paired with a stamp from a different repository state. When a marker
+ * identity cannot be established, the caller gets a fresh uncached result
+ * instead of a guess.
  */
 import { execFile } from "node:child_process";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
@@ -74,6 +77,7 @@ interface MarkerStamp {
 	readonly target?: string;
 	readonly targetRevision?: string;
 	readonly common?: string;
+	readonly validity?: string;
 }
 
 function identityOf(info: BigIntStats): string {
@@ -83,6 +87,12 @@ function identityOf(info: BigIntStats): string {
 function stampOfInfo(info: BigIntStats): string {
 	return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
 }
+
+/** Whether Git accepts a directory's HEAD as a symbolic ref, an object ID, or neither. */
+type HeadKind = "absent" | "symbolic" | "object-id" | "invalid";
+
+/** A directory Git requires either exists as a directory or does not satisfy that requirement. */
+type MemberKind = "absent" | "directory" | "other";
 
 /** Read one marker file without following a symlink or reading past its bound. */
 function readMarker(path: string): string | undefined {
@@ -105,8 +115,69 @@ function readMarker(path: string): string | undefined {
 	finally { closeSync(fd); }
 }
 
+/** Classify one required marker path; an unmodelled or uninspectable entry is uncertain. */
+function memberKind(path: string): MemberKind | undefined {
+	let info: BigIntStats | undefined;
+	try { info = lstatSync(path, { bigint: true, throwIfNoEntry: false }); }
+	catch { return undefined; }
+	if (info === undefined) return "absent";
+	if (info.isDirectory()) return "directory";
+	if (info.isFile()) return "other";
+	return undefined;
+}
+
+/** Classify HEAD as Git's validity check reads it; undefined means its content could not be read. */
+function headKind(path: string): HeadKind | undefined {
+	let info: BigIntStats | undefined;
+	try { info = lstatSync(path, { bigint: true, throwIfNoEntry: false }); }
+	catch { return undefined; }
+	if (info === undefined) return "absent";
+	if (!info.isFile()) return undefined;
+	const text = readMarker(path);
+	if (text === undefined) return undefined;
+	const line = text.split("\n", 1)[0]?.replace(/\r$/u, "") ?? "";
+	if (/^ref:[ \t]*\S/u.test(line)) return "symbolic";
+	if (/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\s*$/u.test(line)) return "object-id";
+	return "invalid";
+}
+
+/**
+ * Describe the entries Git checks before it accepts one directory as a
+ * repository: HEAD at that directory, and `objects` and `refs` either there or,
+ * when a `commondir` pointer exists, at the pointer's target. Undefined means a
+ * marker cannot be classified, so its discovery result must not be cached.
+ */
+function directoryMarkers(path: string): { readonly head: HeadKind; readonly stamp: string } | undefined {
+	const head = headKind(join(path, "HEAD"));
+	if (head === undefined) return undefined;
+	const objects = memberKind(join(path, "objects"));
+	const refs = memberKind(join(path, "refs"));
+	if (objects === undefined || refs === undefined) return undefined;
+	const pointer = join(path, "commondir");
+	let pointerInfo: BigIntStats | undefined;
+	try { pointerInfo = lstatSync(pointer, { bigint: true, throwIfNoEntry: false }); }
+	catch { return undefined; }
+	let commondir: string | null = null;
+	let common: { readonly objects: MemberKind; readonly refs: MemberKind } | undefined;
+	if (pointerInfo !== undefined) {
+		if (!pointerInfo.isFile()) return undefined;
+		const text = readMarker(pointer);
+		if (text === undefined) return undefined;
+		commondir = text;
+		const target = resolve(path, text.replace(/[\r\n]+$/u, ""));
+		const commonObjects = memberKind(join(target, "objects"));
+		const commonRefs = memberKind(join(target, "refs"));
+		if (commonObjects === undefined || commonRefs === undefined) return undefined;
+		common = { objects: commonObjects, refs: commonRefs };
+	}
+	return { head, stamp: JSON.stringify({ head, objects, refs, commondir, ...(common === undefined ? {} : { common }) }) };
+}
+
 function markerAt(candidate: string, info: BigIntStats, directory: string): MarkerStamp | undefined {
-	if (info.isDirectory()) return { kind: "directory", path: candidate, revision: identityOf(info) };
+	if (info.isDirectory()) {
+		const markers = directoryMarkers(candidate);
+		return markers === undefined ? undefined : { kind: "directory", path: candidate, revision: identityOf(info), validity: markers.stamp };
+	}
 	if (!info.isFile()) return undefined;
 	const text = readMarker(candidate);
 	if (text === undefined) return undefined;
@@ -117,6 +188,8 @@ function markerAt(candidate: string, info: BigIntStats, directory: string): Mark
 	const target = isAbsolute(raw) ? raw : resolve(directory, raw);
 	const targetInfo = lstatSync(target, { bigint: true, throwIfNoEntry: false });
 	const common = readMarker(join(target, "commondir"));
+	const markers = directoryMarkers(target);
+	if (markers === undefined) return undefined;
 	return {
 		kind: "file",
 		path: candidate,
@@ -124,22 +197,15 @@ function markerAt(candidate: string, info: BigIntStats, directory: string): Mark
 		target,
 		...(targetInfo?.isDirectory() === true ? { targetRevision: identityOf(targetInfo) } : {}),
 		...(common === undefined ? {} : { common }),
+		validity: markers.stamp,
 	};
 }
 
-/** Git treats a directory with HEAD, objects and refs as a repository marker. */
-function bareStamp(canonical: string): MarkerStamp | undefined {
-	const head = lstatSync(join(canonical, "HEAD"), { bigint: true, throwIfNoEntry: false });
-	const objects = lstatSync(join(canonical, "objects"), { bigint: true, throwIfNoEntry: false });
-	const refs = lstatSync(join(canonical, "refs"), { bigint: true, throwIfNoEntry: false });
-	if (head?.isFile() !== true || objects?.isDirectory() !== true || refs?.isDirectory() !== true) return undefined;
-	const config = lstatSync(join(canonical, "config"), { bigint: true, throwIfNoEntry: false });
-	return { kind: "bare", path: canonical, revision: stampOfInfo(head), ...(config?.isFile() === true ? { common: stampOfInfo(config) } : {}) };
-}
-
 /**
- * Describe the discovery inputs for one canonical cwd. Undefined means the
- * identity cannot be trusted, so its result must not be cached.
+ * Describe the discovery inputs for one canonical cwd. A directory whose own
+ * markers Git accepts is reported as a bare repository; otherwise only an
+ * absent `.git` along the ancestors is reported as none. Undefined means the
+ * marker identity cannot be trusted, so its result must not be cached.
  */
 function markerStamp(canonical: string): MarkerStamp | undefined {
 	let directory = canonical;
@@ -153,13 +219,22 @@ function markerStamp(canonical: string): MarkerStamp | undefined {
 	}
 	const bare = lstatSync(canonical, { bigint: true, throwIfNoEntry: false });
 	if (bare === undefined || !bare.isDirectory()) return { kind: "none", path: canonical, revision: "" };
-	return bareStamp(canonical) ?? { kind: "none", path: canonical, revision: "" };
+	const markers = directoryMarkers(canonical);
+	if (markers === undefined) return undefined;
+	if (markers.head !== "symbolic" && markers.head !== "object-id") return { kind: "none", path: canonical, revision: "" };
+	return { kind: "bare", path: canonical, revision: identityOf(bare), validity: markers.stamp };
 }
 
 /** Directory identity that follows the resolved path, not an earlier marker read. */
 function repositoryIdentity(path: string): string | undefined {
 	const info = statSync(path, { bigint: true, throwIfNoEntry: false });
 	return info?.isDirectory() === true ? identityOf(info) : undefined;
+}
+
+interface DiscoveryInputs {
+	readonly canonical: string;
+	readonly environment: string;
+	readonly stamp: string;
 }
 
 interface CompletedLocation {
@@ -208,15 +283,28 @@ class RepositoryLocationResolver implements PrimaryLocationResolver {
 		this.completed.clear();
 	}
 
+	/** Capture the inputs a discovery result must stay paired with. */
+	private async inputs(path: string): Promise<DiscoveryInputs | undefined> {
+		let canonical: string;
+		try { canonical = await realpath(path); }
+		catch { return undefined; }
+		const environment = discoveryEnvironment();
+		try {
+			const stamp = markerStamp(canonical);
+			return stamp === undefined ? undefined : { canonical, environment, stamp: JSON.stringify(stamp) };
+		} catch { return undefined; }
+	}
+
 	private async load(key: string, generation: number): Promise<PrimaryLocation> {
+		const before = await this.inputs(key);
 		const location = await discoverPrimaryLocation(key);
 		if (generation !== this.generation || location.repositoryState === "unknown") return location;
+		const after = before === undefined ? undefined : await this.inputs(location.cwd);
+		if (before === undefined || after === undefined || after.canonical !== before.canonical || after.environment !== before.environment || after.stamp !== before.stamp) return location;
 		try {
-			const stamp = markerStamp(location.cwd);
-			if (stamp === undefined) return location;
 			const repositoryRevision = location.repository === undefined ? undefined : repositoryIdentity(location.repository);
 			if (location.repositoryState === "git" && repositoryRevision === undefined) return location;
-			this.remember(key, { environment: discoveryEnvironment(), stamp: JSON.stringify(stamp), ...(repositoryRevision === undefined ? {} : { repositoryRevision }), location });
+			this.remember(key, { environment: after.environment, stamp: after.stamp, ...(repositoryRevision === undefined ? {} : { repositoryRevision }), location });
 		} catch { /* A result without a trustworthy revision stays uncached. */ }
 		return location;
 	}
