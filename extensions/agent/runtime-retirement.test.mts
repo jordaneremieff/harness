@@ -938,6 +938,8 @@ it("refuses reload without teardown while a live observer remains, then reloads 
 	await client.request("status");
 	await client.request("command", { name: "reload" });
 	assert.equal(f.runtime.shutdownRequired, false);
+	// The replacement delivery loop reports retirement eligibility only after its first pass.
+	await deliverySettled(f.runtime);
 	await client.request("status");
 	checks[checks.length - 1]();
 	await host.done;
