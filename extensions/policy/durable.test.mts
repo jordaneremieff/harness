@@ -248,6 +248,8 @@ interface FixtureOptions {
 	prepare?: (storeDir: string) => Promise<void>;
 	/** Replace the telemetry persistence boundary. */
 	append?: AppendTelemetry;
+	/** Harness settings, such as compaction thresholds. */
+	settings?: NonNullable<Parameters<typeof DurableModule.Harness.open>[1]["settings"]>;
 }
 
 /** The policy management tools start undeclared; a fixture that calls them loads them explicitly. */
@@ -281,6 +283,7 @@ async function openFixture(options: FixtureOptions = {}): Promise<Fixture> {
 			{
 				models,
 				registry,
+				...(options.settings ? { settings: options.settings } : {}),
 				onReport: (error: unknown) => {
 					reports.push(error);
 					reportHarnessError(error);
@@ -1146,6 +1149,150 @@ test("native guidance keeps its bytes and position across later requests", async
 		assert.ok(record);
 		assert.equal(record.history, "latest");
 		assert.equal(record.fork, "current");
+	} finally {
+		await fixture.close();
+	}
+});
+
+/** Repeating context guidance, so every request leaves a record on the newest conversation message. */
+async function addRepeatingGuide(fixture: Fixture): Promise<void> {
+	await addRule(fixture.policy, "durable-repeat-guide", {
+		phase: "context",
+		when: { op: "exists", path: ["context"] },
+		action: { kind: "guide", text: "Repeat guidance." },
+		onUnavailable: "skip",
+	});
+}
+
+type SeenMessage = { role: string; text: string };
+
+/** Submit prompts and record each provider request as role and text pairs. */
+function requestRecorder(fixture: Fixture) {
+	const seen: SeenMessage[][] = [];
+	const ask = async (prompt: string) => {
+		fixture.faux.appendResponses([
+			(callContext) => {
+				seen.push(
+					(callContext.messages as Array<{ role: string; content: unknown }>).map((message) => ({
+						role: message.role,
+						text:
+							typeof message.content === "string"
+								? message.content
+								: (message.content as Array<{ text?: string }>).map((block) => block.text ?? "").join(""),
+					})),
+				);
+				return fauxAssistantMessage(`answer ${prompt}`);
+			},
+		]);
+		const submission = await fixture.root.submit({ type: "input", content: prompt }, context);
+		await submission.wait(context);
+	};
+	return { seen, ask };
+}
+
+const isGuidance = (message: SeenMessage | undefined) => message?.text === "[policy] Repeat guidance.";
+
+async function guidanceHealth(fixture: Fixture): Promise<{ status: string; epoch: string | null; records: number }> {
+	await submit(
+		fixture,
+		[fauxAssistantMessage(fauxToolCall("policy_rules", { view: "health" }), { stopReason: "toolUse" }), fauxAssistantMessage("done")],
+		"inspect health",
+	);
+	const health = JSON.parse(textOf((await toolResults(fixture.root, "policy_rules")).at(-1))) as {
+		guidance: { status: string; epoch: string | null; records: number };
+	};
+	return health.guidance;
+}
+
+test("native guidance whose source survives real compaction keeps its place and removed sources retire", async () => {
+	const fixture = await openFixture({ mode: "annotate", settings: { compaction: { keepRecentTokens: 10 } } });
+	try {
+		await addRepeatingGuide(fixture);
+		const { seen, ask } = requestRecorder(fixture);
+		for (const prompt of ["p1", "p2", "p3", "p4"]) await ask(prompt);
+		fixture.faux.appendResponses([fauxAssistantMessage("Summary.")]);
+		const compaction = await fixture.root.compact("Summarize.", context);
+		await fixture.harness.waitForTask(compaction, context);
+		const view = await fixture.root.context(context);
+		assert.equal(view.head?.kind, "pi.compaction");
+		await ask("p5");
+		const request = seen.at(-1) ?? [];
+		const texts = request.map((message) => message.text);
+		assert.equal(texts.includes("p1"), false);
+		assert.equal(texts.includes("p2"), false);
+		for (const prompt of ["p3", "p4", "p5"]) {
+			const at = texts.indexOf(prompt);
+			assert.ok(at > 0, prompt);
+			assert.equal(isGuidance(request[at + 1]), true, `guidance follows ${prompt}`);
+		}
+		assert.equal(request.filter(isGuidance).length, 3);
+		assert.equal(isGuidance(request[2]), false);
+		const health = await guidanceHealth(fixture);
+		assert.equal(health.status, "ok");
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("native context edits without a new head retire replaced sources and keep the others", async () => {
+	const fixture = await openFixture({ mode: "annotate" });
+	try {
+		await addRepeatingGuide(fixture);
+		const { seen, ask } = requestRecorder(fixture);
+		for (const prompt of ["p1", "p2", "p3"]) await ask(prompt);
+		const before = await guidanceHealth(fixture);
+		const view = await fixture.root.context(context);
+		assert.equal(view.head, undefined);
+		const userEntry = (text: string) => {
+			const entry = view.entries.find((candidate) => JSON.stringify(candidate.model ?? []).includes(`"${text}"`));
+			assert.ok(entry, text);
+			return entry.id;
+		};
+		await fixture.root.submit(
+			{
+				type: "write",
+				entry: {
+					kind: "edit-note",
+					edits: [
+						{
+							target: userEntry("p1"),
+							action: "replace",
+							messages: [{ role: "user", content: [{ type: "text", text: "edited p1" }], timestamp: 1 }],
+						},
+						{ target: userEntry("p2"), action: "omit" },
+					],
+				},
+			},
+			context,
+		);
+		assert.equal((await fixture.root.context(context)).head, undefined);
+		await ask("p4");
+		const request = seen.at(-1) ?? [];
+		const texts = request.map((message) => message.text);
+		assert.equal(texts.includes("p2"), false);
+		assert.equal(isGuidance(request[texts.indexOf("edited p1") + 1]), false);
+		for (const prompt of ["p3", "p4"]) assert.equal(isGuidance(request[texts.indexOf(prompt) + 1]), true, prompt);
+		const after = await guidanceHealth(fixture);
+		assert.equal(after.status, "ok");
+		assert.notEqual(after.epoch, before.epoch);
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("native message appends keep the context epoch", async () => {
+	const fixture = await openFixture({ mode: "annotate" });
+	try {
+		await addRepeatingGuide(fixture);
+		const { ask } = requestRecorder(fixture);
+		await ask("p1");
+		const first = await guidanceHealth(fixture);
+		assert.ok(first.epoch);
+		await ask("p2");
+		await ask("p3");
+		const later = await guidanceHealth(fixture);
+		assert.equal(later.epoch, first.epoch);
+		assert.equal(later.status, "ok");
 	} finally {
 		await fixture.close();
 	}

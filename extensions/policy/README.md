@@ -704,31 +704,41 @@ rule authority. Injection does not establish provider receipt or compliance.
 
 Context-phase guidance is a persistent record, not a trailing message rebuilt
 on each request. A record freezes its text, timestamp and the observation pins
-behind it, and names one anchor: the ordinal and SHA-256 digest of a non-system
-conversation message, excluding Policy's own projected messages. Every later
-request inserts the record immediately after that same message, before later
-conversation messages, so bytes and position stay identical while the
-conversation grows. Pi system messages and system patches keep their original
-relative order. Record identity derives from the context epoch, anchor, rule
-pins and text, so a retry at the same boundary adds no duplicate.
+behind it, and names one anchor: the stable identity of a conversation
+contribution (its entry id and contribution index) with the SHA-256 digest of
+its message as a content check. Every later request locates that contribution
+in the request and inserts the record immediately after its message, before
+later conversation messages, wherever compaction or edits moved it. Messages
+that only the request carries, such as system patches and notices added by
+other extensions, never take part in the mapping. Pi system messages and system
+patches keep their original relative order. A message is located only when the
+contributions and the request messages with the same content are equally
+many, matched in order; an ambiguous mapping is refused, never guessed. Record
+identity derives from the context epoch, anchor, rule pins and text, so a retry
+at the same boundary adds no duplicate.
 
 Ordinary sessions register `context_with_system` and persist each new record
 as a non-context `policy_guidance` custom entry through `pi.appendEntry`.
 Native conversations store records in the `policy.guidance` document. A new
 record is persisted first; only then does the rule's once/cooldown allowance
-and any retained notice get consumed. A failed write adds no message and
-consumes no allowance, and health reports `persistence-failed`.
+and any retained notice get consumed. In an ordinary session a failed write adds
+no message, consumes no allowance, and health reports `persistence-failed`. In a
+native conversation a failed commit aborts the operation and health reports no
+such status.
 
 A context epoch identifies the selected context boundary, not each append. For
 ordinary sessions it is the session identity plus the newest compaction,
-branch-summary or context-edit entry on the active branch; for native
-conversations it is the conversation plus the head of the context view. The
-ledger restores only from the active branch. After compaction or a context
-rewrite, records whose anchor message still exists keep their place; records
-whose source was removed retire. A record is never moved to a new tail. An
-anchor that no longer matches inside an unchanged epoch is a projection fault:
-Policy stops adding context guidance, keeps projecting what it can place, and
-reports `anchor-mismatch`.
+branch-summary or context-edit entry in chronological order on the active
+branch; for native conversations it is the conversation plus the head of the
+context view and the newest entry whose edits reach an active entry. The ledger
+restores only from the active branch and remembers the epoch it last validated
+against, separately from the epoch in which each record was created. After a
+boundary, records whose source contribution still exists with the same content
+keep their place; records whose source contribution was removed or replaced
+retire. A record is never moved to a new tail and never adopts a replacement
+contribution. A source that disappears or changes inside the validated epoch, or
+a mapping that is ambiguous, is a projection fault: Policy stops adding context
+guidance, keeps projecting what it can place, and reports `anchor-mismatch`.
 
 The ledger holds at most 128 records and 256 KiB of serialized records per
 active epoch. Policy never evicts a record whose anchor is active. At capacity

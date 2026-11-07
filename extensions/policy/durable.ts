@@ -100,6 +100,7 @@ import {
 import {
 	GUIDANCE_HISTORY_LIMITS,
 	type GuidanceRecord,
+	type GuidanceSource,
 	type GuidanceStatus,
 	guidanceHistory,
 	guidanceText,
@@ -677,6 +678,7 @@ function repairGuidance(doc: GuidanceDocValue): GuidanceDocValue {
 
 interface RequestInput {
 	epoch: string;
+	sources: readonly GuidanceSource[];
 	messages: readonly Message[];
 	snapshot: RuleSnapshot;
 	agent: Durable.Agent;
@@ -686,6 +688,33 @@ interface RequestInput {
 	mode: PolicyMode;
 	turn: number;
 	now: number;
+}
+
+/**
+ * The context boundary of a conversation: its head marker plus the newest entry
+ * whose edits reach an active entry. Appending messages changes neither.
+ */
+function guidanceEpochOf(conversationId: Durable.ConversationId, view: Durable.ContextView): string {
+	let edited: Durable.EntryId | undefined;
+	let active: Set<Durable.EntryId> | undefined;
+	for (let index = view.entries.length - 1; index >= 0 && edited === undefined; index--) {
+		const entry = view.entries[index];
+		if (!entry?.edits?.length) continue;
+		active ??= new Set<Durable.EntryId>(view.entries.map((candidate) => candidate.id));
+		if (entry.edits.some((edit) => active?.has(edit.target))) edited = entry.id;
+	}
+	return `${conversationId}:${view.head?.id ?? "root"}:${edited ?? "none"}`;
+}
+
+/** Model-visible contributions of the active context, by entry and contribution index. */
+function guidanceSourcesOf(view: Durable.ContextView): GuidanceSource[] {
+	const sources: GuidanceSource[] = [];
+	view.entries.forEach((entry, index) => {
+		const contributions = view.contributions[index] ?? [];
+		for (let contribution = 0; contribution < contributions.length; contribution++)
+			sources.push({ entryId: String(entry.id), contribution, message: contributions[contribution] });
+	});
+	return sources;
 }
 
 interface DurablePolicyRuntimeOptions {
@@ -1690,10 +1719,11 @@ class DurablePolicyRuntime {
 		const view = await this.conversationView(api.conversationId, context);
 		const turn = view.messages.filter((message) => message.role === "assistant").length + 1;
 		const mode = this.effectiveMode(snapshot);
-		const epoch = `${api.conversationId}:${view.head?.id ?? "root"}`;
+		const epoch = guidanceEpochOf(api.conversationId, view);
 		const effect = await this.withState(surface, context, (state, guidance) =>
 			this.requestEffect(state, guidance, {
 				epoch,
+				sources: guidanceSourcesOf(view),
 				messages: request.messages,
 				snapshot,
 				agent,
@@ -1767,11 +1797,12 @@ class DurablePolicyRuntime {
 		observation: ObservationState,
 		input: RequestInput,
 	): { messages?: readonly Message[]; notice?: string } {
-		const { epoch, messages, mode, turn, now } = input;
+		const { epoch, sources, messages, mode, turn, now } = input;
 		const plan = planGuidance<Message>(
 			messages,
+			sources,
 			guidanceHistory(this.guidanceRecordsOf(guidance)),
-			epoch,
+			{ epoch, validatedEpoch: guidance.epoch || undefined },
 			PROJECTION_MODES.includes(mode) ? () => this.selectRequestGuidance(state, observation, input) : undefined,
 			now,
 		);
@@ -2202,7 +2233,8 @@ class DurablePolicyRuntime {
 				guidanceRecords: this.guidanceRecordsOf(reading.guidance).map((record) => ({
 					id: record.id,
 					epoch: record.anchor.epoch,
-					messageOrdinal: record.anchor.messageOrdinal,
+					entryId: record.anchor.entryId,
+					contribution: record.anchor.contribution,
 					timestamp: record.timestamp,
 				})),
 			};

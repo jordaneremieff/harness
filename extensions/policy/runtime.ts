@@ -14,8 +14,10 @@ import {
 	GUIDANCE_ENTRY,
 	GUIDANCE_HISTORY_LIMITS,
 	guidanceHistory,
+	type GuidanceEpochs,
 	type GuidanceHistory,
 	type GuidanceRecord,
+	type GuidanceSource,
 	type GuidanceStatus,
 	guidanceText,
 	parseGuidanceRecord,
@@ -957,30 +959,43 @@ export class PolicyRuntime {
 		if (text) this.shellCardSent = true;
 		return text;
 	}
-	/** The newest compaction, branch-summary or context-edit entry bounds the context epoch. */
-	private guidanceEpochFor(ctx: ExtensionContext, entries: readonly { id: string; type: string }[]): string {
-		const boundary = entries.findLast(
-			(entry) => entry.type === "compaction" || entry.type === "branch_summary" || entry.type === "context_edit",
-		);
+	/** The newest compaction, branch-summary or context-edit entry on the active branch bounds the context epoch. */
+	private guidanceEpochFor(ctx: ExtensionContext): string {
+		const boundary = ctx.sessionManager
+			.getBranch()
+			.findLast(
+				(entry) => entry.type === "compaction" || entry.type === "branch_summary" || entry.type === "context_edit",
+			);
 		return `${ctx.sessionManager.getSessionId()}:${boundary?.id ?? "root"}`;
 	}
 
-	/** Restore the ledger from the active branch when the context boundary changes. */
-	private syncGuidance(ctx: ExtensionContext): string {
-		const entries = ctx.sessionManager.buildContextEntries();
-		const epoch = this.guidanceEpochFor(ctx, entries);
-		if (!this.guidanceDirty && epoch === this.guidanceEpoch) return epoch;
-		this.guidanceEpoch = epoch;
-		this.guidanceDirty = false;
-		this.guidanceStatus = "ok";
-		this.guidanceNotice = undefined;
+	/**
+	 * Read the active branch: its context epoch, the model-visible contributions
+	 * that guidance can anchor to, and, after a reset, the stored records.
+	 */
+	private syncGuidance(ctx: ExtensionContext): { epochs: GuidanceEpochs; sources: GuidanceSource[] } {
+		const projection = ctx.sessionManager.buildSessionProjection();
+		const epoch = this.guidanceEpochFor(ctx);
+		const restore = this.guidanceDirty;
+		const epochs: GuidanceEpochs = { epoch, validatedEpoch: restore ? undefined : this.guidanceEpoch };
+		if (restore || epoch !== this.guidanceEpoch) this.guidanceNotice = undefined;
+		const sources: GuidanceSource[] = [];
 		const records: GuidanceRecord[] = [];
-		for (const entry of entries) {
-			const record = entry.type === "custom" && entry.customType === GUIDANCE_ENTRY ? parseGuidanceRecord(entry.data) : undefined;
+		for (const { sourceEntry, messages } of projection.entries) {
+			for (let contribution = 0; contribution < messages.length; contribution++)
+				sources.push({ entryId: sourceEntry.id, contribution, message: messages[contribution] });
+			const record =
+				restore && sourceEntry.type === "custom" && sourceEntry.customType === GUIDANCE_ENTRY
+					? parseGuidanceRecord(sourceEntry.data)
+					: undefined;
 			if (record) records.push(record);
 		}
-		this.guidanceLedger = guidanceHistory(records.slice(0, GUIDANCE_HISTORY_LIMITS.records));
-		return epoch;
+		if (restore) {
+			this.guidanceDirty = false;
+			this.guidanceStatus = "ok";
+			this.guidanceLedger = guidanceHistory(records);
+		}
+		return { epochs, sources };
 	}
 
 	private notifyGuidance(status: GuidanceStatus, epoch: string, ctx: ExtensionContext): void {
@@ -1057,7 +1072,8 @@ export class PolicyRuntime {
 		const rules = this.contextRules(ctx);
 		const now = this.now();
 		const mode = this.effectiveMode();
-		const epoch = this.syncGuidance(ctx);
+		const { epochs, sources } = this.syncGuidance(ctx);
+		const epoch = epochs.epoch;
 		const evaluation = evaluatePrograms(rules, "context", {
 			tool: "",
 			facts: { context: this.publicContext() },
@@ -1074,8 +1090,9 @@ export class PolicyRuntime {
 		const projecting = mode === "annotate" || mode === "enforce";
 		const plan = planGuidance(
 			event.messages,
+			sources,
 			this.guidanceLedger,
-			epoch,
+			epochs,
 			projecting
 				? () =>
 						prepareGuidanceSelection(
@@ -1096,6 +1113,7 @@ export class PolicyRuntime {
 			} else status = "persistence-failed";
 		}
 		this.guidanceLedger = history;
+		this.guidanceEpoch = epoch;
 		this.guidanceStatus = status;
 		this.notifyGuidance(status, epoch, ctx);
 		if (messages.length === event.messages.length) return;
@@ -1121,7 +1139,8 @@ export class PolicyRuntime {
 			guidanceRecords: this.guidanceLedger.records.map((record) => ({
 				id: record.id,
 				epoch: record.anchor.epoch,
-				messageOrdinal: record.anchor.messageOrdinal,
+				entryId: record.anchor.entryId,
+				contribution: record.anchor.contribution,
 				timestamp: record.timestamp,
 			})),
 		};

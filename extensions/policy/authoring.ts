@@ -196,7 +196,20 @@ function admission(draft: ParsedDraft, snapshot: RuleSnapshot): void {
 /** Session facts draft checking reads; a native host supplies these without an ExtensionContext. */
 export type DraftCheckContext = { cwd: string; model?: { provider: string; id: string } | null };
 
-function caseContext(ctx: DraftCheckContext, scope: DraftCase["scope"]): ExtensionContext {
+/** The one conversation message every context step of a draft check sends. */
+function draftRequestMessage(capturedAt: number) {
+	return {
+		role: "user" as const,
+		content: [{ type: "text" as const, text: "Draft check request." }],
+		timestamp: capturedAt,
+	};
+}
+
+function caseContext(
+	ctx: DraftCheckContext,
+	scope: DraftCase["scope"],
+	request: ReturnType<typeof draftRequestMessage>,
+): ExtensionContext {
 	const provider = scope?.provider ?? scope?.model?.slice(0, scope.model.indexOf("/"));
 	const id = scope?.model?.slice((scope.model?.indexOf("/") ?? -1) + 1);
 	return {
@@ -205,7 +218,16 @@ function caseContext(ctx: DraftCheckContext, scope: DraftCase["scope"]): Extensi
 		mode: "print",
 		signal: undefined,
 		getSystemPrompt: () => "",
-		sessionManager: { getSessionId: () => "draft-check", buildContextEntries: () => [] },
+		sessionManager: {
+			getSessionId: () => "draft-check",
+			getBranch: () => [],
+			buildSessionProjection: () => ({
+				entries: [{ sourceEntry: { id: "draft-check-request", type: "message" }, messages: [request] }],
+				messages: [request],
+				thinkingLevel: "off",
+				model: null,
+			}),
+		},
 		...(scope ? { cwd: scope.cwd, model: provider && id ? { provider, id } : undefined } : {}),
 	} as unknown as ExtensionContext;
 }
@@ -251,7 +273,8 @@ async function runCase(
 	ctx: DraftCheckContext,
 	capturedAt: number,
 ) {
-	const context = caseContext(ctx, entry.scope);
+	const request = draftRequestMessage(capturedAt);
+	const context = caseContext(ctx, entry.scope, request);
 	let now = capturedAt;
 	let turn = 0;
 	const hooks = new Map<string, (...args: unknown[]) => unknown>();
@@ -294,13 +317,7 @@ async function runCase(
 			const projected = await runtime.contextWithSystem(
 				{
 					type: "context_with_system",
-					messages: [
-						{
-							role: "user",
-							content: [{ type: "text", text: "Draft check request." }],
-							timestamp: capturedAt,
-						},
-					],
+					messages: [request],
 				},
 				context,
 			);

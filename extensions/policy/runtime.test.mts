@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, test } from "node:test";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
 import type { NamedData } from "./data.ts";
@@ -98,17 +98,15 @@ function fixture(
 			records.push(...batch);
 		},
 	);
-	const entries: Array<{ id: string; type: string; customType?: string; data?: unknown }> = [];
-	let entrySequence = 0;
+	const session = SessionManager.inMemory("/project", { id: "session" });
+	const guidanceEntries = () =>
+		session.getEntries().filter((entry) => entry.type === "custom" && entry.customType === GUIDANCE_ENTRY);
 	const ctx = {
 		mode: "tui",
 		hasUI: true,
 		cwd: "/project",
 		model: { provider: "test", id: "model" },
-		sessionManager: {
-			getSessionId: () => "session",
-			buildContextEntries: () => entries,
-		},
+		sessionManager: session,
 		getSystemPrompt: () => "",
 		ui: { notify: (text: string) => notifications.push(text) },
 	} as unknown as ExtensionContext;
@@ -116,7 +114,7 @@ function fixture(
 		getAllTools: () => [{ name: toolName, parameters: schema }],
 		getActiveTools: () => [toolName],
 		appendEntry: (customType: string, data?: unknown) => {
-			entries.push({ id: `entry-${++entrySequence}`, type: "custom", customType, data });
+			session.appendCustomEntry(customType, data);
 		},
 		on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler),
 	} as unknown as ExtensionAPI;
@@ -137,17 +135,16 @@ function fixture(
 	);
 	runtime.sync(snapshot);
 	runtime.attach();
+	const firstMessage = { role: "user", content: [{ type: "text", text: "Run controlled tools." }], timestamp: 1 };
+	const firstEntry = session.appendMessage(firstMessage as never);
 	let transcript: Array<Record<string, unknown>> = [
 		{ role: "system", content: "", sections: { preamble: "prompt" }, timestamp: 0 },
-		{ role: "user", content: [{ type: "text", text: "Run controlled tools." }], timestamp: 1 },
+		firstMessage,
 	];
 	let turns = 0;
 	const advance = () => {
 		turns++;
-		transcript = [
-			...transcript,
-			{ role: "user", content: [{ type: "text", text: `Turn ${turns}.` }], timestamp: 1 + turns },
-		];
+		push({ role: "user", content: [{ type: "text", text: `Turn ${turns}.` }], timestamp: 1 + turns });
 	};
 	const project = async (next = false) => {
 		if (next) advance();
@@ -170,10 +167,11 @@ function fixture(
 		return lines.length ? lines.join("\n") : undefined;
 	};
 	const contextEmitted = async (next = false) => (await project(next))?.emitted;
-	const push = (message: Record<string, unknown>) => {
+	function push(message: Record<string, unknown>) {
+		if (message.role !== "system") session.appendMessage(message as never);
 		transcript = [...transcript, message];
-	};
-	const replaceTranscript = (messages: Array<Record<string, unknown>>) => {
+	}
+	const setTranscript = (messages: Array<Record<string, unknown>>) => {
 		transcript = messages;
 	};
 	const inputs = new Map<string, Record<string, unknown>>();
@@ -220,13 +218,16 @@ function fixture(
 		finish,
 		result,
 		views,
-		entries,
+		session,
+		guidanceEntries,
+		firstEntry,
+		firstMessage,
 		project,
 		contextText,
 		contextEmitted,
 		advance,
 		push,
-		replaceTranscript,
+		setTranscript,
 		getTranscript: () => transcript,
 		records,
 		writer,
@@ -751,7 +752,7 @@ describe("persistent context guidance placement", () => {
 			else firstNotice = projected[0];
 			previous = result.messages;
 		}
-		assert.equal(f.entries.length, 8);
+		assert.equal(f.guidanceEntries().length, 8);
 		await f.writer.close();
 	});
 
@@ -763,7 +764,7 @@ describe("persistent context guidance placement", () => {
 		assert.ok(second);
 		assert.equal(second.emitted, undefined);
 		assert.equal(JSON.stringify(second.messages), JSON.stringify(first.messages));
-		assert.equal(f.entries.length, 1);
+		assert.equal(f.guidanceEntries().length, 1);
 		await f.writer.close();
 	});
 
@@ -808,67 +809,192 @@ describe("persistent context guidance placement", () => {
 		await f.writer.close();
 	});
 
-	it("preserves valid anchors across compaction and retires a removed source", async () => {
+	const textOf = (message: Message | undefined) =>
+		Array.isArray(message?.content)
+			? (message.content as Array<{ text?: string }>).map((block) => block.text ?? "").join("")
+			: "";
+	const guidanceHealth = async (f: ReturnType<typeof fixture>) =>
+		(await f.runtime.inspect("health", {}, f.ctx)) as {
+			guidance: { status: string; records: number; epoch?: string };
+		};
+	/** The request Pi would send after the session changed: its projection behind the system message. */
+	const requestFromSession = (f: ReturnType<typeof fixture>, extra: Message[] = []) =>
+		f.setTranscript([
+			f.getTranscript()[0] as Message,
+			...(f.session.buildSessionProjection().messages as unknown as Message[]),
+			...extra,
+		]);
+	/** Three requests, each leaving a record on the newest conversation message. */
+	const threeRecords = async (f: ReturnType<typeof fixture>) => {
+		const ids = [f.firstEntry];
+		await f.project();
+		for (let turn = 0; turn < 2; turn++) {
+			f.advance();
+			ids.push(
+				f.session
+					.getEntries()
+					.filter((entry) => entry.type === "message")
+					.at(-1)?.id as string,
+			);
+			await f.project();
+		}
+		return ids;
+	};
+	const afterMessage = (messages: readonly Message[], text: string) => {
+		const index = messages.findIndex((message) => message.role !== "system" && textOf(message) === text);
+		assert.ok(index >= 0, text);
+		return messages[index + 1];
+	};
+
+	for (const signalled of [true, false]) {
+		it(`keeps guidance whose source survives real compaction and retires a removed source${signalled ? "" : " without a compaction signal"}`, async () => {
+			const f = fixture([repeatableGuide()]);
+			const ids = await threeRecords(f);
+			assert.equal(f.guidanceEntries().length, 3);
+			f.setMode("observe");
+			f.session.appendCompaction("Earlier work.", ids[2] as string, 1000);
+			if (signalled) await f.handlers.get("session_compact")?.({}, f.ctx);
+			requestFromSession(f);
+			const projection = f.getTranscript();
+			assert.equal(projection.some((message) => textOf(message) === "Run controlled tools."), false);
+			const kept = await f.project();
+			assert.ok(kept);
+			assert.equal(notices(kept.messages).length, 1);
+			assert.deepEqual(afterMessage(kept.messages, "Turn 2."), notices(kept.messages)[0]);
+			const health = await guidanceHealth(f);
+			assert.equal(health.guidance.records, 1);
+			assert.equal(health.guidance.status, "ok");
+			const stable = await f.project();
+			assert.equal(JSON.stringify(stable?.messages), JSON.stringify(kept.messages));
+			await f.writer.close();
+		});
+	}
+
+	it("keeps surviving guidance when an older retained edit and branch summary precede real compaction", async () => {
 		const f = fixture([repeatableGuide()]);
-		const first = await f.project();
-		assert.ok(first);
+		const first = f.firstEntry;
+		await f.project();
+		f.advance();
+		const second = f.session.getLeafId() as string;
+		await f.project();
+		f.session.appendContextEdit(first, { content: [{ type: "text", text: "Edited first request." }] });
+		f.session.branchWithSummary(f.session.getLeafId() as string, "Abandoned detour.");
+		await f.handlers.get("session_tree")?.({}, f.ctx);
+		requestFromSession(f);
+		f.advance();
+		await f.project();
 		f.setMode("observe");
-		f.entries.push({ id: "compaction-one", type: "compaction" });
-		await f.handlers.get("session_compact")?.({}, f.ctx);
+		const before = await guidanceHealth(f);
+		f.session.appendCompaction("Earlier work.", second, 1000);
+		requestFromSession(f);
 		const kept = await f.project();
 		assert.ok(kept);
-		assert.equal(notices(kept.messages).length, 1);
-		f.replaceTranscript([
-			{ role: "system", content: "", timestamp: 0 },
-			{ role: "user", content: [{ type: "text", text: "replacement" }], timestamp: 1 },
-		]);
-		f.entries.push({ id: "compaction-two", type: "compaction" });
-		await f.handlers.get("session_compact")?.({}, f.ctx);
-		const retired = await f.project();
-		assert.equal(retired, undefined);
-		const health = (await f.runtime.inspect("health", {}, f.ctx)) as {
-			guidance: { status: string; records: number };
-		};
-		assert.equal(health.guidance.records, 0);
+		const survivors = notices(kept.messages);
+		assert.ok(survivors.length >= 1);
+		assert.deepEqual(afterMessage(kept.messages, "Turn 1."), survivors[0]);
+		const health = await guidanceHealth(f);
 		assert.equal(health.guidance.status, "ok");
+		assert.notEqual(health.guidance.epoch, before.guidance.epoch);
+		assert.match(health.guidance.epoch ?? "", new RegExp(`:${f.session.getLeafId()}$`));
+		await f.writer.close();
+	});
+
+	it("retires only the record whose source a context edit replaced", async () => {
+		const f = fixture([repeatableGuide()]);
+		await f.project();
+		f.advance();
+		await f.project();
+		f.setMode("observe");
+		f.session.appendContextEdit(f.firstEntry, { content: [{ type: "text", text: "Edited first request." }] });
+		requestFromSession(f);
+		const edited = await f.project();
+		assert.ok(edited);
+		assert.equal(notices(edited.messages).length, 1);
+		assert.deepEqual(afterMessage(edited.messages, "Turn 1."), notices(edited.messages)[0]);
+		const health = await guidanceHealth(f);
+		assert.equal(health.guidance.records, 1);
+		assert.equal(health.guidance.status, "ok");
+		await f.writer.close();
+	});
+
+	it("keeps the context epoch unchanged across ordinary appends", async () => {
+		const f = fixture([repeatableGuide()]);
+		await f.project();
+		const epoch = (await guidanceHealth(f)).guidance.epoch;
+		assert.ok(epoch);
+		for (let turn = 0; turn < 3; turn++) {
+			await f.project(true);
+			assert.equal((await guidanceHealth(f)).guidance.epoch, epoch);
+		}
+		await f.writer.close();
+	});
+
+	it("places records by source through duplicate contents and request-only messages", async () => {
+		const f = fixture([repeatableGuide()]);
+		const twin = { role: "user", content: [{ type: "text", text: "ok" }], timestamp: 40 };
+		const memory = { role: "user", content: [{ type: "text", text: "Memory notice." }], timestamp: 90 };
+		f.push({ ...twin });
+		f.push({ role: "user", content: [{ type: "text", text: "between" }], timestamp: 41 });
+		f.push({ ...twin });
+		f.setTranscript([...f.getTranscript(), memory]);
+		const first = await f.project();
+		assert.ok(first?.emitted);
+		const indexes = first.messages.flatMap((message, index) => (textOf(message) === first.emitted ? [index] : []));
+		assert.equal(indexes.length, 1);
+		const placed = first.messages[(indexes[0] as number) - 1];
+		assert.equal(textOf(placed), "ok");
+		assert.equal(first.messages.filter((message) => textOf(message) === "ok").indexOf(placed as Message), 1);
+		assert.equal(textOf(first.messages[(indexes[0] as number) + 1]), "Memory notice.");
+
+		f.setMode("observe");
+		f.setTranscript([...f.getTranscript(), { ...twin }, memory]);
+		const ambiguous = await f.project();
+		assert.equal(ambiguous, undefined);
+		const health = await guidanceHealth(f);
+		assert.equal(health.guidance.status, "anchor-mismatch");
+		f.setMode("enforce");
+		assert.equal(await f.contextEmitted(), undefined);
+		assert.equal(f.guidanceEntries().length, 1);
 		await f.writer.close();
 	});
 
 	it("restores only the active branch after tree navigation", async () => {
 		const f = fixture([repeatableGuide()]);
 		await f.project();
+		f.advance();
+		await f.project();
+		const tip = f.session.getLeafId() as string;
+		const full = f.getTranscript();
 		f.setMode("observe");
-		await f.handlers.get("session_tree")?.({}, f.ctx);
-		const kept = await f.project();
-		assert.ok(kept);
-		assert.equal(notices(kept.messages).length, 1);
-		f.entries.splice(0);
+		f.session.branch(f.firstEntry);
+		f.setTranscript(full.slice(0, 2));
 		await f.handlers.get("session_tree")?.({}, f.ctx);
 		assert.equal(await f.project(), undefined);
+		assert.equal((await guidanceHealth(f)).guidance.records, 0);
+		f.session.branch(tip);
+		f.setTranscript(full);
+		await f.handlers.get("session_tree")?.({}, f.ctx);
+		const restored = await f.project();
+		assert.ok(restored);
+		assert.equal(notices(restored.messages).length, 2);
 		await f.writer.close();
 	});
 
 	it("refuses new guidance at capacity without consuming its allowance", async () => {
 		const f = fixture([repeatableGuide()]);
-		const message = { role: "user", content: [{ type: "text", text: "Run controlled tools." }], timestamp: 1 };
-		const digest = messageDigest(message);
+		const digest = messageDigest(f.firstMessage);
 		for (let index = 0; index < GUIDANCE_HISTORY_LIMITS.records; index++)
-			f.entries.push({
-				id: `capacity-${index}`,
-				type: "custom",
-				customType: GUIDANCE_ENTRY,
-				data: {
-					id: `record-${index}`,
-					anchor: { epoch: "session:root", messageOrdinal: 0, messageDigest: digest },
-					timestamp: index,
-					text: `[policy] Earlier notice ${index}.`,
-					pins: [],
-				},
+			f.session.appendCustomEntry(GUIDANCE_ENTRY, {
+				id: `record-${index}`,
+				anchor: { epoch: "earlier", entryId: f.firstEntry, contribution: 0, messageDigest: digest },
+				timestamp: index,
+				text: `[policy] Earlier notice ${index}.`,
+				pins: [],
 			});
 		const result = await f.project();
 		assert.ok(result);
 		assert.equal(result.emitted, undefined);
-		assert.equal(f.entries.length, GUIDANCE_HISTORY_LIMITS.records);
+		assert.equal(f.guidanceEntries().length, GUIDANCE_HISTORY_LIMITS.records);
 		assert.equal((await f.views())[0].projected, 0);
 		const health = (await f.runtime.inspect("health", {}, f.ctx)) as {
 			guidance: { status: string; records: number; retainedBytes: number };
@@ -889,7 +1015,7 @@ describe("persistent context guidance placement", () => {
 			throw new Error("storage unavailable");
 		};
 		assert.equal(await f.project(), undefined);
-		assert.equal(f.entries.length, 0);
+		assert.equal(f.guidanceEntries().length, 0);
 		assert.equal((await f.views())[0].projected, 0);
 		const health = (await f.runtime.inspect("health", {}, f.ctx)) as { guidance: { status: string } };
 		assert.equal(health.guidance.status, "persistence-failed");
@@ -898,11 +1024,9 @@ describe("persistent context guidance placement", () => {
 
 	it("ignores malformed stored anchors without changing projection", async () => {
 		const f = fixture([repeatableGuide()], "observe");
-		f.entries.push({
-			id: "malformed",
-			type: "custom",
-			customType: GUIDANCE_ENTRY,
-			data: { id: "bad", anchor: { epoch: "session:root", messageOrdinal: -1, messageDigest: "short" } },
+		f.session.appendCustomEntry(GUIDANCE_ENTRY, {
+			id: "bad",
+			anchor: { epoch: "earlier", entryId: f.firstEntry, contribution: -1, messageDigest: "short" },
 		});
 		assert.equal(await f.project(), undefined);
 		const health = (await f.runtime.inspect("health", {}, f.ctx)) as {

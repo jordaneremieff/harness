@@ -2,10 +2,12 @@
  * Persistent placement of context guidance in the active request history.
  *
  * Each record freezes its text and the observation pins behind it, and names
- * one conversation message as its anchor. Later requests project every record
- * immediately after that same message, so guidance already sent keeps its bytes
- * and position while later conversation messages continue to append. Records
- * never move to a new tail and are never evicted while their anchor is active.
+ * one conversation message as its anchor by the stable identity of the
+ * contribution that produced it (entry id and contribution index) plus a content
+ * digest. Later requests project every record immediately after that same
+ * message, wherever it now sits in the request, so guidance already sent keeps
+ * its bytes while later conversation messages continue to append. Records never
+ * move to a new tail and are never evicted while their anchor is active.
  */
 import { createHash } from "node:crypto";
 import {
@@ -25,10 +27,26 @@ export const GUIDANCE_ENTRY = "policy_guidance";
 /** Health state published by the projection. */
 export type GuidanceStatus = "ok" | "capacity" | "anchor-mismatch" | "persistence-failed";
 
+/** One model-visible message and the stable identity of the contribution that produced it. */
+export interface GuidanceSource {
+	readonly entryId: string;
+	readonly contribution: number;
+	readonly message: unknown;
+}
+
 export interface GuidanceAnchor {
+	/** The context epoch in which the record was created. */
 	readonly epoch: string;
-	readonly messageOrdinal: number;
+	readonly entryId: string;
+	readonly contribution: number;
 	readonly messageDigest: string;
+}
+
+/** The epoch of the current request and the last epoch the ledger was checked against. */
+export interface GuidanceEpochs {
+	readonly epoch: string;
+	/** Absent when the ledger was just restored and has no earlier check. */
+	readonly validatedEpoch: string | undefined;
 }
 
 export interface GuidanceRecord {
@@ -65,14 +83,10 @@ export interface GuidanceProjection<M> {
 	readonly messages: Array<M | GuidanceMessage>;
 	/** Records whose anchor still names the same message. */
 	readonly retained: GuidanceRecord[];
-	/** Records whose source context is gone in another epoch. */
+	/** Records whose source contribution was removed or replaced across an epoch boundary. */
 	readonly retired: GuidanceRecord[];
-	/** Records whose anchor changed inside the same epoch. */
+	/** Records that cannot be placed: a source lost inside the validated epoch, or an ambiguous request mapping. */
 	readonly mismatched: GuidanceRecord[];
-}
-
-interface BasePositions {
-	readonly indexes: number[];
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
@@ -179,10 +193,7 @@ function ownMessageMatcher(records: readonly GuidanceRecord[]): (message: { role
 	};
 }
 
-function basePositions<M extends { role: string }>(
-	messages: readonly M[],
-	isOwn: (message: M) => boolean,
-): BasePositions {
+function basePositions<M extends { role: string }>(messages: readonly M[], isOwn: (message: M) => boolean): number[] {
 	const indexes: number[] = [];
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index];
@@ -190,7 +201,137 @@ function basePositions<M extends { role: string }>(
 		if (isOwn(message)) continue;
 		indexes.push(index);
 	}
-	return { indexes };
+	return indexes;
+}
+
+function safeDigest(message: unknown): string {
+	try {
+		return message === undefined ? "" : messageDigest(message);
+	} catch {
+		return "";
+	}
+}
+
+/** Cheap grouping key: equal messages always share it, so only a group's members need hashing. */
+function messageKey(message: unknown): string {
+	const record = objectValue(message);
+	const timestamp = record?.timestamp;
+	return `${typeof record?.role === "string" ? record.role : ""}\u0000${typeof timestamp === "number" ? timestamp : ""}`;
+}
+
+function sourceRef(entryId: string, contribution: number): string {
+	return `${entryId}\u0000${contribution}`;
+}
+
+/** The most request messages one tail search inspects. */
+const TAIL_CANDIDATES = 16;
+
+/**
+ * Resolves contributions of the conversation to positions in one request. A
+ * message is located only when the contributions and the request messages with
+ * the same content are equally many, matched in order; otherwise the mapping is
+ * ambiguous and nothing is guessed. Request-only messages never take part.
+ */
+class RequestLocator {
+	private readonly refs = new Map<string, number>();
+	private readonly sourceGroups = new Map<string, number[]>();
+	private readonly requestGroups = new Map<string, number[]>();
+	private readonly sourceDigests = new Map<number, string>();
+	private readonly requestDigests = new Map<number, string>();
+	readonly positions: readonly number[];
+	private readonly messages: readonly unknown[];
+	private readonly sources: readonly GuidanceSource[];
+
+	constructor(messages: readonly unknown[], sources: readonly GuidanceSource[], positions: readonly number[]) {
+		this.messages = messages;
+		this.sources = sources;
+		this.positions = positions;
+		for (let index = 0; index < sources.length; index++) {
+			const source = sources[index];
+			if (!source) continue;
+			const message = objectValue(source.message);
+			if (!message || message.role === "system") continue;
+			this.refs.set(sourceRef(source.entryId, source.contribution), index);
+			const key = messageKey(message);
+			const group = this.sourceGroups.get(key);
+			if (group) group.push(index);
+			else this.sourceGroups.set(key, [index]);
+		}
+		for (const position of positions) {
+			const key = messageKey(messages[position]);
+			const group = this.requestGroups.get(key);
+			if (group) group.push(position);
+			else this.requestGroups.set(key, [position]);
+		}
+	}
+
+	sourceIndex(anchor: GuidanceAnchor): number | undefined {
+		return this.refs.get(sourceRef(anchor.entryId, anchor.contribution));
+	}
+
+	sourceDigest(index: number): string {
+		let digest = this.sourceDigests.get(index);
+		if (digest === undefined) {
+			digest = safeDigest(this.sources[index]?.message);
+			this.sourceDigests.set(index, digest);
+		}
+		return digest;
+	}
+
+	private requestDigest(position: number): string {
+		let digest = this.requestDigests.get(position);
+		if (digest === undefined) {
+			digest = safeDigest(this.messages[position]);
+			this.requestDigests.set(position, digest);
+		}
+		return digest;
+	}
+
+	/** Contributions and request positions that carry exactly this content. */
+	private equal(key: string, digest: string): { sources: number[]; requests: number[] } {
+		return {
+			sources: (this.sourceGroups.get(key) ?? []).filter((index) => this.sourceDigest(index) === digest),
+			requests: (this.requestGroups.get(key) ?? []).filter((position) => this.requestDigest(position) === digest),
+		};
+	}
+
+	/** The request position of one contribution, or undefined when the mapping is ambiguous. */
+	positionOf(index: number): number | undefined {
+		const digest = this.sourceDigest(index);
+		if (!digest) return undefined;
+		const { sources, requests } = this.equal(messageKey(this.sources[index]?.message), digest);
+		if (sources.length !== requests.length) return undefined;
+		const rank = sources.indexOf(index);
+		return rank < 0 ? undefined : requests[rank];
+	}
+
+	/** The contribution behind one request position, or undefined for a request-only or ambiguous message. */
+	sourceAt(position: number): number | undefined {
+		const digest = this.requestDigest(position);
+		if (!digest) return undefined;
+		const { sources, requests } = this.equal(messageKey(this.messages[position]), digest);
+		if (sources.length !== requests.length) return undefined;
+		const rank = requests.indexOf(position);
+		return rank < 0 ? undefined : sources[rank];
+	}
+
+	/** The anchor after the newest request message that has exactly one source contribution. */
+	tailAnchor(epoch: string): GuidanceAnchor | undefined {
+		for (let step = 0; step < TAIL_CANDIDATES; step++) {
+			const position = this.positions[this.positions.length - 1 - step];
+			if (position === undefined) return undefined;
+			const index = this.sourceAt(position);
+			const source = index === undefined ? undefined : this.sources[index];
+			if (index === undefined || !source) continue;
+			return {
+				epoch,
+				entryId: source.entryId,
+				contribution: source.contribution,
+				messageDigest: this.sourceDigest(index),
+			};
+		}
+		return undefined;
+	}
 }
 
 /** The frozen user message for one record. */
@@ -214,7 +355,8 @@ export function guidanceRecordId(
 			JSON.stringify(
 				canonical({
 					epoch,
-					ordinal: anchor.messageOrdinal,
+					entryId: anchor.entryId,
+					contribution: anchor.contribution,
 					digest: anchor.messageDigest,
 					pins: pins
 						.map(({ id, revision, generation }) => ({ id, revision, generation }))
@@ -239,29 +381,6 @@ export function guidanceRecord(
 		text: prepared.text,
 		pins: prepared.pins,
 	};
-}
-
-/** The anchor after the newest base message, or undefined without one. */
-export function tailGuidanceAnchor<M extends { role: string }>(
-	messages: readonly M[],
-	epoch: string,
-	history: GuidanceHistory,
-	isOwn?: (message: M) => boolean,
-): GuidanceAnchor | undefined {
-	const positions = basePositions(messages, isOwn ?? ownMessageMatcher(history.records));
-	const index = positions.indexes.at(-1);
-	if (index === undefined) return undefined;
-	const message = messages[index];
-	if (message === undefined) return undefined;
-	try {
-		return {
-			epoch,
-			messageOrdinal: positions.indexes.length - 1,
-			messageDigest: messageDigest(message),
-		};
-	} catch {
-		return undefined;
-	}
 }
 
 /** Serialized size of one record, including its metadata. */
@@ -304,11 +423,12 @@ export function appendGuidance(
 function parseAnchor(value: unknown): GuidanceAnchor | undefined {
 	const anchor = objectValue(value);
 	if (!anchor) return undefined;
-	const { epoch, messageOrdinal, messageDigest: digest } = anchor;
+	const { epoch, entryId, contribution, messageDigest: digest } = anchor;
 	if (typeof epoch !== "string" || !epoch || epoch.length > 512) return undefined;
-	if (!safeInteger(messageOrdinal)) return undefined;
+	if (typeof entryId !== "string" || !entryId || entryId.length > 256) return undefined;
+	if (!safeInteger(contribution)) return undefined;
 	if (typeof digest !== "string" || !/^[a-f0-9]{64}$/.test(digest)) return undefined;
-	return { epoch, messageOrdinal, messageDigest: digest };
+	return { epoch, entryId, contribution, messageDigest: digest };
 }
 
 function parsePin(value: unknown): StatePin | undefined {
@@ -352,55 +472,41 @@ interface Placement {
 	readonly insertions: Map<number, GuidanceRecord[]>;
 }
 
-function safeDigest(message: unknown): string {
-	try {
-		return message === undefined ? "" : messageDigest(message);
-	} catch {
-		return "";
-	}
-}
-
-/** Match each record to its anchor message; hash only the messages actually referenced. */
-function placeRecords(
-	messages: readonly unknown[],
-	history: GuidanceHistory,
-	epoch: string,
-	indexes: readonly number[],
-): Placement {
+/**
+ * Match each record to its source contribution. A removed or replaced source
+ * retires its record when the epoch changed since the ledger was last checked;
+ * inside that epoch it is a projection fault. Only the messages actually
+ * referenced, and the messages equal to them, are hashed.
+ */
+function placeRecords(locator: RequestLocator, history: GuidanceHistory, epochs: GuidanceEpochs): Placement {
 	const placement: Placement = { retained: [], retired: [], mismatched: [], insertions: new Map() };
-	const digests = new Map<number, string>();
+	const boundary = epochs.validatedEpoch !== epochs.epoch;
 	for (const record of history.records) {
-		const index = indexes[record.anchor.messageOrdinal];
-		let digest: string | undefined;
-		if (index !== undefined) {
-			digest = digests.get(index) ?? safeDigest(messages[index]);
-			digests.set(index, digest);
+		const index = locator.sourceIndex(record.anchor);
+		if (index === undefined || locator.sourceDigest(index) !== record.anchor.messageDigest) {
+			(boundary ? placement.retired : placement.mismatched).push(record);
+			continue;
 		}
-		if (index === undefined || digest !== record.anchor.messageDigest) {
-			(record.anchor.epoch === epoch ? placement.mismatched : placement.retired).push(record);
+		const position = locator.positionOf(index);
+		if (position === undefined) {
+			placement.mismatched.push(record);
 			continue;
 		}
 		placement.retained.push(record);
-		const bucket = placement.insertions.get(index);
+		const bucket = placement.insertions.get(position);
 		if (bucket) bucket.push(record);
-		else placement.insertions.set(index, [record]);
+		else placement.insertions.set(position, [record]);
 	}
 	return placement;
 }
 
-/**
- * Insert every anchored record after its message. System messages and system
- * patches keep their original relative order. A record whose anchor moved in
- * another epoch is retired; one whose anchor changed inside this epoch is
- * reported as a projection fault. Neither case guesses a new position.
- */
-export function projectGuidance<M extends { role: string }>(
+function project<M extends { role: string }>(
 	messages: readonly M[],
+	locator: RequestLocator,
 	history: GuidanceHistory,
-	options: { readonly epoch: string; readonly isOwn?: (message: M) => boolean },
+	epochs: GuidanceEpochs,
 ): GuidanceProjection<M> {
-	const isOwn = options.isOwn ?? ownMessageMatcher(history.records);
-	const placement = placeRecords(messages, history, options.epoch, basePositions(messages, isOwn).indexes);
+	const placement = placeRecords(locator, history, epochs);
 	const projected: Array<M | GuidanceMessage> = [];
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index];
@@ -413,6 +519,36 @@ export function projectGuidance<M extends { role: string }>(
 		retired: placement.retired,
 		mismatched: placement.mismatched,
 	};
+}
+
+function locatorFor<M extends { role: string }>(
+	messages: readonly M[],
+	sources: readonly GuidanceSource[],
+	history: GuidanceHistory,
+	isOwn?: (message: M) => boolean,
+): RequestLocator {
+	return new RequestLocator(
+		messages,
+		sources,
+		basePositions(messages, isOwn ?? ownMessageMatcher(history.records)),
+	);
+}
+
+/**
+ * Insert every record after its source message. System messages and system
+ * patches keep their original relative order. A record whose source was removed
+ * or replaced across an epoch boundary is retired; one that cannot be placed
+ * inside the validated epoch, or whose request mapping is ambiguous, is reported
+ * as a projection fault. No case guesses a new position.
+ */
+export function projectGuidance<M extends { role: string }>(
+	messages: readonly M[],
+	sources: readonly GuidanceSource[],
+	history: GuidanceHistory,
+	epochs: GuidanceEpochs,
+	isOwn?: (message: M) => boolean,
+): GuidanceProjection<M> {
+	return project(messages, locatorFor(messages, sources, history, isOwn), history, epochs);
 }
 
 /** One request's guidance decision, before any record is persisted. */
@@ -438,18 +574,20 @@ export interface GuidancePlan<M> {
  */
 export function planGuidance<M extends { role: string }>(
 	messages: readonly M[],
+	sources: readonly GuidanceSource[],
 	stored: GuidanceHistory,
-	epoch: string,
+	epochs: GuidanceEpochs,
 	select: (() => PreparedGuidanceSelection | undefined) | undefined,
 	now: number,
 ): GuidancePlan<M> {
-	const existing = projectGuidance(messages, stored, { epoch });
+	const locator = locatorFor(messages, sources, stored);
+	const existing = project(messages, locator, stored, epochs);
 	const faulted = existing.mismatched.length > 0;
 	const history = guidanceHistory(faulted ? [...existing.retained, ...existing.mismatched] : existing.retained);
 	const base = { history, messages: existing.messages };
 	if (faulted) return { ...base, status: "anchor-mismatch" };
 	const prepared = select?.();
-	const anchor = prepared ? tailGuidanceAnchor(messages, epoch, history) : undefined;
+	const anchor = prepared ? locator.tailAnchor(epochs.epoch) : undefined;
 	if (!prepared || !anchor) return { ...base, status: "ok" };
 	const record = guidanceRecord(anchor, now, prepared);
 	const appended = appendGuidance(history, record);
@@ -462,7 +600,7 @@ export function planGuidance<M extends { role: string }>(
 			record,
 			prepared,
 			history: appended.history,
-			messages: projectGuidance(messages, appended.history, { epoch }).messages,
+			messages: project(messages, locator, appended.history, epochs).messages,
 		},
 	};
 }

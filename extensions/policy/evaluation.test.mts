@@ -3,7 +3,7 @@ import { access } from "node:fs/promises";
 import { dirname } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { createEventBus, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createEventBus, type ExtensionAPI, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 import { compile } from "@earendil-works/pi-schema";
 import type { TranscriptEvent } from "vitest-evals";
 import { piSdkAdapter, runDeterministicChecks } from "../../evals/subjects/pi-sdk.mts";
@@ -43,17 +43,28 @@ function harness(mode: "enforce" | "observe") {
 	const tools = new Map<string, FixtureTool>();
 	let active: string[] = [];
 	const entries: Array<{ id: string; type: "custom"; customType: string; data?: unknown }> = [];
+	const session = SessionManager.inMemory("/virtual", { id: "synthetic-session" });
+	const opening = { role: "user", content: [{ type: "text", text: "Run the scripted scenario." }], timestamp: 1 };
+	session.appendMessage(opening as never);
 	let transcript: Array<Record<string, unknown>> = [
 		{ role: "system", content: "", sections: { preamble: "fixture" }, timestamp: 0 },
-		{ role: "user", content: [{ type: "text", text: "Run the scripted scenario." }], timestamp: 1 },
+		opening,
 	];
+	const grow = (turn: number) => {
+		const added = [
+			{ role: "assistant", content: [{ type: "text", text: `Step ${turn}.` }], timestamp: turn * 10 },
+			{ role: "user", content: [{ type: "text", text: `Continue ${turn}.` }], timestamp: turn * 10 + 1 },
+		];
+		for (const message of added) session.appendMessage(message as never);
+		transcript = [...transcript, ...added];
+	};
 	const ctx = {
 		cwd: "/virtual/evals/policy",
 		mode: "rpc",
 		hasUI: false,
 		model: { provider: "test", id: "fixture" },
 		thinkingLevel: "off",
-		sessionManager: { getSessionId: () => "synthetic-session", buildContextEntries: () => entries },
+		sessionManager: session,
 		getSystemPrompt: () => "",
 		ui: { notify: () => {} },
 	} as unknown as ExtensionContext;
@@ -73,6 +84,7 @@ function harness(mode: "enforce" | "observe") {
 		getActiveTools: () => active,
 		appendEntry: (customType: string, data?: unknown) => {
 			entries.push({ id: `entry-${entries.length + 1}`, type: "custom", customType, data });
+			session.appendCustomEntry(customType, data);
 		},
 		setActiveTools: (names: string[]) => {
 			active = [...names];
@@ -97,11 +109,7 @@ function harness(mode: "enforce" | "observe") {
 	};
 	const advance = () => {
 		const turn = transcript.length;
-		transcript = [
-			...transcript,
-			{ role: "assistant", content: [{ type: "text", text: `Step ${turn}.` }], timestamp: turn * 10 },
-			{ role: "user", content: [{ type: "text", text: `Continue ${turn}.` }], timestamp: turn * 10 + 1 },
-		];
+		grow(turn);
 	};
 	return {
 		tools,

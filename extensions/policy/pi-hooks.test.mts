@@ -164,7 +164,7 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 	const endings: string[] = [];
 	const run = async (
 		calls: Array<{ id: string; name?: string; arguments: Record<string, unknown> }>,
-		options: { endAfterTurn?: boolean; stopReason?: AssistantMessage["stopReason"] } = {},
+		options: { endAfterTurn?: boolean; stopReason?: AssistantMessage["stopReason"]; continueSession?: boolean } = {},
 	) => {
 		let supplied = false;
 		let turnIndex = -1;
@@ -223,7 +223,7 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 				{ role: "user", content: "Run controlled tools", timestamp: promptTimestamp },
 				...host.convertToLlm(preparationMessages),
 			],
-			{ systemPrompt: "Controlled test", messages: [], tools },
+			{ systemPrompt: "Controlled test", messages: options.continueSession ? session.buildSessionProjection().messages : [], tools },
 			{
 				model,
 				convertToLlm: (messages: unknown[]) => messages,
@@ -985,10 +985,10 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 				(await f.states()).observationPeriods.find((row: { id: string }) => row.id === "context").projected,
 				0,
 			);
-			await f.run([]);
+			await f.run([], { continueSession: true });
 			assert.equal(f.requests(), 2);
 			assert.match(JSON.stringify(f.requestContexts[1]), /Review the completed calls/);
-			await f.run([]);
+			await f.run([], { continueSession: true });
 			assert.equal(f.requests(), 3);
 			assert.match(JSON.stringify(f.requestContexts[2]), /Review the completed calls/);
 			assert.equal(
