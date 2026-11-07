@@ -209,8 +209,11 @@ class Projector implements TabLabelProjector {
 		const transport = this.transport;
 		if (!ctx || !controller || !transport) return;
 		const run = { generation: this.generation, ctx, controller, transport };
+		// Demands made while this pass runs belong to a later pass: they receive
+		// their own observation rather than this one's acknowledgement.
+		const covered: RefreshCoverage = { inputRevision: this.demand.inputRevision, nameRevision: this.demand.nameRevision };
 		try {
-			const coverage = await this.update(run, this.demand.inputRevision);
+			const coverage = await this.update(run, covered);
 			if (coverage && this.current(run) && this.coversDemand(coverage)) this.dirty = false;
 		} catch (error) {
 			if (this.current(run)) this.warn(ctx, error);
@@ -226,28 +229,25 @@ class Projector implements TabLabelProjector {
 	}
 
 	/** One observation pass. A pass reports the demands it covered; an invalidated run reports none. */
-	private async update(run: Run, inputRevision: number): Promise<RefreshCoverage | undefined> {
-		if (run.ctx.mode !== "tui") return this.coveredDemand();
+	private async update(run: Run, covered: RefreshCoverage): Promise<RefreshCoverage | undefined> {
+		if (run.ctx.mode !== "tui") return covered;
 		const sessionId = this.env.REX_SESSION;
 		const blockId = this.env.REX_BLOCK;
-		if (!sessionId || !blockId) return this.coveredDemand();
+		if (!sessionId || !blockId) return covered;
 		const identity = await this.serverIdentity(run);
 		if (!this.current(run)) return undefined;
-		if (!await this.foregroundMatches(run, sessionId, blockId)) return this.current(run) ? this.coveredDemand() : undefined;
+		if (!await this.foregroundMatches(run, sessionId, blockId)) return this.current(run) ? covered : undefined;
 		const selected = await this.containingWindow(run, sessionId, blockId);
 		if (!this.current(run)) return undefined;
-		if (!selected) return this.coveredDemand();
+		if (!selected) return covered;
 		const desired = this.label(this.ctx ?? run.ctx);
 		this.demand.desiredLabel = desired;
-		const coverage: RefreshCoverage = { inputRevision, nameRevision: this.demand.nameRevision };
+		// The name is read after the queries settle, so a name change made before that
+		// read is the one applied here and is covered by this pass.
+		const coverage: RefreshCoverage = { inputRevision: covered.inputRevision, nameRevision: this.demand.nameRevision };
 		if (!desired) return coverage;
 		await this.applyLabel(run, { ...identity, sessionId, blockId, ...selected }, desired);
 		return coverage;
-	}
-
-	/** A pass that found nothing to apply covers every demand made before it ended. */
-	private coveredDemand(): RefreshCoverage {
-		return { inputRevision: this.demand.inputRevision, nameRevision: this.demand.nameRevision };
 	}
 
 	private async serverIdentity(run: Run): Promise<{ hostId: string; instanceId: string }> {

@@ -522,12 +522,13 @@ requests an update only when its sanitised label differs from the label already 
 unchanged name event runs no Rex process. Each update rechecks the server identity, the foreground
 process, the containing tab and its current label, so a tab reset to its default label or changed to
 a manual label is observed by the next request without a preceding name change. A pass covers the
-input revision it started with and the name revision it read immediately before writing. A later
-input, or a name change after that read, receives exactly one necessary follow-up pass, and
-coincident start and input requests share one pass. Session changes invalidate older runs and abort
-their CLI work; shutdown awaits a bounded drain. No polling, background service, focus watcher, or
-OSC output participates. A single warning notification per extension runtime reports real errors
-without adding persistent status chrome.
+input revision it started with. When it writes, it also covers the name revision it read
+immediately before writing; when it finds nothing to apply, it covers the name revision it started
+with. A later input, or a name change after that point, therefore receives exactly one necessary
+follow-up pass, and coincident start and input requests share one pass. Session changes invalidate
+older runs and abort their CLI work; shutdown awaits a bounded drain. No polling, background
+service, focus watcher, or OSC output participates. A single warning notification per extension
+runtime reports real errors without adding persistent status chrome.
 
 Every claim write, confirmation, manual-divergence removal, withdrawal (restoration or removal) and
 pruning removal holds the lock of the one record it changes. A record's lock path is

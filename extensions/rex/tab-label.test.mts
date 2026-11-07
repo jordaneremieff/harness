@@ -436,6 +436,90 @@ test("an input during an observation pass receives its own fresh pass", async (t
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
 
+test("an input during a gated foreground query receives its own observation pass", async (t) => {
+	const f = await fixture(t);
+	const entered = deferred();
+	const release = deferred();
+	let foregrounds = 0;
+	f.transport.onMethod = async (method) => {
+		if (method !== "com.superlogical.terminal.process") return;
+		foregrounds++;
+		if (foregrounds === 1) {
+			// This answer is a mismatch, so the first pass finds nothing to apply.
+			f.transport.processPid = 9999;
+			entered.resolve();
+			await release.promise;
+			return;
+		}
+		f.transport.processPid = 4242;
+	};
+	f.projector.start(f.ctx);
+	await entered.promise;
+	f.projector.input(f.ctx);
+	release.resolve();
+	await f.projector.idle();
+	assert.deepEqual(
+		f.transport.calls.map((call) => call.method),
+		["whoami", "com.superlogical.terminal.process", "whoami", "com.superlogical.terminal.process", "session.view", "session.set_window_label"],
+	);
+	assert.deepEqual(f.transport.writes, ["fallback"]);
+});
+
+test("an input during a gated window query receives its own observation pass", async (t) => {
+	const f = await fixture(t);
+	const entered = deferred();
+	const release = deferred();
+	let views = 0;
+	f.transport.onMethod = async (method) => {
+		if (method !== "session.view") return;
+		views++;
+		if (views === 1) {
+			// The first answer finds the block in a window that holds another block too.
+			f.transport.extraBlocks = 1;
+			entered.resolve();
+			await release.promise;
+			return;
+		}
+		f.transport.extraBlocks = 0;
+	};
+	f.projector.start(f.ctx);
+	await entered.promise;
+	f.projector.input(f.ctx);
+	release.resolve();
+	await f.projector.idle();
+	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, ...CHECKS, "session.set_window_label"]);
+	assert.deepEqual(f.transport.writes, ["fallback"]);
+});
+
+test("a name change during a gated foreground query receives its own observation pass", async (t) => {
+	const f = await fixture(t);
+	const entered = deferred();
+	const release = deferred();
+	let foregrounds = 0;
+	f.transport.onMethod = async (method) => {
+		if (method !== "com.superlogical.terminal.process") return;
+		foregrounds++;
+		if (foregrounds === 1) {
+			f.transport.processPid = 9999;
+			entered.resolve();
+			await release.promise;
+			return;
+		}
+		f.transport.processPid = 4242;
+	};
+	f.projector.start(f.ctx);
+	await entered.promise;
+	f.state.name = "Named";
+	f.projector.refresh(f.ctx);
+	release.resolve();
+	await f.projector.idle();
+	assert.deepEqual(
+		f.transport.calls.map((call) => call.method),
+		["whoami", "com.superlogical.terminal.process", "whoami", "com.superlogical.terminal.process", "session.view", "session.set_window_label"],
+	);
+	assert.deepEqual(f.transport.writes, ["Named"]);
+});
+
 test("manual divergence removes provenance and the restored default resumes management", async (t) => {
 	const f = await fixture(t);
 	f.projector.start(f.ctx);
