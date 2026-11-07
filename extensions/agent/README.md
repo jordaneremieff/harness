@@ -2223,7 +2223,12 @@ synchronous `durable:agent-entry` handler on the service `EventBus`
 (`entry-binding.ts`) and removes that handler after resource loading, including
 on failure. The handler accepts only the canonical Agent entrypoint selected for
 that host, supplies the native registration factory (`native-entry.ts`) for that
-exact path, and explicitly rejects any other Agent entrypoint. The native
+exact path, and explicitly rejects any other Agent entrypoint. Native host
+reload goes through `DurableServices.reloadResources()`, which installs the
+same handler around the resource loader's reload, keeps the loader's factory
+cache refresh, removes the handler when the reload settles or fails, and fails
+the reload when an unselected Agent entrypoint appears. Reload therefore never
+evaluates the ordinary registration graph. The native
 factory publishes settings and the Agent contribution with the original
 `extensions/agent/index.ts` `source` path, without loading or constructing
 ordinary managers, tool cards, commands, or `SelfCompaction`. When no

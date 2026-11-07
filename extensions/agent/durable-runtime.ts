@@ -558,7 +558,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		if (params.name !== "reload") return host.request("command", params);
 		if (!host.isIdle()) throw new Error("Reload requires an idle storage; it cannot replace another conversation's active tasks");
 		if (host.observationCount > 0) throw new Error("Reload requires closed live observations; release every observer before reload");
-		await services.services.resourceLoader.reload();
+		await services.reloadResources();
 		try {
 			await deliveries.close();
 			unsubscribeChanges?.();

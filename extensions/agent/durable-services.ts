@@ -235,6 +235,13 @@ export interface DurableServices {
 	 * before scheduling starts, and closes storage after `close()`.
 	 */
 	install(harness: Durable.Harness): Promise<void>;
+	/**
+	 * Reload the resource loader, which refreshes the extension factory cache,
+	 * with the canonical Agent entry binding installed around the whole load.
+	 * The binding is removed when the reload settles or fails, and a rejected
+	 * Agent entry fails the reload.
+	 */
+	reloadResources(): Promise<void>;
 	close(): Promise<void>;
 }
 
@@ -729,7 +736,8 @@ export async function createDurableServices(options: CreateDurableServicesOption
 	const contributions: DurableContribution[] = [];
 	const collectionErrors: Error[] = [];
 	let selectionError: Error | undefined;
-	const unsubscribeEntry = bus.on(AGENT_ENTRY_CHANNEL, (data) => {
+	/** Answer every Agent entry request with the native entry for the canonical source, or a rejection. */
+	const bindAgentEntry = (): (() => void) => bus.on(AGENT_ENTRY_CHANNEL, (data) => {
 		if (typeof data !== "object" || data === null) return;
 		const request = data as AgentEntryRequest;
 		if (request.version !== 1 || typeof request.source !== "string" || request.source === "") return;
@@ -745,6 +753,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 		}
 		request.result = { kind: "native", register: createNativeAgentEntry(request.source) };
 	});
+	const unsubscribeEntry = bindAgentEntry();
 	const unsubscribe = bus.on("durable:contribution", (data) => {
 		try {
 			selectionError ??= unselectedAgentContribution(data, selectedAgent);
@@ -822,6 +831,21 @@ export async function createDurableServices(options: CreateDurableServicesOption
 		return environment;
 	};
 
+	/** Reload resources with the Agent entry binding installed for the whole reload; a rejected entry fails it. */
+	const reloadResources = async (): Promise<void> => {
+		if (closed) throw new Error("durable services are closed");
+		const priorError = selectionError;
+		selectionError = undefined;
+		const unbind = bindAgentEntry();
+		try {
+			await services.resourceLoader.reload();
+			if (selectionError !== undefined) throw selectionError;
+		} finally {
+			unbind();
+			selectionError = priorError;
+		}
+	};
+
 	try {
 		const loaded = services.resourceLoader.getExtensions();
 		reportIssues(report, collectionErrors, services, loaded, contributions);
@@ -888,6 +912,7 @@ export async function createDurableServices(options: CreateDurableServicesOption
 			settings,
 			env,
 			install,
+			reloadResources,
 			close: closeNow,
 		};
 	} catch (error) {

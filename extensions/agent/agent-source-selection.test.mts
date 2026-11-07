@@ -329,3 +329,86 @@ test("entry dispatcher selects native or ordinary registration, preserves origin
 	assert.ok(ordinaryTools.includes("agent_spawn"));
 });
 
+
+const probeKey = "__agentEntryProbe";
+function entryProbe(source: string): string {
+	return `export default function (pi) {
+	const request = { version: 1, source: ${JSON.stringify(source)} };
+	pi.events.emit("durable:agent-entry", request);
+	(globalThis[${JSON.stringify(probeKey)}] ??= []).push(request.result?.kind ?? "none");
+}\n`;
+}
+
+function probeResults(): string[] {
+	const state = globalThis as Record<string, unknown>;
+	state[probeKey] ??= [];
+	return state[probeKey] as string[];
+}
+
+function assertNoOrdinaryRegistrations(services: Awaited<ReturnType<typeof createDurableServices>>): void {
+	const loaded = services.services.resourceLoader.getExtensions().extensions;
+	const agent = loaded.find(item => item.resolvedPath === selectedAgent);
+	assert.ok(agent);
+	assert.equal(agent.tools.size, 0, "reloaded native entry registers no ordinary tools");
+	assert.equal(agent.commands.size, 0, "reloaded native entry registers no ordinary commands");
+	assert.equal(agent.shortcuts.size, 0);
+	assert.equal(agent.messageRenderers.size, 0);
+}
+
+test("scoped resource reload binds the canonical Agent source around the whole reload and removes it afterwards", { timeout: 30000 }, async t => {
+	const f = fixture(t);
+	const probe = join(f.root, "entry-probe.ts");
+	writeFileSync(probe, entryProbe(selectedAgent));
+	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ extensions: [probe], cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	probeResults().length = 0;
+	t.after(() => { delete (globalThis as Record<string, unknown>)[probeKey]; });
+	const services = await createDurableServices({
+		cwd: f.cwd, agentDir: f.agentDir, storageId: "scoped-reload", packageDir: getPackageDir(),
+		modelRuntime: await createTestRuntime(), trusted: false, agentExtensionPath: selectedAgent,
+	});
+	try {
+		assert.deepEqual(probeResults(), ["native"]);
+		assertNoOrdinaryRegistrations(services);
+
+		await services.reloadResources();
+		assert.deepEqual(probeResults(), ["native", "native"], "the reload answers the source request natively");
+		assertNoOrdinaryRegistrations(services);
+		assert.equal(services.services.resourceLoader.getExtensions().errors.length, 0);
+
+		await services.services.resourceLoader.reload();
+		assert.deepEqual(probeResults(), ["native", "native", "none"], "the binding is gone once the scoped reload settles");
+
+		writeFileSync(probe, entryProbe(join(f.root, "foreign", "index.ts")));
+		await assert.rejects(services.reloadResources(), /unselected Agent contribution/u);
+		assert.equal(probeResults().at(-1), "rejected");
+		const afterFailure = probeResults().length;
+
+		writeFileSync(probe, entryProbe(selectedAgent));
+		await services.services.resourceLoader.reload();
+		assert.deepEqual(probeResults().slice(afterFailure), ["none"], "the binding is removed after a failed reload");
+
+		await services.reloadResources();
+		assert.equal(probeResults().at(-1), "native");
+		assertNoOrdinaryRegistrations(services);
+	} finally { await services.close(); }
+});
+
+test("native host reload keeps the Agent entry native and registers nothing ordinary", { timeout: 30000 }, async t => {
+	const f = fixture(t);
+	const probe = join(f.root, "entry-probe.ts");
+	writeFileSync(probe, entryProbe(selectedAgent));
+	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ extensions: [probe], cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	probeResults().length = 0;
+	t.after(() => { delete (globalThis as Record<string, unknown>)[probeKey]; });
+	const record = new AgentCatalog(f.root).create({ cwd: f.cwd, agentDir: f.agentDir, packageDir: getPackageDir(), model: { provider: testModel.provider, modelId: testModel.id }, thinkingLevel: "off", trust: false });
+	const runtime = await createDurableRuntime(hostMetadata(record), { modelRuntime: await createTestRuntime() });
+	try {
+		const initial = probeResults().length;
+		assert.ok(initial > 0);
+		assert.ok(probeResults().every(kind => kind === "native"));
+		const result = await runtime.request("command", { name: "reload" }, "native-reload") as { reloaded?: boolean };
+		assert.equal(result.reloaded, true);
+		assert.ok(probeResults().length > initial, "reload evaluated the factories again");
+		assert.ok(probeResults().every(kind => kind === "native"), "every entry request during reload resolved natively");
+	} finally { await runtime.close(); }
+});
