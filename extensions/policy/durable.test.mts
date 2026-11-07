@@ -1014,7 +1014,7 @@ test("annotate mode appends guide text and records the observation period", asyn
 	}
 });
 
-test("context-phase guidance reaches one model request per period", async () => {
+test("context-phase guidance is selected once per period and keeps its place", async () => {
 	const fixture = await openFixture({ mode: "annotate" });
 	try {
 		await addRule(fixture.policy, "durable-context-guide", {
@@ -1044,7 +1044,53 @@ test("context-phase guidance reaches one model request per period", async () => 
 		const second = await fixture.root.submit({ type: "input", content: "second" }, context);
 		await second.wait(context);
 		assert.ok(seen[1]);
-		assert.ok(!seen[1].includes("Context-phase guidance."));
+		assert.ok(seen[1].includes("Context-phase guidance."));
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("native guidance keeps its bytes and position across later requests", async () => {
+	const storage = new DurableModule.MemoryStorage();
+	const fixture = await openFixture({ mode: "annotate", storage });
+	try {
+		await addRule(fixture.policy, "durable-early-guide", {
+			phase: "context",
+			when: { op: "exists", path: ["context"] },
+			action: { kind: "guide", text: "Early guidance." },
+			onUnavailable: "skip",
+			state: { observe: { op: "exists", path: ["context"] }, once: "period" },
+		});
+		const seen: Array<Array<{ role: string }>> = [];
+		for (let request = 1; request <= 5; request++) {
+			fixture.faux.appendResponses([
+				(callContext) => {
+					seen.push(callContext.messages as Array<{ role: string }>);
+					return fauxAssistantMessage(`answer ${request}`);
+				},
+			]);
+			const submission = await fixture.root.submit({ type: "input", content: `prompt ${request}` }, context);
+			await submission.wait(context);
+		}
+		const marker = (message: { role: string }) => JSON.stringify(message).includes("Early guidance.");
+		const position = seen[0].findIndex(marker);
+		assert.ok(position > 0);
+		for (const request of seen) {
+			assert.equal(request.filter(marker).length, 1);
+			assert.equal(request.findIndex(marker), position);
+		}
+		for (let index = 1; index < seen.length; index++)
+			for (let block = 0; block < seen[index - 1].length; block++)
+				if (seen[index - 1][block].role !== "system")
+					assert.equal(JSON.stringify(seen[index][block]), JSON.stringify(seen[index - 1][block]));
+		const record = await storage.findDocument(
+			{ kind: "policy.guidance", scope: { kind: "conversation", conversationId: fixture.root.id } },
+			"current",
+			context,
+		);
+		assert.ok(record);
+		assert.equal(record.history, "latest");
+		assert.equal(record.fork, "current");
 	} finally {
 		await fixture.close();
 	}

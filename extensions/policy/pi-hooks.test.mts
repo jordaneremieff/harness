@@ -108,6 +108,7 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 		);
 	}
 	const session = host.SessionManager.inMemory(base);
+	const promptTimestamp = Date.now();
 	const runner = new host.ExtensionRunner(loaded.extensions, loaded.runtime, base, session, {});
 	const errors: unknown[] = [];
 	runner.onError((error: unknown) => errors.push(error));
@@ -118,7 +119,9 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 	const actions = {
 		sendMessage: () => assert.fail("Policy must not send a message to force a turn"),
 		sendUserMessage: () => assert.fail("Policy must not force a user turn"),
-		appendEntry: () => {},
+		appendEntry: (customType: string, data?: unknown) => {
+			session.appendCustomEntry(customType, data);
+		},
 		setSessionName: () => {},
 		getSessionName: () => undefined,
 		setLabel: () => {},
@@ -217,7 +220,7 @@ async function setup(programs: Array<[string, FactsProgram]>, mode = "enforce", 
 		}));
 		const messages = await runAgentLoop(
 			[
-				{ role: "user", content: "Run controlled tools", timestamp: Date.now() },
+				{ role: "user", content: "Run controlled tools", timestamp: promptTimestamp },
 				...host.convertToLlm(preparationMessages),
 			],
 			{ systemPrompt: "Controlled test", messages: [], tools },
@@ -987,7 +990,7 @@ describe(`ordinary Pi ${version} policy hooks`, () => {
 			assert.match(JSON.stringify(f.requestContexts[1]), /Review the completed calls/);
 			await f.run([]);
 			assert.equal(f.requests(), 3);
-			assert.doesNotMatch(JSON.stringify(f.requestContexts[2]), /Review the completed calls/);
+			assert.match(JSON.stringify(f.requestContexts[2]), /Review the completed calls/);
 			assert.equal(
 				(await f.states()).observationPeriods.find((row: { id: string }) => row.id === "context").projected,
 				1,

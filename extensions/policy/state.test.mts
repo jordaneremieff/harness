@@ -140,6 +140,21 @@ test("once-per-turn and cooldown flags change only on actual projection", () => 
 	assert.equal(state.project("failures", 11, 2), true);
 });
 
+test("guidance eligibility changes only on an accepted projection", () => {
+	const state = new ObservationState();
+	state.sync([rule({ once: "period" })], 0);
+	const pin = pinOf(state);
+	state.complete(pin, failed, 1, 1);
+	for (let read = 0; read < 3; read++) {
+		assert.equal(state.eligible("failures", 2, 1), true);
+		assert.equal(state.view("failures", 2, 1)?.projected, 0);
+	}
+	assert.equal(state.project("failures", 2, 1), true);
+	assert.equal(state.eligible("failures", 2, 1), false);
+	assert.equal(state.project("failures", 2, 1), false);
+	assert.equal(state.view("failures", 2, 1)?.projected, 1);
+});
+
 test("semantic and lifecycle resets reject stale generations; ordinary sync preserves periods", () => {
 	for (const reason of ["load", "reload", "new", "resume", "fork", "tree-navigation"]) {
 		const state = new ObservationState();

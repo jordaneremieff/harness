@@ -13,17 +13,19 @@
  *   and guide annotations replace the tool result; observation completion,
  *   retained guidance, and provenance are committed to `policy.state`.
  * - `beforeRequest` is the context phase. Context programs and retained guidance
- *   append user messages to that request
- *   only, which is the native equivalent of the ordinary `context` event.
+ *   become records in `policy.guidance`; each is projected after its anchor
+ *   message on every later request, the native equivalent of the ordinary
+ *   `context_with_system` projection.
  * - Compaction carries no policy decision and installs no hook.
  *
  * Observation periods are conversation-scoped because Durable turns and
  * replay identity are conversation-scoped; the ordinary runtime keeps one
  * session-wide state. `policy.state` holds the serialized `ObservationState`,
  * retained guidance, the initial shell card, the counted turn, a bounded
- * ring of completed calls with the result effect each decided, one message
- * effect per generation task, the revision identity, and observation
- * counters. Every update recomputes inside one in-process tail and commits the
+ * ring of completed calls with the result effect each decided, the revision
+ * identity, and observation counters. `policy.guidance` holds the frozen
+ * guidance records and their health status; record identity makes a repeated
+ * request attempt idempotent. Every update recomputes inside one in-process tail and commits the
  * state and its task or call key together, so a replay after process loss
  * returns the recorded decision instead of deciding again. Hooks use only the
  * public `HookApi`: durable writes go through `host.harness.commit()` keyed by
@@ -87,7 +89,6 @@ import {
 } from "./program.ts";
 import {
 	boundedRows,
-	guidanceText,
 	markUnavailable,
 	metadata,
 	publicState,
@@ -96,6 +97,17 @@ import {
 	samePin,
 	telemetryDecisionRows,
 } from "./runtime.ts";
+import {
+	GUIDANCE_HISTORY_LIMITS,
+	type GuidanceRecord,
+	type GuidanceStatus,
+	guidanceHistory,
+	guidanceText,
+	parseGuidanceRecord,
+	planGuidance,
+	type PreparedGuidanceSelection,
+	prepareGuidanceSelection,
+} from "./guidance-history.ts";
 import {
 	type CallEffects,
 	type CallOutcome,
@@ -144,7 +156,6 @@ import {
 const MAX_CATALOG_TOOLS = 1024;
 const MAX_MEMO_INPUT_BYTES = 16 * 1024;
 const COMPLETED_CALLS = 512;
-const REQUEST_EFFECTS = 64;
 const PROJECTION_MODES: readonly PolicyMode[] = ["annotate", "enforce"];
 
 /** Host diagnostics establish rejection or uncertain execution, not a completed tool attempt. */
@@ -262,8 +273,6 @@ type StoredRetainedGuidance = {
 	generation: number;
 	evaluation: JsonValue;
 };
-/** Message effect of one generation task, recorded so a replayed request sends the same messages. */
-type StoredRequestEffect = { taskId: string; guidance?: string };
 type PolicyStateValue = Durable.JsonObject & {
 	identity: string;
 	generation: number;
@@ -271,10 +280,17 @@ type PolicyStateValue = Durable.JsonObject & {
 	observation: JsonValue;
 	retainedGuidance: JsonValue[];
 	completedCalls: JsonValue[];
-	requestEffects: JsonValue[];
 	incomplete: number;
 	stale: number;
 	shellCard: string | null;
+};
+
+/** Conversation-scoped guidance ledger. Latest history, current fork, no automatic checkpoints. */
+type GuidanceDocValue = Durable.JsonObject & {
+	epoch: string;
+	status: GuidanceStatus;
+	noticeEpoch: string | null;
+	records: JsonValue[];
 };
 
 /** What `beforeTool` records on the tool task for `afterTool` and for recovery. */
@@ -408,6 +424,15 @@ export async function createPolicyDurableExtension(host: PolicyDurableHost): Pro
 		checkpointWhen: () => false,
 		initial: initialPolicyStateValue,
 	});
+	const GuidanceDoc = defineDoc<GuidanceDocValue>({
+		kind: "policy.guidance",
+		version: 1,
+		scope: "conversation",
+		history: "latest",
+		fork: "current",
+		checkpointWhen: () => false,
+		initial: initialGuidanceDocValue,
+	});
 	const loaded = await registry.snapshot();
 	const loadedPolicy = preparedPolicyFor(loaded);
 	const wrappedTools = new Set([...loadedPolicy.compiled.values()].flatMap((program) => {
@@ -422,6 +447,7 @@ export async function createPolicyDurableExtension(host: PolicyDurableHost): Pro
 		cwd: host.cwd,
 		mode: configured.values.mode,
 		stateDoc: StateDoc,
+		guidanceDoc: GuidanceDoc,
 	});
 	runtimes.set(host, runtime);
 
@@ -541,11 +567,14 @@ function initialPolicyStateValue(): PolicyStateValue {
 		observation: initialObservationValue(),
 		retainedGuidance: [],
 		completedCalls: [],
-		requestEffects: [],
 		incomplete: 0,
 		stale: 0,
 		shellCard: null,
 	};
+}
+
+function initialGuidanceDocValue(): GuidanceDocValue {
+	return { epoch: "", status: "ok", noticeEpoch: null, records: [] };
 }
 
 function isStoredGuidance(value: JsonValue): value is StoredRetainedGuidance {
@@ -564,15 +593,6 @@ function isStoredCompleted(value: JsonValue): value is StoredCompletedCall {
 	return entry !== undefined && typeof entry.id === "string";
 }
 
-function isStoredRequestEffect(value: JsonValue): value is StoredRequestEffect {
-	const entry = objectValue(value);
-	return (
-		entry !== undefined &&
-		typeof entry.taskId === "string" &&
-		(entry.guidance === undefined || typeof entry.guidance === "string")
-	);
-}
-
 function normalizePolicyState(raw: Readonly<PolicyStateValue> | undefined): PolicyStateValue {
 	if (!raw) return initialPolicyStateValue();
 	const value = raw as Partial<PolicyStateValue>;
@@ -584,9 +604,6 @@ function normalizePolicyState(raw: Readonly<PolicyStateValue> | undefined): Poli
 		retainedGuidance: Array.isArray(value.retainedGuidance) ? value.retainedGuidance.filter(isStoredGuidance) : [],
 		completedCalls: Array.isArray(value.completedCalls)
 			? value.completedCalls.filter(isStoredCompleted).slice(-COMPLETED_CALLS)
-			: [],
-		requestEffects: Array.isArray(value.requestEffects)
-			? value.requestEffects.filter(isStoredRequestEffect).slice(-REQUEST_EFFECTS)
 			: [],
 		incomplete: safeInteger(value.incomplete) ?? 0,
 		stale: safeInteger(value.stale) ?? 0,
@@ -603,11 +620,52 @@ function repairState(state: PolicyStateValue): PolicyStateValue {
 	state.observation = normalized.observation;
 	state.retainedGuidance = normalized.retainedGuidance;
 	state.completedCalls = normalized.completedCalls;
-	state.requestEffects = normalized.requestEffects;
 	state.incomplete = normalized.incomplete;
 	state.stale = normalized.stale;
 	state.shellCard = normalized.shellCard;
 	return state;
+}
+
+const GUIDANCE_STATUSES: readonly GuidanceStatus[] = ["capacity", "anchor-mismatch", "persistence-failed"];
+
+function boundedString(value: unknown): string | undefined {
+	return typeof value === "string" && value.length <= 512 ? value : undefined;
+}
+
+function normalizeGuidanceDoc(raw: Readonly<GuidanceDocValue> | undefined): GuidanceDocValue {
+	if (!raw) return initialGuidanceDocValue();
+	const value = raw as Partial<GuidanceDocValue>;
+	const parsed = Array.isArray(value.records) ? value.records.map(parseGuidanceRecord) : [];
+	const records = parsed.filter((record): record is GuidanceRecord => record !== undefined);
+	return {
+		epoch: boundedString(value.epoch) ?? "",
+		status: GUIDANCE_STATUSES.find((status) => status === value.status) ?? "ok",
+		noticeEpoch: boundedString(value.noticeEpoch) ?? null,
+		records: records.slice(0, GUIDANCE_HISTORY_LIMITS.records) as unknown as JsonValue[],
+	};
+}
+
+/** Repair one guidance draft in place so one corrupt record cannot hide the rest. */
+function repairGuidance(doc: GuidanceDocValue): GuidanceDocValue {
+	const normalized = normalizeGuidanceDoc(doc);
+	doc.epoch = normalized.epoch;
+	doc.status = normalized.status;
+	doc.noticeEpoch = normalized.noticeEpoch;
+	doc.records = normalized.records;
+	return doc;
+}
+
+interface RequestInput {
+	epoch: string;
+	messages: readonly Message[];
+	snapshot: RuleSnapshot;
+	agent: Durable.Agent;
+	scope: RuleMatchContext;
+	rules: ProgramRule[];
+	installed: readonly string[];
+	mode: PolicyMode;
+	turn: number;
+	now: number;
 }
 
 interface DurablePolicyRuntimeOptions {
@@ -619,6 +677,7 @@ interface DurablePolicyRuntimeOptions {
 	cwd: string;
 	mode: PolicyMode;
 	stateDoc: Durable.ConversationDocToken<PolicyStateValue>;
+	guidanceDoc: Durable.ConversationDocToken<GuidanceDocValue>;
 }
 
 class DurablePolicyRuntime {
@@ -632,6 +691,7 @@ class DurablePolicyRuntime {
 	private readonly cwd: string;
 	private readonly mode: PolicyMode;
 	private readonly stateDoc: Durable.ConversationDocToken<PolicyStateValue>;
+	private readonly guidanceDoc: Durable.ConversationDocToken<GuidanceDocValue>;
 	private stateTail: Promise<unknown> = Promise.resolve();
 	private telemetryFailure?: string;
 
@@ -644,6 +704,7 @@ class DurablePolicyRuntime {
 		this.cwd = options.cwd;
 		this.mode = options.mode;
 		this.stateDoc = options.stateDoc;
+		this.guidanceDoc = options.guidanceDoc;
 	}
 
 	private actionBinding(conversationId: Durable.ConversationId, snapshot: RuleSnapshot, agent: Durable.Agent, scope: RuleMatchContext): ActionBinding {
@@ -746,15 +807,34 @@ class DurablePolicyRuntime {
 	private withState<T>(
 		surface: PolicySurface,
 		context: Context,
-		work: (state: PolicyStateValue) => T | Promise<T>,
+		work: (state: PolicyStateValue, guidance: GuidanceDocValue) => T | Promise<T>,
 	): Promise<T> {
 		const run = this.stateTail.then(async () => {
 			let result!: T;
 			await surface.commit(async (tx) => {
 				const draft = await tx.doc(this.stateDoc, surface.conversationId);
-				result = await work(repairState(draft));
+				const guidanceDraft = await tx.doc(this.guidanceDoc, surface.conversationId);
+				result = await work(repairState(draft), repairGuidance(guidanceDraft));
 			}, context);
 			return result;
+		});
+		this.stateTail = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	}
+
+	/** Run one read of both conversation documents on the serialized state tail. */
+	private readStateAndGuidance<T>(
+		surface: PolicySurface,
+		context: Context,
+		work: (state: PolicyStateValue, guidance: GuidanceDocValue) => T | Promise<T>,
+	): Promise<T> {
+		const run = this.stateTail.then(async () => {
+			const raw = await surface.snapshot(this.stateDoc, surface.conversationId, context);
+			const guidance = await surface.snapshot(this.guidanceDoc, surface.conversationId, context);
+			return work(normalizePolicyState(raw), normalizeGuidanceDoc(guidance));
 		});
 		this.stateTail = run.then(
 			() => undefined,
@@ -775,8 +855,15 @@ class DurablePolicyRuntime {
 		return Array.isArray(state.completedCalls) ? state.completedCalls.filter(isStoredCompleted) : [];
 	}
 
-	private requestEffectsOf(state: PolicyStateValue): StoredRequestEffect[] {
-		return Array.isArray(state.requestEffects) ? state.requestEffects.filter(isStoredRequestEffect) : [];
+	private guidanceRecordsOf(doc: GuidanceDocValue): GuidanceRecord[] {
+		const records: GuidanceRecord[] = [];
+		if (Array.isArray(doc.records))
+			for (const entry of doc.records) {
+				const record = parseGuidanceRecord(entry);
+				if (record) records.push(record);
+				if (records.length >= GUIDANCE_HISTORY_LIMITS.records) break;
+			}
+		return records;
 	}
 
 	/** Public-surface adapter for hooks: reads and memos from HookApi, writes and agent from the host Harness. */
@@ -1563,63 +1650,58 @@ class DurablePolicyRuntime {
 	): Promise<{ messages: readonly Message[] } | undefined> {
 		const now = Date.now();
 		const surface = this.hookSurface(api);
-		const taskId = String(api.taskId);
 		const { snapshot, agent, scope, rules, installed } = await this.activeRules(surface, context);
 		const view = await this.conversationView(api.conversationId, context);
 		const turn = view.messages.filter((message) => message.role === "assistant").length + 1;
 		const mode = this.effectiveMode(snapshot);
-		const effect = await this.withState(surface, context, (state) =>
-			this.requestEffect(state, taskId, { snapshot, agent, scope, rules, installed, mode, turn, now }),
+		const epoch = `${api.conversationId}:${view.head?.id ?? "root"}`;
+		const effect = await this.withState(surface, context, (state, guidance) =>
+			this.requestEffect(state, guidance, {
+				epoch,
+				messages: request.messages,
+				snapshot,
+				agent,
+				scope,
+				rules,
+				installed,
+				mode,
+				turn,
+				now,
+			}),
 		);
-		const messages = [...request.messages];
-		if (effect.guidance) messages.push(userMessage(effect.guidance, now));
-		return messages.length === request.messages.length ? undefined : { messages };
+		if (effect.notice)
+			try {
+				console.warn(terminalSafe(`[policy] ${effect.notice}`));
+			} catch {
+				/* Guidance health reporting does not change the request. */
+			}
+		return effect.messages ? { messages: effect.messages } : undefined;
 	}
 
-	/** One generation task's request effect; a recorded taskId replays the same messages. */
+	/**
+	 * One request's guidance projection. Record identity makes a repeated
+	 * attempt at the same anchor idempotent; a new record is committed before
+	 * its observation allowance is consumed.
+	 */
 	private requestEffect(
 		state: PolicyStateValue,
-		taskId: string,
-		input: {
-			snapshot: RuleSnapshot;
-			agent: Durable.Agent;
-			scope: RuleMatchContext;
-			rules: ProgramRule[];
-			installed: readonly string[];
-			mode: PolicyMode;
-			turn: number;
-			now: number;
-		},
-	): StoredRequestEffect {
-		const recorded = this.requestEffectsOf(state).find((entry) => entry.taskId === taskId);
-		if (recorded) return recorded;
-		const { rules, mode, turn, now } = input;
+		guidance: GuidanceDocValue,
+		input: RequestInput,
+	): { messages?: readonly Message[]; notice?: string } {
 		const observation = this.observationOf(state);
-		observation.sync(rules, now);
-		state.turn = Math.max(state.turn, turn);
-		const effect: StoredRequestEffect = { taskId };
-		if (PROJECTION_MODES.includes(mode)) this.projectRequest(state, observation, effect, input);
+		observation.sync(input.rules, input.now);
+		state.turn = Math.max(state.turn, input.turn);
+		const projected = this.projectRequest(state, guidance, observation, input);
 		state.observation = observation.toJSON() as unknown as JsonValue;
-		state.requestEffects = [...this.requestEffectsOf(state), effect].slice(-REQUEST_EFFECTS);
-		return effect;
+		return projected;
 	}
 
-	/** Context rules and retained guidance for one request. */
-	private projectRequest(
+	/** Selected guidance text for context programs and retained notices, without consuming allowance. */
+	private selectRequestGuidance(
 		state: PolicyStateValue,
 		observation: ObservationState,
-		effect: StoredRequestEffect,
-		input: {
-			snapshot: RuleSnapshot;
-			agent: Durable.Agent;
-			scope: RuleMatchContext;
-			rules: ProgramRule[];
-			installed: readonly string[];
-			mode: PolicyMode;
-			turn: number;
-			now: number;
-		},
-	): void {
+		input: RequestInput,
+	): PreparedGuidanceSelection | undefined {
 		const { snapshot, agent, scope, rules, installed, mode, turn, now } = input;
 		const retained = this.validRetained(state, observation, rules);
 		state.retainedGuidance = retained;
@@ -1634,17 +1716,51 @@ class DurablePolicyRuntime {
 			mode,
 			scope,
 		});
-		const projected = new Set<string>();
-		const guidance = this.selectGuidance(
-			observation,
+		return prepareGuidanceSelection(
 			[...retained.map((entry) => entry.evaluation as unknown as ProgramEvaluation), ...contextPrograms],
-			mode,
+			observation,
 			now,
 			turn,
-			(id) => projected.add(id),
 		);
-		if (guidance) effect.guidance = guidance;
-		state.retainedGuidance = this.retainedGuidanceOf(state).filter((entry) => !projected.has(entry.id));
+	}
+
+	/** Context rules and retained guidance for one request. */
+	private projectRequest(
+		state: PolicyStateValue,
+		guidance: GuidanceDocValue,
+		observation: ObservationState,
+		input: RequestInput,
+	): { messages?: readonly Message[]; notice?: string } {
+		const { epoch, messages, mode, turn, now } = input;
+		const plan = planGuidance<Message>(
+			messages,
+			guidanceHistory(this.guidanceRecordsOf(guidance)),
+			epoch,
+			PROJECTION_MODES.includes(mode) ? () => this.selectRequestGuidance(state, observation, input) : undefined,
+			now,
+		);
+		let { history, messages: projected } = plan;
+		if (plan.addition) {
+			for (const id of plan.addition.prepared.ids)
+				if (observation.project(id, now, turn))
+					state.retainedGuidance = this.retainedGuidanceOf(state).filter((entry) => entry.id !== id);
+			({ history, messages: projected } = plan.addition);
+		}
+		guidance.epoch = epoch;
+		guidance.status = plan.status;
+		guidance.records = history.records as unknown as JsonValue[];
+		const notice = plan.status !== "ok" && guidance.noticeEpoch !== epoch ? this.guidanceNotice(plan.status) : undefined;
+		if (notice !== undefined) guidance.noticeEpoch = epoch;
+		return {
+			...(projected.length !== messages.length ? { messages: projected as readonly Message[] } : {}),
+			...(notice !== undefined ? { notice } : {}),
+		};
+	}
+
+	private guidanceNotice(status: GuidanceStatus): string {
+		return status === "capacity"
+			? "Guidance history is full; earlier guidance keeps its place and new context guidance is refused."
+			: "Guidance history cannot place an earlier notice; new context guidance is paused.";
 	}
 
 	private validRetained(
@@ -2031,10 +2147,10 @@ class DurablePolicyRuntime {
 		const now = Date.now();
 		const snapshot = await this.snapshot();
 		const { agent, scope, rules, installed } = await this.activeRules(surface, context);
-		const reading = await this.readState(surface, context, (state) => {
+		const reading = await this.readStateAndGuidance(surface, context, (state, guidance) => {
 			const observation = this.observationOf(state);
 			observation.sync(rules, now);
-			return { state, observation };
+			return { state, guidance, observation };
 		});
 		if (view === "state") {
 			return {
@@ -2047,9 +2163,16 @@ class DurablePolicyRuntime {
 					revision: entry.revision,
 					generation: entry.generation,
 				})),
+				guidanceRecords: this.guidanceRecordsOf(reading.guidance).map((record) => ({
+					id: record.id,
+					epoch: record.anchor.epoch,
+					messageOrdinal: record.anchor.messageOrdinal,
+					timestamp: record.timestamp,
+				})),
 			};
 		}
 		if (view === "health") {
+			const guidanceRecords = this.guidanceRecordsOf(reading.guidance);
 			return {
 				authority: snapshot.health,
 				telemetry: this.telemetryFailure ? { status: "failed", reason: this.telemetryFailure } : { status: "ready" },
@@ -2057,6 +2180,13 @@ class DurablePolicyRuntime {
 					incomplete: reading.state.incomplete,
 					pending: await this.pendingCount(surface.conversationId, context),
 					recentCompletedIds: this.completedCallsOf(reading.state).length,
+				},
+				guidance: {
+					status: reading.guidance.status,
+					epoch: reading.guidance.epoch || null,
+					records: guidanceRecords.length,
+					retainedBytes: guidanceHistory(guidanceRecords).retainedBytes,
+					limits: GUIDANCE_HISTORY_LIMITS,
 				},
 			};
 		}
@@ -2077,8 +2207,8 @@ class DurablePolicyRuntime {
 				},
 				innerSchemas: "Unavailable; decoded argument corrections are unsupported",
 				dataKinds: ["table"],
-				observationStorage: "conversation document",
-				projection: "message append, no new turn",
+				observationStorage: "conversation documents",
+				projection: "full transcript with retained guidance, no new turn",
 			};
 		}
 		if (view === "explain") return this.inspectExplain(params, snapshot, reading.state, reading.observation, now, surface);
@@ -2235,6 +2365,3 @@ class DurablePolicyRuntime {
 	}
 }
 
-function userMessage(text: string, timestamp: number): Message {
-	return { role: "user", content: [{ type: "text", text }], timestamp };
-}

@@ -210,7 +210,9 @@ section, and native task hooks:
   results; completion rules receive the distinct outcome. A policy denial
   already completed by the input hook produces no second record or guidance.
 - `GenerationTask.beforeRequest` is the context phase: context rules and retained
-  completion guidance append user messages to that request only.
+  completion guidance become persistent records in the `policy.guidance`
+  document, projected after their original anchor on every later request (see
+  [persistent guidance placement](#persistent-guidance-placement)).
 - The `policy_shell` system section stores the conversation's initial shell card.
   Every request renders the same bytes, including after a tool call or recovery.
   Initial absence is also retained. Current checks still use the live rule store.
@@ -225,7 +227,10 @@ Harness by call or task identity, and the resolved agent comes from the host's
 conversation handle. Every state update recomputes and commits inside one
 in-process tail. The document explicitly disables automatic checkpoints: ordinary
 updates remain deltas rather than new complete bases. The document uses latest
-history and forks from the current state.
+history and forks from the current state. The `policy.guidance` document has
+the same semantics (conversation scope, latest history, current fork, no
+automatic checkpoints) and is read and written in the same serialized
+transaction as `policy.state`.
 
 Durable tools return model-visible `output`, program-visible `structuredOutput`,
 and UI `details` separately. Each registration declares `structuredOutputSchema`.
@@ -679,6 +684,47 @@ The host retains and compacts the message normally. Later rule changes still
 control execution; the earlier message remains a labeled snapshot, not live
 rule authority. Injection does not establish provider receipt or compliance.
 
+### Persistent guidance placement
+
+Context-phase guidance is a persistent record, not a trailing message rebuilt
+on each request. A record freezes its text, timestamp and the observation pins
+behind it, and names one anchor: the ordinal and SHA-256 digest of a non-system
+conversation message, excluding Policy's own projected messages. Every later
+request inserts the record immediately after that same message, before later
+conversation messages, so bytes and position stay identical while the
+conversation grows. Pi system messages and system patches keep their original
+relative order. Record identity derives from the context epoch, anchor, rule
+pins and text, so a retry at the same boundary adds no duplicate.
+
+Ordinary sessions register `context_with_system` and persist each new record
+as a non-context `policy_guidance` custom entry through `pi.appendEntry`.
+Native conversations store records in the `policy.guidance` document. A new
+record is persisted first; only then does the rule's once/cooldown allowance
+and any retained notice get consumed. A failed write adds no message and
+consumes no allowance, and health reports `persistence-failed`.
+
+A context epoch identifies the selected context boundary, not each append. For
+ordinary sessions it is the session identity plus the newest compaction,
+branch-summary or context-edit entry on the active branch; for native
+conversations it is the conversation plus the head of the context view. The
+ledger restores only from the active branch. After compaction or a context
+rewrite, records whose anchor message still exists keep their place; records
+whose source was removed retire. A record is never moved to a new tail. An
+anchor that no longer matches inside an unchanged epoch is a projection fault:
+Policy stops adding context guidance, keeps projecting what it can place, and
+reports `anchor-mismatch`.
+
+The ledger holds at most 128 records and 256 KiB of serialized records per
+active epoch. Policy never evicts a record whose anchor is active. At capacity
+it keeps projecting existing records, refuses new context-guidance records
+without consuming their allowance, reports `capacity` in `policy_rules` with
+`view:"health"` (`guidance.status`, record count, retained bytes, limits),
+and sends one operator notice per epoch. Enforcement, result handling and
+telemetry continue. Changing a rule or mode affects only new guidance; records
+already sent stay in place, including after a switch to observe mode.
+Compaction and branch changes do not replay consumed observations as new
+notices. Result guidance retained in a tool result is unchanged.
+
 ### Matched-rule and recovery guidance
 
 Matched-rule and recovery guidance share a 2048-byte UTF-8 bound, including the `[policy]`
@@ -696,7 +742,7 @@ next normal model request even when a codemode script discards the nested result
 or extracts only its data. This delivery reuses the same selection and
 once/cooldown allowance; it neither forces another turn nor adds a policy queue.
 
-Completion-triggered guidance enters the next actual `context` request. Pi's
+Completion-triggered guidance enters the next actual model request as a persistent record. Pi's
 `tool_result` hook precedes final error classification, and `tool_execution_end`
 has no result-patch return. Policy therefore retains the triggered notice rather
 than attaching premature guidance to a result. Success or window expiry does not
@@ -740,7 +786,8 @@ not zero. Inspection renders unavailable values explicitly.
 In ordinary sessions, load, reload, new session, resume, fork, and tree navigation
 reset observations. Disable, replacement, and explicit reset invalidate the
 affected rule's prior pins. Old completions cannot restore explicitly reset state.
-Compaction and ordinary continuation preserve observations.
+Compaction and ordinary continuation preserve observations; compaction also
+keeps guidance records whose anchor message survives.
 
 Natural expiry and outcome-based reset are completion-time boundaries, not
 changes of authority. A long call can enter the new completion period. Preview

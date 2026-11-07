@@ -205,9 +205,9 @@ function caseContext(ctx: DraftCheckContext, scope: DraftCase["scope"]): Extensi
 		mode: "print",
 		signal: undefined,
 		getSystemPrompt: () => "",
-		sessionManager: { getSessionId: () => "draft-check" },
+		sessionManager: { getSessionId: () => "draft-check", buildContextEntries: () => [] },
 		...(scope ? { cwd: scope.cwd, model: provider && id ? { provider, id } : undefined } : {}),
-	} as ExtensionContext;
+	} as unknown as ExtensionContext;
 }
 
 function caseScope(ctx: DraftCheckContext) {
@@ -259,6 +259,7 @@ async function runCase(
 	const catalog = capturedCatalog(pi);
 	const isolatedPi = {
 		...catalog,
+		appendEntry: () => {},
 		on: (name: string, handler: (...args: unknown[]) => unknown) => {
 			hooks.set(name, handler);
 			return () => hooks.delete(name);
@@ -290,7 +291,20 @@ async function runCase(
 			turn++;
 		}
 		if (step.kind === "context") {
-			const text = await runtime.context(context);
+			const projected = await runtime.contextWithSystem(
+				{
+					type: "context_with_system",
+					messages: [
+						{
+							role: "user",
+							content: [{ type: "text", text: "Draft check request." }],
+							timestamp: capturedAt,
+						},
+					],
+				},
+				context,
+			);
+			const text = projected?.emitted;
 			const actual = { guidance: !!text };
 			rows.push({
 				kind: step.kind,

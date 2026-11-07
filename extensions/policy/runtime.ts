@@ -1,9 +1,27 @@
 /** One event interpreter for approved plans, corrections, observations, and guidance. */
 import { randomUUID } from "node:crypto";
 import { ActionApprovals, actionAuthority, type ActionBinding, type ActionControl, sameActionInput, sealActionInput } from "./action-approval.ts";
-import type { ExtensionAPI, ExtensionContext, ToolCallEvent, ToolResultEvent } from "@earendil-works/pi-coding-agent";
+import type {
+	ContextWithSystemEvent,
+	ExtensionAPI,
+	ExtensionContext,
+	ToolCallEvent,
+	ToolResultEvent,
+} from "@earendil-works/pi-coding-agent";
 import { captureFor, ruleScopeMatches as scopeMatches } from "./classify.ts";
 import { isOwnedInput, ownInput, prepareSchema, snapshotData, UNKNOWN } from "./data.ts";
+import {
+	GUIDANCE_ENTRY,
+	GUIDANCE_HISTORY_LIMITS,
+	guidanceHistory,
+	type GuidanceHistory,
+	type GuidanceRecord,
+	type GuidanceStatus,
+	guidanceText,
+	parseGuidanceRecord,
+	prepareGuidanceSelection,
+	planGuidance,
+} from "./guidance-history.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
 import { type PreparedPolicy, attachedPreparedPolicy, preparedPolicyFor } from "./prepared.ts";
 import type { PolicyMode } from "./mode.ts";
@@ -15,7 +33,6 @@ import {
 	type EvaluationContext,
 	evaluatePrograms,
 	GUIDANCE_BYTES,
-	GUIDANCE_PREFIX,
 	type InputPlan,
 	observationSelected,
 	type ProgramEvaluation,
@@ -188,19 +205,6 @@ export function publicState(views: ReturnType<ObservationState["snapshot"]>): un
 		Object.fromEntries(Object.entries(view).map(([key, value]) => [key, value === UNKNOWN ? "unavailable" : value])),
 	);
 }
-export function guidanceText(lines: readonly string[]): string | undefined {
-	let text = GUIDANCE_PREFIX;
-	for (const line of new Set(lines)) {
-		const safe = line
-			.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
-			.replace(/\s+/g, " ")
-			.trim();
-		if (!safe) continue;
-		if (Buffer.byteLength(`${text} ${safe}`, "utf8") > GUIDANCE_BYTES) break;
-		text += ` ${safe}`;
-	}
-	return text === GUIDANCE_PREFIX ? undefined : text;
-}
 /** Pi supplies mutable plain argument objects. Refuse exotic descriptors before a single synchronous commit. */
 function commitInput(target: Record<string, unknown>, candidate: Record<string, unknown>): boolean {
 	const proto = Object.getPrototypeOf(target);
@@ -247,6 +251,11 @@ export class PolicyRuntime {
 	private readonly pending = new Map<string, ObservedCall>();
 	private readonly ended = new Set<string>();
 	private readonly retainedGuidance = new Map<string, { pin: StatePin; evaluation: ProgramEvaluation }>();
+	private guidanceLedger: GuidanceHistory = { records: [], retainedBytes: 0 };
+	private guidanceEpoch: string | undefined;
+	private guidanceDirty = true;
+	private guidanceStatus: GuidanceStatus = "ok";
+	private guidanceNotice?: string;
 	private snapshot?: RuleSnapshot;
 	private policy?: PreparedPolicy;
 	private ownedPolicy = false;
@@ -363,6 +372,11 @@ export class PolicyRuntime {
 		this.retainedGuidance.clear();
 		this.generation++;
 		this.turn = 0;
+		this.guidanceLedger = { records: [], retainedBytes: 0 };
+		this.guidanceEpoch = undefined;
+		this.guidanceDirty = true;
+		this.guidanceStatus = "ok";
+		this.guidanceNotice = undefined;
 		this.state.reset(reason, this.now());
 		for (const call of this.pending.values()) call.complete = false;
 		this.ended.clear();
@@ -747,26 +761,12 @@ export class PolicyRuntime {
 			structuredContent: event.structuredContent,
 		};
 	}
-	private guidance(evaluations: ProgramEvaluation[], projected?: (id: string) => void): string | undefined {
+	private guidance(evaluations: ProgramEvaluation[]): string | undefined {
 		if (this.effectiveMode() !== "annotate" && this.effectiveMode() !== "enforce") return;
-		const eligible = evaluations.filter(
-			(e) => e.truth === true && e.action.kind === "guide" && this.state.eligible(e.id, this.now(), this.turn),
-		);
-		const selected: ProgramEvaluation[] = [];
-		const lines: string[] = [];
-		for (const entry of eligible) {
-			if (entry.action.kind !== "guide") continue;
-			const next = guidanceText([...lines, entry.action.text]);
-			if (next === guidanceText(lines)) continue;
-			lines.push(entry.action.text);
-			selected.push(entry);
-		}
-		const text = guidanceText(lines);
-		if (text) for (const entry of selected) {
-			this.state.project(entry.id, this.now(), this.turn);
-			projected?.(entry.id);
-		}
-		return text;
+		const prepared = prepareGuidanceSelection(evaluations, this.state, this.now(), this.turn);
+		if (!prepared) return;
+		for (const id of prepared.ids) this.state.project(id, this.now(), this.turn);
+		return prepared.text;
 	}
 	async toolEnd(
 		event: { toolName: string; toolCallId: string; result: unknown; isError: boolean },
@@ -955,22 +955,107 @@ export class PolicyRuntime {
 		if (text) this.shellCardSent = true;
 		return text;
 	}
-	async context(ctx: ExtensionContext): Promise<string | undefined> {
-		if (this.closed || !this.enabled()) return;
-		const generation = this.generation;
-		await this.load(ctx);
-		if (!this.live(generation)) return;
+	/** The newest compaction, branch-summary or context-edit entry bounds the context epoch. */
+	private guidanceEpochFor(ctx: ExtensionContext, entries: readonly { id: string; type: string }[]): string {
+		const boundary = entries.findLast(
+			(entry) => entry.type === "compaction" || entry.type === "branch_summary" || entry.type === "context_edit",
+		);
+		return `${ctx.sessionManager.getSessionId()}:${boundary?.id ?? "root"}`;
+	}
+
+	/** Restore the ledger from the active branch when the context boundary changes. */
+	private syncGuidance(ctx: ExtensionContext): string {
+		const entries = ctx.sessionManager.buildContextEntries();
+		const epoch = this.guidanceEpochFor(ctx, entries);
+		if (!this.guidanceDirty && epoch === this.guidanceEpoch) return epoch;
+		this.guidanceEpoch = epoch;
+		this.guidanceDirty = false;
+		this.guidanceStatus = "ok";
+		this.guidanceNotice = undefined;
+		const records: GuidanceRecord[] = [];
+		for (const entry of entries) {
+			const record = entry.type === "custom" && entry.customType === GUIDANCE_ENTRY ? parseGuidanceRecord(entry.data) : undefined;
+			if (record) records.push(record);
+		}
+		this.guidanceLedger = guidanceHistory(records.slice(0, GUIDANCE_HISTORY_LIMITS.records));
+		return epoch;
+	}
+
+	private notifyGuidance(status: GuidanceStatus, epoch: string, ctx: ExtensionContext): void {
+		const key = `${epoch}:${status}`;
+		if (status === "ok" || this.guidanceNotice === key) return;
+		this.guidanceNotice = key;
+		if (ctx.mode !== "tui") return;
+		const text =
+			status === "capacity"
+				? "Guidance history is full; earlier guidance keeps its place and new context guidance is refused."
+				: status === "anchor-mismatch"
+					? "Guidance history cannot place an earlier notice; new context guidance is paused."
+					: "Guidance history could not persist a notice; its allowance is unchanged.";
+		try {
+			ctx.ui.notify(`[policy] ${text}`, "warning");
+		} catch {
+			/* Reporting guidance health does not change policy decisions. */
+		}
+	}
+
+	private contextRules(ctx: ExtensionContext): ProgramRule[] {
 		const policy = this.prepared();
-		const rules = [...policy.records.values()]
+		return [...policy.records.values()]
 			.filter(
 				(r) =>
-					effectiveState(r) === "active" && r.matcherAvailable && scopeMatches(r.definition.scope, sessionScope(ctx)),
+					effectiveState(r) === "active" &&
+					r.matcherAvailable &&
+					scopeMatches(r.definition.scope, sessionScope(ctx)),
 			)
 			.flatMap((record) => {
 				const compiled = policy.compiled.get(record.id);
 				return compiled ? [compiled] : [];
 			});
+	}
+
+	private noticeContextRules(evaluation: readonly ProgramEvaluation[], ctx: ExtensionContext): void {
+		if (this.effectiveMode() !== "notice" || ctx.mode !== "tui") return;
+		const ids = evaluation
+			.filter((entry) => entry.truth === true && this.state.eligible(entry.id, this.now(), this.turn))
+			.map((entry) => entry.id);
+		if (!ids.length) return;
+		try {
+			ctx.ui.notify(`[policy] ${ids.join(", ")}`, "warning");
+		} catch {
+			/* Notice does not change guidance state. */
+		}
+	}
+
+	/** Persist one planned record, then consume its allowance. False means nothing changed. */
+	private persistGuidance(record: GuidanceRecord, ids: readonly string[], now: number): boolean {
+		try {
+			this.pi.appendEntry(GUIDANCE_ENTRY, record);
+		} catch {
+			return false;
+		}
+		for (const id of ids) if (this.state.project(id, now, this.turn)) this.retainedGuidance.delete(id);
+		return true;
+	}
+
+	/**
+	 * Project persisted context guidance after its original anchor in the full
+	 * transcript. A new record is persisted before its allowance is consumed, so
+	 * a failed write changes no eligibility and adds no message.
+	 */
+	async contextWithSystem(
+		event: ContextWithSystemEvent,
+		ctx: ExtensionContext,
+	): Promise<{ messages: ContextWithSystemEvent["messages"]; emitted?: string } | undefined> {
+		if (this.closed || !this.enabled()) return;
+		const generation = this.generation;
+		await this.load(ctx);
+		if (!this.live(generation)) return;
+		const policy = this.prepared();
+		const rules = this.contextRules(ctx);
 		const now = this.now();
+		const mode = this.effectiveMode();
+		const epoch = this.syncGuidance(ctx);
 		const evaluation = evaluatePrograms(rules, "context", {
 			tool: "",
 			facts: { context: this.publicContext() },
@@ -978,24 +1063,41 @@ export class PolicyRuntime {
 			namedData: policy.data,
 			data: policy.data.snapshot(now),
 			now,
-			mode: this.effectiveMode(),
+			mode,
 		});
-		if (this.effectiveMode() === "notice" && ctx.mode === "tui") {
-			const ids = evaluation
-				.filter((e) => e.truth === true && this.state.eligible(e.id, this.now(), this.turn))
-				.map((e) => e.id);
-			if (ids.length)
-				try {
-					ctx.ui.notify(`[policy] ${ids.join(", ")}`, "warning");
-				} catch {
-					/* Notice does not change guidance state. */
-				}
-		}
+		this.noticeContextRules(evaluation, ctx);
 		for (const [id, notice] of this.retainedGuidance)
 			if (!rules.some((rule) => rule.id === id) || !samePin(notice.pin, this.state.pin(id)))
 				this.retainedGuidance.delete(id);
-		const retained = [...this.retainedGuidance.values()].map(({ evaluation: entry }) => entry);
-		return this.guidance([...retained, ...evaluation], (id) => this.retainedGuidance.delete(id));
+		const projecting = mode === "annotate" || mode === "enforce";
+		const plan = planGuidance(
+			event.messages,
+			this.guidanceLedger,
+			epoch,
+			projecting
+				? () =>
+						prepareGuidanceSelection(
+							[...[...this.retainedGuidance.values()].map(({ evaluation: entry }) => entry), ...evaluation],
+							this.state,
+							now,
+							this.turn,
+						)
+				: undefined,
+			now,
+		);
+		let { history, messages, status } = plan;
+		let emitted: string | undefined;
+		if (plan.addition) {
+			if (this.persistGuidance(plan.addition.record, plan.addition.prepared.ids, now)) {
+				({ history, messages } = plan.addition);
+				emitted = plan.addition.record.text;
+			} else status = "persistence-failed";
+		}
+		this.guidanceLedger = history;
+		this.guidanceStatus = status;
+		this.notifyGuidance(status, epoch, ctx);
+		if (messages.length === event.messages.length) return;
+		return { messages, ...(emitted !== undefined ? { emitted } : {}) };
 	}
 	async inspect(view: string, params: Record<string, unknown>, ctx: ExtensionContext): Promise<unknown> {
 		const snapshot = view === "preview" && this.snapshot ? this.snapshot : await this.load(ctx);
@@ -1014,6 +1116,12 @@ export class PolicyRuntime {
 			incomplete: this.incomplete,
 			staleCompletions: this.stale,
 			retainedGuidance: [...this.retainedGuidance.values()].map(({ pin }) => pin),
+			guidanceRecords: this.guidanceLedger.records.map((record) => ({
+				id: record.id,
+				epoch: record.anchor.epoch,
+				messageOrdinal: record.anchor.messageOrdinal,
+				timestamp: record.timestamp,
+			})),
 		};
 	}
 
@@ -1022,6 +1130,13 @@ export class PolicyRuntime {
 			authority: snapshot.health,
 			telemetry: this.telemetryFailure ? { status: "failed", reason: this.telemetryFailure } : { status: "ready" },
 			observations: { incomplete: this.incomplete, pending: this.pending.size, recentCompletedIds: this.ended.size },
+			guidance: {
+				status: this.guidanceStatus,
+				epoch: this.guidanceEpoch,
+				records: this.guidanceLedger.records.length,
+				retainedBytes: this.guidanceLedger.retainedBytes,
+				limits: GUIDANCE_HISTORY_LIMITS,
+			},
 		};
 	}
 
@@ -1043,7 +1158,7 @@ export class PolicyRuntime {
 			innerSchemas: "Unavailable; decoded argument corrections are unsupported",
 			dataKinds: ["table"],
 			observationStorage: "memory",
-			projection: "context, no new turn",
+			projection: "full transcript with retained guidance, no new turn",
 		};
 	}
 
@@ -1141,6 +1256,9 @@ export class PolicyRuntime {
 			if (content) return { message: { customType: "policy_shell_contract", content, display: false } };
 		});
 		this.pi.on("session_tree", () => this.resetSession("tree"));
+		this.pi.on("session_compact", () => {
+			this.guidanceDirty = true;
+		});
 		this.pi.on("turn_start", () => {
 			this.turn++;
 		});
@@ -1148,15 +1266,9 @@ export class PolicyRuntime {
 		this.pi.on("tool_call", (event, ctx) => this.toolCall(event, ctx));
 		this.pi.on("tool_result", (event, ctx) => this.toolResult(event, ctx));
 		this.pi.on("tool_execution_end", (event, ctx) => this.toolEnd(event, ctx));
-		this.pi.on("context", async (event, ctx) => {
-			const text = await this.context(ctx);
-			if (text)
-				return {
-					messages: [
-						...event.messages,
-						{ role: "user" as const, content: [{ type: "text" as const, text }], timestamp: this.now() },
-					],
-				};
+		this.pi.on("context_with_system", async (event, ctx) => {
+			const projected = await this.contextWithSystem(event, ctx);
+			if (projected) return projected;
 		});
 		this.pi.on("session_shutdown", async () => {
 			this.closed = true;

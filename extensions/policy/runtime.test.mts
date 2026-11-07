@@ -8,6 +8,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 
 import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
 import type { NamedData } from "./data.ts";
+import { GUIDANCE_ENTRY, GUIDANCE_HISTORY_LIMITS, messageDigest } from "./guidance-history.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
 import type { FactsProgram } from "./program.ts";
@@ -97,18 +98,26 @@ function fixture(
 			records.push(...batch);
 		},
 	);
+	const entries: Array<{ id: string; type: string; customType?: string; data?: unknown }> = [];
+	let entrySequence = 0;
 	const ctx = {
 		mode: "tui",
 		hasUI: true,
 		cwd: "/project",
 		model: { provider: "test", id: "model" },
-		sessionManager: { getSessionId: () => "session" },
+		sessionManager: {
+			getSessionId: () => "session",
+			buildContextEntries: () => entries,
+		},
 		getSystemPrompt: () => "",
 		ui: { notify: (text: string) => notifications.push(text) },
 	} as unknown as ExtensionContext;
 	const pi = {
 		getAllTools: () => [{ name: toolName, parameters: schema }],
 		getActiveTools: () => [toolName],
+		appendEntry: (customType: string, data?: unknown) => {
+			entries.push({ id: `entry-${++entrySequence}`, type: "custom", customType, data });
+		},
 		on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) => handlers.set(name, handler),
 	} as unknown as ExtensionAPI;
 	let runtime: PolicyRuntime;
@@ -128,6 +137,45 @@ function fixture(
 	);
 	runtime.sync(snapshot);
 	runtime.attach();
+	let transcript: Array<Record<string, unknown>> = [
+		{ role: "system", content: "", sections: { preamble: "prompt" }, timestamp: 0 },
+		{ role: "user", content: [{ type: "text", text: "Run controlled tools." }], timestamp: 1 },
+	];
+	let turns = 0;
+	const advance = () => {
+		turns++;
+		transcript = [
+			...transcript,
+			{ role: "user", content: [{ type: "text", text: `Turn ${turns}.` }], timestamp: 1 + turns },
+		];
+	};
+	const project = async (next = false) => {
+		if (next) advance();
+		return (await handlers.get("context_with_system")?.({ type: "context_with_system", messages: transcript }, ctx)) as
+			| { messages: Array<Record<string, unknown>>; emitted?: string }
+			| undefined;
+	};
+	const projectedText = (messages: readonly Record<string, unknown>[]) =>
+		messages.flatMap((message) => {
+			if (message.role !== "user" || !Array.isArray(message.content)) return [];
+			const text = message.content
+				.filter((block: { type?: string }) => block?.type === "text")
+				.map((block: { text?: string }) => block.text ?? "")
+				.join("");
+			return text.startsWith("[policy]") ? [text] : [];
+		});
+	const contextText = async (next = false) => {
+		const projected = await project(next);
+		const lines = projectedText(projected?.messages ?? transcript);
+		return lines.length ? lines.join("\n") : undefined;
+	};
+	const contextEmitted = async (next = false) => (await project(next))?.emitted;
+	const push = (message: Record<string, unknown>) => {
+		transcript = [...transcript, message];
+	};
+	const replaceTranscript = (messages: Array<Record<string, unknown>>) => {
+		transcript = messages;
+	};
 	const inputs = new Map<string, Record<string, unknown>>();
 	const call = async (id: string, input: Record<string, unknown>) => {
 		inputs.set(id, input);
@@ -172,6 +220,14 @@ function fixture(
 		finish,
 		result,
 		views,
+		entries,
+		project,
+		contextText,
+		contextEmitted,
+		advance,
+		push,
+		replaceTranscript,
+		getTranscript: () => transcript,
 		records,
 		writer,
 		ctx,
@@ -199,6 +255,13 @@ const guide = () =>
 		action: { kind: "guide", text: "Inspect the completed outcome." },
 		onUnavailable: "skip",
 		state: { observe: success, once: "period" },
+	});
+const repeatableGuide = (id = "context.guide") =>
+	rule(id, {
+		phase: "context",
+		when: { op: "exists", path: ["context"] },
+		action: { kind: "guide", text: "Keep the earlier notice in place." },
+		onUnavailable: "skip",
 	});
 
 function shellRule(effect: "block" | "steer" = "block", key = "routing.cat-read"): RuleRecord {
@@ -477,7 +540,7 @@ describe("completion-triggered recovery guidance", () => {
 		await f.call("success", {});
 		await f.result("first", true);
 		await f.finish("first", true);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 		await f.runtime.toolResult(
 			{
 				type: "tool_result",
@@ -494,16 +557,16 @@ describe("completion-triggered recovery guidance", () => {
 		await f.result("success");
 		await f.finish("success");
 		assert.equal((await f.views())[0].count, 0);
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /actual failed assumption or tool contract/);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.match((await f.contextText()) ?? "", /actual failed assumption or tool contract/);
+		assert.equal(await f.contextEmitted(), undefined);
 		await completed(f, "third", true);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 		await completed(f, "fourth", true);
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /explicit operator approval/);
+		assert.match((await f.contextText()) ?? "", /explicit operator approval/);
 		await completed(f, "fifth", true);
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /repeatable/);
+		assert.match((await f.contextText()) ?? "", /repeatable/);
 		await f.finish("fifth", true);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 	});
 
 	it("coalesces continued failures and preserves notices through compaction without repeating idle context", async () => {
@@ -513,8 +576,8 @@ describe("completion-triggered recovery guidance", () => {
 		assert.equal(before.retainedGuidance.length, 1);
 		await f.handlers.get("session_compact")?.({}, f.ctx);
 		await f.handlers.get("turn_start")?.({}, f.ctx);
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /Two consecutive/);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.match((await f.contextText()) ?? "", /Two consecutive/);
+		assert.equal(await f.contextEmitted(), undefined);
 	});
 
 	it("retains notices omitted by the shared projection byte bound", async () => {
@@ -530,9 +593,9 @@ describe("completion-triggered recovery guidance", () => {
 		const f = fixture([a, b]);
 		await completed(f, "first", true);
 		await completed(f, "second", true);
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /a{1500}/);
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /b{1500}/);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.match((await f.contextText()) ?? "", /a{1500}/);
+		assert.match((await f.contextText()) ?? "", /b{1500}/);
+		assert.equal(await f.contextEmitted(), undefined);
 	});
 
 	it("counts the final flag rather than an earlier result error", async () => {
@@ -542,7 +605,7 @@ describe("completion-triggered recovery guidance", () => {
 		await f.result("patched", true);
 		await f.finish("patched", false);
 		await completed(f, "third", true);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 		assert.equal((await f.views())[0].count, 1);
 	});
 
@@ -553,13 +616,13 @@ describe("completion-triggered recovery guidance", () => {
 		await completed(f, "old", true);
 		now += DEFAULT_LIMITS.errorWindowMs;
 		await completed(f, "new", true);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 		now += DEFAULT_LIMITS.errorWindowMs - 1;
 		await completed(f, "pair", true);
 		now += DEFAULT_LIMITS.errorWindowMs * 2;
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /Two consecutive/);
+		assert.match((await f.contextText()) ?? "", /Two consecutive/);
 		await completed(f, "fresh", true);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 	});
 
 	it("ignores error-like success text, preflight failure, partial results, and duplicate endings", async () => {
@@ -584,7 +647,7 @@ describe("completion-triggered recovery guidance", () => {
 		await f.finish("text", false);
 		await completed(f, "failure", true);
 		await f.finish("failure", true);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 		assert.equal((await f.views())[0].count, 1);
 	});
 
@@ -592,11 +655,10 @@ describe("completion-triggered recovery guidance", () => {
 		for (const mode of ["observe", "notice", "annotate", "enforce"] as const)
 			it(`${hostMode}/${mode}: completion guidance follows the effect matrix`, async () => {
 				const f = fixture([recoveryRule()], mode);
-				const ctx = { ...f.ctx, mode: hostMode, hasUI: hostMode === "tui" || hostMode === "rpc" };
 				await completed(f, "first", true);
 				await completed(f, "second", true);
-				const output = await f.handlers.get("context")?.({ messages: [] }, ctx);
-				assert.equal(output !== undefined, mode === "annotate" || mode === "enforce");
+				const output = await f.project();
+				assert.equal(output?.emitted !== undefined, mode === "annotate" || mode === "enforce");
 			});
 
 	for (const change of [
@@ -655,12 +717,201 @@ describe("completion-triggered recovery guidance", () => {
 				default:
 					await f.handlers.get("session_start")?.({ reason: change }, f.ctx);
 			}
-			assert.equal(await f.runtime.context(f.ctx), undefined);
+			assert.equal(await f.contextEmitted(), undefined);
 			delete r.definition.scope;
 			f.setMode("enforce");
 			f.snapshot.health = { status: "ok", path: "rules.jsonl" };
-			assert.equal(await f.runtime.context(f.ctx), undefined);
+			assert.equal(await f.contextEmitted(), undefined);
 		});
+});
+
+describe("persistent context guidance placement", () => {
+	type Message = Record<string, unknown>;
+	const notices = (messages: readonly Message[]) =>
+		messages.filter((message) => {
+			if (message.role !== "user" || !Array.isArray(message.content)) return false;
+			return message.content.some(
+				(block: { type?: string; text?: string }) =>
+					block?.type === "text" && block.text?.startsWith("[policy]") === true,
+			);
+		});
+
+	it("keeps every earlier request block byte-identical across eight requests", async () => {
+		const f = fixture([repeatableGuide()]);
+		let previous: readonly Message[] = [];
+		let firstNotice: Message | undefined;
+		for (let request = 1; request <= 8; request++) {
+			const result = await f.project(request > 1);
+			assert.ok(result, `request ${request}`);
+			for (let index = 0; index < previous.length; index++)
+				assert.equal(JSON.stringify(result.messages[index]), JSON.stringify(previous[index]));
+			const projected = notices(result.messages);
+			assert.equal(projected.length, request);
+			if (firstNotice) assert.deepEqual(projected[0], firstNotice);
+			else firstNotice = projected[0];
+			previous = result.messages;
+		}
+		assert.equal(f.entries.length, 8);
+		await f.writer.close();
+	});
+
+	it("adds no duplicate record or message on a retry at the same boundary", async () => {
+		const f = fixture([repeatableGuide()]);
+		const first = await f.project();
+		assert.ok(first?.emitted);
+		const second = await f.project();
+		assert.ok(second);
+		assert.equal(second.emitted, undefined);
+		assert.equal(JSON.stringify(second.messages), JSON.stringify(first.messages));
+		assert.equal(f.entries.length, 1);
+		await f.writer.close();
+	});
+
+	it("does not rewrite historical guidance after a rule or mode change", async () => {
+		const f = fixture([repeatableGuide()]);
+		const first = await f.project();
+		assert.ok(first);
+		const frozen = notices(first.messages)[0];
+		assert.ok(frozen);
+		f.setMode("observe");
+		const observed = await f.project();
+		assert.ok(observed);
+		assert.deepEqual(notices(observed.messages)[0], frozen);
+		const record = f.snapshot.records.get("context.guide");
+		assert.ok(record);
+		record.definition.revision = "fedcba654321";
+		f.setMode("enforce");
+		const revised = await f.project();
+		assert.ok(revised);
+		assert.deepEqual(notices(revised.messages)[0], frozen);
+		await f.writer.close();
+	});
+
+	it("keeps system patches in their original relative order around frozen guidance", async () => {
+		const f = fixture([repeatableGuide()]);
+		const first = await f.project();
+		assert.ok(first);
+		f.push({ role: "system", content: "", sections: { skills: "one" }, timestamp: 2 });
+		f.push({ role: "user", content: [{ type: "text", text: "next" }], timestamp: 3 });
+		const second = await f.project();
+		assert.ok(second);
+		assert.deepEqual(
+			second.messages.map((message) => message.role),
+			["system", "user", "user", "system", "user", "user"],
+		);
+		assert.deepEqual(second.messages[3], {
+			role: "system",
+			content: "",
+			sections: { skills: "one" },
+			timestamp: 2,
+		});
+		await f.writer.close();
+	});
+
+	it("preserves valid anchors across compaction and retires a removed source", async () => {
+		const f = fixture([repeatableGuide()]);
+		const first = await f.project();
+		assert.ok(first);
+		f.setMode("observe");
+		f.entries.push({ id: "compaction-one", type: "compaction" });
+		await f.handlers.get("session_compact")?.({}, f.ctx);
+		const kept = await f.project();
+		assert.ok(kept);
+		assert.equal(notices(kept.messages).length, 1);
+		f.replaceTranscript([
+			{ role: "system", content: "", timestamp: 0 },
+			{ role: "user", content: [{ type: "text", text: "replacement" }], timestamp: 1 },
+		]);
+		f.entries.push({ id: "compaction-two", type: "compaction" });
+		await f.handlers.get("session_compact")?.({}, f.ctx);
+		const retired = await f.project();
+		assert.equal(retired, undefined);
+		const health = (await f.runtime.inspect("health", {}, f.ctx)) as {
+			guidance: { status: string; records: number };
+		};
+		assert.equal(health.guidance.records, 0);
+		assert.equal(health.guidance.status, "ok");
+		await f.writer.close();
+	});
+
+	it("restores only the active branch after tree navigation", async () => {
+		const f = fixture([repeatableGuide()]);
+		await f.project();
+		f.setMode("observe");
+		await f.handlers.get("session_tree")?.({}, f.ctx);
+		const kept = await f.project();
+		assert.ok(kept);
+		assert.equal(notices(kept.messages).length, 1);
+		f.entries.splice(0);
+		await f.handlers.get("session_tree")?.({}, f.ctx);
+		assert.equal(await f.project(), undefined);
+		await f.writer.close();
+	});
+
+	it("refuses new guidance at capacity without consuming its allowance", async () => {
+		const f = fixture([repeatableGuide()]);
+		const message = { role: "user", content: [{ type: "text", text: "Run controlled tools." }], timestamp: 1 };
+		const digest = messageDigest(message);
+		for (let index = 0; index < GUIDANCE_HISTORY_LIMITS.records; index++)
+			f.entries.push({
+				id: `capacity-${index}`,
+				type: "custom",
+				customType: GUIDANCE_ENTRY,
+				data: {
+					id: `record-${index}`,
+					anchor: { epoch: "session:root", messageOrdinal: 0, messageDigest: digest },
+					timestamp: index,
+					text: `[policy] Earlier notice ${index}.`,
+					pins: [],
+				},
+			});
+		const result = await f.project();
+		assert.ok(result);
+		assert.equal(result.emitted, undefined);
+		assert.equal(f.entries.length, GUIDANCE_HISTORY_LIMITS.records);
+		assert.equal((await f.views())[0].projected, 0);
+		const health = (await f.runtime.inspect("health", {}, f.ctx)) as {
+			guidance: { status: string; records: number; retainedBytes: number };
+		};
+		assert.equal(health.guidance.status, "capacity");
+		assert.equal(health.guidance.records, GUIDANCE_HISTORY_LIMITS.records);
+		assert.ok(health.guidance.retainedBytes > 0);
+		const noticesBefore = f.notifications.filter((text) => text.includes("Guidance history is full")).length;
+		assert.equal(noticesBefore, 1);
+		await f.project();
+		assert.equal(f.notifications.filter((text) => text.includes("Guidance history is full")).length, 1);
+		await f.writer.close();
+	});
+
+	it("adds no record and consumes no allowance when persistence fails", async () => {
+		const f = fixture([repeatableGuide()]);
+		(f.pi as unknown as { appendEntry: () => void }).appendEntry = () => {
+			throw new Error("storage unavailable");
+		};
+		assert.equal(await f.project(), undefined);
+		assert.equal(f.entries.length, 0);
+		assert.equal((await f.views())[0].projected, 0);
+		const health = (await f.runtime.inspect("health", {}, f.ctx)) as { guidance: { status: string } };
+		assert.equal(health.guidance.status, "persistence-failed");
+		await f.writer.close();
+	});
+
+	it("ignores malformed stored anchors without changing projection", async () => {
+		const f = fixture([repeatableGuide()], "observe");
+		f.entries.push({
+			id: "malformed",
+			type: "custom",
+			customType: GUIDANCE_ENTRY,
+			data: { id: "bad", anchor: { epoch: "session:root", messageOrdinal: -1, messageDigest: "short" } },
+		});
+		assert.equal(await f.project(), undefined);
+		const health = (await f.runtime.inspect("health", {}, f.ctx)) as {
+			guidance: { status: string; records: number };
+		};
+		assert.equal(health.guidance.records, 0);
+		assert.equal(health.guidance.status, "ok");
+		await f.writer.close();
+	});
 });
 
 describe("effective command checks", () => {
@@ -1215,7 +1466,7 @@ function invokeLifecyclePhase(f: RuntimeFixture, phase: LifecyclePhase, input: R
 		return f.runtime.toolCall({ type: "tool_call", toolName: "sample", toolCallId: "deferred", input }, f.ctx);
 	if (phase === "result") return f.result("deferred", false, { failed: true });
 	if (phase === "end") return f.finish("deferred");
-	return f.runtime.context(f.ctx);
+	return f.project();
 }
 async function assertLifecycleSettled(f: RuntimeFixture, phase: LifecyclePhase, input: Record<string, unknown>) {
 	if (phase === "start")
@@ -1503,12 +1754,12 @@ describe("final observations and guidance", () => {
 		await f.call("a", {});
 		await f.result("a");
 		await f.finish("a");
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 		const tools = f.pi.getAllTools();
 		f.pi.getAllTools = () => [...tools, { ...tools[0], name: "alternative" }];
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 		f.pi.getActiveTools = () => ["sample", "alternative"];
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /Inspect the completed outcome/);
+		assert.match((await f.contextText()) ?? "", /Inspect the completed outcome/);
 		await f.writer.close();
 	});
 
@@ -1520,7 +1771,7 @@ describe("final observations and guidance", () => {
 		f.pi.getAllTools = () => {
 			throw new Error("catalog unavailable");
 		};
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 		assert.equal((await f.views())[0].projected, 0);
 		await f.writer.close();
 	});
@@ -1541,12 +1792,12 @@ describe("final observations and guidance", () => {
 		await f.call("a", {});
 		await f.result("a");
 		await f.finish("a");
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.equal(await f.contextEmitted(), undefined);
 		await f.handlers.get("turn_start")?.({}, f.ctx);
 		await f.call("b", {});
 		await f.result("b");
 		await f.finish("b");
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /Inspect the completed outcome/);
+		assert.match((await f.contextText()) ?? "", /Inspect the completed outcome/);
 		await f.writer.close();
 		assert.equal(f.records[0].outputBytes, 4);
 	});
@@ -1587,8 +1838,8 @@ describe("final observations and guidance", () => {
 		assert.equal((await f.views())[0].count, 1);
 		await f.result("first");
 		await f.finish("first");
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /Inspect the completed outcome/);
-		assert.equal(await f.runtime.context(f.ctx), undefined);
+		assert.match((await f.contextText()) ?? "", /Inspect the completed outcome/);
+		assert.equal(await f.contextEmitted(), undefined);
 		await f.writer.close();
 		assert.deepEqual(
 			f.records.map((r) => r.callId),
@@ -1626,7 +1877,9 @@ describe("final observations and guidance", () => {
 		await f.call("a", {});
 		await f.result("a");
 		await f.finish("a");
-		assert.equal(f.handlers.has("session_compact"), false);
+		assert.equal(f.handlers.has("session_compact"), true);
+		assert.equal((await f.views())[0].count, 1);
+		await f.handlers.get("session_compact")?.({}, f.ctx);
 		assert.equal((await f.views())[0].count, 1);
 		await f.handlers.get("session_tree")?.({}, f.ctx);
 		assert.equal((await f.views())[0].count, 0);
@@ -1644,7 +1897,7 @@ describe("final observations and guidance", () => {
 		assert.deepEqual(await f.views(), before);
 		assert.deepEqual(input, { old: "x" });
 		assert.equal((preview as { stateAdvanced: boolean }).stateAdvanced, false);
-		assert.match((await f.runtime.context(f.ctx)) ?? "", /Inspect the completed outcome/);
+		assert.match((await f.contextText()) ?? "", /Inspect the completed outcome/);
 		await f.writer.close();
 	});
 	it("terminal identifier rollover does not disable result corrections", async () => {
