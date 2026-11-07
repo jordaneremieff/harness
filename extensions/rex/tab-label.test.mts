@@ -364,12 +364,84 @@ test("default and recorded automatic labels accept updates and repeated input ob
 	assert.deepEqual(f.transport.writes, ["fallback", "Named", "Latest"]);
 });
 
+const CHECKS = ["whoami", "com.superlogical.terminal.process", "session.view"];
+
+test("an unchanged name event launches no process and every input keeps three fresh checks", async (t) => {
+	const f = await fixture(t);
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label"]);
+
+	const settled = f.transport.calls.length;
+	f.projector.refresh(f.ctx);
+	f.projector.refresh(f.ctx);
+	await f.projector.idle();
+	assert.equal(f.transport.calls.length, settled);
+
+	for (let index = 1; index <= 2; index++) {
+		f.projector.input(f.ctx);
+		await f.projector.idle();
+		assert.deepEqual(f.transport.calls.slice(settled + (index - 1) * CHECKS.length, settled + index * CHECKS.length).map((call) => call.method), CHECKS);
+	}
+	assert.equal(f.transport.calls.length, settled + 2 * CHECKS.length);
+	assert.deepEqual(f.transport.writes, ["fallback"]);
+});
+
+test("coincident start and input share one observation pass", async (t) => {
+	const f = await fixture(t);
+	f.projector.start(f.ctx);
+	f.projector.input(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label"]);
+	assert.deepEqual(f.transport.writes, ["fallback"]);
+});
+
+test("an unchanged name event during an observation pass adds no pass", async (t) => {
+	const f = await fixture(t);
+	const entered = deferred();
+	const release = deferred();
+	f.transport.onMethod = async (method) => {
+		if (method === "session.view") {
+			entered.resolve();
+			await release.promise;
+		}
+	};
+	f.projector.start(f.ctx);
+	await entered.promise;
+	f.projector.refresh(f.ctx);
+	release.resolve();
+	await f.projector.idle();
+	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label"]);
+	assert.deepEqual(f.transport.writes, ["fallback"]);
+});
+
+test("an input during an observation pass receives its own fresh pass", async (t) => {
+	const f = await fixture(t);
+	const entered = deferred();
+	const release = deferred();
+	let blocked = false;
+	f.transport.onMethod = async (method) => {
+		if (method === "session.view" && !blocked) {
+			blocked = true;
+			entered.resolve();
+			await release.promise;
+		}
+	};
+	f.projector.start(f.ctx);
+	await entered.promise;
+	f.projector.input(f.ctx);
+	release.resolve();
+	await f.projector.idle();
+	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label", ...CHECKS]);
+	assert.deepEqual(f.transport.writes, ["fallback"]);
+});
+
 test("manual divergence removes provenance and the restored default resumes management", async (t) => {
 	const f = await fixture(t);
 	f.projector.start(f.ctx);
 	await f.projector.idle();
 	f.transport.label = "Manual";
-	f.projector.refresh(f.ctx);
+	f.projector.input(f.ctx);
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 	assert.deepEqual(await recordFiles(f.agentDir), []);
@@ -400,7 +472,7 @@ test("split windows and foreground mismatches never write", async (t) => {
 
 	f.transport.extraBlocks = 0;
 	f.transport.processPid = 999;
-	f.projector.refresh(f.ctx);
+	f.projector.input(f.ctx);
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, []);
 	assert.equal(f.transport.calls.at(-1)?.method, "com.superlogical.terminal.process");
@@ -434,7 +506,7 @@ test("an uncertain write reconciles from pending without a repeated effect", asy
 	assert.equal(pending?.label, undefined);
 	assert.ok(pending?.attempt);
 
-	f.projector.refresh(f.ctx);
+	f.projector.input(f.ctx);
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 	const [confirmed] = await recordFiles(f.agentDir);
@@ -576,7 +648,7 @@ test("a delayed no-effect cleanup leaves a newer valid claim intact", async (t) 
 	const [retained] = await recordFiles(f.agentDir);
 	assert.deepEqual(retained, newer);
 
-	second.refresh(f.ctx);
+	second.input(f.ctx);
 	await second.idle();
 	const [reconciled] = await recordFiles(f.agentDir);
 	assert.equal(reconciled?.label, "Shared name");
@@ -671,6 +743,7 @@ test("a name change during an in-flight fallback write finishes with the new nam
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, ["fallback", "New name"]);
 	assert.equal(f.transport.label, "New name");
+	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label", ...CHECKS, "session.set_window_label"]);
 });
 
 test("a delayed startup read uses the latest session name at write time", async (t) => {
@@ -690,6 +763,7 @@ test("a delayed startup read uses the latest session name at write time", async 
 	release.resolve();
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, ["New name"]);
+	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label"]);
 });
 
 test("shutdown and a new session invalidate an obsolete run before its write", async (t) => {
@@ -721,7 +795,7 @@ test("real errors produce one bounded warning per runtime", async (t) => {
 	f.transport.failWhoami = true;
 	f.projector.start(f.ctx);
 	await f.projector.idle();
-	f.projector.refresh(f.ctx);
+	f.projector.input(f.ctx);
 	await f.projector.idle();
 	f.projector.start(f.ctx);
 	await f.projector.idle();
@@ -833,7 +907,7 @@ async function delayedWithdrawalAfterReload(t: TestContext, prior: string | unde
 	assert.deepEqual(first.notices, []);
 
 	secondState.name = "New name";
-	second.refresh(secondCtx);
+	second.input(secondCtx);
 	await second.idle();
 	assert.deepEqual(secondTransport.writes, ["New name"]);
 	assert.equal(tab.label, "New name");
@@ -920,8 +994,7 @@ test("a suspended holder keeps its record lock and every replacement update is r
 	// Each refused acquisition takes the bounded acquisition time, which advances the clock.
 	projector.start(ctx);
 	do {
-		state.name = "New name";
-		projector.refresh(ctx);
+		projector.input(ctx);
 		await projector.idle();
 		assert.deepEqual(transport.writes, []);
 		assert.deepEqual(await recordFiles(child.agentDir), [claim]);
@@ -935,7 +1008,7 @@ test("a suspended holder keeps its record lock and every replacement update is r
 	assert.equal(code, 0);
 	assert.deepEqual(await recordFiles(child.agentDir), []);
 
-	projector.refresh(ctx);
+	projector.input(ctx);
 	await projector.idle();
 	assert.deepEqual(transport.writes, ["New name"]);
 	const [confirmed] = await recordFiles(child.agentDir);
@@ -1011,7 +1084,7 @@ test("a cancelled update waiting for a record lock makes no change", async (t) =
 	const readPause = pauseNextRecordRead(readEntered.resolve, readRelease.promise);
 	t.after(readPause.restore);
 	readPause.armed = true;
-	holder.refresh(holderCtx);
+	holder.input(holderCtx);
 	await readEntered.promise;
 	assert.equal((await lockFiles(first.agentDir)).length, 1);
 

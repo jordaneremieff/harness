@@ -50,6 +50,17 @@ interface Run {
 	transport: RexTransport;
 }
 
+interface RefreshDemand {
+	inputRevision: number;
+	nameRevision: number;
+	desiredLabel: string;
+}
+
+interface RefreshCoverage {
+	inputRevision: number;
+	nameRevision: number;
+}
+
 interface RecordStep {
 	read(): Promise<StoredRecord | undefined>;
 	write(record: StoredRecord): Promise<void>;
@@ -100,6 +111,7 @@ class Projector implements TabLabelProjector {
 	private transport: RexTransport | undefined;
 	private running: Promise<void> | undefined;
 	private dirty = false;
+	private readonly demand: RefreshDemand = { inputRevision: 0, nameRevision: 0, desiredLabel: "" };
 	private warned = false;
 	private readonly options: TabLabelProjectorOptions;
 
@@ -119,6 +131,8 @@ class Projector implements TabLabelProjector {
 		this.ctx = ctx;
 		this.controller = new AbortController();
 		this.transport = this.createTransport();
+		this.demand.desiredLabel = this.label(ctx);
+		this.demand.inputRevision++;
 		this.dirty = true;
 		this.pump();
 	}
@@ -126,12 +140,20 @@ class Projector implements TabLabelProjector {
 	refresh(ctx: ExtensionContext): void {
 		if (!this.active) return;
 		this.ctx = ctx;
+		const label = this.label(ctx);
+		if (label === this.demand.desiredLabel) return;
+		this.demand.desiredLabel = label;
+		this.demand.nameRevision++;
 		this.dirty = true;
 		this.pump();
 	}
 
 	input(ctx: ExtensionContext): void {
-		this.refresh(ctx);
+		if (!this.active) return;
+		this.ctx = ctx;
+		this.demand.inputRevision++;
+		this.dirty = true;
+		this.pump();
 	}
 
 	async idle(): Promise<void> {
@@ -173,60 +195,75 @@ class Projector implements TabLabelProjector {
 
 	private async runLoop(promise: Promise<void>): Promise<void> {
 		try {
-			while (this.active && this.dirty) {
-				this.dirty = false;
-				const ctx = this.ctx;
-				const controller = this.controller;
-				const transport = this.transport;
-				if (!ctx || !controller || !transport) continue;
-				const run = { generation: this.generation, ctx, controller, transport };
-				try {
-					await this.update(run);
-				} catch (error) {
-					if (this.current(run)) this.warn(ctx, error);
-				}
-			}
+			while (this.active && this.dirty) await this.runPass();
 		} finally {
 			if (this.running === promise) this.running = undefined;
 			if (this.active && this.dirty) this.pump();
 		}
 	}
 
+	private async runPass(): Promise<void> {
+		this.dirty = false;
+		const ctx = this.ctx;
+		const controller = this.controller;
+		const transport = this.transport;
+		if (!ctx || !controller || !transport) return;
+		const run = { generation: this.generation, ctx, controller, transport };
+		try {
+			const coverage = await this.update(run, this.demand.inputRevision);
+			if (coverage && this.current(run) && this.coversDemand(coverage)) this.dirty = false;
+		} catch (error) {
+			if (this.current(run)) this.warn(ctx, error);
+		}
+	}
+
+	private coversDemand(coverage: RefreshCoverage): boolean {
+		return this.demand.inputRevision <= coverage.inputRevision && this.demand.nameRevision <= coverage.nameRevision;
+	}
+
 	private current(run: Run): boolean {
 		return this.active && this.generation === run.generation && !run.controller.signal.aborted;
 	}
 
-	private async update(run: Run): Promise<void> {
-		if (run.ctx.mode !== "tui") return;
+	/** One observation pass. A pass reports the demands it covered; an invalidated run reports none. */
+	private async update(run: Run, inputRevision: number): Promise<RefreshCoverage | undefined> {
+		if (run.ctx.mode !== "tui") return this.coveredDemand();
 		const sessionId = this.env.REX_SESSION;
 		const blockId = this.env.REX_BLOCK;
-		if (!sessionId || !blockId) return;
+		if (!sessionId || !blockId) return this.coveredDemand();
 		const identity = await this.serverIdentity(run);
-		if (!identity || !await this.foregroundMatches(run, sessionId, blockId)) return;
+		if (!this.current(run)) return undefined;
+		if (!await this.foregroundMatches(run, sessionId, blockId)) return this.current(run) ? this.coveredDemand() : undefined;
 		const selected = await this.containingWindow(run, sessionId, blockId);
-		if (!selected) return;
-		const desired = this.desired(run.ctx);
-		if (!desired) return;
+		if (!this.current(run)) return undefined;
+		if (!selected) return this.coveredDemand();
+		const desired = this.label(this.ctx ?? run.ctx);
+		this.demand.desiredLabel = desired;
+		const coverage: RefreshCoverage = { inputRevision, nameRevision: this.demand.nameRevision };
+		if (!desired) return coverage;
 		await this.applyLabel(run, { ...identity, sessionId, blockId, ...selected }, desired);
+		return coverage;
 	}
 
-	private async serverIdentity(run: Run): Promise<{ hostId: string; instanceId: string } | undefined> {
+	/** A pass that found nothing to apply covers every demand made before it ended. */
+	private coveredDemand(): RefreshCoverage {
+		return { inputRevision: this.demand.inputRevision, nameRevision: this.demand.nameRevision };
+	}
+
+	private async serverIdentity(run: Run): Promise<{ hostId: string; instanceId: string }> {
 		const identity = object(await this.json(run, ["whoami", "--json"]));
-		if (!this.current(run)) return undefined;
 		if (!text(identity.host_id) || !text(identity.instance_id)) throw new Error("Rex did not report its host and instance IDs.");
 		return { hostId: identity.host_id, instanceId: identity.instance_id };
 	}
 
 	private async foregroundMatches(run: Run, sessionId: string, blockId: string): Promise<boolean> {
 		const processes = object(await this.api(run, "com.superlogical.terminal.process", { session_id: sessionId, block_id: blockId, args: {} }));
-		if (!this.current(run)) return false;
 		const foreground = processes.foreground === null || processes.foreground === undefined ? undefined : object(processes.foreground);
 		return foreground?.pid === this.pid;
 	}
 
 	private async containingWindow(run: Run, sessionId: string, blockId: string): Promise<{ windowId: string; currentLabel: string } | undefined> {
 		const view = object(await this.api(run, "session.view", { session_id: sessionId }));
-		if (!this.current(run)) return undefined;
 		return locateWindow(view, blockId);
 	}
 
@@ -360,7 +397,7 @@ class Projector implements TabLabelProjector {
 		return outcome;
 	}
 
-	private desired(ctx: ExtensionContext): string {
+	private label(ctx: ExtensionContext): string {
 		return sanitizeTabLabel(this.options.getSessionName() || basename(ctx.cwd));
 	}
 

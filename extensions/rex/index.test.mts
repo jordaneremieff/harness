@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
-import { createEventBus, SessionManager, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { createEventBus, SessionManager, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Schema } from "@earendil-works/pi-schema";
 import { registerRex } from "./index.ts";
 import { toolDisplay } from "./display.ts";
 import { RexCore, resultByteLimit, type RexResult } from "./core.ts";
-import type { CliResult, RexTransport } from "./transport.ts";
+import { createTabLabelProjector, type TabLabelProjector } from "./tab-label.ts";
+import type { CliCall, CliResult, RexTransport } from "./transport.ts";
 
 test("ordinary shutdown drains owned calls before reload replaces live-call state", async () => {
 	const tools = new Map<string, ToolDefinition<Schema>>();
@@ -251,4 +255,86 @@ test("ordinary registration wires tab labels without changing the tool surface",
 	handlers.get("input")?.({ type: "input", source: "interactive" }, ctx);
 	await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
 	assert.deepEqual(events, ["start", "refresh", "input", "shutdown"]);
+});
+
+const LABEL_CHECKS = ["whoami", "com.superlogical.terminal.process", "session.view"];
+
+class LabelTransport implements RexTransport {
+	readonly methods: string[] = [];
+	label = "Window 00000000";
+	private readonly pid: number;
+
+	constructor(pid: number) { this.pid = pid; }
+
+	async run(args: readonly string[], _call: CliCall): Promise<CliResult> {
+		const method = args.includes("whoami") ? "whoami" : args.at(-2) ?? "";
+		this.methods.push(method);
+		if (method === "whoami") return reply({ host_id: "host", instance_id: "instance" });
+		if (method === "com.superlogical.terminal.process") return reply({ foreground: { pid: this.pid }, last_exit: null });
+		if (method === "session.view") return reply({ revision: 1, session_id: "session:test", windows: [{ window_id: "window:00000000", label: this.label, layers: [{ blocks: [{ block_id: "block:test" }] }] }] });
+		if (method === "session.set_window_label") {
+			const input = JSON.parse(args.at(-1) ?? "{}") as { label: string };
+			this.label = input.label;
+			return reply({ revision: 2 });
+		}
+		throw new Error(`Unexpected Rex method: ${method}`);
+	}
+
+	dispose(): void {}
+}
+
+function reply(value: unknown): CliResult {
+	return { outcome: "exited", exitCode: 0, signal: null, stdout: JSON.stringify(value), stderr: "", bytes: 0, truncated: false, started: true };
+}
+
+test("ordinary tab label wiring runs no process for an unchanged name event and one pass per input", async () => {
+	const agentDir = await mkdtemp(join(tmpdir(), "rex-index-label-"));
+	const transport = new LabelTransport(process.pid);
+	const state = { name: undefined as string | undefined };
+	const handlers = new Map<string, (event?: unknown, ctx?: unknown) => unknown>();
+	let projector: TabLabelProjector | undefined;
+	const pi = {
+		events: createEventBus(),
+		on: (name: string, handler: (event?: unknown, ctx?: unknown) => unknown) => { handlers.set(name, handler); return () => handlers.delete(name); },
+		registerTool: () => {},
+		appendEntry: () => {},
+		getSessionName: () => state.name,
+	} as unknown as ExtensionAPI;
+	registerRex(pi, {
+		createTabLabelProjector: (options) => {
+			const created = createTabLabelProjector({ ...options, agentDir, env: { REX_SESSION: "session:test", REX_BLOCK: "block:test" }, createTransport: () => transport });
+			projector = created;
+			return created;
+		},
+	});
+	const ctx = { mode: "tui", cwd: "/work/fixture", ui: { notify: () => {} } } as unknown as ExtensionContext;
+	try {
+		await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
+		await projector?.idle();
+		assert.deepEqual(transport.methods, [...LABEL_CHECKS, "session.set_window_label"]);
+		assert.equal(transport.label, "fixture");
+
+		const settled = transport.methods.length;
+		handlers.get("session_info_changed")?.({ type: "session_info_changed", name: undefined }, ctx);
+		await projector?.idle();
+		assert.equal(transport.methods.length, settled);
+
+		state.name = "Named";
+		handlers.get("session_info_changed")?.({ type: "session_info_changed", name: "Named" }, ctx);
+		await projector?.idle();
+		assert.deepEqual(transport.methods.slice(settled), [...LABEL_CHECKS, "session.set_window_label"]);
+		assert.equal(transport.label, "Named");
+
+		const named = transport.methods.length;
+		handlers.get("input")?.({ type: "input", source: "rpc" }, ctx);
+		await projector?.idle();
+		assert.equal(transport.methods.length, named);
+
+		handlers.get("input")?.({ type: "input", source: "interactive" }, ctx);
+		await projector?.idle();
+		assert.deepEqual(transport.methods.slice(named), LABEL_CHECKS);
+	} finally {
+		await handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" });
+		await rm(agentDir, { recursive: true, force: true });
+	}
 });
