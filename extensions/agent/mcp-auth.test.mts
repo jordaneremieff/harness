@@ -9,7 +9,7 @@ import lockfile, { type LockOptions } from "proper-lockfile";
 import type { McpServerConfig } from "@earendil-works/pi-coding-agent";
 import { StreamableHttpTransport, type McpFetch } from "@earendil-works/pi-mcp";
 import { McpOAuthAuthorizationRequiredError, McpOAuthProvider, type McpOAuthState, type AuthorizationServerMetadata } from "@earendil-works/pi-mcp/oauth";
-import { McpCredentialFileLock, McpRefreshLock, NativeMcpAuth, type CredentialFileLock } from "./mcp-auth.ts";
+import { McpCredentialFileLock, McpRefreshLock, NativeMcpAuth, type CredentialFileLock, type McpLockDriver } from "./mcp-auth.ts";
 
 const url = "https://mcp.example.test/mcp";
 const key = `mcp__docs|${url}`;
@@ -26,11 +26,37 @@ function deferred() {
 	let resolve!: () => void;
 	return { promise: new Promise<void>((done) => { resolve = done; }), resolve: () => resolve() };
 }
-function fixture(t: TestContext, initial = grant(), fileLock?: CredentialFileLock) {
+
+interface LockAcquisition {
+	readonly path: string;
+	readonly options: LockOptions;
+	acquire(): void;
+	compromise(error?: Error): void;
+	readonly releases: number;
+}
+/** Controlled acquisitions for adapter tests; the real filesystem locks remain in their own test. */
+function controlledLocks() {
+	const acquisitions: LockAcquisition[] = [];
+	const driver: McpLockDriver = {
+		lock: (path, options) =>
+			new Promise((resolve) => {
+				const entry = {
+					path,
+					options: options ?? {},
+					releases: 0,
+					acquire: () => resolve(async () => { entry.releases++; }),
+					compromise: (error = new Error("synthetic ownership loss")) => options?.onCompromised?.(error),
+				};
+				acquisitions.push(entry);
+			}),
+	};
+	return { driver, acquisitions };
+}
+function fixture(t: TestContext, initial = grant(), fileLock?: CredentialFileLock, refreshLock?: McpRefreshLock) {
 	const dir = mkdtempSync(join(tmpdir(), "mcp-auth-test-"));
 	const path = join(dir, "mcp-auth.json");
 	writeFileSync(path, JSON.stringify({ [key]: initial }));
-	const owner = new NativeMcpAuth(dir, undefined, fileLock);
+	const owner = new NativeMcpAuth(dir, refreshLock, fileLock);
 	t.after(async () => { await owner.close(); rmSync(dir, { recursive: true, force: true }); });
 	return { dir, path, owner, read: () => JSON.parse(readFileSync(path, "utf8")) as Record<string, McpOAuthState> };
 }
@@ -128,14 +154,21 @@ it("does not fall back to a URL-only grant after committed canonical logout", as
 	assert.deepEqual(f.read(), { [url]: urlOnly });
 });
 
-it("fails a lock timeout without running an unlocked mutation", { timeout: 35_000 }, async (t) => {
+it("fails a credential lock acquisition without running an unlocked mutation", async (t) => {
 	const f = fixture(t);
-	const release = await lockfile.lock(f.path, { realpath: false });
 	const before = readFileSync(f.path, "utf8"); let writes = 0;
-	try {
-		await assert.rejects(new McpCredentialFileLock().withFileLock(f.path, () => { writes++; writeFileSync(f.path, "{}"); }), { code: "ELOCKED" });
-		assert.equal(writes, 0); assert.equal(readFileSync(f.path, "utf8"), before); assert.ok(existsSync(`${f.path}.lock`));
-	} finally { await release(); }
+	const locked = Object.assign(new Error("Lock file is already being held"), { code: "ELOCKED" });
+	const driver: McpLockDriver = { lock: async () => { throw locked; } };
+	await assert.rejects(new McpCredentialFileLock(driver).withFileLock(f.path, () => { writes++; writeFileSync(f.path, "{}"); }), { code: "ELOCKED" });
+	assert.equal(writes, 0); assert.equal(readFileSync(f.path, "utf8"), before); assert.equal(existsSync(`${f.path}.lock`), false);
+});
+
+it("fails a refresh lock acquisition without running the callback", async () => {
+	const locked = Object.assign(new Error("Lock file is already being held"), { code: "ELOCKED" });
+	const driver: McpLockDriver = { lock: async () => { throw locked; } };
+	let calls = 0;
+	await assert.rejects(new McpRefreshLock(tmpdir(), driver).withRefreshLock(key, async () => { calls++; }), { code: "ELOCKED" });
+	assert.equal(calls, 0);
 });
 
 it("reclaims a stale directory and owns the lock during the mutation", async (t) => {
@@ -159,16 +192,21 @@ it("drains a completed remote rotation before close resolves", async (t) => {
 });
 
 it("does not exchange after close while waiting for refresh ownership", async (t) => {
-	const f = fixture(t); const held = deferred(); const release = deferred();
-	const lock = new McpRefreshLock(f.dir);
+	const held = deferred(); const release = deferred();
+	const locks = controlledLocks();
+	const lock = new McpRefreshLock(tmpdir(), locks.driver);
+	const f = fixture(t, grant(), undefined, lock);
 	const holder = lock.withRefreshLock(key, async () => { held.resolve(); await release.promise; });
+	const [holding] = locks.acquisitions; assert.ok(holding); holding.acquire();
 	await held.promise;
 	let calls = 0; refreshFetch(t, async () => { calls++; return Response.json(rotated); });
 	const refresh = provider(f.owner).onUnauthorized(rejectedToken());
 	const rejected = assert.rejects(refresh, /authentication is closed/u);
-	const close = f.owner.close(); release.resolve();
-	await Promise.all([holder, rejected, close]);
+	const close = f.owner.close(); release.resolve(); await holder;
+	const [waiting] = locks.acquisitions.slice(1); assert.ok(waiting); waiting.acquire();
+	await Promise.all([rejected, close]);
 	assert.equal(calls, 0); assert.deepEqual(f.read()[key], grant());
+	assert.deepEqual(locks.acquisitions.map((entry) => entry.releases), [1, 1]);
 });
 
 it("does not exchange after close while waiting for the credential reread", async (t) => {
@@ -185,18 +223,17 @@ it("does not exchange after close while waiting for the credential reread", asyn
 });
 
 it("reports compromised refresh ownership without releasing a replacement lease", async (t) => {
-	const f = fixture(t); let compromise: ((error: Error) => unknown) | undefined; let releases = 0;
+	const f = fixture(t);
 	const warning = t.mock.method(process, "emitWarning", () => undefined);
-	t.mock.method(lockfile, "lock", async (_path: string, options?: LockOptions) => {
-		compromise = options?.onCompromised;
-		return async () => { releases++; };
-	});
-	const result = await new McpRefreshLock(f.dir).withRefreshLock(key, async (lease) => {
+	const locks = controlledLocks();
+	const work = new McpRefreshLock(f.dir, locks.driver).withRefreshLock(key, async (lease) => {
 		assert.equal(lease?.valid, true);
-		assert.ok(compromise); compromise(new Error("synthetic ownership loss"));
+		locks.acquisitions[0]?.compromise();
 		assert.equal(lease?.valid, false); return "completed";
 	});
-	assert.equal(result, "completed"); assert.equal(releases, 0);
+	locks.acquisitions[0]?.acquire();
+	assert.equal(await work, "completed");
+	assert.equal(locks.acquisitions[0]?.releases, 0);
 	assert.deepEqual(warning.mock.calls[0].arguments, ["MCP refresh lock ownership was lost; credential writes remain conditional", { code: "MCP_REFRESH_LOCK_COMPROMISED" }]);
 });
 
@@ -264,72 +301,86 @@ async function leaseFixture(t: TestContext, pause: "reread" | "metadata" | "toke
 		reread.resolve(); await within(resumeRead.promise, "credential reread", 15_000);
 		return fileLock.withFileLock(path, fn);
 	} };
-	const first = new NativeMcpAuth(dir, undefined, pause === "reread" ? gated : undefined); owners.push(first);
-	const second = new NativeMcpAuth(dir); owners.push(second);
+	const locks = controlledLocks();
+	const first = new NativeMcpAuth(dir, new McpRefreshLock(dir, locks.driver), pause === "reread" ? gated : undefined); owners.push(first);
+	const second = new NativeMcpAuth(dir, new McpRefreshLock(dir, locks.driver)); owners.push(second);
 	function start(owner: NativeMcpAuth, metadataOverride = false) {
 		const auth = owner.provider("docs", { url: serverUrl, oauth: metadataOverride ? { authServerMetadataUrl: `${base}/metadata` } : undefined }, (value) => value);
 		return auth.onUnauthorized({ token: "synthetic-old", serverUrl: new URL(serverUrl), fetch: globalThis.fetch, response: new Response(null, { status: 401 }) })
 			.then(() => undefined, (error: unknown) => error);
 	}
-	const lockPath = join(dir, `mcp-auth-refresh-${createHash("sha256").update(canonicalKey).digest("hex").slice(0, 16)}.lock`);
-	return { first, second, start, lockPath, reread, resumeRead, discovery, resumeDiscovery, token, resumeToken,
+	const lockPath = join(dir, `mcp-auth-refresh-${createHash("sha256").update(canonicalKey).digest("hex").slice(0, 16)}`);
+	return { first, second, start, lockPath, locks, reread, resumeRead, discovery, resumeDiscovery, token, resumeToken,
 		read: () => JSON.parse(readFileSync(path, "utf8")), canonicalKey, state, unrelated,
 		verify: (expected = 1) => { assert.deepEqual(errors, []); assert.equal(exchanges, expected); } };
 }
 
 for (const pause of ["reread", "metadata"] as const) {
-	it(`sends no token request after reported lease loss during ${pause}`, { timeout: 22_000 }, async (t) => {
+	it(`sends no token request after reported lease loss during ${pause}`, { timeout: 10_000 }, async (t) => {
 		const f = await leaseFixture(t, pause);
 		const first = f.start(f.first, pause === "metadata");
+		const [original] = f.locks.acquisitions; assert.ok(original); original.acquire();
 		await within((pause === "reread" ? f.reread : f.discovery).promise, "first owner pause");
-		const warning = compromiseWarning(t); rmSync(f.lockPath, { recursive: true });
-		const second = f.start(f.second); await within(f.token.promise, "replacement token request");
+		const warning = compromiseWarning(t); original.compromise();
+		const second = f.start(f.second);
+		const replacement = f.locks.acquisitions[1]; assert.ok(replacement); replacement.acquire();
+		await within(f.token.promise, "replacement token request");
 		await warning;
 		f.resumeRead.resolve(); f.resumeDiscovery.resolve();
 		assert.match(String(await within(first, "lost owner completion")), /refresh lock ownership was lost/u);
-		assert.ok(existsSync(f.lockPath));
+		assert.equal(original.releases, 0);
 		assert.deepEqual(f.read(), { [f.canonicalKey]: f.state, unrelated: f.unrelated });
 		f.resumeToken.resolve(); assert.equal(await within(second, "replacement completion"), undefined);
-		assert.equal(existsSync(f.lockPath), false); assert.deepEqual(f.read()[f.canonicalKey].tokens, rotated);
+		assert.equal(replacement.releases, 1); assert.deepEqual(f.read()[f.canonicalKey].tokens, rotated);
 		assert.deepEqual(f.read().unrelated, f.unrelated); f.verify();
+		assert.equal(original.path, f.lockPath); assert.equal(replacement.path, f.lockPath);
 	});
 }
 
-it("persists an admitted rotation after reported lease loss and close", { timeout: 22_000 }, async (t) => {
+it("persists an admitted rotation after reported lease loss and close", { timeout: 10_000 }, async (t) => {
 	const f = await leaseFixture(t, "token"); const attempt = f.start(f.first);
+	const [original] = f.locks.acquisitions; assert.ok(original); original.acquire();
 	await within(f.token.promise, "admitted token request");
-	const warning = compromiseWarning(t); rmSync(f.lockPath, { recursive: true }); await warning;
+	const warning = compromiseWarning(t); original.compromise(); await warning;
 	let closed = false; const close = f.first.close().then(() => { closed = true; });
 	await Promise.resolve(); assert.equal(closed, false);
 	f.resumeToken.resolve(); assert.equal(await within(attempt, "admitted completion"), undefined);
 	await within(close, "close after persistence"); assert.equal(closed, true);
+	assert.equal(original.releases, 0);
 	assert.deepEqual(f.read()[f.canonicalKey].tokens, rotated); assert.deepEqual(f.read().unrelated, f.unrelated); f.verify();
 });
 
 it("sends no token request after close during metadata discovery", { timeout: 8000 }, async (t) => {
 	const f = await leaseFixture(t, "metadata"); const attempt = f.start(f.first, true);
+	const [original] = f.locks.acquisitions; assert.ok(original); original.acquire();
 	await within(f.discovery.promise, "metadata request"); const close = f.first.close();
 	f.resumeDiscovery.resolve();
 	assert.match(String(await within(attempt, "closed owner completion")), /authentication is closed/u);
 	await within(close, "closed owner drain"); f.verify(0);
+	assert.equal(original.releases, 1);
 	assert.deepEqual(f.read(), { [f.canonicalKey]: f.state, unrelated: f.unrelated });
 });
 
 it("refuses a credential callback after reported ownership loss", async (t) => {
 	const f = fixture(t); let writes = 0; let releases = 0;
 	const warning = t.mock.method(process, "emitWarning", () => undefined);
-	t.mock.method(lockfile, "lock", async (_path: string, options?: LockOptions) => {
+	const driver: McpLockDriver = { lock: async (_path, options) => {
 		options?.onCompromised?.(new Error("synthetic ownership loss"));
 		return async () => { releases++; };
-	});
-	await assert.rejects(new McpCredentialFileLock().withFileLock(f.path, () => { writes++; }), /synthetic ownership loss/u);
+	} };
+	await assert.rejects(new McpCredentialFileLock(driver).withFileLock(f.path, () => { writes++; }), /synthetic ownership loss/u);
 	assert.equal(writes, 0); assert.equal(releases, 0); assert.equal(warning.mock.callCount(), 1);
 });
 
 it("releases refresh ownership after a failed callback", async (t) => {
-	const f = fixture(t); const lock = new McpRefreshLock(f.dir);
-	await assert.rejects(lock.withRefreshLock(key, async () => { throw new Error("synthetic failure"); }), /synthetic failure/u);
-	assert.equal(await lock.withRefreshLock(key, async () => "reacquired"), "reacquired");
+	const f = fixture(t); const locks = controlledLocks(); const lock = new McpRefreshLock(f.dir, locks.driver);
+	const failed = lock.withRefreshLock(key, async () => { throw new Error("synthetic failure"); });
+	locks.acquisitions[0]?.acquire();
+	await assert.rejects(failed, /synthetic failure/u);
+	const reacquired = lock.withRefreshLock(key, async () => "reacquired");
+	locks.acquisitions[1]?.acquire();
+	assert.equal(await reacquired, "reacquired");
+	assert.deepEqual(locks.acquisitions.map((entry) => entry.releases), [1, 1]);
 });
 
 it("reads URL-only state without taking it over", async (t) => {

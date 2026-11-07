@@ -138,7 +138,7 @@ async function main(): Promise<void> {
 }
 
 async function handlePrompt(command: Command, services: FixtureServices): Promise<void> {
-	await services.session.prompt("Check the current effort context");
+	await services.session.prompt(typeof command.text === "string" ? command.text : "Check the current effort context");
 	send({ type: "command-done", id: command.id, totalRequests: services.totalRequests(), customEntries: services.customEntries() });
 }
 

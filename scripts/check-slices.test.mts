@@ -189,7 +189,9 @@ import {
 	auditSchemaDependencies,
 	auditSchemaImports,
 	auditSliceImports,
+	analyseSource,
 	checkSettingsReadme,
+	createSourceInventory,
 	type Declaration,
 	environmentReads,
 	extensionSources,
@@ -229,7 +231,7 @@ for (const [name, form] of moduleForms) {
 			] as const) {
 				const source = form(`${quote}${specifier}${quote}`);
 				assert.deepEqual(literalSpecifiers(source), [specifier]);
-				assert.equal(auditSliceImports(root, file, source).length, allowed ? 0 : 1, source);
+				assert.equal(auditSliceImports(root, file, analyseSource(file, source)).length, allowed ? 0 : 1, source);
 			}
 			for (const [consumer, target, allowed] of [
 				["suite.eval.mts", "../../evals/vitest-evals.mts", true],
@@ -239,7 +241,7 @@ for (const [name, form] of moduleForms) {
 				["fixtures/nested.eval.mts", "../../../evals/vitest-evals.mts", false],
 			] as const) {
 				assert.equal(
-					auditSliceImports(root, join(root, "extensions/example", consumer), form(`${quote}${target}${quote}`)).length,
+					auditSliceImports(root, join(root, "extensions/example", consumer), analyseSource(join(root, "extensions/example", consumer), form(`${quote}${target}${quote}`))).length,
 					allowed ? 0 : 1,
 				);
 			}
@@ -250,21 +252,21 @@ for (const [name, form] of moduleForms) {
 for (const [name, form] of moduleForms) {
 	test(`schema import guard: ${name}`, () => {
 		for (const specifier of ["typebox", "typebox/value", "@sinclair/typebox", "@sinclair/typebox/compiler"]) {
-			const failures = auditSchemaImports("/fixture", "/fixture/scripts/example.mts", form(JSON.stringify(specifier)));
+			const failures = auditSchemaImports("/fixture", "/fixture/scripts/example.mts", analyseSource("/fixture/scripts/example.mts", form(JSON.stringify(specifier))));
 			assert.deepEqual(failures, [`scripts/example.mts: import "${specifier}" uses TypeBox; use @earendil-works/pi-schema`]);
 		}
 		for (const specifier of ["typebox-extra", "@sinclair/typebox-extra", "@earendil-works/pi-schema", "./typebox.ts"])
-			assert.deepEqual(auditSchemaImports("/fixture", "/fixture/scripts/example.mts", form(JSON.stringify(specifier))), []);
+			assert.deepEqual(auditSchemaImports("/fixture", "/fixture/scripts/example.mts", analyseSource("/fixture/scripts/example.mts", form(JSON.stringify(specifier)))), []);
 	});
 }
 
 test("schema guard ignores inert strings and computed specifiers", () => {
-	assert.deepEqual(auditSchemaImports("/fixture", "/fixture/scripts/example.mts", `
+	assert.deepEqual(auditSchemaImports("/fixture", "/fixture/scripts/example.mts", analyseSource("/fixture/scripts/example.mts", `
 		// import "typebox";
 		const text = 'require("@sinclair/typebox")';
 		const name = "typebox";
 		import(name); require(name);
-	`), []);
+	`)), []);
 });
 
 test("schema guard rejects direct declarations in every dependency section", () => {
@@ -371,7 +373,7 @@ for (const [name, form] of callForms) {
 				const source = form(`${quote}${specifier}${quote}`);
 				assert.ok(literalSpecifiers(source).includes(specifier), source);
 				assert.equal(
-					auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", source).length,
+					auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", analyseSource("/fixture/extensions/example/runtime.ts", source)).length,
 					allowed ? 0 : 1,
 					source,
 				);
@@ -396,7 +398,7 @@ for (const [name, source] of [
 	["missing expression", 'const value = ; import "../memory/settings.ts";'],
 ] as const) {
 	test(`syntax failure: ${name}`, () => {
-		assert.deepEqual(auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", source), [
+		assert.deepEqual(auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", analyseSource("/fixture/extensions/example/runtime.ts", source)), [
 			"extensions/example/runtime.ts: TypeScript syntax errors prevent a complete import check",
 		]);
 	});
@@ -507,7 +509,26 @@ test("literal extraction ignores comments, ordinary strings, and computed specif
 test("literal extraction decodes escapes before applying slice rules", () => {
 	const source = 'import("\\x2e\\x2e/memory/settings.ts")';
 	assert.deepEqual(literalSpecifiers(source), ["../memory/settings.ts"]);
-	assert.equal(auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", source).length, 1);
+	assert.equal(auditSliceImports("/fixture", "/fixture/extensions/example/runtime.ts", analyseSource("/fixture/extensions/example/runtime.ts", source)).length, 1);
+});
+
+test("one source inventory reads and analyses each source once", () => {
+	const file = "/fixture/extensions/example/runtime.ts";
+	const source = 'import "../memory/settings.ts";\nexport const value = env.PI_EXAMPLE_NAME;';
+	const reads = new Map<string, number>();
+	const inventory = createSourceInventory((path) => {
+		reads.set(path, (reads.get(path) ?? 0) + 1);
+		return path === file ? source : "";
+	});
+	const analysis = inventory.analyse(file);
+	assert.equal(inventory.analyse(file), analysis, "the derived analysis is reused");
+	assert.equal(inventory.text(file), source, "the source text is read once");
+	assert.deepEqual(analysis.environmentReads, ["PI_EXAMPLE_NAME"]);
+	assert.deepEqual(auditSliceImports("/fixture", file, analysis), [
+		'extensions/example/runtime.ts: import "../memory/settings.ts" escapes the extension slice',
+	]);
+	assert.deepEqual(auditSchemaImports("/fixture", file, analysis), []);
+	assert.equal(reads.get(file), 1);
 });
 
 function pillarFixtureRoot(): string {
@@ -1224,7 +1245,7 @@ test("allows only the agent public transport entrypoint", async () => {
 		["extensions/other/index.ts", "../../transport/index.ts", false],
 		["extensions/agent/host-client.ts", "../../extensions/other/index.ts", false],
 	] as const)
-		assert.equal(auditSliceImports(root, join(root, file), `import "${specifier}";`).length, allowed ? 0 : 1);
+		assert.equal(auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length, allowed ? 0 : 1);
 });
 
 test("allows only the operator-ui public entrypoint, and only for its consumers", async () => {
@@ -1237,7 +1258,7 @@ test("allows only the operator-ui public entrypoint, and only for its consumers"
 		["extensions/stash/operator-view.ts", "../../operator-ui/frame.ts", false],
 		["extensions/brave/index.ts", "../../operator-ui/index.ts", false],
 	] as const)
-		assert.equal(auditSliceImports(root, join(root, file), `import "${specifier}";`).length, allowed ? 0 : 1);
+		assert.equal(auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length, allowed ? 0 : 1);
 });
 
 test("allows only the agent and evo session-name entrypoint", async () => {
@@ -1249,7 +1270,7 @@ test("allows only the agent and evo session-name entrypoint", async () => {
 		["extensions/brave/index.ts", "../../session-name/index.ts", false],
 		["extensions/agent/index.ts", "../../session-name/helpers.ts", false],
 	] as const)
-		assert.equal(auditSliceImports(root, join(root, file), `import "${specifier}";`).length, allowed ? 0 : 1, file);
+		assert.equal(auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length, allowed ? 0 : 1, file);
 });
 
 test("session-name imports nothing outside its own directory", async () => {
@@ -1265,7 +1286,7 @@ test("session-name imports nothing outside its own directory", async () => {
 		["/repo/session-name/helpers.ts", false],
 	] as const)
 		assert.equal(
-			auditSelfContainedImports(root, file, `import "${specifier}";`, "session-name").length,
+			auditSelfContainedImports(root, file, analyseSource(file, `import "${specifier}";`), "session-name").length,
 			allowed ? 0 : 1,
 			specifier,
 		);
@@ -1283,5 +1304,5 @@ test("operator-ui imports nothing outside its own directory", async () => {
 		["../transport/index.ts", false],
 		["/repo/extensions/agent/index.ts", false],
 	] as const)
-		assert.equal(auditOperatorUiImports(root, file, `import "${specifier}";`).length, allowed ? 0 : 1, specifier);
+		assert.equal(auditOperatorUiImports(root, file, analyseSource(file, `import "${specifier}";`)).length, allowed ? 0 : 1, specifier);
 });

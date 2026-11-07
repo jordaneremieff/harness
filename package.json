@@ -12,7 +12,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "test": "node --test --test-concurrency=4 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"operator-ui/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"session-name/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"transport/*.test.mts\"",
+    "test": "node --test --test-concurrency=4 --test-timeout=120000 \"evals/*.test.mts\" \"evals/subjects/*.test.mts\" \"extensions/*/*.test.mts\" \"operator-ui/*.test.mts\" \"prompts/*.test.mts\" \"scripts/*.test.mts\" \"session-name/*.test.mts\" \"skills/*/scripts/*.test.mts\" \"transport/*.test.mts\"",
     "test:coverage": "npm test -- --experimental-test-coverage",
     "evals": "node evals/cli.mts",
     "lint": "biome lint --error-on-warnings .",
@@ -20,7 +20,7 @@
     "typecheck": "tsc -p .",
     "check": "node scripts/check-slices.mts",
     "hooks": "node scripts/publication-scan.mts --install",
-    "warmup:jiti": "pi --help --offline --extension extensions/brave/index.ts --extension extensions/statusline/index.ts --extension extensions/clipboard/index.ts --extension extensions/stash/index.ts"
+    "warmup:jiti": "node scripts/extension-load-check.mts extensions/*/index.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

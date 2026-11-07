@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { it } from "node:test";
+import { it, type TestContext } from "node:test";
 import { stripVTControlCharacters } from "node:util";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -495,16 +495,21 @@ it("a committed result replaces its partial on the existing committed call", () 
 
 const click = (width: number, height: number, y: number): TuiMouseEvent => ({ type: "click", button: "left", x: 2, y, screenX: 2, screenY: y, width, height, shift: false, alt: false, ctrl: false, clickCount: 1 });
 
-function checkCodemodeCase(width: number, expanded: boolean, isError: boolean, partial: boolean, args: { code: string }, details: unknown, definition: ToolDefinition): void {
+function checkCodemodeCase(t: TestContext, width: number, expanded: boolean, isError: boolean, partial: boolean, args: { code: string }, details: unknown, definition: ToolDefinition): void {
 	const call = assistant("call", [{ type: "toolCall", id: "outer", name: "codemode", arguments: args }]);
 	const completed = result(partial ? "live:tool:outer" : "result", "outer", "codemode", "", isError);
 	const message = completed.model?.[0]; assert.ok(message?.role === "toolResult");
 	message.content = [{ type: "text", text: "Script failed\nWall time 1.0 seconds\nOutput:\n" }, { type: "text", text: Array.from({ length: 9 }, (_, i) => `output ${i}`).join("\n") }];
 	message.details = details as typeof message.details;
 	const native = new ToolExecutionComponent("codemode", "outer", args, { showImages: false }, { ...definition, renderShell: "self" }, tui, "/work");
+	let conversation: AgentConversation | undefined;
+	t.after(() => {
+		try { native.updateResult(message, false); }
+		finally { conversation?.dispose(); }
+	});
 	native.setArgsComplete(); native.markExecutionStarted(); native.setExpanded(expanded);
 	native.updateResult(message, partial);
-	const conversation = new AgentConversation([call, completed], "/work", tui, expanded, false);
+	conversation = new AgentConversation([call, completed], "/work", tui, expanded, false);
 	const rendered = conversation.render(width).lines;
 	const visible = stripVTControlCharacters(rendered.join("\n"));
 	assert.doesNotMatch(rendered.join("\n"), /\x1b\[48;/u, "no outer tool block");
@@ -519,10 +524,9 @@ function checkCodemodeCase(width: number, expanded: boolean, isError: boolean, p
 	}
 	const settled = { ...completed, id: "result" };
 	conversation.update([call, settled]);
-	native.updateResult(message, false);
 }
 
-for (const partial of [false, true]) it(`matches a real native codemode component with current details: partial=${partial}`, () => {
+for (const partial of [false, true]) it(`matches a real native codemode component with current details: partial=${partial}`, (t) => {
 	const definitions: ToolDefinition[] = [];
 	const standIn = { registerTool: ((definition: ToolDefinition) => { definitions.push(definition); }) as ExtensionAPI["registerTool"] };
 	createCodemodeExtension()(standIn as ExtensionAPI);
@@ -533,8 +537,45 @@ for (const partial of [false, true]) it(`matches a real native codemode componen
 	assert.ok([undefined, "default", "self"].includes(definitions[0].renderShell));
 	const args = { code: Array.from({ length: 14 }, (_, i) => `console.log("code line ${i}");`).join("\n") };
 	const details = { calls: Array.from({ length: 12 }, (_, i) => ({ name: i % 2 ? "models.classify" : "lookup", status: ["ok", "error", "cancelled", partial ? "running" : "cancelled"][i % 4], id: i + 1, args: "a".repeat(200), error: "failure", durationMs: i * 100 })), fullOutputPath: "output.txt" };
-	for (const width of [30, 80, 120]) for (const expanded of [false, true]) for (const isError of [false, true]) checkCodemodeCase(width, expanded, isError, partial, args, details, definitions[0]);
+	for (const width of [30, 80, 120]) for (const expanded of [false, true]) for (const isError of [false, true]) checkCodemodeCase(t, width, expanded, isError, partial, args, details, definitions[0]);
 	assert.equal(details.calls[0].args.length, 200);
+});
+
+it("exits after a deliberate assertion failure while a codemode card is live", () => {
+	const root = mkdtempSync(join(tmpdir(), "codemode-card-exit-"));
+	try {
+		const script = join(root, "failing-card.mjs");
+		writeFileSync(script, `
+import assert from "node:assert/strict";
+import { createCodemodeExtension, initTheme, ToolExecutionComponent } from ${JSON.stringify(import.meta.resolve("@earendil-works/pi-coding-agent"))};
+initTheme("dark");
+const definitions = [];
+createCodemodeExtension()({ registerTool: (definition) => definitions.push(definition) });
+const message = { role: "toolResult", toolCallId: "outer", toolName: "codemode", isError: false,
+  content: [{ type: "text", text: "Script failed" }],
+  details: { calls: [{ name: "lookup", status: "running", id: 1, args: "a", durationMs: 0 }], fullOutputPath: "output.txt" } };
+const card = new ToolExecutionComponent("codemode", "outer", { code: "console.log(1)" }, { showImages: false }, { ...definitions[0], renderShell: "self" }, { requestRender() {} }, "/work");
+try {
+  card.setArgsComplete();
+  card.markExecutionStarted();
+  card.updateResult(message, true);
+  assert.fail("DELIBERATE_CARD_FAILURE");
+} finally {
+  card.updateResult(message, false);
+}
+`);
+		const result = spawnSync(process.execPath, [script], {
+			cwd: process.cwd(),
+			encoding: "utf8",
+			timeout: 20_000,
+		});
+		assert.equal(result.error, undefined);
+		assert.equal(result.signal, null);
+		assert.equal(result.status, 1);
+		assert.match(result.stderr, /DELIBERATE_CARD_FAILURE/u);
+	} finally {
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 it("retains whole-card and pending-card choices through result arrival and changed arguments", () => {

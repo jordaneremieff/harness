@@ -46,6 +46,68 @@ function reportFailures(): never {
 	for (const failure of failures) console.error(`  - ${failure}`);
 	process.exit(1);
 }
+
+const contextVariables = new Set([
+	"PI_AGENT_DIR",
+	"PI_AGENT_SESSIONS_DIR",
+	"PI_MANAGED_INSTALL_ROOT",
+	"PI_CODING_AGENT_DIR",
+	"PI_SESSION_ID",
+	"PI_HARNESS_FILE",
+	"PI_CODEMODE_MAX_WORKERS",
+]);
+const configurationVariable = (name: string) => !contextVariables.has(name) && !/^PI_.*_TEST_/.test(name);
+
+export interface SourceAnalysis {
+	readonly path: string;
+	readonly text: string;
+	readonly syntaxErrors: readonly ts.Diagnostic[];
+	readonly specifiers: readonly string[];
+	readonly environmentReads: readonly string[];
+}
+
+export interface SourceInventory {
+	text(path: string): string;
+	analyse(path: string): SourceAnalysis;
+}
+
+/** One source text, syntax result, module specifiers and configuration reads for all audits. */
+export function analyseSource(path: string, text: string): SourceAnalysis {
+	return {
+		path,
+		text,
+		syntaxErrors: syntaxErrors(text),
+		specifiers: literalSpecifiers(text),
+		environmentReads: environmentReads(text),
+	};
+}
+
+/** Reads each path once and reuses its derived analysis across audit passes. */
+export function createSourceInventory(
+	read: (path: string) => string = (path) => readFileSync(path, "utf8"),
+): SourceInventory {
+	const texts = new Map<string, string>();
+	const analyses = new Map<string, SourceAnalysis>();
+	const text = (path: string): string => {
+		const cached = texts.get(path);
+		if (cached !== undefined) return cached;
+		const value = read(path);
+		texts.set(path, value);
+		return value;
+	};
+	return {
+		text,
+		analyse(path: string): SourceAnalysis {
+			const cached = analyses.get(path);
+			if (cached !== undefined) return cached;
+			const analysis = analyseSource(path, text(path));
+			analyses.set(path, analysis);
+			return analysis;
+		},
+	};
+}
+
+const inventory = createSourceInventory();
 const sources = main ? extensionSources(root) : { files: [], violations: [] };
 const sourceFiles = sources.files;
 for (const violation of sources.violations) fail(violation);
@@ -63,7 +125,7 @@ for (const entry of main ? readdirSync(extensionsRoot, { withFileTypes: true }) 
 	if (!existsSync(indexFile)) {
 		fail(`${label}: missing index.ts (every extension registers via index.ts)`);
 	} else {
-		const source = readFileSync(indexFile, "utf8");
+		const source = inventory.text(indexFile);
 		if (!/\bexport\s+default\b/.test(source)) {
 			fail(`${label}: index.ts has no default export (the Pi factory contract)`);
 		}
@@ -227,13 +289,13 @@ function publicImport(
 export function auditSelfContainedImports(
 	root: string,
 	file: string,
-	source: string,
+	analysis: SourceAnalysis,
 	directory: string,
 ): string[] {
 	const rel = relative(root, file);
-	if (syntaxErrors(source).length) return [`${rel}: TypeScript syntax errors prevent a complete import check`];
+	if (analysis.syntaxErrors.length) return [`${rel}: TypeScript syntax errors prevent a complete import check`];
 	const moduleDir = join(root, directory);
-	return literalSpecifiers(source).flatMap((specifier) => {
+	return analysis.specifiers.flatMap((specifier) => {
 		if (specifier.startsWith("/")) return [`${rel}: absolute import "${specifier}"`];
 		if (!specifier.startsWith("./") && !specifier.startsWith("../")) return [];
 		const target = relative(moduleDir, resolve(dirname(file), specifier));
@@ -241,8 +303,8 @@ export function auditSelfContainedImports(
 	});
 }
 
-export function auditOperatorUiImports(root: string, file: string, source: string): string[] {
-	return auditSelfContainedImports(root, file, source, "operator-ui");
+export function auditOperatorUiImports(root: string, file: string, analysis: SourceAnalysis): string[] {
+	return auditSelfContainedImports(root, file, analysis, "operator-ui");
 }
 
 function evaluationImport(root: string, file: string, sliceDir: string, target: string | undefined): boolean {
@@ -253,14 +315,14 @@ function evaluationImport(root: string, file: string, sliceDir: string, target: 
 	);
 }
 
-export function auditSliceImports(root: string, file: string, source: string): string[] {
+export function auditSliceImports(root: string, file: string, analysis: SourceAnalysis): string[] {
 	const violations: string[] = [];
 	const fail = (message: string) => violations.push(message);
 	const rel = relative(root, file);
-	if (syntaxErrors(source).length) return [`${rel}: TypeScript syntax errors prevent a complete import check`];
+	if (analysis.syntaxErrors.length) return [`${rel}: TypeScript syntax errors prevent a complete import check`];
 	const sliceName = rel.split(/[\\/]/)[1];
 	const sliceDir = join(root, "extensions", sliceName);
-	literalSpecifiers(source).forEach((specifier) => {
+	analysis.specifiers.forEach((specifier) => {
 		// Literal './' and '../' spellings are resolved against the importing
 		// file before comparison, so a './' prefix cannot dodge the escape
 		// check (e.g. './../sibling/index.ts').
@@ -283,19 +345,19 @@ export function auditSliceImports(root: string, file: string, source: string): s
 }
 
 for (const file of sourceFiles) {
-	for (const violation of auditSliceImports(root, file, readFileSync(file, "utf8"))) fail(violation);
+	for (const violation of auditSliceImports(root, file, inventory.analyse(file))) fail(violation);
 }
 const operatorUiDir = join(root, "operator-ui");
 for (const entry of main && existsSync(operatorUiDir) ? readdirSync(operatorUiDir, { withFileTypes: true }) : []) {
 	if (!entry.isFile() || !/\.(ts|mts)$/.test(entry.name)) continue;
 	const file = join(operatorUiDir, entry.name);
-	for (const violation of auditOperatorUiImports(root, file, readFileSync(file, "utf8"))) fail(violation);
+	for (const violation of auditOperatorUiImports(root, file, inventory.analyse(file))) fail(violation);
 }
 const sessionNameDir = join(root, "session-name");
 for (const entry of main && existsSync(sessionNameDir) ? readdirSync(sessionNameDir, { withFileTypes: true }) : []) {
 	if (!entry.isFile() || !/\.(ts|mts)$/.test(entry.name)) continue;
 	const file = join(sessionNameDir, entry.name);
-	for (const violation of auditSelfContainedImports(root, file, readFileSync(file, "utf8"), "session-name"))
+	for (const violation of auditSelfContainedImports(root, file, inventory.analyse(file), "session-name"))
 		fail(violation);
 }
 
@@ -309,16 +371,6 @@ function configurationSource(repositoryRoot: string, file: string): boolean {
 		!/(?:^|\/)[^/]*-fixture\.(ts|mts)$/.test(path)
 	);
 }
-const contextVariables = new Set([
-	"PI_AGENT_DIR",
-	"PI_AGENT_SESSIONS_DIR",
-	"PI_MANAGED_INSTALL_ROOT",
-	"PI_CODING_AGENT_DIR",
-	"PI_SESSION_ID",
-	"PI_HARNESS_FILE",
-	"PI_CODEMODE_MAX_WORKERS",
-]);
-const configurationVariable = (name: string) => !contextVariables.has(name) && !/^PI_.*_TEST_/.test(name);
 // Lexical detection covers direct and injected env access, not arbitrary aliases.
 export function environmentReads(source: string): string[] {
 	const pattern = /(?:\benv|\bprocess\s*\.\s*env|\))\s*(?:\.\s*(PI_[A-Z0-9_]+)|\[\s*["'](PI_[A-Z0-9_]+)["']\s*\])/g;
@@ -504,16 +556,17 @@ export function checkSettingsReadme(declaration: Declaration, readme: string): b
 	);
 }
 
-function hasSettingsReader(runtime: string[]): boolean {
-	return runtime.some((file) => /\breadSettings\s*\(/.test(readFileSync(file, "utf8")));
+function hasSettingsReader(runtime: readonly SourceAnalysis[]): boolean {
+	return runtime.some((analysis) => /\breadSettings\s*\(/.test(analysis.text));
 }
 async function loadSettingsDeclaration(
 	repositoryRoot: string,
 	declarationPath: string,
 	slice: string,
+	inventory: SourceInventory,
 ): Promise<Declaration> {
-	const source = readFileSync(declarationPath, "utf8");
-	const importsEntrypoint = literalSpecifiers(source).some((specifier) => {
+	const analysis = inventory.analyse(declarationPath);
+	const importsEntrypoint = analysis.specifiers.some((specifier) => {
 		const target = resolve(dirname(declarationPath), specifier);
 		return target.startsWith(`${join(repositoryRoot, "extensions")}/`) && target.endsWith("/index.ts");
 	});
@@ -530,6 +583,7 @@ export async function auditSettings(
 	repositoryRoot: string,
 	files: string[],
 	onReadmeMismatch?: (path: string, projection: string) => void,
+	inventory: SourceInventory = createSourceInventory(),
 ): Promise<string[]> {
 	const violations: string[] = [];
 	const sliceNames = [
@@ -540,8 +594,9 @@ export async function auditSettings(
 		const runtime = files.filter(
 			(file) => file.startsWith(`${directory}/`) && configurationSource(repositoryRoot, file),
 		);
-		const reads = runtime.flatMap((file) =>
-			environmentReads(readFileSync(file, "utf8")).map((name) => ({ file, name })),
+		const analyses = runtime.map((file) => inventory.analyse(file));
+		const reads = analyses.flatMap((analysis) =>
+			analysis.environmentReads.map((name) => ({ file: analysis.path, name })),
 		);
 		const declarationPath = join(directory, "settings.ts");
 		if (!existsSync(declarationPath)) {
@@ -550,14 +605,14 @@ export async function auditSettings(
 					({ file, name }) => `${relative(repositoryRoot, file)}: ${name} requires an owning settings.ts declaration`,
 				),
 			);
-			if (!reads.length && hasSettingsReader(runtime))
+			if (!reads.length && hasSettingsReader(analyses))
 				violations.push(`extensions/${slice}: readSettings consumer requires an owning settings.ts declaration`);
 			continue;
 		}
 		const readmePath = join(directory, "README.md");
-		const readme = existsSync(readmePath) ? readFileSync(readmePath, "utf8") : "";
+		const readme = existsSync(readmePath) ? inventory.text(readmePath) : "";
 		try {
-			const declaration = await loadSettingsDeclaration(repositoryRoot, declarationPath, slice);
+			const declaration = await loadSettingsDeclaration(repositoryRoot, declarationPath, slice, inventory);
 			if (!checkSettingsReadme(declaration, readme)) {
 				onReadmeMismatch?.(`extensions/${slice}/README.md`, settingsReadme(declaration));
 				violations.push(
@@ -582,7 +637,7 @@ if (main) {
 		console.log(
 			`check-slices: paste-ready replacement for ${path}\n--- BEGIN ${path} configuration ---\n${projection}\n--- END ${path} configuration ---`,
 		);
-	});
+	}, inventory);
 	for (const violation of violations) fail(violation);
 }
 
@@ -602,10 +657,10 @@ function typeboxPackage(specifier: string): boolean {
 	);
 }
 
-export function auditSchemaImports(root: string, file: string, source: string): string[] {
+export function auditSchemaImports(root: string, file: string, analysis: SourceAnalysis): string[] {
 	const label = relative(root, file);
-	if (syntaxErrors(source).length) return [`${label}: TypeScript syntax errors prevent a complete schema import check`];
-	return literalSpecifiers(source)
+	if (analysis.syntaxErrors.length) return [`${label}: TypeScript syntax errors prevent a complete schema import check`];
+	return analysis.specifiers
 		.filter(typeboxPackage)
 		.map((specifier) => `${label}: import "${specifier}" uses TypeBox; use @earendil-works/pi-schema`);
 }
@@ -633,11 +688,11 @@ if (main) {
 		if (!/^(extensions|scripts|prompts|transport|operator-ui|evals|session-name)\/.*\.(ts|mts)$/.test(file)) continue;
 		const path = join(root, file);
 		if (!existsSync(path)) continue;
-		for (const violation of auditSchemaImports(root, path, readFileSync(path, "utf8"))) fail(violation);
+		for (const violation of auditSchemaImports(root, path, inventory.analyse(path))) fail(violation);
 	}
 	const manifest = join(root, "package.json");
 	if (existsSync(manifest)) {
-		for (const violation of auditSchemaDependencies(JSON.parse(readFileSync(manifest, "utf8")))) fail(violation);
+		for (const violation of auditSchemaDependencies(JSON.parse(inventory.text(manifest)))) fail(violation);
 	}
 }
 
@@ -650,7 +705,7 @@ for (const doc of tracked.split("\n")) {
 	// `git ls-files` includes an unstaged deletion. A gate over the working tree
 	// must ignore that absent path rather than crash before it reports findings.
 	if (!existsSync(path)) continue;
-	const text = readFileSync(path, "utf8");
+	const text = inventory.text(path);
 	for (const match of text.matchAll(countPattern)) {
 		fail(`${doc}: hardcoded count "${match[0]}"`);
 	}
@@ -903,9 +958,9 @@ export function auditPillars(root: string): { violations: string[]; readmeProjec
 	}
 	auditPillarIdentities(entries, violations);
 	const readme = pillarText(readmePath, "pillars/README.md", violations) ?? "";
-	const inventory = parseInventory(readme);
+	const rows = parseInventory(readme);
 	const filesByKey = new Map(entries.map((entry) => [entry.filename, entry]));
-	const inventoryMismatch = auditPillarInventory(inventory, filesByKey, violations);
+	const inventoryMismatch = auditPillarInventory(rows, filesByKey, violations);
 
 	auditPillarGovernance(pillarsDir, violations);
 	auditArmoryPaths(root, violations);
@@ -914,8 +969,8 @@ export function auditPillars(root: string): { violations: string[]; readmeProjec
 	const metaInvalid = violations.some((violation) =>
 		/^(pillars\/(principle|pattern|heuristic)-|duplicate \(|skills\/troll\/references\/pillar-armory)/.test(violation),
 	);
-	const readmeDiverged = entries.length !== inventory.length || inventoryMismatch;
-	const readmeProjection = !metaInvalid && readmeDiverged ? projectPillarInventory(entries, inventory) : "";
+	const readmeDiverged = entries.length !== rows.length || inventoryMismatch;
+	const readmeProjection = !metaInvalid && readmeDiverged ? projectPillarInventory(entries, rows) : "";
 	return { violations, readmeProjection };
 }
 
@@ -930,7 +985,7 @@ const packageJsonPath = join(root, "package.json");
 if (main && existsSync(packageJsonPath)) {
 	let testScript: string | undefined;
 	try {
-		const manifest = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+		const manifest = JSON.parse(inventory.text(packageJsonPath)) as {
 			scripts?: Record<string, string>;
 		};
 		const candidate = manifest.scripts?.test;

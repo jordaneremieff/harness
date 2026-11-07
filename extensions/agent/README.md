@@ -3402,7 +3402,18 @@ post-compaction context; the card makes no post-size claim.
 Run focused tests with `node --test "extensions/agent/*.test.mts"`. The normal
 repository gates are `npm run lint`, `npm run typecheck`, `npm run check`, and
 `npm test`. `node scripts/extension-load-check.mts extensions/agent/index.ts`
-checks extension loading in a fresh process.
+loads the requested entrypoint through Pi's public discovery API in isolated
+directories and fails on a reported load error or an unresolved entrypoint.
+
+Live tool-card tests register cleanup before they render. A standalone native
+codemode card is finalised with a settled result, and its conversation is
+disposed in nested cleanup after that finalisation. A bounded child process
+deliberately fails an assertion while a card is live and must exit with status
+1, so a failed run cannot leave a renderer timer alive.
+
+MCP authentication tests inject a lock driver to control acquisition,
+compromise, and release at exact gates. One real filesystem test reclaims a
+stale lock directory and holds the lock during its mutation.
 
 Native tests exercise real Harness instances and faux providers. Creation,
 retry, awareness, and live-tool fixtures use explicit temporary agent directories

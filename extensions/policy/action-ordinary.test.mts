@@ -93,6 +93,20 @@ async function fixture(
 	const oldMode = process.env.PI_POLICY_MODE;
 	process.env.PI_POLICY_DIR = dir;
 	process.env.PI_POLICY_MODE = options.mode ?? "enforce";
+	const shutdown = async (active: sdk.AgentSession | undefined): Promise<void> => {
+		try {
+			await active?.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		} finally {
+			try { active?.dispose(); }
+			finally {
+				await rm(root, { recursive: true, force: true });
+				if (oldDir === undefined) delete process.env.PI_POLICY_DIR;
+				else process.env.PI_POLICY_DIR = oldDir;
+				if (oldMode === undefined) delete process.env.PI_POLICY_MODE;
+				else process.env.PI_POLICY_MODE = oldMode;
+			}
+		}
+	};
 	const loader = new sdk.DefaultResourceLoader({
 		cwd: root,
 		agentDir: join(root, "agent"),
@@ -170,21 +184,11 @@ async function fixture(
 			approve,
 			run,
 			close: async () => {
-				await active.dispose();
-				await rm(root, { recursive: true, force: true });
-				if (oldDir === undefined) delete process.env.PI_POLICY_DIR;
-				else process.env.PI_POLICY_DIR = oldDir;
-				if (oldMode === undefined) delete process.env.PI_POLICY_MODE;
-				else process.env.PI_POLICY_MODE = oldMode;
+				await shutdown(active);
 			},
 		};
 	} catch (error) {
-		await session?.dispose();
-		await rm(root, { recursive: true, force: true });
-		if (oldDir === undefined) delete process.env.PI_POLICY_DIR;
-		else process.env.PI_POLICY_DIR = oldDir;
-		if (oldMode === undefined) delete process.env.PI_POLICY_MODE;
-		else process.env.PI_POLICY_MODE = oldMode;
+		await shutdown(session);
 		throw error;
 	}
 }

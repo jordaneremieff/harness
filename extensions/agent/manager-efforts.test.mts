@@ -86,6 +86,27 @@ async function waitForEvent(fixture: ChildFixture, label: string, predicate: (ev
 	catch (error) { throw new Error(`Missing ${label}. Events: ${JSON.stringify(fixture.events)}. ${String(error)}`); }
 }
 
+it("records interactive input when no session name supplies the purpose", { timeout: 30000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "agent-efforts-nameless-"));
+	const sessionsRoot = join(root, "sessions");
+	const cwd = join(root, "work");
+	mkdirSync(sessionsRoot);
+	const fixtures: ChildFixture[] = [];
+	t.after(async () => {
+		for (const fixture of fixtures) {
+			if (fixture.child.exitCode === null && fixture.child.signalCode === null) fixture.child.kill("SIGTERM");
+		}
+		await Promise.all(fixtures.map((fixture) => waitForProcessExit(fixture.child, DEADLINE_MS).catch(() => undefined)));
+		rmSync(root, { recursive: true, force: true });
+	});
+	const fixture = await startFixture(root, sessionsRoot, cwd, "nameless");
+	fixtures.push(fixture);
+	await fixture.command("prompt", { text: "..." });
+	const view = await fixture.command("inspect");
+	const self = (view.awareness as { self: { observedPurpose?: { source: string; text: string } } }).self;
+	assert.deepEqual(self.observedPurpose, { source: "interactive-input", text: "..." }, "input without a usable name remains the bounded purpose");
+});
+
 it("keeps discovery and intent out of ordinary transcripts across processes", { timeout: 90000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "agent-efforts-"));
 	const sessionsRoot = join(root, "sessions");
@@ -127,7 +148,7 @@ it("keeps discovery and intent out of ordinary transcripts across processes", { 
 	assert.equal(parameters.oneOf, undefined);
 	const observed = await second.command("inspect");
 	const observedSelf = (observed.awareness as { self: { observedPurpose?: { source: string; text: string } }; threads: { items: unknown[] } }).self;
-	assert.deepEqual(observedSelf.observedPurpose, { source: "interactive-input", text: "Check the current effort context" }, "the first interactive input becomes a bounded purpose claim");
+	assert.deepEqual(observedSelf.observedPurpose, { source: "session-name", text: "Check the current effort context" }, "the derived session name supplies the observed purpose");
 	assert.ok(Array.isArray((observed.awareness as { threads: { items: unknown[] } }).threads.items), "the awareness result includes the bounded recent-thread view");
 
 	const publish = await second.command("prompt-intent", { action: "publish" });

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { resolveLoaderPath } from "./extension-load-check.mts";
+import { checkExtensionLoad } from "./extension-load-check.mts";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -68,51 +68,54 @@ function tupleSchemaIssues(name: string, parameters: unknown): string[] {
 	return issues;
 }
 
-test("loader discovery supports the current bundled CLI layout", async (t) => {
-	const root = await mkdtemp(join(tmpdir(), "pi-loader-layout-"));
+test("loads exactly the requested entrypoints from isolated discovery directories", async (t) => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-load-isolation-")));
 	t.after(() => rm(root, { recursive: true, force: true }));
-	const dist = join(root, "installed", "dist");
-	const binary = join(dist, "bundle", "cli.js");
-	const loader = join(dist, "core", "extensions", "loader.js");
-	await mkdir(join(dist, "bundle"), { recursive: true });
-	await mkdir(join(dist, "core", "extensions"), { recursive: true });
-	await writeFile(binary, "");
-	await writeFile(loader, "");
-	assert.equal(resolveLoaderPath(root, { binaryPath: binary }), await realpath(loader));
-
-	const local = join(
-		root,
-		"node_modules",
-		"@earendil-works",
-		"pi-coding-agent",
-		"dist",
-		"core",
-		"extensions",
-		"loader.js",
-	);
-	await mkdir(join(local, ".."), { recursive: true });
-	await writeFile(local, "");
-	assert.equal(resolveLoaderPath(root, { binaryPath: binary }), local);
+	const cwd = join(root, "work");
+	const agentDir = join(root, "agent");
+	await mkdir(cwd, { recursive: true });
+	await mkdir(agentDir, { recursive: true });
+	const extension = join(root, "requested.ts");
+	await writeFile(extension, "export default function () {}\n");
+	const outcome = await checkExtensionLoad([extension], { cwd, agentDir });
+	assert.equal(outcome.status, "pass", JSON.stringify(outcome));
+	assert.equal(outcome.loaded, 1);
+	assert.equal(outcome.expected, 1);
+	assert.deepEqual(outcome.failures, []);
+	assert.deepEqual(outcome.missing, []);
 });
 
-test("the load CLI fails when no Pi loader is available", async (t) => {
-	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-loader-unavailable-")));
+test("the load CLI ignores ambient local and global extensions", async (t) => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-load-ambient-")));
 	t.after(() => rm(root, { recursive: true, force: true }));
-	const script = join(root, "scripts", "extension-load-check.mts");
-	await mkdir(dirname(script));
-	await copyFile(fileURLToPath(new URL("./extension-load-check.mts", import.meta.url)), script);
-	const extension = join(root, "example.ts");
+	const work = join(root, "work");
+	const home = join(root, "home");
+	await mkdir(join(work, ".pi", "extensions"), { recursive: true });
+	await mkdir(join(home, ".pi", "agent", "extensions"), { recursive: true });
+	await writeFile(join(work, ".pi", "extensions", "local.ts"), "export default function () { throw new Error('ambient local extension'); }\n");
+	await writeFile(join(home, ".pi", "agent", "extensions", "global.ts"), "export default function () { throw new Error('ambient global extension'); }\n");
+	const extension = join(root, "requested.ts");
 	await writeFile(extension, "export default function () {}\n");
+	const script = fileURLToPath(new URL("./extension-load-check.mts", import.meta.url));
+	const { stdout } = await promisify(execFile)(process.execPath, [script, extension], {
+		cwd: work,
+		env: { ...process.env, HOME: home, PI_AGENT_DIR: "" },
+		timeout: 20_000,
+	});
+	assert.match(stdout, /Loaded 1 extension/);
+});
+
+test("the load CLI fails when a requested entrypoint is absent", async (t) => {
+	const root = await realpath(await mkdtemp(join(tmpdir(), "pi-load-missing-")));
+	t.after(() => rm(root, { recursive: true, force: true }));
+	const script = fileURLToPath(new URL("./extension-load-check.mts", import.meta.url));
+	const missing = join(root, "absent.ts");
 	await assert.rejects(
-		promisify(execFile)(process.execPath, [script, extension], {
-			cwd: root,
-			env: { ...process.env, PATH: join(root, "no-binaries") },
-			timeout: 10_000,
-		}),
+		promisify(execFile)(process.execPath, [script, missing], { cwd: root, timeout: 20_000 }),
 		(error: unknown) => {
 			const failure = error as { code: number; stderr: string };
 			assert.equal(failure.code, 1);
-			assert.match(failure.stderr, /Pi extension loader not found/);
+			assert.match(failure.stderr, /did not load the requested extension entrypoint/);
 			return true;
 		},
 	);

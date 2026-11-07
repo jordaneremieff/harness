@@ -119,7 +119,8 @@ for (const scenario of ["resume", "prior-drafts", "collision", "abort-before", "
 		assert.match(JSON.stringify(entries.at(-1) ?? null), /DELIVERY_COMPLETE/u);
 		const second = f.requests[1];
 		assert.ok(second);
-		const text = JSON.stringify(second.messages);
+		const text = second.messages.map(({ role, content }) => `${role}\n${JSON.stringify(content)}`).join("\n");
+		const userText = second.messages.filter((message) => message.role === "user").map((message) => JSON.stringify(message.content)).join("\n");
 		assert.match(text, /CONTINUITY_CONTRACT/u);
 		assert.match(text, /SIBLING_EVIDENCE/u);
 		if (scenario === "prior-drafts") {
@@ -131,6 +132,7 @@ for (const scenario of ["resume", "prior-drafts", "collision", "abort-before", "
 			assert.match(text, /Self-compaction was not applied/u);
 		}
 		assert.doesNotMatch(text, /OLD_UNQUALIFIED_CONTEXT/u);
+		assert.doesNotMatch(userText, /OLD_UNQUALIFIED_CONTEXT/u, "the old user-context message is absent");
 		assert.ok(getCurrentTools(second.messages).some((tool) => tool.name === "agent_compact"));
 	});
 }

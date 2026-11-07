@@ -3,24 +3,19 @@
 // Proves that extension entrypoints actually load.
 //
 // `pi --help --offline --extension <path>` exits 0 even when an extension
-// factory throws, so it cannot be used as a load gate. This runs Pi's own
-// loader and fails on the error list the loader returns.
+// factory throws, so it cannot be used as a load gate. This uses Pi's public
+// discovery and load API in isolated cwd and agent directories, then checks
+// that every requested entrypoint resolved and that Pi reported no errors.
 
-import type { ExtensionRuntime, LoadExtensionsResult } from "@earendil-works/pi-coding-agent";
-import { existsSync, realpathSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { discoverAndLoadExtensions } from "@earendil-works/pi-coding-agent";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
-const scriptPath = fileURLToPath(import.meta.url);
-const defaultRepoRoot = resolve(dirname(scriptPath), "..");
-interface LoaderModule {
-	createExtensionRuntime(): ExtensionRuntime;
-	loadExtensions(
-		paths: string[],
-		cwd: string,
-		eventBus: undefined,
-		runtime: ExtensionRuntime,
-	): Promise<LoadExtensionsResult>;
+export interface LoadCheckOptions {
+	readonly cwd?: string;
+	readonly agentDir?: string;
 }
 
 function errorMessage(error: unknown): string {
@@ -31,40 +26,39 @@ function errorMessage(error: unknown): string {
 	return String(error);
 }
 
-export function resolveLoaderPath(repoRoot: string, options: { binaryPath?: string } = {}) {
-	const local = join(repoRoot, "node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js");
-	if (existsSync(local)) return local;
-	const binary = options.binaryPath;
-	if (!binary || !existsSync(binary)) return undefined;
-	const binaryDir = dirname(realpathSync(binary));
-	const candidates = [
-		join(binaryDir, "core", "extensions", "loader.js"),
-		join(binaryDir, "..", "core", "extensions", "loader.js"),
-	];
-	return candidates.find((candidate) => existsSync(candidate));
+function resolved(path: string): string {
+	const absolute = resolve(path);
+	return existsSync(absolute) ? realpathSync(absolute) : absolute;
 }
 
-export async function checkExtensionLoad(
-	entrypoints: string[],
-	options: { repoRoot?: string; cwd?: string; binaryPath?: string } = {},
-) {
-	const repoRoot = options.repoRoot ?? defaultRepoRoot;
-	const loaderPath = resolveLoaderPath(repoRoot, options);
-	if (!loaderPath) {
-		return { status: "skipped", reason: "Pi extension loader not found", failures: [] };
-	}
-	const loader: LoaderModule = await import(pathToFileURL(loaderPath).href);
-	const runtime = loader.createExtensionRuntime();
-	const result = await loader.loadExtensions(entrypoints, options.cwd ?? repoRoot, undefined, runtime);
-	const failures = (result.errors ?? []).map((entry) => ({
-		path: entry.path,
-		message: errorMessage(entry.error),
-	}));
-	return {
-		status: failures.length > 0 ? "fail" : "pass",
-		loaded: (result.extensions ?? []).length,
-		failures,
+export async function checkExtensionLoad(entrypoints: string[], options: LoadCheckOptions = {}) {
+	const owned: string[] = [];
+	const privateDirectory = (prefix: string): string => {
+		const directory = mkdtempSync(join(tmpdir(), prefix));
+		owned.push(directory);
+		return directory;
 	};
+	const cwd = options.cwd ?? privateDirectory("pi-load-check-cwd-");
+	const agentDir = options.agentDir ?? privateDirectory("pi-load-check-agent-");
+	try {
+		const result = await discoverAndLoadExtensions(entrypoints, cwd, agentDir);
+		const loaded = result.extensions.map((extension) => resolved(extension.resolvedPath));
+		const expected = [...new Set(entrypoints.map(resolved))];
+		const failures = result.errors.map((entry) => ({
+			path: entry.path,
+			message: errorMessage(entry.error),
+		}));
+		const missing = expected.filter((path) => !loaded.includes(path));
+		return {
+			status: failures.length > 0 || missing.length > 0 ? "fail" : "pass",
+			loaded: loaded.length,
+			expected: expected.length,
+			failures,
+			missing,
+		};
+	} finally {
+		for (const directory of owned) rmSync(directory, { recursive: true, force: true });
+	}
 }
 
 async function main() {
@@ -72,22 +66,12 @@ async function main() {
 	if (entrypoints.length === 0) {
 		throw new Error("Usage: extension-load-check.mts <entrypoint> [entrypoint...]");
 	}
-	const which = process.env.PATH?.split(":")
-		.map((directory) => join(directory, "pi"))
-		.find((candidate) => existsSync(candidate));
-	const outcome = await checkExtensionLoad(
-		entrypoints.map((path) => resolve(path)),
-		{
-			binaryPath: which,
-		},
-	);
-	if (outcome.status === "skipped") {
-		console.error(outcome.reason);
-		process.exitCode = 1;
-		return;
-	}
+	const outcome = await checkExtensionLoad(entrypoints.map((path) => resolve(path)));
 	for (const failure of outcome.failures) {
 		console.error(`${failure.path}: ${failure.message}`);
+	}
+	for (const path of outcome.missing) {
+		console.error(`${path}: Pi did not load the requested extension entrypoint`);
 	}
 	if (outcome.status === "fail") process.exitCode = 1;
 	else console.log(`Loaded ${outcome.loaded} extension${outcome.loaded === 1 ? "" : "s"}`);

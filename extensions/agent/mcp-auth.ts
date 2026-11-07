@@ -31,15 +31,23 @@ export interface CredentialFileLock {
 
 const lockRetries = { retries: 250, factor: 1, minTimeout: 100, maxTimeout: 100 };
 
+/** The low-level exclusive lock operation; tests supply controlled acquisition and callbacks. */
+export interface McpLockDriver {
+	lock: typeof lockfile.lock;
+}
+
+const defaultLockDriver: McpLockDriver = { lock: lockfile.lock };
+
 export class McpRefreshLock implements RefreshLock {
 	private readonly agentDir: string;
-	constructor(agentDir: string) { this.agentDir = agentDir; }
+	private readonly driver: McpLockDriver;
+	constructor(agentDir: string, driver: McpLockDriver = defaultLockDriver) { this.agentDir = agentDir; this.driver = driver; }
 
 	async withRefreshLock<T>(key: string, fn: (lease?: RefreshLease) => Promise<T>): Promise<T> {
 		mkdirSync(this.agentDir, { recursive: true, mode: 0o700 });
 		const path = join(this.agentDir, `mcp-auth-refresh-${createHash("sha256").update(key).digest("hex").slice(0, 16)}`);
 		let compromised = false;
-		const release = await lockfile.lock(path, {
+		const release = await this.driver.lock(path, {
 			realpath: false, stale: 20_000, retries: lockRetries,
 			onCompromised: () => {
 				compromised = true;
@@ -58,10 +66,13 @@ function missing(error: unknown): boolean {
 
 /** Ordinary Pi's credential target and default stale threshold; never run network I/O here. */
 export class McpCredentialFileLock implements CredentialFileLock {
+	private readonly driver: McpLockDriver;
+	constructor(driver: McpLockDriver = defaultLockDriver) { this.driver = driver; }
+
 	async withFileLock<T>(path: string, fn: () => T): Promise<T> {
 		mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
 		let compromised: Error | undefined;
-		const release = await lockfile.lock(path, {
+		const release = await this.driver.lock(path, {
 			realpath: false, retries: lockRetries,
 			onCompromised: (error) => {
 				compromised = error;

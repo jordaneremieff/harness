@@ -63,8 +63,10 @@ effective hook location changes. Scan a range by hand with
 - `npm run check` also verifies slice isolation, settings declarations, and the
   pillar inventory.
 - `npm run typecheck`, `npm run lint`.
-- `node scripts/extension-load-check.mts extensions/<name>/index.ts` runs Pi's
-  own loader; `pi --help --offline --extension <path>` exits 0 even when the
+- `node scripts/extension-load-check.mts extensions/<name>/index.ts` loads the
+  requested entrypoints through Pi's public discovery API in isolated cwd and
+  agent directories. It fails on a reported load error or an entrypoint Pi did
+  not resolve. `pi --help --offline --extension <path>` exits 0 even when the
   factory throws, so it is not a load check.
 - `node skills/harness/scripts/validate-skill.mts skills/<name>`.
 

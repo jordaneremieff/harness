@@ -116,11 +116,11 @@ The harness is a Pi package. `package.json` declares the resources under the
 }
 ```
 
-- `npm run warmup:jiti` loads the extension entrypoints named in the manifest's
-  script through `pi --help --offline` to warm jiti's transpilation cache. It is
-  an optional operator step, not a build or successful-load check. Use the
-  [entrypoint load check](conventions/worktrees.md#checks)
-  to detect extension load errors.
+- `npm run warmup:jiti` runs the package's extension entrypoints through the
+  [entrypoint load check](conventions/worktrees.md#checks) to warm jiti's
+  transpilation cache. It is an optional operator step, not a build or
+  acceptance check: it loads no deliberately lazy view and proves no runtime
+  behaviour.
 - Extensions are TypeScript sources that Pi loads through jiti. There is no
   build step. Pi requires Node 22.19 or newer; Node runs the direct TypeScript
   tests through `node --test` over the glob in the `test` script.

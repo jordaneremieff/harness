@@ -66,7 +66,7 @@ for (const themeName of ["dark", "light"] as const) {
 			const wide = component.render(240);
 			const wideFirst = wide.findIndex((line) => plain(line));
 			assert.equal(plain(wide[wideFirst + 1]), `from Parser review · provider/${modelId} · xhigh`);
-			assert.equal(wide.filter((line) => plain(line) === "... (ctrl+o to expand)").length, 1);
+			assert.equal(wide.filter((line) => plain(line) === "... (click or ctrl+o to expand)").length, 1);
 			const widths = [2, 3, 4, 5, 8, 16, 20];
 			if (rowName === "metadata") widths.push(60);
 			for (const width of widths) {

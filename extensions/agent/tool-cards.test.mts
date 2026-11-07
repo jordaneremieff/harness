@@ -3,7 +3,7 @@ import { keyHint, keyText } from "@earendil-works/pi-coding-agent";
 const cardKeys = { keyText, keyHint };
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentToolResult, Theme, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { CustomMessageComponent, initTheme } from "@earendil-works/pi-coding-agent";
@@ -36,6 +36,9 @@ initTheme("dark", false);
 setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 // Native key hints read the TUI instance resolved by the coding-agent package.
 const nativeTui = await import(createRequire(import.meta.resolve("@earendil-works/pi-coding-agent")).resolve("@earendil-works/pi-tui"));
+const previousNativeKeys = nativeTui.getKeybindings();
+nativeTui.setKeybindings(new nativeTui.KeybindingsManager({ ...nativeTui.TUI_KEYBINDINGS, "app.tools.expand": { defaultKeys: "ctrl+o", description: "Expand tool output" } }));
+after(() => nativeTui.setKeybindings(previousNativeKeys));
 const theme = { fg: (_color: string, value: string) => value, bg: (_color: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
 const screen = (component: { render(width: number): string[] }, width = 100) => component.render(width).map((line) => stripVTControlCharacters(line).trimEnd()).join("\n");
 const context = (overrides: Partial<AgentCardContext> = {}): AgentCardContext => ({ ...cardKeys, args: {}, expanded: false, argsComplete: true, isError: false, ...overrides });
@@ -74,10 +77,10 @@ describe("agent call cards", () => {
 
 	it("shows an argument hint only when a collapsed call hides or clips content", () => {
 		assert.equal(screen(renderAgentCall("agent_status", { sessionId: "s" }, theme, context())), "agent_status · s");
-		assert.doesNotMatch(screen(renderAgentCall("agent_attach", { sessionId: "s" }, theme, context())), /expand for full details/);
+		assert.doesNotMatch(screen(renderAgentCall("agent_attach", { sessionId: "s" }, theme, context())), /to expand/u);
 		assert.match(screen(renderAgentCall("agent_attach", { sessionId: "s", model: "p/m" }, theme, context())), /Requested: p\/m/);
-		assert.match(screen(renderAgentCall("agent_spawn", { prompt: "p".repeat(400) }, theme, context())), /expand for full details/);
-		assert.match(screen(renderListCall({ query: "q".repeat(400) }, theme, context())), /expand for full details/);
+		assert.match(screen(renderAgentCall("agent_spawn", { prompt: "p".repeat(400) }, theme, context())), /\(ctrl\+o to expand\)/);
+		assert.match(screen(renderListCall({ query: "q".repeat(400) }, theme, context())), /\(ctrl\+o to expand\)/);
 	});
 
 	it("escapes controls and fits narrow widths", () => {
@@ -99,7 +102,7 @@ describe("agent call cards", () => {
 			assert.match(screen(collapsed), new RegExp(`${name} · target-session`));
 			assert.match(screen(collapsed), /reply to message-reference/);
 			assert.match(screen(collapsed), /First line \*\*literal Markdown\*\*/);
-			assert.match(screen(collapsed), /expand for full details/);
+			assert.match(screen(collapsed), /\(ctrl\+o to expand\)/);
 			const expanded = renderer(args, theme, context({ ...cardKeys, expanded: true, lastComponent: collapsed }));
 			assert.equal(expanded, collapsed);
 			assert.ok(screen(expanded).includes(args.message));
@@ -414,7 +417,8 @@ describe("agent result notice card", () => {
 		assert.ok(collapsed);
 		const text = screen(collapsed);
 		assert.match(text, /\[agent\] result · storage-a/);
-		assert.doesNotMatch(text, /Open:|Source details:|\/agent opens|to expand/);
+		assert.match(text, /\.\.\. \(click or ctrl\+o to expand\)/u);
+		assert.doesNotMatch(text, /Source details:|submissionId:|\/agent opens/u);
 		assert.match(text, /Review: fix the token\./);
 		assert.match(text, /Keep the identifier\./);
 		assert.doesNotMatch(text, /\*\*|submissionId:/);
@@ -515,7 +519,8 @@ describe("agent result notice card", () => {
 		const text = screen(card);
 		assert.match(text, /\[agent\] result · reader/);
 		assert.match(text, /SECOND READY/);
-		assert.doesNotMatch(text, /Open:|Source details:|\/agent opens|to expand/);
+		assert.match(text, /\.\.\. \(click or ctrl\+o to expand\)/u);
+		assert.doesNotMatch(text, /Source details:|\/agent opens/u);
 		assert.doesNotMatch(text, /Results do not establish/);
 		assert.doesNotMatch(text, /agent_inspect/);
 		assert.doesNotMatch(text, /Agent “reader” finished\./);
@@ -537,15 +542,16 @@ describe("agent result notice card", () => {
 		assert.ok(card);
 		for (const width of [80, 140]) {
 			const lines: string[] = card.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.equal(lines.length, 6);
+			assert.equal(lines.length, 7);
 			assert.equal(lines[0]?.trim(), "");
 			assert.match(lines[1] ?? "", /\[agent\] result · A very long/u);
 			assert.equal(lines[2]?.trim(), "provider/model · high");
 			assert.equal(lines[3]?.trim(), "");
 			assert.equal(lines[4]?.trim(), "A short answer.");
-			assert.equal(lines[5]?.trim(), "");
+			assert.equal(lines[5]?.trim(), "... (click or ctrl+o to expand)");
+			assert.equal(lines[6]?.trim(), "");
 			assert.ok(card.render(width).every((line) => visibleWidth(line) <= width));
-			assert.doesNotMatch(lines.join("\n"), /Open:|Source details|to expand|opens the dashboard/);
+			assert.doesNotMatch(lines.join("\n"), /Open:|Source details|opens the dashboard/);
 		}
 		assert.deepEqual(message, before);
 	});
@@ -563,7 +569,7 @@ describe("agent result notice card", () => {
 			const preview: string[] = collapsed.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
 			assert.equal(preview.length, 9, "two padded lines, a two-tier header, one separator, three body lines and one hint");
 			const full: string[] = expanded.render(width).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.match(preview[7] ?? "", /\.\.\. \(ctrl\+o to expand\)/u);
+			assert.match(preview[7] ?? "", /\.\.\. \(click or ctrl\+o to expand\)/u);
 			assert.equal(preview[3]?.trim(), "");
 			assert.deepEqual(preview.slice(4, 7), full.slice(4, 7));
 			assert.equal(preview.filter((line) => /to expand/u.test(line)).length, 1);
@@ -586,9 +592,9 @@ describe("agent result notice card", () => {
 		for (const width of [80, 140]) {
 			const components = Array.from({ length: 4 }, () => new CustomMessageComponent(message, renderAgentPeerMessage));
 			const lines = components.flatMap((component) => component.render(width)).map((line) => stripVTControlCharacters(line).trimEnd());
-			assert.equal(lines.length, 28, "four native separators and four padded two-tier cards with header separators");
+			assert.equal(lines.length, 32, "four native separators and four padded two-tier cards with header separators and hints");
 			assert.equal(lines.filter((line) => line.trim() === "").length, 16);
-			assert.equal(lines.filter((line) => line.trim()).at(-1)?.trim(), "Short answer.");
+			assert.equal(lines.filter((line) => line.trim()).at(-1)?.trim(), "... (click or ctrl+o to expand)");
 			const first = components[0];
 			assert.ok(first);
 			first.setExpanded(true);
