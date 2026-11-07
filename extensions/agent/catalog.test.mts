@@ -276,7 +276,7 @@ it("evicts old validated records at the bounded cache limit", (t) => {
 		return parse(...args);
 	});
 	catalog.read(first.storageId);
-	for (let index = 0; index < 256; index++) catalog.read(catalog.create(input).storageId);
+	for (let index = 0; index < 512; index++) catalog.read(catalog.create(input).storageId);
 	catalog.read(first.storageId);
 	assert.equal(parses, 2);
 });
@@ -660,3 +660,80 @@ function writeClaim(record: ReturnType<AgentCatalog["read"]>, pid: number, host 
 	);
 	return paths.claim;
 }
+
+function countParses(t: { mock: { method: typeof import("node:test").mock.method } }, text: string): { readonly count: () => number } {
+	const parse = JSON.parse;
+	let parses = 0;
+	t.mock.method(JSON, "parse", (...args: Parameters<typeof JSON.parse>) => {
+		if (args[0] === text) parses++;
+		return parse(...args);
+	});
+	return { count: () => parses };
+}
+
+it("answers an unchanged record from its opened-file revision without parsing the payload again", (t) => {
+	const { catalog, input } = fixture(t);
+	const record = catalog.create(input);
+	const parses = countParses(t, readFileSync(catalog.path(record.storageId), "utf8"));
+	catalog.read(record.storageId);
+	new AgentCatalog(input.cwd).read(record.storageId);
+	catalog.read(record.storageId);
+	assert.equal(parses.count(), 1, "only the first read parses the payload");
+});
+
+it("detects an in-place edit that keeps size and modification time", (t) => {
+	const { catalog, input } = fixture(t);
+	const record = catalog.create({ ...input, name: "aaaa" });
+	const path = catalog.path(record.storageId);
+	catalog.read(record.storageId);
+	const before = statSync(path);
+	writeFileSync(path, readFileSync(path, "utf8").replace("aaaa", "bbbb"));
+	utimesSync(path, before.atime, before.mtime);
+	assert.equal(statSync(path).size, before.size);
+	assert.equal(catalog.read(record.storageId).name, "bbbb");
+});
+
+it("does not cache a corrupt or unsafe record and recovers on the next valid publication", (t) => {
+	const { catalog, input } = fixture(t);
+	const record = catalog.create(input);
+	const path = catalog.path(record.storageId);
+	writeFileSync(path, "{ not json");
+	const parses = countParses(t, "{ not json");
+	assert.throws(() => catalog.read(record.storageId), /JSON/u);
+	assert.throws(() => catalog.read(record.storageId), /JSON/u);
+	assert.equal(parses.count(), 2, "a failed read is parsed again, never cached");
+	writeFileSync(path, `${JSON.stringify(record)}\n`);
+	assert.deepEqual(catalog.read(record.storageId), record);
+});
+
+it("publishes its own writes to the next read without a stale cached value", (t) => {
+	const { catalog, input } = fixture(t);
+	const record = catalog.create(input);
+	catalog.read(record.storageId);
+	catalog.markRecoveryDue(record.storageId, true);
+	assert.equal(catalog.read(record.storageId).recoveryDue, true);
+	assert.equal(catalog.discardUnopened(catalog.read(record.storageId)), "removed");
+	assert.throws(() => catalog.read(record.storageId), /ENOENT/u);
+});
+
+it("evicts old validations when retained payload bytes pass the byte bound", (t) => {
+	const { catalog, input } = fixture(t);
+	const long = "x".repeat(1900);
+	const rows = (storageId: string): CatalogViewRow[] => Array.from({ length: 11 }, (_, index) => ({
+		id: `${storageId}:${index}`, storageId, cwd: input.cwd, modifiedAt: 0, owner: "unknown", state: "idle", cost: 0, partial: false, latestReply: long,
+	}));
+	const first = catalog.create(input);
+	catalog.updateView(first.storageId, { storageId: first.storageId, updatedAt: "2026-01-01T00:00:00.000Z", rows: rows(first.storageId), coverage: { complete: true, omitted: 0 } });
+	const text = readFileSync(catalog.path(first.storageId), "utf8");
+	assert.ok(text.length > 16_000, "each record is large enough that 8 MiB holds fewer than 512 of them");
+	const parses = countParses(t, text);
+	catalog.read(first.storageId);
+	const count = Math.ceil((8 * 1024 * 1024) / text.length) + 4;
+	for (let index = 0; index < count; index++) {
+		const next = catalog.create(input);
+		catalog.updateView(next.storageId, { storageId: next.storageId, updatedAt: "2026-01-01T00:00:00.000Z", rows: rows(next.storageId), coverage: { complete: true, omitted: 0 } });
+		catalog.read(next.storageId);
+	}
+	catalog.read(first.storageId);
+	assert.equal(parses.count(), 2);
+});

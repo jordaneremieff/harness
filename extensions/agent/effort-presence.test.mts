@@ -8,13 +8,21 @@ import { it } from "node:test";
 import { AgentCatalog } from "./catalog.ts";
 import { boundCatalogView } from "./catalog-view.ts";
 import { PRIMARY_ENDPOINT_VERSION, primaryEndpointPath } from "./primary-channel.ts";
-import { discoverPrimaryLocation, readRelatedEfforts, type PrimaryIntentClaim } from "./effort-presence.ts";
+import { discoverPrimaryLocation, createPrimaryLocationResolver } from "./effort-location.ts";
+import { readRelatedEfforts, type EffortReadResources, type PrimaryIntentClaim } from "./effort-presence.ts";
 
 function rootFor(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "efforts-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	mkdirSync(join(root, ".primaries"));
 	return root;
+}
+/** One owned catalogue and location cache, as a manager or native contribution supplies. */
+function resources(root: string): EffortReadResources {
+	return { catalog: new AgentCatalog(root), locations: createPrimaryLocationResolver() };
+}
+function readPage(root: string, self: Parameters<typeof readRelatedEfforts>[1]) {
+	return readRelatedEfforts(resources(root), self);
 }
 function intent(paths = ["extensions/agent"], branches = ["topic"]): PrimaryIntentClaim {
 	return { purpose: "Effort awareness", integration: "Compose the change", authority: "The operator requested the change", scope: { paths, branches }, contactThread: "storage/thread", updatedAt: "2026-10-04T10:00:00Z" };
@@ -41,7 +49,7 @@ it("uses the canonical common Git directory for separate worktrees", async (t) =
 	assert.equal(main.repository, realpathSync(join(repository, ".git")));
 	assert.equal(linked.repository, main.repository);
 	record(root, { cwd: linked.cwd, repository: linked.repository });
-	const page = await readRelatedEfforts(root, { id: randomUUID(), ...main });
+	const page = await readPage(root, { id: randomUUID(), ...main });
 	assert.equal(page.efforts[0]?.relationship, "repository");
 	assert.deepEqual(await discoverPrimaryLocation(root), { cwd: realpathSync(root), repositoryState: "outside-git" });
 });
@@ -57,7 +65,7 @@ it("excludes proven dead records and retains distinct foreign unknown and incomp
 	const unrelated = record(root, { cwd: "/elsewhere" });
 	const reader = self();
 	record(root, { id: reader.id });
-	const page = await readRelatedEfforts(root, reader);
+	const page = await readPage(root, reader);
 	assert.deepEqual(new Map(page.efforts.map((row) => [row.id, row.liveness])), new Map([[unknown, "unknown"], [incompatible, "incompatible"], [live, "live"], [unrelated, "live"]]));
 	assert.deepEqual(page.coverage, { visited: 6, unreadable: 0, dead: 1, unrelated: 1, omitted: 0, complete: true, reasons: [] });
 	for (const id of [deadId, unknown, incompatible, unrelated]) assert.ok(existsSync(primaryEndpointPath(root, id)));
@@ -67,7 +75,7 @@ it("classifies permission-denied process probes as unknown rather than dead", as
 	const root = rootFor(t);
 	record(root);
 	t.mock.method(process, "kill", () => { throw Object.assign(new Error("permission denied"), { code: "EPERM" }); });
-	const page = await readRelatedEfforts(root, self());
+	const page = await readPage(root, self());
 	assert.equal(page.efforts[0]?.liveness, "unknown");
 	assert.equal(page.coverage.dead, 0);
 });
@@ -76,12 +84,12 @@ it("matches cwd independently from Git and labels exact or prefix scope overlap 
 	const root = rootFor(t);
 	const id = record(root, { intentClaim: intent(["extensions/agent/manager.ts", "extensions/agent-other", "glob*"], ["topic", "other"]) });
 	record(root, { repository: "/work/git-common" });
-	const page = await readRelatedEfforts(root, self());
+	const page = await readPage(root, self());
 	assert.equal(page.efforts.length, 2);
 	const declared = page.efforts.find((row) => row.id === id);
 	assert.deepEqual(declared?.overlap, { basis: "intentClaim", paths: ["extensions/agent/manager.ts"], branches: ["topic"] });
 	assert.equal(declared?.relationship, "cwd");
-	const gitPage = await readRelatedEfforts(root, { ...self(), repository: "/different/git" });
+	const gitPage = await readPage(root, { ...self(), repository: "/different/git" });
 	assert.equal(gitPage.efforts.length, 2);
 	assert.ok(gitPage.efforts.every((row) => row.relationship === "cwd"));
 });
@@ -91,7 +99,7 @@ it("reports malformed optional intent as unreadable without pretending the direc
 	record(root, { intentClaim: { purpose: "incomplete" } });
 	record(root, { repository: 12 });
 	writeFileSync(join(root, ".primaries", `${randomUUID()}.json`), "not JSON");
-	const page = await readRelatedEfforts(root, self());
+	const page = await readPage(root, self());
 	assert.deepEqual(page.coverage, { visited: 3, unreadable: 3, dead: 0, unrelated: 0, omitted: 0, complete: false, reasons: ["unreadable"] });
 	assert.equal(page.efforts.length, 0);
 });
@@ -99,7 +107,7 @@ it("reports malformed optional intent as unreadable without pretending the direc
 it("bounds visits and results and reports exact visited omissions", async (t) => {
 	const root = rootFor(t);
 	for (let index = 0; index < 270; index += 1) record(root);
-	const page = await readRelatedEfforts(root, self());
+	const page = await readPage(root, self());
 	assert.equal(page.coverage.visited, 256);
 	assert.equal(page.efforts.length, 20);
 	assert.equal(page.coverage.omitted, 236);
@@ -112,7 +120,7 @@ it("bounds serialized pages with large intent claims", async (t) => {
 	const root = rootFor(t);
 	const large = { ...intent(), purpose: "界".repeat(1024), integration: "i".repeat(2048), authority: "a".repeat(2048) };
 	for (let index = 0; index < 8; index += 1) record(root, { intentClaim: large });
-	const page = await readRelatedEfforts(root, self());
+	const page = await readPage(root, self());
 	assert.ok(Buffer.byteLength(JSON.stringify(page)) <= 16384);
 	assert.ok(page.coverage.omitted > 0);
 	assert.ok(page.coverage.reasons.includes("byte-limit"));
@@ -120,12 +128,12 @@ it("bounds serialized pages with large intent claims", async (t) => {
 
 it("reports missing roots as complete empty pages and unreadable roots as incomplete", async (t) => {
 	const root = rootFor(t);
-	const empty = await readRelatedEfforts(join(root, "absent"), self());
+	const empty = await readPage(join(root, "absent"), self());
 	assert.equal(empty.coverage.complete, true);
 	assert.equal(empty.coverage.visited, 0);
 	const blocked = join(root, "blocked");
 	writeFileSync(blocked, "not a directory");
-	const page = await readRelatedEfforts(blocked, self());
+	const page = await readPage(blocked, self());
 	assert.equal(page.coverage.complete, false);
 	assert.deepEqual(page.coverage.reasons, ["directory-unreadable"]);
 });
@@ -140,7 +148,7 @@ it("reports failed Git discovery explicitly instead of outside-git or unrelated"
 	assert.equal(location.repositoryState, "unknown");
 	assert.deepEqual(await discoverPrimaryLocation(join(root, "missing")), { cwd: join(root, "missing"), repositoryState: "unknown" });
 	record(root);
-	const page = await readRelatedEfforts(root, { id: randomUUID(), ...location });
+	const page = await readPage(root, { id: randomUUID(), ...location });
 	assert.equal(page.coverage.unrelated, 0);
 	assert.equal(page.coverage.omitted, 0);
 	assert.equal(page.efforts.length, 1);
@@ -148,7 +156,7 @@ it("reports failed Git discovery explicitly instead of outside-git or unrelated"
 	assert.deepEqual(page.coverage.reasons, ["repository-unknown"]);
 	const unknownRecord = rootFor(t);
 	record(unknownRecord, { repositoryState: "unknown" });
-	assert.deepEqual((await readRelatedEfforts(unknownRecord, self())).coverage.reasons, ["repository-unknown"]);
+	assert.deepEqual((await readPage(unknownRecord, self())).coverage.reasons, ["repository-unknown"]);
 });
 
 it("uses declared intent alone for repository, cwd and machine purposes", async (t) => {
@@ -157,7 +165,7 @@ it("uses declared intent alone for repository, cwd and machine purposes", async 
 	const repository = record(root, { repository: "/work/common", observedPurpose, intentClaim: intent() });
 	const cwd = record(root, { observedPurpose, intentClaim: intent() });
 	const machine = record(root, { cwd: "/other/project", observedPurpose, intentClaim: intent() });
-	const page = await readRelatedEfforts(root, { ...self(), repository: "/work/common" });
+	const page = await readPage(root, { ...self(), repository: "/work/common" });
 	assert.equal(page.efforts.length, 3);
 	for (const row of page.efforts) assert.equal(row.observedPurpose, undefined);
 	assert.deepEqual(page.efforts.find((row) => row.id === repository)?.intentClaim, intent());
@@ -172,16 +180,16 @@ it("labels fallback origin only without intent and clears without retaining a st
 	for (const source of ["session-name", "interactive-input"]) {
 		const observedPurpose = { source, text: `Known origin from ${source}` };
 		const id = record(root, { observedPurpose, intentClaim: intent() });
-		assert.equal((await readRelatedEfforts(root, reader)).efforts.find((row) => row.id === id)?.observedPurpose, undefined);
+		assert.equal((await readPage(root, reader)).efforts.find((row) => row.id === id)?.observedPurpose, undefined);
 		record(root, { id, observedPurpose });
-		const row = (await readRelatedEfforts(root, reader)).efforts.find((value) => value.id === id);
+		const row = (await readPage(root, reader)).efforts.find((value) => value.id === id);
 		assert.deepEqual(row?.observedPurpose, observedPurpose);
 		assert.equal(row?.intentClaim, undefined);
 		assert.equal(row?.purposeClaim, undefined);
 	}
 	const unknown = record(root, { intentClaim: intent() });
 	record(root, { id: unknown });
-	const row = (await readRelatedEfforts(root, reader)).efforts.find((value) => value.id === unknown);
+	const row = (await readPage(root, reader)).efforts.find((value) => value.id === unknown);
 	assert.equal(row?.intentClaim, undefined);
 	assert.equal(row?.observedPurpose, undefined);
 });
@@ -193,7 +201,7 @@ it("lists all local efforts, exposes machine purpose only, and marks declared ga
 	const machine = record(root, { cwd: "/other/project", repository: "/other/common", intentClaim: claim });
 	const related = record(root, { repository: "/work/common", intentClaim: claim });
 	record(root, { cwd: "/foreign/project", hostname: "foreign", intentClaim: claim });
-	const page = await readRelatedEfforts(root, { ...self(), repository: "/work/common" });
+	const page = await readPage(root, { ...self(), repository: "/work/common" });
 	const distant = page.efforts.find((row) => row.id === machine);
 	assert.equal(distant?.relationship, "machine");
 	assert.equal(distant?.purposeClaim, claim.purpose);
@@ -214,7 +222,7 @@ it("does not claim a shared machine gate for foreign-host records", async (t) =>
 	const root = rootFor(t);
 	const claim = { ...intent(), scope: { ...intent().scope, fullGate: true } };
 	record(root, { hostname: "foreign-host", repository: "/work/common", intentClaim: claim });
-	const page = await readRelatedEfforts(root, { ...self(), repository: "/work/common", intentClaim: claim });
+	const page = await readPage(root, { ...self(), repository: "/work/common", intentClaim: claim });
 	assert.equal(page.efforts[0]?.liveness, "unknown");
 	assert.deepEqual(page.efforts[0]?.sharedSubstrates, ["repository", "cwd"]);
 });
@@ -226,12 +234,12 @@ function unsupportedNative(root: string) {
 it("counts unsupported native producers separately from omitted claims and contains corrupt records", async t => {
 	const root = rootFor(t);
 	unsupportedNative(root);
-	let page = await readRelatedEfforts(root, self());
+	let page = await readPage(root, self());
 	assert.equal(page.coverage.unsupported, 1);
 	assert.equal(page.coverage.omitted, 0);
 	assert.equal(page.coverage.complete, true);
 	writeFileSync(join(new AgentCatalog(root).root, `${randomUUID()}.json`), "corrupt catalogue record");
-	page = await readRelatedEfforts(root, self());
+	page = await readPage(root, self());
 	assert.equal(page.coverage.unsupported, 1);
 	assert.equal(page.coverage.unreadable, 1);
 	assert.equal(page.coverage.omitted, 0);
@@ -243,7 +251,7 @@ it("does not count an omitted native claim again as an unsupported producer", as
 	const root = rootFor(t), record = unsupportedNative(root), catalog = new AgentCatalog(root);
 	const view = boundCatalogView({ updatedAt: "2026-01-01T00:00:00.000Z", storageId: record.storageId, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, modifiedAt: 1, owner: "here", state: "idle", cost: 0, partial: false }] });
 	writeFileSync(catalog.path(record.storageId), JSON.stringify({ ...record, view: { ...view, intentClaims: { rows: {}, coverage: { complete: false, omitted: 1 } } } }));
-	const page = await readRelatedEfforts(root, self());
+	const page = await readPage(root, self());
 	assert.equal(page.coverage.unsupported, undefined);
 	assert.equal(page.coverage.omitted, 1);
 	assert.equal(page.coverage.complete, false);
@@ -253,7 +261,7 @@ it("does not count an omitted native claim again as an unsupported producer", as
 it("shares visit, result and byte caps across ordinary and native roots without counting unsupported claims as omissions", async t => {
 	const root = rootFor(t);
 	for (let index = 0; index < 140; index++) { record(root); unsupportedNative(root); }
-	const page = await readRelatedEfforts(root, self());
+	const page = await readPage(root, self());
 	assert.equal(page.coverage.visited, page.limits.visits);
 	assert.equal(page.efforts.length, page.limits.results);
 	assert.equal(page.coverage.omitted, 140 - page.limits.results);

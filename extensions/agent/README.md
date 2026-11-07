@@ -113,11 +113,20 @@ unreadable catalog record in `coverage.unavailable`, even when
 `coverage.complete` is true.
 
 Agent catalogue readers compile their projection schemas once per process.
-They keep a bounded process-local cache of validated records.
-Every read still opens the current file without following symlinks and checks
-its size and content. Identical content reuses validation. Changed content is
-validated on that read. Each caller receives an independent record, so caller
-edits never change later observations.
+They keep a bounded process-local cache of validated records: at most 512
+records and 8 MiB of retained payload. Every read still opens the current file
+without following symlinks and checks that it is a bounded regular file. The
+opened descriptor's device, inode, size, modification time and change time
+(nanosecond precision) form its revision. A matching revision returns an
+isolated clone of the validated record without reading or parsing the payload.
+A different revision reads and validates the bounded payload, and the result is
+cached only if the descriptor still has that revision afterwards. A changed,
+missing, unsafe or corrupt file evicts its entry, and a failed read is never
+cached. The catalogue's own publication and removal evict the exact path. Each
+caller receives an independent record, so caller edits never change later
+observations. The cache holds parsed metadata only: it never stands in for a
+writer-claim observation, an authority decision or the identity checks that
+guard destructive discard, which read the record again.
 
 Discovery is not a frozen snapshot. Each page lists the current directory names,
 then bounds entry visits and record reads. Records created behind the cursor,
@@ -1913,6 +1922,30 @@ about its purpose and next shared acts. A **shared substrate** is a resource
 that efforts use, such as a repository, cwd, or the machine for a full-gate run.
 These observations expose opportunities for cooperation; they do not grant
 control over another effort or authority to act outside the operator's direction.
+
+Strict descriptor observation of an ordinary endpoint record (presence reads and
+parked-wake availability) reuses the same revision rule: at most 512 parsed
+descriptors and 4 MiB of retained payload, keyed by the opened file's revision,
+with failures never cached. Process, host and delivery-contract classification
+runs on every read, so a dead owner is never reported live from a cached parse.
+Delivery, registration, replacement and removal read the endpoint file
+directly and do not use this cache.
+
+Each manager and each native contribution owns one catalogue reader and one
+repository-location resolver, and passes both to every effort read. The
+resolver keeps up to 32 completed locations and shares one in-flight resolution
+per working directory. Git remains the authority on a miss, with its existing
+timeout and output bound. A completed explicit `git` or `outside-git` result is
+reused only while the canonical cwd, the sanitised Git environment and `PATH`,
+the nearest `.git` marker (or its absence along the ancestors, and bare
+repository markers) and the resolved common directory keep their identities. A
+new nested repository, `git init`, a replaced worktree pointer or a changed
+common directory therefore produces a fresh Git read. An `unknown` result
+(for example a missing directory or a Git timeout) is shared only while in
+flight and is never retained. When a trustworthy marker identity cannot be
+established the caller receives a fresh uncached result. One presence pass
+observes each storage's writer claim once. Awareness answers are never cached,
+so peer intent changes appear on the next read.
 
 The existing primary endpoint records publish host identity, process liveness,
 canonical cwd, Git common directory, start time, and sampled last activity. Git

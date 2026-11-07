@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
@@ -8,7 +8,7 @@ import { createServer, type Socket } from "node:net";
 import { spawnSync } from "node:child_process";
 import { eventLog } from "./host-fixture.mts";
 import { createTransportServer, unixSocketPath } from "../../transport/index.ts";
-import { connectPrimaryChannel, createPrimaryChannel, PRIMARY_ENDPOINT_VERSION, primaryEndpointOwnerState, primaryEndpointPath, primaryEndpointStatus, PrimaryChannelConflictError, PrimaryChannelUnavailableError, probePrimaryChannel, type PrimaryChannelOptions, type PrimaryDelivery } from "./primary-channel.ts";
+import { connectPrimaryChannel, createPrimaryChannel, PRIMARY_ENDPOINT_VERSION, primaryEndpointOwnerState, primaryEndpointPath, primaryEndpointStatus, readPrimaryEndpointDescriptor, PrimaryChannelConflictError, PrimaryChannelUnavailableError, probePrimaryChannel, type PrimaryChannelOptions, type PrimaryDelivery } from "./primary-channel.ts";
 
 interface Fixture {
 	readonly root: string;
@@ -587,4 +587,72 @@ it("publishes and clears observed purpose without erasing host facts or intent",
 	channel.setObservedPurpose(undefined);
 	assert.equal("observedPurpose" in JSON.parse(readFileSync(primaryEndpointPath(root, channel.id), "utf8")), false);
 	assert.equal(channel.info().repository, "/work/common");
+});
+
+function countEndpointParses(t: { mock: { method: typeof import("node:test").mock.method } }, text: string): { readonly count: () => number } {
+	const parse = JSON.parse;
+	let parses = 0;
+	t.mock.method(JSON, "parse", (...args: Parameters<typeof JSON.parse>) => {
+		if (args[0] === text) parses++;
+		return parse(...args);
+	});
+	return { count: () => parses };
+}
+
+it("reuses the strict descriptor parse for an unchanged file while ownership stays fresh", (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const text = endpointRecord(root, id, { pid: process.pid });
+	writeFileSync(primaryEndpointPath(root, id), text);
+	const parses = countEndpointParses(t, text);
+	const first = readPrimaryEndpointDescriptor(root, id);
+	assert.equal(first.state, "live");
+	first.info && Reflect.set(first.info, "cwd", "/mutated-by-caller");
+	const second = readPrimaryEndpointDescriptor(root, id);
+	assert.equal(second.info?.cwd, "/work/topic", "a caller edit never reaches a later read");
+	assert.equal(parses.count(), 1);
+	const kill = t.mock.method(process, "kill", () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+	assert.equal(readPrimaryEndpointDescriptor(root, id).state, "dead", "process state is classified on every read");
+	assert.equal(kill.mock.callCount(), 1);
+	assert.equal(parses.count(), 1);
+});
+
+it("reads a changed or removed descriptor on the next observation and never caches a failure", (t) => {
+	const root = testRoot(t);
+	const id = uuidV7();
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const path = primaryEndpointPath(root, id);
+	writeFileSync(path, endpointRecord(root, id, { name: "aaaa" }));
+	assert.equal(readPrimaryEndpointDescriptor(root, id).info?.name, "aaaa");
+	const before = statSync(path);
+	writeFileSync(path, readFileSync(path, "utf8").replace("aaaa", "bbbb"));
+	utimesSync(path, before.atime, before.mtime);
+	assert.equal(statSync(path).size, before.size);
+	assert.equal(readPrimaryEndpointDescriptor(root, id).info?.name, "bbbb", "an in-place edit with the same size and mtime is seen");
+	const corrupt = endpointRecord(root, id, { repositoryState: "invalid" });
+	writeFileSync(path, corrupt);
+	const parses = countEndpointParses(t, corrupt);
+	assert.equal(readPrimaryEndpointDescriptor(root, id).unreadable, true);
+	assert.equal(readPrimaryEndpointDescriptor(root, id).unreadable, true);
+	assert.equal(parses.count(), 2, "a refused descriptor is parsed again");
+	rmSync(path);
+	assert.deepEqual(readPrimaryEndpointDescriptor(root, id), { state: "absent" });
+});
+
+it("bounds the strict descriptor cache to its record count", (t) => {
+	const root = testRoot(t);
+	mkdirSync(join(root, ".primaries"), { recursive: true, mode: 0o700 });
+	const first = uuidV7();
+	const firstText = endpointRecord(root, first);
+	writeFileSync(primaryEndpointPath(root, first), firstText);
+	const parses = countEndpointParses(t, firstText);
+	readPrimaryEndpointDescriptor(root, first);
+	for (let index = 0; index < 512; index++) {
+		const id = uuidV7();
+		writeFileSync(primaryEndpointPath(root, id), endpointRecord(root, id));
+		readPrimaryEndpointDescriptor(root, id);
+	}
+	readPrimaryEndpointDescriptor(root, first);
+	assert.equal(parses.count(), 2);
 });

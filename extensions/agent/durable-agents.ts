@@ -20,7 +20,6 @@
 
 import { realpathSync } from "node:fs";
 import { hostname } from "node:os";
-import { discoverPrimaryLocation } from "./effort-presence.ts";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { agentRunControlDoc } from "./run-control-state.ts";
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
@@ -44,6 +43,8 @@ import { CollaborationParams } from "./collaboration-contract.ts";
 import { controlText } from "./control-result.ts";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { AgentCatalog } from "./catalog.ts";
+import { createPrimaryLocationResolver } from "./effort-location.ts";
+import type { EffortReadResources } from "./effort-presence.ts";
 import { readFleetStatus, FleetSelectionProperties, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
 import { readEffortAwareness, formatEffortAwareness, nativeIntentSelf } from "./effort-awareness.ts";
 import type { Context, JsonValue } from "@earendil-works/chord";
@@ -613,6 +614,9 @@ async function fleetObservation(catalogRoot: string | undefined, sessionId: stri
 function buildExtension(host: AgentContributionHost, options: AgentContributionOptions): Durable.Extension {
 	const durable = host.durable;
 	const dispatch = options.dispatch;
+	const locations = createPrimaryLocationResolver();
+	const effortCatalog = host.catalogRoot === undefined ? undefined : new AgentCatalog(dirname(host.catalogRoot));
+	const effortResources: EffortReadResources | undefined = effortCatalog === undefined ? undefined : { catalog: effortCatalog, locations };
 	const registrationPreferences = readAgentPreferences(host.agentDir, host.services.modelRuntime);
 	const presetParams = <T extends typeof SpawnParams | typeof ConfigureParams | typeof PlaceParams>(params: T): T => ({ ...params, properties: { ...(params.properties as Record<string, Schema>), preset: presetParameter(registrationPreferences).schema } });
 	const preferenceSnapshot = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context): Promise<PreferenceSnapshot> => {
@@ -1614,10 +1618,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 			}),
 	});
 
-	const ownAwareness = async (catalogRoot: string, api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
+	const ownAwareness = async (api: Durable.ToolExecutionApi<ControlDetails>, context: Context) => {
+		if (effortResources === undefined) throw new Error("Native effort awareness requires the host's selected catalogue root");
 		const agent = await api.agent(context);
 		const meta = await api.snapshot(AgentMetaDoc, api.conversationId, context);
-		return readEffortAwareness(dirname(catalogRoot), nativeIntentSelf(identity(api.conversationId), agent.cwd ?? host.cwd, meta === undefined ? null : meta.intent), undefined, "reported");
+		return readEffortAwareness(effortResources, nativeIntentSelf(identity(api.conversationId), agent.cwd ?? host.cwd, meta === undefined ? null : meta.intent), "reported");
 	};
 
 	const readStatus = async (args: StatusInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context, selection: FleetSelection) => {
@@ -1630,7 +1635,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		const createdAgents = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
 		if (createdAgents === undefined && host.catalogRoot === undefined) return result;
 		const observed: Record<string, unknown> = { ...result.details };
-		if (host.catalogRoot !== undefined) observed.awareness = await ownAwareness(host.catalogRoot, api, context);
+		if (host.catalogRoot !== undefined) observed.awareness = await ownAwareness(api, context);
 		const text = [controlText(observed)];
 		if (createdAgents !== undefined) {
 			observed.createdAgents = createdAgents;
@@ -1799,16 +1804,16 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		replay: "safe",
 		execute: async (args, api, context) => {
 			validateIntentInput(args);
-			if (host.catalogRoot === undefined) return errorResult("Native intent requires the host's selected catalogue root");
+			if (host.catalogRoot === undefined || effortResources === undefined) return errorResult("Native intent requires the host's selected catalogue root");
 			const agent = await api.agent(context);
-			const location = await discoverPrimaryLocation(agent.cwd ?? host.cwd);
+			const location = await locations.resolve(agent.cwd ?? host.cwd);
 			const stamp = await api.memo("agent-intent-time", new Date(api.now()).toISOString(), context);
 			const { action, ...fields } = args;
 			const claim = action === "clear" ? null : { ...fields, updatedAt: stamp } as import("./effort-presence.ts").PrimaryIntentClaim;
 			const cwd = agent.cwd ?? host.cwd;
 			const metadata = await api.commit(tx => publishConversationIntent(tx, api.conversationId, { claim, ...location, cwd, repository: location.repository ?? null, hostname: hostname(), startedAt: stamp, taskId: api.taskId }), context);
 			const published = nativeIntentSelf(identity(api.conversationId), cwd, metadata);
-			const value = { published, awareness: await readEffortAwareness(dirname(host.catalogRoot), published, undefined, "reported") };
+			const value = { published, awareness: await readEffortAwareness(effortResources, published, "reported") };
 			return textResult(JSON.stringify(value), JSON.parse(JSON.stringify(value)));
 		},
 	});
@@ -1859,11 +1864,11 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	const preferences = durable.section("agent-preferences", () => renderAgentPreferences(readAgentPreferences(host.agentDir, host.services.modelRuntime)));
 
 	const efforts = durable.section("agent-efforts", async (input, context) => {
-		if (host.catalogRoot === undefined) return undefined;
+		if (effortResources === undefined) return undefined;
 		try {
 			const meta = await input.read.snapshot(AgentMetaDoc, input.conversationId, context);
 			const self = nativeIntentSelf(identity(input.conversationId), input.agent.cwd ?? host.cwd, meta === undefined ? null : meta.intent);
-			return formatEffortAwareness(await readEffortAwareness(dirname(host.catalogRoot), self, undefined, "reported"), "prompt");
+			return formatEffortAwareness(await readEffortAwareness(effortResources, self, "reported"), "prompt");
 		} catch {
 			return "Current effort and active thread awareness is unavailable. Read agent_status for a new bounded observation. Earlier notices describe changes, not current state.";
 		}

@@ -1,13 +1,13 @@
-import { execFile } from "node:child_process";
-import { opendir, realpath } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { opendir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { hostname } from "node:os";
 import { readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 import type { PrimaryInfo, PrimaryObservedPurpose, PrimaryRepositoryState } from "./primary-channel.ts";
 import type { Dirent } from "node:fs";
-import { AgentCatalog, type CatalogRecord } from "./catalog.ts";
+import type { AgentCatalog, CatalogRecord } from "./catalog.ts";
+import type { PrimaryLocationResolver } from "./effort-location.ts";
 import { hostPaths } from "./host-protocol.ts";
-import { observeClaim } from "./claims.ts";
+import { observeClaim, type ClaimObservation } from "./claims.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
 
 type EffortFacts = Pick<PrimaryInfo, "id" | "cwd" | "name" | "repository" | "repositoryState" | "startedAt" | "lastActivityAt" | "intentClaim" | "observedPurpose" | "hostname">;
@@ -59,34 +59,15 @@ export interface EffortPresencePage {
 }
 export const EFFORT_PRESENCE_LIMITS = { visits: 256, results: 20, bytes: 16 * 1024 } as const;
 
+/** Resources one manager or native contribution owns for its effort reads. */
+export interface EffortReadResources {
+	readonly catalog: AgentCatalog;
+	readonly locations: PrimaryLocationResolver;
+}
+
 /** Observed origin text is a fallback, never a competing declared purpose. */
 export function observedPurposeFallback(value: { intentClaim?: PrimaryIntentClaim; purposeClaim?: string; observedPurpose?: PrimaryObservedPurpose }): Pick<RelatedEffort, "observedPurpose"> {
 	return value.intentClaim !== undefined || value.purposeClaim !== undefined || value.observedPurpose === undefined ? {} : { observedPurpose: value.observedPurpose };
-}
-
-function gitEnvironment(): NodeJS.ProcessEnv {
-	const env: NodeJS.ProcessEnv = { ...process.env, LC_ALL: "C", GIT_OPTIONAL_LOCKS: "0" };
-	for (const key of ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"]) delete env[key];
-	return env;
-}
-
-/** Resolve one location without a shell, with bounded Git output and execution time. */
-export async function discoverPrimaryLocation(cwd: string): Promise<{ cwd: string; repository?: string; repositoryState: PrimaryRepositoryState }> {
-	let canonical: string;
-	try { canonical = await realpath(cwd); }
-	catch { return { cwd: resolve(cwd), repositoryState: "unknown" }; }
-	const result = await new Promise<{ common?: string; state: PrimaryRepositoryState }>((done) => {
-		execFile("git", ["rev-parse", "--git-common-dir"], { cwd: canonical, timeout: 1000, maxBuffer: 4096, encoding: "utf8", env: gitEnvironment() }, (error, stdout, stderr) => {
-			if (!error && stdout.trim()) done({ common: stdout.trim(), state: "git" });
-			else done({ state: error?.code === 128 && stderr.startsWith("fatal: not a git repository") ? "outside-git" : "unknown" });
-		});
-	});
-	if (!result.common) return { cwd: canonical, repositoryState: result.state };
-	try {
-		return { cwd: canonical, repository: await realpath(resolve(canonical, result.common)), repositoryState: "git" };
-	} catch {
-		return { cwd: canonical, repositoryState: "unknown" };
-	}
 }
 
 /** Exact paths and component-boundary prefixes only; wildcard strings are not interpreted. */
@@ -195,7 +176,7 @@ async function visitDirectory(path: string, page: EffortPresencePage, visit: (en
 		}
 	} catch { markPartial(page, "directory-unreadable"); }
 }
-function nativeRow(record: CatalogRecord, id: string, metadata: NativeIntentMetadata, self: EffortPresenceSelf, page: EffortPresencePage): void {
+function nativeRow(record: CatalogRecord, id: string, metadata: NativeIntentMetadata, self: EffortPresenceSelf, page: EffortPresencePage, claims: Map<string, ClaimObservation>): void {
 	if (!metadata.claim || id === self.id) { page.coverage.unrelated++; return; }
 	const info: EffortFacts = { id, cwd: metadata.cwd, hostname: metadata.hostname, startedAt: metadata.startedAt, repositoryState: metadata.repositoryState, intentClaim: metadata.claim,
 		...(metadata.repository === null ? {} : { repository: metadata.repository }),
@@ -203,43 +184,49 @@ function nativeRow(record: CatalogRecord, id: string, metadata: NativeIntentMeta
 	if (info.repositoryState === "unknown") markPartial(page, "repository-unknown");
 	const relationship = relation(self, info);
 	if (!relationship) { page.coverage.unrelated++; return; }
-	const paths = hostPaths(record);
-	const ownership = observeClaim(paths.claim, paths.identity);
+	let ownership = claims.get(record.storageId);
+	if (ownership === undefined) {
+		const paths = hostPaths(record);
+		ownership = observeClaim(paths.claim, paths.identity);
+		claims.set(record.storageId, ownership);
+	}
 	if (ownership.kind === "absent" || ownership.kind === "dead") { page.coverage.dead++; return; }
 	appendEffort(page, effortRow(info, self, ownership.kind === "live" ? "live" : "unknown", relationship));
 }
-function visitNativeRecord(catalog: AgentCatalog, entry: Dirent, self: EffortPresenceSelf, page: EffortPresencePage): void {
+function visitNativeRecord(catalog: AgentCatalog, entry: Dirent, self: EffortPresenceSelf, page: EffortPresencePage, claims: Map<string, ClaimObservation>): void {
 	if (!entry.isFile() || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/u.test(entry.name)) { page.coverage.unrelated++; return; }
 	let record: CatalogRecord;
 	try { record = catalog.read(entry.name.slice(0, -5)); }
 	catch { page.coverage.unreadable++; markPartial(page, "native-record-unreadable"); return; }
-	const claims = record.view?.intentClaims;
-	if (!claims) { page.coverage.unsupported = (page.coverage.unsupported ?? 0) + 1; return; }
+	const claimRows = record.view?.intentClaims;
+	if (!claimRows) { page.coverage.unsupported = (page.coverage.unsupported ?? 0) + 1; return; }
 	page.coverage.unrelated++;
-	page.coverage.omitted += claims.coverage.omitted;
-	if (!claims.coverage.complete) markPartial(page, "native-intent-incomplete");
-	for (const [id, metadata] of Object.entries(claims.rows)) {
+	page.coverage.omitted += claimRows.coverage.omitted;
+	if (!claimRows.coverage.complete) markPartial(page, "native-intent-incomplete");
+	for (const [id, metadata] of Object.entries(claimRows.rows)) {
 		if (page.coverage.visited >= page.limits.visits) { markPartial(page, "visit-limit"); break; }
 		page.coverage.visited++;
 		if (metadata === null) page.coverage.unrelated++;
-		else nativeRow(record, id, metadata, self, page);
+		else nativeRow(record, id, metadata, self, page, claims);
 	}
 }
-async function visitNativeRoot(sessionsRoot: string, self: EffortPresenceSelf, page: EffortPresencePage): Promise<void> {
-	const catalog = new AgentCatalog(sessionsRoot);
-	await visitDirectory(catalog.root, page, entry => visitNativeRecord(catalog, entry, self, page));
+async function visitNativeRoot(catalog: AgentCatalog, self: EffortPresenceSelf, page: EffortPresencePage): Promise<void> {
+	// One writer claim observation serves every claim row in this record during one pass.
+	const claims = new Map<string, ClaimObservation>();
+	await visitDirectory(catalog.root, page, entry => visitNativeRecord(catalog, entry, self, page, claims));
 }
 
 /** Read-only presence page; ordinary records and native projections share all visit, result and byte caps. */
-export async function readRelatedEfforts(sessionsRoot: string, self: EffortPresenceSelf): Promise<EffortPresencePage> {
+export async function readRelatedEfforts(resources: EffortReadResources, self: EffortPresenceSelf): Promise<EffortPresencePage> {
+	const sessionsRoot = dirname(resources.catalog.root);
 	const page: EffortPresencePage = {
 		efforts: [],
 		coverage: { visited: 0, unreadable: 0, dead: 0, unrelated: 0, omitted: 0, complete: true, reasons: [] },
 		limits: EFFORT_PRESENCE_LIMITS,
 	};
 	if (self.repositoryState === "unknown") markPartial(page, "repository-unknown");
-	await visitDirectory(join(resolve(sessionsRoot), ".primaries"), page, entry => visitEntry(sessionsRoot, self, page, entry));
-	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(sessionsRoot, self, page);
+	await visitDirectory(join(sessionsRoot, ".primaries"), page, entry => visitEntry(sessionsRoot, self, page, entry));
+	if (page.coverage.visited < page.limits.visits) await visitNativeRoot(resources.catalog, self, page);
 	page.efforts.sort((a, b) => a.id.localeCompare(b.id));
 	return page;
 }

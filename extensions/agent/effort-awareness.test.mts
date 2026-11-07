@@ -14,6 +14,8 @@ import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { AgentCatalog } from "./catalog.ts";
 import { createAgentContribution } from "./durable-agents.ts";
 import { EFFORT_AWARENESS_PROMPT_BYTES, EFFORT_AWARENESS_SELF_BYTES, formatEffortAwareness, readEffortAwareness } from "./effort-awareness.ts";
+import { createPrimaryLocationResolver } from "./effort-location.ts";
+import type { EffortReadResources } from "./effort-presence.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
 import type { PrimaryIntentClaim } from "./effort-presence.ts";
 import { PRIMARY_ENDPOINT_VERSION, primaryEndpointPath } from "./primary-channel.ts";
@@ -23,6 +25,13 @@ function fixture(t: { after(fn: () => void): void }) {
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	mkdirSync(join(root, ".primaries"));
 	return { root, catalog: new AgentCatalog(root), self: { id: randomUUID(), cwd: root } };
+}
+/** One owned catalogue and location cache, as a manager or native contribution supplies. */
+function resources(root: string, catalog = new AgentCatalog(root)): EffortReadResources {
+	return { catalog, locations: createPrimaryLocationResolver() };
+}
+function readAwareness(root: string, self: Parameters<typeof readEffortAwareness>[1], catalog?: AgentCatalog) {
+	return readEffortAwareness(resources(root, catalog), self);
 }
 function ambientPreferences(t: { after(fn: () => void): void }): string {
 	const directory = mkdtempSync(join(tmpdir(), "effort-ambient-preferences-"));
@@ -62,7 +71,7 @@ it("unifies self-published purpose, related presence and active thread hints wit
 	const peer = randomUUID();
 	publish(root, peer, claim("Related effort"));
 	const threadId = publishThread(catalog, root);
-	const view = await readEffortAwareness(root, { ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } }, catalog);
+	const view = await readAwareness(root, { ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } }, catalog);
 	assert.equal(matchesSchema(EffortAwarenessSchema, view), true, JSON.stringify(schemaErrors(EffortAwarenessSchema, view, 10)));
 	assert.deepEqual(view.self.intentClaim, intentClaim);
 	assert.equal(view.self.observedPurpose, undefined);
@@ -74,7 +83,7 @@ it("unifies self-published purpose, related presence and active thread hints wit
 	assert.ok(prompt.includes("Own published purpose"));
 	assert.ok(prompt.includes("Active shared work"));
 	assert.ok(prompt.includes("do not grant authority to the reader"));
-	assert.deepEqual(await readEffortAwareness(root, { ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } }, catalog), view);
+	assert.deepEqual(await readAwareness(root, { ...self, intentClaim, observedPurpose: { source: "interactive-input", text: "First interactive input" } }, catalog), view);
 	assert.equal(formatEffortAwareness(view), prompt);
 });
 
@@ -83,7 +92,7 @@ it("keeps prompt bytes stable when clocks, traversal counters and activity order
 	publish(root, randomUUID());
 	publish(root, randomUUID());
 	publishThread(catalog, root);
-	const view = await readEffortAwareness(root, { ...self, intentClaim: claim() }, catalog);
+	const view = await readAwareness(root, { ...self, intentClaim: claim() }, catalog);
 	const before = formatEffortAwareness(view, "prompt");
 	const changed = { ...view,
 		self: { ...view.self, intentClaim: { ...claim(), updatedAt: "2026-10-29T12:00:00Z" } },
@@ -107,7 +116,7 @@ it("never emits observed competitors with declared intent, including compact pro
 	const observedPurpose = { source: "interactive-input" as const, text: "UNRELATED-LATER-REMARK" };
 	const peer = randomUUID();
 	publish(root, peer, claim("PEER-DECLARED-PURPOSE"), root, observedPurpose);
-	const view = await readEffortAwareness(root, { ...self, intentClaim: claim("SELF-DECLARED-PURPOSE"), observedPurpose });
+	const view = await readAwareness(root, { ...self, intentClaim: claim("SELF-DECLARED-PURPOSE"), observedPurpose });
 	assert.equal(JSON.stringify(view).includes(observedPurpose.text), false);
 	const raw = { ...view, self: { ...view.self, observedPurpose }, presence: { ...view.presence, efforts: view.presence.efforts.map((row) => ({ ...row, observedPurpose })) } };
 	const prompt = formatEffortAwareness(raw);
@@ -132,14 +141,14 @@ it("refreshes declared purpose and clear directly from current records without s
 	const peer = randomUUID();
 	const observedPurpose = { source: "session-name" as const, text: "Named origin, not current intent" };
 	publish(root, peer, claim("OLD-PLAN"), root, observedPurpose);
-	assert.ok(formatEffortAwareness(await readEffortAwareness(root, self)).includes("OLD-PLAN"));
+	assert.ok(formatEffortAwareness(await readAwareness(root, self)).includes("OLD-PLAN"));
 	publish(root, peer, claim("NEW-PLAN"), root, observedPurpose);
-	const current = formatEffortAwareness(await readEffortAwareness(root, self));
+	const current = formatEffortAwareness(await readAwareness(root, self));
 	assert.ok(current.includes("NEW-PLAN"));
 	assert.equal(current.includes("OLD-PLAN"), false);
 	assert.equal(current.includes(observedPurpose.text), false);
 	publish(root, peer, null, root, observedPurpose);
-	const cleared = await readEffortAwareness(root, { ...self, observedPurpose });
+	const cleared = await readAwareness(root, { ...self, observedPurpose });
 	assert.equal(cleared.presence.efforts[0]?.intentClaim, undefined);
 	assert.deepEqual(cleared.presence.efforts[0]?.observedPurpose, observedPurpose);
 	assert.deepEqual(cleared.self.observedPurpose, observedPurpose);
@@ -149,7 +158,7 @@ it("refreshes declared purpose and clear directly from current records without s
 	assert.ok(prompt.includes('"source":"session-name"'));
 	assert.ok(prompt.includes("it is not current intent"));
 	publish(root, peer, null);
-	const unknown = await readEffortAwareness(root, self);
+	const unknown = await readAwareness(root, self);
 	assert.equal(unknown.presence.efforts[0]?.observedPurpose, undefined);
 	assert.equal(formatEffortAwareness(unknown).includes(observedPurpose.text), false);
 });
@@ -159,7 +168,7 @@ it("includes unrelated local purpose claims without full authority or integratio
 	const peer = randomUUID();
 	const intentClaim = { ...claim("Unrelated local purpose"), integration: "PRIVATE-INTEGRATION", authority: "PRIVATE-AUTHORITY", scope: { paths: ["PRIVATE-PATH"], branches: ["private-branch"], fullGate: true }, contactThread: "contact/thread" };
 	publish(root, peer, intentClaim, join(root, "other-cwd"));
-	const view = await readEffortAwareness(root, self);
+	const view = await readAwareness(root, self);
 	const effort = view.presence.efforts[0];
 	assert.equal(effort?.id, peer);
 	assert.equal(effort.relationship, "machine");
@@ -180,7 +189,7 @@ it("includes unrelated local purpose claims without full authority or integratio
 it("keeps machine-only prompt bytes stable when intentUpdatedAt alone changes", async (t) => {
 	const { root, self } = fixture(t);
 	publish(root, randomUUID(), claim("Machine-only purpose"), join(root, "other-cwd"));
-	const view = await readEffortAwareness(root, self);
+	const view = await readAwareness(root, self);
 	assert.equal(view.presence.efforts[0]?.relationship, "machine");
 	assert.equal(view.presence.efforts[0]?.intentUpdatedAt, claim().updatedAt);
 	const changed = { ...view, presence: { ...view.presence,
@@ -195,12 +204,12 @@ it("preserves repository state and declared full gates in the current self view"
 	const { root, self } = fixture(t);
 	publish(root, randomUUID());
 	const intentClaim = { ...claim(), scope: { ...claim().scope, fullGate: true } };
-	const view = await readEffortAwareness(root, { ...self, repository: "/repository/common", repositoryState: "git", intentClaim });
+	const view = await readAwareness(root, { ...self, repository: "/repository/common", repositoryState: "git", intentClaim });
 	assert.equal(view.self.repositoryState, "git");
 	assert.equal(view.self.repository, "/repository/common");
 	assert.ok(formatEffortAwareness(view).includes('"fullGate":true'));
 	const largeClaim = { ...intentClaim, authority: "😀".repeat(512), integration: "😀".repeat(512), scope: { ...intentClaim.scope, paths: Array.from({ length: 4 }, () => "😀".repeat(64)), branches: Array.from({ length: 4 }, () => "😀".repeat(64)) } };
-	const wide = await readEffortAwareness(root, { ...self, intentClaim: largeClaim });
+	const wide = await readAwareness(root, { ...self, intentClaim: largeClaim });
 	const prompt = formatEffortAwareness(wide);
 	assert.ok(prompt.includes("Own published purpose"));
 	assert.ok(prompt.includes("Self detail shortened"));
@@ -209,7 +218,7 @@ it("preserves repository state and declared full gates in the current self view"
 
 it("bounds self input with explicit omissions rather than a shortened authority claim", async (t) => {
 	const { root, self } = fixture(t);
-	const view = await readEffortAwareness(root, { ...self, intentClaim: claim("x".repeat(EFFORT_AWARENESS_SELF_BYTES * 2)) });
+	const view = await readAwareness(root, { ...self, intentClaim: claim("x".repeat(EFFORT_AWARENESS_SELF_BYTES * 2)) });
 	assert.equal(view.self.omitted, true);
 	assert.equal(view.self.intentClaim, undefined);
 	assert.ok(Buffer.byteLength(JSON.stringify(view.self)) <= EFFORT_AWARENESS_SELF_BYTES);
@@ -222,7 +231,7 @@ it("reserves prompt space for active threads and retains or omits whole claims",
 	longClaim.scope.paths.push(...Array.from({ length: 12 }, (_, index) => `extensions/agent/${index}`));
 	for (let index = 0; index < 20; index++) publish(root, randomUUID(), longClaim);
 	publishThread(catalog, root);
-	const view = await readEffortAwareness(root, self, catalog);
+	const view = await readAwareness(root, self, catalog);
 	const prompt = formatEffortAwareness(view);
 	assert.ok(Buffer.byteLength(prompt) <= EFFORT_AWARENESS_PROMPT_BYTES);
 	assert.ok(prompt.includes("Active shared work"));
@@ -236,10 +245,10 @@ it("reserves prompt space for active threads and retains or omits whole claims",
 
 it("keeps zero-live-effort context to one line without losing unknown coverage", async (t) => {
 	const { root, catalog, self } = fixture(t);
-	const view = await readEffortAwareness(root, { ...self, intentClaim: claim("Do not repeat my whole claim") }, catalog);
+	const view = await readAwareness(root, { ...self, intentClaim: claim("Do not repeat my whole claim") }, catalog);
 	assert.equal(formatEffortAwareness(view), "No other live efforts or active thread hints in the covered sources.");
 	publishThread(catalog, root);
-	const withThread = await readEffortAwareness(root, self, catalog);
+	const withThread = await readAwareness(root, self, catalog);
 	const unknownView = { ...withThread, self: { ...self, omitted: true }, presence: { ...withThread.presence, efforts: [
 		{ id: "unknown", cwd: root, startedAt: "now", relationship: "cwd" as const, liveness: "unknown" as const },
 		{ id: "incompatible", cwd: root, startedAt: "now", relationship: "cwd" as const, liveness: "incompatible" as const },
@@ -353,4 +362,27 @@ it("adds awareness only to native untargeted status and preserves host fields an
 	assert.equal(fleetResult.view, "fleet");
 	assert.equal("awareness" in fleetResult, false);
 	assert.deepEqual(calls, [{}, { sessionId: peer }]);
+});
+
+it("resolves the reader location through the supplied resolver and only when the caller has no repository", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const resolved: string[] = [];
+	const locations = { resolve: async (cwd: string) => { resolved.push(cwd); return { cwd, repositoryState: "git" as const, repository: "/shared/common" }; }, invalidate() {}, clear() {} };
+	const view = await readEffortAwareness({ catalog, locations }, self);
+	assert.deepEqual(resolved, [root]);
+	assert.equal(view.self.repository, "/shared/common");
+	await readEffortAwareness({ catalog, locations }, { ...self, repository: "/known", repositoryState: "git" });
+	assert.deepEqual(resolved, [root], "a supplied repository needs no discovery");
+});
+
+it("reads current peer intent on every call even when the catalogue and locations are reused", async (t) => {
+	const { root, catalog, self } = fixture(t);
+	const shared = resources(root, catalog);
+	const peer = randomUUID();
+	publish(root, peer, claim("FIRST"));
+	assert.ok(formatEffortAwareness(await readEffortAwareness(shared, self)).includes("FIRST"));
+	publish(root, peer, claim("SECOND"));
+	const current = formatEffortAwareness(await readEffortAwareness(shared, self));
+	assert.ok(current.includes("SECOND"));
+	assert.equal(current.includes("FIRST"), false);
 });

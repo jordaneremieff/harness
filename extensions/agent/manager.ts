@@ -20,7 +20,8 @@ import { firstInteractivePurpose, purposeExcerpt } from "./effort-purpose.ts";
 import { readEffortAwareness, type EffortAwareness } from "./effort-awareness.ts";
 import { createPrimaryChannel, connectPrimaryChannel, primaryEndpointStatus, readPrimaryEndpointDescriptor, type PrimaryChannel, type PrimaryInfo, type PrimaryIntentClaim } from "./primary-channel.ts";
 import { readPrimaryObservation, type OrdinaryPrimaryObservation } from "./primary-observation.ts";
-import { discoverPrimaryLocation, readRelatedEfforts, type EffortPresencePage } from "./effort-presence.ts";
+import { readRelatedEfforts, type EffortPresencePage, type EffortReadResources } from "./effort-presence.ts";
+import { createPrimaryLocationResolver, type PrimaryLocationResolver } from "./effort-location.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import { acquireHost, connectHost, HostReadinessUnavailableError, type HostConnection, type HostObservationListener } from "./host-client.ts";
@@ -266,6 +267,7 @@ export class AgentManager {
 	}
 	private rosterChanged(): void { for (const listener of this.rosterListeners) listener(); }
 	readonly catalog: AgentCatalog;
+	private readonly locations: PrimaryLocationResolver;
 	private readonly inventory: CatalogObservation;
 	readonly places: PlaceBook;
 	private readonly options: AgentManagerOptions;
@@ -298,6 +300,7 @@ export class AgentManager {
 	constructor(options: AgentManagerOptions) {
 		this.options = options;
 		this.catalog = new AgentCatalog(options.root);
+		this.locations = createPrimaryLocationResolver();
 		this.inventory = new CatalogObservation(this.catalog);
 		this.places = new PlaceBook(join(options.root, "durable"));
 		this.delivered = new BoundedMap(options.deliveredLimit ?? DEFAULT_DELIVERED_LIMIT);
@@ -946,7 +949,7 @@ export class AgentManager {
 		const previous = this.primaries.get(ownerId);
 		if (previous) await this.closePrimary(ownerId, previous.signal);
 		if (this.stopping(primary)) return;
-		const location = await discoverPrimaryLocation(primary.cwd ?? this.options.root);
+		const location = await this.locations.resolve(primary.cwd ?? this.options.root);
 		if (this.stopping(primary)) return;
 		const channel = await (this.options.createPrimary ?? createPrimaryChannel)({ id: ownerId, ...location, lastActivityAt: new Date().toISOString(), observedPurpose: this.observedPurpose(primary), sessionFile: primary.sessionFile, name: primary.name, model: primary.model, thinkingLevel: primary.thinkingLevel, sessionsRoot: this.options.root, signal: primary.signal,
 			promptTrust: (cwd) => primary.promptTrust?.(cwd) ?? Promise.resolve(undefined),
@@ -1071,16 +1074,20 @@ export class AgentManager {
 
 	/** Bounded local-machine efforts with full intent only for a shared repository or cwd. */
 	async efforts(ownerId: string, cwd?: string): Promise<EffortPresencePage> {
-		const self = this.primaryChannels.get(ownerId)?.info() ?? { id: ownerId, ...await discoverPrimaryLocation(cwd ?? this.options.root) };
-		return readRelatedEfforts(this.options.root, self);
+		const self = this.primaryChannels.get(ownerId)?.info() ?? { id: ownerId, ...await this.locations.resolve(cwd ?? this.options.root) };
+		return readRelatedEfforts(this.effortResources(), self);
 	}
 
 	/** Current bounded view for model runs, status, and the dashboard. */
 	async awareness(ownerId: string, cwd?: string): Promise<EffortAwareness> {
 		const self = this.primaryChannels.get(ownerId)?.info() ?? { id: ownerId, cwd: cwd ?? this.options.root };
-		const awareness = await readEffortAwareness(this.options.root, self, this.catalog);
+		const awareness = await readEffortAwareness(this.effortResources(), self);
 		if ((this.primaries.get(ownerId)?.observedInputComplete === false || this.primaries.get(ownerId)?.observedInputCanCapture === false) && !awareness.self.observedPurpose && !awareness.self.intentClaim) awareness.self.omitted = true;
 		return awareness;
+	}
+
+	private effortResources(): EffortReadResources {
+		return { catalog: this.catalog, locations: this.locations };
 	}
 
 	/** Publish a session's claim without changing host facts or another primary. */
@@ -1392,6 +1399,7 @@ export class AgentManager {
 		if (this.closing) return this.closing;
 		this.shuttingDown = true;
 		this.lifecycle.abort();
+		this.locations.clear();
 		this.rosterListeners.clear();
 		const primaries = [...this.primaries].map(([ownerId, primary]) => this.closePrimary(ownerId, primary.signal));
 		this.releaseClients();

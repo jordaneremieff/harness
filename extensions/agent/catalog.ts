@@ -12,7 +12,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 	linkSync,
-	type Stats,
+	type BigIntStats,
 } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -28,14 +28,27 @@ import { profileText } from "./profile-schema.ts";
 const UUID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u;
 export const MAX_RECORD_BYTES = 32_768;
 const MAX_VISITS = 256;
-const VALIDATED_RECORD_LIMIT = 256;
-// Every lookup still reads the bounded file. Only unchanged content skips validation.
-const validatedRecords = new Map<string, { text: string; record: CatalogRecord }>();
-function cacheValidatedRecord(path: string, text: string, record: CatalogRecord): void {
-	validatedRecords.set(path, { text, record: structuredClone(record) });
-	if (validatedRecords.size <= VALIDATED_RECORD_LIMIT) return;
-	const oldest = validatedRecords.keys().next().value;
-	if (oldest !== undefined) validatedRecords.delete(oldest);
+const VALIDATED_RECORD_LIMIT = 512;
+const VALIDATED_PAYLOAD_LIMIT = 8 * 1024 * 1024;
+// A read opens the bounded file and checks its identity. Only an unchanged file skips payload reads.
+interface ValidatedRecord { readonly revision: string; readonly record: CatalogRecord; readonly bytes: number }
+const validatedRecords = new Map<string, ValidatedRecord>();
+let validatedPayloadBytes = 0;
+function forgetValidatedRecord(path: string): void {
+	const cached = validatedRecords.get(path);
+	if (cached === undefined) return;
+	validatedRecords.delete(path);
+	validatedPayloadBytes -= cached.bytes;
+}
+function rememberValidatedRecord(path: string, revision: string, record: CatalogRecord, bytes: number): void {
+	forgetValidatedRecord(path);
+	validatedRecords.set(path, { revision, record: structuredClone(record), bytes });
+	validatedPayloadBytes += bytes;
+	while (validatedRecords.size > VALIDATED_RECORD_LIMIT || validatedPayloadBytes > VALIDATED_PAYLOAD_LIMIT) {
+		const oldest = validatedRecords.keys().next().value;
+		if (oldest === undefined) break;
+		forgetValidatedRecord(oldest);
+	}
 }
 interface CatalogQuery {
 	cursor?: string;
@@ -150,8 +163,8 @@ function priorityCursor(cursor: string | undefined, binding: string): PriorityKe
 	} catch { throw new Error("Invalid roster cursor or caller changed; restart the roster"); }
 }
 
-function fileStamp(info: Stats): string {
-	return JSON.stringify([info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs]);
+function fileStamp(info: BigIntStats): string {
+	return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
 }
 
 export interface CatalogFact {
@@ -320,6 +333,7 @@ export class AgentCatalog {
 				return { record: this.read(storageId), created: false };
 			}
 		} finally { unlinkSync(prepared); }
+		forgetValidatedRecord(this.path(storageId));
 		publishCatalogChange(this.root, storageId);
 		return { record, created: true };
 	}
@@ -346,6 +360,7 @@ export class AgentCatalog {
 				throw new Error("Spawn request ID already belongs to different agent configuration");
 			return { record: previous, created: false };
 		}
+		forgetValidatedRecord(this.path(storageId));
 		publishCatalogChange(this.root, storageId);
 		return { record, created: true };
 	}
@@ -368,6 +383,7 @@ export class AgentCatalog {
 		const current = lstatSync(path, { throwIfNoEntry: false });
 		if (current === undefined || current.dev !== before.dev || current.ino !== before.ino) return "record-changed";
 		unlinkSync(path);
+		forgetValidatedRecord(path);
 		publishCatalogChange(this.root, record.storageId);
 		return "removed";
 	}
@@ -383,53 +399,60 @@ export class AgentCatalog {
 
 	private readWithTime(identity: string): { record: CatalogRecord; modifiedAt: number; fileStamp: string } {
 		const storageId = storageIdOf(identity);
-		const fd = openSync(this.path(storageId), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+		const path = this.path(storageId);
+		const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
 		try {
-			const info = fstatSync(fd);
-			if (!info.isFile() || info.size > MAX_RECORD_BYTES)
+			const info = fstatSync(fd, { bigint: true });
+			if (!info.isFile() || info.size > BigInt(MAX_RECORD_BYTES))
 				throw new Error("Agent metadata exceeds its bound or is not a regular file");
-			const bytes = Buffer.alloc(MAX_RECORD_BYTES + 1);
-			let length = 0;
-			while (length < bytes.length) {
-				const count = readSync(fd, bytes, length, bytes.length - length, length);
-				if (!count) break;
-				length += count;
-			}
-			if (length > MAX_RECORD_BYTES) throw new Error("Agent metadata exceeds its read bound");
-			const text = bytes.toString("utf8", 0, length);
-			const path = this.path(storageId);
+			const revision = fileStamp(info);
 			const cached = validatedRecords.get(path);
-			if (cached?.text === text) {
+			if (cached?.revision === revision) {
 				validatedRecords.delete(path);
 				validatedRecords.set(path, cached);
-				return { record: structuredClone(cached.record), modifiedAt: info.mtimeMs, fileStamp: fileStamp(info) };
+				return { record: structuredClone(cached.record), modifiedAt: Number(info.mtimeMs), fileStamp: revision };
 			}
-			validatedRecords.delete(path);
-			const value: unknown = JSON.parse(text);
-			if (!value || typeof value !== "object") throw new Error("Agent metadata is invalid");
-			const record = value as CatalogRecord;
-			if (
-				record.storageId !== storageId ||
-				record.storagePath !== join(this.root, `${storageId}.sqlite`) ||
-				typeof record.cwd !== "string" ||
-				!record.cwd.startsWith("/") ||
-				typeof record.agentDir !== "string" ||
-				typeof record.packageDir !== "string" ||
-				typeof record.createdAt !== "string" ||
-				typeof record.model?.provider !== "string" ||
-				typeof record.model?.modelId !== "string"
-			)
-				throw new Error("Agent metadata is invalid");
-			parseHostMetadata(hostMetadata(record));
-			if (!isThinkingLevel(record.thinkingLevel)) throw new Error("Agent metadata has an unknown reasoning level");
-			this.parseProjections(record);
-			if (record.recoveryDue !== undefined && typeof record.recoveryDue !== "boolean")
-				throw new Error("Agent metadata has an invalid recovery marker");
-			cacheValidatedRecord(path, text, record);
-			return { record, modifiedAt: info.mtimeMs, fileStamp: fileStamp(info) };
+			forgetValidatedRecord(path);
+			const { record, length } = this.parseRecord(fd, storageId);
+			const after = fstatSync(fd, { bigint: true });
+			if (fileStamp(after) === revision) rememberValidatedRecord(path, revision, record, length);
+			return { record, modifiedAt: Number(info.mtimeMs), fileStamp: revision };
 		} finally {
 			closeSync(fd);
 		}
+	}
+
+	/** Bounded read and full validation of one opened record. */
+	private parseRecord(fd: number, storageId: string): { record: CatalogRecord; length: number } {
+		const bytes = Buffer.alloc(MAX_RECORD_BYTES + 1);
+		let length = 0;
+		while (length < bytes.length) {
+			const count = readSync(fd, bytes, length, bytes.length - length, length);
+			if (!count) break;
+			length += count;
+		}
+		if (length > MAX_RECORD_BYTES) throw new Error("Agent metadata exceeds its read bound");
+		const value: unknown = JSON.parse(bytes.toString("utf8", 0, length));
+		if (!value || typeof value !== "object") throw new Error("Agent metadata is invalid");
+		const record = value as CatalogRecord;
+		if (
+			record.storageId !== storageId ||
+			record.storagePath !== join(this.root, `${storageId}.sqlite`) ||
+			typeof record.cwd !== "string" ||
+			!record.cwd.startsWith("/") ||
+			typeof record.agentDir !== "string" ||
+			typeof record.packageDir !== "string" ||
+			typeof record.createdAt !== "string" ||
+			typeof record.model?.provider !== "string" ||
+			typeof record.model?.modelId !== "string"
+		)
+			throw new Error("Agent metadata is invalid");
+		parseHostMetadata(hostMetadata(record));
+		if (!isThinkingLevel(record.thinkingLevel)) throw new Error("Agent metadata has an unknown reasoning level");
+		this.parseProjections(record);
+		if (record.recoveryDue !== undefined && typeof record.recoveryDue !== "boolean")
+			throw new Error("Agent metadata has an invalid recovery marker");
+		return { record, length };
 	}
 
 	/** Capture source identities before byte-bounded record and claim observation. */
@@ -439,8 +462,8 @@ export class AgentCatalog {
 
 	/** Check a catalog pathname without opening its payload or following a symlink. */
 	recordStamp(storageId: string): string {
-		const info = lstatSync(this.path(storageId));
-		if (!info.isFile() || info.size > MAX_RECORD_BYTES) throw new Error("Agent metadata exceeds its bound or is not a regular file");
+		const info = lstatSync(this.path(storageId), { bigint: true });
+		if (!info.isFile() || info.size > BigInt(MAX_RECORD_BYTES)) throw new Error("Agent metadata exceeds its bound or is not a regular file");
 		return fileStamp(info);
 	}
 
@@ -522,6 +545,7 @@ export class AgentCatalog {
 			}
 			throw error;
 		}
+		forgetValidatedRecord(path);
 		publishCatalogChange(this.root, record.storageId);
 		return record;
 	}

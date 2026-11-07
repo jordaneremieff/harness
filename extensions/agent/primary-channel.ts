@@ -19,7 +19,7 @@
  * supplies `deliver` (usually `pi.sendMessage`) and `promptTrust` (usually a UI
  * select mapped by `promptProjectTrust`).
  */
-import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, chmodSync, writeFileSync } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, chmodSync, writeFileSync, type BigIntStats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { opendir } from "node:fs/promises";
 import { hostname } from "node:os";
@@ -34,6 +34,8 @@ export type { PrimaryIntentClaim } from "./effort-presence.ts";
 /** Current notice contract includes explicit quiet-delivery semantics. */
 export const PRIMARY_ENDPOINT_VERSION = PRIMARY_DELIVERY_CONTRACT;
 const ENDPOINT_BYTES = 16 * 1024;
+const DESCRIPTOR_RECORD_LIMIT = 512;
+const DESCRIPTOR_PAYLOAD_LIMIT = 4 * 1024 * 1024;
 const LIST_LIMIT = 20;
 const VISIT_LIMIT = 256;
 const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
@@ -322,8 +324,77 @@ interface EndpointFile {
 	readonly ino: number;
 }
 
+interface ValidatedEndpoint { readonly revision: string; readonly endpoint: RecordedPrimaryEndpoint; readonly bytes: number }
+
+/** Strict descriptor observation reuses a parse only for an unchanged opened-file revision. */
+const validatedEndpoints = new Map<string, ValidatedEndpoint>();
+let validatedEndpointBytes = 0;
+
+function endpointRevision(info: BigIntStats): string {
+	return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+}
+
+function forgetValidatedEndpoint(path: string): void {
+	const cached = validatedEndpoints.get(path);
+	if (cached === undefined) return;
+	validatedEndpoints.delete(path);
+	validatedEndpointBytes -= cached.bytes;
+}
+
+function rememberValidatedEndpoint(path: string, revision: string, endpoint: RecordedPrimaryEndpoint, bytes: number): void {
+	forgetValidatedEndpoint(path);
+	validatedEndpoints.set(path, { revision, endpoint: structuredClone(endpoint), bytes });
+	validatedEndpointBytes += bytes;
+	while (validatedEndpoints.size > DESCRIPTOR_RECORD_LIMIT || validatedEndpointBytes > DESCRIPTOR_PAYLOAD_LIMIT) {
+		const oldest = validatedEndpoints.keys().next().value;
+		if (oldest === undefined) break;
+		forgetValidatedEndpoint(oldest);
+	}
+}
+
+function unreadableEndpoint(path: string, error: unknown): never {
+	forgetValidatedEndpoint(path);
+	throw new PrimaryChannelUnavailableError(`primary endpoint is unreadable: ${String(error)}`);
+}
+
+/** Read one endpoint for descriptor observation, reusing only validation of the same file revision. */
+function readValidatedEndpoint(path: string): RecordedPrimaryEndpoint | undefined {
+	let fd: number;
+	try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+	catch (error) {
+		if (errnoCode(error) === "ENOENT") { forgetValidatedEndpoint(path); return undefined; }
+		return unreadableEndpoint(path, error);
+	}
+	try {
+		const stat = fstatSync(fd, { bigint: true });
+		if (!stat.isFile() || stat.size > BigInt(ENDPOINT_BYTES)) return unreadableEndpoint(path, "the record exceeds its bound or is not a regular file");
+		const revision = endpointRevision(stat);
+		const cached = validatedEndpoints.get(path);
+		if (cached?.revision === revision) {
+			validatedEndpoints.delete(path);
+			validatedEndpoints.set(path, cached);
+			return structuredClone(cached.endpoint);
+		}
+		forgetValidatedEndpoint(path);
+		const buffer = Buffer.alloc(ENDPOINT_BYTES + 1);
+		let bytes = 0;
+		while (bytes < buffer.length) {
+			const count = readSync(fd, buffer, bytes, buffer.length - bytes, bytes);
+			if (!count) break;
+			bytes += count;
+		}
+		if (bytes > ENDPOINT_BYTES) throw new PrimaryChannelUnavailableError("primary endpoint exceeds its bound");
+		const endpoint = parseEndpoint(JSON.parse(buffer.toString("utf8", 0, bytes)), true);
+		const after = fstatSync(fd, { bigint: true });
+		if (endpointRevision(after) === revision) rememberValidatedEndpoint(path, revision, endpoint, bytes);
+		return endpoint;
+	} finally {
+		closeSync(fd);
+	}
+}
+
 /** Read one endpoint file with a no-symlink bounded read and exact identity validation. */
-function readEndpointFile(path: string, strictDescriptor = false): EndpointFile | undefined {
+function readEndpointFile(path: string): EndpointFile | undefined {
 	let fd: number;
 	try {
 		fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -342,7 +413,7 @@ function readEndpointFile(path: string, strictDescriptor = false): EndpointFile 
 			bytes += count;
 		}
 		if (bytes > ENDPOINT_BYTES) throw new PrimaryChannelUnavailableError("primary endpoint exceeds its bound");
-		return { endpoint: parseEndpoint(JSON.parse(buffer.toString("utf8", 0, bytes)), strictDescriptor), dev: stat.dev, ino: stat.ino };
+		return { endpoint: parseEndpoint(JSON.parse(buffer.toString("utf8", 0, bytes))), dev: stat.dev, ino: stat.ino };
 	} finally {
 		closeSync(fd);
 	}
@@ -363,6 +434,7 @@ function serializeEndpoint(endpoint: PrimaryEndpoint): string {
 /** Publish one complete record exclusively; an existing path refuses publication. */
 function publishEndpoint(path: string, endpoint: PrimaryEndpoint): void {
 	writeFileSync(path, serializeEndpoint(endpoint), { flag: "wx", mode: 0o600 });
+	forgetValidatedEndpoint(path);
 }
 
 /** Replace one complete record atomically, so a reader never sees a partial write. */
@@ -371,6 +443,7 @@ function rewriteEndpoint(path: string, endpoint: PrimaryEndpoint): void {
 	try {
 		writeFileSync(temporary, serializeEndpoint(endpoint), { mode: 0o600 });
 		renameSync(temporary, path);
+		forgetValidatedEndpoint(path);
 	} finally {
 		removeFile(temporary);
 	}
@@ -378,6 +451,7 @@ function rewriteEndpoint(path: string, endpoint: PrimaryEndpoint): void {
 
 /** Remove one file, ignoring its absence. */
 function removeFile(path: string): void {
+	forgetValidatedEndpoint(path);
 	try {
 		unlinkSync(path);
 	} catch (error) {
@@ -670,9 +744,8 @@ function classifyEndpoint(record: RecordedPrimaryEndpoint, id: string): PrimaryE
 export function readPrimaryEndpointDescriptor(sessionsRoot: string, id: string): PrimaryEndpointStatus & { readonly info?: PrimaryInfo; readonly unreadable?: true } {
 	if (!UUID_ANY.test(id)) return { state: "unknown", unreadable: true };
 	try {
-		const file = readEndpointFile(primaryEndpointPath(sessionsRoot, id), true);
-		if (!file) return { state: "absent" };
-		const endpoint = file.endpoint;
+		const endpoint = readValidatedEndpoint(primaryEndpointPath(sessionsRoot, id));
+		if (!endpoint) return { state: "absent" };
 		if (endpoint.id !== id) return { state: "unknown", unreadable: true };
 		const { version: _version, serverId: _serverId, ...info } = endpoint;
 		return { ...classifyEndpoint(endpoint, id), info };

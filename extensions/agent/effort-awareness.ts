@@ -1,10 +1,10 @@
-import { AgentCatalog } from "./catalog.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import type { NativeIntentMetadata } from "./durable-controls.ts";
 import { readRecentCollaboration, type RecentCollaborationPage } from "./collaboration-discovery.ts";
+import type { EffortReadResources } from "./effort-presence.ts";
 import {
-	discoverPrimaryLocation, observedPurposeFallback, readRelatedEfforts,
+	observedPurposeFallback, readRelatedEfforts,
 	type EffortPresencePage, type EffortPresenceSelf, type RelatedEffort,
 } from "./effort-presence.ts";
 
@@ -28,10 +28,10 @@ export const EFFORT_AWARENESS_SELF_BYTES = 16 * 1024;
 export const EFFORT_AWARENESS_PROMPT_BYTES = 12 * 1024;
 
 /** Compose current host presence and published thread hints without retained state or background work. */
-export async function readEffortAwareness(sessionsRoot: string, self: EffortSelf, catalog = new AgentCatalog(sessionsRoot), cwdMode: "canonical" | "reported" = "canonical"): Promise<EffortAwareness> {
+export async function readEffortAwareness(resources: EffortReadResources, self: EffortSelf, cwdMode: "canonical" | "reported" = "canonical"): Promise<EffortAwareness> {
 	let location: Pick<EffortPresenceSelf, "cwd" | "repository" | "repositoryState"> = { cwd: self.cwd, ...(self.repository === undefined ? {} : { repository: self.repository }), ...(self.repositoryState === undefined ? {} : { repositoryState: self.repositoryState }) };
 	if (self.repository === undefined) {
-		try { location = await discoverPrimaryLocation(self.cwd); }
+		try { location = await resources.locations.resolve(self.cwd); }
 		catch { location = { cwd: self.cwd, repositoryState: "unknown" }; }
 	}
 	if (cwdMode === "reported") location = { ...location, cwd: self.cwd };
@@ -44,14 +44,14 @@ export async function readEffortAwareness(sessionsRoot: string, self: EffortSelf
 	if (Buffer.byteLength(JSON.stringify(projection)) > EFFORT_AWARENESS_SELF_BYTES) {
 		projection = { id: self.id.slice(0, 256), cwd: location.cwd.slice(0, 512), ...(location.repository === undefined ? {} : { repository: location.repository.slice(0, 512) }), ...(location.repositoryState === undefined ? {} : { repositoryState: location.repositoryState }), omitted: true };
 	}
-	const presence = await readRelatedEfforts(sessionsRoot, projection);
+	const presence = await readRelatedEfforts(resources, projection);
 	const contacts = [self.intentClaim?.contactThread, ...presence.efforts.map((effort) => effort.intentClaim?.contactThread ?? effort.contactThreadClaim)];
 	const priorities = [
 		...contacts.filter((thread): thread is string => thread !== undefined).map((thread) => thread.split("/")[0]),
 		self.id,
 		...presence.efforts.filter((effort) => effort.liveness === "live").map((effort) => effort.id),
 	];
-	const threads = await readRecentCollaboration(catalog, priorities);
+	const threads = await readRecentCollaboration(resources.catalog, priorities);
 	return { self: projection, presence, threads };
 }
 
