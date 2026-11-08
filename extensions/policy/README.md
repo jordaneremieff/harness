@@ -719,6 +719,14 @@ at the same boundary adds no duplicate.
 
 Ordinary sessions register `context_with_system` and persist each new record
 as a non-context `policy_guidance` custom entry through `pi.appendEntry`.
+Retirement uses a `policy_guidance_retirement` custom entry whose `ids` name the
+retired records. Restoration folds both entry types in chronological order on
+the active branch before checking surviving sources in the selected projection.
+Restoring an earlier source digest never revives a retired record. An unchanged
+ledger writes no retirement entry. Retirement persists before replacement
+guidance is admitted or its allowance consumed. Failed retirement writes retain
+the pending IDs, pause new guidance and report `persistence-failed`; subsequent
+requests retry persistence without reviving those records.
 Native conversations store records in the `policy.guidance` document. A new
 record is persisted first; only then does the rule's once/cooldown allowance
 and any retained notice get consumed. In an ordinary session a failed write adds
@@ -745,9 +753,13 @@ active epoch. Policy never evicts a record whose anchor is active. At capacity
 it keeps projecting existing records, refuses new context-guidance records
 without consuming their allowance, reports `capacity` in `policy_rules` with
 `view:"health"` (`guidance.status`, record count, retained bytes, limits),
-and sends one operator notice per epoch. Enforcement, result handling and
-telemetry continue. Changing a rule or mode affects only new guidance; records
-already sent stay in place, including after a switch to observe mode.
+and sends one operator notice per epoch. Restoration applies the same bounds
+after source validation. An oversized surviving ledger is a projection fault:
+Policy retains every record, reports `capacity`, and projects no guidance until
+the ledger fits. It never silently truncates active records to hide excess
+state. Enforcement, result handling and telemetry continue. Changing a rule or
+mode affects only new guidance; records already sent stay in place, including
+after a switch to observe mode.
 Compaction and branch changes do not replay consumed observations as new
 notices. Result guidance retained in a tool result is unchanged.
 

@@ -8,7 +8,7 @@ import { type ExtensionAPI, type ExtensionContext, SessionManager } from "@earen
 
 import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
 import type { NamedData } from "./data.ts";
-import { GUIDANCE_ENTRY, GUIDANCE_HISTORY_LIMITS, messageDigest } from "./guidance-history.ts";
+import { GUIDANCE_ENTRY, GUIDANCE_HISTORY_LIMITS, GUIDANCE_RETIREMENT_ENTRY, messageDigest } from "./guidance-history.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
 import type { FactsProgram } from "./program.ts";
@@ -125,16 +125,12 @@ function fixture(
 		runtime.sync(snapshot);
 		return snapshot;
 	};
-	runtime = new PolicyRuntime(
-		pi,
-		load,
-		() => mode,
-		directory,
-		() => true,
-		writer,
-	);
-	runtime.sync(snapshot);
-	runtime.attach();
+	const restart = () => {
+		runtime = new PolicyRuntime(pi, load, () => mode, directory, () => true, writer);
+		runtime.sync(snapshot);
+		runtime.attach();
+	};
+	restart();
 	const firstMessage = { role: "user", content: [{ type: "text", text: "Run controlled tools." }], timestamp: 1 };
 	const firstEntry = session.appendMessage(firstMessage as never);
 	let transcript: Array<Record<string, unknown>> = [
@@ -213,7 +209,8 @@ function fixture(
 	return {
 		snapshot,
 		pi,
-		runtime,
+		get runtime() { return runtime; },
+		restart,
 		call,
 		finish,
 		result,
@@ -916,6 +913,169 @@ describe("persistent context guidance placement", () => {
 		assert.equal(health.guidance.status, "ok");
 		await f.writer.close();
 	});
+
+	const ledger = async (f: ReturnType<typeof fixture>) =>
+		((await f.runtime.inspect("state", {}, f.ctx)) as {
+			guidanceRecords: Array<{ id: string; timestamp: number }>;
+		}).guidanceRecords;
+	const retirements = (f: ReturnType<typeof fixture>) =>
+		f.session.getEntries().filter((entry) => entry.type === "custom" && entry.customType === GUIDANCE_RETIREMENT_ENTRY);
+	const editSource = async (f: ReturnType<typeof fixture>, text: string) => {
+		f.session.appendContextEdit(f.firstEntry, { content: [{ type: "text", text }] });
+		requestFromSession(f);
+		return f.project();
+	};
+
+	it("preserves retired identities and complete projection after a source digest reversal and restart", async () => {
+		const f = fixture([repeatableGuide()]);
+		try {
+			const initial = await editSource(f, "alpha");
+			const first = await ledger(f);
+			const initialTip = f.session.getLeafId() as string;
+			await editSource(f, "beta");
+			const before = await editSource(f, "alpha");
+			assert.ok(before);
+			const records = await ledger(f);
+			assert.equal(records.length, 1);
+			assert.notEqual(records[0].id, first[0].id);
+			assert.equal(retirements(f).length, 2);
+			const previous = f.runtime;
+			f.restart();
+			assert.notEqual(f.runtime, previous);
+			const restored = await f.project();
+			assert.deepEqual(await ledger(f), records);
+			assert.deepEqual(restored?.messages, before.messages);
+			assert.equal((await guidanceHealth(f)).guidance.status, "ok");
+			f.setMode("observe");
+			f.session.branch(initialTip);
+			await f.handlers.get("session_tree")?.({}, f.ctx);
+			requestFromSession(f);
+			assert.deepEqual((await f.project())?.messages, initial?.messages);
+			assert.deepEqual(await ledger(f), first);
+		} finally {
+			await f.writer.close();
+		}
+	});
+
+	it("bounds active guidance across more historical creations than the record limit and restores the same branch", async () => {
+		const f = fixture([repeatableGuide()]);
+		try {
+			await editSource(f, "alpha");
+			for (let cycle = 0; cycle <= GUIDANCE_HISTORY_LIMITS.records; cycle++) {
+				await editSource(f, "beta");
+				await editSource(f, "alpha");
+				assert.equal((await ledger(f)).length, 1);
+			}
+			assert.equal(f.guidanceEntries().length, 1 + 2 * (GUIDANCE_HISTORY_LIMITS.records + 1));
+			const records = await ledger(f);
+			f.setMode("observe");
+			const before = await f.project();
+			assert.equal(notices(before?.messages ?? []).length, 1);
+			const tip = f.session.getLeafId() as string;
+			f.session.branch(f.firstEntry);
+			await f.handlers.get("session_tree")?.({}, f.ctx);
+			requestFromSession(f);
+			assert.equal(await f.project(), undefined);
+			assert.deepEqual(await ledger(f), []);
+			f.session.branch(tip);
+			await f.handlers.get("session_tree")?.({}, f.ctx);
+			requestFromSession(f);
+			const fromTree = await f.project();
+			assert.deepEqual(await ledger(f), records);
+			assert.deepEqual(fromTree?.messages, before?.messages);
+			f.restart();
+			const restored = await f.project();
+			assert.deepEqual(await ledger(f), records);
+			assert.deepEqual(restored?.messages, before?.messages);
+			assert.equal((await guidanceHealth(f)).guidance.status, "ok");
+		} finally {
+			await f.writer.close();
+		}
+	});
+
+	it("persists retirement before replacement and preserves the allowance while retirement writes fail", async () => {
+		const f = fixture([repeatableGuide()]);
+		try {
+			await editSource(f, "alpha");
+			const retiredId = (await ledger(f))[0].id;
+			const projected = (await f.views())[0].projected;
+			const append = f.pi.appendEntry.bind(f.pi);
+			const writes: string[] = [];
+			let failing = true;
+			f.pi.appendEntry = (type, data) => {
+				writes.push(type);
+				if (type === GUIDANCE_RETIREMENT_ENTRY && failing) throw new Error("storage unavailable");
+				append(type, data);
+			};
+			assert.equal(await editSource(f, "beta"), undefined);
+			assert.deepEqual(writes, [GUIDANCE_RETIREMENT_ENTRY]);
+			assert.equal((await guidanceHealth(f)).guidance.status, "persistence-failed");
+			assert.equal((await f.views())[0].projected, projected);
+			assert.equal(f.guidanceEntries().length, 1);
+			assert.equal(retirements(f).length, 0);
+			assert.equal(await editSource(f, "alpha"), undefined);
+			assert.deepEqual(await ledger(f), []);
+			assert.equal((await f.views())[0].projected, projected);
+			failing = false;
+			writes.length = 0;
+			const recovered = await f.project();
+			assert.ok(recovered?.emitted);
+			assert.deepEqual(writes, [GUIDANCE_RETIREMENT_ENTRY, GUIDANCE_ENTRY]);
+			assert.equal((await f.views())[0].projected, projected + 1);
+			assert.notEqual((await ledger(f))[0].id, retiredId);
+			assert.equal((await guidanceHealth(f)).guidance.status, "ok");
+			f.setMode("observe");
+			f.restart();
+			assert.deepEqual((await f.project())?.messages, recovered.messages);
+		} finally {
+			await f.writer.close();
+		}
+	});
+
+	it("writes no retirement when repeated requests and equal-content edits keep the ledger unchanged", async () => {
+		const f = fixture([repeatableGuide()]);
+		try {
+			await editSource(f, "alpha");
+			const records = await ledger(f);
+			f.setMode("observe");
+			await f.project();
+			await editSource(f, "alpha");
+			f.restart();
+			await f.project();
+			assert.deepEqual(await ledger(f), records);
+			assert.equal(retirements(f).length, 0);
+		} finally {
+			await f.writer.close();
+		}
+	});
+
+	for (const limit of ["records", "bytes"] as const) {
+		it(`faults before projecting a restored ledger over its ${limit} limit without truncation`, async () => {
+			const f = fixture([repeatableGuide()]);
+			try {
+				const count = limit === "records" ? GUIDANCE_HISTORY_LIMITS.records + 1 : 2;
+				const digest = messageDigest(f.firstMessage);
+				for (let index = 0; index < count; index++)
+					f.session.appendCustomEntry(GUIDANCE_ENTRY, {
+						id: `restored-${index}`,
+						anchor: { epoch: "earlier", entryId: f.firstEntry, contribution: 0, messageDigest: digest },
+						timestamp: index,
+						text: limit === "records" ? `[policy] Notice ${index}.` : "x".repeat(GUIDANCE_HISTORY_LIMITS.bytes / 2),
+						pins: [],
+					});
+				assert.equal(await f.project(), undefined);
+				assert.equal((await ledger(f)).length, count);
+				assert.equal((await guidanceHealth(f)).guidance.status, "capacity");
+				assert.equal((await f.views())[0].projected, 0);
+				assert.equal(retirements(f).length, 0);
+				assert.ok(f.notifications.some((notice) => notice.includes("guidance projection is paused")));
+				await f.project();
+				assert.equal((await ledger(f)).length, count);
+			} finally {
+				await f.writer.close();
+			}
+		});
+	}
 
 	it("keeps the context epoch unchanged across ordinary appends", async () => {
 		const f = fixture([repeatableGuide()]);

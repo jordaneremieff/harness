@@ -13,14 +13,17 @@ import { isOwnedInput, ownInput, prepareSchema, snapshotData, UNKNOWN } from "./
 import {
 	GUIDANCE_ENTRY,
 	GUIDANCE_HISTORY_LIMITS,
+	GUIDANCE_RETIREMENT_ENTRY,
 	guidanceHistory,
 	type GuidanceEpochs,
 	type GuidanceHistory,
+	type GuidancePlan,
 	type GuidanceRecord,
 	type GuidanceSource,
 	type GuidanceStatus,
 	guidanceText,
 	parseGuidanceRecord,
+	parseGuidanceRetirement,
 	prepareGuidanceSelection,
 	planGuidance,
 } from "./guidance-history.ts";
@@ -257,6 +260,8 @@ export class PolicyRuntime {
 	private guidanceLedger: GuidanceHistory = { records: [], retainedBytes: 0 };
 	private guidanceEpoch: string | undefined;
 	private guidanceDirty = true;
+	/** Failed retirement writes remain pending even if the source digest returns. */
+	private guidanceRetirements: string[] = [];
 	private guidanceStatus: GuidanceStatus = "ok";
 	private guidanceNotice?: string;
 	private snapshot?: RuleSnapshot;
@@ -379,6 +384,7 @@ export class PolicyRuntime {
 		this.guidanceLedger = { records: [], retainedBytes: 0 };
 		this.guidanceEpoch = undefined;
 		this.guidanceDirty = true;
+		this.guidanceRetirements = [];
 		this.guidanceStatus = "ok";
 		this.guidanceNotice = undefined;
 		this.state.reset(reason, this.now());
@@ -980,22 +986,28 @@ export class PolicyRuntime {
 		const epochs: GuidanceEpochs = { epoch, validatedEpoch: restore ? undefined : this.guidanceEpoch };
 		if (restore || epoch !== this.guidanceEpoch) this.guidanceNotice = undefined;
 		const sources: GuidanceSource[] = [];
-		const records: GuidanceRecord[] = [];
-		for (const { sourceEntry, messages } of projection.entries) {
+		for (const { sourceEntry, messages } of projection.entries)
 			for (let contribution = 0; contribution < messages.length; contribution++)
 				sources.push({ entryId: sourceEntry.id, contribution, message: messages[contribution] });
-			const record =
-				restore && sourceEntry.type === "custom" && sourceEntry.customType === GUIDANCE_ENTRY
-					? parseGuidanceRecord(sourceEntry.data)
-					: undefined;
-			if (record) records.push(record);
-		}
-		if (restore) {
-			this.guidanceDirty = false;
-			this.guidanceStatus = "ok";
-			this.guidanceLedger = guidanceHistory(records);
-		}
+		if (restore) this.restoreGuidance(ctx);
 		return { epochs, sources };
+	}
+
+	private restoreGuidance(ctx: ExtensionContext): void {
+		const records = new Map<string, GuidanceRecord>();
+		for (const entry of ctx.sessionManager.getBranch()) {
+			if (entry.type !== "custom") continue;
+			if (entry.customType === GUIDANCE_ENTRY) {
+				const record = parseGuidanceRecord(entry.data);
+				if (record && !records.has(record.id)) records.set(record.id, record);
+			} else if (entry.customType === GUIDANCE_RETIREMENT_ENTRY) {
+				for (const id of parseGuidanceRetirement(entry.data)) records.delete(id);
+			}
+		}
+		for (const id of this.guidanceRetirements) records.delete(id);
+		this.guidanceDirty = false;
+		this.guidanceStatus = "ok";
+		this.guidanceLedger = guidanceHistory([...records.values()]);
 	}
 
 	private notifyGuidance(status: GuidanceStatus, epoch: string, ctx: ExtensionContext): void {
@@ -1005,7 +1017,10 @@ export class PolicyRuntime {
 		if (ctx.mode !== "tui") return;
 		const text =
 			status === "capacity"
-				? "Guidance history is full; earlier guidance keeps its place and new context guidance is refused."
+				? this.guidanceLedger.records.length > GUIDANCE_HISTORY_LIMITS.records ||
+					this.guidanceLedger.retainedBytes > GUIDANCE_HISTORY_LIMITS.bytes
+					? "Guidance history exceeds its limits; guidance projection is paused without discarding records."
+					: "Guidance history is full; earlier guidance keeps its place and new context guidance is refused."
 				: status === "anchor-mismatch"
 					? "Guidance history cannot place an earlier notice; new context guidance is paused."
 					: "Guidance history could not persist a notice; its allowance is unchanged.";
@@ -1053,6 +1068,31 @@ export class PolicyRuntime {
 		}
 		for (const id of ids) if (this.state.project(id, now, this.turn)) this.retainedGuidance.delete(id);
 		return true;
+	}
+
+	/** Retirement must reach storage before any replacement consumes its allowance. */
+	private persistGuidancePlan<M>(
+		plan: GuidancePlan<M>,
+		now: number,
+	): Pick<GuidancePlan<M>, "history" | "messages" | "status"> & { emitted?: string } {
+		const { history, messages, status } = plan;
+		const retained = new Set(history.records.map((record) => record.id));
+		this.guidanceRetirements.push(
+			...this.guidanceLedger.records.filter((record) => !retained.has(record.id)).map((record) => record.id),
+		);
+		if (this.guidanceRetirements.length) {
+			try {
+				this.pi.appendEntry(GUIDANCE_RETIREMENT_ENTRY, { ids: this.guidanceRetirements });
+				this.guidanceRetirements = [];
+			} catch {
+				return { history, messages, status: "persistence-failed" };
+			}
+		}
+		const addition = plan.addition;
+		if (!addition) return { history, messages, status };
+		if (!this.persistGuidance(addition.record, addition.prepared.ids, now))
+			return { history, messages, status: "persistence-failed" };
+		return { history: addition.history, messages: addition.messages, status, emitted: addition.record.text };
 	}
 
 	/**
@@ -1104,14 +1144,7 @@ export class PolicyRuntime {
 				: undefined,
 			now,
 		);
-		let { history, messages, status } = plan;
-		let emitted: string | undefined;
-		if (plan.addition) {
-			if (this.persistGuidance(plan.addition.record, plan.addition.prepared.ids, now)) {
-				({ history, messages } = plan.addition);
-				emitted = plan.addition.record.text;
-			} else status = "persistence-failed";
-		}
+		const { history, messages, status, emitted } = this.persistGuidancePlan(plan, now);
 		this.guidanceLedger = history;
 		this.guidanceEpoch = epoch;
 		this.guidanceStatus = status;

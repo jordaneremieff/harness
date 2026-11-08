@@ -10,6 +10,7 @@ import {
 	guidanceRecordBytes,
 	messageDigest,
 	parseGuidanceRecord,
+	parseGuidanceRetirement,
 	prepareGuidance,
 	projectGuidance,
 	planGuidance,
@@ -360,6 +361,35 @@ test("capacity refuses new records without evicting existing ones", () => {
 	assert.deepEqual(byteRefusal.history, synthetic);
 	assert.equal(appendGuidance(filled, { ...large, id: "record-second" }).status, "appended");
 	assert.equal(guidanceRecordBytes(large) > 0, true);
+});
+
+test("restoration checks surviving records before capacity and never selects guidance for an oversized ledger", () => {
+	const messages = [system({}, 0), user("first", 1)];
+	const sources = sourcesOf(messages);
+	const record = recordAt(sources[0], "[policy] Retained.", "epoch-one", 10);
+	const records = Array.from({ length: GUIDANCE_HISTORY_LIMITS.records + 1 }, (_, index) => ({
+		...record, id: `record-${index}`,
+	}));
+	const restored = guidanceHistory(records);
+	const selection = () => { assert.fail("An oversized ledger must not select new guidance"); };
+	const overflow = planGuidance(messages, sources, restored, same("epoch-one"), selection, 20);
+	assert.equal(overflow.status, "capacity");
+	assert.deepEqual(overflow.history, restored);
+	assert.deepEqual(overflow.messages, messages);
+	assert.equal(overflow.addition, undefined);
+
+	const replaced = [system({}, 0), user("replacement", 1)];
+	const retired = planGuidance(replaced, sourcesOf(replaced), restored,
+		{ epoch: "epoch-two", validatedEpoch: "epoch-one" }, undefined, 20);
+	assert.equal(retired.status, "ok");
+	assert.deepEqual(retired.history.records, []);
+	assert.deepEqual(retired.messages, replaced);
+});
+
+test("retirement entries require a complete list of valid record identities", () => {
+	assert.deepEqual(parseGuidanceRetirement({ ids: ["one", "two"] }), ["one", "two"]);
+	for (const value of [null, [], { ids: "one" }, { ids: ["one", ""] }, { ids: ["one", 2] }, { ids: ["x".repeat(129)] }])
+		assert.deepEqual(parseGuidanceRetirement(value), []);
 });
 
 test("malformed stored records are discarded", () => {

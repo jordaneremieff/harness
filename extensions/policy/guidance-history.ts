@@ -23,6 +23,7 @@ export const GUIDANCE_HISTORY_LIMITS = { records: 128, bytes: 256 * 1024 } as co
 
 /** Custom entry type for ordinary sessions. The entry stays out of LLM context. */
 export const GUIDANCE_ENTRY = "policy_guidance";
+export const GUIDANCE_RETIREMENT_ENTRY = "policy_guidance_retirement";
 
 /** Health state published by the projection. */
 export type GuidanceStatus = "ok" | "capacity" | "anchor-mismatch" | "persistence-failed";
@@ -449,6 +450,14 @@ function parsePins(value: unknown): StatePin[] | undefined {
 	return pins;
 }
 
+/** Validate the record identities named by an ordinary retirement entry. */
+export function parseGuidanceRetirement(value: unknown): string[] {
+	const ids = objectValue(value)?.ids;
+	return Array.isArray(ids) && ids.every((id) => typeof id === "string" && id.length > 0 && id.length <= 128)
+		? ids
+		: [];
+}
+
 /** Validate one stored record. */
 export function parseGuidanceRecord(value: unknown): GuidanceRecord | undefined {
 	const entry = objectValue(value);
@@ -500,13 +509,10 @@ function placeRecords(locator: RequestLocator, history: GuidanceHistory, epochs:
 	return placement;
 }
 
-function project<M extends { role: string }>(
+function projectPlacement<M extends { role: string }>(
 	messages: readonly M[],
-	locator: RequestLocator,
-	history: GuidanceHistory,
-	epochs: GuidanceEpochs,
+	placement: Placement,
 ): GuidanceProjection<M> {
-	const placement = placeRecords(locator, history, epochs);
 	const projected: Array<M | GuidanceMessage> = [];
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index];
@@ -548,7 +554,7 @@ export function projectGuidance<M extends { role: string }>(
 	epochs: GuidanceEpochs,
 	isOwn?: (message: M) => boolean,
 ): GuidanceProjection<M> {
-	return project(messages, locatorFor(messages, sources, history, isOwn), history, epochs);
+	return projectPlacement(messages, placeRecords(locatorFor(messages, sources, history, isOwn), history, epochs));
 }
 
 /** One request's guidance decision, before any record is persisted. */
@@ -581,9 +587,13 @@ export function planGuidance<M extends { role: string }>(
 	now: number,
 ): GuidancePlan<M> {
 	const locator = locatorFor(messages, sources, stored);
-	const existing = project(messages, locator, stored, epochs);
+	const placement = placeRecords(locator, stored, epochs);
+	const retired = new Set(placement.retired.map((record) => record.id));
+	const history = guidanceHistory(stored.records.filter((record) => !retired.has(record.id)));
+	if (history.records.length > GUIDANCE_HISTORY_LIMITS.records || history.retainedBytes > GUIDANCE_HISTORY_LIMITS.bytes)
+		return { history, messages: [...messages], status: "capacity" };
+	const existing = projectPlacement(messages, placement);
 	const faulted = existing.mismatched.length > 0;
-	const history = guidanceHistory(faulted ? [...existing.retained, ...existing.mismatched] : existing.retained);
 	const base = { history, messages: existing.messages };
 	if (faulted) return { ...base, status: "anchor-mismatch" };
 	const prepared = select?.();
@@ -600,7 +610,7 @@ export function planGuidance<M extends { role: string }>(
 			record,
 			prepared,
 			history: appended.history,
-			messages: project(messages, locator, appended.history, epochs).messages,
+			messages: projectPlacement(messages, placeRecords(locator, appended.history, epochs)).messages,
 		},
 	};
 }
