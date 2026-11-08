@@ -2,13 +2,28 @@ import assert from "node:assert/strict";
 import { it } from "node:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth, CURSOR_MARKER } from "@earendil-works/pi-tui";
-import { dashboardGeometry, dashboardHeading, LIST_BLOCK_ROWS, listBlock, readingGeometry } from "./dashboard-layout.ts";
+import { visibleWidth, truncateToWidth, CURSOR_MARKER } from "@earendil-works/pi-tui";
+import { dashboardGeometry, dashboardHeading, fitLine, LIST_BLOCK_ROWS, listBlock, readingGeometry } from "./dashboard-layout.ts";
 import { fixture, row, source, theme, turn } from "./dashboard-test-fixture.mts";
 import { agentState, updateDraft } from "./dashboard-state.ts";
 
 /** Visible text: styling and the zero-width cursor markers removed, so columns match the screen. */
 const visible = (lines: string[]) => lines.map((line) => stripVTControlCharacters(line.replace(/\x1b_[^\x07]*\x07/g, "")));
+
+it("line fitting preserves truncation and padding for styled and Unicode text", () => {
+	const hyperlink = "\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\";
+	const cases: Array<[string, number[]]> = [
+		["\x1b[31mstyled row\x1b[0m", [0, 1, 5, 10, 15]],
+		[`${hyperlink}${CURSOR_MARKER}`, [0, 1, 3, 4, 8]],
+		["界e\u0301🙂", [0, 1, 2, 4, 5, 8]],
+		["a\tb", [0, 1, 4, 5, 8]],
+		["x".repeat(4097), [0, 1, 80]],
+	];
+	for (const [text, widths] of cases) for (const width of widths) {
+		const value = truncateToWidth(text, Math.max(1, width), "…");
+		assert.equal(fitLine(text, width), value + " ".repeat(Math.max(0, width - visibleWidth(value))), `width ${width}, length ${text.length}`);
+	}
+});
 
 it("the roster keeps its share of the window and the conversation keeps the body", () => {
 	for (const [width, expected] of [[100, 32], [120, 32], [164, 44], [240, 60]]) {

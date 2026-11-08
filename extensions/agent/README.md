@@ -13,7 +13,8 @@ existing `ctrl+alt+g` shortcut also opens it without changing your native draft.
 The view lists agents beside the selected conversation on wide terminals and
 above it on narrow terminals, with the conversation, its message field and the
 agent's controls in one place. Esc steps back to the untouched primary without
-stopping work.
+stopping work. The view measures bounded rows before truncation and retains
+fitting text with its terminal styling and padding.
 
 Choose the surface that serves your task:
 

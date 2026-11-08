@@ -23,7 +23,12 @@ export function clamp(value: number, min: number, max: number): number {
 	return Math.max(min, Math.min(max, Math.round(value)));
 }
 export function fitLine(text: string, width: number): string {
-	const value = truncateToWidth(text, Math.max(1, width), "…");
+	const limit = Math.max(1, width);
+	if (text.length <= 4096) {
+		const measured = visibleWidth(text);
+		if (measured <= limit) return text + " ".repeat(Math.max(0, width - measured));
+	}
+	const value = truncateToWidth(text, limit, "…");
 	return value + " ".repeat(Math.max(0, width - visibleWidth(value)));
 }
 export function dashboardHeading(title: string, position: string, width: number, theme: Paint, bottom = false): string {
