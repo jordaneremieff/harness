@@ -415,6 +415,50 @@ describe("PolicyWriter", () => {
 		assert.deepEqual(writer.health(), { state: "ok", lostRecords: 0, lostBytes: 0 });
 	});
 
+	it("counts preparation expiry without an append and admits a later batch", async (t) => {
+		const dir = await policyDir(t);
+		let now = 0;
+		t.mock.method(performance, "now", () => now);
+		let prepared = () => {};
+		const preparing = new Promise<void>((resolve) => { prepared = resolve; });
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		let dropped = () => {};
+		const lost = new Promise<void>((resolve) => { dropped = resolve; });
+		const states: string[] = [];
+		let attempts = 0;
+		const writer = new PolicyWriter(dir, (health) => {
+			states.push(health.state);
+			if (health.state === "pressure") dropped();
+		}, async (path, batch, retention, options) => {
+			attempts++;
+			await appendSerializedTelemetryRecords(path, batch, retention, { ...options, hooks: {
+				afterDirectoryPreparation: async () => {
+					if (attempts === 1) { prepared(); await gate; }
+				},
+			} });
+		});
+		const row = entry();
+		assert.equal(writer.enqueue(row), true);
+		await preparing;
+		assert.deepEqual(await readdir(join(dir, "telemetry")), []);
+		now = 2100;
+		release();
+		await lost;
+		await new Promise((resolve) => setImmediate(resolve));
+		const loss = { lostRecords: 1, lostBytes: serializeTelemetryRecord(row).bytes };
+		assert.deepEqual(writer.health(), { state: "pressure", ...loss });
+		assert.equal(attempts, 1, "expiry is not retried as lock contention");
+		assert.deepEqual(await readdir(join(dir, "telemetry")), []);
+		const later = { ...entry(), callId: "later-admission" };
+		assert.equal(writer.enqueue(later), true);
+		await writer.close();
+		assert.equal(attempts, 2);
+		assert.deepEqual(await segmentLines(dir, localDate(new Date(later.at))), [JSON.stringify(later)]);
+		assert.deepEqual(writer.health(), { state: "ok", ...loss });
+		assert.deepEqual(states, ["pressure", "ok"]);
+	});
+
 	it("drops only an expired batch and writes later batches after lock release", async (t) => {
 		const dir = await policyDir(t);
 		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
@@ -562,6 +606,36 @@ describe("PolicyWriter", () => {
 		await writer.close();
 		assert.equal(attempts, 1);
 		assert.equal(writer.health().state, "failed");
+	});
+
+	it("never extends one batch's deadline when close starts near expiry", async (t) => {
+		let now = 0;
+		t.mock.method(performance, "now", () => now);
+		let attempted = () => {};
+		const attempting = new Promise<void>((resolve) => { attempted = resolve; });
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const deadlines: number[] = [];
+		const writer = new PolicyWriter("/unused", () => {}, async (_dir, _batch, _retention, options) => {
+			assert.ok(options?.acquireUntil !== undefined);
+			deadlines.push(options.acquireUntil);
+			if (deadlines.length === 1) { attempted(); await gate; }
+			else now = options.acquireUntil;
+			throw new TelemetryLockBusyError("held");
+		});
+		const row = entry();
+		assert.equal(writer.enqueue(row), true);
+		await attempting;
+		assert.deepEqual(deadlines, [2000]);
+		now = 1900;
+		const closing = writer.close();
+		assert.equal(writer.enqueue(row), false);
+		now = 2000;
+		release();
+		await closing;
+		assert.deepEqual(deadlines, [2000], "close does not grant another acquisition after the original deadline");
+		assert.equal(now, 2000);
+		assert.deepEqual(writer.health(), { state: "pressure", lostRecords: 1, lostBytes: serializeTelemetryRecord(row).bytes });
 	});
 
 	it("bounds all shutdown acquisitions by one deadline and leaves no retry after close", async (t) => {

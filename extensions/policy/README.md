@@ -1579,7 +1579,10 @@ the policy directory.
   within a 2,000 ms monotonic budget from the batch's first attempt. It retains
   and retries the same serialised batch before any later batch. Expiry discards
   only that unwritten batch and counts its lost records and serialised bytes;
-  future admission stays open. Policy never removes a lock because of its age;
+  future admission stays open. Directory preparation consumes that same budget.
+  Expiry before the first lock creation produces `TelemetryAcquisitionExpiredError`,
+  not held-lock contention or a permanent failure; no retention or append occurs.
+  Policy never removes a lock because of its age;
   if a process stopped while holding it, stop all policy writers before removing
   `.telemetry-lock` by hand.
 - **Queue.** The writer holds at most 512 accepted records and 4 MiB of serialised
@@ -1599,7 +1602,8 @@ the policy directory.
   Telemetry failure never changes an approved tool decision.
 - **Close.** Closing stops admission. Remaining acquisitions share one 2,000 ms
   monotonic budget from close, rather than a separate budget per remaining batch.
-  The writer counts and discards batches that never acquire the lock by that
+  Each batch also retains its original acquisition deadline; close never extends it.
+  The writer counts and discards batches that never acquire the lock by the earlier
   deadline. An acquired append and its cleanup finish without cancellation.
   Close leaves no retry timer; an idle writer has no retry timer.
 

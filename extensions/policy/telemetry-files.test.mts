@@ -12,6 +12,7 @@ import {
 	serializeTelemetryRecord,
 	readTelemetryInventory,
 	TELEMETRY_INVENTORY_ENTRIES,
+	TelemetryAcquisitionExpiredError,
 	TelemetryLockBusyError,
 	TELEMETRY_SEGMENT_BYTES,
 	type TelemetryRetention,
@@ -291,6 +292,45 @@ describe("telemetry safety", () => {
 });
 
 describe("telemetry lock", () => {
+	it("expires after delayed directory preparation without creating a free lock or appending", async (t) => {
+		const dir = await policyDir(t);
+		let now = 0;
+		t.mock.method(performance, "now", () => now);
+		let prepared = () => {};
+		const preparing = new Promise<void>((resolve) => { prepared = resolve; });
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const appending = appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record())], RETENTION, {
+			acquireUntil: 2000,
+			hooks: { afterDirectoryPreparation: async () => { prepared(); await gate; } },
+		});
+		const expired = assert.rejects(appending, (error: unknown) => {
+			assert.ok(error instanceof TelemetryAcquisitionExpiredError);
+			assert.ok(!(error instanceof TelemetryLockBusyError));
+			return true;
+		});
+		await preparing;
+		assert.deepEqual(await names(dir), []);
+		now = 2100;
+		release();
+		await expired;
+		assert.deepEqual(await names(dir), []);
+	});
+
+	it("finishes an acquired append and lock cleanup after its acquisition deadline", async (t) => {
+		const dir = await policyDir(t);
+		let now = 0;
+		t.mock.method(performance, "now", () => now);
+		const row = record();
+		await appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(row)], RETENTION, {
+			acquireUntil: 2000,
+			hooks: { afterInventory: async () => { now = 2100; } },
+		});
+		assert.deepEqual(await names(dir), [`${DAY}.000001.jsonl`]);
+		const lines = (await readFile(join(dir, "telemetry", `${DAY}.000001.jsonl`), "utf8")).split("\n").filter(Boolean);
+		assert.deepEqual(lines, [JSON.stringify(row)]);
+	});
+
 	it("fails within the acquisition limit on a held lock and never removes it", async (t) => {
 		const dir = await policyDir(t);
 		const lock = join(dir, "telemetry", ".telemetry-lock");

@@ -13,6 +13,7 @@ import {
 	TELEMETRY_BATCH_RECORDS,
 	TELEMETRY_QUEUE_BYTES,
 	TELEMETRY_QUEUE_RECORDS,
+	TelemetryAcquisitionExpiredError,
 	type TelemetryHealth,
 	TelemetryLockBusyError,
 	type TelemetryRetention,
@@ -177,7 +178,7 @@ export class PolicyWriter implements TelemetryWriter {
 	}
 
 	private acquisitionDeadline(started: number): number {
-		return this.closeDeadline ?? started + TELEMETRY_RETRY_BUDGET_MS;
+		return Math.min(started + TELEMETRY_RETRY_BUDGET_MS, this.closeDeadline ?? Number.POSITIVE_INFINITY);
 	}
 
 	private async backoff(started: number): Promise<void> {
@@ -204,6 +205,7 @@ export class PolicyWriter implements TelemetryWriter {
 				await this.append(this.dir, batch, this.retention, { acquireUntil: deadline });
 				return "written";
 			} catch (error) {
+				if (error instanceof TelemetryAcquisitionExpiredError) return "dropped";
 				if (!(error instanceof TelemetryLockBusyError)) throw error;
 				this.state("pressure");
 				if (!this.discardQueued) await this.backoff(started);

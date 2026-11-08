@@ -60,6 +60,14 @@ export class TelemetryLockBusyError extends Error {
 	}
 }
 
+/** Acquisition expired before lock creation, without retention or append. */
+export class TelemetryAcquisitionExpiredError extends Error {
+	constructor(path: string) {
+		super(`policy telemetry acquisition expired before lock creation at ${path}`);
+		this.name = "TelemetryAcquisitionExpiredError";
+	}
+}
+
 export interface TelemetryAppendOptions {
 	/** Absolute monotonic deadline shared by a batch's acquisition attempts. */
 	readonly acquireUntil?: number;
@@ -252,11 +260,14 @@ async function acquireLock(
 	const deadline = Math.min(performance.now() + LOCK_WAIT_MS, acquireUntil);
 	let contended = false;
 	for (;;) {
-		if (contended && performance.now() >= deadline) throw new TelemetryLockBusyError(path);
+		if (performance.now() >= deadline) {
+			if (contended) throw new TelemetryLockBusyError(path);
+			throw new TelemetryAcquisitionExpiredError(path);
+		}
 		const handle = await tryCreateLock(path);
 		if (handle) return handle;
-		contended = true;
 		if (!(await inspectLock(path, hooks))) continue;
+		contended = true;
 		const remaining = deadline - performance.now();
 		if (remaining <= 0) throw new TelemetryLockBusyError(path);
 		await delay(Math.min(LOCK_RETRY_MS, remaining));
@@ -289,6 +300,8 @@ export function serializeTelemetryRecord(record: PolicyRecord): SerializedTeleme
 
 /** Test seams for failures that a real directory cannot produce on demand. */
 export interface TelemetryFileHooks {
+	/** Runs after directory preparation and before the first lock-creation attempt. */
+	readonly afterDirectoryPreparation?: () => Promise<void>;
 	/** Runs after the inventory is read and before any retention or append. */
 	readonly afterInventory?: () => Promise<void>;
 	/** Replaces the removal of one inspected segment. */
@@ -503,6 +516,7 @@ export async function appendSerializedTelemetryRecords(
 	await privateDirectory(policyDir);
 	const dir = telemetryDirectory(policyDir);
 	await privateDirectory(dir);
+	await hooks?.afterDirectoryPreparation?.();
 	const lockPath = join(dir, TELEMETRY_LOCK_FILE);
 	const handle = await acquireLock(lockPath, options.acquireUntil ?? Number.POSITIVE_INFINITY, hooks);
 	let failure: unknown;
