@@ -90,7 +90,7 @@ function fixture(mode: PolicyMode = "enforce", records = rules()) {
 	const telemetry: PolicyRecord[] = [];
 	const writer = new PolicyWriter(
 		"/unused",
-		(reason) => assert.fail(reason),
+		(health) => assert.fail(health.reason ?? health.state),
 		async (_dir, batch) => {
 			telemetry.push(...batch.map((item) => JSON.parse(item.json) as PolicyRecord));
 		},

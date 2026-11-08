@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, type TestContext } from "node:test";
 import type { PolicyRecord } from "./record.ts";
 import { appendRecord, PolicyWriter } from "./store.ts";
 import {
+	appendSerializedTelemetryRecords,
 	localDate,
+	serializeTelemetryRecord,
+	TelemetryLockBusyError,
 	TELEMETRY_BATCH_BYTES,
 	TELEMETRY_BATCH_RECORDS,
 	TELEMETRY_QUEUE_BYTES,
@@ -178,7 +182,7 @@ describe("PolicyWriter", () => {
 			release = resolve;
 		});
 		let started = false;
-		const writer = new PolicyWriter("/unused", assert.fail, async () => {
+		const writer = new PolicyWriter("/unused", (health) => assert.fail(health.reason ?? health.state), async () => {
 			started = true;
 			await gate;
 		});
@@ -196,52 +200,53 @@ describe("PolicyWriter", () => {
 		assert.equal(flushed, true);
 	});
 
-	it("stops accepting at the record bound, reports once, and drains accepted work", async () => {
-		const failures: string[] = [];
+	it("refuses and counts excess records, reports state changes, and resumes admission after drain", async () => {
+		const states: string[] = [];
 		let written = 0;
-		const writer = new PolicyWriter(
-			"/unused",
-			(reason) => failures.push(reason),
-			async (_dir, batch) => {
-				written += batch.length;
-			},
-		);
-		let accepted = true;
-		for (let index = 0; index <= TELEMETRY_QUEUE_RECORDS; index++) accepted = writer.enqueue(entry());
-		assert.equal(accepted, false, "the record past the bound is not accepted");
-		assert.equal(writer.enqueue(entry()), false);
+		const writer = new PolicyWriter("/unused", (health) => states.push(health.state), async (_dir, batch) => {
+			written += batch.length;
+		});
+		const row = entry();
+		for (let index = 0; index < TELEMETRY_QUEUE_RECORDS; index++) assert.equal(writer.enqueue(row), true);
+		assert.equal(writer.enqueue(row), false);
+		assert.equal(writer.enqueue(row), false);
+		assert.deepEqual(writer.health(), { state: "pressure", lostRecords: 2, lostBytes: serializeTelemetryRecord(row).bytes * 2 });
+		assert.deepEqual(states, ["pressure"]);
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(writer.enqueue(row), true);
 		await writer.close();
-		assert.equal(failures.length, 1);
-		assert.match(failures[0], /queue reached 512 records/);
-		assert.equal(written, TELEMETRY_QUEUE_RECORDS);
+		assert.deepEqual(states, ["pressure", "ok"]);
+		assert.equal(writer.health().lostRecords, 2);
+		assert.equal(written, TELEMETRY_QUEUE_RECORDS + 1);
 	});
 
-	it("stops accepting at the serialized byte bound and drains accepted work", async () => {
-		const failures: string[] = [];
-		let written = 0;
+	it("charges in-flight serialized bytes to the cap without closing admission", async () => {
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
 		let writtenBytes = 0;
-		const writer = new PolicyWriter(
-			"/unused",
-			(reason) => failures.push(reason),
-			async (_dir, batch) => {
-				written += batch.length;
-				for (const item of batch) writtenBytes += item.bytes;
-			},
-		);
+		const writer = new PolicyWriter("/unused", () => {}, async (_dir, batch) => {
+			await gate;
+			for (const item of batch) writtenBytes += item.bytes;
+		});
 		const large = { ...entry(), captured: "x".repeat(200 * 1024) };
-		let accepted = 0;
+		const bytes = serializeTelemetryRecord(large).bytes;
+		assert.equal(writer.enqueue(large), true);
+		await new Promise((resolve) => setImmediate(resolve));
+		let accepted = 1;
 		while (writer.enqueue(large)) accepted++;
-		assert.ok(accepted > 0 && accepted < TELEMETRY_QUEUE_RECORDS);
+		assert.equal(accepted, Math.floor(TELEMETRY_QUEUE_BYTES / bytes));
+		assert.deepEqual(writer.health(), { state: "pressure", lostRecords: 1, lostBytes: bytes });
+		release();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(writer.enqueue(large), true);
 		await writer.close();
-		assert.equal(failures.length, 1);
-		assert.match(failures[0], /queue reached 4194304 bytes/);
-		assert.equal(written, accepted);
-		assert.ok(writtenBytes <= TELEMETRY_QUEUE_BYTES);
+		assert.equal(writtenBytes, (accepted + 1) * bytes);
+		assert.equal(writer.health().state, "ok");
 	});
 
 	it("groups queued records into bounded batches and runs an oversized permitted record alone", async () => {
 		const batches: string[][] = [];
-		const writer = new PolicyWriter("/unused", assert.fail, async (_dir, batch) => {
+		const writer = new PolicyWriter("/unused", (health) => assert.fail(health.reason ?? health.state), async (_dir, batch) => {
 			batches.push(batch.map((item) => item.json));
 		});
 		for (let index = 0; index < TELEMETRY_BATCH_RECORDS * 2 + 5; index++) writer.enqueue(entry());
@@ -259,7 +264,7 @@ describe("PolicyWriter", () => {
 	it("queues an owned snapshot serialised once and appends those exact bytes", async () => {
 		const original = JSON.stringify;
 		const seen: Array<{ day: string; json: string; bytes: number }> = [];
-		const writer = new PolicyWriter("/unused", assert.fail, async (_dir, batch) => {
+		const writer = new PolicyWriter("/unused", (health) => assert.fail(health.reason ?? health.state), async (_dir, batch) => {
 			seen.push(...batch);
 		});
 		const mutable = { ...entry(), captured: "before" };
@@ -288,7 +293,7 @@ describe("PolicyWriter", () => {
 			release = resolve;
 		});
 		const sizes: number[] = [];
-		const writer = new PolicyWriter("/unused", assert.fail, async (_dir, batch) => {
+		const writer = new PolicyWriter("/unused", (health) => assert.fail(health.reason ?? health.state), async (_dir, batch) => {
 			for (const item of batch) sizes.push(item.bytes, Buffer.byteLength(item.json, "utf8") + 2);
 			await gate;
 		});
@@ -302,7 +307,7 @@ describe("PolicyWriter", () => {
 
 	it("rejects new records after close admission", async () => {
 		let written = 0;
-		const writer = new PolicyWriter("/unused", assert.fail, async (_dir, batch) => {
+		const writer = new PolicyWriter("/unused", (health) => assert.fail(health.reason ?? health.state), async (_dir, batch) => {
 			written += batch.length;
 		});
 		assert.equal(writer.enqueue(entry()), true);
@@ -317,7 +322,7 @@ describe("PolicyWriter", () => {
 		let calls = 0;
 		const writer = new PolicyWriter(
 			"/unused",
-			(reason) => failures.push(reason),
+			(health) => failures.push(health.reason ?? health.state),
 			async () => {
 				calls++;
 				throw new Error("store failed");
@@ -337,7 +342,7 @@ describe("PolicyWriter", () => {
 		let calls = 0;
 		const writer = new PolicyWriter(
 			"/unused",
-			(reason) => failures.push(reason),
+			(health) => failures.push(health.reason ?? health.state),
 			async () => {
 				calls++;
 			},
@@ -348,7 +353,7 @@ describe("PolicyWriter", () => {
 		assert.equal(calls, 0);
 		assert.equal(failures.length, 1);
 		assert.match(failures[0], /exceeds/);
-		const undated = new PolicyWriter("/unused", (reason) => failures.push(reason), async () => {});
+		const undated = new PolicyWriter("/unused", (health) => failures.push(health.reason ?? health.state), async () => {});
 		assert.equal(undated.enqueue(record("not-a-date")), false);
 		assert.match(failures[1], /invalid policy timestamp/);
 	});
@@ -369,24 +374,221 @@ describe("PolicyWriter", () => {
 
 	it("writes through the default file store under the telemetry directory", async (t) => {
 		const dir = await policyDir(t);
-		const writer = new PolicyWriter(dir, assert.fail);
+		const writer = new PolicyWriter(dir, (health) => assert.fail(health.reason ?? health.state));
 		const at = new Date(2026, 8, 3, 12).toISOString();
 		for (let index = 0; index < 5; index++) writer.enqueue({ ...record(at), callId: `c${index}` });
 		await writer.close();
 		assert.equal((await segmentLines(dir, "2026-09-03")).length, 5);
 	});
 
-	it("reports a held lock as a persistence failure after the bounded wait", async (t) => {
+	it("retries exact admitted bytes when a lock clears after the first acquisition wait", async (t) => {
 		const dir = await policyDir(t);
 		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
-		await writeFile(join(dir, "telemetry", ".telemetry-lock"), "", { mode: 0o600 });
-		const failures: string[] = [];
-		const writer = new PolicyWriter(dir, (reason) => failures.push(reason));
-		const started = Date.now();
+		const lock = join(dir, "telemetry", ".telemetry-lock");
+		await writeFile(lock, "", { mode: 0o600 });
+		const states: string[] = [];
+		const seen: unknown[] = [];
+		let written = () => {};
+		const persisted = new Promise<void>((resolve) => { written = resolve; });
+		const writer = new PolicyWriter(dir, (health) => states.push(health.state), async (...args) => {
+			seen.push(args[1]);
+			assert.ok((args[3]?.acquireUntil ?? 0) - performance.now() <= 2000);
+			await appendSerializedTelemetryRecords(...args);
+			written();
+		});
+		const row = entry();
+		const snapshot = JSON.stringify(row);
+		assert.equal(writer.enqueue(row), true);
+		row.captured = "mutated after admission";
+		const started = performance.now();
+		await delay(700);
+		await unlink(lock);
+		await persisted;
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual(await segmentLines(dir, localDate(new Date(row.at))), [snapshot]);
+		assert.ok(performance.now() - started < 2000);
+		assert.ok(seen.length >= 2);
+		assert.equal(seen[0], seen[1], "retry retains the same serialised batch");
+		assert.deepEqual(states, ["pressure", "ok"]);
+		assert.equal(writer.enqueue(entry()), true);
+		await writer.close();
+		assert.deepEqual(writer.health(), { state: "ok", lostRecords: 0, lostBytes: 0 });
+	});
+
+	it("drops only an expired batch and writes later batches after lock release", async (t) => {
+		const dir = await policyDir(t);
+		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
+		const lock = join(dir, "telemetry", ".telemetry-lock");
+		await writeFile(lock, "", { mode: 0o600 });
+		const writer = new PolicyWriter(dir, () => {});
+		const row = entry();
+		assert.equal(writer.enqueue(row), true);
+		await new Promise((resolve) => setImmediate(resolve));
+		const kept = { ...entry(), callId: "retained-next-batch" };
+		assert.equal(writer.enqueue(kept), true);
+		await delay(2150);
+		assert.deepEqual(writer.health(), { state: "pressure", lostRecords: 1, lostBytes: serializeTelemetryRecord(row).bytes });
+		await unlink(lock);
+		const later = { ...entry(), callId: "later" };
+		assert.equal(writer.enqueue(later), true);
+		await writer.close();
+		assert.deepEqual(await segmentLines(dir, localDate(new Date(row.at))), [JSON.stringify(kept), JSON.stringify(later)]);
+		assert.deepEqual(writer.health(), { state: "ok", lostRecords: 1, lostBytes: serializeTelemetryRecord(row).bytes });
+	});
+
+	it("charges an in-flight retry batch to the record cap and recovers from queue pressure", async (t) => {
+		const dir = await policyDir(t);
+		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
+		const lock = join(dir, "telemetry", ".telemetry-lock");
+		await writeFile(lock, "", { mode: 0o600 });
+		const states: string[] = [];
+		let written = () => {};
+		const persisted = new Promise<void>((resolve) => { written = resolve; });
+		const writer = new PolicyWriter(dir, (health) => states.push(health.state), async (...args) => {
+			await appendSerializedTelemetryRecords(...args);
+			written();
+		});
+		const row = entry();
+		assert.equal(writer.enqueue(row), true);
+		await delay(550);
+		for (let index = 1; index < TELEMETRY_QUEUE_RECORDS; index++) assert.equal(writer.enqueue(row), true);
+		assert.equal(writer.enqueue(row), false, "in-flight record occupies the last slot");
+		assert.equal(writer.enqueue(row), false);
+		assert.deepEqual(states, ["pressure"]);
+		await unlink(lock);
+		await persisted;
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(writer.enqueue(row), true);
+		await writer.close();
+		assert.deepEqual(writer.health(), { state: "ok", lostRecords: 2, lostBytes: serializeTelemetryRecord(row).bytes * 2 });
+		assert.equal((await segmentLines(dir, localDate(new Date(row.at)))).length, TELEMETRY_QUEUE_RECORDS + 1);
+	});
+
+	it("never retries a partial append failure", async (t) => {
+		const dir = await policyDir(t);
+		let attempts = 0;
+		let writes = 0;
+		const writer = new PolicyWriter(dir, () => {}, async (path, batch, retention, options) => {
+			attempts++;
+			await appendSerializedTelemetryRecords(path, batch, retention, { ...options, hooks: {
+				writeChunk: async (handle, bytes) => {
+					if (writes++ === 0) return (await handle.write(bytes.subarray(0, 10))).bytesWritten;
+					throw new Error("partial append failed");
+				},
+			} });
+		});
 		writer.enqueue(entry());
 		await writer.close();
-		assert.ok(Date.now() - started >= 400);
-		assert.match(failures[0], /lock remains held/);
-		await stat(join(dir, "telemetry", ".telemetry-lock"));
+		assert.equal(attempts, 1);
+		assert.equal(writes, 2);
+		assert.equal(writer.health().state, "failed");
+		assert.match(writer.health().reason ?? "", /partial append failed/);
+		assert.equal(writer.enqueue(entry()), false);
+		const files = await readdir(join(dir, "telemetry"));
+		assert.equal(files.length, 1);
+		assert.equal((await stat(join(dir, "telemetry", files[0]))).size, 10);
+	});
+
+	it("never retries an unlock identity failure after append", async (t) => {
+		const dir = await policyDir(t);
+		let attempts = 0;
+		const writer = new PolicyWriter(dir, () => {}, async (path, batch, retention, options) => {
+			attempts++;
+			await appendSerializedTelemetryRecords(path, batch, retention, { ...options, hooks: {
+				afterInventory: async () => {
+					const lock = join(dir, "telemetry", ".telemetry-lock");
+					await rename(lock, join(dir, "telemetry", "retained-lock"));
+					await writeFile(lock, "replacement", { mode: 0o600 });
+				},
+			} });
+		});
+		const row = entry();
+		writer.enqueue(row);
+		await writer.close();
+		assert.equal(attempts, 1);
+		assert.equal(writer.health().state, "failed");
+		assert.match(writer.health().reason ?? "", /lock changed/);
+		assert.equal(writer.enqueue(entry()), false);
+		assert.deepEqual(await segmentLines(dir, localDate(new Date(row.at))), [JSON.stringify(row)]);
+	});
+
+	it("retries after bounded jitter and leaves no idle retry work after recovery", async (t) => {
+		t.mock.method(Math, "random", () => 0.5);
+		const attempted: number[] = [];
+		let complete = () => {};
+		const recovered = new Promise<void>((resolve) => { complete = resolve; });
+		const writer = new PolicyWriter("/unused", () => {}, async () => {
+			attempted.push(performance.now());
+			if (attempted.length === 1) throw new TelemetryLockBusyError("held");
+			complete();
+		});
+		writer.enqueue(entry());
+		await recovered;
+		await new Promise((resolve) => setImmediate(resolve));
+		const elapsed = attempted[1] - attempted[0];
+		assert.ok(elapsed >= 70 && elapsed < 300, `75 ms jitter resumed after ${elapsed} ms`);
+		assert.deepEqual(writer.health(), { state: "ok", lostRecords: 0, lostBytes: 0 });
+		await delay(120);
+		assert.equal(attempted.length, 2);
+		await writer.close();
+	});
+
+	it("cancels retry backoff when invalid admission fails the writer", async (t) => {
+		t.mock.method(Math, "random", () => 0.999);
+		let attempts = 0;
+		const writer = new PolicyWriter("/unused", () => {}, async () => {
+			attempts++;
+			throw new TelemetryLockBusyError("held");
+		});
+		writer.enqueue(entry());
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(writer.health().state, "pressure");
+		const started = performance.now();
+		assert.equal(writer.enqueue(record("invalid")), false);
+		await writer.close();
+		assert.ok(performance.now() - started < 50, "close cancels the pending 100 ms backoff");
+		assert.equal(attempts, 1);
+		assert.equal(writer.health().state, "failed");
+		assert.equal(writer.health().lostRecords, 2);
+	});
+
+	it("does not retry an untyped error with the busy error message", async () => {
+		let attempts = 0;
+		const writer = new PolicyWriter("/unused", () => {}, async () => {
+			attempts++;
+			throw new Error(new TelemetryLockBusyError("/unused").message);
+		});
+		writer.enqueue(entry());
+		await writer.close();
+		assert.equal(attempts, 1);
+		assert.equal(writer.health().state, "failed");
+	});
+
+	it("bounds all shutdown acquisitions by one deadline and leaves no retry after close", async (t) => {
+		const dir = await policyDir(t);
+		await mkdir(join(dir, "telemetry"), { recursive: true, mode: 0o700 });
+		const lock = join(dir, "telemetry", ".telemetry-lock");
+		await writeFile(lock, "", { mode: 0o600 });
+		let calls = 0;
+		const states: string[] = [];
+		const writer = new PolicyWriter(dir, (health) => states.push(health.state), async (...args) => {
+			calls++;
+			await appendSerializedTelemetryRecords(...args);
+		});
+		const row = entry();
+		for (let index = 0; index < 100; index++) writer.enqueue(row);
+		await delay(600);
+		const started = performance.now();
+		await writer.close();
+		const elapsed = performance.now() - started;
+		assert.ok(elapsed >= 1900 && elapsed < 2800, `close took ${elapsed} ms`);
+		assert.deepEqual(writer.health(), { state: "pressure", lostRecords: 100, lostBytes: serializeTelemetryRecord(row).bytes * 100 });
+		assert.deepEqual(states, ["pressure"]);
+		const stopped = calls;
+		await unlink(lock);
+		await delay(120);
+		assert.equal(calls, stopped, "no retry timer survives close");
+		assert.equal(writer.enqueue(row), false);
+		assert.deepEqual(await readdir(join(dir, "telemetry")), []);
 	});
 });

@@ -193,6 +193,7 @@ test("the real inspection invocation produces only its ordinary completion recor
 				return true;
 			},
 			close: async () => {},
+			health: () => ({ state: "ok", lostRecords: 0, lostBytes: 0 }),
 		},
 	);
 	runtime.sync(f.snapshot);

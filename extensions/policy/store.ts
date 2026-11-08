@@ -1,6 +1,7 @@
 /** Append-only, private filesystem persistence for policy records. */
 
 import { chmod, lstat, mkdir } from "node:fs/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import type { PolicyRecord } from "./record.ts";
 import {
 	appendSerializedTelemetryRecords,
@@ -12,6 +13,8 @@ import {
 	TELEMETRY_BATCH_RECORDS,
 	TELEMETRY_QUEUE_BYTES,
 	TELEMETRY_QUEUE_RECORDS,
+	type TelemetryHealth,
+	TelemetryLockBusyError,
 	type TelemetryRetention,
 	type TelemetryWriter,
 } from "./telemetry-files.ts";
@@ -59,51 +62,70 @@ export async function appendRecord(
 	}
 }
 
+const TELEMETRY_RETRY_BUDGET_MS = 2_000;
+
 /**
- * Bounded serial writer that keeps filesystem work outside tool-result handlers. Each accepted
- * record is serialised once, and the queue holds only those bytes. Every queued promise handles
- * its own failure, so no rejection can escape in the background.
+ * Bounded serial writer outside tool-result handlers. Accepted records are serialised once.
+ * In-flight batches remain charged to the queue until written or discarded.
  */
 export class PolicyWriter implements TelemetryWriter {
 	private accepting = true;
 	private discardQueued = false;
-	private failureReported = false;
+	private currentHealth: TelemetryHealth = { state: "ok", lostRecords: 0, lostBytes: 0 };
+	private closeDeadline: number | undefined;
+	private retryAbort: AbortController | undefined;
 	private queuedBytes = 0;
 	private queuedRecords = 0;
 	private pending: SerializedTelemetryRecord[] = [];
 	private drainPromise: Promise<void> | undefined;
 	private readonly dir: string;
-	private readonly onFailure: (reason: string) => void;
+	private readonly onStateChange: (health: TelemetryHealth) => void;
 	private readonly append: AppendTelemetry;
 	private readonly retention: TelemetryRetention;
 
 	constructor(
 		dir: string,
-		onFailure: (reason: string) => void,
+		onStateChange: (health: TelemetryHealth) => void,
 		append: AppendTelemetry = appendSerializedTelemetryRecords,
 		retention: TelemetryRetention = DEFAULT_TELEMETRY_RETENTION,
 	) {
 		this.dir = dir;
-		this.onFailure = onFailure;
+		this.onStateChange = onStateChange;
 		this.append = append;
 		this.retention = retention;
 	}
 
-	private fail(reason: string, discardQueued: boolean): void {
-		this.accepting = false;
-		if (discardQueued) {
-			this.discardQueued = true;
-			this.pending = [];
-			this.queuedBytes = 0;
-			this.queuedRecords = 0;
-		}
-		if (this.failureReported) return;
-		this.failureReported = true;
+	health(): TelemetryHealth {
+		return { ...this.currentHealth };
+	}
+
+	private lose(records: number, bytes: number): void {
+		this.currentHealth = {
+			...this.currentHealth,
+			lostRecords: this.currentHealth.lostRecords + records,
+			lostBytes: this.currentHealth.lostBytes + bytes,
+		};
+	}
+
+	private state(state: TelemetryHealth["state"], reason?: string): void {
+		if (this.currentHealth.state === "failed" || this.currentHealth.state === state) return;
+		this.currentHealth = { ...this.currentHealth, state, ...(reason === undefined ? {} : { reason }) };
 		try {
-			this.onFailure(reason);
+			this.onStateChange(this.health());
 		} catch {
-			// Failure reporting must not create an unhandled rejection.
+			// Reporting has no persistence authority.
 		}
+	}
+
+	private fail(reason: string): void {
+		if (this.currentHealth.state === "failed") return;
+		this.accepting = false;
+		this.discardQueued = true;
+		const bytes = this.pending.reduce((total, entry) => total + entry.bytes, 0);
+		this.releaseBatch(this.pending.length, bytes, true);
+		this.pending = [];
+		this.retryAbort?.abort();
+		this.state("failed", reason);
 	}
 
 	/** Queue telemetry only. Refusal never changes an approved policy decision. */
@@ -113,15 +135,13 @@ export class PolicyWriter implements TelemetryWriter {
 		try {
 			admitted = serializeTelemetryRecord(record);
 		} catch (error) {
-			this.fail(errorMessage(error), true);
+			this.lose(1, 0);
+			this.fail(errorMessage(error));
 			return false;
 		}
-		if (this.queuedRecords >= TELEMETRY_QUEUE_RECORDS) {
-			this.fail(`policy writer queue reached ${TELEMETRY_QUEUE_RECORDS} records`, false);
-			return false;
-		}
-		if (this.queuedBytes + admitted.bytes > TELEMETRY_QUEUE_BYTES) {
-			this.fail(`policy writer queue reached ${TELEMETRY_QUEUE_BYTES} bytes`, false);
+		if (this.queuedRecords >= TELEMETRY_QUEUE_RECORDS || this.queuedBytes + admitted.bytes > TELEMETRY_QUEUE_BYTES) {
+			this.lose(1, admitted.bytes);
+			this.state("pressure");
 			return false;
 		}
 		this.pending.push(admitted);
@@ -129,6 +149,12 @@ export class PolicyWriter implements TelemetryWriter {
 		this.queuedRecords++;
 		this.schedule();
 		return true;
+	}
+
+	private releaseBatch(records: number, bytes: number, lost = false): void {
+		if (lost) this.lose(records, bytes);
+		this.queuedBytes -= bytes;
+		this.queuedRecords -= records;
 	}
 
 	private schedule(): void {
@@ -150,31 +176,68 @@ export class PolicyWriter implements TelemetryWriter {
 		return batch;
 	}
 
-	/** Clears its own handle in the turn that finds the queue empty, so no accepted record is stranded. */
+	private acquisitionDeadline(started: number): number {
+		return this.closeDeadline ?? started + TELEMETRY_RETRY_BUDGET_MS;
+	}
+
+	private async backoff(started: number): Promise<void> {
+		const remaining = this.acquisitionDeadline(started) - performance.now();
+		const wait = Math.min(50 + Math.random() * 50, Math.max(0, remaining));
+		if (wait <= 0) return;
+		const abort = new AbortController();
+		this.retryAbort = abort;
+		try {
+			await delay(wait, undefined, { signal: abort.signal });
+		} catch (error) {
+			if (!abort.signal.aborted) throw error;
+		} finally {
+			this.retryAbort = undefined;
+		}
+	}
+
+	private async writeBatch(batch: readonly SerializedTelemetryRecord[]): Promise<"written" | "dropped"> {
+		const started = performance.now();
+		while (!this.discardQueued) {
+			const deadline = this.acquisitionDeadline(started);
+			if (deadline <= performance.now()) return "dropped";
+			try {
+				await this.append(this.dir, batch, this.retention, { acquireUntil: deadline });
+				return "written";
+			} catch (error) {
+				if (!(error instanceof TelemetryLockBusyError)) throw error;
+				this.state("pressure");
+				if (!this.discardQueued) await this.backoff(started);
+			}
+		}
+		return "dropped";
+	}
+
+	/** Clears its handle in the turn that finds the queue empty, so accepted records are not stranded. */
 	private async drain(): Promise<void> {
 		await Promise.resolve();
 		try {
 			while (!this.discardQueued && this.pending.length > 0) {
 				const batch = this.takeBatch();
-				let bytes = 0;
-				for (const entry of batch) bytes += entry.bytes;
+				const bytes = batch.reduce((total, entry) => total + entry.bytes, 0);
 				try {
-					await this.append(this.dir, batch, this.retention);
+					const outcome = await this.writeBatch(batch);
+					this.releaseBatch(batch.length, bytes, outcome === "dropped");
+					this.state(outcome === "dropped" ? "pressure" : "ok");
 				} catch (error) {
-					this.fail(errorMessage(error), true);
+					this.releaseBatch(batch.length, bytes, true);
+					this.fail(errorMessage(error));
 					return;
 				}
-				this.queuedBytes = Math.max(0, this.queuedBytes - bytes);
-				this.queuedRecords = Math.max(0, this.queuedRecords - batch.length);
 			}
 		} finally {
 			this.drainPromise = undefined;
 		}
 	}
 
-	/** Stop admission and wait for the final accepted batch. */
+	/** Stop admission; pending acquisitions share a deadline, while acquired appends finish cleanup. */
 	async close(): Promise<void> {
 		this.accepting = false;
+		this.closeDeadline ??= performance.now() + TELEMETRY_RETRY_BUDGET_MS;
 		while (this.drainPromise) await this.drainPromise;
 	}
 }

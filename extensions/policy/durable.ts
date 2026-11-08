@@ -129,7 +129,7 @@ import {
 import { SHELL_CARD_BYTES, shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin, type StateView } from "./state.ts";
 import { PolicyWriter } from "./store.ts";
-import type { AppendTelemetry, TelemetryRetention } from "./telemetry-files.ts";
+import type { AppendTelemetry, TelemetryHealth, TelemetryRetention } from "./telemetry-files.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
 import {
 	approvalReadback,
@@ -745,7 +745,6 @@ class DurablePolicyRuntime {
 	private readonly guidanceDoc: Durable.ConversationDocToken<GuidanceDocValue>;
 	private readonly writer: PolicyWriter;
 	private stateTail: Promise<unknown> = Promise.resolve();
-	private telemetryFailure?: string;
 
 	constructor(options: DurablePolicyRuntimeOptions) {
 		this.wrappedTools = options.wrappedTools;
@@ -759,17 +758,17 @@ class DurablePolicyRuntime {
 		this.guidanceDoc = options.guidanceDoc;
 		this.writer = new PolicyWriter(
 			options.dir,
-			(reason) => this.recordingFailed(reason),
+			(health) => this.recordingChanged(health),
 			options.append,
 			options.retention,
 		);
 	}
 
-	private recordingFailed(reason: string): void {
-		if (this.telemetryFailure !== undefined) return;
-		this.telemetryFailure = reason;
+	private recordingChanged(health: TelemetryHealth): void {
 		try {
-			console.warn(`[policy] telemetry persistence stopped: ${reason}`);
+			console.warn(health.state === "failed"
+				? `[policy] telemetry persistence stopped: ${health.reason}`
+				: `[policy] telemetry ${health.state}; lost ${health.lostRecords} records, ${health.lostBytes} bytes`);
 		} catch {
 			/* Failure reporting must not create an unhandled rejection. */
 		}
@@ -2243,7 +2242,7 @@ class DurablePolicyRuntime {
 			const guidanceRecords = this.guidanceRecordsOf(reading.guidance);
 			return {
 				authority: snapshot.health,
-				telemetry: this.telemetryFailure ? { status: "failed", reason: this.telemetryFailure } : { status: "ready" },
+				telemetry: this.writer.health(),
 				observations: {
 					incomplete: reading.state.incomplete,
 					pending: await this.pendingCount(surface.conversationId, context),

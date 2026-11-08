@@ -31,7 +31,7 @@ import { deserializeSnapshot, readPanelAnswer } from "./panel-protocol.ts";
 import type { OperatorView, PanelHost } from "../../operator-ui/index.ts";
 import { operatorPanel } from "./operator-panel.ts";
 import type { FactsProgram } from "./program.ts";
-import { localDate } from "./telemetry-files.ts";
+import { localDate, TelemetryLockBusyError } from "./telemetry-files.ts";
 import { PolicyProposeParams, PolicyRulesParams, validateProposal } from "./tools.ts";
 import { PolicyControlParams } from "./control.ts";
 import { DraftCasesSchema } from "./authoring.ts";
@@ -1749,6 +1749,49 @@ test("host shutdown drains the final accepted telemetry batch", async () => {
 	}
 });
 
+test("native telemetry health follows pressure and recovery from the writer snapshot", async () => {
+	const gate = deferred();
+	const pressure = deferred();
+	const recovered = deferred();
+	let attempts = 0;
+	const fixture = await openFixture({
+		mode: "observe",
+		extension: probeExtension({ executed: 0 }),
+		append: async () => {
+			if (++attempts === 1) throw new TelemetryLockBusyError("held");
+			await gate.promise;
+		},
+	});
+	const warnings: string[] = [];
+	const warn = console.warn;
+	console.warn = (...args: unknown[]) => {
+		const text = args.map(String).join(" ");
+		warnings.push(text);
+		if (text.includes("telemetry pressure")) pressure.resolve();
+		if (text.includes("telemetry ok")) recovered.resolve();
+	};
+	try {
+		await submit(fixture,
+			[fauxAssistantMessage(fauxToolCall("probe", {}), { stopReason: "toolUse" }), fauxAssistantMessage("done")], "run probe");
+		await pressure.promise;
+		const inspect = async () => {
+			await submit(fixture,
+				[fauxAssistantMessage(fauxToolCall("policy_rules", { view: "health" }), { stopReason: "toolUse" }), fauxAssistantMessage("done")], "inspect health");
+			return JSON.parse(textOf((await toolResults(fixture.root, "policy_rules")).at(-1))).telemetry;
+		};
+		assert.deepEqual(await inspect(), { state: "pressure", lostRecords: 0, lostBytes: 0 });
+		gate.resolve();
+		await recovered.promise;
+		assert.deepEqual(await inspect(), { state: "ok", lostRecords: 0, lostBytes: 0 });
+		assert.equal(warnings.filter((line) => line.includes("telemetry pressure")).length, 1);
+		assert.equal(warnings.filter((line) => line.includes("telemetry ok")).length, 1);
+	} finally {
+		gate.resolve();
+		console.warn = warn;
+		await fixture.close();
+	}
+});
+
 test("native telemetry failure reports once in health without changing an approved denial", async () => {
 	const counter = { executed: 0 };
 	let attempts = 0;
@@ -1803,10 +1846,12 @@ test("native telemetry failure reports once in health without changing an approv
 			"inspect health",
 		);
 		const health = JSON.parse(textOf((await toolResults(fixture.root, "policy_rules")).at(-1))) as {
-			telemetry: { status: string; reason?: string };
+			telemetry: { state: string; lostRecords: number; lostBytes: number; reason?: string };
 			authority: { status: string };
 		};
-		assert.equal(health.telemetry.status, "failed");
+		assert.equal(health.telemetry.state, "failed");
+		assert.ok(health.telemetry.lostRecords > 0);
+		assert.ok(health.telemetry.lostBytes > 0);
 		assert.match(health.telemetry.reason ?? "", /disk unavailable/);
 		assert.equal(health.authority.status, "ok");
 	} finally {

@@ -60,7 +60,7 @@ import { contentRevision, type RuleRecord, effectiveEffect, effectiveState, rule
 import { shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin } from "./state.ts";
 import { PolicyWriter } from "./store.ts";
-import { DEFAULT_TELEMETRY_RETENTION, type TelemetryRetention } from "./telemetry-files.ts";
+import { DEFAULT_TELEMETRY_RETENTION, type TelemetryHealth, type TelemetryRetention } from "./telemetry-files.ts";
 
 const MAX_CATALOG_TOOLS = 1024;
 const MAX_FINAL_IDS = 8192;
@@ -272,10 +272,9 @@ export class PolicyRuntime {
 	private turn = 0;
 	private closed = false;
 	private shellCardSent = false;
-	private telemetryFailure?: string;
 	private incomplete = 0;
 	private stale = 0;
-	private readonly writer: Pick<PolicyWriter, "enqueue" | "close">;
+	private readonly writer: Pick<PolicyWriter, "enqueue" | "health" | "close">;
 	private readonly dir: string;
 	private readonly pi: ExtensionAPI;
 	private readonly load: (ctx?: ExtensionContext) => Promise<RuleSnapshot>;
@@ -289,7 +288,7 @@ export class PolicyRuntime {
 		mode: () => PolicyMode,
 		dir: string,
 		enabled: () => boolean = () => true,
-		writer?: Pick<PolicyWriter, "enqueue" | "close">,
+		writer?: Pick<PolicyWriter, "enqueue" | "health" | "close">,
 		now: () => number = () => Date.now(),
 		createActionState = true,
 		retention: TelemetryRetention = DEFAULT_TELEMETRY_RETENTION,
@@ -304,12 +303,13 @@ export class PolicyRuntime {
 		this.enabled = enabled;
 		this.now = now;
 		this.createActionState = createActionState;
-		this.writer = writer ?? new PolicyWriter(dir, (reason) => this.recordingFailed(reason), undefined, retention);
+		this.writer = writer ?? new PolicyWriter(dir, (health) => this.recordingChanged(health), undefined, retention);
 	}
-	private recordingFailed(reason: string): void {
-		this.telemetryFailure = reason;
+	private recordingChanged(health: TelemetryHealth): void {
 		try {
-			console.warn(`[policy] telemetry persistence stopped: ${reason}`);
+			console.warn(health.state === "failed"
+				? `[policy] telemetry persistence stopped: ${health.reason}`
+				: `[policy] telemetry ${health.state}; lost ${health.lostRecords} records, ${health.lostBytes} bytes`);
 		} catch {
 			/* Reporting has no policy authority. */
 		}
@@ -1182,7 +1182,7 @@ export class PolicyRuntime {
 	private inspectHealth(snapshot: RuleSnapshot): unknown {
 		return {
 			authority: snapshot.health,
-			telemetry: this.telemetryFailure ? { status: "failed", reason: this.telemetryFailure } : { status: "ready" },
+			telemetry: this.writer.health(),
 			observations: { incomplete: this.incomplete, pending: this.pending.size, recentCompletedIds: this.ended.size },
 			guidance: {
 				status: this.guidanceStatus,

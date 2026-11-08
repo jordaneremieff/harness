@@ -1573,20 +1573,35 @@ the policy directory.
   the same.
 - **Lock.** A `.telemetry-lock` file in the telemetry directory serialises rotation,
   retention, and append across processes. It is separate from the rule transaction
-  lock and the observation-state lock. Acquisition waits at most 500 ms and then
-  fails. Policy never removes a lock because of its age; if a process stopped while
-  holding it, stop all policy writers before removing `.telemetry-lock` by hand.
-- **Queue.** The writer holds at most 512 accepted records and 4 MiB of serialized
-  records that are not yet written. Each record is serialized once, when it is queued; the queue holds those bytes, and
-  the append writes them unchanged, so later changes to the caller's object do not
-  alter the record.
+  lock and the observation-state lock. Each acquisition waits at most 500 ms,
+  capped by the batch's remaining budget. Only a safe held lock produces
+  `TelemetryLockBusyError`. The writer retries that error with 50–100 ms jitter
+  within a 2,000 ms monotonic budget from the batch's first attempt. It retains
+  and retries the same serialised batch before any later batch. Expiry discards
+  only that unwritten batch and counts its lost records and serialised bytes;
+  future admission stays open. Policy never removes a lock because of its age;
+  if a process stopped while holding it, stop all policy writers before removing
+  `.telemetry-lock` by hand.
+- **Queue.** The writer holds at most 512 accepted records and 4 MiB of serialised
+  records, including an in-flight or retry batch. Each record is serialised once
+  at admission; later changes to the caller's object do not alter those bytes.
   Records go to disk in batches of at most 32 records or 64 KiB; a permitted record
-  larger than a batch runs alone. A record over 256 KiB is refused.
-- **Failure.** A full queue, an invalid or oversized record, a held lock, an unsafe
-  entry, or a failed write or removal stops further admission and reports health once.
-  A full queue still writes what it accepted; a persistence failure discards the
-  queued records. Telemetry failure never changes an approved tool decision. Closing
-  the writer stops admission and waits for the last accepted batch.
+  larger than a batch runs alone. Queue pressure refuses and counts the incoming
+  record and its bytes without closing admission. Admission resumes when capacity
+  returns. A record over 256 KiB is refused as a permanent failure.
+- **Failure.** Invalid or oversized records, unsafe inventory or foreign ownership,
+  changed segment or lock identity, retention failure, append failure (including
+  partial writes), and unlock or cleanup failure stop admission permanently.
+  They are never retried. The writer discards and counts unwritten queued records;
+  a failed append counts its batch as lost because complete persistence is uncertain.
+  A record that fails admission validation contributes a lost record but no
+  admitted byte count.
+  Telemetry failure never changes an approved tool decision.
+- **Close.** Closing stops admission. Remaining acquisitions share one 2,000 ms
+  monotonic budget from close, rather than a separate budget per remaining batch.
+  The writer counts and discards batches that never acquire the lock by that
+  deadline. An acquired append and its cleanup finish without cancellation.
+  Close leaves no retry timer; an idle writer has no retry timer.
 
 Daily telemetry records tool/call identity, session context, duration, text output
 size, truncation, reported tokens, observed outcome, mode, rule revisions,
@@ -1625,13 +1640,15 @@ to be removed.
 Native tool execution queues a telemetry record and does not wait for the disk
 write. A successful policy decision does not prove its record reached disk.
 
-Telemetry failure stops further admission and reports health once. The reported
-reason names the cause: queue overflow, an invalid or oversized record, a held
-or changed lock, an unsafe or incomplete inventory, or a failed write or removal.
-The `health` inspection view reports `telemetry` as `ready` or `failed` with
-that reason. Telemetry state never stops approved rules, corrections, or counters,
-and it never changes an approved tool decision. Rule-authority health remains a
-separate boundary.
+The ordinary and native `health` inspection views read the writer's current
+`telemetry` snapshot: `state` (`ok`, `pressure`, or `failed`), cumulative
+`lostRecords` and `lostBytes`, and `reason` when failed. Byte counts use the
+serialised queue size, including framing allowances. A recovered append clears
+pressure but preserves cumulative losses. Reports occur on state changes, not
+once per refused record. Only permanent failure stops future admission.
+Telemetry state never stops approved rules, corrections, or counters, and it
+never changes an approved tool decision. Rule-authority health remains a separate
+boundary.
 
 ## Maintained evaluations
 

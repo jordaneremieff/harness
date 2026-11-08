@@ -16,6 +16,7 @@ import type { PolicyRecord } from "./record.ts";
 import type { RuleRecord } from "./rule.ts";
 import { PolicyRuntime } from "./runtime.ts";
 import { PolicyWriter } from "./store.ts";
+import { TELEMETRY_QUEUE_RECORDS } from "./telemetry-files.ts";
 
 const yes = { op: "exists" as const, path: ["input"] };
 const success = { op: "eq" as const, path: ["outcome", "kind"], value: "success" };
@@ -79,6 +80,7 @@ function fixture(
 	fail = false,
 	directory = "/unused",
 	toolName = "sample",
+	appendGate?: Promise<void>,
 ) {
 	const snapshot: RuleSnapshot = {
 		records: new Map(programs.map((r) => [r.id, r])),
@@ -92,10 +94,11 @@ function fixture(
 	const failures: string[] = [];
 	const writer = new PolicyWriter(
 		"/unused",
-		(reason) => failures.push(reason),
+		(health) => { if (health.state === "failed") failures.push(health.reason ?? "unknown failure"); },
 		async (_dir, batch) => {
 			if (fail) throw new Error("disk unavailable");
 			records.push(...batch.map((item) => JSON.parse(item.json) as PolicyRecord));
+			if (appendGate) await appendGate;
 		},
 	);
 	const session = SessionManager.inMemory("/project", { id: "session" });
@@ -2238,6 +2241,29 @@ test("prepares the registered schema at each tool boundary", async () => {
 });
 
 describe("telemetry writer lifecycle", () => {
+	it("reads current writer pressure, recovery, and cumulative loss counts in ordinary health", async () => {
+		let release = () => {};
+		const gate = new Promise<void>((resolve) => { release = resolve; });
+		const f = fixture([], "observe", obj({}, { open: true }), false, "/unused", "sample", gate);
+		await f.call("trace", {});
+		await f.finish("trace");
+		await new Promise((resolve) => setImmediate(resolve));
+		const row = f.records[0];
+		assert.ok(row);
+		for (let index = 1; index < TELEMETRY_QUEUE_RECORDS; index++) assert.equal(f.writer.enqueue(row), true);
+		assert.equal(f.writer.enqueue(row), false);
+		const health = async () => (await f.runtime.inspect("health", {}, f.ctx)) as { telemetry: ReturnType<PolicyWriter["health"]> };
+		assert.deepEqual((await health()).telemetry, f.writer.health());
+		assert.equal(f.writer.health().state, "pressure");
+		release();
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.deepEqual((await health()).telemetry, f.writer.health());
+		assert.equal(f.writer.health().state, "ok");
+		assert.equal(f.writer.health().lostRecords, 1);
+		assert.ok(f.writer.health().lostBytes > 0);
+		await f.writer.close();
+	});
+
 	it("closes the writer on shutdown, drains accepted records, and refuses later ones", async () => {
 		const f = fixture([], "observe", obj({}, { open: true }));
 		await f.call("trace", {});

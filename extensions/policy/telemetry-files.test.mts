@@ -7,9 +7,12 @@ import { describe, it, type TestContext } from "node:test";
 import { promisify } from "node:util";
 import type { PolicyRecord } from "./record.ts";
 import {
+	appendSerializedTelemetryRecords,
 	appendTelemetryRecords,
+	serializeTelemetryRecord,
 	readTelemetryInventory,
 	TELEMETRY_INVENTORY_ENTRIES,
+	TelemetryLockBusyError,
 	TELEMETRY_SEGMENT_BYTES,
 	type TelemetryRetention,
 	validateTelemetryRetention,
@@ -294,12 +297,39 @@ describe("telemetry lock", () => {
 		await writeFile(lock, "other-owner", { mode: 0o600 });
 		const identity = await stat(lock);
 		const started = Date.now();
-		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), /lock remains held/);
+		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION), TelemetryLockBusyError);
 		const elapsed = Date.now() - started;
 		assert.ok(elapsed >= 400 && elapsed < 5000, `waited ${elapsed} ms`);
 		assert.equal(await readFile(lock, "utf8"), "other-owner");
 		assert.equal((await stat(lock)).ino, identity.ino);
 		assert.deepEqual(await names(dir), [".telemetry-lock"]);
+	});
+
+	it("caps acquisition by the caller's remaining batch budget", async (t) => {
+		const dir = await policyDir(t);
+		const lock = join(dir, "telemetry", ".telemetry-lock");
+		await writeFile(lock, "held", { mode: 0o600 });
+		const started = performance.now();
+		await assert.rejects(appendSerializedTelemetryRecords(dir, [serializeTelemetryRecord(record())], RETENTION, {
+			acquireUntil: started + 40,
+		}), TelemetryLockBusyError);
+		const elapsed = performance.now() - started;
+		assert.ok(elapsed >= 35 && elapsed < 300, `acquisition took ${elapsed} ms`);
+		assert.equal(await readFile(lock, "utf8"), "held");
+	});
+
+	it("refuses foreign lock ownership as a permanent error", async (t) => {
+		const dir = await policyDir(t);
+		const lock = join(dir, "telemetry", ".telemetry-lock");
+		await writeFile(lock, "held", { mode: 0o600 });
+		await assert.rejects(appendTelemetryRecords(dir, [record("a")], RETENTION, {
+			foreignOwner: (path) => path === lock,
+		}), (error: unknown) => {
+			assert.ok(error instanceof Error && !(error instanceof TelemetryLockBusyError));
+			assert.match(error.message, /not owned by this user/);
+			return true;
+		});
+		assert.equal(await readFile(lock, "utf8"), "held");
 	});
 
 	it("refuses a lock that is a symbolic link or a directory without following it", async (t) => {
@@ -338,7 +368,7 @@ describe("telemetry across processes", () => {
 		await seed(dir, "2026-09-02.000001.jsonl", 20 * MIB);
 		await seed(dir, `${DAY}.000001.jsonl`, TELEMETRY_SEGMENT_BYTES - 200);
 		const script = `
-			import { appendTelemetryRecords } from ${JSON.stringify(new URL("./telemetry-files.ts", import.meta.url).href)};
+			import { appendTelemetryRecords, TelemetryLockBusyError } from ${JSON.stringify(new URL("./telemetry-files.ts", import.meta.url).href)};
 			const [dir, id, count, at] = process.argv.slice(1);
 			const retention = { maxBytes: 48 * 1024 * 1024, maxAgeDays: 30 };
 			for (let index = 0; index < Number(count); index++) {
@@ -352,7 +382,7 @@ describe("telemetry across processes", () => {
 						await appendTelemetryRecords(dir, [entry], retention);
 						break;
 					} catch (error) {
-						if (attempt >= 20 || !/lock remains held/.test(String(error))) throw error;
+						if (attempt >= 20 || !(error instanceof TelemetryLockBusyError)) throw error;
 					}
 				}
 			}

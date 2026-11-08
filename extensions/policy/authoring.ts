@@ -300,6 +300,7 @@ async function runCase(
 				return true;
 			},
 			close: async () => {},
+			health: () => ({ state: "ok", lostRecords: 0, lostBytes: 0 }),
 		},
 		() => now,
 		false,

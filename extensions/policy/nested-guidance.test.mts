@@ -121,7 +121,7 @@ async function fixture(
 			() => options.mode ?? "enforce",
 			root,
 			() => options.enabled !== false,
-			{ enqueue: () => true, close: async () => {} },
+			{ enqueue: () => true, close: async () => {}, health: () => ({ state: "ok", lostRecords: 0, lostBytes: 0 }) },
 			() => now,
 		);
 		runtime.sync(snapshot);
