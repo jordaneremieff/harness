@@ -229,6 +229,8 @@ export class AgentDashboard implements Component, Focusable {
 	private selectedMark = "";
 	private earlierPending = false;
 	private history = new ConversationHistory();
+	private appliedHistory?: Pick<ConversationFrame, "entries" | "nextBefore"> & { complete: boolean };
+	private usageEntries?: ConversationFrame["entries"];
 	private loadedPages = 1;
 	private loadMore = false;
 	private rosterCache = new Map<string, { signature: string; row: AgentConversationSummary }>();
@@ -576,6 +578,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.saveConsole();
 		this.console?.dispose();
 		this.console = undefined;
+		this.resetAppliedHistory();
 		this.closeInspector();
 		this.frames.cancelPending();
 		this.frameStarted = false;
@@ -591,6 +594,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.selectedMark = mark;
 		if (this.source.availability(row.id)?.state !== "unavailable") return;
 		const generation = ++this.sourceGeneration;
+		this.resetAppliedHistory();
 		this.source.refresh(row.id);
 		void this.readSelected(row, generation);
 	}
@@ -603,6 +607,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.saveConsole();
 		this.console?.dispose();
 		this.history = new ConversationHistory();
+		this.resetAppliedHistory();
 		this.console = new AgentConsole(
 			row,
 			agentState(this.state, row.id),
@@ -752,6 +757,7 @@ export class AgentDashboard implements Component, Focusable {
 	private frameChanged(): void {
 		const console = this.console;
 		if (!console || this.closed) return;
+		if (this.source.availability(console.row.id)?.state === "unavailable") this.resetAppliedHistory();
 		this.pendingGeneration = this.sourceGeneration;
 		if (!this.frameStarted && this.source.frame(console.row.id) !== undefined) {
 			this.frameStarted = true;
@@ -761,6 +767,24 @@ export class AgentDashboard implements Component, Focusable {
 		this.frames.markDirty();
 	}
 
+	private resetAppliedHistory(): void {
+		this.appliedHistory = undefined;
+		this.usageEntries = undefined;
+	}
+
+	private applyHistory(console: AgentConsole, frame: ConversationFrame): void {
+		const previous = this.appliedHistory;
+		if (previous?.entries !== frame.entries || previous.complete !== frame.coverage.complete || previous.nextBefore !== frame.nextBefore) {
+			this.history.tail({ entries: frame.entries, partial: !frame.coverage.complete, revision: `r${frame.revision}`, nextBefore: frame.nextBefore }, console.state.view.anchor?.id);
+			this.snapshot = { entries: this.history.entries(console.state.view.anchor?.id), revision: `r${frame.revision}`, partial: !frame.coverage.complete, nextBefore: this.history.earlier() };
+			this.appliedHistory = { entries: frame.entries, complete: frame.coverage.complete, nextBefore: frame.nextBefore };
+		}
+		if (this.usageEntries !== frame.entries) {
+			console.observeUsage(frame.entries);
+			this.usageEntries = frame.entries;
+		}
+	}
+
 	/** Apply the newest frame for the captured selection generation, then render. */
 	private applyLatestFrame(generation: number): void {
 		const console = this.console;
@@ -768,19 +792,21 @@ export class AgentDashboard implements Component, Focusable {
 		const frame = this.source.frame(console.row.id);
 		// A selection change during the read owns the pane; this application is stale.
 		if (this.closed || generation !== this.sourceGeneration || this.console !== console) return;
+		const availability = this.source.availability(console.row.id);
 		if (frame) {
 			console.save();
-			this.history.tail({ entries: frame.entries, partial: !frame.coverage.complete, revision: `r${frame.revision}`, nextBefore: frame.nextBefore }, console.state.view.anchor?.id);
-			this.snapshot = { entries: this.history.entries(console.state.view.anchor?.id), revision: `r${frame.revision}`, partial: !frame.coverage.complete, nextBefore: this.history.earlier() };
+			this.applyHistory(console, frame);
 			this.updateObservedRow(console, frame);
 			this.setConversation(frame.live);
-			const availability = this.source.availability(console.row.id);
 			console.status = frame.coverage.complete ? "" : "Partial history";
 			console.warning = availability?.state === "unavailable" ? "Connection lost; last observed messages shown. Reconnect starts the host." : undefined;
-			console.observeUsage(frame.entries, availability?.state === "live" ? frame.status.usage : undefined);
+			console.usage = availability?.state === "live" ? frame.status.usage : undefined;
 			this.branches.refresh(console.row.cwd, `${console.row.id}:${frame.entries.at(-1)?.id ?? "empty"}`);
 		}
-		if (!frame && this.source.availability(console.row.id)?.state === "unavailable") console.warning = "Not connected; stored messages shown";
+		if (availability?.state === "unavailable") {
+			this.resetAppliedHistory();
+			if (!frame) console.warning = "Not connected; stored messages shown";
+		}
 		this.redraw();
 	}
 
@@ -808,6 +834,7 @@ export class AgentDashboard implements Component, Focusable {
 		try {
 			const page = before ? await this.source.earlier(console.row.id, before) : await this.source.snapshot(console.row.id);
 			if (this.closed || generation !== this.sourceGeneration) return;
+			this.resetAppliedHistory();
 			this.history.add(page, before, console.state.view.anchor?.id);
 			this.snapshot = { ...page, entries: this.history.entries(console.state.view.anchor?.id), nextBefore: this.history.earlier() };
 			this.setConversation(this.source.frame(console.row.id)?.live);
@@ -2307,6 +2334,7 @@ export class AgentDashboard implements Component, Focusable {
 		this.resize.clear();
 		this.saveConsole();
 		this.closed = true;
+		this.resetAppliedHistory();
 		this.frames.dispose();
 		this.closeInspector();
 		this.branches.dispose();

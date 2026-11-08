@@ -149,6 +149,33 @@ function fixture() {
 	};
 	return { host, listeners, closed, snapshot, roster: () => rosterListener() };
 }
+it("preserves unchanged history identity through live frames and snapshot reads", async () => {
+	const f = fixture();
+	const source = createAgentObservationSource(f.host);
+	const off = source.subscribe(() => {});
+	try {
+		source.select("one");
+		await turn();
+		const publish = f.listeners.get("one:conversation");
+		assert.ok(publish);
+		const first = conversationFrame({ entries: [{ id: "1", kind: "pi.user", model: [{ role: "user", content: "History", timestamp: 1 }] }] });
+		publish(first, true, "live");
+		assert.strictEqual(source.frame("one"), first);
+		assert.strictEqual((await source.snapshot("one")).entries, first.entries);
+		const next = { ...first, revision: 2, live: [{ id: "live:text", kind: "pi.user", model: [{ role: "user" as const, content: "Live text", timestamp: 2 }] }] };
+		publish(next, false, "live");
+		assert.strictEqual(source.frame("one"), next);
+		assert.strictEqual(source.frame("one")?.entries, first.entries);
+		assert.strictEqual((await source.snapshot("one")).entries, first.entries);
+		publish(undefined, false, "unavailable");
+		const reconnected = structuredClone(next);
+		publish(reconnected, true, "live");
+		assert.strictEqual(source.frame("one"), reconnected);
+		assert.notStrictEqual(source.frame("one")?.entries, first.entries);
+		assert.deepEqual(source.frame("one"), next);
+	} finally { off(); }
+});
+
 it("only the selected conversation remains watched and cold reads keep continuation", async () => {
 	const f = fixture();
 	const source = createAgentObservationSource(f.host);

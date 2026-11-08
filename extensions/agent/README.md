@@ -946,6 +946,16 @@ that set a final stop reason before their text stream ends. Committed output
 replaces its partial. Hidden native messages stay hidden.
 Display limits remain explicit; missing content is not a fabricated answer.
 
+Observation feeds deliver a full initial snapshot and Chord structural updates
+thereafter. Reconnect delivers another complete snapshot. Chord reconstructs each
+complete frame and retains unchanged subtree identities, so the client needs no
+custom patch protocol. The work view reuses committed history and its snapshot
+when the entries reference, completeness and history cursor stay unchanged. It
+recomputes committed context usage only when the entries change, while live
+output, status, current usage and notices still update on each applied frame.
+Selection changes, reconnect, history navigation and disposal clear this local
+reuse state. Disappeared live slots still finalise their partial cards.
+
 Live frames are built and applied from the newest state, not once per change.
 The host marks its observation scheduler dirty on every native publication, which
 is cheap, and builds frames at most once per 100 ms; a change that arrives while

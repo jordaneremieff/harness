@@ -86,7 +86,8 @@ export function createTransportServer(options: TransportServerOptions): Transpor
 			const publish=(next:unknown):void=>{
 				if(closed||!peers.has(peer))return;
 				latest=wrapped(next);
-				if(active)void host.root(ctx=>{if(!closed&&peers.has(peer))value.replace(ctx,{ready:true,...latest});}).catch(()=>{});
+				// Fresh JSON rebuilds otherwise replace unchanged history on the wire.
+				if(active)void host.root(ctx=>{if(!closed&&peers.has(peer))value.replace(ctx,{ready:true,...latest},{diff:true});}).catch(()=>{});
 			};
 			const subscription=await options.subscribe(kind,token,peer,publish);
 			try{

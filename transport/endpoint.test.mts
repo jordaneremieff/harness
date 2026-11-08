@@ -58,6 +58,64 @@ it("hydrates state, publishes updates, and releases connection-owned feeds", { t
 	await released;
 });
 
+interface Observation { revision: number; entries: { id: number; text: string }[]; live: { text: string }[]; coverage: { complete: boolean } }
+
+for (const kind of ["changes", "observation"] as const) it(`publishes ${kind} feed updates as forced structural diffs that reconstruct the exact state`, { timeout: 5000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "transport-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const path = join(root, "host.sock"), serverId = randomUUID();
+	let latest: Observation = { revision: 0, entries: [{ id: 1, text: "unchanged history ".repeat(1000) }], live: [{ text: "initial live text" }], coverage: { complete: true } };
+	let publish: (value: unknown) => void = () => {};
+	const server = createTransportServer({ serverId, path, request: async () => null, subscribe: (_kind, _token, _peer, callback) => {
+		publish = callback;
+		return { value: latest, close: () => {} };
+	} });
+	await server.start(); t.after(() => server.close());
+	const client = await connectTransport({ serverId, path }); t.after(() => client.dispose());
+	const opsWrites: string[] = [];
+	const write = Socket.prototype.write as unknown as (this: Socket, data: unknown, ...args: unknown[]) => boolean;
+	t.mock.method(Socket.prototype, "write", function (this: Socket, data: unknown, ...args: unknown[]) {
+		if (typeof data === "string" && data.includes('"as":"ops"')) opsWrites.push(data);
+		return Reflect.apply(write, this, [data, ...args]);
+	});
+	let nextArrived: () => void = () => {};
+	const updates: Observation[] = [];
+	const subscription = await client.subscribe(kind, undefined, (value) => { updates.push(value as Observation); nextArrived(); });
+	const baseline = subscription.value as Observation;
+	assert.deepEqual(baseline, latest);
+	for (let revision = 1; revision <= 3; revision++) {
+		const arrived = new Promise<void>((resolve) => { nextArrived = resolve; });
+		latest = structuredClone(latest);
+		latest.revision = revision;
+		latest.live[0].text += ` appended text ${revision}`;
+		publish(latest);
+		await arrived;
+		const rebuilt = updates.at(-1);
+		assert.ok(rebuilt);
+		assert.deepEqual(rebuilt, latest);
+		assert.strictEqual(rebuilt.entries, baseline.entries);
+		assert.strictEqual(rebuilt.entries[0], baseline.entries[0]);
+		assert.strictEqual(rebuilt.coverage, baseline.coverage);
+	}
+	assert.equal(updates.length, 3);
+	const ops = opsWrites.filter((line) => line.includes('"m":"value"'));
+	assert.equal(ops.length, 3);
+	assert.ok(ops.some((encoded) => encoded.includes("revision")));
+	for (const encoded of ops) {
+		assert.ok(encoded.includes("appended text"));
+		assert.equal(encoded.includes("unchanged history"), false);
+		assert.equal(encoded.includes("initial live text"), false);
+		assert.equal(encoded.includes('"entries"'), false);
+	}
+	await subscription.dispose();
+	await client.dispose();
+	const reconnected = await connectTransport({ serverId, path }); t.after(() => reconnected.dispose());
+	const snapshot = await reconnected.subscribe(kind, undefined, () => {});
+	assert.deepEqual(snapshot.value, latest);
+	assert.notStrictEqual((snapshot.value as Observation).entries, baseline.entries);
+	await snapshot.dispose();
+});
+
 it("forwards cancellation and separates remote errors from link loss", { timeout: 5000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "transport-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
