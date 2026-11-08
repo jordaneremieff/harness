@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { it } from "node:test";
@@ -154,6 +154,79 @@ it("notices a common-directory pointer added, changed and removed in an ordinary
 	assert.equal(calls(), warm + 3);
 });
 
+it("notices a commondir alias retargeted between two present repositories", async (t) => {
+	const { root, work, calls } = workspace(t);
+	git(work, "init", "-q");
+	const repository = (name: string) => {
+		const directory = join(root, name);
+		mkdirSync(directory);
+		git(directory, "init", "-q");
+		return realpathSync(join(directory, ".git"));
+	};
+	const first = repository("first");
+	const second = repository("second");
+	const alias = join(root, "common");
+	symlinkSync(first, alias);
+	writeFileSync(join(work, ".git", "commondir"), `${alias}\n`);
+	const resolver = createPrimaryLocationResolver();
+	assert.equal((await resolver.resolve(work)).repository, first);
+	const warm = calls();
+	assert.equal((await resolver.resolve(work)).repository, first);
+	assert.equal(calls(), warm, "an unchanged alias reuses the completed result");
+	unlinkSync(alias);
+	symlinkSync(second, alias);
+	assert.equal((await resolver.resolve(work)).repository, second);
+	assert.equal(calls(), warm + 1);
+});
+
+it("does not cache discovery when a commondir alias cannot be resolved before Git runs", async (t) => {
+	const { root, work, bin, log, calls } = workspace(t);
+	git(work, "init", "-q");
+	const target = join(root, "target");
+	mkdirSync(target);
+	git(target, "init", "-q");
+	const repository = realpathSync(join(target, ".git"));
+	const alias = join(root, "common");
+	symlinkSync(join(root, "missing"), alias);
+	writeFileSync(join(work, ".git", "commondir"), `${alias}\n`);
+	const trigger = join(root, "mutate");
+	writeFileSync(trigger, "");
+	writeFileSync(join(bin, "git"), `#!/bin/sh\necho call >> '${log}'\nif [ -e '${trigger}' ]; then rm -f '${trigger}' '${alias}'; ln -s '${repository}' '${alias}'; fi\nexec '${REAL_GIT}' "$@"\n`);
+	const resolver = createPrimaryLocationResolver();
+	assert.equal((await resolver.resolve(work)).repository, repository);
+	assert.equal(calls(), 1);
+	assert.equal((await resolver.resolve(work)).repository, repository);
+	assert.equal(calls(), 2, "an unresolved identity before discovery prevents reuse");
+	assert.equal((await resolver.resolve(work)).repository, repository);
+	assert.equal(calls(), 2, "a resolved stable identity permits reuse");
+});
+
+it("does not cache discovery when a commondir alias changes while Git runs", async (t) => {
+	const { root, work, bin, log, calls } = workspace(t);
+	git(work, "init", "-q");
+	const repository = (name: string) => {
+		const directory = join(root, name);
+		mkdirSync(directory);
+		git(directory, "init", "-q");
+		return realpathSync(join(directory, ".git"));
+	};
+	const first = repository("first");
+	const second = repository("second");
+	const alias = join(root, "common");
+	symlinkSync(first, alias);
+	writeFileSync(join(work, ".git", "commondir"), `${alias}\n`);
+	const trigger = join(root, "mutate");
+	writeFileSync(trigger, "");
+	writeFileSync(join(bin, "git"), `#!/bin/sh\necho call >> '${log}'\n'${REAL_GIT}' "$@"\nstatus=$?\nif [ -e '${trigger}' ]; then rm -f '${trigger}' '${alias}'; ln -s '${second}' '${alias}'; fi\nexit $status\n`);
+	const resolver = createPrimaryLocationResolver();
+	assert.equal((await resolver.resolve(work)).repositoryState, "git");
+	assert.equal(calls(), 1);
+	assert.equal((await resolver.resolve(work)).repository, second);
+	assert.equal(calls(), 2, "different before and after identities prevent reuse");
+	assert.equal((await resolver.resolve(work)).repository, second);
+	assert.equal(calls(), 2, "the next stable discovery permits reuse");
+});
+
 it("notices discovery validity changes inside an ordinary repository", async (t) => {
 	const { work, calls } = workspace(t);
 	git(work, "init", "-q");
@@ -194,6 +267,46 @@ it("notices discovery validity changes inside an ordinary repository", async (t)
 	assert.equal((await changed("a removed refs directory")).repositoryState, "outside-git");
 	mkdirSync(refs);
 	assert.equal((await changed("a restored refs directory")).repository, repository);
+});
+
+it("refreshes a cached repository when a valid HEAD becomes invalid", async (t) => {
+	const { work, calls } = workspace(t);
+	git(work, "init", "-q");
+	const resolver = createPrimaryLocationResolver();
+	const repository = realpathSync(join(work, ".git"));
+	assert.equal((await resolver.resolve(work)).repository, repository);
+	const warm = calls();
+	writeFileSync(join(work, ".git", "HEAD"), "ref: garbage\n");
+	assert.equal((await resolver.resolve(work)).repositoryState, "outside-git");
+	assert.equal(calls(), warm + 1);
+	assert.equal((await resolver.resolve(work)).repositoryState, "outside-git");
+	assert.equal(calls(), warm + 1, "the unchanged invalid HEAD reuses the completed result");
+});
+
+it("refreshes a cached outside-Git result when an invalid HEAD becomes valid", async (t) => {
+	const { work, calls } = workspace(t);
+	git(work, "init", "-q");
+	const repository = realpathSync(join(work, ".git"));
+	const head = join(work, ".git", "HEAD");
+	const saved = readFileSync(head, "utf8");
+	writeFileSync(head, "ref: garbage\n");
+	const resolver = createPrimaryLocationResolver();
+	assert.equal((await resolver.resolve(work)).repositoryState, "outside-git");
+	const warm = calls();
+	writeFileSync(head, saved);
+	assert.equal((await resolver.resolve(work)).repository, repository);
+	assert.equal(calls(), warm + 1);
+});
+
+it("serves ten reads with one Git process while HEAD is unchanged", async (t) => {
+	const { work, calls } = workspace(t);
+	git(work, "init", "-q");
+	const resolver = createPrimaryLocationResolver();
+	const first = await resolver.resolve(work);
+	assert.equal(first.repositoryState, "git");
+	assert.equal(calls(), 1);
+	for (let read = 1; read < 10; read++) assert.deepEqual(await resolver.resolve(work), first);
+	assert.equal(calls(), 1);
 });
 
 it("caches a bare repository until one of its own markers changes", async (t) => {

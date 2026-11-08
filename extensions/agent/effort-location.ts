@@ -88,9 +88,6 @@ function stampOfInfo(info: BigIntStats): string {
 	return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
 }
 
-/** Whether Git accepts a directory's HEAD as a symbolic ref, an object ID, or neither. */
-type HeadKind = "absent" | "symbolic" | "object-id" | "invalid";
-
 /** A directory Git requires either exists as a directory or does not satisfy that requirement. */
 type MemberKind = "absent" | "directory" | "other";
 
@@ -126,29 +123,47 @@ function memberKind(path: string): MemberKind | undefined {
 	return undefined;
 }
 
-/** Classify HEAD as Git's validity check reads it; undefined means its content could not be read. */
-function headKind(path: string): HeadKind | undefined {
+/** Read HEAD exactly as stored; null means absent and undefined means its content could not be read. */
+function headContents(path: string): string | null | undefined {
 	let info: BigIntStats | undefined;
 	try { info = lstatSync(path, { bigint: true, throwIfNoEntry: false }); }
 	catch { return undefined; }
-	if (info === undefined) return "absent";
+	if (info === undefined) return null;
 	if (!info.isFile()) return undefined;
-	const text = readMarker(path);
-	if (text === undefined) return undefined;
-	const line = text.split("\n", 1)[0]?.replace(/\r$/u, "") ?? "";
-	if (/^ref:[ \t]*\S/u.test(line)) return "symbolic";
-	if (/^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\s*$/u.test(line)) return "object-id";
-	return "invalid";
+	return readMarker(path);
+}
+
+interface CommonMarkers {
+	readonly resolved: string;
+	readonly identity: string;
+	readonly objects: MemberKind;
+	readonly refs: MemberKind;
+}
+
+/** Resolve a commondir pointer target and describe its identity and required markers. */
+function commonMarkers(path: string, text: string): CommonMarkers | undefined {
+	const target = resolve(path, text.replace(/[\r\n]+$/u, ""));
+	let resolved: string;
+	try { resolved = realpathSync(target); }
+	catch { return undefined; }
+	const identity = repositoryIdentity(resolved);
+	if (identity === undefined) return undefined;
+	const objects = memberKind(join(resolved, "objects"));
+	const refs = memberKind(join(resolved, "refs"));
+	if (objects === undefined || refs === undefined) return undefined;
+	return { resolved, identity, objects, refs };
 }
 
 /**
  * Describe the entries Git checks before it accepts one directory as a
- * repository: HEAD at that directory, and `objects` and `refs` either there or,
- * when a `commondir` pointer exists, at the pointer's target. Undefined means a
- * marker cannot be classified, so its discovery result must not be cached.
+ * repository: the exact bounded HEAD contents at that directory, and `objects`
+ * and `refs` either there or, when a `commondir` pointer exists, at the
+ * pointer's resolved target with its canonical path and directory identity.
+ * Undefined means a marker cannot be classified or resolved, so its discovery
+ * result must not be cached.
  */
-function directoryMarkers(path: string): { readonly head: HeadKind; readonly stamp: string } | undefined {
-	const head = headKind(join(path, "HEAD"));
+function directoryMarkers(path: string): string | undefined {
+	const head = headContents(join(path, "HEAD"));
 	if (head === undefined) return undefined;
 	const objects = memberKind(join(path, "objects"));
 	const refs = memberKind(join(path, "refs"));
@@ -158,25 +173,22 @@ function directoryMarkers(path: string): { readonly head: HeadKind; readonly sta
 	try { pointerInfo = lstatSync(pointer, { bigint: true, throwIfNoEntry: false }); }
 	catch { return undefined; }
 	let commondir: string | null = null;
-	let common: { readonly objects: MemberKind; readonly refs: MemberKind } | undefined;
+	let common: CommonMarkers | undefined;
 	if (pointerInfo !== undefined) {
 		if (!pointerInfo.isFile()) return undefined;
 		const text = readMarker(pointer);
 		if (text === undefined) return undefined;
 		commondir = text;
-		const target = resolve(path, text.replace(/[\r\n]+$/u, ""));
-		const commonObjects = memberKind(join(target, "objects"));
-		const commonRefs = memberKind(join(target, "refs"));
-		if (commonObjects === undefined || commonRefs === undefined) return undefined;
-		common = { objects: commonObjects, refs: commonRefs };
+		common = commonMarkers(path, text);
+		if (common === undefined) return undefined;
 	}
-	return { head, stamp: JSON.stringify({ head, objects, refs, commondir, ...(common === undefined ? {} : { common }) }) };
+	return JSON.stringify({ head, objects, refs, commondir, ...(common === undefined ? {} : { common }) });
 }
 
 function markerAt(candidate: string, info: BigIntStats, directory: string): MarkerStamp | undefined {
 	if (info.isDirectory()) {
 		const markers = directoryMarkers(candidate);
-		return markers === undefined ? undefined : { kind: "directory", path: candidate, revision: identityOf(info), validity: markers.stamp };
+		return markers === undefined ? undefined : { kind: "directory", path: candidate, revision: identityOf(info), validity: markers };
 	}
 	if (!info.isFile()) return undefined;
 	const text = readMarker(candidate);
@@ -197,13 +209,13 @@ function markerAt(candidate: string, info: BigIntStats, directory: string): Mark
 		target,
 		...(targetInfo?.isDirectory() === true ? { targetRevision: identityOf(targetInfo) } : {}),
 		...(common === undefined ? {} : { common }),
-		validity: markers.stamp,
+		validity: markers,
 	};
 }
 
 /**
  * Describe the discovery inputs for one canonical cwd. A directory whose own
- * markers Git accepts is reported as a bare repository; otherwise only an
+ * markers are present is reported as a bare repository; otherwise only an
  * absent `.git` along the ancestors is reported as none. Undefined means the
  * marker identity cannot be trusted, so its result must not be cached.
  */
@@ -221,8 +233,7 @@ function markerStamp(canonical: string): MarkerStamp | undefined {
 	if (bare === undefined || !bare.isDirectory()) return { kind: "none", path: canonical, revision: "" };
 	const markers = directoryMarkers(canonical);
 	if (markers === undefined) return undefined;
-	if (markers.head !== "symbolic" && markers.head !== "object-id") return { kind: "none", path: canonical, revision: "" };
-	return { kind: "bare", path: canonical, revision: identityOf(bare), validity: markers.stamp };
+	return { kind: "bare", path: canonical, revision: identityOf(bare), validity: markers };
 }
 
 /** Directory identity that follows the resolved path, not an earlier marker read. */

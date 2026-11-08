@@ -1980,12 +1980,14 @@ reused only while the canonical cwd, the sanitised Git environment and `PATH`,
 the nearest `.git` marker (or its absence along the ancestors, and bare
 repository markers), the common-directory pointer and the markers Git requires
 before it accepts a directory as a repository keep their identities. For an
-ordinary `.git` directory those markers are a valid `HEAD` and the `objects` and
-`refs` directories; a `commondir` target keeps its own `objects` and `refs`.
-Inputs are captured before and after Git runs, so a result whose inputs changed
-during discovery is not retained. A new nested repository, `git init`, a
-replaced worktree pointer, a changed common directory or a changed repository
-marker therefore produces a fresh Git read. An `unknown` result
+ordinary `.git` directory those markers are the exact bounded `HEAD` contents
+and the `objects` and `refs` directories; Git decides whether that `HEAD` is
+valid. A `commondir` target keeps its own `objects` and `refs`, its canonical
+resolved path, and its directory device and inode. Inputs are captured before
+and after Git runs, so a result whose inputs changed during discovery, or whose
+common-directory resolution was uncertain, is not retained. A new nested
+repository, `git init`, a replaced worktree pointer, a changed common directory
+or a changed repository marker therefore produces a fresh Git read. An `unknown` result
 (for example a missing directory or a Git timeout) is shared only while in
 flight and is never retained. When a trustworthy marker identity cannot be
 established the caller receives a fresh uncached result. One presence pass
