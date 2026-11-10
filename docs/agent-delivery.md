@@ -134,17 +134,23 @@ architectures retain the skill's exemptions. A correctly classified
 agent-proposed skill needs a usefulness rationale, not an incident or omission.
 Do not reclassify a capability to obtain an exemption.
 
-Before writing a new enumerated surface, apply the operator grant and the skill's
+Before landing a new enumerated surface, apply the operator grant and the skill's
 approval rule. The elevated `/evo` grant covers necessary new surfaces within
 declared intent; state the required warrant in the result rather than ask again.
 A promising idea, reversibility, or sufficient warrant does not itself grant
-authority. Develop an unapproved surface's proposal in chat, not an implementation
-disguised as an experiment. Complete independent authorized work while holding
+authority to land. The skill's private-prototype rule lets an unapproved surface
+take runnable form in a place that nothing loads, so its proposal can be tried
+and not only read. Complete independent authorized work while holding
 only the act that requires a missing decision.
 
 ## Coordinate with related efforts
 
-At kickoff and before each promotion, publish your invoking session's purpose,
+Independent work needs no claim, status read, or contact. Before a
+[shared act](conventions/worktrees.md#shared-acts) of the development workflow,
+or when work can overlap another effort, use bounded discovery of the related
+efforts; the current context sometimes already supplies it. Publish a claim or
+contact an effort only where an actual dependency needs coordination. A claim
+carries your invoking session's purpose,
 integration intent, declared scope, carried operator direction, and contact
 thread through `agent_intent`. An ordinary primary publishes its own claim; a
 native root or child publishes only its own conversation claim without a primary
@@ -180,11 +186,13 @@ hold, release, or continuing condition. Rejoin to replace your contribution and
 cite the source exchange. Threads and Related efforts display these declarations;
 a member's release is not consensus, permission, or proof of machine availability.
 
-Before a full suite, read untargeted `agent_status`. A native coordinator declares
-its own claim rather than another session's claim. Declare the start of a full
-gate or main integration in your own integration intent with `scope.fullGate`
-set to `true`, and clear that claim on release. Run one full gate per machine at
-a time. Notify only efforts that requested the release; do not broadcast routine
+A full suite needs no claim and no prior status read. A session that needs a
+quiet machine, such as for a timing measurement, declares it in its own
+integration intent with `scope.fullGate` set to `true` and clears that claim
+afterwards. A session that sees such a claim holds its own full suite until the
+claim clears and continues its other work. A native coordinator declares
+its own claim rather than another session's claim. Notify only efforts that
+requested the release; do not broadcast routine
 starts or releases to every related primary. Each direct model-origin notice
 can start a primary turn. Intent and contributor statements are declarations,
 not locks.
@@ -197,9 +205,9 @@ composed answer. When one composed result serves the work, that agent remains
 free to perform the main work itself and use assistance selectively. Neither
 capability prescribes staffing. Do not build a primary-side result buffer.
 
-Each coordinator controls only its own workers, checkouts, and branches. Never
-control another coordinator's resources or promote its unpublished commits.
-Keep unpublished commits off live slice branches. Share advice, evidence, and
+Each session controls only its own workers, checkouts, and branches. Never
+control another session's resources or land its unmerged commits.
+Share advice, evidence, and
 review requests without treating discovery as permission. Resolve technical
 order in the thread; escalate only conflicting operator directions.
 
@@ -265,11 +273,12 @@ changed division of work, and exchange findings directly with relevant peers. A
 normal self-contained terminal response is a valid full-session result; do not
 impose an auxiliary worker's submission protocol. Keep concurrent edits
 disjoint. An owner's area follows the work, such as one behaviour with its
-implementation, tests, and documentation, not a file count. One coordinator
-serializes branch integration, push, and activation; that coordinator can also
-do substantive work. Worker branches merge through plain Git under the
-[development workflow](conventions/worktrees.md); no sibling source
-synchronization or promotion command exists.
+implementation, tests, and documentation, not a file count. Within one effort,
+one session integrates its workers' branches and performs the effort's landing,
+activation, and publication; that session can also do substantive work. The
+role is local to the effort and gates no other effort. Worker branches merge
+through plain Git under the [development workflow](conventions/worktrees.md); no
+sibling source synchronization or promotion command exists.
 
 Reuse a session when its retained expertise, context, and ownership serve the
 current task. Check its current operation and preserve the current requester and
@@ -338,7 +347,7 @@ final-verification owner. Reuse evidence that remains applicable to the composed
 candidate and execution conditions; check invalidated evidence and uncovered
 interactions. A new worker, review, commit or release milestone alone does not
 justify another complete run. Run the checks the change can break once, then
-commit and push. Tests, counts, source existence,
+commit. Tests, counts, source existence,
 generated text and worker summaries do not replace required outcome evidence.
 Use proportionate evidence that reaches the actual claim, not a new framework,
 recurring journal or operator ceremony. An unavailable necessary layer blocks its
@@ -389,20 +398,22 @@ conversation before deciding that an act lacks authority; carried grants do not
 require the operator to repeat a settled decision. Host authorization, project
 trust, required checks, and review still bind.
 
-Before release, verify the established remote main and accepted resource scope
-from current Git evidence. Inspect accepted local commits and the complete
-outgoing diff. Establish confidence through applicable evidence, substantive
-review and the repository's verification rules. Run the checks the change can
-break, then push with plain Git. Prior publication is not a prerequisite. Exclude unrelated commits and resources. If a candidate commit
-already appears on remote main, report that state without replaying it. Complete
-required activation through the repository procedure and preserve unrelated
-configured activation and settings.
+Delivery follows the [development workflow](conventions/worktrees.md): land the
+accepted result on `main`, activate it when the outcome needs running code, and
+publish when no operator restriction holds publication. Publication does not
+hold landing or activation. Establish confidence through applicable
+evidence, substantive review and the repository's verification rules, and run
+the checks the change can break before landing. Before a push, verify the
+established remote main from current Git evidence and inspect the complete
+outgoing diff. Exclude unrelated commits and resources. If a candidate commit
+already appears on remote main, report that state without replaying it. Preserve
+unrelated configured activation and settings.
 
-A local commit alone is not completion for an accepted high-confidence
-improvement. End when acceptance and all authorized delivery, including
-promotion, push to the established remote main, and required activation, are
-verified complete, or an exact unresolved boundary blocks the remaining work.
-Verify actual branch, commit, publication, and activation state for each granted
+A plan or an unmerged branch is not completion for an accepted high-confidence
+improvement. End when the accepted result is on `main`, is live where the
+outcome needs running code, and every further authorized act is done or reported
+with the exact boundary that holds it. Report publication as its own state.
+Verify actual branch, commit, activation, and publication state for each granted
 step. Stop only the affected step at a missing fact, check, or authority, and
 finish independent authorized work.
 

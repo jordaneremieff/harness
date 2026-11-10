@@ -1,4 +1,4 @@
-/** Read published review coverage and the running Pi installation without changing either. */
+/** Read committed review coverage and the running Pi installation without changing either. */
 
 import { Buffer } from "node:buffer";
 import { execFile } from "node:child_process";
@@ -74,18 +74,17 @@ function commitId(output: string): string {
 	return hash;
 }
 
-async function publishedCoverageCommit(root: string): Promise<string> {
-	const main = commitId(await git(root, ["rev-parse", "--verify", "refs/heads/main^{commit}"]));
-	const upstream = commitId(await git(root, ["rev-parse", "--verify", "main@{upstream}^{commit}"]));
-	return commitId(await git(root, ["merge-base", main, upstream]));
+/** Review coverage is a fact of local main; publication of main is a separate fact. */
+async function reviewCoverageCommit(root: string): Promise<string> {
+	return commitId(await git(root, ["rev-parse", "--verify", "refs/heads/main^{commit}"]));
 }
 
 async function reviewedThrough(root: string, commit: string): Promise<string> {
 	const document = await git(root, ["show", `${commit}:${PI_COVERAGE_PATH}`]);
 	const markers = document.split(/\r?\n/).filter((line) => line.includes("pi-release-reviewed-through:"));
-	if (markers.length !== 1) throw new Error("Expected one reviewed-through marker in the published coverage document.");
+	if (markers.length !== 1) throw new Error("Expected one reviewed-through marker in the committed coverage document.");
 	const match = /^<!-- pi-release-reviewed-through: (\S+) -->$/.exec(markers[0]);
-	if (!match || match[1] === "unknown") throw new Error("Published Pi release review coverage is unknown.");
+	if (!match || match[1] === "unknown") throw new Error("Pi release review coverage is unknown.");
 	versionParts(match[1]);
 	return match[1];
 }
@@ -206,8 +205,8 @@ export async function readPiReleaseIntake(options: PiReleaseIntakeOptions): Prom
 	try {
 		versionParts(result.installedVersion);
 		result.changelogPath = join(options.installedPackageDir ?? getPackageDir(), "CHANGELOG.md");
-		input = "published review coverage (main and its configured upstream)";
-		result.baselineCommit = await publishedCoverageCommit(options.harnessRoot);
+		input = "review coverage committed on local main";
+		result.baselineCommit = await reviewCoverageCommit(options.harnessRoot);
 		result.baselineVersion = await reviewedThrough(options.harnessRoot, result.baselineCommit);
 		const order = compareVersions(result.installedVersion, result.baselineVersion);
 		if (order < 0) return { ...result, state: "ahead" };

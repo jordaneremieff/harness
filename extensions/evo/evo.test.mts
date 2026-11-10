@@ -35,10 +35,10 @@ const authorityContracts = [
 	],
 	[
 		"complete release grant",
-		/authorizes promotion, push to the established remote main, and required activation of accepted high-confidence results.*including new harness resources/,
+		/authorizes integration on main, required activation, and push to the established remote main for accepted high-confidence results.*including new harness resources/,
 	],
 	["no duplicate approval", /without another approval unless the operator restricts it or reserves the act/],
-	["no prior publication condition", /Prior publication is not a prerequisite/],
+	["publication is a separate act", /Publication is a separate act from integration and activation; neither waits for it/],
 	["accepted scope only", /grant covers accepted resources, not unrelated commits or work/],
 	["required repository procedures", /Use established repository procedures and required gates/],
 	[
@@ -328,10 +328,13 @@ for (const direction of [undefined, "Improve ordinary document tasks; do not pub
 			],
 			[
 				"shared mutation owner",
-				/coordinator alone owns shared synchronization, integration, promotion, push, and activation/,
+				/one session integrates its workers' branches and performs the effort's integration on main, activation, and push/,
 			],
 			["no second runtime", /Do not build another scheduler, store, model loop, fixed roster, or evaluation framework/],
-			["complete delivery", /after acceptance and verified authorized delivery, not just a local commit or plan/],
+			[
+				"complete delivery",
+				/after acceptance and verified authorized delivery: the result is on main, is live where the outcome needs running code, and its publication state is reported separately/,
+			],
 			["ownership resolved", /Resolve live worker ownership before exit/],
 		]);
 		const workflow = prompt.indexOf("Required delivery workflow:");
@@ -537,14 +540,17 @@ test("the workflow preserves capability-specific warrants separately from permis
 		["skill usefulness case", /agent-proposed skill needs a usefulness rationale, not an incident or omission/],
 		[
 			"authority before write",
-			/Before writing a new enumerated surface, apply the operator grant and the skill's approval rule/,
+			/Before landing a new enumerated surface, apply the operator grant and the skill's approval rule/,
 		],
 		[
 			"grant applied once",
 			/elevated `\/evo` grant covers necessary new surfaces.*state the required warrant.*rather than ask again/,
 		],
 		["warrant is not authority", /sufficient warrant does not itself grant authority/],
-		["unapproved implementation held", /unapproved surface's proposal in chat, not an implementation/],
+		[
+			"private prototype route",
+			/private-prototype rule lets an unapproved surface take runnable form in a place that nothing loads/,
+		],
 	]);
 });
 
@@ -602,7 +608,10 @@ test("collaboration preserves the use path and accepts observed task improvement
 		],
 		["disjoint edits", /Keep concurrent edits disjoint/],
 		["coherent ownership", /owner's area follows the work, such as one behaviour with its implementation, tests, and documentation, not a file count/],
-		["working coordinator", /One coordinator serializes branch integration, push, and activation; that coordinator can also do substantive work/],
+		[
+			"working integrator",
+			/one session integrates its workers' branches and performs the effort's landing, activation, and publication; that session can also do substantive work/,
+		],
 		[
 			"settlement is not acceptance",
 			/Prompt admission, idle state, provider completion, and task acceptance are different facts/,
@@ -716,20 +725,20 @@ test("delivery preserves release gates and distinguishes scoped no-change from b
 	assertContracts(deliveryWorkflow, [
 		[
 			"current release scope",
-			/verify the established remote main and accepted resource scope from current Git evidence/,
+			/verify the established remote main from current Git evidence/,
 		],
-		["complete diff reviewed", /Inspect accepted local commits and the complete outgoing diff/],
+		["complete diff reviewed", /inspect the complete outgoing diff/],
 		[
 			"confidence before release",
 			/Establish confidence through applicable evidence, substantive review and the repository's verification rules/,
 		],
-		["plain push after checks", /Run the checks the change can break, then push with plain Git/],
+		["checks before landing", /run the checks the change can break before landing/],
 		["no replay", /already appears on remote main, report that state without replaying it/],
 		[
 			"full authorized delivery",
-			/all authorized delivery, including promotion, push to the established remote main, and required activation/,
+			/End when the accepted result is on `main`, is live where the outcome needs running code, and every further authorized act is done or reported/,
 		],
-		["actual release verification", /Verify actual branch, commit, publication, and activation state/],
+		["actual release verification", /Verify actual branch, commit, activation, and publication state/],
 		[
 			"same use path governs final claims",
 			/Compare the actual result with the promised operator benefit on the same selected use path/,

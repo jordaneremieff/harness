@@ -71,7 +71,7 @@ const RELEASE_WORK = [
 	"- Refresh docs/pi-durable-harness.md from current sources with current verification dates.",
 	"- Audit every extension, skill, prompt, and script against changed, added, removed, or deprecated behavior in every release in scope. Assess superseded changes against the current host.",
 	"- Adopt new capabilities where they serve what the operator accomplishes with agents.",
-	"- Resolve every applicable finding, pass repository gates, and accept the complete adoption before the coordinator advances the reviewed-through marker. Include it in promotion only with that completed adoption; verify publication before claiming completion. Partial, failed, or unrelated directed work leaves the marker unchanged.",
+	"- Resolve every applicable finding, pass repository gates, and accept the complete adoption before the coordinator advances the reviewed-through marker. Commit completed adoption and its marker on main; report publication separately. Partial, failed, or unrelated directed work leaves the marker unchanged.",
 ];
 
 function behindBlock(release: PiReleaseIntake, directed: boolean): string[] {
@@ -106,7 +106,7 @@ function unavailableBlock(release: PiReleaseIntake, directed: boolean): string[]
 			: "This run's first priority is autonomous release-baseline recovery, not an unrelated topic. Do not ask the operator to paste notes or select a topic.",
 	];
 	lines.push(
-		"For release intake, establish the last complete published review from repository evidence, not dependency installation or a checkout-version row. If none is established, read all available cumulative changelog releases through the installed version in bounded pages and review their effects on the current harness.",
+		"For release intake, establish the last complete committed review from repository evidence, not dependency installation or a checkout-version row. If none is established, read all available cumulative changelog releases through the installed version in bounded pages and review their effects on the current harness.",
 		"Resolve missing or malformed source boundaries before claiming coverage. A byte or heading limit requires bounded direct source reads, not omission. Continue independent intake where evidence exists; an unavailable detection result alone is not completion.",
 		...RELEASE_WORK,
 	);
@@ -118,18 +118,18 @@ function releaseBlock(release: PiReleaseIntake | undefined, directed: boolean): 
 	const lines = [
 		"Pi release state:",
 		`Running Pi version: ${jsonString(release.installedVersion)}. Installed changelog: ${jsonString(release.changelogPath)}.`,
-		`Review baseline source: ${jsonString(release.baselinePath)} at ${release.baselineCommit ?? "an unresolved commit"}, the common ancestor of main and its configured upstream. Dirty and provisional worktree copies do not establish coverage.`,
-		"Local upstream tracking evidence is conservative, not a fresh remote check. This invocation never writes the reviewed-through marker.",
+		`Review baseline source: ${jsonString(release.baselinePath)} at ${release.baselineCommit ?? "an unresolved commit"}, the tip of local main. Dirty and provisional worktree copies do not establish coverage.`,
+		"Review coverage and publication are separate facts: a marker committed on local main counts whether or not main is pushed. This invocation never writes the reviewed-through marker.",
 	];
 	switch (release.state) {
 		case "aligned":
 			lines.push(
-				`Published review coverage matches installed Pi ${release.installedVersion}; no newer listed release is pending.`,
+				`Committed review coverage matches installed Pi ${release.installedVersion}; no newer listed release is pending.`,
 			);
 			break;
 		case "ahead":
 			lines.push(
-				`Published reviewed-through ${release.baselineVersion} is newer than installed Pi ${release.installedVersion}. Report the host mismatch; do not lower coverage.`,
+				`Committed reviewed-through ${release.baselineVersion} is newer than installed Pi ${release.installedVersion}. Report the host mismatch; do not lower coverage.`,
 			);
 			break;
 		case "behind":
@@ -160,7 +160,7 @@ export function buildEvoKickoff(options: EvoKickoffOptions): string {
 		"Authority and boundaries:",
 		"- Apply the Intent authority rule in the universal AGENTS.md to the direction, governing conversation, and delegated task contracts. /evo grants autonomous delivery, not merely recommendations.",
 		"- This invocation authorizes evidence reads, required worktree procedures, full Pi execution sessions, necessary local implementation within the declared intent, and coherent local commits after required checks. It covers necessary new surfaces; state the required warrant in the result instead of requesting repeated per-surface approval.",
-		"- This invocation also authorizes promotion, push to the established remote main, and required activation of accepted high-confidence results within the declared intent, including new harness resources. Complete this delivery without another approval unless the operator restricts it or reserves the act. Prior publication is not a prerequisite.",
+		"- This invocation also authorizes integration on main, required activation, and push to the established remote main for accepted high-confidence results within the declared intent, including new harness resources. Complete this delivery without another approval unless the operator restricts it or reserves the act. Publication is a separate act from integration and activation; neither waits for it.",
 		"- The grant covers accepted resources, not unrelated commits or work. Use established repository procedures and required gates. Activation enables accepted resources in Pi, not broader settings changes or external deployment; preserve unrelated configured activation and settings.",
 		"- Current explicit operator restrictions and restrictions in the direction take priority over this default grant. Apply grants in the direction and governing conversation before deciding that an act lacks authority. Delivery outside the declared intent or established procedures needs an operator grant covering that act.",
 		"- Reserved acts require an operator decision covering them: pillar corpus promotion, new runtime dependencies, credential access or disclosure, destructive acts on others' work, history, or data, operator-store migration, unrelated work, and external changes beyond the harness repository and its remote other than required activation of accepted resources. This invocation alone does not approve those acts.",
@@ -171,7 +171,7 @@ export function buildEvoKickoff(options: EvoKickoffOptions): string {
 		"- When orientation needs session history, task the standing @session-history expert as docs/session-history.md directs. Reuse its expertise instead of repeating a corpus brief.",
 		"- The active session owns the integrated outcome and remains free to investigate, implement, and verify substantive work itself. Choose direct work, collaboration, delegation, or a dedicated coordinator by the task, and revise the choice as the work develops. When other agents implement, discover the registered full Pi agent controls and use full Pi sessions. An unavailable execution capability that the chosen arrangement needs is an exact blocker, not permission to substitute a reduced backend.",
 		"- Carry the same concrete before/after operator use path from exploration through task contracts, acceptance, and final claims. Develop and challenge it with collaborators where useful; revise agent-authored recipes when discoveries change the approach.",
-		"- Preserve concurrent work and inherited attribution. The coordinator alone owns shared synchronization, integration, promotion, push, and activation. Do not build another scheduler, store, model loop, fixed roster, or evaluation framework.",
-		"- Finish with one concise integrated chat result after acceptance and verified authorized delivery, not just a local commit or plan. Follow the delivery workflow's scoped no-change and blocked-work distinctions; stop only affected acts at an exact boundary and complete independent authorized work. Resolve live worker ownership before exit.",
+		"- Preserve concurrent work and inherited attribution. Within this effort, one session integrates its workers' branches and performs the effort's integration on main, activation, and push. Do not build another scheduler, store, model loop, fixed roster, or evaluation framework.",
+		"- Finish with one concise integrated chat result after acceptance and verified authorized delivery: the result is on main, is live where the outcome needs running code, and its publication state is reported separately. A plan or an unmerged branch is not completion. Follow the delivery workflow's scoped no-change and blocked-work distinctions; stop only affected acts at an exact boundary and complete independent authorized work. Resolve live worker ownership before exit.",
 	].join("\n");
 }

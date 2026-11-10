@@ -37,7 +37,8 @@ it("keeps native await off ordinary primaries and treats waiting as a capability
 
 it("declares quiet gate windows and attributes member conditions without permission", () => {
 	const status = AGENT_CONTROL_GUIDANCE.agent_status.guidelines?.join("\n") ?? "";
-	assert.match(status, /Before a full suite, read untargeted agent_status/u);
+	assert.match(status, /A full suite needs no claim and no prior status read/u);
+	assert.match(status, /hold your own full suite until that claim clears/u);
 	assert.match(status, /scope.fullGate true; clear the claim on release/u);
 	assert.match(status, /Notify only efforts that requested release/u);
 	const threads = AGENT_CONTROL_GUIDANCE.agent_collaborate.guidelines?.join("\n") ?? "";

@@ -44,10 +44,10 @@ completed cumulative release intake. Its value is a numeric major.minor.patch
 version or `unknown`. Targeted contract checks, dependency installation, and
 checkout versions do not establish that coverage.
 
-Evo reads the declaration from the common ancestor of local main and main's
-configured upstream, by immutable commit. Dirty files, provisional declarations,
-and unpublished local-main coverage do not suppress intake. Local tracking refs
-are conservative Git evidence, not a fresh remote check. Missing evidence or an
+Evo reads the declaration from the tip of local main, by immutable commit.
+Dirty files and provisional declarations do not suppress intake. Review coverage
+and publication are separate facts: a declaration committed on local main counts
+whether or not main is pushed. Missing evidence or an
 invalid declaration requires baseline recovery, not substitution of an installed
 version or lockfile. The reader is `extensions/evo/release.ts`.
 
@@ -55,8 +55,8 @@ The coordinator owns advancement. Review every cumulative changelog entry after
 the prior declaration through the running release. Include separately published
 runtime dependencies when their contracts affect consumers. Resolve findings,
 complete useful adoption and required repository checks, and accept the whole
-range before changing the declaration. Promotion includes it only with completed
-adoption. Verify publication before reporting completion. Partial or failed intake
+range before changing the declaration. The commit on main includes it only with
+completed adoption. Report publication as its own state. Partial or failed intake
 and unrelated directed work leave the declaration unchanged.
 
 When complete prior coverage is unknown, read available cumulative release notes

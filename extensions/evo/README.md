@@ -111,15 +111,15 @@ The baseline is the explicit `pi-release-reviewed-through` declaration in
 [the host contract document](../../docs/pi-durable-harness.md#release-review-coverage).
 It describes completed release review, not dependency installation. The command
 does not use the lockfile or a checkout-version row as review evidence. It reads
-the document by immutable commit at the common ancestor of local `main` and
-its configured upstream. Dirty files, provisional branches, and an unpublished
-marker on local main do not suppress pending intake. Local upstream tracking is
-conservative evidence, not a fresh network check; evo does not fetch.
+the document by immutable commit at the tip of local `main`. Dirty files and
+provisional branches do not suppress pending intake. Review coverage and
+publication are separate facts: a marker committed on local `main` counts whether
+or not `main` is pushed. Evo does not fetch.
 
 If the declaration is `unknown` or coverage evidence is unavailable, a bare run
-first recovers a defensible published baseline from repository evidence.
+first recovers a defensible committed baseline from repository evidence.
 Targeted contract checks alone do not establish exhaustive release coverage.
-If no published baseline exists, the run reads the available cumulative changelog
+If no committed baseline exists, the run reads the available cumulative changelog
 through the running version in bounded pages and
 reviews its effects on the current harness. Superseded changes are assessed
 against the current host, not implemented again. The operator does not need to
@@ -127,7 +127,7 @@ paste notes or select a topic.
 
 The kickoff distinguishes:
 
-- **Aligned:** published review coverage matches the running version and the
+- **Aligned:** committed review coverage matches the running version and the
   changelog boundary exists. The command does not repeat completed intake.
 - **Behind:** the running host has later changelog entries. Every entry in the
   interval appears oldest first, with its source path and inclusive line range.
@@ -135,7 +135,7 @@ The kickoff distinguishes:
   procedure: a release-intake direction selects it as work; an unrelated direction
   retains its focus and reports the review as a pending lead. Latest-version
   alignment remains required in both cases.
-- **Ahead:** published coverage exceeds the running host. Report the host
+- **Ahead:** committed coverage exceeds the running host. Report the host
   mismatch without lowering coverage.
 - **Unavailable:** Git evidence, the declaration, version syntax, or changelog
   validation failed. Bare runs prioritize autonomous baseline/source recovery,
@@ -161,9 +161,9 @@ and audits extensions, skills, prompts, and scripts for every release in scope.
 The coordinator judges the direction's focus; the command does not classify
 free text. It adopts new capabilities where they serve the operator's work.
 The coordinator advances coverage only after complete review, resolved applicable
-findings, required checks, and accepted adoption. Promotion includes the marker
-only with completed adoption; publication must succeed before completion is
-claimed. Partial, failed, and unrelated directed runs leave coverage unchanged.
+findings, required checks, and accepted adoption. The commit on `main` includes
+the marker only with completed adoption. Publication is reported as its own
+state and does not hold coverage. Partial, failed, and unrelated directed runs leave coverage unchanged.
 The command itself never writes the marker.
 
 ## Session-history expertise
@@ -222,13 +222,14 @@ Invoking `/evo` authorizes:
   surfaces, with the required warrant stated in the result instead of repeated
   per-surface approval;
 - coherent local commits after required checks; and
-- promotion, push to the established remote main, and required activation of
-  accepted high-confidence results within declared intent, including new harness
-  resources.
+- integration on `main`, required activation, and push to the established
+  remote main for accepted high-confidence results within declared intent,
+  including new harness resources.
 
 The coordinator completes those acts without another approval unless the operator
 restricts them or reserves the act. The grant covers accepted results, not
-unrelated commits or resources. Prior publication is not a prerequisite. Use
+unrelated commits or resources. Publication is a separate act from integration
+and activation; neither waits for it. Use
 established repository procedures and their gates, following the
 [release checks](../../docs/agent-delivery.md#deliver-and-report).
 
@@ -257,9 +258,11 @@ grants no credential or project-trust bypass. Apply binding safeguards, required
 checks, and review to every authorized act. Repository rules protect concurrent
 work and held experiments; inherited edits retain attribution.
 
-Completion requires acceptance and verified authorized delivery, including
-promotion, push, and required activation, unless an exact unresolved boundary
-blocks the remaining work. A local commit alone is not completion. Evo expresses
+Completion requires acceptance and verified authorized delivery: the result is
+on `main` and is live where the outcome needs running code. Publication is a
+separate authorized act, done when no operator restriction holds it and reported
+as its own state. A plan or an unmerged branch is not completion. An exact
+unresolved boundary stops only the act it blocks. Evo expresses
 this grant in the request; it does not mechanically enforce filesystem paths or
 tool permissions.
 
@@ -317,8 +320,8 @@ binding, direction refusal, and the absence of model tools.
 - `index.ts` registers `/evo`, emits the Durable contribution, resolves its
   evidence root, reads release intake, reports invalid input, names an unnamed
   session from the direction outside RPC mode, and selects follow-up delivery.
-- `release.ts` reads published review coverage and bounds cumulative release notes.
-- `release.test.mts` checks source validation, publication boundaries, context
+- `release.ts` reads committed review coverage and bounds cumulative release notes.
+- `release.test.mts` checks source validation, committed-coverage boundaries, context
   limits, recovery priority, and directed focus with isolated Git fixtures.
 - `command.ts` sanitizes and bounds the direction.
 - `kickoff.ts` frames intent, direction, authority, and the required workflow read.

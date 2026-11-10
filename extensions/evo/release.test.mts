@@ -49,7 +49,7 @@ for (const [baseline, state, versions] of [
 	["0.99.0", "behind", ["0.99.1", "0.99.2"]],
 	["0.100.0", "ahead", []],
 ] as const) {
-	test(`published coverage ${baseline} produces ${state}`, async (t) => {
+	test(`committed coverage ${baseline} produces ${state}`, async (t) => {
 		const fixture = setup(baseline);
 		t.after(fixture.close);
 		const result = await fixture.read();
@@ -88,48 +88,55 @@ test("dependency-only updates and repeat dispatch never advance coverage", async
 	assert.equal(readFileSync(join(fixture.root, PI_COVERAGE_PATH), "utf8"), doc);
 });
 
-test("dirty, provisional, and unpublished main markers retain published review coverage", async (t) => {
+test("dirty and provisional markers do not count; a marker committed on local main does", async (t) => {
 	const fixture = setup();
 	t.after(fixture.close);
-	const published = fixture.git("rev-parse", "HEAD").trim();
-	fixture.marker("0.99.2");
+	fixture.marker("0.99.1");
 	assert.equal((await fixture.read()).baselineVersion, "0.99.0");
 	fixture.commit();
-	assert.equal((await fixture.read()).baselineCommit, published);
+	const committed = fixture.git("rev-parse", "HEAD").trim();
+	const unpublished = await fixture.read();
+	assert.equal(unpublished.baselineCommit, committed);
+	assert.equal(unpublished.baselineVersion, "0.99.1");
 	fixture.git("switch", "--quiet", "--create", "provisional");
 	fixture.marker("0.100.0");
 	fixture.commit();
-	assert.equal((await fixture.read()).baselineVersion, "0.99.0");
+	const provisional = await fixture.read();
+	assert.equal(provisional.baselineCommit, committed);
+	assert.equal(provisional.baselineVersion, "0.99.1");
 });
 
-test("only published completed marker advancement clears pending releases", async (t) => {
+test("a marker committed on local main clears pending releases before publication", async (t) => {
 	const fixture = setup();
 	t.after(fixture.close);
 	fixture.marker("0.99.2");
-	fixture.commit();
 	assert.equal((await fixture.read()).state, "behind");
-	fixture.publish();
+	fixture.commit();
 	assert.equal((await fixture.read()).state, "aligned");
 });
 
-test("divergent main and upstream use their common committed coverage", async (t) => {
+test("an upstream that diverges from main, or no upstream, leaves committed coverage unchanged", async (t) => {
 	const fixture = setup();
 	t.after(fixture.close);
 	const common = fixture.git("rev-parse", "HEAD").trim();
 	fixture.marker("0.99.1");
 	fixture.commit();
+	const main = fixture.git("rev-parse", "HEAD").trim();
 	fixture.git("switch", "--quiet", "--create", "other", common);
 	fixture.marker("0.99.2");
 	fixture.commit();
 	fixture.publish();
-	const result = await fixture.read();
-	assert.equal(result.baselineCommit, common);
-	assert.equal(result.baselineVersion, "0.99.0");
+	const diverged = await fixture.read();
+	assert.equal(diverged.baselineCommit, main);
+	assert.equal(diverged.baselineVersion, "0.99.1");
+	fixture.git("config", "--unset", "branch.main.remote");
+	const withoutUpstream = await fixture.read();
+	assert.equal(withoutUpstream.baselineCommit, main);
+	assert.equal(withoutUpstream.state, "behind");
 });
 
 for (const [name, change, pattern] of [
 	["missing main", (f: ReturnType<typeof setup>) => f.git("branch", "-m", "other"), /main/],
-	["missing upstream", (f: ReturnType<typeof setup>) => f.git("config", "--unset", "branch.main.remote"), /upstream/],
 	[
 		"unknown marker",
 		(f: ReturnType<typeof setup>) => {
@@ -165,7 +172,7 @@ for (const [name, change, pattern] of [
 			f.commit();
 			f.publish();
 		},
-		/published review coverage/,
+		/review coverage committed on local main/,
 	],
 ] as const) {
 	test(`${name} preserves actionable unavailable coverage`, async (t) => {
@@ -175,7 +182,7 @@ for (const [name, change, pattern] of [
 		const result = await fixture.read();
 		assert.equal(result.state, "unavailable");
 		assert.match(result.reason ?? "", pattern);
-		if (name === "missing main" || name === "missing upstream") assert.equal(result.baselineCommit, undefined);
+		if (name === "missing main") assert.equal(result.baselineCommit, undefined);
 		else assert.equal(result.baselineCommit, fixture.git("rev-parse", "HEAD").trim());
 		assert.equal(result.changelogPath, join(fixture.installedPackageDir, "CHANGELOG.md"));
 		const prompt = buildEvoKickoff({ harnessRoot: fixture.root, invocationCwd: fixture.root, release: result });
@@ -258,7 +265,7 @@ test("the rendered note cap retains every release and source range, including Un
 });
 
 for (const [baseline, state, expected] of [
-	["0.99.2", "aligned", /Published review coverage matches installed Pi/],
+	["0.99.2", "aligned", /Committed review coverage matches installed Pi/],
 	["0.100.0", "ahead", /newer than installed Pi.*do not lower coverage/],
 	["unknown", "unavailable", /autonomous release-baseline recovery/],
 	["0.99.0", "behind", /purpose is the harness-wide release intake/],

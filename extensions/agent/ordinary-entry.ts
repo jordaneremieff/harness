@@ -357,7 +357,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		label: "Agent intent",
 		promptSnippet: AGENT_CONTROL_GUIDANCE.agent_intent.snippet,
 		promptGuidelines: [...(AGENT_CONTROL_GUIDANCE.agent_intent.guidelines ?? [])],
-		description: "Publish or clear this ordinary primary session's purpose, integration intent, scope, carried operator direction, and contact thread. Intent is a session claim, not verified authority or a lock. Returns the published endpoint and bounded related efforts. No model wake. Publish at kickoff and before promotion; update or clear intent when integration completes. Use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
+		description: "Publish or clear this ordinary primary session's purpose, integration intent, scope, carried operator direction, and contact thread. Intent is a session claim, not verified authority or a lock. Returns the published endpoint and bounded related efforts. No model wake. Independent work needs no claim. Publish where an actual dependency with another effort needs coordination, after bounded discovery; update or clear intent when integration completes. Use agent_send for direct effort contact and agent_collaborate for a retained agreement.",
 		parameters: IntentParams,
 		outputSchema: unknown(),
 		async execute(_callId, input: Static<typeof IntentParams>, _signal, _update, ctx) {
