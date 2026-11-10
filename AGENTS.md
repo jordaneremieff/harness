@@ -82,8 +82,12 @@
   merely narrate the code (Cognitive Stratification, Intrinsic Organization).
 - Work on `main` directly, or on a short-lived branch or worktree when you need
   isolation from concurrent work. When done: run the checks that matter for the
-  change, commit, `git push origin main`. See `docs/conventions/worktrees.md`.
-  Never rewrite or discard another session's uncommitted work.
+  change and commit to `main`. Trial, activation, and publication are separate
+  acts; `docs/conventions/worktrees.md` owns them. Push only when the operator's
+  current direction permits publication. Never rewrite or discard another
+  session's uncommitted work.
+- Landed code has no session owner. Any session may repair a failing check on
+  `main`, in its own commit. The session that landed a break owes its repair.
 - Each extension is an independent vertical slice with structural, semantic, state,
   and presentation boundaries. An extension must not import a sibling, parse
   sibling-formatted output, reproduce sibling-owned types or lifecycle states,
@@ -199,7 +203,8 @@ them instead.
 ## Temporary work
 
 Perform disposable investigation outside tracked repository paths where
-practical. Use the operating system temporary directory.
+practical. Use the working directory that the machine instructions name for
+such files, or the operating system temporary directory when they name none.
 
 Temporary scripts created inside the repository must be removed before
 completion.
@@ -211,7 +216,10 @@ Verify what the change can break, then stop:
 - Run the tests of the files you changed and of their direct consumers
   (`node --test <files>`). Run `npm test` only for changes with broad effect:
   dependencies, compiler or lint configuration, shared helpers, or the test
-  runner itself.
+  runner itself. Two repository tests consume every slice: a settings-declaration
+  change also runs `node --test scripts/settings-contract.test.mts`, and a
+  registration or tool-schema change also runs
+  `node --test scripts/extension-load-check.test.mts`.
 - Run `npm run check` (slice isolation, settings declarations, pillar inventory,
   test inventory) after structural edits; `npm run typecheck` and `npm run lint`
   after TypeScript edits.

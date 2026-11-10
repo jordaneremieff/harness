@@ -62,6 +62,15 @@ requirements. Existing applicable results can satisfy them. Read
    value. Keep necessary unresolved facts explicit; narrow or block their dependent
    conclusion rather than guess or transfer obtainable work to the operator.
 
+## Sequence for experienced behaviour
+
+For behaviour a person will judge by use, build the complete capability, run the
+smallest check that yields a usable trial (repository-root path
+`docs/conventions/worktrees.md`, section "Trial"), and let the person try it
+before tests are expanded and before broad checks run. Findings from that use
+decide the shape that tests then protect. Agents verify behaviour that only
+agents use; do not hand that work to the operator.
+
 ## Assertions, fixtures and mocks are fallible
 
 When a check fails, determine whether the implementation, expected contract,
@@ -69,7 +78,13 @@ assertion, fixture, mock or execution setup is wrong. Verify the expected behavi
 against its governing source, not solely the existing test or implementation.
 Repair the defective part and verify the repaired contract. Correct, replace,
 consolidate or remove mistaken or obsolete verification. If a real contract change
-retires protection, preserve protection for contracts that remain valid.
+retires protection, preserve protection for contracts that remain valid. When a
+contract is retired, remove the tests that protect only that contract instead of
+porting them.
+
+Assert the fact that must reach the model or the operator, such as a control that
+is present or absent, a bound, or a restriction. An assertion on exact wording
+needs a consequence that the wording itself carries.
 
 Do not distort correct behaviour to satisfy a mistaken assertion. Do not delete,
 skip or weaken a genuine failure merely to obtain a pass. An unresolved genuine

@@ -1,177 +1,65 @@
-# Managed extension removal
+# Extension removal
 
-Use this procedure after the operator settles an extension disposition. It
-produces one exact plan, uses current repository primitives, and removes no
-external data by implication.
+Use this procedure after the operator settles an extension's disposition.
+Removal retires functionality. It deletes no stored data by implication.
 
-## Produce the plan
+## Fix the target
 
 Use the canonical extension name from the operator's instruction. Do not replace
 a named target with a similar extension inferred from context. If the name and
 the discovered extension disagree, stop and report both.
 
-Resolve the repository root first. Use every Git command with `git -C <repo>`
-and every package command with `npm --prefix <repo>`. Do not depend on the
-caller's current directory.
+## Remove
 
-Use read-only Git commands for the plan. Do not edit Pi settings or remove
-worktrees while planning.
+Work in the main checkout or your own worktree under the development workflow
+(repository-root path `docs/conventions/worktrees.md`).
 
-Start with these reads. Apply the repository's required record or byte bound to
-each producing command. Stop when a bound prevents an exact plan.
+1. List what the extension owns and what refers to it. Apply the repository's
+   output bounds to each command:
 
-```bash
-git -C <repo> status --short --branch
-git -C <repo> status --short --untracked-files=all -- extensions/<name>
-git -C <repo> ls-files -- extensions/<name>
-git -C <repo> grep -n -F -e 'extensions/<name>/' --
-git -C <repo> worktree list --porcelain
-git -C <repo> for-each-ref --format='%(refname:short)' refs/heads/extension/
-git -C <repo> log --oneline main..extension/<name>
-```
+   ```bash
+   git ls-files -- extensions/<name>
+   git grep -n -F -e 'extensions/<name>' -e '<each tool and command name>' --
+   ```
 
-Inspect `package.json`, current documentation, status-key rows,
-extension-configuration rows, and architecture references for target-owned
-integration. Verify that each local `extension/*` branch already has its
-registered worktree. Inspect Pi settings without changing them. Require the
-package list to match the canonical routing from
-`docs/conventions/worktrees.md`: the main package has extensions
-disabled, and each active extension uses its exact worktree entrypoint. Require
-the target local branch and its registered worktree. Stop when an invariant
-fails.
-
-Represent the plan as one JSON object with this shape and exact values:
-
-```json
-{
-  "kind": "extension",
-  "name": "<name>",
-  "repository": "<repo>",
-  "sourceOnMain": true,
-  "mainChangeRequired": true,
-  "ownedPaths": [],
-  "trackedFiles": [],
-  "registrationEdits": [],
-  "otherReferences": [],
-  "mainState": { "branch": "main", "clean": true },
-  "worktree": { "path": "<path>", "clean": true, "registered": true },
-  "settings": { "path": "<path>", "activeEntrypoint": "<path-or-null>" },
-  "localBranch": "extension/<name>",
-  "branchOnlyCommits": [],
-  "reason": "<current behavioral deficiency>",
-  "applyAuthorized": false,
-  "pushMain": false,
-  "deleteRemoteBranch": false,
-  "focusedChecks": [],
-  "repositoryGates": ["lint", "typecheck", "check", "test"],
-  "excluded": ["user data", "session records", "remote branches", "unrelated worktrees"]
-}
-```
-
-Set `applyAuthorized` only when the current operator instruction explicitly
-authorizes removal of this exact extension. If it is false, deliver the plan and
-stop. Set `pushMain` only when the operator explicitly authorizes a push. Remote
-branch deletion requires separate explicit authority and is not part of this
-procedure.
-
-If `pushMain` is true, fetch `origin/main` during preflight and compare
-`main...origin/main`. Stop when the remote branch contains commits absent from
-local `main`. Without push authority, do not contact or change the remote.
-
-## Build and verify the candidate
-
-Require a clean tracked state in the main checkout. Stop if an untracked file
-exists under the target path in the main checkout. Require a clean target
-worktree, including no untracked files. Leave unrelated dirty worktrees unchanged.
-
-When `mainChangeRequired` is true:
-
-1. If `sourceOnMain` is true, remove `extensions/<name>/` with Git, not an
-   operating-system recursive deletion.
-2. Remove the exact `warmup:jiti` extension pair from `package.json`.
-3. Remove status-key rows whose Publisher is `extensions/<name>`.
-4. Remove extension-configuration rows whose Extension is `<name>`.
-5. Remove other current target-owned references and documentation.
-6. Add no aliases, tombstones, fallback readers, migrations, or compatibility
+2. Inspect each reference; do not delete by pattern. Remove what the extension
+   owns: its slice directory (`git rm -r extensions/<name>`), its rows in the
+   convention documents, its entries in the architecture document and the
+   repository README, skill and prompt text that directs agents to its tools or
+   commands, and evaluation suites or fixtures that exist only for it. A
+   reference that states a fact about another slice stays, reworded when it
+   named the removed extension as a consumer.
+3. Add no aliases, tombstones, fallback readers, migrations, or compatibility
    shims.
-7. Inspect the complete candidate diff before gates.
+4. Run the checks the removal can break: `npm run check`, `npm run typecheck`,
+   `npm run lint`, the script tests that consume every slice
+   (`node --test scripts/settings-contract.test.mts scripts/extension-load-check.test.mts`),
+   and the tests of the extension's direct consumers, including consumers whose
+   files needed no edit.
+5. Commit one coherent removal with the behavioural reason in its body.
+6. Activate `main` under that workflow's "Activate" section. The new
+   snapshot's load check covers every remaining entrypoint. The previous
+   snapshot is the code restore point.
 
-Use the candidate index to confirm the target paths and registrations are
-absent. Enumerate every remaining tracked `extensions/*/index.ts` entrypoint and
-run this focused check separately for each one:
+## What stays
 
-```bash
-node <repo>/scripts/extension-load-check.mts <repo>/<remaining-entrypoint>
-```
+- **Stored data.** The extension's stores, its section of the machine document,
+  and its environment overrides stay in place. Name each location in the result.
+  Deleting or migrating them needs the operator's instruction for that data.
+- **Running sessions.** A Pi process started before the activation keeps the
+  removed tools and commands until it ends. State that boundary in the result.
+- **Other routes.** An extension that a machine loads through its own settings
+  entry, outside the harness package, still loads until that entry is removed.
+  Report such an entry; change it only when the instruction covers that machine's
+  settings.
 
-The loader check is the focused load evidence. Treat a skipped loader check as a
-blocker, not a pass. `warmup:jiti` remains a package smoke check, but it does not
-prove that extension factories loaded successfully.
-
-Run the remaining-extension warmup, then the repository gates from the main
-candidate checkout:
-
-```bash
-npm --prefix <repo> run warmup:jiti
-npm --prefix <repo> run lint
-npm --prefix <repo> run typecheck
-npm --prefix <repo> run check
-npm --prefix <repo> test
-```
-
-When `mainChangeRequired` is false, do not create an empty main commit and do
-not push `main`. Run the applicable focused checks and repository gates, then
-proceed to local retirement. Report that `main` is unchanged.
-
-## Commit and retire
-
-When `mainChangeRequired` is true, commit one coherent removal with the
-behavioral reason in its body. Disable the managed synchronization hook for this
-commit because the target branch must remain intact until the destination
-succeeds:
-
-```bash
-git -C <repo> -c core.hooksPath=/dev/null commit <planned-message-options>
-```
-
-Push `main` without force only when `pushMain` is true. If the push fails, keep
-the target active and keep its worktree and branch. Report the exact non-force
-retry command and stop.
-
-After the local destination succeeds, or after an authorized push succeeds:
-
-1. Remove the exact target entry from Pi settings and verify that no other
-   entry changed.
-2. Run `git -C <repo> worktree remove <exact-target-worktree>` without force,
-   if a worktree exists.
-3. Run `git -C <repo> branch -D extension/<name>`, if a branch exists.
-4. Run the focused loader check with each remaining absolute entrypoint.
-
-Leave other worktrees and unrelated settings entries unchanged. Never delete a
-remote extension branch without separate explicit authority.
-
-## Failure and completion
-
-Before commit, restore only the paths in the plan. Do not use a repository-wide
-hard reset. Pi settings and the target branch remain unchanged during candidate
-checks, so a failed gate needs no activation or branch compensation.
-
-After the destination succeeds, keep the committed removal visible if local
-retirement fails. Report the failed standard command and the remaining state.
-
-Extension removal does not authorize deletion or migration of extension stores,
-stash artifacts, clipboard archives, session records, memory, credentials,
-untracked files, or other user data.
+## Completion
 
 Use [verification by claim](verification.md). Confirm these postconditions:
 
-- the target-owned paths and current registrations are absent;
-- tracked target-reference scans return no unintended live reference;
-- every remaining main and worktree entrypoint passes the focused loader check;
-- required documentation links resolve;
-- focused checks and normal repository gates pass;
-- unrelated dirty worktrees and excluded data remain unchanged;
-- `main` equals `origin/main` after an authorized push;
-- the remote extension branch remains unless separately authorized; and
-- final Git status reports every remaining modified or untracked file in the
-  worktrees changed by the removal.
+- the target-owned paths and references are absent from `main`;
+- the selected checks pass, and the new snapshot loads every remaining
+  entrypoint;
+- documentation links that pointed into the removed slice resolve or are gone;
+- the result names the retained data locations and the running-session
+  boundary.

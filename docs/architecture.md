@@ -9,25 +9,24 @@ The [repository instructions](../AGENTS.md) govern changes.
 Review the source before installation: Pi packages execute code and supply
 instructions with access to the local system.
 
-### Development checkout
+### Development machine
 
-Register the working clone as a local Pi package:
+Keep a working clone for edits and install its development dependencies with
+`npm ci`. Pi does not load the working clone. Pi settings hold one local package
+entry for a detached snapshot of an accepted `main` commit, which carries its
+own installed dependencies:
 
 ```bash
-pi install /absolute/path/to/harness
+git worktree add --detach ../harness.releases/<name> main
+npm --prefix ../harness.releases/<name> ci
+pi install /absolute/path/to/harness.releases/<name>
 ```
 
-Pi uses the local path directly, without copying it. Update that checkout
-through Git. Install the lockfile's development dependencies with `npm ci` in
-the checkout.
-
-For extension development, disable the package's extension resources in
-`pi config` and route each extension explicitly in Pi settings to the
-`extensions/<name>/index.ts` entrypoint of the checkout it should load: the main
-checkout, a branch worktree, or a detached checkout of an accepted commit with
-its own installed dependencies. Follow the
-[development workflow](conventions/worktrees.md) for branches, checks, and
-publication, and [storage host retirement](pi-durable-harness.md#storage-host-retirement)
+Pi uses the local path directly, without copying it. The entry loads the
+snapshot's extensions, skills, and prompt templates together. After the first
+install, the [development workflow](conventions/worktrees.md) owns trial,
+activation, recovery, and publication. Follow
+[storage host retirement](pi-durable-harness.md#storage-host-retirement)
 before switching a route that running processes load.
 
 ### Other machines
@@ -64,6 +63,11 @@ Keep machine-local rules outside the repository, in `~/AGENTS.md` or workspace
 and project `AGENTS.md` files. Pi loads the global rules and the ancestor
 context files for the session directory.
 
+A rules file that a machine links to the working clone, and a Pillars corpus
+that its machine document points at the working clone, are live from that
+working tree and are not part of a snapshot. See
+[Pi configuration](conventions/worktrees.md#pi-configuration).
+
 Harness extension settings live in a machine document, by default
 `<agentDir>/harness.json`, not in `config/`. Each extension owns its section
 and its documented `PI_*` environment overrides. See the
@@ -89,12 +93,12 @@ and its documented `PI_*` environment overrides. See the
    `sourceInfo.path`, its entrypoint. An
    extension that registers no tool or command has no registry record; use
    `pi list` for the configured sources.
-   - Remove the extension's package entry from Pi settings. See
+   - For an extension loaded through the harness package entry, disable the
+     extension resource in `pi config`, or add an exclusion such as
+     `"-extensions/<name>/index.ts"` to the package entry's `extensions` filter.
+     See "Select package resources" in Pi's `docs/packages.md` and
      [Pi configuration](conventions/worktrees.md#pi-configuration).
-   - For a package install, disable the extension resource in `pi config`, or
-     add an exclusion such as `"-extensions/<name>/index.ts"` to the package
-     entry's `extensions` filter. See "Select package resources" in Pi's
-     `docs/packages.md`.
+   - For an extension that has its own settings entry, remove that entry.
    - `pi remove <source>` removes one configured source. For the harness
      package source, that removes every harness extension, skill, and prompt.
 
@@ -138,8 +142,8 @@ The harness is a Pi package. `package.json` declares the resources under the
   before selecting a runtime or remote integration surface.
 - `package-lock.json` pins the development dependency snapshot for reproducible
   standalone checks. Refresh it with the Pi release used to validate the harness.
-  Run `npm ci` in each affected checkout after a lockfile update. Worktree source
-  synchronization does not install dependencies.
+  Run `npm ci` in each affected checkout after a lockfile update. A new worktree
+  or snapshot needs its own `npm ci`.
 - Validate changes against the installed Pi declarations, not only the tests.
 
 The manifest activates extensions, skills, and the prompt templates in
@@ -226,8 +230,8 @@ An extension contains:
   the Pi `ExtensionAPI`; it registers tools, commands, and event handlers and
   owns cleanup on `session_shutdown`.
 - Colocated `*.test.mts` files — the focused tests run by the `test` glob.
-- A `README.md` — the surface, configuration, boundaries, and verification
-  for the slice.
+- A `README.md` — the surface, configuration, and boundaries of the slice. It
+  lists no test files; the tests sit beside the source.
 - Its own state on disk under the Pi agent directory, with an environment
   variable override where a store location is configurable. Stateless
   extensions and slices whose lifecycle state lives in an external

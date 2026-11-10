@@ -8,7 +8,7 @@ description: >
   classification among them, or when changing harness rules and shared
   contracts. Also use when a request opens harness inspection or improvement
   without naming the change, or when harness work is delegated across workers
-  or sessions. New enumerated surfaces require authority before any write;
+  or sessions. New enumerated surfaces require authority before they land;
   apply the universal Intent authority rule before asking for approval.
   Reclassifying an addition does not supply authority. Do not use for invoking
   or installing an unchanged resource, ordinary application code, unrelated
@@ -29,7 +29,7 @@ Select, design, change, and verify Pi harness surfaces through one entry point. 
 - Treat current Pi documentation, declarations, installed source, and shipped examples as the authority for version-sensitive claims.
 - Follow the owning repository's rules in `AGENTS.md` for provenance, privacy, worktree, testing, release, scope, and dependency approval.
 - Keep common decisions here and lane-specific detail in one-level references. Read only the references that the selected lane requires.
-- **New surfaces require authority before any write.** Apply the approval gate below. The enumeration decides what counts, not the agent's framing of the request.
+- **New surfaces require authority before they land.** A private prototype needs none. Apply the approval gate below. The enumeration decides what counts, not the agent's framing of the request.
 
 ## New surfaces require authority
 
@@ -47,16 +47,26 @@ A change adds a **new surface** when it introduces any of the following that do 
 
 Edits, tests, docs, and refactors **inside** an already-registered surface are ordinary work. They still need surface classification and proportionate verification, but they do not need a new-surface proposal.
 
-### Approval gate before implementation
+### Private prototypes
 
-When the intended change adds a new surface:
+An agent may build a new surface and run it in a trial (repository-root path `docs/conventions/worktrees.md`, section "Trial") without prior approval when all of these hold:
+
+- the files sit in a branch worktree or working directory that no Pi settings entry loads, and nothing lands on `main`;
+- the work adds no dependency, uses no credential, and writes to no live store; and
+- the result states the exploratory question that the prototype answers.
+
+A prototype is evidence for a proposal, not an adopted surface. Landing it follows the approval gate below. Remove a prototype that is not adopted.
+
+### Approval gate before landing
+
+When the intended change lands a new surface on `main`:
 
 1. **Apply Intent authority in the universal `AGENTS.md`.** Determine whether the supplied authority covers the surface or delegates its selection. Apply any workflow-specific grant under the repository's authority rules. An operator request that names the surface already satisfies this gate.
 2. **Establish the required warrant** under workflow step 3. Name each new surface against the enumeration, the nearest existing surface and why it cannot absorb the change, the lowest sufficient layer, and out-of-scope items. A warrant establishes suitability, not authority.
-3. **If authority is missing, stop before any write.** Propose the complete change in chat and wait for explicit operator approval. Without a grant that delegates surface selection, approval must cover the surface itself, not only the desired outcome. Do not recreate this hold when step 1 already establishes authority.
-4. **Implement only the authorized scope.** State the warrant in the result when no approval request was needed.
+3. **If authority is missing, stop before landing.** Propose the complete change in chat, with the runnable prototype when one exists, and wait for explicit operator approval. Without a grant that delegates surface selection, approval must cover the surface itself, not only the desired outcome. Do not recreate this hold when step 1 already establishes authority.
+4. **Land only the authorized scope.** State the warrant in the result when no approval request was needed.
 
-If an unapproved new surface is already present in the tree when you notice it, stop, report what is present, and hold for operator disposition. Do not silently keep expanding it or silently revert concurrent work you did not author.
+If an unapproved new surface is already present on `main` when you notice it, stop, report what is present, and hold for operator disposition. Do not silently keep expanding it or silently revert concurrent work you did not author.
 
 
 ## No backward compatibility

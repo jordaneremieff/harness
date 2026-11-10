@@ -42,10 +42,11 @@ staged exchanges when one result changes another task's question. Honor an
 explicit request for independent verification.
 
 Give each split task an integration destination and acceptance criteria. Keep
-file ownership disjoint during concurrent edits. Assign shared mutations such
-as branch integration, dependency refresh, and publication to
-one coordinator; a worker's local commit does not establish integration or
-release. Assign composition and verification to the session best placed to do
+file ownership disjoint during concurrent edits. Within one effort, give that
+effort's shared mutations, such as integrating its branches, a dependency
+refresh, landing, activation, and publication, to one session; a worker's local
+commit does not establish integration or release. That assignment is local to
+the effort and gates no other effort. Assign composition and verification to the session best placed to do
 them; the session that owes the operator the outcome remains accountable for
 delivery. Revisit the split when evidence changes the problem. A list of completed worker tasks
 is not an outcome if their combined result misses the request.

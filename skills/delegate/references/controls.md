@@ -80,4 +80,4 @@ answers win over this table.
 | One agent's state | `agent_status` with `sessionId` | Busy state, current tools, open submissions, pending timers | Settled failures appear in `agent_inspect` results, not here | `#controls` |
 | Recent provider failures | `agent_status` `view: "fleet"` | Sampled machine-local evidence | Partial lower bounds; missing evidence is unknown, not zero | `#controls` |
 | Find stored agents | `agent_list` | Paged catalog with query | Repeat the same query with the cursor | `#controls` |
-| Declare the effort | `agent_intent` | Publish at kickoff and before promotion; clear on release | A claim is not a lock; a finished plan must not stay declared | `#efforts-presence-and-intent` |
+| Declare the effort | `agent_intent` | Publish where a real dependency needs coordination; clear on release | A claim is not a lock; a finished plan must not stay declared | `#efforts-presence-and-intent` |

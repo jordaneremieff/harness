@@ -99,7 +99,7 @@ These facts shape the choice:
   boundaries protect concurrent work; they do not define the unit of thought.
   Give each path that changes concurrently one owner at a time. Name one
   accountable owner for composition and for shared acts such as sync,
-  promotion, push, and activation; that owner need not be a separate session.
+  landing, activation, and push; that owner need not be a separate session.
 - **Model choice:** choose each agent by preset from the operator's preferences.
   Name an exact model only when a direction requires it. At a quota wall,
   substitute in the configured order and report the substitution. Read
