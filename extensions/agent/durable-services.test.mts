@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext, type StreamOptions } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext, type SimpleStreamOptions, type StreamOptions } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { ProjectTrustStore, createReadToolDefinition, getPackageDir, hasTrustRequiringProjectResources } from "@earendil-works/pi-coding-agent";
 import { createDurableServices, LOAD_FAILURE_MAX_CHARS } from "./durable-services.ts";
@@ -190,7 +190,7 @@ for (const sample of [
 	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ ...sample.settings, cacheWarming: "off" }));
 	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-options", extensionPaths: [f.silentPath], trusted: true });
 	const runtime = await createTestRuntime();
-	const received: StreamOptions[] = [];
+	const received: (StreamOptions & Pick<SimpleStreamOptions, "thinkingBudgets">)[] = [];
 	const stream = (_model: unknown, _transcript: TranscriptContext, options?: StreamOptions) => {
 		received.push(options ?? {});
 		const message: AssistantMessage = { role: "assistant", content: [{ type: "text", text: "done" }], api: testModel.api, provider: testModel.provider, model: testModel.id, usage: USAGE, stopReason: "stop", timestamp: Date.now() };

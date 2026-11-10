@@ -260,10 +260,11 @@ it("retains a live protocol error in request failures and close notifications", 
 		if (data instanceof Uint8Array && Buffer.from(data).includes(Buffer.from("protocol-trigger"))) data = duplicate;
 		return Reflect.apply(write, this, [data, ...args]);
 	});
-	const closed = Promise.withResolvers<string>();
-	client.onClose(closed.resolve);
+	let onClosed = (_reason: string) => {};
+	const closed = new Promise<string>((resolve) => { onClosed = resolve; });
+	client.onClose(onClosed);
 	await assert.rejects(client.request({ method: "echo" }), /hello/);
-	assert.match(await closed.promise, /hello/);
+	assert.match(await closed, /hello/);
 	await assert.rejects(client.request({ method: "after-close" }), /hello/);
 });
 
@@ -359,15 +360,18 @@ it("contains a queued feed publication after release and before subscription cle
  const root = mkdtempSync(join(tmpdir(), "transport-")); t.after(() => rmSync(root, { recursive: true, force: true }));
  const path = join(root, "host.sock"), serverId = randomUUID();
  let publish: (value: unknown) => void = () => {};
- const active = Promise.withResolvers<void>(), published = Promise.withResolvers<void>();
+ let started = () => {}, publishDone = () => {};
+ let publishFailed = (_error: unknown) => {};
+ const active = new Promise<void>((resolve) => { started = resolve; });
+ const published = new Promise<void>((resolve, reject) => { publishDone = resolve; publishFailed = reject; });
  const server = createTransportServer({
   serverId, path,
   subscribe: (_kind, _token, _peer, callback) => { publish = callback; return { value: 0, close: () => {} }; },
   request: async (request, _peer, signal) => {
    if (request.method !== "wait") return null;
-   active.resolve();
+   started();
    return new Promise((resolve) => signal.addEventListener("abort", () => {
-    try { publish(1); published.resolve(); } catch (error) { published.reject(error); }
+    try { publish(1); publishDone(); } catch (error) { publishFailed(error); }
     resolve(null);
    }, { once: true }));
   },
@@ -376,10 +380,10 @@ it("contains a queued feed publication after release and before subscription cle
  const client = await connectTransport({ serverId, path }); t.after(() => client.dispose());
  const subscription = await client.subscribe("changes", undefined, () => {});
  const controller = new AbortController();
- const pending = client.request({ method: "wait" }, controller.signal); await active.promise;
+ const pending = client.request({ method: "wait" }, controller.signal); await active;
  const rejected = assert.rejects(pending);
  await subscription.dispose(); controller.abort();
- await Promise.all([rejected, published.promise]);
+ await Promise.all([rejected, published]);
  assert.equal(client.connected, true);
  assert.equal(await client.request({ method: "alive" }), null);
 });
