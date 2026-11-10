@@ -210,7 +210,7 @@ it("retains a standing profile across native boundaries and routes reused work b
 	assert.ok(host);
 	await b.raw(identity, "close").catch((error: unknown) => {
 		assert.ok(error instanceof Error);
-		assert.equal(error.message, "raw close: durable host connection closed: server closed");
+		assert.equal(error.message, "raw close: durable host connection closed: peer ended");
 	});
 	await b.call("release", { sessionId: identity });
 	const paths = hostPaths(metadata);

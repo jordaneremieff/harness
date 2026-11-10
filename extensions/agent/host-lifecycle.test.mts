@@ -11,7 +11,7 @@ import { createTransportServer } from "../../transport/index.ts";
 import { acquireHost, connectHost } from "./host-client.ts";
 import * as hostClient from "./host-client.ts";
 import { fixtureMetadata } from "./host-fixture.mts";
-import { hostPaths, HOST_READY_PREFIX } from "./host-protocol.ts";
+import { HostError, hostPaths, HOST_READY_PREFIX } from "./host-protocol.ts";
 import { runHost } from "./host-process.ts";
 import { runtimeFixture } from "./durable-runtime-fixture.mts";
 
@@ -38,7 +38,12 @@ it("rejects a local protocol validation error without recovering the host", { ti
 	t.after(() => host.close());
 	const client = await connectHost(metadata, { retryAttempts: 0 });
 	t.after(() => client.close());
-	await assert.rejects(client.request("list", { limit: 5, cursor: undefined }), /invalid[/]json:.*strict JSON value/u);
+	await assert.rejects(client.request("list", { limit: 5, cursor: undefined }), (error: unknown) => {
+		assert.ok(error instanceof HostError);
+		assert.equal(error.code, "invalid");
+		assert.match(error.message, /strict JSON value/u);
+		return true;
+	});
 	assert.equal(client.closed, false, "a local encoding error leaves the transport healthy");
 	assert.equal(requests, 0, "invalid parameters never reached the server");
 	assert.deepEqual(await client.request("list", { limit: 5 }), { requests: 1 });
