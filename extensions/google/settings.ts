@@ -169,8 +169,7 @@ function readSection(options: ReadOptions) {
 function checked(key: Key, input: unknown, agentDir: string): string | undefined {
 	if (!textValid(input) || input.length > 4096) throw new Error("Invalid setting");
 	if (key === "expectedAccount") {
-		if (input.length < 3 || input.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(input))
-			throw new Error("Invalid account");
+		if (input.length < 3 || input.length > 320) throw new Error("Invalid account");
 		return input;
 	}
 	if (!input.length) throw new Error("Invalid path");
