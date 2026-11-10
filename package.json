@@ -43,7 +43,6 @@
     "@biomejs/biome": "2.5.7",
     "@types/node": "^22.19.0",
     "@types/proper-lockfile": "4.1.4",
-    "tinyrainbow": "3.1.1",
     "typescript": "^5.9.3",
     "vitest": "4.1.11",
     "vitest-evals": "0.16.1"
