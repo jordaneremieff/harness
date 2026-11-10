@@ -5,7 +5,7 @@ import { canonicalIdentity } from "./native-identity.ts";
 import type { AwaitFact, OwnAwaitFact, ProducerAwaitFact, ProducerRetry } from "./await-facts.ts";
 import type { ResultReference } from "./result-schema.ts";
 
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 
 import { safeFactText } from "./primary-observation.ts";
 

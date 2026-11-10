@@ -126,7 +126,7 @@ async function noticeFixture(t: { after(fn: () => void): void }, toolTarget?: st
 	mkdirSync(cwd);
 	mkdirSync(agentDir);
 	mkdirSync(sessionsRoot);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false } }));
 	writeFileSync(join(root, "notice.ts"), WRAPPER);
 
 	const previousAgentDir = process.env.PI_AGENT_DIR;

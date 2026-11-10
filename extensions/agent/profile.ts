@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { configure, defineDoc, type ConversationId, type Cursor, type Harness, type Tx } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";

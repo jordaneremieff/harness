@@ -7,7 +7,7 @@
  * bounded JSON frames on demand. A watch exists only while at least one observation token references
  * it. Reading never resumes the Harness, schedules work, or opens storage.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ConversationId, ConversationView, Harness, LiveState, TaskGraph, WatchHandle } from "@earendil-works/pi-durable";
 import { AgentMetaDoc } from "./durable-controls.ts";
 import { captureCommunicationReader } from "./communication-observation.ts";

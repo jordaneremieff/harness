@@ -1,5 +1,5 @@
 import type * as Native from "@earendil-works/pi-durable";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ResultReference } from "./result-schema.ts";
 
 export type RunControlState = {

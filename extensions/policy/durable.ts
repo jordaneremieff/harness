@@ -45,7 +45,8 @@ import { bool, lit, num, obj, str, type Schema, type Static } from "@earendil-wo
 import { randomUUID } from "node:crypto";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { ActionApprovals, actionAuthority, type ActionBinding, type ActionControl, sameActionInput } from "./action-approval.ts";
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { Message, ToolCall } from "@earendil-works/pi-ai";

@@ -1,5 +1,5 @@
 /** Optional catalog intervention facts, separate from native operation rows. */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Harness } from "@earendil-works/pi-durable";
 import { arr, bool, compile, int, lit, obj, oneOf, str, union, type Static } from "@earendil-works/pi-schema";

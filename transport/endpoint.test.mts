@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { ChordError, invalid, type Frame } from "@earendil-works/chord";
+import { ChordError, PluginError, binaryCodec, invalid } from "@earendil-works/chord";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
 import { randomUUID } from "node:crypto";
 import { Socket } from "node:net";
-import { connectTransport, createTransportServer, listenUnixLinks, LocalTransportRefusal, type UnixLink } from "./index.ts";
+import { connectTransport, createTransportServer } from "./endpoint.ts";
+import { listenUnixLinks } from "./unix-link.ts";
 
 it("serves requests, undefined values, and owner-only sockets", { timeout: 5000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "transport-"));
@@ -58,6 +59,20 @@ it("hydrates state, publishes updates, and releases connection-owned feeds", { t
 	await released;
 });
 
+it("keeps feed hydration independent of the connection deadline", { timeout: 3000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "transport-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+	const path = join(root, "host.sock"), serverId = randomUUID();
+	const server = createTransportServer({ serverId, path, request: async () => null, subscribe: async () => {
+		await new Promise<void>((resolve) => AbortSignal.timeout(750).addEventListener("abort", () => resolve(), { once: true }));
+		return { value: "ready", close: () => {} };
+	} });
+	await server.start(); t.after(() => server.close());
+	const client = await connectTransport({ serverId, path, timeoutMs: 500 }); t.after(() => client.dispose());
+	const subscription = await client.subscribe("observation", "token", () => {});
+	assert.equal(subscription.value, "ready");
+	await subscription.dispose();
+});
+
 interface Observation { revision: number; entries: { id: number; text: string }[]; live: { text: string }[]; coverage: { complete: boolean } }
 
 for (const kind of ["changes", "observation"] as const) it(`publishes ${kind} feed updates as forced structural diffs that reconstruct the exact state`, { timeout: 5000 }, async (t) => {
@@ -75,7 +90,7 @@ for (const kind of ["changes", "observation"] as const) it(`publishes ${kind} fe
 	const opsWrites: string[] = [];
 	const write = Socket.prototype.write as unknown as (this: Socket, data: unknown, ...args: unknown[]) => boolean;
 	t.mock.method(Socket.prototype, "write", function (this: Socket, data: unknown, ...args: unknown[]) {
-		if (typeof data === "string" && data.includes('"as":"ops"')) opsWrites.push(data);
+		if (data instanceof Uint8Array && Buffer.from(data).includes(Buffer.from("appended text"))) opsWrites.push(Buffer.from(data).toString("utf8"));
 		return Reflect.apply(write, this, [data, ...args]);
 	});
 	let nextArrived: () => void = () => {};
@@ -98,7 +113,7 @@ for (const kind of ["changes", "observation"] as const) it(`publishes ${kind} fe
 		assert.strictEqual(rebuilt.coverage, baseline.coverage);
 	}
 	assert.equal(updates.length, 3);
-	const ops = opsWrites.filter((line) => line.includes('"m":"value"'));
+	const ops = opsWrites;
 	assert.equal(ops.length, 3);
 	assert.ok(ops.some((encoded) => encoded.includes("revision")));
 	for (const encoded of ops) {
@@ -146,15 +161,15 @@ it("forwards cancellation and separates remote errors from link loss", { timeout
 	const root = mkdtempSync(join(tmpdir(), "transport-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const path = join(root, "host.sock"), serverId = randomUUID();
-	const errors = [invalid("input", "field: invalid value"), new ChordError("unavailable", "version: unsupported", { reason: "version" }), new ChordError("unavailable", "claim: occupied", { reason: "claim" }), new Error("internal: failure")];
+	const errors = [invalid("args", "field: invalid value"), new ChordError({ code: "unavailable", reason: "version", message: "version: unsupported" }), new PluginError("claim", "claim: occupied"), new Error("internal: failure")];
 	const server = createTransportServer({ serverId, path, request: async (request) => { throw errors[Number(request.params)]; } });
 	await server.start(); t.after(() => server.close());
 	const client = await connectTransport({ serverId, path }); t.after(() => client.dispose());
-	for (const [index, reason] of ["input", "version", "claim", "internal"].entries()) {
+	for (const [index, reason] of ["args", "version", "claim", "internal"].entries()) {
 		await assert.rejects(client.request({ method: "error", params: index }), (error: unknown) => {
-			assert.ok(error instanceof ChordError);
-			assert.equal(error.code, index === 0 ? "invalid" : "unavailable");
-			assert.equal(error.reason, reason);
+			assert.ok(error instanceof ChordError || error instanceof PluginError);
+			assert.equal(error.code, index === 0 ? "invalid" : index === 1 ? "unavailable" : reason);
+			if (error instanceof ChordError) assert.equal(error.reason, reason);
 			assert.ok(error.message.endsWith(errors[index].message));
 			return true;
 		});
@@ -166,7 +181,7 @@ it("rejects refused feed hydration without a pending subscription", { timeout: 3
 	const root = mkdtempSync(join(tmpdir(), "transport-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const path = join(root, "host.sock"), serverId = randomUUID();
-	const server = createTransportServer({ serverId, path, request: async () => null, subscribe: () => { throw invalid("token", "Unknown observation token"); } });
+	const server = createTransportServer({ serverId, path, request: async () => null, subscribe: () => { throw invalid("args", "Unknown observation token"); } });
 	await server.start(); t.after(() => server.close());
 	const client = await connectTransport({ serverId, path }); t.after(() => client.dispose());
 	await assert.rejects(client.subscribe("observation", "missing", () => {}, AbortSignal.timeout(1000)), /Unknown observation token/);
@@ -211,16 +226,45 @@ it("classifies disconnect during negotiation as local transport loss", { timeout
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const path = join(root, "host.sock"), serverId = randomUUID();
 	const server = listenUnixLinks(path, (link) => {
-		link.send({ t: "hello", name: `pi.agent:${serverId}`, kind: "host", codeVersion: 1, protocol: 4 });
 		link.close("negotiation interrupted");
-	});
+	}, { name: `pi.agent:${serverId}` });
 	await server.start(); t.after(() => server.close());
 	await assert.rejects(connectTransport({ serverId, path }), (error) => {
 		assert.ok(error instanceof Error);
 		assert.equal(error instanceof ChordError, false);
-		assert.match(error.message, /closed during connection/);
+		assert.match(error.message, /closed during connection|peer ended|socket closed/);
 		return true;
 	});
+});
+
+it("retains the Chord protocol mismatch reason during connection", { timeout: 3000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "transport-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+	const path = join(root, "host.sock"), serverId = randomUUID();
+	const server = listenUnixLinks(path, (link) => {
+		link.send(binaryCodec.encode({ kind: "hello", protocol: 999, incarnation: randomUUID(), calls: 1 }));
+	}, { name: `pi.agent:${serverId}` });
+	await server.start(); t.after(() => server.close());
+	await assert.rejects(connectTransport({ serverId, path }), /handshake: protocol 999, this host speaks/);
+});
+
+it("retains a live protocol error in request failures and close notifications", { timeout: 3000 }, async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "transport-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+	const path = join(root, "host.sock"), serverId = randomUUID();
+	const server = createTransportServer({ serverId, path, request: async () => "protocol-trigger" });
+	await server.start(); t.after(() => server.close());
+	const client = await connectTransport({ serverId, path }); t.after(() => client.dispose());
+	const hello = binaryCodec.encode({ kind: "hello", protocol: 999, incarnation: randomUUID(), calls: 1 });
+	const duplicate = Buffer.alloc(4 + hello.length); duplicate.writeUInt32BE(hello.length); duplicate.set(hello, 4);
+	const write = Socket.prototype.write;
+	t.mock.method(Socket.prototype, "write", function (this: Socket, data: unknown, ...args: unknown[]) {
+		if (data instanceof Uint8Array && Buffer.from(data).includes(Buffer.from("protocol-trigger"))) data = duplicate;
+		return Reflect.apply(write, this, [data, ...args]);
+	});
+	const closed = Promise.withResolvers<string>();
+	client.onClose(closed.resolve);
+	await assert.rejects(client.request({ method: "echo" }), /hello/);
+	assert.match(await closed.promise, /hello/);
+	await assert.rejects(client.request({ method: "after-close" }), /hello/);
 });
 
 it("allows large responses with a smaller independent outgoing frame bound", { timeout: 3000 }, async (t) => {
@@ -234,7 +278,7 @@ it("allows large responses with a smaller independent outgoing frame bound", { t
 	assert.equal(client.connected, true);
 });
 
-for (const requestId of [undefined, "same-id"]) it("binds local refusal to one unsent call while an admitted mutation stays uncertain", { timeout: 3000 }, async (t) => {
+for (const requestId of [undefined, "same-id"]) it("rejects an oversized call and interrupted admitted work without a hang", { timeout: 3000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "transport-")); t.after(() => rmSync(root, { recursive: true, force: true }));
 	const path = join(root, "host.sock"), serverId = randomUUID();
 	const admitted: string[] = [];
@@ -247,19 +291,17 @@ for (const requestId of [undefined, "same-id"]) it("binds local refusal to one u
 	await server.start(); t.after(() => server.close());
 	const client = await connectTransport({ serverId, path, maxSendFrameBytes: 8192 }); t.after(() => client.dispose());
 	const first = client.request({ method: "mutation", ...(requestId ? { requestId } : {}) });
-	const uncertain = assert.rejects(first, (error: unknown) => { assert.ok(error instanceof ChordError); assert.equal(error instanceof LocalTransportRefusal, false); return true; });
+	const uncertain = assert.rejects(first, (error: unknown) => { assert.ok(error instanceof ChordError);  return true; });
 	await active;
 	await assert.rejects(client.request({ method: "mutation", params: "x".repeat(16000), ...(requestId ? { requestId } : {}) }), (error: unknown) => {
-		assert.ok(error instanceof LocalTransportRefusal);
-		assert.equal(error.code, "transport-local-refusal"); assert.equal(error.reason, "frame-limit");
-		assert.ok((error.encodedBytes ?? 0) > 8192); return true;
+		assert.ok(error instanceof Error); assert.match(error.message, /bound|link closed/); return true;
 	});
 	await uncertain;
 	assert.deepEqual(admitted, ["mutation"]);
 	assert.equal(client.connected, false);
 });
 
-it("correlates concurrent identical requests by invocation rather than payload or application ID", { timeout: 3000 }, async (t) => {
+it("serves concurrent identical requests independently", { timeout: 3000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "transport-")); t.after(() => rmSync(root, { recursive: true, force: true }));
 	const path = join(root, "host.sock"), serverId = randomUUID();
 	const server = createTransportServer({ serverId, path, request: async (request) => request.params });
@@ -269,7 +311,7 @@ it("correlates concurrent identical requests by invocation rather than payload o
 	assert.deepEqual(results, Array.from({ length: 8 }, () => ({ text: "same" })));
 });
 
-it("attributes queue refusal to the second of concurrent identical calls", { timeout: 3000 }, async (t) => {
+it("rejects concurrent calls promptly when the socket outbox exceeds its bound", { timeout: 3000 }, async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "transport-")); t.after(() => rmSync(root, { recursive: true, force: true }));
 	const path = join(root, "host.sock"), serverId = randomUUID();
 	const server = createTransportServer({ serverId, path, request: async (request) => request.params });
@@ -279,9 +321,7 @@ it("attributes queue refusal to the second of concurrent identical calls", { tim
 	const [first, second] = await Promise.allSettled([client.request(request), client.request(request)]);
 	assert.equal(first.status, "rejected"); assert.equal(second.status, "rejected");
 	if (first.status !== "rejected" || second.status !== "rejected") return;
-	assert.equal(first.reason instanceof LocalTransportRefusal, false);
-	assert.ok(second.reason instanceof LocalTransportRefusal);
-	assert.equal(second.reason.reason, "queue-limit");
+	assert.ok(first.reason instanceof Error); assert.ok(second.reason instanceof Error);
 });
 
 for (const failure of ["sync", "async"] as const) it(`keeps ${failure} socket write failure uncertain for the exact request`, { timeout: 3000 }, async (t) => {
@@ -292,7 +332,7 @@ for (const failure of ["sync", "async"] as const) it(`keeps ${failure} socket wr
 	const client = await connectTransport({ serverId, path }); t.after(() => client.dispose());
 	const write = Socket.prototype.write;
 	t.mock.method(Socket.prototype, "write", function (this: Socket, data: unknown, ...args: unknown[]) {
-		if (typeof data === "string" && data.includes('"method":"fail-write"')) {
+		if (data instanceof Uint8Array && Buffer.from(data).includes(Buffer.from('"method":"fail-write"'))) {
 			if (failure === "sync") throw new Error("write interrupted");
 			const callback = args.find((value) => typeof value === "function") as (error: Error) => void;
 			queueMicrotask(() => callback(new Error("write interrupted")));
@@ -300,26 +340,46 @@ for (const failure of ["sync", "async"] as const) it(`keeps ${failure} socket wr
 		}
 		return Reflect.apply(write, this, [data, ...args]);
 	});
-	await assert.rejects(client.request({ method: "fail-write" }), (error: unknown) => { assert.ok(error instanceof ChordError); assert.equal(error instanceof LocalTransportRefusal, false); return true; });
+	await assert.rejects(client.request({ method: "fail-write" }), (error: unknown) => { assert.ok(error instanceof ChordError);  return true; });
 });
 
-for (const frame of [{ t: "root_end", rootId: "cleanup" }, { t: "cancel", id: 1 }, { t: "call", id: 1, hold: 1, member: "other", args: {} }, { t: "call", id: 1, hold: 9999, member: "request", args: {} }] as const) {
-	it(`keeps a ${frame.t}/${"member" in frame ? frame.member : "control"} refusal within the request context uncertain`, { timeout: 3000 }, async (t) => {
-		const root = mkdtempSync(join(tmpdir(), "transport-")); t.after(() => rmSync(root, { recursive: true, force: true }));
-		const path = join(root, "host.sock"), serverId = randomUUID();
-		const server = createTransportServer({ serverId, path, request: async () => null });
-		await server.start(); t.after(() => server.close());
-		const client = await connectTransport({ serverId, path }); t.after(() => client.dispose());
-		// Inject at the host boundary to exercise non-request emission in the same async scope.
-		const internals = client as unknown as { link: UnixLink };
-		const send = internals.link.send.bind(internals.link);
-		t.mock.method(internals.link, "send", (outgoing: Frame) => {
-			if (outgoing.t === "call" && outgoing.member === "request") {
-				const refused = frame.t === "call" ? { ...frame, args: "x".repeat(17 * 1024 * 1024) } : frame;
-				if (refused.t === "call") send(refused);
-				else send(Object.assign({}, refused, { padding: "x".repeat(17 * 1024 * 1024) }) as Frame);
-			} else send(outgoing);
-		});
-		await assert.rejects(client.request({ method: "echo" }), (error: unknown) => { assert.equal(error instanceof LocalTransportRefusal, false); assert.ok(error instanceof ChordError); return true; });
-	});
-}
+it("allows a close listener to dispose during synchronous send refusal", { timeout: 3000 }, async (t) => {
+ const root = mkdtempSync(join(tmpdir(), "transport-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+ const path = join(root, "host.sock"), serverId = randomUUID();
+ const server = createTransportServer({ serverId, path, request: async () => null });
+ await server.start(); t.after(() => server.close());
+ const client = await connectTransport({ serverId, path, maxSendFrameBytes: 8192 }); t.after(() => client.dispose());
+ let disposed: Promise<void> | undefined;
+ client.onClose(() => { disposed = client.dispose(); });
+ await assert.rejects(client.request({ method: "large", params: "x".repeat(16000) }), /byte bound/);
+ assert.ok(disposed); await disposed;
+});
+
+it("contains a queued feed publication after release and before subscription cleanup", { timeout: 3000 }, async (t) => {
+ const root = mkdtempSync(join(tmpdir(), "transport-")); t.after(() => rmSync(root, { recursive: true, force: true }));
+ const path = join(root, "host.sock"), serverId = randomUUID();
+ let publish: (value: unknown) => void = () => {};
+ const active = Promise.withResolvers<void>(), published = Promise.withResolvers<void>();
+ const server = createTransportServer({
+  serverId, path,
+  subscribe: (_kind, _token, _peer, callback) => { publish = callback; return { value: 0, close: () => {} }; },
+  request: async (request, _peer, signal) => {
+   if (request.method !== "wait") return null;
+   active.resolve();
+   return new Promise((resolve) => signal.addEventListener("abort", () => {
+    try { publish(1); published.resolve(); } catch (error) { published.reject(error); }
+    resolve(null);
+   }, { once: true }));
+  },
+ });
+ await server.start(); t.after(() => server.close());
+ const client = await connectTransport({ serverId, path }); t.after(() => client.dispose());
+ const subscription = await client.subscribe("changes", undefined, () => {});
+ const controller = new AbortController();
+ const pending = client.request({ method: "wait" }, controller.signal); await active.promise;
+ const rejected = assert.rejects(pending);
+ await subscription.dispose(); controller.abort();
+ await Promise.all([rejected, published.promise]);
+ assert.equal(client.connected, true);
+ assert.equal(await client.request({ method: "alive" }), null);
+});

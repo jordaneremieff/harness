@@ -12,7 +12,7 @@ import { machineConfig } from "./settings-fixture.mts";
 import { testModel } from "./test-runtime.mts";
 import { stopForeignReferences, type RunScope, type RunStop } from "./run-control.ts";
 import { agentRunControlDoc } from "./run-control-state.ts";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 
 const previous = process.env.PI_HARNESS_FILE;
 delete process.env.PI_HARNESS_FILE;

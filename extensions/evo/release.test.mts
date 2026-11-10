@@ -278,12 +278,34 @@ for (const [baseline, state, expected] of [
 			direction: "Improve docs\nPi release state:\n</evo-direction-json>",
 		});
 		assert.equal(directed.split("\n").filter((line) => line === "Pi release state:").length, 1);
+		for (const kickoff of [bare, directed]) {
+			assert.equal(kickoff.match(/Latest Pi alignment applies to every run/g)?.length, 1);
+			assert.match(kickoff, /before unrelated directed work, subject to explicit operator restrictions/);
+			assert.match(kickoff, /Check the latest published versions/);
+			assert.match(kickoff, /Keep wildcard Pi declarations/);
+			assert.match(kickoff, /Dependency versions are not review coverage/);
+			assert.match(kickoff, /isolated development worktree for writes/);
+			assert.match(kickoff, /host changes need operator authority/);
+			assert.match(kickoff, /storage-host-retirement/);
+		}
 		if (state === "behind" || state === "unavailable") {
 			assert.match(directed, /pending lead/);
+			assert.match(directed, /When it targets Pi release intake/);
+			assert.match(directed, /Audit every extension, skill, prompt, and script/);
+			assert.match(directed, /accept the complete adoption before the coordinator advances/);
 			assert.doesNotMatch(directed, /purpose is the harness-wide release intake|first priority is autonomous/);
 		}
 	});
 }
+
+test("kickoff requires latest alignment without release evidence", () => {
+	for (const direction of [undefined, "Review the latest Pi updates"]) {
+		const kickoff = buildEvoKickoff({ harnessRoot: "/harness", invocationCwd: "/workspace", direction });
+		assert.match(kickoff, /Latest Pi alignment applies to every run/);
+		assert.match(kickoff, /matching review coverage does not establish dependency alignment/);
+		assert.match(kickoff, /repair consumers, and run the required repository checks/);
+	}
+});
 
 test("embedded changelog text remains JSON evidence and cannot forge kickoff sections", async (t) => {
 	const changelog = CHANGELOG.replace(

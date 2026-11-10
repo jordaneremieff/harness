@@ -11,7 +11,8 @@
  * supplies the `pillars` command for the judgment actions.
  */
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";

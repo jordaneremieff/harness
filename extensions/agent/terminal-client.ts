@@ -13,7 +13,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import { KeybindingsManager, ProcessTerminal, TuiAltScreen, TUI_KEYBINDINGS, setKeybindings, type Component, type ProgramStatus, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { type Action, type Choice, Form, plainLine, type ViewHost } from "../../operator-ui/index.ts";
 import { AgentManager, type AgentCaller } from "./manager.ts";
 import { createAgentObservationSource, type AgentObservationSource } from "./agent-observation.ts";

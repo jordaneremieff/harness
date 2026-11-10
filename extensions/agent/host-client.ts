@@ -12,7 +12,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { isChordError } from "@earendil-works/chord";
+import { PluginError, isChordError } from "@earendil-works/chord";
 import { connectTransport, type TransportClient, type TransportRequest, type TransportSubscription } from "../../transport/index.ts";
 import { classifyClaim, observeClaim, readClaimFile } from "./claims.ts";
 import {
@@ -391,7 +391,7 @@ async function acquireLink(metadata: HostMetadata, options: HostLaunchOptions): 
 		try {
 			return await attachLink(metadata);
 		} catch (error) {
-			if (error instanceof HostError || isChordError(error)) throw error;
+			if (error instanceof HostError || isChordError(error) || error instanceof PluginError) throw error;
 			// A killed owner can still appear live until the process is reaped.
 			// Wait for that observation to settle; a dead claim still refuses launch.
 			await waitForHostRelease(metadata, { signal: AbortSignal.timeout(Math.min(options.launchTimeoutMs ?? DEFAULT_LAUNCH_TIMEOUT_MS, CONNECT_WAIT_LIMIT_MS)) });
@@ -796,7 +796,7 @@ class HostConnectionImpl implements HostConnection {
 		if (!this.pending.has(call)) return;
 		if (this.client.connected || isChordError(error) && error.code !== "unavailable") {
 			this.pending.delete(call);
-			call.reject(isChordError(error) ? new HostError(error.message, error.reason === "claim" || error.reason === "internal" ? error.reason : error.code) : toError(error));
+			call.reject(isChordError(error) || error instanceof PluginError ? new HostError(error.message, error.code) : toError(error));
 			return;
 		}
 		if (call.signal?.aborted) {

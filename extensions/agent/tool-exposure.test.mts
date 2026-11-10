@@ -53,7 +53,7 @@ async function ordinaryFixture(t: TestContext) {
 	mkdirSync(agentDir);
 	mkdirSync(sessionsRoot);
 	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({
-		cacheWarming: { mode: "off" },
+		cacheWarming: "off",
 		retry: { enabled: false },
 		compaction: { enabled: false },
 		defaultTools: ["+codemode", "+tool_search"],

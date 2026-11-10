@@ -1,5 +1,5 @@
 /** Recover queued user inputs through native passive writes, without extending a failed run. */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { InboxDoc, LiveDoc, type Conversation, type ConversationId, type Harness, type Cursor, type EntryRecord } from "@earendil-works/pi-durable";
 import { onStoredCommit } from "./commit-observation.ts";

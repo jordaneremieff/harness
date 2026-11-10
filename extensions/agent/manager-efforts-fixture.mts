@@ -94,7 +94,7 @@ async function main(): Promise<void> {
 	mkdirSync(agentDir, { recursive: true });
 	mkdirSync(sessionsRoot, { recursive: true });
 	mkdirSync(cwd, { recursive: true });
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false } }));
 	const wrapperPath = join(root, `extension-${randomUUID()}.ts`);
 	writeFileSync(wrapperPath, wrapper);
 	const sessionManager = SessionManager.create(cwd, sessionsRoot);

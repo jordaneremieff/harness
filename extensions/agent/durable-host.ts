@@ -35,7 +35,7 @@ import { answerReceipts, migrateDeliveryStore, snapshotIntent, snapshotReceipt }
 import { listCollaboration, readCollaboration, mutateCollaboration } from "./collaboration.ts";
 import { checkInMinutes } from "./check-in-options.ts";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Models } from "@earendil-works/pi-ai";
 import { ModelEvidenceCollector } from "./model-evidence.ts";
 import { isInputKind } from "./input-entry.ts";
@@ -880,7 +880,7 @@ export class DurableHost {
 		const origin = this.originParam(params);
 		const answer = await command.run({
 			args: requestString(params, "args") ?? "",
-			...(params?.data === undefined ? {} : { data: params.data as import("@earendil-works/chord").JsonValue }),
+			...(params?.data === undefined ? {} : { data: params.data as import("@earendil-works/chord/json").JsonValue }),
 			...(origin === undefined ? {} : { origin }),
 			conversation,
 			context,

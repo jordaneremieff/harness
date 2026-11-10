@@ -26,7 +26,7 @@ async function fixture(t: TestContext) {
 	const root = mkdtempSync(join(tmpdir(), "delivery-eligibility-"));
 	t.after(() => rmSync(root, { recursive: true, force: true }));
 	const agentDir = join(root, "agent"); mkdirSync(agentDir);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: [], cacheWarming: { mode: "off" } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: [], cacheWarming: "off" }));
 	const catalog = new AgentCatalog(root);
 	const metadata = hostMetadata(catalog.create({ cwd: root, agentDir, packageDir: getPackageDir(), model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off", trust: true }));
 	const models = await fixtureRuntime("answer");
@@ -172,7 +172,7 @@ for (const failure of ["unavailable", "live-claim", "closing"] as const) it(`ret
 	const link = { closed: false, request: async () => { delivered.push(undefined); return {}; }, close: async () => {} } as unknown as HostConnection;
 	const watcher = startDurableDelivery({ host: f.host, metadata: f.metadata, catalog: f.catalog, sessionsRoot: f.root, signal: new AbortController().signal, unavailableTargets, retryDelayMs: 50,
 		connectTarget: async () => {
-			if (++attempts === 1) throw failure === "unavailable" ? new HostError("target starts elsewhere", "unavailable") : failure === "closing" ? new ChordError("unavailable", "target is shutting down", { reason: "closing" }) : new Error("endpoint not ready");
+			if (++attempts === 1) throw failure === "unavailable" ? new HostError("target starts elsewhere", "unavailable") : failure === "closing" ? new ChordError({ code: "unavailable", message: "target is shutting down" }) : new Error("endpoint not ready");
 			unavailableTargets.set(target.storageId, { reason: "stale failed acquisition", availability: "a".repeat(64) });
 			return link;
 		}, onIdle: () => idle.push(undefined) });

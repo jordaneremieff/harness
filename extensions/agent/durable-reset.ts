@@ -10,7 +10,7 @@
  * turn. History, identity, files, and settings are not removed, and a reset
  * never cancels background timers.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { ResetEntry, type Conversation, type ConversationId, type EntryId, type SubmissionId, type SubmissionRecord } from "@earendil-works/pi-durable";
 
 export interface ResetRequest {

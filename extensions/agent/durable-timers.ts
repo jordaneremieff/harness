@@ -20,7 +20,7 @@
  * contribution registers the definition in the registry.
  */
 import { createHash } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { inputEntry } from "./input-entry.ts";
 import { classifyAwaitInput, reconcileInputRelease } from "./awaited-results.ts";
 import { defineDoc, defineDocFamily, defineTask, type ConversationId, type Cursor, type Harness, type SubmissionRecord, type TaskId, type TaskRecord, type TaskState, type TaskOutcome, type Tx } from "@earendil-works/pi-durable";

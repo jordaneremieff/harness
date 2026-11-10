@@ -12,7 +12,7 @@ import { Duplex } from "node:stream";
 import { afterEach, beforeEach, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { obj } from "@earendil-works/pi-schema";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Models, ToolResultMessage } from "@earendil-works/pi-ai";
 import { createEventBus, getAgentDir } from "@earendil-works/pi-coding-agent";

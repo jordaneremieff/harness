@@ -14,7 +14,7 @@ async function nativeResult(host: DurableHost, reference: ResultReference, conte
 	if (status.type !== "input" || host.identity(status.conversationId) !== reference.sessionId || (reference.requestId !== undefined && reference.requestId !== status.requestId)) throw new Error("The exact native result does not identify this conversation's admitted input");
 	return host.wait(submission.id, context);
 }
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { SubmissionId } from "@earendil-works/pi-durable";
 import type { ResultReference } from "./result-schema.ts";
 import type { ProducerAwaitFact } from "./await-facts.ts";

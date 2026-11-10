@@ -1,5 +1,5 @@
 /** One-hop refresh uses existing commit notifications, never a recursive watch. */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { OwnAwaitFactSchema, ProducerRetrySchema, type ProducerState, type ProducerAwaitFact } from "./await-facts.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { safeFactText } from "./primary-observation.ts";

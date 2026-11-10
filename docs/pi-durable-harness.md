@@ -1,6 +1,6 @@
 # Pi durable-harness track
 
-Pi 1.5.0 supplies the ordinary coding-agent host and the separate Pi Durable
+Pi 1.5.2 supplies the ordinary coding-agent host and the separate Pi Durable
 runtime. Ordinary sessions retain their ordinary host. A native operator
 conversation does not require an ordinary primary. Durable owns native agent
 conversations, generation, tool tasks, committed state, and recovery. The Agent
@@ -8,11 +8,13 @@ extension supplies cwd-bound resources, process ownership, controls, and deliver
 The [session host roles](conventions/session-host-roles.md) and
 [Agent host contract](agent-host-contract.md) define that composition.
 
-Source review date: 2026-11-02. Cumulative source coverage includes the
-coding-agent, Durable, Chord, and MCP release notes from 1.0.4 through 1.5.0,
-plus the initial pi-schema 1.5.0 release notes. The review checks installed
-1.5.0 manifests and defining contracts against current harness consumers. Each contract below names its source boundary;
-release-note coverage is not package-wide runtime parity.
+Source review date: 2026-11-11. The current review checks the installed 1.5.2
+manifests and the 1.5.1–1.5.2 contracts identified below against harness consumers.
+Earlier source coverage includes the coding-agent, Durable, Chord, and MCP
+release notes from 1.0.4 through 1.5.0, plus the initial pi-schema release.
+Each contract below names its source boundary; earlier verification dates remain
+historical evidence, not a claim that every source was rechecked at 1.5.2.
+Release-note coverage is not package-wide runtime parity.
 Dependency installation does not replace modules in retained processes.
 Source inspection does not establish live provider behavior, conversion
 acceptance, or cumulative release acceptance. The release declaration records
@@ -71,12 +73,12 @@ A manifest does not identify another process's loaded modules.
 
 | Source | Current contract |
 |---|---|
-| Coding-agent 1.5.0 manifest | Runtime exports are the ordinary root and `./rpc-entry`. It depends on agent-core, AI, Codemode, MCP, TUI, and TypeBox. |
-| Agent-core 1.5.0 manifest | The root and package metadata remain public; no AgentHarness lane runtime is published there. It depends on AI and pi-schema. |
-| AI 1.5.0 manifest | The root no longer re-exports TypeBox. A `./compat` export is published; the extension loader maps both the AI root and `./compat` to an extension view that keeps `Type`, `Static`, `TSchema`, and a TypeBox `StringEnum`. AI depends on pi-schema, not TypeBox. |
-| Durable 1.5.0 manifest | Root, environments, tools, native codemode, native tool-search, optional image processing, storage adapters including IndexedDB and the Chord store (`./storage/store`), and testing exports are published. It depends on Chord, AI, Codemode, pi-schema, and telemetry; TypeBox is no longer its dependency. |
-| Chord 1.5.0 manifest | Typed host runtime plus context, output, delta, Node, portable SQLite, SQLite telemetry, and the experimental `./next` surfaces are public. It depends on pi-schema and telemetry; esbuild and ws are optional peers. TypeBox is no longer its dependency. |
-| pi-schema 1.5.0 manifest | Root and `./formats` exports. No runtime dependencies. |
+| Coding-agent 1.5.2 manifest | Runtime exports are the ordinary root and `./rpc-entry`. It depends on agent-core, AI, Codemode, MCP, TUI, and TypeBox. |
+| Agent-core 1.5.2 manifest | The root and package metadata remain public; no AgentHarness lane runtime is published there. It depends on AI and pi-schema. |
+| AI 1.5.2 manifest | The root no longer re-exports TypeBox. A `./compat` export is published; the extension loader maps both the AI root and `./compat` to an extension view that keeps `Type`, `Static`, `TSchema`, and a TypeBox `StringEnum`. AI depends on pi-schema, not TypeBox. |
+| Durable 1.5.2 manifest | Root, environments, tools, native codemode, native tool-search, optional image processing, storage adapters including IndexedDB and the Chord store (`./storage/store`), and testing exports are published. It depends on Chord, AI, Codemode, pi-schema, and telemetry; TypeBox is no longer its dependency. |
+| Chord 1.5.2 manifest | The root exports Chord v2. The v1 root, `./old`, `./node`, and `./next` surfaces are absent. Context, JSON, watches, delta, SQLite, telemetry, HTTP, workers, plugins, app, sync, and client surfaces have explicit subpaths. It depends on pi-schema and telemetry; esbuild, React, and ws are optional peers. |
+| pi-schema 1.5.2 manifest | Root and `./formats` exports. No runtime dependencies. |
 | Coding-agent dependencies | Chord is not its dependency. Durable still depends on Chord; this does not remove the harness's direct Chord requirement. |
 | Removed packages | Pi Client, Pi Protocol, and Pi Server served the removed experimental runtime and are no longer released. Their old transport is not a current integration surface. |
 | Loaded processes | Unknown unless that process reports its descriptor or its resolution is directly observed. |
@@ -208,14 +210,16 @@ adopts them as one host transition with no compatibility path for 1.4.0:
 
 ### Native schema package
 
-Checked on 2026-11-03 against the installed packages.
-`@earendil-works/pi-schema` 1.5.0 is installed in this checkout. It supplies
+Checked on 2026-11-11 against the installed package manifests and README.
+`@earendil-works/pi-schema` 1.5.2 is installed in this checkout. It supplies
 plain JSON Schema builders (`str`,
 `num`, `int`, `bool`, `nul`, `unknown`, `lit`, `oneOf`, `obj`, `opt`, `arr`,
-`tuple`, `map`, `union`, `nullable`, `bytes`), a `Static` type, and
+`tuple`, `map`, `union`, `nullable`, `bytes`, `bigint`, `unsafe`, `recursive`),
+a `Static` type, and
 `compile(schema, options)`, which validates JSON Schema drafts 2020-12 and 7
 without code generation. A `Validator` supplies `check` and `errors` with JSON
-Pointer paths; `{ coerce: true }` adds `coerce` and `parse`. Format checks are
+Pointer paths; `validate` returns a non-coercing result. `{ coerce: true }` adds
+`coerce` and `parse`. Format checks are
 in the optional `./formats` export. The package has no runtime dependencies.
 AI, agent-core, Durable, and Chord depend on it. Sources:
 `pi-schema/{package.json,README.md,dist/builders.d.ts}` and
@@ -258,11 +262,15 @@ its grapheme-based limit with an extension-local counter. pi-schema treats
 
 ## Native host integration contracts
 
-- Chord uses host-family placement keyed by `serverId`, explicit principals and
-  upstream links, `Ref`, named state and resources, and hydrated references.
-  The Unix adapter checks wire 4 and `codeVersion`, and returns encoded bytes
-  including LF from `Link.send()`. The owning contract is
-  [Chord wire contract](agent-host-contract.md#chord-wire-contract).
+- Chord v2 uses `hostKind` placement keyed by `serverId`, explicit principals,
+  facets loaded by the host, `Reference`, and watchable state. The Unix adapter
+  exchanges a bounded current-format identity prelude before Chord bytes, then
+  frames each message with its length. Chord owns the codec, calls, cancellation,
+  and state. The adapter owns stream framing, encoded-message and queued-byte
+  bounds, and initial identity admission; it does not interpret encoded calls
+  to expose per-call refusal evidence. Checked on 2026-11-11 against Chord 1.5.2
+  `dist/{host,link,contracts}` and `transport/{endpoint,unix-link}.ts`.
+  The owning contract is [Chord wire contract](agent-host-contract.md#chord-wire-contract).
 - Chord 1.5.0 checks contract and state schemas with pi-schema. TypeBox-built
   schemas still validate but type as `unknown`; `format` is an annotation and
   is not checked. An `invalid` error's message and `details` use pi-schema
@@ -381,12 +389,17 @@ Defining sources: `dist/core/{agent-session,session-manager,model-runtime}.d.ts`
 Checked on 2026-11-02 against the installed coding-agent 1.5.0 declarations,
 documentation, and release notes:
 
-- Tool argument validation runs on pi-schema. TypeBox features outside JSON
-  Schema (`Type.Refine()`, `Type.BigInt()`, `Type.Undefined()`, codecs,
-  `Format.Set()` formats) no longer apply to tool arguments. Plain JSON Schema
-  tools, including MCP tools, get the same coercion as TypeBox tools. Errors the
-  model sees use pi-schema messages (`- path: missing`). Sources:
-  `pi-ai/dist/utils/validation.js` and `docs/extensions.md`.
+- Tool argument validation runs on pi-schema. `Type.Refine()` refinements,
+  codecs, and `Format.Set()` formats do not supply tool-argument checks.
+  Plain JSON Schema tools, including MCP tools, get the same coercion as
+  TypeBox tools. Errors use pi-schema messages (`- path: missing`). The
+  1.5.2 source check on 2026-11-11 supersedes the earlier JavaScript-type
+  restriction: `Type.BigInt()` and `Type.Undefined()` validate and coerce;
+  `Type.Void()` still rejects JSON arguments. The installed extension guide
+  retains the earlier restriction, so this claim follows the defining
+  implementation and current release notes. Sources:
+  `pi-ai/dist/utils/validation.js`, `pi-schema/dist/coerce.js`, and
+  `pi-schema/CHANGELOG.md`.
 - The tool render context and the message and entry renderer options inject
   `keyText()` and `keyHint()`. An imported copy can resolve to the extension's
   own package and miss the user's keybindings. Source:
@@ -394,13 +407,45 @@ documentation, and release notes:
 - `pi.exec()` accepts `maxBuffer` (combined stdout and stderr). Its result has
   `truncated`, true when output passed the limit; the command is then terminated
   with a nonzero code. Source: `dist/core/exec.d.ts`.
-- Inline `ctx.ui.custom()` components accept `blocked` to report that Pi waits
-  for user input; overlays ignore it.
+- Inline `ctx.ui.custom()` components and overlays accept `blocked` to report
+  that Pi waits for user input. At 1.5.2, an overlay retains that status while
+  hidden, until `done()`. Each overlay has its own status source. Checked on
+  2026-11-11 in `dist/modes/interactive/interactive-mode.js`. The Agent dashboard
+  remains a browsing overlay without `blocked`; opening it does not require the
+  agent to stop work.
 - `pi.setActiveTools()` keeps the order of tools that stay active and appends
   newly activated tools, so a reordered list does not change the system prompt.
 - Extension packages show their changelog after an update, from
   `pi.changelogPath` or the package root `CHANGELOG.md`; `collapseChangelog`
   condenses it. Sources: `docs/{packages,settings}.md`.
+
+### Current loading, tools and ordinary lifecycle
+
+Checked on 2026-11-11 against the installed coding-agent 1.5.2 sources:
+
+- Extension imports use the entry file's canonical path. Native contribution
+  admission compares canonical source identities with loaded entrypoints. The
+  inventory retains emitted source paths and configured ordinary-only paths. A matching extension name alone
+  does not admit a contribution. Sources: `dist/core/extensions/loader.js` and
+  `extensions/agent/durable-services.ts`.
+- The read tool streams local files; custom operations opt in with
+  `createReadStream`. Native read delegates the selected installation's tool
+  without replacing its operations. Grep receives context from ripgrep rather
+  than `GrepOperations.readFile`; no harness override needs that deprecated hook.
+  Sources: `dist/core/tools/{read,grep}.js` and
+  `extensions/agent/durable-services.ts`.
+- Ordinary reload refuses an active response or compaction. Native reload has
+  its own storage-idle and closed-observer conditions before resource reload.
+  Neither path permits a running invocation to use replaced registrations.
+  Sources: `dist/core/agent-session.js` and `extensions/agent/durable-runtime.ts`.
+- `cacheWarming` accepts `off`, `streaming`, or `idle` and defaults to `idle`.
+  Runtime fixtures that disable warming use the string `off`, not a mode object.
+  This ordinary default does not establish native provider cache behaviour.
+  Sources: `dist/core/{settings-schema,settings-defaults}.js`.
+- Interactive Pi owns the missing-directory Continue/Fork/Cancel decision.
+  Fork creates a new session identity; Continue does not store the changed
+  directory. The harness has no `switchSession()` consumer to adapt. Source:
+  `docs/sessions.md`. This is not an SDK/RPC missing-directory runtime trial.
 
 ### Summary, model, and recovery changes
 
@@ -565,7 +610,14 @@ host capability. Current ordinary defining sources are
   `tool_search` and `searchTools()` rank name matches above description mentions
   and tokenize words in any script, in ordinary and native hosts alike.
 - MCP input schemas are plain JSON Schema. Tool argument validation coerces
-  them like TypeBox schemas.
+  them like TypeBox schemas. Native MCP uses public pi-mcp helpers for tool names,
+  namespaces, input-schema normalisation, server-shape validation, and output
+  limits. The upstream limiter replaces the local 20 KiB text limiter, cuts at
+  UTF-8 boundaries, and receives the native spill-file writer. Structured results
+  remain complete. Local code retains exposure selection, project trust and
+  provider-auth restrictions. Checked on 2026-11-11 against pi-mcp 1.5.2
+  `dist/{naming,input-schema,config,output-limit}.{js,d.ts}` and
+  `extensions/agent/durable-execution.ts`.
 - Connection no longer lists every resource. `/mcp` and `pi mcp list --json`
   report resource capability as `resources: true`, not inventory counts. Resource
   tools enumerate on demand. Structured MCP content is `unknown` when no output
@@ -587,7 +639,11 @@ host capability. Current ordinary defining sources are
   accepts only `http:` and `https:` metadata and authorization URLs.
   `oauth.clientRegistration` defaults to `auto` (a Client ID Metadata Document
   when supported, otherwise dynamic registration), with `dcr` and `cimd` modes.
-  Native refresh honours these settings and the configured metadata URL. Stored
+  Native refresh honours these settings and the configured metadata URL. It
+  calls `authorizeMcp` with `refreshOnly: true`: a failed refresh never starts
+  interactive authorization or replaces its pending verifier. Checked on
+  2026-11-11 against pi-mcp 1.5.2 `dist/oauth/flow.js` and
+  `extensions/agent/mcp-auth.ts`. Stored
   credentials are keyed by server identity and URL. Native conditional writes
   preserve newer committed tokens and committed logout. Short file locks never
   cover network exchange. Native and ordinary automatic refresh share the
@@ -729,7 +785,10 @@ a storage ID, submission ID, or task ID. Defining sources:
 `pi-durable/dist/harness/{provider,generation,compaction,harness,view}.js`.
 
 The host uses public configured model services and forwards current transport,
-timeout, retry, and sampling options. Provider transport timeout and generation
+HTTP idle timeout, WebSocket connect timeout, thinking budgets, retry, and
+sampling options. Checked on 2026-11-11 against Durable 1.5.2
+`ConversationStreamOptions` in `dist/harness/types.d.ts`, coding-agent
+`dist/core/settings-manager.d.ts`, and `extensions/agent/durable-services.ts`. Provider transport timeout and generation
 retry policy are different mechanisms. Mistral's current request timeout covers
 headers, not the response body. Per-thinking sampling remains upstream request
 construction; catalog visibility does not prove remote support or cache savings.
@@ -759,6 +818,14 @@ stream that crashes before its first store leaves no aborted entry and no usage
 record. Tool output also adapts its commit interval by size. Sources:
 `pi-durable/dist/harness/{types.d.ts,agent.js,generation.js,tool.js}` and
 `chord/dist/output.js`.
+
+JSONL storage supports `readOnly: true` at `JsonlStorage.open()` and
+`openNodeJsonlStorage()`. This open creates and repairs nothing, captures the
+committed state at open, and refuses commits. `HarnessOptions.readOnly` alone
+does not make a prior storage open read-only. The Agent's cold observer instead
+opens its captured private SQLite copy, not the live writer's JSONL directory.
+Checked on 2026-11-11 against Durable 1.5.2
+`dist/storage/jsonl/storage.js` and `extensions/agent/durable-observation.ts`.
 
 JSONL defaults fsync off. Sidecar-before-marker ordering with fsync enabled does
 not prove every acknowledged tail survives power loss. SQLite uses WAL and
@@ -875,8 +942,10 @@ experimental coding-agent client is assumed.
 
 ### Store format and retained task versions
 
-Durable 1.5.0 opens SQLite storage at schema version 2, the version 1.4.0
-introduced; 1.5.0 adds no SQLite migration. `SqliteStorage.open()`
+Checked on 2026-11-11 against the installed Durable 1.5.2 migration list and
+native task definitions. Durable 1.5.2 opens SQLite storage at schema version 2,
+the version 1.4.0 introduced; 1.5.1–1.5.2 add no SQLite migration.
+`SqliteStorage.open()`
 automatically applies pending migrations before reading metadata. Migration 2
 rebuilds the tasks table to admit the `sleeping` status, copies its records,
 and recreates its indexes. Opening an existing schema-1 database therefore
@@ -893,11 +962,12 @@ rollback merely because the transcript remains readable.
 Native `pi.tool` is version 3 with a migration from versions 1 and 2 in
 `pi-durable/dist/harness/tool.js`; `pi.generation` is version 2 and `pi.live`
 version 3. An older Harness leaves these tasks blocked (`task_too_old`) and
-cannot read a `pi.live` value 1.5.0 wrote. Task-definition migrations and SQLite
+cannot read a version-3 `pi.live` value. Task-definition migrations and SQLite
 schema migration are separate changes.
 
 The controlled `extensions/agent/host-upgrade.test.mts` trial completed an
-isolated Pi/Durable 1.3.0-to-1.4.0 transition; no 1.4.0-to-1.5.0 trial exists. It drained tools and deliveries,
+isolated Pi/Durable 1.3.0-to-1.4.0 transition. It does not establish a transition
+to 1.5.2. It drained tools and deliveries,
 closed the old writer, and released its claim before the new open. The trial
 checked schema 1 to 2, the rebuilt task constraint, unchanged other schema
 objects and retained rows, exact retained results, and successful follow-up work.
@@ -906,8 +976,8 @@ explicitly supplied isolated old and new runtimes and skips when those inputs
 are absent. This result concerns that drained synthetic store, not arbitrary
 operator stores, unsafe-effect replay, or compatibility with live consumers.
 
-Operator migration authority must cover a 1.5.0 open of an existing operator
-store. A schema-1 SQLite store migrates to schema 2 on open, even when drained.
+Operator migration authority must cover a current-host open of an existing
+operator store when that open changes its schema or retained task versions. A schema-1 SQLite store migrates to schema 2 on open, even when drained.
 Unfinished `pi.tool` tasks at version 1 or 2, unfinished `pi.generation` tasks,
 and the first `pi.live` write at version 3 also need authority, because older
 hosts cannot resume or read them afterward. An explicit grant supplies that
@@ -1015,7 +1085,8 @@ by the Durable host. Sources: session-manager/runtime and Durable types/harness.
 | Generation, native nested calls, script replay, storage recovery | Pi Durable |
 | Resources, trust, configured providers, ordinary primary lifecycle | Public coding-agent services |
 | Detached storage processes, writer claims, exact controls and delivery | Agent extension |
-| Typed live calls and state over same-user sockets | Chord plus the package-level transport boundary |
+| Typed live calls, cancellation and watchable state | Chord v2 |
+| Same-user Unix stream framing, link bounds and initial identity admission | Package transport adapter; Agent is its consumer |
 | Bounded native inspection and cold snapshots | Agent extension's public consumer contract |
 | Doctrine and handover meaning | Owning corpus and Stash contracts; transport does not create authority |
 

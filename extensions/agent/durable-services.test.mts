@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "node:test";
@@ -101,7 +101,7 @@ function fixture(t: { after(fn: () => void): void }, options: { projectSettings?
 	const agentDir = join(root, "agent");
 	mkdirSync(cwd);
 	mkdirSync(agentDir);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false } }));
 	if (options.projectSettings) {
 		mkdirSync(join(cwd, ".pi"));
 		writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify(options.projectSettings));
@@ -138,7 +138,7 @@ it("collects contributions, matches sources, and installs the built-in registry"
 	try {
 		assert.deepEqual(services.inventory.contributions, [{
 			name: "fixture.emit",
-			source: f.emitPath,
+			source: realpathSync(f.emitPath),
 			commands: [{ name: "fixture-command", description: "Fixture command" }],
 		}]);
 		assert.deepEqual(services.inventory.ordinaryOnly, [f.silentPath]);
@@ -179,14 +179,15 @@ it("collects contributions, matches sources, and installs the built-in registry"
 });
 
 for (const sample of [
-	{ name: "provider overrides", settings: { transport: "sse", httpIdleTimeoutMs: 45000, retry: { provider: { timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 5678 } } }, expected: { transport: "sse", timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 5678 } },
-	{ name: "HTTP idle fallback", settings: { httpIdleTimeoutMs: 45000 }, expected: { transport: "auto", timeoutMs: 45000, maxRetries: undefined, maxRetryDelayMs: 60000 } },
-	{ name: "default timeout", settings: {}, expected: { transport: "auto", timeoutMs: 300000, maxRetries: undefined, maxRetryDelayMs: 60000 } },
-	{ name: "disabled HTTP idle timeout", settings: { httpIdleTimeoutMs: 0 }, expected: { transport: "auto", timeoutMs: 2147483647, maxRetries: undefined, maxRetryDelayMs: 60000 } },
-	{ name: "explicit zero provider timeout", settings: { retry: { provider: { timeoutMs: 0, maxRetries: 0, maxRetryDelayMs: 0 } } }, expected: { transport: "auto", timeoutMs: 0, maxRetries: 0, maxRetryDelayMs: 0 } },
+	{ name: "websocket timeout and thinking budgets", settings: { websocketConnectTimeoutMs: 12345, thinkingBudgets: { medium: 4096 } }, expected: { transport: "auto", timeoutMs: 300000, maxRetries: undefined, maxRetryDelayMs: 60000, websocketConnectTimeoutMs: 12345, thinkingBudgets: { medium: 4096 } } },
+	{ name: "provider overrides", settings: { transport: "sse", httpIdleTimeoutMs: 45000, retry: { provider: { timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 5678 } } }, expected: { transport: "sse", timeoutMs: 1234, maxRetries: 2, maxRetryDelayMs: 5678, websocketConnectTimeoutMs: undefined, thinkingBudgets: undefined } },
+	{ name: "HTTP idle fallback", settings: { httpIdleTimeoutMs: 45000 }, expected: { transport: "auto", timeoutMs: 45000, maxRetries: undefined, maxRetryDelayMs: 60000, websocketConnectTimeoutMs: undefined, thinkingBudgets: undefined } },
+	{ name: "default timeout", settings: {}, expected: { transport: "auto", timeoutMs: 300000, maxRetries: undefined, maxRetryDelayMs: 60000, websocketConnectTimeoutMs: undefined, thinkingBudgets: undefined } },
+	{ name: "disabled HTTP idle timeout", settings: { httpIdleTimeoutMs: 0 }, expected: { transport: "auto", timeoutMs: 2147483647, maxRetries: undefined, maxRetryDelayMs: 60000, websocketConnectTimeoutMs: undefined, thinkingBudgets: undefined } },
+	{ name: "explicit zero provider timeout", settings: { retry: { provider: { timeoutMs: 0, maxRetries: 0, maxRetryDelayMs: 0 } } }, expected: { transport: "auto", timeoutMs: 0, maxRetries: 0, maxRetryDelayMs: 0, websocketConnectTimeoutMs: undefined, thinkingBudgets: undefined } },
 ]) it(`forwards ${sample.name} to the native Durable model stream`, async (t) => {
 	const f = fixture(t);
-	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ ...sample.settings, cacheWarming: { mode: "off" } }));
+	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ ...sample.settings, cacheWarming: "off" }));
 	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-options", extensionPaths: [f.silentPath], trusted: true });
 	const runtime = await createTestRuntime();
 	const received: StreamOptions[] = [];
@@ -207,7 +208,7 @@ for (const sample of [
 		assert.equal(result.status, "done");
 		assert.equal(received.length, 1);
 		const options = received[0];
-		assert.deepEqual({ transport: options?.transport, timeoutMs: options?.timeoutMs, maxRetries: options?.maxRetries, maxRetryDelayMs: options?.maxRetryDelayMs }, sample.expected);
+		assert.deepEqual({ transport: options?.transport, timeoutMs: options?.timeoutMs, maxRetries: options?.maxRetries, maxRetryDelayMs: options?.maxRetryDelayMs, websocketConnectTimeoutMs: options?.websocketConnectTimeoutMs, thinkingBudgets: options?.thinkingBudgets }, sample.expected);
 	} finally { await services.close(); await harness.close(BACKGROUND_CONTEXT); }
 });
 

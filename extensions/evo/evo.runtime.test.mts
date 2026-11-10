@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
@@ -367,13 +367,19 @@ test("real evo command retains pending releases despite aligned dependencies and
 		assert.equal(
 			texts[0],
 			buildEvoKickoff({
-				harnessRoot: fixture.root,
+				harnessRoot: realpathSync(fixture.root),
 				invocationCwd: runtime.cwd,
 				release: expected,
 			}),
 		);
 		assert.match(texts[0], /purpose is the harness-wide release intake/);
 		assert.match(texts[1], /pending lead/);
+		for (const text of texts) {
+			assert.match(text, /Latest Pi alignment applies to every run/);
+			assert.match(text, /Check the latest published versions/);
+			assert.match(text, /Audit every extension, skill, prompt, and script/);
+		}
+		assert.match(texts[1], /When it targets Pi release intake/);
 		for (const release of expected.releases) {
 			assert.ok(texts[0].includes(`- ${release.version} (${release.date})`));
 		}

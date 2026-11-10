@@ -45,13 +45,25 @@ supplied focus. Stronger leads outside it are recommendations, not substitute
 work. Keep an inferred purpose provisional; it never expands authority or
 replaces an operator's request.
 
-When the kickoff reports unaccounted Pi releases, a bare run treats the release
-intake as its purpose; a directed run keeps its focus and reports intake as a
-pending lead. Unknown coverage makes autonomous baseline recovery the bare run's
-first priority, followed by cumulative changelog review if no prior complete
-review is established. Dependency installation does not establish release
-coverage. Follow the [review coverage procedure](pi-durable-harness.md#release-review-coverage)
-before advancing its declaration.
+Every run completes the [latest Pi alignment obligation](../extensions/evo/README.md#release-intake)
+before unrelated directed work, subject to explicit operator restrictions.
+Publication, running-host version, checkout dependencies, and completed review
+coverage are separate evidence. Select a development checkout through the
+[development workflow](conventions/worktrees.md); do not treat the kickoff's
+package evidence root as a writable release checkout. A newer published host
+requires the separately authorised upgrade and fresh process, not a hot upgrade;
+complete independent repository work and apply the host-retirement procedure
+before activation.
+
+When the kickoff reports unaccounted Pi releases, a bare run treats release
+intake as its purpose. A directed run whose focus is release intake performs the
+same complete procedure. Other directed runs keep their focus and report the
+review as a pending lead without skipping latest-version alignment. Unknown
+coverage requires autonomous baseline recovery for release-intake runs, followed
+by cumulative changelog review if no prior complete review is established.
+Dependency installation does not establish release coverage. Follow the
+[review coverage procedure](pi-durable-harness.md#release-review-coverage) before
+advancing its declaration; unrelated directed work leaves it unchanged.
 
 Use history to learn from delivered outcomes and corrections, not to create a
 fixed roadmap or work quota. Maintenance-heavy recent sessions are activity

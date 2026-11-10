@@ -105,7 +105,7 @@ export async function primaryFixture(t: { after(fn: () => void): void }, scenari
 	mkdirSync(cwd);
 	mkdirSync(agentDir);
 	mkdirSync(sessionsRoot);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false } }));
 	writeFileSync(join(root, "continuity.ts"), wrapperSource(scenario, fileURLToPath(new URL("./index.ts", import.meta.url))));
 
 	const previousAgentDir = process.env.PI_AGENT_DIR;

@@ -20,7 +20,10 @@ development, collaboration, acceptance, continuity, and release checks.
 /evo <direction>
 ```
 
-Bare `/evo` prioritizes pending Pi release intake or unresolved release coverage.
+Every `/evo` run first checks latest Pi dependency alignment, including directed
+runs and runs whose release review is already complete. Explicit operator
+restrictions remain binding. Bare `/evo` then prioritizes pending Pi release
+intake or unresolved release coverage.
 When review coverage matches the running host, it infers a useful purpose without
 asking the operator for a topic. Current capabilities and plausible uses suffice to start; incident history,
 populated stores, and proof of a defect are not prerequisites. The coordinator
@@ -76,6 +79,28 @@ command.
 
 ## Release intake
 
+Latest-version alignment and release review are separate obligations. Every run
+checks the latest published versions of existing Pi dependencies and peers,
+compares them with the running host and checkout graph, and repairs a stale graph
+before unrelated directed work. Wildcard declarations remain; the lockfile records
+the current resolved versions. Upgrade defects require consumer repairs, not an
+older dependency target. Dependency versions do not establish review coverage.
+
+The coordinator selects main or an isolated development worktree through the
+[development workflow](../../docs/conventions/worktrees.md). The package root in
+the kickoff supplies evidence and worktree discovery, not permission to modify a
+loaded release checkout. Dependency changes require `npm ci` in affected
+development worktrees and the repository's required checks.
+
+If publication is ahead of the running host, repository alignment continues.
+The coordinator identifies the required Pi upgrade and fresh process; those host
+changes require operator authority beyond the invocation's repository grant.
+The command itself performs no publication lookup, fetch, install, or hot upgrade.
+Before activation, follow
+[storage host retirement](../../docs/pi-durable-harness.md#storage-host-retirement)
+for loaded-runtime checks and a safe process/source switch. A newer dependency
+graph does not establish compatibility with an older retained host.
+
 After an upgrade, start a new Pi process and run bare `/evo`. The command reads
 `VERSION` and `getPackageDir()` from the running Pi host and its cumulative
 `CHANGELOG.md`. A new session inside an old process does not reload Pi core.
@@ -106,14 +131,17 @@ The kickoff distinguishes:
   changelog boundary exists. The command does not repeat completed intake.
 - **Behind:** the running host has later changelog entries. Every entry in the
   interval appears oldest first, with its source path and inclusive line range.
-  Bare runs select harness-wide intake; directed runs retain their focus and
-  report intake as a pending lead.
+  Bare runs select harness-wide intake. Directed runs receive the same intake
+  procedure: a release-intake direction selects it as work; an unrelated direction
+  retains its focus and reports the review as a pending lead. Latest-version
+  alignment remains required in both cases.
 - **Ahead:** published coverage exceeds the running host. Report the host
   mismatch without lowering coverage.
 - **Unavailable:** Git evidence, the declaration, version syntax, or changelog
   validation failed. Bare runs prioritize autonomous baseline/source recovery,
-  not an unrelated topic or an automatic stop. Directed runs report the pending
-  coverage question without replacing their focus.
+  not an unrelated topic or an automatic stop. Directed release-intake runs use
+  the same recovery procedure. Other directed runs report the pending coverage
+  question without replacing their focus or skipping latest-version alignment.
 
 Both version endpoints must occur in the cumulative changelog before the command
 claims interval coverage. It rejects malformed, duplicate, and out-of-order
@@ -128,10 +156,10 @@ Every selected release retains its path and line range if its text does not fit.
 The kickoff requires direct bounded reads of omitted text. Note lines are JSON
 strings, separate from trusted instructions.
 
-A bare intake aligns dependencies while retaining wildcard peers, runs
-`npm ci` in affected worktrees, repairs consumers, refreshes the host contract
-document, and audits extensions, skills, prompts, and scripts for every release
-in scope. It adopts new capabilities where they serve the operator's work.
+A release-intake run, bare or directed, also refreshes the host contract document
+and audits extensions, skills, prompts, and scripts for every release in scope.
+The coordinator judges the direction's focus; the command does not classify
+free text. It adopts new capabilities where they serve the operator's work.
 The coordinator advances coverage only after complete review, resolved applicable
 findings, required checks, and accepted adoption. Promotion includes the marker
 only with completed adoption; publication must succeed before completion is

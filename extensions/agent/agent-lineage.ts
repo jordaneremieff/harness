@@ -1,5 +1,5 @@
 import { str, int, lit, union, arr, opt, obj, type Static } from "@earendil-works/pi-schema";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { ConversationDocToken, ConversationId, JsonObject, ToolExecutionApi } from "@earendil-works/pi-durable";
 
 const MAX_CREATED_AGENTS = 20;

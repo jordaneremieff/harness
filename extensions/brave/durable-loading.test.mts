@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { Duplex } from "node:stream";
 import { afterEach, beforeEach, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 

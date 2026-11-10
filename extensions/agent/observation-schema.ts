@@ -15,7 +15,7 @@ import { str, num, int, bool, nul, lit, union, arr, opt, obj, nullable, map, typ
  * `JsonValueSchema`, which validates JSON exactly rather than accepting
  * anything.
  */
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
 import { FleetStatusSchema } from "./fleet-status.ts";

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, defineDocFamily, ROOT_CONVERSATION_ID, type Harness, type Session, type Tx } from "@earendil-works/pi-durable";
 import {
 	COLLABORATION_THREAD_ID,

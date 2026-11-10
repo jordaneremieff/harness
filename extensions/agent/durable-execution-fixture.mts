@@ -244,7 +244,7 @@ export async function executionFixture(t: { after(fn: () => void | Promise<void>
 	writeFileSync(
 		join(agentDir, "settings.json"),
 		JSON.stringify({
-			cacheWarming: { mode: "off" },
+			cacheWarming: "off",
 			retry: { enabled: false },
 			defaultTools: options.settings?.defaultTools ?? ["+codemode", "+tool_search"],
 			...(options.settings?.extensions === undefined ? {} : { extensions: options.settings.extensions }),
@@ -436,7 +436,7 @@ export async function crashFixtureMain(argv: readonly string[]): Promise<number>
 	const root = dirname(storagePath);
 	const agentDir = join(root, "agent");
 	mkdirSync(agentDir, { recursive: true });
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false }, defaultTools: ["+codemode"] }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false }, defaultTools: ["+codemode"] }));
 	(globalThis as Record<string, unknown>).__execFixture = { effectPath: join(root, "effect.txt"), hang: true };
 	const extensionPath = writeExecutionExtension(join(root, "child-extension"));
 	const { runtime } = await scriptRuntime(`const value = await tools["slow-effect"]({});\nreturn value;`);

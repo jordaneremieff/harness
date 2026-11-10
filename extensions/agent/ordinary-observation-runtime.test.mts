@@ -32,7 +32,7 @@ it("native peer tools read ordinary retained work and errors without admitting p
 	const agentDir = join(root, "agent");
 	const cwd = join(root, "work");
 	mkdirSync(agentDir); mkdirSync(cwd);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))], cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))], cacheWarming: "off", retry: { enabled: false } }));
 	const models = await createTestRuntime();
 	const stream = t.mock.method(models, "stream", () => { throw new Error("Observation must not request a provider"); });
 	const streamSimple = t.mock.method(models, "streamSimple", () => { throw new Error("Observation must not request a provider"); });

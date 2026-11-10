@@ -18,7 +18,7 @@ import { CodemodeWorkerQueue, QueuedCodemodeSandbox } from "./codemode-admission
 import type { CreatedAgents } from "./agent-lineage.ts";
 import type { readEffortAwareness } from "./effort-awareness.ts";
 import { StatusOutputSchema, StatusToolOutputSchema } from "./observation-schema.ts";
-import { createDurableExecution, loadMcpConfig, type DurableExecutionHost } from "./durable-execution.ts";
+import { convertMcpResult, createDurableExecution, loadMcpConfig, type DurableExecutionHost } from "./durable-execution.ts";
 import { createAgentContribution, type AgentContributionHost } from "./durable-agents.ts";
 import type { McpOAuthState } from "@earendil-works/pi-mcp/oauth";
 import { answerRuntime, answerMessage, codemodeStream, CRASH_STORAGE_ID, declaredTool, declaredTools, executionFixture, fixtureModelId, fixtureProvider, fixtureServerPath, httpMcpServer, messageText, resourceListStream, streamRuntime, toolResultBody, toolResultText, toolSearchStream, writeExecutionExtension, type FixtureStream } from "./durable-execution-fixture.mts";
@@ -820,6 +820,38 @@ function mcpConfigFixture(t: { after(fn: () => void): void }, globalServers: Rec
 	return { agentDir, cwd, source, override };
 }
 
+it("keeps MCP text at Unicode boundaries and preserves the full script result", async (t) => {
+	const text = `${"x".repeat(10237)}😀${"y".repeat(30000)}😀${"z".repeat(10237)}`;
+	const raw = { content: [{ type: "text" as const, text }], structuredContent: { text } };
+	const result = await convertMcpResult("docs", "large", raw);
+	assert.deepEqual(result.structuredOutput, raw);
+	assert.ok(result.output);
+	const shown = result.output.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+	assert.equal(Buffer.from(shown, "utf8").toString("utf8"), shown);
+	assert.ok(shown.length < text.length);
+	assert.match(shown, /truncated/u);
+	const path = (result.details as { fullOutputPath?: string }).fullOutputPath;
+	assert.ok(path);
+	t.after(() => rmSync(path, { force: true }));
+	assert.equal(readFileSync(path, "utf8"), text);
+});
+
+it("rejects MCP OAuth callbacks outside the declared registration contract", (t) => {
+	const url = "https://example.com/mcp";
+	const f = mcpConfigFixture(t, {
+		query: { url, oauth: { callbackUrl: "http://localhost/callback?state=foreign" } },
+		ports: { url, oauth: { callbackUrl: "http://localhost:1234/callback", callbackPort: 5678 } },
+		document: { url, oauth: { clientRegistration: "cimd", callbackUrl: "http://localhost/other" } },
+		valid: { url, oauth: { clientRegistration: "cimd", callbackUrl: "http://localhost:1234/callback" } },
+	}, {});
+	const config = loadMcpConfig({ ...f, projectTrusted: false });
+	assert.deepEqual(config.servers.map((server) => server.name), ["valid"]);
+	assert.equal(config.errors.length, 3);
+	assert.match(config.errors.join("\n"), /query|fragment/u);
+	assert.match(config.errors.join("\n"), /different ports/u);
+	assert.match(config.errors.join("\n"), /path \/callback/u);
+});
+
 it("reads a leading BOM in global and trusted project MCP configuration", (t) => {
 	const base = { command: "synthetic-server", exposure: "direct" };
 	const f = mcpConfigFixture(t, { docs: base }, { docs: { enabled: false } });
@@ -895,7 +927,7 @@ it("rejects nonselection and invalid project overrides without changing the glob
 		["enabled", { enabled: "false" }, /enabled must be a boolean/u],
 		["exposure", { exposure: "invalid" }, /invalid exposure/u],
 		["toolExposure", { toolExposure: { read: "invalid" } }, /invalid toolExposure/u],
-		["typed", { type: "stdio", enabled: false }, /set "command"/u],
+		["typed", { type: "stdio", enabled: false }, /needs either "command"/u],
 	];
 	const f = mcpConfigFixture(t, Object.fromEntries(patches.map(([name]) => [name, base])), Object.fromEntries(patches.map(([name, patch]) => [name, patch])));
 	const config = loadMcpConfig({ ...f, projectTrusted: true });
@@ -1190,7 +1222,7 @@ async function nativeClockFixture(t: TestContext, now: () => number, code = '// 
 	const root = mkdtempSync(join(tmpdir(), "durable-codemode-clock-"));
 	const agentDir = join(root, "agent");
 	mkdirSync(agentDir);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["+codemode"], cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultTools: ["+codemode"], cacheWarming: "off", retry: { enabled: false } }));
 	let services: Awaited<ReturnType<typeof createDurableServices>> | undefined;
 	let harness: Harness | undefined;
 	const storage = new MemoryStorage();

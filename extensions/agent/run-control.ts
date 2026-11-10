@@ -1,4 +1,4 @@
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import * as native from "@earendil-works/pi-durable";
 import type { CommitPublication, ConversationId, Harness, SubmissionId, TaskId, Tx } from "@earendil-works/pi-durable";

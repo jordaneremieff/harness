@@ -28,7 +28,8 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import * as Durable from "@earendil-works/pi-durable";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { createBashTool, createEditTool, createWriteTool } from "@earendil-works/pi-durable/tools";
@@ -493,8 +494,10 @@ function buildBuiltin(pi: PiRuntime, services: AgentSessionServices, inventory: 
 
 /** Keep only the contributions whose source is a configured extension entrypoint. */
 function matchContributions(contributions: readonly DurableContribution[], loadedPaths: readonly string[]): DurableContribution[] {
-	const loaded = new Set(loadedPaths);
-	return contributions.filter((contribution) => loaded.has(contribution.source));
+	// The loader imports the canonical entry path, while a configured resolved path keeps its given form;
+	// both sides resolve through the filesystem before identity is compared.
+	const loaded = new Set(loadedPaths.map(realpathOrExact));
+	return contributions.filter((contribution) => loaded.has(realpathOrExact(contribution.source)));
 }
 
 /** Longest load-failure line the inventory and its prompt section retain. */
@@ -508,7 +511,7 @@ export function boundedLoadFailure(text: string): string {
 
 /** Build the inventory from emitted contributions, loaded extension paths, and loader failures. */
 function buildInventory(contributions: readonly DurableContribution[], loadedPaths: readonly string[], loadErrors: LoadExtensionsResult["errors"]): DurableInventory {
-	const emitted = new Set(contributions.map((contribution) => contribution.source));
+	const emitted = new Set(contributions.map((contribution) => realpathOrExact(contribution.source)));
 	const failed = loadErrors.map((item) => ({ path: item.path, error: boundedLoadFailure(item.error) }));
 	return {
 		contributions: contributions.map((contribution) => ({
@@ -518,7 +521,7 @@ function buildInventory(contributions: readonly DurableContribution[], loadedPat
 			...(contribution.display === undefined ? {} : { display: contribution.display }),
 			...(contribution.panel === undefined ? {} : { panel: contribution.panel }),
 		})),
-		ordinaryOnly: loadedPaths.filter((path) => !emitted.has(path)),
+		ordinaryOnly: loadedPaths.filter((path) => !emitted.has(realpathOrExact(path))),
 		// The member appears only when something failed, like `timers` appears only when one waits.
 		...(failed.length === 0 ? {} : { failed }),
 	};
@@ -616,9 +619,9 @@ function reportIssues(report: (error: unknown) => void, collection: readonly Err
 	for (const error of collection) report(error);
 	for (const item of services.diagnostics) if (item.type === "error") report(new Error(item.message));
 	for (const item of loaded.errors) report(new Error(`${item.path}: ${item.error}`));
-	const matched = new Set(loaded.extensions.map((extension) => extension.resolvedPath));
+	const matched = new Set(loaded.extensions.map((extension) => realpathOrExact(extension.resolvedPath)));
 	for (const contribution of contributions) {
-		if (!matched.has(contribution.source)) report(new Error(`durable contribution "${contribution.name}" from ${contribution.source} matches no loaded extension entrypoint`));
+		if (!matched.has(realpathOrExact(contribution.source))) report(new Error(`durable contribution "${contribution.name}" from ${contribution.source} matches no loaded extension entrypoint`));
 	}
 }
 
@@ -708,6 +711,8 @@ function providerStreamSettings(settings: SettingsManager): NonNullable<Durable.
 	return {
 		transport: settings.getTransport(),
 		timeoutMs: provider.timeoutMs ?? (idle === 0 ? 2147483647 : idle),
+		websocketConnectTimeoutMs: settings.getWebSocketConnectTimeoutMs(),
+		thinkingBudgets: settings.getThinkingBudgets(),
 		maxRetries: provider.maxRetries,
 		maxRetryDelayMs: provider.maxRetryDelayMs,
 	};

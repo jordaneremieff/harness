@@ -619,7 +619,7 @@ for (const route of ["primary", "same-storage", "catalog"] as const) it(`deliver
 	const producer = await source.harness.createConversation({ ownership: { kind: "ownerless" }, agent: { model: { provider: fixtureProvider, modelId: fixtureModelId } } }, BACKGROUND_CONTEXT);
 	if (route === "same-storage") {
 		const request = source.request.bind(source);
-		t.mock.method(source, "request", async (method: string, params?: RequestParams, context?: import("@earendil-works/chord").Context) => {
+		t.mock.method(source, "request", async (method: string, params?: RequestParams, context?: import("@earendil-works/chord/context").Context) => {
 			if (method === "submit" && params?.sessionId === owner) nativeReceived.push(params);
 			return request(method, params, context);
 		});

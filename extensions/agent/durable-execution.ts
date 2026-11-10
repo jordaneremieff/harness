@@ -1,20 +1,20 @@
 /** Native code mode and tool search with configured MCP transports and resource tools. */
 import { execSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { JsonValue } from "@earendil-works/chord";
-import type { Context } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
+import type { Context } from "@earendil-works/chord/context";
 import { awaitWithContext, withCancel } from "@earendil-works/chord/context";
 import type { CodemodeJsonSchema } from "@earendil-works/pi-codemode";
 import { CodemodeSandbox, parseCodemodeSource } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension, createCodemodeTool, type CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import { createToolSearchExtension } from "@earendil-works/pi-durable/tool-search";
 import type { AuthProvider, CallToolResult, ContentBlock, ListResourcesResult, ReadResourceResult, Resource, ResourceTemplate, Tool as McpTool } from "@earendil-works/pi-mcp";
-import { JSON_RPC_ERROR_CODES, McpClient, McpError, StdioTransport, StreamableHttpTransport, toLlmContent } from "@earendil-works/pi-mcp";
+import { createMcpToolName, isMcpServerOverride, JSON_RPC_ERROR_CODES, limitMcpContent, mcpNamespace, McpClient, McpError, normalizeMcpInputSchema, StdioTransport, StreamableHttpTransport, toLlmContent, validateMcpServerConfig } from "@earendil-works/pi-mcp";
 import { McpOAuthAuthorizationRequiredError } from "@earendil-works/pi-mcp/oauth";
 import type { AgentSessionServices, LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } from "@earendil-works/pi-coding-agent";
 export type { LoadedMcpConfig, McpExposure, McpServerConfig, McpServerEntry } from "@earendil-works/pi-coding-agent";
@@ -76,11 +76,9 @@ const CODEMODE_DEADLINE_MEMO = "agent.codemode.deadline";
 /** Declarations the model keeps when `codemode.mode` is `only`: Pi's code mode and discovery tools, and the Agent's model-only coordination tools that scripts cannot call. */
 const CODEMODE_ONLY_DECLARATIONS = new Set([CODEMODE_TOOL_NAME, TOOL_SEARCH_TOOL_NAME, "agent_await", "agent_compact"]);
 const DEFAULT_READY_TIMEOUT_MS = 10_000;
-const MCP_OUTPUT_MAX_BYTES = 20 * 1024;
-const SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
+
 const MAX_SERVERS_SECTION_CHARS = 4096;
 const MAX_SERVER_DESCRIPTION_CHARS = 250;
-const MAX_TOOL_NAME_LENGTH = 64;
 
 type NestedTool = Durable.ToolRegistration;
 
@@ -93,17 +91,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isStringRecord(value: unknown): value is Record<string, string> {
-	return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
-}
-
 function isExposure(value: unknown): value is McpExposure {
 	return value === "codemode" || value === "deferred" || value === "direct" || value === "hidden" || value === "codemode-deferred";
 }
 
 /** Validate one `mcpServers` entry, returning a copy or an error message. */
 function validateServerConfig(name: string, raw: unknown, scope: "global" | "project"): McpServerConfig | string {
-	if (!SERVER_NAME_PATTERN.test(name)) return `invalid server name "${name}" (use letters, digits, "_" and "-")`;
 	if (!isRecord(raw)) return `server "${name}" must be an object`;
 	const value: Record<string, unknown> = { ...raw };
 	if (value.exposure === "codemode-deferred") value.exposure = "codemode";
@@ -111,8 +104,20 @@ function validateServerConfig(name: string, raw: unknown, scope: "global" | "pro
 		if (!isRecord(value.toolExposure)) return `server "${name}": toolExposure must map tool names to exposures`;
 		value.toolExposure = Object.fromEntries(Object.entries(value.toolExposure).map(([tool, exposure]) => [tool, exposure === "codemode-deferred" ? "codemode" : exposure]));
 	}
-	const structural = validateServerShape(name, value);
-	if (typeof structural === "string") return structural;
+	const structural = validateMcpServerConfig(name, value, {
+		checkMetadataDocumentCallback(callbackUrl) {
+			if (callbackUrl === undefined) return undefined;
+			const callback = new URL(callbackUrl);
+			return callback.hostname !== "[::1]" && callback.pathname === "/callback"
+				? undefined
+				: 'oauth.clientRegistration "cimd" requires a localhost or 127.0.0.1 callback with path /callback';
+		},
+	});
+	if (structural.kind === "invalid") return structural.error;
+	if (value.exposure !== undefined && !isExposure(value.exposure)) return `server "${name}": invalid exposure`;
+	if (isRecord(value.toolExposure) && !Object.values(value.toolExposure).every((entry) => isExposure(entry))) {
+		return `server "${name}": invalid toolExposure`;
+	}
 	const auth = validateAuthFields(name, value, scope);
 	if (typeof auth === "string") return auth;
 	return value as unknown as McpServerConfig;
@@ -124,78 +129,6 @@ function validateAuthFields(name: string, value: Record<string, unknown>, scope:
 		if (scope === "project") return `server "${name}": auth is only allowed in the global mcp.json`;
 		if (!isRecord(auth) || typeof auth.provider !== "string" || auth.provider === "") return `server "${name}": auth.provider must be a provider name`;
 	}
-	const oauth = value.oauth;
-	if (oauth === undefined) return true;
-	if (!isRecord(oauth)) return `server "${name}": oauth must be an object`;
-	return validateOAuthFields(name, oauth);
-}
-
-function validateOAuthFields(name: string, oauth: Record<string, unknown>): true | string {
-	if (oauth.clientRegistration !== undefined && oauth.clientRegistration !== "auto" && oauth.clientRegistration !== "cimd" && oauth.clientRegistration !== "dcr") {
-		return `server "${name}": oauth.clientRegistration must be auto, cimd, or dcr`;
-	}
-	for (const key of ["clientId", "clientSecret", "scope", "clientName"] as const) {
-		if (oauth[key] !== undefined && typeof oauth[key] !== "string") return `server "${name}": oauth.${key} must be a string`;
-	}
-	const port = oauth.callbackPort;
-	if (port !== undefined && (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535)) {
-		return `server "${name}": oauth.callbackPort must be a port number`;
-	}
-	if (oauth.callbackUrl !== undefined && (typeof oauth.callbackUrl !== "string" || !isLoopbackUrl(oauth.callbackUrl, false))) {
-		return `server "${name}": oauth.callbackUrl must be an http loopback URL`;
-	}
-	if (oauth.authServerMetadataUrl !== undefined && (typeof oauth.authServerMetadataUrl !== "string" || !isLoopbackUrl(oauth.authServerMetadataUrl, true))) {
-		return `server "${name}": oauth.authServerMetadataUrl must be an https URL, or http on loopback`;
-	}
-	return true;
-}
-
-function isLoopbackUrl(value: string, allowHttps: boolean): boolean {
-	if (!URL.canParse(value)) return false;
-	const url = new URL(value);
-	if (url.protocol === "https:") return allowHttps;
-	if (url.protocol !== "http:") return false;
-	return url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-}
-
-function validateServerShape(name: string, value: Record<string, unknown>): true | string {
-	const common = validateCommonFields(name, value);
-	if (typeof common === "string") return common;
-	const http = validateHttpFields(name, value);
-	if (http !== undefined) return http;
-	const stdio = validateStdioFields(name, value);
-	if (stdio !== undefined) return stdio;
-	return `server "${name}": set "command" for a stdio server or "url" for an HTTP server`;
-}
-
-function validateCommonFields(name: string, value: Record<string, unknown>): true | string {
-	if (value.exposure !== undefined && !isExposure(value.exposure)) return `server "${name}": invalid exposure`;
-	if (isRecord(value.toolExposure) && !Object.values(value.toolExposure).every((entry) => isExposure(entry))) {
-		return `server "${name}": invalid toolExposure`;
-	}
-	if (value.enabled !== undefined && typeof value.enabled !== "boolean") return `server "${name}": enabled must be a boolean`;
-	if (value.description !== undefined && typeof value.description !== "string") return `server "${name}": description must be a string`;
-	if (value.timeout !== undefined && (typeof value.timeout !== "number" || !(value.timeout > 0))) return `server "${name}": timeout must be positive seconds`;
-	if (value.type === "sse") return `server "${name}": legacy SSE transport is not supported; use the streamable HTTP URL`;
-	return true;
-}
-
-/** True or an error when the entry selects HTTP; undefined when it does not. */
-function validateHttpFields(name: string, value: Record<string, unknown>): true | string | undefined {
-	if (typeof value.url !== "string" || (value.type !== undefined && value.type !== "http" && value.type !== "streamable-http")) return undefined;
-	if (!URL.canParse(value.url) || !/^https?:$/.test(new URL(value.url).protocol)) return `server "${name}": url must be an http or https URL`;
-	if (value.headers !== undefined && !isStringRecord(value.headers)) return `server "${name}": headers must map names to strings`;
-	return true;
-}
-
-/** True or an error when the entry selects stdio; undefined when it does not. */
-function validateStdioFields(name: string, value: Record<string, unknown>): true | string | undefined {
-	if (typeof value.command !== "string" || (value.type !== undefined && value.type !== "stdio")) return undefined;
-	if (value.args !== undefined && !(Array.isArray(value.args) && value.args.every((arg) => typeof arg === "string"))) {
-		return `server "${name}": args must be an array of strings`;
-	}
-	if (value.env !== undefined && !isStringRecord(value.env)) return `server "${name}": env must map names to strings`;
-	if (value.cwd !== undefined && typeof value.cwd !== "string") return `server "${name}": cwd must be a string`;
 	return true;
 }
 
@@ -208,7 +141,7 @@ interface McpConfigState {
 const PROJECT_MCP_OVERRIDE_KEYS = ["enabled", "exposure", "toolExposure"];
 
 function isMcpSelectionOverride(value: unknown): value is Record<string, unknown> {
-	return isRecord(value) && value.command === undefined && value.url === undefined && value.type === undefined;
+	return isRecord(value) && isMcpServerOverride(value);
 }
 
 function applyProjectMcpOverride(name: string, patch: Record<string, unknown>, path: string, state: McpConfigState): void {
@@ -275,11 +208,6 @@ export function loadMcpConfig(options: { agentDir: string; cwd: string; projectT
 		...(state.autoEnableCodemode === undefined ? {} : { autoEnableCodemode: state.autoEnableCodemode }),
 		errors: state.errors,
 	};
-}
-
-/** `mcp__<server>` with invalid characters replaced by `_`. */
-function mcpNamespace(server: string): string {
-	return `mcp__${server.replace(/[^A-Za-z0-9_]/g, "_")}`;
 }
 
 /** The effective exposure of one server tool, honoring exact overrides and then `*` patterns. */
@@ -352,14 +280,6 @@ function templateStep(config: string, dollar: number, env: Record<string, string
 
 // ─── MCP tool names and results ─────────────────────────────────────────────
 
-/** `mcp__<server>__<tool>`, sanitized; too-long or colliding names get a stable hash suffix. */
-export function createMcpToolName(server: string, tool: string, isTaken: (name: string) => boolean = () => false): string {
-	const name = `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_]/g, "_");
-	if (name.length <= MAX_TOOL_NAME_LENGTH && !isTaken(name)) return name;
-	const hash = createHash("sha256").update(`${server}\0${tool}`).digest("hex").slice(0, 8);
-	return `${name.slice(0, MAX_TOOL_NAME_LENGTH - hash.length - 1)}_${hash}`;
-}
-
 /** The `CallToolResult` output schema every MCP tool declares to scripts. */
 function createMcpResultSchema(structuredContentSchema: CodemodeJsonSchema | undefined): Schema {
 	return {
@@ -378,61 +298,7 @@ function textOf(content: readonly { type?: string; text?: string }[] | undefined
 	return (content ?? []).flatMap((block) => (block.type === "text" && typeof block.text === "string" ? [block.text] : [])).join("\n");
 }
 
-/** Model-facing text of an MCP result over the byte cap keeps its ends and spills the full text. */
-async function limitMcpContent(content: ToolResultContent): Promise<{ content: ToolResultContent; fullOutputPath?: string }> {
-	const combined = textOf(content);
-	const bytes = Buffer.byteLength(combined, "utf8");
-	if (bytes <= MCP_OUTPUT_MAX_BYTES) return { content };
-	const text = middleTruncate(combined, MCP_OUTPUT_MAX_BYTES);
-	let fullOutputPath: string | undefined;
-	let where: string;
-	try {
-		fullOutputPath = await saveToTempFile(combined, ".txt");
-		where = `[Complete output: ${fullOutputPath} (read it with offset/limit)]`;
-	} catch (error) {
-		where = `[Could not save the full output: ${error instanceof Error ? error.message : String(error)}]`;
-	}
-	const tokens = Math.ceil(bytes / 4);
-	return {
-		content: [
-			{
-				type: "text",
-				text: `Output was truncated (about ${tokens} tokens originally, ${combined.split("\n").length} lines):\n\n${text}\n\n${where}`,
-			},
-			...content.filter((block) => block.type === "image"),
-		],
-		...(fullOutputPath === undefined ? {} : { fullOutputPath }),
-	};
-}
-
-/** Keep the start and end of `text` within `maxBytes`, with an omission marker in the middle. */
-function middleTruncate(text: string, maxBytes: number): string {
-	const half = Math.max(0, Math.floor(maxBytes / 2));
-	const head = utf8Prefix(text, half);
-	const tail = utf8Suffix(text, Math.max(0, maxBytes - Buffer.byteLength(head, "utf8")));
-	const omitted = Buffer.byteLength(text, "utf8") - Buffer.byteLength(head, "utf8") - Buffer.byteLength(tail, "utf8");
-	return `${head}\n…${omitted} bytes truncated…\n${tail}`;
-}
-
-function utf8Prefix(text: string, maxBytes: number): string {
-	let bytes = 0;
-	for (let index = 0; index < text.length; index++) {
-		bytes += Buffer.byteLength(text[index] ?? "", "utf8");
-		if (bytes > maxBytes) return text.slice(0, index);
-	}
-	return text;
-}
-
-function utf8Suffix(text: string, maxBytes: number): string {
-	let bytes = 0;
-	for (let index = text.length - 1; index >= 0; index--) {
-		bytes += Buffer.byteLength(text[index] ?? "", "utf8");
-		if (bytes > maxBytes) return text.slice(index + 1);
-	}
-	return text;
-}
-
-async function saveToTempFile(data: string | Buffer, extension: string): Promise<string> {
+async function saveToTempFile(data: string | Uint8Array, extension: string): Promise<string> {
 	const path = join(tmpdir(), `pi-durable-execution-${randomBytes(8).toString("hex")}${extension}`);
 	await writeFile(path, data, { mode: 0o600 });
 	return path;
@@ -479,7 +345,7 @@ async function blobResourceContent(resource: { uri: string; mimeType?: string; b
 
 /** Convert one MCP result into a Durable tool result. Scripts read `structuredOutput`. */
 export async function convertMcpResult(server: string, tool: string, result: CallToolResult): Promise<Durable.ToolExecutionResult<JsonValue>> {
-	const limited = await limitMcpContent(await mcpModelContent(result));
+	const limited = await limitMcpContent([...await mcpModelContent(result)], saveToTempFile);
 	const { _meta: _ignored, ...scriptResult } = result;
 	return {
 		output: [...limited.content],
@@ -498,8 +364,7 @@ async function mcpModelContent(result: CallToolResult): Promise<ToolResultConten
 
 /** MCP input schemas must be objects; some providers reject object schemas without properties. */
 function toParameters(schema: unknown): Schema {
-	const object = isRecord(schema) ? schema : {};
-	return { ...object, type: object.type ?? "object", ...(object.properties === undefined ? { properties: {} } : {}) };
+	return normalizeMcpInputSchema(isRecord(schema) ? schema : {}) as Schema;
 }
 
 function expandHome(value: string): string {
@@ -765,7 +630,7 @@ function listedResource(server: string, item: unknown): Record<string, JsonValue
 
 /** A resource tool result: listing JSON for the model and the full payload for scripts. */
 async function resourceJsonResult(tool: string, server: string | undefined, payload: JsonValue): Promise<Durable.ToolExecutionResult<JsonValue>> {
-	const limited = await limitMcpContent([{ type: "text", text: JSON.stringify(payload) }]);
+	const limited = await limitMcpContent([{ type: "text", text: JSON.stringify(payload) }], saveToTempFile);
 	return {
 		output: [...limited.content],
 		structuredOutput: payload,
@@ -1125,7 +990,7 @@ class DurableExecutionRuntime implements DurableExecution {
 		const result = await server.readResource(uri, { signal: context.abortSignal });
 		const blocks: ContentBlock[] = result.contents.flatMap((contents) => [...(result.contents.length > 1 ? [{ type: "text" as const, text: `${contents.uri}:` }] : []), { type: "resource" as const, resource: contents }]);
 		const converted = (await Promise.all(blocks.map((block) => blockToContent(block)))).flat();
-		const limited = await limitMcpContent(converted.length > 0 ? converted : [{ type: "text", text: `Resource ${uri} is empty.` }]);
+		const limited = await limitMcpContent(converted.length > 0 ? converted : [{ type: "text", text: `Resource ${uri} is empty.` }], saveToTempFile);
 		const contents = result.contents.map(({ _meta: _ignored, ...rest }) => rest);
 		return {
 			output: [...limited.content],

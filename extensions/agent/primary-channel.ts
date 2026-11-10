@@ -24,7 +24,8 @@ import { randomUUID } from "node:crypto";
 import { opendir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
-import { invalid, type JsonValue } from "@earendil-works/chord";
+import { invalid } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { connectTransport, createTransportServer, unixSocketPath, type TransportClient, type TransportRequest } from "../../transport/index.ts";
 import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
@@ -558,7 +559,7 @@ class PrimaryChannelHost {
 			case "trustPrompt":
 				return this.trustPrompt(request.params);
 			default:
-				throw invalid("method", `unknown primary channel method ${request.method}`);
+				throw invalid("args", `unknown primary channel method ${request.method}`);
 		}
 	}
 

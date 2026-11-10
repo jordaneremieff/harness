@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
-import { isChordError } from "@earendil-works/chord";
+import { PluginError } from "@earendil-works/chord";
 import { connectTransport, type TransportClient, type TransportRequest } from "../../transport/index.ts";
 import { observeClaim } from "./claims.ts";
 import { HostError, hostPaths, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
@@ -157,7 +157,7 @@ it("preserves a runtime error message", { timeout: 15000 }, async (t) => {
 	const { host, metadata: config } = await startHost(root);
 	t.after(() => host.close().catch(() => {}));
 	const client = await connectClient(config);
-	await assert.rejects(call(client, config, "configure"), (error: unknown) => isChordError(error, "invalid") && error.message === "invalid/invalid: not allowed");
+	await assert.rejects(call(client, config, "configure"), (error: unknown) => error instanceof PluginError && error.code === "invalid" && error.message === "not allowed");
 	await client.dispose();
 });
 

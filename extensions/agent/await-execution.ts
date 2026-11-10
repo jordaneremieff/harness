@@ -1,5 +1,5 @@
 /** An invocation-owned native wait keeps its original run open without provider work. */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { inputEntry } from "./input-entry.ts";
 import { withCancel } from "@earendil-works/chord/context";
 import { InboxDoc, type ToolExecutionApi, type TaskId, type DocumentWatch } from "@earendil-works/pi-durable";

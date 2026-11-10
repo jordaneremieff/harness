@@ -2,7 +2,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isAbsolute } from "node:path";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { DistillSource } from "./distill.ts";
 import { mergeRedactionReports, readRedactionReport, redactSecretsWithReport } from "./redact.ts";

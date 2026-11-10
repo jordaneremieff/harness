@@ -56,7 +56,7 @@ function fixture(t: TestContext) {
 	const globalSettings = join(agentDir, "settings.json"), projectSettings = join(cwd, ".pi", "settings.json");
 	writeFileSync(globalSettings, JSON.stringify({
 		packages: [relative(agentDir, originalAgent), { source: relative(agentDir, other) }], extensions: [ordinary], skills: [skill], prompts: [prompt],
-		transport: "sse", defaultThinkingLevel: "high", cacheWarming: { mode: "off" }, retry: { enabled: false },
+		transport: "sse", defaultThinkingLevel: "high", cacheWarming: "off", retry: { enabled: false },
 	}));
 	writeFileSync(projectSettings, JSON.stringify({ extensions: [project], skills: [projectSkill], compaction: { reserveTokens: 1234 } }));
 	const originalGlobal = readFileSync(globalSettings, "utf8"), originalProject = readFileSync(projectSettings, "utf8");
@@ -108,7 +108,7 @@ test("rejects another Agent from a configured package directory before native in
 	const packageRoot = dirname(f.originalFixture);
 	writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "selection-original-agent", version: "1.0.0", pi: { extensions: ["index.ts"] } }));
 	const path = join(f.agentDir, "settings.json");
-	const settings = JSON.stringify({ packages: [relative(f.agentDir, packageRoot)], cacheWarming: { mode: "off" }, retry: { enabled: false } });
+	const settings = JSON.stringify({ packages: [relative(f.agentDir, packageRoot)], cacheWarming: "off", retry: { enabled: false } });
 	writeFileSync(path, settings);
 	let services: Awaited<ReturnType<typeof createDurableServices>> | undefined;
 	try {
@@ -359,7 +359,7 @@ test("scoped resource reload binds the canonical Agent source around the whole r
 	const f = fixture(t);
 	const probe = join(f.root, "entry-probe.ts");
 	writeFileSync(probe, entryProbe(selectedAgent));
-	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ extensions: [probe], cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ extensions: [probe], cacheWarming: "off", retry: { enabled: false } }));
 	probeResults().length = 0;
 	t.after(() => { delete (globalThis as Record<string, unknown>)[probeKey]; });
 	const services = await createDurableServices({
@@ -397,7 +397,7 @@ test("native host reload keeps the Agent entry native and registers nothing ordi
 	const f = fixture(t);
 	const probe = join(f.root, "entry-probe.ts");
 	writeFileSync(probe, entryProbe(selectedAgent));
-	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ extensions: [probe], cacheWarming: { mode: "off" }, retry: { enabled: false } }));
+	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ extensions: [probe], cacheWarming: "off", retry: { enabled: false } }));
 	probeResults().length = 0;
 	t.after(() => { delete (globalThis as Record<string, unknown>)[probeKey]; });
 	const record = new AgentCatalog(f.root).create({ cwd: f.cwd, agentDir: f.agentDir, packageDir: getPackageDir(), model: { provider: testModel.provider, modelId: testModel.id }, thinkingLevel: "off", trust: false });

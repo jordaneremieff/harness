@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
-import { ChordError, invalid, isChordError } from "@earendil-works/chord";
+import { ChordError, PluginError, invalid, isChordError } from "@earendil-works/chord";
 import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
 import { type ClaimIdentity, type ClaimObservation, classifyClaim, readClaimFile } from "./claims.ts";
 import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
@@ -21,10 +21,9 @@ import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from
 import { isObservationFrame } from "./live-frames.ts";
 import { createObservationPump, type ObservationClock, type ObservationPump } from "./observation-pump.ts";
 
-function hostOperationError(error: unknown): ChordError {
-	if (isChordError(error)) return error;
-	const reason = error instanceof HostError ? error.code : "internal";
-	return new ChordError(reason === "invalid" ? "invalid" : "unavailable", error instanceof Error ? error.message : String(error), { reason });
+function hostOperationError(error: unknown): ChordError | PluginError {
+	if (isChordError(error) || error instanceof PluginError) return error;
+	return new PluginError(error instanceof HostError ? error.code : "internal", error instanceof Error ? error.message : String(error));
 }
 
 /** The host-side surface the parent runtime must supply. */
@@ -284,7 +283,7 @@ class HostProcessServer implements HostProcess {
 			request: (request, peer, signal) => this.invoke(request, signal, this.attachment(peer)),
 			subscribe: async (kind, token, peer, publish) => {
 				const state = this.attachment(peer);
-				if (this.closing) throw new ChordError("unavailable", "The durable host process is shutting down", { reason: "closing" });
+				if (this.closing) throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
 				if (kind === "changes") return this.subscribeChanges(publish, state);
 				this.beginActivity();
 				try { return await this.subscribeObservation(token ?? "", publish, state); }
@@ -348,7 +347,7 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private async invoke(request: TransportRequest, signal: AbortSignal, state: AttachmentState): Promise<unknown> {
-		if (this.closing) throw new ChordError("unavailable", "The durable host process is shutting down", { reason: "closing" });
+		if (this.closing) throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
 		const active = request.method !== HOST_CONTRACT_MEMBER && request.method !== "close";
 		if (active) this.beginActivity();
 		try { return await this.dispatch(request, signal, state); }
@@ -374,11 +373,11 @@ class HostProcessServer implements HostProcess {
 	}
 
 	private async subscribeObservation(token: string, publish: (value: unknown) => void, state: AttachmentState): Promise<{ value: unknown; close: () => void }> {
-		if (!state.tokens.has(token)) throw invalid("observation", `unknown observation token ${token}`);
+		if (!state.tokens.has(token)) throw invalid("args", `unknown observation token ${token}`);
 		let baseline: unknown;
 		try {
 			baseline = await this.runtime.request("observe-frame", { token }, randomUUID());
-			if (!isObservationFrame(baseline) || state.released || !state.tokens.has(token)) throw invalid("observation", `observation token ${token} returned no frame`);
+			if (!isObservationFrame(baseline) || state.released || !state.tokens.has(token)) throw invalid("args", `observation token ${token} returned no frame`);
 		} catch (error) { this.closeObservationToken(token, state); throw error; }
 		const entry: ObservationSubscription = { subscriptionId: randomUUID(), token, publish, revision: baseline.revision, closed: false, close: () => {} };
 		entry.close = () => this.closeObservationSubscription(entry, state);
@@ -460,7 +459,7 @@ class HostProcessServer implements HostProcess {
 			await Promise.race([this.shutdown(), this.writerReleased]);
 			return {};
 		}
-		if (this.closing) throw new ChordError("unavailable", "The durable host process is shutting down", { reason: "closing" });
+		if (this.closing) throw new ChordError({ code: "unavailable", message: "The durable host process is shutting down" });
 		const token = this.prepareObservationToken(method, params, state);
 		try {
 			// Only an observational wait receives the disconnect or cancel signal;
@@ -481,22 +480,22 @@ class HostProcessServer implements HostProcess {
 		let mismatch: string | undefined;
 		try { mismatch = operationContractMismatch(method, parseOperationContract(rawContract)); }
 		catch { mismatch = "The caller does not provide a current operation contract."; }
-		if (mismatch) throw new ChordError("unavailable", `${mismatch} Restart the caller or host with matching current agent code; no operation was admitted.`, { reason: "version" });
+		if (mismatch) throw new ChordError({ code: "unavailable", reason: "version", message: `${mismatch} Restart the caller or host with matching current agent code; no operation was admitted.` });
 	}
 
 	private assertObservationAdmission(method: string): void {
-		if (method === "observe-open" && this.releasePending) throw new ChordError("unavailable", "The durable host release is pending", { reason: "closing" });
+		if (method === "observe-open" && this.releasePending) throw new ChordError({ code: "unavailable", message: "The durable host release is pending" });
 	}
 
 	private prepareObservationToken(method: string, params: unknown, state: AttachmentState): string | undefined {
 		this.assertObservationAdmission(method);
 		const token = params !== null && typeof params === "object" && "token" in params && typeof params.token === "string" ? params.token : undefined;
-		if (method === "observe-frame" && (token === undefined || !state.tokens.has(token) || state.closingTokens.has(token))) throw invalid("observation", "The observation token does not belong to this connection");
+		if (method === "observe-frame" && (token === undefined || !state.tokens.has(token) || state.closingTokens.has(token))) throw invalid("args", "The observation token does not belong to this connection");
 		if ((method === "observe-open" || method === "observe-close") && token !== undefined) {
-			if ([...this.attachments.values()].some((owner) => owner !== state && (owner.tokens.has(token) || owner.closingTokens.has(token)))) throw invalid("observation", "The observation token belongs to another connection");
+			if ([...this.attachments.values()].some((owner) => owner !== state && (owner.tokens.has(token) || owner.closingTokens.has(token)))) throw invalid("args", "The observation token belongs to another connection");
 		}
 		if (method === "observe-open" && token !== undefined) {
-			if (state.closingTokens.has(token)) throw invalid("observation", "The observation token is still closing");
+			if (state.closingTokens.has(token)) throw invalid("args", "The observation token is still closing");
 			state.tokens.add(token);
 		}
 		return token;

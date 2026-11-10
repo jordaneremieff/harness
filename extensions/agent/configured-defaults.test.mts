@@ -17,7 +17,7 @@ const pi: typeof import("@earendil-works/pi-coding-agent") = await import(pathTo
 const first = { ...testModel, id: "first" };
 const second = { ...testModel, id: "second" };
 const plain = { ...testModel, id: "plain", reasoning: false };
-const fixed = { cacheWarming: { mode: "off" }, retry: { enabled: false } };
+const fixed = { cacheWarming: "off", retry: { enabled: false } };
 
 async function fixture(t: TestContext, global: object, project?: object) {
 	const root = mkdtempSync(join(tmpdir(), "configured-defaults-"));

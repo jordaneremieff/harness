@@ -6,7 +6,8 @@
  * listener on the channel, so the emission has no effect there.
  */
 
-import type { Context, JsonValue } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
+import type { JsonValue } from "@earendil-works/chord/json";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import { publishSettings, type SettingsBus } from "./settings.ts";

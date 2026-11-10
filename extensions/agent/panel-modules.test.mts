@@ -102,7 +102,7 @@ async function hostInventory(t: { after(fn: () => void): void }, descriptor: str
 	const root = directory(t);
 	const cwd = join(root, "work"); const agentDir = join(root, "agent");
 	mkdirSync(cwd); mkdirSync(agentDir);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: { mode: "off" } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off" }));
 	const owner = join(root, "owner"); mkdirSync(owner);
 	writeFileSync(join(owner, "index.ts"), EMIT(descriptor, commands));
 	for (const [name, text] of Object.entries(files)) writeFileSync(join(owner, name), text);

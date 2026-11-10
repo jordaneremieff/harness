@@ -1,4 +1,4 @@
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { isInputKind } from "./input-entry.ts";
 import type { Conversation, EntryId, EntryRecord, Harness, SubmissionId } from "@earendil-works/pi-durable";
 import { boundCommunicationViews, COMMUNICATION_PAGE_ENTRIES, parseCommunicationCompanion, parseCommunicationLink, parseCommunicationPassive, parseCommunicationView, type CommunicationInputLink, type CommunicationView } from "./communication.ts";

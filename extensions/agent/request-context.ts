@@ -1,6 +1,6 @@
 /** Host-authored request routes, retained independently of the active transcript. */
 import { createHash, createHmac, randomBytes } from "node:crypto";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Message } from "@earendil-works/pi-ai";
 import { isInputKind } from "./input-entry.ts";
 import { readDeliveryDraft } from "./delivery-store.ts";

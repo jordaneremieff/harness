@@ -31,7 +31,7 @@ import { matchesSchema } from "./schema-check.ts";
 import { NativeIntentMetadataSchema } from "./effort-schema.ts";
 import { canonicalIdentity } from "./native-identity.ts";
 import type { CatalogIntentClaims, CatalogViewRow } from "./catalog-view.ts";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { clampThinkingLevel, type Message, type Models, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import {

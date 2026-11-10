@@ -1,7 +1,7 @@
 /** Independent contributed work, with creator provenance but no answer route. */
 import { createHash } from "node:crypto";
 import { realpathSync, statSync } from "node:fs";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { acquireHost } from "./host-client.ts";
 import { hostRequestVersionError, type HostMetadata } from "./host-protocol.ts";

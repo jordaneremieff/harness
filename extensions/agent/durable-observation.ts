@@ -16,7 +16,7 @@
 import { createHash } from "node:crypto";
 import { AGENT_INPUT_KIND, isInputKind } from "./input-entry.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Message, Models, Usage } from "@earendil-works/pi-ai";
 import type { ModelEvidenceCollector } from "./model-evidence.ts";
 import { createSession, AssistantEntry, Harness, InboxDoc, LiveDoc, UsageDoc, type Conversation, type ConversationId, type ConversationRecord, type ConversationView, type Cursor, type EntryId, type EntryRecord, type HarnessOptions, type HarnessInspection, type LiveState, type RunFailure, type Storage, type SubmissionId, type SubmissionRecord, type TaskInspection, type UsageState } from "@earendil-works/pi-durable";

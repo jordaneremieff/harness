@@ -1,7 +1,7 @@
 /** Retained provider-limit evidence and explicit recovery, independent of native submission settlement. */
 import { createHash } from "node:crypto";
 import { AgentDoc, LiveDoc, ProviderDoc, defineDocFamily, configure, type ConversationId, type SubmissionId, type Tx, type ModelRef, type AgentChange, type Harness, type Cursor } from "@earendil-works/pi-durable";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { DeferredHandle, Api, Model } from "@earendil-works/pi-ai";
 import type { ProducerAwaitFact } from "./await-facts.ts";
 import { canonicalIdentity } from "./native-identity.ts";

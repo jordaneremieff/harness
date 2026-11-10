@@ -1,5 +1,5 @@
 /** Native keyed delivery records and bounded reference pages. Payloads have one retained owner. */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { defineDoc, defineDocFamily, type Harness, type Session, type Tx } from "@earendil-works/pi-durable";
 import type { AgentDeliveryState, DeliveryIntent, DeliveryReceipt, DeliveryReport } from "./durable-controls.ts";
 

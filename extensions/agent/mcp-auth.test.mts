@@ -390,16 +390,16 @@ it("reads URL-only state without taking it over", async (t) => {
 	assert.deepEqual(f.read(), { [url]: state });
 });
 
-const configurations: { name: string; oauth?: Extract<McpServerConfig, { url: string }>["oauth"]; supports?: boolean; iss?: boolean; expectedClient?: string; expectedRedirect?: string; error?: RegExp }[] = [
+const configurations: { name: string; oauth?: Extract<McpServerConfig, { url: string }>["oauth"]; supports?: boolean; iss?: boolean; expectedClient?: string; expectedRedirect?: string; signIn?: boolean; error?: RegExp }[] = [
 	{ name: "explicit client", oauth: { clientId: "registered-client", clientSecret: "synthetic-secret" }, expectedClient: "registered-client" },
 	{ name: "forced unsupported CIMD", oauth: { clientRegistration: "cimd" }, supports: false, error: /clientRegistration.*cimd.*requires/u },
-	{ name: "DCR", oauth: { clientRegistration: "dcr" }, expectedClient: "dynamic-client", expectedRedirect: "http://127.0.0.1/callback" },
-	{ name: "named client and scope", oauth: { clientName: "test-client", scope: "configured-scope" }, expectedClient: "dynamic-client", expectedRedirect: "http://127.0.0.1/callback" },
-	{ name: "custom callback with port", oauth: { callbackUrl: "http://localhost:8765/custom", callbackPort: 9999 }, expectedClient: "dynamic-client", expectedRedirect: "http://localhost:8765/custom" },
-	{ name: "callbackPort", oauth: { clientRegistration: "dcr", callbackPort: 8765 }, expectedClient: "dynamic-client", expectedRedirect: "http://127.0.0.1:8765/callback" },
+	{ name: "DCR", oauth: { clientRegistration: "dcr" }, signIn: true },
+	{ name: "named client and scope", oauth: { clientName: "test-client", scope: "configured-scope" }, signIn: true },
+	{ name: "custom callback with port", oauth: { callbackUrl: "http://localhost:8765/custom", callbackPort: 9999 }, signIn: true },
+	{ name: "callbackPort", oauth: { clientRegistration: "dcr", callbackPort: 8765 }, signIn: true },
 	{ name: "metadata override", oauth: { authServerMetadataUrl: "https://auth.example.test/override" }, expectedClient: "https://pi.dev/oauth/client.json" },
 	{ name: "server-specific document", iss: false, expectedClient: `https://pi.dev/oauth/${createHash("sha256").update(url).digest().subarray(0, 9).toString("base64url")}/client.json` },
-	{ name: "auto falls back to DCR", supports: false, expectedClient: "dynamic-client", expectedRedirect: "http://127.0.0.1/callback" },
+	{ name: "auto without CIMD support", supports: false, signIn: true },
 ];
 for (const row of configurations) {
 	it(`honours OAuth configuration: ${row.name}`, async (t) => {
@@ -422,23 +422,50 @@ for (const row of configurations) {
 			return Response.json(rotated);
 		});
 		if (row.error) await assert.rejects(provider(f.owner, row.oauth).onUnauthorized(rejectedToken()), row.error);
+		else if (row.signIn) {
+			// An automatic refresh never registers a client: a config without a stored client or document requires sign-in.
+			await assert.rejects(provider(f.owner, row.oauth).onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
+			assert.deepEqual(requests, []);
+			assert.deepEqual(f.read()[key], state);
+		}
 		else assert.equal(await provider(f.owner, row.oauth).token(), rotated.access_token);
 		if (row.oauth?.authServerMetadataUrl) assert.ok(requests.includes(row.oauth.authServerMetadataUrl));
 	});
 }
 
-it("uses the challenge resource metadata and scope without an interactive redirect", async (t) => {
+it("keeps a pending sign-in when the native refresh fails", async (t) => {
+	const pending = grant(); pending.codeVerifier = "pending-verifier"; pending.oauthState = "pending-state";
+	const f = fixture(t, pending); const requests: string[] = [];
+	refreshFetch(t, async (input) => {
+		requests.push(String(input));
+		if (String(input) !== metadata.token_endpoint) throw new Error(`unexpected request: ${String(input)}`);
+		return Response.json({ error: "invalid_grant" }, { status: 400 });
+	});
+	await assert.rejects(provider(f.owner, { clientId: "registered-client" }).onUnauthorized(rejectedToken()), McpOAuthAuthorizationRequiredError);
+	assert.deepEqual(requests, [metadata.token_endpoint]);
+	const saved = f.read()[key];
+	assert.equal(saved.tokens, undefined);
+	assert.equal(saved.codeVerifier, "pending-verifier");
+	assert.equal(saved.oauthState, "pending-state");
+});
+
+it("uses the challenge resource metadata without registration or an interactive redirect", async (t) => {
 	const state = grant(); delete state.discovery; delete state.tokensExpireAt;
-	const f = fixture(t, state); let resourceSeen = false; let scope: string | null = null;
-	const fetch: McpFetch = async (input, init) => {
+	const f = fixture(t, state); let resourceSeen = false; const requests: string[] = [];
+	const fetch: McpFetch = async (input) => {
+		requests.push(String(input));
 		if (String(input) === "https://mcp.example.test/resource") { resourceSeen = true; return Response.json({ resource: url, authorization_servers: [metadata.issuer] }); }
 		if (String(input).includes(".well-known")) return Response.json({ ...metadata, registration_endpoint: "https://auth.example.test/register" });
-		if (String(input).endsWith("/register")) { const body = JSON.parse(String(init?.body)); scope = body.scope; return Response.json({ ...body, client_id: "dynamic-client" }); }
-		return Response.json({ error: "invalid_grant" }, { status: 400 });
+		throw new Error(`unexpected request: ${String(input)}`);
 	};
 	const auth = provider(f.owner, { clientRegistration: "dcr", scope: "configured" });
 	await assert.rejects(auth.onUnauthorized({ token: state.tokens?.access_token, serverUrl: new URL(url), response: new Response(null, { status: 401, headers: { "www-authenticate": 'Bearer resource_metadata="https://mcp.example.test/resource", scope="challenged"' } }), fetch }), McpOAuthAuthorizationRequiredError);
-	assert.equal(resourceSeen, true); assert.equal(scope, "challenged"); assert.equal(f.read()[key].tokens, undefined);
+	assert.equal(resourceSeen, true);
+	assert.ok(requests.every((request) => request === "https://mcp.example.test/resource" || request.includes(".well-known")));
+	const saved = f.read()[key];
+	assert.deepEqual(saved.tokens, state.tokens);
+	assert.equal(saved.codeVerifier, state.codeVerifier);
+	assert.equal(saved.oauthState, state.oauthState);
 });
 
 it("sends the stored token after a transient refresh failure and reports sign-in after a 401", async (t) => {

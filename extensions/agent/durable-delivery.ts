@@ -29,7 +29,7 @@ import { canonicalIdentity } from "./native-identity.ts";
 import { providerBlockText } from "./provider-block-facts.ts";
 import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";

@@ -43,7 +43,7 @@ async function namingFixture(t: TestContext, options: { retainedName?: string } 
 	const agentDir = join(root, "agent");
 	const sessionsRoot = join(root, "sessions");
 	mkdirSync(cwd); mkdirSync(agentDir); mkdirSync(sessionsRoot);
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: { mode: "off" }, retry: { enabled: false }, compaction: { enabled: false } }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false }, compaction: { enabled: false } }));
 	const harnessFile = join(agentDir, "harness.json");
 	writeFileSync(harnessFile, JSON.stringify(machineConfig({ presets: {} })));
 	const saved = new Map(["PI_AGENT_DIR", "PI_CODING_AGENT_DIR", "PI_AGENT_SESSIONS_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]]));

@@ -17,7 +17,7 @@ Use these terms consistently:
 - `storageId` identifies one Durable SQLite storage and host.
 - The external conversation identity is `storageId` for root conversation 1, otherwise `storageId:conversationId`.
 - `conversationId`, submission IDs, and entry IDs resolve to positive safe integers. Live request parsers also accept decimal-digit strings in the corresponding ID fields; responses use numbers except display snapshot entry IDs, which are strings. Source: `extensions/agent/durable-observation.ts:473-500`.
-- `serverId` is the public server UUID. The expected Chord host name is `pi.agent:<serverId>`. Neither is a conversation identity.
+- `serverId` is the public server UUID. The expected transport identity name is `pi.agent:<serverId>`. Neither is a conversation identity.
 
 Source: `extensions/agent/index.ts:231-235`; `extensions/agent/identity.ts:15-19`; `extensions/agent/durable-observation.ts:508-522`; `extensions/agent/dashboard-types.ts:107-127`.
 
@@ -209,8 +209,8 @@ Source: `extensions/agent/host-protocol.ts:34,151-181`; `extensions/agent/claims
 Import `connectTransport` from the public `transport/index.ts` entrypoint and
 call `connectTransport({serverId, path: socketPath})`, then negotiate with
 `client.request({method: "runtime-contract"})`. The configured `serverId`
-binds the first server hello to the expected host; the same matching hello
-then reaches Chord. A matching filename alone is insufficient. Attach-only
+binds the adapter's identity prelude to the expected host before Chord bytes
+reach an accepted host. A matching filename alone is insufficient. Attach-only
 access first requires a live claim, then a successful connection and usable
 descriptor. An attach failure never authorizes listener replacement. Sources:
 `transport/{index,endpoint,unix-link}.ts` and `extensions/agent/host-client.ts`.
@@ -266,124 +266,131 @@ The host owns its lifetime independently of its clients. Runtime construction re
 
 ## Chord wire contract
 
-The live interface uses the published Chord `remote`, `method`, `createHost`,
-`Link`, and `Frame` contracts. The package-level transport entrypoint serves
-Agent clients without imports from another extension's private implementation. Its
-contract runtime values use these exact closed schemas:
+The live interface uses Chord v2's `remote`, `method`, `hostKind`,
+`createHost`, facets, references, and byte `Link` contracts. The package-level
+transport entrypoint serves the Agent without imports from another extension.
+Its contract declarations are:
 
 ```typescript
-import { hostFamily, method, remote } from "@earendil-works/chord";
-import { bool, lit, obj, opt, str, union, unknown } from "@earendil-works/pi-schema";
+import {
+  bool, hostKind, method, obj, oneOf, opt, remote, str, unknown,
+} from "@earendil-works/chord";
 
+const placement = hostKind("pi.agent", { serverId: str() });
 const Endpoint = remote("pi.agent.endpoint", {
-  version: 1, host: hostFamily("pi.agent:", "serverId"),
-  input: obj({ serverId: str() }),
+  version: 1,
+  params: { serverId: str() },
+  hostAddress: ({ serverId }) => placement({ serverId }),
   variants: { default: { methods: {
     request: method(obj({
-      method: str({ minLength: 1, maxLength: 128 }),
+      method: str({ min: 1, max: 128 }),
       params: opt(unknown()),
-      requestId: opt(str({ minLength: 1, maxLength: 128 })),
+      requestId: opt(str({ min: 1, max: 128 })),
       contract: opt(unknown()),
     }), obj({ value: opt(unknown()) })),
   } } },
 });
-
 const Feed = remote("pi.agent.feed", {
-  version: 1, host: hostFamily("pi.agent:", "serverId"),
-  input: obj({
-    serverId: str(),
-    kind: union([lit("changes"), lit("observation")]),
-    token: opt(str()),
-  }),
+  version: 1,
+  params: {
+    serverId: str(), kind: oneOf("changes", "observation"),
+    token: str(),
+  },
+  hostAddress: ({ serverId }) => placement({ serverId }),
   variants: { default: { state: {
     value: obj({ ready: bool(), value: opt(unknown()) }),
   } } },
 });
 ```
 
-One UTF-8 JSON Chord frame followed by LF forms one socket record. The adapter
-handles split and combined reads, ordered writes, backpressure, byte bounds,
-and close. It rejects invalid UTF-8, malformed JSON, a nonobject frame or
-missing string tag, and an invalid initial hello before Chord dispatch.
-Chord validates its remaining frame protocol. Chord owns its hello, call, result, cancellation,
-subscription, and state protocol. No retired Pi service envelope is accepted.
+Each socket first exchanges one UTF-8 JSON identity record followed by LF:
 
-The default frame bound is 16 MiB of UTF-8 JSON, excluding LF. `maxFrameBytes`
-bounds received frames. `maxSendFrameBytes` independently bounds outgoing JSON
-frames, excluding LF, and defaults to `maxFrameBytes`. A consumer with a complete
-socket-record budget of `N` bytes sets `maxSendFrameBytes: N - 1` to reserve LF.
-Independent bounds let clients accept large observations while limiting smaller
-requests without changing the wire contract.
+```json
+{"transport":"harness.chord/2","kind":"host","name":"pi.agent:<serverId>"}
+```
 
-The default outgoing queue bound is 64 MiB of encoded bytes, including LF.
-Every socket write stays charged until its write callback completes, even when
-`socket.writableLength` is zero. This includes call and control frames; a
-successful callback releases exactly that write's encoded bytes. Write errors
-close the Link without proving non-admission. Before receiver registration, the
-queue bound counts JSON frame bytes without LF. Both `connectTransport` and
-`createTransportServer` accept `maxFrameBytes`, `maxSendFrameBytes`, and
-`maxQueueBytes`; the listener forwards its limits to each accepted Link.
-These are encoded-byte limits, not universal maxima on user messages, native
-values, or complete observations. JSON escaping changes the encoded size;
-equal numeric defaults do not establish equal payload capacity across wire
-formats. Larger exchanges require suitable limits at both peers.
+The client sends the same transport identifier with `kind: "client"` and an
+empty name. Identity JSON is bounded at 1,024 bytes before LF. The adapter checks
+the exact transport identifier, opposite role, and expected server name, and
+rejects additional fields. Identity admission has a five-second deadline; a
+client's configured connection deadline also applies. No Chord message reaches
+an accepted host before the adapter admits the identity. Old JSON-frame peers,
+unknown formats, wrong names, malformed UTF-8 and silent peers fail within a
+bound. The transport identifier is independent of Chord's protocol number:
+a matching Chord protocol number does not establish adapter compatibility.
+There is no old codec, fallback, or automatic protocol negotiation. The
+connection deadline applies to the initial endpoint get, not subsequent feed
+hydration, which uses Chord's default readiness bound. Client protocol-error
+reports retain their reason in connection failures and close notifications.
 
-The first server frame is `hello` with `kind: "host"`, exact expected
-`name: pi.agent:<serverId>`, protocol 4, and a nonnegative safe-integer `codeVersion`. The client rejects a
-mismatch and forwards the same matching hello to Chord. The server accepts only client
-peers and assigns a unique connection principal; supplied frame fields do not
-select that principal. Filesystem permissions, not the public name, enforce
-same-user access. Attach failure grants no authority to start or replace a host.
+After identity admission, each socket record is a four-byte unsigned
+big-endian payload length followed by that many bytes. Chord's public
+`binaryCodec` encodes and decodes the payload. Chord owns its hello, holds,
+calls, results, cancellation, state deltas, and protocol validation. The adapter
+only moves ordered bytes; it does not inspect encoded calls or derive admission
+proof from them.
 
-Create a Chord client host with explicit self and principal values and an
-upstream `{link, principal}`. Acquire `host.hold(Endpoint, {serverId})` and await
-its readiness with state disabled within the handshake deadline. Placement comes
-from the declared host family, not an `at` option. References use `Ref`; await
-hydration before reading state. The server opens named `self.state` and
-`self.resource` handles. Run calls through `host.root()`. Unwrap the response's
-optional `value` without converting absent values to `null`. Chord errors
-remain errors, not empty data. Malformed application input uses `invalid`.
-Version refusal uses `unavailable` with reason `version`; other availability,
-claim, and internal distinctions remain in the reason. The shared server keeps
-Chord errors intact and wraps untyped failures as `unavailable/internal`.
-Link loss is a separate failure. Do not encode an error code in its message.
+The default payload bound is 16 MiB. `maxFrameBytes` bounds received records
+before payload allocation or codec decoding. `maxSendFrameBytes` independently
+bounds outgoing payloads and defaults to `maxFrameBytes`. The four-byte prefix
+is excluded from both payload bounds. The default outgoing queue bound is
+64 MiB, including those prefixes. Every socket write stays charged until its
+write callback completes, even when `socket.writableLength` is zero. Duplicate
+callbacks release no extra capacity. Before receiver registration, the same
+queue bound limits retained incoming payload bytes. The identity prelude has
+its own small bound and is outside the Chord outbox.
 
-The Unix Link closes on a received `bye` instead of forwarding it. Sending
-after close is a no-op. Serialization or queue overflow closes the Link and
-returns `undefined` from `send()` without a throw or a partial offending frame.
-Chord treats that absent byte count as zero.
-A successful send returns the encoded byte count including LF. Chord owns its
-frame acknowledgments; the adapter does not reinterpret them as byte credits.
-The public `UnixLink.onSendRefusal` event supplies that unsent frame and a
-`LocalTransportRefusal` before close notification. Its `code` is
-`"transport-local-refusal"`; its `reason` is `"frame-limit"`, `"queue-limit"`, or
-`"serialization"`. Its optional `encodedBytes` is the UTF-8 JSON size excluding
-LF, absent when serialization fails. Sending after close produces no refusal.
+Chord's `PartLimits` separately bound JSON parts on receipt, including their
+inflated size. The endpoint passes its receive bound to both part limits.
+Those checks do not replace whole-record framing or a stalled socket's outbox
+bound. These byte limits are not universal maxima on user messages, native
+values, or complete observations. Larger exchanges need suitable limits at
+both peers. The server forwards its limits to each accepted link.
 
-`TransportClient.request` throws that exported class only for the exact
-Endpoint call that the adapter refused before socket write. Correlation uses
-the local invocation's async scope, the Endpoint hold, and the `request` call
-member, not cloned argument identity, application request IDs, error text, or
-another control frame. Concurrent already-written requests interrupted by that
-close retain link-loss errors: their admission and side effects remain uncertain.
-Incoming overflow, remote errors, cancellation, and synchronous or asynchronous
-socket write failures do not acquire the local-refusal classification. This
-allows each client to distinguish definite local non-admission from uncertain
-loss without replaying a mutation automatically.
+The server assigns a unique connection principal with `kind: "connection"`.
+Supplied message fields never select that principal. Filesystem permissions,
+not the public name, enforce same-user access. Attach failure grants no
+authority to start or replace a host.
 
-Close attempts a bounded `bye` and ends the socket. The listener refuses an
-existing path. It binds a private unpublished name and publishes a hard link
-without replacement, so Node's own close cannot unlink a substituted public
-socket. Cleanup unlinks only the public socket whose device/inode it recorded.
+The server loads a facet that serves Endpoint and Feed. Client hosts load
+before acquiring references and connect their parent byte link explicitly.
+A host address comes from the declared host kind. Calls run through
+`host.root()`; references and watches own hydration and cancellation. Each
+Feed belongs to its connection's principal and carries transient watchable
+state. A native resource opens the application subscription and closes it when
+the Feed ends. Structural deltas preserve unchanged history instead of
+resending it. Reconnect creates a new client host, references, and observation
+tokens, not an old subscription on a new link.
 
-Agent clients import `transport/index.ts`. They do not import another slice's
-transport implementation or supply a second adapter. Its public factories
-are `connectTransport`, `createTransportServer`, `createUnixLink`,
-`connectUnixLink`, and `listenUnixLinks`. The client exposes `request`,
-`subscribe`, `onClose`, `connected`, and `dispose`; `subscribe` returns a
-hydrated `value` and `dispose`. Reconnect creates a new client host and fresh
-Feed handles and observation tokens, not `host.connect()` with old handles.
-Sources: `transport/{index,endpoint,unix-link}.ts`.
+Responses unwrap the optional `value` without converting absence to `null`.
+Chord errors keep their current codes and permitted reasons; version refusal
+uses `unavailable/version`. Application failures use `PluginError` codes,
+including `invalid`, `claim`, and `internal`, without encoding a code into the
+message. The Agent client maps those codes to its own `HostError`.
+Connection loss stays distinct from an application error. A failed send rejects
+pending requests promptly, but supplies no typed proof of non-admission.
+Clients do not replay mutations merely because the link failed.
+
+Sending after close is a no-op. A payload or queue overflow closes the link
+without a partial offending record. Socket write errors also close the link.
+`Link.send()` returns `void`; Chord owns protocol acknowledgements, not adapter
+byte credits. Close ends the socket and bounds its final drain. The listener
+refuses an existing path. It binds a private unpublished name and publishes a
+hard link without replacement, so Node's close cannot unlink a substituted
+public socket. Cleanup unlinks only the socket whose device and inode it
+recorded.
+
+The public `transport/index.ts` exports `connectTransport`,
+`createTransportServer`, `unixSocketPath`, and the types `TransportClient`,
+`TransportRequest`, `TransportServer`, and `TransportSubscription`. Codec
+contracts, adapter internals and tests stay in their owning modules. The client
+exposes `request`, `subscribe`, `onClose`, `connected`, and `dispose`;
+`subscribe` returns a hydrated `value` and `dispose`.
+
+Sources: `transport/{index,endpoint,unix-link}.ts`; Chord 1.5.2
+`dist/contracts/{declare,host-kind,params}.d.ts`,
+`dist/host/{host,facet,reference,attempt}.d.ts`, and
+`dist/link/{link,message,part}.d.ts`.
 
 The manager's retained-object identity is `manager/6.0.0`; ordinary primary
 channels use `primary-delivery/3.0.0`. The typed `deliver` payload accepts optional
@@ -443,7 +450,7 @@ A consumer must possess an expected contract for the payload it implements. It m
 
 `D` below is the exact `@earendil-works/pi-durable` release loaded by that process, not a future version pinned by this document. A consumer of opaque native values compares it with the Durable representation it supports. The descriptor's `release` is currently `1.0.0`.
 
-The current descriptor requires `codingAgent: "1.5.0"` and `durable: "1.5.0"`. The host observes stored commits with `observeCommits()`, reads the task graph through `observeTaskGraph()` and `watchTaskGraph()`, and reads conversation windows through `Conversation.watch()`; tool cards read the keybinding hints Pi injects into render contexts. Native timer and check-in deadline tasks use `TaskRuntime.sleepUntil()`. Chord wire 4 is a separate transport contract. These are minimum required APIs, not dependency pins, a supported-version ceiling, or a substitute for exact operation checks. Read floors from the loaded descriptor, not from the source release label. Sources: `extensions/agent/version-contract.ts`, `durable-timers.ts`, `durable-checkins.ts`, and the installed Durable `dist/types.d.ts`.
+The current descriptor requires `codingAgent: "1.5.0"` and `durable: "1.5.1"`. Injected keybinding hints set the coding-agent floor; the Chord v2 dependency graph and provider stream options set the Durable floor. The host observes stored commits with `observeCommits()`, reads the task graph through `observeTaskGraph()` and `watchTaskGraph()`, and reads conversation windows through `Conversation.watch()`; tool cards read the keybinding hints Pi injects into render contexts. Native timer and check-in deadline tasks use `TaskRuntime.sleepUntil()`. The `harness.chord/2` identity prelude and Chord v2 codec form a separate transport contract. These are minimum required APIs, not dependency pins, a supported-version ceiling, or a substitute for exact operation checks. Read floors from the loaded descriptor, not from the source release label. Sources: `extensions/agent/version-contract.ts`, `durable-timers.ts`, `durable-checkins.ts`, and the installed Durable `dist/types.d.ts`.
 
 For every member in the following set, request and response are both `<member>/1.0.0`, with no `durable` field:
 

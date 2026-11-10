@@ -260,6 +260,8 @@ export class NativeMcpAuth {
 				serverUrl: url, resourceMetadataUrl: challenge?.resourceMetadataUrl,
 				authorizationServerMetadataUrl: settings.authServerMetadataUrl === undefined ? undefined : new URL(settings.authServerMetadataUrl),
 				scope: challenge?.scope ?? settings.scope, fetch: guardedFetch,
+				// An automatic refresh must not register a client or replace a pending sign-in's state and verifier.
+				refreshOnly: true,
 			});
 			if (result === "REDIRECT") failure = new McpOAuthAuthorizationRequiredError();
 		} catch (error) { failure = error; }

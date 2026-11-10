@@ -65,7 +65,7 @@ export class HostError extends Error {
 /** Private directory, socket, and claim paths for one host identity. */
 export interface HostPaths {
 	readonly directory: string;
-	/** Canonical v4 identity the endpoint expects in its Chord hello. */
+	/** Canonical v4 identity the endpoint expects in its adapter prelude. */
 	readonly serverId: string;
 	readonly socket: string;
 	readonly claim: string;

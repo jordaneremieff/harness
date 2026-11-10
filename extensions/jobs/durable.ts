@@ -7,7 +7,7 @@
  * the owning conversation when a finite job settles. Launch remains a `bash`
  * call, so native tool-call policy sees the command before any job exists.
  */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { withAbortSignal } from "@earendil-works/chord/context";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";

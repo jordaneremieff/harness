@@ -88,7 +88,7 @@ function gate(): Gate {
  * subprocess's fixed clock.
  */
 function scheduleSettingsText(agentExtension: boolean, crashRetry = process.env.DURABLE_TEST_CRASH_RETRY === "1"): string {
-	return JSON.stringify({ cacheWarming: { mode: "off" }, retry: crashRetry ? { enabled: true, maxRetries: 1, baseDelayMs: 0, maxAgentDelayMs: 0 } : { enabled: false }, ...(agentExtension ? { extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))] } : {}) });
+	return JSON.stringify({ cacheWarming: "off", retry: crashRetry ? { enabled: true, maxRetries: 1, baseDelayMs: 0, maxAgentDelayMs: 0 } : { enabled: false }, ...(agentExtension ? { extensions: [fileURLToPath(new URL("./index.ts", import.meta.url))] } : {}) });
 }
 
 /** Prepare the final configuration before the parent captures its immutable launcher inputs. */

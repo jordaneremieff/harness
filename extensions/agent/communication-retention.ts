@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { isInputKind } from "./input-entry.ts";
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import { defineDocFamily, type ConversationId, type EntryId, type Session, type SubmissionRecord, type Tx } from "@earendil-works/pi-durable";
 import { AwaitDoc } from "./awaited-results.ts";
 import { communicationFingerprint, parseCommunication, parseCommunicationCompanion, type Communication, type CommunicationInputLink } from "./communication.ts";

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import type { JsonValue } from "@earendil-works/chord";
+import type { JsonValue } from "@earendil-works/chord/json";
 import { retainedSentWork, SENT_WORK_ENTRY, sentWorkIdentity } from "./session-work.ts";
 
 const storage = "12345678-1234-4234-8234-123456789abc";

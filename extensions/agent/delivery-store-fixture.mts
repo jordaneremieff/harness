@@ -1,6 +1,6 @@
 import { onStoredCommit } from "./commit-observation.ts";
 /** Native delivery mutations for fixtures that need exact retained or malformed rows. */
-import type { Context } from "@earendil-works/chord";
+import type { Context } from "@earendil-works/chord/context";
 import type { Harness, Tx } from "@earendil-works/pi-durable";
 import type { AgentDeliveryState } from "./durable-controls.ts";
 import { deliveryState, readDeliveryDraft, writeDeliveryDraft } from "./delivery-store.ts";

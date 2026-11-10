@@ -313,7 +313,7 @@ function dispatchedSpawn(holder: DispatchHolder, params: Readonly<Record<string,
 	return { sessionId, ...(holder.spawnThinking === undefined ? {} : { thinking: holder.spawnThinking }), ...(params.prompt === undefined ? {} : { result: { sessionId, submissionId: 23, requestId: params.requestId } }) };
 }
 
-async function nativeDispatchResult(holder: DispatchHolder, params: Readonly<Record<string, unknown>>, callContext: import("@earendil-works/chord").Context): Promise<unknown> {
+async function nativeDispatchResult(holder: DispatchHolder, params: Readonly<Record<string, unknown>>, callContext: import("@earendil-works/chord/context").Context): Promise<unknown> {
 	assert.ok(holder.harness);
 	const reference = params.result as { submissionId: number; requestId?: string; sessionId: string };
 	const input = await holder.harness.submission(reference.submissionId as Durable.SubmissionId, callContext);
