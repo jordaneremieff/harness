@@ -39,7 +39,17 @@ function violations(tools: readonly DeclaredTool[], surface: string): string[] {
 	return found;
 }
 
-it("declares an explicit JSON Schema type on every pillars tool parameter, ordinary and native", async (t) => {
+function fieldHint(tools: readonly DeclaredTool[], name: string, field: string): string {
+	const tool = tools.find((item) => item.name === name);
+	assert.ok(tool);
+	const schema = tool.parameters as { properties: Record<string, { description?: string }> };
+	const hint = schema.properties[field].description;
+	assert.equal(typeof hint, "string");
+	assert.ok(hint);
+	return hint;
+}
+
+it("declares explicit parameter types and matching field hints, ordinary and native", async (t) => {
 	const agentDir = mkdtempSync(join(tmpdir(), "pillars-schema-agent-"));
 	t.after(() => rmSync(agentDir, { recursive: true, force: true }));
 	const previousAgentDir = process.env.PI_AGENT_DIR;
@@ -67,4 +77,13 @@ it("declares an explicit JSON Schema type on every pillars tool parameter, ordin
 		for (const name of ["pillars", "pillars_usage"]) assert.ok(tools.some((tool) => tool.name === name), `${surface} surface exposes ${name}`);
 	}
 	assert.deepEqual([...violations(ordinary, "ordinary"), ...violations(native, "native")], []);
+	for (const [name, field, meaning] of [
+		["pillars", "resource", /identifier.*not a filename or path.*\{"resource":"governance"\}/],
+		["pillars", "offset", /nextOffset with referenceBodyDigest from the same page.*omit both/],
+		["pillars_usage", "cursor", /cursor alone, without view or windowDays/],
+	] as const) {
+		const ordinaryHint = fieldHint(ordinary, name, field);
+		assert.equal(fieldHint(native, name, field), ordinaryHint);
+		assert.match(ordinaryHint, meaning);
+	}
 });

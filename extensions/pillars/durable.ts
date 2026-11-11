@@ -339,11 +339,11 @@ export function pillarsDurableContribution(
 					resource: opt(
 						str({
 							maxLength: 64,
-							description: "Resource identifier from the inventory; defaults to inventory",
+							description: "Canonical identifier from the inventory, not a filename or path. For governance use {\"resource\":\"governance\"}; omit for inventory.",
 						}),
 					),
 					offset: opt(
-						int({ minimum: 0, maximum: 1048576, description: "UTF-8 byte offset from nextOffset" }),
+						int({ minimum: 0, maximum: 1048576, description: "Copy nextOffset with referenceBodyDigest from the same page; omit both fields for a fresh read." }),
 					),
 					referenceBodyDigest: opt(
 						str({
@@ -407,7 +407,7 @@ export function pillarsDurableContribution(
 								{
 									view: opt(StringEnum(["overview", "revisions"])),
 									windowDays: opt(int({ minimum: 1, maximum: 30 })),
-									cursor: opt(str({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$" })),
+									cursor: opt(str({ minLength: 4, maxLength: 256, pattern: "^[-_A-Za-z0-9]+$", description: "Copy nextCursor unchanged and send cursor alone, without view or windowDays." })),
 								},
 								{ open: false },
 							),

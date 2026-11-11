@@ -86,6 +86,12 @@ text and its SHA-256 digest, not a generated summary or a compliance verdict.
 {"resource":"heuristic-verification-reach"}
 ```
 
+Use an inventory identifier, not a filename or path.
+`{"resource":"governance"}` is valid; `governance.md` is not an identifier.
+For a source continuation, copy both `nextOffset` and `referenceBodyDigest`
+from the same page. For an access-evidence continuation, send `cursor` alone.
+Omit fields for defaults; null does not select a default.
+
 The tool returns at most 32 KiB. If it returns `nextOffset`, continue with that
 UTF-8 byte offset and `referenceBodyDigest`. A changed reference fails rather
 than silently combining revisions. A source body is limited to 1 MiB.
