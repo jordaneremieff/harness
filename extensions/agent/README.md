@@ -415,6 +415,27 @@ status card labels its newest text by role and state: `Latest reply` or
 `Latest input` when idle, and `Replying` or `Working on input` while active.
 Text without a retained author role uses `Latest message` or `Working on the task`.
 
+### Continuity tool declarations
+
+After successful ordinary or native registration, Agent answers the package's
+[continuity-tool request](../../docs/conventions/continuity-tools.md). It declares
+`agent_compact` for whole-tool compaction and bounded forms of `agent_abort`,
+`agent_steer` and `agent_send` for worker resolution.
+
+The worker-resolution declarations accept only closed argument shapes. Targets
+and optional steer reply targets use 1–256 UTF-16 code units; messages use
+1–8000. These are the units counted by JavaScript's `string.length`. Abort accepts
+`sessionId` and the current `background`, `release` and `timerId` combinations
+shared by both runtimes, not ordinary-only `trust`. Steer accepts `sessionId`,
+`message` and optional `replyTo`. Send accepts only `sessionId`, `message` and
+`mode: "report"`. It refuses `passive`, `deliverAt`, `replyTo`, `checkInMinutes`
+and other modes. Unknown fields are refused.
+
+A declaration checks argument shape, not authority, ownership or target state.
+It does not prove that continuity succeeded or prevent an idle target from
+starting work after a steer. Normal permissions, request routes and tool controls
+remain in force.
+
 ## Standalone terminal attachment
 
 From this checkout, start an interactive terminal with an existing identity or
