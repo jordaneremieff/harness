@@ -226,8 +226,10 @@ function commitInput(target: Record<string, unknown>, candidate: Record<string, 
 
 function refusalEvidence(entry: ProgramEvaluation, corrected: boolean): string | undefined {
 	if (entry.truth === "unknown") {
-		const reasons = entry.unavailableReasons?.join(", ") || "evidence-unavailable";
-		return `Evidence unavailable: ${reasons}. The rule denies unavailable evidence. No matching command was established.`;
+		const reasons = entry.unavailableReasons?.map((reason) => reason === "unsupported-shell" ? `${reason} (shell group)` : reason).join(", ") || "evidence-unavailable";
+		if (entry.unavailableReasons !== undefined)
+			return `Policy could not determine whether this command matches the rule. Evidence unavailable: ${reasons}. The rule denies unavailable evidence. No matching command was established. Use plain literal commands joined with && or ; when that preserves the task.`;
+		return `Policy could not determine whether this call matches the rule. Evidence unavailable: ${reasons}. The rule denies unavailable evidence. No matching command was established.`;
 	}
 	if (entry.matchedSegment) return `Matched command: ${corrected ? "[corrected input omitted]" : entry.matchedSegment}`;
 	return undefined;
@@ -242,7 +244,11 @@ function denialDiagnostic(id: string, record: RuleRecord | undefined, entries: P
 		if (proof) evidence.add(proof);
 		if (!corrected) for (const suggestion of entry.commandSuggestions ?? []) suggestions.add(suggestion);
 	}
-	const text = guidanceText([[`Rule ${id}: ${record ? ruleGuidance(record) : "The rule denies this call."}`, ...evidence].join(" ")]);
+	const note = record ? ruleGuidance(record) : "The rule denies this call.";
+	const parts = entries.some((entry) => entry.truth === "unknown")
+		? [`Rule ${id}:`, ...evidence, `Rule note: ${note}`]
+		: [`Rule ${id}: ${note}`, ...evidence];
+	const text = guidanceText([parts.join(" ")]);
 	return { text, suggestions };
 }
 

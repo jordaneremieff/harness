@@ -1431,8 +1431,13 @@ scope {modelProviders?, models?, cwdPrefixes?}
 ```
 
 Every supplied command constraint must hold in one parsed stage. Command names
-match basenames. Each diagnostic starts with `Rule <id>:` and its rule note, then adds
-`Matched command:` with the first matching stage for that rule and input view.
+match basenames. Each diagnostic starts with `Rule <id>:`. A confirmed match gives
+its rule note, then `Matched command:` with the first matching stage for that rule
+and input view. An unavailable-evidence denial first states that Policy could not
+determine whether the command matches, gives the parse reason (including a shell
+group label for `unsupported-shell`), and names plain literal commands joined with
+`&&` or `;` as an accepted form when that preserves the task. It puts the stored
+note last, labelled `Rule note:`, rather than presenting that note as a detected match.
 The segment uses normalized command words, not an exact shell-source slice:
 quotes are normalized, wrappers and redirects are omitted, and nested
 substitutions remain separate stages. Each excerpt is terminal-safe, uses

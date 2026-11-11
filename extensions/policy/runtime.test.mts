@@ -439,6 +439,42 @@ describe("integrated catalogue guidance", () => {
 });
 
 describe("separate denial evidence", () => {
+	it("explains an unreadable group before the rule note and admits readable harmless control", async (t) => {
+		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
+		gate.definition.note = "Synthetic restriction: leave repository publication unchanged.";
+		gate.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } };
+		const f = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+		t.after(() => f.writer.close());
+		assert.equal((await f.call("group", { command: "(true)" }))?.reason,
+			"[policy] Rule synthetic.git: Policy could not determine whether this command matches the rule. Evidence unavailable: unsupported-shell (shell group). The rule denies unavailable evidence. No matching command was established. Use plain literal commands joined with && or ; when that preserves the task. Rule note: Synthetic restriction: leave repository publication unchanged.");
+		assert.equal(await f.call("harmless-loop", { command: "for f in a b; do echo $f; done" }), undefined);
+		assert.equal(await f.call("harmless-substitution", { command: "echo $(date)" }), undefined);
+		assert.equal((await f.call("push", { command: "git push" }))?.reason,
+			"[policy] Rule synthetic.git: Synthetic restriction: leave repository publication unchanged. Matched command: git push");
+	});
+	it("keeps the cause, parse reason and accepted form before the note for every unavailable command reason", () => {
+		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
+		gate.definition.note = "Synthetic restriction: leave repository publication unchanged.";
+		const records = new Map([[gate.id, gate]]);
+		// The shell reader, Git option decoder and command evaluator supply these reason codes.
+		for (const reason of [
+			"command-byte-limit", "word-limit", "stage-limit", "parse-limit", "nested-depth-limit", "option-limit",
+			"malformed-shell", "malformed-for-syntax", "unsupported-shell", "unsupported-for-syntax",
+			"unexpanded-heredoc", "unexpanded-arithmetic", "unexpanded-parameter", "unexpanded-backtick",
+			"dynamic-prefix", "unsupported-prefix", "unresolved-command", "opaque-command-operand", "shell-evidence-unavailable",
+			"dynamic-command", "dynamic-word", "unsupported-global-option", "unsupported-option", "invalid-option-form",
+			"missing-value", "missing-subcommand", "future-evidence-code",
+		]) {
+			const plan = { corrections: [], evaluations: [{ id: gate.id, deny: true, truth: "unknown", unavailableReasons: [reason] }] } as unknown as InputPlan;
+			const text = refusalText(plan, records, []) ?? "";
+			assert.ok(text.startsWith("[policy] Rule synthetic.git: Policy could not determine whether this command matches the rule."), reason);
+			assert.ok(text.includes(`Evidence unavailable: ${reason}`), reason);
+			assert.ok(text.includes("No matching command was established. Use plain literal commands joined with && or ; when that preserves the task. Rule note:"), reason);
+			assert.ok(text.endsWith(gate.definition.note), reason);
+			assert.doesNotMatch(text, /Matched command:/, reason);
+		}
+	});
 	it("admits a supported harmless loop but denies unknown execution without a false match", async (t) => {
 		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
 		gate.definition.note = "Use a permitted command shape.";
