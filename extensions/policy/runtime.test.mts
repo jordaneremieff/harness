@@ -389,7 +389,7 @@ describe("integrated catalogue guidance", () => {
 		t.after(() => f.writer.close());
 		const input = { command: "sed -n '4,8p' src/sample.ts" };
 		assert.equal(await f.call("slice", input), undefined);
-		const original = { content: [{ type: "text" as const, text: "Synthetic source lines." }], isError: false };
+		const original = { content: [{ type: "text" as const, text: "Synthetic source lines." }], isError: false, details: undefined };
 		const patch = await f.runtime.toolResult({ type: "tool_result", toolName: "bash", toolCallId: "slice", input, ...original }, f.ctx);
 		const final = { ...original, ...patch };
 		const note = f.snapshot.records.get("routing.sed-slice")?.definition.note;
@@ -408,7 +408,7 @@ describe("integrated catalogue guidance", () => {
 			const id = `read-${index}`;
 			const input = { path: `src/synthetic-${index}.txt` };
 			assert.equal(await f.call(id, input), undefined);
-			const original = { content: [{ type: "text" as const, text: "a".repeat(24_000) }], isError: false };
+			const original = { content: [{ type: "text" as const, text: "a".repeat(24_000) }], isError: false, details: undefined };
 			const patch = await f.runtime.toolResult({ type: "tool_result", toolName: "read", toolCallId: id, input, ...original }, f.ctx);
 			const final = { ...original, ...patch };
 			await f.runtime.toolEnd({ toolName: "read", toolCallId: id, result: final, isError: final.isError }, f.ctx);
@@ -427,7 +427,7 @@ describe("integrated catalogue guidance", () => {
 		t.after(() => f.writer.close());
 		const input = { command: "fd --max-results 4 -x echo {} src" };
 		assert.equal(await f.call("invalid-fd", input), undefined);
-		const original = { content: [{ type: "text" as const, text: "Synthetic fd error: --max-results conflicts with -x." }], isError: true };
+		const original = { content: [{ type: "text" as const, text: "Synthetic fd error: --max-results conflicts with -x." }], isError: true, details: undefined };
 		const patch = await f.runtime.toolResult({ type: "tool_result", toolName: "bash", toolCallId: "invalid-fd", input, ...original }, f.ctx);
 		assert.equal(patch, undefined);
 		assert.equal(original.content[0].text, "Synthetic fd error: --max-results conflicts with -x.");
