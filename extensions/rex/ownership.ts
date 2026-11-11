@@ -36,7 +36,7 @@ export interface OwnershipState {
 /** The adapter serialises updates atomically for each owner, including concurrent calls. */
 export interface OwnershipStore {
 	read(ownerId: string): Promise<OwnershipState>;
-	update(ownerId: string, change: (current: OwnershipState) => OwnershipState): Promise<OwnershipState>;
+	update(ownerId: string, change: (current: OwnershipState) => OwnershipState, phase: "work" | "finalise"): Promise<OwnershipState>;
 }
 
 export function initialOwnershipState(): OwnershipState {

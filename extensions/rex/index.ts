@@ -1,9 +1,10 @@
 import { fileURLToPath } from "node:url";
 import { getAgentDir, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Schema, Static } from "@earendil-works/pi-schema";
-import { boundResult, resultByteLimit, RexCore, type RexRequest } from "./core.ts";
+import { boundResult, deadlineResult, resultByteLimit, RexCore, type RexRequest } from "./core.ts";
 import { liveCalls, ordinaryOwner, ordinaryOwnershipStore, ordinaryStatusStore, resultChannels, serialiseOwners, type RexAdapterOptions } from "./config.ts";
 import { rexContribution } from "./durable.ts";
+import { createRexBudget } from "./deadline.ts";
 import { toolDisplay } from "./display.ts";
 import { publishRexToolDisplay } from "./presentation.ts";
 import { publishSettings, readSettings } from "./settings.ts";
@@ -46,18 +47,21 @@ export function registerRex(pi: ExtensionAPI, options: RegistrationOptions = {})
 			execute: async (callId, args: Static<typeof spec.parameters>, signal, _onUpdate, ctx) => {
 				const validated = validateRequest(spec.name, args);
 				if (!validated.ok) return resultChannels(validated);
+				const budget = createRexBudget(validated.request.timeoutMs, settings.maxWaitMs, AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]));
+				try {
 				const ownerId = ordinaryOwner(ctx);
-				const coreOptions = { ...settings, store: ordinaryOwnershipStore(pi, ctx, settings.maxRecords, serialise), isCallActive: invocations.isCallActive };
+				const coreOptions = { ...settings, store: ordinaryOwnershipStore(pi, ctx, settings.maxRecords, serialise, budget), isCallActive: invocations.isCallActive };
 				const core = options.createCore?.(coreOptions) ?? new RexCore(coreOptions);
 				const release = invocations.enter(ownerId, callId);
 				active.add(core);
-				const context = { ownerId, callId, cwd: ctx.cwd, signal: AbortSignal.any([lifetime.signal, ...(signal ? [signal] : [])]) };
+				const context = { ownerId, callId, cwd: ctx.cwd, signal: budget.signal, budget };
 				try {
 					const result = spec.name === "rex_status"
-						? await rexStatus(validated.request as StatusRequest, context, core, ordinaryStatusStore(pi, ctx, serialise, context.signal), async () => ({ host: "ordinary", state: ctx.isIdle() ? "idle" : "active", observedAt: new Date().toISOString(), source: "ExtensionContext.isIdle()", note: "Current ordinary host activity only. Pi's interactive reporter owns TUI lifecycle output. Headless and RPC callers do not gain terminal attachment." }))
+						? await rexStatus(validated.request as StatusRequest, context, core, ordinaryStatusStore(pi, ctx, serialise, context.signal, budget), async () => ({ host: "ordinary", state: ctx.isIdle() ? "idle" : "active", observedAt: new Date().toISOString(), source: "ExtensionContext.isIdle()", note: "Current ordinary host activity only. Pi's interactive reporter owns TUI lifecycle output. Headless and RPC callers do not gain terminal attachment." }))
 						: await core.execute(validated.request as RexRequest, context);
-					return resultChannels(boundResult(result, resultByteLimit(settings.maxOutputBytes)));
+					return resultChannels(boundResult(deadlineResult(result, budget, validated.request.op), resultByteLimit(settings.maxOutputBytes)));
 				} finally { active.delete(core); try { core.dispose(); } finally { release(); } }
+				} finally { budget.dispose(); }
 			},
 		};
 		tools.push(tool);

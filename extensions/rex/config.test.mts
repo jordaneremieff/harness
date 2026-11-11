@@ -4,6 +4,7 @@ import { compile } from "@earendil-works/pi-schema";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ordinaryOwnershipStore, ordinaryStatusStore, resultChannels, serialiseOwners } from "./config.ts";
 import { boundResult, DEFAULT_MAX_OUTPUT_BYTES, resultByteLimit, type RexResult } from "./core.ts";
+import { createRexBudget } from "./deadline.ts";
 import { settings } from "./settings.ts";
 import { beginOwnership, initialOwnershipState, requestDigest, type OwnershipRecord } from "./ownership.ts";
 import { ResultSchema } from "./schema.ts";
@@ -94,13 +95,13 @@ test("ordinary ownership commits before the update resolves and serialises concu
 	const gate = new Promise<void>((resolve) => { release = resolve; });
 	let firstEntered!: () => void;
 	const entered = new Promise<void>((resolve) => { firstEntered = resolve; });
-	const first = store.update("ordinary:one", (state) => { firstEntered(); return state; });
+	const first = store.update("ordinary:one", (state) => { firstEntered(); return state; }, "work");
 	await entered;
 	await first;
 	assert.equal(f.entries.length, 1);
 	await Promise.all([
-		store.update("ordinary:one", (state) => beginOwnership(state, record("parallel-one"))),
-		store.update("ordinary:one", (state) => beginOwnership(state, record("parallel-two"))),
+		store.update("ordinary:one", (state) => beginOwnership(state, record("parallel-one")), "work"),
+		store.update("ordinary:one", (state) => beginOwnership(state, record("parallel-two")), "work"),
 	]);
 	assert.equal((await store.read("ordinary:one")).records.length, 2);
 	const order: number[] = [];
@@ -130,13 +131,35 @@ test("ordinary status cancellation while queued prevents the eventual state appe
 	assert.equal(f.entries.length, 0);
 });
 
+test("ownership serial admission rejects cancelled work but permits bounded effect settlement", async () => {
+	const f = fixture();
+	const queue = serialiseOwners();
+	const caller = new AbortController();
+	const budget = createRexBudget(30000, 300000, caller.signal);
+	let release!: () => void;
+	let entered!: () => void;
+	const gate = new Promise<void>((resolve) => { release = resolve; });
+	const started = new Promise<void>((resolve) => { entered = resolve; });
+	const blocker = queue("ordinary:one", async () => { entered(); await gate; });
+	await started;
+	const store = ordinaryOwnershipStore(f.pi, f.ctx, 128, queue, budget);
+	try {
+		const rejected = assert.rejects(store.update("ordinary:one", (state) => beginOwnership(state, record("not-dispatched")), "work"), /cancelled/);
+		caller.abort(); release();
+		await Promise.all([blocker, rejected]);
+		assert.equal(f.entries.length, 0);
+		await store.update("ordinary:one", (state) => state, "finalise");
+		assert.equal(f.entries.length, 1);
+	} finally { release(); budget.dispose(); }
+});
+
 test("persistent pending effects require conversation admission before the retained append", async () => {
 	const f = fixture("/test/session.jsonl");
 	const store = ordinaryOwnershipStore(f.pi, f.ctx, 128, serialiseOwners());
-	await assert.rejects(store.update("ordinary:one", (state) => beginOwnership(state, record("before-admission"))), /admitted user or assistant/);
+	await assert.rejects(store.update("ordinary:one", (state) => beginOwnership(state, record("before-admission")), "work"), /admitted user or assistant/);
 	assert.equal(f.entries.length, 0);
 	f.admit();
-	await store.update("ordinary:one", (state) => beginOwnership(state, record("after-admission")));
+	await store.update("ordinary:one", (state) => beginOwnership(state, record("after-admission")), "work");
 	assert.equal(f.entries.length, 2);
 });
 
@@ -144,7 +167,7 @@ test("copied ordinary entries do not transfer cleanup ownership to a new session
 	const f = fixture();
 	const queue = serialiseOwners();
 	const first = ordinaryOwnershipStore(f.pi, f.ctx, 128, queue);
-	await first.update("ordinary:one", (state) => beginOwnership(state, record("created")));
+	await first.update("ordinary:one", (state) => beginOwnership(state, record("created")), "work");
 	assert.equal((await first.read("ordinary:one")).records.length, 1, "branch navigation does not hide session-wide external resources");
 	const sameHeaderCopy = ordinaryOwnershipStore(f.pi, f.ctx, 128, queue);
 	assert.equal((await sameHeaderCopy.read("ordinary:one")).records.length, 1, "the same header ID is the same logical owner");
@@ -152,5 +175,5 @@ test("copied ordinary entries do not transfer cleanup ownership to a new session
 	await assert.rejects(first.read("ordinary:one"), /changed sessions/);
 	const fork = ordinaryOwnershipStore(f.pi, f.ctx, 128, queue);
 	assert.deepEqual(await fork.read("ordinary:fork"), initialOwnershipState());
-	await assert.rejects(fork.update("ordinary:one", () => initialOwnershipState()), /changed sessions/);
+	await assert.rejects(fork.update("ordinary:one", () => initialOwnershipState(), "work"), /changed sessions/);
 });

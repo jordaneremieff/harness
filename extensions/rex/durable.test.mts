@@ -3,13 +3,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { obj } from "@earendil-works/pi-schema";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
-import { rexContribution } from "./durable.ts";
+import { createRexBudget } from "./deadline.ts";
+import { nativeOwnershipStore, rexContribution } from "./durable.ts";
 import { beginOwnership, requestDigest } from "./ownership.ts";
 import { RexCore, type RexRequest, type RexResult } from "./core.ts";
 import type { CliResult, RexTransport } from "./transport.ts";
@@ -54,6 +55,37 @@ function mockResult(request: RexRequest, callId: string): RexResult {
 	return { ...ok({ operation: request.op }), target };
 }
 
+test("native ownership detaches work cancellation only for bounded mandatory settlement", async () => {
+	let now = 0;
+	const caller = new AbortController();
+	const budget = createRexBudget(1000, 300000, caller.signal, { now: () => now, schedule: () => () => {} });
+	const context = withAbortSignal(budget.signal, BACKGROUND_CONTEXT);
+	const document = { ownerId: "", state: null as unknown };
+	const commits: Context[] = [];
+	const api = {
+		conversationId: 1,
+		snapshot: async () => document,
+		commit: async (change: (tx: { doc(): Promise<typeof document> }) => Promise<unknown>, selected: Context) => {
+			commits.push(selected);
+			assert.equal(selected.abortSignal?.aborted, false);
+			return change({ doc: async () => document });
+		},
+	} as unknown as Parameters<typeof nativeOwnershipStore>[0];
+	const store = nativeOwnershipStore(api, {} as Parameters<typeof nativeOwnershipStore>[1], "storage:1", 128, context, budget);
+	try {
+		caller.abort();
+		assert.equal(context.abortSignal?.aborted, true);
+		await assert.rejects(store.update("storage:1", (state) => state, "work"), /cancelled/);
+		assert.equal(commits.length, 0);
+		await store.update("storage:1", (state) => state, "finalise");
+		assert.equal(commits.length, 1);
+		assert.equal(document.ownerId, "storage:1");
+		now = 100;
+		await assert.rejects(store.update("storage:1", (state) => state, "finalise"), /cancelled/);
+		assert.equal(commits.length, 1);
+	} finally { budget.dispose(); }
+});
+
 test("native tools use real model calls, structured channels, unsafe replay and fork-isolated ownership", { timeout: 30000 }, async () => {
 	const agentDir = await mkdtemp(join(tmpdir(), "rex-native-"));
 	const previousRecords = process.env.PI_REX_MAX_RECORDS;
@@ -75,13 +107,15 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		createCore: (options) => ({
 			dispose: () => { disposed++; },
 			execute: async (request, context) => {
+				assert.ok(context.budget);
+				assert.equal(context.signal, context.budget.signal);
 				owners.push(context.ownerId);
 				executed.push(request.op);
 				assert.equal(options.isCallActive?.(context.ownerId, context.callId), true);
 				endedCalls.push(() => options.isCallActive?.(context.ownerId, context.callId));
 				if (request.op === "create") {
 					const now = new Date().toISOString();
-					await options.store.update(context.ownerId, (state) => beginOwnership(state, { ownerId: context.ownerId, callId: context.callId, requestDigest: requestDigest(request), server, operation: "create", phase: "pending", resources: [], createdAt: now, updatedAt: now }));
+					await options.store.update(context.ownerId, (state) => beginOwnership(state, { ownerId: context.ownerId, callId: context.callId, requestDigest: requestDigest(request), server, operation: "create", phase: "pending", resources: [], createdAt: now, updatedAt: now }), "work");
 					const retained = await options.store.read(context.ownerId);
 					assert.equal(retained.records[0]?.phase, "pending", "native commit resolves before the external-effect boundary");
 				}
@@ -178,7 +212,9 @@ test("native tools use real model calls, structured channels, unsafe replay and 
 		const observed = observedWork.structuredOutput as unknown as RexResult;
 		assert.equal(observed.outcome, "observed");
 		assert.equal(observed.effects.state, "none");
-		assert.equal(JSON.stringify(observed), JSON.stringify(mockResult({ op: "observe" }, "unused")));
+		assert.equal(observed.coverage.deadline?.effectiveMs, 30000);
+		const expectedObserved = mockResult({ op: "observe" }, "unused");
+		assert.deepEqual({ ...observed, coverage: expectedObserved.coverage }, expectedObserved);
 		assert.ok(executed.includes("observe"));
 		assert.ok(verifiedRead);
 		assert.equal(verifiedRead.isError, false);

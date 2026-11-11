@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createRexBudget, type BudgetClock } from "./deadline.ts";
 import { validateRequest } from "./schema.ts";
 import { boundResult, resultByteLimit, RexCore } from "./core.ts";
 import type { RexCallContext, RexResult } from "./core.ts";
@@ -458,7 +459,7 @@ test("cleanup refuses ownership state that changes after resource preflight", as
   await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
   f.transport.handler = async (method) => {
     if (method !== "target.resolve") return undefined;
-    await f.store.update("owner", (state) => changeOwnership(state, "create", { note: "The claim changed during preflight." }));
+    await f.store.update("owner", (state) => changeOwnership(state, "create", { note: "The claim changed during preflight." }), "work");
     return resolveReply({ kinds: ["block"] });
   };
   const response = await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
@@ -789,7 +790,7 @@ test("queued cancellation prevents release, recovery and forgetting at state adm
 	for (const operation of ["release", "recover", "forget"] as const) {
 		const f = fixture();
 		await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
-		if (operation === "forget") await f.store.update("owner", (state) => changeOwnership(state, "create", { phase: "released" }));
+		if (operation === "forget") await f.store.update("owner", (state) => changeOwnership(state, "create", { phase: "released" }), "work");
 		const before = structuredClone(f.store.state);
 		let enter!: () => void;
 		let release!: () => void;
@@ -823,16 +824,19 @@ test("configured low wait caps supply valid defaults and bound explicit timeouts
 	};
 	assert.equal((await f.core.execute({ op: "wait", condition: "child_exit", target }, context)).ok, true);
 	assert.equal((await f.core.execute({ op: "native", kind: "api", method: "new.capability", target }, { ...context, callId: "native-default" })).ok, true);
-	assert.deepEqual(durations, [1000]);
+	assert.equal(durations.length, 1);
+	assert.ok(durations.every((duration) => duration > 0 && duration <= 900));
 	const cappedWait = await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 45000, target }, context);
 	assert.equal(cappedWait.ok, true);
 	assert.match(cappedWait.coverage.note ?? "", /requested 45000 ms deadline exceeded the configured 1000 ms cap/);
 	const cappedNative = await f.core.execute({ op: "native", kind: "api", method: "new.capability", timeoutMs: 45000, target }, { ...context, callId: "native-explicit" });
 	assert.equal(cappedNative.ok, true);
-	assert.deepEqual(durations, [1000, 1000]);
+	assert.equal(durations.length, 2);
+	assert.ok(durations.every((duration) => duration > 0 && duration <= 900));
 	assert.match(cappedNative.coverage.note ?? "", /used 1000 ms/);
 	assert.equal((await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 300001, target }, context)).ok, false);
-	assert.deepEqual(durations, [1000, 1000]);
+	assert.equal(durations.length, 2);
+	assert.ok(durations.every((duration) => duration > 0 && duration <= 900));
 });
 
 test("native actions distinguish absent arguments from explicit objects without changing Lua", async () => {
@@ -1431,7 +1435,7 @@ test("observation cancellation and one capped page deadline stop reads, not term
 		const count = f.transport.calls.length;
 		if (stop === "cancel") controller.abort(); else t.mock.timers.tick(1000);
 		const response = await pending;
-		assert.equal(response.outcome, stop === "cancel" ? "observation_cancelled" : "observation_timeout");
+		assert.equal(response.outcome, stop === "cancel" ? "cancelled" : "timeout");
 		assert.match(response.coverage.note ?? "", /configured 1000 ms cap/);
 		assert.equal(maximum, 1);
 		assert.equal(active, 0);
@@ -1536,6 +1540,223 @@ test("catalogue bounds and kind-specific fields are rejected without native effe
 	}
 	assert.equal(validateRequest("rex_native", { op: "native", kind: "catalog", query: "[", offset: 0, limit: 100 }).ok, true);
 	assert.equal(f.store.state.records.length, 0);
+});
+
+function operationTime(total = 1000, caller?: AbortSignal) {
+	let now = 0;
+	const tasks = new Set<{ at: number; action: () => void }>();
+	const clock: BudgetClock = {
+		now: () => now,
+		schedule(action, milliseconds) { const task = { at: now + milliseconds, action }; tasks.add(task); return () => { tasks.delete(task); }; },
+	};
+	const budget = createRexBudget(total, 300000, caller, clock);
+	return { budget, clock, advance(milliseconds: number) {
+		const end = now + milliseconds;
+		for (;;) {
+			const task = [...tasks].filter((entry) => entry.at <= end).sort((a, b) => a.at - b.at)[0];
+			if (!task) break;
+			now = task.at; tasks.delete(task); task.action();
+		}
+		now = end;
+	} };
+}
+
+for (const [total, eventAt] of [[1000, 850], [13500, 12000]] as const) {
+	for (const mode of ["event", "deadline", "source_error"] as const) {
+		test(`event observation retains its ${total} ms operation allowance for ${mode}`, async () => {
+			const f = fixture();
+			const time = operationTime(total);
+			let eventCall!: CliCall;
+			let endEvent!: (result: CliResult) => void;
+			let ready = false;
+			let entered!: () => void;
+			const initial = new Promise<void>((resolve) => { entered = resolve; });
+			const run = f.transport.run.bind(f.transport);
+			f.transport.run = (args, call) => {
+				if (!args.includes("events")) return run(args, call);
+				eventCall = call;
+				return new Promise((resolve) => {
+					let done = false;
+					const finish = (value: CliResult) => { if (done) return; done = true; cancel(); call.signal?.removeEventListener("abort", abort); resolve(value); };
+					const abort = () => finish({ ...reply({}), outcome: "cancelled", exitCode: null });
+					const reserve = Math.min(1000, Math.max(1, Math.floor(call.timeoutMs / 10)));
+					const cancel = time.clock.schedule(() => finish({ ...reply({}), outcome: "timeout", exitCode: null }), call.timeoutMs - reserve);
+					endEvent = finish;
+					call.signal?.addEventListener("abort", abort, { once: true });
+				});
+			};
+			f.transport.handler = (method) => {
+				if (!method.endsWith(".format")) return undefined;
+				entered();
+				return reply({ content: ready ? "service ready" : "no marker", eof: true });
+			};
+			try {
+				const pending = f.core.execute({ op: "wait", condition: "text", text: "service ready", timeoutMs: total, target }, { ...context, budget: time.budget });
+				await initial;
+				assert.equal(eventCall.timeoutMs, total);
+				assert.equal(eventCall.finaliseSignal, time.budget.finaliseSignal);
+				if (mode === "event") {
+					time.advance(eventAt); ready = true; eventCall.onLine?.("{}");
+				} else if (mode === "source_error") {
+					time.advance(800); endEvent({ ...reply({}), exitCode: 2, stderr: "event source failed" });
+				} else time.advance(time.budget.workEndsAt);
+				const result = await pending;
+				assert.equal(result.outcome, mode === "event" ? "condition_observed" : mode === "deadline" ? "timeout" : "observation_failed");
+				assert.ok(time.budget.elapsed() <= total);
+				assert.ok(f.transport.calls.filter((call) => call.method?.endsWith(".format")).length <= 2);
+			} finally { time.budget.dispose(); f.core.dispose(); }
+		});
+	}
+}
+
+test("early cancellation bounds a non-cooperative event process with the same final signal", async () => {
+	const f = fixture();
+	const caller = new AbortController();
+	const time = operationTime(1000, caller.signal);
+	let entered!: () => void;
+	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => args.includes("events")
+		? new Promise((resolve) => call.finaliseSignal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled", signal: "SIGKILL" }), { once: true }))
+		: run(args, call);
+	f.transport.handler = (method) => {
+		if (!method.endsWith(".format")) return undefined;
+		entered(); return reply({ content: "no marker", eof: true });
+	};
+	try {
+		const pending = f.core.execute({ op: "wait", condition: "text", text: "ready", timeoutMs: 1000, target }, { ...context, budget: time.budget });
+		await initial;
+		time.advance(200); caller.abort();
+		assert.equal(time.budget.endsAt, 300);
+		time.advance(100);
+		const result = await pending;
+		assert.equal(result.outcome, "cancelled");
+		assert.equal(time.budget.elapsed(), 300);
+	} finally { time.budget.dispose(); }
+});
+
+test("escaped Unicode capture continuation cannot match after the shared work cutoff", async () => {
+	const f = fixture();
+	const time = operationTime();
+	let blobs = 0;
+	const output = Buffer.from(`${"\\".repeat(20000)}😀ready`);
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => args.includes("events")
+		? new Promise((resolve) => call.signal?.addEventListener("abort", () => resolve({ ...reply({}), outcome: "cancelled" }), { once: true }))
+		: run(args, call);
+	f.transport.handler = (method, data) => {
+		if (method.endsWith(".format")) return reply({ id: 1, total: output.length, content: "old output", eof: false });
+		if (method.endsWith(".blob_read")) {
+			const args = data.args as { offset: number; max_bytes: number };
+			const suffix = output.subarray(args.offset).toString("utf8");
+			const eof = Buffer.byteLength(JSON.stringify(suffix)) - 2 <= args.max_bytes;
+			blobs++; time.advance(900);
+			return reply({ id: 1, total: output.length, data: eof ? suffix : "", eof });
+		}
+		return undefined;
+	};
+	try {
+		const result = await f.core.execute({ op: "wait", condition: "text", text: "ready", timeoutMs: 1000, target }, { ...context, budget: time.budget });
+		assert.equal(result.outcome, "timeout");
+		assert.equal(blobs, 1);
+		assert.equal(time.budget.elapsed(), 900);
+	} finally { time.budget.dispose(); f.core.dispose(); }
+});
+
+test("native child wait leaves response room and a stopped tail preserves exit evidence", async () => {
+	const f = fixture();
+	const time = operationTime();
+	let processes = 0;
+	let waitAllowance = 0;
+	let waitMs = 0;
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = async (args, call) => {
+		if (args.includes("whoami")) time.advance(200);
+		if (args.includes("wait")) {
+			waitAllowance = call.timeoutMs;
+			waitMs = Number(args[args.indexOf("--for") + 1]?.replace("ms", ""));
+			return reply({});
+		}
+		return run(args, call);
+	};
+	f.transport.handler = (method) => {
+		if (method.endsWith(".process")) return reply({ last_exit: ++processes === 1 ? null : { exit_code: 0 } });
+		if (method.endsWith(".format")) { time.advance(700); return reply({ content: "tail", eof: true }); }
+		return undefined;
+	};
+	try {
+		const result = await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 1000, target }, { ...context, budget: time.budget });
+		assert.equal(waitAllowance, 700);
+		assert.ok(waitMs < waitAllowance - Math.floor(waitAllowance / 10));
+		assert.equal(result.outcome, "child_completed");
+		assert.match(JSON.stringify(result.data), /captureError.*timeout/);
+	} finally { time.budget.dispose(); f.core.dispose(); }
+});
+
+test("cancelled effect settlement leaves one exact pending claim without a retry", async () => {
+	const f = fixture();
+	const caller = new AbortController();
+	const update = f.store.update.bind(f.store);
+	const phases: string[] = [];
+	f.store.update = async (owner, change, phase) => {
+		phases.push(phase);
+		if (phase === "finalise") throw new Error("settlement unavailable");
+		return update(owner, change, phase);
+	};
+	f.transport.handler = (method) => {
+		if (method !== "session.create") return undefined;
+		caller.abort();
+		return reply({ session_id: session });
+	};
+	const result = await f.core.execute({ op: "create", kind: "session", label: "work" }, { ...context, signal: caller.signal });
+	assert.equal(result.outcome, "cancelled");
+	assert.equal(result.effects.state, "unknown");
+	assert.equal(result.effects.recordId, context.callId);
+	assert.equal(f.store.state.records[0]?.phase, "pending");
+	assert.deepEqual(phases, ["work", "finalise"]);
+	assert.equal(f.transport.calls.filter((call) => call.method === "session.create").length, 1);
+});
+
+test("cleanup interruption retains the completed close and all uncertain resource IDs", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const record = f.store.state.records[0];
+	assert.ok(record);
+	record.resources = [block, "block:44444444-4444-4444-8444-444444444444", "block:55555555-5555-4555-8555-555555555555"].map((blockId) => ({ kind: "block", sessionId: session, blockId }));
+	const caller = new AbortController();
+	let closes = 0;
+	f.transport.handler = (method, data) => {
+		if (method === "target.resolve") return reply({ results: [{ status: "resolved", target: { kind: "block", session_id: session, block_id: (data.queries as string[])[0] } }] });
+		if (method === "block.close") { if (++closes === 2) caller.abort(); return reply({}); }
+		return undefined;
+	};
+	const result = await f.core.execute({ op: "cleanup", recordId: context.callId }, { ...context, callId: "close-partial", signal: caller.signal });
+	assert.equal(result.outcome, "cancelled");
+	assert.equal(result.effects.state, "unknown");
+	assert.equal(result.effects.recordId, "close-partial");
+	assert.equal(closes, 2);
+	assert.equal((result.data as { closed: unknown[] }).closed.length, 1);
+	assert.deepEqual(result.effects.resources, record.resources);
+	assert.equal(f.store.state.records.find((entry) => entry.callId === context.callId)?.phase, "unknown");
+});
+
+test("an admitted atomic settlement finishes and reports its deadline overrun", async () => {
+	const f = fixture();
+	const time = operationTime();
+	const update = f.store.update.bind(f.store);
+	f.store.update = async (owner, change, phase) => {
+		const result = await update(owner, change, phase);
+		if (phase === "finalise") time.advance(1200);
+		return result;
+	};
+	try {
+		const result = await f.core.execute({ op: "create", kind: "session", label: "work", timeoutMs: 1000 }, { ...context, budget: time.budget });
+		assert.equal(result.outcome, "created");
+		assert.equal(result.effects.state, "confirmed");
+		assert.equal(result.coverage.deadline?.elapsedMs, 1200);
+		assert.equal(result.coverage.deadline?.overrunMs, 200);
+		assert.equal(f.store.state.records[0]?.phase, "confirmed");
+	} finally { time.budget.dispose(); }
 });
 
 test("catalogue command and output-limit errors never become empty successful matches", async () => {

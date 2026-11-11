@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { rexStatus, type HostActivity, type RexExecutor, type StatusBinding, type StatusStore } from "./status.ts";
+import { createRexBudget } from "./deadline.ts";
 import type { ResolvedTarget, RexRequest } from "./core.ts";
 
 const target: ResolvedTarget = { source: "explicit", server: { endpoint: "unix:///synthetic-rex", hostId: "host", instanceId: "instance", selection: "test" }, sessionId: "session:00000000-0000-0000-0000-000000000001", blockId: "block:00000000-0000-0000-0000-000000000002" };
@@ -30,6 +31,27 @@ test("status binding requires explicit verified IDs and never sends terminal inp
 	assert.ok(f.requests.every((request) => request.op === "resolve" || request.op === "inspect"));
 	await rexStatus({ op: "unbind" }, call, f.core, f.store, activity);
 	assert.equal(f.binding(), undefined);
+});
+
+test("status resolution and verification share one budget before binding admission", async () => {
+	for (const delay of [400, 600]) {
+		const f = fixture();
+		let now = 0;
+		const budget = createRexBudget(1000, 300000, undefined, { now: () => now, schedule: () => () => {} });
+		const remaining: number[] = [];
+		const core: RexExecutor = { dispose: () => {}, execute: async (_request, context) => {
+			assert.equal(context.budget, budget);
+			remaining.push(budget.remaining("work"));
+			now += delay;
+			return { ok: true, outcome: "snapshot", target, effects: { state: "none" }, coverage: { bounded: true } };
+		} };
+		try {
+			const response = await rexStatus({ op: "bind", target: { server: target.server.endpoint, session: target.sessionId, block: target.blockId } }, { ...call, budget, signal: budget.signal }, core, f.store, activity);
+			assert.deepEqual(remaining, [900, 900 - delay]);
+			assert.equal(response.outcome, delay === 400 ? "status_bound" : "timeout");
+			assert.equal(f.binding() !== undefined, delay === 400);
+		} finally { budget.dispose(); }
+	}
 });
 
 test("status binding and snapshot preserve omitted-data coverage and source notes", async () => {

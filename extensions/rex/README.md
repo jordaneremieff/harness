@@ -218,10 +218,35 @@ For a command array whose own exit status matters, set `shell: "none"`.
 This disables both the shell and login wrapper. `shell: "auto"` or an omitted
 shell retains the installed shell/login behaviour, so the reported direct-child
 exit can describe a wrapper rather than the intended inner command.
-A wait or native call without `timeoutMs` uses 30 seconds or the configured cap,
-whichever is lower. A `timeoutMs` above the configured `maxWaitMs` cap is not
-an error: the call uses the cap and `coverage.note` names the deadline it used,
-so the agent knows the observation was shorter than requested.
+Every tool call uses one monotonic deadline from argument validation through target
+resolution, nested CLI calls, observation and cleanup. `timeoutMs` defaults to 30 seconds
+or the configured `maxWaitMs` cap, whichever is lower. A larger request uses the cap and
+reports the effective duration. The same deadline applies to nested status checks and
+capture continuations; a new subprocess does not restart it. The operation reserves
+part of that allowance for process termination and state finalisation.
+
+At the deadline, Rex stops its CLI or observer process, not the independent terminal
+program. `timeout` means the deadline ended; `cancelled` means the caller or host
+cancelled the operation. Neither establishes child failure, child exit or service
+shutdown. `observation_failed` retains the CLI or event-source cause. A normal event-source
+end without the condition is `observer_ended`. An evidence cap is `snapshot_limit`.
+
+Text and status observations resume on relevant events, event-process exit, cancellation
+or the deadline. They use current snapshots, not a polling interval. The event source
+remains available through the work window; the same operation allowance includes its
+teardown. A budget-caused stop retains timeout or cancelled, not an event-source failure.
+A failed or interrupted capture, or an unverified end, does not match text. A valid EOF
+tail remains matchable when only its older prefix is omitted. Live events have no replay
+guarantee. A bounded timeout does not establish that the condition never occurred.
+
+An already observed child exit remains visible if its optional tail fails or times out.
+The tail then carries its own error. After a mutation dispatch, incomplete acknowledgement
+or state settlement retains unknown effects and an exact claim ID. Inspect and reconcile
+that claim; do not replay the effect. A queued state update checks the deadline before
+admission. An atomic append or commit already admitted finishes before the tool returns;
+deadline metadata reports any overrun. The deadline is not a hard real-time guarantee for
+synchronous JavaScript or disk operations.
+
 It does not observe an inner command typed into a live shell. A wait deadline is
 not a child exit, application failure or service shutdown. Child nonzero exit,
 observer timeout, observer cancellation and missing completion evidence remain
@@ -373,8 +398,8 @@ no ownership writes, resource creation, application input, waits for child exit,
 cleanup or automatic polling. `complete` means that the requested current
 observations succeeded, not that the work completed. The page returns `observed`
 when every report is complete, `observation_incomplete` for partial evidence,
-`observation_timeout` for its deadline or `observation_cancelled` for caller
-cancellation. Completed fields survive interruption; remaining resources report
+`timeout` for its deadline and `cancelled` for caller cancellation. All observation
+and reconciliation results identify the operation and phase separately from effect certainty. Completed fields survive interruption; remaining resources report
 unknown/unavailable. Reports on one unavailable server do not suppress the other
 reports. Timestamps identify independent reads, not an atomic snapshot.
 
@@ -590,7 +615,7 @@ fresh configuration snapshots, not proof of runtime application.
 |---|---|---|---|---|---|
 | executable | `PI_REX_EXECUTABLE` | string | "rex" | minLength 1; maxLength 4096 | Installed Rex executable name or path. The extension uses the supported CLI without a shell. |
 | maxOutputBytes | `PI_REX_MAX_OUTPUT_BYTES` | integer | 65536 | min 4096; max 1048576 | Maximum combined stdout/stderr bytes retained from one Rex CLI process. Core results have a separate aggregate bound. Capture is not a complete transcript. |
-| maxWaitMs | `PI_REX_MAX_WAIT_MS` | integer | 120000 | min 1000; max 300000 | Deadline cap for each Rex CLI process, in milliseconds. A request above the cap uses the cap and reports it. An operation can use several processes. Deadline cancellation does not stop persistent terminal work. |
+| maxWaitMs | `PI_REX_MAX_WAIT_MS` | integer | 120000 | min 1000; max 300000 | Deadline cap for a complete Rex tool operation, including nested calls and cleanup. Background label CLI calls also use this cap. A larger request uses the cap and reports it. Deadline cancellation does not stop persistent terminal work. |
 | maxRecords | `PI_REX_MAX_RECORDS` | integer | 128 | min 2; max 256 | Maximum retained ownership and operation records per caller. |
 <!-- harness:settings:end -->
 

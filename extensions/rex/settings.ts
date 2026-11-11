@@ -8,7 +8,7 @@ export const settings = {
 	fields: {
 		executable: { type: "string", env: "PI_REX_EXECUTABLE", default: "rex", minLength: 1, maxLength: 4096, description: "Installed Rex executable name or path. The extension uses the supported CLI without a shell." },
 		maxOutputBytes: { type: "integer", env: "PI_REX_MAX_OUTPUT_BYTES", default: DEFAULT_MAX_OUTPUT_BYTES, min: 4096, max: 1048576, description: "Maximum combined stdout/stderr bytes retained from one Rex CLI process. Core results have a separate aggregate bound. Capture is not a complete transcript." },
-		maxWaitMs: { type: "integer", env: "PI_REX_MAX_WAIT_MS", default: 120000, min: 1000, max: 300000, description: "Deadline cap for each Rex CLI process, in milliseconds. A request above the cap uses the cap and reports it. An operation can use several processes. Deadline cancellation does not stop persistent terminal work." },
+		maxWaitMs: { type: "integer", env: "PI_REX_MAX_WAIT_MS", default: 120000, min: 1000, max: 300000, description: "Deadline cap for a complete Rex tool operation, including nested calls and cleanup. Background label CLI calls also use this cap. A larger request uses the cap and reports it. Deadline cancellation does not stop persistent terminal work." },
 		maxRecords: { type: "integer", env: "PI_REX_MAX_RECORDS", default: 128, min: 2, max: 256, description: "Maximum retained ownership and operation records per caller." },
 	},
 } as const;

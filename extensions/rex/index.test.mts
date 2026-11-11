@@ -117,6 +117,8 @@ test("ordinary owned observation preserves the shared request and canonical read
 	registerRex(pi, { createCore: () => ({ dispose: () => {}, execute: async (received, call) => {
 		assert.equal(received, request);
 		assert.equal(call.ownerId, "ordinary:observation-session");
+		assert.ok(call.budget);
+		assert.equal(call.signal, call.budget.signal);
 		return expected;
 	} }) });
 	const ctx = { cwd: "/test", isIdle: () => true, sessionManager: { getSessionId: () => "observation-session", getEntries: () => [], getSessionFile: () => undefined } } as unknown as ExtensionToolContext;
@@ -125,8 +127,10 @@ test("ordinary owned observation preserves the shared request and canonical read
 		assert.ok(tool);
 		const response = await tool.execute("observe", request, undefined, undefined, ctx);
 		assert.equal(response.isError, false);
-		assert.equal(JSON.stringify(response.structuredContent), JSON.stringify(expected));
-		assert.equal(response.content.filter((part) => part.type === "text").map((part) => part.text).join(""), JSON.stringify(expected));
+		const received = response.structuredContent as unknown as RexResult;
+		assert.equal(received.coverage.deadline?.effectiveMs, 30000);
+		assert.deepEqual({ ...received, coverage: expected.coverage }, expected);
+		assert.equal(response.content.filter((part) => part.type === "text").map((part) => part.text).join(""), JSON.stringify(received));
 		assert.equal(writes, 0);
 	} finally { await handlers.get("session_shutdown")?.(); }
 });

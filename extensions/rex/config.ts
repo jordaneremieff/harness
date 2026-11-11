@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { JsonValue } from "@earendil-works/chord/json";
+import type { RexBudget } from "./deadline.ts";
 import type { RexCoreOptions, RexResult } from "./core.ts";
 import { validateStatusBinding, type RexExecutor, type StatusStore } from "./status.ts";
 import { initialOwnershipState, validateOwnershipState, type OwnershipState, type OwnershipStore } from "./ownership.ts";
@@ -49,11 +50,12 @@ export function serialiseOwners(): <T>(owner: string, action: () => Promise<T>) 
 	};
 }
 
-export function ordinaryStatusStore(pi: Pick<ExtensionAPI, "appendEntry">, ctx: Pick<ExtensionContext, "sessionManager">, serialise: ReturnType<typeof serialiseOwners>, signal?: AbortSignal): StatusStore {
+export function ordinaryStatusStore(pi: Pick<ExtensionAPI, "appendEntry">, ctx: Pick<ExtensionContext, "sessionManager">, serialise: ReturnType<typeof serialiseOwners>, signal?: AbortSignal, budget?: RexBudget): StatusStore {
 	const ownerId = ordinaryOwner(ctx);
 	const check = () => { if (ordinaryOwner(ctx) !== ownerId) throw new Error("The Rex caller changed sessions."); };
 	return {
 		read: async () => {
+			budget?.check("resolve");
 			check();
 			const entries = ctx.sessionManager.getEntries();
 			for (let index = entries.length - 1; index >= 0; index--) {
@@ -66,6 +68,7 @@ export function ordinaryStatusStore(pi: Pick<ExtensionAPI, "appendEntry">, ctx: 
 		},
 		write: (binding) => serialise(ownerId, async () => {
 			if (signal?.aborted) throw new Error("The status call was cancelled before state write.");
+			budget?.check("effect");
 			check();
 			pi.appendEntry("rex.status", { ownerId, binding: validateStatusBinding(binding, ownerId) ?? null });
 		}),
@@ -82,12 +85,14 @@ export function ordinaryOwnershipStore(
 	ctx: Pick<ExtensionContext, "sessionManager">,
 	maxRecords: number,
 	serialise: ReturnType<typeof serialiseOwners>,
+	budget?: RexBudget,
 ): OwnershipStore {
 	const owner = ordinaryOwner(ctx);
 	const assertOwner = (ownerId: string) => {
 		if (ownerId !== owner || ordinaryOwner(ctx) !== owner) throw new Error("The Rex caller changed sessions. Reconcile in the original session.");
 	};
-	const read = async (ownerId: string): Promise<OwnershipState> => {
+	const read = async (ownerId: string, phase: "work" | "finalise" = "work"): Promise<OwnershipState> => {
+		budget?.check(phase === "finalise" ? "finalise" : "effect");
 		assertOwner(ownerId);
 		const entries = ctx.sessionManager.getEntries();
 		for (let index = entries.length - 1; index >= 0; index--) {
@@ -102,16 +107,19 @@ export function ordinaryOwnershipStore(
 		}
 		return initialOwnershipState();
 	};
+	const checkWrite = (phase: "work" | "finalise") => budget?.check(phase === "finalise" ? "finalise" : "effect");
 	return {
 		read,
-		update: (ownerId, change) => serialise(ownerId, async () => {
-			const state = validateOwnershipState(change(await read(ownerId)), maxRecords);
+		update: (ownerId, change, phase) => serialise(ownerId, async () => {
+			checkWrite(phase);
+			const state = validateOwnershipState(change(await read(ownerId, phase)), maxRecords);
 			assertOwner(ownerId);
 			if (state.records.some((record) => record.ownerId !== ownerId)) throw new Error("Rex ownership records belong to another caller.");
 			if (state.records.some((record) => record.phase === "pending") && ctx.sessionManager.getSessionFile()) {
 				const admitted = ctx.sessionManager.getEntries().some((entry) => entry.type === "message" && (entry.message.role === "user" || entry.message.role === "assistant"));
 				if (!admitted) throw new Error("A persistent Rex effect requires an admitted user or assistant message.");
 			}
+			checkWrite(phase);
 			pi.appendEntry("rex.ownership", { ownerId, state });
 			return state;
 		}),

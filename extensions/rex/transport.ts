@@ -14,6 +14,7 @@ export interface CliResult {
 }
 export interface CliCall {
 	signal?: AbortSignal;
+	finaliseSignal?: AbortSignal;
 	timeoutMs: number;
 	maxOutputBytes: number;
 	stdin?: string;
@@ -39,7 +40,7 @@ export class CliTransport implements RexTransport {
 	}
 
 	async run(args: readonly string[], call: CliCall): Promise<CliResult> {
-		if (this.disposed || call.signal?.aborted) return empty("cancelled");
+		if (this.disposed || call.signal?.aborted || call.finaliseSignal?.aborted) return empty("cancelled");
 		if (this.active.size >= this.maxActive)
 			return { ...empty("spawn_error"), stderr: "Rex CLI concurrency limit reached." };
 		if (
@@ -52,6 +53,10 @@ export class CliTransport implements RexTransport {
 		) {
 			throw new Error("Rex CLI bounds are invalid.");
 		}
+		// The caller's timeout covers the whole call, including termination and forced settlement.
+		const finalCutoff = performance.now() + call.timeoutMs;
+		const reserve = Math.min(1000, Math.max(1, Math.floor(call.timeoutMs / 10)));
+		const executionCutoff = finalCutoff - reserve;
 		const abort = new AbortController();
 		const relay = () => abort.abort();
 		call.signal?.addEventListener("abort", relay, { once: true });
@@ -83,6 +88,8 @@ export class CliTransport implements RexTransport {
 						}
 					}
 				};
+				const after = (at: number, action: () => void) =>
+					setTimeout(action, Math.max(0, at - performance.now()));
 				const finish = (exitCode: number | null, signal: string | null) => {
 					if (settled) return;
 					settled = true;
@@ -90,6 +97,7 @@ export class CliTransport implements RexTransport {
 					clearTimeout(escalation);
 					clearTimeout(forced);
 					abort.signal.removeEventListener("abort", onAbort);
+					call.finaliseSignal?.removeEventListener("abort", onFinalise);
 					if (!truncated) {
 						stdout += decoders.stdout.end();
 						stderr += decoders.stderr.end();
@@ -103,10 +111,17 @@ export class CliTransport implements RexTransport {
 					if (settled || outcome !== "exited") return;
 					outcome = reason;
 					kill("SIGTERM");
-					escalation = setTimeout(() => kill("SIGKILL"), 250);
-					forced = setTimeout(() => finish(null, "SIGKILL"), 1000);
+					const termAt = performance.now();
+					escalation = after(Math.min(termAt + 250, finalCutoff), () => kill("SIGKILL"));
+					forced = after(finalCutoff, () => finish(null, "SIGKILL"));
 				};
 				const onAbort = () => stop("cancelled");
+				const onFinalise = () => {
+					if (settled) return;
+					if (outcome === "exited") outcome = "cancelled";
+					kill("SIGKILL");
+					finish(null, "SIGKILL");
+				};
 				const emitLines = (text: string) => {
 					if (!call.onLine) return;
 					lineBuffer += text;
@@ -144,6 +159,8 @@ export class CliTransport implements RexTransport {
 				delete env.REX_BLOCK;
 				delete env.REX_CLIENT;
 				delete env.REX_SERVER;
+				call.finaliseSignal?.addEventListener("abort", onFinalise, { once: true });
+				deadline = after(executionCutoff, () => stop("timeout"));
 				try {
 					child = spawn(this.executable, [...args], {
 						cwd: call.cwd,
@@ -160,7 +177,7 @@ export class CliTransport implements RexTransport {
 					child.stderr?.on("data", (chunk: Buffer) => consume("stderr", chunk));
 					child.once("error", (error) => {
 						stderr = error.message.slice(0, 1024);
-						outcome = "spawn_error";
+						if (outcome === "exited") outcome = "spawn_error";
 						finish(null, null);
 					});
 					child.once("close", finish);
@@ -169,10 +186,10 @@ export class CliTransport implements RexTransport {
 					});
 					child.stdin?.end(call.stdin);
 					abort.signal.addEventListener("abort", onAbort, { once: true });
-					deadline = setTimeout(() => stop("timeout"), call.timeoutMs);
+					if (call.finaliseSignal?.aborted) onFinalise();
 					if (abort.signal.aborted) onAbort();
 				} catch (error) {
-					outcome = "spawn_error";
+					if (outcome === "exited") outcome = "spawn_error";
 					stderr = String(error).slice(0, 1024);
 					finish(null, null);
 				}

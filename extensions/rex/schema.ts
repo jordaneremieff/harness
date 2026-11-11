@@ -9,7 +9,7 @@ export const TargetSchema = obj({
 	server: opt(text()), session: opt(text()), window: opt(text()), block: opt(text()), client: opt(text()),
 	source: opt(choice("explicit", "inherited", "focus")),
 }, { description: "Server selection and target intent. Explicit selectors never acquire other IDs from the inherited launch context. Focus is a separate request, not the default." });
-const base = { target: opt(TargetSchema), timeoutMs: opt(int({ minimum: 1000, maximum: 300000 })) };
+const base = { target: opt(TargetSchema), timeoutMs: opt(int({ minimum: 1000, maximum: 300000, description: "Total operation allowance, including target resolution, nested calls and cleanup; capped by rex.maxWaitMs. Observer cancellation does not stop terminal work." })) };
 const variant = <const T extends Properties>(properties: T) => obj({ ...properties, ...base });
 const page = { offset: opt(int({ minimum: 0 })), limit: opt(int({ minimum: 1, maximum: 4 })) };
 
@@ -45,7 +45,7 @@ export const requestVariants = {
 		variant({ op: choice("reconcile"), recordId: opt(text(1024)), recover: opt(bool()), release: opt(bool()), note: opt(text(2048)), ...page }),
 		variant({ op: choice("cleanup"), recordId: text(1024), forget: opt(bool()) }),
 	],
-	rex_status: [obj({ op: choice("snapshot", "bind", "unbind"), target: opt(TargetSchema) })],
+	rex_status: [obj({ op: choice("snapshot", "bind", "unbind"), ...base })],
 } as const satisfies Record<string, readonly Schema[]>;
 export type RexToolName = keyof typeof requestVariants;
 export type StatusRequest = Static<(typeof requestVariants.rex_status)[number]>;
@@ -129,6 +129,7 @@ export const ResultSchema = obj({
 	effects: obj({ state: choice("none", "confirmed", "unknown"), recordId: opt(str()), resources: opt(arr(unknown())), note: opt(str()) }, { open: true }),
 	coverage: obj({
 		bounded: lit(true), truncated: opt(bool()), note: opt(str()),
+		deadline: opt(obj({ effectiveMs: int({ minimum: 1 }), elapsedMs: int({ minimum: 0 }), phase: choice("resolve", "observe", "effect", "finalise"), overrunMs: opt(int({ minimum: 1 })) })),
 		totalRecords: opt(int()), returnedRecords: opt(int()), omittedRecords: opt(int()),
 		nextOffset: opt(int()), dataOmitted: opt(bool()),
 		pageOffset: opt(int({ minimum: 0 })), nextPageOffset: opt(int({ minimum: 0 })),

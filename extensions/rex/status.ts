@@ -61,6 +61,7 @@ async function bindStatus(request: StatusRequest, context: RexCallContext, core:
 	if (!verification.ok || !verification.target) return verification;
 	if (!sameServer(resolved.target.server, verification.target.server)) return failure("The Rex server instance changed during verification. Reconcile before binding.", "stale_status_binding");
 	const binding = { ownerId: context.ownerId, target: verification.target, verifiedAt: new Date().toISOString() };
+	context.budget?.check("effect");
 	if (context.signal?.aborted) return failure("The status call was cancelled before binding.", "cancelled");
 	await store.write(binding);
 	return { ok: true, outcome: "status_bound", target: binding.target, effects: noEffects, coverage: statusCoverage(verification.coverage), data: { binding, reportedStatus: verification.data, meaning: "The binding selects status inspection only. It grants neither resource ownership nor a terminal output route." } };
@@ -69,7 +70,9 @@ async function bindStatus(request: StatusRequest, context: RexCallContext, core:
 async function statusSnapshot(request: StatusRequest, context: RexCallContext, core: RexExecutor, store: StatusStore, activity: () => Promise<HostActivity>): Promise<RexResult> {
 	const binding = request.target ? undefined : await store.read();
 	if (binding && binding.ownerId !== context.ownerId) return failure("This status binding belongs to another caller.");
+	context.budget?.check("observe");
 	const hostActivity = await activity();
+	context.budget?.check("observe");
 	const target = request.target ?? (binding ? targetIntent(binding.target) : undefined);
 	if (!target) return { ok: true, outcome: "host_status", effects: noEffects, coverage, data: { hostActivity, binding: null, terminalProjection: hostActivity.host === "ordinary" ? "Pi owns ordinary TUI lifecycle output; this extension emits nothing." : NATIVE_PROJECTION_LIMIT } };
 	const snapshot = await core.execute({ op: "inspect", view: "status", target }, context);
@@ -85,11 +88,12 @@ export async function rexStatus(
 	activity: () => Promise<HostActivity>,
 ): Promise<RexResult> {
 	try {
+		context.budget?.check("resolve");
 		if (context.signal?.aborted) return failure("The status call was cancelled before execution.", "cancelled");
 		if (request.op === "unbind") return await unbindStatus(request, store);
 		if (request.op === "bind") return await bindStatus(request, context, core, store);
 		return await statusSnapshot(request, context, core, store, activity);
 	} catch (error) {
-		return failure(error instanceof Error ? error.message : String(error), context.signal?.aborted ? "cancelled" : "invalid_status_request");
+		return failure(error instanceof Error ? error.message : String(error), context.budget?.stopReason() ?? (context.signal?.aborted ? "cancelled" : "invalid_status_request"));
 	}
 }
