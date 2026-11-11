@@ -83,11 +83,15 @@ test("setting source absence and collection failure have explicit coverage", asy
 	const reader = settingsReader(bus);
 	try {
 		const result = await lookup({ params: { kind: "setting" }, snapshot: hostSnapshot,
-			settings: { publications: [], available: true, collection: { status: "available", slices: [], malformed: 0, omitted: 0 } },
+			settings: reader.read(),
 			session: {}, epoch: "fixture" });
 		verify(result);
 		assert.equal(result.outcome, "unavailable");
 		assert.match(result.text, /No loaded publisher responded/);
+		assert.equal(result.details.continuationStatus, "unavailable");
+		assert.equal(typeof result.details.continuationReason, "string");
+		assert.equal(result.details.cursor, undefined);
+		assert.equal(result.details.pageTruncated, false);
 		assert.deepEqual((result.details.settingsCoverage as { respondingSlices: string[] }).respondingSlices, []);
 		const unavailable = await lookup({ params: { kind: "setting" }, snapshot: hostSnapshot, session: {}, epoch: "fixture" });
 		verify(unavailable);
