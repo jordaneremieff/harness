@@ -45,6 +45,9 @@ class FakeTransport implements RexTransport {
 	readonly calls: Array<{ method: string; args: readonly string[]; signal?: AbortSignal }> = [];
 	readonly tab: TabState;
 	processPid = 4242;
+	hostId = "host";
+	instanceId = "instance";
+	windowId = WINDOW_ID;
 	extraBlocks = 0;
 	failWhoami = false;
 	disposals = 0;
@@ -76,7 +79,7 @@ class FakeTransport implements RexTransport {
 
 	private whoami(): CliResult {
 		if (this.failWhoami) return { ...response({}), exitCode: 1, stderr: "unavailable" };
-		return response({ host_id: "host", instance_id: "instance" });
+		return response({ host_id: this.hostId, instance_id: this.instanceId });
 	}
 
 	private view(): CliResult {
@@ -84,7 +87,7 @@ class FakeTransport implements RexTransport {
 			{ block_id: this.env.REX_BLOCK },
 			...Array.from({ length: this.extraBlocks }, (_, index) => ({ block_id: `block:extra-${index}` })),
 		];
-		return response({ revision: 1, session_id: this.env.REX_SESSION, windows: [{ window_id: WINDOW_ID, label: this.tab.label, layers: [{ blocks }] }] });
+		return response({ revision: 1, session_id: this.env.REX_SESSION, windows: [{ window_id: this.windowId, label: this.tab.label, layers: [{ blocks }] }] });
 	}
 
 	private setLabel(args: readonly string[]): CliResult {
@@ -257,19 +260,35 @@ function pauseNextDirectoryCreate(directory: string, entered: () => void, releas
 }
 
 /** Runs a callback after the next record rename, with the claim already persisted. */
-function afterNextRecordRename(directory: string, done: () => void): () => void {
+function afterNextRecordRename(directory: string, done: () => void | Promise<void>): () => void {
 	const original = MUTABLE_PROMISES.rename;
 	let fired = false;
 	const patched: typeof original = async (...args) => {
 		await original(...args);
 		if (!fired && String(args[1]).startsWith(directory)) {
 			fired = true;
-			done();
+			await done();
 		}
 	};
 	MUTABLE_PROMISES.rename = patched;
 	syncBuiltinESMExports();
 	return () => { MUTABLE_PROMISES.rename = original; syncBuiltinESMExports(); };
+}
+
+function contendRecordLocks(): Fault & { attempts: number } {
+	const fault = { armed: false, attempts: 0, restore: () => {} };
+	const original = MUTABLE_PROMISES.open;
+	const patched: typeof original = async (...args) => {
+		if (String(args[0]).endsWith(".lock")) {
+			fault.attempts++;
+			if (fault.armed) throw Object.assign(new Error("Record lock is held"), { code: "EAGAIN" });
+		}
+		return original(...args);
+	};
+	MUTABLE_PROMISES.open = patched;
+	syncBuiltinESMExports();
+	fault.restore = () => { MUTABLE_PROMISES.open = original; syncBuiltinESMExports(); };
+	return fault;
 }
 
 interface ChildLines {
@@ -365,12 +384,13 @@ test("default and recorded automatic labels accept updates and repeated input ob
 });
 
 const CHECKS = ["whoami", "com.superlogical.terminal.process", "session.view"];
+const WRITE_CHECKS = [...CHECKS, ...CHECKS, "session.set_window_label"];
 
 test("an unchanged name event launches no process and every input keeps three fresh checks", async (t) => {
 	const f = await fixture(t);
 	f.projector.start(f.ctx);
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label"]);
+	assert.deepEqual(f.transport.calls.map((call) => call.method), WRITE_CHECKS);
 
 	const settled = f.transport.calls.length;
 	f.projector.refresh(f.ctx);
@@ -392,7 +412,7 @@ test("coincident start and input share one observation pass", async (t) => {
 	f.projector.start(f.ctx);
 	f.projector.input(f.ctx);
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label"]);
+	assert.deepEqual(f.transport.calls.map((call) => call.method), WRITE_CHECKS);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
 
@@ -411,7 +431,7 @@ test("an unchanged name event during an observation pass adds no pass", async (t
 	f.projector.refresh(f.ctx);
 	release.resolve();
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label"]);
+	assert.deepEqual(f.transport.calls.map((call) => call.method), WRITE_CHECKS);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
 
@@ -432,7 +452,7 @@ test("an input during an observation pass receives its own fresh pass", async (t
 	f.projector.input(f.ctx);
 	release.resolve();
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label", ...CHECKS]);
+	assert.deepEqual(f.transport.calls.map((call) => call.method), [...WRITE_CHECKS, ...CHECKS]);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
 
@@ -460,7 +480,7 @@ test("an input during a gated foreground query receives its own observation pass
 	await f.projector.idle();
 	assert.deepEqual(
 		f.transport.calls.map((call) => call.method),
-		["whoami", "com.superlogical.terminal.process", "whoami", "com.superlogical.terminal.process", "session.view", "session.set_window_label"],
+		["whoami", "com.superlogical.terminal.process", ...WRITE_CHECKS],
 	);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
@@ -487,7 +507,7 @@ test("an input during a gated window query receives its own observation pass", a
 	f.projector.input(f.ctx);
 	release.resolve();
 	await f.projector.idle();
-	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, ...CHECKS, "session.set_window_label"]);
+	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, ...WRITE_CHECKS]);
 	assert.deepEqual(f.transport.writes, ["fallback"]);
 });
 
@@ -515,7 +535,7 @@ test("a name change during a gated foreground query receives its own observation
 	await f.projector.idle();
 	assert.deepEqual(
 		f.transport.calls.map((call) => call.method),
-		["whoami", "com.superlogical.terminal.process", "whoami", "com.superlogical.terminal.process", "session.view", "session.set_window_label"],
+		["whoami", "com.superlogical.terminal.process", ...WRITE_CHECKS],
 	);
 	assert.deepEqual(f.transport.writes, ["Named"]);
 });
@@ -644,6 +664,169 @@ test("a never-started setter keeps the earlier confirmed projection", async (t) 
 	assert.equal(confirmed?.label, "Next name");
 });
 
+test("contention opens once without a timer or another pass and a real name event recovers", async (t) => {
+	const f = await fixture(t);
+	const fault = contendRecordLocks();
+	t.after(fault.restore);
+	fault.armed = true;
+	let timers = 0;
+	const original = globalThis.setTimeout;
+	t.mock.method(globalThis, "setTimeout", (...args: Parameters<typeof setTimeout>) => {
+		timers++;
+		return original(...args);
+	});
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.equal(fault.attempts, 1);
+	assert.equal(timers, 0);
+	assert.deepEqual(f.transport.writes, []);
+	assert.deepEqual(f.notices, []);
+	const calls = f.transport.calls.length;
+	fault.armed = false;
+	await f.projector.idle();
+	assert.equal(fault.attempts, 1);
+	assert.equal(f.transport.calls.length, calls);
+	f.state.name = "Recovered name";
+	f.projector.refresh(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["Recovered name"]);
+	assert.equal(timers, 0);
+});
+
+test("a name change after claim I/O skips the old setter and retains the newer demand", async (t) => {
+	const f = await fixture(t);
+	t.after(afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => {
+		f.state.name = "Latest name";
+		f.projector.refresh(f.ctx);
+	}));
+	f.state.name = "Obsolete name";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["Latest name"]);
+	assert.equal((await recordFiles(f.agentDir))[0]?.label, "Latest name");
+});
+
+test("session replacement after claim I/O never dispatches the old setter", async (t) => {
+	const f = await fixture(t);
+	t.after(afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => {
+		f.state.name = "Replacement name";
+		f.projector.start(f.ctx);
+	}));
+	f.state.name = "Obsolete name";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, ["Replacement name"]);
+	assert.deepEqual(f.notices, []);
+});
+
+const attachmentChanges: readonly [string, (f: Awaited<ReturnType<typeof fixture>>) => void][] = [
+	["foreground loss", (f) => { f.transport.processPid = 9999; }],
+	["a second block", (f) => { f.transport.extraBlocks = 1; }],
+	["a manual label", (f) => { f.transport.label = "Manual label"; }],
+	["a different host", (f) => { f.transport.hostId = "other-host"; }],
+	["a different server instance", (f) => { f.transport.instanceId = "other-instance"; }],
+	["a different containing window", (f) => { f.transport.windowId = "window:other"; }],
+	["a different inherited session", (f) => { f.env.REX_SESSION = "session:other"; }],
+	["a different inherited block", (f) => { f.env.REX_BLOCK = "block:other"; }],
+];
+for (const [name, change] of attachmentChanges) {
+	test(`${name} after claim I/O prevents setter dispatch`, async (t) => {
+		const f = await fixture(t);
+		t.after(afterNextRecordRename(join(f.agentDir, "rex", "tab-labels"), () => { change(f); }));
+		f.state.name = "Attempted name";
+		f.projector.start(f.ctx);
+		await f.projector.idle();
+		assert.deepEqual(f.transport.writes, []);
+		assert.equal(f.transport.label, name === "a manual label" ? "Manual label" : DEFAULT_LABEL);
+		assert.deepEqual(await recordFiles(f.agentDir), []);
+		assert.deepEqual(f.notices, []);
+	});
+}
+
+test("a superseded claim prevents dispatch and remains intact", async (t) => {
+	const f = await fixture(t);
+	const directory = join(f.agentDir, "rex", "tab-labels");
+	t.after(afterNextRecordRename(directory, async () => {
+		const recordName = (await readdir(directory)).find((name) => name.endsWith(".json"));
+		assert.ok(recordName);
+		const record = (await recordFiles(f.agentDir))[0];
+		assert.ok(record);
+		await writeFile(join(directory, recordName), JSON.stringify({ ...record, attempt: "successor", pending: "Successor name" }));
+	}));
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, []);
+	const [retained] = await recordFiles(f.agentDir);
+	assert.equal(retained?.attempt, "successor");
+	assert.equal(retained?.pending, "Successor name");
+});
+
+test("a contended withdrawal remains pending until an actual input retries it once", async (t) => {
+	const f = await fixture(t);
+	const fault = contendRecordLocks();
+	t.after(fault.restore);
+	f.transport.onMethod = (method) => { if (method === "session.set_window_label") fault.armed = true; };
+	f.transport.queueSet({ outcome: "spawn_error", started: false, apply: false });
+	f.state.name = "Unstarted name";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	const [claim] = await recordFiles(f.agentDir);
+	assert.ok(claim?.attempt);
+	assert.equal(claim.pending, "Unstarted name");
+	assert.match(f.notices[0] ?? "", /withdrawal remains pending/);
+	const attempts = fault.attempts;
+	fault.armed = false;
+	f.transport.onMethod = undefined;
+	await f.projector.idle();
+	assert.equal(fault.attempts, attempts);
+	assert.deepEqual(await recordFiles(f.agentDir), [claim]);
+	f.state.name = "Recovered name";
+	f.projector.input(f.ctx);
+	await f.projector.idle();
+	assert.equal((await recordFiles(f.agentDir))[0]?.label, "Recovered name");
+	assert.equal((await recordFiles(f.agentDir))[0]?.attempt, undefined);
+	assert.deepEqual(f.transport.writes, ["Unstarted name", "Recovered name"]);
+});
+
+test("a contended confirmation stays pending and reconciles without another setter", async (t) => {
+	const f = await fixture(t);
+	const fault = contendRecordLocks();
+	t.after(fault.restore);
+	f.transport.onMethod = (method) => { if (method === "session.set_window_label") fault.armed = true; };
+	f.state.name = "Acknowledged name";
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	const [claim] = await recordFiles(f.agentDir);
+	assert.equal(claim?.pending, "Acknowledged name");
+	assert.ok(claim?.attempt);
+	fault.armed = false;
+	f.transport.onMethod = undefined;
+	f.projector.input(f.ctx);
+	await f.projector.idle();
+	const [confirmed] = await recordFiles(f.agentDir);
+	assert.equal(confirmed?.label, "Acknowledged name");
+	assert.equal(confirmed?.attempt, undefined);
+	assert.deepEqual(f.transport.writes, ["Acknowledged name"]);
+	assert.deepEqual(f.notices, []);
+});
+
+test("shutdown attempts retained withdrawal once and preserves uncertain state", async (t) => {
+	const f = await fixture(t);
+	const fault = contendRecordLocks();
+	t.after(fault.restore);
+	f.transport.onMethod = (method) => { if (method === "session.set_window_label") fault.armed = true; };
+	f.transport.queueSet({ outcome: "spawn_error", started: false, apply: false });
+	f.projector.start(f.ctx);
+	await f.projector.idle();
+	const before = await recordFiles(f.agentDir);
+	const attempts = fault.attempts;
+	await f.projector.shutdown();
+	assert.equal(fault.attempts, attempts + 1);
+	assert.deepEqual(await recordFiles(f.agentDir), before);
+	assert.equal(f.notices.length, 1);
+	assert.match(f.notices[0] ?? "", /withdrawal remains pending/);
+});
+
 test("a claim write that fails after persistence withdraws the claim before dispatch", async (t) => {
 	const f = await fixture(t, { maxRecords: 1 });
 	const directory = join(f.agentDir, "rex", "tab-labels");
@@ -687,6 +870,31 @@ test("a run cancelled after its claim is persisted withdraws the claim before di
 	assert.deepEqual(f.transport.writes, []);
 	assert.equal(f.transport.label, "Attempted name");
 	assert.deepEqual(await recordFiles(f.agentDir), []);
+});
+
+test("an old acknowledgement cannot confirm a successor's claim", async (t) => {
+	const tab: TabState = { label: DEFAULT_LABEL };
+	const f = await fixture(t, { tab });
+	const secondTransport = new FakeTransport(f.env, tab);
+	const second = projectorFor(f.agentDir, f.env, secondTransport, () => "Successor name");
+	t.after(() => second.shutdown());
+	const entered = deferred();
+	const release = deferred();
+	t.after(release.resolve);
+	f.transport.onMethod = async (method) => {
+		if (method === "session.set_window_label") { entered.resolve(); await release.promise; }
+	};
+	f.state.name = "Older name";
+	f.projector.start(f.ctx);
+	await entered.promise;
+	secondTransport.queueSet({ outcome: "timeout", started: true, apply: false });
+	second.start(f.ctx);
+	await second.idle();
+	const [successor] = await recordFiles(f.agentDir);
+	assert.equal(successor?.pending, "Successor name");
+	release.resolve();
+	await f.projector.idle();
+	assert.deepEqual(await recordFiles(f.agentDir), [successor]);
 });
 
 test("a delayed no-effect cleanup leaves a newer valid claim intact", async (t) => {
@@ -827,7 +1035,7 @@ test("a name change during an in-flight fallback write finishes with the new nam
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, ["fallback", "New name"]);
 	assert.equal(f.transport.label, "New name");
-	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label", ...CHECKS, "session.set_window_label"]);
+	assert.deepEqual(f.transport.calls.map((call) => call.method), [...WRITE_CHECKS, ...WRITE_CHECKS]);
 });
 
 test("a delayed startup read uses the latest session name at write time", async (t) => {
@@ -847,7 +1055,7 @@ test("a delayed startup read uses the latest session name at write time", async 
 	release.resolve();
 	await f.projector.idle();
 	assert.deepEqual(f.transport.writes, ["New name"]);
-	assert.deepEqual(f.transport.calls.map((call) => call.method), [...CHECKS, "session.set_window_label"]);
+	assert.deepEqual(f.transport.calls.map((call) => call.method), WRITE_CHECKS);
 });
 
 test("shutdown and a new session invalidate an obsolete run before its write", async (t) => {
@@ -975,7 +1183,7 @@ async function delayedWithdrawalAfterReload(t: TestContext, prior: string | unde
 	await second.idle();
 	assert.deepEqual(secondTransport.writes, []);
 	assert.deepEqual(await recordFiles(first.agentDir), [claim]);
-	assert.equal(secondNotices.length, 1);
+	assert.equal(secondNotices.length, 0);
 
 	release.resolve();
 	await first.projector.idle();
@@ -988,7 +1196,8 @@ async function delayedWithdrawalAfterReload(t: TestContext, prior: string | unde
 		assert.equal(cleaned[0]?.pending, undefined);
 		assert.equal(cleaned[0]?.attempt, undefined);
 	}
-	assert.deepEqual(first.notices, []);
+	assert.equal(first.notices.length, 1);
+	assert.match(first.notices[0] ?? "", /withdrawal remains pending/);
 
 	secondState.name = "New name";
 	second.input(secondCtx);
@@ -1067,7 +1276,6 @@ test("a suspended holder keeps its record lock and every replacement update is r
 	assert.ok(claim.attempt);
 
 	child.child.kill("SIGSTOP");
-	const stoppedAt = Date.now();
 
 	const tab: TabState = { label: DEFAULT_LABEL };
 	const notices: string[] = [];
@@ -1075,15 +1283,18 @@ test("a suspended holder keeps its record lock and every replacement update is r
 	const { transport, ctx, projector } = replacementProjector(child.agentDir, child.env, tab, notices, state);
 	t.after(() => projector.shutdown());
 
-	// Each refused acquisition takes the bounded acquisition time, which advances the clock.
 	projector.start(ctx);
-	do {
-		projector.input(ctx);
-		await projector.idle();
-		assert.deepEqual(transport.writes, []);
-		assert.deepEqual(await recordFiles(child.agentDir), [claim]);
-	} while (Date.now() - stoppedAt <= 11_000);
-	assert.ok(Date.now() - stoppedAt > 11_000);
+	await projector.idle();
+	assert.deepEqual(transport.writes, []);
+	assert.deepEqual(await recordFiles(child.agentDir), [claim]);
+	const calls = transport.calls.length;
+	await projector.idle();
+	assert.equal(transport.calls.length, calls);
+	projector.input(ctx);
+	await projector.idle();
+	assert.deepEqual(transport.writes, []);
+	assert.deepEqual(await recordFiles(child.agentDir), [claim]);
+	assert.deepEqual(notices, []);
 
 	child.child.kill("SIGCONT");
 	child.child.stdin.write("go\n");
@@ -1224,8 +1435,7 @@ test("an acquisition that finds its lock path replaced refuses without a mutatio
 
 	assert.deepEqual(f.transport.writes, []);
 	assert.deepEqual(await recordFiles(f.agentDir), []);
-	assert.equal(f.notices.length, 1);
-	assert.match(f.notices[0] ?? "", /held by another update/);
+	assert.deepEqual(f.notices, []);
 	const [lockName] = await lockFiles(f.agentDir);
 	assert.ok(lockName);
 	assert.ok(held.handle);

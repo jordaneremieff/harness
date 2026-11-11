@@ -315,7 +315,7 @@ test("ordinary tab label wiring runs no process for an unchanged name event and 
 	try {
 		await handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
 		await projector?.idle();
-		assert.deepEqual(transport.methods, [...LABEL_CHECKS, "session.set_window_label"]);
+		assert.deepEqual(transport.methods, [...LABEL_CHECKS, ...LABEL_CHECKS, "session.set_window_label"]);
 		assert.equal(transport.label, "fixture");
 
 		const settled = transport.methods.length;
@@ -326,7 +326,7 @@ test("ordinary tab label wiring runs no process for an unchanged name event and 
 		state.name = "Named";
 		handlers.get("session_info_changed")?.({ type: "session_info_changed", name: "Named" }, ctx);
 		await projector?.idle();
-		assert.deepEqual(transport.methods.slice(settled), [...LABEL_CHECKS, "session.set_window_label"]);
+		assert.deepEqual(transport.methods.slice(settled), [...LABEL_CHECKS, ...LABEL_CHECKS, "session.set_window_label"]);
 		assert.equal(transport.label, "Named");
 
 		const named = transport.methods.length;

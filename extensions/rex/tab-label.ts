@@ -12,9 +12,6 @@ const SHUTDOWN_DRAIN_MS = 2000;
 // `open(2)` on macOS takes a flock-style exclusive lock atomically with O_EXLOCK.
 // Node's fs.constants does not expose the flag.
 const O_EXLOCK = 0x20;
-// About two seconds of bounded acquisition.
-const LOCK_ATTEMPTS = 20;
-const LOCK_RETRY_MS = 100;
 
 type Settings = Pick<RexSettings, "executable" | "maxOutputBytes" | "maxWaitMs">;
 
@@ -67,7 +64,7 @@ interface RecordStep {
 	remove(): Promise<void>;
 }
 
-type StepOutcome<T> = { done: true; value: T } | { done: false };
+type StepOutcome<T> = { done: true; value: T } | { done: false; reason: "contended" | "cancelled" };
 
 export interface TabLabelProjector {
 	start(ctx: ExtensionContext): void;
@@ -113,6 +110,7 @@ class Projector implements TabLabelProjector {
 	private dirty = false;
 	private readonly demand: RefreshDemand = { inputRevision: 0, nameRevision: 0, desiredLabel: "" };
 	private warned = false;
+	private readonly withdrawals = new Map<string, { key: ResourceKey; attempt: string }>();
 	private readonly options: TabLabelProjectorOptions;
 
 	constructor(options: TabLabelProjectorOptions) {
@@ -161,20 +159,25 @@ class Projector implements TabLabelProjector {
 	}
 
 	async shutdown(): Promise<void> {
+		const ctx = this.ctx;
 		this.active = false;
 		this.ctx = undefined;
 		this.dirty = false;
 		this.invalidate();
 		const running = this.running;
-		if (!running) return;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		try {
-			await Promise.race([
+			if (running) await Promise.race([
 				running,
 				new Promise<void>((resolve) => { timer = setTimeout(resolve, SHUTDOWN_DRAIN_MS); }),
 			]);
 		} finally {
 			if (timer) clearTimeout(timer);
+		}
+		try {
+			await this.retryWithdrawals();
+		} catch (error) {
+			if (ctx) this.warn(ctx, error);
 		}
 	}
 
@@ -251,6 +254,7 @@ class Projector implements TabLabelProjector {
 	}
 
 	private async serverIdentity(run: Run): Promise<{ hostId: string; instanceId: string }> {
+		await this.retryWithdrawals();
 		const identity = object(await this.json(run, ["whoami", "--json"]));
 		if (!text(identity.host_id) || !text(identity.instance_id)) throw new Error("Rex did not report its host and instance IDs.");
 		return { hostId: identity.host_id, instanceId: identity.instance_id };
@@ -268,6 +272,7 @@ class Projector implements TabLabelProjector {
 	}
 
 	private async applyLabel(run: Run, attachment: Attachment, desired: string): Promise<void> {
+		if (this.withdrawals.size >= MAX_STORE_RECORDS) throw new Error("Rex tab label cleanup capacity is exhausted.");
 		const { currentLabel, ...key } = attachment;
 		const defaultLabel = `Window ${key.windowId.slice(-8)}`;
 		const attempt = randomUUID();
@@ -302,9 +307,8 @@ class Projector implements TabLabelProjector {
 			if (!outcome.done) return;
 			claim = outcome.value;
 		} catch (error) {
-			// A failed step can still leave the renamed claim behind. Withdraw it, and keep
-			// the step failure as the diagnostic.
-			if (claimAttempted) await this.withdrawClaim(key, attempt).catch(() => {});
+			// A failed step can leave a persisted claim; a failed withdrawal stays uncertain.
+			if (claimAttempted) await this.withdrawClaim(key, attempt, run.ctx);
 			throw error;
 		}
 		if (!claim) return;
@@ -312,8 +316,16 @@ class Projector implements TabLabelProjector {
 	}
 
 	private async writeLabel(run: Run, key: ResourceKey, claim: Claim, desired: string): Promise<void> {
-		if (!this.current(run)) {
-			await this.withdrawClaim(key, claim.attempt);
+		let eligible: boolean;
+		try {
+			eligible = await this.dispatchEligible(run, key, claim, desired);
+		} catch (error) {
+			await this.withdrawClaim(key, claim.attempt, run.ctx);
+			if (this.current(run)) throw error;
+			return;
+		}
+		if (!eligible || !this.desiredIsCurrent(run, key, desired)) {
+			await this.withdrawClaim(key, claim.attempt, run.ctx);
 			return;
 		}
 		try {
@@ -322,7 +334,7 @@ class Projector implements TabLabelProjector {
 			if (!(error instanceof CliCallError) || error.started) throw error;
 			let withdrawal: unknown;
 			try {
-				await this.withdrawClaim(key, claim.attempt);
+				await this.withdrawClaim(key, claim.attempt, run.ctx);
 			} catch (withdrawalError) {
 				withdrawal = withdrawalError;
 			}
@@ -331,6 +343,28 @@ class Projector implements TabLabelProjector {
 		}
 		if (!this.current(run)) return;
 		await this.confirmLabel(run, key, claim.attempt, desired);
+	}
+
+	private desiredIsCurrent(run: Run, key: ResourceKey, desired: string): boolean {
+		return this.current(run) && this.env.REX_SESSION === key.sessionId &&
+			this.env.REX_BLOCK === key.blockId && this.label(this.ctx ?? run.ctx) === desired;
+	}
+
+	private async dispatchEligible(run: Run, key: ResourceKey, claim: Claim, desired: string): Promise<boolean> {
+		const currentName = () => this.desiredIsCurrent(run, key, desired);
+		if (!currentName()) return false;
+		const identity = await this.serverIdentity(run);
+		if (!currentName() || identity.hostId !== key.hostId || identity.instanceId !== key.instanceId) return false;
+		if (!await this.foregroundMatches(run, key.sessionId, key.blockId) || !currentName()) return false;
+		const selected = await this.containingWindow(run, key.sessionId, key.blockId);
+		const observed = claim.label ?? `Window ${key.windowId.slice(-8)}`;
+		if (!currentName() || selected?.windowId !== key.windowId ||
+			(selected.currentLabel !== observed && selected.currentLabel !== claim.pending)) return false;
+		const outcome = await this.withRecordStep(key, run, async (step) => {
+			const record = await step.read();
+			return record?.attempt === claim.attempt && record.pending === desired;
+		});
+		return outcome.done && outcome.value && currentName();
 	}
 
 	// Confirms one successful write only while the record still carries its attempt.
@@ -343,16 +377,34 @@ class Projector implements TabLabelProjector {
 	}
 
 	// Withdraws one attempt only. A record with a different attempt, or no record, belongs to newer state.
-	private async withdrawClaim(key: ResourceKey, attempt: string): Promise<void> {
-		await this.withRecordStep(key, undefined, async (step) => {
-			const record = await step.read();
-			if (record?.attempt !== attempt) return;
-			if (record.label === undefined) {
-				await step.remove();
-				return;
-			}
-			await step.write({ ...key, version: 1, label: record.label, updatedAt: this.now().toISOString() });
-		});
+	private async withdrawClaim(key: ResourceKey, attempt: string, ctx?: ExtensionContext): Promise<void> {
+		const id = `${this.path(key)}:${attempt}`;
+		this.withdrawals.set(id, { key, attempt });
+		try {
+			const outcome = await this.withRecordStep(key, undefined, async (step) => {
+				const record = await step.read();
+				if (record?.attempt !== attempt) return;
+				if (record.label === undefined) {
+					await step.remove();
+					return;
+				}
+				await step.write({ ...key, version: 1, label: record.label, updatedAt: this.now().toISOString() });
+			});
+			if (!outcome.done) throw new Error("Rex tab label withdrawal remains pending: its record lock is held.");
+			this.withdrawals.delete(id);
+		} catch (error) {
+			if (!this.active && ctx) this.warn(ctx, error);
+			throw error;
+		}
+	}
+
+	private async retryWithdrawals(): Promise<void> {
+		let failure: unknown;
+		for (const { key, attempt } of [...this.withdrawals.values()]) {
+			try { await this.withdrawClaim(key, attempt); }
+			catch (error) { failure ??= error; }
+		}
+		if (failure) throw failure;
 	}
 
 	/**
@@ -364,8 +416,8 @@ class Projector implements TabLabelProjector {
 	private async withRecordStep<T>(key: ResourceKey, run: Run | undefined, decide: (step: RecordStep) => Promise<T>): Promise<StepOutcome<T>> {
 		await mkdir(this.directory, { recursive: true, mode: 0o700 });
 		const recordPath = this.path(key);
-		const lock = await RecordLock.acquire(recordPath, LOCK_ATTEMPTS);
-		if (!lock) throw new Error("Rex tab label record lock is held by another update.");
+		const lock = await RecordLock.acquire(recordPath);
+		if (!lock) return { done: false, reason: "contended" };
 		let wrote = false;
 		let outcome: StepOutcome<T>;
 		try {
@@ -388,7 +440,7 @@ class Projector implements TabLabelProjector {
 			outcome = { done: true, value };
 		} catch (error) {
 			if (!(error instanceof CancelledStep)) throw error;
-			outcome = { done: false };
+			outcome = { done: false, reason: "cancelled" };
 		} finally {
 			await lock.release();
 		}
@@ -502,7 +554,7 @@ class Projector implements TabLabelProjector {
 
 	// A locked record belongs to another step, and a changed record is newer than the listed one.
 	private async pruneRecord(path: string, mtime: number): Promise<boolean> {
-		const lock = await RecordLock.acquire(path, 1);
+		const lock = await RecordLock.acquire(path);
 		if (!lock) return false;
 		try {
 			const listed = await recordMtime(path);
@@ -525,10 +577,6 @@ class CancelledStep extends Error {}
 
 function lockPathFor(recordPath: string): string {
 	return `${recordPath.slice(0, -".json".length)}.lock`;
-}
-
-function wait(ms: number): Promise<void> {
-	return new Promise<void>((settle) => { setTimeout(settle, ms); });
 }
 
 async function recordMtime(path: string): Promise<number | undefined> {
@@ -554,24 +602,16 @@ class RecordLock {
 		this.handle = handle;
 	}
 
-	/**
-	 * Locks one record, or returns undefined when another holder keeps it for every attempt.
-	 */
-	static async acquire(recordPath: string, attempts: number): Promise<RecordLock | undefined> {
+	/** Locks one record once, or skips a contended or replaced lock path. */
+	static async acquire(recordPath: string): Promise<RecordLock | undefined> {
 		if (process.platform !== "darwin") throw new Error("Rex tab label record locks need macOS file locks.");
-		const lockPath = lockPathFor(recordPath);
-		for (let attempt = 0; attempt < attempts; attempt++) {
-			if (attempt > 0) await wait(LOCK_RETRY_MS);
-			const lock = await RecordLock.attempt(lockPath);
-			if (lock) return lock;
-		}
-		return undefined;
+		return RecordLock.attempt(lockPathFor(recordPath));
 	}
 
 	/**
 	 * One acquisition attempt. The open file description owns the lock. A lock path that no
 	 * longer names the opened file means a successor took the path: the attempt closes its
-	 * description and reports a retry, so it never acts under a successor's lock.
+	 * description and skips the step, so it never acts under a successor's lock.
 	 */
 	private static async attempt(lockPath: string): Promise<RecordLock | undefined> {
 		let handle: FileHandle;

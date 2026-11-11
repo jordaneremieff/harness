@@ -534,13 +534,20 @@ process never started, such as a spawn error, a concurrency refusal or cancellat
 The withdrawal rereads the record and acts only when it still carries the same `attempt`; it restores
 the prior label, or removes the record when the claim held no label. The original failure keeps the
 existing single warning while the run is current. If the withdrawal itself fails, that warning
-reports the store failure instead, because the claim then remains. A replaced or cancelled run warns
-nothing.
+reports the store failure instead, because the claim then remains. A replaced run warns nothing.
+Shutdown reports retained cleanup uncertainty through the same bounded warning.
 
 Every other outcome after dispatch is uncertain: a timeout after the process started, cancellation
 after start, a nonzero exit, an output limit, incomplete JSON or a transport error. The claim stays,
 and a later read reconciles a label that matches `pending` without repeating the write. An
-acknowledged write records the confirmed label and clears `pending` and `attempt`.
+acknowledged write records the confirmed label and clears `pending` and `attempt` when its record
+step succeeds. A contended confirmation leaves the claim pending for a later readback.
+
+Before a label setter starts, the projector rechecks the desired name, current runtime, foreground
+process, containing window and observed label. It also rechecks host identity and the exact stored
+claim after file I/O. A stale request withdraws its own unstarted claim. A /name or RPC name change
+never grants authority over a manual Rex label. Rex supplies no conditional setter, so a concurrent
+edit after the final observation still has a race with the automatic write.
 
 Session start and every interactive input request a fresh serialized update. A session name change
 requests an update only when its sanitised label differs from the label already requested, so an
@@ -574,13 +581,15 @@ immediately. A lock file exists only while a step holds it: the release removes 
 open description still holds the lock, then closes the description. A crash can leave an unlocked
 lock file, which the next step on that record locks, reuses and removes.
 
-Acquisition is bounded to about two seconds of attempts, one hundred milliseconds apart. While
-another holder keeps the lock, each attempt fails without waiting, and a whole interval of such
-failures makes the step fail with an error that changes nothing. Lock contention or a store failure
-is an error, never evidence that no record exists. After an attempt opens the lock file, the step
-compares the opened file's device and inode with the file now at the lock path. A removed or replaced
-path is a mismatch: the step closes its description and retries, so it never acts under a successor's
-lock. Any other failure to open or identify the lock path refuses that record. Record locks use the
+Each local record step makes one nonblocking kernel-lock attempt. Contention skips that projection
+request without a timer retry or a self-generated update. The next real session-start, input or
+name-change request tries again. Lock contention never counts as an absent record. A path/inode
+mismatch also skips the step. Other file errors retain the bounded warning. A required cleanup that
+fails remains uncertain; later genuine demand retries that exact cleanup once before projection.
+
+After an attempt opens the lock file, the step compares the opened file's device and inode with the
+file now at the lock path. A removed or replaced path is a mismatch: the step closes its description
+and skips the step, so it never acts under a successor's lock. Any other failure to open or identify the lock path refuses that record. Record locks use the
 macOS `O_EXLOCK` open flag; on another platform the step fails with an error. Pruning runs after the
 writer's own lock is released, takes one victim's lock with a single attempt, and skips a victim
 that another step holds. Inside that lock it removes the record only when the record's
