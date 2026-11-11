@@ -1296,7 +1296,10 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					const decision = gate({ measure: state.measure ?? { kind: "unknown" }, toolName: call.name, args: call.arguments,
 						config, declared: continuityTools(bus), released: state.released,
 						decisionRoundOpen: !state.decisionRoundUsed, blockedRounds: state.blockedRounds });
-					if (decision.kind === "block") return { block: decision.reason };
+					if (decision.kind === "block") {
+						if (band(state.measure ?? { kind: "unknown" }, config) === "decision") state.decisionRoundOpen = true;
+						return { block: decision.reason };
+					}
 					return undefined;
 				},
 				afterTool: async (_call, result, api) => {
@@ -1316,8 +1319,10 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					if (!config.enabled) return;
 					const state = currentGate(api);
 					const currentBand = band(state.measure ?? { kind: "unknown" }, config);
+					const countResults = currentBand === "stop" || state.decisionRoundOpen;
+					state.decisionRoundOpen = false;
 					if (currentBand === "decision") state.decisionRoundUsed = true;
-					if (state.released || currentBand !== "stop") {
+					if (state.released || !countResults) {
 						state.blockedRounds = 0;
 						return;
 					}
@@ -1342,6 +1347,7 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					if (!config.enabled) return undefined;
 					return capacityRead(parent, async (context) => {
 						const state = currentGate(api);
+						state.decisionRoundOpen = false;
 						await restoreNativeRefusals(state, host, api, context);
 						const conversation = String(api.conversationId);
 						const doc = await api.snapshot(capacityDoc, api.conversationId, context);

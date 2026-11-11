@@ -441,7 +441,8 @@ or exhausted scan reports an error instead of inventing an empty episode. Inspec
 it, then use `/stash capacity reset` to establish a new starting point. Invalid
 configuration disables capacity enforcement. In an ordinary session, the first
 tool-call evaluation returns the error through Pi's tool display and the next
-model request, without a command. This ordinary report is the operator's
+model request, without a command; that tool call does not run. This ordinary
+report is the operator's
 configuration notice; later tools remain available without repeating it. If a
 turn-end hook encounters the error first, Pi receives an extension error instead.
 The native hook reports once through Harness.onReport, but the native host does
@@ -563,11 +564,14 @@ band in force.
 
 Native gates share one reported-usage measurement for each response and its tool
 round. Below the decision threshold they do not scan history or read tool-result
-entries. In the unreleased stop band, bounded reads of actual model-slot results
-stop at the first executed or unavailable result, which rules out a refused round.
-Before a request, a nonzero unreleased refused-round count needs one LiveDoc
-snapshot; a zero count or a released gate needs none. Capacity
-notice evaluation separately reads its episode document, task memo and agent model.
+entries. On an unreleased gate, an open decision round that blocked a call or a
+stop round reads actual model-slot results with a 500 ms deadline per read, and a
+nonzero refused count then needs one LiveDoc snapshot within the next request's
+shared 500 ms deadline. Result reads stop at the first executed result or missing
+result entry, which rules out a refused round. Normal and closed-decision rounds
+read no result; a zero count or a released gate needs no LiveDoc snapshot.
+Capacity notice evaluation separately reads its episode document, task memo and
+agent model.
 At or above the decision threshold, one bounded read examines only entries after
 the previous gate snapshot, including compaction
 and reset entries hidden behind passive messages. The read shares a 500 ms
@@ -798,10 +802,11 @@ Native `afterResponse` measures the accepted response usage and refreshes the
 bounded boundary snapshot above the decision threshold. `beforeTool` gates new
 calls from that shared measurement. `afterTool` adds termination controls to
 unexecuted slots after two refused rounds. `afterTools` counts only the
-generation's actual model-slot results in the unreleased stop band. Outside that
-band it clears the refused count without reading results; it still closes the
-decision round. `beforeRequest` clears the refused count before it reads Pi's
-public live run state. A zero count or released gate needs no live snapshot. Only a successful
+generation's actual model-slot results on an unreleased gate when the open
+decision round blocked a call or the band is stop. Other rounds clear the refused
+count without reading results; every completed round closes the decision round.
+`beforeRequest` clears the refused count before it reads Pi's public live run
+state. A zero count or released gate needs no live snapshot. Only a successful
 snapshot with existing tool rounds restores the saved count.
 An unavailable snapshot cannot carry refusals into a later run.
 A native context reset or compaction clears the gate episode; closing the host

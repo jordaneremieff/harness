@@ -710,6 +710,23 @@ test("native stop rounds count actual unexecuted slots including invalid argumen
 	assert.match(results[0].text, /Stash stop/);
 });
 
+test("a refused native decision round counts toward termination on the third refused round", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 200000);
+	gateThresholds(t, "100");
+	const round = () => fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" });
+	const enterStop = () => {
+		process.env.PI_STASH_STOP_PERCENT = "0.03";
+		return round();
+	};
+	await answerWith(h.root, h.faux, [round(), enterStop, round(), round()], "Retain the task.");
+	assert.equal(h.faux.state.callCount, 3);
+	const results = await toolResults(h.root);
+	assert.equal(results.length, 3);
+	assert.ok(results.every((result) => result.isError));
+	assert.match(results[0].text, /Stash decision round/);
+	assert.ok(results.slice(1).every((result) => /Stash stop/.test(result.text)));
+});
+
 test("native refusal counts start at zero after termination and an answer-only run", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 2000);
 	gateThresholds(t, "0.03");
@@ -961,9 +978,12 @@ test("native gates skip ineffective reads and share each response snapshot", { t
 	const call = fauxToolCall("stash_list", {}, { id: "read" });
 	assert.match((await tool.beforeTool(call, api, context))?.block ?? "", /Stash decision round/);
 	await generation.afterTools(assistantId, resultIds, api, context);
-	assert.equal(await tool.beforeTool(call, api, context), undefined, "the decision round closes without result reads");
+	assert.equal(await tool.beforeTool(call, api, context), undefined, "the refused decision round closes");
 	await generation.beforeRequest(request, api, context);
-	assert.deepEqual(reads, { history: 1, results: 0, live: 0 });
+	assert.deepEqual(reads, { history: 1, results: 1, live: 1 }, "the refused decision round needs result and live-round evidence");
+	await generation.afterTools(assistantId, resultIds, api, context);
+	await generation.beforeRequest(request, api, context);
+	assert.deepEqual(reads, { history: 1, results: 1, live: 1 }, "a closed-decision round clears the count without more reads");
 	for (let index = 0; index < 10; index++) {
 		await tool.beforeTool(call, api, context);
 		await tool.afterTool(call, { output: [], diagnostics: [{ severity: "error", code: "blocked", message: "refused" }] }, api, context);
@@ -972,12 +992,12 @@ test("native gates skip ineffective reads and share each response snapshot", { t
 	process.env.PI_STASH_STOP_PERCENT = "40";
 	await generation.afterTools(assistantId, resultIds, api, context);
 	await generation.beforeRequest(request, api, context);
-	assert.deepEqual(reads, { history: 1, results: 1, live: 1 }, "a stop refusal needs the result and live-round evidence");
+	assert.deepEqual(reads, { history: 1, results: 2, live: 2 }, "a stop refusal needs the result and live-round evidence");
 	message.usage.input = 0.1;
 	await generation.afterResponse(message, api, context);
 	await generation.afterTools(assistantId, resultIds, api, context);
 	await generation.beforeRequest(request, api, context);
-	assert.deepEqual(reads, { history: 1, results: 1, live: 1 }, "a normal response clears the count without another live read");
+	assert.deepEqual(reads, { history: 1, results: 2, live: 2 }, "a normal response clears the count without another live read");
 	message.usage.input = 1000;
 	await generation.afterResponse(message, api, context);
 	await generation.afterTools(assistantId, resultIds, api, context);
@@ -986,8 +1006,21 @@ test("native gates skip ineffective reads and share each response snapshot", { t
 	await command.run({ args: "capacity release", conversation: h.root, context, host: h.host, invocationId: "release", harness: h.harness });
 	await generation.beforeRequest(request, api, context);
 	await generation.afterTools(assistantId, resultIds, api, context);
-	assert.equal(reads.live, 1, "a released gate does not restore the unused count");
-	assert.equal(reads.results, 2, "a released gate does not read more results");
+	assert.equal(reads.live, 2, "a released gate does not restore the unused count");
+	assert.equal(reads.results, 3, "a released gate does not read more results");
+
+	const otherApi = { ...api, conversationId: (Number(h.root.id) + 1) as Durable.ConversationId };
+	process.env.PI_STASH_STOP_PERCENT = "100";
+	await generation.afterResponse(message, otherApi, context);
+	assert.match((await tool.beforeTool(call, otherApi, context))?.block ?? "", /Stash decision round/);
+	process.env.PI_STASH_STOP_PERCENT = "0.01";
+	await generation.afterTools(assistantId, resultIds, otherApi, context);
+	process.env.PI_STASH_STOP_PERCENT = "100";
+	await generation.beforeRequest(request, otherApi, context);
+	message.usage.input = 0.1;
+	await generation.afterResponse(message, otherApi, context);
+	await generation.afterTools(assistantId, resultIds, otherApi, context);
+	assert.equal(reads.results, 3, "a disabled round cannot leave a decision marker for the next normal round");
 });
 
 test("native boundary reads share a deadline and fail open without advancing past an unread entry", { timeout: 10000 }, async (t) => {
