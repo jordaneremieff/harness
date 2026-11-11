@@ -14,6 +14,8 @@ import { checkInMinutes } from "./check-in-options.ts";
 import { realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { AgentCatalog, CatalogObservation, projectCatalogPriority, hostMetadata, storageIdOf, type CatalogRecord } from "./catalog.ts";
+import type { CatalogView } from "./catalog-view.ts";
+import type { NativeOwnerEvidence } from "./host-changes.ts";
 import { subscribeCatalogChanges, type CatalogChange } from "./catalog-events.ts";
 import { sessionFigures } from "./footer.ts";
 import { sentWorkIdentity } from "./session-work.ts";
@@ -27,8 +29,8 @@ import { createPrimaryLocationResolver, type PrimaryLocationResolver } from "./e
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
 import { acquireHost, connectHost, HostEndpointUnavailableError, type HostConnection, type HostObservationListener } from "./host-client.ts";
-import { HostError, hostRequestVersionError, type HostMetadata } from "./host-protocol.ts";
-import type { ClaimObservation } from "./claims.ts";
+import { HostError, hostPaths, hostRequestVersionError, type HostMetadata } from "./host-protocol.ts";
+import { observeClaim, type ClaimObservation } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentPriorityPage, AgentPrioritySummary } from "./dashboard-types.ts";
 import type { ConversationSnapshotPage } from "./durable-observation.ts";
@@ -202,6 +204,37 @@ class BoundedMap<V> {
 }
 
 /** A primary owns client connections, never a Durable scheduler or storage writer. */
+function catalogOwner(storageId: string, observedClaim: ClaimObservation, evidence: NativeOwnerEvidence | undefined) {
+	const verified = evidence?.kind === "verified" && evidence.storageId === storageId
+		&& !(observedClaim.kind === "dead" && observedClaim.endedAt !== undefined && observedClaim.writerId === evidence.writerId);
+	const publication = verified ? evidence.view : undefined;
+	const resolvedClaim = publication !== undefined || (!verified && (observedClaim.kind === "absent" || observedClaim.kind === "dead"));
+	const claim: ClaimObservation = publication ? { kind: "live", label: "Verified current host" }
+		: verified ? { kind: "unknown", error: "The current host has no successful bounded publication" } : observedClaim;
+	const unknownReason = evidence && evidence.kind !== "verified" ? evidence.reason
+		: !evidence && observedClaim.kind === "unknown" ? observedClaim.error : "The current host has no successful bounded publication";
+	return { publication, resolvedClaim, claim, unknownReason };
+}
+
+function publishedRows(view: CatalogView, observedAt: string, { claim, publication, unknownReason }: ReturnType<typeof catalogOwner>): AgentConversationSummary[] {
+	const hints = new Map((view.attention?.rows ?? []).map((hint) => [hint.identity, hint.kind]));
+	const ownerLabel = `${publication ? "Current host publication" : "Host metadata"} at ${view.updatedAt}; claim observed at ${observedAt}${claim.kind === "unknown" ? `; ${unknownReason}` : ""}`;
+	return view.rows.map((source) => {
+		const row = { ...source } as AgentConversationSummary;
+		const hint = hints.get(source.id);
+		if (hint !== undefined) row.attention = hint;
+		row.owner = claimOwner(claim);
+		row.ownerLabel = ownerLabel;
+		if (claim.kind === "unknown" && row.state === "working") {
+			row.state = "unavailable";
+			row.partial = true;
+			row.error = unknownReason;
+		} else if (claim.kind !== "live" && row.state === "working") row.state = "interrupted";
+		if (claim.kind !== "live") row.currentTool = undefined;
+		return enrichDashboardRow(row, view.profiles);
+	});
+}
+
 export class AgentManager {
 	readonly managerProtocol = MANAGER_PROTOCOL;
 	private coldObservations = createColdObservationCache();
@@ -284,7 +317,7 @@ export class AgentManager {
 	private catalogueScan?: Promise<void>;
 	private catalogueScanAgain = false;
 	private readonly wakeAttempts = new BoundedMap<ReadonlyMap<string, string>>(MAX_INVENTORY_PAGES * 20);
-	private readonly recoveryClients = new Map<string, { close: () => void; refresh: () => Promise<void> }>();
+	private readonly recoveryClients = new Map<string, { client: HostConnection; close: () => void; refresh: () => Promise<void> }>();
 	private readonly primaries = new Map<string, PrimaryClient>();
 	private readonly primaryChannels = new Map<string, PrimaryChannel>();
 	private readonly closingPrimaries = new Map<string, Promise<void>>();
@@ -800,52 +833,42 @@ export class AgentManager {
 		const inventory = await this.inventory.read();
 		const activeStorageIds = [...new Set([...this.launchRows.keys(), ...this.opening.keys(), ...this.recovering])];
 		const page = projectCatalogPriority(inventory, { cursor: input.cursor, ownerIds: input.ownerId ? [input.ownerId] : [...this.primaries.keys()], activeStorageIds, limit: MAX_INVENTORY_PAGES * 20 });
-		const coverage = { complete: page.nextCursor === null && page.coverage.unreadable === 0 && page.coverage.unknownClaims === 0, storagesVisited: page.coverage.inspected,
+		const coverage = { complete: page.nextCursor === null && page.coverage.remaining === 0 && page.coverage.unreadable === 0, storagesVisited: page.coverage.inspected,
 			skipped: page.coverage.unreadable, omitted: 0, nextCursor: page.nextCursor, inventory: page.coverage,
-			projections: {} as Record<string, { skipped: number; omitted: number }> };
+			projections: {} as Record<string, { skipped: number; omitted: number; unresolvedClaim: boolean }>, unresolvedClaims: 0 };
 		for (const { record, modifiedAt, priority, claim, observedAt } of page.items) {
 			const projection = await this.catalogRows(record, claim, observedAt);
 			coverage.skipped += projection.skipped;
+			if (!projection.resolvedClaim) coverage.unresolvedClaims++;
 			coverage.omitted += projection.omitted;
-			coverage.projections[record.storageId] = { skipped: projection.skipped, omitted: projection.omitted };
+			coverage.projections[record.storageId] = { skipped: projection.skipped, omitted: projection.omitted, unresolvedClaim: !projection.resolvedClaim };
 			const recoveryError = this.recoveryErrors.get(record.storageId);
 			const note = this.recoveryNotes.get(record.storageId);
 			rows.push(...projection.rows.map((row) => ({ ...row, rosterOrder: { priority, modifiedAt }, ...(record.ownerId ? { creatingOwnerId: record.ownerId } : {}),
 				...(note === undefined ? {} : { ownerLabel: `${note} ${row.ownerLabel ?? ""}`.trim() }),
 				...(recoveryError === undefined ? {} : { health: { ...row.health, lastError: recoveryError } }) })));
 		}
+		coverage.complete &&= coverage.unresolvedClaims === 0 && coverage.skipped === 0 && coverage.omitted === 0;
 		return { rows, coverage, observedAt: page.observedAt };
 	}
 
-	private async catalogRows(record: CatalogRecord, observedClaim: ClaimObservation, observedAt: string): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number }> {
+	private async catalogRows(record: CatalogRecord, observedClaim: ClaimObservation, observedAt: string): Promise<{ rows: AgentConversationSummary[]; skipped: number; omitted: number; resolvedClaim: boolean }> {
+		const connection = this.clients.get(record.storageId) ?? this.recoveryClients.get(record.storageId)?.client;
+		const owner = catalogOwner(record.storageId, observedClaim, connection?.ownerEvidence);
+		const { publication, resolvedClaim } = owner;
 		const starting = this.launchRows.get(record.storageId);
-		const view = record.view;
+		const view = publication ?? record.view;
 		if (starting) {
 			const published = view?.rows.find((row) => row.id === record.storageId);
 			if (this.opening.has(record.storageId) || !published || view?.unavailable || (starting.firstMessage && !published.firstMessage))
-				return { rows: [starting], skipped: 0, omitted: 0 };
+				return { rows: [starting], skipped: 0, omitted: 0, resolvedClaim };
 			this.launchRows.delete(record.storageId);
 		}
 		if (!view || view.unavailable) {
-			return { skipped: 1, omitted: 0, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt), owner: claimOwner(observedClaim), state: "unavailable", cost: 0, partial: true, error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state" }] };
+			return { skipped: 1, omitted: 0, resolvedClaim, rows: [{ id: record.storageId, storageId: record.storageId, cwd: record.cwd, name: record.name, modifiedAt: Date.parse(view?.updatedAt ?? record.createdAt), owner: claimOwner(observedClaim), state: "unavailable", cost: 0, partial: true, error: view?.unavailable ?? "Host metadata is unavailable; inspect this conversation for native state" }] };
 		}
-		const claim = observedClaim;
-		const hints = new Map((view.attention?.rows ?? []).map((hint) => [hint.identity, hint.kind]));
-		const rows = view.rows.map((source) => {
-			const row = { ...source } as AgentConversationSummary;
-			const hint = hints.get(source.id);
-			if (hint !== undefined) row.attention = hint;
-			row.owner = claimOwner(claim);
-			row.ownerLabel = `Host metadata at ${view.updatedAt}; claim observed at ${observedAt}${claim.kind === "unknown" ? `; ${claim.error}` : ""}`;
-			if (claim.kind === "unknown" && row.state === "working") {
-				row.state = "unavailable";
-				row.partial = true;
-				row.error = claim.error;
-			} else if (claim.kind !== "live" && row.state === "working") row.state = "interrupted";
-			if (claim.kind !== "live") row.currentTool = undefined;
-			return enrichDashboardRow(row, view.profiles);
-		});
-		return { rows, skipped: view.coverage.complete ? 0 : 1, omitted: view.coverage.omitted };
+		const rows = publishedRows(view, observedAt, owner);
+		return { rows, skipped: view.coverage.complete ? 0 : 1, omitted: view.coverage.omitted, resolvedClaim };
 	}
 
 	async snapshot(sessionId: string, params: { before?: number; limit?: number; maxBytes?: number } = {}): Promise<ConversationSnapshotPage> {
@@ -1234,7 +1257,8 @@ export class AgentManager {
 		const loss = Symbol();
 		this.recoveryHolds.set(storageId, loss);
 		if (client.ownerReleased) return;
-		try { if (this.catalog.read(storageId).recoveryDue !== true) return; }
+		let record: CatalogRecord;
+		try { record = this.catalog.read(storageId); if (record.recoveryDue !== true) return; }
 		catch (error) { this.recordRecoveryError(storageId, errorText(error)); return; }
 		const recover = () => {
 			if (this.recoveryHolds.get(storageId) !== loss || this.shuttingDown || client.ownerReleased) return;
@@ -1255,6 +1279,13 @@ export class AgentManager {
 			} catch (error) { this.recordRecoveryError(storageId, errorText(error)); }
 		};
 		if (!client.ownedExit) {
+			const paths = hostPaths(record);
+			const ended = observeClaim(paths.claim, paths.identity);
+			if (ended.kind === "dead" && ended.endedAt !== undefined && ended.writerId === client.writerId) {
+				this.recoveryErrors.delete(storageId);
+				this.failures.delete(storageId);
+				return;
+			}
 			this.recordRecoveryError(storageId, "Host link is unavailable without an owned child-exit event. Retained work remains; use agent_attach for explicit recovery.");
 			return;
 		}
@@ -1275,12 +1306,15 @@ export class AgentManager {
 			unsubscribe();
 			removeClose();
 			primary.signal.removeEventListener("abort", close);
-			this.recoveryClients.delete(storageId);
-			this.recoveryNotes.delete(storageId);
-			this.recovering.delete(storageId);
+			if (this.recoveryClients.get(storageId) === managed) {
+				this.recoveryClients.delete(storageId);
+				this.recoveryNotes.delete(storageId);
+				this.recovering.delete(storageId);
+			}
 			void client.close().catch((error) => this.failures.set(storageId, errorText(error)));
 		};
-		this.recoveryClients.set(storageId, { close, refresh: () => check() });
+		const managed = { client, close, refresh: () => check() };
+		this.recoveryClients.set(storageId, managed);
 		primary.signal.addEventListener("abort", close, { once: true });
 		const lost = () => {
 			if (closed) return;
@@ -1288,6 +1322,11 @@ export class AgentManager {
 			this.hostLost(storageId, client);
 		};
 		removeClose = client.onClose(lost);
+		const failed = (error: unknown) => {
+			if (closed) return;
+			this.failures.set(storageId, errorText(error));
+			lost();
+		};
 		const check = async () => {
 			if (closed) return;
 			if (checking) { again = true; return; }
@@ -1301,10 +1340,7 @@ export class AgentManager {
 					}
 					void this.refreshFooter();
 				} while (again && !closed);
-			} catch (error) {
-				lost();
-				this.failures.set(storageId, errorText(error));
-			}
+			} catch (error) { failed(error); }
 			finally { checking = false; }
 		};
 		try {
@@ -1374,8 +1410,7 @@ export class AgentManager {
 	async sessionFigures(ownerId: string, page?: AgentConversationPage): Promise<string> {
 		const observed = page ?? await this.dashboardPage({ ownerId });
 		const text = this.figuresForRows(ownerId, observed.rows);
-		const inventory = observed.coverage.inventory;
-		return (inventory.remaining || inventory.unreadable || inventory.unknownClaims)
+		return !observed.coverage.complete
 			? text.replace(/(agents: \d+\/\d+)( active)/u, "$1+$2") : text;
 	}
 

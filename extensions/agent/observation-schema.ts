@@ -18,7 +18,7 @@ import { str, num, int, bool, nul, lit, union, arr, opt, obj, nullable, map, typ
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
 import { matchesSchema, schemaErrors } from "./schema-check.ts";
-import { FleetStatusSchema } from "./fleet-status.ts";
+import { FleetStatusSchema, FleetSelectionProperties } from "./fleet-status.ts";
 import { OrdinaryPrimaryObservationSchema } from "./primary-observation.ts";
 import { EffortAwarenessSchema } from "./effort-schema.ts";
 import { CreatedAgentsSchema } from "./agent-lineage.ts";
@@ -50,6 +50,13 @@ const cursorSchema = jsonObject;
 const storageStatusId = str({ pattern: STORAGE_STATUS_ID_PATTERN });
 const storageStatusLimit = int({ minimum: 1, maximum: 50 });
 export const StorageStatusPageInputSchema = obj({ view: lit("storage-page"), storageId: storageStatusId, cursor: opt(cursorSchema), limit: opt(storageStatusLimit) });
+/** Object-root parameters survive provider conversion; execution validates selector combinations. */
+export const StatusToolInputSchema = obj({
+	sessionId: opt(str({ minLength: 1, description: "Default: the calling conversation; omit for the storage overview." })),
+	view: opt(union([lit("fleet"), lit("storage-page")])),
+	...FleetSelectionProperties,
+	storageId: opt(storageStatusId), cursor: opt(cursorSchema), limit: opt(storageStatusLimit),
+});
 export const StorageStatusCoverageSchema = obj({
 	complete: boolean, returned: count, scanned: count,
 	next: union([nul(), obj({ tool: lit("agent_status"), view: lit("storage-page"), storageId: storageStatusId, cursor: cursorSchema, limit: storageStatusLimit })]),

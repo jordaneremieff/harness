@@ -637,7 +637,7 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 		assert.deepEqual(structuredObservation(schema, fixture), fixture);
 	}
 	for (const host of [{ pid: 4242, inventory }, { live: false }]) {
-		for (const selected of [{ conversation }, { conversations: [conversation] }]) {
+		for (const selected of [{ conversation }, { conversations: [conversation], coverage: { complete: true, returned: 1, scanned: 1, next: null } }]) {
 			const input = { ...selected, ...host, storageId: "storage", deliveryError: fullText };
 			assert.deepEqual(
 				structuredObservation(StatusOutputSchema, input),

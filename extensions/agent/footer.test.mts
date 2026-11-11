@@ -210,10 +210,13 @@ for (const kind of ["incomplete", "omitted", "unavailable", "missing", "empty", 
 			...(kind === "unavailable" ? { unavailable: "Fixture view unavailable" } : {}),
 		});
 		const observed = await manager.dashboardPage();
-		assert.equal(observed.coverage.complete, true, "view uncertainty does not change catalog scan coverage");
+		assert.equal(observed.coverage.inventory.unreadable, 0);
+		assert.equal(observed.coverage.inventory.unknownClaims, 0);
+		assert.equal(observed.coverage.inventory.remaining, 0);
+		assert.equal(observed.coverage.complete, kind === "partial", "presentation includes projection uncertainty without changing raw inventory coverage");
 		const count = !inScope || kind === "empty" ? 1 : 2;
 		const cost = inScope && ["incomplete", "omitted", "partial"].includes(kind) ? "0.75" : "0.25";
-		const expected = `agents: 0/${count} active · ~$${cost}`;
+		const expected = `agents: 0/${count}${observed.coverage.complete ? "" : "+"} active · ~$${cost}`;
 		assert.equal(await manager.sessionFigures("primary", observed), expected);
 		assert.equal(await manager.sessionFigures("primary"), expected, "footer and dashboard reuse the same scoped rows");
 	});

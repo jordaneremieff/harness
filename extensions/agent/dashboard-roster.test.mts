@@ -43,6 +43,13 @@ it("merges one current inventory scan and one latest projection per retained sto
 	assert.equal(merged.omitted, 3);
 	assert.deepEqual(merged.projections, current.projections);
 	assert.equal(previous.projections.a.omitted, 2, "the prior observation is unchanged");
+	const raw = { ...inventory, unreadable: 0, unknownClaims: 2 };
+	const unresolved = { ...previous, inventory: raw, projections: { a: { skipped: 0, omitted: 0, unresolvedClaim: true } } };
+	const resolved = { ...current, inventory: raw, complete: true, skipped: 0, omitted: 0, projections: { b: { skipped: 0, omitted: 0, unresolvedClaim: false } } };
+	assert.equal(mergeAgentCoverage(unresolved, resolved).complete, false, "a previous selected unknown claim remains unresolved");
+	const refreshed = mergeAgentCoverage(unresolved, { ...resolved, projections: { a: { skipped: 0, omitted: 0, unresolvedClaim: false } } });
+	assert.equal(refreshed.complete, true);
+	assert.equal(refreshed.inventory.unknownClaims, 2, "presentation never rewrites raw claim coverage");
 });
 
 it("describes continuation as excluded output after the complete priority inventory scan", () => {

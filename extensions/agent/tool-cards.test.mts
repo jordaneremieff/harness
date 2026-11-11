@@ -296,10 +296,10 @@ describe("agent result cards", () => {
 		assert.doesNotMatch(text, /no matches|absent|not found/i);
 	});
 
-	it("reports a cold release without an active-host message", () => {
-		const card = createAgentToolCards().agent_abort.renderResult(result({ retiring: false, blockers: [], live: false }), { ...cardKeys, expanded: false, isPartial: false }, theme, context());
-		assert.match(screen(card), /not running/u);
-		assert.doesNotMatch(screen(card), /remains active/u);
+	it("keeps an unavailable release distinct from proof that no host runs", () => {
+		const card = createAgentToolCards().agent_abort.renderResult({ ...result(undefined, "No verified native host endpoint; writer release is unconfirmed"), isError: true }, { ...cardKeys, expanded: false, isPartial: false }, theme, context());
+		assert.match(screen(card), /writer release is unconfirmed/u);
+		assert.doesNotMatch(screen(card), /not running|remains active/u);
 	});
 
 	it("shows admission receipts, fork, rewind, configure, abort, and command outcomes", () => {

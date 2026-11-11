@@ -144,7 +144,9 @@ export interface AgentDashboardCoverage {
 	/** Candidate scan and output bounds from the manager's priority reader. */
 	inventory: CatalogPriorityCoverage;
 	/** Per-storage view exclusions for distinct accounting across refreshed priority pages. */
-	projections: Record<string, { skipped: number; omitted: number }>;
+	projections: Record<string, { skipped: number; omitted: number; unresolvedClaim?: boolean }>;
+	/** Selected claims without a current publication or recorded-generation end. Raw inventory counts remain unchanged. */
+	unresolvedClaims?: number;
 	/** True when the catalog scan and page output reached the inventory end. */
 	complete: boolean;
 	/** Storages visited for this page. */
@@ -160,9 +162,11 @@ export interface AgentDashboardCoverage {
 /** Merge retained rows while counting one latest inventory scan and one projection per storage. */
 export function mergeAgentCoverage(previous: AgentDashboardCoverage, current: AgentDashboardCoverage): AgentDashboardCoverage {
 	const projections = { ...previous.projections, ...current.projections };
-	return { ...current, projections, storagesVisited: current.inventory.inspected,
-		skipped: current.inventory.unreadable + Object.values(projections).reduce((total, item) => total + item.skipped, 0),
-		omitted: Object.values(projections).reduce((total, item) => total + item.omitted, 0) };
+	const skipped = current.inventory.unreadable + Object.values(projections).reduce((total, item) => total + item.skipped, 0);
+	const omitted = Object.values(projections).reduce((total, item) => total + item.omitted, 0);
+	const unresolvedClaims = Object.values(projections).filter(item => item.unresolvedClaim === true).length;
+	return { ...current, projections, storagesVisited: current.inventory.inspected, skipped, omitted, unresolvedClaims,
+		complete: current.complete && skipped === 0 && omitted === 0 && unresolvedClaims === 0 };
 }
 
 /** One bounded dashboard page: roster rows plus the coverage of their collection. */

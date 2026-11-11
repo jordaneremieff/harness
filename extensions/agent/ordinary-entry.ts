@@ -11,9 +11,9 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { bool, int, map, num, obj, opt, str, union, unknown, type Schema, type Static } from "@earendil-works/pi-schema";
+import { bool, int, map, num, obj, opt, str, unknown, type Schema, type Static } from "@earendil-works/pi-schema";
 import { sessionNameFromInput } from "../../session-name/index.ts";
-import { storageStatusPageInput } from "./storage-status.ts";
+import { storageStatusPageInput, validateStatusSelectors } from "./storage-status.ts";
 import { createAgentObservationSource } from "./agent-observation.ts";
 import {
 	PresetParameter,
@@ -40,7 +40,6 @@ import {
 	type AgentControlExposure,
 	type AgentControlToolName,
 } from "./control-guidance.ts";
-import { controlText } from "./control-result.ts";
 import { dashboardPreferences } from "./dashboard-preferences.ts";
 import type { AgentContributionHost } from "./durable-agents.ts";
 import {
@@ -52,13 +51,13 @@ import {
 import { formatEffortAwareness } from "./effort-awareness.ts";
 import { EFFORT_PURPOSE_ENTRY, purposeExcerpt, retainedPurpose } from "./effort-purpose.ts";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
-import { FleetSelectionProperties, validateFleetSelection } from "./fleet-status.ts";
+import { validateFleetSelection } from "./fleet-status.ts";
 import type { IndependentCommandLaunch } from "./independent-launch.ts";
 import { AgentManager, MANAGER_PROTOCOL, type AgentCaller } from "./manager.ts";
 import {
 	InspectToolOutputSchema,
 	StatusToolOutputSchema,
-	StorageStatusPageInputSchema,
+	StatusToolInputSchema,
 	structuredObservation,
 } from "./observation-schema.ts";
 import type { PrimaryIntentClaim } from "./primary-channel.ts";
@@ -203,8 +202,7 @@ const result = (value: unknown, schema?: Schema): AgentToolResult<unknown> => ({
 	structuredContent: schema ? structuredObservation(schema, value) : JSON.parse(JSON.stringify(value ?? null)),
 });
 function releaseCommandMessage(value: unknown, label: string): string {
-	const state = value as { live: false; retiring: false; blockers: string[] } | { live?: true; retiring: boolean; blockers: string[]; writesPlaced: number };
-	if (state.live === false) return `Agent “${label}” is not running.`;
+	const state = value as { retiring: boolean; blockers: string[]; writesPlaced: number };
 	const message = state.retiring ? `Released “${label}”; its host is retiring.` : `Stopped “${label}”; the host stays up: ${state.blockers.join("; ")}.`;
 	const writes = state.writesPlaced > 0 ? ` Placed ${state.writesPlaced} leftover ${state.writesPlaced === 1 ? "write" : "writes"}.` : "";
 	return `${message}${writes}`;
@@ -342,8 +340,6 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 				}
 				const value = await execute(admitted, ctx, callId, admissionCaller);
 				const output = result(value, schema);
-				if (name === "agent_abort" && admitted.release === true && (value as { live?: unknown })?.live === false)
-					return { ...output, content: [{ type: "text", text: controlText(value) }] };
 				if (name === "agent_compact" && typeof (value as { text?: unknown })?.text === "string")
 					return { ...output, content: [{ type: "text", text: (value as { text: string }).text }] };
 				return output;
@@ -402,9 +398,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_status",
-		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected Durable agent returns full state and bounded pending timers. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state. For one storage, use view: storage-page with its exact storageId and follow coverage.next unchanged; this backend JSON cursor is separate from agent_list discovery.",
-		union([obj({ sessionId: opt(id), view: opt(StringEnum(["fleet"], { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })), ...FleetSelectionProperties }, {}), StorageStatusPageInputSchema]),
+		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected Durable agent returns full state and bounded pending timers. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state. For one storage, use view: storage-page with its exact storageId and call the tool named by coverage.next.tool with its remaining fields unchanged; this backend JSON cursor is separate from agent_list discovery.",
+		StatusToolInputSchema,
 		(input, ctx) => {
+			validateStatusSelectors(input);
 			if (input.view === "storage-page") return getManager().status(storageStatusPageInput(input));
 			const sessionId = input.sessionId as string | undefined;
 			const view = input.view as "fleet" | undefined;

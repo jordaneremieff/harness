@@ -254,7 +254,7 @@ async function main(): Promise<void> {
 	const metadata = parseHostMetadata(JSON.parse(metadataJson));
 	const statePath = join(dirname(metadata.storagePath), "state.json");
 	writeFixtureState(statePath, { starts: (readFixtureState(statePath).starts ?? 0) + 1 });
-	const host = await runHost(() => createFixtureRuntime(statePath), { metadata });
+	const host = await runHost(() => ({ ...createFixtureRuntime(statePath), ...(process.env.HOST_FIXTURE_PUBLICATION === "1" ? { publishedView: { storageId: metadata.storageId, updatedAt: new Date().toISOString(), rows: [], coverage: { complete: true, omitted: 0 } } } : {}) }), { metadata });
 	await host.done;
 }
 

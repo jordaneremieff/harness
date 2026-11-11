@@ -2,9 +2,9 @@ import { str, int, bool, nul, union, arr, opt, obj } from "@earendil-works/pi-sc
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { existsSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { hostname, tmpdir } from "node:os";
 import { createFixtureRuntime, eventLog, fixtureMetadata, waitForFixtureState, waitForProcessExit } from "./host-fixture.mts";
 import { parseHostReadyLine } from "./host-protocol.ts";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,7 @@ import { fixtureRuntime, fixtureRegistry, hostOptions } from "./durable-host-fix
 import { it, beforeEach, afterEach } from "node:test";
 import { createColdObservationCache, openColdObservationSnapshot, type ColdObservationHooks, type ColdObservationOptions } from "./cold-observation.ts";
 import type { HostMetadata } from "./host-protocol.ts";
+import type { HostChanges } from "./host-changes.ts";
 
 let cache: ReturnType<typeof createColdObservationCache>;
 let counts: { opens: number; reads: number; closes: number };
@@ -43,6 +44,25 @@ const SnapshotPageSchema = obj({
 		complete: bool(), entries: int({ minimum: 0 }), bytes: int({ minimum: 0 }),
 		hiddenExcluded: int({ minimum: 0 }), entryLimitReached: bool(), byteLimitReached: bool(),
 	}),
+});
+
+it("cold owner classification ends a recorded generation without inferring a current lease holder", async t => {
+	const root = mkdtempSync(join(tmpdir(), "cold-generation-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const metadata = fixtureMetadata(root), paths = hostPaths(metadata);
+	mkdirSync(dirname(paths.claim), { recursive: true });
+	mkdirSync(dirname(metadata.storagePath), { recursive: true });
+	writeFileSync(metadata.storagePath, "synthetic source");
+	const record = { token: "writer", sessionId: metadata.storageId, cwd: metadata.cwd, host: hostname(), pid: process.pid, createdAt: "2026-01-01T00:00:00.000Z" };
+	const read = () => observeColdStorage(metadata, "status", {}, { hooks: { open: async input => ({ request: async () => ({ owner: input.classifyOwner?.().owner, live: false }), close: async () => {} }) } });
+	writeFileSync(paths.claim, JSON.stringify({ ...record, endedAt: record.createdAt }));
+	assert.deepEqual(await read(), { owner: "unknown", live: false, storageId: metadata.storageId });
+	writeFileSync(paths.claim, JSON.stringify(record));
+	assert.deepEqual(await read(), { owner: "unavailable", live: false, storageId: metadata.storageId });
+	t.mock.method(process, "kill", () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+	assert.deepEqual(await read(), { owner: "unknown", live: false, storageId: metadata.storageId });
+	writeFileSync(paths.claim, JSON.stringify({ ...record, host: "foreign", endedAt: record.createdAt }));
+	assert.deepEqual(await read(), { owner: "unavailable", live: false, storageId: metadata.storageId });
 });
 
 it("rereads an absent storage that appears during its empty observation open", async () => {
@@ -156,9 +176,10 @@ it("keeps a fixture receipt pending until its release protocol request", async (
 	const path = join(f.root, "state.json");
 	const runtime = createFixtureRuntime(path);
 	const observed = {
-		subscribeChanges: async (listener: () => void) => {
-			const unsubscribe = runtime.onChange?.(listener) ?? (() => {});
-			listener();
+		subscribeChanges: async (listener: (frame: HostChanges) => void) => {
+			const notify = () => listener({ revision: 0, writerId: "fixture" });
+			const unsubscribe = runtime.onChange?.(notify) ?? (() => {});
+			notify();
 			return unsubscribe;
 		},
 	};

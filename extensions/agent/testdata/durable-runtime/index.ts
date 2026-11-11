@@ -32,7 +32,7 @@ import { fileURLToPath } from "node:url";
 import { publishFixtureMarker } from "./signal.ts";
 import type * as Durable from "@earendil-works/pi-durable";
 import { createAssistantMessageEventStream, type AssistantMessage, type Model, type TranscriptContext } from "@earendil-works/pi-ai";
-import { getPackageDir, ModelRuntime, VERSION, type AgentSessionServices, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createCodemodeExtension, getPackageDir, ModelRuntime, VERSION, type AgentSessionServices, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { str, obj } from "@earendil-works/pi-schema";
 
 const providerId = "durable-runtime-fixture";
@@ -188,6 +188,21 @@ function retryError() {
 	return events;
 }
 
+function storagePages(context: TranscriptContext) {
+	const result = context.messages.findLast(item => item.role === "toolResult" && item.toolName === "codemode");
+	if (result) { writeFileSync(join(controlDir(), "storage-pages.json"), JSON.stringify(result)); return answer(); }
+	const storageId = userText(context).split("STORAGE_PAGE:")[1]?.split("\n")[0];
+	if (!storageId) throw new Error("The storage-page fixture requires its exact storage identity");
+	const code = `await tools.agent_spawn({name:"page peer",model:"${providerId}/${modelId}"});
+		const first = await tools.agent_status({view:"storage-page",storageId:${JSON.stringify(storageId)},limit:1});
+		if (!first.coverage.next) throw new Error("The initial page has no continuation");
+		const {tool,...next} = first.coverage.next;
+		if (tool !== "agent_status") throw new Error("Unexpected continuation tool");
+		const last = await tools[tool](next);
+		return {first,last};`;
+	return completed([{ type: "toolCall", id: "storage-pages", name: "codemode", arguments: { code } }], "toolUse");
+}
+
 function intent(context: TranscriptContext) {
 	const texts = context.messages.flatMap(item => item.role === "user" ? [typeof item.content === "string" ? item.content : item.content.flatMap(part => part.type === "text" ? [part.text] : []).join("\n")] : []);
 	const text = texts.findLast(value => value.startsWith("INTENT_INPUT:"));
@@ -211,6 +226,7 @@ function stream(_model: unknown, context: TranscriptContext, options?: RequestOp
 	if (mode === "retry") return retryError();
 	if (mode === "spawn") return spawn(context);
 	if (mode === "intent") return intent(context);
+	if (mode === "storage-pages") return storagePages(context);
 	if (mode === "await-local" || mode === "await-reference") return awaited(context, mode, options?.signal);
 	if (mode === "tool-round" && context.messages.at(-1)?.role !== "toolResult") {
 		return completed([{ type: "toolCall", id: `read-${context.messages.length}`, name: "read", arguments: { path: join(controlDir(), "input.txt") } }], "toolUse");
@@ -241,7 +257,8 @@ function recordNativeCommit(publication: Durable.CommitPublication): void {
 	}
 }
 
-export default function registerDurableRuntimeFixture(pi: ExtensionAPI): void {
+export default async function registerDurableRuntimeFixture(pi: ExtensionAPI): Promise<void> {
+	if (process.env.DURABLE_TEST_MODE === "storage-pages") await createCodemodeExtension({ models: false })(pi);
 	pi.registerProvider({
 		id: providerId,
 		name: "Durable runtime fixture",

@@ -23,15 +23,14 @@ export interface ClaimFile {
 }
 
 /**
- * `live` is a same-host process that exists (or refuses a signal probe);
- * `dead` is a same-host process that no longer exists; `unknown` is a claim
- * whose owner cannot be established: another host, an invalid record, or an
- * unexpected probe failure.
+ * Native `dead` ends only the recorded generation; `unknown` establishes no
+ * current holder. The separate process-lock classifier also returns `live`
+ * for a present same-host process. None of these observations owns a lease.
  */
 export type ClaimObservation =
 	| { kind: "absent" }
 	| { kind: "live"; label: string }
-	| { kind: "dead"; label: string }
+	| { kind: "dead"; label: string; writerId?: string; endedAt?: string }
 	| { kind: "unknown"; label?: string; error: string };
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -114,10 +113,27 @@ export function validClaim(claim: unknown, identity: ClaimIdentity): claim is Re
 		&& Number.isSafeInteger(claim.pid) && Number(claim.pid) > 0 && Number(claim.pid) <= MAX_PID;
 }
 
-/** Diagnostic metadata never proves possession of the native writer lease. */
+/** Native identities qualify generation-end evidence, never lease possession. */
+export function validNativeWriterId(value: unknown): value is string {
+	return typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\u0000-\u0020\u007f-\u009f\ud800-\udfff]/u.test(value);
+}
+
+/** Diagnostic metadata can end its recorded generation, never establish a current lease holder. */
 export function classifyClaim(claim: unknown, identity: ClaimIdentity): ClaimObservation {
-	if (!validClaim(claim, identity)) return { kind: "unknown", error: "Writer claim is invalid" };
-	return { kind: "unknown", label: claim.host, error: "Native claim metadata does not establish a live writer" };
+	if (!validClaim(claim, identity) || !validNativeWriterId(claim.token)) return { kind: "unknown", error: "Writer claim is invalid" };
+	if (claim.host !== hostname()) return { kind: "unknown", label: claim.host, error: "Writer claim belongs to another host" };
+	const label = `PID ${claim.pid}`;
+	if (claim.endedAt !== undefined) {
+		if (!timestamp(claim.endedAt) || claim.endedAt < String(claim.createdAt)) return { kind: "unknown", label, error: "Writer claim has an invalid end marker" };
+		return { kind: "dead", label, writerId: claim.token, endedAt: claim.endedAt };
+	}
+	try { process.kill(claim.pid, 0); }
+	catch (error) {
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code === "ESRCH") return { kind: "dead", label, writerId: claim.token };
+		if (code !== "EPERM") return { kind: "unknown", label, error: `Writer process check failed (${code ?? "unknown"})` };
+	}
+	return { kind: "unknown", label, error: "Native claim metadata does not establish a live writer" };
 }
 
 /** Process presence remains the distinct contract of non-native process locks. */

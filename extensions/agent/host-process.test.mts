@@ -5,7 +5,7 @@ import { once } from "node:events";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { it } from "node:test";
+import { after, it } from "node:test";
 import { PluginError } from "@earendil-works/chord";
 import { connectTransport, type TransportClient, type TransportRequest } from "../../transport/index.ts";
 import { observeClaim } from "./claims.ts";
@@ -25,9 +25,12 @@ function writerAvailable(config: HostMetadata): boolean {
 	return true;
 }
 
-function fixtureRoot(t: { after(fn: () => void): void }): string {
+const fixtureRoots = new Set<string>();
+after(() => { for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true }); });
+
+function fixtureRoot(_t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "host-process-"));
-	t.after(() => rmSync(root, { recursive: true, force: true }));
+	fixtureRoots.add(root);
 	return root;
 }
 
@@ -209,7 +212,7 @@ it("returns a failed runtime response before shared shutdown releases the claim"
 		await host.done;
 		await host.close();
 		assert.equal(closed, 1, "fatal and explicit close share one shutdown");
-		assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "unknown");
+		assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "dead");
 		assert.equal(writerAvailable(config), true);
 	} finally { await client.dispose().catch(() => {}); }
 	const replacement = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
@@ -271,7 +274,7 @@ it("retires after the idle window and releases the claim", { timeout: 15000 }, a
 	const root = fixtureRoot(t);
 	const { host, metadata: config } = await startHost(root, 50);
 	await host.done;
-	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "unknown");
+	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "dead");
 	assert.equal(writerAvailable(config), true);
 });
 
@@ -449,6 +452,43 @@ it("does not acquire a claim when validation fails before construction", async (
 	await host.close();
 });
 
+it("writes a clean end through the held descriptor and clears it for the next holder", { timeout: 10000 }, async t => {
+	const root = fixtureRoot(t), config = metadata(root), paths = hostPaths(config);
+	const first = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
+	const before = JSON.parse(readFileSync(paths.claim, "utf8"));
+	const inode = lstatSync(paths.claim).ino;
+	await first.close();
+	const ended = JSON.parse(readFileSync(paths.claim, "utf8"));
+	assert.equal(ended.token, before.token);
+	assert.ok(ended.endedAt >= ended.createdAt);
+	assert.equal(observeClaim(paths.claim, paths.identity).kind, "dead");
+	assert.equal(lstatSync(paths.socket, { throwIfNoEntry: false }), undefined);
+	const second = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
+	t.after(() => second.close());
+	const current = JSON.parse(readFileSync(paths.claim, "utf8"));
+	assert.notEqual(current.token, ended.token);
+	assert.equal(current.endedAt, undefined);
+	assert.equal(lstatSync(paths.claim).ino, inode);
+});
+
+it("an end-record write failure retains exclusion until its process exits", { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t), config = metadata(root), paths = hostPaths(config);
+	const source = `
+		import { runHost } from ${JSON.stringify(new URL("./host-process.ts", import.meta.url).href)};
+		const host = await runHost(() => ({ request:async()=>({}), close:async()=>{}, isIdle:()=>false }), {metadata:JSON.parse(process.argv[1]),idleMs:0,announceReady(){},writeEndRecord(){throw new Error('end write failed');}});
+		try {await host.close();} catch(error) {process.send(error.message);}
+		await new Promise(resolve=>process.once('message',resolve));process.exit(0);`;
+	const child = spawn(process.execPath, ["--input-type=module", "--eval", source, JSON.stringify(config)], { stdio: ["ignore", "ignore", "pipe", "ipc"] });
+	t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); });
+	const [message] = await once(child, "message");
+	assert.equal(message, "end write failed");
+	assert.equal(writerAvailable(config), false);
+	assert.equal(JSON.parse(readFileSync(paths.claim, "utf8")).endedAt, undefined);
+	assert.equal(lstatSync(paths.socket, { throwIfNoEntry: false }), undefined);
+	const exited = once(child, "exit"); child.send("exit"); await exited;
+	assert.equal(writerAvailable(config), true);
+});
+
 it("retains exclusion when native close fails", async (t) => {
 	const root = fixtureRoot(t), config = metadata(root);
 	const runtime = { ...echoRuntime(), close: async () => { throw new Error("native close failed"); } };
@@ -456,6 +496,7 @@ it("retains exclusion when native close fails", async (t) => {
 	const done = assert.rejects(host.done, /native close failed/u);
 	await assert.rejects(host.close(), /native close failed/u);
 	await done;
+	assert.equal(JSON.parse(readFileSync(hostPaths(config).claim, "utf8")).endedAt, undefined);
 	await assert.rejects(runHost(echoRuntime, { metadata: config, idleMs: 0 }), HostClaimRefusedError);
 	assert.equal(writerAvailable(config), false);
 });

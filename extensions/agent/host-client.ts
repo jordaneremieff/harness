@@ -33,6 +33,7 @@ import {
 } from "./host-protocol.ts";
 import { HOST_CONTRACT, type RuntimeContract } from "./version-contract.ts";
 import { isObservationFrame, type ObservationFrame } from "./live-frames.ts";
+import { parseHostChanges, type HostChanges, type NativeOwnerEvidence } from "./host-changes.ts";
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30_000;
 // An unresolved project trust decision includes time for the primary UI answer.
@@ -110,6 +111,10 @@ export interface HostConnection {
 	readonly metadata: HostMetadata;
 	/** Current operation contracts advertised by this host. */
 	readonly runtimeContract: RuntimeContract;
+	/** Negotiated generation; it remains an identity, not evidence of a live connection. */
+	readonly writerId?: string;
+	/** Current-link publication evidence, without a socket probe or a disk reread. */
+	readonly ownerEvidence?: NativeOwnerEvidence;
 	/** Exact owned child behind this link, when this process has that event source. */
 	readonly ownedExit?: Promise<OwnedHostExit> | undefined;
 	/** A successful owner close follows writer release; local client close does not. */
@@ -124,7 +129,7 @@ export interface HostConnection {
 	 * Optional so structural test doubles remain valid; every acquired
 	 * connection implements it.
 	 */
-	subscribeChanges?(listener: () => void, signal?: AbortSignal): Promise<() => void>;
+	subscribeChanges?(listener: (frame: HostChanges) => void, signal?: AbortSignal): Promise<() => void>;
 	/**
 	 * Open one host-owned live observation. Frames arrive as published state,
 	 * coalesced by the host; cancelling the returned handle or aborting `signal`
@@ -139,6 +144,7 @@ export interface HostConnection {
 
 interface Link {
 	readonly client: TransportClient;
+	readonly writerId: string;
 	readonly pid: number;
 	readonly socketPath: string;
 	readonly runtimeContract: RuntimeContract;
@@ -157,7 +163,9 @@ interface PendingCall {
 }
 
 interface ChangeEntry {
-	readonly listener: () => void;
+	readonly listener: (frame: HostChanges) => void;
+	binding?: symbol;
+	frame?: HostChanges;
 	readonly signal: AbortSignal | undefined;
 	subscription: TransportSubscription | undefined;
 	disposed: boolean;
@@ -407,7 +415,7 @@ async function attachLink(metadata: HostMetadata, deadline = performance.now() +
 	const client = await connectClient(paths.serverId, paths.socket, deadline, signal);
 	try {
 		const hello = await readHostHello(client, deadline, signal);
-		return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeContract: hello.contract, ...(attempt?.state === "ready" && !attempt.writerReleased && attempt.validatedReady?.writerId === hello.writerId ? { ownedExit: attempt.exited } : {}) };
+		return { client, writerId: hello.writerId, pid: claimPid(paths), socketPath: paths.socket, runtimeContract: hello.contract, ...(attempt?.state === "ready" && !attempt.writerReleased && attempt.validatedReady?.writerId === hello.writerId ? { ownedExit: attempt.exited } : {}) };
 	} catch (error) {
 		const answered = client.connected;
 		await withinBudget(client.dispose(), deadline).catch(() => undefined);
@@ -476,7 +484,10 @@ class HostConnectionImpl implements HostConnection {
 	private readonly changeEntries = new Map<number, ChangeEntry>();
 	private readonly observationEntries = new Map<number, ObservationEntry>();
 	private nextObservationId = 1;
-	private readonly pendingChanges = new Set<() => void>();
+	private readonly pendingChanges = new Set<ChangeEntry>();
+	private writerIdValue = "";
+	private changeFrame: HostChanges | undefined;
+	private changeError = "The current host has no successful bounded publication";
 	private nextChangeId = 1;
 	private changeScheduled = false;
 	private readonly launchOptions: HostLaunchOptions;
@@ -520,6 +531,12 @@ class HostConnectionImpl implements HostConnection {
 		return this.runtimeContractValue;
 	}
 
+	get writerId(): string { return this.writerIdValue; }
+	get ownerEvidence(): NativeOwnerEvidence {
+		if (this.closedValue || !this.client.connected || this.ownerReleasedValue || this.recovery) return { kind: "unavailable", reason: "The current host link is unavailable or released" };
+		if (!this.changeFrame) return { kind: "unknown", reason: this.changeError };
+		return { kind: "verified", storageId: this.storageId, socketPath: this.socketPathValue, writerId: this.writerIdValue, ...(this.changeFrame.view === undefined ? {} : { view: this.changeFrame.view }) };
+	}
 	get ownedExit(): Promise<OwnedHostExit> | undefined { return this.ownedExitValue; }
 	get ownerReleased(): boolean { return this.ownerReleasedValue; }
 
@@ -547,6 +564,8 @@ class HostConnectionImpl implements HostConnection {
 
 	private installClient(link: Link): void {
 		this.unsubscribeState?.();
+		this.clearPublication("The current host has no successful bounded publication");
+		this.writerIdValue = link.writerId;
 		this.client = link.client;
 		this.pidValue = link.pid;
 		this.socketPathValue = link.socketPath;
@@ -555,6 +574,7 @@ class HostConnectionImpl implements HostConnection {
 		this.ownerReleasedValue = false;
 		this.unsubscribeState = link.client.onClose((reason) => {
 			if (this.closedValue || link.client !== this.client) return;
+			this.clearPublication("The host transport was lost");
 			for (const entry of this.observationEntries.values()) this.markObservationUnavailable(entry);
 			this.startRecovery(new Error(`durable host connection closed: ${reason}`));
 		});
@@ -612,7 +632,7 @@ class HostConnectionImpl implements HostConnection {
 		void client.request(call.call, wireSignal).then(
 			(result) => {
 				if (call.method === "close") {
-					if (client === this.client) this.ownerReleasedValue = true;
+					if (client === this.client) { this.ownerReleasedValue = true; this.clearPublication("The host owner released the writer"); }
 					const attempt = ownedLaunches.get(hostPaths(this.metadata).serverId);
 					if (attempt && ownedExit === attempt.exited) attempt.writerReleased = true;
 				}
@@ -625,7 +645,7 @@ class HostConnectionImpl implements HostConnection {
 	}
 
 
-	async subscribeChanges(listener: () => void, signal?: AbortSignal): Promise<() => void> {
+	async subscribeChanges(listener: (frame: HostChanges) => void, signal?: AbortSignal): Promise<() => void> {
 		if (this.closedValue) throw new Error("durable host connection is closed");
 		if (signal?.aborted) throw abortReason(signal);
 		const id = this.nextChangeId;
@@ -635,9 +655,10 @@ class HostConnectionImpl implements HostConnection {
 		try {
 			await this.bindChangeEntry(entry);
 		} catch (error) {
-			this.changeEntries.delete(id);
+			this.releaseChangeEntry(id);
 			throw toError(error);
 		}
+		if (signal?.aborted) { this.releaseChangeEntry(id); throw abortReason(signal); }
 		if (signal) {
 			const onAbort = () => {
 				this.releaseChangeEntry(id);
@@ -654,19 +675,37 @@ class HostConnectionImpl implements HostConnection {
 	private async bindChangeEntry(entry: ChangeEntry): Promise<void> {
 		if (this.closedValue || entry.disposed) return;
 		const refusal = hostRequestVersionError("changes", this.runtimeContractValue);
-		if (refusal) throw refusal;
-		const subscription = await this.client.subscribe("changes", undefined, () => { if (!this.closedValue && !entry.disposed) this.queueChange(entry.listener); }, entry.signal);
-		if (this.closedValue || entry.disposed) {
-			await subscription.dispose().catch(() => undefined);
-			return;
+		if (refusal) { this.clearPublication(`changes: ${refusal.message}`, false); throw refusal; }
+		const client = this.client;
+		const writerId = this.writerIdValue;
+		const binding = Symbol();
+		entry.binding = binding;
+		const current = () => !this.closedValue && !this.ownerReleasedValue && !entry.disposed && !entry.signal?.aborted && client === this.client && client.connected && entry.binding === binding;
+		const retain = (value: unknown) => {
+			if (!current()) return;
+			const frame = parseHostChanges(value, writerId, this.storageId);
+			entry.frame = frame;
+			this.changeFrame = frame;
+			this.changeError = frame.view === undefined ? "The current host has no successful bounded publication" : "";
+			this.queueChange(entry);
+		};
+		let subscription: TransportSubscription;
+		try {
+			subscription = await client.subscribe("changes", undefined, (value) => {
+				try { retain(value); }
+				catch (error) { if (current()) this.clearPublication(`changes: ${toError(error).message}`, false); }
+			}, entry.signal);
+		} catch (error) {
+			if (current()) this.clearPublication(`changes: ${toError(error).message}`, false);
+			throw error;
 		}
+		if (!current()) { await subscription.dispose().catch(() => undefined); return; }
 		const previous = entry.subscription;
 		if (previous) await previous.dispose().catch(() => undefined);
-		if (this.closedValue || entry.disposed) { await subscription.dispose().catch(() => undefined); return; }
+		if (!current()) { await subscription.dispose().catch(() => undefined); return; }
 		entry.subscription = subscription;
-		queueMicrotask(() => {
-			if (!this.closedValue && !entry.disposed) entry.listener();
-		});
+		try { retain(subscription.value); }
+		catch (error) { if (current()) this.clearPublication(`changes: ${toError(error).message}`, false); await subscription.dispose().catch(() => undefined); throw error; }
 	}
 
 	private releaseChangeEntry(id: number): void {
@@ -675,7 +714,15 @@ class HostConnectionImpl implements HostConnection {
 		entry.disposed = true;
 		entry.removeAbort();
 		this.changeEntries.delete(id);
-		this.pendingChanges.delete(entry.listener);
+		this.pendingChanges.delete(entry);
+		if (this.changeFrame === entry.frame) {
+			this.changeFrame = undefined;
+			this.changeError = "No current publication subscription remains";
+			for (const remaining of this.changeEntries.values()) if (remaining.binding && remaining.frame) this.changeFrame = remaining.frame;
+		}
+		entry.binding = undefined;
+		entry.frame = undefined;
+		if (this.changeEntries.size === 0) this.clearPublication("No current publication subscription remains");
 		const subscription = entry.subscription;
 		entry.subscription = undefined;
 		if (subscription) void subscription.dispose().catch(() => undefined);
@@ -851,18 +898,25 @@ class HostConnectionImpl implements HostConnection {
 		this.observationEntries.clear();
 	}
 
+	private clearPublication(reason: string, invalidateBindings = true): void {
+		this.changeFrame = undefined;
+		this.changeError = reason;
+		this.pendingChanges.clear();
+		for (const entry of this.changeEntries.values()) { entry.frame = undefined; if (invalidateBindings) entry.binding = undefined; }
+	}
+
 	/** Coalesce a burst of write notifications into one listener call per turn. */
-	private queueChange(listener: () => void): void {
+	private queueChange(entry: ChangeEntry): void {
 		if (this.closedValue) return;
-		this.pendingChanges.add(listener);
+		this.pendingChanges.add(entry);
 		if (this.changeScheduled) return;
 		this.changeScheduled = true;
 		queueMicrotask(() => {
 			this.changeScheduled = false;
 			const callbacks = [...this.pendingChanges];
 			this.pendingChanges.clear();
-			for (const callback of callbacks) {
-				if (!this.closedValue) callback();
+			for (const entry of callbacks) {
+				if (!this.closedValue && !entry.disposed && entry.frame && entry.binding && this.client.connected && !this.ownerReleasedValue) entry.listener(entry.frame);
 			}
 		});
 	}
@@ -938,6 +992,7 @@ class HostConnectionImpl implements HostConnection {
 	private shutdownLocal(error: Error): void {
 		if (this.closedValue) return;
 		this.closedValue = true;
+		this.clearPublication("The local host connection is closed");
 		this.lifetime.abort(error);
 		this.unsubscribeState?.();
 		this.unsubscribeState = undefined;
@@ -958,6 +1013,7 @@ class HostConnectionImpl implements HostConnection {
 	async close(): Promise<void> {
 		if (this.closedValue) return;
 		this.closedValue = true;
+		this.clearPublication("The local host connection is closed");
 		this.lifetime.abort(new Error("durable host client closed the connection"));
 		this.unsubscribeState?.();
 		this.unsubscribeState = undefined;

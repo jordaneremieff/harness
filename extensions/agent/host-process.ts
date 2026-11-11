@@ -10,15 +10,18 @@ import { readSettings } from "./settings.ts";
  * launching client can connect without polling.
  */
 import { randomUUID } from "node:crypto";
-import { chmodSync, ftruncateSync, lstatSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, ftruncateSync, lstatSync, mkdirSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { ChordError, PluginError, invalid, isChordError } from "@earendil-works/chord";
 import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
 import { tryNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
+import { validNativeWriterId } from "./claims.ts";
 import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady, type HostBusy, formatHostBusy } from "./host-protocol.ts";
 import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from "./version-contract.ts";
 import { isObservationFrame } from "./live-frames.ts";
+import type { CatalogView } from "./catalog-view.ts";
+import type { HostChanges } from "./host-changes.ts";
 import { createObservationPump, type ObservationClock, type ObservationPump } from "./observation-pump.ts";
 
 function hostOperationError(error: unknown): ChordError | PluginError {
@@ -54,6 +57,8 @@ export interface HostRuntime {
 	 * serves the initial snapshot and publishes no changes.
 	 */
 	onChange?(listener: () => void): () => void;
+	/** Latest bounded view after its successful catalogue publication, not a disk reread. */
+	readonly publishedView?: CatalogView;
 	/** Native view publications and committed invalidation wake observation feeds independently of catalog writes. */
 	onObservationChange?(listener: () => void): () => void;
 	/** Native commits and host-local control completion reset the idle interval without publishing a footer change. */
@@ -81,6 +86,8 @@ export interface RunHostOptions {
 	readonly scheduleIdleCheck?: (check: () => void, delayMs: number) => () => void;
 	/** Waiting used by the observation scheduler. Defaults to a wall-clock timer. */
 	readonly observationClock?: ObservationClock;
+	/** Write a clean end record through the held descriptor; failure retains exclusion. */
+	readonly writeEndRecord?: (descriptor: number, bytes: Buffer) => void;
 }
 
 /** Owner of one storage for the process lifetime. */
@@ -206,10 +213,14 @@ class HostProcessServer implements HostProcess {
 
 	private readonly exit: (() => never) | undefined;
 	private readonly writerId: string;
+	private readonly record: ClaimRecord;
+	private readonly writeEndRecord: NonNullable<RunHostOptions["writeEndRecord"]>;
 
-	constructor(runtime: HostRuntime, paths: HostPaths, claim: NativeWriterLease, writerId: string, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"], observationClock?: ObservationClock, exit?: () => never) {
+	constructor(runtime: HostRuntime, paths: HostPaths, claim: NativeWriterLease, record: ClaimRecord, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"], observationClock?: ObservationClock, exit?: () => never, writeEndRecord = writeEndClaim) {
 		this.exit = exit;
-		this.writerId = writerId;
+		this.record = record;
+		this.writerId = record.token;
+		this.writeEndRecord = writeEndRecord;
 		this.runtime = runtime;
 		this.paths = paths;
 		this.claim = claim;
@@ -332,11 +343,16 @@ class HostProcessServer implements HostProcess {
 			queueMicrotask(() => {
 				pending = false;
 				if (state.subscriptions.get(id) !== entry) return;
-				publish({ revision: ++sequence });
+				publish(this.changesFrame(++sequence));
 			});
 		}) ?? (() => {});
 		state.subscriptions.set(id, entry);
-		return { value: { revision: 0 }, close: () => { if (state.subscriptions.delete(id)) entry.unsubscribe(); } };
+		return { value: this.changesFrame(0), close: () => { if (state.subscriptions.delete(id)) entry.unsubscribe(); } };
+	}
+
+	private changesFrame(revision: number): HostChanges {
+		const view = this.runtime.publishedView;
+		return { revision, writerId: this.writerId, ...(view === undefined ? {} : { view }) };
 	}
 
 	private async subscribeObservation(token: string, publish: (value: unknown) => void, state: AttachmentState): Promise<{ value: unknown; close: () => void }> {
@@ -629,6 +645,10 @@ class HostProcessServer implements HostProcess {
 		try {
 			await closeRuntime(this.runtime, this.exit);
 			this.unpublishSocket();
+			this.claim.assertNamed();
+			const endedAt = new Date().toISOString();
+			if (!validNativeWriterId(this.record.token) || endedAt < this.record.createdAt) throw new Error("Writer end identity or time order is invalid");
+			this.writeEndRecord(this.claim.descriptor, Buffer.from(JSON.stringify({ ...this.record, endedAt })));
 			this.claim.release();
 			this.resolveWriterReleased();
 			// Let the released close invocation enqueue its response before transport EOF.
@@ -655,6 +675,17 @@ function claimRecord(identity: HostPaths["identity"], token: string): ClaimRecor
 	return { token, pid: process.pid, host: hostname(), sessionId: identity.sessionId, cwd: resolve(identity.cwd), createdAt: new Date().toISOString() };
 }
 
+/** Positional writes do not inherit the descriptor offset left by acquisition. */
+function writeEndClaim(descriptor: number, bytes: Buffer): void {
+	let offset = 0;
+	while (offset < bytes.length) {
+		const count = writeSync(descriptor, bytes, offset, bytes.length - offset, offset);
+		if (count === 0) throw new Error("Writer end record made no write progress");
+		offset += count;
+	}
+	ftruncateSync(descriptor, bytes.length);
+}
+
 function cleanupClaim(claim: NativeWriterLease): void {
 	try {
 		claim.release();
@@ -675,9 +706,9 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
 	chmodSync(paths.directory, 0o700);
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
-	const token = randomUUID();
+	const record = claimRecord(paths.identity, randomUUID());
 	let claim: NativeWriterLease;
-	try { claim = takeClaim(paths.claim, claimRecord(paths.identity, token)); }
+	try { claim = takeClaim(paths.claim, record); }
 	catch (error) {
 		if (error instanceof HostClaimRefusedError && error.observation === "busy") {
 			(options.announceBusy ?? ((target) => process.stdout.write(formatHostBusy(target))))({ storageId: metadata.storageId, socketPath: paths.socket });
@@ -687,7 +718,7 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	let runtime: HostRuntime | undefined;
 	try {
 		runtime = await createRuntime();
-		const host = new HostProcessServer(runtime, paths, claim, token, idleMs, options.scheduleIdleCheck, options.observationClock, options.exit);
+		const host = new HostProcessServer(runtime, paths, claim, record, idleMs, options.scheduleIdleCheck, options.observationClock, options.exit, options.writeEndRecord);
 		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
 		return host;
 	} catch (error) {

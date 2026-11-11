@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { AgentCatalog, storageIdOf, validateDeliveryRecipient } from "./catalog.ts";
 import { storageStatusPageInput } from "./storage-status.ts";
-import { boundCatalogView, withAttentionHints, withModelEvidence } from "./catalog-view.ts";
+import { boundCatalogView, withAttentionHints, withModelEvidence, type CatalogView } from "./catalog-view.ts";
 import { projectCatalogAttention } from "./catalog-attention.ts";
 import type { HostMetadata } from "./host-protocol.ts";
 import type { HostRuntime } from "./host-process.ts";
@@ -147,6 +147,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 	let activityGeneration = 0;
 	let retirementSealed = false;
 	const changeListeners = new Set<() => void>();
+	let publishedView: CatalogView | undefined;
 	const observationListeners = new Set<() => void>();
 	const activityListeners = new Set<() => void>();
 	const quiescentListeners = new Set<() => void>();
@@ -308,6 +309,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 				const intended = withIntentClaims(attentive, intents);
 				const view = withModelEvidence(intended, projection.modelEvidence);
 				catalog.updateView(metadata.storageId, view, await projectCollaboration(host.harness, BACKGROUND_CONTEXT));
+				publishedView = view;
 				for (const listener of changeListeners) listener();
 			} catch (error) {
 				if (force) throw error;
@@ -728,5 +730,5 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 		await closeIdleRuntime();
 		return undefined;
 	};
-	return { request, requestRelease, get releaseRequested() { return releaseRequested; }, onReleaseRequested: (listener) => { releaseListeners.add(listener); return () => { releaseListeners.delete(listener); }; }, onQuiescent: (listener) => { quiescentListeners.add(listener); return () => { quiescentListeners.delete(listener); }; }, get shutdownRequired() { return reloadFailed || sessionFailed || (host.sessionEnded && host !== reloadClosingHost); }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, onObservationChange: (listener) => { observationListeners.add(listener); return () => { observationListeners.delete(listener); }; }, close: closeHost };
+	return { request, requestRelease, get publishedView() { return publishedView; }, get releaseRequested() { return releaseRequested; }, onReleaseRequested: (listener) => { releaseListeners.add(listener); return () => { releaseListeners.delete(listener); }; }, onQuiescent: (listener) => { quiescentListeners.add(listener); return () => { quiescentListeners.delete(listener); }; }, get shutdownRequired() { return reloadFailed || sessionFailed || (host.sessionEnded && host !== reloadClosingHost); }, isIdle: () => !runtimeUnavailable() && !reloading && activeRequests === 0 && host.isIdle(), tryRetire, onActivity: (listener) => { activityListeners.add(listener); return () => { activityListeners.delete(listener); }; }, onChange: (listener) => { changeListeners.add(listener); return () => { changeListeners.delete(listener); }; }, onObservationChange: (listener) => { observationListeners.add(listener); return () => { observationListeners.delete(listener); }; }, close: closeHost };
 }

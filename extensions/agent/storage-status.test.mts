@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
+import { normalizeContext, type Model } from "@earendil-works/pi-ai";
+import { stream as anthropicStream } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import * as Durable from "@earendil-works/pi-durable";
 import { SessionManager, type ExtensionAPI, type ExtensionToolContext, type ToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -18,7 +20,7 @@ import { runHost, type HostProcess } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { StatusToolOutputSchema, StorageStatusCoverageSchema, StorageStatusPageInputSchema, structuredObservation } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
-import { storageStatusCoverage, storageStatusPageInput, type StorageStatusPageInput } from "./storage-status.ts";
+import { storageStatusCoverage, storageStatusPageInput, validateStatusSelectors, type StorageStatusPageInput } from "./storage-status.ts";
 
 const context = BACKGROUND_CONTEXT;
 type Page = { conversations: Array<{ identity: string }>; coverage: { complete: boolean; scanned: number; returned: number; next: ({ tool: "agent_status" } & StorageStatusPageInput) | null } };
@@ -37,7 +39,9 @@ it("storage page selectors are closed and keep backend JSON cursors unchanged", 
 	for (const invalid of [{ ...valid, cursor: "global-discovery-cursor" }, { ...valid, cursor: [] }, { ...valid, cursor: null }, { ...valid, limit: 0 }, { ...valid, limit: 51 }, { ...valid, limit: 1.5 }, { ...valid, sessionId: storageId }, { ...valid, provider: "fixture" }, { ...valid, storageId: `${storageId}:2` }]) {
 		assert.equal(matchesSchema(StorageStatusPageInputSchema, invalid), false);
 		assert.throws(() => storageStatusPageInput(invalid));
+		assert.throws(() => validateStatusSelectors(invalid));
 	}
+	for (const invalid of [{ storageId }, { cursor }, { limit: 1 }, { view: "fleet", sessionId: storageId }]) assert.throws(() => validateStatusSelectors(invalid));
 	const coverage = storageStatusCoverage(storageId, 1, 1, 0, cursor);
 	assert.equal(matchesSchema(StorageStatusCoverageSchema, coverage), true);
 	assert.equal(coverage.complete, false);
@@ -84,6 +88,9 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 	await register({ events: { emit() {}, on: () => () => {} }, on() {}, registerTool: (tool: ToolDefinition) => ordinaryTools.set(tool.name, tool), registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {}, getThinkingLevel: () => "off" } as unknown as ExtensionAPI);
 	const ordinary = ordinaryTools.get("agent_status");
 	assert.ok(ordinary);
+	assert.ok("type" in ordinary.parameters);
+	assert.equal(ordinary.parameters.type, "object");
+	await assertProviderStatusParameters(ordinary.parameters);
 	const list = ordinaryTools.get("agent_list");
 	assert.ok(list);
 	assert.equal(matchesSchema(list.parameters, { cursor: { order: "ascending" } }), false);
@@ -107,12 +114,15 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 	assert.equal(last.coverage.next, null);
 	assert.equal(new Set([...first.conversations, ...last.conversations].map((item) => item.identity)).size, 51);
 	await assert.rejects(ordinaryRead({ view: "storage-page", storageId: record.storageId, cursor: { invalid: true } }));
+	await assert.rejects(ordinary.execute("mixed-status", { view: "storage-page", storageId: record.storageId, sessionId: record.storageId }, new AbortController().signal, undefined, toolContext), /does not accept sessionId/u);
 
 	const faux = fauxProvider();
 	const models = createModels();
 	models.setProvider(faux.provider);
 	const pending: Durable.JsonObject[] = [];
-	faux.setResponses(Array.from({ length: 8 }, () => () => {
+	let nativeMixedError = false;
+	faux.setResponses(Array.from({ length: 8 }, () => (request) => {
+		nativeMixedError ||= request.messages.some(message => message.role === "toolResult" && message.isError);
 		const input = pending.shift();
 		return input === undefined ? fauxAssistantMessage("done") : fauxAssistantMessage([fauxToolCall("agent_status", input)], { stopReason: "toolUse" });
 	}));
@@ -129,6 +139,10 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 	const nativeTool = extension.tools?.find((tool) => tool.name === "agent_status");
 	assert.ok(nativeTool);
 	assert.equal(matchesSchema(nativeTool.parameters, nextInput), true);
+	assert.ok("type" in nativeTool.parameters);
+	assert.equal(nativeTool.parameters.type, "object");
+	assert.deepEqual(nativeTool.parameters, ordinary.parameters);
+	await assertProviderStatusParameters(nativeTool.parameters);
 	const nativeList = extension.tools?.find((tool) => tool.name === "agent_list");
 	assert.ok(nativeList);
 	assert.equal(matchesSchema(nativeList.parameters, { cursor: { order: "ascending" } }), false);
@@ -147,5 +161,30 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 	assert.equal(nativePages.length, 2);
 	assert.equal(nativePages[1].coverage.complete, true);
 	assert.equal(new Set(nativePages.flatMap((result) => result.conversations.map((item) => item.identity))).size, 51);
+	pending.push({ view: "storage-page", storageId: record.storageId, sessionId: record.storageId });
+	await (await conversation.submit({ type: "input", content: "Reject mixed status selectors." }, context)).wait(context);
+	assert.equal(nativeMixedError, true);
+	assert.equal(nativePages.length, 2, "mixed selectors never reach native dispatch");
 	assert.equal(HOST_CONTRACT.operations.status.request, "status/1.1.0");
 });
+
+/** The public adapter serialises to an intercepted fetch; no provider receives this request. */
+async function assertProviderStatusParameters(parameters: object): Promise<void> {
+	const model: Model<"anthropic-messages"> = { id: "fixture", name: "fixture", api: "anthropic-messages", provider: "anthropic", baseUrl: "https://unused.invalid", input: ["text"], reasoning: false, contextWindow: 10000, maxTokens: 100, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
+	let payload: { tools: Array<{ input_schema: { type: string; properties: Record<string, unknown> } }> } | undefined;
+	let calls = 0;
+	const stream = anthropicStream(model, normalizeContext({ messages: [{ role: "user", content: "Schema fixture", timestamp: 0 }], tools: [{ name: "agent_status", description: "Read status", parameters }] }), {
+		apiKey: "fixture-not-a-credential", maxRetries: 0,
+		fetch: async (_input, init) => {
+			calls++;
+			payload = JSON.parse(String(init?.body));
+			return Response.json({ type: "error", error: { type: "invalid_request_error", message: "Intercepted schema fixture" } }, { status: 400 });
+		},
+	});
+	await stream.result();
+	assert.equal(calls, 1);
+	assert.ok(payload);
+	const schema = payload.tools[0].input_schema;
+	assert.equal(schema.type, "object");
+	assert.deepEqual(Object.keys(schema.properties).sort(), ["cursor", "limit", "model", "provider", "sessionId", "storageId", "view"]);
+}

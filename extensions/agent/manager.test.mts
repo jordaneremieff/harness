@@ -25,9 +25,12 @@ import type { ExecutionSelection } from "./agent-preferences.ts";
 import { connectPrimaryChannel, type PrimaryChannel, type PrimaryChannelOptions, type PrimaryInfo } from "./primary-channel.ts";
 import type { createPrimaryChannel } from "./primary-channel.ts";
 
-function fixtureRoot(t: { after(fn: () => void): void }): string {
+const fixtureRoots = new Set<string>();
+after(() => { for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true }); });
+
+function fixtureRoot(_t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "agent-manager-"));
-	t.after(() => rmSync(root, { recursive: true, force: true }));
+	fixtureRoots.add(root);
 	mkdirSync(join(root, "agent"));
 	writeFileSync(join(root, "agent", "harness.json"), JSON.stringify(machineConfig({ presets: { standard: { model: "acme/model-x" } }, preferences: { defaultPreset: "standard" } })));
 	return root;
@@ -50,7 +53,7 @@ function createRecord(manager: AgentManager, root: string, ownerId = "owner-1") 
 
 /** One syntactically valid writer claim owned by `pid` on this host. */
 function claimFor(record: CatalogRecord, pid: number): unknown {
-	return { sessionId: record.storageId, cwd: resolve(record.cwd), host: hostname(), pid, createdAt: new Date().toISOString() };
+	return { token: randomUUID(), sessionId: record.storageId, cwd: resolve(record.cwd), host: hostname(), pid, createdAt: new Date().toISOString() };
 }
 
 /** Write a claim file a startup scan would observe as live, dead, or unknown. */
@@ -104,11 +107,12 @@ function fakeConnection(metadata: HostMetadata, handler: (method: string, params
 				listeners.delete(callback);
 			};
 		},
-		async subscribeChanges(listener: () => void): Promise<() => void> {
-			changes.add(listener);
-			listener();
+		async subscribeChanges(listener: (frame: import("./host-changes.ts").HostChanges) => void): Promise<() => void> {
+			const notify = () => listener({ revision: 0, writerId: "fixture" });
+			changes.add(notify);
+			notify();
 			return () => {
-				changes.delete(listener);
+				changes.delete(notify);
 			};
 		},
 		change() {
@@ -1309,6 +1313,7 @@ for (const entry of ["cached", "recovery"] as const) for (const loss of ["foreig
 	else await first.exit({ code: loss === "clean" ? 0 : 1, signal: null, failed: loss !== "clean" });
 	await settleCatalogueRecovery(manager);
 	assert.equal(connections.length, 1, "the close notification does not authorise acquisition");
+	if (loss === "foreign") assert.match((await manager.dashboardPage()).rows.find(row => row.id === record.storageId)?.health?.lastError ?? "", /without an owned child-exit event/u);
 	(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([unrelated.storageId]);
 	await settleCatalogueRecovery(manager);
 	assert.equal(connections.length, 1, "an unrelated catalogue change does not authorise acquisition");
@@ -1335,9 +1340,11 @@ it("catalogue recovery waits for the current owned failed-exit source", { timeou
 	await settleCatalogueRecovery(manager);
 	const first = connections[0];
 	assert.ok(first);
+	Object.defineProperty(first, "writerId", { value: "writer" });
+	writeClaim(record, { token: "writer", sessionId: record.storageId, cwd: record.cwd, host: hostname(), pid: process.pid, createdAt: "2026-01-01T00:00:00.000Z", endedAt: "2026-01-01T00:00:01.000Z" });
 	await first.close();
 	await settleCatalogueRecovery(manager);
-	assert.equal(connections.length, 1, "catalogue scans do not bypass a pending exit observation");
+	assert.equal(connections.length, 1, "catalogue scans and end metadata do not bypass a pending exit observation");
 	await first.exit({ code: 1, signal: null, failed: true });
 	await connections.waitForCount(2);
 	assert.equal(connections.length, 2, "the exact failed exit admits one replacement");
@@ -2005,6 +2012,113 @@ it("lets explicit acquisition follow a failed shared attachment without making t
 	gate.resolve();
 	await Promise.all([read, attach]);
 	assert.equal(acquisitions, 1);
+});
+
+it("shows current-host publications without changing raw claim coverage", { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t);
+	const clients: HostConnection[] = [];
+	const open = async (metadata: HostMetadata) => { const client = await connectHost(metadata, { retryAttempts: 0 }); clients.push(client); return client; };
+	const manager = new AgentManager(managerOptions(root, { connect: open, acquire: open }));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	const retained = { storageId: record.storageId, updatedAt: "2026-01-01T00:00:00.000Z", rows: [{ id: record.storageId, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "here", state: "working", currentTool: { name: "read", argument: "retained" }, cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } };
+	manager.catalog.updateView(record.storageId, retained);
+	let publishedView: import("./catalog-view.ts").CatalogView | undefined;
+	const changes = new Set<() => void>();
+	const host = await runHost(() => ({ request: async () => ({}), close: async () => {}, isIdle: () => false, get publishedView() { return publishedView; }, onChange: listener => { changes.add(listener); return () => { changes.delete(listener); }; } }), { metadata: hostMetadata(record), idleMs: 0, announceReady() {} });
+	t.after(() => host.close());
+	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	const initial = await manager.dashboardPage();
+	assert.equal(initial.rows[0].state, "unavailable");
+	assert.match(initial.rows[0].error ?? "", /no successful bounded publication/u);
+	assert.equal(initial.coverage.complete, false);
+	publishedView = { ...retained, updatedAt: "2026-01-01T00:00:01.000Z", rows: [{ ...retained.rows[0], currentTool: { name: "write", argument: "current" } }] };
+	const received = eventLog<void>();
+	assert.ok(clients[0].subscribeChanges);
+	const stop = await clients[0].subscribeChanges(frame => { if (frame.view?.updatedAt === publishedView?.updatedAt) received.push(undefined); });
+	for (const notify of changes) notify();
+	await received.waitForCount(1);
+	stop();
+	const current = await manager.dashboardPage();
+	assert.equal(current.rows[0].state, "working");
+	assert.equal(current.rows[0].currentTool?.argument, "current");
+	assert.match(current.rows[0].ownerLabel ?? "", /Current host publication at 2026-01-01T00:00:01/u);
+	assert.equal(current.coverage.inventory.unknownClaims, 1);
+	assert.equal(current.coverage.complete, true);
+	assert.equal(await manager.sessionFigures("owner-1", current), "agents: 1/1 active");
+	const projection = manager as unknown as { catalogRows(record: CatalogRecord, claim: import("./claims.ts").ClaimObservation, observedAt: string): Promise<{ rows: Array<{ state: string; currentTool?: unknown }> }> };
+	const end = { kind: "dead" as const, label: "ended", writerId: clients[0].writerId, endedAt: "2026-01-01T00:00:02.000Z" };
+	assert.equal((await projection.catalogRows(manager.catalog.read(record.storageId), end, end.endedAt)).rows[0].state, "interrupted", "the exact end overrides a retiring connected link");
+	assert.equal((await projection.catalogRows(manager.catalog.read(record.storageId), { ...end, writerId: "previous" }, end.endedAt)).rows[0].state, "working", "a previous generation does not end this link");
+	const unknown = createRecord(manager, root);
+	writeClaim(unknown, "invalid");
+	manager.catalog.updateView(unknown.storageId, { ...retained, storageId: unknown.storageId, rows: [{ ...retained.rows[0], id: unknown.storageId, storageId: unknown.storageId }] });
+	publishCatalogChange(root, unknown.storageId);
+	assert.equal((await manager.dashboardPage()).coverage.complete, false);
+	await clients[0].close();
+	assert.equal((await manager.dashboardPage()).rows.find(row => row.id === record.storageId)?.currentTool, undefined);
+	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	const rebound = (await manager.dashboardPage()).rows.find(row => row.id === record.storageId);
+	assert.equal(rebound?.state, "working", "a new link consumes the retained initial frame without another write");
+	assert.equal(rebound?.currentTool?.argument, "current");
+});
+
+it("uses a startup recovery link publication before explicit attachment", { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t), connections = eventLog<HostConnection>(), requests: string[] = [];
+	const open = async (metadata: HostMetadata) => { const client = await connectHost(metadata, { retryAttempts: 0 }); connections.push(client); return client; };
+	const manager = new AgentManager(managerOptions(root, { connect: open, acquire: open, createPrimary: primaryFactory().factory }));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	const view = { storageId: record.storageId, updatedAt: "2026-01-01T00:00:00.000Z", rows: [{ id: record.storageId, storageId: record.storageId, cwd: root, modifiedAt: 1, owner: "here", state: "working", currentTool: { name: "read", argument: "recovery publication" }, cost: 0, partial: false }], coverage: { complete: true, omitted: 0 } };
+	manager.catalog.updateView(record.storageId, view);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	const host = await runHost(() => ({ request: async method => { requests.push(method); return { workPending: true, deliveriesActive: true }; }, publishedView: view, close: async () => {}, isIdle: () => false }), { metadata: hostMetadata(record), idleMs: 0, announceReady() {} });
+	t.after(() => host.close());
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await settleCatalogueRecovery(manager);
+	assert.equal(connections.length, 1);
+	const page = await manager.dashboardPage();
+	assert.equal(page.rows[0].state, "working");
+	assert.equal(page.rows[0].currentTool?.argument, "recovery publication");
+	assert.equal(page.coverage.inventory.unknownClaims, 1);
+	assert.equal(page.coverage.complete, true);
+	assert.equal(await manager.sessionFigures("owner-1", page), "agents: 1/1 active");
+	assert.ok(requests.every(method => method === "recovery-state"), "presentation uses the existing recovery feed without a status request");
+	const regular = fakeConnection(hostMetadata(record), async () => ({}));
+	Object.defineProperty(regular, "ownerEvidence", { value: { kind: "verified", storageId: record.storageId, socketPath: "synthetic", writerId: "newer-writer" } });
+	const currentClients = (manager as unknown as { clients: Map<string, HostConnection> }).clients;
+	currentClients.set(record.storageId, regular);
+	const newer = await manager.dashboardPage();
+	assert.equal(newer.rows[0].state, "unavailable", "a regular writer without a publication never uses an older recovery snapshot");
+	assert.equal(newer.rows[0].currentTool, undefined);
+	currentClients.delete(record.storageId);
+	await regular.close();
+	await connections[0].close();
+	await settleCatalogueRecovery(manager);
+	const lost = await manager.dashboardPage();
+	assert.notEqual(lost.rows[0].state, "working");
+	assert.equal(lost.rows[0].currentTool, undefined);
+	assert.equal(connections.length, 1, "loss of a foreign recovery link grants no replacement authority");
+});
+
+it("a clean exact foreign retirement does not report a recovery fault", { timeout: 15000 }, async t => {
+	const root = fixtureRoot(t);
+	const connections = eventLog<HostConnection>();
+	const open = async (metadata: HostMetadata) => { const client = await connectHost(metadata, { retryAttempts: 0 }); connections.push(client); return client; };
+	const manager = new AgentManager(managerOptions(root, { connect: open, acquire: open, createPrimary: primaryFactory().factory }));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	const host = await runHost(() => ({ request: async () => ({ workPending: true, deliveriesActive: true }), close: async () => {}, isIdle: () => false }), { metadata: hostMetadata(record), idleMs: 0, announceReady() {} });
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await connections.waitForCount(1);
+	await host.close();
+	await waitForConnectionClose(connections[0]);
+	await settleCatalogueRecovery(manager);
+	assert.equal(connections.length, 1);
+	assert.equal((await manager.dashboardPage()).rows[0]?.health?.lastError, undefined);
+	const status = await manager.status() as { failures: unknown[] };
+	assert.deepEqual(status.failures, []);
 });
 
 it("refreshes the registered primary identity after model, thinking, and name changes", async (t) => {

@@ -21,6 +21,8 @@ import { it } from "node:test";
 import { AgentCatalog, CatalogObservation, projectCatalogPriority, hostMetadata, storageIdOf } from "./catalog.ts";
 import { boundCatalogView, type CatalogViewRow } from "./catalog-view.ts";
 import { hostPaths } from "./host-protocol.ts";
+import { tryNativeWriterLease } from "./native-lease.ts";
+import { observeClaim } from "./claims.ts";
 
 function fixture(t: { after(fn: () => void): void }) {
 	const root = mkdtempSync(join(tmpdir(), "agent-catalog-"));
@@ -160,7 +162,7 @@ it("reconciles catalogue changes without inferring ownership from process presen
 	const added = catalog.create(input);
 	now += 2000;
 	const current = await observation.read();
-	assert.equal(current.facts.get(live.storageId)?.claim.kind, "unknown");
+	assert.equal(current.facts.get(live.storageId)?.claim.kind, "dead");
 	assert.equal(current.facts.has(removed.storageId), false);
 	assert.equal(current.facts.get(corrupt.storageId), null);
 	assert.equal(current.facts.get(added.storageId)?.record.storageId, added.storageId);
@@ -736,4 +738,21 @@ it("evicts old validations when retained payload bytes pass the byte bound", (t)
 	}
 	catalog.read(first.storageId);
 	assert.equal(parses.count(), 2);
+});
+
+it("retains an unopened record while a new holder still exposes the previous ended generation", t => {
+	const { catalog, input } = fixture(t);
+	const record = catalog.createTracked(input, "pre-publication").record;
+	const paths = hostPaths(record);
+	mkdirSync(dirname(paths.claim), { recursive: true });
+	const createdAt = "2026-01-01T00:00:00.000Z";
+	writeFileSync(paths.claim, JSON.stringify({ token: "previous", sessionId: record.storageId, cwd: record.cwd, host: hostname(), pid: process.pid, createdAt, endedAt: createdAt }), { mode: 0o600 });
+	const holder = tryNativeWriterLease(paths.claim);
+	assert.equal(holder.kind, "held");
+	if (holder.kind !== "held") return;
+	t.after(() => holder.lease.release());
+	assert.equal(observeClaim(paths.claim, paths.identity).kind, "dead");
+	assert.equal(catalog.discardUnopened(record), "writer-present");
+	assert.equal(existsSync(catalog.path(record.storageId)), true);
+	assert.equal(existsSync(record.storagePath), false);
 });

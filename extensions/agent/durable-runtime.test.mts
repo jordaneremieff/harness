@@ -32,6 +32,28 @@ import { childCatalogRecord, killHost, markerFixture, runtimeFixture, trackHost,
 import { publishFixtureMarker } from "./testdata/durable-runtime/signal.ts";
 import type { AwaitFact } from "./await-facts.ts";
 
+it("native codemode follows the own-storage status page through real runtime dispatch", { timeout: 60000 }, async t => {
+	const f = runtimeFixture(t, { withAgentExtension: true, withCodemode: true });
+	const client = await acquireHost(f.metadata, { env: f.env("storage-pages") });
+	trackHost(t, client.pid);
+	const admitted = await client.request("submit", { message: `STORAGE_PAGE:${f.metadata.storageId}`, ownerId: f.ownerId, origin: "operator", requestId: "storage-pages" }) as { submissionId: number };
+	await f.marker("answered");
+	await waitForReceipt(client, f.ownerId, admitted.submissionId);
+	const result = JSON.parse(readFileSync(join(f.testDir, "storage-pages.json"), "utf8")) as { isError?: boolean; content: Array<{ type: string; text?: string }> };
+	assert.notEqual(result.isError, true, JSON.stringify(result));
+	const text = result.content.filter(part => part.type === "text").at(-1)?.text;
+	assert.ok(text);
+	const pages = JSON.parse(text) as { first: { conversations: Array<{ identity: string }>; coverage: { complete: boolean; next: { tool: string; storageId: string; cursor: object; limit: number } } }; last: { conversations: Array<{ identity: string }>; coverage: { complete: boolean; next: null } } };
+	assert.equal(pages.first.coverage.complete, false);
+	assert.equal(pages.first.coverage.next.tool, "agent_status");
+	assert.equal(pages.first.coverage.next.storageId, f.metadata.storageId);
+	assert.equal(pages.first.coverage.next.limit, 1);
+	assert.equal(typeof pages.first.coverage.next.cursor, "object");
+	assert.equal(pages.last.coverage.complete, true);
+	assert.equal(pages.last.coverage.next, null);
+	assert.equal(new Set([...pages.first.conversations, ...pages.last.conversations].map(row => row.identity)).size, 2);
+});
+
 interface SubmitResult {
 	readonly submissionId: string | number;
 	readonly deduped: boolean;
@@ -708,7 +730,7 @@ for (const pendingDelivery of [false, true]) it(`exits after a failed reload wit
 		assert.match(state.nextError, /closed/u, "later controls cannot use the torn-down runtime");
 		assert.equal(state.shutdownRequired, true, "the failed runtime requires process shutdown instead of retaining its live claim");
 		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
-		assert.equal(observeClaim(paths.claim, paths.identity).kind, "unknown", "diagnostic metadata does not establish writer possession");
+		assert.equal(observeClaim(paths.claim, paths.identity).kind, "dead", "an exited same-host PID ends only the recorded generation");
 		assert.equal(new AgentCatalog(f.root).read(f.metadata.storageId).recoveryDue, true, "failure retains recovery due, including an unacknowledged delivery");
 		const identityAfter = lstatSync(paths.claim);
 		assert.equal(identityAfter.dev, identityBefore.dev);

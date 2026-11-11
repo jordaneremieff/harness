@@ -9,6 +9,7 @@ import { eventLog, fixtureMetadata } from "./host-fixture.mts";
 import { hostPaths } from "./host-protocol.ts";
 import { runHost, type HostRuntime } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
+import { observeClaim } from "./claims.ts";
 
 function deferred() {
 	let resolve!: () => void;
@@ -40,7 +41,8 @@ it("retires with passive clients and change subscriptions without cancelling the
 	f.checks[f.checks.length - 1].fire();
 	await f.host.done;
 	await Promise.all(lost);
-	assert.equal(existsSync(hostPaths(f.metadata).claim), false);
+	assert.equal(existsSync(hostPaths(f.metadata).claim), true);
+	assert.equal(observeClaim(hostPaths(f.metadata).claim, hostPaths(f.metadata).identity).kind, "dead");
 	assert.equal(existsSync(hostPaths(f.metadata).socket), false);
 	assert.ok(clients.every((client) => client.closed));
 });

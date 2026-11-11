@@ -368,8 +368,9 @@ export class AgentCatalog {
 	/**
 	 * Remove a record this call created when its host never opened. The record
 	 * must be byte-identical at the same inode, no storage file may exist, and
-	 * the native writer claim must be absent or a proven dead local claim. A
-	 * reused record, a live or unknown writer, or any changed path is kept.
+	 * the native writer claim must be absent. An ended diagnostic record does
+	 * not exclude a new holder before its metadata write. Any present claim,
+	 * reused record, or changed path is kept.
 	 * Call this only for a `created: true` result.
 	 */
 	discardUnopened(record: CatalogRecord): CatalogDiscardResult {
@@ -379,7 +380,7 @@ export class AgentCatalog {
 		if (lstatSync(record.storagePath, { throwIfNoEntry: false }) !== undefined) return "storage-present";
 		const paths = hostPaths(record);
 		const observation = observeClaim(paths.claim, paths.identity);
-		if (observation.kind === "live" || observation.kind === "unknown") return "writer-present";
+		if (observation.kind !== "absent") return "writer-present";
 		const current = lstatSync(path, { throwIfNoEntry: false });
 		if (current === undefined || current.dev !== before.dev || current.ino !== before.ino) return "record-changed";
 		unlinkSync(path);

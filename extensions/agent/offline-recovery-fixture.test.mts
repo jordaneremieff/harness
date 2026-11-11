@@ -48,7 +48,18 @@ for (const invalid of ["path", "mode", "missing-mode", "arguments"] as const) it
 	assert.equal(fixture.cleanupAllowed, false);
 });
 
-for (const condition of ["unchanged", "changed-bytes", "changed-file", "corrupt", "missing-live"] as const) it(`requires an exited identical captured writer for attach refusal: ${condition}`, async (t) => {
+function alterCapturedClaim(condition: string, path: string, before: Buffer): void {
+	if (["ended", "ended-live", "invalid-end", "changed-token-ended"].includes(condition)) {
+		const record = JSON.parse(before.toString()) as Record<string, unknown>;
+		writeFileSync(path, JSON.stringify({ ...record, ...(condition === "changed-token-ended" ? { token: "replacement" } : {}), endedAt: condition === "invalid-end" ? "invalid" : record.createdAt }));
+	}
+	if (condition === "changed-bytes") writeFileSync(path, `${before.toString()} `);
+	if (condition === "changed-file") { writeFileSync(`${path}.replacement`, before, { flag: "wx", mode: 0o600 }); renameSync(`${path}.replacement`, path); }
+	if (condition === "corrupt") writeFileSync(path, "not JSON");
+	if (condition === "missing-live") unlinkSync(path);
+}
+
+for (const condition of ["unchanged", "ended", "ended-live", "invalid-end", "changed-token-ended", "changed-bytes", "changed-file", "corrupt", "missing-live"] as const) it(`requires an exited identical captured writer for attach refusal: ${condition}`, async (t) => {
 	const fixture = allocateOfflineFixture("offline-proof-"), target = metadata(fixture.root);
 	fixture.allow(target);
 	const generation = fixture.generation(), paths = hostPaths(target);
@@ -70,16 +81,13 @@ for (const condition of ["unchanged", "changed-bytes", "changed-file", "corrupt"
 		}, { env: { DURABLE_TEST_MODE: "answer" } });
 		generation.checkpoint(target);
 		const before = readFileSync(paths.claim);
-		if (condition !== "missing-live") stop();
-		if (condition === "changed-bytes") writeFileSync(paths.claim, `${before.toString()} `);
-		if (condition === "changed-file") { writeFileSync(`${paths.claim}.replacement`, before, { flag: "wx", mode: 0o600 }); renameSync(`${paths.claim}.replacement`, paths.claim); }
-		if (condition === "corrupt") writeFileSync(paths.claim, "not JSON");
-		if (condition === "missing-live") unlinkSync(paths.claim);
+		if (condition !== "missing-live" && condition !== "ended-live") stop();
+		alterCapturedClaim(condition, paths.claim, before);
 		const retained = existsSync(paths.claim) ? readFileSync(paths.claim) : undefined;
 		await assert.rejects(generation.connect(target, { env: { DURABLE_TEST_MODE: "answer" } }));
-		if (condition === "unchanged") {
+		if (condition === "unchanged" || condition === "ended") {
 			fixture.ordinaryRecipient("after-expected-refusal");
-			assert.deepEqual(readFileSync(paths.claim), before);
+			assert.deepEqual(readFileSync(paths.claim), retained);
 			const successor = await fixture.recover();
 			assert.notEqual(successor, generation);
 			assert.equal(existsSync(paths.claim), false);

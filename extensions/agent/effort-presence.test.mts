@@ -260,11 +260,11 @@ it("does not count an omitted native claim again as an unsupported producer", as
 	assert.deepEqual(page.coverage.reasons, ["native-intent-incomplete"]);
 });
 
-it("keeps native effort rows visible without PID probes", async (t) => {
+it("retains unknown native efforts and omits ended generations with their declarations", async (t) => {
 	const root = rootFor(t);
 	const native = unsupportedNative(root);
 	const catalog = new AgentCatalog(root);
-	const metadata: NativeIntentMetadata = { claim: intent(), cwd: native.cwd, repository: null, repositoryState: "outside-git", hostname: hostname(), startedAt: "2026-01-01T00:00:00.000Z", taskId: 2 };
+	const metadata: NativeIntentMetadata = { claim: { ...intent(), scope: { ...intent().scope, fullGate: true } }, cwd: native.cwd, repository: null, repositoryState: "outside-git", hostname: hostname(), startedAt: "2026-01-01T00:00:00.000Z", taskId: 2 };
 	const rows = [
 		{ id: native.storageId, storageId: native.storageId, cwd: native.cwd, modifiedAt: 1, owner: "here", state: "idle", cost: 0, partial: false },
 		{ id: `${native.storageId}:2`, storageId: native.storageId, cwd: native.cwd, modifiedAt: 2, owner: "here", state: "idle", cost: 0, partial: false },
@@ -276,12 +276,21 @@ it("keeps native effort rows visible without PID probes", async (t) => {
 	writeFileSync(catalog.path(native.storageId), JSON.stringify({ ...native, view }));
 	const paths = hostPaths(native);
 	mkdirSync(dirname(paths.claim), { recursive: true });
-	writeFileSync(paths.claim, JSON.stringify({ sessionId: native.storageId, cwd: native.cwd, host: hostname(), createdAt: new Date().toISOString(), pid: process.pid }));
+	writeFileSync(paths.claim, JSON.stringify({ token: "writer", sessionId: native.storageId, cwd: native.cwd, host: hostname(), createdAt: new Date().toISOString(), pid: process.pid }));
 	const spy = t.mock.method(process, "kill", () => true);
 	const page = await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() });
 	assert.equal(page.efforts.length, 2);
 	assert.ok(page.efforts.every(row => row.liveness === "unknown"));
-	assert.equal(spy.mock.callCount(), 0, "native effort observation never probes a diagnostic PID");
+	assert.ok(page.efforts.every(row => row.intentClaim?.scope.fullGate === true));
+	assert.ok(spy.mock.callCount() > 0, "process presence remains unknown");
+	const ended = { token: "writer", sessionId: native.storageId, cwd: native.cwd, host: hostname(), createdAt: "2026-01-01T00:00:00.000Z", endedAt: "2026-01-01T00:00:01.000Z", pid: process.pid };
+	writeFileSync(paths.claim, JSON.stringify(ended));
+	const retired = await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() });
+	assert.deepEqual(retired.efforts, []);
+	spy.mock.mockImplementation(() => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); });
+	const { endedAt: _endedAt, ...unmarked } = ended;
+	writeFileSync(paths.claim, JSON.stringify(unmarked));
+	assert.deepEqual((await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() })).efforts, []);
 });
 
 it("shares visit, result and byte caps across ordinary and native roots without counting unsupported claims as omissions", async t => {

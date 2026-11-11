@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { it } from "node:test";
+import { after, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { connectTransport, createTransportServer } from "../../transport/index.ts";
@@ -21,9 +21,12 @@ function launch(extra: Partial<HostLaunchOptions> = {}): HostLaunchOptions {
 	return { runner: fixturePath, ...extra };
 }
 
-function fixtureRoot(t: { after(fn: () => void): void }): string {
+const fixtureRoots = new Set<string>();
+after(() => { for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true }); });
+
+function fixtureRoot(_t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "host-client-"));
-	t.after(() => rmSync(root, { recursive: true, force: true }));
+	fixtureRoots.add(root);
 	return root;
 }
 
@@ -153,6 +156,19 @@ it("waits for an owned launch's readiness frame instead of probing its socket", 
 	assert.equal(first.pid, second.pid);
 });
 
+it("refuses a retired changes operation without a feed fallback", { timeout: 10000 }, async t => {
+	const root = fixtureRoot(t);
+	const altered = { ...HOST_CONTRACT, operations: { ...HOST_CONTRACT.operations, changes: { request: "changes/1.0.0", response: "changes/1.0.0" } } };
+	const peer = await openVersionedHost(root, altered);
+	t.after(() => peer.close());
+	const client = await connectHost(peer.metadata);
+	t.after(() => client.close());
+	assert.ok(client.subscribeChanges);
+	await assert.rejects(client.subscribeChanges(() => {}), /changes.*contract/u);
+	assert.equal(client.ownerEvidence?.kind, "unknown");
+	assert.deepEqual(peer.calls, ["runtime-contract"]);
+});
+
 it("an unrelated live PID is diagnostic, not native ownership or release evidence", async (t) => {
 	const root = fixtureRoot(t);
 	const config = fixtureMetadata(root);
@@ -160,6 +176,8 @@ it("an unrelated live PID is diagnostic, not native ownership or release evidenc
 	mkdirSync(dirname(paths.claim), { recursive: true });
 	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: config.storageId, cwd: config.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
 	const inode = lstatSync(paths.claim).ino;
+	const claim = JSON.parse(readFileSync(paths.claim, "utf8"));
+	writeFileSync(paths.claim, JSON.stringify({ ...claim, endedAt: claim.createdAt }));
 	await assert.rejects(connectHost(config), /No verified native host endpoint/u);
 	await assert.rejects(waitForHostRelease(config), /No owned child-exit or owner close-completion event/u);
 	const client = await acquireHost(config, launch());
@@ -320,10 +338,12 @@ it("reports initial and changed state and stops on cancel", { timeout: 30000 }, 
 it("rebinds change subscriptions after an owned failed exit with retryable work", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
-	const connection = await openHost(t, root);
+	const connection = await openHost(t, root, launch({ env: { HOST_FIXTURE_PUBLICATION: "1" } }));
 	const changes = eventLog<number>();
 	const unsubscribe = await subscribeChanges(connection, () => changes.push(changes.length));
 	await changes.waitForCount(1);
+	assert.equal(connection.ownerEvidence?.kind, "verified");
+	const writerId = connection.writerId;
 	const pending = connection.request("receipts", { requestId: "changes-resume" });
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
@@ -335,12 +355,61 @@ it("rebinds change subscriptions after an owned failed exit with retryable work"
 	await connection.request("timer-cancel");
 	await pending;
 	await changes.waitForCount(2);
+	assert.notEqual(connection.writerId, writerId);
+	assert.equal(connection.ownerEvidence?.kind, "verified", "the rebound initial publication belongs to the new hello");
+	if (connection.ownerEvidence?.kind === "verified") assert.equal(connection.ownerEvidence.view?.storageId, connection.storageId);
 	unsubscribe();
+	assert.equal(connection.ownerEvidence?.kind, "unknown", "the last publication subscription ended");
 	const stopped = changes.length;
 	await connection.request("report");
 	await connection.request("timer-list", { barrier: true });
 	assert.equal(changes.length, stopped, "disposed subscriptions produce no later notification");
 	await connection.close();
+});
+
+for (const close of ["local", "owner"] as const) it(`invalidates current-host publication on ${close} close`, { timeout: 10000 }, async t => {
+	const root = fixtureRoot(t), metadata = fixtureMetadata(root);
+	const listeners = new Set<() => void>();
+	const view = { storageId: metadata.storageId, updatedAt: "2026-01-01T00:00:00.000Z", rows: [], coverage: { complete: true, omitted: 0 } };
+	const host = await runHost(() => ({ publishedView: view, request: async () => ({}), close: async () => {}, isIdle: () => false, onChange: listener => { listeners.add(listener); return () => { listeners.delete(listener); }; } }), { metadata, idleMs: 0, announceReady() {} });
+	t.after(() => host.close());
+	const client = await connectHost(metadata);
+	t.after(() => client.close());
+	const changes = eventLog<void>();
+	assert.ok(client.subscribeChanges);
+	await client.subscribeChanges(() => changes.push(undefined));
+	await changes.waitForCount(1);
+	const kind = () => client.ownerEvidence?.kind;
+	assert.equal(kind(), "verified");
+	if (client.ownerEvidence?.kind === "verified") assert.deepEqual(client.ownerEvidence.view, view);
+	if (close === "owner") await client.request("close"); else await client.close();
+	assert.equal(kind(), "unavailable");
+	const count = changes.length;
+	for (const notify of listeners) notify();
+	await new Promise<void>(resolve => setImmediate(resolve));
+	assert.equal(changes.length, count, "old callbacks do not restore a closed owner's publication");
+	assert.equal(kind(), "unavailable");
+});
+
+it("a busy runner causes one endpoint negotiation without a native runtime open", { timeout: 10000 }, async t => {
+	const root = fixtureRoot(t), metadata = fixtureMetadata(root);
+	const evidence = join(root, "busy-peer.json");
+	const source = `
+		import { writeFileSync } from 'node:fs';
+		import { randomUUID } from 'node:crypto';
+		import { createTransportServer } from ${JSON.stringify(new URL("../../transport/index.ts", import.meta.url).href)};
+		import { hostPaths, formatHostBusy } from ${JSON.stringify(new URL("./host-protocol.ts", import.meta.url).href)};
+		import { HOST_CONTRACT } from ${JSON.stringify(new URL("./version-contract.ts", import.meta.url).href)};
+		const metadata = JSON.parse(process.argv[1]);
+		const paths = hostPaths(metadata), writerId = randomUUID(); let calls = 0;
+		const save = () => writeFileSync(${JSON.stringify(evidence)}, JSON.stringify({pid:process.pid,calls}));
+		const server = createTransportServer({serverId:paths.serverId,path:paths.socket,request:async request => {calls++;save();return {format:'pi.agent.host-hello/1',writerId,contract:HOST_CONTRACT};}});
+		await server.start(); save(); process.stdout.write(formatHostBusy({storageId:metadata.storageId,socketPath:paths.socket}));`;
+	t.after(() => { try { const saved = JSON.parse(readFileSync(evidence, "utf8")); process.kill(saved.pid, "SIGKILL"); } catch {} });
+	const client = await acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", source], launchTimeoutMs: 5000 });
+	t.after(() => client.close());
+	assert.equal(JSON.parse(readFileSync(evidence, "utf8")).calls, 1);
+	assert.equal(client.ownedExit, undefined, "busy supplies no owned writer identity");
 });
 
 it("closing the connection with admitted work does not cancel it", { timeout: 30000 }, async (t) => {

@@ -60,6 +60,7 @@ operations.dashboard = { ...operations.dashboard, response: schemaId(AgentConver
 for (const method of ["snapshot", "observe-open", "observe-frame", "receipts", "fork", "rewind", "compact", "command"]) operations[method] = { ...operations[method], durable: durableVersion };
 
 operations["recovery-state"] = { ...operations["recovery-state"], response: "recovery-state/1.1.0" };
+operations.changes = { request: "changes/2.0.0", response: "changes/2.0.0" };
 
 /** Release identifies source; operation identities, not release ordering, authorize calls. */
 export const HOST_CONTRACT: RuntimeContract = Object.freeze({

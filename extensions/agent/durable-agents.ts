@@ -22,7 +22,7 @@ import { realpathSync } from "node:fs";
 import { hostname } from "node:os";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { agentRunControlDoc } from "./run-control-state.ts";
-import { storageStatusPageInput } from "./storage-status.ts";
+import { storageStatusPageInput, validateStatusSelectors } from "./storage-status.ts";
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
 import { readInputProviderBlock, captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
 import { providerBlockText } from "./provider-block-facts.ts";
@@ -46,7 +46,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { AgentCatalog } from "./catalog.ts";
 import { createPrimaryLocationResolver } from "./effort-location.ts";
 import type { EffortReadResources } from "./effort-presence.ts";
-import { readFleetStatus, FleetSelectionProperties, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
+import { readFleetStatus, validateFleetSelection, type FleetSelection } from "./fleet-status.ts";
 import { readEffortAwareness, formatEffortAwareness, nativeIntentSelf } from "./effort-awareness.ts";
 import type { Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
@@ -55,7 +55,7 @@ import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { inputEntry } from "./input-entry.ts";
-import { str, num, int, bool, unknown, opt, obj, map, union, type Static, type Schema } from "@earendil-works/pi-schema";
+import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
@@ -68,7 +68,7 @@ import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
 import {
 	InspectToolOutputSchema,
 	StatusToolOutputSchema,
-	StorageStatusPageInputSchema,
+	StatusToolInputSchema,
 	structuredObservation,
 	nativeStructuredObservation,
 } from "./observation-schema.ts";
@@ -471,16 +471,7 @@ const CommandParams = obj(
 	{},
 );
 
-const StatusParams = union([obj(
-	{
-		view: opt(StringEnum(["fleet"], { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })),
-		...FleetSelectionProperties,
-		sessionId: opt(
-			str({ minLength: 1, description: "Default: the calling conversation; omit for the storage overview." }),
-		),
-	},
-	{},
-), StorageStatusPageInputSchema]);
+const StatusParams = StatusToolInputSchema;
 
 const ListParams = obj(
 	{
@@ -1661,12 +1652,13 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_status",
 			description:
-				"Read conversation state and tools through the host observation. A selected Durable session lists bounded pending timers with IDs and deadlines. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state. Without a target, read this storage's conversations, effort presence and intent claims, and recent active thread hints with explicit coverage. Fleet overviews use compact excerpts and summary coverage. For one storage, use view: storage-page with its exact storageId and follow coverage.next unchanged; this backend JSON cursor is separate from agent_list discovery.",
+				"Read conversation state and tools through the host observation. A selected Durable session lists bounded pending timers with IDs and deadlines. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state. Without a target, read this storage's conversations, effort presence and intent claims, and recent active thread hints with explicit coverage. Fleet overviews use compact excerpts and summary coverage. For one storage, use view: storage-page with its exact storageId and call the tool named by coverage.next.tool with its remaining fields unchanged; this backend JSON cursor is separate from agent_list discovery.",
 			parameters: StatusParams,
 			replay: "safe",
 			execute: async (args: StatusInput, api, context) => {
 				let selection: FleetSelection;
 				try {
+					validateStatusSelectors(args);
 					if (args.view === "storage-page") { storageStatusPageInput(args); selection = {}; }
 					else selection = validateFleetSelection(args);
 				}

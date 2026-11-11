@@ -23,6 +23,14 @@ export function storageStatusPageInput(value: unknown): StorageStatusPageInput &
 	return { view: "storage-page", storageId: value.storageId, limit, ...(value.cursor === undefined ? {} : { cursor: value.cursor as Cursor }) };
 }
 
+/** Provider object schemas declare all fields; execution enforces mutually exclusive selectors. */
+export function validateStatusSelectors(value: Readonly<Record<string, unknown>>): void {
+	if (value.view === "storage-page") { storageStatusPageInput(value); return; }
+	for (const key of ["storageId", "cursor", "limit"]) if (value[key] !== undefined) throw new Error(`${key} requires view: storage-page`);
+	if (value.view !== undefined && value.view !== "fleet") throw new Error("Status view must be fleet or storage-page");
+	if (value.view === "fleet" && value.sessionId !== undefined) throw new Error("Fleet status does not accept sessionId");
+}
+
 /** The cold snapshot adds cwd locally; it never becomes a public page selector. */
 export function storageStatusScanInput(params: Readonly<Record<string, unknown>> | undefined, storageId: string): StorageStatusPageInput & { readonly limit: number } {
 	const { cwd: _cwd, ...input } = params ?? {};

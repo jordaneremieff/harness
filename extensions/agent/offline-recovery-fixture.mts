@@ -5,7 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { acquireHost, connectHost, HostEndpointUnavailableError, type HostConnection, type HostLaunchOptions } from "./host-client.ts";
 import { hostPaths, type HostMetadata } from "./host-protocol.ts";
-import { CLAIM_BYTES, validClaim } from "./claims.ts";
+import { CLAIM_BYTES, classifyClaim, validClaim } from "./claims.ts";
 import { storageIdOf } from "./catalog.ts";
 
 const fixtures = new Map<string, OfflineFixture>();
@@ -21,6 +21,14 @@ function identity(path: string): Identity {
 	return { dev: stat.dev, ino: stat.ino, uid: stat.uid };
 }
 function equalIdentity(a: Identity, b: Identity): boolean { return a.dev === b.dev && a.ino === b.ino && a.uid === b.uid; }
+/** Only the exact captured record or its holder's canonical end write preserves the generation. */
+function sameRecord(before: Captured, current: Captured): boolean {
+	if (before.bytes.equals(current.bytes)) return true;
+	if (before.value.endedAt !== undefined) return false;
+	const ended = classifyClaim(current.value, hostPaths(before.metadata).identity);
+	return ended.kind === "dead" && ended.endedAt !== undefined
+		&& current.bytes.equals(Buffer.from(JSON.stringify({ ...before.value, endedAt: ended.endedAt })));
+}
 function gone(pid: number): boolean {
 	try { process.kill(pid, 0); return false; }
 	catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") return true; throw error; }
@@ -154,7 +162,7 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 	}
 	function capture(metadata: HostMetadata, pid?: number): void {
 		const next = snapshot(metadata, pid), previous = captured.get(next.path);
-		if (previous && (!equalIdentity(previous, next) || !previous.bytes.equals(next.bytes))) fail(new Error("Fixture claim changed before recovery"));
+		if (previous && (!equalIdentity(previous, next) || !sameRecord(previous, next))) fail(new Error("Fixture claim changed before recovery"));
 		captured.set(next.path, next);
 	}
 	function admitSessionsRoot(options: HostLaunchOptions): string {
@@ -234,7 +242,7 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 		if (absent(claimPath)) return before === undefined || gone(before.pid);
 		if (!before) return false;
 		const current = snapshot(metadata);
-		return equalIdentity(before, current) && before.bytes.equals(current.bytes) && gone(before.pid);
+		return equalIdentity(before, current) && sameRecord(before, current) && gone(before.pid);
 	}
 	class Generation implements OfflineGeneration {
 		private sealed = false;
@@ -338,7 +346,7 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 		for (const capturedClaim of captured.values()) {
 			if (absent(capturedClaim.path)) continue;
 			const current = snapshot(capturedClaim.metadata);
-			if (!equalIdentity(current, capturedClaim) || !current.bytes.equals(capturedClaim.bytes) || !gone(capturedClaim.pid)) fail(new Error("Captured claim changed or writer still exists; root retained"));
+			if (!equalIdentity(current, capturedClaim) || !sameRecord(capturedClaim, current) || !gone(capturedClaim.pid)) fail(new Error("Captured claim changed or writer still exists; root retained"));
 		}
 	}
 	async function quiesce(teardown: boolean): Promise<void> {
@@ -358,7 +366,7 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 	function removeCapturedClaims(): void {
 		for (const claim of captured.values()) if (!absent(claim.path)) {
 			const current = snapshot(claim.metadata);
-			if (!equalIdentity(current, claim) || !current.bytes.equals(claim.bytes)) fail(new Error("Claim changed before unlink"));
+			if (!equalIdentity(current, claim) || !sameRecord(claim, current)) fail(new Error("Claim changed before unlink"));
 			unlinkSync(claim.path);
 			if (!absent(claim.path)) fail(new Error("Claim absence not established"));
 		}
