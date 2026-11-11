@@ -63,6 +63,15 @@ describe("CLI command-operand evidence", () => {
 		for (const command of ["bash <<\\EOF\n$(git push)\nEOF", "cat <<\\EOF | sh\n$(git push)\nEOF"])
 			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), "unknown");
 	});
+	it("keeps trap commands and unsupported arithmetic in plain loops unavailable", () => {
+		for (const body of ["trap 'git push' EXIT", "'trap' 'git push' EXIT", "command trap 'git push' EXIT",
+			"builtin trap 'git push' EXIT", "trap 'echo cleanup' EXIT", 'echo $[ 1 <<"2" ]\ngit push\n2',
+			'(( x = 1 <<"2" ))\ngit push\n2']) {
+			const command = `for f in a; do ${body}\ndone\n`;
+			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), "unknown", command);
+		}
+		assert.equal(evaluateCommandRecords("bash", "trap 'echo cleanup' EXIT", [record], scope).get(record.id), false);
+	});
 	it("keeps scope and tool exclusions ahead of unavailable evidence", () => {
 		const excluded = structuredClone(record);
 		excluded.definition.scope = { cwdPrefixes: ["/elsewhere"] };

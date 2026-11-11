@@ -1428,7 +1428,8 @@ input. Only `<<-` removes leading tabs; spaces, CR and U+2028 remain line data.
 The reader removes ordinary shell quotes and backslash-newline continuations
 from delimiter words. Delimiters with `$'...'` or `$"..."` leave evidence
 unavailable (`unexpanded-heredoc`); an absent end line leaves evidence unavailable
-(`malformed-shell`).
+(`malformed-shell`). A plain `for` body with a `trap` command or an unsupported
+arithmetic form also leaves evidence unavailable.
 A shell interpreter that consumes either form still leaves execution evidence
 unavailable. See the [Bash here-document rules](https://www.gnu.org/software/bash/manual/bash.html#Here-Documents).
 

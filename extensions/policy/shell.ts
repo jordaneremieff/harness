@@ -521,6 +521,11 @@ function backslashAction(state: ReaderState): ReaderAction {
 }
 
 function dollarAction(state: ReaderState): ReaderAction {
+	if (state.frame.loop && state.text[state.index + 1] === "[") {
+		const close = skipBalanced(state.text, state.index + 1, "[", "]");
+		if (state.text.slice(state.index + 2, close).includes("<<"))
+			state.budget.reasons.add("unexpanded-arithmetic");
+	}
 	if (state.pendingHeredoc && (state.text[state.index + 1] === "'" || state.text[state.index + 1] === '"'))
 		state.budget.reasons.add("unexpanded-heredoc");
 	if (state.text.slice(state.index, state.index + 3) === "$((") {
@@ -886,6 +891,7 @@ function loopSplit(split: Split, frame: ParseFrame, stages: Word[][], budget: Pa
 		return { ...split, words: words.slice(1) };
 	}
 	if (first.keyword && LOOP_CONTROLS.has(first.text)) budget.reasons.add("unsupported-for-syntax");
+	if (toStage(words, false, false).command === "trap") budget.reasons.add("unsupported-for-syntax");
 	frame.loop.body = true;
 	return split;
 }
