@@ -63,6 +63,21 @@ describe("CLI command-operand evidence", () => {
 		for (const command of ["bash <<\\EOF\n$(git push)\nEOF", "cat <<\\EOF | sh\n$(git push)\nEOF"])
 			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), "unknown");
 	});
+	it("retains current-word quotes across digit extraction for escaped delimiters", () => {
+		for (const descriptor of ["'2'", '"2"', "'23'", '"23"']) {
+			for (const word of ["\\EOF", "E\\OF"]) {
+				const command = `cat ${descriptor}<<${word}\n$(git push)\nEOF\n`;
+				const evidence = evaluateCommandRecords("bash", command, [record], scope);
+				assert.equal(evidence.get(record.id), false, command);
+				assert.deepEqual(evidence.reasons.get(record.id) ?? [], [], command);
+			}
+		}
+		for (const command of ["cat <<\\EOF\n$(git push)\nEOF\n", "cat '2'<<EOF\n$(git push)\nEOF\n"]) {
+			const evidence = evaluateCommandRecords("bash", command, [record], scope);
+			assert.equal(evidence.get(record.id), "unknown", command);
+			assert.ok(evidence.reasons.get(record.id)?.includes("unexpanded-heredoc"), command);
+		}
+	});
 	it("gives plain loops the command evidence of their standalone bodies", () => {
 		for (const body of ["trap 'git push' EXIT", "'trap' 'git push' EXIT", "command trap 'git push' EXIT",
 			"builtin trap 'git push' EXIT", "trap 'echo cleanup' EXIT", 'echo $[ 1 <<"2" ]\ngit push\n2\n',
@@ -98,6 +113,21 @@ describe("deferred command meaning", () => {
 	it("matches literal trap actions as nested commands", () => {
 		for (const body of ["trap 'git push' EXIT", "'trap' -- 'git push' EXIT", "command trap 'git push' DEBUG", "builtin trap 'git push' EXIT"])
 			for (const command of contexts(body)) assert.equal(truth(command), true, command);
+	});
+	it("accepts decimal signal operands and named uppercase signal operands", () => {
+		const names = ["EXIT", "DEBUG", "ERR", "RETURN", "HUP", "INT", "QUIT", "ILL", "TRAP", "ABRT", "EMT", "FPE", "KILL", "BUS", "SEGV", "SYS", "PIPE", "ALRM", "TERM", "URG", "STOP", "TSTP", "CONT", "CHLD", "TTIN", "TTOU", "IO", "XCPU", "XFSZ", "VTALRM", "PROF", "WINCH", "INFO", "USR1", "USR2"];
+		for (const signal of ["0", "2", "23", "000", ...names, ...names.map((name) => `SIG${name}`)]) {
+			assert.equal(truth(`trap 'git push' ${signal}`), true, signal);
+			assert.equal(truth(`trap 'rm -f "$tmp"' ${signal}`), false, signal);
+		}
+		for (const signal of [...names.map((name) => name.toLowerCase()), "sigEXIT", "SigINT", "SIGUNKNOWN", "-2", "+2", "2.0", "$signal"]) {
+			for (const action of ["git push", 'rm -f "$tmp"']) {
+				const command = `trap '${action}' ${signal}`;
+				const evidence = evaluateCommandRecords("bash", command, [record], scope);
+				assert.equal(evidence.get(record.id), "unknown", command);
+				assert.ok(evidence.reasons.get(record.id)?.includes("unresolved-command"), command);
+			}
+		}
 	});
 	it("admits literal cleanup, reset, listing and signal-only forms", () => {
 		for (const body of ["trap 'rm -f \"$tmp\"' EXIT", "trap ': cleanup' EXIT", "trap cleanup EXIT", "trap - EXIT", "trap '' INT", "trap EXIT", "trap", "trap -p", "trap -l", "trap -p 'git push' EXIT", "alias", "alias -p", "alias -p p='git push'"])
