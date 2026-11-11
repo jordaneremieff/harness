@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
@@ -28,8 +28,46 @@ after(() => {
 
 type Script = (lastUserText: string, lastToolResult: { name: string; text: string; isError: boolean } | undefined) => ReturnType<typeof fauxAssistantMessage>;
 
+type JobProbe = { beforeEnv?(id: number): Promise<void>; beforeCommit?(id: number): void; onExec?(id: number): void };
+
+function probedDurable(probe: JobProbe): typeof Durable {
+	function defineTask<I, S extends { phase: string }, R, H extends object = object>(definition: Durable.TaskDefinition<I, S, R, H>): Durable.Task<I, S, R, H> {
+		if (definition.name !== JOB_TASK_NAME) return Durable.defineTask(definition);
+		const phases = Object.fromEntries(Object.entries(definition.phases).map(([phase, handler]) => [phase,
+			async (task: Durable.RunningTask<I, S, R>, runtime: Durable.TaskRuntime<I, S, R, H>, context: Context) => {
+				let committed = false;
+				const facade = new Proxy(runtime, { get(target, key) {
+					if (key === "env") return async (...args: Parameters<typeof runtime.env>) => {
+						await probe.beforeEnv?.(Number(task.id));
+						const env = await runtime.env(...args);
+						if (!env || !probe.onExec) return env;
+						const execute = env.exec.bind(env);
+						env.exec = (...args) => { probe.onExec?.(Number(task.id)); return execute(...args); };
+						return env;
+					};
+					if (key === "commit") return (...args: Parameters<typeof runtime.commit>) => {
+						if (!committed) { committed = true; probe.beforeCommit?.(Number(task.id)); }
+						return runtime.commit(...args);
+					};
+					const value = Reflect.get(target, key, target);
+					return typeof value === "function" ? value.bind(target) : value;
+				} });
+				return (handler as Durable.PhaseHandler<I, S, S, R, H>)(task, facade, context);
+			},
+		])) as typeof definition.phases;
+		return Durable.defineTask({ ...definition, phases });
+	}
+	return { ...Durable, defineTask };
+}
+
+function barrier() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((ready) => { resolve = ready; });
+	return { promise, resolve };
+}
+
 /** One Harness over `storage` with the host's native bash tool and the jobs contribution installed. */
-async function openHarness(storage: Durable.Storage, script: Script) {
+async function openHarness(storage: Durable.Storage, script: Script, options: { probe?: JobProbe; env?: Durable.HarnessOptions["env"]; responses?: number; failAdmission?: () => boolean } = {}) {
 	const faux = fauxProvider();
 	const respond: FauxResponseFactory = (transcript) => {
 		const messages = transcript.messages;
@@ -39,14 +77,14 @@ async function openHarness(storage: Durable.Storage, script: Script) {
 		const toolResult = last?.role === "toolResult" ? { name: last.toolName, text: last.content.filter((part) => part.type === "text").map((part) => part.text).join("\n"), isError: last.isError } : undefined;
 		return script(userText, toolResult);
 	};
-	faux.setResponses(Array.from({ length: 12 }, () => respond));
+	faux.setResponses(Array.from({ length: options.responses ?? 12 }, () => respond));
 	const models = createModels();
 	models.setProvider(faux.provider);
 	const registry = Durable.createRegistry();
 	registry.install(Durable.defineExtension({ name: "pi.host", tools: [{ ...createBashTool(), replay: "unsafe" }] }));
 	const closers: Array<() => void | Promise<void>> = [];
 	const host = {
-		durable: Durable,
+		durable: options.probe ? probedDurable(options.probe) : Durable,
 		services: {} as AgentSessionServices,
 		cwd: root,
 		agentDir: join(root, "agent"),
@@ -56,10 +94,21 @@ async function openHarness(storage: Durable.Storage, script: Script) {
 		onClose: (dispose: () => void | Promise<void>) => closers.push(dispose),
 	} satisfies DurableContributionHost;
 	registry.install(await createJobsContribution({ source: ENTRYPOINT }).create(host));
+	if (options.failAdmission) registry.install(Durable.defineExtension({ name: "admission-probe", wraps: [{ tool: "bash", wrap: (tool: Durable.ToolRegistration) => ({ ...tool,
+		execute: (args: Durable.JsonObject, api: Durable.ToolExecutionApi, context: Context) => {
+			if (!options.failAdmission?.()) return tool.execute(args, api, context);
+			const facade = new Proxy(api, { get(target, key) {
+				if (key === "commit") return () => { throw new Error("Controlled admission commit failure"); };
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			} });
+			return tool.execute(args, facade, context);
+		},
+	}) }] }));
 	const reports: string[] = [];
 	const harness = await Durable.Harness.open(
 		storage,
-		{ models, registry, env: (target) => new NodeExecutionEnv({ cwd: target.cwd ?? root }), onReport: (report) => reports.push(`${report.kind}: ${report.error instanceof Error ? report.error.message : String(report.error)}`) },
+		{ models, registry, env: options.env ?? ((target) => new NodeExecutionEnv({ cwd: target.cwd ?? root })), onReport: (report) => reports.push(`${report.kind}: ${report.error instanceof Error ? report.error.message : String(report.error)}`) },
 		context,
 	);
 	host.harness = harness;
@@ -69,7 +118,7 @@ async function openHarness(storage: Durable.Storage, script: Script) {
 		for (const dispose of closers) await dispose();
 		assert.deepEqual(reports, [], "the harness reported no task or extension errors");
 	};
-	return { harness, faux, close };
+	return { harness, faux, close, reports };
 }
 
 async function say(conversation: Durable.Conversation, text: string) {
@@ -117,6 +166,184 @@ function jobIdOf(text: string): string {
 	assert.ok(match, `job admission text names the job: ${text}`);
 	return match[1];
 }
+
+function waitingEnvironment(target: Durable.EnvTarget): NodeExecutionEnv {
+	const env = new NodeExecutionEnv({ cwd: target.cwd ?? root });
+	env.exec = async (_command, _options, context) => {
+		const signal = context.abortSignal;
+		assert.ok(signal);
+		if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+		return { ok: true, value: { exitCode: 0 } };
+	};
+	return env;
+}
+const admissionScript: Script = (user, result) => user.startsWith("LAUNCH") && result === undefined
+	? fauxAssistantMessage(fauxToolCall("bash", { command: "synthetic", background: true }, { id: "shared-provider-id" }), { stopReason: "toolUse" })
+	: fauxAssistantMessage("Done.");
+async function launch(conversation: Durable.Conversation, label: string): Promise<string | undefined> {
+	await say(conversation, `LAUNCH ${label}`);
+	const result = (await toolResults(conversation)).filter((item) => item.name === "bash").at(-1);
+	assert.ok(result);
+	if (result.isError) { assert.match(result.text, /Active job limit reached|Controlled admission commit failure/); return undefined; }
+	return jobIdOf(result.text);
+}
+async function stopJobs(harness: Durable.Harness, ids: string[]): Promise<void> {
+	await Promise.all(ids.map((id) => harness.abortTask(Number(id) as Durable.TaskId, context)));
+	await harness.waitForIdle(context);
+}
+
+for (const abortHeld of [false, true]) test(`committed admissions retain slots until transfer or abort (${abortHeld})`, { timeout: 30000 }, async () => {
+	const reached = barrier();
+	const release = barrier();
+	let held: number | undefined;
+	const instance = await openHarness(new Durable.MemoryStorage(), admissionScript, { responses: 100, env: waitingEnvironment, probe: { beforeEnv: async (id) => {
+		held ??= id;
+		if (id === held) { reached.resolve(); await release.promise; }
+	} } });
+	const conversation = await instance.harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
+	const ids: string[] = [];
+	try {
+		const first = await launch(conversation, "held");
+		assert.ok(first);
+		ids.push(first);
+		await reached.promise;
+		assert.equal(Number(first), held);
+		assert.ok(Number.isSafeInteger(held));
+		if (abortHeld) {
+			const abort = instance.harness.abortTask(Number(first) as Durable.TaskId, context);
+			release.resolve();
+			await abort;
+			await instance.harness.waitForIdle(context);
+			ids.length = 0;
+		}
+		for (let index = 0; index < (abortHeld ? 8 : 7); index++) {
+			const id = await launch(conversation, String(index));
+			assert.ok(id);
+			ids.push(id);
+		}
+		assert.equal(await launch(conversation, "overflow"), undefined);
+		release.resolve();
+		await stopJobs(instance.harness, ids);
+		ids.length = 0;
+		const next = await launch(conversation, "after cleanup");
+		assert.ok(next);
+		ids.push(next);
+	} finally {
+		release.resolve();
+		await stopJobs(instance.harness, ids);
+		await instance.close();
+	}
+});
+
+for (const boundary of ["commit", "environment", "admission"] as const) test(`a failure at the ${boundary} boundary leaves no pending admission slot`, { timeout: 30000 }, async () => {
+	let failed = false;
+	const fail = () => { if (!failed) { failed = true; throw new Error("Controlled pre-open failure"); } };
+	const instance = await openHarness(new Durable.MemoryStorage(), admissionScript, { responses: 100, env: waitingEnvironment,
+		...(boundary === "admission" ? { failAdmission: () => { if (failed) return false; failed = true; return true; } } : { probe: boundary === "commit" ? { beforeCommit: fail } : { beforeEnv: async () => fail() } }),
+	});
+	const conversation = await instance.harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
+	const ids: string[] = [];
+	try {
+		await launch(conversation, "failure");
+		await instance.harness.waitForIdle(context);
+		assert.equal(failed, true);
+		if (boundary !== "admission") {
+			const reports = instance.reports.splice(0);
+			assert.ok(reports.length > 0);
+			assert.ok(reports.every((report) => report.includes("Controlled pre-open failure")));
+		}
+		for (let index = 0; index < 8; index++) {
+			const id = await launch(conversation, String(index));
+			assert.ok(id);
+			ids.push(id);
+		}
+		assert.equal(await launch(conversation, "overflow"), undefined);
+	} finally { await stopJobs(instance.harness, ids); await instance.close(); }
+});
+
+test("repeated provider IDs keep separate pending slots and transfer only the opened job", { timeout: 30000 }, async () => {
+	const gates = [barrier(), barrier()];
+	const entered = [barrier(), barrier()];
+	const jobs: number[] = [];
+	const opened = barrier();
+	const instance = await openHarness(new Durable.MemoryStorage(), admissionScript, { responses: 100, env: waitingEnvironment, probe: { beforeEnv: async (id) => {
+		let index = jobs.indexOf(id);
+		if (index < 0) { index = jobs.length; jobs.push(id); }
+		if (index < 2) { entered[index].resolve(); await gates[index].promise; }
+	}, onExec: (id) => { if (id === jobs[0]) opened.resolve(); } } });
+	const conversation = await instance.harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
+	const ids: string[] = [];
+	try {
+		for (let index = 0; index < 2; index++) { const id = await launch(conversation, String(index)); assert.ok(id); ids.push(id); await entered[index].promise; }
+		assert.notEqual(jobs[0], jobs[1]);
+		gates[0].resolve();
+		await opened.promise;
+		await instance.harness.abortTask(Number(ids[0]) as Durable.TaskId, context);
+		for (let index = 0; index < 7; index++) { const id = await launch(conversation, `fill ${index}`); assert.ok(id); ids.push(id); }
+		assert.equal(await launch(conversation, "overflow"), undefined);
+		const abort = instance.harness.abortTask(Number(ids[1]) as Durable.TaskId, context);
+		gates[1].resolve();
+		await abort;
+		const next = await launch(conversation, "after second cleanup"); assert.ok(next); ids.push(next);
+	} finally { for (const gate of gates) gate.resolve(); await stopJobs(instance.harness, ids); await instance.close(); }
+});
+
+test("host close clears a committed reservation before a fresh host admits work", { timeout: 30000 }, async () => {
+	const reached = barrier(); const release = barrier();
+	const instance = await openHarness(new Durable.MemoryStorage(), admissionScript, { responses: 100, env: waitingEnvironment, probe: { beforeEnv: async () => { reached.resolve(); await release.promise; } } });
+	const conversation = await instance.harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
+	assert.ok(await launch(conversation, "held")); await reached.promise;
+	const closing = instance.close(); release.resolve(); await closing;
+	const fresh = await openHarness(new Durable.MemoryStorage(), admissionScript, { responses: 100, env: waitingEnvironment });
+	const next = await fresh.harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
+	const ids: string[] = [];
+	try { for (let index = 0; index < 8; index++) { const id = await launch(next, String(index)); assert.ok(id); ids.push(id); } }
+	finally { await stopJobs(fresh.harness, ids); await fresh.close(); }
+});
+
+test("retained task pages survive SQLite reopen while process-local logs remain unavailable", { timeout: 30000 }, async () => {
+	const storagePath = join(root, "retained-pages.sqlite");
+	let request: Durable.JsonObject = { action: "list" };
+	const script: Script = (user, result) => {
+		if (result !== undefined) return fauxAssistantMessage("Done.");
+		if (user.startsWith("LAUNCH")) return fauxAssistantMessage(fauxToolCall("bash", { command: "finite", background: true }), { stopReason: "toolUse" });
+		if (user === "MANAGE") return fauxAssistantMessage(fauxToolCall("jobs", request), { stopReason: "toolUse" });
+		return fauxAssistantMessage("Done.");
+	};
+	const first = await openHarness(await openNodeSqliteStorage(storagePath), script, { responses: 256, env: (target) => {
+		const env = new NodeExecutionEnv({ cwd: target.cwd ?? root });
+		env.exec = async () => ({ ok: true, value: { exitCode: 0 } });
+		return env;
+	} });
+	let conversationId: Durable.ConversationId;
+	const ids: string[] = [];
+	try {
+		const conversation = await first.harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root } });
+		conversationId = conversation.id;
+		for (let index = 0; index < 33; index++) {
+			const id = await launch(conversation, String(index)); assert.ok(id); ids.push(id);
+			await first.harness.waitForIdle(context);
+		}
+	} finally { await first.close(); }
+	const second = await openHarness(await openNodeSqliteStorage(storagePath), script, { responses: 32 });
+	try {
+		const conversation = await second.harness.conversation(conversationId, context); assert.ok(conversation);
+		const manage = async () => { await say(conversation, "MANAGE"); const result = (await toolResults(conversation)).filter((item) => item.name === "jobs").at(-1); assert.ok(result); return result; };
+		const page = JSON.parse((await manage()).text) as { jobs: Array<{ id: string; status: string }>; nextTaskCursor?: Durable.Cursor };
+		assert.equal(page.jobs.length, 32); assert.ok(page.nextTaskCursor);
+		assert.ok(page.jobs.every((job) => job.status === "succeeded"));
+		request = { action: "list", taskCursor: page.nextTaskCursor };
+		const rest = JSON.parse((await manage()).text) as typeof page;
+		assert.equal(rest.jobs.length, 1); assert.equal(rest.nextTaskCursor, undefined);
+		assert.deepEqual(new Set([...page.jobs, ...rest.jobs].map((job) => job.id)), new Set(ids));
+		request = { action: "status", id: ids[0] };
+		assert.match((await manage()).text, /"status": "succeeded"/);
+		request = { action: "logs", id: ids[0] };
+		const logs = await manage(); assert.equal(logs.isError, true); assert.match(logs.text, /not retained in the current agent host process/);
+		request = { action: "status", id: ids[0], taskCursor: page.nextTaskCursor };
+		assert.match((await manage()).text, /Only list accepts taskCursor/);
+	} finally { await second.close(); }
+});
 
 test("a finite background command continues its conversation once with its outcome, logs, and policy-visible launch", { timeout: 30_000 }, async () => {
 	const storage = new Durable.MemoryStorage();

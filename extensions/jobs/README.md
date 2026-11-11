@@ -32,7 +32,8 @@ error), the elapsed time, a bounded control-free preview of the command (at
 most 200 characters), the working directory (or `unknown` when the record has
 none), the retained backend error on its own line, the total output byte count,
 and the last output lines (at most 40 lines from the last 4 KiB of the retained
-tail). A timeout reports the settled duration and names the configured limit.
+tail). The excerpt exhausts that complete bounded window through as many log
+pages as needed. A timeout reports the settled duration and names the configured limit.
 A job lost to a host restart states that its output is unavailable and that zero
 retained bytes does not mean the command produced no output. The excerpt is
 labelled as untrusted command output, and the text says when earlier lines are
@@ -81,7 +82,16 @@ next host marks the task on restart and admits one completion with status
 `lost`: the command is never run again to recover its result, and `jobs` logs
 for that job are unavailable. Another conversation in the same storage cannot
 read or cancel the job; its requests fail with an unknown job ID. The running
-and retained limits apply per host process.
+limit includes admitted tasks whose command has not opened live output yet.
+Reservations use launching task identities and transfer once into live output;
+a failure or abort before that transfer releases its reservation.
+
+Native `jobs list` reads retained task records after restart, newest first,
+at most 32 per page. Pass `nextTaskCursor` back as `taskCursor` on the next list
+call until the result omits it. The cursor is an opaque object, not the numeric
+log-byte cursor. Other actions reject it. Retained task status does not restore
+output, rerun a command, or reattach a process. The output registry remains bounded
+per host process.
 
 ```json
 {"action":"list"}
@@ -134,7 +144,9 @@ full retained error, and for log pages the byte cursors, gap, continuation
 card shows the page marks (`output gap · more output · output pending`) rather
 than the job error. A `list` card identifies each job by command preview, not
 only by ID. Foreground `bash` results keep Pi's native bash card; only the
-background admission shape uses the job card.
+background admission shape uses the job card. A list with `nextTaskCursor`
+shows `More jobs: partial page` in both forms; the expanded card also prints the
+exact JSON cursor. A complete empty page stays `No jobs`.
 
 Every retained string on a card (command preview, directory, owner, identifiers,
 error text, model-visible fallback text and the retained log page) passes
@@ -165,7 +177,7 @@ text. Direct tool calls keep their existing text and `details`.
   Thrown failures, including timeout and abort, still reject in scripts.
 - Background `bash` resolves to `{ job }`. The schema is a union of the native
   foreground schema and this admission object, not a second native schema.
-- `jobs` returns `{ jobs }` for `list`, `{ job }` for `status` and `cancel`,
+- `jobs` returns `{ jobs, nextTaskCursor? }` for native `list` (`{ jobs }` for ordinary list), `{ job }` for `status` and `cancel`,
   and the log page object for `logs`. Unknown IDs and invalid requests still
   produce errors. These objects keep the bounds and ownership below.
 
@@ -196,7 +208,13 @@ request determines the final cancellation reason. Repeated cancellation has no
 additional effect. Numeric exit codes appear only when the backend returns
 one; cancellation does not invent a numeric exit code or signal name.
 
-The manager allows at most eight running jobs and retains at most 32 records.
+The ordinary manager allows at most eight running jobs and retains at most 32
+records. The native host allows eight admitted or running jobs, retains output
+for at most 32 records, and pages persisted task records without a host-local
+history limit. Timeout and explicit cancellation retain backend errors. Text
+uses `Backend error after timeout` or `Backend error after cancellation` for
+those outcomes; other failures use `Execution error`. Error text never decides
+whether an error is an abort or gets discarded.
 At capacity, a new job evicts the oldest finished record, never a running job.
 Unknown or evicted IDs produce an error. Records retain the bounded command
 preview, working directory, and owner described above, never the full command

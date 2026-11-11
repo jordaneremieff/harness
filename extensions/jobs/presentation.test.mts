@@ -45,6 +45,32 @@ function jobResult(job: JobView, expanded = false): string {
 	return render({ content: [{ type: "text", text: "" }], details: { job } }, expanded);
 }
 
+test("list cards distinguish complete pages from partial pages in both forms", () => {
+	const cursor = { after: 41 };
+	for (const jobs of [[], [{ id: "41", commandPreview: "fixture", status: "succeeded" }]]) {
+		const complete = { content: [], details: { jobs } };
+		const partial = { content: [], details: { jobs, nextTaskCursor: cursor } };
+		for (const expanded of [false, true]) {
+			const fullText = render(complete, expanded);
+			const partialText = render(partial, expanded);
+			assert.doesNotMatch(fullText, /partial page|nextTaskCursor/);
+			assert.match(partialText, /More jobs: partial page/);
+			if (expanded) assert.ok(partialText.includes(`nextTaskCursor: ${JSON.stringify(cursor)}`));
+			else { assert.doesNotMatch(partialText, /nextTaskCursor/); assert.match(partialText, /expand/); }
+			if (jobs.length === 0) assert.equal(fullText.trim(), "No jobs");
+		}
+	}
+});
+
+test("error cards retain non-abort diagnostics under the known outcome label", () => {
+	for (const expanded of [false, true]) {
+		for (const [status, label] of [["cancelled", "Backend error after cancellation"], ["timed_out", "Backend error after timeout"], ["failed", "Execution error"]]) {
+			const text = jobResult({ id: "1", commandPreview: "fixture", status, error: "non-abort diagnostic" }, expanded);
+			assert.ok(text.includes(`${label}: non-abort diagnostic`));
+		}
+	}
+});
+
 test("ordinary snapshots carry bounded command identity and omit a missing owner", async () => {
 	const manager = new JobManager();
 	const job = manager.start("printf ready", "/work/jobs", { exec: async () => ({ exitCode: 0 }) });
@@ -108,7 +134,7 @@ test("cards keep accepted, requested, settled, timeout, loss, and unavailable ou
 	assert.doesNotMatch(settled, /to expand|expand for full/u, "expanded cards show no hint");
 	const failed = jobResult({ id: "7", commandPreview: "npm test", cwd: "/work", status: "failed", startedAt: 0, endedAt: 4000, exitCode: 1, cancellationRequested: false, error: "Exit 1\x1b[2J\x1b]52;c;Zm9v\x07 with\nrest" });
 	assert.match(failed, /^failed \u00b7 exit 1 \u00b7 final 4(?:\.0)?s\s*$/mu, "the exceptional state leads the facts line");
-	assert.match(failed, /^Exit 1 with rest\s*$/mu);
+	assert.match(failed, /^Execution error: Exit 1 with rest\s*$/mu);
 	assert.doesNotMatch(failed, /\x1b|Zm9v/u, "terminal sequences never reach the card");
 
 	const timed = jobResult({ id: "4", commandPreview: "sleep 30", status: "timed_out", startedAt: 0, endedAt: 50, cancellationRequested: true, timeoutSeconds: 0.05 }, true);

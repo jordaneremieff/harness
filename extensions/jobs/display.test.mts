@@ -2,10 +2,32 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Text } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { createJobsContribution } from "./durable.ts";
 import { toolDisplay } from "./display.ts";
 import registerJobs from "./index.ts";
+
+test("native list cards preserve partial-page markers and expanded cursors", () => {
+	const renderer = toolDisplay().tools.find((tool) => tool.name === "jobs")?.renderResult;
+	assert.ok(renderer);
+	const theme = { fg: (_name: string, value: string) => value } as unknown as Theme;
+	const cursor = { after: 41 };
+	for (const expanded of [false, true]) {
+		const context = { expanded, args: {}, toolCallId: "list", state: {}, cwd: "/work", argsComplete: true, executionStarted: true, isPartial: false, isError: false, showImages: false, outputPad: 0, invalidate() {}, keyText: () => "", keyHint: () => "" } as unknown as Parameters<typeof renderer>[3];
+		for (const jobs of [[], [{ id: "41", commandPreview: "fixture", status: "succeeded" }]]) {
+			const component = renderer({ content: [], details: { jobs, nextTaskCursor: cursor } }, { expanded, isPartial: false }, theme, context);
+			assert.ok(component instanceof Text);
+			const text = component.render(120).join("\n");
+			assert.match(text, /More jobs: partial page/);
+			if (expanded) assert.ok(text.includes(`nextTaskCursor: ${JSON.stringify(cursor)}`));
+			else { assert.doesNotMatch(text, /nextTaskCursor/); assert.match(text, /expand/); }
+			const complete = renderer({ content: [], details: { jobs } }, { expanded, isPartial: false }, theme, context);
+			assert.ok(complete instanceof Text);
+			assert.doesNotMatch(complete.render(120).join("\n"), /partial page|nextTaskCursor/);
+		}
+	}
+});
 
 test("display.ts is presentation-only and the contribution names it", () => {
 	const source = readFileSync(fileURLToPath(new URL("./display.ts", import.meta.url)), "utf8");

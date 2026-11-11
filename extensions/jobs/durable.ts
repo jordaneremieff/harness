@@ -87,12 +87,13 @@ const JobsParameters = obj(
 		action: StringEnum(["list", "status", "logs", "cancel"] as const),
 		id: opt(str({ description: "Job ID returned by bash with background:true", minLength: 1, maxLength: 100 })),
 		cursor: opt(int({ description: "Byte cursor from a previous logs result; default starts at retained output", minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
+		taskCursor: opt(obj({}, { open: true })),
 	},
 	{ open: false },
 );
 type JobsParams = Static<typeof JobsParameters>;
 const JobsOutputSchema = union([
-	obj({ jobs: arr(JobSchema, { maxItems: JOB_LIMITS.retained }) }, { open: true }),
+	obj({ jobs: arr(JobSchema, { maxItems: JOB_LIMITS.retained }), nextTaskCursor: opt(obj({}, { open: true })) }, { open: true }),
 	JobResultSchema,
 	obj({ id: str(), text: str({ maxLength: JOB_LIMITS.pageBytes }), earliest: int(), next: int(), end: int(), gap: bool(), more: bool(), pendingBytes: int() }, { open: true }),
 ]);
@@ -130,14 +131,29 @@ class LiveJob {
 /** Bounded per-host registry of live output; terminal entries are evicted oldest first past the retained limit. */
 class LiveJobs {
 	readonly #entries = new Map<number, LiveJob>();
+	readonly #pendingAdmissions = new Map<number, number>();
+	readonly #launchTaskByJob = new Map<number, number>();
+	reserveAdmission(launchTaskId: number, conversationId: number): void {
+		if (this.#pendingAdmissions.has(launchTaskId)) throw new Error("Duplicate job admission task");
+		this.#pendingAdmissions.set(launchTaskId, conversationId);
+	}
+	linkAdmission(jobTaskId: number, launchTaskId: number): void {
+		if (!Number.isSafeInteger(jobTaskId) || !this.#pendingAdmissions.has(launchTaskId)) throw new Error("Invalid job admission association");
+		this.#launchTaskByJob.set(jobTaskId, launchTaskId);
+	}
+	releaseAdmission(launchTaskId: number, jobTaskId?: number): void {
+		this.#pendingAdmissions.delete(launchTaskId);
+		if (jobTaskId !== undefined) this.#launchTaskByJob.delete(jobTaskId);
+	}
+	releaseJobAdmission(jobTaskId: number): void {
+		const launchTaskId = this.#launchTaskByJob.get(jobTaskId);
+		if (launchTaskId !== undefined) this.releaseAdmission(launchTaskId, jobTaskId);
+	}
 	get(id: number): LiveJob | undefined {
 		return this.#entries.get(id);
 	}
 	runningCount(): number {
-		return [...this.#entries.values()].filter((entry) => entry.running).length;
-	}
-	idsFor(conversationId: number): number[] {
-		return [...this.#entries].filter(([, entry]) => entry.conversationId === conversationId).map(([id]) => id);
+		return this.#pendingAdmissions.size + [...this.#entries.values()].filter((entry) => entry.running).length;
 	}
 	open(id: number, conversationId: number): LiveJob {
 		if (this.#entries.size >= JOB_LIMITS.retained) {
@@ -145,11 +161,14 @@ class LiveJobs {
 			if (oldest) this.#entries.delete(oldest[0]);
 		}
 		const entry = new LiveJob(conversationId);
+		this.releaseJobAdmission(id);
 		this.#entries.set(id, entry);
 		return entry;
 	}
 	clear(): void {
 		this.#entries.clear();
+		this.#pendingAdmissions.clear();
+		this.#launchTaskByJob.clear();
 	}
 }
 
@@ -261,26 +280,40 @@ export function createJobsContribution(options: { source: string }): DurableCont
 				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result: lost } }), context);
 			}
 
+			async function jobEnvironment(runtime: JobRuntime, context: Context) {
+				if (runtime.signal.aborted) return undefined;
+				const env = await runtime.env(context);
+				if (env === undefined) throw new Error("Background jobs need the conversation's execution environment");
+				return runtime.signal.aborted ? undefined : env;
+			}
+
 			async function runJob(task: Durable.RunningTask<JobInput, JobState, JobResult>, runtime: JobRuntime, context: Context): Promise<void> {
 				const input = task.input;
 				const id = Number(task.id);
 				const startedAt = runtime.now();
-				await runtime.commit(() => ({ status: "running", checkpoint: { phase: "run", startedAt } }), context);
-				const env = await runtime.env(context);
-				if (env === undefined) throw new Error("Background jobs need the conversation's execution environment");
-				const entry = live.open(id, input.conversationId);
-				const exec = await env.exec(
-					input.command,
-					{ cwd: env.cwd, env: {}, inheritEnv: true, ...(input.timeoutSeconds === undefined ? {} : { timeout: input.timeoutSeconds }), onOutput: (text) => entry.append(text) },
-					withAbortSignal(runtime.signal, context),
-				);
-				const endedAt = runtime.now();
-				entry.settle(endedAt);
-				// An abort mark ends this invocation; the abort handler commits the terminal state.
-				if (runtime.signal.aborted) return;
-				const result = resultOf(exec, startedAt, endedAt, entry.end);
-				await admitCompletion(runtime, input, jobOf(id, input, result), entry, context);
-				await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
+				let entry: LiveJob | undefined;
+				try {
+					await runtime.commit(() => ({ status: "running", checkpoint: { phase: "run", startedAt } }), context);
+					const env = await jobEnvironment(runtime, context);
+					if (env === undefined) return;
+					const opened = live.open(id, input.conversationId);
+					entry = opened;
+					const exec = await env.exec(
+						input.command,
+						{ cwd: env.cwd, env: {}, inheritEnv: true, ...(input.timeoutSeconds === undefined ? {} : { timeout: input.timeoutSeconds }), onOutput: (text) => opened.append(text) },
+						withAbortSignal(runtime.signal, context),
+					);
+					const endedAt = runtime.now();
+					entry.settle(endedAt);
+					// An abort mark ends this invocation; the abort handler commits the terminal state.
+					if (runtime.signal.aborted) return;
+					const result = resultOf(exec, startedAt, endedAt, entry.end);
+					await admitCompletion(runtime, input, jobOf(id, input, result), entry, context);
+					await runtime.commit(() => ({ status: "terminal", outcome: { status: "completed", result } }), context);
+				} finally {
+					live.releaseJobAdmission(id);
+					entry?.settle(runtime.now());
+				}
 			}
 
 			const JobTask: JobRunTask = host.durable.defineTask<JobInput, JobState, JobResult>({
@@ -295,6 +328,7 @@ export function createJobsContribution(options: { source: string }): DurableCont
 					},
 				},
 				abort: async (task, runtime, context) => {
+					live.releaseJobAdmission(Number(task.id));
 					live.get(Number(task.id))?.settle(runtime.now());
 					const startedAt = task.state.checkpoint.startedAt;
 					if (task.abortReason === "restart" && startedAt !== undefined) return settleLost(task, runtime, startedAt, context);
@@ -310,13 +344,10 @@ export function createJobsContribution(options: { source: string }): DurableCont
 				return record as unknown as JobRecord;
 			}
 
-			async function listJobs(api: Durable.ToolExecutionApi, context: Context): Promise<Durable.ToolExecutionResult> {
-				const jobs: CompletionJob[] = [];
-				for (const id of live.idsFor(api.conversationId)) {
-					const record = await api.getTask(id as Durable.TaskId<JobResult>, context);
-					if (record !== undefined && record.kind === JOB_TASK_NAME) jobs.push(jsonJob(jobFromRecord(record as unknown as JobRecord, api.now())));
-				}
-				return textResult({ jobs });
+			async function listJobs(api: Durable.ToolExecutionApi, context: Context, taskCursor?: Durable.Cursor): Promise<Durable.ToolExecutionResult> {
+				const page = await api.commit((tx) => tx.scanTasks({ conversationId: api.conversationId, kind: JOB_TASK_NAME, order: "descending" }, JOB_LIMITS.retained, taskCursor), context);
+				const jobs = page.items.map((record) => jsonJob(jobFromRecord(record as unknown as JobRecord, api.now())));
+				return textResult({ jobs, ...(page.next ? { nextTaskCursor: page.next } : {}) });
 			}
 
 			function readLogs(id: string, cursor: number | undefined, job: CompletionJob): Durable.ToolExecutionResult {
@@ -346,9 +377,10 @@ export function createJobsContribution(options: { source: string }): DurableCont
 				parameters: JobsParameters,
 				structuredOutputSchema: JobsOutputSchema,
 				async execute(params, api, context) {
+					if (params.action !== "list" && params.taskCursor !== undefined) throw new Error("Only list accepts taskCursor.");
 					if (params.action !== "list") return manageJob(params, api, context);
 					if (params.id !== undefined || params.cursor !== undefined) throw new Error("list accepts no id or cursor.");
-					return listJobs(api, context);
+					return listJobs(api, context, params.taskCursor as Durable.Cursor | undefined);
 				},
 			});
 
@@ -359,8 +391,22 @@ export function createJobsContribution(options: { source: string }): DurableCont
 				const createdAt = api.now();
 				const timeout = args.timeout === undefined ? {} : { timeoutSeconds: args.timeout };
 				const input: JobInput = { conversationId: api.conversationId, command: args.command, preview: commandPreview(args.command), ...(api.env === undefined ? {} : { cwd: api.env.cwd }), owner: `${host.storageId}:${api.conversationId}`, createdAt, requestId: `${JOB_COMPLETION_MESSAGE}:${api.conversationId}:${api.callId}`, ...timeout };
-				const taskId = await api.commit((tx) => tx.createTask(JobTask, input, { ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true, abandonOnRestart: true }), context);
-				return textResult({ job: { id: String(taskId), ...identityOf(input), observedAt: createdAt, status: "running", startedAt: createdAt, cancellationRequested: false, ...timeout } });
+				const launchTaskId = Number(api.taskId);
+				live.reserveAdmission(launchTaskId, api.conversationId);
+				let jobTaskId: number | undefined;
+				let created = false;
+				try {
+					const taskId = await api.commit(async (tx) => {
+						const createdId = await tx.createTask(JobTask, input, { ownership: { kind: "conversation" }, conversationId: api.conversationId, background: true, abandonOnRestart: true });
+						jobTaskId = Number(createdId);
+						live.linkAdmission(jobTaskId, launchTaskId);
+						return createdId;
+					}, context);
+					created = true;
+					return textResult({ job: { id: String(taskId), ...identityOf(input), observedAt: createdAt, status: "running", startedAt: createdAt, cancellationRequested: false, ...timeout } });
+				} finally {
+					if (!created) live.releaseAdmission(launchTaskId, jobTaskId);
+				}
 			}
 
 			function wrapBash(tool: Durable.ToolRegistration): Durable.ToolRegistration {

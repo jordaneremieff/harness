@@ -40,11 +40,13 @@ export function completionTail(read: (cursor?: number) => JobLogs): JobCompletio
 	const probe = read();
 	const start = Math.max(probe.earliest, probe.end - COMPLETION_LIMITS.tailBytes);
 	let text = "";
-	for (let cursor = start, pages = 0; pages < 4; pages++) {
+	let cursor = start;
+	while (true) {
 		const page = read(cursor);
 		text += page.text;
-		cursor = page.next;
 		if (!page.more) break;
+		if (page.next <= cursor) throw new Error("Job log reader did not advance");
+		cursor = page.next;
 	}
 	const lines = text.replace(/\n$/u, "").split("\n");
 	// A window that starts inside the output begins with a partial line.
@@ -53,11 +55,15 @@ export function completionTail(read: (cursor?: number) => JobLogs): JobCompletio
 	return { text: kept.join("\n"), omitted: probe.earliest > 0 || start > probe.earliest || kept.length < lines.length, outputBytes: probe.end };
 }
 
+export function executionErrorLabel(status: string | undefined): string {
+	return status === "timed_out" ? "Backend error after timeout" : status === "cancelled" ? "Backend error after cancellation" : "Execution error";
+}
+
 export function completionContent(details: JobCompletionDetails): string {
 	const { job, tail } = details;
 	const lines = [`Background job ${job.id} ${outcomeLine(job)}: ${details.command || "command unknown"}`];
 	lines.push(`Working directory: ${job.cwd === undefined ? "unknown" : displayText(job.cwd)}`);
-	if (job.error) lines.push(`Execution error: ${displayText(job.error)}`);
+	if (job.error) lines.push(`${executionErrorLabel(job.status)}: ${displayText(job.error)}`);
 	if (job.status === "lost") lines.push("Output is unavailable after host loss; zero retained bytes does not mean the command produced no output.");
 	else if (tail.outputBytes === 0) lines.push("The command produced no output.");
 	else {

@@ -2,11 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { type BashOperations, createLocalBashOperations } from "@earendil-works/pi-coding-agent";
+import { completionContent, completionTail } from "./completion.ts";
 import { JOB_LIMITS, JobManager } from "./manager.ts";
 
 const cwd = process.cwd();
 const native = createLocalBashOperations();
 const success: BashOperations = { exec: async () => ({ exitCode: 0 }) };
+function barrier() {
+	let resolve!: () => void;
+	const promise = new Promise<void>((ready) => { resolve = ready; });
+	return { promise, resolve };
+}
 async function until(check: () => boolean): Promise<void> {
 	for (let attempt = 0; attempt < 300; attempt++) {
 		if (check()) return;
@@ -14,6 +20,35 @@ async function until(check: () => boolean): Promise<void> {
 	}
 	assert.fail("Condition did not become true");
 }
+
+test("real backend cancellation retains its error under the cancellation label", { timeout: 5000 }, async (t) => {
+	const manager = new JobManager();
+	t.after(() => manager.dispose());
+	const ready = barrier();
+	const operations: BashOperations = { exec: (command, cwd, options) => native.exec(command, cwd, { ...options, onData: (data) => { options.onData(data); ready.resolve(); } }) };
+	const job = manager.start("printf 'ready\\n'; exec tail -f /dev/null", cwd, operations);
+	await ready.promise;
+	manager.cancel(job.id);
+	const settled = await manager.wait(job.id);
+	assert.equal(settled.status, "cancelled");
+	assert.ok(settled.error);
+	const text = completionContent({ job: settled, command: "fixture", tail: completionTail((cursor) => manager.logs(job.id, cursor)) });
+	assert.match(text, /Backend error after cancellation/);
+	assert.doesNotMatch(text, /Execution error:/);
+});
+
+test("a non-abort backend rejection after cancellation remains retained", { timeout: 5000 }, async (t) => {
+	const manager = new JobManager();
+	t.after(() => manager.dispose());
+	const ready = barrier();
+	const job = manager.start("controlled", cwd, { exec: (_command, _cwd, options) => new Promise((_resolve, reject) => {
+		options.signal?.addEventListener("abort", () => reject(new Error("non-abort backend diagnostic")), { once: true });
+		ready.resolve();
+	}) });
+	await ready.promise;
+	manager.cancel(job.id);
+	assert.equal((await manager.wait(job.id)).error, "non-abort backend diagnostic");
+});
 
 test("registers synchronously and owns a cancellation request until backend settlement", async () => {
 	const manager = new JobManager();

@@ -1,7 +1,7 @@
 import { createBashToolDefinition, type AgentToolResult, type Theme, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { basename } from "node:path";
-import { displayText } from "./completion.ts";
+import { displayText, executionErrorLabel } from "./completion.ts";
 
 /** Facts a job card can show. Absent fields are unknown, not empty. */
 export interface JobView {
@@ -121,7 +121,7 @@ function compactJob(job: JobView): string[] {
 	const context = contextLine(job);
 	const lines = [lineOf(job.commandPreview) ?? "command unknown", ...(context ? [context] : []), [...new Set(facts)].join(" · ")];
 	const error = compactError(textOf(job.error));
-	if (error) lines.push(error);
+	if (error) lines.push(`${executionErrorLabel(job.status)}: ${error}`);
 	return lines;
 }
 
@@ -145,7 +145,7 @@ function detailJob(job: JobView, logs?: LogView): string[] {
 		...lossLines(job),
 	];
 	const error = textOf(job.error);
-	if (error) lines.push(`retained error: ${error}`);
+	if (error) lines.push(`${executionErrorLabel(job.status)}: ${error}`);
 	if (logs) lines.push(...logDetail(logs));
 	else lines.push("Logs are not in this result.");
 	return lines;
@@ -213,13 +213,18 @@ function logsLines(logs: LogView, expanded: boolean): string[] {
 	return logs.job ? detailJob(logs.job, logs) : ["command unknown", "unknown", ...logDetail(logs)];
 }
 
-function listLines(jobs: unknown[], expanded: boolean): string[] {
-	if (jobs.length === 0) return ["No jobs"];
-	return jobs.flatMap((entry, index) => {
+function listLines(jobs: unknown[], expanded: boolean, nextTaskCursor?: unknown): string[] {
+	if (jobs.length === 0 && nextTaskCursor === undefined) return ["No jobs"];
+	const lines = jobs.flatMap((entry, index) => {
 		const job = jobView(entry) ?? {};
-		const lines = expanded ? detailJob(job) : compactJob(job);
-		return index === 0 ? lines : ["", ...lines];
+		const rows = expanded ? detailJob(job) : compactJob(job);
+		return index === 0 ? rows : ["", ...rows];
 	});
+	if (nextTaskCursor !== undefined) {
+		lines.push("More jobs: partial page");
+		if (expanded) lines.push(`nextTaskCursor: ${JSON.stringify(nextTaskCursor)}`);
+	}
+	return lines;
 }
 
 /** Card lines and whether a collapsed card hides more. Fallback text is the model-visible result text. */
@@ -230,8 +235,8 @@ function jobsLines(details: unknown, expanded: boolean, isError: boolean, fallba
 		const lines = logsLines(logs, expanded);
 		return { lines: isError && cleanFallback ? [...lines, cleanFallback] : lines, more: !expanded };
 	}
-	const record = jobView(details) as { jobs?: unknown; job?: unknown } | undefined;
-	if (Array.isArray(record?.jobs)) return { lines: listLines(record.jobs, expanded), more: !expanded && record.jobs.length > 0 };
+	const record = jobView(details) as { jobs?: unknown; job?: unknown; nextTaskCursor?: unknown } | undefined;
+	if (Array.isArray(record?.jobs)) return { lines: listLines(record.jobs, expanded, record.nextTaskCursor), more: !expanded && (record.jobs.length > 0 || record.nextTaskCursor !== undefined) };
 	const job = jobView(record?.job);
 	if (job) return { lines: expanded ? detailJob(job) : compactJob(job), more: !expanded };
 	if (cleanFallback) {
