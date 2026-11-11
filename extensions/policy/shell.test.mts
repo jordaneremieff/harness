@@ -43,6 +43,67 @@ describe("plain for evidence", () => {
 		assert.equal(limited.statements.length, 64);
 		assert.ok(limited.statements.flat().every((stage) => stage.args[0] === "x"));
 	});
+	it("charges a piped loop terminator only once at the aggregate stage limit", () => {
+		const loop = "for f in a; do echo x; done | cat\n";
+		const below = parseShellEvidence(`${loop.repeat(63)}echo tail`);
+		assert.ok(!below.reasons.includes("stage-limit"));
+		assert.deepEqual(below.reasons, ["malformed-for-syntax"]);
+		assert.equal(below.statements.length, 127);
+		assert.deepEqual(below.statements.at(-1)?.[0].args, ["tail"]);
+		const limited = parseShellEvidence(`${loop.repeat(64)}echo tail`);
+		assert.ok(limited.reasons.includes("stage-limit"));
+		assert.equal(limited.statements.length, 128);
+		assert.deepEqual(limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
+			Array.from({ length: 64 }, () => [[["echo", ["x"]]], [["", []], ["cat", []]]]).flat());
+	});
+	it("counts a pipeline body at the aggregate stage limit", () => {
+		const loop = "for f in a; do echo x | cat; done\n";
+		const below = parseShellEvidence(`${loop.repeat(63)}echo tail`);
+		assert.equal(below.complete, true);
+		assert.equal(below.statements.length, 64);
+		assert.deepEqual(below.statements.at(-1)?.[0].args, ["tail"]);
+		const limited = parseShellEvidence(`${loop.repeat(64)}echo tail`);
+		assert.ok(limited.reasons.includes("stage-limit"));
+		assert.deepEqual(limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
+			Array.from({ length: 64 }, () => [["echo", ["x"]], ["cat", []]]));
+	});
+	it("shares the aggregate stage limit with loops nested in a substitution", () => {
+		const loop = "for f in a; do echo x; done\n";
+		const below = parseShellEvidence(`echo $(${loop.repeat(84)}echo tail)`);
+		assert.equal(below.complete, true);
+		assert.equal(below.statements.length, 86);
+		assert.deepEqual(below.statements.at(-1)?.[0].args, ["tail"]);
+		const limited = parseShellEvidence(`echo $(${loop.repeat(85)}echo tail)`);
+		assert.ok(limited.reasons.includes("stage-limit"));
+		assert.equal(limited.statements[0][0].command, "echo");
+		assert.deepEqual(limited.statements.slice(1).map((statement) => statement.map((stage) => [stage.command, stage.args])),
+			Array.from({ length: 85 }, () => [["echo", ["x"]]]));
+	});
+	it("counts directly nested loops at the aggregate stage limit without resolving their syntax", () => {
+		const loop = "for f in a; do for g in b; do echo x; done; done\n";
+		const below = parseShellEvidence(`${loop.repeat(51)}echo tail`);
+		assert.ok(!below.reasons.includes("stage-limit"));
+		assert.deepEqual(below.reasons, ["unsupported-for-syntax"]);
+		assert.equal(below.statements.length, 154);
+		assert.deepEqual(below.statements.at(-1)?.[0].args, ["tail"]);
+		const limited = parseShellEvidence(`${loop.repeat(52)}echo tail`);
+		assert.ok(limited.reasons.includes("stage-limit"));
+		assert.deepEqual(limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
+			Array.from({ length: 51 }, () => [[["for", ["g", "in", "b"]]], [["echo", ["x"]]], [["done", []]]]).flat());
+	});
+	it("stops at the aggregate stage limit within a loop body", () => {
+		const command = (count: number) => `for f in a; do ${"echo x; ".repeat(count)}done\necho tail`;
+		const below = parseShellEvidence(command(253));
+		assert.equal(below.complete, true);
+		assert.equal(below.statements.length, 254);
+		assert.deepEqual(below.statements.at(-1)?.[0].args, ["tail"]);
+		for (const [count, retained] of [[254, 254], [256, 255]]) {
+			const limited = parseShellEvidence(command(count));
+			assert.ok(limited.reasons.includes("stage-limit"));
+			assert.deepEqual(limited.statements.map((statement) => statement.map((stage) => [stage.command, stage.args])),
+				Array.from({ length: retained }, () => [["echo", ["x"]]]));
+		}
+	});
 	it("leaves unsupported or incomplete control syntax unavailable", () => {
 		for (const command of [
 			'for x "in" a; do echo x; done', 'for x in a; "do" echo x; done',
