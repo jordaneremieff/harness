@@ -249,7 +249,7 @@ const suite: EvaluationSuite = {
 				String(id).replaceAll("-", " "),
 				[step({ command: String(command) }, "bash")],
 				denied
-					? outcome("bash", "[policy] Synthetic CLI force policy refused this call.", true)
+					? outcome("bash", "[policy] Rule eval.cli-force: Synthetic CLI force policy refused this call.", true)
 					: outcome("bash", `INERT COMMAND:${command}`),
 				denied
 					? "Enforce refuses this synthetic CLI request under the approved plain-force or unknown-denying rule. A lease option does not cancel plain force. Observe executes the inert echo unchanged."
