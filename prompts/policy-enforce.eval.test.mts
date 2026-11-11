@@ -186,7 +186,13 @@ async function evidenceFor(
 
 it("explicit variant modes ignore ambient enforcement and retain falsifiable controls", async (t) => {
 	const evaluationCase = suite.cases[0];
-	const input = evaluationCase.input as { fixture: PolicyFixture };
+	const input = evaluationCase.input;
+	assert.ok(input !== null && typeof input === "object" && !Array.isArray(input));
+	const fixture = input.fixture;
+	assert.ok(fixture !== null && typeof fixture === "object" && !Array.isArray(fixture));
+	assert.ok(typeof fixture.command === "string");
+	assert.ok(typeof fixture.fileName === "string");
+	const policyFixture: PolicyFixture = { command: fixture.command, fileName: fixture.fileName };
 	const enforce = suite.subject.variants.find((variant) => variant.id === "enforce");
 	const observe = suite.subject.variants.find((variant) => variant.id === "observe-baseline");
 	assert.ok(enforce);
@@ -195,13 +201,13 @@ it("explicit variant modes ignore ambient enforcement and retain falsifiable con
 	const enforceChecks = runDeterministicChecks(
 		"",
 		evaluationCase.checks,
-		await evidenceFor(enforce, input.fixture),
+		await evidenceFor(enforce, policyFixture),
 		evaluationCase.id,
 	);
 	const observeChecks = runDeterministicChecks(
 		"",
 		evaluationCase.checks,
-		await evidenceFor(observe, input.fixture),
+		await evidenceFor(observe, policyFixture),
 		evaluationCase.id,
 	);
 

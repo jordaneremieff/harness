@@ -1,9 +1,24 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { fileURLToPath } from "node:url";
+import type { JsonValue } from "vitest-evals";
 
 import { piSdkAdapter, runDeterministicChecks } from "../evals/subjects/pi-sdk.mts";
 import suite from "./tldr.eval.mts";
+
+function jsonObject(value: JsonValue | undefined): Record<string, JsonValue> {
+	assert.ok(value !== null && typeof value === "object" && !Array.isArray(value));
+	return value;
+}
+
+function reviewCriteria(metadata: JsonValue | undefined): string[] {
+	const criteria = jsonObject(metadata).criteria;
+	assert.ok(Array.isArray(criteria));
+	return criteria.map((criterion) => {
+		assert.ok(typeof criterion === "string");
+		return criterion;
+	});
+}
 
 const examples: Record<string, string> = {
 	"shipped-summary-command":
@@ -69,10 +84,10 @@ it("the tldr suite validates and resolves both variants without inference", () =
 		cases: suite.cases,
 	});
 	for (const variant of suite.subject.variants) {
-		assert.deepEqual(variant.config.tools, []);
+		assert.deepEqual(jsonObject(variant.config).tools, []);
 		assert.ok(piSdkAdapter.resolve({ suitePath, subjectKind: suite.subject.kind, subjectConfig: suite.subject.config, variant }));
 	}
-	assert.deepEqual(suite.subject.variants[1].config.promptTemplates, [
+	assert.deepEqual(jsonObject(suite.subject.variants[1].config).promptTemplates, [
 		{ name: "tldr", source: { inline: "tldr $ARGUMENTS" } },
 	]);
 });
@@ -80,8 +95,8 @@ it("the tldr suite validates and resolves both variants without inference", () =
 it("every tldr case has a readable synthetic output that passes its deterministic floors", () => {
 	assert.deepEqual(Object.keys(examples).sort(), suite.cases.map((entry) => entry.id).sort());
 	for (const entry of suite.cases) {
-		assert.ok(entry.reviewMetadata?.criteria.length, `${entry.id} requires semantic review criteria`);
-		const results = runDeterministicChecks(examples[entry.id], entry.checks);
+		assert.ok(reviewCriteria(entry.reviewMetadata).length, `${entry.id} requires semantic review criteria`);
+		const results = runDeterministicChecks(examples[entry.id], entry.checks, [], entry.id);
 		assert.deepEqual(results.filter((result) => !result.passed), [], entry.id);
 	}
 });
@@ -109,7 +124,7 @@ it("each tldr deterministic floor rejects its own isolated violation", () => {
 					assert.fail(`Unhandled deterministic check ${check.type}`);
 			}
 			for (const violation of violations) {
-				const failed = runDeterministicChecks(violation, entry.checks).filter((result) => !result.passed);
+				const failed = runDeterministicChecks(violation, entry.checks, [], entry.id).filter((result) => !result.passed);
 				assert.deepEqual(failed.map((result) => result.checkId), [check.id], `${entry.id}: ${check.id}`);
 			}
 		}
@@ -123,7 +138,7 @@ it("optional history cleanup can be omitted or qualified without failing lexical
 		examples[entry.id],
 		"Correcting the pushed commit messages remains optional and risks disrupting other checkouts through a history rewrite. Leaving history unchanged remains the default. The report fix is released and ready to use.",
 	]) {
-		assert.ok(runDeterministicChecks(output, entry.checks).every((result) => result.passed));
+		assert.ok(runDeterministicChecks(output, entry.checks, [], entry.id).every((result) => result.passed));
 	}
 });
 
@@ -131,16 +146,16 @@ it("a bookkeeping-only summary still needs human review when lexical floors pass
 	const entry = suite.cases.find((entry) => entry.id === "shipped-summary-command");
 	assert.ok(entry);
 	const output = "The /brief command passed its checks. The evaluation still awaits your verdict.";
-	assert.ok(runDeterministicChecks(output, entry.checks).every((result) => result.passed));
+	assert.ok(runDeterministicChecks(output, entry.checks, [], entry.id).every((result) => result.passed));
 	assert.equal(suite.adjudication.policy, "human-required");
-	assert.ok(entry.reviewMetadata.criteria.some((criterion) => criterion.includes("optional evaluation verdicts")));
+	assert.ok(reviewCriteria(entry.reviewMetadata).some((criterion) => criterion.includes("optional evaluation verdicts")));
 });
 
 it("a short but false answer still needs human review", () => {
 	const entry = suite.cases.find((entry) => entry.id === "proposal-approval");
 	assert.ok(entry);
-	const results = runDeterministicChecks("The search fix is deployed and makes every search instant.", entry.checks);
+	const results = runDeterministicChecks("The search fix is deployed and makes every search instant.", entry.checks, [], entry.id);
 	assert.ok(results.every((result) => result.passed));
 	assert.equal(suite.adjudication.policy, "human-required");
-	assert.ok(entry.reviewMetadata.criteria.some((criterion) => criterion.includes("No implementation")));
+	assert.ok(reviewCriteria(entry.reviewMetadata).some((criterion) => criterion.includes("No implementation")));
 });

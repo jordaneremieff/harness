@@ -74,7 +74,14 @@ interface IdealExecution {
 function assistantToolCall(callId: string, content: string, label: string | undefined): Message {
 	return {
 		role: "assistant",
-		content: [{ type: "toolCall", id: callId, name: "clipboard_copy", arguments: { content, label } }],
+		content: [
+			{
+				type: "toolCall",
+				id: callId,
+				name: "clipboard_copy",
+				arguments: { content, ...(label === undefined ? {} : { label }) },
+			},
+		],
 		api: "openai-completions",
 		provider: "test",
 		model: "seed-eval",
@@ -288,7 +295,8 @@ function caseForbiddenValues(evaluationCase: EvaluationSuite["cases"][number]): 
 function eventsWithoutLabel(events: TranscriptEvent[]): TranscriptEvent[] {
 	return events.map((event) => {
 		if (event.type === "tool_call" && event.name === "clipboard_copy" && typeof event.arguments === "object") {
-			const args = { ...(event.arguments as Record<string, unknown>), label: undefined };
+			const args = { ...event.arguments };
+			delete args.label;
 			return { ...event, arguments: args };
 		}
 		return event;
@@ -298,7 +306,7 @@ function eventsWithoutLabel(events: TranscriptEvent[]): TranscriptEvent[] {
 function eventsWithContent(events: TranscriptEvent[], content: string, label: string | undefined): TranscriptEvent[] {
 	return events.map((event) => {
 		if (event.type === "tool_call" && event.name === "clipboard_copy" && typeof event.arguments === "object") {
-			return { ...event, arguments: { content, label } };
+			return { ...event, arguments: { content, ...(label === undefined ? {} : { label }) } };
 		}
 		return event;
 	});
@@ -488,7 +496,14 @@ function assertTransferToken(
 
 it("transfer fixtures keep forbidden tokens role-less and required tokens role-established", () => {
 	for (const evaluationCase of transferSuite.cases) {
-		const seedContents = evaluationCase.input.seed.map((message) => String(message.content ?? ""));
+		const input = evaluationCase.input;
+		assert.ok(typeof input === "object" && input !== null && !Array.isArray(input));
+		const { seed } = input;
+		assert.ok(Array.isArray(seed));
+		const seedContents = seed.map((message) => {
+			assert.ok(typeof message === "object" && message !== null && !Array.isArray(message));
+			return String(message.content ?? "");
+		});
 		const tokenChecks = (evaluationCase.checks as ParsedCheck[]).filter(
 			(check) => check.type === "tool-call" && check.config.name === "clipboard_copy",
 		);
