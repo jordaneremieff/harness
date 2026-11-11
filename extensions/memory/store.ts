@@ -420,6 +420,11 @@ interface WriteLease {
 	assertNamed(): void;
 	release(): void;
 }
+class UnsafeLockError extends Error {
+	constructor() {
+		super("Memory lock file attributes are unsafe; no notes were written. Inspect its type, owner, size and permissions; the owner must use chmod 0600 at a quiet-writer boundary.");
+	}
+}
 class LockIdentityError extends Error {
 	constructor() {
 		super("Memory lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.");
@@ -455,16 +460,16 @@ function acquire(root: string): WriteLease {
 		fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_EXLOCK, 0o600);
 		const info = fstatSync(fd);
 		if (!info.isFile() || info.uid !== process.getuid?.() || info.nlink < 1 || (info.mode & 0o077) !== 0 || info.size > 4096)
-			throw new Error("Unsafe lock inode");
+			throw new UnsafeLockError();
 		const lease = heldLease(fd, path);
 		lease.assertNamed();
 		return lease;
 	} catch (error) {
 		if (fd !== undefined) { try { closeSync(fd); } catch { /* Acquisition did not grant publication authority. */ } }
-		if (error instanceof LockIdentityError) throw error;
+		if (error instanceof LockIdentityError || error instanceof UnsafeLockError) throw error;
 		const code = errorCode(error);
 		throw new Error(code === "EAGAIN" || code === "EWOULDBLOCK"
-			? "Memory writer is busy. This writer never removes the lock file. Do not remove it."
+			? "Memory writer is busy. Retry later. This writer never removes the lock file. Do not remove it."
 			: `Memory lock acquisition failed (${code}); no notes were written.`);
 	}
 }

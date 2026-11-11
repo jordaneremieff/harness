@@ -804,7 +804,10 @@ interrupted writer. Every alias shares the same kernel exclusion and stays uncha
 Acquisition requires read/write access and no group or other permission bits, not
 exact equality with mode `0600`. Unsafe modes refuse; an explicit owner chmod to
 `0600` at a quiet-writer boundary repairs the same inode without deletion. The
-extension performs no automatic permission repair.
+extension performs no automatic permission repair. Unsafe-attribute refusals identify
+the lock file and request inspection and owner chmod at a quiet-writer boundary.
+Operating-system refusals retain their error code. A busy refusal requests a later
+retry; it never requests lock removal.
 
 A crash can leave private `.memory-*.tmp` files and the persistent lock inode. The
 lock's presence does not require removal before another supported writer acquires

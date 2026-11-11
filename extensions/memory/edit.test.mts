@@ -547,7 +547,7 @@ test("writer contention refuses without altering the note or the owner's lock", 
 	const held = openSync(lock, constants.O_RDWR | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20);
 	try {
 		assert.throws(() => editMemory(f.root, f.input), {
-			message: "Memory writer is busy. This writer never removes the lock file. Do not remove it.",
+			message: "Memory writer is busy. Retry later. This writer never removes the lock file. Do not remove it.",
 		});
 		assert.equal(readFileSync(lock, "utf8"), "active writer");
 		assert.equal(lstatSync(lock).ino, before.ino);

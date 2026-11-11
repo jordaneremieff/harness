@@ -414,7 +414,7 @@ test("new mutations reject stale digests, contention, cancellation and failed ca
 	const contended = fixture(t);
 	const held = openSync(join(contended.root, ".memory-write.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20, 0o600);
 	try {
-		assert.throws(() => retire(contended), { message: "Memory writer is busy. This writer never removes the lock file. Do not remove it." });
+		assert.throws(() => retire(contended), { message: "Memory writer is busy. Retry later. This writer never removes the lock file. Do not remove it." });
 	} finally { closeSync(held); }
 	assert.equal(retire(contended).ok, true);
 	for (const operation of [reviewMemory, retireMemory]) {

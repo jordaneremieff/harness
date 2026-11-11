@@ -79,6 +79,7 @@ test("factory registers only the memory jobs, with native cards and trigger guid
 	const searchParameters = JSON.stringify(all.get("memory_search")?.parameters);
 	assert.match(searchParameters, /quoted, case-insensitive literal fragments/);
 	assert.match(all.get("memory_read")?.description ?? "", /12,000 Unicode code points.*lifecycle/);
+	assert.ok(all.get("memory_read")?.description.includes("If the source changes, read the note again from offset 0 without the old digest to obtain the current note and digest. Use memory_search only if the slug no longer exists."));
 	const guidance = [...all.values()].flatMap((tool) => tool.promptGuidelines ?? []).join("\n");
 	for (const word of [
 		"memo",

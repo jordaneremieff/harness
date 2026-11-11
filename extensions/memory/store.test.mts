@@ -40,7 +40,8 @@ function failure(fn: () => unknown): MemoryWriteError {
 	}
 }
 
-const busyMessage = "Memory writer is busy. This writer never removes the lock file. Do not remove it.";
+const busyMessage = "Memory writer is busy. Retry later. This writer never removes the lock file. Do not remove it.";
+const unsafeMessage = "Memory lock file attributes are unsafe; no notes were written. Inspect its type, owner, size and permissions; the owner must use chmod 0600 at a quiet-writer boundary.";
 const identityMessage = "Memory lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.";
 function holdWriter(path: string): number {
 	return openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20, 0o600);
@@ -70,6 +71,46 @@ test("acquisition errors retain the underlying code without exposing content", (
 	try {
 		assert.throws(() => writeMemory(root, note()), { message: "Memory lock acquisition failed (EACCES); no notes were written." });
 		assert.equal(readFileSync(lock, "utf8"), "private metadata");
+		assert.deepEqual(readdirSync(root), [".memory-write.lock"]);
+	} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test("no-follow acquisition refuses a symbolic link error before publication", (t) => {
+	const root = corpus(t), lock = join(fs.realpathSync(root), ".memory-write.lock");
+	const original = fs.openSync;
+	t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+		if (args[0] === lock) {
+			assert.equal(Number(args[1]) & constants.O_NOFOLLOW, constants.O_NOFOLLOW);
+			throw Object.assign(new Error("Symbolic link refused"), { code: "ELOOP" });
+		}
+		return original(...args);
+	});
+	syncBuiltinESMExports();
+	try {
+		assert.throws(() => writeMemory(root, note()), { message: "Memory lock acquisition failed (ELOOP); no notes were written." });
+		assert.deepEqual(readdirSync(root), []);
+	} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
+
+test("named identity change at acquisition closes the descriptor before publication", (t) => {
+	const root = corpus(t), lock = join(fs.realpathSync(root), ".memory-write.lock");
+	const originalOpen = fs.openSync, originalStat = fs.lstatSync;
+	let descriptor: number | undefined;
+	t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+		const fd = originalOpen(...args);
+		if (args[0] === lock) descriptor = fd;
+		return fd;
+	});
+	t.mock.method(fs, "lstatSync", (...args: Parameters<typeof fs.lstatSync>) => {
+		const info = originalStat(...args);
+		assert.ok(info);
+		return args[0] === lock ? Object.assign(Object.create(Object.getPrototypeOf(info)), info, { ino: Number(info.ino) + 1 }) : info;
+	});
+	syncBuiltinESMExports();
+	try {
+		assert.throws(() => writeMemory(root, note()), { message: identityMessage });
+		assert.notEqual(descriptor, undefined);
+		assert.throws(() => fs.fstatSync(descriptor as number), { code: "EBADF" });
 		assert.deepEqual(readdirSync(root), [".memory-write.lock"]);
 	} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
@@ -194,7 +235,8 @@ test("lock modes require private read/write access without a private corpus mode
 		const before = lstatSync(path);
 		if (mode === 0o600 || mode === 0o700) assert.equal(writeMemory(root, note()).ok, true);
 		else {
-			assert.throws(() => writeMemory(root, note()), /Memory lock acquisition failed/);
+			assert.throws(() => writeMemory(root, note()), { message: mode === 0o640 || mode === 0o602
+				? unsafeMessage : "Memory lock acquisition failed (EACCES); no notes were written." });
 			assert.equal(lstatSync(path).mode & 0o777, mode);
 			assert.equal(fs.existsSync(join(root, "README.md")), false);
 			chmodSync(path, 0o600);
@@ -208,10 +250,10 @@ test("lock modes require private read/write access without a private corpus mode
 test("unsafe lock type, size and ownership refuse before publication", (t) => {
 	const root = corpus(t), path = join(root, ".memory-write.lock");
 	mkdirSync(path);
-	assert.throws(() => writeMemory(root, note()), /Memory lock acquisition failed/);
+	assert.throws(() => writeMemory(root, note()), { message: "Memory lock acquisition failed (EISDIR); no notes were written." });
 	rmSync(path, { recursive: true });
 	writeFileSync(path, "x".repeat(4097), { mode: 0o600 });
-	assert.throws(() => writeMemory(root, note()), /Memory lock acquisition failed/);
+	assert.throws(() => writeMemory(root, note()), { message: unsafeMessage });
 	writeFileSync(path, "", { mode: 0o600 });
 	const original = fs.fstatSync;
 	t.mock.method(fs, "fstatSync", (...args: Parameters<typeof fs.fstatSync>) => {
@@ -219,7 +261,7 @@ test("unsafe lock type, size and ownership refuse before publication", (t) => {
 		return Object.assign(Object.create(Object.getPrototypeOf(info)), info, { uid: Number(info.uid) + 1 });
 	});
 	syncBuiltinESMExports();
-	try { assert.throws(() => writeMemory(root, note()), /Memory lock acquisition failed/); }
+	try { assert.throws(() => writeMemory(root, note()), { message: unsafeMessage }); }
 	finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 	assert.deepEqual(readdirSync(root), [".memory-write.lock"]);
 	assert.equal(writeMemory(root, note()).ok, true);
