@@ -33,8 +33,7 @@ external content intake:
 - `worker-resolution` resolves existing work: stop it, redirect it, or report on it.
 
 A producer must not declare a spawn tool, `codemode`, `tool_search`, or a generic
-runner that executes other tools. Current declarations from Agent cover its own
-compaction tool and its bounded abort, steer, and report forms.
+runner that executes other tools.
 
 ## Argument predicates and authority
 
