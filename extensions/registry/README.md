@@ -309,9 +309,9 @@ absence.
 
 Every list, candidate and content-match page states `pageTruncated` and
 `continuationStatus`. `pageTruncated` means known matches remain after the returned
-page. `available` supplies a cursor. `complete` means the complete source has no
-remaining match. `unavailable` states why incomplete evidence or the request shape
-prevents a safe continuation. `blocked` states that a record or outer metadata does
+page. `available` supplies a cursor. `complete` means no known match remains and
+no source gap was reported. `unavailable` states why incomplete evidence or the
+request shape prevents a safe continuation. `blocked` states that a record or outer metadata does
 not fit the result bound. The last two states include `continuationReason`.
 Incomplete source coverage remains incomplete even when all known rows fit.
 `resultBounded` describes byte or line reduction, not the ordinary page limit.

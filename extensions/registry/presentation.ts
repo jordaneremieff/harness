@@ -203,7 +203,7 @@ function kindTally(records: unknown[]): string {
 
 function continuationOf(details: Record<string, unknown>): string {
 	if (details.continuationStatus === "available") return "continuation available";
-	if (details.continuationStatus === "complete") return "no further match (complete source)";
+	if (details.continuationStatus === "complete") return "no further known match (no reported gap)";
 	if (details.continuationStatus !== "unavailable" && details.continuationStatus !== "blocked") return "";
 	const reason = typeof details.continuationReason === "string" ? `: ${previewMark(details.continuationReason, 140).text}` : "";
 	return `continuation ${details.continuationStatus}${reason}`;

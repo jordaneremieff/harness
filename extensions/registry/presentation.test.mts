@@ -246,7 +246,8 @@ describe("registry result card", () => {
 		const shown = screen(renderRegistryResult(unknown, { expanded: false, isPartial: false }, theme, { isError: false }));
 		assert.match(shown, /metadata unknown/);
 		assert.match(shown, /availability unknown/);
-		assert.match(shown, /no further match \(complete source\)/);
+		assert.match(shown, /no further known match \(no reported gap\)/);
+		assert.doesNotMatch(shown, /complete source/);
 		assert.doesNotMatch(shown, /0 context|thinking off|thinking low/);
 	});
 
