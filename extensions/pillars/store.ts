@@ -1,7 +1,7 @@
 /** Private local persistence for Pillars day shards: lock-free reads, rename-published writes. */
 
-import { constants, type Stats } from "node:fs";
-import { lstat, mkdir, open, readdir, rename, unlink } from "node:fs/promises";
+import { closeSync, constants, fstatSync, lstatSync, openSync, renameSync, unlinkSync, type Stats } from "node:fs";
+import { lstat, mkdir, open, readdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { getHeapStatistics } from "node:v8";
 import {
@@ -10,17 +10,40 @@ import {
 } from "./capacity.ts";
 
 export class StoreUnavailableError extends Error {
-	constructor() { super("store_unreadable"); this.name = "StoreUnavailableError"; }
+	constructor(message = "store_unreadable") { super(message); this.name = "StoreUnavailableError"; }
+}
+
+export class StoreBusyError extends StoreUnavailableError {
+	constructor() {
+		super("Pillars aggregate writer is busy. This writer never removes the lock file. Do not remove it.");
+		this.name = "StoreBusyError";
+	}
+}
+export class StoreLockIdentityError extends StoreUnavailableError {
+	constructor() {
+		super("Pillars lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.");
+		this.name = "StoreLockIdentityError";
+	}
+}
+export class StorePlatformError extends StoreUnavailableError {
+	constructor() { super("Pillars aggregate writes require macOS."); this.name = "StorePlatformError"; }
+}
+interface ExclusiveLease {
+	readonly descriptor: number;
+	readonly device: number;
+	readonly inode: number;
+	assertNamed(): void;
+	release(): void;
 }
 
 const LOCK = "store.lock";
 const PENDING = "pending.tmp";
 const SLOT = /^day-(?:[0-2][0-9])\.json$/;
-const POLL_MS = 5;
+const O_EXLOCK = 0x20;
 const REJECTIONS = ["clock_rollback", "store_corrupt", "response_overflow"];
 const NO_FOLLOW = typeof constants.O_NOFOLLOW === "number" ? constants.O_NOFOLLOW : 0;
 
-interface Scan { slots: Map<string, number>; lockBytes?: number; pending: boolean }
+interface Scan { slots: Map<string, number>; pending: boolean }
 
 function aborted(): Error { return new DOMException("The operation was aborted", "AbortError"); }
 function corrupt(): Error { return new Error("store_corrupt"); }
@@ -29,9 +52,6 @@ function code(error: unknown): string | undefined {
 }
 function owner(): number | undefined {
 	return typeof process.getuid === "function" ? process.getuid() : undefined;
-}
-function delay(milliseconds: number): Promise<void> {
-	return new Promise((accept) => { setTimeout(accept, milliseconds); });
 }
 function memoryGuard(start: NodeJS.MemoryUsage): void {
 	const used = process.memoryUsage();
@@ -90,7 +110,8 @@ async function syncDirectory(root: string): Promise<void> {
 export class PillarsStore {
 	readonly root: string;
 	private active = false;
-	private heldLock: { dev: number; ino: number } | undefined;
+	private heldLock: ExclusiveLease | undefined;
+	private pendingIdentity: { dev: number; ino: number } | undefined;
 	constructor(root: string) { this.root = root; }
 
 	async capture(today: string, signal?: AbortSignal): Promise<Snapshot> {
@@ -114,6 +135,7 @@ export class PillarsStore {
 			memoryGuard(start);
 			return await run(start);
 		} catch (error) {
+			if (error instanceof StoreBusyError || error instanceof StoreLockIdentityError || error instanceof StorePlatformError) throw error;
 			if (signal?.aborted) throw aborted();
 			if (error instanceof Error && REJECTIONS.includes(error.message)) throw error;
 			throw new StoreUnavailableError();
@@ -124,8 +146,8 @@ export class PillarsStore {
 		if (!(await verifyChain(this.root))) return { shards: {} };
 		if (signal?.aborted) throw aborted();
 		const scan = await this.scan();
-		// Unresolved temporary state and a written control file are writer business.
-		if (scan.pending || (scan.lockBytes !== undefined && scan.lockBytes > 0)) throw new StoreUnavailableError();
+		// Only a writer can resolve an interrupted publication.
+		if (scan.pending) throw new StoreUnavailableError();
 		const snapshot = await this.load(scan, start);
 		try {
 			validateSnapshot(snapshot, today);
@@ -144,15 +166,17 @@ export class PillarsStore {
 	}
 
 	private async write(batch: Batch, today: string, start: NodeJS.MemoryUsage, signal?: AbortSignal): Promise<CommitStatus> {
+		if (process.platform !== "darwin") throw new StorePlatformError();
 		await mkdir(this.root, { recursive: true, mode: 0o700 });
 		if (!(await verifyChain(this.root))) throw new StoreUnavailableError();
 		if (signal?.aborted) throw aborted();
-		await this.acquire(signal);
+		this.heldLock = this.acquire(signal);
 		try {
 			let scan = await this.scan();
 			if (scan.pending) {
 				// An interrupted publication never reached a slot name; drop it.
-				await unlink(join(this.root, PENDING));
+				this.heldLock.assertNamed();
+				unlinkSync(join(this.root, PENDING));
 				await syncDirectory(this.root);
 				scan = await this.scan();
 			}
@@ -160,7 +184,12 @@ export class PillarsStore {
 			const snapshot = await this.load(scan, start);
 			try { validateSnapshot(snapshot); } catch { throw corrupt(); }
 			const plan = planCommit(snapshot, batch, today);
-			if (!plan.candidate || !plan.slot) return await this.confirmNoPublication(plan.status);
+			if (!plan.candidate || !plan.slot) {
+				this.heldLock.assertNamed();
+				const status = await this.confirmNoPublication(plan.status);
+				this.heldLock.assertNamed();
+				return status;
+			}
 			if (signal?.aborted) throw aborted();
 			const payload = Buffer.from(JSON.stringify(plan.candidate), "utf8");
 			let stored = 0;
@@ -169,51 +198,49 @@ export class PillarsStore {
 				throw new StoreUnavailableError();
 			}
 			const published = await this.publish(payload, plan.slot, plan.expiredSlots);
+			this.heldLock.assertNamed();
 			if (signal?.aborted) throw aborted();
 			return published ? plan.status : "publication_failed";
-		} finally { await this.release(); }
-	}
-
-	private async openLock(path: string): Promise<boolean> {
-		try {
-			const handle = await open(path, "wx", 0o600);
-			try {
-				const { dev, ino } = await handle.stat();
-				this.heldLock = { dev, ino };
-			} finally { await handle.close(); }
-			return true;
-		} catch (error) {
-			if (code(error) !== "EEXIST") throw error;
-			return false;
+		} finally {
+			const held = this.heldLock;
+			this.heldLock = undefined;
+			held.release();
 		}
 	}
 
-	private async pause(signal?: AbortSignal): Promise<void> {
-		await delay(POLL_MS);
+	private acquire(signal?: AbortSignal): ExclusiveLease {
 		if (signal?.aborted) throw aborted();
-	}
-
-	private async acquire(signal?: AbortSignal): Promise<void> {
 		const path = join(this.root, LOCK);
-		const deadline = Date.now() + LIMITS.lockMilliseconds;
-		for (let attempt = 0; ; attempt++) {
-			if (signal?.aborted) throw aborted();
-			if (attempt > 0 && Date.now() >= deadline) throw new StoreUnavailableError();
-			if (await this.openLock(path)) return;
-			await this.pause(signal);
-		}
-	}
-
-	private async release(): Promise<void> {
-		const held = this.heldLock;
-		this.heldLock = undefined;
-		if (!held) return;
-		const path = join(this.root, LOCK);
+		let descriptor: number;
 		try {
-			const current = await lstat(path);
-			if (current.dev !== held.dev || current.ino !== held.ino) throw new StoreUnavailableError();
-			await unlink(path);
-		} catch (error) { if (code(error) !== "ENOENT") throw error; }
+			descriptor = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | NO_FOLLOW | O_EXLOCK, 0o600);
+		} catch (error) {
+			if (code(error) === "EAGAIN") throw new StoreBusyError();
+			throw new StoreUnavailableError();
+		}
+		let closed = false, poisoned = false;
+		try {
+			const info = fstatSync(descriptor);
+			if (!info.isFile() || info.nlink < 1 || owner() === undefined || info.uid !== owner() ||
+				(info.mode & 0o077) !== 0 || info.size > LIMITS.controlBytes) throw new StoreUnavailableError();
+			const lease: ExclusiveLease = {
+				descriptor, device: info.dev, inode: info.ino,
+				assertNamed() {
+					if (closed || poisoned) throw new StoreLockIdentityError();
+					try {
+						const held = fstatSync(descriptor), named = lstatSync(path);
+						if (!named.isFile() || held.dev !== info.dev || held.ino !== info.ino ||
+							named.dev !== held.dev || named.ino !== held.ino) throw new StoreLockIdentityError();
+					} catch {
+						poisoned = true;
+						throw new StoreLockIdentityError();
+					}
+				},
+				release() { if (!closed) { closed = true; closeSync(descriptor); } },
+			};
+			lease.assertNamed();
+			return lease;
+		} catch (error) { closeSync(descriptor); throw error; }
 	}
 
 	private async entryStats(name: string, uid: number | undefined): Promise<Stats> {
@@ -222,7 +249,7 @@ export class PillarsStore {
 		const maxBytes = name === LOCK ? LIMITS.controlBytes : LIMITS.shardBytes;
 		if (
 			!info.isFile() ||
-			info.nlink !== 1 ||
+			(name === LOCK ? info.nlink < 1 : info.nlink !== 1) ||
 			(uid !== undefined && info.uid !== uid) ||
 			(info.mode & 0o077) !== 0 ||
 			info.size > maxBytes
@@ -234,15 +261,14 @@ export class PillarsStore {
 
 	/** Admission is by name, type, link count, owner, private mode, and size. */
 	private async scan(): Promise<Scan> {
-		const names = await readdir(this.root);
+		const names = (await readdir(this.root)).filter((name) => name !== ".DS_Store");
 		if (names.length > LIMITS.entries) throw new StoreUnavailableError();
 		const uid = owner();
 		const scan: Scan = { slots: new Map(), pending: false };
 		for (const name of names.sort()) {
 			const info = await this.entryStats(name, uid);
-			if (name === LOCK) scan.lockBytes = info.size;
-			else if (name === PENDING) scan.pending = true;
-			else scan.slots.set(name, info.size);
+			if (name === PENDING) scan.pending = true;
+			else if (name !== LOCK) scan.slots.set(name, info.size);
 		}
 		return scan;
 	}
@@ -282,14 +308,12 @@ export class PillarsStore {
 		return value;
 	}
 
-	/**
-	 * A slot file changes only by rename, so every reader sees a whole shard.
-	 * A failure keeps the sealed batch retryable: the caller receives a status,
-	 * never a partially applied store.
-	 */
+	/** Readers see a whole shard after rename; its receipt survives an uncertain directory sync. */
 	private async writePending(path: string, payload: Buffer): Promise<void> {
 		const handle = await open(path, "wx", 0o600);
 		try {
+			const info = await handle.stat();
+			this.pendingIdentity = { dev: info.dev, ino: info.ino };
 			for (let written = 0; written < payload.length; ) {
 				const { bytesWritten } = await handle.write(payload, written, payload.length - written, written);
 				if (bytesWritten === 0) throw new StoreUnavailableError();
@@ -299,29 +323,52 @@ export class PillarsStore {
 		} finally { await handle.close(); }
 	}
 
+	private lease(): ExclusiveLease {
+		if (!this.heldLock) throw new StoreLockIdentityError();
+		return this.heldLock;
+	}
+
 	private async removeExpired(slots: readonly string[]): Promise<void> {
+		const lease = this.lease();
+		lease.assertNamed();
 		let removed = false;
 		for (const expired of slots) {
 			try {
-				await unlink(join(this.root, expired));
+				lease.assertNamed();
+				unlinkSync(join(this.root, expired));
 				removed = true;
 			} catch (error) { if (code(error) !== "ENOENT") throw error; }
 		}
 		if (removed) await syncDirectory(this.root);
 	}
 
-	private async publish(payload: Buffer, slot: string, expiredSlots: readonly string[]): Promise<boolean> {
-		const pending = join(this.root, PENDING);
-		let renamed = false;
+	private discardPending(pending: string, lease: ExclusiveLease): void {
+		if (!this.pendingIdentity) return;
 		try {
+			const named = lstatSync(pending);
+			if (named.dev !== this.pendingIdentity.dev || named.ino !== this.pendingIdentity.ino) return;
+			lease.assertNamed();
+			unlinkSync(pending);
+		} catch (error) { if (error instanceof StoreLockIdentityError) throw error; }
+	}
+
+	private async publish(payload: Buffer, slot: string, expiredSlots: readonly string[]): Promise<boolean> {
+		const pending = join(this.root, PENDING), lease = this.lease();
+		let renamed = false;
+		this.pendingIdentity = undefined;
+		try {
+			lease.assertNamed();
 			await this.writePending(pending, payload);
-			await rename(pending, join(this.root, slot));
+			lease.assertNamed();
+			renameSync(pending, join(this.root, slot));
 			renamed = true;
 			await syncDirectory(this.root);
 			await this.removeExpired(expiredSlots);
 			return true;
-		} catch {
-			if (!renamed) { try { await unlink(pending); } catch { /* the temporary file may not exist */ } }
+		} catch (error) {
+			if (error instanceof StoreLockIdentityError) throw error;
+			lease.assertNamed();
+			if (!renamed) this.discardPending(pending, lease);
 			return false;
 		}
 	}

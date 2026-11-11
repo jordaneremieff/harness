@@ -57,7 +57,7 @@ test("the actual Pi CLI prints the Pillars inventory without a provider request"
 			cwd: f.root, input: "", encoding: "utf8", stdio: "pipe", timeout: 30000, maxBuffer: 65536,
 			env: {
 				PATH: process.env.PATH, HOME: join(f.root, "home"), PI_CODING_AGENT_DIR: f.agentDir,
-				PI_PILLARS_DIR: f.store, PI_PILLARS_COLLECT: "0", PI_PILLARS_CORPUS: f.corpusDir, PI_OFFLINE: "1", NO_COLOR: "1",
+				PI_MEMORY_DIR: join(f.root, "memory"), PI_PILLARS_DIR: f.store, PI_PILLARS_COLLECT: "0", PI_PILLARS_CORPUS: f.corpusDir, PI_OFFLINE: "1", NO_COLOR: "1",
 			},
 		});
 		assert.match(output, /# Synthetic lifecycle inventory/);
@@ -71,7 +71,7 @@ test("the actual Pi CLI prints the Pillars inventory without a provider request"
 		], {
 			cwd: f.root, input: "", encoding: "utf8", timeout: 30000, maxBuffer: 65536,
 			env: { PATH: process.env.PATH, HOME: join(f.root, "home"), PI_CODING_AGENT_DIR: f.agentDir,
-				PI_PILLARS_DIR: f.store, PI_PILLARS_COLLECT: "invalid", PI_PILLARS_CORPUS: f.corpusDir, PI_OFFLINE: "1", NO_COLOR: "1" },
+				PI_MEMORY_DIR: join(f.root, "memory"), PI_PILLARS_DIR: f.store, PI_PILLARS_COLLECT: "invalid", PI_PILLARS_CORPUS: f.corpusDir, PI_OFFLINE: "1", NO_COLOR: "1" },
 		});
 		assert.equal(invalid.status, 0);
 		assert.match(invalid.stdout, /# Synthetic lifecycle inventory/);
@@ -120,7 +120,7 @@ for (const transition of ["fork", "reload"] as const) {
 			await bind(runtime.session);
 			const now = Date.now();
 			const day = utcDay(now);
-			// Hold the retry clock, not filesystem work, so shutdown owns the pending result flush.
+			// Turn completion flushes results even when the observation clock does not advance.
 			t.mock.method(Date, "now", () => now);
 			const runRead = async (active: InstanceType<typeof sdk.AgentSession>) => {
 				faux.setResponses([
@@ -137,7 +137,7 @@ for (const transition of ["fork", "reload"] as const) {
 			};
 			await runRead(runtime.session);
 			const initial = committedShard(f.store, day);
-			assert.deepEqual(summary(initial), { requests: 1, results: 0, verified: 0 });
+			assert.deepEqual(summary(initial), { requests: 1, results: 1, verified: 1 });
 			assert.equal(initial.receipts.length, 1);
 			const originalOwner = initial.receipts[0].owner;
 			const oldSession = runtime.session;
@@ -162,11 +162,11 @@ for (const transition of ["fork", "reload"] as const) {
 			assert.equal(runtime.session.messages.filter((message) => message.role === "toolResult").length, 1);
 			await runRead(runtime.session);
 			const beforeDispose = committedShard(f.store, day);
-			assert.deepEqual(summary(beforeDispose), { requests: 2, results: 1, verified: 1 });
+			assert.deepEqual(summary(beforeDispose), { requests: 2, results: 2, verified: 2 });
 			assert.equal(beforeDispose.receipts.length, 2);
 			const newReceipt = beforeDispose.receipts.find((receipt) => receipt.owner !== originalOwner);
 			assert.ok(newReceipt);
-			assert.equal(newReceipt.seq, 1);
+			assert.equal(newReceipt.seq, 2);
 			await runtime.dispose();
 			disposed = true;
 			assert.deepEqual(boundaries, [{ requests: 1, results: 1, verified: 1 }, { requests: 2, results: 2, verified: 2 }]);

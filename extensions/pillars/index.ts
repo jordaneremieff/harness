@@ -105,7 +105,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		delivered.clear();
 	});
 	pi.on("turn_end", async (_event, ctx) => {
-		if (enabled) await collector?.flush(false, ctx.signal);
+		if (enabled) await collector?.flush(true, ctx.signal);
 	});
 	pi.on("session_shutdown", async () => {
 		stopSettings();

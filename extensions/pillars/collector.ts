@@ -13,6 +13,8 @@ import {
 	zero,
 } from "./capacity.ts";
 
+import { StoreBusyError, StoreLockIdentityError } from "./store.ts";
+
 export interface Publisher {
 	commit(batch: Batch, today: string, signal?: AbortSignal): Promise<CommitStatus>;
 }
@@ -60,7 +62,8 @@ export class Collector {
 	private refused = new Set<string>();
 	private sealed?: Batch;
 	private active?: Promise<void>;
-	private timer?: ReturnType<typeof setTimeout>;
+	private publicationBlocked = false;
+	private busyWarned = false;
 	private lastAttempt = -Infinity;
 	private first = true;
 	private closed = false;
@@ -174,21 +177,12 @@ export class Collector {
 		Object.freeze(batch);
 		this.sealed = batch;
 	}
-	private schedule(): void {
-		if (this.closed || this.timer || (!this.sealed && !this.pending.size && !this.health.size)) return;
-		this.timer = setTimeout(
-			() => {
-				this.timer = undefined;
-				void this.flush();
-			},
-			Math.max(1, 1000 - (this.now() - this.lastAttempt)),
-		);
-		this.timer.unref();
-	}
+
 	private async attempt(batch: Batch, signal?: AbortSignal): Promise<void> {
 		try {
 			const status = await this.publisher.commit(batch, utcDay(this.now()), signal);
 			if (status === "committed" || status === "duplicate") {
+				this.busyWarned = false;
 				this.sequences.set(batch.day, batch.seq);
 				this.sealed = undefined;
 			} else if (REFUSED_STATUSES.includes(status)) {
@@ -198,21 +192,25 @@ export class Collector {
 				this.health.delete(batch.day);
 				this.diagnostic("Pillars storage refused a delta. Unpersisted loss remains unknown.");
 			} else if (status === "publication_failed") this.incident("writeFailures");
-		} catch {
+		} catch (error) {
 			this.incident("writeFailures");
+			if (error instanceof StoreLockIdentityError) {
+				this.publicationBlocked = true;
+				this.diagnostic(error.message);
+			} else if (error instanceof StoreBusyError && !this.busyWarned) {
+				this.busyWarned = true;
+				this.diagnostic(error.message);
+			}
 		}
 	}
 
 	async flush(immediate = false, signal?: AbortSignal): Promise<void> {
-		if (this.closed) return;
+		if (this.closed || this.publicationBlocked) return;
 		if (this.active) {
 			await this.active;
 			return;
 		}
-		if (!immediate && this.now() - this.lastAttempt < 1000) {
-			this.schedule();
-			return;
-		}
+		if (!immediate && this.now() - this.lastAttempt < 1000) return;
 		this.seal();
 		if (!this.sealed) return;
 		const batch = this.sealed;
@@ -222,21 +220,12 @@ export class Collector {
 			await this.active;
 		} finally {
 			this.active = undefined;
-			this.schedule();
 		}
 	}
 	async shutdown(): Promise<void> {
 		if (this.closed) return;
-		if (this.timer) {
-			clearTimeout(this.timer);
-			this.timer = undefined;
-		}
 		await this.active;
 		await this.flush(true);
 		this.closed = true;
-		if (this.timer) {
-			clearTimeout(this.timer);
-			this.timer = undefined;
-		}
 	}
 }

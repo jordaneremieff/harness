@@ -10,7 +10,6 @@ export const LIMITS = Object.freeze({
 	batchCells: 2048,
 	maxSeq: 2147483647,
 	cellBytes: 864,
-	lockMilliseconds: 100,
 });
 export const COUNTERS = [
 	"readRequests", "readResults", "resultComplete", "resultPartial", "resultError", "resultUnknown",

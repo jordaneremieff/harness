@@ -370,17 +370,48 @@ rename, and syncs the containing directory. Repeated JSON keys in a stored
 file resolve to the last value before schema validation; the store does not
 reject duplicate keys.
 
-Concurrent instances serialize writes through a cooperative `store.lock` file
-created with exclusive semantics. A writer that cannot create the lock waits
-at most 100 milliseconds; lock contention is an error, not zero use. No writer
-removes an existing lock because of its age or recorded owner. A crashed writer
-leaves the store unavailable for publication until offline recovery. Stop all
-relevant writers and launchers before removing an orphan lock. Adoption requires
-older takeover-capable writers and launchers to stop before the new protocol
-starts. Ownership extends through publication and directory synchronisation.
-Cleanup refuses a changed lock identity; that check is not atomic fencing against
-unsupported lock replacement. Reads are lock-free and reject unresolved temporary
-state instead of blocking.
+Aggregate writes use a macOS kernel file lock on the persistent `store.lock`
+inode. One nonblocking acquisition either owns the lock or reports contention.
+The writer holds its descriptor through publication and directory synchronisation,
+then closes it. The kernel releases exclusion when the process exits, including
+after a crash. File presence, contents, age and recorded process identifiers do
+not prove ownership. The writer never unlinks the lock path. Other platforms
+refuse aggregate writes with `Pillars aggregate writes require macOS.` Corpus
+source reads remain available.
+
+A safe lock inode can have hard-link aliases; every alias shares the same kernel
+exclusion and stays unchanged. Acquisition requires read/write access and no
+group or other permission bits, not exact equality with mode `0600`. Unsafe modes
+refuse. An explicit owner chmod to `0600` at a quiet-writer boundary repairs the
+same inode without deletion. The extension performs no automatic permission repair.
+
+Reads remain lock-free and create no storage. A safe lock file does not block a
+read. Unresolved `pending.tmp` makes a capture unavailable until a writer performs
+pending-publication recovery. The store ignores the exact `.DS_Store` metadata
+name and validates every managed entry. It does not ignore unknown shard files
+or repair corrupt shards.
+
+Before publication and retention changes, the writer checks that the lock path
+still names its held inode. Missing or changed identity stops publication and
+blocks further publication by that collector. Its sealed batch remains buffered.
+The writer never removes or recreates the lock as recovery. A pathname check and
+rename are separate system calls; an external unlink between them still defeats
+exclusion. Never remove a live or persistent lock file.
+
+Contention reports `Pillars aggregate writer is busy. This writer never removes the lock file. Do not remove it.`
+Identity loss reports `Pillars lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.`
+
+Before adoption, all older writers and write-capable launch routes for this
+aggregate directory must end. A new release does not update existing processes.
+Older pathname writers do not hold a kernel lock and do not exclude a new lease
+while already inside their critical section. Once the persistent inode exists,
+later old acquisitions refuse even while it is unlocked. Never delete a lock to
+restore an old writer. Rollback also requires a quiet-writer boundary. See the
+[file-exclusion convention](../../docs/conventions/file-exclusion.md).
+
+Candidate trials require private agent, aggregate and Memory roots through
+`PI_CODING_AGENT_DIR`, `PI_PILLARS_DIR` and `PI_MEMORY_DIR`. Verify their resolved
+values before any source observation or mutation.
 
 The store assumes a local filesystem. It does not admit or detect filesystem
 types, so a network filesystem is unsupported but not detected. Schema
@@ -411,12 +442,13 @@ than block on a writer. The managed store peak is bounded by 62 MiB plus
 process-memory guards supplement serialized limits. These guards are not
 a hard process-RSS promise: the Pi host and other extensions share that process.
 
-The collector attempts publication after its first eligible observation,
-coalesces later result/turn triggers, limits ordinary attempts to one per
-second, and makes a final shutdown attempt. Each new extension instance uses
-a fresh private owner key. Forks do not replay history. Abrupt termination,
-failed final publication, and a stalled filesystem still leave unknown tails.
-The lock wait is limited to 100 milliseconds; contention is a reported error.
+The collector attempts publication on its first eligible observation, later
+eligible observations, turn completion and shutdown. Ordinary observations are
+coalesced to at most one attempt per second. A deferred or contended batch stays
+buffered until another publication event; no retry timer probes the lock. Each
+new instance uses a fresh private owner key. Forks do not replay history.
+Unpersisted tails remain unknown after process loss or an unsuccessful final
+attempt.
 
 ## Durable agents
 
@@ -681,8 +713,8 @@ Run the focused tests with:
 node --test extensions/pillars/*.test.mts
 ```
 
-The suite is Node-only. It covers cooperative lock exclusion and stale-lock
-breaking, crash-leftover reconciliation, atomic publication, retention,
+The suite is Node-only. It covers kernel exclusion and crash release,
+publication identity loss, temporary-state recovery, atomic publication, retention,
 corruption, quotas, full-capacity pagination, memory refusal, export
 publication, free-text command parsing, native argument-completion insertion,
 help rendering at narrow widths, and actual Pi discovery/callback/command/shutdown
