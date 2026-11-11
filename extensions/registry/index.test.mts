@@ -39,6 +39,23 @@ function fixture() {
 }
 
 describe("Pi adapter", () => {
+	it("flags invalid queries but preserves structured data and limited-coverage status", async () => {
+		const { tool } = fixture();
+		const invalid = await tool.execute("invalid", { cursor: "malformed" }, undefined, undefined, context);
+		assert.equal(invalid.details?.outcome, "invalid_arguments");
+		assert.equal(invalid.isError, true);
+		assert.deepEqual(invalid.structuredContent, JSON.parse(JSON.stringify(invalid.details)));
+		for (const [params, outcome] of [[{ kind: "tool", name: "absent" }, "missing"], [{ kind: "setting" }, "unavailable"]] as const) {
+			const result = await tool.execute("coverage", params, undefined, undefined, context);
+			assert.equal(result.details?.outcome, outcome);
+			assert.equal(result.isError, false);
+		}
+		const partialContext = { ...context, modelRegistry: { getAll: () => [], getAvailable: () => [], getError: () => "catalogue error",
+			getRegisteredProviderIds: () => [] } } as unknown as ExtensionToolContext;
+		const partial = await tool.execute("partial", { kind: "model" }, undefined, undefined, partialContext);
+		assert.equal(partial.details?.outcome, "partial");
+		assert.equal(partial.isError, false);
+	});
 	it("emits one durable contribution for the entrypoint path", () => {
 		const emissions = fixture().emissions.filter((emission) => emission.channel === "durable:contribution");
 		assert.equal(emissions.length, 1);
@@ -150,10 +167,13 @@ describe("Pi adapter", () => {
 		const ctx = new Proxy(context, { get(target, key, receiver) { probes.push(String(key)); return Reflect.get(target, key, receiver); } });
 		const result = await tool.execute("cancelled", { kind: "model" }, AbortSignal.abort(), undefined, ctx);
 		assert.equal(result.details?.outcome, "cancelled");
+		assert.equal(result.isError, true);
+		assert.deepEqual(result.structuredContent, JSON.parse(JSON.stringify(result.details)));
 		assert.deepEqual(probes, []);
 		await handlerFor(handlers, "session_shutdown")({});
 		const stopped = await tool.execute("stopped", { kind: "model" }, undefined, undefined, ctx);
 		assert.equal(stopped.details?.outcome, "cancelled");
+		assert.equal(stopped.isError, true);
 		assert.deepEqual(probes, []);
 	});
 	it("reports each failed host accessor independently", () => {

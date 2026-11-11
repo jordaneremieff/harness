@@ -20,7 +20,7 @@ import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
 import { REGISTRY_DESCRIPTION, REGISTRY_PROMPT_GUIDELINES, REGISTRY_PROMPT_SNIPPET, RegistryParams } from "./contract.ts";
 import { createRegistryDurableContribution } from "./durable.ts";
-import { lookup } from "./lookup.ts";
+import { lookup, lookupIsError } from "./lookup.ts";
 import { RegistryOutputSchema } from "./output.ts";
 import { readContext } from "./host.ts";
 import { readModels } from "./models.ts";
@@ -199,7 +199,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 					snapshot: { tools: [], activeTools: [], commands: [], observation: null,
 						availability: { tools: false, activeTools: false, commands: false }, at },
 				});
-				return { content: [{ type: "text" as const, text: result.text }], details: result.details, structuredContent: result.structuredContent };
+				return { content: [{ type: "text" as const, text: result.text }], details: result.details, structuredContent: result.structuredContent, isError: lookupIsError(result.outcome) };
 			}
 			const snapshot = readSnapshot(pi, observations.snapshot(), at, ctx);
 			let modelQuery = params.kind === "model";
@@ -217,7 +217,7 @@ export default function registerRegistry(pi: ExtensionAPI) {
 				epoch,
 				signal: abortSignal,
 			});
-			return { content: [{ type: "text" as const, text: result.text }], details: result.details, structuredContent: result.structuredContent };
+			return { content: [{ type: "text" as const, text: result.text }], details: result.details, structuredContent: result.structuredContent, isError: lookupIsError(result.outcome) };
 		},
 	});
 	publish();

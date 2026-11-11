@@ -3,8 +3,9 @@ import { mkdtemp, rm, writeFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
-import { lookup, type LookupRequest, type LookupResult } from "./lookup.ts";
+import { lookup, lookupIsError, type LookupRequest, type LookupResult } from "./lookup.ts";
 import { decodeCursor } from "./query.ts";
+import type { Outcome } from "./format.ts";
 import type { HostSnapshot } from "./records.ts";
 import { SCAN_MAX_BYTES, type ScanResult } from "./scan.ts";
 
@@ -20,6 +21,11 @@ before(async () => { dir = await mkdtemp(join(tmpdir(), "registry-lookup-")); })
 after(async () => { await rm(dir, { recursive: true, force: true }); });
 
 describe("lookup outcomes", () => {
+	it("maps each typed outcome to query failure rather than incomplete coverage", () => {
+		const expected: Record<Outcome, boolean> = { invalid_arguments: true, stale_cursor: true, io_error: true, cancelled: true,
+			ok: false, host_summary: false, missing: false, ambiguous: false, unavailable: false, partial: false };
+		for (const outcome of Object.keys(expected) as Outcome[]) assert.equal(lookupIsError(outcome), expected[outcome], outcome);
+	});
 	it("returns an explicit no-argument host summary without scanning", async () => {
 		const result = await lookup(request({ scan: async () => { throw new Error("unexpected scan"); } }));
 		assert.equal(result.outcome, "host_summary");

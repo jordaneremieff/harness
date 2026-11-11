@@ -82,6 +82,25 @@ export interface LookupResult extends BoundedResult {
 	outcome: Outcome;
 }
 
+export function lookupIsError(outcome: Outcome): boolean {
+	switch (outcome) {
+		case "invalid_arguments":
+		case "stale_cursor":
+		case "io_error":
+		case "cancelled":
+			return true;
+		case "ok":
+		case "host_summary":
+		case "missing":
+		case "ambiguous":
+		case "unavailable":
+		case "partial":
+			return false;
+	}
+	const exhaustive: never = outcome;
+	return exhaustive;
+}
+
 function surfacesFor(query: Query): { tools: boolean; commands: boolean } {
 	if (query.kind === "tool") return { tools: true, commands: false };
 	if (query.contains !== undefined) return { tools: false, commands: true };

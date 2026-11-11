@@ -23,7 +23,7 @@ import type { Usage } from "@earendil-works/pi-ai";
 import { calculateContextTokens, type SourceInfo } from "@earendil-works/pi-coding-agent";
 import { REGISTRY_DESCRIPTION, REGISTRY_PROMPT_GUIDELINES, REGISTRY_PROMPT_SNIPPET, RegistryParams } from "./contract.ts";
 import type { ContextSnapshot } from "./host.ts";
-import { type DurableLookupContext, lookup } from "./lookup.ts";
+import { type DurableLookupContext, lookup, lookupIsError } from "./lookup.ts";
 import { readDurableModels, readSettingsScope, type DurableModelReader } from "./models.ts";
 import { ObservationStore, type ObservableOptions } from "./observer.ts";
 import { RegistryOutputSchema } from "./output.ts";
@@ -522,7 +522,7 @@ export function createRegistryDurableContribution(source: string, bus: SettingsB
 					});
 					const details = JSON.parse(JSON.stringify(result.details)) as Durable.JsonObject;
 					const structuredOutput = JSON.parse(JSON.stringify(result.structuredContent)) as Durable.JsonObject;
-					return { output: [{ type: "text", text: result.text }], structuredOutput, details };
+					return { output: [{ type: "text", text: result.text }], structuredOutput, details, isError: lookupIsError(result.outcome) };
 				},
 			});
 			const guidance = durable.section("registry", (input) =>

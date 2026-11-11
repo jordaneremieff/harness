@@ -382,7 +382,7 @@ test("native resource pages resume after clock changes and reject substantive so
 	})] };
 	const { harness, root } = await open(models, extension);
 	let sequence = 0;
-	const query = async (params: { kind?: string; limit?: number; cursor?: string }) => {
+	const query = async (params: { kind?: string; limit?: number; cursor?: string }, expectedError = false) => {
 		const id = `page-${++sequence}`;
 		faux.setResponses([
 			fauxAssistantMessage([fauxToolCall("registry", params, { id })], { stopReason: "toolUse" }),
@@ -391,7 +391,7 @@ test("native resource pages resume after clock changes and reject substantive so
 		const settled = await (await root.submit({ type: "input", content: "Inspect the next page." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 		assert.equal(settled.status, "done");
 		const result = toolResult((await root.context(BACKGROUND_CONTEXT)).messages, id);
-		assert.equal(result.isError, false, textOf(result));
+		assert.equal(result.isError, expectedError, textOf(result));
 		assert.ok(compile(RegistryOutputSchema).check(objectOf(result.details)));
 		return result;
 	};
@@ -413,7 +413,7 @@ test("native resource pages resume after clock changes and reject substantive so
 			}
 			if (kind === "context_file") files[0].path = join(CWD, "CHANGED.md");
 			else skills[0].disableModelInvocation = !skills[0].disableModelInvocation;
-			assert.equal(objectOf((await query({ cursor })).details).outcome, "stale_cursor", kind);
+			assert.equal(objectOf((await query({ cursor }, true)).details).outcome, "stale_cursor", kind);
 		}
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
@@ -477,7 +477,7 @@ test("an aborted host signal cancels the query without probing host facts", asyn
 		await (await root.submit({ type: "input", content: "Inspect." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
 		const { messages } = await root.context(BACKGROUND_CONTEXT);
 		const cancelled = toolResult(messages, "cancelled");
-		assert.equal(cancelled.isError, false, textOf(cancelled));
+		assert.equal(cancelled.isError, true, textOf(cancelled));
 		assert.equal(objectOf(cancelled.details).outcome, "cancelled");
 		assert.deepEqual(probes, []);
 	} finally {
@@ -560,6 +560,11 @@ test("native structured output retains an unresolved selected identity and page 
 	assert.equal(selected.evidence, "selection");
 	for (const key of ["displayName", "reasoning", "input", "contextWindow", "maxTokens", "supportedThinkingLevels"]) assert.equal(selected[key], null);
 	assert.equal(JSON.stringify(result.structuredOutput), JSON.stringify(result.details));
+	assert.equal(result.isError, false);
+	const invalid = await tool.execute({ cursor: "malformed" }, api, BACKGROUND_CONTEXT);
+	assert.equal(invalid.isError, true);
+	assert.equal(objectOf(invalid.structuredOutput).outcome, "invalid_arguments");
+	assert.deepEqual(invalid.structuredOutput, invalid.details);
 });
 
 test("native codemode receives structured registry pages and distinguishes callable from offered tools", { timeout: 30000 }, async () => {
@@ -579,24 +584,36 @@ test("native codemode receives structured registry pages and distinguishes calla
 			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
 		Durable.defineTool({ name: "model_only", description: "Model fixture", parameters: obj({}, { open: true }), callers: ["model"],
 			execute: async () => { throw new Error("Discovery must not execute the fixture"); } }),
+		Durable.defineTool({ name: "nested_query", description: "Inspect a direct nested query result.", parameters: obj({}, { open: true }), callers: ["model"],
+			execute: async (_args, api, context) => {
+				const nested = await api.executeTool("registry", { cursor: "malformed" }, context);
+				assert.equal(nested.isError, true);
+				assert.equal(objectOf(nested.structuredOutput).outcome, "invalid_arguments");
+				return { output: [{ type: "text", text: JSON.stringify({ isError: nested.isError, outcome: objectOf(nested.structuredOutput).outcome }) }] };
+			} }),
+		Durable.defineTool({ name: "fixture_failure", description: "Return an error without a declared value.", parameters: obj({}, { open: true }), callers: ["tools"],
+			execute: async () => ({ output: [{ type: "text", text: "Fixture failure" }], isError: true }) }),
 	] }));
 	const harness = await Durable.Harness.open(new Durable.MemoryStorage(), { models, registry }, BACKGROUND_CONTEXT);
 	try {
 		const root = await harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
 		faux.setResponses([
-			fauxAssistantMessage([fauxToolCall("codemode", { code: `
+			fauxAssistantMessage([fauxToolCall("nested_query", {}, { id: "direct-query" }), fauxToolCall("codemode", { code: `
 const pages = await Promise.all([
   tools.registry({kind: "tool"}),
   tools.registry({kind: "tool", name: "absent"}),
   tools.registry({kind: "model", name: "unconfigured/missing"}),
   tools.registry({kind: "setting"}),
-  tools.registry({kind: "model", name: "faux/faux-1"})
+  tools.registry({kind: "model", name: "faux/faux-1"}),
+  tools.registry({cursor: "malformed"})
 ]);
+const failure = await Promise.allSettled([tools.fixture_failure({})]);
 if (pages.some(p => typeof p !== "object" || !Array.isArray(p.records))) throw new Error("not structured");
 const facts = Object.fromEntries(pages[0].records.map(r => [r.name, {active:r.active, callable:r.callable, evidence:r.callableEvidence}]));
 return {facts, missing:pages[1].outcome, nonChat:pages[2].catalogBoundary, settings:pages[3].settingsCoverage,
   carrier: Object.hasOwn(pages[0], "structuredContent"),
   pageStatus: pages[0].continuationStatus, pageTruncated: pages[0].pageTruncated,
+  invalid: pages[5].outcome, failureRejected: failure[0].status === "rejected",
   unknown: {name:pages[4].records[0].name, metadataAvailable:pages[4].records[0].metadataAvailable,
     evidence:pages[4].records[0].evidence, displayName:pages[4].records[0].displayName,
     reasoning:pages[4].records[0].reasoning, input:pages[4].records[0].input,
@@ -622,8 +639,22 @@ return {facts, missing:pages[1].outcome, nonChat:pages[2].catalogBoundary, setti
 		assert.match(output, /"unknown":\{"name":"faux\/faux-1","metadataAvailable":false,"evidence":"selection","displayName":null,"reasoning":null,"input":null,"contextWindow":null,"maxTokens":null,"supportedThinkingLevels":null\}/);
 		const calls = objectOf(script.details).calls;
 		assert.ok(Array.isArray(calls));
-		assert.equal(calls.length, 5);
-		assert.ok(calls.every(call => objectOf(call).name === "registry" && objectOf(call).status === "ok"));
+		assert.equal(calls.length, 7);
+		const registryCalls = calls.filter((call) => objectOf(call).name === "registry");
+		assert.equal(registryCalls.length, 6);
+		assert.deepEqual(registryCalls.map((call) => objectOf(call).status), ["ok", "ok", "ok", "ok", "ok", "error"]);
+		assert.equal(objectOf(calls.find((call) => objectOf(call).name === "fixture_failure")).status, "error");
+		assert.match(output, /"invalid":"invalid_arguments"/);
+		assert.match(output, /"failureRejected":true/);
+		const direct = toolResult((await root.context(BACKGROUND_CONTEXT)).messages, "direct-query");
+		assert.equal(direct.isError, false, textOf(direct));
+		assert.match(textOf(direct), /"isError":true,"outcome":"invalid_arguments"/);
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("codemode", { code: "await tools.fixture_failure({})" }, { id: "uncaught" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("Inspected."),
+		]);
+		await (await root.submit({ type: "input", content: "Inspect an uncaught failure." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		assert.equal(toolResult((await root.context(BACKGROUND_CONTEXT)).messages, "uncaught").isError, true);
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);
 		await sandbox.close();

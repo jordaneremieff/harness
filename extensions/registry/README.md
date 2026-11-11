@@ -545,6 +545,14 @@ its schema and registered guidance without activating it.
 | `invalid_arguments` | An argument or cursor violates the tool contract. |
 | `io_error` | A resolved source could not be read or was not a regular file. This is not absence. |
 
+The tool sets `isError:true` for `invalid_arguments`, `stale_cursor`, `io_error`
+and `cancelled`. Other outcomes retain successful tool status because they report
+discovery or observation coverage, including a valid absence, ambiguity or partial
+result. The structured result always retains its `outcome`. Registry declares
+structured output in both session forms, so codemode scripts resolve to that result
+even when the model-tool flag is an error. Inspect `outcome`; a resolved promise does
+not establish a successful query. The recovery text identifies the required correction.
+
 Pi also validates the public schema before tool execution and reports its own
 validation errors. The tool rechecks arguments because extension hooks are able
 to mutate them after that validation.
