@@ -18,6 +18,31 @@ describe("plain for evidence", () => {
 			if (command.includes("$(")) assert.deepEqual(names, ["wc", "fd", "head"]);
 		}
 	});
+	it("counts loop headers and terminators at the aggregate stage limit", () => {
+		const loop = "for f in a; do echo x; done\n";
+		const below = parseShellEvidence(`${loop.repeat(85)}echo tail`);
+		assert.equal(below.complete, true);
+		assert.equal(below.statements.length, 86);
+		assert.deepEqual(below.statements.at(-1)?.[0].args, ["tail"]);
+		for (const count of [86, 128, 130]) {
+			for (const tail of ["echo tail", "echo $'a\\'b' ; git push #'\n", "git push\n"]) {
+				const limited = parseShellEvidence(`${loop.repeat(count)}${tail}`);
+				assert.ok(limited.reasons.includes("stage-limit"));
+				assert.equal(limited.statements.length, 85);
+				assert.ok(limited.statements.flat().every((stage) => stage.command === "echo" && stage.args[0] === "x"));
+			}
+		}
+	});
+	it("counts a standalone do split at the aggregate stage limit", () => {
+		const loop = "for f in a\ndo\necho x\ndone\n";
+		const below = parseShellEvidence(`${loop.repeat(63)}echo tail`);
+		assert.equal(below.complete, true);
+		assert.equal(below.statements.length, 64);
+		const limited = parseShellEvidence(`${loop.repeat(64)}echo tail`);
+		assert.ok(limited.reasons.includes("stage-limit"));
+		assert.equal(limited.statements.length, 64);
+		assert.ok(limited.statements.flat().every((stage) => stage.args[0] === "x"));
+	});
 	it("leaves unsupported or incomplete control syntax unavailable", () => {
 		for (const command of [
 			'for x "in" a; do echo x; done', 'for x in a; "do" echo x; done',

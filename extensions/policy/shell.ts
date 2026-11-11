@@ -903,6 +903,11 @@ function loopSplit(split: Split, frame: ParseFrame, stages: Word[][], budget: Pa
 	return split;
 }
 
+function countLoopStructure(split: Split, body: Split, budget: ParseBudget): void {
+	// Structural words consume the same work budget as ordinary command words.
+	if (split.words.length > 0 && body.words.length === 0 && split.end !== "pipe") budget.stages++;
+}
+
 function parse(command: string, depth: number, budget: ParseBudget): Statement[] {
 	const statements: Statement[] = [];
 	const heredocs: Heredoc[] = [];
@@ -917,7 +922,9 @@ function parse(command: string, depth: number, budget: ParseBudget): Statement[]
 			break;
 		}
 		const { split, next } = readWords(command, index, heredocs, nestedCommands, budget, frame);
-		if (admitSplit(loopSplit(split, frame, stages, budget), next, index, stages, statements, budget)) break;
+		const body = loopSplit(split, frame, stages, budget);
+		countLoopStructure(split, body, budget);
+		if (admitSplit(body, next, index, stages, statements, budget)) break;
 		index = next;
 	}
 	if (heredocs.length || frame.groups.length) budget.reasons.add("malformed-shell");
