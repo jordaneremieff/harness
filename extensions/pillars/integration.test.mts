@@ -151,7 +151,9 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		await session.prompt("Consult the synthetic principle and its governance.");
 		const messages = session.messages.filter((message) => message.role === "toolResult" && ["source-call", "read-call"].includes(message.toolCallId));
 		assert.equal(messages.length, 2);
-		const sourceText = messages[0].content.find((block) => block.type === "text");
+		const sourceMessage = messages[0];
+		assert.ok(sourceMessage?.role === "toolResult");
+		const sourceText = sourceMessage.content.find((block) => block.type === "text");
 		assert.ok(sourceText && sourceText.type === "text");
 		assert.equal(JSON.parse(sourceText.text).text, entryBody);
 		const during = await new PillarsStore(join(root, "store")).capture(utcDay());
