@@ -171,12 +171,12 @@ describe("registry result card", () => {
 			records: [{ kind: "tool", name: "a" }, { kind: "tool", name: "b" }],
 			resultBounded: true,
 			omittedRecordBlocks: 3,
-			cursor: "opaque",
+			cursor: "opaque", pageTruncated: true, continuationStatus: "available",
 		});
 		const shown = screen(renderRegistryResult(bounded, { expanded: false, isPartial: false }, theme, { isError: false }));
 		assert.match(shown, /ok · 2 shown of 5/);
 		assert.match(shown, /tool 2 · 3 omitted from this page · continuation available/);
-		const blocked = resultOf("x", { outcome: "ok", total: 5, returnedRecords: 0, records: [], resultBounded: true, omittedRecordBlocks: 5, pageBlocked: true });
+		const blocked = resultOf("x", { outcome: "ok", total: 5, returnedRecords: 0, records: [], resultBounded: true, omittedRecordBlocks: 5, pageBlocked: true, pageTruncated: true, continuationStatus: "blocked", continuationReason: "The first record exceeds the result bound." });
 		assert.match(screen(renderRegistryResult(blocked, { expanded: false, isPartial: false }, theme, { isError: false })), /first record exceeds the result bound/);
 	});
 
@@ -198,7 +198,7 @@ describe("registry result card", () => {
 			total: 3,
 			returnedRecords: 2,
 			records: [{ kind: "model", name: "p/a" }, { kind: "model", name: "p/b" }],
-			cursor: "next",
+			cursor: "next", pageTruncated: true, continuationStatus: "available",
 		});
 		const shown = screen(renderRegistryResult(discovery, { expanded: false, isPartial: false }, theme, { isError: false }));
 		assert.match(shown, /ok · 2 shown of 3/);
@@ -214,6 +214,7 @@ describe("registry result card", () => {
 				{
 					kind: "model",
 					name: "provider/model",
+					metadataAvailable: true,
 					available: true,
 					configuredAuth: true,
 					contextWindow: 1_000_000,
@@ -236,6 +237,25 @@ describe("registry result card", () => {
 			records: ["a", "b", "c", "d", "e", "f", "g", "h"].map((kind) => ({ kind, name: kind })),
 		});
 		assert.match(screen(renderRegistryResult(many, { expanded: false, isPartial: false }, theme, { isError: false })), /\+2 more/);
+	});
+
+	it("states unknown model metadata without invented context or thinking capability", () => {
+		const unknown = resultOf("x", { outcome: "ok", total: 1, returnedRecords: 1, pageTruncated: false, continuationStatus: "complete",
+			records: [{ kind: "model", name: "provider/unknown", metadataAvailable: false, available: null, configuredAuth: null,
+				contextWindow: null, supportedThinkingLevels: null }] });
+		const shown = screen(renderRegistryResult(unknown, { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(shown, /metadata unknown/);
+		assert.match(shown, /availability unknown/);
+		assert.match(shown, /no further match \(complete source\)/);
+		assert.doesNotMatch(shown, /0 context|thinking off|thinking low/);
+	});
+
+	it("retains the explicit reason when continuation is unavailable", () => {
+		const partial = resultOf("x", { outcome: "partial", total: 2, returnedRecords: 1, pageTruncated: true,
+			continuationStatus: "unavailable", continuationReason: "The catalogue is incomplete.", records: [{ kind: "model", name: "provider/model" }] });
+		const shown = screen(renderRegistryResult(partial, { expanded: false, isPartial: false }, theme, { isError: false }));
+		assert.match(shown, /continuation unavailable: The catalogue is incomplete/);
+		assert.doesNotMatch(shown, /continuation available/);
 	});
 
 	it("rounds the host context percent to a whole number", () => {

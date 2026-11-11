@@ -97,7 +97,7 @@ function compactModelQuery(query: Query): boolean {
 	return query.kind === "model" && !fullRecordQuery(query) && !query.health;
 }
 
-const MODEL_LIST_FIELDS = ["displayName", "input", "selected", "catalog", "available", "configuredAuth", "oauth", "subscriptionRecognized", "authSource", "catalogCost", "catalogCostHasTiers", "inScope", "scopeIndex", "providerHasScopedModels", "providerNamedInSettings", "reasoning", "contextWindow", "supportedThinkingLevels", "currentThinkingLevel"];
+const MODEL_LIST_FIELDS = ["displayName", "metadataAvailable", "input", "selected", "catalog", "available", "configuredAuth", "oauth", "subscriptionRecognized", "authSource", "catalogCost", "catalogCostHasTiers", "inScope", "scopeIndex", "providerHasScopedModels", "providerNamedInSettings", "reasoning", "contextWindow", "supportedThinkingLevels", "currentThinkingLevel"];
 
 const MODEL_LIST_LABELS: Record<string, string> = { subscriptionRecognized: "subscription", catalogCost: "price", catalogCostHasTiers: "tiers", providerHasScopedModels: "providerScoped", providerNamedInSettings: "providerSettings" };
 
@@ -241,6 +241,8 @@ export function discoveryPage(request: DiscoveryRequest) {
 	const result = boundResult({
 		header: discoveryHeader(outcome, request, modelQuery, observation, stale, unavailable, partial),
 		blocks: discoveryBlocks(page.items, stale, compactModelQuery(query), fullRecordQuery(query)),
+		page: stale ? undefined : { total: selected.length, offset: page.offset,
+			unavailableReason: unavailable || partial ? "The source coverage is incomplete or unavailable; no safe continuation is available." : undefined },
 		footer: ["", ...BOUNDARY_LINES],
 		details: {
 			...discoveryDetails(outcome, query, selected, page, modelQuery, models, observation, partial),

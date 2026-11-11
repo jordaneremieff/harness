@@ -166,6 +166,7 @@ function unavailableResult(
 			"Incomplete inventories have no continuation; query an available resource kind for paged results.",
 		]),
 		blocks: matched.slice(0, query.limit).map((record) => recordBlock(record, fullRecordQuery(query))),
+		page: { total: matched.length, offset: 0, unavailableReason: "The requested resource inventory is incomplete; no safe continuation is available." },
 		pageSummary: (kept) => `records: ${kept} shown of ${matched.length} known matches | limit ${query.limit} (inventory incomplete)`,
 		footer: (kept) => [
 			...(fullRecordQuery(query) ? observationLines(request.snapshot.observation) : [RESOURCE_LIST_HINT]),
@@ -221,6 +222,7 @@ function ambiguousTargetResult(
 			"",
 		]),
 		blocks: page.items.map((record) => recordBlock(record, fullRecordQuery(query))),
+		page: { total: candidates.length, offset: page.offset },
 		footer: (kept) => [
 			...(fullRecordQuery(query) ? [] : [RESOURCE_LIST_HINT]),
 			...boundariesFor(request, page.items.slice(0, kept)),
@@ -297,6 +299,12 @@ function scanFailureResult(
 	return null;
 }
 
+function scanContinuationReason(scan: ScanResult): string | undefined {
+	if (scan.stamp === undefined) return "The scan has no stable file stamp; a safe continuation is unavailable.";
+	if (scan.truncated) return "The scan was incomplete; matches after the scanned part are unknown.";
+	return undefined;
+}
+
 function completedScanResult(
 	request: LookupRequest,
 	query: Query,
@@ -351,6 +359,8 @@ function completedScanResult(
 	return finish(outcome, {
 		header,
 		blocks: page.items.map(matchBlock),
+		page: { total: scan.matches.length, offset: page.offset,
+			unavailableReason: scanContinuationReason(scan) },
 		footer: ["", ...boundariesFor(request, [record])],
 		details,
 		pageSummary: (kept) =>
@@ -495,6 +505,7 @@ function listingResult(
 				"More than one tool has this exact name. No schema was returned.",
 			]),
 			blocks: page.items.map((record) => recordBlock(record)),
+			page: { total: selected.length, offset: page.offset },
 			footer,
 			details: { query, total: selected.length },
 		});
@@ -515,6 +526,7 @@ function listingResult(
 	return finish(outcome, {
 		header,
 		blocks,
+		page: { total: selected.length, offset: page.offset },
 		footer,
 		details,
 		pageSummary: (kept) => `records: ${kept} shown of ${page.total} matched | offset ${page.offset} | limit ${query.limit}`,

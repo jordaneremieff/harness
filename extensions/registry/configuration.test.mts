@@ -107,6 +107,9 @@ test("setting output bounds drop whole rows or report a blocked page", async () 
 		const result = await lookup({ params: { kind: "setting" }, snapshot: hostSnapshot, settings: reader.read(), session: {}, epoch: "fixture" });
 		verify(result);
 		assert.equal(result.details.pageBlocked, true);
+		assert.equal(result.details.pageTruncated, true);
+		assert.equal(result.details.continuationStatus, "blocked");
+		assert.equal(typeof result.details.continuationReason, "string");
 		assert.equal(result.details.returnedRecords, 0);
 		assert.equal(result.details.cursor, undefined);
 	} finally { reader.dispose(); dispose(); bus.clear(); }
@@ -121,7 +124,15 @@ test("partial publication coverage prevents absence and invalidates cursors with
 	const result = await run({ kind: "setting", name: "absent" }, partial);
 	verify(result);
 	assert.equal(result.outcome, "partial");
+	assert.equal(result.details.pageTruncated, false);
+	assert.equal(result.details.continuationStatus, "unavailable");
+	assert.equal(typeof result.details.continuationReason, "string");
 	assert.equal(result.details.cursor, undefined);
+	const limited = await run({ kind: "setting", limit: 1 }, partial);
+	assert.equal(limited.details.pageTruncated, true);
+	assert.equal(limited.details.continuationStatus, "unavailable");
+	assert.equal(limited.details.cursor, undefined);
+	assert.equal(limited.details.resultBounded, false);
 	assert.match(result.text, /malformed publications: 1 \| omitted publications: 2/);
 	assert.equal((await run({ cursor: first.details.cursor }, partial)).outcome, "stale_cursor");
 });

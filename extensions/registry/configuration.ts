@@ -125,6 +125,8 @@ export function settingsPage(request: {
 			...(snapshot.publications.length ? [] : ["No loaded publisher responded. This does not establish that no settings exist."]),
 		],
 		blocks: stale ? [] : page.items.map(settingBlock),
+		page: stale ? undefined : { total: selected.length, offset: page.offset,
+			unavailableReason: partial || !snapshot.available ? "The settings source is incomplete or unavailable; no safe continuation is available." : undefined },
 		footer: ["", "Document and unknown-key diagnostics remain in settingsCoverage.publications, including diagnostics without declared rows.",
 			...snapshot.publications.flatMap((publication) => publication.diagnostics.map((fact) =>
 				`${oneLine(fact.field.startsWith(`${publication.slice}.`) ? fact.field : `${publication.slice}.${fact.field}`, 320)}: ${fact.source} ${fact.code}: ${fact.message}`))],

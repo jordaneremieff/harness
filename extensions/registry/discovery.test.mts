@@ -96,7 +96,7 @@ describe("model discovery", () => {
 		assert.equal((await run({ kind: "model", name: "a" }, host(), models)).outcome, "missing");
 	});
 	it("keeps unavailable, catalog errors, and selected-outside-catalog evidence distinct", async () => {
-		const { ctx } = context();
+		const { ctx, catalog } = context();
 		ctx.modelRegistry.getAll = () => { throw new Error("secret-catalog"); };
 		ctx.modelRegistry.getAvailable = () => { throw new Error("secret-availability"); };
 		ctx.modelRegistry.getError = () => "secret-error";
@@ -111,6 +111,15 @@ describe("model discovery", () => {
 		ctx.modelRegistry.getAll = () => [];
 		result = await run({ kind: "model", name: "none" }, host(), readModels(ctx, 2));
 		assert.equal(result.outcome, "partial");
+		assert.equal(result.details.pageTruncated, false);
+		assert.equal(result.details.continuationStatus, "unavailable");
+		assert.equal(typeof result.details.continuationReason, "string");
+		ctx.modelRegistry.getAll = () => catalog;
+		const limited = await run({ kind: "model", limit: 1 }, host(), readModels(ctx, 2));
+		assert.equal(limited.details.pageTruncated, true);
+		assert.equal(limited.details.continuationStatus, "unavailable");
+		assert.equal(limited.details.cursor, undefined);
+		assert.equal(limited.details.resultBounded, false);
 		assert.match(String(result.details.catalogBoundary), /Chat models only/);
 		assert.equal((await run({ kind: "model", available: true }, host(), readModels(ctx, 2))).outcome, "unavailable");
 	});

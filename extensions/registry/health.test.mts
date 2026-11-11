@@ -3,9 +3,9 @@ import { describe, it } from "node:test";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { ModelRegistry, type ExtensionAPI, type ExtensionContext, type ExtensionToolContext, type ModelRuntime, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import registerRegistry, { RegistryParams } from "./index.ts";
-import { catalogHealth, type HealthRecord } from "./health.ts";
+import { catalogHealth, healthCoverage, type HealthRecord } from "./health.ts";
 import { lookup, type LookupResult } from "./lookup.ts";
-import { readModels, type ModelSnapshot } from "./models.ts";
+import { readDurableModels, readModels, type DurableModelReader, type ModelSnapshot } from "./models.ts";
 import { decodeCursor, parseQuery, type RawParams } from "./query.ts";
 import type { HostSnapshot } from "./records.ts";
 
@@ -49,6 +49,28 @@ function assertBounded(result: LookupResult) {
 }
 
 describe("offline catalog health", () => {
+	it("checks selected identity and auth independently of missing metadata", async () => {
+		const reader: DurableModelReader = { getModels: () => [], getModel: () => undefined, getAvailableSnapshot: () => [],
+			getError: () => undefined, getRegisteredProviderIds: () => [], hasConfiguredAuth: () => false,
+			isUsingOAuth: () => false, isUsingSubscription: () => false, getProviderAuthStatus: () => ({}) };
+		const scope = { status: "absent", patterns: null, observedAt: 1 } as const;
+		const agent = { model: { provider: "fixture", modelId: "unknown" } };
+		const snapshot = readDurableModels(reader, agent, 1, scope);
+		assert.equal(healthCoverage(readDurableModels(reader, {}, 1, scope)).selectedAuth, "not_selected");
+		assert.deepEqual(codes(catalogHealth(snapshot)[0]), ["selected_not_in_catalog", "selected_auth_missing"]);
+		assert.equal(healthCoverage(snapshot).selectedAuth, "checked");
+		const failed = readDurableModels({ ...reader, hasConfiguredAuth: () => { throw new Error("unavailable"); } }, agent, 1, scope);
+		assert.equal(healthCoverage(failed).selectedAuth, "unavailable");
+		const partial = await run(failed);
+		assert.equal(partial.outcome, "partial");
+		assert.equal(partial.details.continuationStatus, "unavailable");
+		assert.equal(partial.details.cursor, undefined);
+		const errored = readDurableModels({ ...reader, getError: () => "catalog error" }, agent, 1, scope);
+		assert.deepEqual(codes(catalogHealth(errored)[0]), ["selected_auth_missing"]);
+		const known = readModels(fixture([model("unknown")]).ctx, 1).records[0];
+		const unknown = { ...snapshot.records[0], catalog: true };
+		assert.equal(catalogHealth({ ...snapshot, records: [known, unknown] }).some((row) => codes(row).includes("metadata_conflict")), false);
+	});
 	it("flags explicit expiry cues without guessing retirement status or treating version dates as expiry", () => {
 		const ids = ["preview-expires-on-1231", "preview-expires-on-2030-12-31", "EXPIRES-ON-0229",
 			"version-2030-12-31", "version-1231", "neverexpires-on-1231", "expires-on-12345", "expires-on-later"];

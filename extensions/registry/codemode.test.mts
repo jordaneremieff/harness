@@ -45,7 +45,9 @@ if (typeof page !== "object" || page.outcome !== "ok") throw new Error("not type
 return {names: page.records.filter(r => r.kind === "tool" && r.callable).map(r => r.name),
   exposure: page.records[0].exposure, active: page.records[0].active, declared: page.records[0].modelDeclared,
   aliases: page.records[0].namespace.aliases,
-  empty: pages[1].value.outcome, count: pages[1].value.returnedRecords};
+  empty: pages[1].value.outcome, count: pages[1].value.returnedRecords,
+  pageTruncated: page.pageTruncated, continuation: page.continuationStatus,
+  emptyContinuation: pages[1].value.continuationStatus};
 ` }, undefined, undefined, ctx);
 	assert.notEqual(result.isError, true, JSON.stringify(result.content));
 	const text = result.content.filter((entry) => entry.type === "text").map((entry) => entry.text).join("\n");
@@ -55,5 +57,8 @@ return {names: page.records.filter(r => r.kind === "tool" && r.callable).map(r =
 	assert.match(text, /"declared":\s*null/);
 	assert.match(text, /"empty":\s*"missing"/);
 	assert.match(text, /"count":\s*0/);
+	assert.match(text, /"pageTruncated":\s*false/);
+	assert.match(text, /"continuation":\s*"complete"/);
+	assert.match(text, /"emptyContinuation":\s*"complete"/);
 	assert.match(text, /"aliases":\s*\[\s*"reference-guide"\s*\]/);
 });

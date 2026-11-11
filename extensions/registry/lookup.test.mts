@@ -6,7 +6,7 @@ import { after, before, describe, it } from "node:test";
 import { lookup, type LookupRequest, type LookupResult } from "./lookup.ts";
 import { decodeCursor } from "./query.ts";
 import type { HostSnapshot } from "./records.ts";
-import { SCAN_MAX_BYTES } from "./scan.ts";
+import { SCAN_MAX_BYTES, type ScanResult } from "./scan.ts";
 
 const source = (path: string) => ({ path, source: "fixture", scope: "temporary" as const, origin: "top-level" as const, baseDir: "/fixtures" });
 function snapshot(commands: HostSnapshot["commands"] = []): HostSnapshot {
@@ -28,7 +28,11 @@ describe("lookup outcomes", () => {
 		assert.match(result.text, /mode: rpc/);
 	});
 	it("keeps missing, unavailable and cancelled distinct", async () => {
-		assert.equal((await lookup(request({ params: { name: "absent" } }))).outcome, "missing");
+		const missing = await lookup(request({ params: { name: "absent" } }));
+		assert.equal(missing.outcome, "missing");
+		assert.equal(missing.details.pageTruncated, false);
+		assert.equal(missing.details.continuationStatus, "complete");
+		assert.equal(missing.details.cursor, undefined);
 		const host = snapshot(); host.availability.commands = false;
 		assert.equal((await lookup(request({ params: { name: "absent" }, snapshot: host }))).outcome, "unavailable");
 		assert.equal((await lookup(request({ params: { name: "tool", kind: "tool" }, snapshot: host }))).outcome, "ok");
@@ -61,11 +65,27 @@ describe("registration pages", () => {
 		const host = snapshot(Array.from({ length: 5 }, (_, i) => ({ name: `command-${i}`, source: "extension" as const, sourceInfo: source(`/fixtures/${i}.ts`) })));
 		const first = await lookup(request({ params: { kind: "command", limit: 2 }, snapshot: host }));
 		const next = await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }));
+		assert.equal(first.details.pageTruncated, true);
+		assert.equal(first.details.continuationStatus, "available");
+		assert.equal(first.details.resultBounded, false);
 		assert.equal(next.details.offset, 2);
 		assert.deepEqual((next.details.records as { name: string }[]).map((r) => r.name), ["command-2", "command-3"]);
 		assert.equal((await lookup(request({ params: { cursor: cursor(first) }, snapshot: host, epoch: "new-session" }))).outcome, "stale_cursor");
 		host.commands[0].sourceInfo.path = "/fixtures/changed.ts";
 		assert.equal((await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }))).outcome, "stale_cursor");
+	});
+	it("states why an ambiguous detail page has no continuation", async () => {
+		const base = snapshot();
+		const tool = base.tools[0];
+		assert.ok(tool);
+		const host: HostSnapshot = { ...base, tools: [tool, { ...tool, sourceInfo: source("/fixtures/second.ts") }] };
+		const result = await lookup(request({ params: { kind: "tool", name: "tool", detail: true, limit: 1 }, snapshot: host }));
+		assert.equal(result.outcome, "ambiguous");
+		assert.equal(result.details.pageTruncated, true);
+		assert.equal(result.details.continuationStatus, "unavailable");
+		assert.match(String(result.details.continuationReason), /request shape/);
+		assert.equal(result.details.cursor, undefined);
+		assert.equal(result.details.resultBounded, false);
 	});
 	it("does not skip records when full-envelope bounds reduce a page", async () => {
 		const host = snapshot(Array.from({ length: 100 }, (_, i) => ({ name: `command-${String(i).padStart(3, "0")}`, source: "extension" as const, sourceInfo: source(`/fixtures/${"x".repeat(2000)}${i}`) })));
@@ -77,6 +97,8 @@ describe("registration pages", () => {
 			assert.equal(result.details.returnedRecords, returned.length);
 			assert.ok(result.text.includes(`records: ${returned.length} shown of 100 matched | offset ${names.length} | limit 100`));
 			names.push(...returned.map((r) => r.name));
+			assert.equal(result.details.pageTruncated, names.length < 100);
+			assert.equal(result.details.continuationStatus, names.length < 100 ? "available" : "complete");
 			if (result.details.cursor === undefined) break;
 			assert.equal(decodeCursor(cursor(result)).offset, names.length);
 			result = await lookup(request({ params: { cursor: cursor(result) }, snapshot: host }));
@@ -98,6 +120,13 @@ describe("incomplete inventories", () => {
 		assert.equal(result.details.total, 3);
 		assert.equal(result.details.incompleteInventory, true);
 		assert.equal(result.details.returnedRecords, 2);
+		assert.equal(result.details.pageTruncated, true);
+		assert.equal(result.details.continuationStatus, "unavailable");
+		assert.equal(typeof result.details.continuationReason, "string");
+		assert.equal(result.details.resultBounded, false);
+		const allKnown = await lookup(request({ params: { search: "documents", limit: 100 }, snapshot: threeDocs() }));
+		assert.equal(allKnown.details.pageTruncated, false);
+		assert.equal(allKnown.details.continuationStatus, "unavailable");
 		assert.deepEqual((result.details.records as { name: string }[]).map((r) => r.name), ["alpha", "beta"]);
 		assert.ok(result.text.includes("records: 2 shown of 3 known matches | limit 2 (inventory incomplete)"));
 		assert.match(result.text, /no continuation/);
@@ -128,6 +157,32 @@ describe("file-backed lookup", () => {
 		assert.equal(result.outcome, "ambiguous");
 		assert.equal((result.details.records as unknown[]).length, 2);
 		assert.equal(decodeCursor(cursor(result)).offset, 2);
+		assert.equal(result.details.pageTruncated, true);
+		assert.equal(result.details.continuationStatus, "available");
+	});
+	it("retains stamped partial-scan cursors and never calls the known prefix complete", async () => {
+		const path = join(dir, "partial.md");
+		const host = snapshot([{ name: "skill:example", source: "skill", sourceInfo: source(path) }]);
+		const scanned: ScanResult = { outcome: "partial", truncated: true, bytesRead: 100, fileSize: 200,
+			matches: [{ line: 1, text: "needle one" }, { line: 2, text: "needle two" }],
+			stamp: { path, size: 200, mtimeMs: 1, ctimeMs: 1, ino: 1, dev: 1, digest: "0".repeat(64) } };
+		const first = await lookup(request({ params: { name: "example", contains: "needle", limit: 1 }, snapshot: host, scan: async () => scanned }));
+		assert.equal(first.details.partialScan, true);
+		assert.equal(first.details.pageTruncated, true);
+		assert.equal(first.details.continuationStatus, "available");
+		const last = await lookup(request({ params: { cursor: cursor(first) }, snapshot: host, scan: async () => scanned }));
+		assert.equal(last.details.partialScan, true);
+		assert.equal(last.details.pageTruncated, false);
+		assert.equal(last.details.continuationStatus, "unavailable");
+		assert.match(String(last.details.continuationReason), /incomplete.*unknown/);
+		assert.equal(last.details.cursor, undefined);
+		const unstamped = { ...scanned }; delete unstamped.stamp;
+		const noStamp = await lookup(request({ params: { name: "example", contains: "needle", limit: 1 }, snapshot: host, scan: async () => unstamped }));
+		assert.equal(noStamp.details.partialScan, true);
+		assert.equal(noStamp.details.pageTruncated, true);
+		assert.equal(noStamp.details.continuationStatus, "unavailable");
+		assert.match(String(noStamp.details.continuationReason), /stamp/);
+		assert.equal(noStamp.details.cursor, undefined);
 	});
 	it("finds literal content with context in one call and invalidates affected-file continuation", async () => {
 		const path = join(dir, "content.md");
@@ -138,9 +193,13 @@ describe("file-backed lookup", () => {
 		assert.match(first.text, /Before/);
 		assert.match(first.text, /Memory instruction/);
 		assert.equal((first.details.modelInvocable as { value: boolean }).value, false);
+		assert.equal(first.details.pageTruncated, true);
+		assert.equal(first.details.continuationStatus, "available");
 		const second = await lookup(request({ params: { cursor: cursor(first) }, snapshot: host }));
 		assert.equal(second.outcome, "ok");
 		assert.match(second.text, /MEMORY second/);
+		assert.equal(second.details.pageTruncated, false);
+		assert.equal(second.details.continuationStatus, "complete");
 		const stamp = decodeCursor(cursor(first)).file;
 		assert.ok(stamp);
 		await writeFile(path, "---\ndisable-model-invocation: true\n---\nBefore\nmemory instruction\nMEMORY second\nAfter\n");

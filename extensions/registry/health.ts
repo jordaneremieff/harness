@@ -23,7 +23,7 @@ function capabilityValue(record: ModelRecord, field: (typeof CAPABILITY_FIELDS)[
 function metadataDifferences(records: ModelRecord[]): Map<string, HealthFinding> {
 	const groups = new Map<string, ModelRecord[]>();
 	for (const record of records) {
-		if (!record.catalog) continue;
+		if (!record.catalog || !record.metadataAvailable) continue;
 		const identity = JSON.stringify([record.provider, record.id]);
 		const group = groups.get(identity) ?? [];
 		group.push(record);
@@ -77,7 +77,7 @@ export function catalogHealth(snapshot: ModelSnapshot | undefined): HealthRecord
 				boundary: "Current selection and configured-auth presence only, not recent dispatch use, credential validity, or a remote auth failure.",
 			});
 		}
-		const difference = record.catalog ? differences.get(JSON.stringify([record.provider, record.id])) : undefined;
+		const difference = record.catalog && record.metadataAvailable ? differences.get(JSON.stringify([record.provider, record.id])) : undefined;
 		if (difference) findings.push(difference);
 		return findings.length === 0 ? [] : [{ ...record, findings }];
 	});

@@ -35,6 +35,12 @@ export interface Block {
 	detail: Record<string, unknown>;
 }
 
+export interface PageFacts {
+	pageTruncated: boolean;
+	continuationStatus: "available" | "complete" | "unavailable" | "blocked";
+	continuationReason?: string;
+}
+
 export interface Assembled {
 	header: string[];
 	blocks: Block[];
@@ -42,6 +48,8 @@ export interface Assembled {
 	details: Record<string, unknown>;
 	/** Format the page count from the blocks that fit the complete result. */
 	pageSummary?: (kept: number) => string;
+	/** Known matches and a reason to report when no safe cursor is available. */
+	page?: { total: number; offset: number; unavailableReason?: string };
 	/** Recalculate continuation after output bounds reduce the page. */
 	continuation?: (kept: number) => string | undefined;
 }
@@ -92,14 +100,29 @@ function measure(text: string, details: Record<string, unknown>): { bytes: numbe
 	};
 }
 
+function pageFacts(assembled: Assembled, kept: number, cursor: string | undefined, blockedReason?: string): PageFacts | undefined {
+	const page = assembled.page;
+	if (!page && !blockedReason) return undefined;
+	const pageTruncated = page ? page.offset + kept < page.total : kept < assembled.blocks.length;
+	if (blockedReason) return { pageTruncated, continuationStatus: "blocked", continuationReason: blockedReason };
+	if (cursor) return { pageTruncated, continuationStatus: "available" };
+	const reason = page?.unavailableReason ?? (pageTruncated ? "The request shape does not provide a safe continuation for the remaining matches." : undefined);
+	return reason ? { pageTruncated, continuationStatus: "unavailable", continuationReason: reason } : { pageTruncated, continuationStatus: "complete" };
+}
+
+function continuationLine(facts: PageFacts | undefined): string[] {
+	return facts ? [`page truncated: ${facts.pageTruncated} | continuation: ${facts.continuationStatus}${facts.continuationReason ? `; ${facts.continuationReason}` : ""}`] : [];
+}
+
 /** Header, page notice, and footer for one retained block count. */
-function boundLines(assembled: Assembled, kept: number, dropped: number, cursor: string | undefined): string[] {
+function boundLines(assembled: Assembled, kept: number, dropped: number, cursor: string | undefined, facts: PageFacts | undefined): string[] {
 	const notice =
 		dropped > 0
 			? [`[result bounded: ${dropped} of ${assembled.blocks.length} record blocks omitted from this page]`]
 			: [];
 	return [
 		...assembled.header,
+		...continuationLine(facts),
 		...(assembled.pageSummary ? [assembled.pageSummary(kept)] : []),
 		...assembled.blocks.slice(0, kept).flatMap((block) => block.lines),
 		...notice,
@@ -114,9 +137,13 @@ function boundDetails(
 	kept: number,
 	dropped: number,
 	cursor: string | undefined,
+	facts: PageFacts | undefined,
 ): Record<string, unknown> {
+	const details = { ...assembled.details };
+	delete details.cursor;
 	return {
-		...assembled.details,
+		...details,
+		...facts,
 		records: assembled.blocks.slice(0, kept).map((block) => block.detail),
 		resultBounded: dropped > 0,
 		omittedRecordBlocks: dropped,
@@ -136,10 +163,12 @@ function oversizedResult(assembled: Assembled): BoundedResult {
 		returnedRecords: 0,
 		records: [],
 		pageBlocked: true,
+		...pageFacts(assembled, 0, undefined, "The outer metadata exceeds the result bound; this page cannot advance."),
 	};
 	const text = [
 		oneLine(assembled.header[0] ?? "registry"),
 		"[result bounded: oversized metadata omitted; this page cannot advance; no absence is established]",
+		...continuationLine(pageFacts(assembled, 0, undefined, "The outer metadata exceeds the result bound; this page cannot advance.")),
 		...BOUNDARY_LINES,
 	].join("\n");
 	return { text, details: minimal, structuredContent: minimal, droppedBlocks: assembled.blocks.length };
@@ -153,9 +182,11 @@ export function boundResult(assembled: Assembled): BoundedResult {
 	let kept = assembled.blocks.length;
 	for (;;) {
 		const dropped = assembled.blocks.length - kept;
-		const cursor = kept > 0 ? assembled.continuation?.(kept) : undefined;
-		const text = boundLines(assembled, kept, dropped, cursor).join("\n");
-		const details = boundDetails(assembled, kept, dropped, cursor);
+		const remaining = !assembled.page || assembled.page.offset + kept < assembled.page.total;
+		const cursor = kept > 0 && remaining ? assembled.continuation?.(kept) : undefined;
+		const facts = pageFacts(assembled, kept, cursor, dropped > 0 && kept === 0 ? "The first record exceeds the result bound; this page cannot advance." : undefined);
+		const text = boundLines(assembled, kept, dropped, cursor, facts).join("\n");
+		const details = boundDetails(assembled, kept, dropped, cursor, facts);
 		const size = measure(text, details);
 		if (size.bytes <= MAX_RESULT_BYTES && size.lines <= MAX_RESULT_LINES) {
 			return { text, details, structuredContent: JSON.parse(JSON.stringify(details)) as JsonObject, droppedBlocks: dropped };

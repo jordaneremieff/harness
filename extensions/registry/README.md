@@ -307,6 +307,22 @@ arguments. `pageBlocked` means the page cannot advance; `omittedDetails` means
 oversized outer metadata was omitted. An empty array alone never establishes
 absence.
 
+Every list, candidate and content-match page states `pageTruncated` and
+`continuationStatus`. `pageTruncated` means known matches remain after the returned
+page. `available` supplies a cursor. `complete` means the complete source has no
+remaining match. `unavailable` states why incomplete evidence or the request shape
+prevents a safe continuation. `blocked` states that a record or outer metadata does
+not fit the result bound. The last two states include `continuationReason`.
+Incomplete source coverage remains incomplete even when all known rows fit.
+`resultBounded` describes byte or line reduction, not the ordinary page limit.
+The text and terminal card use the same facts.
+
+For a partial scan with a stable file stamp (the saved facts used to detect file
+changes), continuation stays `available` while known matches remain, and
+`partialScan: true` stays on every page. When its known prefix ends,
+continuation is `unavailable`, not `complete`, because the scan was incomplete and
+later matches are unknown; no stamp also means `unavailable`.
+
 `structuredContent` mirrors the already bounded `details` data. Both
 `details.records` and `structuredContent.records` retain the same projected
 records in both text forms, except that model price tiers require an exact-name
@@ -348,6 +364,15 @@ The supported signals are:
   input modalities, context/output limits, or supported thinking levels. Array
   order and display names do not count as conflicts. Different providers are
   distinct identities, so their different limits are not flagged.
+
+A native conversation's selected model is an identity, independent of metadata
+resolution. If that identity is absent from the returned catalogue and its metadata
+does not resolve, Registry retains one selected row with `evidence: "selection"` and
+`metadataAvailable: false`. Capability fields are null, not zero, false or empty
+capability lists. Provider auth facts remain independently checked through the
+public local getters. An unresolved identity is not an absent selection. Catalogue
+membership and auth findings retain their normal evidence limits; no remote probe
+or credential resolution occurs.
 
 Comparison uses all returned catalog rows before query filters. The report
 pages flagged rows, states matched and unflagged row counts, and retains the

@@ -85,14 +85,15 @@ export interface ModelRecord {
 	name: string;
 	provider: string;
 	id: string;
-	displayName: string;
+	displayName: string | null;
+	metadataAvailable: boolean;
 	catalog: boolean;
 	selected: boolean;
-	reasoning: boolean;
-	input: string[];
-	contextWindow: number;
-	maxTokens: number;
-	supportedThinkingLevels: string[];
+	reasoning: boolean | null;
+	input: string[] | null;
+	contextWindow: number | null;
+	maxTokens: number | null;
+	supportedThinkingLevels: string[] | null;
 	available: boolean | null;
 	configuredAuth: boolean | null;
 	oauth: boolean | null;
@@ -107,7 +108,7 @@ export interface ModelRecord {
 	scopeIndex?: number;
 	scopeThinkingLevel?: string;
 	currentThinkingLevel?: string;
-	evidence: "registration";
+	evidence: "registration" | "selection";
 	at: number;
 }
 
@@ -230,7 +231,8 @@ function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord
 		provider: model.provider,
 		id: model.id,
 		displayName: model.name,
-		catalog: input.catalog.includes(model),
+		metadataAvailable: true,
+		catalog: input.catalog.some((entry) => entry.provider === model.provider && entry.id === model.id),
 		selected,
 		reasoning: model.reasoning,
 		input: [...model.input],
@@ -252,6 +254,26 @@ function buildModelRecord(model: ModelInfo, input: ModelBuildInput): ModelRecord
 		...(selected && input.thinkingLevel !== undefined ? { currentThinkingLevel: input.thinkingLevel } : {}),
 		evidence: "registration",
 		at: input.at,
+	};
+}
+
+function selectedIdentity(reader: DurableModelReader, ref: NonNullable<DurableAgentModel["model"]>, input: ModelBuildInput): ModelRecord {
+	const name = `${ref.provider}/${ref.modelId}`;
+	return {
+		kind: "model", name, provider: ref.provider, id: ref.modelId,
+		displayName: null, metadataAvailable: false, catalog: false, selected: true,
+		reasoning: null, input: null, contextWindow: null, maxTokens: null, supportedThinkingLevels: null,
+		available: input.availableSnapshot ? input.available.has(name) : null,
+		configuredAuth: readBoolean(() => reader.hasConfiguredAuth(ref.provider)),
+		oauth: readBoolean(() => reader.isUsingOAuth(ref.provider)),
+		subscriptionRecognized: readBoolean(() => reader.isUsingSubscription(ref.provider)),
+		authSource: readAuthSource(() => reader.getProviderAuthStatus(ref.provider)),
+		catalogCost: null, catalogCostHasTiers: null, providerHasScopedModels: null,
+		providerNamedInSettings: input.settingsProviders?.has(ref.provider) ?? null,
+		extensionProvider: input.extensionProviders?.has(ref.provider) ?? null,
+		inScope: null,
+		...(input.thinkingLevel === undefined ? {} : { currentThinkingLevel: input.thinkingLevel }),
+		evidence: "selection", at: input.at,
 	};
 }
 
@@ -366,14 +388,14 @@ export function readDurableModels(reader: DurableModelReader, agent: DurableAgen
 		try {
 			selectedModel = reader.getModel(agent.model.provider, agent.model.modelId);
 		} catch {
-			/* The selected model stays absent from the projected rows. */
+			/* The selected identity remains available without capability metadata. */
 		}
 	}
 	const models = [...catalog];
 	if (selectedModel && !models.some((model) => model.provider === selectedModel.provider && model.id === selectedModel.id)) {
 		models.push(selectedModel);
 	}
-	return buildModelSnapshot({
+	const input: ModelBuildInput = {
 		models,
 		catalog,
 		catalogAvailable,
@@ -402,5 +424,11 @@ export function readDurableModels(reader: DurableModelReader, agent: DurableAgen
 			}
 		},
 		at,
-	});
+	};
+	const result = buildModelSnapshot(input);
+	if (agent.model && !result.records.some((record) => record.selected)) {
+		result.records.push(selectedIdentity(reader, agent.model, input));
+		result.records.sort((a, b) => modelGroup(a) - modelGroup(b) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+	}
+	return result;
 }

@@ -22,6 +22,7 @@ describe("model snapshots", () => {
 		const { ctx } = context();
 		const snapshot = readModels(ctx, 1);
 		assert.deepEqual(snapshot.records.map((record) => record.name), ["catalog-fixture/a", "catalog-fixture/b", "extension-fixture/a"]);
+		assert.ok(snapshot.records.every((record) => record.metadataAvailable === true && record.evidence === "registration"));
 		const [second, outside, first] = snapshot.records;
 		assert.equal(typeof first.scopeIndex, "number");
 		assert.equal(first.scopeIndex, 0);

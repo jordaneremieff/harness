@@ -37,14 +37,14 @@ const catalogCost = union([obj({ ...priceRates, tiers: opt(arr(
 const settingsScope = obj({ status: oneOf(["available", "absent", "unavailable"]),
 	patterns: union([strings, nul()]), observedAt: num() });
 const model = obj({
-	kind: lit("model"), name: text, provider: text, id: text, displayName: text,
-	catalog: bool(), selected: bool(), reasoning: bool(), input: strings,
-	contextWindow: num(), maxTokens: num(), supportedThinkingLevels: strings,
+	kind: lit("model"), name: text, provider: text, id: text, displayName: nullableText,
+	metadataAvailable: bool(), catalog: bool(), selected: bool(), reasoning: nullableBoolean, input: union([strings, nul()]),
+	contextWindow: nullableNumber, maxTokens: nullableNumber, supportedThinkingLevels: union([strings, nul()]),
 	available: nullableBoolean, configuredAuth: nullableBoolean, extensionProvider: nullableBoolean, inScope: nullableBoolean,
 	oauth: nullableBoolean, subscriptionRecognized: nullableBoolean, authSource: union([oneOf(AUTH_SOURCES), nul()]),
 	catalogCost, catalogCostHasTiers: nullableBoolean, providerHasScopedModels: nullableBoolean, providerNamedInSettings: nullableBoolean,
 	scopeIndex: opt(count), scopeThinkingLevel: opt(text), currentThinkingLevel: opt(text),
-	evidence: lit("registration"), at: num(), findings: opt(arr(finding, { maxItems: 4 })),
+	evidence: oneOf(["registration", "selection"]), at: num(), findings: opt(arr(finding, { maxItems: 4 })),
 });
 const contextFile = obj({ kind: lit("context_file"), name: text, path: text,
 	evidence: lit("observation"), at: num() });
@@ -85,6 +85,7 @@ export const RegistryOutputSchema = obj({
 	records: arr(union([resource, model, contextFile, setting, match]), { maxItems: 100 }),
 	resultBounded: bool(), omittedRecordBlocks: count, returnedRecords: count,
 	cursor: opt(str({ maxLength: 16384 })), pageBlocked: opt(bool()), omittedDetails: opt(bool()),
+	pageTruncated: opt(bool()), continuationStatus: opt(oneOf(["available", "complete", "unavailable", "blocked"])), continuationReason: opt(text),
 	query: opt(query), total: opt(count), offset: opt(count), candidates: opt(count),
 	availability: opt(availability), observed: opt(bool()), observedAt: opt(nullableNumber),
 	observationPartial: opt(bool()), unavailableSurfaces: opt(strings), incompleteInventory: opt(bool()),

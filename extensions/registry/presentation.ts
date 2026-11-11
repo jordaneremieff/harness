@@ -202,7 +202,11 @@ function kindTally(records: unknown[]): string {
 }
 
 function continuationOf(details: Record<string, unknown>): string {
-	return typeof details.cursor === "string" && details.cursor ? "continuation available" : "";
+	if (details.continuationStatus === "available") return "continuation available";
+	if (details.continuationStatus === "complete") return "no further match (complete source)";
+	if (details.continuationStatus !== "unavailable" && details.continuationStatus !== "blocked") return "";
+	const reason = typeof details.continuationReason === "string" ? `: ${previewMark(details.continuationReason, 140).text}` : "";
+	return `continuation ${details.continuationStatus}${reason}`;
 }
 
 /** Compact count: 128K, 1M. */
@@ -214,6 +218,7 @@ function compactCount(value: number): string {
 
 function modelFacts(entry: Record<string, unknown>): string {
 	const parts: string[] = [];
+	if (entry.metadataAvailable === false) parts.push("metadata unknown");
 	if (entry.available === true) parts.push("available (cached)");
 	else if (entry.available === false) parts.push("unavailable (cached)");
 	else parts.push("availability unknown");
@@ -243,7 +248,6 @@ function singleRecordFacts(records: unknown[]): string {
 }
 
 function boundsOf(details: Record<string, unknown>): string {
-	if (details.pageBlocked === true) return "first record exceeds the result bound";
 	const omitted = numberField(details.omittedRecordBlocks, 0);
 	if (details.resultBounded === true) return `${omitted} omitted from this page`;
 	return "";

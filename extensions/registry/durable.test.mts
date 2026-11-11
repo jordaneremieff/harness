@@ -536,8 +536,37 @@ test("unresolved native agent leaves callable evidence unavailable", async () =>
 	assert.equal(objectOf(records[0]).active, undefined);
 });
 
+test("native structured output retains an unresolved selected identity and page evidence", async () => {
+	const setup = fixture();
+	const services: RegistryDurableServices = { ...setup.services, modelRuntime: { ...setup.services.modelRuntime,
+		getModels: () => [], getModel: () => undefined, getAvailableSnapshot: () => [], hasConfiguredAuth: () => false } };
+	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services));
+	const tool = extension.tools?.[0];
+	assert.ok(tool);
+	const api = { conversationId: 1, agent: async () => ({ model: { provider: "fixture", modelId: "unknown" }, thinkingLevel: "high", tools: [], callable: [] }),
+		registry: { tools: () => [{ extension, tool }] } } as unknown as Durable.ToolExecutionApi;
+	const result = await tool.execute({ kind: "model", name: "fixture/unknown" }, api, BACKGROUND_CONTEXT);
+	assert.ok(compile(RegistryOutputSchema).check(result.structuredOutput));
+	const page = objectOf(result.structuredOutput);
+	assert.equal(page.pageTruncated, false);
+	assert.equal(page.continuationStatus, "complete");
+	const records = page.records;
+	assert.ok(Array.isArray(records));
+	assert.equal(records.length, 1);
+	const selected = objectOf(records[0]);
+	assert.equal(selected.name, "fixture/unknown");
+	assert.equal(selected.selected, true);
+	assert.equal(selected.metadataAvailable, false);
+	assert.equal(selected.evidence, "selection");
+	for (const key of ["displayName", "reasoning", "input", "contextWindow", "maxTokens", "supportedThinkingLevels"]) assert.equal(selected[key], null);
+	assert.equal(JSON.stringify(result.structuredOutput), JSON.stringify(result.details));
+});
+
 test("native codemode receives structured registry pages and distinguishes callable from offered tools", { timeout: 30000 }, async () => {
-	const { faux, models, services } = fixture();
+	const setup = fixture();
+	const { faux, models } = setup;
+	const services: RegistryDurableServices = { ...setup.services, modelRuntime: { ...setup.services.modelRuntime,
+		getModels: () => [], getModel: () => undefined, getAvailableSnapshot: () => [], hasConfiguredAuth: () => false } };
 	const extension = await createRegistryDurableContribution(REGISTRY_SOURCE, settingsBus).create(host(services));
 	const sandbox = new CodemodeSandbox();
 	const registry = Durable.createRegistry();
@@ -560,12 +589,19 @@ const pages = await Promise.all([
   tools.registry({kind: "tool"}),
   tools.registry({kind: "tool", name: "absent"}),
   tools.registry({kind: "model", name: "unconfigured/missing"}),
-  tools.registry({kind: "setting"})
+  tools.registry({kind: "setting"}),
+  tools.registry({kind: "model", name: "faux/faux-1"})
 ]);
 if (pages.some(p => typeof p !== "object" || !Array.isArray(p.records))) throw new Error("not structured");
 const facts = Object.fromEntries(pages[0].records.map(r => [r.name, {active:r.active, callable:r.callable, evidence:r.callableEvidence}]));
 return {facts, missing:pages[1].outcome, nonChat:pages[2].catalogBoundary, settings:pages[3].settingsCoverage,
-  carrier: Object.hasOwn(pages[0], "structuredContent")};
+  carrier: Object.hasOwn(pages[0], "structuredContent"),
+  pageStatus: pages[0].continuationStatus, pageTruncated: pages[0].pageTruncated,
+  unknown: {name:pages[4].records[0].name, metadataAvailable:pages[4].records[0].metadataAvailable,
+    evidence:pages[4].records[0].evidence, displayName:pages[4].records[0].displayName,
+    reasoning:pages[4].records[0].reasoning, input:pages[4].records[0].input,
+    contextWindow:pages[4].records[0].contextWindow, maxTokens:pages[4].records[0].maxTokens,
+    supportedThinkingLevels:pages[4].records[0].supportedThinkingLevels}};
 ` }, { id: "script" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage("Inspected."),
 		]);
@@ -581,9 +617,12 @@ return {facts, missing:pages[1].outcome, nonChat:pages[2].catalogBoundary, setti
 		assert.match(output, /Chat models only/);
 		assert.match(output, /"settings":\{/);
 		assert.match(output, /"carrier":false/);
+		assert.match(output, /"pageStatus":"complete"/);
+		assert.match(output, /"pageTruncated":false/);
+		assert.match(output, /"unknown":\{"name":"faux\/faux-1","metadataAvailable":false,"evidence":"selection","displayName":null,"reasoning":null,"input":null,"contextWindow":null,"maxTokens":null,"supportedThinkingLevels":null\}/);
 		const calls = objectOf(script.details).calls;
 		assert.ok(Array.isArray(calls));
-		assert.equal(calls.length, 4);
+		assert.equal(calls.length, 5);
 		assert.ok(calls.every(call => objectOf(call).name === "registry" && objectOf(call).status === "ok"));
 	} finally {
 		await harness.close(BACKGROUND_CONTEXT);

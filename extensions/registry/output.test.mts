@@ -15,7 +15,7 @@ const snapshot = (): HostSnapshot => ({ tools: ["a", "b"].map((name) => ({ name,
 	commands: [{ name: "guide", source: "prompt", sourceInfo }], observation: null,
 	availability: { tools: true, activeTools: true, callableTools: true, commands: true }, at: 1000 });
 const models: ModelSnapshot = { catalogAvailable: true, availableSnapshot: true, catalogError: false, scopeConfigured: false, scopeOrder: null,
-	records: [{ kind: "model", name: "fixture/a", provider: "fixture", id: "a", displayName: "A", catalog: true, selected: true,
+	records: [{ kind: "model", name: "fixture/a", provider: "fixture", id: "a", displayName: "A", metadataAvailable: true, catalog: true, selected: true,
 		reasoning: true, input: ["text"], contextWindow: 1000, maxTokens: 100, supportedThinkingLevels: ["off", "high"],
 		available: true, configuredAuth: false, oauth: null, subscriptionRecognized: null, authSource: null,
 		catalogCost: null, catalogCostHasTiers: null, providerHasScopedModels: null, providerNamedInSettings: null,
@@ -32,6 +32,19 @@ function validate(result: LookupResult) {
 }
 
 describe("native structured registry output", () => {
+	it("validates null capabilities and selection evidence without removing model fields", async () => {
+		const unknown: ModelSnapshot = { ...models, scopeConfigured: null, records: [{ ...models.records[0],
+			metadataAvailable: false, catalog: false, evidence: "selection", displayName: null, reasoning: null, input: null,
+			contextWindow: null, maxTokens: null, supportedThinkingLevels: null, inScope: null }] };
+		const result = validate(await run({ kind: "model" }, { models: unknown }));
+		assert.equal(result.details.pageTruncated, false);
+		assert.equal(result.details.continuationStatus, "complete");
+		assert.equal(compile(RegistryOutputSchema).check({ ...result.structuredContent, continuationStatus: "invented" }), false);
+		const rows = result.details.records as Record<string, unknown>[];
+		for (const key of ["displayName", "reasoning", "input", "contextWindow", "maxTokens", "supportedThinkingLevels"]) assert.equal(rows[0][key], null);
+		assert.equal(rows[0].metadataAvailable, false);
+		assert.equal(rows[0].evidence, "selection");
+	});
 	it("validates all outcomes, source kinds, coverage and continuations", async () => {
 		const outcomes = new Set<string>();
 		const check = (result: LookupResult) => { validate(result); outcomes.add(result.outcome); return result; };

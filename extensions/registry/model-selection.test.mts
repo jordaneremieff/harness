@@ -53,6 +53,42 @@ function durableReader(catalog: Model<Api>[]): DurableModelReader {
 }
 
 describe("portable model selection evidence", () => {
+	it("distinguishes absent selection, resolved metadata and unresolved selected identity", async () => {
+		const { catalog } = fixture();
+		const scope: SettingsScopeEvidence = { status: "available", patterns: ["missing/*"], observedAt: 1 };
+		const reader = durableReader(catalog);
+		assert.equal(readDurableModels(reader, {}, 1, scope).records.some((row) => row.selected), false);
+		const known = readDurableModels(reader, { model: { provider: catalog[0].provider, modelId: catalog[0].id } }, 1, scope).records.find((row) => row.selected);
+		assert.equal(known?.catalog, true);
+		assert.equal(known?.metadataAvailable, true);
+		const outside = { ...catalog[0], provider: "missing", id: "resolved" };
+		const resolved = readDurableModels({ ...reader, getModel: () => outside }, { model: { provider: "missing", modelId: "resolved" } }, 1, scope).records.find((row) => row.selected);
+		assert.equal(resolved?.catalog, false);
+		assert.equal(resolved?.metadataAvailable, true);
+		assert.equal(resolved?.displayName, outside.name);
+		const agent = { model: { provider: "missing", modelId: "unknown" }, thinkingLevel: "high" };
+		const snapshot = readDurableModels({ ...reader, hasConfiguredAuth: () => false }, agent, 1, scope);
+		const selected = snapshot.records.filter((row) => row.selected);
+		assert.equal(selected.length, 1);
+		const row = selected[0];
+		assert.equal(row.name, "missing/unknown");
+		assert.equal(row.catalog, false);
+		assert.equal(row.metadataAvailable, false);
+		assert.equal(row.evidence, "selection");
+		assert.equal(row.currentThinkingLevel, "high");
+		assert.equal(row.providerNamedInSettings, true);
+		assert.equal(row.configuredAuth, false);
+		assert.equal(row.oauth, true);
+		for (const key of ["displayName", "reasoning", "input", "contextWindow", "maxTokens", "supportedThinkingLevels", "catalogCost", "catalogCostHasTiers"] as const) assert.equal(row[key], null);
+		assert.equal(snapshot.records.filter((entry) => entry.displayName?.startsWith("Sample") === true).length, catalog.length);
+		const list = await run(snapshot, { kind: "model", name: row.name });
+		assert.deepEqual(records(list), selected);
+		const failed = readDurableModels({ ...reader, getModel: () => { throw new Error("metadata unavailable"); },
+			hasConfiguredAuth: () => { throw new Error("auth unavailable"); }, isUsingOAuth: () => { throw new Error("oauth unavailable"); },
+			isUsingSubscription: () => { throw new Error("billing unavailable"); }, getProviderAuthStatus: () => { throw new Error("source unavailable"); } }, agent, 1, scope).records.find((entry) => entry.selected);
+		assert.ok(failed);
+		for (const key of ["configuredAuth", "oauth", "subscriptionRecognized", "authSource"] as const) assert.equal(failed[key], null);
+	});
 	it("keeps availability ahead of configuration evidence and selection", async () => {
 		const { catalog, ctx } = fixture();
 		ctx.scopedModels = [{ model: catalog[1] }];
@@ -225,7 +261,7 @@ describe("provider configuration order", () => {
 				seen.push(...records(page).map((row) => row.name));
 			}
 			assert.equal(page.details.cursor, undefined);
-			const expected = snapshot.records.filter((row) => row.displayName.startsWith("Sample"));
+			const expected = snapshot.records.filter((row) => row.displayName?.startsWith("Sample") === true);
 			assert.deepEqual(seen, expected.map((row) => row.name));
 			assert.equal(new Set(seen).size, catalog.length - 1);
 			assert.deepEqual(expected.slice(1, 41).map((row) => row.id), variants.map((model) => model.id));

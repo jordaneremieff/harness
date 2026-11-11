@@ -31,7 +31,7 @@ function snapshot(): HostSnapshot {
 }
 function model(): ModelRecord {
 	return { kind: "model", name: "fixture/model", provider: "fixture", id: "model", displayName: "Fixture Model",
-		catalog: true, selected: true, reasoning: true, input: ["text", "image"], contextWindow: 10000, maxTokens: 1000,
+		metadataAvailable: true, catalog: true, selected: true, reasoning: true, input: ["text", "image"], contextWindow: 10000, maxTokens: 1000,
 		supportedThinkingLevels: ["off", "high"], available: true, configuredAuth: true, extensionProvider: false,
 		oauth: null, subscriptionRecognized: null, authSource: null, catalogCost: null, catalogCostHasTiers: null, providerHasScopedModels: true, providerNamedInSettings: null,
 		inScope: true, scopeIndex: 0, scopeThinkingLevel: "off", currentThinkingLevel: "high", evidence: "registration", at };
@@ -80,6 +80,25 @@ describe("compact registry output", () => {
 			assert.ok(!list.text.includes(`${key}:`) && !list.text.includes(`${key}=`), key);
 		}
 		assert.match(list.text, /exact provider\/id name for full metadata/);
+	});
+
+	it("preserves unknown selected-model capabilities in exact and compact output", async () => {
+		const unknown: ModelRecord = { ...model(), displayName: null, reasoning: null, input: null, contextWindow: null,
+			maxTokens: null, supportedThinkingLevels: null, metadataAvailable: false, catalog: false, evidence: "selection",
+			inScope: null, providerHasScopedModels: null };
+		delete unknown.scopeIndex; delete unknown.scopeThinkingLevel;
+		const snapshot = { ...models([unknown]), scopeConfigured: null, scopeOrder: null };
+		const list = await lookup(request({ params: { kind: "model" }, models: snapshot }));
+		const exact = await lookup(request({ params: { kind: "model", name: unknown.name }, models: snapshot }));
+		assert.deepEqual(records(list), records(exact));
+		for (const key of ["displayName", "reasoning", "input", "contextWindow", "maxTokens", "supportedThinkingLevels"]) {
+			assert.equal(records(exact)[0][key], null);
+			assert.ok(exact.text.includes(`${key}: null`));
+			if (key !== "maxTokens") assert.ok(list.text.includes(`${key}=null`));
+		}
+		assert.match(list.text, /metadataAvailable=false/);
+		const filtered = await lookup(request({ params: { kind: "model", search: "null" }, models: snapshot }));
+		assert.equal(records(filtered).length, 0);
 	});
 
 	it("shows display names, image input, and session cycle positions in compact model lists", async () => {
