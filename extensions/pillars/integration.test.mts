@@ -81,9 +81,18 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		assert.equal(resolve(pillarsTool.sourceInfo.path), entry);
 		const command = session.extensionRunner.getRegisteredCommands().find((command) => command.name === "pillars");
 		assert.ok(command?.getArgumentCompletions);
-		const completions = command.getArgumentCompletions;
-		assert.equal((await command.getArgumentCompletions("de"))?.[0].value, "derive");
-		assert.equal((await command.getArgumentCompletions("read p"))?.[0].value, "read principle-example");
+		const completions = (prefix: string) => {
+			const result = command.getArgumentCompletions?.(prefix);
+			assert.notEqual(result, undefined);
+			if (result === null) return null;
+			assert.ok(Array.isArray(result), "completion returns synchronously");
+			return result;
+		};
+		assert.equal(completions("de")?.[0].value, "derive");
+		for (const prefix of ["read p", "read pr", "read pri"]) {
+			assert.equal(completions(prefix)?.[0].value, "read principle-example");
+		}
+		assert.equal(completions("check a hint"), null);
 		faux.setResponses([
 			(context) => {
 				assert.ok(ai.getCurrentTools(context.messages).some((tool) => tool.name === "pillars"));
@@ -109,6 +118,53 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 				.flatMap((shard) => shard.cells)
 				.some((cell) => cell.observationStage === "tool_request"),
 		);
+		const assertSource = async (expected: string) => {
+			faux.setResponses([
+				ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "principle-example" }, { id: "refresh-source" })),
+				ai.fauxAssistantMessage("Synthetic source checked."),
+			]);
+			await activeSession.prompt("Read the configured synthetic source.");
+			const message = activeSession.messages.findLast((item) => item.role === "toolResult");
+			assert.ok(message?.role === "toolResult");
+			const block = message.content.find((item) => item.type === "text");
+			assert.ok(block?.type === "text");
+			const source: unknown = JSON.parse(block.text);
+			assert.ok(source && typeof source === "object");
+			if (expected === "source_unavailable") {
+				assert.equal(message.isError, true);
+				assert.ok("code" in source);
+				assert.equal(source.code, expected);
+			} else {
+				assert.equal(message.isError, false);
+				assert.ok("text" in source);
+				assert.equal(source.text, expected);
+			}
+		};
+		const assertCatalogueRefresh = async () => {
+			const inventory = "# Inventory\n[Example](principle-example.md)\n";
+			const updated = "# Current synthetic principle\nRead the current bytes.\n";
+			await writeFile(join(corpusDir, "README.md"), `${inventory}[Missing](principle-missing.md)\n`);
+			await writeFile(join(corpusDir, "principle-example.md"), updated);
+			for (const prefix of ["read p", "read pr", "read pri"]) {
+				assert.equal(completions(prefix)?.[0].value, "read principle-example");
+			}
+			await assertSource(updated);
+			await activeSession.prompt("/pillars browse");
+			assert.equal(completions("read "), null);
+			await assertSource("source_unavailable");
+			await writeFile(join(corpusDir, "README.md"), inventory);
+			await writeFile(join(corpusDir, "principle-example.md"), entryBody);
+			await activeSession.prompt("/pillars browse");
+			assert.equal(completions("read p")?.[0].value, "read principle-example");
+			await writeFile(join(corpusDir, "principle-added.md"), "# Added synthetic principle\n");
+			await writeFile(join(corpusDir, "README.md"), `${inventory}[Added](principle-added.md)\n`);
+			assert.equal(completions("read principle-a"), null);
+			await activeSession.prompt("/pillars browse");
+			assert.equal(completions("read principle-a")?.[0].value, "read principle-added");
+			await writeFile(join(corpusDir, "README.md"), inventory);
+			await activeSession.prompt("/pillars browse");
+		};
+		await assertCatalogueRefresh();
 		const assertHelpCommands = async () => {
 			const messagesBeforeCommand = activeSession.messages.length;
 			await activeSession.prompt("/pillars read principle-example");
@@ -141,14 +197,37 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 				await activeSession.prompt("/pillars help");
 				const help = activeSession.sessionManager.getLeafEntry();
 				assert.ok(help?.type === "custom" && (help.data as { text: string }).text.includes("# Pillars commands"));
-				assert.equal(await completions("read "), null);
-				assert.equal((await completions("ch"))?.[0].value, "check");
+				assert.equal(completions("read p")?.[0].value, "read principle-example");
+				assert.equal(completions("ch")?.[0].value, "check");
+				await activeSession.prompt("/pillars browse");
+				assert.equal(completions("read "), null);
 			} finally {
 				process.env.PI_PILLARS_CORPUS = corpusDir;
 			}
-			assert.equal((await completions("read p"))?.[0].value, "read principle-example");
+			assert.equal(completions("read "), null);
+			await activeSession.prompt("/pillars browse");
+			assert.equal(completions("read p")?.[0].value, "read principle-example");
 		};
 		await assertHelpCommands();
+		const assertJudgmentRefresh = async () => {
+			for (const action of ["check", "derive", "review"]) {
+				const before = completions("read ");
+				assert.ok(before?.length);
+				process.env.PI_PILLARS_CORPUS = join(root, "absent-corpus");
+				try {
+					await activeSession.prompt("/pillars help");
+					assert.deepEqual(completions("read "), before);
+					faux.setResponses([ai.fauxAssistantMessage("Synthetic judgment refresh checked.")]);
+					await activeSession.prompt(`/pillars ${action} inspect the configured corpus`);
+					await activeSession.waitForIdle();
+					assert.equal(completions("read "), null);
+				} finally {
+					process.env.PI_PILLARS_CORPUS = corpusDir;
+				}
+				await activeSession.prompt("/pillars browse");
+			}
+		};
+		await assertJudgmentRefresh();
 		const assertJudgmentRequests = async () => {
 			for (const input of [
 				"check",
@@ -266,15 +345,15 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		const cells = Object.values(captured.shards).flatMap((shard) => shard.cells);
 		assert.equal(
 			cells.reduce((n, cell) => n + cell.counters.readRequests, 0),
-			3,
+			4,
 		);
 		assert.equal(
 			cells.reduce((n, cell) => n + cell.counters.readResults, 0),
-			3,
+			4,
 		);
 		assert.equal(
 			cells.reduce((n, cell) => n + cell.counters.bodyVerifiedAtObservation, 0),
-			2,
+			3,
 		);
 		assert.equal(
 			cells.reduce((n, cell) => n + cell.counters.resultError, 0),

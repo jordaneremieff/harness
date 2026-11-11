@@ -175,9 +175,16 @@ is ready the frame shows a reading placeholder.
 The attached Agent terminal opens the same view through `operator-panel.ts`,
 a presentation-only module that routes the inventory and every page read
 through the host's `pillars` contribution command. Outside the terminal UI, or when the
-inventory cannot be read, `browse` falls back to the Markdown inventory text. Argument autocomplete offers actions
-with descriptions and current resource identifiers after `read `. It does not
-complete free-text hints or invent continuation values. Source output uses Pi's
+inventory cannot be read, `browse` falls back to the Markdown inventory text.
+Argument autocomplete filters the identifiers already discovered for the current
+session and performs no corpus I/O. Session start and an explicit non-help
+`/pillars` command refresh the catalogue. An unsuccessful refresh makes the
+catalogue unavailable rather than serving a previous configured corpus. Source
+reads still read current body bytes; the identifier catalogue is not a cached
+doctrine body. To discover changed identifiers or a changed corpus selection,
+run `/pillars` or start a new session. Autocomplete offers actions with
+descriptions and resource identifiers after `read `. It does not complete
+free-text hints or invent continuation values. Source output uses Pi's
 Markdown renderer in the terminal. Help, browse, read, and access-evidence
 output stay outside model context: TUI, JSON, and RPC use a custom session
 entry, while text-print mode writes to stdout. JSON/RPC consumers receive the

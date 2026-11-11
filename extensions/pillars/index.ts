@@ -355,13 +355,11 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 	pi.registerCommand("pillars", {
 		description:
 			"Check alignment and continue the corrected work, derive candidates, review guidance, or browse Pillars. Use /pillars for help; judgment actions accept an optional hint.",
-		getArgumentCompletions: async (prefix) => {
-			if (/^read\s+[^\s]*$/.test(prefix)) await discover();
-			return commandCompletions(prefix, catalog);
-		},
+		getArgumentCompletions: (prefix) => commandCompletions(prefix, catalog),
 		handler: async (args, ctx) => {
 			const request = parseJudgmentRequest(args);
 			if (request) {
+				await discover(ctx.signal);
 				pi.sendMessage(
 					{ customType: "pillars-request", content: judgmentPrompt(request), display: true },
 					{ triggerTurn: true, deliverAs: "steer" },
