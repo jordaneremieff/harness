@@ -304,9 +304,10 @@ describe("starter intervention effects", () => {
 		}));
 		const f = fixture(rows, "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
+		const sourceInfo = { path: "builtin:fixture", source: "builtin", scope: "temporary" as const, origin: "top-level" as const };
 		f.pi.getAllTools = () => [
-			{ name: "bash", description: "Synthetic command", parameters: obj({ command: str() }, { open: true }) },
-			{ name: "read", description: "Synthetic reader", parameters: obj({ path: str() }, { open: true }) },
+			{ name: "bash", description: "Synthetic command", parameters: obj({ command: str() }, { open: true }), exposure: "direct", sourceInfo },
+			{ name: "read", description: "Synthetic reader", parameters: obj({ path: str() }, { open: true }), exposure: "direct", sourceInfo },
 		];
 		f.pi.getActiveTools = () => ["bash", "read"];
 		assert.match((await f.call("traversal", { command: "find src -type f" }))?.reason ?? "", /Rule form\.find-discovery:/);
