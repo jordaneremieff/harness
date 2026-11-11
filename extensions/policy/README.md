@@ -1406,8 +1406,9 @@ to select parsed lexical stages.
 The parser recognises a plain `for NAME in WORDS; do SIMPLE_LIST; done` loop with
 simple commands and pipelines. It reads the body with the same rules as top-level
 commands and retains command substitutions as separate evidence. Quoted or escaped
-keywords, arithmetic loops, nested control forms, control operators, redirects on
-the header and words after `done` leave evidence unavailable. A known command
+keywords, arithmetic loops, nested control forms, redirects on the header, words
+after `done`, and control operators inside the loop or after `done` leave evidence
+unavailable; a loop after `&&` or `||` is admitted. A known command
 position is not proof that the command terminates or that its executable has no
 further effects.
 
@@ -1419,8 +1420,9 @@ reason; it does not claim a matching command.
 
 The shell parser does not expand aliases, variables, globs, generated words, or
 shell data. It captures the command once and uses that same value for matching
-and bounded best-effort redaction. Here-document evidence requires the delimiter
-word's quote flag. Quote characters set this flag; a backslash escape alone does
+and bounded best-effort redaction. Here-document evidence uses the current word's
+quote flag, which also retains quotes from digits immediately before the redirect
+operator. Quote characters set this flag; a backslash escape alone does
 not. An unset flag leaves body expansion unavailable (`unexpanded-heredoc`). The
 reader finds the first line
 that holds the decoded delimiter, with quote and backslash characters removed,
@@ -1429,8 +1431,8 @@ of an exact decoded-delimiter line, ended by LF or the end of input. Only `<<-`
 removes leading tabs in the exact comparison. A missing end or a difference between
 the two ends leaves evidence unavailable (`malformed-shell`). Literal here-string
 words use the same rules inside and outside a plain `for` loop.
-A shell interpreter that consumes either form still leaves execution evidence
-unavailable. See the [Bash here-document rules](https://www.gnu.org/software/bash/manual/bash.html#Here-Documents).
+`sh`, `bash`, `zsh`, `dash` and `ksh` leave CLI execution evidence unavailable when
+they consume either form. See the [Bash here-document rules](https://www.gnu.org/software/bash/manual/bash.html#Here-Documents).
 
 ```text
 match {
