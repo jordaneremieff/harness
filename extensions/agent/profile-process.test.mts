@@ -6,17 +6,25 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { getCurrentTools } from "@earendil-works/pi-ai";
 import { connectTransport } from "../../transport/index.ts";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, writeFileSync } from "node:fs";
 import { it } from "node:test";
 import type { AgentProfile } from "./profile-schema.ts";
 import type { RequestContext } from "./request-context.ts";
 import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { connectHost } from "./host-client.ts";
-import { observeClaim } from "./claims.ts";
-import { eventLog, waitForProcessExit } from "./host-fixture.mts";
+import { tryNativeWriterLease } from "./native-lease.ts";
+import { eventLog, waitForProcessExit, waitForConnectionClose } from "./host-fixture.mts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { BASE_OPERATIONS } from "./profile-base-contract-fixture.mts";
 import { guarded, instructions, lastTool, profileFixture, type ProviderRequest, type Requester } from "./profile-process-fixture.mts";
+
+function writerAvailable(metadata: HostMetadata): boolean {
+	assert.equal(existsSync(hostPaths(metadata).claim), true, "writer release preserves the lease inode");
+	const attempt = tryNativeWriterLease(hostPaths(metadata).claim);
+	if (attempt.kind === "busy") return false;
+	attempt.lease.release();
+	return true;
+}
 
 it("uses the OS temporary directory by default and preserves the scratch-root override", async (t) => {
 	const saved = process.env.PROFILE_TEST_ROOT;
@@ -150,12 +158,17 @@ it("retains a standing profile across native boundaries and routes reused work b
 	assert.deepEqual(afterReset.requests, [], "settled and reset routes are not current requests");
 	assert.equal(f.requests.length, requestsBeforeReset, "reset and profile reads start no model request");
 	await a.raw(identity, "observe-close", { token: observation.token });
+	const releaseObserver = await connectHost(metadata, { retryAttempts: 0 });
+	t.after(() => releaseObserver.close());
 	await a.call("release", { sessionId: identity });
-	assert.equal(existsSync(hostPaths(metadata).claim), false);
+	await waitForConnectionClose(releaseObserver);
+	assert.equal(writerAvailable(metadata), true);
+	const releasedInode = lstatSync(hostPaths(metadata).claim).ino;
 	const cold = await a.control<AgentProfile>("profile-read", { sessionId: "@archive-guide" });
 	assert.equal(cold.live, false);
 	assert.equal(cold.revision, correctedProfile.revision);
-	assert.equal(existsSync(hostPaths(metadata).claim), false, "cold profile read acquires no writer");
+	assert.equal(writerAvailable(metadata), true, "cold profile read acquires no writer");
+	assert.equal(lstatSync(hostPaths(metadata).claim).ino, releasedInode);
 	assert.equal(f.requests.length, requestsBeforeReset);
 	await a.close();
 	const aRestarted = await f.requester(a.identity);
@@ -213,11 +226,10 @@ it("retains a standing profile across native boundaries and routes reused work b
 		assert.equal(error.message, "raw close: durable host connection closed: peer ended");
 	});
 	await b.call("release", { sessionId: identity });
-	const paths = hostPaths(metadata);
-	assert.equal(observeClaim(paths.claim, paths.identity).kind, "absent");
+	assert.equal(writerAvailable(metadata), true);
 	await b.close();
 	const restarted = await f.requester(b.identity);
-	await restarted.call("release", { sessionId: identity });
+	assert.equal(writerAvailable(metadata), true, "registration leaves clean storage closed");
 	const reopened = await restarted.raw<Updated>(identity, "profile-update", update);
 	assert.equal(reopened.outcome, "applied");
 	assert.equal(reopened.deduped, true);
@@ -274,7 +286,7 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	const changedOperations = ["status", "submit", "dashboard"];
 	for (const method of unchangedOperations) assert.deepEqual(HOST_CONTRACT.operations[method], BASE_OPERATIONS[method], `${method} keeps its declared base contract`);
 	for (const method of changedOperations) assert.notDeepEqual(HOST_CONTRACT.operations[method], BASE_OPERATIONS[method], `${method} requires its changed contract`);
-	assert.equal(HOST_CONTRACT.operations.status.request, BASE_OPERATIONS.status.request);
+	assert.notEqual(HOST_CONTRACT.operations.status.request, BASE_OPERATIONS.status.request);
 	assert.notEqual(HOST_CONTRACT.operations.status.response, BASE_OPERATIONS.status.response);
 	assert.notEqual(HOST_CONTRACT.operations.submit.request, BASE_OPERATIONS.submit.request);
 	assert.equal(HOST_CONTRACT.operations.submit.response, BASE_OPERATIONS.submit.response);
@@ -286,7 +298,7 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	await assert.rejects(base("configure", { name: "Rejected base rename" }, { request: "configure/1.0.0", response: "configure/1.0.0" }), /configure request contract configure\/1\.0\.0 differs from configure\/1\.3\.0.*no operation was admitted/u);
 	const unchanged = await a.control<AgentProfile>("profile-read", { sessionId: expert.sessionId });
 	assert.equal(unchanged.name, "Contract expert", "the refused base configure never changes native storage");
-	await assert.rejects(base("status"), /status response contract .* differs from .*no operation was admitted/u);
+	await assert.rejects(base("status"), /status request contract .* differs from .*no operation was admitted/u);
 	await assert.rejects(base("submit", { message: "Rejected base task", requestId: "rejected-base-admission", ownerId: a.identity, origin: "operator" }), /submit request contract .* differs from .*no operation was admitted/u);
 	const status = await a.raw<{ conversation: { identity: string; busy: boolean } }>(expert.sessionId, "status");
 	assert.equal(status.conversation.identity, expert.sessionId);

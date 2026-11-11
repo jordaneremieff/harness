@@ -74,7 +74,14 @@ export interface HostPaths {
 	readonly identity: ClaimIdentity;
 }
 
+export interface HostHello {
+	readonly format: "pi.agent.host-hello/1";
+	readonly writerId: string;
+	readonly contract: RuntimeContract;
+}
+
 export interface HostReady {
+	readonly writerId: string;
 	readonly pid: number;
 	readonly socketPath: string;
 	/** Current operation contracts of this process. */
@@ -186,7 +193,7 @@ export function hostPaths(metadata: Pick<HostMetadata, "agentDir" | "storageId" 
 }
 
 export function formatHostReady(ready: HostReady): string {
-	return `${HOST_READY_PREFIX}${JSON.stringify({ pid: ready.pid, socketPath: ready.socketPath, contract: ready.contract })}\n`;
+	return `${HOST_READY_PREFIX}${JSON.stringify({ pid: ready.pid, socketPath: ready.socketPath, writerId: ready.writerId, contract: ready.contract })}\n`;
 }
 
 export function formatHostBusy(target: HostBusy): string {
@@ -201,13 +208,19 @@ export function parseHostBusyLine(line: string): HostBusy | undefined {
 	return { storageId: boundedText(value.storageId, "host busy storageId", IDENTITY_LIMIT), socketPath: absolutePath(value.socketPath, "host busy socketPath") };
 }
 
+/** The current endpoint identifies its own writer separately from its static operation contracts. */
+export function parseHostHello(value: unknown): HostHello {
+	if (!isRecord(value) || value.format !== "pi.agent.host-hello/1") throw new Error("host writer hello must use pi.agent.host-hello/1");
+	return { format: "pi.agent.host-hello/1", writerId: boundedText(value.writerId, "host writerId", IDENTITY_LIMIT), contract: parseRuntimeContract(value.contract) };
+}
+
 /** Parse one readiness line. A non-matching line yields undefined; a matching line with a bad body throws. */
 export function parseHostReadyLine(line: string): HostReady | undefined {
 	if (!line.startsWith(HOST_READY_PREFIX)) return undefined;
 	const value: unknown = JSON.parse(line.slice(HOST_READY_PREFIX.length));
 	if (!isRecord(value)) throw new Error("host readiness line is not an object");
 	if (typeof value.pid !== "number" || !Number.isSafeInteger(value.pid) || value.pid <= 0) throw new Error("host readiness pid must be a positive integer");
-	return { pid: value.pid, socketPath: boundedText(value.socketPath, "host readiness socketPath", PATH_LIMIT), contract: parseRuntimeContract(value.contract) };
+	return { pid: value.pid, socketPath: boundedText(value.socketPath, "host readiness socketPath", PATH_LIMIT), contract: parseRuntimeContract(value.contract), writerId: boundedText(value.writerId, "host writerId", IDENTITY_LIMIT) };
 }
 
 /**

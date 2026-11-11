@@ -23,13 +23,15 @@ import {
 	isCancelableHostWait,
 	isRetrySafeHostMethod,
 	parseHostMetadata,
+	parseHostHello,
 	parseHostReadyLine,
 	parseHostBusyLine,
 	type HostMetadata,
 	type HostPaths,
 	type HostReady,
+	type HostHello,
 } from "./host-protocol.ts";
-import { HOST_CONTRACT, parseRuntimeContract, type RuntimeContract } from "./version-contract.ts";
+import { HOST_CONTRACT, type RuntimeContract } from "./version-contract.ts";
 import { isObservationFrame, type ObservationFrame } from "./live-frames.ts";
 
 const DEFAULT_LAUNCH_TIMEOUT_MS = 30_000;
@@ -51,6 +53,7 @@ interface OwnedLaunch {
 	readonly exited: Promise<OwnedHostExit>;
 	state: "pending" | "ready" | "uncertain" | "exited";
 	writerReleased?: boolean;
+	validatedReady?: HostReady;
 	outcome?: OwnedHostExit;
 }
 const ownedLaunches = new Map<string, OwnedLaunch>();
@@ -335,14 +338,18 @@ function detachChild(child: ChildProcess): void {
 function startOwnedLaunch(metadata: HostMetadata, options: HostLaunchOptions, deadline: number): OwnedLaunch {
 	options.signal?.throwIfAborted();
 	const timeout = remaining(deadline);
-	const key = hostPaths(metadata).serverId;
+	const paths = hostPaths(metadata);
+	const key = paths.serverId;
 	const runner = options.runner ?? fileURLToPath(new URL("./durable-runner.ts", import.meta.url));
 	const child = spawn(process.execPath, [runner, ...(options.runnerArgs ?? []), JSON.stringify(metadata)], {
 		cwd: metadata.cwd, detached: true, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...options.env },
 	});
 	let resolveExit!: (outcome: OwnedHostExit) => void;
 	const exited = new Promise<OwnedHostExit>((resolveValue) => { resolveExit = resolveValue; });
-	const ready = waitForReady(child, timeout);
+	const ready = waitForReady(child, timeout).then((value) => {
+		if (value.socketPath !== paths.socket) throw new Error("Host readiness path does not match the expected storage endpoint");
+		return value;
+	});
 	const attempt: OwnedLaunch = { child, exited, ready, state: "pending" };
 	ownedLaunches.set(key, attempt);
 	exitedLaunches.delete(key);
@@ -362,7 +369,7 @@ function startOwnedLaunch(metadata: HostMetadata, options: HostLaunchOptions, de
 	};
 	child.once("exit", (code, signal) => finish({ code, signal, failed: code !== 0 || signal !== null }));
 	child.on("error", () => { if (child.pid === undefined) finish({ code: null, signal: null, failed: true }); });
-	void ready.then(() => { if (attempt.state !== "exited") attempt.state = "ready"; }, () => { if (attempt.state !== "exited") attempt.state = "uncertain"; });
+	void ready.then((value) => { if (attempt.state !== "exited") { attempt.validatedReady = value; attempt.state = "ready"; } }, () => { if (attempt.state !== "exited") attempt.state = "uncertain"; });
 	detachChild(child);
 	return attempt;
 }
@@ -376,14 +383,12 @@ async function launchRunner(metadata: HostMetadata, options: HostLaunchOptions, 
 	let attempt = ownedLaunches.get(paths.serverId);
 	if (attempt?.state === "uncertain") throw new HostReadinessUnavailableError(new Error("The previous launch has no terminal child-exit event"));
 	if (!attempt || attempt.state === "exited" || attempt.writerReleased) attempt = startOwnedLaunch(metadata, options, deadline);
-	let ready: HostReady;
-	try { ready = await withinBudget(attempt.ready, deadline, options.signal); }
+	try { await withinBudget(attempt.ready, deadline, options.signal); }
 	catch (error) {
 		assertBusyTarget(error, metadata, paths);
 		if (!(error instanceof HostLeaseBusyError) && !options.signal?.aborted && attempt.state !== "exited") throw new HostReadinessUnavailableError(error);
 		throw error;
 	}
-	if (ready.socketPath !== paths.socket) throw new HostReadinessUnavailableError(new Error("Host readiness path does not match the expected storage endpoint"));
 	try { return await attachLink(metadata, deadline, options.signal); }
 	catch (error) {
 		if (!(error instanceof HostError) && !options.signal?.aborted && attempt.state !== "exited") throw new HostReadinessUnavailableError(error);
@@ -401,8 +406,8 @@ async function attachLink(metadata: HostMetadata, deadline = performance.now() +
 	}
 	const client = await connectClient(paths.serverId, paths.socket, deadline, signal);
 	try {
-		const runtimeContract = await readRuntimeContract(client, deadline, signal);
-		return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeContract, ...(attempt?.state === "ready" && !attempt.writerReleased ? { ownedExit: attempt.exited } : {}) };
+		const hello = await readHostHello(client, deadline, signal);
+		return { client, pid: claimPid(paths), socketPath: paths.socket, runtimeContract: hello.contract, ...(attempt?.state === "ready" && !attempt.writerReleased && attempt.validatedReady?.writerId === hello.writerId ? { ownedExit: attempt.exited } : {}) };
 	} catch (error) {
 		const answered = client.connected;
 		await withinBudget(client.dispose(), deadline).catch(() => undefined);
@@ -412,12 +417,12 @@ async function attachLink(metadata: HostMetadata, deadline = performance.now() +
 	}
 }
 
-/** Read the advertised current contract without an older-handshake fallback. */
-async function readRuntimeContract(client: TransportClient, deadline = performance.now() + CONNECT_WAIT_LIMIT_MS, signal?: AbortSignal): Promise<RuntimeContract> {
+/** Read the current writer and operation contract without an older-handshake fallback. */
+async function readHostHello(client: TransportClient, deadline = performance.now() + CONNECT_WAIT_LIMIT_MS, signal?: AbortSignal): Promise<HostHello> {
 	try {
 		const timeout = AbortSignal.timeout(Math.min(CONNECT_WAIT_LIMIT_MS, remaining(deadline)));
 		const value = await withinBudget(client.request({ method: HOST_CONTRACT_MEMBER }, signal ? AbortSignal.any([signal, timeout]) : timeout), deadline, signal);
-		return parseRuntimeContract(value);
+		return parseHostHello(value);
 	} catch (error) {
 		if (!client.connected) throw new Error("The host link closed during runtime contract negotiation", { cause: error });
 		throw new HostError(`The host does not provide a usable current operation contract. Restart the agent host after active work ends. ${toError(error).message}`, "unavailable", { cause: error });

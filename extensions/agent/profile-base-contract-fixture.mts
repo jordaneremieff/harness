@@ -35,10 +35,11 @@ async function main(): Promise<void> {
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: metadata.storageId, cwd: metadata.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
+	const writerId = randomUUID();
 	const server = createTransportServer({
 		serverId: paths.serverId, path: paths.socket,
 		request: async (request) => {
-			if (request.method === "runtime-contract") return baseContract;
+			if (request.method === "runtime-contract") return { format: "pi.agent.host-hello/1", writerId, contract: baseContract };
 			const expected = BASE_OPERATIONS[request.method];
 			const supplied = parseOperationContract(request.contract);
 			if (!expected || supplied.request !== expected.request || supplied.response !== expected.response || supplied.durable !== expected.durable) throw new Error(`Unavailable base operation: ${request.method}`);

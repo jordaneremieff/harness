@@ -24,9 +24,18 @@ import { eventLog, waitForProcessExit } from "./host-fixture.mts";
 import { createPrimaryChannel, primaryEndpointPath } from "./primary-channel.ts";
 import { PRIMARY_DELIVERY_CONTRACT } from "./version-contract.ts";
 import { connectHost } from "./host-client.ts";
-import { hostPaths, parseHostReadyLine } from "./host-protocol.ts";
+import { hostPaths, parseHostReadyLine, type HostMetadata } from "./host-protocol.ts";
 import { runHost } from "./host-process.ts";
 import { AgentManager } from "./manager.ts";
+import { tryNativeWriterLease } from "./native-lease.ts";
+
+function writerAvailable(metadata: HostMetadata): boolean {
+	assert.equal(existsSync(hostPaths(metadata).claim), true, "writer release preserves the lease inode");
+	const attempt = tryNativeWriterLease(hostPaths(metadata).claim);
+	if (attempt.kind === "busy") return false;
+	attempt.lease.release();
+	return true;
+}
 
 function deferred() {
 	let resolve!: () => void;
@@ -337,7 +346,7 @@ it("releases an idle storage after its response and closes open observations", {
 	await host.done;
 	assert.equal(f.native.observationCount, 0);
 	assert.deepEqual(await release(), { retiring: false, blockers: ["The runtime is closed or reload is in progress"] });
-	assert.equal(existsSync(hostPaths(f.metadata).claim), false);
+	assert.equal(writerAvailable(f.metadata), true);
 	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, false);
 });
 
@@ -368,7 +377,7 @@ it("cancels release when a second client admits work during the response grace",
 		assert.equal(f.native.observationCount, 1, "cancelled release preserves the new client's observation");
 		await observation.close();
 		await host.done;
-		assert.equal(existsSync(hostPaths(f.metadata).claim), false);
+		assert.equal(writerAvailable(f.metadata), true);
 	} finally { admit.resolve(); await admitted.catch(() => undefined); held.mock.restore(); }
 });
 
@@ -724,7 +733,7 @@ for (const fault of ["catalog", "marker"] as const) it(`rejects a final ${fault}
 	const host = await runHost(() => f.runtime, { metadata: f.metadata, idleMs: 0, announceReady: () => {} });
 	await assert.rejects(host.close(), /write refused/u);
 	await assert.rejects(host.done, /write refused/u);
-	assert.equal(existsSync(hostPaths(f.metadata).claim), true);
+	assert.equal(writerAvailable(f.metadata), false);
 	assert.equal(f.catalog.read(f.metadata.storageId).recoveryDue, fault === "marker");
 });
 
@@ -740,12 +749,12 @@ it("keeps two native observation watches until close, selection change, and abor
 	const conversation = await client.observe({ scope: "conversation", sessionId: f.metadata.storageId });
 	const tasks = await client.observe({ scope: "tasks", sessionId: f.metadata.storageId }, { signal: controller.signal });
 	checks[checks.length - 1]();
-	assert.equal(existsSync(hostPaths(f.metadata).claim), true);
+	assert.equal(writerAvailable(f.metadata), false);
 	await conversation.close();
 	const selected = await client.observe({ scope: "conversation", sessionId: f.metadata.storageId });
 	await selected.close();
 	checks[checks.length - 1]();
-	assert.equal(existsSync(hostPaths(f.metadata).claim), true, "the task graph watch remains live");
+	assert.equal(writerAvailable(f.metadata), false, "the task graph watch remains live");
 	const count = checks.length;
 	controller.abort();
 	await tasks.close();
@@ -910,7 +919,7 @@ it("releases only the logical observer whose established native frame fails", { 
 	assert.equal(healthyAvailable, true);
 	assert.equal(f.native.observationCount, 1, "only the healthy logical token remains");
 	checks[checks.length - 1]();
-	assert.equal(existsSync(hostPaths(f.metadata).claim), true);
+	assert.equal(writerAvailable(f.metadata), false);
 	await healthy.close();
 	await failed.close();
 	await client.request("status");
@@ -1003,7 +1012,7 @@ it("retains final costs, drops manager caches without recovery, serves cold read
 	await footers.waitFor((items) => items.some((text) => text.endsWith(` · ~$${total.toFixed(2)}`)));
 	const cold = await manager.control("inspect", { sessionId: f.metadata.storageId, view: "history" }, { id: observer, cwd: f.cwd }) as { entries: unknown[] };
 	assert.ok(cold.entries.length > 0);
-	assert.equal(existsSync(hostPaths(f.metadata).claim), false);
+	assert.equal(writerAvailable(f.metadata), true);
 	const reopenedRuntime = await createDurableRuntime(f.metadata);
 	const reopened = await runHost(() => reopenedRuntime, { metadata: f.metadata, idleMs: 0, announceReady: () => {} });
 	t.after(() => reopened.close());

@@ -10,7 +10,7 @@ import { PluginError } from "@earendil-works/chord";
 import { connectTransport, type TransportClient, type TransportRequest } from "../../transport/index.ts";
 import { observeClaim } from "./claims.ts";
 import { tryNativeWriterLease } from "./native-lease.ts";
-import { HostError, hostPaths, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
+import { HostError, hostPaths, parseHostHello, parseHostMetadata, type HostMetadata, type HostReady } from "./host-protocol.ts";
 import { HostClaimRefusedError, resolveIdleMs, runHost, type HostProcess, type HostRuntime } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
 import { eventLog } from "./host-fixture.mts";
@@ -79,6 +79,24 @@ async function deadPid(): Promise<number> {
 	await once(child, "exit");
 	return pid;
 }
+
+it("publishes the current writer identity from the server rather than mutable diagnostic metadata", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), config = metadata(root);
+	let ready: HostReady | undefined;
+	const host = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: value => { ready = value; } });
+	t.after(() => host.close());
+	assert.ok(ready);
+	const paths = hostPaths(config);
+	const record = JSON.parse(readFileSync(paths.claim, "utf8")) as { token: string };
+	assert.equal(ready.writerId, record.token);
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
+	const hello = parseHostHello(await client.request({ method: "runtime-contract" }));
+	assert.equal(hello.writerId, ready.writerId);
+	assert.deepEqual(hello.contract, HOST_CONTRACT);
+	writeFileSync(paths.claim, JSON.stringify({ ...record, token: randomUUID() }));
+	assert.deepEqual(parseHostHello(await client.request({ method: "runtime-contract" })), hello);
+});
 
 it("cancels a refused release without closing observations and resumes idle retirement", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t), checked = eventLog<void>(), checks = eventLog<() => void>();

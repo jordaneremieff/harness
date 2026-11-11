@@ -19,7 +19,7 @@ lease on a permanent private inode before storage opens, and it alone resumes
 the native scheduler. The inode's record is diagnostic, not PID-based
 ownership. Normal release closes only the descriptor. An acquiring control
 attaches first, then lets a runner contend for the lease; a busy runner opens no
-runtime. This exclusion contract covers cooperating writers on a private local
+runtime. The current endpoint's hello carries the server's per-run writer identity separately from its static operation contract. Only a match with validated readiness from the exact owned launch supplies a child-exit source for automatic recovery. A foreign endpoint remains attachable without that authority. Catalogue work markers do not override a known loss refusal; explicit attachment and primary registration retain their separate recovery roles. This exclusion contract covers cooperating writers on a private local
 macOS filesystem, not network/shared filesystems or uncooperative writers. A root
 agent uses the storage ID; its forks and same-directory agents use conversation
 IDs within that storage. An agent at a different directory receives a new

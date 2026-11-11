@@ -8,11 +8,12 @@ import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { connectTransport, createTransportServer } from "../../transport/index.ts";
 import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
-import { acquireHost, connectHost, snapshotHost, waitForHostRelease, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
+import { acquireHost, connectHost, observeOwnedHostExit, snapshotHost, waitForHostRelease, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState, eventLog, waitForFixtureState, waitForConnectionClose } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { HOST_CONTRACT, type RuntimeContract } from "./version-contract.ts";
 import { markerFixture } from "./durable-runtime-fixture.mts";
+import { runHost } from "./host-process.ts";
 
 const fixturePath = fileURLToPath(new URL("./host-fixture.mts", import.meta.url));
 
@@ -53,7 +54,7 @@ async function observeFrames(connection: HostConnection, scope: HostObservationS
 }
 
 /** A transport fixture with independently declared operation contracts. */
-async function openVersionedHost(root: string, contract: RuntimeContract | undefined, status?: JsonValue): Promise<{ readonly metadata: ReturnType<typeof fixtureMetadata>; calls: string[]; close(): Promise<void> }> {
+async function openVersionedHost(root: string, contract: RuntimeContract | undefined, status?: JsonValue, hello?: { value: unknown }): Promise<{ readonly metadata: ReturnType<typeof fixtureMetadata>; calls: string[]; close(): Promise<void> }> {
 	const metadata = fixtureMetadata(root);
 	const paths = hostPaths(metadata);
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
@@ -64,11 +65,12 @@ async function openVersionedHost(root: string, contract: RuntimeContract | undef
 		{ mode: 0o600 },
 	);
 	const calls: string[] = [];
+	const writerId = randomUUID();
 	const server = createTransportServer({
 		serverId: paths.serverId, path: paths.socket,
 		request: async (request) => {
 			calls.push(request.method);
-			if (contract && request.method === "runtime-contract") return contract;
+			if (contract && request.method === "runtime-contract") return hello ? hello.value : { format: "pi.agent.host-hello/1", writerId, contract };
 			if (status !== undefined && request.method === "status") return status;
 			if (request.method === "close") return {};
 			throw new Error(`unknown durable host method ${request.method}`);
@@ -84,6 +86,14 @@ it("refuses a peer without the current negotiation contract before dispatch", as
  t.after(() => peer.close());
  await assert.rejects(connectHost(peer.metadata, launch()), /current operation contract.*Restart/u);
  assert.deepEqual(peer.calls, ["runtime-contract"]);
+});
+
+for (const value of [HOST_CONTRACT, { format: "pi.agent.host-hello/1", contract: HOST_CONTRACT }, { format: "pi.agent.host-hello/1", writerId: "", contract: HOST_CONTRACT }]) it("refuses a peer without the required current writer hello before dispatch", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t);
+	const peer = await openVersionedHost(root, HOST_CONTRACT, undefined, { value });
+	t.after(() => peer.close());
+	await assert.rejects(connectHost(peer.metadata), /current operation contract.*Restart/u);
+	assert.deepEqual(peer.calls, ["runtime-contract"]);
 });
 
 it("admits unchanged operations across releases and refuses only changed contracts", async (t) => {
@@ -647,9 +657,56 @@ function lifecycleRunner(mode: string): string {
 			renameSync(ready.socketPath + ".held", ready.socketPath);
 			await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "restored");
 		}
+		if (${JSON.stringify(mode)} === "retire-held") {
+			await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "retire");
+			await host.close();
+			await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "writer-released");
+			process.exit(1);
+		}
 		await host.done;
 	`;
 }
+
+it("a foreign writer never inherits a retired child's failed-exit evidence", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
+	const releaseRetire = markers.hold("retire"), releaseExit = markers.hold("writer-released");
+	t.after(releaseRetire); t.after(releaseExit);
+	const owner = await acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", lifecycleRunner("retire-held")], env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
+	const exited = owner.ownedExit;
+	assert.ok(exited);
+	t.after(async () => { releaseRetire(); releaseExit(); await owner.close(); await exited; });
+	await owner.close();
+	assert.equal(owner.ownerReleased, false, "local disposal does not report writer release");
+	await markers.marker("retire");
+	releaseRetire();
+	await markers.marker("writer-released");
+	const foreign = await runHost(() => ({ request: async () => ({ writer: "foreign" }), close: async () => {}, isIdle: () => false }), { metadata, idleMs: 0, announceReady() {} });
+	t.after(() => foreign.close());
+	const attached = await acquireHost(metadata, launch());
+	t.after(() => attached.close());
+	const inherited = attached.ownedExit;
+	assert.deepEqual(await attached.request("status"), { writer: "foreign" });
+	releaseExit();
+	assert.equal((await exited).failed, true, "the retired child exits with failure while the foreign writer remains usable");
+	assert.deepEqual(await attached.request("status"), { writer: "foreign" });
+	assert.equal(inherited, undefined, "the current foreign endpoint has no owned-child exit source");
+});
+
+it("wrong-path readiness never establishes an owned-exit source for attachment", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
+	const release = markers.hold("ready");
+	t.after(release);
+	const pending = acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", lifecycleRunner("wrong-path")], env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
+	const refused = assert.rejects(pending, /owned runner remains unconfirmed/u);
+	await markers.marker("ready");
+	release();
+	await refused;
+	const exited = observeOwnedHostExit(metadata);
+	const attached = await connectHost(metadata);
+	t.after(async () => { await attached.request("close").catch(() => undefined); await attached.close(); await exited; });
+	assert.deepEqual(await attached.request("timer-list"), { starts: 1, alive: true });
+	assert.equal(attached.ownedExit, undefined, "a rejected readiness identity is not owned-writer evidence");
+});
 
 for (const mode of ["invalid", "wrong-path", "connect-failure", "deadline", "cancel"] as const) it(`${mode} startup observation never kills a resumed runtime`, { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);

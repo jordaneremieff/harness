@@ -205,9 +205,11 @@ class HostProcessServer implements HostProcess {
 	private unsubscribeQuiescent: (() => void) | undefined;
 
 	private readonly exit: (() => never) | undefined;
+	private readonly writerId: string;
 
-	constructor(runtime: HostRuntime, paths: HostPaths, claim: NativeWriterLease, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"], observationClock?: ObservationClock, exit?: () => never) {
+	constructor(runtime: HostRuntime, paths: HostPaths, claim: NativeWriterLease, writerId: string, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"], observationClock?: ObservationClock, exit?: () => never) {
 		this.exit = exit;
+		this.writerId = writerId;
 		this.runtime = runtime;
 		this.paths = paths;
 		this.claim = claim;
@@ -282,7 +284,7 @@ class HostProcessServer implements HostProcess {
 		});
 		this.unsubscribeRelease = this.runtime.onReleaseRequested?.((requested) => { if (!requested) { this.cancelRelease(); return; } this.releasePending = true; this.scheduleRelease(); });
 		if (this.runtime.releaseRequested) { this.releasePending = true; this.scheduleRelease(); }
-		announce({ pid: this.pid, socketPath: this.paths.socket, contract: HOST_CONTRACT });
+		announce({ pid: this.pid, socketPath: this.paths.socket, writerId: this.writerId, contract: HOST_CONTRACT });
 		this.scheduleRetirement();
 	}
 
@@ -415,7 +417,7 @@ class HostProcessServer implements HostProcess {
 		const { method, params, contract: rawContract } = request;
 		const requestId = request.requestId ?? randomUUID();
 		// Negotiate before parsing or dispatching an operation payload.
-		if (method === HOST_CONTRACT_MEMBER) return HOST_CONTRACT;
+		if (method === HOST_CONTRACT_MEMBER) return { format: "pi.agent.host-hello/1", writerId: this.writerId, contract: HOST_CONTRACT };
 		this.validateOperation(method, rawContract);
 		// Process shutdown owns the transport, runtime, writer claim, and done promise.
 		if (method === "close") {
@@ -685,7 +687,7 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	let runtime: HostRuntime | undefined;
 	try {
 		runtime = await createRuntime();
-		const host = new HostProcessServer(runtime, paths, claim, idleMs, options.scheduleIdleCheck, options.observationClock, options.exit);
+		const host = new HostProcessServer(runtime, paths, claim, token, idleMs, options.scheduleIdleCheck, options.observationClock, options.exit);
 		await host.start(options.announceReady ?? ((ready) => process.stdout.write(formatHostReady(ready))));
 		return host;
 	} catch (error) {

@@ -20,11 +20,12 @@ async function fixture(t: TestContext, refuseReopen = false) {
 	const calls = eventLog<{ request: TransportRequest; resolve(value: unknown): void; reject(error: Error): void }>();
 	const backend = `${paths.socket}.b`;
 	let revision = 1;
+	const writerId = randomUUID();
 	const observationOpens = eventLog<string>(), observationCloses = eventLog<string>();
 	const changes = new Set<(value: unknown) => void>(), observations = new Set<(value: unknown) => void>();
 	const frame = () => ({ scope: "tasks", storageId: metadata.storageId, revision, observedAt: new Date().toISOString(), tasks: [], labels: [], coverage: { complete: true, live: true } });
 	const server = createTransportServer({ serverId: paths.serverId, path: backend, request: async (request) => {
-		if (request.method === "runtime-contract") return HOST_CONTRACT;
+		if (request.method === "runtime-contract") return { format: "pi.agent.host-hello/1", writerId, contract: HOST_CONTRACT };
 		if (request.method === "observe-open") {
 			observationOpens.push(String((request.params as { token: string }).token));
 			if (refuseReopen && observationOpens.length > 1) throw new Error("reopen refused");

@@ -10,6 +10,7 @@ import {
 	isCancelableHostWait,
 	isRetrySafeHostMethod,
 	parseHostMetadata,
+	parseHostHello,
 	parseHostReadyLine,
 } from "./host-protocol.ts";
 
@@ -80,13 +81,24 @@ it("classifies retry-safe methods and cancelable waits", () => {
 });
 
 it("parses readiness only with a usable current operation contract", () => {
- const ready = formatHostReady({ pid: 7, socketPath: "/tmp/host.sock", contract: HOST_CONTRACT });
+ const ready = formatHostReady({ pid: 7, socketPath: "/tmp/host.sock", writerId: "writer-id", contract: HOST_CONTRACT });
  assert.equal(ready.endsWith("\n"), true);
- assert.deepEqual(parseHostReadyLine(ready.trimEnd()), { pid: 7, socketPath: "/tmp/host.sock", contract: HOST_CONTRACT });
+ assert.deepEqual(parseHostReadyLine(ready.trimEnd()), { pid: 7, socketPath: "/tmp/host.sock", writerId: "writer-id", contract: HOST_CONTRACT });
  assert.equal(parseHostReadyLine("other output"), undefined);
  assert.throws(() => parseHostReadyLine("PI_AGENT_HOST_READY {not json}"));
  assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":0,"socketPath":"/tmp/x"}'));
  assert.throws(() => parseHostReadyLine('PI_AGENT_HOST_READY {"pid":7,"socketPath":"/tmp/x"}'), /contract.*Restart/u);
+});
+
+it("requires bounded writer identity in readiness and the current hello envelope", () => {
+	const hello = { format: "pi.agent.host-hello/1", writerId: "writer-id", contract: HOST_CONTRACT };
+	assert.deepEqual(parseHostHello(hello), hello);
+	for (const writerId of [undefined, null, 7, "", "x".repeat(513), "bad\u0000id"]) {
+		assert.throws(() => parseHostHello({ ...hello, writerId }), /host writerId/u);
+		assert.throws(() => parseHostReadyLine(`PI_AGENT_HOST_READY ${JSON.stringify({ pid: 7, socketPath: "/tmp/x", contract: HOST_CONTRACT, writerId })}`), /host writerId/u);
+	}
+	for (const value of [null, [], HOST_CONTRACT, { ...hello, format: "other" }]) assert.throws(() => parseHostHello(value), /host writer hello/u);
+	assert.throws(() => parseHostHello({ ...hello, contract: undefined }), /contract.*Restart/u);
 });
 
 it("carries a coded error class", () => {
