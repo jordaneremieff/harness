@@ -242,10 +242,10 @@ async function withStashTarget<T>(
 }
 
 const changeLifecycle = (id: string, change: StashLifecycleChange, signal?: AbortSignal) =>
-	withStashTarget(id, signal, (dir, targetId) => transitionStash(dir, targetId, change));
+	withStashTarget(id, signal, (dir, targetId) => transitionStash(dir, targetId, change, undefined, signal));
 
 const rotateLifecycle = (id: string, signal?: AbortSignal) =>
-	withStashTarget(id, signal, (dir, targetId) => rotateStash(dir, targetId));
+	withStashTarget(id, signal, (dir, targetId) => rotateStash(dir, targetId, signal));
 
 /** Reserved first-token actions exposed by `/stash` autocomplete. */
 const STASH_VERBS: ReadonlyArray<{ value: string; label: string; description: string }> = [

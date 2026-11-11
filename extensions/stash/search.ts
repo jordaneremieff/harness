@@ -142,8 +142,7 @@ function sameDirectory(a: Stats, b: Stats): boolean {
 		!b.isSymbolicLink() &&
 		a.dev === b.dev &&
 		a.ino === b.ino &&
-		a.mtimeMs === b.mtimeMs &&
-		a.ctimeMs === b.ctimeMs
+		a.mtimeMs === b.mtimeMs
 	);
 }
 

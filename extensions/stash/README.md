@@ -198,7 +198,9 @@ cursor corruption; it is not authentication or a hostile-client security
 boundary. Malformed cursors, changed membership, changed entry kinds, a replaced
 store, or different collection/query/filters require a restart without the cursor.
 Cursors from a contract without collection binding also require a restart. Edits to
-an artifact's bytes do not invalidate a filename inventory.
+an artifact's bytes do not invalidate a filename inventory. During enumeration,
+directory identity also checks mtime. Permission-only ctime changes do not
+invalidate enumeration; per-file ctime checks still detect changes during reads.
 
 `coverage` reports the inventory size, candidate count, page range `[from,next)`,
 visited count, actual bytes read, fully searched count, filter exclusions,
@@ -297,6 +299,11 @@ returns the exact id, state, new digest, and whether content changed. There is
 no edit-history store or automatic rollback copy. If lock cleanup fails after
 publication, the error states that the mutation completed and names the lock
 path; read the artifact before another attempt.
+
+Lifecycle changes and rotation honour cancellation before final publication.
+The transition rename or archive link commits the operation. After that point,
+the operation completes, including source removal after rotation, without another
+cancellation check. If a result is interrupted, read the current state before retrying.
 
 Lifecycle gates are explicit:
 

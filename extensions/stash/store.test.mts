@@ -38,6 +38,73 @@ describe("resolveStoreDir", () => {
 	});
 });
 
+describe("lifecycle cancellation publication boundary", () => {
+	for (const afterPublication of [false, true]) {
+		it(`honours transition cancellation only before publication (${afterPublication})`, async (t) => {
+			const store = join(dir, `transition-cancel-${afterPublication}`);
+			const { record, path } = await writeStash(store, { title: "Boundary", summary: "Original" });
+			const original = await readFile(path, "utf8");
+			const controller = new AbortController();
+			if (afterPublication) {
+				const realRename = fs.rename;
+				t.mock.method(fs, "rename", async (...args: Parameters<typeof fs.rename>) => {
+					await realRename(...args);
+					if (args[1] === path) controller.abort();
+				});
+			} else {
+				const realWrite = fs.writeFile;
+				t.mock.method(fs, "writeFile", async (...args: Parameters<typeof fs.writeFile>) => {
+					await realWrite(...args);
+					if (String(args[0]).endsWith(".tmp")) controller.abort();
+				});
+			}
+			syncBuiltinESMExports();
+			t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+			const result = transitionStash(store, record.id, { action: "close", outcome: "Done" }, undefined, controller.signal);
+			if (afterPublication) {
+				assert.equal((await result).meta.state, "closed");
+				assert.notEqual(await readFile(path, "utf8"), original);
+			} else {
+				await assert.rejects(result, /stash mutation cancelled/);
+				assert.equal(await readFile(path, "utf8"), original);
+			}
+			assert.equal(controller.signal.aborted, true);
+			assert.deepEqual(await readdir(store), [`${record.id}.md`]);
+		});
+
+		it(`honours rotation cancellation only before publication (${afterPublication})`, async (t) => {
+			const store = join(dir, `rotation-cancel-${afterPublication}`);
+			const { record, path } = await writeStash(store, { title: "Boundary", summary: "Original" });
+			const original = await readFile(path, "utf8");
+			const archivePath = join(store, ".trash", `${record.id}.md`);
+			const controller = new AbortController();
+			const realLink = fs.link;
+			let links = 0;
+			t.mock.method(fs, "link", async (...args: Parameters<typeof fs.link>) => {
+				await realLink(...args);
+				links++;
+				if (links === (afterPublication ? 2 : 1)) controller.abort();
+			});
+			syncBuiltinESMExports();
+			t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+			const result = rotateStash(store, record.id, controller.signal);
+			if (afterPublication) {
+				assert.equal((await result).archivePath, archivePath);
+				assert.equal(await readFile(archivePath, "utf8"), original);
+				await assert.rejects(readFile(path), { code: "ENOENT" });
+				assert.deepEqual(await readdir(store), [".trash"]);
+				assert.deepEqual(await readdir(join(store, ".trash")), [`${record.id}.md`]);
+			} else {
+				await assert.rejects(result, /stash mutation cancelled/);
+				assert.equal(await readFile(path, "utf8"), original);
+				assert.deepEqual(await readdir(store), [".trash", `${record.id}.md`]);
+				assert.deepEqual(await readdir(join(store, ".trash")), []);
+			}
+			assert.equal(links, afterPublication ? 2 : 1);
+		});
+	}
+});
+
 describe("publication identity", () => {
 	it("retains edits, lifecycle and archive location without coalescing identical operations", async () => {
 		const directory = join(dir, "publication");

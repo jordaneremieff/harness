@@ -560,7 +560,7 @@ async function pickupCommand(binding: StashBinding, call: StashDurableCommandCal
 async function pickupStash(binding: StashBinding, call: StashDurableCommandCall, id: string, note: string | undefined): Promise<string> {
 	const { conversation, context, invocationId } = call;
 	const activated = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
-		transitionStash(dir, targetId, { action: "activate" }),
+		transitionStash(dir, targetId, { action: "activate" }, undefined, context.abortSignal),
 	);
 	const agent = await conversation.agent(context);
 	const message = buildPickupMessage(activated.id, activated.content, {
@@ -587,7 +587,7 @@ async function completeCommand(binding: StashBinding, context: Context, parts: s
 
 async function closeStash(binding: StashBinding, context: Context, id: string, outcome: string): Promise<string> {
 	const transitioned = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
-		transitionStash(dir, targetId, { action: "close", outcome }),
+		transitionStash(dir, targetId, { action: "close", outcome }, undefined, context.abortSignal),
 	);
 	return `Closed stash ${transitioned.id}.\nOutcome: ${safeLine(transitioned.meta.outcome ?? outcome.trim())}${transitioned.redactions.count ? `\n${redactionNotice(transitioned.redactions)}` : ""}`;
 }
@@ -606,12 +606,12 @@ async function lifecycleCommand(
 async function changeStash(binding: StashBinding, context: Context, verb: "release" | "reopen" | "rotate", id: string): Promise<string> {
 	if (verb === "rotate") {
 		const rotated = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
-			rotateStash(dir, targetId),
+			rotateStash(dir, targetId, context.abortSignal),
 		);
 		return `Rotated stash ${rotated.id} to the stash archive.`;
 	}
 	const transitioned = await withStashTarget(binding.storeDir, id, context.abortSignal, (dir, targetId) =>
-		transitionStash(dir, targetId, { action: verb }),
+		transitionStash(dir, targetId, { action: verb }, undefined, context.abortSignal),
 	);
 	return verb === "release" ? `Released stash ${transitioned.id} back to open.` : `Reopened stash ${transitioned.id}.`;
 }
@@ -931,7 +931,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		executionMode: "sequential" as const,
 		execute: async (params, _api, context) => {
 			const transitioned = await withStashTarget(storeDir, params.id, context.abortSignal, (dir, targetId) =>
-				transitionStash(dir, targetId, { action: "close", outcome: params.outcome }),
+				transitionStash(dir, targetId, { action: "close", outcome: params.outcome }, undefined, context.abortSignal),
 			);
 			return {
 				output: [
@@ -960,7 +960,7 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		executionMode: "sequential" as const,
 		execute: async (params, _api, context) => {
 			const rotated = await withStashTarget(storeDir, params.id, context.abortSignal, (dir, targetId) =>
-				rotateStash(dir, targetId),
+				rotateStash(dir, targetId, context.abortSignal),
 			);
 			return {
 				output: [{ type: "text" as const, text: `Rotated stash ${rotated.id} to the stash archive.` }],

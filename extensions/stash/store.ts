@@ -737,9 +737,10 @@ export async function transitionStash(
 	idOrPrefix: string,
 	change: StashLifecycleChange,
 	now: Date = new Date(),
+	signal?: AbortSignal,
 ): Promise<StashTransitionResult> {
-	return withArtifactMutation(dir, idOrPrefix, undefined, async (located) => {
-		const source = await readMutationSource(located.path);
+	return withArtifactMutation(dir, idOrPrefix, signal, async (located) => {
+		const source = await readMutationSource(located.path, "mutable", signal);
 		const parsed = parseFrontmatter(source.content);
 		// The full content is read here, so the unclosed-header check runs on the
 		// whole artifact, not the bounded scan window: a header that closes beyond
@@ -766,7 +767,7 @@ export async function transitionStash(
 		}
 
 		const content = updateFrontmatter(source.content, patch);
-		await publishRevision(dir, located, source, content);
+		await publishRevision(dir, located, source, content, signal);
 		return {
 			...located,
 			content,
@@ -972,15 +973,18 @@ async function publishArchive(
 	archivePath: string,
 	temporary: string,
 	identity: FileIdentity,
+	signal?: AbortSignal,
 ): Promise<void> {
 	let staged = false;
 	let published = false;
 	try {
+		checkMutationSignal(signal);
 		await link(path, temporary);
 		staged = true;
 		const retained = await lstat(temporary);
 		if (!sameRegularFile(retained, identity))
 			throw new Error("stash target changed during rotation; retry the operation");
+		checkMutationSignal(signal);
 		try {
 			await link(temporary, archivePath);
 		} catch (error) {
@@ -1019,9 +1023,10 @@ async function readRotationSource(located: Extract<LocatedArtifact, { ok: true }
  * link pins the verified inode before exclusive archive publication; source
  * removal follows publication. Raw external writers do not honor the lock.
  */
-export async function rotateStash(dir: string, idOrPrefix: string): Promise<StashRotateResult> {
-	return withArtifactMutation(dir, idOrPrefix, undefined, async (located) => {
+export async function rotateStash(dir: string, idOrPrefix: string, signal?: AbortSignal): Promise<StashRotateResult> {
+	return withArtifactMutation(dir, idOrPrefix, signal, async (located) => {
 		const { prefix, state } = await readRotationSource(located);
+		checkMutationSignal(signal);
 		if (state === "active") {
 			throw new Error(`stash ${located.id} is active; complete it before rotation (state: active)`);
 		}
@@ -1038,7 +1043,7 @@ export async function rotateStash(dir: string, idOrPrefix: string): Promise<Stas
 		// A source-path replacement must not reserve the archive name with an
 		// unverified inode. Cleanup owns only this temporary link, never the archive.
 		const temporary = join(archiveDir, `.${located.id}.${randomUUID()}.tmp`);
-		await publishArchive(located.id, located.path, archivePath, temporary, prefix.identity);
+		await publishArchive(located.id, located.path, archivePath, temporary, prefix.identity, signal);
 		return { id: located.id, path: located.path, archivePath, state };
 	});
 }

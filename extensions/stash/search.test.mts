@@ -507,6 +507,33 @@ it("returns a complete empty observation for a missing store and rejects a file 
 	await assert.rejects(searchStashes(join(root, "a.md"), { query: "needle" }), /not a regular directory/);
 });
 
+it("accepts a permission-only directory change during enumeration", async () => {
+	await put("a", "needle");
+	const original = fs.opendir;
+	let changed = false;
+	mock.method(fs, "opendir", async (...args: Parameters<typeof fs.opendir>) => {
+		const directory = await original(...args);
+		const read = directory.read.bind(directory);
+		mock.method(directory, "read", async () => {
+			if (!changed) {
+				changed = true;
+				const before = await stat(root);
+				await chmod(root, 0o700);
+				const after = await stat(root);
+				assert.notEqual(after.ctimeMs, before.ctimeMs);
+				assert.equal(after.mtimeMs, before.mtimeMs);
+			}
+			return read();
+		});
+		return directory;
+	});
+	syncBuiltinESMExports();
+	const result = await searchStashes(root, { query: "needle" });
+	assert.equal(changed, true);
+	assert.equal(result.matches.length, 1);
+	assert.equal(result.matches[0].id, "a");
+});
+
 it("rejects a changed directory during enumeration", async () => {
 	await put("a", "needle");
 	const original = fs.opendir;
