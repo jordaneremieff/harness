@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
-import { compile } from "@earendil-works/pi-schema";
+import { compile, obj } from "@earendil-works/pi-schema";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { draftAssessment, MAX_DRAFT_CHARACTERS } from "./draft.ts";
 import test from "node:test";
@@ -261,6 +261,77 @@ test("native settings replace the factory snapshot with the host agent directory
 		await opened.harness.close(BACKGROUND_CONTEXT);
 		stopFactory();
 		collected.dispose();
+	}
+});
+
+test("usage failures retain diagnostics through model, script and direct native calls", { timeout: 30000 }, async (t) => {
+	const fixture = await makeFixture(t);
+	useFixtureEnvironment(t, fixture);
+	const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
+	t.after(() => sandbox.close());
+	const direct: Durable.NestedToolExecutionResult[] = [];
+	const probe = Durable.defineExtension({
+		name: "usage-result-probe",
+		tools: [Durable.defineTool({
+			name: "usage-probe", description: "Read the retained usage result.", parameters: obj({}, { open: false }),
+			async execute(_args, api, context) {
+				direct.push(await api.executeTool("pillars_usage", {}, context));
+				return { output: [{ type: "text", text: "Direct result retained." }] };
+			},
+		})],
+	});
+	const opened = await openContribution(fixture, { extra: [createCodemodeExtension({ sandbox, models: false }), probe] });
+	t.after(() => opened.controller.abort());
+	const call = async (name: string, args: Durable.JsonObject) => {
+		opened.faux.setResponses([
+			fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }),
+			fauxAssistantMessage("Synthetic usage checked."),
+		]);
+		const settled = await (await opened.root.submit({ type: "input", content: "Read access evidence." }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		assert.equal(settled.status, "done");
+		const message = toolResults((await opened.root.context(BACKGROUND_CONTEXT)).messages).at(-1);
+		assert.ok(message);
+		return message;
+	};
+	try {
+		assert.equal(opened.extension.tools?.find((tool) => tool.name === "pillars_usage")?.structuredOutputSchema, undefined);
+		const empty = await call("pillars_usage", {});
+		assert.equal(empty.isError, false);
+		assert.match(textOf(empty), /"kind":"page"/);
+		assert.match(textOf(empty), /"totalRows":0/);
+		assert.deepEqual(empty.details, JSON.parse(textOf(empty)));
+		const cursor = await call("pillars_usage", { cursor: "abcd" });
+		assert.equal(cursor.isError, true);
+		assert.match(textOf(cursor), /"code":"cursor_invalid"/);
+		assert.match(textOf(cursor), /fresh|Send/);
+		assert.deepEqual(cursor.details, JSON.parse(textOf(cursor)));
+		await writeFile(fixture.store, "Unreadable synthetic aggregate root.");
+		try {
+			const unreadable = await call("pillars_usage", {});
+			const diagnostic = textOf(unreadable);
+			assert.equal(unreadable.isError, true);
+			assert.match(diagnostic, /"kind":"error".*"code":"store_unreadable"/);
+			assert.deepEqual(unreadable.details, JSON.parse(diagnostic));
+			const caught = await call("codemode", { code: 'try { await tools.pillars_usage({}); throw new Error("expected rejection"); } catch (error) { if (JSON.parse(error.message).code !== "store_unreadable") throw error; text(error.message); }' });
+			assert.equal(caught.isError, false, textOf(caught));
+			assert.ok(textOf(caught).includes(diagnostic));
+			const uncaught = await call("codemode", { code: "await tools.pillars_usage({});" });
+			assert.equal(uncaught.isError, true);
+			assert.ok(textOf(uncaught).includes(diagnostic));
+			const outer = await call("usage-probe", {});
+			assert.equal(outer.isError, false);
+			assert.equal(direct.length, 1);
+			assert.equal(direct[0].isError, true);
+			assert.equal(direct[0].structuredOutput, diagnostic);
+			assert.deepEqual(direct[0].details, unreadable.details);
+			assert.equal("output" in direct[0], false);
+		} finally {
+			await rm(fixture.store, { force: true });
+		}
+		assert.deepEqual(opened.reports, []);
+	} finally {
+		await opened.harness.close(BACKGROUND_CONTEXT);
+		await opened.closeAll();
 	}
 });
 

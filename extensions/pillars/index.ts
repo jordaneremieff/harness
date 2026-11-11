@@ -251,7 +251,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		},
 		async execute(_id, args: Static<typeof PillarsUsageParameters>, signal) {
 			const result = await reader.read(args, signal);
-			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result, isError: result.kind === "error" };
 		},
 	});
 	pi.registerEntryRenderer<{ text: string }>(

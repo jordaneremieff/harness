@@ -425,6 +425,7 @@ export function pillarsDurableContribution(
 								return {
 									output: [{ type: "text", text: JSON.stringify(result) }],
 									details: asDetails(result),
+									isError: result.kind === "error",
 								};
 							},
 						}),

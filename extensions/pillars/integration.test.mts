@@ -58,6 +58,7 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			noThemes: true,
 			noContextFiles: true,
 			additionalExtensionPaths: [entry],
+			extensionFactories: [sdk.createCodemodeExtension({ models: false })],
 		});
 		await loader.reload();
 		assert.deepEqual(loader.getExtensions().errors, []);
@@ -70,7 +71,7 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			resourceLoader: loader,
 			sessionManager: sdk.SessionManager.inMemory(root),
 			settingsManager,
-			tools: ["read", "pillars", "pillars_usage"],
+			tools: ["read", "pillars", "pillars_usage", "codemode"],
 		});
 		session = result.session;
 		const activeSession = session;
@@ -93,6 +94,47 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			assert.equal(completions(prefix)?.[0].value, "read principle-example");
 		}
 		assert.equal(completions("check a hint"), null);
+		const callUsageTool = async (name: string, args: import("@earendil-works/pi-ai").ToolCall["arguments"]) => {
+			faux.setResponses([
+				ai.fauxAssistantMessage(ai.fauxToolCall(name, args)),
+				ai.fauxAssistantMessage("Synthetic usage checked."),
+			]);
+			await activeSession.prompt("Check retained access evidence.");
+			const message = activeSession.messages.findLast((item) => item.role === "toolResult");
+			assert.ok(message?.role === "toolResult");
+			return message;
+		};
+		const usageText = (message: import("@earendil-works/pi-ai").ToolResultMessage) =>
+			message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n");
+		const assertUsageOutcomes = async () => {
+			const empty = await callUsageTool("pillars_usage", {});
+			assert.equal(empty.isError, false);
+			assert.deepEqual(empty.details, JSON.parse(usageText(empty)));
+			assert.match(usageText(empty), /"kind":"page"/);
+			assert.match(usageText(empty), /"totalRows":0/);
+			const cursor = await callUsageTool("pillars_usage", { cursor: "abcd" });
+			assert.equal(cursor.isError, true);
+			assert.match(usageText(cursor), /"code":"cursor_invalid"/);
+			assert.match(usageText(cursor), /fresh|Send/);
+			assert.deepEqual(cursor.details, JSON.parse(usageText(cursor)));
+			await writeFile(join(root, "store"), "Unreadable synthetic aggregate root.");
+			try {
+				const unreadable = await callUsageTool("pillars_usage", {});
+				const diagnostic = usageText(unreadable);
+				assert.equal(unreadable.isError, true);
+				assert.match(diagnostic, /"kind":"error".*"code":"store_unreadable"/);
+				assert.deepEqual(unreadable.details, JSON.parse(diagnostic));
+				const caught = await callUsageTool("codemode", { code: 'try { await tools.pillars_usage({}); throw new Error("expected rejection"); } catch (error) { if (JSON.parse(error.message).code !== "store_unreadable") throw error; text(error.message); }' });
+				assert.equal(caught.isError, false, usageText(caught));
+				assert.ok(usageText(caught).includes(diagnostic));
+				const uncaught = await callUsageTool("codemode", { code: "await tools.pillars_usage({});" });
+				assert.equal(uncaught.isError, true);
+				assert.ok(usageText(uncaught).includes(diagnostic));
+			} finally {
+				await rm(join(root, "store"), { force: true });
+			}
+		};
+		await assertUsageOutcomes();
 		faux.setResponses([
 			(context) => {
 				assert.ok(ai.getCurrentTools(context.messages).some((tool) => tool.name === "pillars"));
@@ -107,7 +149,7 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			ai.fauxAssistantMessage("Synthetic run finished."),
 		]);
 		await session.prompt("Consult the synthetic principle and its governance.");
-		const messages = session.messages.filter((message) => message.role === "toolResult");
+		const messages = session.messages.filter((message) => message.role === "toolResult" && ["source-call", "read-call"].includes(message.toolCallId));
 		assert.equal(messages.length, 2);
 		const sourceText = messages[0].content.find((block) => block.type === "text");
 		assert.ok(sourceText && sourceText.type === "text");

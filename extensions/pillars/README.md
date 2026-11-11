@@ -321,6 +321,15 @@ exact row is absent. Overflow never proves zero activity for a concrete identity
 /pillars export "/absolute/local/file.json" --days 7
 ```
 
+`pillars_usage` marks every `kind:"error"` response as a tool error in ordinary
+and native sessions. The JSON diagnostic and details remain unchanged.
+Successful pages, including empty pages, are not errors. The tool has no declared
+structured output schema: ordinary and native Codemode scripts receive text on
+success and reject with the JSON error text on failure. Catch that failure when
+recovery is part of the script. Direct native `api.executeTool` returns an error
+result instead; inspect its `isError` and `structuredOutput` fields. A cursor
+error requests a fresh read; it does not authorise storage deletion or reset.
+
 Each operator command displays one bounded page. `/pillars next` continues the
 same frozen capture without another scan. Commands and the tool share one
 capture; a fresh request or export replaces it. Pages contain at most 24 rows
