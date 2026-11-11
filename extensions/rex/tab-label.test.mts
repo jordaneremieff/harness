@@ -743,6 +743,25 @@ for (const [name, change] of attachmentChanges) {
 	});
 }
 
+test("a server selector change during the exact claim read never retargets the setter", async (t) => {
+	const f = await fixture(t);
+	const entered = deferred();
+	const release = deferred();
+	t.after(release.resolve);
+	const pause = pauseNextRecordRead(entered.resolve, release.promise);
+	t.after(pause.restore);
+	pause.armed = true;
+	f.projector.start(f.ctx);
+	await entered.promise;
+	f.env.REX_SERVER = "unix:///replacement";
+	release.resolve();
+	await f.projector.idle();
+	assert.deepEqual(f.transport.writes, []);
+	assert.equal(f.transport.calls.some((call) => call.args.includes("unix:///replacement")), false);
+	assert.deepEqual(await recordFiles(f.agentDir), []);
+	assert.deepEqual(f.notices, []);
+});
+
 test("a superseded claim prevents dispatch and remains intact", async (t) => {
 	const f = await fixture(t);
 	const directory = join(f.agentDir, "rex", "tab-labels");

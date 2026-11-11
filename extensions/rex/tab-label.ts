@@ -316,15 +316,16 @@ class Projector implements TabLabelProjector {
 	}
 
 	private async writeLabel(run: Run, key: ResourceKey, claim: Claim, desired: string): Promise<void> {
+		const server = this.env.REX_SERVER;
 		let eligible: boolean;
 		try {
-			eligible = await this.dispatchEligible(run, key, claim, desired);
+			eligible = await this.dispatchEligible(run, key, claim, desired, server);
 		} catch (error) {
 			await this.withdrawClaim(key, claim.attempt, run.ctx);
 			if (this.current(run)) throw error;
 			return;
 		}
-		if (!eligible || !this.desiredIsCurrent(run, key, desired)) {
+		if (!eligible || !this.desiredIsCurrent(run, key, desired, server)) {
 			await this.withdrawClaim(key, claim.attempt, run.ctx);
 			return;
 		}
@@ -345,13 +346,13 @@ class Projector implements TabLabelProjector {
 		await this.confirmLabel(run, key, claim.attempt, desired);
 	}
 
-	private desiredIsCurrent(run: Run, key: ResourceKey, desired: string): boolean {
-		return this.current(run) && this.env.REX_SESSION === key.sessionId &&
+	private desiredIsCurrent(run: Run, key: ResourceKey, desired: string, server: string | undefined): boolean {
+		return this.current(run) && this.env.REX_SERVER === server && this.env.REX_SESSION === key.sessionId &&
 			this.env.REX_BLOCK === key.blockId && this.label(this.ctx ?? run.ctx) === desired;
 	}
 
-	private async dispatchEligible(run: Run, key: ResourceKey, claim: Claim, desired: string): Promise<boolean> {
-		const currentName = () => this.desiredIsCurrent(run, key, desired);
+	private async dispatchEligible(run: Run, key: ResourceKey, claim: Claim, desired: string, server: string | undefined): Promise<boolean> {
+		const currentName = () => this.desiredIsCurrent(run, key, desired, server);
 		if (!currentName()) return false;
 		const identity = await this.serverIdentity(run);
 		if (!currentName() || identity.hostId !== key.hostId || identity.instanceId !== key.instanceId) return false;
