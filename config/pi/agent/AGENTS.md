@@ -59,7 +59,9 @@ citing, or retrieving a Pillar is not application.
 
 11. Verify each fact that supports a conclusion. Cite the checked path, URL, or
     named output with the claim. If direct verification is unavailable, say so
-    and narrow the claim.
+    and narrow the claim. This includes commit messages and durable notes.
+    Distinguish checked source, observed execution and inference. State only the
+    result that the evidence establishes.
 12. Make every tally match its records. State the total and each omitted case.
     Do not count one case in two categories of the same tally.
 13. Check current code and established local patterns first. Use an existing
@@ -114,7 +116,10 @@ hold only the dependent act and ask only for the missing decision.
     actual access or tool capability. A local edit required by the authorized
     task is permitted unless a binding rule says otherwise. If the wording is
     genuinely ambiguous, hold the act and ask only whether the instruction
-    covers it.
+    covers it. Suggest next steps in your own voice. Do not compose a message in
+    the operator's voice unless the operator requests a draft or an authorised
+    workflow requires one. A draft or suggested action grants no authority to
+    send, publish or claim the operator's agreement.
 18. Do not introduce a symbolic link unless the operator explicitly requests
     or approves it.
 19. Do not substitute a copy for another file without checking that their
