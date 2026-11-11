@@ -8,7 +8,7 @@
 import { stripVTControlCharacters } from "node:util";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
 import { awaitFactLines, AwaitFactSchema } from "./await-facts.ts";
-import { ProviderBlockFactSchema, providerBlockText } from "./provider-block-facts.ts";
+import { ProviderBlockFactSchema, providerBlockSummary, providerBlockText } from "./provider-block-facts.ts";
 import { matchesSchema } from "./schema-check.ts";
 import type { AgentToolResult, MessageRenderer, Theme, ToolRenderResultOptions } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme, type KeybindingHints } from "@earendil-works/pi-coding-agent";
@@ -586,13 +586,13 @@ export function renderInspectCall(value: unknown, theme: Theme, context: AgentCa
 
 // --- Result cards ----------------------------------------------------------------
 
-function outcomeCard(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext, labels: { error: string; partial: string }, summarize: (details: Record<string, unknown>, theme: Theme, context: AgentCardContext) => string[] | undefined): Component {
+function outcomeCard(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext, labels: { error: string; partial: string }, summarize: (details: Record<string, unknown>, theme: Theme, context: AgentCardContext) => string[] | undefined, expandedLines: readonly string[] = []): Component {
 	const details = resultDetails(result);
 	const output = resultText(result);
 	const lines: string[] = [];
 	if (context.isError === true) lines.push(theme.fg("error", labels.error));
 	else if (options.isPartial) lines.push(theme.fg("muted", labels.partial));
-	if (options.expanded) lines.push(theme.fg("toolOutput", boundedSource(output)));
+	if (options.expanded) lines.push(...expandedLines, theme.fg("toolOutput", boundedSource(output)));
 	else {
 		const summary = summarize(details, theme, context);
 		if (summary) lines.push(...summary);
@@ -782,8 +782,10 @@ function newestTextLabel(working: boolean, role: string | undefined): string {
 	return working ? "Working on the task" : "Latest message";
 }
 
-function providerBlockLines(block: unknown, theme: Theme): string[] {
-	return matchesSchema(ProviderBlockFactSchema, block) ? [theme.fg("warning", displayText(providerBlockText(block)))] : [muted(theme, "Provider block unavailable: invalid native fact")];
+function providerBlockLines(block: unknown, theme: Theme, compact = false): string[] {
+	if (!matchesSchema(ProviderBlockFactSchema, block)) return [muted(theme, "Provider block unavailable: invalid native fact")];
+	const lines = compact ? providerBlockSummary(block) : [providerBlockText(block)];
+	return lines.map(line => theme.fg("warning", displayText(line)));
 }
 function activityLines(status: Record<string, unknown>, readOnly: boolean, theme: Theme): string[] {
 	if (status.providerBlock !== undefined) return providerBlockLines(status.providerBlock, theme);
@@ -1072,6 +1074,7 @@ function inspectResultSummary(details: Record<string, unknown>, theme: Theme, co
 	const headline = `saved result${status ? ` · ${displayPreview(status, 40)}` : ""}${operation ? ` · operation ${displayIdentity(operation)}` : submission !== undefined ? ` · submission ${submission}` : ""}`;
 	const lines = [theme.fg("toolOutput", headline)];
 	lines.push(muted(theme, `${hasAnswer ? "assistant answer retained" : "no assistant answer"}${reason ? ` · ${displayPreview(reason, 160)}` : ""}`));
+	if (details.providerBlock !== undefined) lines.push(...providerBlockLines(details.providerBlock, theme, true));
 	return lines;
 }
 
@@ -1114,7 +1117,10 @@ function inspectHistorySummary(details: Record<string, unknown>, view: string, t
 }
 
 export function renderInspectResult(result: AgentToolResult<unknown>, options: ToolRenderResultOptions, theme: Theme, context: AgentCardContext): Component {
-	return outcomeCard(result, options, theme, context, { error: "Inspect error", partial: "Inspection pending" }, inspectSummary);
+	const details = resultDetails(result);
+	const recovery = options.expanded && details.view === "result" && details.providerBlock !== undefined
+		? providerBlockLines(details.providerBlock, theme) : [];
+	return outcomeCard(result, options, theme, context, { error: "Inspect error", partial: "Inspection pending" }, inspectSummary, recovery);
 }
 
 /** A thread's known title, or its exact identity when the view has not read that thread. */

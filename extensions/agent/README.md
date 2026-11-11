@@ -1704,6 +1704,14 @@ context-compaction attempt. Native submissions settle as `unanswered` with
 `model_error`, not as successful answers. Existing result delivery carries the
 blocked cause; no second terminal result replaces the original reference.
 
+Owner notices and expanded status and saved-result cards show the original
+receive time in ISO UTC, or state that the time is unavailable. They distinguish
+a provider call from a refusal that reused a retained block and keep the evidence's
+redaction and truncation markers. Collapsed saved-result cards summarise the
+refusal's source, receive time and recovery action. Expanded saved-result cards
+put the full readable facts before the bounded source text; the inspection's
+JSON text and structured result remain unchanged.
+
 An active provider block survives host reopen. Further requests in that
 conversation return an explicit host error without a provider call. Native
 queue recovery retains each input and its own terminal outcome; it does not
@@ -1713,8 +1721,13 @@ with its evidence and recovery instructions.
 Explicit, validated model configuration clears the matching block. Naming or
 reasoning-level changes do not clear it, and failed model selection leaves it
 intact. Explicit configuration of the same model permits a deliberate retry
-after capacity returns. A subsequent send creates a new result reference; the
-original failed request remains inspectable with its original identity.
+after capacity returns. Recovery text names the retained original result's target
+and shows `agent_configure({sessionId:<target>,model:<explicit provider/model>})`,
+followed by a new `agent_send` follow-up after successful configuration. It selects
+no model and grants no authority. If the original target is unavailable, the text
+states that limit instead of constructing a target. A subsequent send creates a
+new result reference; the original failed request remains inspectable with its
+original identity.
 
 Unknown provider-limit wording does not depend on the exhaustion classifier.
 For each observed native generation retry burst, the host retains attempt evidence

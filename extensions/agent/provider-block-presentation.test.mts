@@ -18,7 +18,7 @@ import { eventLog } from "./host-fixture.mts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
 import { safeProviderError } from "./primary-observation.ts";
-import { renderAgentResult } from "./tool-cards.ts";
+import { renderAgentResult, renderInspectResult } from "./tool-cards.ts";
 
 const timestamp = Date.parse("2026-10-11T01:02:03.000Z");
 const target = "fixture-storage:2";
@@ -102,8 +102,59 @@ it("renders readable retained recovery facts in status output", () => {
 	}
 });
 
+it("keeps saved-result recovery facts visible without changing inspection JSON", () => {
+	initTheme("dark", false);
+	const theme = { fg: (_colour: string, value: string) => value, bg: (_colour: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
+	for (const source of ["provider", "host-block"] as const) for (const expanded of [false, true]) {
+		const block = fact({ source, errorRedacted: true, errorTruncated: true });
+		const details = { view: "result", sessionId: target, conversationId: 2, submissionId: 7, status: "unanswered", reason: "model_error", providerBlock: block };
+		const result = { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
+		const before = structuredClone(result);
+		const rendered = renderInspectResult(result, { expanded, isPartial: false }, theme, { keyText, args: { view: "result", submissionId: 7 }, expanded, argsComplete: true, isError: false });
+		const text = rendered.render(expanded ? 1600 : 100).map(line => stripVTControlCharacters(line)).join("\n");
+		assert.ok(text.includes("Received at: 2026-10-11T01:02:03.000Z."));
+		assert.ok(text.includes("agent_configure"));
+		assert.ok(text.includes("agent_send"));
+		if (expanded) {
+			assert.ok(text.includes(providerBlockText(block)));
+			assert.ok(text.indexOf(providerBlockText(block)) < text.indexOf('{"view":'));
+			assert.ok(text.includes("[credential redacted] [truncated]"));
+		} else {
+			assert.ok(text.includes(source === "provider" ? "Provider call refused." : "Retained host refusal."));
+			assert.ok(text.includes("Recovery: explicit model"));
+		}
+		assert.deepEqual(result, before);
+	}
+});
+
+it("shows unavailable receive time and recovery target in both saved-result card views", () => {
+	initTheme("dark", false);
+	const theme = { fg: (_colour: string, value: string) => value, bg: (_colour: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
+	const block = fact({ timestamp: Number.MAX_SAFE_INTEGER, originalResults: [] });
+	const details = { view: "result", status: "unanswered", providerBlock: block };
+	for (const expanded of [false, true]) {
+		const rendered = renderInspectResult({ content: [{ type: "text", text: JSON.stringify(details) }], details }, { expanded, isPartial: false }, theme, { keyText, args: {}, expanded, argsComplete: true, isError: false });
+		const text = rendered.render(expanded ? 1600 : 100).map(line => stripVTControlCharacters(line)).join("\n");
+		assert.ok(text.includes("Receive time unavailable."));
+		assert.ok(text.includes("Recovery target unavailable"));
+		assert.doesNotMatch(text, /agent_configure/u);
+	}
+});
+
+it("does not construct recovery facts from an invalid saved-result provider block", () => {
+	initTheme("dark", false);
+	const theme = { fg: (_colour: string, value: string) => value, bg: (_colour: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
+	const details = { view: "result", status: "unanswered", providerBlock: fact({ timestamp: -1 }) };
+	for (const expanded of [false, true]) {
+		const rendered = renderInspectResult({ content: [{ type: "text", text: JSON.stringify(details) }], details }, { expanded, isPartial: false }, theme, { keyText, args: {}, expanded, argsComplete: true, isError: false });
+		const text = rendered.render(1600).map(line => stripVTControlCharacters(line)).join("\n");
+		assert.ok(text.includes("Provider block unavailable: invalid native fact"));
+		assert.doesNotMatch(text, /agent_configure/u);
+	}
+});
+
 for (const receiveTime of [timestamp, 8_640_000_000_000_001, Number.MAX_SAFE_INTEGER]) it(`delivers separate recovery facts with ${receiveTime > 8_640_000_000_000_000 ? "unavailable" : "UTC"} receive time ${receiveTime} while terminal errors stay classification-safe`, async (t) => {
-	const root = await mkdtemp(join(tmpdir(), "provider-block-presentation-"));
+	const root = await mkdtemp(join(tmpdir(), "pb-"));
 	const models = await scriptedRuntime([]);
 	let calls = 0;
 	models.streamSimple = () => {
@@ -114,12 +165,16 @@ for (const receiveTime of [timestamp, 8_640_000_000_000_001, Number.MAX_SAFE_INT
 	};
 	const storagePath = join(root, "storage.sqlite"); const storageId = randomUUID(); const owner = randomUUID(); const sessionsRoot = join(root, "sessions");
 	const metadata = parseHostMetadata({ storageId, storagePath, cwd: root, agentDir: join(root, "agent"), packageDir: root, model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off" });
+	const primaryDirectory = join(sessionsRoot, ".primaries");
+	assert.ok(Buffer.byteLength(join(primaryDirectory, `${owner}.sock`)) <= 100, "fixture primary socket must remain in its private root");
 	const host = await DurableHost.open({ ...hostOptions(storagePath, models, fixtureRegistry()), storageId, cwd: root, now: () => receiveTime, settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
 	let channel: Awaited<ReturnType<typeof createPrimaryChannel>> | undefined;
 	let delivery: ReturnType<typeof startDurableDelivery> | undefined;
 	t.after(async () => { await delivery?.close(); await channel?.close(); await host.close(); await rm(root, { recursive: true, force: true }); });
 	const received = eventLog<PrimaryDelivery>();
 	channel = await createPrimaryChannel({ id: owner, cwd: root, sessionsRoot, deliver: (message) => { received.push(message); }, promptTrust: async () => undefined });
+	assert.ok(channel.socketPath.startsWith(`${primaryDirectory}/`));
+	t.diagnostic(`Private primary socket: ${channel.socketPath}; storage: ${storagePath}`);
 	delivery = startDurableDelivery({ host, metadata, catalog: new AgentCatalog(root), sessionsRoot, signal: new AbortController().signal });
 	const first = await host.submit({ message: "original task", requestId: "first-blocked", ownerId: owner, origin: "model" });
 	const original = await host.wait(first.submissionId);

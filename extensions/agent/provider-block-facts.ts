@@ -14,10 +14,22 @@ export const ProviderBlockFactSchema = obj({
 });
 export type ProviderBlockFact = Static<typeof ProviderBlockFactSchema>;
 
+function receivedText(block: ProviderBlockFact): string {
+	const date = new Date(block.timestamp);
+	return Number.isFinite(date.getTime()) ? `Received at: ${date.toISOString()}.` : "Receive time unavailable.";
+}
+
+export function providerBlockSummary(block: ProviderBlockFact): string[] {
+	return [
+		`${block.source === "provider" ? "Provider call refused." : "Retained host refusal."} ${receivedText(block)}`,
+		block.originalResults[0] === undefined ? "Recovery target unavailable: no retained original result identity."
+			: "Recovery: explicit model with agent_configure, then a new agent_send.",
+	];
+}
+
 export function providerBlockText(block: ProviderBlockFact): string {
 	const target = block.originalResults[0]?.sessionId;
-	const date = new Date(block.timestamp);
-	const received = Number.isFinite(date.getTime()) ? `Received at: ${date.toISOString()}.` : "Receive time unavailable.";
+	const received = receivedText(block);
 	const dispatch = block.source === "provider" ? "This call reached the provider." : "This call did not reach the provider; the host reused a retained block.";
 	const recovery = target === undefined ? "Recovery target unavailable: no retained original result identity." : `Target: ${target}. Choose an explicit provider/model under your existing authority, then call agent_configure({sessionId:${JSON.stringify(target)},model:<explicit provider/model>}). After successful configuration, send a new agent_send follow-up.`;
 	return `${PROVIDER_BLOCK_ERROR} ${dispatch} ${received} Provider evidence: ${block.error}${block.errorRedacted ? " [credential redacted]" : ""}${block.errorTruncated ? " [truncated]" : ""} A provider time without a stated zone has an unspecified zone. Block ${block.blockId}. ${recovery} Replaying the original request keeps its original settled result.`;
