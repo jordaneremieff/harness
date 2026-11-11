@@ -1,4 +1,4 @@
-import { str, num, int, bool, nul, lit, union, arr, opt, obj, nullable, map, type Static, type StaticObject, type Properties, type Schema } from "@earendil-works/pi-schema";
+import { str, num, int, bool, nul, lit, union, arr, opt, obj, nullable, map, unknown, type Static, type StaticObject, type Properties, type Schema } from "@earendil-works/pi-schema";
 /**
  * Exact JSON schemas for the native Durable observation surface.
  *
@@ -8,12 +8,12 @@ import { str, num, int, bool, nul, lit, union, arr, opt, obj, nullable, map, typ
  * `structuredOutputSchema`/`structuredOutput` contracts. Neither path maps native
  * observations through an ordinary-session shape.
  *
- * Every object schema closes its properties. Optional properties are absent in
+ * Fixed-shape objects close their properties. Optional properties are absent in
  * the JSON round trip, never present with an undefined value. Open-ended
  * identifier strings (`provider`, `api`, `kind`) are strings because providers
- * and task authors choose them; arbitrary JSON payloads use the recursive
- * `JsonValueSchema`, which validates JSON exactly rather than accepting
- * anything.
+ * and task authors choose them. Response JSON payloads use the recursive
+ * `JsonValueSchema`. Tool cursor parameters use an open object declaration;
+ * execution validates storage-page inputs separately.
  */
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { ToolExecutionResult } from "@earendil-works/pi-durable";
@@ -53,9 +53,9 @@ export const StorageStatusPageInputSchema = obj({ view: lit("storage-page"), sto
 /** Object-root parameters survive provider conversion; execution validates selector combinations. */
 export const StatusToolInputSchema = obj({
 	sessionId: opt(str({ minLength: 1, description: "Default: the calling conversation; omit for the storage overview." })),
-	view: opt(union([lit("fleet"), lit("storage-page")])),
+	view: opt(union([lit("fleet"), lit("storage-page")], { description: "Read sampled machine-local model evidence with fleet, without a sessionId. Optional exact model/provider filters select published evidence, not provider health. Use storage-page for one exact storageId." })),
 	...FleetSelectionProperties,
-	storageId: opt(storageStatusId), cursor: opt(cursorSchema), limit: opt(storageStatusLimit),
+	storageId: opt(storageStatusId), cursor: opt(map(unknown(), { description: "Opaque backend cursor. Pass the returned cursor object unchanged." })), limit: opt(storageStatusLimit),
 });
 export const StorageStatusCoverageSchema = obj({
 	complete: boolean, returned: count, scanned: count,

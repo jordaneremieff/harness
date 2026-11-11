@@ -18,6 +18,7 @@ import { fixtureRuntime, fixtureRegistry, hostOptions } from "./durable-host-fix
 import { createAgentContribution } from "./durable-agents.ts";
 import { runHost, type HostProcess } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
+import { hostPaths } from "./host-protocol.ts";
 import { StatusToolOutputSchema, StorageStatusCoverageSchema, StorageStatusPageInputSchema, structuredObservation } from "./observation-schema.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { storageStatusCoverage, storageStatusPageInput, validateStatusSelectors, type StorageStatusPageInput } from "./storage-status.ts";
@@ -72,6 +73,8 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 		rmSync(root, { recursive: true, force: true });
 	});
 	const record = manager.catalog.create({ cwd: root, agentDir: root, packageDir: root, model: { provider: "fixture", modelId: "fixture" }, thinkingLevel: "off" });
+	const metadata = hostMetadata(record, root);
+	t.diagnostic(`Native status socket: ${hostPaths(metadata).socket}`);
 	nativeOwner = await runHost(async () => {
 		const opened = await DurableHost.open({ ...hostOptions(record.storagePath, await fixtureRuntime("answer"), fixtureRegistry(), root), storageId: record.storageId });
 		source = opened;
@@ -81,7 +84,7 @@ for (const route of ["connected", "cold"] as const) it(`ordinary and native stat
 			const result = await opened.request(method, params as Parameters<DurableHost["request"]>[1], signal ?? context);
 			return method === "status" ? { ...(result as Record<string, unknown>), inventory: { contributions: [], ordinaryOnly: [] }, pid: process.pid, storageId: record.storageId } : result;
 		}, close: () => opened.close(), isIdle: () => false };
-	}, { metadata: hostMetadata(record, root), idleMs: 0, announceReady: () => {} });
+	}, { metadata, idleMs: 0, announceReady: () => {} });
 	if (route === "cold") await nativeOwner.close();
 
 	const ordinaryTools = new Map<string, ToolDefinition>();
@@ -187,4 +190,12 @@ async function assertProviderStatusParameters(parameters: object): Promise<void>
 	const schema = payload.tools[0].input_schema;
 	assert.equal(schema.type, "object");
 	assert.deepEqual(Object.keys(schema.properties).sort(), ["cursor", "limit", "model", "provider", "sessionId", "storageId", "view"]);
+	const { description: cursorDescription, ...cursor } = schema.properties.cursor as Record<string, unknown>;
+	assert.deepEqual(cursor, { type: "object", additionalProperties: {} });
+	assert.equal(typeof cursorDescription, "string");
+	const view = schema.properties.view as Record<string, unknown>;
+	assert.ok(typeof view.description === "string");
+	assert.match(view.description, /sampled machine-local model evidence/u);
+	assert.match(view.description, /not provider health/u);
+	assert.match(view.description, /storage-page/u);
 }
