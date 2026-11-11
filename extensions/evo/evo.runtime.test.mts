@@ -19,6 +19,7 @@ import {
 	SettingsManager,
 	VERSION,
 } from "@earendil-works/pi-coding-agent";
+import { SESSION_NAME_CODE_POINTS, SESSION_NAME_WORDS } from "../../session-name/index.ts";
 import type { ProvisionalName } from "../../session-name/lifecycle.ts";
 import { MAX_DIRECTION_CODE_POINTS } from "./command.ts";
 import registerEvo from "./index.ts";
@@ -430,6 +431,42 @@ test("a direction names an unnamed session in every mode except rpc", { timeout:
 		} finally {
 			await runtime.close();
 		}
+	}
+});
+
+test("long directions retain their user entry and bounded automatic name", { timeout: 30000 }, async () => {
+	for (const length of [36_000, MAX_DIRECTION_CODE_POINTS]) {
+		const names: ProvisionalName[] = [];
+		const runtime = await ordinarySession("tui", (pi) => {
+			pi.events.on("session-name:provisional", (value) => { names.push(value as ProvisionalName); });
+		});
+		try {
+			const prefix = "Improve long directions.\n";
+			const direction = prefix + "<".repeat(length - prefix.length);
+			await settleCommand(runtime, `/evo ${direction}`);
+			assert.equal(runtime.requests.length, 1);
+			const request = runtime.requests[0];
+			assert.ok(request);
+			const [kickoff] = userTexts(request);
+			assert.ok(kickoff);
+			const encoded = kickoff.match(/<evo-direction-json>\n([^\n]+)\n<\/evo-direction-json>/u)?.[1];
+			assert.ok(encoded);
+			assert.equal(JSON.parse(encoded), direction);
+			const delivered = request.messages.find((message) => message.role === "user");
+			assert.ok(delivered);
+			const stored = runtime.session.sessionManager.getEntries().find(
+				(entry) => entry.type === "message" && entry.message.role === "user",
+			);
+			assert.ok(stored?.type === "message" && stored.message.role === "user");
+			assert.deepEqual(stored.message.content, delivered.content);
+			const name = runtime.session.sessionName;
+			assert.equal(name, "Improve long directions");
+			assert.ok(Array.from(name).length <= SESSION_NAME_CODE_POINTS);
+			assert.ok(name.split(/\s+/u).length <= SESSION_NAME_WORDS);
+			assert.equal(names.length, 1);
+			assert.equal(names[0]?.text, direction.slice(0, 4096));
+			assert.deepEqual(runtime.errors, []);
+		} finally { await runtime.close(); }
 	}
 });
 

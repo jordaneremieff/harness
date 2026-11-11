@@ -2,8 +2,8 @@
 
 import { Buffer } from "node:buffer";
 
-export const MAX_DIRECTION_CODE_POINTS = 20_000;
-export const MAX_RAW_DIRECTION_BYTES = 80_000;
+export const MAX_DIRECTION_CODE_POINTS = 64_000;
+export const MAX_RAW_DIRECTION_BYTES = MAX_DIRECTION_CODE_POINTS * 4;
 
 const ANSI = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\x1b\r\n\u0085\u2028\u2029]*(?:\u0007|\x1b\\))/g;
 const LINE_SEPARATOR = /\r\n?|[\u0085\u2028\u2029]/g;
@@ -18,7 +18,7 @@ export function parseEvoInvocation(raw: string): EvoInvocation {
 	if (Buffer.byteLength(raw, "utf8") > MAX_RAW_DIRECTION_BYTES) {
 		return {
 			ok: false,
-			error: `The raw evo direction must be ${MAX_RAW_DIRECTION_BYTES} bytes or fewer.`,
+			error: `The raw evo direction must be ${MAX_RAW_DIRECTION_BYTES} UTF-8 bytes or fewer. Shorten it or send the direction as a plain message.`,
 		};
 	}
 	const direction = raw
@@ -32,7 +32,7 @@ export function parseEvoInvocation(raw: string): EvoInvocation {
 	if (Array.from(direction).length > MAX_DIRECTION_CODE_POINTS) {
 		return {
 			ok: false,
-			error: `The evo direction must be ${MAX_DIRECTION_CODE_POINTS} Unicode code points or fewer.`,
+			error: `The evo direction must be ${MAX_DIRECTION_CODE_POINTS} Unicode code points or fewer. Shorten it or send the direction as a plain message.`,
 		};
 	}
 	return { ok: true, direction };

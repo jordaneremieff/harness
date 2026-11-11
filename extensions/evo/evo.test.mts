@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
@@ -281,15 +282,20 @@ test("visible directions are bounded by Unicode code points", () => {
 	const result = parseEvoInvocation(`${accepted}x`);
 	assert.equal(result.ok, false);
 	if (!result.ok)
-		assert.equal(result.error, `The evo direction must be ${MAX_DIRECTION_CODE_POINTS} Unicode code points or fewer.`);
+		assert.equal(result.error, `The evo direction must be ${MAX_DIRECTION_CODE_POINTS} Unicode code points or fewer. Shorten it or send the direction as a plain message.`);
 });
 
 test("raw input is bounded before hidden formatting is removed", () => {
+	const hiddenBytes = MAX_RAW_DIRECTION_BYTES - 1;
+	const accepted = `x${"\u200b".repeat(Math.floor(hiddenBytes / 3))}${" ".repeat(hiddenBytes % 3)}`;
+	assert.equal(Buffer.byteLength(accepted, "utf8"), MAX_RAW_DIRECTION_BYTES);
+	assert.deepEqual(parseEvoInvocation(accepted), { ok: true, direction: "x" });
+	assert.equal(parseEvoInvocation(`${accepted}x`).ok, false);
 	const hidden = "\u200b".repeat(Math.floor(MAX_RAW_DIRECTION_BYTES / 3) + 1);
 	const result = parseEvoInvocation(hidden);
 	assert.equal(result.ok, false);
 	if (!result.ok)
-		assert.equal(result.error, `The raw evo direction must be ${MAX_RAW_DIRECTION_BYTES} bytes or fewer.`);
+		assert.equal(result.error, `The raw evo direction must be ${MAX_RAW_DIRECTION_BYTES} UTF-8 bytes or fewer. Shorten it or send the direction as a plain message.`);
 });
 
 for (const direction of [undefined, "Improve ordinary document tasks; do not publish."]) {
