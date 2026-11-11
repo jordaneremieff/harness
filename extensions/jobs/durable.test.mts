@@ -119,7 +119,7 @@ async function openHarness(storage: Durable.Storage, script: Script, options: { 
 		for (const dispose of closers) await dispose();
 		assert.deepEqual(reports, [], "the harness reported no task or extension errors");
 	};
-	return { harness, faux, close, reports };
+	return { harness, faux, close, reports, registry };
 }
 
 async function say(conversation: Durable.Conversation, text: string) {
@@ -328,6 +328,9 @@ test("retained task pages survive SQLite reopen while process-local logs remain 
 	} finally { await first.close(); }
 	const second = await openHarness(await openNodeSqliteStorage(storagePath), script, { responses: 32 });
 	try {
+		const parameters = second.registry.snapshot().tools().find(({ tool }) => tool.name === "jobs")?.tool.parameters;
+		assert.match(JSON.stringify(parameters), /List only: reuse the exact nextTaskCursor from the previous list result/);
+		assert.match(JSON.stringify(parameters), /Separate from the logs byte cursor/);
 		const conversation = await second.harness.conversation(conversationId, context); assert.ok(conversation);
 		const manage = async () => { await say(conversation, "MANAGE"); const result = (await toolResults(conversation)).filter((item) => item.name === "jobs").at(-1); assert.ok(result); return result; };
 		const page = JSON.parse((await manage()).text) as { jobs: Array<{ id: string; status: string }>; nextTaskCursor?: Durable.Cursor };

@@ -6,8 +6,10 @@ The declaration is a package contract, not permission to act.
 
 ## Synchronous declaration
 
-The consumer emits `harness:continuity-tools` on the factory's `pi.events` bus at
-each decision or stop evaluation. A producer answers synchronously:
+Stash emits `harness:continuity-tools` on the factory's `pi.events` bus. The
+ordinary consumer emits for tool calls in the decision or stop band. The native
+consumer emits at every enabled `beforeTool` evaluation. Both consumers also emit
+when the capacity command reports gate status. A producer answers synchronously:
 
 ```ts
 interface ContinuityToolsRequest {

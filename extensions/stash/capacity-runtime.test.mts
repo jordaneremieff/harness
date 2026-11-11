@@ -15,6 +15,7 @@ import {
 import {
 	type AgentSession,
 	createAgentSession,
+	createCodemodeExtension,
 	DefaultResourceLoader,
 	type ExtensionFactory,
 	ModelRuntime,
@@ -28,7 +29,7 @@ import { listStashes } from "./store.ts";
 
 const config = { enabled: true, checkpointPercent: 60, decisionPercent: 70, stopPercent: 95 };
 
-async function runtime(t: TestContext, options: { stash?: boolean; abortAtBoundary?: boolean; gate?: boolean } = {}) {
+async function runtime(t: TestContext, options: { stash?: boolean; abortAtBoundary?: boolean; gate?: boolean; codemode?: boolean } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "stash-capacity-runtime-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const savedContext = ["PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]] as const);
@@ -97,9 +98,13 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 				void Promise.resolve().then(() => request.declare({ name: "fake_late", act: "compaction" }));
 			});
 			pi.on("tool_call", (event) => event.toolName === "other_blocked" ? { block: true, reason: "Another extension refused this call." } : undefined);
-			for (const name of ["fixture_read", "fake_compact", "fake_resolve", "fake_late", "other_blocked"]) pi.registerTool({
+			for (const name of ["fixture_read", "fake_compact", "fake_resolve", "fake_late", "other_blocked", "fixture_enable_gate"]) pi.registerTool({
 				name, label: name, description: "Synthetic gate fixture", parameters: obj({ mode: opt(str()) }),
-				execute: async () => { executed.push(name); return { content: [{ type: "text", text: "done" }], details: {} }; },
+				execute: async () => {
+					executed.push(name);
+					if (name === "fixture_enable_gate") process.env.PI_STASH_CAPACITY = "1";
+					return { content: [{ type: "text", text: "done" }], details: {} };
+				},
 			});
 		}
 		if (options.stash || options.gate) registerStash(pi);
@@ -123,7 +128,7 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 		noThemes: true,
 		noContextFiles: true,
 		systemPrompt: "Synthetic capacity test.",
-		extensionFactories: [fixture],
+		extensionFactories: [fixture, ...(options.codemode ? [createCodemodeExtension({ models: false })] : [])],
 	});
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
@@ -136,7 +141,7 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 		settingsManager,
 		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(root),
-		tools: options.gate ? ["stash_write", "stash_read", "fixture_read", "fake_compact", "fake_resolve", "fake_late", "other_blocked"] : options.stash ? ["stash_write"] : [],
+		tools: options.gate ? ["stash_write", "stash_read", "stash_edit", "stash_complete", "stash_rotate", "fixture_read", "fake_compact", "fake_resolve", "fake_late", "other_blocked", "fixture_enable_gate", ...(options.codemode ? ["codemode"] : [])] : options.stash ? ["stash_write"] : [],
 	}));
 	t.after(() => session.dispose());
 	await session.bindExtensions({
@@ -202,6 +207,37 @@ test("the stop gate preserves accepted continuity forms and refuses late declara
 	}
 	const saved = host.session.messages.find((item) => item.role === "toolResult" && item.toolCallId === "saved");
 	assert.ok(saved?.role === "toolResult" && !saved.isError);
+});
+
+for (const name of ["stash_edit", "stash_complete", "stash_rotate"] as const) {
+	test(`ordinary stop refuses ${name} before its store operation`, { timeout: 20000 }, async (t) => {
+		const host = await runtime(t, { gate: true });
+		host.setUsage(9600);
+		const args: Parameters<typeof fauxToolCall>[1] = name === "stash_edit"
+			? { id: "missing", expectedDigest: "a".repeat(64), edits: [{ oldText: "before", newText: "after" }] }
+			: name === "stash_complete" ? { id: "missing", outcome: "done" } : { id: "missing" };
+		await host.prompt([fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }), reply()]);
+		const result = host.session.messages.find((message) => message.role === "toolResult" && message.toolName === name);
+		assert.ok(result?.role === "toolResult" && result.isError);
+		assert.match(JSON.stringify(result.content), /Stash stop/);
+	});
+}
+
+test("ordinary codemode nested calls meet the stop gate after controls become enabled", { timeout: 30000 }, async (t) => {
+	const saved = process.env.PI_STASH_CAPACITY;
+	process.env.PI_STASH_CAPACITY = "0";
+	t.after(() => { if (saved === undefined) delete process.env.PI_STASH_CAPACITY; else process.env.PI_STASH_CAPACITY = saved; });
+	const host = await runtime(t, { gate: true, codemode: true });
+	host.setUsage(9600);
+	await host.prompt([
+		fauxAssistantMessage(fauxToolCall("codemode", { code: 'await tools.fixture_enable_gate({}); text(await tools.stash_read({id:"missing"}));' }), { stopReason: "toolUse" }),
+		reply(),
+	]);
+	const result = host.session.messages.find((message) => message.role === "toolResult" && message.toolName === "codemode");
+	assert.ok(result?.role === "toolResult");
+	assert.match(JSON.stringify(result.content), /Stash stop/);
+	assert.deepEqual(host.executed, ["fixture_enable_gate"]);
+	assert.equal(host.session.messages.filter((message) => message.role === "toolResult").length, 1, "nested results stay in the parent result");
 });
 
 test("release remains reachable at the stop threshold and compaction restores the gate", { timeout: 20000 }, async (t) => {

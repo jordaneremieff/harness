@@ -399,45 +399,50 @@ function unexecuted(diagnostics: readonly { code?: string }[] | undefined): bool
 	return diagnostics?.some((diagnostic) => diagnostic.code === "blocked" || diagnostic.code === "tool_unavailable" || diagnostic.code === "invalid_arguments") === true;
 }
 
-function nativePageMeasure(host: StashDurableHost, entries: readonly Durable.EntryRecord[], initial: Measure, usageSeen: boolean): { measure: Measure; episode?: string; usageSeen: boolean } {
-	let measure = initial;
-	for (const entry of entries) {
-		if (entry.kind === "pi.compaction" || entry.kind === "pi.reset") return { measure, episode: String(entry.id), usageSeen };
-		if (usageSeen) continue;
-		const reported = reportedUsageFor(entry.model ?? []);
-		if (!reported) continue;
-		usageSeen = true;
-		const window = providerContextWindow(reported.message.provider, reported.message.model, host.services.modelRuntime);
-		const tokens = calculateContextTokens(reported.message.usage);
-		if (window && Number.isFinite(tokens) && tokens > 0) measure = { kind: "known", tokens, contextWindow: window, percent: tokens / window * 100 };
-	}
-	return { measure, usageSeen };
+type NativeGateRead = { through?: Durable.EntryId };
+
+function nativeMeasure(host: StashDurableHost, message: AssistantMessage): Measure {
+	const window = providerContextWindow(message.provider, message.model, host.services.modelRuntime);
+	const tokens = calculateContextTokens(message.usage);
+	return window && Number.isFinite(tokens) && tokens > 0
+		? { kind: "known", tokens, contextWindow: window, percent: tokens / window * 100 }
+		: { kind: "unknown" };
 }
 
-async function nativeGateState(host: StashDurableHost, states: Map<string, GateState>, api: Durable.HookApi, context: Context): Promise<GateState> {
-	let measure: Measure = { kind: "unknown" };
-	let episode: string | null = null;
-	let cursor: Durable.Cursor | undefined;
-	let boundary = false;
-	let usageSeen = false;
-	for (let visited = 0; visited < 64 && !boundary; visited += 16) {
-		const page = await capacityRead(context, (bounded) => api.entries({ order: "descending" }, 16, cursor, bounded));
-		if (!page) { measure = { kind: "unknown" }; break; }
-		const scanned = nativePageMeasure(host, page.items, measure, usageSeen);
-		measure = scanned.measure;
-		usageSeen = scanned.usageSeen;
-		if (scanned.episode !== undefined) {
-			episode = scanned.episode;
-			boundary = true;
-		}
-		if (!page.next) break;
-		cursor = page.next;
-	}
+function observeNativeGateBoundary(states: Map<string, GateState>, key: string, entry: Durable.EntryRecord): void {
+	if (entry.kind !== "pi.compaction" && entry.kind !== "pi.reset") return;
+	const current = states.get(key);
+	if (current?.episode !== undefined && current.episode !== null && Number(current.episode) >= Number(entry.id)) return;
+	gateState(states, key, String(entry.id));
+}
+
+/** Read only the unexamined interval, once per response, under one deadline. */
+async function refreshNativeGate(states: Map<string, GateState>, read: NativeGateRead, measure: Measure, api: Durable.HookApi, parent: Context): Promise<void> {
 	const key = String(api.conversationId);
-	// A bounded tail without a context boundary retains the last observed episode.
-	const state = gateState(states, key, boundary ? episode : states.get(key)?.episode ?? null);
-	state.measure = measure;
-	return state;
+	const complete = await capacityRead(parent, async (context) => {
+		const tail = (await api.entries({ order: "descending" }, 1, undefined, context)).items[0];
+		checkCapacityCancellation(context);
+		if (!tail) return true;
+		if (read.through === undefined) {
+			read.through = tail.id;
+			return true;
+		}
+		let cursor: Durable.Cursor | undefined;
+		const minEntryId = (Number(read.through) + 1) as Durable.EntryId;
+		for (let visited = 0; visited < 4096; visited += 16) {
+			const page = await api.entries({ order: "ascending", minEntryId, maxEntryId: tail.id }, 16, cursor, context);
+			checkCapacityCancellation(context);
+			for (const entry of page.items) {
+				observeNativeGateBoundary(states, key, entry);
+				read.through = entry.id;
+			}
+			if (!page.next) return true;
+			cursor = page.next;
+		}
+		return false;
+	});
+	const state = states.get(key);
+	if (state) state.measure = complete ? measure : { kind: "unknown" };
 }
 
 function compactionLeadText(config: ReturnType<typeof capacityConfig>, threshold: number | undefined): string {
@@ -908,7 +913,9 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 		}
 	};
 	const gates = new Map<string, GateState>();
-	host.onClose(() => { gates.clear(); bindings.delete(host); });
+	const gateReads = new Map<string, NativeGateRead>();
+	const currentGate = (api: Durable.HookApi) => gates.get(String(api.conversationId)) ?? gateState(gates, String(api.conversationId), null);
+	host.onClose(() => { gates.clear(); gateReads.clear(); bindings.delete(host); });
 	const storeDir = resolveStoreDir(process.env, host.agentDir);
 
 	const capacityDoc = host.durable.defineDoc<CapacityDocState>({
@@ -1264,20 +1271,21 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 		tools: [writeTool, listTool, readTool, editTool, completeTool, rotateTool],
 		hooks: [
 			host.durable.hook(host.durable.ToolTask, {
-				beforeTool: async (call, api, context) => {
+				beforeTool: async (call, api) => {
 					const config = readCapacityConfig();
 					if (!config.enabled) return undefined;
-					const state = await nativeGateState(host, gates, api, context);
+					const state = currentGate(api);
 					const decision = gate({ measure: state.measure ?? { kind: "unknown" }, toolName: call.name, args: call.arguments,
 						config, declared: continuityTools(bus), released: state.released,
 						decisionRoundOpen: !state.decisionRoundUsed, blockedRounds: state.blockedRounds });
 					if (decision.kind === "block") return { block: decision.reason };
 					return undefined;
 				},
-				afterTool: async (_call, result, api, context) => {
+				afterTool: async (_call, result, api) => {
 					const config = readCapacityConfig();
 					if (!config.enabled) return undefined;
-					const state = await nativeGateState(host, gates, api, context);
+					const state = currentGate(api);
+					if (result.diagnostics?.some((diagnostic) => diagnostic.code === "aborted" || diagnostic.code === "abandoned")) state.blockedRounds = 0;
 					if (config.enabled && !state.released && band(state.measure ?? { kind: "unknown" }, config) === "stop" && state.blockedRounds >= 2 && unexecuted(result.diagnostics)) {
 						return { ...result, control: { ...result.control, terminate: true } };
 					}
@@ -1288,7 +1296,7 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 				afterTools: async (_assistant, results, api, context) => {
 					const config = readCapacityConfig();
 					if (!config.enabled) return;
-					const state = await nativeGateState(host, gates, api, context);
+					const state = currentGate(api);
 					let refused = results.length > 0;
 					for (const id of results) {
 						const entry = await capacityRead(context, (bounded) => api.entry(host.durable.ToolResultEntry, id, bounded));
@@ -1298,33 +1306,51 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					if (band(state.measure ?? { kind: "unknown" }, config) === "decision") state.decisionRoundUsed = true;
 				},
 
-				beforeRequest: async (request, api, parent) => capacityRead(parent, async (context) => {
+				afterResponse: async (message, api, context) => {
+					const config = readCapacityConfig();
+					if (!config.enabled) return;
+					const key = String(api.conversationId);
+					const state = currentGate(api);
+					const measure = nativeMeasure(host, message);
+					state.measure = measure;
+					if (band(measure, config) === "normal") return;
+					const read = gateReads.get(key) ?? {};
+					gateReads.set(key, read);
+					await refreshNativeGate(gates, read, measure, api, context);
+				},
+				beforeRequest: async (request, api, parent) => {
+					// Configuration errors reach Pi's hook reporter; only usage reads fail open.
 					const config = readCapacityConfig(true);
 					if (!config.enabled) return undefined;
-					const conversation = String(api.conversationId);
-					const doc = await api.snapshot(capacityDoc, api.conversationId, context);
-					checkCapacityCancellation(context);
-					const episode = doc?.episode ?? 1;
-					const pending = await api.memo<CapacityMemo>("capacity", context);
-					checkCapacityCancellation(context);
-					if (pending !== undefined && pending.episode === episode && pending.conversation === conversation) {
+					return capacityRead(parent, async (context) => {
+						const live = await api.snapshot(host.durable.LiveDoc, api.conversationId, context);
+						checkCapacityCancellation(context);
+						if (live?.run?.turns === 0) currentGate(api).blockedRounds = 0;
+						const conversation = String(api.conversationId);
+						const doc = await api.snapshot(capacityDoc, api.conversationId, context);
+						checkCapacityCancellation(context);
+						const episode = doc?.episode ?? 1;
+						const pending = await api.memo<CapacityMemo>("capacity", context);
+						checkCapacityCancellation(context);
+						if (pending !== undefined && pending.episode === episode && pending.conversation === conversation) {
+							return undefined;
+						}
+						const latches = scanCapacityNotices(request.messages, episode, conversation);
+						const agent = await api.snapshot(host.durable.AgentDoc, api.conversationId, context);
+						checkCapacityCancellation(context);
+						const estimate = estimateContext(request.messages, host.services.modelRuntime, agent?.model);
+						const model = agent?.model && host.services.modelRuntime.getModel(agent.model.provider, agent.model.modelId);
+						const threshold = piAutoThreshold(host.services.settingsManager.getCompactionSettings(model), model);
+						const crossing = capacityRequest(estimate, latches, { ...config, checkpointPercent: effectiveCheckpointPercent(config, threshold) });
+						if (!crossing.checkpoint && !crossing.decision) return undefined;
+						await api.memo(
+							"capacity",
+							{ episode, conversation, text: [capacityNoticeText(estimate, crossing, episode, conversation, config.stopPercent), compactionLeadText(config, threshold)].filter(Boolean).join("\n") },
+							context,
+						);
 						return undefined;
-					}
-					const latches = scanCapacityNotices(request.messages, episode, conversation);
-					const agent = await api.snapshot(host.durable.AgentDoc, api.conversationId, context);
-					checkCapacityCancellation(context);
-					const estimate = estimateContext(request.messages, host.services.modelRuntime, agent?.model);
-					const model = agent?.model && host.services.modelRuntime.getModel(agent.model.provider, agent.model.modelId);
-					const threshold = piAutoThreshold(host.services.settingsManager.getCompactionSettings(model), model);
-					const crossing = capacityRequest(estimate, latches, { ...config, checkpointPercent: effectiveCheckpointPercent(config, threshold) });
-					if (!crossing.checkpoint && !crossing.decision) return undefined;
-					await api.memo(
-						"capacity",
-						{ episode, conversation, text: [capacityNoticeText(estimate, crossing, episode, conversation, config.stopPercent), compactionLeadText(config, threshold)].filter(Boolean).join("\n") },
-						context,
-					);
-					return undefined;
-				}),
+					});
+				},
 				onYield: async (_answer: AssistantMessage, api, parent) => capacityRead(parent, async (context) => {
 					const pending = await api.memo<CapacityMemo>("capacity", context);
 					checkCapacityCancellation(context);

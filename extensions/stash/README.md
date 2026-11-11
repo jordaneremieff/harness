@@ -539,8 +539,9 @@ and another extension's refusal reset that count. Native rounds count actual
 unexecuted model slots, including invalid arguments and unavailable tools. Nested
 calls neither count nor terminate a generation. A native slot that faults or is
 orphaned before task creation has no control and prevents that round's termination.
-Any executed continuity call resets the count. Admitted resolution calls therefore
-remain bounded by the model, not by this refusal counter.
+Any executed continuity call resets the count. Each run starts the count at zero,
+including a run after an abort or an answer without tools. Admitted resolution
+calls therefore remain bounded by the model, not by this refusal counter.
 
 `/stash capacity release` lifts the decision and stop gates until compaction in
 that session. Reload restores them. A native owner reaches the same command
@@ -553,6 +554,15 @@ releases observe committed compaction and context-reset entries directly, so a
 later passive tail does not hide the boundary. The observation reads no history
 and ends with the host. `/stash capacity reset` resets notice latches, not a gate release. A failed compaction leaves the measured
 band in force.
+
+Native gates share one reported-usage measurement for each response and its tool
+round. Below the decision threshold they read no history. Above it, one bounded
+read examines only entries after the previous gate snapshot, including compaction
+and reset entries hidden behind passive messages. The read shares a 500 ms
+deadline across one newest-entry read and at most 4096 interval entries per
+response. An incomplete or failed read opens the gate with unknown usage; a later
+response continues from the last examined entry. The first snapshot needs no historical boundary because its gate
+state is fresh. Release commands retain their direct boundary observer.
 Stash does not block `/compact` or Pi's own compaction.
 
 If Pi automatic compaction is enabled, the effective checkpoint request threshold
@@ -772,11 +782,15 @@ separate acts; no operator-store migration occurs.
 
 ### Capacity guidance
 
-Native `beforeTool` gates new calls from bounded retained usage. `afterTool`
-adds termination controls to unexecuted slots after two refused rounds.
-`afterTools` counts only the generation's actual model-slot results and closes
-the decision round. A native context reset or compaction clears the gate episode;
-closing the host clears all process-local gate state.
+Native `afterResponse` measures the accepted response usage and refreshes the
+bounded boundary snapshot above the decision threshold. `beforeTool` gates new
+calls from that shared measurement. `afterTool` adds termination controls to
+unexecuted slots after two refused rounds. `afterTools` counts only the
+generation's actual model-slot results and closes the decision round.
+`beforeRequest` resets the refused count at the start of each run, from Pi's
+public live run state.
+A native context reset or compaction clears the gate episode; closing the host
+clears all process-local gate state.
 
 The contribution ports the ordinary capacity monitor to two native generation
 hooks. `beforeRequest` observes the request's model context, scans it for

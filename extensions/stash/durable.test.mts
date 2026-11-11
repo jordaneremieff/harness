@@ -33,6 +33,7 @@ after(() => {
 
 interface TestHarness {
 	readonly bus: ReturnType<typeof createEventBus>;
+	readonly reports: Durable.Report[];
 	readonly launches: IndependentCommandInput[];
 	readonly storage: MemoryStorage;
 	readonly harness: Durable.Harness;
@@ -113,14 +114,15 @@ async function startHarness(
 		registry.install(createCodemodeExtension({ sandbox, models: false }));
 	}
 	const storage = new MemoryStorage();
-	const harness = await Harness.open(storage, { models, registry }, context);
+	const reports: Durable.Report[] = [];
+	const harness = await Harness.open(storage, { models, registry, onReport: (report) => reports.push(report) }, context);
 	const root = await harness.root(context, {
 		agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: workdir },
 	});
 	t.after(async () => {
 		await harness.close(context);
 	});
-	return { harness, root, faux, host, contribution, extension, storeDir, workdir, launches, storage, bus };
+	return { harness, root, faux, host, contribution, extension, storeDir, workdir, launches, storage, bus, reports };
 }
 
 function messageText(message: Message | undefined): string {
@@ -699,6 +701,65 @@ test("native stop rounds count actual unexecuted slots including invalid argumen
 	assert.match(results[0].text, /Stash stop/);
 });
 
+test("native refusal counts start at zero after termination and an answer-only run", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000);
+	gateThresholds(t, "0.03");
+	const refuse = () => fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" });
+	await answerWith(h.root, h.faux, [refuse(), refuse(), refuse()], "Retain the task.");
+	await answerWith(h.root, h.faux, [fauxAssistantMessage("answer"), fauxAssistantMessage("answer")], "Answer without tools.");
+	const before = h.faux.state.callCount;
+	await answerWith(h.root, h.faux, [refuse(), refuse(), refuse()], "Try the next run.");
+	assert.equal(h.faux.state.callCount - before, 3);
+	assert.equal((await toolResults(h.root)).length, 6);
+});
+
+test("native refusal counts start at zero after an abort", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000);
+	gateThresholds(t, "0.03");
+	const refuse = () => fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" });
+	let signalReady!: () => void;
+	const ready = new Promise<void>((resolve) => { signalReady = resolve; });
+	h.faux.setResponses([refuse(), refuse(), (_request, options) => {
+		signalReady();
+		return new Promise<never>((_resolve, reject) => options?.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true }));
+	}]);
+	const submission = await h.root.submit({ type: "input", content: "Retain the task." }, context);
+	await ready;
+	await h.root.abort(context);
+	assert.equal((await submission.wait(context)).status, "unanswered");
+	const before = h.faux.state.callCount;
+	await answerWith(h.root, h.faux, [refuse(), refuse(), refuse()], "Try the next run.");
+	assert.equal(h.faux.state.callCount - before, 3);
+});
+
+test("native invalid capacity settings report once and leave tools available", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000);
+	gateThresholds(t, "96");
+	process.env.PI_STASH_CHECKPOINT_PERCENT = "95";
+	process.env.PI_STASH_DECISION_PERCENT = "90";
+	const responses = () => [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("answer")];
+	await answerWith(h.root, h.faux, responses(), "Read available work.");
+	await answerWith(h.root, h.faux, responses(), "Read it again.");
+	assert.equal(h.reports.length, 1);
+	assert.match(String(h.reports[0].error), /checkpointPercent.*decisionPercent/);
+	assert.ok((await toolResults(h.root)).every((result) => !result.isError));
+	assert.doesNotMatch(await modelText(h.root), /\[stash-capacity/);
+});
+
+for (const name of ["stash_edit", "stash_complete", "stash_rotate"] as const) {
+	test(`native stop refuses ${name} before its store operation`, { timeout: 30000 }, async (t) => {
+		const h = await startHarness(t, 2000);
+		gateThresholds(t, "0.03");
+		const args: Durable.JsonObject = name === "stash_edit"
+			? { id: "missing", expectedDigest: "a".repeat(64), edits: [{ oldText: "before", newText: "after" }] }
+			: name === "stash_complete" ? { id: "missing", outcome: "done" } : { id: "missing" };
+		await answerWith(h.root, h.faux, [fauxAssistantMessage(fauxToolCall(name, args), { stopReason: "toolUse" }), fauxAssistantMessage("answer"), fauxAssistantMessage("answer")], "Retain the task.");
+		const result = (await toolResults(h.root)).find((result) => result.name === name);
+		assert.equal(result?.isError, true);
+		assert.match(result?.text ?? "", /Stash stop/);
+	});
+}
+
 test("nested refusals stay outside the model round and do not terminate their executed parent", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 2000, false, true, true);
 	gateThresholds(t, "0.03");
@@ -753,6 +814,20 @@ test("a native release after reset survives the first gate evaluation", { timeou
 	assert.equal((await toolResults(h.root)).at(-1)?.isError, true);
 });
 
+test("a native release retains the latest boundary while older unseen boundaries are scanned", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000);
+	gateThresholds(t, "0.03");
+	const responses = () => [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("answer"), fauxAssistantMessage("answer")];
+	await answerWith(h.root, h.faux, responses(), "Retain the task.");
+	await h.root.reset("First retained task.", context);
+	await h.root.reset("Latest retained task.", context);
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	await command.run({ args: "capacity release", conversation: h.root, context, host: h.host, invocationId: "release", harness: h.harness });
+	await answerWith(h.root, h.faux, responses(), "Continue the task.");
+	assert.equal((await toolResults(h.root)).at(-1)?.isError, false);
+});
+
 for (const boundary of ["reset", "compaction"] as const) {
 	test(`a ${boundary} clears a native release before a long passive tail`, { timeout: 30000 }, async (t) => {
 		const h = await startHarness(t, 2000);
@@ -782,6 +857,94 @@ for (const boundary of ["reset", "compaction"] as const) {
 	});
 }
 
+for (const boundary of ["reset", "compaction"] as const) {
+	test(`a ${boundary} starts a fresh native decision episode after a long passive tail without release`, { timeout: 30000 }, async (t) => {
+		const h = await startHarness(t, 200000);
+		gateThresholds(t, "100");
+		const responses = () => [
+			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+			fauxAssistantMessage("answer"), fauxAssistantMessage("answer"),
+		];
+		await answerWith(h.root, h.faux, responses(), "Retain the task.");
+		assert.deepEqual((await toolResults(h.root)).map((result) => result.isError), [true, false]);
+		if (boundary === "reset") await h.root.reset("Retained task.", context);
+		else {
+			await h.root.configure({ compaction: { enabled: false, keepRecentTokens: 1 } }, context);
+			h.faux.setResponses([fauxAssistantMessage("Retained summary.")]);
+			const id = await h.root.compact(undefined, context);
+			assert.equal((await h.harness.waitForTask(id, context)).state.outcome.status, "completed");
+		}
+		for (let index = 0; index < 80; index++) await h.root.submit({ type: "write", entry: { kind: "fixture.passive", data: { index } } }, context);
+		await answerWith(h.root, h.faux, responses(), "Continue the task.");
+		assert.deepEqual((await toolResults(h.root)).slice(-2).map((result) => result.isError), [true, false]);
+	});
+}
+
+test("native gates read no history below decision and share one snapshot across each tool round", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000);
+	gateThresholds(t, "100");
+	const generation = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)?.handlers as Durable.GenerationHooks;
+	const tool = h.extension.hooks?.find((hook) => hook.task === Durable.ToolTask.definition.name)?.handlers as Durable.ToolHooks;
+	let reads = 0;
+	const api = {
+		conversationId: h.root.id,
+		entries: async () => { reads++; return { items: [{ id: 1, kind: "fixture.passive" }] }; },
+	} as unknown as Durable.HookApi;
+	const message = fauxAssistantMessage("answer");
+	message.provider = "faux";
+	message.model = "faux-1";
+	message.usage = { ...message.usage, input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0 };
+	await generation.afterResponse(message, api, context);
+	assert.equal(reads, 0);
+	message.usage.input = 1000;
+	await generation.afterResponse(message, api, context);
+	assert.equal(reads, 1);
+	const call = fauxToolCall("stash_list", {}, { id: "read" });
+	for (let index = 0; index < 10; index++) {
+		await tool.beforeTool(call, api, context);
+		await tool.afterTool(call, { output: [], diagnostics: [{ severity: "error", code: "blocked", message: "refused" }] }, api, context);
+	}
+	assert.equal(reads, 1, "tool hooks reuse the response snapshot");
+});
+
+test("native boundary reads share a deadline and fail open without advancing past an unread entry", { timeout: 10000 }, async (t) => {
+	const h = await startHarness(t, 2000);
+	gateThresholds(t, "100");
+	const hooks = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)?.handlers as Durable.GenerationHooks;
+	const tools = h.extension.hooks?.find((hook) => hook.task === Durable.ToolTask.definition.name)?.handlers as Durable.ToolHooks;
+	const message = fauxAssistantMessage("answer");
+	message.provider = "faux";
+	message.model = "faux-1";
+	message.usage = { ...message.usage, input: 1000, output: 0, cacheRead: 0, cacheWrite: 0 };
+	await hooks.afterResponse(message, { conversationId: h.root.id, entries: async () => ({ items: [{ id: 1 }] }) } as unknown as Durable.HookApi, context);
+	let signal: AbortSignal | undefined;
+	let calls = 0;
+	const api = {
+		conversationId: h.root.id,
+		entries: async (_query: unknown, _limit: unknown, _cursor: unknown, bounded: typeof context) => {
+			calls++;
+			if (calls === 1) return { items: [{ id: 2 }] };
+			signal = bounded.abortSignal;
+			return new Promise<never>(() => {});
+		},
+	} as unknown as Durable.HookApi;
+	await hooks.afterResponse(message, api, context);
+	assert.equal(calls, 2);
+	assert.equal(signal?.aborted, true);
+	assert.equal(await tools.beforeTool(fauxToolCall("stash_list", {}), api, context), undefined);
+	const recovered = {
+		conversationId: h.root.id,
+		entries: async (query: { order: string; minEntryId?: number }) => {
+			if (query.order === "descending") return { items: [{ id: 2 }] };
+			assert.equal(query.minEntryId, 2);
+			return { items: [{ id: 2, kind: "pi.reset" }] };
+		},
+	} as unknown as Durable.HookApi;
+	await hooks.afterResponse(message, recovered, context);
+	assert.match((await tools.beforeTool(fauxToolCall("stash_list", {}), recovered, context))?.block ?? "", /Stash decision round/);
+});
+
 test("native capacity notices preserve the complete post-hook request prefix", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 2000);
 	gateThresholds(t, "100");
@@ -809,7 +972,7 @@ test("native capacity request reads share a deadline and cancel each stalled API
 	const hooks = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)?.handlers as Durable.GenerationHooks;
 	assert.ok(hooks);
 	for (const phase of ["request", "yield"] as const) {
-		const steps = phase === "request" ? 4 : 2;
+		const steps = phase === "request" ? 5 : 2;
 		for (let stalled = 1; stalled <= steps; stalled++) {
 			let calls = 0;
 			let signal: AbortSignal | undefined;
@@ -822,7 +985,7 @@ test("native capacity request reads share a deadline and cancel each stalled API
 			const pending = { episode: 1, conversation: String(h.root.id), text: "Frozen notice." };
 			const api = {
 				conversationId: h.root.id,
-				snapshot: (token: unknown, _id: unknown, bounded: typeof context) => read(bounded, token === Durable.AgentDoc ? { model: { provider: "faux", modelId: "faux-1" } } : { episode: 1 }),
+				snapshot: (token: unknown, _id: unknown, bounded: typeof context) => read(bounded, token === Durable.LiveDoc ? { run: { turns: 0 } } : token === Durable.AgentDoc ? { model: { provider: "faux", modelId: "faux-1" } } : { episode: 1 }),
 				memo: (_name: string, candidateOrContext: unknown, bounded?: typeof context) => read(bounded ?? candidateOrContext as typeof context, bounded ? candidateOrContext : phase === "yield" ? pending : undefined),
 			} as unknown as Durable.HookApi;
 			const result = phase === "request"

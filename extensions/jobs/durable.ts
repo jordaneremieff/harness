@@ -87,7 +87,7 @@ const JobsParameters = obj(
 		action: StringEnum(["list", "status", "logs", "cancel"] as const),
 		id: opt(str({ description: "Job ID returned by bash with background:true", minLength: 1, maxLength: 100 })),
 		cursor: opt(int({ description: "Byte cursor from a previous logs result; default starts at retained output", minimum: 0, maximum: Number.MAX_SAFE_INTEGER })),
-		taskCursor: opt(obj({}, { open: true })),
+		taskCursor: opt(obj({}, { open: true, description: "List only: reuse the exact nextTaskCursor from the previous list result; omit for the first page. Separate from the logs byte cursor." })),
 	},
 	{ open: false },
 );
