@@ -71,7 +71,7 @@ test("native ownership detaches work cancellation only for bounded mandatory set
 			return change({ doc: async () => document });
 		},
 	} as unknown as Parameters<typeof nativeOwnershipStore>[0];
-	const store = nativeOwnershipStore(api, {} as Parameters<typeof nativeOwnershipStore>[1], "storage:1", 128, context, budget);
+	const store = nativeOwnershipStore(api, {} as unknown as Parameters<typeof nativeOwnershipStore>[1], "storage:1", 128, context, budget);
 	try {
 		caller.abort();
 		assert.equal(context.abortSignal?.aborted, true);
