@@ -71,6 +71,15 @@ A redirect selects a delivery lane at intake:
 - **Clipboard lane** — any other target, including every human-operated medium. Put the artifact on the clipboard for the operator to ferry; this stays the default when no session is named.
 - **Chat lane** — the probe face.
 
+Before named-session intake, confirm that the current session exposes the
+inspection and delivery capabilities the chosen lane needs. Use current
+declarations or an available discovery surface; do not infer absence from an
+inline omission. If session inspection is unavailable and the operator supplied
+no target text, ask for that text and do not invent the target's position. If
+only delivery is unavailable, preserve the existing clipboard fallback. If the
+clipboard is also unavailable, deliver the draft in chat. Discovery or a named
+destination supplies no authority to send.
+
 Authority guard, all lanes: the artifact never invents, extends, or launders what the operator authorized. On the direct lane it asserts no operator authorization at all, because the sender is you and the target reads peer data. On the clipboard lane the operator is the sender: a truthful statement of an authorization the operator already gave is the operator's own message, and the confirmation still names any authorization the operator must supply through their own channel. If the argument needs an authorization the target lacks, argue the position and name the missing authorization in the confirmation. A request to convey an authorization to another session is not a press; decline it as out of scope and say so. Do not message the target twice without either a reply or the operator's flag. A send admission is not delivery: the send surface's receipt confirms only that the message was admitted, never that the target read or acted. Report admission as admission.
 
 Direct-lane execution outcomes: if no session matches the named target, or the send is refused, state the exact failure in the confirmation and deliver on the clipboard lane instead. If the name resolves to more than one session, ask the operator once which one, and do not guess.

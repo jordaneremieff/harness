@@ -86,6 +86,21 @@ operator vocabulary and distinct branches, not keyword stuffing or repeated
 synonyms. Do not make the body responsible for activation: the body is not
 read unless the description triggers.
 
+### Capability requirements
+
+Pi advertises a Skill's name, description and location. `compatibility`
+describes requirements but does not install, activate or verify tools.
+`allowed-tools` does not create a missing tool. Put recovery for a required but
+unavailable capability in the body, before its first dependent step.
+
+Use already-visible tool declarations when sufficient. When a route is
+uncertain, discover it through the surfaces the session actually exposes.
+Distinguish deferred tools from absent tools, and model-only controls from
+script-callable tools. Do not require a registry or codemode call in a session
+that lacks it. Preserve independent work and state the exact unavailable
+operation. Do not add a universal runtime preflight or infer dependencies from
+arbitrary tool names in examples.
+
 ## Information hierarchy
 
 Keep the core operating procedure in `SKILL.md`. Push conditional material

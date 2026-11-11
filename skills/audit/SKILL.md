@@ -81,6 +81,14 @@ Classify each source as one of these types:
 - **Snapshot:** current configuration, registration, binding, rule, or run state.
   A snapshot does not prove historical use or availability.
 
+Use a named tool directly when its current declaration is sufficient. If a
+required tool is not declared, use an available tool-discovery surface before
+treating it as absent. Deferred tools can remain callable without an inline
+model declaration. A script's callable list excludes model-only controls and
+cannot establish their absence. If no permitted route supplies the needed
+capability, preserve useful independent evidence and name the unavailable step
+in the result. Do not invent a replacement tool or return an empty answer.
+
 Use the public source that matches the unit:
 
 - Use `agent_list` for bounded session metadata and `agent_inspect` for retained
