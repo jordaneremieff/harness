@@ -224,9 +224,11 @@ Push `main` with `git push origin main` when the operator's current direction
 permits publication. A push can carry many commits, and no other act waits for
 it.
 
-The pre-push hook refuses commits that carry a credential, private key,
-absolute personal home path, or retained session envelope signature. Install
-it in the effective hook directory for the selected worktree:
+The pre-push hook refuses recognised credentials, private keys, personal home
+paths, and retained session envelope openings. Envelope signatures include
+request context, request routes, effort records, and agent preferences, with
+or without attributes. A signature scan is not a semantic privacy review.
+Install it in the effective hook directory for the selected worktree:
 
 ```bash
 npm run hooks

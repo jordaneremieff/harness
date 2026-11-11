@@ -14,7 +14,7 @@ const rules: Array<[string, RegExp]> = [
 	["personal-path", /(?:\/Users\/|\/home\/)[A-Za-z0-9._-]+\//],
 	["private-key", /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/],
 	["credential", /\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|sk-ant-[A-Za-z0-9_-]{30,})\b/],
-	["session-transcript", /^\s*<(?:agent-request-context|agent-efforts|agent-preferences)>\s*$/],
+	["session-transcript", /^\s*<(?:agent-request-context|agent-request-route|agent-efforts|agent-preferences)(?=[\s/>])/],
 ];
 
 export function scanText(text: string): { line: number; rule: string } | undefined {

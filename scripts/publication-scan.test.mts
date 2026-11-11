@@ -12,6 +12,9 @@ const script = fileURLToPath(new URL("./publication-scan.mts", import.meta.url))
 process.env.GIT_CONFIG_GLOBAL = "/dev/null";
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 
+// Envelope openings are assembled from fragments so this file retains none verbatim.
+const opening = (name: string, attributes = ""): string => ["<", "agent", "-", name, attributes].join("");
+
 function repository(initialText = "plain\n"): { root: string; git: (...args: string[]) => string } {
 	const root = realpathSync(mkdtempSync(join(tmpdir(), "publication-scan-")));
 	const env = {
@@ -40,6 +43,45 @@ test("signature rules flag secrets and personal paths without reporting the matc
 	assert.equal(scanText("ordinary source\nwith /usr/local/bin\n"), undefined);
 });
 
+test("every recognised envelope name matches bare and attributed opening tags", () => {
+	for (const name of ["request-context", "request-route", "efforts", "preferences"]) {
+		assert.equal(scanText(`${opening(name)}>`)?.rule, "session-transcript");
+		assert.equal(scanText(`${opening(name, ' host="fixture" origin=\'test\'')}>`)?.rule, "session-transcript");
+		assert.equal(scanText(`${opening(name, '\thost="fixture"')}>`)?.rule, "session-transcript");
+	}
+	assert.equal(scanText(`${opening("request-route")}>`)?.line, 1);
+	assert.equal(scanText(`\t${opening("request-context", " kind='header'")}>`)?.rule, "session-transcript");
+});
+
+test("envelope openings match indentation, tabs, CRLF and quoted attributes", () => {
+	const route = opening("request-route");
+	assert.equal(scanText(`  ${route}>`)?.rule, "session-transcript");
+	assert.equal(scanText(`\t\t${route}>`)?.rule, "session-transcript");
+	assert.equal(scanText(`${route} scope="worktree">`)?.rule, "session-transcript");
+	assert.equal(scanText(`${route} scope='worktree'>`)?.rule, "session-transcript");
+	assert.equal(scanText(`${route} scope="worktree" depth=2 sealed>`)?.rule, "session-transcript");
+	assert.equal(scanText(`\t${route} scope='worktree'\r\n`)?.rule, "session-transcript");
+	assert.equal(scanText(["intro", `${route} scope="worktree">`].join("\r\n"))?.line, 2);
+});
+
+test("a header that continues over several lines is a signature at its first line", () => {
+	const route = opening("request-route");
+	assert.equal(scanText([`${route} scope="worktree"`, ' depth="2"', ">"].join("\n"))?.line, 1);
+	assert.equal(scanText([`${route} `, 'scope="worktree"', ">"].join("\n"))?.line, 1);
+	assert.equal(scanText(["intro", `\t${route} scope="worktree"`, ' depth="1">'].join("\r\n"))?.line, 2);
+});
+
+test("longer names and ordinary tags are not envelope signatures", () => {
+	for (const name of ["request-context-archive", "request-routes", "efforts-by-day", "preferences_extra"]) {
+		assert.equal(scanText(`${opening(name)}>`), undefined);
+	}
+	assert.equal(scanText(`${opening("efforts")}s>`), undefined);
+	assert.equal(scanText("agent-efforts>\n"), undefined);
+	assert.equal(scanText("\t<div>\n"), undefined);
+	assert.equal(scanText('  <span class="note">\n'), undefined);
+	assert.equal(scanText("\t<section id='main'>\n"), undefined);
+});
+
 test("a range scan covers commit messages and changed blobs, and a clean range passes", (t) => {
 	const { root, git } = repository();
 	t.after(() => rmSync(root, { recursive: true, force: true }));
@@ -58,6 +100,26 @@ test("a range scan covers commit messages and changed blobs, and a clean range p
 	const refused = spawnSync(process.execPath, [script, `${base}..HEAD`], { cwd: root, encoding: "utf8" });
 	assert.equal(refused.status, 1);
 	assert.match(refused.stderr, /Publication refused/);
+});
+
+test("a range scan finds envelope signatures without echoing attributes", (t) => {
+	const { root, git } = repository();
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const base = git("rev-parse", "HEAD");
+	const blobOpening = opening("request-route", ' scope="fixture-blob-marker"');
+	writeFileSync(join(root, "envelope.txt"), `${blobOpening}>\nbody\n`);
+	git("add", ".");
+	const messageOpening = opening("preferences", " origin='fixture-message-marker'");
+	git("commit", "-q", "-m", ["Retained session", `${messageOpening}>`].join("\n"));
+	const findings = scanRange(root, [`${base}..HEAD`]);
+	assert.equal(findings.length, 2);
+	assert.match(findings[0], /commit message line 2: session-transcript/);
+	assert.match(findings[1], /"envelope\.txt":1: session-transcript/);
+	for (const finding of findings) {
+		assert.equal(finding.includes("fixture-blob-marker"), false);
+		assert.equal(finding.includes("fixture-message-marker"), false);
+		assert.equal(finding.includes("agent-"), false);
+	}
 });
 
 test("root commits scan both clean and flagged content", (t) => {
