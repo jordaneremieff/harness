@@ -19,7 +19,7 @@ describe("qualified output guidance", () => {
 		assert.doesNotMatch(cap.note, /head -n 50 before sort/);
 		for (const command of ["fd -l . design", "fd . design --exec echo {}", "fd . design --exec-batch echo {}"])
 			assert.ok(bash(command).includes(fd.id), command);
-		const pipeline = "fd -t f -l . design findings records | awk '{print $5, $9}' | sort -k2 | head -n 200";
+		const pipeline = "fd -t f -l . src docs tests | awk '{print $5, $9}' | sort -k2 | head -n 200";
 		assert.deepEqual(bash(pipeline), [fd.id, cap.id]);
 		for (const id of ["bounds.find-output-uncapped", "bounds.grep-recursive-uncapped", "bounds.ls-recursive-uncapped"]) {
 			const row = RULES.find((entry) => entry.id === id);

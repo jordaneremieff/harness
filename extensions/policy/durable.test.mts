@@ -583,7 +583,7 @@ test("native unavailable command denials name their rule without claiming a matc
 			const auditContext = { sessionManager: { getSessionId: () => "command-evidence" }, model: null };
 			const audit = makeRuleAudit(auditContext, "agent-tool");
 			const proposal = await registry.proposeAdd({
-				id: "local.push", purpose: "Keep remote writes held.", authority: "steer-or-block", note: "Do not push.",
+				id: "synthetic.git", purpose: "Evaluate the declared command.", authority: "steer-or-block", note: "Use a permitted command shape.",
 				matcher: { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
 					spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } },
 			}, "Synthetic restriction.", audit);
@@ -599,7 +599,7 @@ test("native unavailable command denials name their rule without claiming a matc
 		const result = (await toolResults(fixture.root, "bash")).at(-1);
 		assert.equal(executions, 0);
 		assert.equal(result?.isError, true);
-		assert.match(textOf(result), /Rule local\.push:.*opaque-command-operand/);
+		assert.match(textOf(result), /Rule synthetic\.git:.*opaque-command-operand/);
 		assert.match(textOf(result), /No matching command was established/);
 		assert.doesNotMatch(textOf(result), /Matched command:/);
 		await fixture.closeHost();

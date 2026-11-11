@@ -366,17 +366,17 @@ describe("starter intervention effects", () => {
 		assert.equal(await f.result("failed-reader", true), undefined);
 		assert.equal(await f.call("reader", { command: "cat notes.md" }), undefined);
 		assert.match(JSON.stringify(await f.result("reader")), /read tool for file contents/);
-		assert.equal(await f.call("details", { command: "fd -t f -l . design findings records | awk '{print $5, $9}' | sort -k2 | head -n 200" }), undefined);
+		assert.equal(await f.call("details", { command: "fd -t f -l . src docs tests | awk '{print $5, $9}' | sort -k2 | head -n 200" }), undefined);
 	});
 });
 
 describe("separate denial evidence", () => {
 	it("admits a supported harmless loop but denies unknown execution without a false match", async (t) => {
-		const hold = rule("local.push", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
-		hold.definition.note = "Keep remote writes held.";
-		hold.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
+		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
+		gate.definition.note = "Use a permitted command shape.";
+		gate.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
 			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } };
-		const f = fixture([hold], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+		const f = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		assert.equal(await f.call("loop", { command: 'for f in $(fd -t f design | head -n 20); do wc -c "$f"; done' }), undefined);
 		assert.equal(await f.call("newline-loop", { command: "for x in a; do\necho safe; done" }), undefined);
@@ -388,14 +388,14 @@ describe("separate denial evidence", () => {
 		]) {
 			const denied = await f.call(id, { command });
 			assert.ok(denied);
-			assert.match(denied.reason, /Rule local\.push:/);
+			assert.match(denied.reason, /Rule synthetic\.git:/);
 			assert.ok(denied.reason.includes(reason));
 			assert.match(denied.reason, /No matching command was established/);
 			assert.doesNotMatch(denied.reason, /Matched command:/);
 		}
 		assert.match((await f.call("push-loop", { command: "for x in a; do git push; done" }))?.reason ?? "", /Matched command: git push/);
-		hold.matcher.onUnavailable = "skip";
-		const skip = fixture([hold], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+		gate.matcher.onUnavailable = "skip";
+		const skip = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => skip.writer.close());
 		assert.equal(await skip.call("skip", { command: "timeout 1 echo safe" }), undefined);
 	});
@@ -404,7 +404,7 @@ describe("separate denial evidence", () => {
 		fd.definition.note = "For plain discovery use --max-results N; it conflicts with --list-details, --exec and --exec-batch. Bound selected input for those forms.";
 		const cap = shellRule("block", "bounds.false-cap");
 		cap.definition.note = "Bound selected input. Move the cap only when changed input preserves the task, not for global sorting or totals.";
-		const command = "fd -t f -l . design findings records | awk '{print $5, $9}' | sort -k2 | head -n 200";
+		const command = "fd -t f -l . src docs tests | awk '{print $5, $9}' | sort -k2 | head -n 200";
 		for (const effect of ["block", "steer"] as const) {
 			for (const row of [fd, cap]) row.definition.effect = effect;
 			const f = fixture([fd, cap], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");

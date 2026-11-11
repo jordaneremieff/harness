@@ -5,11 +5,11 @@ import type { RuleRecord } from "./rule.ts";
 
 describe("CLI command-operand evidence", () => {
 	const record: RuleRecord = {
-		id: "local.push", source: { kind: "package" },
+		id: "synthetic.git", source: { kind: "package" },
 		matcher: { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
 			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } },
-		definition: { purpose: "Keep remote writes explicit.", authority: "exact", revision: "123456abcdef",
-			state: "active", effect: "block", note: "Do not push." },
+		definition: { purpose: "Evaluate the declared command.", authority: "exact", revision: "123456abcdef",
+			state: "active", effect: "block", note: "Use a permitted command shape." },
 		matcherAvailable: true, staleOverride: false,
 	};
 	const scope = { cwd: "/project", provider: "test", model: "test/model" };
