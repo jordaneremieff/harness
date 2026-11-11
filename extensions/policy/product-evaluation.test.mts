@@ -607,14 +607,15 @@ test("a failed draft neither resets nor observes the pillars period", async () =
 });
 
 test("pillars periods expire exactly at the declared age", async (t) => {
-	let now = Date.now();
-	t.mock.method(Date, "now", () => now);
+	let now = 0;
+	t.mock.method(performance, "now", () => now);
 	const run = harness("enforce");
 	try {
 		await run.start();
 		await run.call(pillarsBody);
 		assert.equal((await run.project()).length, 1);
 		now += DEFAULT_LIMITS.periodMs - 1;
+		assert.equal((await pillarsPeriod(run)).count, 1);
 		assert.deepEqual(await run.project(), []);
 		now++;
 		await run.call(pillarsBody);
@@ -757,8 +758,8 @@ for (const catalog of ["missing-schema", "unavailable"] as const)
 	});
 
 test("package periods expire exactly at the declared age and tree navigation resets observations", async (t) => {
-	let now = Date.now();
-	t.mock.method(Date, "now", () => now);
+	let now = 0;
+	t.mock.method(performance, "now", () => now);
 	const run = harness("enforce");
 	try {
 		await run.start();
