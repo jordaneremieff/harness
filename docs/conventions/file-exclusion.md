@@ -24,14 +24,9 @@ between them still defeats exclusion. This is cooperative exclusion, not fencing
 against another process that removes or replaces the path. Network and remote
 filesystems are unsupported; adapters do not detect filesystem types.
 
-Before a protocol change, retire every older writer and write-capable launcher
-for the affected root. An old pathname owner does not hold the kernel lock. A
-persistent inode refuses later old acquisitions but cannot fence an old writer
-already inside its critical section. Selecting a release does not update loaded
-processes. Rollback needs the same quiet boundary. Never delete a lock to restore
-an older writer. Trials use private state roots before any write-capable hook runs.
+Exclusion holds only among writers that use this protocol. A writer that does
+not use the protocol is not excluded. Writers never remove the persistent lock
+file.
 
-Pillars and Memory own their slice-local implementations and tests. Rex supplies
-existing evidence of the OS primitive; it does not own a shared lock service.
-Extensions do not import sibling adapters. This convention does not prescribe
-Agent host takeover or create a shared runtime library.
+Pillars and Memory each own a slice-local lock adapter and its tests.
+Adapters do not import siblings. There is no shared lock library.

@@ -812,12 +812,9 @@ it. The extension does not delete crash residue automatically. Note receipts and
 source inspection still govern repair after interrupted or partial publication.
 Search ignores these hidden artifacts.
 
-Before adoption, all older writers and write-capable launch routes for this corpus
-must end. Selecting a new release does not change existing processes. Older writers
-do not hold kernel exclusion and can overlap a new lease before old cleanup removes
-the inode. After the persistent inode exists, later old acquisitions refuse even when
-it is unlocked. Do not delete a lock to restore an old writer. Rollback also requires
-a quiet-writer boundary. See the [file-exclusion convention](../../docs/conventions/file-exclusion.md).
+Kernel exclusion coordinates Memory writers that use this protocol. A writer that
+does not use the protocol is not excluded. The writer never removes the persistent
+lock file. See the [file-exclusion convention](../../docs/conventions/file-exclusion.md).
 
 Before each live rename or creation link and each prior-capture publication, the
 writer checks that the lock path still names its held inode. A missing or changed
@@ -825,8 +822,7 @@ path stops that mutation without lock removal, recreation or retry. Published fi
 and captures remain; `written` and `notWritten` identify the completed prefix and
 remaining files. The pathname check and publication are separate system calls, so
 an external unlink between them still defeats exclusion. Never remove a live or
-persistent lock file. Candidate trials require private agent, Pillars and Memory
-copies through all three environment overrides.
+persistent lock file.
 
 Contention reports `Memory writer is busy. This writer never removes the lock file. Do not remove it.`
 Identity loss reports `Memory lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.`

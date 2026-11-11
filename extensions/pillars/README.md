@@ -186,7 +186,7 @@ Argument autocomplete filters the identifiers already discovered for the current
 session and performs no corpus I/O. Session start and an explicit non-help
 `/pillars` command refresh the catalogue. An unsuccessful refresh makes the
 catalogue unavailable rather than serving a previous configured corpus. Source
-reads still read current body bytes; the identifier catalogue is not a cached
+reads use current body bytes; the identifier catalogue is not a cached
 doctrine body. To discover changed identifiers or a changed corpus selection,
 run `/pillars` or start a new session. Autocomplete offers actions with
 descriptions and resource identifiers after `read `. It does not complete
@@ -322,7 +322,7 @@ exact row is absent. Overflow never proves zero activity for a concrete identity
 ```
 
 `pillars_usage` marks every `kind:"error"` response as a tool error in ordinary
-and native sessions. The JSON diagnostic and details remain unchanged.
+and native sessions.
 Successful pages, including empty pages, are not errors. The tool has no declared
 structured output schema: ordinary and native Codemode scripts receive text on
 success and reject with the JSON error text on failure. Catch that failure when
@@ -423,17 +423,10 @@ exclusion. Never remove a live or persistent lock file.
 Contention reports `Pillars aggregate writer is busy. This writer never removes the lock file. Do not remove it.`
 Identity loss reports `Pillars lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.`
 
-Before adoption, all older writers and write-capable launch routes for this
-aggregate directory must end. A new release does not update existing processes.
-Older pathname writers do not hold a kernel lock and do not exclude a new lease
-while already inside their critical section. Once the persistent inode exists,
-later old acquisitions refuse even while it is unlocked. Never delete a lock to
-restore an old writer. Rollback also requires a quiet-writer boundary. See the
+Kernel exclusion coordinates aggregate writers that use this protocol. A writer
+that does not use the protocol is not excluded. The writer never removes the
+persistent lock file. See the
 [file-exclusion convention](../../docs/conventions/file-exclusion.md).
-
-Candidate trials require private agent, aggregate and Memory roots through
-`PI_CODING_AGENT_DIR`, `PI_PILLARS_DIR` and `PI_MEMORY_DIR`. Verify their resolved
-values before any source observation or mutation.
 
 The store assumes a local filesystem. It does not admit or detect filesystem
 types, so a network filesystem is unsupported but not detected. Schema
