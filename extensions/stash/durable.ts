@@ -756,8 +756,13 @@ async function capacityCommand(
 	}
 	if (parts[1] === "release") {
 		observeReleaseBoundaries(binding, harness, host);
-		const state = binding.gates.get(String(conversation.id)) ?? gateState(binding.gates, String(conversation.id), null);
-		state.released = true;
+		const released = await capacityRead(context, (bounded) => conversation.commit(async (tx) => {
+			const marker = await tx.latestHeadMarker(conversation.id);
+			checkCapacityCancellation(bounded);
+			gateState(binding.gates, String(conversation.id), marker ? String(marker.id) : null).released = true;
+			return true;
+		}, bounded));
+		if (!released) throw new Error("Stash capacity release could not read the current context boundary.");
 		return "Stash stop and decision round released until the next compaction in this session. Reload restores them.";
 	}
 	if (parts[1] === "reset") {

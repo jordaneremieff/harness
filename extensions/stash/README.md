@@ -546,10 +546,12 @@ remain bounded by the model, not by this refusal counter.
 that session. Reload restores them. A native owner reaches the same command
 through `agent_command`. `/stash capacity` reports the band, episode, release,
 thresholds and declared tools. Gate state is process-local; compaction or a native context reset starts a new
-gate episode. Native releases observe committed compaction and context-reset
-entries directly, so a later passive tail does not hide the boundary. The
-observation reads no history and ends with the host. `/stash capacity reset`
-resets notice latches, not a gate release. A failed compaction leaves the measured
+gate episode. A native release binds to the current context boundary before the
+command confirms it; an older marker does not revoke it. If the bounded boundary
+read fails, the command reports an error and grants no new release. Native
+releases observe committed compaction and context-reset entries directly, so a
+later passive tail does not hide the boundary. The observation reads no history
+and ends with the host. `/stash capacity reset` resets notice latches, not a gate release. A failed compaction leaves the measured
 band in force.
 Stash does not block `/compact` or Pi's own compaction.
 

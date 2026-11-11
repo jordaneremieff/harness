@@ -738,6 +738,21 @@ test("native continuity execution resets refusal counts and release lifts the st
 	assert.equal((await toolResults(h.root)).at(-1)?.isError, true);
 });
 
+test("a native release after reset survives the first gate evaluation", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000);
+	gateThresholds(t, "0.03");
+	await h.root.reset("Retained task.", context);
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	await command.run({ args: "capacity release", conversation: h.root, context, host: h.host, invocationId: "release", harness: h.harness });
+	const responses = () => [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("answer"), fauxAssistantMessage("answer")];
+	await answerWith(h.root, h.faux, responses(), "Continue the task.");
+	assert.equal((await toolResults(h.root)).at(-1)?.isError, false);
+	await h.root.reset("Retained task.", context);
+	await answerWith(h.root, h.faux, responses(), "Continue the task.");
+	assert.equal((await toolResults(h.root)).at(-1)?.isError, true);
+});
+
 for (const boundary of ["reset", "compaction"] as const) {
 	test(`a ${boundary} clears a native release before a long passive tail`, { timeout: 30000 }, async (t) => {
 		const h = await startHarness(t, 2000);
