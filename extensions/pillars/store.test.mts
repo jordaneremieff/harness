@@ -381,6 +381,7 @@ test("identity loss before publication retains the sealed batch and successor pe
 	await using f = await fixture();
 	const original = fs.open;
 	let intercept = true, calls = 0;
+	let successor: Awaited<ReturnType<typeof lstat>> | undefined;
 	const warnings: string[] = [];
 	const mocked = t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
 		const handle = await original(...args);
@@ -391,6 +392,7 @@ test("identity loss before publication retains the sealed batch and successor pe
 				await sync();
 				await rm(join(f.root, "store.lock"));
 				assert.equal(await new PillarsStore(f.root).commit(batch(2), TODAY), "committed");
+				successor = await lstat(join(f.root, "store.lock"));
 				await writeFile(join(f.root, "pending.tmp"), "successor", { mode: 0o600 });
 			};
 		}
@@ -407,6 +409,10 @@ test("identity loss before publication retains the sealed batch and successor pe
 		assert.equal(calls, 1);
 		assert.equal(collector.bufferedEvents, 1);
 		assert.equal(await readFile(join(f.root, "pending.tmp"), "utf8"), "successor");
+		assert.ok(successor);
+		const named = await lstat(join(f.root, "store.lock"));
+		assert.equal(named.ino, successor.ino);
+		assert.equal(named.dev, successor.dev);
 		const shard = JSON.parse(await readFile(join(f.root, slotFor(TODAY)), "utf8"));
 		assert.equal(shard.cells[0].counters.readRequests, 1);
 		assert.deepEqual(shard.receipts, [{ owner: batch(2).owner, seq: 1 }]);
@@ -466,41 +472,70 @@ test("a cancelled publication closes its lease after the protected operation", a
 	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
 });
 
-test("collector contention retries only at explicit events and warns once per episode", async (t) => {
-	await using f = await fixture();
-	await mkdir(f.root, { mode: 0o700 });
-	let now = Date.parse(TODAY), calls = 0;
+test("collector contention defers twice and reports the third consecutive busy attempt once", async (t) => {
+	let busy = true;
 	const inputs: Batch[] = [], warnings: string[] = [];
-	const collector = new Collector({ commit: async (input, day, signal) => { inputs.push(input); calls++; return f.store.commit(input, day, signal); } }, { now: () => now, diagnostic: (message) => warnings.push(message) });
-	t.mock.timers.enable({ apis: ["setTimeout"] });
-	const held = await holdLock(f.root);
-	try {
-		collector.admit(batch().cells[0]);
-		await collector.observed();
-		t.mock.timers.tick(10000);
-		assert.equal(calls, 1);
-		now += 1000;
-		await collector.observed();
-		assert.equal(calls, 2);
-		assert.equal(inputs[0], inputs[1]);
-		assert.deepEqual(warnings, [new StoreBusyError().message]);
-	} finally { await held.close(); }
-	await collector.flush(true);
-	assert.equal(collector.bufferedEvents, 0);
-	assert.equal(inputs[0], inputs[2]);
+	const collector = new Collector({ commit: async (input) => {
+		inputs.push(input);
+		if (busy) throw new StoreBusyError();
+		return "committed";
+	} }, { now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) });
+	const incidents = t.mock.method(collector, "incident");
 	collector.admit(batch().cells[0]);
 	await collector.observed();
-	assert.equal(calls, 3);
 	await collector.flush(true);
-	assert.equal(calls, 4);
-	const again = await holdLock(f.root);
-	try {
-		collector.admit(batch().cells[0]);
-		await collector.flush(true);
-		assert.equal(warnings.length, 2);
-		assert.equal(warnings[1], new StoreBusyError().message);
-	} finally { await again.close(); }
+	assert.equal(inputs.length, 2);
+	assert.equal(inputs[0], inputs[1]);
+	assert.equal(collector.bufferedEvents, 1);
+	assert.deepEqual(warnings, []);
+	assert.equal(incidents.mock.callCount(), 0);
+	await collector.flush(true);
+	assert.deepEqual(warnings, ["Pillars aggregate writer is busy. The next publication event retries. This writer never removes the lock file. Do not remove it."]);
+	assert.deepEqual(incidents.mock.calls.map((call) => call.arguments), [["writeFailures"]]);
+	await collector.flush(true);
+	assert.equal(warnings.length, 1);
+	assert.equal(incidents.mock.callCount(), 1);
+	busy = false;
+	await collector.flush(true);
+	assert.equal(inputs[0], inputs[4]);
+	assert.equal(collector.bufferedEvents, 0);
+	await collector.flush(true);
+	assert.equal(inputs[5].health?.writeFailures, 1);
+	busy = true;
+	collector.admit(batch().cells[0]);
+	await collector.flush(true);
+	await collector.flush(true);
+	assert.equal(warnings.length, 1);
+	await collector.flush(true);
+	assert.equal(warnings.length, 2);
+	busy = false;
 	await collector.shutdown();
+});
+
+test("a busy shutdown probe reports its lost tail without another attempt", async (t) => {
+	let calls = 0;
+	const warnings: string[] = [];
+	const collector = new Collector({ commit: async () => { calls++; throw new StoreBusyError(); } },
+		{ now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) });
+	const incidents = t.mock.method(collector, "incident");
+	collector.admit(batch().cells[0]);
+	await collector.shutdown();
+	await collector.shutdown();
+	await collector.flush(true);
+	assert.equal(calls, 1);
+	assert.deepEqual(incidents.mock.calls.map((call) => call.arguments), [["writeFailures"]]);
+	assert.deepEqual(warnings, ["Pillars shutdown publication is busy. The unpublished delta is lost when this collector closes."]);
+});
+
+test("unsupported publication emits one diagnostic per collector", async () => {
+	const warnings: string[] = [];
+	const collector = new Collector({ commit: async () => { throw new StorePlatformError(); } },
+		{ now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) });
+	collector.admit(batch().cells[0]);
+	await collector.flush(true);
+	await collector.flush(true);
+	await collector.shutdown();
+	assert.deepEqual(warnings, ["Pillars aggregate writes require macOS."]);
 });
 
 test("identity loss during scan blocks collector retries without recreating the lock", async (t) => {

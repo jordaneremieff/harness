@@ -13,7 +13,7 @@ import {
 	zero,
 } from "./capacity.ts";
 
-import { StoreBusyError, StoreLockIdentityError } from "./store.ts";
+import { StoreBusyError, StoreLockIdentityError, StorePlatformError } from "./store.ts";
 
 export interface Publisher {
 	commit(batch: Batch, today: string, signal?: AbortSignal): Promise<CommitStatus>;
@@ -63,7 +63,9 @@ export class Collector {
 	private sealed?: Batch;
 	private active?: Promise<void>;
 	private publicationBlocked = false;
-	private busyWarned = false;
+	private busyAttempts = 0;
+	private platformWarned = false;
+	private shuttingDown = false;
 	private lastAttempt = -Infinity;
 	private first = true;
 	private closed = false;
@@ -181,8 +183,8 @@ export class Collector {
 	private async attempt(batch: Batch, signal?: AbortSignal): Promise<void> {
 		try {
 			const status = await this.publisher.commit(batch, utcDay(this.now()), signal);
+			this.busyAttempts = 0;
 			if (status === "committed" || status === "duplicate") {
-				this.busyWarned = false;
 				this.sequences.set(batch.day, batch.seq);
 				this.sealed = undefined;
 			} else if (REFUSED_STATUSES.includes(status)) {
@@ -193,14 +195,30 @@ export class Collector {
 				this.diagnostic("Pillars storage refused a delta. Unpersisted loss remains unknown.");
 			} else if (status === "publication_failed") this.incident("writeFailures");
 		} catch (error) {
-			this.incident("writeFailures");
-			if (error instanceof StoreLockIdentityError) {
-				this.publicationBlocked = true;
-				this.diagnostic(error.message);
-			} else if (error instanceof StoreBusyError && !this.busyWarned) {
-				this.busyWarned = true;
+			this.failed(error);
+		}
+	}
+
+	private failed(error: unknown): void {
+		if (error instanceof StoreBusyError) {
+			this.busyAttempts = Math.min(4, this.busyAttempts + 1);
+			if (this.shuttingDown) {
+				this.incident("writeFailures");
+				this.diagnostic("Pillars shutdown publication is busy. The unpublished delta is lost when this collector closes.");
+			} else if (this.busyAttempts === 3) {
+				this.incident("writeFailures");
 				this.diagnostic(error.message);
 			}
+			return;
+		}
+		this.busyAttempts = 0;
+		this.incident("writeFailures");
+		if (error instanceof StoreLockIdentityError) {
+			this.publicationBlocked = true;
+			this.diagnostic(error.message);
+		} else if (error instanceof StorePlatformError && !this.platformWarned) {
+			this.platformWarned = true;
+			this.diagnostic(error.message);
 		}
 	}
 
@@ -225,6 +243,7 @@ export class Collector {
 	async shutdown(): Promise<void> {
 		if (this.closed) return;
 		await this.active;
+		this.shuttingDown = true;
 		await this.flush(true);
 		this.closed = true;
 	}

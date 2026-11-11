@@ -77,11 +77,13 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		if (ctx.hasUI) ctx.ui.notify(text, "warning");
 		else process.stderr.write(`${text}\n`);
 	}
-	async function discover(signal?: AbortSignal): Promise<void> {
+	async function discover(signal?: AbortSignal, retainCatalog = false): Promise<boolean> {
 		try {
 			catalog = await loadCatalog(signal, options);
+			return true;
 		} catch {
-			catalog = undefined;
+			if (!retainCatalog) catalog = undefined;
+			return false;
 		}
 	}
 	pi.on("session_start", async (event, ctx) => {
@@ -352,6 +354,12 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		}
 		await usageOrExport(input, ctx);
 	}
+	async function refreshJudgment(ctx: ExtensionContext): Promise<void> {
+		if (await discover(ctx.signal, true)) return;
+		diagnostic(ctx, catalog
+			? "Pillars catalogue refresh failed. The judgment uses the last available catalogue; source reads still verify current body bytes."
+			: "Pillars catalogue refresh failed. No catalogue is available; check the configured corpus and retry.");
+	}
 	pi.registerCommand("pillars", {
 		description:
 			"Check alignment and continue the corrected work, derive candidates, review guidance, or browse Pillars. Use /pillars for help; judgment actions accept an optional hint.",
@@ -359,7 +367,7 @@ export default function pillarsExtension(pi: ExtensionAPI, options: ReadOptions 
 		handler: async (args, ctx) => {
 			const request = parseJudgmentRequest(args);
 			if (request) {
-				await discover(ctx.signal);
+				await refreshJudgment(ctx);
 				pi.sendMessage(
 					{ customType: "pillars-request", content: judgmentPrompt(request), display: true },
 					{ triggerTurn: true, deliverAs: "steer" },

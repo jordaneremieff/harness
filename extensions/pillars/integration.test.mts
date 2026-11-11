@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PillarsStore } from "./store.ts";
 import { utcDay } from "./collector.ts";
+import { zero } from "./capacity.ts";
 
 const hostRoot = process.env.PI_PILLARS_TEST_HOST_ROOT;
 const sdk: typeof import("@earendil-works/pi-coding-agent") = await import(
@@ -18,7 +19,7 @@ const ai: typeof import("@earendil-works/pi-ai") = await import(
 
 test("Pi discovery, source delivery, callbacks, commands and awaited shutdown use the actual extension", {
 	timeout: 30000,
-}, async () => {
+}, async (t) => {
 	const root = await mkdtemp(join(process.cwd(), ".pillars-sdk-test-"));
 	const previous = process.env.PI_PILLARS_DIR;
 	const previousCollect = process.env.PI_PILLARS_COLLECT;
@@ -83,7 +84,9 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		const command = session.extensionRunner.getRegisteredCommands().find((command) => command.name === "pillars");
 		assert.ok(command?.getArgumentCompletions);
 		const completions = (prefix: string) => {
+			const toolsBefore = activeSession.getActiveToolNames();
 			const result = command.getArgumentCompletions?.(prefix);
+			assert.deepEqual(activeSession.getActiveToolNames(), toolsBefore);
 			assert.notEqual(result, undefined);
 			if (result === null) return null;
 			assert.ok(Array.isArray(result), "completion returns synchronously");
@@ -117,6 +120,22 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 			assert.match(usageText(cursor), /"code":"cursor_invalid"/);
 			assert.match(usageText(cursor), /fresh|Send/);
 			assert.deepEqual(cursor.details, JSON.parse(usageText(cursor)));
+			const day = utcDay();
+			await new PillarsStore(join(root, "store")).commit({ owner: "a".repeat(32), seq: 1, day,
+				cells: Array.from({ length: 25 }, (_, index) => ({ day, observationStage: "tool_request", resourceClass: "entry",
+					resourceId: `synthetic-${index}`, model: "test/model", reasoning: "high", referenceBodyDigest: "a".repeat(64),
+					observerVersion: "1.0.0", piVersion: "1.0.0", counters: { ...zero(), readRequests: 1 } })),
+			}, day);
+			const paged = await callUsageTool("pillars_usage", { view: "revisions" });
+			const next = JSON.parse(usageText(paged)).pagination.nextCursor;
+			assert.equal(typeof next, "string");
+			await callUsageTool("pillars_usage", {});
+			const expired = await callUsageTool("pillars_usage", { cursor: next });
+			assert.equal(expired.isError, true);
+			assert.match(usageText(expired), /"code":"cursor_expired"/);
+			assert.match(usageText(expired), /Send \{\} for a fresh overview/);
+			assert.deepEqual(expired.details, JSON.parse(usageText(expired)));
+			await rm(join(root, "store"), { recursive: true, force: true });
 			await writeFile(join(root, "store"), "Unreadable synthetic aggregate root.");
 			try {
 				const unreadable = await callUsageTool("pillars_usage", {});
@@ -254,22 +273,35 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		};
 		await assertHelpCommands();
 		const assertJudgmentRefresh = async () => {
-			for (const action of ["check", "derive", "review"]) {
-				const before = completions("read ");
-				assert.ok(before?.length);
-				process.env.PI_PILLARS_CORPUS = join(root, "absent-corpus");
-				try {
-					await activeSession.prompt("/pillars help");
-					assert.deepEqual(completions("read "), before);
-					faux.setResponses([ai.fauxAssistantMessage("Synthetic judgment refresh checked.")]);
-					await activeSession.prompt(`/pillars ${action} inspect the configured corpus`);
-					await activeSession.waitForIdle();
-					assert.equal(completions("read "), null);
-				} finally {
-					process.env.PI_PILLARS_CORPUS = corpusDir;
+			const warnings: string[] = [];
+			const stderr = t.mock.method(process.stderr, "write", (text: string | Uint8Array) => { warnings.push(String(text)); return true; });
+			try {
+				for (const action of ["check", "derive", "review"]) {
+					const before = completions("read ");
+					assert.ok(before?.length);
+					process.env.PI_PILLARS_CORPUS = join(root, "absent-corpus");
+					try {
+						await activeSession.prompt("/pillars help");
+						assert.deepEqual(completions("read "), before);
+						faux.setResponses([
+							ai.fauxAssistantMessage(ai.fauxToolCall("pillars", { resource: "principle-example" })),
+							ai.fauxAssistantMessage("Synthetic judgment refresh checked."),
+						]);
+						await activeSession.prompt(`/pillars ${action} inspect the configured corpus`);
+						await activeSession.waitForIdle();
+						assert.deepEqual(completions("read "), before);
+						assert.ok(warnings.some((text) => text === "Pillars catalogue refresh failed. The judgment uses the last available catalogue; source reads still verify current body bytes.\n"));
+						const result = activeSession.messages.findLast((message) => message.role === "toolResult");
+						assert.ok(result?.role === "toolResult");
+						assert.equal(result.isError, false);
+						assert.match(usageText(result), /Use checked evidence/);
+						warnings.length = 0;
+					} finally {
+						process.env.PI_PILLARS_CORPUS = corpusDir;
+					}
+					await activeSession.prompt("/pillars browse");
 				}
-				await activeSession.prompt("/pillars browse");
-			}
+			} finally { stderr.mock.restore(); }
 		};
 		await assertJudgmentRefresh();
 		const assertJudgmentRequests = async () => {
@@ -389,15 +421,15 @@ test("Pi discovery, source delivery, callbacks, commands and awaited shutdown us
 		const cells = Object.values(captured.shards).flatMap((shard) => shard.cells);
 		assert.equal(
 			cells.reduce((n, cell) => n + cell.counters.readRequests, 0),
-			4,
+			7,
 		);
 		assert.equal(
 			cells.reduce((n, cell) => n + cell.counters.readResults, 0),
-			4,
+			7,
 		);
 		assert.equal(
 			cells.reduce((n, cell) => n + cell.counters.bodyVerifiedAtObservation, 0),
-			3,
+			6,
 		);
 		assert.equal(
 			cells.reduce((n, cell) => n + cell.counters.resultError, 0),

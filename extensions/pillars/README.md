@@ -183,9 +183,12 @@ a presentation-only module that routes the inventory and every page read
 through the host's `pillars` contribution command. Outside the terminal UI, or when the
 inventory cannot be read, `browse` falls back to the Markdown inventory text.
 Argument autocomplete filters the identifiers already discovered for the current
-session and performs no corpus I/O. Session start and an explicit non-help
-`/pillars` command refresh the catalogue. An unsuccessful refresh makes the
-catalogue unavailable rather than serving a previous configured corpus. Source
+session and performs no corpus I/O. In ordinary sessions, session start and an explicit
+non-help `/pillars` command refresh the catalogue. If a judgment command (`check`, `derive`
+or `review`) cannot refresh it, the command warns you and retains the last available
+catalogue; source reads still verify current body bytes. Without a prior catalogue,
+the tool reports that the source is unavailable. Startup and explicit refresh
+commands make the catalogue unavailable after an unsuccessful refresh. Source
 reads use current body bytes; the identifier catalogue is not a cached
 doctrine body. To discover changed identifiers or a changed corpus selection,
 run `/pillars` or start a new session. Autocomplete offers actions with
@@ -322,7 +325,8 @@ exact row is absent. Overflow never proves zero activity for a concrete identity
 ```
 
 `pillars_usage` marks every `kind:"error"` response as a tool error in ordinary
-and native sessions.
+and native sessions. An unsuccessful read returns the same JSON diagnostic in its
+text and details.
 Successful pages, including empty pages, are not errors. The tool has no declared
 structured output schema: ordinary and native Codemode scripts receive text on
 success and reject with the JSON error text on failure. Catch that failure when
@@ -460,7 +464,15 @@ a hard process-RSS promise: the Pi host and other extensions share that process.
 The collector attempts publication on its first eligible observation, later
 eligible observations, turn completion and shutdown. Ordinary observations are
 coalesced to at most one attempt per second. A deferred or contended batch stays
-buffered until another publication event; no retry timer probes the lock. Each
+buffered until another publication event; no retry timer probes the lock.
+A retained busy batch produces no warning or `writeFailures` incident until three
+consecutive busy attempts, which distinguish one collision from repeated deferral
+without a timed retry. The third attempt produces one warning and incident per
+busy sequence; a non-busy outcome resets the sequence. A busy shutdown probe
+produces a warning and incident because the unpublished tail is lost when the
+collector closes. An unsupported platform produces one diagnostic per collector:
+ordinary sessions show a warning in the UI or stderr without a UI, and native
+sessions write the diagnostic to stderr. Each
 new instance uses a fresh private owner key. Forks do not replay history.
 Unpersisted tails remain unknown after process loss or an unsuccessful final
 attempt.

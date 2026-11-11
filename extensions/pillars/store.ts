@@ -15,7 +15,7 @@ export class StoreUnavailableError extends Error {
 
 export class StoreBusyError extends StoreUnavailableError {
 	constructor() {
-		super("Pillars aggregate writer is busy. This writer never removes the lock file. Do not remove it.");
+		super("Pillars aggregate writer is busy. The next publication event retries. This writer never removes the lock file. Do not remove it.");
 		this.name = "StoreBusyError";
 	}
 }
