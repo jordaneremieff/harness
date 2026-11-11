@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it, test } from "node:test";
-import { type ExtensionAPI, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
+import { convertToLlm, type ExtensionAPI, type ExtensionContext, SessionManager } from "@earendil-works/pi-coding-agent";
 
 import { DEFAULT_LIMITS, PACKAGE_CATALOG } from "./catalog.ts";
 import type { NamedData } from "./data.ts";
@@ -887,6 +887,31 @@ describe("persistent context guidance placement", () => {
 					block?.type === "text" && block.text?.startsWith("[policy]") === true,
 			);
 		});
+
+	it("preserves the complete request prefix with retained shell and guidance notes", async (t) => {
+		const row = PACKAGE_CATALOG.find((entry) => entry.id === "bounds.fd-uncapped");
+		assert.ok(row);
+		const shell: RuleRecord = { id: row.id, source: { kind: "package" }, matcher: row.matcher,
+			definition: { ...row, state: "active" }, matcherAvailable: true, staleOverride: false };
+		const f = fixture([shell, repeatableGuide()], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+		t.after(() => f.writer.close());
+		const prepared = await f.handlers.get("before_agent_start")?.({}, f.ctx) as {
+			message: { customType: string; content: string; display: boolean };
+		};
+		assert.match(prepared.message.content, /Shell contract snapshot/);
+		f.session.appendCustomMessageEntry(prepared.message.customType, prepared.message.content, prepared.message.display);
+		f.setTranscript([f.getTranscript()[0], ...convertToLlm(f.session.buildSessionProjection().messages).map((message) => ({ ...message }))]);
+		let previous: string[] = [];
+		for (let request = 0; request < 3; request++) {
+			const projected = await f.project(request > 0);
+			assert.ok(projected);
+			const current = projected.messages.map((message) => JSON.stringify(message));
+			assert.deepEqual(current.slice(0, previous.length), previous);
+			assert.equal(current.filter((message) => message.includes("Shell contract snapshot")).length, 1);
+			assert.equal(notices(projected.messages).length, request + 2);
+			previous = current;
+		}
+	});
 
 	it("keeps every earlier request block byte-identical across eight requests", async () => {
 		const f = fixture([repeatableGuide()]);

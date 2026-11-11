@@ -1244,6 +1244,36 @@ test("context-phase guidance is selected once per period and keeps its place", a
 	}
 });
 
+test("native shell and guidance notes preserve the complete request prefix", async () => {
+	const fixture = await openFixture({ mode: "annotate", extension: DurableModule.defineExtension({
+		name: "synthetic-command", tools: [DurableModule.defineTool({ name: "bash", description: "Synthetic command tool",
+			parameters: obj({ command: str() }), execute: async () => ({ output: [{ type: "text", text: "unused" }] }) })],
+	}) });
+	try {
+		await addRule(fixture.policy, "synthetic-context", { phase: "context",
+			when: { op: "exists", path: ["context"] }, action: { kind: "guide", text: "Retain the synthetic guidance." },
+			onUnavailable: "skip", state: { observe: { op: "exists", path: ["outcome"] }, once: "period" },
+		});
+		let previous: string[] = [];
+		for (let request = 0; request < 3; request++) {
+			let current: string[] = [];
+			fixture.faux.appendResponses([(callContext) => {
+				current = callContext.messages.map((message) => JSON.stringify(message));
+				return fauxAssistantMessage("Synthetic response.");
+			}]);
+			const submitted = await fixture.root.submit({ type: "input", content: `Synthetic input ${request}.` }, context);
+			await submitted.wait(context);
+			assert.ok(current.length > previous.length);
+			assert.deepEqual(current.slice(0, previous.length), previous);
+			assert.equal(current.filter((message) => message.includes("Shell contract snapshot")).length, 1);
+			assert.equal(current.filter((message) => message.includes("Retain the synthetic guidance.")).length, 1);
+			previous = current;
+		}
+	} finally {
+		await fixture.close();
+	}
+});
+
 test("native guidance keeps its bytes and position across later requests", async () => {
 	const storage = new DurableModule.MemoryStorage();
 	const fixture = await openFixture({ mode: "annotate", storage });
