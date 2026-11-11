@@ -74,7 +74,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_await` | Keep the original native request open for exact admitted results without model calls merely to wait. Explicit interaction releases the wait with partial outcomes. A real abort stops the original request without canceling its producers. Ordinary primaries have no `agent_await` tool; they receive each answer through normal delivery. Waiting is a capability, not a staffing rule. |
 | `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. Busy recipients receive steer at the next tool boundary by default. Durable `mode: "followUp"` normally waits for the current run to end. Report admission depends on its route. During active `agent_await`, admitted explicit input, including ordinary manager reports, releases the wait and joins the current work. Native explicit report delivery releases it only for an awaited producer. These inputs do not promise separate answers. See [await admission and continuity](#await-exact-peer-results). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
-| `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; the result reports `live: false`. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
+| `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
 | `agent_attach` | Connect to the owner without a new prompt; retained unfinished work resumes. An explicit model is applied first; a failed configuration returns its failure instead of a status snapshot. |
 | `agent_configure` | Change an idle conversation's name, exact model, or reasoning level. |
@@ -2690,6 +2690,9 @@ A connection retains its initial acquire or attach-only policy. A safe read does
 not grant launch authority. Recovery first attempts attachment; an automatic
 replacement also requires retryable work and an exact owned failed-child exit.
 A clean child exit or successful owner close does not trigger a replacement.
+When a runner reports BUSY and no endpoint is verified, registration retains an
+unavailable note without adding a recovery fault or clearing a genuine earlier
+error. This proves neither a live owner nor that another startup will succeed.
 Foreign transport loss without an exit source remains unavailable and names
 `agent_attach` for an explicit endpoint check. A qualified clean-end marker for
 that exact negotiated writer identifies expected retirement, not a recovery
@@ -2717,6 +2720,9 @@ or recurring status request. A valid clean-end marker for that same writer
 overrides a still-connected retiring link. A changes-operation mismatch refuses
 without a retired-shape fallback; the current diagnostic path retains the
 unavailable publication reason.
+After a known link loss, a peer can start a working host for that storage while
+this session still shows it as unavailable with `+` and excludes it from the
+working count until this session contacts that host.
 
 A host that does not advertise `release` started on code without that operation,
 regardless of its advertised release number. After active work and result
@@ -3113,7 +3119,7 @@ Durable release. `primary-delivery/3.0.0` requires verified retained primary
 acceptance and carries retry notices and blocked causes alongside exact continuations.
 Older primary endpoints refuse delivery until their Pi process restarts. The
 retained manager contract also changes because its primary callback carries the
-transport source identity. Host operation identities remain unchanged.
+transport source identity. Host operation identities are checked independently.
 The Endpoint identity remains separate from both retained interfaces.
 
 Restart Pi windows to load the changed manager and
@@ -3125,16 +3131,24 @@ The recovery-state request contract remains at 1.0.0.
 
 `version-contract.ts` separates source release, actual loaded upstream releases,
 and operation contracts. A host advertises its descriptor in readiness and
-`runtime-contract`. Each operation names its current request and response
-contract. Client and host compare those identities before dispatch; a mismatch
-refuses that operation before a mutation or response decoding. Unchanged
-operations remain usable across independently restarted Pi windows and hosts,
-including mutations. Release ordering never grants or denies an operation.
-Profile reads, revision-checked updates, enriched discovery, handle resolution,
-and rich task admission have separate feature-scoped operations. Base wire rows
-and top-level host metadata remain unchanged. Optional profile hints live inside
-catalog `view`, outside those base schemas. An older host refuses only unsupported
-features; ordinary base operations remain available in both process directions.
+inside the `runtime-contract` hello envelope. The current hello format is
+`pi.agent.host-hello/1`, with `writerId` and `contract` fields. A client that expects
+a bare operation descriptor refuses this envelope, and the current client
+refuses a bare descriptor. No operation works across that hello boundary in
+either direction, including operations whose individual identities match.
+Earlier-format clients and hosts must finish their work and stop before adoption
+on their affected stores.
+
+After compatible hello negotiation, each operation names its current request
+and response contract. Client and host compare those identities before dispatch;
+a mismatch refuses that operation before a mutation or response decoding.
+Unchanged operations remain usable across independently restarted Pi windows
+and hosts only when both sides accept the current hello. Release ordering never
+grants or denies an operation. Profile reads, revision-checked updates, enriched
+discovery, handle resolution and rich task admission have separate feature-scoped
+operations. Optional profile hints live inside catalog `view`, outside the base
+wire rows. An unsupported operation refuses without preventing other compatible
+operations on that negotiated connection.
 
 A live host with a different `recovery-state` contract is an expected state during
 independent restarts. The manager retains the link without requesting an
