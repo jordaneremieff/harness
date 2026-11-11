@@ -1,6 +1,7 @@
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { AGENT_ENTRY_CHANNEL, type AgentEntryRequest } from "./entry-binding.ts";
+import { declareContinuityTools } from "./continuity-tools.ts";
 
 const ownerKey = Symbol.for("pi.extension.agent.owners");
 const processState = globalThis as typeof globalThis & {
@@ -21,6 +22,7 @@ export default async function registerAgentExtension(pi: ExtensionAPI): Promise<
 	pi.events.emit(AGENT_ENTRY_CHANNEL, request);
 	if (request.result?.kind === "native") {
 		await request.result.register(pi);
+		declareContinuityTools(pi);
 		return;
 	}
 	if (request.result?.kind === "rejected") {
@@ -28,4 +30,5 @@ export default async function registerAgentExtension(pi: ExtensionAPI): Promise<
 	}
 	const { registerOrdinaryAgentExtension } = await loadOrdinaryEntry();
 	registerOrdinaryAgentExtension(pi, source);
+	declareContinuityTools(pi);
 }

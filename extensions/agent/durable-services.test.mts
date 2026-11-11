@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { it } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createAssistantMessageEventStream, type AssistantMessage, type TranscriptContext, type SimpleStreamOptions, type StreamOptions } from "@earendil-works/pi-ai";
 import { Harness, MemoryStorage } from "@earendil-works/pi-durable";
-import { ProjectTrustStore, createReadToolDefinition, getPackageDir, hasTrustRequiringProjectResources } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, createReadToolDefinition, getPackageDir, hasTrustRequiringProjectResources, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { createDurableServices, LOAD_FAILURE_MAX_CHARS } from "./durable-services.ts";
 import { StatusOutputSchema, structuredObservation } from "./observation-schema.ts";
 import { promptProjectTrust } from "./trust-support.ts";
@@ -123,6 +124,48 @@ async function installedHarness(services: Awaited<ReturnType<typeof createDurabl
 	await services.install(harness);
 	return { harness, close: async () => { await services.close(); await harness.close(BACKGROUND_CONTEXT); } };
 }
+
+it("advertises registered Agent continuity tools on the public native service-load bus", { timeout: 20000 }, async (t) => {
+	const f = fixture(t);
+	const runtime = await createTestRuntime();
+	const stream = () => {
+		const message: AssistantMessage = { role: "assistant", content: [{ type: "text", text: "native continuity fixture" }], api: testModel.api, provider: testModel.provider, model: testModel.id, usage: USAGE, stopReason: "stop", timestamp: Date.now() };
+		const events = createAssistantMessageEventStream();
+		events.push({ type: "done", reason: "stop", message });
+		events.end(message);
+		return events;
+	};
+	runtime.registerNativeProvider({ id: testModel.provider, name: "Continuity fixture", getModels: () => [testModel], auth: { apiKey: { name: "Synthetic", check: async () => ({ type: "api_key" }), resolve: async () => ({ auth: {} }) } }, stream, streamSimple: stream });
+	let events: ExtensionAPI["events"] | undefined;
+	const agentSource = fileURLToPath(new URL("./index.ts", import.meta.url));
+	const services = await createDurableServices({
+		cwd: f.cwd, agentDir: f.agentDir, storageId: "continuity-fixture", trusted: true,
+		packageDir: getPackageDir(), modelRuntime: runtime, extensionPaths: [agentSource],
+		extensionFactories: [(pi) => { events = pi.events; }],
+	});
+	const installed = await installedHarness(services);
+	try {
+		assert.ok(events, "the public resource loader supplies the service-load bus");
+		assert.deepEqual(services.inventory.failed ?? [], []);
+		assert.ok(services.inventory.contributions.some((item) => item.source === realpathSync(agentSource)));
+		assert.equal(services.inventory.ordinaryOnly.includes(agentSource), false);
+		const declarations: Array<{ name: string; act: string; accepts?: (input: unknown) => boolean }> = [];
+		events.emit("harness:continuity-tools", { version: 1, declare: (tool: typeof declarations[number]) => declarations.push(tool) });
+		assert.deepEqual(declarations.map(({ name, act }) => ({ name, act })), [
+			{ name: "agent_compact", act: "compaction" }, { name: "agent_abort", act: "worker-resolution" },
+			{ name: "agent_steer", act: "worker-resolution" }, { name: "agent_send", act: "worker-resolution" },
+		]);
+		const registered = services.registry.snapshot().tools().map(({ tool }) => tool.name);
+		for (const declaration of declarations) assert.ok(registered.includes(declaration.name), declaration.name);
+		assert.equal(declarations[0].accepts, undefined);
+		assert.equal(declarations[3].accepts?.({ sessionId: "existing", message: "done", mode: "report" }), true);
+		assert.equal(declarations[3].accepts?.({ sessionId: "existing", message: "done", mode: "report", passive: true }), false);
+		const conversation = await installed.harness.root(BACKGROUND_CONTEXT, { agent: { model: { provider: testModel.provider, modelId: testModel.id } } });
+		const result = await (await conversation.submit({ type: "input", content: "Check native registration" }, BACKGROUND_CONTEXT)).wait(BACKGROUND_CONTEXT);
+		assert.equal(result.status, "done");
+		t.diagnostic(`Private native services: cwd=${f.cwd}; agentDir=${f.agentDir}; MemoryStorage; no host socket or writer claim`);
+	} finally { await installed.close(); }
+});
 
 it("collects contributions, matches sources, and installs the built-in registry", async (t) => {
 	const f = fixture(t);

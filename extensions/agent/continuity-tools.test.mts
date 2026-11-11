@@ -1,0 +1,207 @@
+import assert from "node:assert/strict";
+import { it } from "node:test";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createAgentSession, createEventBus, DefaultResourceLoader, SessionManager, SettingsManager, type AgentSession, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readPrimaryEndpointDescriptor } from "./primary-channel.ts";
+import { createTestRuntime, testModel } from "./test-runtime.mts";
+import { declareContinuityTools } from "./continuity-tools.ts";
+import { AGENT_ENTRY_CHANNEL, type AgentEntryRequest } from "./entry-binding.ts";
+import register from "./index.ts";
+
+interface Declaration {
+	name: string;
+	act: "compaction" | "worker-resolution";
+	accepts?: (input: unknown) => boolean;
+}
+
+function declarations(events: ExtensionAPI["events"]): Declaration[] {
+	const tools: Declaration[] = [];
+	events.emit("harness:continuity-tools", { version: 1, declare: (tool: Declaration) => tools.push(tool) });
+	return tools;
+}
+
+function predicates(events: ExtensionAPI["events"]): Map<string, (input: unknown) => boolean> {
+	return new Map(declarations(events).flatMap((tool) => tool.accepts ? [[tool.name, tool.accepts] as const] : []));
+}
+
+function fixture() {
+	const events = createEventBus();
+	const tools: string[] = [];
+	const pi = {
+		events, on() {}, registerCommand() {}, registerShortcut() {}, registerMessageRenderer() {}, registerToolRenderer() {},
+		registerTool(tool: { name: string }) { tools.push(tool.name); },
+	} as unknown as ExtensionAPI;
+	return { pi, events, tools };
+}
+
+it("declares whole-tool compaction and only the owned worker-resolution tools synchronously", () => {
+	const { pi, events } = fixture();
+	declareContinuityTools(pi);
+	assert.deepEqual(declarations(events).map(({ name, act }) => ({ name, act })), [
+		{ name: "agent_compact", act: "compaction" },
+		{ name: "agent_abort", act: "worker-resolution" },
+		{ name: "agent_steer", act: "worker-resolution" },
+		{ name: "agent_send", act: "worker-resolution" },
+	]);
+	assert.equal(Object.hasOwn(declarations(events)[0], "accepts"), false);
+	assert.notEqual(declarations(events)[1], declarations(events)[1], "each request gets fresh declarations");
+});
+
+it("ignores malformed protocol requests and unknown versions", () => {
+	let calls = 0;
+	const { pi, events } = fixture();
+	declareContinuityTools(pi);
+	for (const input of [undefined, null, 1, "x", [], {}, { version: 2, declare: () => calls++ }, { version: "1", declare: () => calls++ }, { version: 1 }, { version: 1, declare: 1 }]) {
+		assert.doesNotThrow(() => events.emit("harness:continuity-tools", input));
+	}
+	assert.equal(calls, 0);
+});
+
+it("accepts the current bounded abort, steer and immediate report shapes", () => {
+	const { pi, events } = fixture();
+	declareContinuityTools(pi);
+	const accept = predicates(events);
+	for (const input of [
+		{ sessionId: "@worker" }, { sessionId: "storage:1", background: true },
+		{ sessionId: "storage", release: true }, { sessionId: "s", release: true, background: false },
+		{ sessionId: "s", timerId: 1 }, { sessionId: "s", timerId: Number.MAX_SAFE_INTEGER, background: true, release: false },
+		{ sessionId: "s".repeat(256), background: false, release: false },
+	]) assert.equal(accept.get("agent_abort")?.(input), true, JSON.stringify(input));
+	for (const input of [
+		{ sessionId: "@worker", message: "stop" }, { sessionId: "s", message: "x".repeat(8000), replyTo: "r".repeat(256) },
+	]) assert.equal(accept.get("agent_steer")?.(input), true);
+	for (const input of [{ sessionId: "@worker", message: "done", mode: "report" }, { sessionId: "s".repeat(256), message: "x".repeat(8000), mode: "report" }]) {
+		assert.equal(accept.get("agent_send")?.(input), true);
+	}
+});
+
+it("refuses unknown, future, scheduling, spawn, follow-up and malformed argument forms", () => {
+	const { pi, events } = fixture();
+	declareContinuityTools(pi);
+	const accept = predicates(events);
+	for (const name of ["agent_abort", "agent_steer", "agent_send"]) {
+		const valid = name === "agent_abort" ? { sessionId: "s" } : name === "agent_steer" ? { sessionId: "s", message: "x" } : { sessionId: "s", message: "x", mode: "report" };
+		for (const input of [undefined, null, true, 1, "x", [], {}, { ...valid, sessionId: "" }, { ...valid, sessionId: 1 }, { ...valid, sessionId: "s".repeat(257) }, Object.create({ ...valid })]) assert.equal(accept.get(name)?.(input), false, name);
+		for (const field of ["unknown", "passive", "deliverAt", "checkInMinutes", "prompt", "cwd", "model", "spawn"]) {
+			assert.equal(accept.get(name)?.({ ...valid, [field]: true }), false, `${name}: ${field}`);
+		}
+		assert.equal(accept.get(name)?.({ ...valid, [Symbol("unknown")]: true }), false);
+		assert.equal(accept.get(name)?.(Object.defineProperty({ ...valid }, "unknown", { value: true })), false);
+		assert.equal(accept.get(name)?.(Object.defineProperty({ ...valid }, "sessionId", { enumerable: true, get() { throw new Error("getter must not run"); } })), false);
+	}
+});
+
+it("refuses invalid abort flags and combinations", () => {
+	const { pi, events } = fixture();
+	declareContinuityTools(pi);
+	const accept = predicates(events);
+	for (const input of [
+		{ sessionId: "s", trust: true }, { sessionId: "s", background: 1 }, { sessionId: "s", release: "true" },
+		{ sessionId: "s", timerId: 0 }, { sessionId: "s", timerId: 1.5 }, { sessionId: "s", timerId: Number.MAX_SAFE_INTEGER + 1 },
+		{ sessionId: "s", timerId: Infinity }, { sessionId: "s", timerId: undefined },
+		{ sessionId: "s", release: true, background: true }, { sessionId: "s", release: true, timerId: 1 },
+		{ sessionId: "s", message: "x" },
+	]) assert.equal(accept.get("agent_abort")?.(input), false, JSON.stringify(input));
+});
+
+it("refuses invalid messages, modes and reply targets", () => {
+	const { pi, events } = fixture();
+	declareContinuityTools(pi);
+	const accept = predicates(events);
+	for (const name of ["agent_steer", "agent_send"]) {
+		const valid = { sessionId: "s", message: "x", ...(name === "agent_send" ? { mode: "report" } : {}) };
+		for (const message of [undefined, null, 1, "", "x".repeat(8001)]) assert.equal(accept.get(name)?.({ ...valid, message }), false);
+		for (const mode of [undefined, "followUp", "steer", "spawn"]) assert.equal(accept.get(name)?.({ ...valid, mode }), false);
+	}
+	for (const replyTo of [undefined, null, 1, "", "x".repeat(257)]) assert.equal(accept.get("agent_steer")?.({ sessionId: "s", message: "x", replyTo }), false);
+	for (const replyTo of [undefined, "s"]) assert.equal(accept.get("agent_send")?.({ sessionId: "s", message: "x", mode: "report", replyTo }), false);
+});
+
+it("declares only after successful ordinary registration", { timeout: 20000 }, async () => {
+	const { pi, events, tools } = fixture();
+	await register(pi);
+	assert.deepEqual(declarations(events).map((tool) => tool.name), ["agent_compact", "agent_abort", "agent_steer", "agent_send"]);
+	for (const tool of declarations(events)) assert.ok(tools.includes(tool.name));
+	const failed = fixture();
+	failed.pi.registerTool = () => { throw new Error("registration failed"); };
+	await assert.rejects(register(failed.pi), /registration failed/);
+	assert.deepEqual(declarations(failed.events), []);
+});
+
+it("advertises only registered tools through the public ordinary resource loader", { timeout: 20000 }, async (t) => {
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "c-")));
+	const cwd = join(root, "w");
+	const agentDir = join(root, "a");
+	const sessionsRoot = join(root, "s");
+	for (const path of [cwd, agentDir, sessionsRoot]) mkdirSync(path);
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ cacheWarming: "off", retry: { enabled: false } }));
+	writeFileSync(join(agentDir, "harness.json"), "{}");
+	const saved = new Map(["PI_AGENT_DIR", "PI_CODING_AGENT_DIR", "PI_AGENT_SESSIONS_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]]));
+	Object.assign(process.env, { PI_AGENT_DIR: agentDir, PI_CODING_AGENT_DIR: agentDir, PI_AGENT_SESSIONS_DIR: sessionsRoot, PI_HARNESS_FILE: join(agentDir, "harness.json") });
+	let session: AgentSession | undefined;
+	t.after(async () => {
+		try {
+			await session?.abort();
+			const owners = (globalThis as unknown as Record<symbol, { managers: Map<string, { close(): void | Promise<void> }> }>)[Symbol.for("pi.extension.agent.owners")];
+			await owners.managers.get(sessionsRoot)?.close();
+			owners.managers.delete(sessionsRoot);
+			session?.dispose();
+		} finally {
+			for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+			rmSync(root, { recursive: true, force: true });
+			assert.equal(existsSync(root), false);
+		}
+	});
+	let events: ExtensionAPI["events"] | undefined;
+	const settingsManager = SettingsManager.create(cwd, agentDir);
+	const resourceLoader = new DefaultResourceLoader({
+		cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+		additionalExtensionPaths: [fileURLToPath(new URL("./index.ts", import.meta.url))],
+		extensionFactories: [(pi) => { events = pi.events; }],
+	});
+	await resourceLoader.reload();
+	assert.deepEqual(resourceLoader.getExtensions().errors, []);
+	assert.ok(events);
+	const declared = declarations(events);
+	assert.deepEqual(declared.map((tool) => tool.name), ["agent_compact", "agent_abort", "agent_steer", "agent_send"]);
+	const sessionManager = SessionManager.create(cwd, sessionsRoot);
+	const socketDirectory = join(sessionsRoot, ".primaries");
+	assert.ok(Buffer.byteLength(join(socketDirectory, `${sessionManager.getSessionId()}.sock`)) <= 100, "reject shared socket fallback before bind");
+	session = (await createAgentSession({ cwd, agentDir, modelRuntime: await createTestRuntime(), model: testModel, settingsManager, sessionManager, resourceLoader })).session;
+	await session.bindExtensions({});
+	for (const declaration of declared) assert.ok(session.getAllTools().some((tool) => tool.name === declaration.name), declaration.name);
+	const endpoint = readPrimaryEndpointDescriptor(sessionsRoot, sessionManager.getSessionId());
+	assert.equal(endpoint.state, "live");
+	assert.equal(endpoint.info?.socketPath.startsWith(`${socketDirectory}/`), true);
+	t.diagnostic(`Private ordinary socket: ${endpoint.info?.socketPath}`);
+});
+
+it("declares only after successful native registration, not rejection or failure", { timeout: 20000 }, async () => {
+	for (const outcome of ["success", "rejected", "failed"] as const) {
+		const { pi, events } = fixture();
+		let registered = false;
+		events.on(AGENT_ENTRY_CHANNEL, (data) => {
+			const request = data as AgentEntryRequest;
+			request.result = outcome === "rejected" ? { kind: "rejected", reason: "unselected" } : {
+				kind: "native", register: async () => {
+					assert.deepEqual(declarations(events), []);
+					await Promise.resolve();
+					if (outcome === "failed") throw new Error("native failed");
+					registered = true;
+				},
+			};
+		});
+		if (outcome === "success") {
+			await register(pi);
+			assert.equal(registered, true);
+			assert.equal(declarations(events).length, 4);
+		} else {
+			await assert.rejects(register(pi), outcome === "rejected" ? /unselected/ : /native failed/);
+			assert.equal(registered, false);
+			assert.deepEqual(declarations(events), []);
+		}
+	}
+});
