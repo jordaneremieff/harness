@@ -12,7 +12,8 @@ import { AgentCatalog } from "./catalog.ts";
 import { startDurableDelivery } from "./durable-delivery.ts";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureModelId, fixtureProvider, fixtureRegistry, hostOptions, scriptedRuntime } from "./durable-host-fixture.mts";
-import { PROVIDER_BLOCK_ERROR, providerBlockText, type ProviderBlockFact } from "./provider-block-facts.ts";
+import { PROVIDER_BLOCK_ERROR, ProviderBlockFactSchema, providerBlockText, type ProviderBlockFact } from "./provider-block-facts.ts";
+import { matchesSchema } from "./schema-check.ts";
 import { eventLog } from "./host-fixture.mts";
 import { parseHostMetadata } from "./host-protocol.ts";
 import { createPrimaryChannel, type PrimaryDelivery } from "./primary-channel.ts";
@@ -46,6 +47,8 @@ it("distinguishes provider dispatch from a retained host refusal and gives the e
 	const block = fact();
 	const first = providerBlockText(block);
 	const repeated = providerBlockText({ ...block, source: "host-block" });
+	assert.equal(first, 'Agent host: quota exceeded; explicit recovery required. This call reached the provider. Received at: 2026-10-11T01:02:03.000Z. Provider evidence: usage limit reached; reset 2026-10-11 00:00 A provider time without a stated zone has an unspecified zone. Block retained-block. Target: fixture-storage:2. Choose an explicit provider/model under your existing authority, then call agent_configure({sessionId:"fixture-storage:2",model:<explicit provider/model>}). After successful configuration, send a new agent_send follow-up. Replaying the original request keeps its original settled result.');
+	assert.equal(repeated, 'Agent host: quota exceeded; explicit recovery required. This call did not reach the provider; the host reused a retained block. Received at: 2026-10-11T01:02:03.000Z. Provider evidence: usage limit reached; reset 2026-10-11 00:00 A provider time without a stated zone has an unspecified zone. Block retained-block. Target: fixture-storage:2. Choose an explicit provider/model under your existing authority, then call agent_configure({sessionId:"fixture-storage:2",model:<explicit provider/model>}). After successful configuration, send a new agent_send follow-up. Replaying the original request keeps its original settled result.');
 	assert.ok(first.startsWith(PROVIDER_BLOCK_ERROR)); assert.ok(repeated.startsWith(PROVIDER_BLOCK_ERROR));
 	assert.ok(first.includes("This call reached the provider."));
 	assert.ok(repeated.includes("This call did not reach the provider; the host reused a retained block."));
@@ -72,18 +75,34 @@ it("keeps safe evidence and its redaction and truncation markers without constru
 	assert.doesNotMatch(missing, /agent_configure\(/u);
 });
 
+it("renders the Date boundary and unavailable receive times without changing retained evidence", () => {
+	const maximum = 8_640_000_000_000_000;
+	assert.ok(providerBlockText(fact({ timestamp: maximum })).includes("Received at: +275760-09-13T00:00:00.000Z."));
+	for (const value of [maximum + 1, Number.MAX_SAFE_INTEGER]) {
+		const block = fact({ timestamp: value }); const before = structuredClone(block);
+		assert.equal(matchesSchema(ProviderBlockFactSchema, block), true);
+		assert.doesNotThrow(() => providerBlockText(block));
+		assert.ok(providerBlockText(block).includes("This call reached the provider. Receive time unavailable. Provider evidence:"));
+		assert.deepEqual(block, before);
+	}
+});
+
 it("renders readable retained recovery facts in status output", () => {
 	initTheme("dark", false);
 	const theme = { fg: (_colour: string, value: string) => value, bg: (_colour: string, value: string) => value, getBgAnsi: () => "", bold: (value: string) => value } as unknown as Theme;
-	const block = fact();
-	const details = { conversation: { conversationId: 2, identity: target, busy: false, providerBlock: block, agent: {}, usage: {}, submissions: [] } };
-	const rendered = renderAgentResult({ content: [{ type: "text", text: JSON.stringify(details) }], details }, { expanded: true, isPartial: false }, theme, { keyText, args: {}, expanded: true, argsComplete: true, isError: false });
-	const text = rendered.render(1200).map((line) => stripVTControlCharacters(line)).join("\n");
-	assert.ok(text.includes("quota exceeded")); assert.ok(text.includes("2026-10-11T01:02:03.000Z"));
-	assert.ok(text.includes(`agent_configure({sessionId:"${target}",model:<explicit provider/model>})`));
+	for (const value of [timestamp, 8_640_000_000_000_000, 8_640_000_000_000_001, Number.MAX_SAFE_INTEGER]) {
+		const block = fact({ timestamp: value }); const before = structuredClone(block);
+		const details = { conversation: { conversationId: 2, identity: target, busy: false, providerBlock: block, agent: {}, usage: {}, submissions: [] } };
+		const rendered = renderAgentResult({ content: [{ type: "text", text: JSON.stringify(details) }], details }, { expanded: true, isPartial: false }, theme, { keyText, args: {}, expanded: true, argsComplete: true, isError: false });
+		const text = rendered.render(1200).map((line) => stripVTControlCharacters(line)).join("\n");
+		assert.ok(text.includes("quota exceeded"));
+		assert.ok(text.includes(value > 8_640_000_000_000_000 ? "Receive time unavailable." : new Date(value).toISOString()));
+		assert.ok(text.includes(`agent_configure({sessionId:"${target}",model:<explicit provider/model>})`));
+		assert.deepEqual(block, before);
+	}
 });
 
-it("delivers separate recovery facts while terminal errors stay classification-safe without another provider call", async (t) => {
+for (const receiveTime of [timestamp, 8_640_000_000_000_001, Number.MAX_SAFE_INTEGER]) it(`delivers separate recovery facts with ${receiveTime > 8_640_000_000_000_000 ? "unavailable" : "UTC"} receive time ${receiveTime} while terminal errors stay classification-safe`, async (t) => {
 	const root = await mkdtemp(join(tmpdir(), "provider-block-presentation-"));
 	const models = await scriptedRuntime([]);
 	let calls = 0;
@@ -95,7 +114,7 @@ it("delivers separate recovery facts while terminal errors stay classification-s
 	};
 	const storagePath = join(root, "storage.sqlite"); const storageId = randomUUID(); const owner = randomUUID(); const sessionsRoot = join(root, "sessions");
 	const metadata = parseHostMetadata({ storageId, storagePath, cwd: root, agentDir: join(root, "agent"), packageDir: root, model: { provider: fixtureProvider, modelId: fixtureModelId }, thinkingLevel: "off" });
-	const host = await DurableHost.open({ ...hostOptions(storagePath, models, fixtureRegistry()), storageId, cwd: root, settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
+	const host = await DurableHost.open({ ...hostOptions(storagePath, models, fixtureRegistry()), storageId, cwd: root, now: () => receiveTime, settings: { retry: { enabled: false } } }, BACKGROUND_CONTEXT);
 	let channel: Awaited<ReturnType<typeof createPrimaryChannel>> | undefined;
 	let delivery: ReturnType<typeof startDurableDelivery> | undefined;
 	t.after(async () => { await delivery?.close(); await channel?.close(); await host.close(); await rm(root, { recursive: true, force: true }); });
@@ -105,7 +124,9 @@ it("delivers separate recovery facts while terminal errors stay classification-s
 	const first = await host.submit({ message: "original task", requestId: "first-blocked", ownerId: owner, origin: "model" });
 	const original = await host.wait(first.submissionId);
 	assert.equal(original.status, "unanswered"); assert.ok(original.providerBlock);
+	assert.equal(original.providerBlock.timestamp, receiveTime);
 	const firstText = providerBlockText(original.providerBlock);
+	if (receiveTime > 8_640_000_000_000_000) assert.ok(firstText.includes("Receive time unavailable."));
 	const entry = (await host.root().entries({}, 1, undefined, BACKGROUND_CONTEXT)).items[0];
 	const firstError = entry?.model?.[0]; assert.equal(firstError?.role, "assistant");
 	assert.ok(firstError?.role === "assistant"); assert.equal(firstError.errorMessage, PROVIDER_BLOCK_ERROR);
