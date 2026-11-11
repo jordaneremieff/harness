@@ -115,8 +115,11 @@ test("ordinary fleet calls forward exact selection and reject incompatible query
 	assert.deepEqual(value.models.map((row) => row.model), ["sample/a"]);
 	assert.equal(value.selection?.filter, "model-and-provider");
 	assert.equal(value.coverage.unknownEvidenceStorages, 1);
-	for (const invalid of [{ model: "sample/a" }, { view: "fleet", sessionId: target.storageId, model: "sample/a" }, { view: "fleet", model: "broken" }])
-		await assert.rejects(tool.execute("invalid", invalid, new AbortController().signal, undefined, ctx), /require view: fleet|omit sessionId|Fleet model/u);
+	for (const { input, error } of [
+		{ input: { model: "sample/a" }, error: /require view: fleet/u },
+		{ input: { view: "fleet", sessionId: target.storageId, model: "sample/a" }, error: /Fleet status does not accept sessionId/u },
+		{ input: { view: "fleet", model: "broken" }, error: /Fleet model/u },
+	]) await assert.rejects(tool.execute("invalid", input, new AbortController().signal, undefined, ctx), error);
 	await assert.rejects(manager.status(undefined, undefined, undefined, { model: "sample/a" }), /require view: fleet/u);
 	for (const version of ["manager/4.0.0", "manager/5.0.0"]) {
 		Object.defineProperty(manager, "managerProtocol", { value: version, configurable: true });

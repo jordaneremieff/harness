@@ -740,7 +740,7 @@ it("names configured extensions that failed to load in the inventory, status, an
 		const limits = await sections.get("ordinary_only")?.render({} as never, BACKGROUND_CONTEXT);
 		assert.ok(limits?.includes(brokenPath), "the prompt limits name the failed extension");
 		assert.match(limits ?? "", /failed to load/u);
-		structuredObservation(StatusOutputSchema, { conversations: [], inventory: services.inventory, pid: 123, storageId: "fixture-load-failure" });
+		structuredObservation(StatusOutputSchema, { conversations: [], inventory: services.inventory, pid: 123, storageId: "fixture-load-failure", coverage: { complete: true, returned: 0, scanned: 0, next: null } });
 	} finally {
 		await installed.close();
 	}

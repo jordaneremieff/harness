@@ -53,7 +53,7 @@ export const StorageStatusPageInputSchema = obj({ view: lit("storage-page"), sto
 /** Object-root parameters survive provider conversion; execution validates selector combinations. */
 export const StatusToolInputSchema = obj({
 	sessionId: opt(str({ minLength: 1, description: "Default: the calling conversation; omit for the storage overview." })),
-	view: opt(union([lit("fleet"), lit("storage-page")], { description: "Read sampled machine-local model evidence with fleet, without a sessionId. Optional exact model/provider filters select published evidence, not provider health. Use storage-page for one exact storageId." })),
+	view: opt<Schema<"fleet" | "storage-page">>({ type: "string", enum: ["fleet", "storage-page"], description: "Read sampled machine-local model evidence with fleet, without a sessionId. Optional exact model/provider filters select published evidence, not provider health. Use storage-page for one exact storageId." }),
 	...FleetSelectionProperties,
 	storageId: opt(storageStatusId), cursor: opt(map(unknown(), { description: "Opaque backend cursor. Pass the returned cursor object unchanged." })), limit: opt(storageStatusLimit),
 });
