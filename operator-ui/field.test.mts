@@ -55,6 +55,56 @@ it("typing moves the cursor instead of appending at the start", () => {
 	assert.equal(field.value, "axb");
 });
 
+for (const { name, value, expected } of [
+	{ name: "embedded end delimiter", value: "before\u001b[201~after", expected: "beforeafter" },
+	{ name: "embedded start delimiter", value: "before\u001b[200~after", expected: "beforeafter" },
+	{ name: "repeated delimiters", value: "a\u001b[200~\u001b[201~b\u001b[201~\u001b[200~c", expected: "abc" },
+	{ name: "boundary delimiters", value: "\u001b[200~value\u001b[201~", expected: "value" },
+	{ name: "terminal sequences", value: "\u001b[31mred\u001b[0m\u001b[2C\u001b]0;title\u0007text", expected: "redtext" },
+	{ name: "control-only input", value: "\u0000\u0001\u0007\u0008\u000b\u000c\u000e\u001b\u001f\u007f\u0080\u009f", expected: "" },
+	{ name: "empty input", value: "", expected: "" },
+	{ name: "line breaks and tabs", value: "a\r\nb\rc\nd\te", expected: "abcd    e" },
+	{ name: "spaces and Unicode", value: "  Καλημέρα 👩🏽‍💻 e\u0301  ", expected: "  Καλημέρα 👩🏽‍💻 e\u0301  " },
+]) {
+	it(`programmatic field replacement normalises ${name} and places the cursor last`, () => {
+		const field = new TextField("Name", value);
+		assert.equal(field.value, expected);
+		field.handleInput("!");
+		assert.equal(field.value, `${expected}!`);
+		field.handleInput("\u001b[D");
+		field.value = value;
+		assert.equal(field.value, expected);
+		field.handleInput("!");
+		assert.equal(field.value, `${expected}!`);
+	});
+}
+
+it("programmatic replacement preserves focus and reports no interactive change", () => {
+	const changes: string[] = [];
+	const field = new TextField("Name", "first\u001b[201~value", (value) => changes.push(value));
+	field.focused = true;
+	field.value = "next\u001b[200~value";
+	assert.equal(field.focused, true);
+	assert.deepEqual(changes, []);
+	field.handleInput("!");
+	assert.equal(field.value, "nextvalue!");
+	assert.deepEqual(changes, ["nextvalue!"]);
+});
+
+it("interactive paste keeps native whitespace handling and change callbacks", () => {
+	const changes: string[] = [];
+	const field = new TextField("Name", "", (value) => changes.push(value));
+	field.handleInput("\u001b[200~first\r\nsecond\tlast");
+	assert.equal(field.value, "");
+	assert.deepEqual(changes, []);
+	field.handleInput("\u001b[201~");
+	assert.equal(field.value, "firstsecond    last");
+	assert.deepEqual(changes, ["firstsecond    last"]);
+	field.handleInput("!");
+	assert.equal(field.value, "firstsecond    last!");
+	assert.deepEqual(changes, ["firstsecond    last", "firstsecond    last!"]);
+});
+
 it("a text area inserts a new line on Enter", () => {
 	const changes: string[] = [];
 	const area = new TextArea("Body", theme, () => {}, "first", 4, (value) => changes.push(value));

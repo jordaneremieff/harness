@@ -85,6 +85,24 @@ it("every field is visible with its staged value", () => {
 	assert.deepEqual(form.values(), { name: "Grace", notes: "keeps context", mode: "b", target: "This session · harness" });
 });
 
+it("submit receives all printable text around staged terminal delimiters", async () => {
+	const owner = hostFixture();
+	const submitted: Array<Record<string, string>> = [];
+	const form = new Form({
+		title: "Send",
+		heading: "Send the message",
+		fields: [{ kind: "text", id: "text", label: "Text", value: "prefix\u001b[201~middle\u001b[200~suffix" }],
+		action: { label: "Send" },
+		host: owner.host,
+		submit: async (values) => {
+			submitted.push(values);
+			return undefined;
+		},
+	});
+	await form.submit();
+	assert.deepEqual(submitted, [{ text: "prefixmiddlesuffix" }]);
+});
+
 it("submit calls the owner once even when Enter repeats while the request is pending", async () => {
 	const owner = hostFixture();
 	const pending = deferredResult();
@@ -198,7 +216,7 @@ it("cancel calls the owner and leaves, and sends nothing", async () => {
 	const form = new Form({
 		title: "Apply",
 		heading: "Apply the change",
-		fields: [{ kind: "text", id: "name", label: "Name", value: "draft" }],
+		fields: [{ kind: "text", id: "name", label: "Name", value: "draft\u001b[201~tail" }],
 		action: { label: "Apply" },
 		cancelLabel: "Discard",
 		host: owner.host,
@@ -213,6 +231,7 @@ it("cancel calls the owner and leaves, and sends nothing", async () => {
 	assert.equal(actions[0]?.key, "enter", "a single-field form submits on Enter");
 	assert.equal(actions[1]?.key, "escape");
 	assert.equal(actions[1]?.label, "Discard");
+	assert.deepEqual(form.values(), { name: "drafttail" });
 	form.cancel();
 	assert.deepEqual(order, ["cancel"]);
 	assert.ok(owner.events.includes("back"));

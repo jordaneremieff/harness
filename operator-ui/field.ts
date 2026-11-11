@@ -1,6 +1,11 @@
+import { stripVTControlCharacters } from "node:util";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { CURSOR_MARKER, Editor, Input, type TUI, type TuiMouseEvent, type TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { fitLine, plainLine, visibleWidth } from "./text.ts";
+
+function replacementText(value: string): string {
+	return stripVTControlCharacters(value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "");
+}
 
 /** A single-line field: a label column, then the native pi-tui Input with its cursor and editing keys. */
 export class TextField {
@@ -18,9 +23,10 @@ export class TextField {
 
 	/** Replace the value with the cursor after its last character, where typing continues it. */
 	private place(value: string): void {
+		const safe = replacementText(value);
 		this.input.setValue("");
 		// A bracketed paste is the input's public way to insert text and move the cursor past it.
-		if (value) this.input.handleInput(`\u001b[200~${value}\u001b[201~`);
+		if (safe) this.input.handleInput(`\u001b[200~${safe}\u001b[201~`);
 	}
 
 	get focused(): boolean {

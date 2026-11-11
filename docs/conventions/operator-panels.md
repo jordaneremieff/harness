@@ -87,6 +87,12 @@ An owner builds its content as `OperatorView` objects mounted in a
   the terminal has no encoding for it), and `HitMap` (region-local click
   coordinates from the last render only).
 
+Programmatic `TextField` values are single-line text, not terminal input.
+Replacement removes terminal escape sequences and non-whitespace control
+characters before insertion. Native Input removes line breaks and expands tabs.
+Printable text and ordinary spaces remain unchanged, and the cursor follows the
+replacement.
+
 Input rules hold everywhere: while a text field has focus it takes every
 printable key, and the footer then lists only the keys that work there.
 Without a focused text field, the keys the focused view's current hints
