@@ -417,8 +417,8 @@ it("validates every status variant, including unavailable rows", async (t) => {
 		return true;
 	});
 	structuredObservation(StatusOutputSchema, { conversation: status, live: false, storageId: fixtureStorageId });
-	structuredObservation(StatusOutputSchema, { conversations: [status], live: false, storageId: fixtureStorageId });
-	structuredObservation(StatusOutputSchema, { conversations: [status], inventory, pid: 4242, storageId: fixtureStorageId });
+	structuredObservation(StatusOutputSchema, { conversations: [status], coverage: { complete: true, returned: 1, scanned: 1, next: null }, live: false, storageId: fixtureStorageId });
+	structuredObservation(StatusOutputSchema, { conversations: [status], coverage: { complete: true, returned: 1, scanned: 1, next: null }, inventory, pid: 4242, storageId: fixtureStorageId });
 	// The failure member appears only when an extension failed; both shapes are valid.
 	structuredObservation(StatusOutputSchema, { conversation: status, inventory: { ...inventory, failed: [{ path: "/ext/broken.ts", error: "boom" }] }, pid: 4242, storageId: fixtureStorageId });
 	const noTarget = (await host.request("status", {})) as { conversations: readonly unknown[] };
@@ -484,10 +484,10 @@ const validStatusVariants: Record<string, Record<string, unknown>> = {
 	"single live with delivery error": { conversation: minimalConversation, ...liveEnvelope, deliveryError: "owner unreachable" },
 	"single cold": { conversation: minimalConversation, ...coldEnvelope },
 	"single cold with awareness": { conversation: minimalConversation, ...coldEnvelope, awareness: minimalAwareness },
-	"plural live": { conversations: [minimalConversation], ...liveEnvelope },
-	"plural live with created agents": { conversations: [minimalConversation], ...liveEnvelope, createdAgents },
-	"plural cold": { conversations: [], ...coldEnvelope },
-	"plural cold with created agents and awareness": { conversations: [minimalConversation], ...coldEnvelope, createdAgents, awareness: minimalAwareness },
+	"plural live": { conversations: [minimalConversation], coverage: { complete: true, returned: 1, scanned: 1, next: null }, ...liveEnvelope },
+	"plural live with created agents": { conversations: [minimalConversation], coverage: { complete: true, returned: 1, scanned: 1, next: null }, ...liveEnvelope, createdAgents },
+	"plural cold": { conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, ...coldEnvelope },
+	"plural cold with created agents and awareness": { conversations: [minimalConversation], coverage: { complete: true, returned: 1, scanned: 1, next: null }, ...coldEnvelope, createdAgents, awareness: minimalAwareness },
 };
 
 it("accepts every status variant and keeps each one unchanged through the JSON round trip", () => {
@@ -614,7 +614,7 @@ it("leaves diagnostics for unrelated schemas on the ordinary validator errors", 
 
 it("serializes the host status and roster schemas to their published identities", () => {
 	const hash = (schema: unknown) => createHash("sha256").update(JSON.stringify(schema)).digest("hex");
-	assert.equal(hash(StatusOutputSchema), "a41cd066d24faf50cd6357c1e18c7e25b6071bebf92a2187193b04b8407d8c0c");
+	assert.equal(hash(StatusOutputSchema), "a00753e0770f9cf315e673140269e8ac0ad515a335d8aca765fd2319b71a3f24");
 	assert.equal(hash(AgentConversationSummarySchema), "9708e679163a10e256a4854a0d6b5347f8533d28d35efb707647fda100032b04");
 	assert.equal(JSON.stringify(ToolOverviewRowSchema).includes('"attention"'), true);
 	assert.equal(JSON.stringify(AgentConversationSummarySchema).includes('"attention"'), false);

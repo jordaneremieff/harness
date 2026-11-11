@@ -274,7 +274,7 @@ const OBSERVED_AT = "2026-10-02T00:00:00.000Z";
 
 function statusObservation(params: Record<string, unknown>): Record<string, unknown> {
 	const sessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
-	if (sessionId === undefined) return { conversations: [], inventory: { contributions: [], ordinaryOnly: [] }, pid: 123, storageId };
+	if (sessionId === undefined) return { conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, inventory: { contributions: [], ordinaryOnly: [] }, pid: 123, storageId };
 	return {
 		conversation: conversationStatus(sessionConversation(sessionId)),
 		inventory: { contributions: [], ordinaryOnly: [] },

@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
 import { PluginError } from "@earendil-works/chord";
 import { connectTransport, type TransportClient, type TransportRequest } from "../../transport/index.ts";
 import { observeClaim } from "./claims.ts";
+import { tryNativeWriterLease } from "./native-lease.ts";
 import { HostError, hostPaths, parseHostMetadata, type HostMetadata } from "./host-protocol.ts";
 import { HostClaimRefusedError, resolveIdleMs, runHost, type HostProcess, type HostRuntime } from "./host-process.ts";
 import { HOST_CONTRACT } from "./version-contract.ts";
@@ -16,6 +17,13 @@ import { eventLog } from "./host-fixture.mts";
 import { manualClock } from "./observation-clock-fixture.mts";
 
 function noop(): void {}
+
+function writerAvailable(config: HostMetadata): boolean {
+	const attempt = tryNativeWriterLease(hostPaths(config).claim);
+	if (attempt.kind === "busy") return false;
+	attempt.lease.release();
+	return true;
+}
 
 function fixtureRoot(t: { after(fn: () => void): void }): string {
 	const root = mkdtempSync(join(tmpdir(), "host-process-"));
@@ -183,7 +191,8 @@ it("returns a failed runtime response before shared shutdown releases the claim"
 		await host.done;
 		await host.close();
 		assert.equal(closed, 1, "fatal and explicit close share one shutdown");
-		assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "absent");
+		assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "unknown");
+		assert.equal(writerAvailable(config), true);
 	} finally { await client.dispose().catch(() => {}); }
 	const replacement = await runHost(echoRuntime, { metadata: config, idleMs: 0, announceReady: noop });
 	const next = await connectClient(config);
@@ -191,42 +200,61 @@ it("returns a failed runtime response before shared shutdown releases the claim"
 	finally { await next.dispose().catch(() => {}); await replacement.close(); }
 });
 
-it("refuses a second host while the claim is live without creating its runtime", { timeout: 15000 }, async (t) => {
+it("acknowledges owner close after writer release and before transport EOF", async (t) => {
+	const { host, metadata: config } = await startHost(fixtureRoot(t));
+	t.after(() => host.close());
+	const client = await connectClient(config);
+	t.after(() => client.dispose());
+	assert.deepEqual(await call(client, config, "close"), {});
+	assert.equal(writerAvailable(config), true);
+	await host.done;
+});
+
+it("refuses a second host while the lease is held without creating its runtime", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const { host, metadata: config } = await startHost(root);
+	t.after(() => host.close());
 	let created = false;
 	await assert.rejects(
 		runHost(() => {
 			created = true;
 			return echoRuntime();
 		}, { metadata: config, idleMs: 0, announceReady: noop }),
-		(error: unknown) => error instanceof HostClaimRefusedError && error.observation === "live",
+		(error: unknown) => error instanceof HostClaimRefusedError && error.observation === "busy",
 	);
 	assert.equal(created, false, "the losing factory never ran");
 	await host.close();
 });
 
-it("refuses a dead claim without constructing a runtime or replacing its bytes", { timeout: 15000 }, async (t) => {
+it("excludes concurrent contenders on a persistent diagnostic inode", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const config = metadata(root);
 	const paths = hostPaths(config);
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	writeFileSync(paths.claim, JSON.stringify({ token: "stale", pid: await deadPid(), host: hostname(), sessionId: config.storageId, cwd: config.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
-	const original = readFileSync(paths.claim);
+	const original = lstatSync(paths.claim);
 	let constructions = 0;
-	await Promise.all(Array.from({ length: 2 }, () => assert.rejects(runHost(() => {
+	const results = await Promise.allSettled(Array.from({ length: 2 }, () => runHost(() => {
 		constructions += 1;
 		return echoRuntime();
-	}, { metadata: config, idleMs: 0, announceReady: noop }), /offline.*all relevant writers and launchers/iu)));
-	assert.equal(constructions, 0);
-	assert.deepEqual(readFileSync(paths.claim), original);
+	}, { metadata: config, idleMs: 0, announceReady: noop, announceBusy: noop })));
+	for (const result of results) if (result.status === "fulfilled") t.after(() => result.value.close());
+	assert.equal(constructions, 1);
+	assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+	assert.equal(results.filter((result) => result.status === "rejected" && result.reason instanceof HostClaimRefusedError && result.reason.observation === "busy").length, 1);
+	assert.equal(lstatSync(paths.claim).ino, original.ino);
+	assert.equal(writerAvailable(config), false);
+	for (const result of results) if (result.status === "fulfilled") await result.value.close();
+	assert.equal(writerAvailable(config), true);
+	assert.equal(lstatSync(paths.claim).ino, original.ino);
 });
 
 it("retires after the idle window and releases the claim", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const { host, metadata: config } = await startHost(root, 50);
 	await host.done;
-	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "absent");
+	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "unknown");
+	assert.equal(writerAvailable(config), true);
 });
 
 it("waits for runtime idle before retiring", { timeout: 15000 }, async (t) => {
@@ -239,12 +267,12 @@ it("waits for runtime idle before retiring", { timeout: 15000 }, async (t) => {
 	t.after(() => host.close());
 	await checks.waitForCount(1);
 	checks[0]();
-	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "live", "busy host stays");
+	assert.equal(writerAvailable(config), false, "busy host retains exclusion");
 	await checks.waitForCount(2);
 	idle = true;
 	checks[1]();
 	await host.done;
-	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "absent");
+	assert.equal(writerAvailable(config), true);
 });
 
 it("cancels a wait on caller abort and on client disconnect", { timeout: 15000 }, async (t) => {
@@ -411,7 +439,7 @@ it("retains exclusion when native close fails", async (t) => {
 	await assert.rejects(host.close(), /native close failed/u);
 	await done;
 	await assert.rejects(runHost(echoRuntime, { metadata: config, idleMs: 0 }), HostClaimRefusedError);
-	assert.equal(observeClaim(hostPaths(config).claim, hostPaths(config).identity).kind, "live");
+	assert.equal(writerAvailable(config), false);
 });
 
 it("parses the idle window with the configured bounds", (t) => {

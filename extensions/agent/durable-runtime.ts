@@ -26,6 +26,7 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clampThinkingLevel, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { AgentCatalog, storageIdOf, validateDeliveryRecipient } from "./catalog.ts";
+import { storageStatusPageInput } from "./storage-status.ts";
 import { boundCatalogView, withAttentionHints, withModelEvidence } from "./catalog-view.ts";
 import { projectCatalogAttention } from "./catalog-attention.ts";
 import type { HostMetadata } from "./host-protocol.ts";
@@ -426,6 +427,12 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			return await observeProducerAwait(sessionId, async () => await client.request("await-state", { sessionId, ...(params.results === undefined ? {} : { results: params.results }) }, { signal: context.abortSignal }) as import("./await-facts.ts").ProducerState, (changed) => subscribe(changed, context.abortSignal), publish, context, client.onClose.bind(client));
 		} finally { await manager.close(); }
 	}
+	const readStoragePage = async (params: Record<string, unknown>, context: Context): Promise<unknown> => {
+		const input = storageStatusPageInput(params);
+		if (input.storageId === metadata.storageId) return request("status", { ...input }, controlRequestId(params), context.abortSignal);
+		const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
+		try { return await manager.status(input); } finally { await manager.close(); }
+	};
 	const dispatchResolved = async (method: Parameters<AgentControlDispatch>[0], params: Record<string, unknown>, context: Context = BACKGROUND_CONTEXT): Promise<unknown> => {
 		if (method === "await-native") return nativeResult(host, params.result as ResultReference, context);
 		if (method === "observe-producer-await") return observeAwaitProducer(params, context);
@@ -441,6 +448,7 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			const manager = new AgentManager({ root: dirname(dirname(metadata.storagePath)), agentDir: metadata.agentDir, packageDir: metadata.packageDir });
 			try { return await manager.resolveTarget(String(input.sessionId)); } finally { await manager.close(); }
 		}
+		if (method === "status" && input.view === "storage-page") return readStoragePage(input, context);
 		const params = await resolveSelectors(input, method.startsWith("collaboration-"));
 		return dispatchResolved(method, params, context);
 	};

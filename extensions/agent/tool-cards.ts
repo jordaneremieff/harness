@@ -702,6 +702,15 @@ function conversationListLines(conversations: Record<string, unknown>[], theme: 
 	return lines;
 }
 
+function storageStatusLines(conversations: readonly unknown[], value: unknown, theme: Theme): string[] {
+	const lines = conversationListLines(conversations.map(record), theme);
+	const coverage = record(value);
+	if (coverage.complete === false) lines.push(theme.fg("warning", `Storage scan incomplete · ${count(coverage.scanned) ?? 0} scanned · ${count(coverage.returned) ?? 0} returned on this page`));
+	else if (coverage.complete === true) lines.push(muted(theme, `Storage scan reached its end · ${count(coverage.scanned) ?? 0} scanned on this page`));
+	if (coverage.next !== null && coverage.next !== undefined) lines.push(muted(theme, "Continue with coverage.next using agent_status; this is not agent_list discovery"));
+	return lines;
+}
+
 function statusOverviewLines(details: Record<string, unknown>, theme: Theme): string[] | undefined {
 	if (Array.isArray(details.sessions)) {
 		const lines = sessionSummaryLines(details.sessions.map(record), theme);
@@ -710,11 +719,7 @@ function statusOverviewLines(details: Record<string, unknown>, theme: Theme): st
 		lines.push(muted(theme, "agent_list discovers stored conversations"));
 		return lines;
 	}
-	if (Array.isArray(details.conversations)) {
-		const lines = conversationListLines(details.conversations.map(record), theme);
-		lines.push(muted(theme, "agent_list discovers stored conversations"));
-		return lines;
-	}
+	if (Array.isArray(details.conversations)) return storageStatusLines(details.conversations, details.coverage, theme);
 	return undefined;
 }
 

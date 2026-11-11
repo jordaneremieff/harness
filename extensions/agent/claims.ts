@@ -1,4 +1,4 @@
-/** Writer-claim files under `<native>/.claims` and their owner-process classification. */
+/** Bounded native diagnostic records and separate process-lock observations. */
 import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, openSync, readSync, type Stats } from "node:fs";
 import { open } from "node:fs/promises";
@@ -108,19 +108,21 @@ export async function observeClaimAsync(path: string, identity: ClaimIdentity): 
 		return unreadableClaim(error);
 	}
 }
+export function validClaim(claim: unknown, identity: ClaimIdentity): claim is Record<string, unknown> & { host: string; pid: number } {
+	return record(claim) && claim.sessionId === identity.sessionId && claim.cwd === resolve(identity.cwd)
+		&& typeof claim.host === "string" && claim.host.length > 0 && timestamp(claim.createdAt)
+		&& Number.isSafeInteger(claim.pid) && Number(claim.pid) > 0 && Number(claim.pid) <= MAX_PID;
+}
+
+/** Diagnostic metadata never proves possession of the native writer lease. */
 export function classifyClaim(claim: unknown, identity: ClaimIdentity): ClaimObservation {
-	if (
-		!record(claim) ||
-		claim.sessionId !== identity.sessionId ||
-		claim.cwd !== resolve(identity.cwd) ||
-		typeof claim.host !== "string" ||
-		!claim.host ||
-		!timestamp(claim.createdAt) ||
-		!Number.isSafeInteger(claim.pid) ||
-		Number(claim.pid) <= 0 ||
-		Number(claim.pid) > MAX_PID
-	)
-		return { kind: "unknown", error: "Writer claim is invalid" };
+	if (!validClaim(claim, identity)) return { kind: "unknown", error: "Writer claim is invalid" };
+	return { kind: "unknown", label: claim.host, error: "Native claim metadata does not establish a live writer" };
+}
+
+/** Process presence remains the distinct contract of non-native process locks. */
+export function classifyProcessClaim(claim: unknown, identity: ClaimIdentity): ClaimObservation {
+	if (!validClaim(claim, identity)) return { kind: "unknown", error: "Writer claim is invalid" };
 	if (claim.host !== hostname())
 		return { kind: "unknown", label: claim.host, error: "Writer claim belongs to another host" };
 	const pid = Number(claim.pid);

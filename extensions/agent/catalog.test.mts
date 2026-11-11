@@ -137,7 +137,7 @@ it("checks file stamps on every read and observes only changed records without n
 	assert.equal(stats.mock.callCount(), 21);
 });
 
-it("reconciles missed notices, unreadable records, deletions and silent writer death on demand", async (t) => {
+it("reconciles catalogue changes without inferring ownership from process presence", async (t) => {
 	const { catalog, input } = fixture(t);
 	let now = Date.now();
 	t.mock.method(Date, "now", () => now);
@@ -151,7 +151,7 @@ it("reconciles missed notices, unreadable records, deletions and silent writer d
 	writeClaim(live, child.pid);
 	const observation = new CatalogObservation(catalog);
 	const first = await observation.read();
-	assert.equal(first.facts.get(live.storageId)?.claim.kind, "live");
+	assert.equal(first.facts.get(live.storageId)?.claim.kind, "unknown");
 	const exited = once(child, "exit");
 	child.send("exit");
 	await exited;
@@ -160,7 +160,7 @@ it("reconciles missed notices, unreadable records, deletions and silent writer d
 	const added = catalog.create(input);
 	now += 2000;
 	const current = await observation.read();
-	assert.equal(current.facts.get(live.storageId)?.claim.kind, "dead");
+	assert.equal(current.facts.get(live.storageId)?.claim.kind, "unknown");
 	assert.equal(current.facts.has(removed.storageId), false);
 	assert.equal(current.facts.get(corrupt.storageId), null);
 	assert.equal(current.facts.get(added.storageId)?.record.storageId, added.storageId);
@@ -521,15 +521,15 @@ it("keeps a record while a live or unknown writer claim exists", (t) => {
 	assert.equal(existsSync(catalog.path(invalid.storageId)), true);
 });
 
-it("recovers a proven dead local claim and discards the record", (t) => {
+it("retains a record when an exited PID does not prove native writer release", (t) => {
 	const { catalog, input } = fixture(t);
 	const { record } = catalog.createTracked(input, "request");
 	const helper = spawnSync(process.execPath, ["-e", ""]);
 	assert.ok(helper.pid, "the helper process has a pid");
 	const claim = writeClaim(record, helper.pid);
-	assert.equal(catalog.discardUnopened(record), "removed");
-	assert.equal(existsSync(catalog.path(record.storageId)), false);
-	assert.equal(existsSync(claim), true, "the dead claim is left for the next acquire");
+	assert.equal(catalog.discardUnopened(record), "writer-present");
+	assert.equal(existsSync(catalog.path(record.storageId)), true);
+	assert.equal(existsSync(claim), true, "diagnostic metadata supplies no writer-release proof");
 });
 
 it("keeps a record whose bytes changed after create", (t) => {

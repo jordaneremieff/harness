@@ -14,7 +14,7 @@ import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
 import { publishCatalogChange } from "./catalog-events.ts";
 import { dashboardText } from "./dashboard-roster.ts";
-import { connectHost, type HostConnection } from "./host-client.ts";
+import { connectHost, type HostConnection, type OwnedHostExit } from "./host-client.ts";
 import { runHost } from "./host-process.ts";
 import { hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-contract.ts";
@@ -70,13 +70,22 @@ function deadProcessId(): number {
 interface FakeConnection extends HostConnection {
 	/** Run every current change listener, as one native write notification would. */
 	change(): void;
+	exit(outcome: OwnedHostExit): Promise<void>;
 }
 
-function fakeConnection(metadata: HostMetadata, handler: (method: string, params: unknown) => Promise<unknown>, runtimeContract: RuntimeContract = HOST_CONTRACT): FakeConnection {
+function fakeConnection(metadata: HostMetadata, handler: (method: string, params: unknown) => Promise<unknown>, runtimeContract: RuntimeContract = HOST_CONTRACT, owned = false): FakeConnection {
 	let closed = false;
 	const listeners = new Set<() => void>();
 	const changes = new Set<() => void>();
+	let resolveExit: ((outcome: OwnedHostExit) => void) | undefined;
+	const ownedExit = owned ? new Promise<OwnedHostExit>((resolve) => { resolveExit = resolve; }) : undefined;
+	const close = async () => {
+		if (closed) return;
+		closed = true;
+		for (const listener of [...listeners]) listener();
+	};
 	return {
+		...(ownedExit === undefined ? {} : { ownedExit }),
 		pid: 4242,
 		socketPath: "/tmp/fake-host.sock",
 		storageId: metadata.storageId,
@@ -105,11 +114,12 @@ function fakeConnection(metadata: HostMetadata, handler: (method: string, params
 		change() {
 			for (const listener of [...changes]) listener();
 		},
-		async close() {
-			if (closed) return;
-			closed = true;
-			for (const listener of [...listeners]) listener();
+		async exit(outcome) {
+			if (!resolveExit) throw new Error("This fixture has no owned child-exit source");
+			resolveExit(outcome);
+			await close();
 		},
+		close,
 	} as FakeConnection;
 }
 
@@ -459,7 +469,7 @@ const noHost = async () => {
 	throw new Error("no live host");
 };
 
-for (const writer of ["absent", "dead"] as const) it(`does not launch a cold host on release when the writer is ${writer}`, async t => {
+for (const writer of ["absent", "dead"] as const) it(`preserves unavailable release without acquisition for ${writer} metadata`, async t => {
 	const root = fixtureRoot(t);
 	let acquisitions = 0;
 	const manager = new AgentManager(managerOptions(root, { acquire: async () => { acquisitions++; throw new Error("release acquisition is forbidden"); }, connect: noHost }));
@@ -467,7 +477,7 @@ for (const writer of ["absent", "dead"] as const) it(`does not launch a cold hos
 	const record = createRecord(manager, root);
 	manager.catalog.markRecoveryDue(record.storageId, true);
 	if (writer === "dead") writeClaim(record, claimFor(record, deadProcessId()));
-	assert.deepEqual(await manager.control("release", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }), { retiring: false, blockers: [], live: false });
+	await assert.rejects(manager.control("release", { sessionId: record.storageId }, { id: randomUUID(), cwd: root }), /no live host/u);
 	assert.equal(acquisitions, 0);
 	assert.equal(manager.catalog.read(record.storageId).recoveryDue, true, "release does not resume or discard retained work");
 });
@@ -753,7 +763,7 @@ it("refreshes the durable footer from published views at startup and after a hos
 	let connection: FakeConnection | undefined;
 	const manager = new AgentManager(managerOptions(root, {
 		createPrimary: factory.factory,
-		connect: async (metadata) => {
+		acquire: async (metadata) => {
 			connection = fakeConnection(metadata, async (method) => {
 				methods.push(method);
 				if (method === "recovery-state") return { workPending: true, deliveriesPending: true };
@@ -777,8 +787,8 @@ it("refreshes the durable footer from published views at startup and after a hos
 	const primary = fakePrimary(new AbortController().signal);
 	try {
 		await manager.registerPrimary("owner-1", primary.client);
-		await primary.statuses.waitFor((items) => items.includes("agents: 1/1 active"));
-		assert.ok(connection, "a live due record connects without launching");
+		await primary.statuses.waitFor((items) => items.includes("agents: 0/1+ active"));
+		assert.ok(connection, "a due record delegates endpoint attachment and lease exclusion to acquisition");
 		publish("idle");
 		let changes = 0;
 		const changed = deferred();
@@ -790,7 +800,7 @@ it("refreshes the durable footer from published views at startup and after a hos
 		const afterClose = changes;
 		connection.change();
 		assert.equal(changes, afterClose);
-		await primary.statuses.waitFor((items) => items.includes("agents: 0/1 active"));
+		await primary.statuses.waitFor((items) => items.includes("agents: 0/1+ active"));
 		assert.equal(methods.includes("dashboard"), false, "the footer never requests native dashboard state");
 	} finally { manager.close(); }
 });
@@ -823,13 +833,16 @@ for (const scope of ["creation", "sent-work"] as const) it(`refreshes ${scope} f
 	publish("idle");
 	const primary = fakePrimary(new AbortController().signal);
 	await manager.registerPrimary("primary", { ...primary.client, ...(scope === "sent-work" ? { sentWork: new Set([record.storageId]) } : {}) });
-	const idle = scope === "creation" ? "agents: 0/2 active · ~$0.75" : "agents: 0/1 active";
-	const working = scope === "creation" ? "agents: 1/2 active · ~$0.75" : "agents: 1/2 active";
+	const idle = scope === "creation" ? "agents: 0/2+ active · ~$0.75" : "agents: 0/1+ active";
 	assert.equal(primary.statuses.at(-1), idle);
-	for (const [state, expected] of [["working", working], ["idle", idle]] as const) {
-		const before = primary.statuses.length;
+	const notices = eventLog<void>();
+	const off = manager.subscribeRoster(() => notices.push(undefined));
+	t.after(off);
+	for (const state of ["working", "idle"] as const) {
+		const before = notices.length;
 		publish(state);
-		await primary.statuses.waitFor((items) => items.length > before && items.at(-1) === expected);
+		await notices.waitForCount(before + 1);
+		assert.equal(primary.statuses.at(-1), idle, "metadata does not establish an active native writer");
 	}
 	assert.deepEqual(manager.connectedStorageIds(), []);
 });
@@ -861,7 +874,7 @@ it("shares catalog observation across primary reload, replacement, and roster te
 	oldAbort.abort();
 	assert.equal(registrations().length, 1, "a replaced primary cannot stop its replacement's observer");
 	publish("working");
-	await replacement.statuses.waitFor((items) => items.at(-1) === "agents: 1/1 active");
+	await replacement.statuses.waitFor((items) => items.at(-1) === "agents: 0/1+ active");
 	assert.equal(old.statuses.length, oldCount, "the replaced callback receives no further status");
 	replacementAbort.abort();
 	assert.equal(replacement.statuses.at(-1), undefined);
@@ -869,11 +882,10 @@ it("shares catalog observation across primary reload, replacement, and roster te
 	const reloadAbort = new AbortController();
 	const reload = fakePrimary(reloadAbort.signal);
 	await manager.registerPrimary("primary", reload.client);
-	assert.equal(reload.statuses.at(-1), "agents: 1/1 active", "reload reads the current published state");
+	assert.equal(reload.statuses.at(-1), "agents: 0/1+ active", "reload qualifies the current published state");
 	assert.equal(registrations().length, 1);
-	const before = reload.statuses.length;
 	publish("idle");
-	await reload.statuses.waitFor((items) => items.length > before && items.at(-1) === "agents: 0/1 active");
+	await reload.statuses.waitFor((items) => items.at(-1) === "agents: 0/1+ active");
 	const roster = eventLog<void>();
 	const offRoster = manager.subscribeRoster(() => roster.push(undefined));
 	reloadAbort.abort();
@@ -1209,7 +1221,7 @@ for (const cached of [false, true]) it(`keeps a live host's recovery contract di
 	assert.equal(openings, 1);
 	assert.equal(recoveryReads.length, 0, "the caller never requests a response shape it cannot read");
 	const page = await manager.dashboardPage();
-	assert.equal(page.rows[0]?.state, "working");
+	assert.equal(page.rows[0]?.state, "unavailable");
 	assert.equal(page.rows[0]?.health?.lastError, undefined);
 	assert.match(page.rows[0]?.ownerLabel ?? "", /recovery-state.*1\.0\.0.*next start/iu);
 	const status = await manager.status() as { sessions: Array<{ ownerLabel?: string }>; failures: unknown[] };
@@ -1236,7 +1248,7 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 		acquire: async (metadata, options) => {
 			assert.equal(metadata.packageDir, packageDir, "explicit acquisition and loss recovery use the caller installation");
 			assert.equal(options?.retryAttempts, 0);
-			const client = fakeConnection(metadata, async (method) => method === "recovery-state" ? { workPending: true, deliveriesPending: true } : {});
+			const client = fakeConnection(metadata, async (method) => method === "recovery-state" ? { workPending: true, deliveriesPending: true } : {}, HOST_CONTRACT, true);
 			connections.push(client);
 			return client;
 		},
@@ -1249,10 +1261,10 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 	manager.catalog.markRecoveryDue(record.storageId, true);
 	writeClaim(record, claimFor(record, deadProcessId()));
 	for (let index = 0; index < 3; index++) {
-		await connections[index]?.close();
+		await connections[index]?.exit({ code: null, signal: "SIGKILL", failed: true });
 		await connections.waitForCount(index + 2);
 	}
-	await connections[3]?.close();
+	await connections[3]?.exit({ code: null, signal: "SIGKILL", failed: true });
 	await manager.registerPrimary("owner-2", fakePrimary(new AbortController().signal).client);
 	assert.equal(connections.length, 4, "three replacements exhaust the short-window budget");
 	const stopped = await manager.dashboardPage();
@@ -1544,7 +1556,7 @@ it("serializes simultaneous primary registrations without duplicate recovery", {
 	assert.equal(launched.includes(clean.storageId), false, "the clean control record never launches");
 });
 
-it("refuses to recover a due record with an unknown or live writer claim", { timeout: 30000 }, async (t) => {
+it("delegates marked recovery to acquisition without diagnostic ownership assumptions", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const acquired = eventLog<string>();
 	const connected: string[] = [];
@@ -1574,10 +1586,8 @@ it("refuses to recover a due record with an unknown or live writer claim", { tim
 	writeClaim(live, claimFor(live, process.pid));
 	const primary = fakePrimary(new AbortController().signal);
 	await manager.registerPrimary("owner-1", primary.client);
-	assert.deepEqual(acquired.slice().sort(), [absent.storageId, dead.storageId].sort(), "absent and dead claims launch recovery");
-	assert.deepEqual(connected, [live.storageId], "a live claim connects without launching");
-	assert.equal(acquired.includes(unknown.storageId), false, "an unknown claim does not launch");
-	assert.equal(connected.includes(unknown.storageId), false, "an unknown claim does not connect");
+	assert.deepEqual(acquired.slice().sort(), [absent.storageId, dead.storageId, unknown.storageId, live.storageId].sort());
+	assert.deepEqual(connected, [], "the acquiring boundary owns attach-first and kernel exclusion");
 });
 
 it("closes a delivery-only recovery connection when no work remains", { timeout: 30000 }, async (t) => {
@@ -1758,7 +1768,7 @@ it("shares one real attach across concurrent reads and a canceled live selection
 		acquire: async () => { acquisitions++; throw new Error("observation must not launch"); },
 	}));
 	const record = createRecord(manager, root);
-	const host = await runHost(() => ({ request: async () => ({ conversations: [], live: false, storageId: record.storageId }), close: async () => {}, isIdle: () => true }), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
+	const host = await runHost(() => ({ request: async () => ({ conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, live: false, storageId: record.storageId }), close: async () => {}, isIdle: () => true }), { metadata: hostMetadata(record), idleMs: 0, announceReady: () => {} });
 	t.after(async () => { gate.resolve(); manager.close(); await host.close(); });
 	const cancel = new AbortController();
 	const reads = Promise.all([manager.status(record.storageId), manager.snapshot(record.storageId), manager.observeLive(record.storageId, "conversation", () => {}, cancel.signal)]);
@@ -1779,7 +1789,7 @@ it("retains a healthy attachment when its optional change subscription fails", a
 	const root = fixtureRoot(t);
 	const links: FakeConnection[] = [];
 	const manager = new AgentManager(managerOptions(root, {
-		connect: async (metadata) => { const link = fakeConnection(metadata, async () => ({ conversations: [], live: false, storageId: metadata.storageId })); link.subscribeChanges = async () => { throw new Error("subscription rejected"); }; links.push(link); return link; },
+		connect: async (metadata) => { const link = fakeConnection(metadata, async () => ({ conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, live: false, storageId: metadata.storageId })); link.subscribeChanges = async () => { throw new Error("subscription rejected"); }; links.push(link); return link; },
 		acquire: noHost, observe: async () => ({}),
 	}));
 	t.after(() => manager.close());
@@ -1810,7 +1820,7 @@ it("keeps acquired clients usable when only their current change contracts disag
 				link = fakeConnection(metadata, async (method) => {
 					assert.equal(contractRefusal(method, remote), undefined);
 					methods.push(method);
-					return method === "task-submit" ? { submissionId: 7 } : { conversations: [], live: false, storageId: metadata.storageId };
+					return method === "task-submit" ? { submissionId: 7 } : { conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, live: false, storageId: metadata.storageId };
 				}, remote);
 				link.subscribeChanges = async () => { throw contractRefusal("changes", remote); };
 				return link;
@@ -1824,7 +1834,7 @@ it("keeps acquired clients usable when only their current change contracts disag
 		assert.equal(link.closed, false);
 		assert.equal(acquisitions, 1);
 		assert.deepEqual(manager.connectedStorageIds(), [record.storageId]);
-		assert.deepEqual(await manager.status(record.storageId), { conversations: [], live: false, storageId: record.storageId });
+		assert.deepEqual(await manager.status(record.storageId), { conversations: [], coverage: { complete: true, returned: 0, scanned: 0, next: null }, live: false, storageId: record.storageId });
 		assert.deepEqual(methods, ["task-submit", "status"]);
 		const overview = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
 		assert.ok(overview.failures.some((failure) => failure.storageId === `changes:${record.storageId}` && /Live change notices.*Restart/u.test(failure.error)));

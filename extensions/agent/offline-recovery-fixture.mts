@@ -3,12 +3,11 @@ import { constants, closeSync, fstatSync, lstatSync, mkdtempSync, openSync, open
 import { hostname, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { acquireHost, connectHost, type HostConnection, type HostLaunchOptions } from "./host-client.ts";
+import { acquireHost, connectHost, HostEndpointUnavailableError, type HostConnection, type HostLaunchOptions } from "./host-client.ts";
 import { hostPaths, type HostMetadata } from "./host-protocol.ts";
-import { CLAIM_BYTES, classifyClaim } from "./claims.ts";
+import { CLAIM_BYTES, validClaim } from "./claims.ts";
 import { storageIdOf } from "./catalog.ts";
 
-const DEAD_REFUSAL = "Durable host writer claim requires offline recovery with all relevant writers and launchers stopped";
 const fixtures = new Map<string, OfflineFixture>();
 const RUNNERS = ["durable-runner.ts", "durable-schedule-fixture.mts", "queue-recovery-runner.mts", "delivery-wake-crash-fixture.mts"].map(name => fileURLToPath(new URL(name, import.meta.url)));
 const FAILED_RELOAD_RUNNER = fileURLToPath(new URL("./failed-reload-fixture.mts", import.meta.url));
@@ -150,7 +149,7 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 		const paths = hostPaths(metadata); descendant(paths.claim);
 		const read = readBounded(paths.claim), value = read.value;
 		const pid = value.pid;
-		if (classifyClaim(value, paths.identity).kind === "unknown" || typeof pid !== "number" || pid <= 1 || pid === process.pid || expectedPid !== undefined && pid !== expectedPid || typeof value.token !== "string" || !value.token || value.host !== hostname() || typeof value.createdAt !== "string" || (Date.parse(value.createdAt) < createdAt || Date.parse(value.createdAt) > Date.now()) || read.id.uid !== rootIdentity.uid) fail(new Error("Fixture claim identity/lifetime is not owned"));
+		if (!validClaim(value, paths.identity) || typeof pid !== "number" || pid <= 1 || pid === process.pid || expectedPid !== undefined && pid !== expectedPid || typeof value.token !== "string" || !value.token || value.host !== hostname() || typeof value.createdAt !== "string" || (Date.parse(value.createdAt) < createdAt || Date.parse(value.createdAt) > Date.now()) || read.id.uid !== rootIdentity.uid) fail(new Error("Fixture claim identity/lifetime is not owned"));
 		return { ...read.id, path: paths.claim, bytes: read.bytes, value, metadata, pid };
 	}
 	function capture(metadata: HostMetadata, pid?: number): void {
@@ -227,15 +226,8 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 		}
 		return { launch, before };
 	}
-	function isOwnedDeadRefusal(metadata: HostMetadata, connect: boolean, before: Captured | undefined, error: unknown): boolean {
-		if (!connect && before && error instanceof Error && error.message === DEAD_REFUSAL) {
-			const current = snapshot(metadata);
-			if (equalIdentity(before, current) && before.bytes.equals(current.bytes) && gone(before.pid)) return true;
-		}
-		return false;
-	}
 	function isExpectedAttachAbsence(metadata: HostMetadata, connect: boolean, before: Captured | undefined, error: unknown): boolean {
-		if (!connect || !(error instanceof Error) || error.message !== `no live durable host for ${metadata.storageId}`) return false;
+		if (!connect || !(error instanceof HostEndpointUnavailableError)) return false;
 		metadataCheck(metadata);
 		const claimPath = hostPaths(metadata).claim;
 		descendant(claimPath);
@@ -265,7 +257,7 @@ export function allocateOfflineFixture(prefix: string, scratch = tmpdir()): Offl
 				let client: HostConnection;
 				try { client = await (connect ? connectHost : acquireHost)(metadata, launch); }
 				catch (error) {
-					if (isOwnedDeadRefusal(metadata, connect, before, error) || isExpectedAttachAbsence(metadata, connect, before, error)) { expectedRefusal = true; throw error; }
+					if (isExpectedAttachAbsence(metadata, connect, before, error)) { expectedRefusal = true; throw error; }
 					return fail(error);
 				}
 				this.clients.add(client); this.writers.add(client.pid);

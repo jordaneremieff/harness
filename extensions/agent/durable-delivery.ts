@@ -48,8 +48,7 @@ import type { DurableHost } from "./durable-host.ts";
 import { checkInFallback, currentCheckInReport, deliveryPendingCount, deliveryState, intentKey, receiptKey as storedReceiptKey, reportKey, pendingDeliveryPage, reloadDeliveryRows, terminalDeliveryState, retainedIntent, retainedReceipt, retainedReport, storeDeliveryRow } from "./delivery-store.ts";
 import { resolveSessionConversationId } from "./durable-observation.ts";
 import { acquireHost, type HostConnection } from "./host-client.ts";
-import { HostError, hostPaths, type HostMetadata } from "./host-protocol.ts";
-import { observeClaim } from "./claims.ts";
+import { HostError, HostLeaseBusyError, type HostMetadata } from "./host-protocol.ts";
 import { isChordError } from "@earendil-works/chord";
 import { DELIVERY_WAKE_RECIPIENT_LIMIT, nativeRecipientAvailability } from "./delivery-wake.ts";
 import {
@@ -573,10 +572,8 @@ export function deliveryEligibilityError(rows: readonly EligibilityRow[]): Error
 	return row === undefined ? undefined : new Error(`Delivery ${row.key} to ${row.row.ownerId}: ${row.eligibility.state}: ${row.eligibility.reason}`);
 }
 
-function transientTargetFailure(error: unknown, record: CatalogRecord): boolean {
-	if ((error instanceof HostError || isChordError(error)) && error.code === "unavailable") return true;
-	const paths = hostPaths(record);
-	return observeClaim(paths.claim, paths.identity).kind === "live";
+function transientTargetFailure(error: unknown): boolean {
+	return error instanceof HostLeaseBusyError || (error instanceof HostError || isChordError(error)) && error.code === "unavailable";
 }
 
 /**
@@ -660,7 +657,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		let connection: HostConnection;
 		try { connection = await (options.connectTarget ? options.connectTarget(record) : acquire(hostMetadata(record, metadata.packageDir))); }
 		catch (error) {
-			if (!transientTargetFailure(error, record)) unavailableTargets.set(record.storageId, { reason: `native host cannot start: ${asError(error).message}`, availability: nativeRecipientAvailability(record, metadata.packageDir) });
+			if (!transientTargetFailure(error)) unavailableTargets.set(record.storageId, { reason: `native host cannot start: ${asError(error).message}`, availability: nativeRecipientAvailability(record, metadata.packageDir) });
 			throw error;
 		}
 		unavailableTargets.delete(record.storageId);

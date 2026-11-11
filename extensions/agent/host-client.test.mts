@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { it } from "node:test";
@@ -70,6 +70,7 @@ async function openVersionedHost(root: string, contract: RuntimeContract | undef
 			calls.push(request.method);
 			if (contract && request.method === "runtime-contract") return contract;
 			if (status !== undefined && request.method === "status") return status;
+			if (request.method === "close") return {};
 			throw new Error(`unknown durable host method ${request.method}`);
 		},
 	});
@@ -142,15 +143,22 @@ it("waits for an owned launch's readiness frame instead of probing its socket", 
 	assert.equal(first.pid, second.pid);
 });
 
-it("reports a foreign live launch as starting elsewhere without retry polling", async (t) => {
+it("an unrelated live PID is diagnostic, not native ownership or release evidence", async (t) => {
 	const root = fixtureRoot(t);
 	const config = fixtureMetadata(root);
 	const paths = hostPaths(config);
 	mkdirSync(dirname(paths.claim), { recursive: true });
-	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: config.storageId, cwd: config.cwd, createdAt: new Date().toISOString() }));
-	await assert.rejects(connectHost(config), /starting elsewhere.*no readiness event/u);
-	await assert.rejects(acquireHost(config), /starting elsewhere/u);
-	await assert.rejects(waitForHostRelease(config), /No process-exit or close-completion event/u);
+	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: config.storageId, cwd: config.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
+	const inode = lstatSync(paths.claim).ino;
+	await assert.rejects(connectHost(config), /No verified native host endpoint/u);
+	await assert.rejects(waitForHostRelease(config), /No owned child-exit or owner close-completion event/u);
+	const client = await acquireHost(config, launch());
+	track(t, client.pid);
+	assert.equal(lstatSync(paths.claim).ino, inode);
+	await client.request("close").catch(() => undefined);
+	assert.ok(client.ownedExit);
+	assert.equal((await client.ownedExit).failed, false);
+	await client.close();
 });
 
 it("launches a host, echoes, and attaches to the live claim", { timeout: 30000 }, async (t) => {
@@ -172,10 +180,10 @@ it("launches a host, echoes, and attaches to the live claim", { timeout: 30000 }
 
 it("refuses to connect when no host is live", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
-	await assert.rejects(connectHost(fixtureMetadata(root), launch()), /no live durable host/u);
+	await assert.rejects(connectHost(fixtureMetadata(root), launch()), /No verified native host endpoint/u);
 });
 
-it("refuses online relaunch after owner death and preserves the retained submission", { timeout: 30000 }, async (t) => {
+it("reacquires after an owned process exit without losing the retained submission", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
 	const config = fixtureMetadata(root);
@@ -185,25 +193,33 @@ it("refuses online relaunch after owner death and preserves the retained submiss
 	const firstPid = first.pid;
 	process.kill(firstPid, "SIGKILL");
 	await waitForConnectionClose(first);
-	await assert.rejects(acquireHost(config, launch()), /offline recovery/u);
+	assert.ok(first.ownedExit);
+	await first.ownedExit;
+	const next = await acquireHost(config, launch());
+	track(t, next.pid);
+	assert.notEqual(next.pid, firstPid);
+	assert.deepEqual(await next.request("submit", { prompt: "task" }, { requestId: "stable-1" }), initial);
 	assert.equal(Object.keys(readFixtureState(statePath).submitted ?? {}).length, 1);
-	assert.equal(readFixtureState(statePath).starts, 1);
+	assert.equal(readFixtureState(statePath).starts, 2);
+	await next.close();
 	await first.close();
 });
 
-it("settles a retry-safe call with an offline recovery error after owner death", { timeout: 30000 }, async (t) => {
+it("retries a safe call only after an exact owned failed exit", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
 	const connection = await openHost(t, root);
 	const pending = connection.request("receipts", {}, { requestId: "receipts-1" });
-	const refused = assert.rejects(pending, /offline recovery/u);
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
-	await refused;
-	assert.equal(connection.pid, firstPid);
-	assert.equal(readFixtureState(statePath).starts, 1);
-	assert.equal(connection.closed, true);
+	await connection.request("timer-list", { recovered: true });
+	track(t, connection.pid);
+	assert.notEqual(connection.pid, firstPid);
+	assert.equal(readFixtureState(statePath).starts, 2);
+	await connection.request("timer-cancel");
+	await pending;
+	assert.equal(connection.closed, false);
 	await connection.close();
 });
 
@@ -218,8 +234,13 @@ it("rejects an unsafe call instead of resending it", { timeout: 30000 }, async (
 	await assert.rejects(pending, /connection was lost|disconnected|closed|peer ended/iu);
 	await waitForConnectionClose(connection);
 	await connection.close();
-	await assert.rejects(acquireHost(config, launch()), /offline recovery/u);
-	assert.equal(readFixtureState(statePath).starts, 1);
+	assert.ok(connection.ownedExit);
+	await connection.ownedExit;
+	const next = await acquireHost(config, launch());
+	track(t, next.pid);
+	assert.equal(readFixtureState(statePath).starts, 2);
+	assert.equal(readFixtureState(statePath).hangsStarted, 1, "unsafe work was not replayed");
+	await next.close();
 });
 
 it("aborting a wait cancels the host-side wait without harming the host", { timeout: 30000 }, async (t) => {
@@ -286,7 +307,7 @@ it("reports initial and changed state and stops on cancel", { timeout: 30000 }, 
 	await connection.close();
 });
 
-it("closes change subscriptions when owner death requires offline recovery", { timeout: 30000 }, async (t) => {
+it("rebinds change subscriptions after an owned failed exit with retryable work", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");
 	const connection = await openHost(t, root);
@@ -294,17 +315,21 @@ it("closes change subscriptions when owner death requires offline recovery", { t
 	const unsubscribe = await subscribeChanges(connection, () => changes.push(changes.length));
 	await changes.waitForCount(1);
 	const pending = connection.request("receipts", { requestId: "changes-resume" });
-	const refused = assert.rejects(pending, /offline recovery/u);
 	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
 	const firstPid = connection.pid;
 	process.kill(firstPid, "SIGKILL");
-	await refused;
-	assert.equal(connection.closed, true);
-	assert.equal(connection.pid, firstPid);
+	await connection.request("timer-list", { recovered: true });
+	track(t, connection.pid);
+	assert.notEqual(connection.pid, firstPid);
+	assert.equal(connection.closed, false);
+	await connection.request("timer-cancel");
+	await pending;
+	await changes.waitForCount(2);
+	unsubscribe();
 	const stopped = changes.length;
-	await connection.close();
-	assert.equal(changes.length, stopped, "closed subscriptions produce no later notification");
-	await unsubscribe();
+	await connection.request("report");
+	await connection.request("timer-list", { barrier: true });
+	assert.equal(changes.length, stopped, "disposed subscriptions produce no later notification");
 	await connection.close();
 });
 
@@ -351,13 +376,20 @@ it("reads a snapshot through a bounded helper connection", { timeout: 30000 }, a
 	await client.close();
 });
 
-it("refuses to replace a claim owned by another host", { timeout: 30000 }, async (t) => {
+it("does not infer a native writer from a diagnostic hostname", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const config = fixtureMetadata(root);
 	const paths = hostPaths(config);
 	mkdirSync(dirname(paths.claim), { recursive: true });
 	writeFileSync(paths.claim, JSON.stringify({ token: "other", pid: process.pid, host: "another-machine", sessionId: config.storageId, cwd: config.cwd, createdAt: new Date().toISOString() }), { mode: 0o600 });
-	await assert.rejects(acquireHost(config, launch()), /cannot be replaced/u);
+	const original = lstatSync(paths.claim).ino;
+	const connection = await acquireHost(config, launch());
+	track(t, connection.pid);
+	assert.equal(lstatSync(paths.claim).ino, original);
+	await connection.request("close").catch(() => undefined);
+	assert.ok(connection.ownedExit);
+	assert.equal((await connection.ownedExit).failed, false);
+	await connection.close();
 });
 
 it("keeps a deep agent directory working with a short socket path", { timeout: 30000 }, async (t) => {
@@ -455,15 +487,16 @@ it("signals unavailable without relaunching after a host kill while observing", 
 	assert.equal(connection.closed, true, "the connection closes for the manager's bounded recovery");
 });
 
-it("keeps a task observation live after clean writer retirement and reconnect", { timeout: 10000 }, async (t) => {
+it("keeps a task observation live after an owned failed exit and reconnect", { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t), markers = markerFixture(t, root), config = fixtureMetadata(root);
-	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_RETIRE: "clean", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_NOTIFY: markers.notifyPath } }));
 	track(t, connection.pid); t.after(() => connection.close());
 	const observation = await observeFrames(connection, { scope: "tasks", sessionId: config.storageId });
 	const firstPid = connection.pid, frames = eventLog<{ fresh: boolean; state?: string }>();
 	observation.onFrame((_frame, fresh, state) => frames.push({ fresh, state }));
 	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
 	await markers.marker("snapshot-gated");
+	process.kill(firstPid, "SIGKILL");
 	await pending;
 	track(t, connection.pid);
 	await frames.waitFor((items) => connection.pid !== firstPid && items.filter((item) => item.fresh && item.state === "live").length >= 2);
@@ -478,13 +511,14 @@ it("keeps a task observation live after clean writer retirement and reconnect", 
 
 it("marks a refused observation reopen unavailable without closing the recovered connection", { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t), markers = markerFixture(t, root), config = fixtureMetadata(root);
-	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_RETIRE: "clean", DURABLE_TEST_OBSERVATION_REOPEN: "fail", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_OBSERVATION_REOPEN: "fail", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
 	track(t, connection.pid); t.after(() => connection.close());
 	const observation = await observeFrames(connection, { scope: "conversation", sessionId: config.storageId });
 	const firstPid = connection.pid, states = eventLog<string | undefined>();
 	observation.onFrame((_frame, _fresh, state) => states.push(state));
 	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
 	await markers.marker("snapshot-gated");
+	process.kill(firstPid, "SIGKILL");
 	await pending;
 	track(t, connection.pid);
 	await markers.marker("observation-reopen-refused");
@@ -499,11 +533,13 @@ it("marks a refused observation reopen unavailable without closing the recovered
 	await observation.close();
 });
 
-for (const scope of ["tasks", "conversation"] as const) it(`marks ${scope} unavailable when a pending safe call encounters an orphan claim`, { timeout: 10000 }, async (t) => {
+for (const scope of ["tasks", "conversation"] as const) it(`attach-only ${scope} observation never launches after host loss`,  { timeout: 10000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const markers = markerFixture(t, root);
 	const config = fixtureMetadata(root);
-	const connection = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+	const owner = await acquireHost(config, observationLaunch({ env: { DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+	t.after(() => owner.close());
+	const connection = await connectHost(config, observationLaunch());
 	track(t, connection.pid);
 	t.after(() => connection.close());
 	const observation = await observeFrames(connection, { scope, sessionId: config.storageId });
@@ -519,7 +555,7 @@ for (const scope of ["tasks", "conversation"] as const) it(`marks ${scope} unava
 		unavailable();
 	});
 	const pending = connection.request("snapshot", { sessionId: config.storageId, fixtureHold: true });
-	const refused = assert.rejects(pending, /offline recovery/u);
+	const refused = assert.rejects(pending, /unavailable|closed|connect|disconnected/iu);
 	await markers.marker("snapshot-gated");
 	process.kill(firstPid, "SIGKILL");
 	await refused;
@@ -533,4 +569,147 @@ for (const scope of ["tasks", "conversation"] as const) it(`marks ${scope} unava
 	await observation.close();
 	await connection.close();
 	assert.equal(failures, 1, "the failed observation receives one unavailable event");
+});
+
+it("a successful owner close differs from local transport disposal", async (t) => {
+	const peer = await openVersionedHost(fixtureRoot(t), HOST_CONTRACT, {});
+	t.after(() => peer.close());
+	const local = await connectHost(peer.metadata);
+	await local.close();
+	assert.equal(local.ownerReleased, false);
+	assert.equal(peer.calls.includes("close"), false);
+	const owner = await connectHost(peer.metadata);
+	await owner.request("close");
+	assert.equal(owner.ownerReleased, true);
+	await owner.close();
+});
+
+it("close during a held observation rebind prevents every late live callback", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
+	const release = markers.hold("observation-reopen-held");
+	t.after(release);
+	const connection = await acquireHost(metadata, observationLaunch({ env: { DURABLE_TEST_OBSERVATION_REOPEN: "hold", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+	track(t, connection.pid);
+	t.after(() => connection.close());
+	const observation = await observeFrames(connection, { scope: "conversation", sessionId: metadata.storageId });
+	const states: Array<string | undefined> = [];
+	observation.onFrame((_frame, _fresh, state) => states.push(state));
+	const pending = connection.request("snapshot", { sessionId: metadata.storageId, fixtureHold: true });
+	await markers.marker("snapshot-gated");
+	process.kill(connection.pid, "SIGKILL");
+	await markers.marker("observation-reopen-held");
+	await pending;
+	track(t, connection.pid);
+	await connection.close();
+	const settled = states.slice();
+	assert.equal(settled.filter((state) => state === "unavailable").length, 1);
+	release();
+	await markers.marker("observation-reopen-finished");
+	const independent = await connectHost(metadata);
+	t.after(() => independent.close());
+	await independent.request("status", { sessionId: metadata.storageId });
+	assert.deepEqual(states, settled);
+	assert.equal(connection.closed, true);
+	await observation.close();
+	await independent.request("close").catch(() => undefined);
+});
+
+function lifecycleRunner(mode: string): string {
+	return `
+		import { readFileSync, writeFileSync, renameSync } from "node:fs";
+		import { join } from "node:path";
+		import { runHost } from ${JSON.stringify(new URL("./host-process.ts", import.meta.url).href)};
+		import { formatHostReady } from ${JSON.stringify(new URL("./host-protocol.ts", import.meta.url).href)};
+		import { publishFixtureMarker } from ${JSON.stringify(new URL("./testdata/durable-runtime/signal.ts", import.meta.url).href)};
+		const metadata = JSON.parse(process.argv.at(-1));
+		const path = join(metadata.cwd, "lifecycle-state.json");
+		let starts = 0; try { starts = JSON.parse(readFileSync(path, "utf8")).starts; } catch {}
+		let ready, finish;
+		const host = await runHost(() => {
+			writeFileSync(path, JSON.stringify({ starts: ++starts }));
+			return {
+				request: async method => {
+					if (method === "receipts") {
+						await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "waiting");
+						return new Promise(resolve => { finish = resolve; });
+					}
+					if (method === "timer-cancel") finish?.({ done: true });
+					return { starts, alive: true };
+				}, close: async () => { finish?.({ done: true }); }, isIdle: () => false
+			};
+		}, { metadata, idleMs: 0, announceReady: value => { ready = value; } });
+		if (${JSON.stringify(mode)} !== "recovery" || starts > 1) await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "ready");
+		if (${JSON.stringify(mode)} === "connect-failure") renameSync(ready.socketPath, ready.socketPath + ".held");
+		if (${JSON.stringify(mode)} === "invalid") process.stdout.write("PI_AGENT_HOST_READY not-json\\n");
+		else process.stdout.write(formatHostReady(${JSON.stringify(mode)} === "wrong-path" ? { ...ready, socketPath: ready.socketPath + ".wrong" } : ready));
+		if (${JSON.stringify(mode)} === "connect-failure") {
+			await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "restore");
+			renameSync(ready.socketPath + ".held", ready.socketPath);
+			await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "restored");
+		}
+		await host.done;
+	`;
+}
+
+for (const mode of ["invalid", "wrong-path", "connect-failure", "deadline", "cancel"] as const) it(`${mode} startup observation never kills a resumed runtime`, { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
+	const release = markers.hold("ready");
+	t.after(release);
+	const restore = markers.hold("restore");
+	t.after(restore);
+	const controller = new AbortController();
+	const pending = acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", lifecycleRunner(mode)], launchTimeoutMs: mode === "deadline" ? 3000 : 10000, signal: controller.signal, env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
+	const rejected = assert.rejects(pending);
+	await markers.marker("ready");
+	if (mode === "cancel") controller.abort(new Error("withdrawn"));
+	if (mode === "invalid" || mode === "wrong-path" || mode === "connect-failure") release();
+	await rejected;
+	release();
+	if (mode === "connect-failure") { restore(); await markers.marker("restored"); }
+	const surviving = await connectHost(metadata);
+	track(t, surviving.pid);
+	t.after(() => surviving.close());
+	assert.deepEqual(await surviving.request("timer-list"), { starts: 1, alive: true });
+	await surviving.request("close").catch(() => undefined);
+});
+
+it("close during held recovery never installs a late link or stops its independent host", { timeout: 15000 }, async (t) => {
+	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
+	const release = markers.hold("ready");
+	t.after(release);
+	const connection = await acquireHost(metadata, { runner: "--input-type=module", runnerArgs: ["--eval", lifecycleRunner("recovery")], launchTimeoutMs: 10000, env: { DURABLE_TEST_NOTIFY: markers.notifyPath } });
+	track(t, connection.pid);
+	t.after(() => connection.close());
+	const pending = connection.request("receipts");
+	const rejected = assert.rejects(pending);
+	await markers.marker("waiting");
+	process.kill(connection.pid, "SIGKILL");
+	await markers.marker("ready");
+	await connection.close();
+	await rejected;
+	release();
+	const independent = await connectHost(metadata);
+	track(t, independent.pid);
+	t.after(() => independent.close());
+	assert.deepEqual(await independent.request("timer-list"), { starts: 2, alive: true });
+	assert.equal(connection.closed, true);
+	await assert.rejects(connection.request("status"), /closed/u);
+	await independent.request("close").catch(() => undefined);
+});
+
+it("a clean owned exit does not automatically resume a pending read", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), markers = markerFixture(t, root), metadata = fixtureMetadata(root);
+	const connection = await acquireHost(metadata, observationLaunch({ env: { DURABLE_TEST_RETIRE: "clean", DURABLE_TEST_NOTIFY: markers.notifyPath } }));
+	track(t, connection.pid);
+	t.after(() => connection.close());
+	const firstPid = connection.pid;
+	const pending = connection.request("snapshot", { sessionId: metadata.storageId, fixtureHold: true });
+	const rejected = assert.rejects(pending);
+	await markers.marker("snapshot-gated");
+	await rejected;
+	await new Promise<void>((resolve) => { connection.onClose(resolve); });
+	assert.equal(connection.closed, true);
+	assert.equal(connection.pid, firstPid);
+	assert.ok(connection.ownedExit);
+	assert.equal((await connection.ownedExit).failed, false);
 });

@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { storageStatusPageInput, type StorageStatusPageInput } from "./storage-status.ts";
+import { PluginError, isChordError } from "@earendil-works/chord";
 import { createColdObservationCache } from "./cold-observation.ts";
 import { nativeRecipientAvailability, readDeliveryWake } from "./delivery-wake.ts";
 import { launchIndependentCommand, type IndependentCommandInput, type IndependentCommandReceipt } from "./independent-launch.ts";
@@ -24,9 +26,9 @@ import { readRelatedEfforts, type EffortPresencePage, type EffortReadResources }
 import { createPrimaryLocationResolver, type PrimaryLocationResolver } from "./effort-location.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
-import { acquireHost, connectHost, HostReadinessUnavailableError, type HostConnection, type HostObservationListener } from "./host-client.ts";
-import { hostRequestVersionError, hostPaths, type HostMetadata } from "./host-protocol.ts";
-import { observeClaim, type ClaimObservation } from "./claims.ts";
+import { acquireHost, connectHost, HostEndpointUnavailableError, type HostConnection, type HostObservationListener } from "./host-client.ts";
+import { HostError, hostRequestVersionError, type HostMetadata } from "./host-protocol.ts";
+import type { ClaimObservation } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
 import type { AgentConversationPage, AgentConversationSummary, AgentPriorityPage, AgentPrioritySummary } from "./dashboard-types.ts";
 import type { ConversationSnapshotPage } from "./durable-observation.ts";
@@ -360,8 +362,8 @@ export class AgentManager {
 		try { return await this.connection(record, primary, false); }
 		catch (error) {
 			if (this.shuttingDown || primary?.signal.aborted) throw error;
-			const paths = hostPaths(record);
-			if (observeClaim(paths.claim, paths.identity).kind === "live") throw error;
+			if (error instanceof HostEndpointUnavailableError) return undefined;
+			if (error instanceof HostError || isChordError(error) || error instanceof PluginError) throw error;
 			return undefined;
 		}
 	}
@@ -618,14 +620,7 @@ export class AgentManager {
 	}
 
 	private async releaseControl(record: CatalogRecord, params: Record<string, unknown>, caller: AgentCaller): Promise<unknown> {
-		let client: HostConnection;
-		try { client = await this.connection(record, undefined, false); }
-		catch (error) {
-			if (this.shuttingDown || this.lifecycle.signal.aborted) throw error;
-			const paths = hostPaths(record), writer = observeClaim(paths.claim, paths.identity);
-			if (writer.kind !== "absent" && writer.kind !== "dead") throw error;
-			return { retiring: false, blockers: [], live: false };
-		}
+		const client = await this.connection(record, undefined, false);
 		return this.controlClient(client, "release", params, caller);
 	}
 
@@ -813,7 +808,7 @@ export class AgentManager {
 			const recoveryError = this.recoveryErrors.get(record.storageId);
 			const note = this.recoveryNotes.get(record.storageId);
 			rows.push(...projection.rows.map((row) => ({ ...row, rosterOrder: { priority, modifiedAt }, ...(record.ownerId ? { creatingOwnerId: record.ownerId } : {}),
-				...(note === undefined || row.owner !== "here" ? {} : { ownerLabel: `${note} ${row.ownerLabel ?? ""}`.trim() }),
+				...(note === undefined ? {} : { ownerLabel: `${note} ${row.ownerLabel ?? ""}`.trim() }),
 				...(recoveryError === undefined ? {} : { health: { ...row.health, lastError: recoveryError } }) })));
 		}
 		return { rows, coverage, observedAt: page.observedAt };
@@ -839,7 +834,11 @@ export class AgentManager {
 			if (hint !== undefined) row.attention = hint;
 			row.owner = claimOwner(claim);
 			row.ownerLabel = `Host metadata at ${view.updatedAt}; claim observed at ${observedAt}${claim.kind === "unknown" ? `; ${claim.error}` : ""}`;
-			if (claim.kind !== "live" && row.state === "working") row.state = "interrupted";
+			if (claim.kind === "unknown" && row.state === "working") {
+				row.state = "unavailable";
+				row.partial = true;
+				row.error = claim.error;
+			} else if (claim.kind !== "live" && row.state === "working") row.state = "interrupted";
 			if (claim.kind !== "live") row.currentTool = undefined;
 			return enrichDashboardRow(row, view.profiles);
 		});
@@ -910,7 +909,12 @@ export class AgentManager {
 		return this.control("collaboration-mutate", { ...input, sessionId, senderIdentity: caller.id, origin: input.origin ?? "model", requestId: input.requestId ?? randomUUID() }, caller);
 	}
 
-	async status(sessionId?: string, view?: "fleet", caller?: AgentCaller, selection: FleetSelection = {}): Promise<unknown> {
+	async status(sessionId?: string | StorageStatusPageInput, view?: "fleet", caller?: AgentCaller, selection: FleetSelection = {}): Promise<unknown> {
+		if (typeof sessionId === "object") {
+			const input = storageStatusPageInput(sessionId);
+			if (view !== undefined || Object.keys(selection).length !== 0) throw new Error("Storage status does not accept fleet selectors");
+			return this.observe(this.nativeTarget(input.storageId), "status", { ...input });
+		}
 		validateFleetSelection({ ...selection, view, sessionId });
 		if (view === "fleet") {
 			return readFleetStatus(this.catalog, { ...selection, ...(caller ? { effort: { callerId: caller.id, callerUsage: caller.reportedUsage } } : {}) });
@@ -1146,14 +1150,14 @@ export class AgentManager {
 		}
 	}
 
-	private async enqueueRecovery(due: CatalogRecord[], primary: RecoveryOwner, afterLoss = false): Promise<void> {
+	private async enqueueRecovery(due: CatalogRecord[], primary: RecoveryOwner): Promise<void> {
 		let next = 0;
 		const recover = async () => {
 			while (!this.stopping(primary) && next < due.length) {
 				const record = due[next++];
 				if (record) {
 					this.queuedRecovery.delete(record.storageId);
-					await this.recover(record, primary, afterLoss);
+					await this.recover(record, primary);
 				}
 			}
 		};
@@ -1163,7 +1167,7 @@ export class AgentManager {
 		for (const record of due.slice(next)) this.queuedRecovery.delete(record.storageId);
 	}
 
-	private async recover(record: CatalogRecord, primary: RecoveryOwner, afterLoss: boolean): Promise<void> {
+	private async recover(record: CatalogRecord, primary: RecoveryOwner): Promise<void> {
 		if (this.crashes.get(record.storageId)?.stopped) return;
 		const cached = this.clients.get(record.storageId);
 		if (cached) {
@@ -1174,20 +1178,15 @@ export class AgentManager {
 		const recovering = this.recoveryClients.get(record.storageId);
 		if (recovering) { await recovering.refresh(); return; }
 		if (this.recovering.has(record.storageId)) return;
-		const paths = hostPaths(record);
-		const claim = observeClaim(paths.claim, paths.identity);
-		if (claim.kind === "unknown") { this.recordRecoveryError(record.storageId, claim.error); return; }
 		this.recovering.add(record.storageId);
 		try {
-			const open = claim.kind === "live" && !afterLoss ? this.options.connect ?? connectHost : this.options.acquire ?? acquireHost;
+			const open = this.options.acquire ?? acquireHost;
 			const client = await open(hostMetadata(record, this.options.packageDir), MANAGED_LINK);
 			if (this.stopping(primary)) { await client.close(); this.recovering.delete(record.storageId); return; }
 			this.recoveryErrors.delete(record.storageId);
 			await this.monitorRecovery(record.storageId, client, primary);
 		} catch (error) {
 			this.recovering.delete(record.storageId);
-			// A competing writer owns startup. Its catalogue publication triggers the next observation.
-			if (error instanceof HostReadinessUnavailableError) return;
 			this.recordRecoveryError(record.storageId, errorText(error));
 		}
 	}
@@ -1222,28 +1221,33 @@ export class AgentManager {
 		void this.refreshFooter();
 	}
 
-	private hostLost(storageId: string): void {
-		const primary = [...this.primaries.values()].find((candidate) => !this.stopping(candidate));
-		if (!primary || this.queuedRecovery.has(storageId)) return;
-		try {
-			const record = this.catalog.read(storageId);
-			if (record.recoveryDue !== true || this.crashes.get(storageId)?.stopped) return;
-			// Clean native shutdown releases the writer claim before the transport closes.
-			// A retained delivery marker alone is not evidence of an unexpected host loss.
-			const paths = hostPaths(record);
-			if (observeClaim(paths.claim, paths.identity).kind === "absent") return;
-			const now = Date.now();
-			const times = (this.crashes.get(storageId)?.times ?? []).filter((time) => now - time < CRASH_WINDOW_MS);
-			times.push(now);
-			const stopped = times.length > MAX_AUTOMATIC_RESTARTS;
-			this.crashes.set(storageId, { times, stopped });
-			if (stopped) {
-				this.recordRecoveryError(storageId, "Automatic recovery stopped after repeated host losses within 60 seconds. Inspect the host error, then use agent_attach to retry.");
-				return;
-			}
-			this.queuedRecovery.add(storageId);
-			void this.enqueueRecovery([record], primary, true).catch((error) => { this.queuedRecovery.delete(storageId); this.recordRecoveryError(storageId, errorText(error)); });
-		} catch (error) { this.recordRecoveryError(storageId, errorText(error)); }
+	private hostLost(storageId: string, client: HostConnection): void {
+		if (this.shuttingDown || client.ownerReleased) return;
+		try { if (this.catalog.read(storageId).recoveryDue !== true) return; }
+		catch (error) { this.recordRecoveryError(storageId, errorText(error)); return; }
+		const recover = () => {
+			const primary = [...this.primaries.values()].find((candidate) => !this.stopping(candidate));
+			if (!primary || this.queuedRecovery.has(storageId)) return;
+			try {
+				const record = this.catalog.read(storageId);
+				if (record.recoveryDue !== true || this.crashes.get(storageId)?.stopped) return;
+				const now = Date.now();
+				const times = (this.crashes.get(storageId)?.times ?? []).filter((time) => now - time < CRASH_WINDOW_MS);
+				times.push(now);
+				const stopped = times.length > MAX_AUTOMATIC_RESTARTS;
+				this.crashes.set(storageId, { times, stopped });
+				if (stopped) { this.recordRecoveryError(storageId, "Automatic recovery stopped after repeated host losses within 60 seconds. Inspect the host error, then use agent_attach to retry."); return; }
+				this.queuedRecovery.add(storageId);
+				void this.enqueueRecovery([record], primary).catch((error) => { this.queuedRecovery.delete(storageId); this.recordRecoveryError(storageId, errorText(error)); });
+			} catch (error) { this.recordRecoveryError(storageId, errorText(error)); }
+		};
+		if (!client.ownedExit) {
+			this.recordRecoveryError(storageId, "Host link is unavailable without an owned child-exit event. Retained work remains; use agent_attach for explicit recovery.");
+			return;
+		}
+		void client.ownedExit.then((outcome) => { if (outcome.failed && !client.ownerReleased) recover(); }, (error: unknown) => {
+			if (!this.shuttingDown) this.recordRecoveryError(storageId, `Owned host exit is unavailable: ${errorText(error)}`);
+		});
 	}
 
 	private async monitorRecovery(storageId: string, client: HostConnection, primary: RecoveryOwner): Promise<void> {
@@ -1268,7 +1272,7 @@ export class AgentManager {
 		const lost = () => {
 			if (closed) return;
 			close();
-			this.hostLost(storageId);
+			this.hostLost(storageId, client);
 		};
 		removeClose = client.onClose(lost);
 		const check = async () => {
@@ -1314,7 +1318,7 @@ export class AgentManager {
 			this.subscriptions.get(storageId)?.();
 			this.subscriptions.delete(storageId);
 			this.failures.delete(`changes:${storageId}`);
-			this.hostLost(storageId);
+			this.hostLost(storageId, client);
 			this.catalogChanged([storageId]);
 		});
 		if (!client.subscribeChanges) return;

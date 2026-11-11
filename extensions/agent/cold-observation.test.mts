@@ -359,7 +359,8 @@ it("validates real retired storage status, every inspect view, snapshot and dash
 	const { f, submissionId, exited } = await coldSource(t);
 	await exited;
 	const paths = hostPaths(f.metadata);
-	assert.equal(existsSync(paths.claim), false);
+	assert.equal(existsSync(paths.claim), true, "writer release preserves its diagnostic inode");
+	const diagnosticInode = statSync(paths.claim).ino;
 	assert.equal(existsSync(paths.socket), false);
 	const before = statSync(f.storagePath, { bigint: true });
 	t.after(() => closeColdObservations());
@@ -405,7 +406,7 @@ it("validates real retired storage status, every inspect view, snapshot and dash
 	assert.equal(after.ino, before.ino);
 	assert.equal(after.size, before.size);
 	assert.equal(after.mtimeNs, before.mtimeNs);
-	assert.equal(existsSync(paths.claim), false, "cold reads never claim a writer");
+	assert.equal(statSync(paths.claim).ino, diagnosticInode, "cold reads preserve the released writer's diagnostic inode");
 	assert.equal(existsSync(paths.socket), false, "cold reads never launch a host");
 	await closeColdObservations();
 });

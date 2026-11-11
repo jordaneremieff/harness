@@ -11,8 +11,9 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import { bool, int, map, num, obj, opt, str, unknown, type Schema, type Static } from "@earendil-works/pi-schema";
+import { bool, int, map, num, obj, opt, str, union, unknown, type Schema, type Static } from "@earendil-works/pi-schema";
 import { sessionNameFromInput } from "../../session-name/index.ts";
+import { storageStatusPageInput } from "./storage-status.ts";
 import { createAgentObservationSource } from "./agent-observation.ts";
 import {
 	PresetParameter,
@@ -57,6 +58,7 @@ import { AgentManager, MANAGER_PROTOCOL, type AgentCaller } from "./manager.ts";
 import {
 	InspectToolOutputSchema,
 	StatusToolOutputSchema,
+	StorageStatusPageInputSchema,
 	structuredObservation,
 } from "./observation-schema.ts";
 import type { PrimaryIntentClaim } from "./primary-channel.ts";
@@ -400,9 +402,10 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 	);
 	register(
 		"agent_status",
-		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected Durable agent returns full state and bounded pending timers. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state.",
-		obj({ sessionId: opt(id), view: opt(StringEnum(["fleet"], { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })), ...FleetSelectionProperties }, {}),
+		"Orient over agents and related primary efforts. Effort intent is a session claim, not authority. Summary and coverage name omitted rows; agent_list discovers full agent identities. A selected Durable agent returns full state and bounded pending timers. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state. For one storage, use view: storage-page with its exact storageId and follow coverage.next unchanged; this backend JSON cursor is separate from agent_list discovery.",
+		union([obj({ sessionId: opt(id), view: opt(StringEnum(["fleet"], { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })), ...FleetSelectionProperties }, {}), StorageStatusPageInputSchema]),
 		(input, ctx) => {
+			if (input.view === "storage-page") return getManager().status(storageStatusPageInput(input));
 			const sessionId = input.sessionId as string | undefined;
 			const view = input.view as "fleet" | undefined;
 			const selection = validateFleetSelection(input);

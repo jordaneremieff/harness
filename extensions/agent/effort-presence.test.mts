@@ -260,7 +260,7 @@ it("does not count an omitted native claim again as an unsupported producer", as
 	assert.deepEqual(page.coverage.reasons, ["native-intent-incomplete"]);
 });
 
-it("observes one writer claim once for several native rows in a storage", async (t) => {
+it("keeps native effort rows visible without PID probes", async (t) => {
 	const root = rootFor(t);
 	const native = unsupportedNative(root);
 	const catalog = new AgentCatalog(root);
@@ -280,8 +280,8 @@ it("observes one writer claim once for several native rows in a storage", async 
 	const spy = t.mock.method(process, "kill", () => true);
 	const page = await readPage(root, { id: randomUUID(), cwd: native.cwd, intentClaim: intent() });
 	assert.equal(page.efforts.length, 2);
-	assert.ok(page.efforts.every(row => row.liveness === "live"));
-	assert.equal(spy.mock.callCount(), 1, "one writer claim observation serves both rows");
+	assert.ok(page.efforts.every(row => row.liveness === "unknown"));
+	assert.equal(spy.mock.callCount(), 0, "native effort observation never probes a diagnostic PID");
 });
 
 it("shares visit, result and byte caps across ordinary and native roots without counting unsupported claims as omissions", async t => {

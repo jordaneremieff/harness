@@ -20,13 +20,17 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 	process.stderr.on("error", detachedOutput);
 	const input: unknown = JSON.parse(metadataJson);
 	bindInstallationPackages(callerInstallation(input), new URL("./", import.meta.url));
-	const [{ parseHostMetadata }, { runHost }, { createDurableRuntime }] = await Promise.all([
+	const [{ parseHostMetadata }, { runHost, HostClaimRefusedError }, { createDurableRuntime }] = await Promise.all([
 		import("./host-protocol.ts"),
 		import("./host-process.ts"),
 		import("./durable-runtime.ts"),
 	]);
 	const metadata = parseHostMetadata(input);
-	const host = await runHost(() => createDurableRuntime(metadata), { metadata, exit: () => process.exit(0) });
+	const host = await runHost(() => createDurableRuntime(metadata), { metadata, exit: () => process.exit(0) }).catch((error: unknown) => {
+		if (!(error instanceof HostClaimRefusedError) || error.observation !== "busy") throw error;
+		return undefined;
+	});
+	if (!host) return;
 	const stop = () => { void host.close().catch((error: unknown) => { process.stderr.write(`${String(error)}\n`); process.exitCode = 1; }); };
 	process.once("SIGTERM", stop);
 	process.once("SIGINT", stop);
@@ -37,5 +41,8 @@ async function runDurableAgentHost(metadataJson: string): Promise<void> {
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	const input = process.argv[2];
 	if (!input) throw new Error("Durable host metadata is required");
-	void runDurableAgentHost(input).catch((error: unknown) => { process.stderr.write(`Durable host failed: ${String(error)}\n`); process.exitCode = 1; });
+	void runDurableAgentHost(input).catch((error: unknown) => {
+		// Process exit stops a partial runtime before the kernel releases its lease.
+		process.stderr.write(`Durable host failed: ${String(error)}\n`, () => process.exit(1));
+	});
 }

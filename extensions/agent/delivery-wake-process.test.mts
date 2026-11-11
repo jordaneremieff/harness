@@ -2,11 +2,12 @@ import { editDeliveryFixture } from "./delivery-store-fixture.mts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { it, beforeEach, afterEach, type TestContext } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { hostMetadata } from "./catalog.ts";
+import { hostPaths } from "./host-protocol.ts";
 
 import { deliveryWakePath, readDeliveryWake } from "./delivery-wake.ts";
 import { DurableHost } from "./durable-host.ts";
@@ -30,25 +31,20 @@ const observerChannel: typeof createPrimaryChannel = async options => ({
 	update: () => {}, publishIntent: () => {}, touch: () => {}, setObservedPurpose: () => {}, close: async () => {},
 });
 
-function fixture(t: TestContext, idleMinutes = "60", offlineRecovery = false) {
+function fixture(t: TestContext, idleMinutes = "60") {
 	const cleanup: Array<() => void | Promise<void>> = [];
-	let guard: (() => Promise<void>) | undefined;
-	t.after(async () => { await guard?.(); for (const close of cleanup.reverse()) await close(); });
-	const f = runtimeFixture(t, { offlineRecovery }), connections = eventLog<HostConnection>();
-	const offline = f.offline, generation = offline?.generation();
-	if (offline) guard = () => offline.teardown();
+	t.after(async () => { for (const close of cleanup.reverse()) await close(); });
+	const f = runtimeFixture(t), connections = eventLog<HostConnection>();
 	const env = { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: idleMinutes, PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root };
 	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, createPrimary: observerChannel, acquire: async (metadata, options) => {
-		const client = generation ? await generation.acquire(metadata, { ...options, env }) : await acquireHost(metadata, { env });
+		const client = await acquireHost(metadata, { ...options, env });
 		trackHost(t, client.pid); connections.push(client); return client;
-	}, ...(generation ? { connect: (metadata: typeof f.metadata, options?: Parameters<typeof acquireHost>[1]) => generation.connect(metadata, { ...options, env }) } : {}) });
-	generation?.manager(manager);
+	} });
 	cleanup.push(() => manager.close());
-	return { ...f, generation, manager, connections, cleanup: (close: () => void | Promise<void>) => cleanup.unshift(close) };
+	return { ...f, manager, connections, cleanup: (close: () => void | Promise<void>) => cleanup.unshift(close) };
 }
 
 async function seed(f: ReturnType<typeof fixture>, recipient: string): Promise<void> {
-	f.offline?.ordinaryRecipient(recipient);
 	const populate = async () => {
 		const host = await DurableHost.open({ storageId: f.metadata.storageId, storagePath: f.metadata.storagePath, cwd: f.cwd, models: await fixtureRuntime("answer"), registry: fixtureRegistry(), agent: { model: f.metadata.model }, resume: false }, context);
 		try {
@@ -57,12 +53,11 @@ async function seed(f: ReturnType<typeof fixture>, recipient: string): Promise<v
 			}), context);
 		} finally { await host.close(); }
 	};
-	if (f.generation) await f.generation.seed(populate);
-	else await populate();
+	await populate();
 }
 
 async function open(f: ReturnType<typeof fixture>): Promise<HostConnection> {
-	const controller = f.generation?.controller(new AbortController()) ?? new AbortController();
+	const controller = new AbortController();
 	await f.manager.registerPrimary(randomUUID(), { cwd: f.cwd, signal: controller.signal, send: () => {} });
 	await f.manager.control("attach", { sessionId: f.metadata.storageId }, { id: randomUUID(), cwd: f.cwd });
 	await f.connections.waitForCount(1);
@@ -95,40 +90,25 @@ for (const kind of ["parked", "terminal"] as const) it(`retires a ${kind}-only p
 	assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, false);
 });
 
-it("refuses online active-delivery relaunch after SIGKILL and resumes offline", { timeout: 20000 }, async t => {
-	const f = fixture(t, "60", true), owner = randomUUID();
-	const offline = f.offline, initial = f.generation;
-	assert.ok(offline && initial);
+it("resumes retained active delivery after an owned failed exit on the same inode", { timeout: 20000 }, async t => {
+	const f = fixture(t, "60"), owner = randomUUID();
 	const channelOptions = { id: owner, cwd: f.cwd, sessionsRoot: f.root, deliver: () => { throw new Error("temporary receiver failure"); }, promptTrust: async () => undefined };
 	const channel = await createPrimaryChannel(channelOptions);
 	f.cleanup(() => channel.close());
 	await seed(f, owner);
 	const source = await open(f);
 	assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, true);
+	const inode = statSync(hostPaths(f.metadata).claim).ino;
 	process.kill(source.pid, "SIGKILL");
-	await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(5000) });
-	await assert.rejects(initial.acquire(f.metadata, { env: f.env("answer") }), /requires offline recovery/u);
-	assert.equal(f.connections.length, 1);
+	assert.ok(source.ownedExit);
+	await source.ownedExit;
+	await f.connections.waitForCount(2, 10000);
+	assert.notEqual(f.connections[1]?.pid, source.pid);
+	assert.equal(statSync(hostPaths(f.metadata).claim).ino, inode);
 	const retained = await observeDurableStorage(f.metadata, "receipts", { ownerId: owner }) as { reports: Array<{ requestId: string }> };
 	assert.equal(retained.reports.filter(row => row.requestId === "parked-result").length, 1);
 	assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, true);
 	await channel.close();
-	const resumed = await offline.recover();
-	const receiver = await createPrimaryChannel(channelOptions);
-	f.cleanup(() => receiver.close());
-	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, createPrimary: observerChannel,
-		acquire: async (metadata, options) => { const client = await resumed.acquire(metadata, { ...options, env: f.env("answer") }); f.connections.push(client); return client; },
-		connect: (metadata, options) => resumed.connect(metadata, { ...options, env: f.env("answer") }),
-	});
-	resumed.manager(manager);
-	await manager.registerPrimary(randomUUID(), { cwd: f.cwd, signal: resumed.controller(new AbortController()).signal, send: () => {} });
-	await manager.control("attach", { sessionId: f.metadata.storageId }, { id: randomUUID(), cwd: f.cwd });
-	await f.connections.waitForCount(2, 10000);
-	assert.notEqual(f.connections[1]?.pid, source.pid);
-	assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, true);
-	const active = f.connections[1]; assert.ok(active);
-	// The generation keeps this link for shutdown after manager-owned links close.
-	await resumed.connect(f.metadata, { env: f.env("answer") });
 });
 
 it("wakes a retired source after its native recipient becomes available", { timeout: 30000 }, async t => {
@@ -148,30 +128,25 @@ it("wakes a retired source after its native recipient becomes available", { time
 });
 
 it("retains wake metadata before a crash between sidecar publication and marker clearance", { timeout: 30000 }, async t => {
-	const f = fixture(t, "60", true), owner = randomUUID();
-	const offline = f.offline, initial = f.generation;
-	assert.ok(offline && initial);
+	const f = fixture(t, "60"), owner = randomUUID();
 	await seed(f, owner);
 	f.manager.catalog.markRecoveryDue(f.metadata.storageId, true);
 	const runner = fileURLToPath(new URL("./delivery-wake-crash-fixture.mts", import.meta.url));
-	const child = initial.raw(f.metadata, options => spawn(process.execPath, [runner, JSON.stringify(f.metadata)], { env: { ...process.env, ...options.env }, stdio: ["ignore", "pipe", "pipe"] }), { runner, env: f.env("answer") });
-	f.cleanup(() => waitForProcessExit(child));
+	const child = spawn(process.execPath, [runner, JSON.stringify(f.metadata)], { env: { ...process.env, ...f.env("answer") }, stdio: ["ignore", "pipe", "pipe"] });
+	f.cleanup(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await waitForProcessExit(child); });
 	const checkpoint = eventLog<void>();
 	let output = "";
 	child.stdout?.on("data", chunk => { output = `${output}${String(chunk)}`.slice(-32768); if (output.includes("WAKE_BEFORE_MARKER_CLEAR\n")) checkpoint.push(undefined); });
 	await checkpoint.waitForCount(1, 10000);
-	initial.checkpoint(f.metadata);
 	assert.deepEqual(readDeliveryWake(f.root, f.metadata.storageId)?.recipients, [owner]);
 	assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, true);
 	child.kill("SIGKILL"); await waitForProcessExit(child);
-	const resumed = await offline.recover();
 	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir,
-		acquire: (metadata, options) => resumed.acquire(metadata, { ...options, env: f.env("answer") }),
-		connect: (metadata, options) => resumed.connect(metadata, { ...options, env: f.env("answer") }),
+		acquire: async (metadata, options) => { const client = await acquireHost(metadata, { ...options, env: f.env("answer") }); trackHost(t, client.pid); return client; },
 	});
-	resumed.manager(manager);
+	f.cleanup(() => manager.close());
 	const delivered = eventLog<string>();
-	await manager.registerPrimary(owner, { cwd: f.cwd, signal: resumed.controller(new AbortController()).signal, send: text => delivered.push(text) });
+	await manager.registerPrimary(owner, { cwd: f.cwd, signal: new AbortController().signal, send: text => delivered.push(text) });
 	await delivered.waitForCount(1, 10000);
 	assert.equal(delivered.length, 1);
 	assert.match(delivered[0] ?? "", /retained parked result/u);

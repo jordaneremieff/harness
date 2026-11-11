@@ -14,6 +14,7 @@
  * the final read-only Harness preserves committed tasks without recovery.
  */
 import { createHash } from "node:crypto";
+import { storageStatusCoverage, storageStatusScanInput } from "./storage-status.ts";
 import { AGENT_INPUT_KIND, isInputKind } from "./input-entry.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord/context";
@@ -125,7 +126,7 @@ export interface ConversationStatus extends ConversationSummary {
 	readonly lastTextRole?: DurableTextRole;
 	readonly live: unknown;
 	readonly inbox: unknown;
-	readonly usage: UsageState | undefined;
+	readonly usage?: UsageState;
 	readonly agent: {
 		readonly model?: { readonly provider: string; readonly modelId: string };
 		readonly thinkingLevel: string;
@@ -728,12 +729,12 @@ export async function readConversationStatus(
 		...(providerBlock === undefined ? {} : { providerBlock }),
 		...(awaiting === undefined ? {} : { awaiting }),
 		...summary,
-		cwd: agent.cwd ?? options.cwd,
+		...optionalParam("cwd", agent.cwd ?? options.cwd),
 		lastText: messageTextOf(newest.items[0]),
 		...(textRoleOf(newest.items[0]) === undefined ? {} : { lastTextRole: textRoleOf(newest.items[0]) }),
 		live: publicLiveState(live),
 		inbox: inbox ?? null,
-		usage: usage === undefined ? undefined : publicUsageState(usage),
+		...(usage === undefined ? {} : { usage: publicUsageState(usage) }),
 		agent: {
 			...(agent.model === undefined ? {} : { model: { provider: agent.model.provider, modelId: agent.model.modelId } }),
 			thinkingLevel: agent.thinkingLevel,
@@ -2217,19 +2218,21 @@ export class DurableObservation {
 		const sessionId = requestString(params, "sessionId");
 		const conversationId = requestPositiveId(params?.conversationId, "conversationId");
 		const options: DurableStatusOptions = optionalParam("cwd", requestString(params, "cwd"));
+		if (params?.view === "storage-page" && (sessionId !== undefined || conversationId !== undefined)) throw new Error("Storage status does not accept a conversation selector");
 		if (sessionId !== undefined || conversationId !== undefined) {
 			const conversation = await this.target(params, context);
 			const status = await readConversationStatus(this.harness, this.storageId, conversation.id, options, context);
 			if (!status) throw new Error(`conversation ${this.identity(conversation.id)} does not exist`);
 			return { conversation: status };
 		}
-		const page = await this.harness.commit((tx) => tx.scanConversations({}, 50, undefined), context);
+		const input = storageStatusScanInput(params, this.storageId);
+		const page = await this.harness.commit((tx) => tx.scanConversations({}, input.limit, input.cursor), context);
 		const conversations: ConversationStatus[] = [];
 		for (const record of page.items) {
 			const status = await readConversationStatus(this.harness, this.storageId, record.id, options, context);
 			if (status) conversations.push(status);
 		}
-		return { conversations };
+		return { conversations, coverage: storageStatusCoverage(this.storageId, input.limit, page.items.length, conversations.length, page.next) };
 	}
 
 	private async requestList(params: RequestParams | undefined, context: Context): Promise<unknown> {

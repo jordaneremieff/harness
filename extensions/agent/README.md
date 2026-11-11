@@ -4,8 +4,8 @@ Use Agent to delegate work to retained Pi Durable conversations, steer active
 work, read its evidence, and reuse standing experts. A storage has one independent
 host process and one SQLite database; native conversations in that storage share
 its host. Quitting the primary Pi process closes its client connection, not the
-agent's work. Reopening the primary reconnects to its agents and recovers
-unfinished work after an owner-agreed offline claim recovery when their hosts died.
+agent's work. Reopening the primary reconnects to its agents. An acquiring control
+resumes retained work after the previous writer exits and the new host takes its lease.
 
 The ordinary primary owns its terminal, editor, transcript, `/restart`, and
 self-compaction. `/agent` opens the agent work view over that workspace. The
@@ -86,7 +86,7 @@ An ordinary primary remains responsive and receives normal routed results.
 | `agent_command` | Invoke a contributed command, reload host registrations while idle, or fork to a tree entry. |
 | `agent_place` | Resolve the longest directory binding, or create one, with optional work. Model prompts use the same check-in default on both paths, none unless configured; optional `checkInMinutes` sets an interval. |
 | `agent_list` | Page through stored identities and conversation metadata. Search includes retained handles and role hints; profile coverage remains explicit. Reads start no host. |
-| `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
+| `agent_status` | Read conversation and host state, including capability limits. A selected session lists its pending timers, nearest deadline first. `view: "storage-page"` continues one exact storage's bounded status scan. `view: "fleet"` reads sampled machine-local model evidence without a session target. |
 | `agent_inspect` | Read bounded native entries, activity, branches, literal search, or retained results; ordinary targets support raw latest-retained activity/history. |
 | `agent_collaborate` | Discover, create, read, join, leave, post to, revise, or close a shared peer thread. Joining subscribes to passive notices; only explicit `notify` recipients get a model wake. Keep `contribution` within 256 characters and `message` within 8,000 characters; write longer content to a file and post its path. Handler length errors include this remedy because Pi's pre-handler schema errors omit field descriptions. |
 
@@ -2447,14 +2447,18 @@ a token request after close.
   `node_modules` does not need to contain them. Checkout-owned dependencies such as
   Pi Durable and pi-schema keep their ordinary resolution. A host whose installation cannot
   supply a peer package exits before it takes the writer claim.
-- Each storage has one writer claim. The process takes it before it opens
-  SQLite or resumes the Durable scheduler. Every existing claim refuses a second
-  writer, including a dead local owner. Recovery requires all relevant writers
-  and launchers stopped before offline claim removal. Online PID, token or inode
-  checks do not authorise removal. Adoption requires older takeover-capable
-  writers and launchers to stop before the new protocol starts. A rejected
-  runtime factory retains the claim because partial construction has no close
-  handle. Validation failures before acquisition create no claim.
+- Each storage has one descriptor-held writer lease on a permanent inode. The
+  runner takes one nonblocking Darwin lock before it opens SQLite or resumes the
+  Durable scheduler. A busy lease prevents a second runtime from opening. Normal
+  release closes the descriptor; it never removes or replaces the inode. The
+  bounded JSON record is diagnostic metadata, not ownership or process-liveness
+  evidence. Its PID, hostname, age and continued existence grant no takeover.
+  This contract supports cooperating processes on a private local macOS
+  filesystem, not shared/network filesystems or uncooperative writers. The
+  adapter rejects unsafe files and other platforms. A rejected runtime factory
+  retains exclusion until the dedicated process exits because partial
+  construction has no close handle. Validation failures before acquisition
+  create no lease file.
 - The primary talks to the host through the package-level Chord transport at
   `transport/index.ts`, shared with other host clients. Its typed Endpoint
   contract is `pi.agent.endpoint/1`, separate from the manager and primary
@@ -2493,12 +2497,11 @@ a token request after close.
   or marker write rejects shutdown and retains the writer claim until process
   death, rather than announce a clean retirement. Busy shutdown retains the recovery marker,
   attempts final catalog publication, seals native admission, and exits through
-  the runner. It keeps the live claim until process death; the next host
-  resumes retained native work only after offline claim recovery. Concurrent close
-  paths share one shutdown. If reload fails after runtime teardown starts, the
-  host returns the reload error and takes the same process shutdown path. It
-  retains the recovery marker and writer claim until process death; the next
-  acquisition requires offline claim recovery before it starts a fresh host.
+  the runner. It keeps the descriptor until process death; a later acquiring
+  control takes the released lease and resumes retained native work. Concurrent
+  close paths share one shutdown. If reload fails after runtime teardown starts,
+  the host returns the reload error and takes the same process shutdown path. It
+  retains the recovery marker and writer lease until process death.
 - The runtime's `requestRelease()` returns `{ retiring, blockers }` without a
   model turn. Native work in any conversation, a waiting timer or check-in task,
   an active delivery recipient, or another active request blocks release. Open
@@ -2616,17 +2619,51 @@ descendants that outlive a normal transport close: Pi MCP stops escalation when
 the direct child closes, and its public API exposes only the numeric group ID.
 Guardian startup failures appear in host diagnostics.
 
+## Storage status pages
+
+An unselected native host status returns a bounded page and `coverage` with
+`complete`, `returned`, `scanned` and `next`. These are page-local observations,
+not a frozen membership snapshot or an invented total. A record with no status
+still counts as scanned. Its scan continuation remains available even when no
+status rows return.
+
+Use `agent_status` with `view: "storage-page"`, the exact bare `storageId`, an
+optional backend-owned JSON-record `cursor`, and `limit` from 1 to 50. The default
+limit is 50. If `coverage.next` is non-null, call its named `agent_status` tool
+with the remaining fields unchanged. The cursor continues the same unfiltered
+native scan; callers do not interpret its fields. A conversation-qualified
+identity, a string cursor, or mixed fleet/session selectors is invalid here.
+
+`agent_list` remains global discovery with its own string cursor. Its cursor is
+not interchangeable with storage-status continuation. Selected-conversation
+status and the ordinary manager overview keep their separate coverage meanings.
+
 ## Recovery and delivery
 
-Concurrent recovery callers share the writer-claim boundary. A losing launch
-attaches to the winner when its endpoint is ready. If a live foreign writer has
-no ready endpoint and its claim is younger than the default launch readiness
-bound (`DEFAULT_LAUNCH_TIMEOUT_MS` in `host-client.ts`), automatic recovery
-suppresses that startup observation. Later recovery observations outside that
-window retain a visible endpoint-unavailable failure until a successful connection
-clears it. Future-dated claims do not qualify for suppression. Explicit reads
-still report unavailable readiness; no retry poll or second writer bypasses
-the claim.
+An acquiring control first attempts one verified endpoint attachment. If no
+endpoint answers, it starts one runner contender; only the runner takes the
+writer lease. A peer's contract refusal does not start another host.
+A busy contender opens no runtime and reports a typed busy outcome. The caller
+then attempts one attachment to the expected endpoint. A failed endpoint remains
+unavailable; no poll, PID check or record age authorises replacement.
+
+An owned launch has one monotonic budget across readiness, connection and
+contract negotiation. Parse failure, wrong socket, timeout or caller cancellation
+ends only that observation. The child remains independent, its pipes stay
+drained, and its uncertain launch record remains until an actual exit. An
+explicit attachment can verify its endpoint later. Concurrent callers reuse the
+same attempt rather than start another uncertain writer.
+
+A connection retains its initial acquire or attach-only policy. A safe read does
+not grant launch authority. Recovery first attempts attachment; an automatic
+replacement also requires retryable work and an exact owned failed-child exit.
+A clean child exit or successful owner close does not trigger a replacement.
+Foreign transport loss without an exit source remains unavailable and names
+`agent_attach` for explicit recovery. Client close is final, including during
+recovery or subscription setup, and releases only local resources. Writer-release
+observation requires a child-exit event or a successful owner close, never a
+persistent inode's disappearance. Metadata-only unknown ownership changes a
+stale working row to unavailable, not to interrupted.
 
 A host that does not advertise `release` started on code without that operation,
 regardless of its advertised release number. After active work and result
@@ -3248,14 +3285,15 @@ recipient facts. A recorded fallback copy never repeats. Active routes retry;
 incomplete or stale observations also block retirement. No row expiry or new catalog scan
 bound is introduced. A final marker check also runs during clean close. Clean retirement
 closes cached manager and peer delivery links without a recovery acquisition or
-crash-budget charge. Native shutdown releases the writer claim before the
-transport closes. A retained delivery marker with a released claim does not
-trigger automatic recovery. Busy native shutdown retains its claim through
-process death. Unexpected loss preserves native work, but a retained claim blocks
-replacement until an owner-agreed offline recovery after all relevant writers
-and launchers stop. Footer totals remain in the catalog; later reads use cold
-storage without a writer, and later controls acquire a fresh host only when no
-writer claim remains.
+crash-budget charge. Native shutdown stops native writes and unpublishes its
+socket before releasing the kernel lease. Positive owner release does not trigger
+automatic recovery from a retained delivery marker. Uncertain shutdown retains
+exclusion until close succeeds or the dedicated process exits. Unexpected
+connection loss preserves native work. Automatic replacement requires an exact
+owned failed exit, and the replacement must acquire the kernel lease. Diagnostic
+records remain after release and do not block acquisition. Footer totals remain
+in the catalog; later reads use cold storage without a writer, and later controls
+acquire a fresh host only when the kernel lease is free.
 
 Cold `agent_status` returns retained conversation data with `live: false` and
 `storageId`. It omits `pid` and `inventory`: the reader loads no host, so its
@@ -3268,10 +3306,10 @@ While a primary remains registered, an unexpected host connection loss rereads
 that marker and queues recovery through the same bounded pool. The manager owns
 these relaunches; managed connections do not independently relaunch on request
 retries. Three automatic recovery attempts are permitted per storage within sixty
-seconds; these attempts never replace an existing writer claim. Further losses
+seconds; every attempt requires the kernel lease and never unlinks its inode. Further losses
 stop automatic recovery and put a host error in the dashboard roster. Inspect
 the error, then use `agent_attach` to reset the manager's retry budget and retry.
-This reset does not remove a writer claim or perform offline recovery.
+This reset does not remove diagnostic records or release another writer's lease.
 Intentional disconnects and unmarked storage do not relaunch.
 
 ## Execution presets and delegation preferences

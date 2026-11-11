@@ -13,7 +13,15 @@ import * as hostClient from "./host-client.ts";
 import { fixtureMetadata } from "./host-fixture.mts";
 import { HostError, hostPaths, HOST_READY_PREFIX } from "./host-protocol.ts";
 import { runHost } from "./host-process.ts";
+import { tryNativeWriterLease } from "./native-lease.ts";
 import { runtimeFixture } from "./durable-runtime-fixture.mts";
+
+function assertReleased(metadata: Parameters<typeof hostPaths>[0]): void {
+	assert.equal(existsSync(hostPaths(metadata).claim), true);
+	const attempt = tryNativeWriterLease(hostPaths(metadata).claim);
+	assert.equal(attempt.kind, "held");
+	if (attempt.kind === "held") attempt.lease.release();
+}
 
 function deferred(): { promise: Promise<void>; resolve(): void } {
 	let resolve!: () => void;
@@ -124,7 +132,7 @@ it("a wire close exits the durable process and releases its writer claim", { tim
 	const [code, signal] = await exited;
 	assert.equal(code, 0, stderr);
 	assert.equal(signal, null);
-	assert.equal(existsSync(hostPaths(fixture.metadata).claim), false);
+	assertReleased(fixture.metadata);
 });
 
 for (const ownedExit of [false, true]) it(`preserves the busy writer claim with ${ownedExit ? "an explicit" : "no"} process exit owner`, async (t) => {
@@ -161,7 +169,7 @@ it("quiesces observational waits before runtime shutdown without closing transpo
 	await client.request("close").catch(() => undefined);
 	await rejected;
 	await host.done;
-	assert.equal(existsSync(hostPaths(metadata).claim), false);
+	assertReleased(metadata);
 });
 
 it("disconnects only after runtime shutdown and writer release", { timeout: 15000 }, async (t) => {
@@ -185,7 +193,7 @@ it("disconnects only after runtime shutdown and writer release", { timeout: 1500
 	assert.equal(dispatched, 0);
 	release.resolve();
 	await closed;
-	assert.equal(existsSync(hostPaths(metadata).claim), false, "the protocol completion proves release without a filesystem event");
+	assertReleased(metadata);
 	await host.done;
 });
 
@@ -201,7 +209,7 @@ it("waits for writer release through close completion", { timeout: 15000 }, asyn
 	assert.equal(settled, false, "an existing live writer is not released");
 	await host.close();
 	await released;
-	assert.equal(existsSync(hostPaths(metadata).claim), false);
+	assertReleased(metadata);
 });
 
 it("wire close and local close share one complete shutdown", { timeout: 15000 }, async (t) => {
@@ -222,7 +230,7 @@ it("wire close and local close share one complete shutdown", { timeout: 15000 },
 	await closing.promise;
 	await Promise.all([host.done, host.close(), host.close()]);
 	assert.equal(closes, 1);
-	assert.equal(existsSync(hostPaths(metadata).claim), false);
+	assertReleased(metadata);
 });
 
 it("shuts down on spontaneous runtime failure without a client request", { timeout: 5000 }, async (t) => {
@@ -245,6 +253,6 @@ it("shuts down on spontaneous runtime failure without a client request", { timeo
 	await host.done;
 	assert.equal(closes, 1);
 	assert.equal(unsubscribed, true);
-	assert.equal(existsSync(hostPaths(metadata).claim), false);
+	assertReleased(metadata);
 	assert.equal(existsSync(hostPaths(metadata).socket), false);
 });

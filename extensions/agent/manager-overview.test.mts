@@ -55,7 +55,7 @@ it("returns a partial dashboard page with a cursor at the storage bound instead 
 	assert.ok(Buffer.byteLength(JSON.stringify(overview), "utf8") <= 48 * 1024);
 });
 
-it("ranks filename-last live and caller-owned history before recent unowned records across roster consumers", async (t) => {
+it("ranks caller-owned history without PID-derived live priority across roster consumers", async (t) => {
 	const root = fixtureRoot(t);
 	let acquires = 0;
 	let observes = 0;
@@ -80,9 +80,9 @@ it("ranks filename-last live and caller-owned history before recent unowned reco
 	writeFileSync(paths.claim, JSON.stringify({ token: "test", pid: process.pid, host: hostname(), sessionId: live.storageId, cwd: live.cwd, createdAt: new Date().toISOString() }));
 	const page = await manager.dashboardPage({ ownerId: "owner-1" });
 	const rows = dashboardRecords({ observedAt: 0, sessions: page.rows }, "");
-	assert.deepEqual(rows.slice(0, 3).map((row) => row.id), [live.storageId, owned.storageId, newest.storageId]);
+	assert.deepEqual(rows.slice(0, 2).map((row) => row.id), [owned.storageId, newest.storageId]);
 	const viewport = rosterLines(rows, live.storageId, 80, 10, 0, theme, false).join("\n");
-	assert.match(viewport, /Live history/);
+	assert.doesNotMatch(viewport, /Live history/);
 	assert.match(viewport, /Owned history/);
 	assert.match(viewport, /Newest history/);
 	assert.equal(page.coverage.inventory?.inspected, records.length);
@@ -90,7 +90,7 @@ it("ranks filename-last live and caller-owned history before recent unowned reco
 	assert.equal(page.coverage.inventory?.priorityRemaining, 0);
 	assert.equal(await manager.sessionFigures("owner-1"), "agents: 0/1+ active");
 	const overview = structuredObservation(StatusToolOutputSchema, await manager.status(undefined, undefined, { id: "owner-1", cwd: root })) as StatusOverview;
-	assert.deepEqual(overview.sessions.slice(0, 3).map((row) => row.id), [live.storageId, owned.storageId, newest.storageId]);
+	assert.deepEqual(overview.sessions.slice(0, 2).map((row) => row.id), [owned.storageId, newest.storageId]);
 	assert.equal(overview.coverage.inventory?.remaining, 4);
 	assert.equal(overview.coverage.omittedPriorityRows, 0);
 	assert.equal(overview.sessions.some((row) => "rosterOrder" in row), false);

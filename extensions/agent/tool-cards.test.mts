@@ -54,6 +54,14 @@ const conversationStatus = (overrides: Record<string, unknown> = {}) => ({
 });
 const snapshotResult = (status: Record<string, unknown>, outer: Record<string, unknown> = {}) => result({ sessionId: "storage-a", cwd: "/work", status: { conversation: status, inventory: { contributions: [], ordinaryOnly: ["/ext/ordinary.ts"] }, ...outer }, admission: { submissionId: 9, conversationId: 1, deduped: false, identity: "storage-a" }, lifetime: "independent host process" });
 
+it("shows incomplete storage scan coverage and its status continuation", () => {
+	const value = result({ conversations: [], coverage: { complete: false, scanned: 50, returned: 0, next: { tool: "agent_status", view: "storage-page", storageId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", cursor: {}, limit: 50 } } });
+	const text = screen(renderAgentResult(value, { ...cardKeys, expanded: false, isPartial: false }, theme, context()), 180);
+	assert.match(text, /Storage scan incomplete.*50 scanned.*0 returned on this page/u);
+	assert.match(text, /coverage\.next using agent_status/u);
+	assert.doesNotMatch(text, /agent_list discovers stored conversations/u);
+});
+
 describe("agent call cards", () => {
 	it("shows explicit requests without unresolved default chatter", () => {
 		const spawn = screen(renderAgentCall("agent_spawn", { name: "Parser review", model: "provider/model", thinkingLevel: "high" }, theme, context()), 160);

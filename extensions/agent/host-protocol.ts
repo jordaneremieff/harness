@@ -19,6 +19,8 @@ import { parseRuntimeContract, contractRefusal, type RuntimeContract } from "./v
 export const HOST_CONTRACT_MEMBER = "runtime-contract";
 /** Readiness line the host prints after it starts listening. */
 export const HOST_READY_PREFIX = "PI_AGENT_HOST_READY ";
+/** A losing runner reports exclusion without constructing a native runtime. */
+export const HOST_BUSY_PREFIX = "PI_AGENT_HOST_BUSY ";
 /** Largest Unix socket path length that works on every supported host (macOS sun_path is 104 bytes). */
 export const HOST_SOCKET_PATH_LIMIT_BYTES = 100;
 
@@ -77,6 +79,20 @@ export interface HostReady {
 	readonly socketPath: string;
 	/** Current operation contracts of this process. */
 	readonly contract: RuntimeContract;
+}
+
+export interface HostBusy {
+	readonly storageId: string;
+	readonly socketPath: string;
+}
+
+export class HostLeaseBusyError extends HostError {
+	readonly target: HostBusy;
+	constructor(target: HostBusy) {
+		super("Native writer lease is busy; attachment requires a verified endpoint", "claim");
+		this.name = "HostLeaseBusyError";
+		this.target = target;
+	}
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -171,6 +187,18 @@ export function hostPaths(metadata: Pick<HostMetadata, "agentDir" | "storageId" 
 
 export function formatHostReady(ready: HostReady): string {
 	return `${HOST_READY_PREFIX}${JSON.stringify({ pid: ready.pid, socketPath: ready.socketPath, contract: ready.contract })}\n`;
+}
+
+export function formatHostBusy(target: HostBusy): string {
+	return `${HOST_BUSY_PREFIX}${JSON.stringify(target)}\n`;
+}
+
+export function parseHostBusyLine(line: string): HostBusy | undefined {
+	if (!line.startsWith(HOST_BUSY_PREFIX)) return undefined;
+	const value: unknown = JSON.parse(line.slice(HOST_BUSY_PREFIX.length));
+	if (!isRecord(value)) throw new Error("host busy line is not an object");
+	rejectUnknownFields(value, ["storageId", "socketPath"], "host busy line");
+	return { storageId: boundedText(value.storageId, "host busy storageId", IDENTITY_LIMIT), socketPath: absolutePath(value.socketPath, "host busy socketPath") };
 }
 
 /** Parse one readiness line. A non-matching line yields undefined; a matching line with a bad body throws. */

@@ -10,13 +10,13 @@ import { readSettings } from "./settings.ts";
  * launching client can connect without polling.
  */
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, ftruncateSync, lstatSync, mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import { ChordError, PluginError, invalid, isChordError } from "@earendil-works/chord";
 import { createTransportServer, type TransportServer, type TransportRequest } from "../../transport/index.ts";
-import { type ClaimIdentity, type ClaimObservation, classifyClaim, readClaimFile } from "./claims.ts";
-import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady } from "./host-protocol.ts";
+import { tryNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
+import { formatHostReady, HostError, HOST_CONTRACT_MEMBER, hostPaths, isCancelableHostWait, parseHostMetadata, type HostMetadata, type HostPaths, type HostReady, type HostBusy, formatHostBusy } from "./host-protocol.ts";
 import { HOST_CONTRACT, parseOperationContract, operationContractMismatch } from "./version-contract.ts";
 import { isObservationFrame } from "./live-frames.ts";
 import { createObservationPump, type ObservationClock, type ObservationPump } from "./observation-pump.ts";
@@ -73,6 +73,8 @@ export interface RunHostOptions {
 	readonly env?: Readonly<Record<string, string | undefined>>;
 	/** Readiness announcement. Defaults to the stdout readiness line. */
 	readonly announceReady?: (ready: HostReady) => void;
+	/** Losing contenders announce exclusion before they leave without a runtime. */
+	readonly announceBusy?: (target: HostBusy) => void;
 	/** Dedicated process owner's terminal exit; embedded hosts must not supply it. */
 	readonly exit?: () => never;
 	/** Schedule one idle check and return its cancellation function. Defaults to a wall-clock timer. */
@@ -90,10 +92,10 @@ export interface HostProcess {
 	close(): Promise<void>;
 }
 
-/** A claim that cannot be taken; `observation` distinguishes a live owner from an unusable claim. */
+/** A busy lease never grants permission to open native storage. */
 export class HostClaimRefusedError extends Error {
-	readonly observation: "live" | "unknown";
-	constructor(message: string, observation: "live" | "unknown", cause?: unknown) {
+	readonly observation: "busy" | "unknown";
+	constructor(message: string, observation: "busy" | "unknown", cause?: unknown) {
 		super(message, cause === undefined ? undefined : { cause });
 		this.name = "HostClaimRefusedError";
 		this.observation = observation;
@@ -148,56 +150,19 @@ export function resolveIdleMs(idleMs?: number, env: Readonly<Record<string, stri
 	return readSettings({ agentDir, env }).values.idleMinutes * 60_000;
 }
 
-function createClaimFile(path: string, record: ClaimRecord): void {
-	const fd = openSync(path, "wx", 0o600);
-	try {
-		writeFileSync(fd, JSON.stringify(record));
-	} catch (error) {
-		closeSync(fd);
-		rmSync(path, { force: true });
-		throw error;
-	}
-	closeSync(fd);
-}
-
-function errnoCode(error: unknown): string | undefined {
-	return (error as NodeJS.ErrnoException | undefined)?.code;
-}
-
-/** Existing claims are never revoked online, including claims whose recorded process is dead. */
-function takeClaim(path: string, identity: ClaimIdentity, record: ClaimRecord): HeldClaim {
+function takeClaim(path: string, record: ClaimRecord): NativeWriterLease {
 	mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+	const attempt = tryNativeWriterLease(path);
+	if (attempt.kind === "busy") throw new HostClaimRefusedError("Durable host writer lease is busy; no native runtime was opened", "busy");
+	const lease = attempt.lease;
 	try {
-		createClaimFile(path, record);
-		return new HeldClaim(path, record.token);
+		lease.assertNamed();
+		ftruncateSync(lease.descriptor, 0);
+		writeFileSync(lease.descriptor, JSON.stringify(record));
+		return lease;
 	} catch (error) {
-		if (errnoCode(error) !== "EEXIST") throw error;
-	}
-	const recovery = "Stop all relevant writers and launchers before offline claim recovery; do not remove a claim while launchers run.";
-	let observation: ClaimObservation;
-	try { observation = classifyClaim(readClaimFile(path).claim, identity); }
-	catch (error) { throw new HostClaimRefusedError(`Durable host writer claim is unreadable. ${recovery}`, "unknown", error); }
-	if (observation.kind === "live") throw new HostClaimRefusedError(`Durable host writer claim is held by ${observation.label}`, "live");
-	throw new HostClaimRefusedError(`Durable host writer claim requires offline recovery. ${recovery}`, "unknown");
-}
-
-class HeldClaim {
-	private readonly path: string;
-	readonly token: string;
-	constructor(path: string, token: string) {
-		this.path = path;
-		this.token = token;
-	}
-	release(): void {
-		let claim: unknown;
-		try {
-			claim = readClaimFile(this.path).claim;
-		} catch (error) {
-			if (errnoCode(error) === "ENOENT") return;
-			throw new Error("durable host writer claim is unreadable; refused release", { cause: error });
-		}
-		if (!isRecord(claim) || claim.token !== this.token) throw new Error("durable host writer claim changed; refused release");
-		unlinkSync(this.path);
+		lease.release();
+		throw error;
 	}
 }
 
@@ -207,7 +172,7 @@ class HostProcessServer implements HostProcess {
 	readonly done: Promise<void>;
 	private readonly runtime: HostRuntime;
 	private readonly paths: HostPaths;
-	private readonly claim: HeldClaim;
+	private readonly claim: NativeWriterLease;
 	private readonly idleMs: number;
 	private server: TransportServer | undefined;
 	private socketIdentity: { dev: number; ino: number } | undefined;
@@ -241,7 +206,7 @@ class HostProcessServer implements HostProcess {
 
 	private readonly exit: (() => never) | undefined;
 
-	constructor(runtime: HostRuntime, paths: HostPaths, claim: HeldClaim, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"], observationClock?: ObservationClock, exit?: () => never) {
+	constructor(runtime: HostRuntime, paths: HostPaths, claim: NativeWriterLease, idleMs: number, scheduleIdleCheck?: RunHostOptions["scheduleIdleCheck"], observationClock?: ObservationClock, exit?: () => never) {
 		this.exit = exit;
 		this.runtime = runtime;
 		this.paths = paths;
@@ -664,7 +629,8 @@ class HostProcessServer implements HostProcess {
 			this.unpublishSocket();
 			this.claim.release();
 			this.resolveWriterReleased();
-			// A clean transport close follows writer release, so clients need no filesystem notification.
+			// Let the released close invocation enqueue its response before transport EOF.
+			await new Promise<void>((resolve) => setImmediate(resolve));
 			await this.server?.close();
 			this.resolveDone();
 		} catch (error) {
@@ -683,15 +649,15 @@ async function closeRuntime(runtime: HostRuntime, exit?: () => never): Promise<v
 	exit();
 }
 
-function claimRecord(identity: ClaimIdentity, token: string): ClaimRecord {
+function claimRecord(identity: HostPaths["identity"], token: string): ClaimRecord {
 	return { token, pid: process.pid, host: hostname(), sessionId: identity.sessionId, cwd: resolve(identity.cwd), createdAt: new Date().toISOString() };
 }
 
-function cleanupClaim(claim: HeldClaim): void {
+function cleanupClaim(claim: NativeWriterLease): void {
 	try {
 		claim.release();
 	} catch {
-		// An uncertain release leaves exclusion in place until offline recovery.
+		// A failed close leaves exclusion with this process until its actual exit.
 	}
 }
 
@@ -708,7 +674,14 @@ export async function runHost(createRuntime: HostRuntimeFactory, options: RunHos
 	chmodSync(paths.directory, 0o700);
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	const token = randomUUID();
-	const claim = takeClaim(paths.claim, paths.identity, claimRecord(paths.identity, token));
+	let claim: NativeWriterLease;
+	try { claim = takeClaim(paths.claim, claimRecord(paths.identity, token)); }
+	catch (error) {
+		if (error instanceof HostClaimRefusedError && error.observation === "busy") {
+			(options.announceBusy ?? ((target) => process.stdout.write(formatHostBusy(target))))({ storageId: metadata.storageId, socketPath: paths.socket });
+		}
+		throw error;
+	}
 	let runtime: HostRuntime | undefined;
 	try {
 		runtime = await createRuntime();

@@ -29,6 +29,7 @@ async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>, ret
 	const openedMarker = join(metadata.cwd, "observation-opened");
 	const snapshotMarker = join(metadata.cwd, "snapshot-gated");
 	const rejectReopen = process.env.DURABLE_TEST_OBSERVATION_REOPEN === "fail" && existsSync(openedMarker);
+	const holdReopen = process.env.DURABLE_TEST_OBSERVATION_REOPEN === "hold" && existsSync(openedMarker);
 	let finishSnapshot: (() => void) | undefined;
 	const holdSnapshot = async (): Promise<void> => {
 		writeFileSync(snapshotMarker, "held");
@@ -41,17 +42,25 @@ async function createRuntime(metadata: ReturnType<typeof parseHostMetadata>, ret
 			await finished;
 		} else await new Promise(() => {});
 	};
+	const openObservation = async (input: Record<string, unknown> | undefined) => {
+		if (rejectReopen) {
+			if (process.env.DURABLE_TEST_NOTIFY) await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "observation-reopen-refused");
+			throw new Error("observation reopen refused");
+		}
+		writeFileSync(openedMarker, "opened");
+		if (holdReopen && process.env.DURABLE_TEST_NOTIFY) {
+			await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "observation-reopen-held");
+			const result = await durable.request("observe-open", input);
+			await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "observation-reopen-finished");
+			return result;
+		}
+		return durable.request("observe-open", input);
+	};
 	return {
 		request: async (method, params) => {
 			const input = (params ?? undefined) as Record<string, unknown> | undefined;
 			if (method === "snapshot" && input?.fixtureHold === true && !existsSync(snapshotMarker)) await holdSnapshot();
-			if (method === "observe-open") {
-				if (rejectReopen) {
-					if (process.env.DURABLE_TEST_NOTIFY) await publishFixtureMarker(process.env.DURABLE_TEST_NOTIFY, "observation-reopen-refused");
-					throw new Error("observation reopen refused");
-				}
-				writeFileSync(openedMarker, "opened");
-			}
+			if (method === "observe-open") return openObservation(input);
 			return durable.request(method, input);
 		},
 		close: async () => {

@@ -23,6 +23,7 @@ import { ProviderRetryNotices, ProviderRetryNoticeSchema } from "./provider-noti
 import type { ProviderRetryNotice } from "./provider-block.ts";
 import { initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
 import { canonicalIdentity } from "./native-identity.ts";
+import { storageStatusCoverage, storageStatusScanInput } from "./storage-status.ts";
 import { matchesSchema } from "./schema-check.ts";
 import { placeLeftoverWrites, StrandedInputRecovery } from "./stranded-inputs.ts";
 import { admittedResult } from "./result-reference.ts";
@@ -741,14 +742,16 @@ export class DurableHost {
 		const conversationId = requestPositiveId(params?.conversationId, "conversationId");
 		const options: DurableStatusOptions = this.defaultCwd === undefined ? {} : { cwd: this.defaultCwd };
 		const reported = this.deliveryError === undefined ? {} : { deliveryError: this.deliveryError };
+		if (params?.view === "storage-page" && (sessionId !== undefined || conversationId !== undefined)) throw new Error("Storage status does not accept a conversation selector");
 		if (sessionId === undefined && conversationId === undefined) {
-			const page = await this.harness.commit((tx) => tx.scanConversations({}, 50, undefined), context);
+			const input = storageStatusScanInput(params, this.storageId);
+			const page = await this.harness.commit((tx) => tx.scanConversations({}, input.limit, input.cursor), context);
 			const conversations: ConversationStatus[] = [];
 			for (const record of page.items) {
 				const status = await readConversationStatus(this.harness, this.storageId, record.id, options, context);
 				if (status) conversations.push(status);
 			}
-			return { conversations, ...reported };
+			return { conversations, coverage: storageStatusCoverage(this.storageId, input.limit, page.items.length, conversations.length, page.next), ...reported };
 		}
 		const conversation = await this.target(params, context);
 		const status = await readConversationStatus(this.harness, this.storageId, conversation.id, options, context);

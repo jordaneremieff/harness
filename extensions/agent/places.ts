@@ -33,7 +33,7 @@ import {
 } from "node:fs";
 import { hostname } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
-import { type ClaimFile, type ClaimIdentity, classifyClaim, readClaimFile } from "./claims.ts";
+import { type ClaimFile, type ClaimIdentity, classifyProcessClaim, readClaimFile } from "./claims.ts";
 
 /** One area-to-session binding. */
 export interface PlaceBinding {
@@ -350,7 +350,7 @@ export class PlaceBook {
 		const held = this.tryTake(lockFile, claim);
 		if (!held) {
 			const file = this.readLock(lockFile);
-			const observed = classifyClaim(file.claim, this.claimIdentity());
+			const observed = classifyProcessClaim(file.claim, this.claimIdentity());
 			throw new PlaceLockedError(lockFile, isClaim(file.claim) ? file.claim : undefined,
 				observed.kind === "live" ? undefined : "offline recovery requires all relevant writers and launchers stopped");
 		}

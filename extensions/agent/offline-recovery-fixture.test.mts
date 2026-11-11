@@ -27,7 +27,7 @@ for (const runner of [undefined, failedReloadRunner]) it(`keeps an absent attach
 	const fixture = allocateOfflineFixture("offline-proof-"), target = metadata(fixture.root);
 	fixture.allow(target);
 	try {
-		await assert.rejects(fixture.generation().connect(target, { runner, runnerArgs: [], env: { DURABLE_TEST_MODE: "answer" } }), new RegExp(`no live durable host for ${target.storageId}`, "u"));
+		await assert.rejects(fixture.generation().connect(target, { runner, runnerArgs: [], env: { DURABLE_TEST_MODE: "answer" } }), new RegExp(`No verified native host endpoint for ${target.storageId}`, "u"));
 		fixture.ordinaryRecipient("after-expected-absence");
 		await fixture.teardown();
 		assert.equal(fixture.cleanupAllowed, true);

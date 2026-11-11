@@ -14,8 +14,13 @@ its creator, or replace request-local requester and reply routes. Closing a
 client releases its observations, not the native conversation or its admitted
 work.
 
-One independent process owns each Durable storage. It takes the exclusive writer
-claim before storage opens, and it alone resumes the native scheduler. A root
+One independent process owns each Durable storage. It holds a Darwin descriptor
+lease on a permanent private inode before storage opens, and it alone resumes
+the native scheduler. The inode's record is diagnostic, not PID-based
+ownership. Normal release closes only the descriptor. An acquiring control
+attaches first, then lets a runner contend for the lease; a busy runner opens no
+runtime. This exclusion contract covers cooperating writers on a private local
+macOS filesystem, not network/shared filesystems or uncooperative writers. A root
 agent uses the storage ID; its forks and same-directory agents use conversation
 IDs within that storage. An agent at a different directory receives a new
 storage host with cwd-bound resources. Created conversations belong to native

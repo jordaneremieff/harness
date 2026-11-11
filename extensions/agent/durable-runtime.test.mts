@@ -4,8 +4,8 @@
  * Dedicated host entrypoints load the fixture provider and unsafe effect tool
  * from `testdata/durable-runtime` in isolated agent homes. The tests cover
  * crash resumption, deduplication, retained effects and results, owner delivery
- * acknowledgement, and runtime reload. Unclean writer claims remain excluded
- * until the fixture proves offline recovery is safe.
+ * acknowledgement, and runtime reload. Writer replacement requires a released
+ * kernel lease rather than a diagnostic process-liveness claim.
  */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
@@ -21,7 +21,7 @@ import { it, beforeEach, afterEach } from "node:test";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 import { observeClaim } from "./claims.ts";
 import { hostPaths } from "./host-protocol.ts";
-import { acquireHost, waitForHostRelease, type HostConnection } from "./host-client.ts";
+import { acquireHost, connectHost, waitForHostRelease, type HostConnection } from "./host-client.ts";
 import { AgentManager } from "./manager.ts";
 import { createColdObservationCache } from "./cold-observation.ts";
 let cold: ReturnType<typeof createColdObservationCache>;
@@ -31,7 +31,6 @@ const observeDurableStorage: ReturnType<typeof createColdObservationCache>["obse
 import { childCatalogRecord, killHost, markerFixture, runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
 import { publishFixtureMarker } from "./testdata/durable-runtime/signal.ts";
 import type { AwaitFact } from "./await-facts.ts";
-import type { OfflineGeneration } from "./offline-recovery-fixture.mts";
 
 interface SubmitResult {
 	readonly submissionId: string | number;
@@ -483,34 +482,29 @@ it("preserves a crash recovery marker through primary startup and clears it afte
 	}
 });
 
-for (const steerDuringRun of [false, true]) it(`refuses online relaunch after SIGKILL with ${steerDuringRun ? "steering" : "one input"} and resumes offline`, { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t, { offlineRecovery: true, crashRetry: true });
-	const initial = f.offline.generation();
+for (const steerDuringRun of [false, true]) it(`replaces an owned failed writer with ${steerDuringRun ? "steering" : "one input"} without replacing its inode`, { timeout: 30000 }, async (t) => {
+	const f = runtimeFixture(t, { crashRetry: true });
 	const ownerId = randomUUID();
-	f.offline.ordinaryRecipient(ownerId);
-	const controller = initial.controller(new AbortController());
+	const controller = new AbortController();
 	const pids: number[] = [];
 	let resolveRecovered: () => void = () => {};
 	const recovered = new Promise<void>((resolve) => { resolveRecovered = resolve; });
-	const managerFor = (generation: OfflineGeneration, mode: "request" | "effect" | "answer") => {
+	const managerFor = (mode: "request" | "effect") => {
 		const value = new AgentManager({
 			root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir,
 			acquire: async (metadata, options) => {
 				assert.equal(options?.retryAttempts, 0, "the manager owns every automatic relaunch");
-				const client = await generation.acquire(metadata, { ...options, env: f.env(mode) });
+				const client = await acquireHost(metadata, { ...options, env: f.env(pids.length === 0 ? mode : "answer") });
 				pids.push(client.pid);
 				if (pids.length === 2) resolveRecovered();
 				trackHost(t, client.pid);
 				return client;
 			},
-			connect: (metadata, options) => generation.connect(metadata, { ...options, env: f.env(mode) }),
+			connect: (metadata, options) => connectHost(metadata, { ...options, env: f.env("answer") }),
 		});
-		generation.manager(value);
 		return value;
 	};
-	const manager = managerFor(initial, steerDuringRun ? "effect" : "request");
-	let resumedManager: AgentManager | undefined;
-	let resumedController: AbortController | undefined;
+	const manager = managerFor(steerDuringRun ? "effect" : "request");
 	const receipts: Record<string, unknown>[] = [];
 	let resolveDelivered: () => void = () => {};
 	const delivered = new Promise<void>((resolve) => { resolveDelivered = resolve; });
@@ -525,25 +519,15 @@ for (const steerDuringRun of [false, true]) it(`refuses online relaunch after SI
 			expectedIds.push(steered.submissionId);
 		}
 		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, true);
+		const before = lstatSync(hostPaths(f.metadata).claim);
 		killHost(pids[0] as number);
-		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
-		await assert.rejects(initial.acquire(f.metadata, { env: f.env("answer") }), /requires offline recovery/u);
-		assert.equal(controller.signal.aborted, false, "refusal occurs while the original primary remains live");
-		assert.equal(pids.length, 1, "the dead claim admits no automatic replacement");
-		assert.equal(receipts.length, 0);
-		const retained = await observeDurableStorage(f.metadata, "inspect", { view: "history", source: "user", limit: 10 }) as HistoryPage;
-		assert.ok(retained.entries.length >= 1, "the interrupted input remains in a read-only copy");
-		const pending = await observeDurableStorage(f.metadata, "receipts", { ownerId }) as { pending: number };
-		assert.equal(pending.pending, expectedIds.length, "the original and steered submissions remain pending before offline recovery");
-		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, true);
-		const resumed = await f.offline.recover();
-		resumedController = resumed.controller(new AbortController());
-		resumedManager = managerFor(resumed, "answer");
-		await resumedManager.registerPrimary(ownerId, { cwd: f.cwd, signal: resumedController.signal, send });
-		await within(delivered, 15000, "the fresh primary received no recovered result");
+		await within(delivered, 15000, "the original primary received no recovered result");
 		await within(recovered, 10000, "the replacement connection did not become ready");
-		assert.equal(resumedController.signal.aborted, false);
-		assert.equal(pids.length, 2, "offline resumption launches one replacement");
+		assert.equal(controller.signal.aborted, false);
+		assert.equal(pids.length, 2, "owned failure launches one replacement");
+		const after = lstatSync(hostPaths(f.metadata).claim);
+		assert.equal(after.dev, before.dev);
+		assert.equal(after.ino, before.ino);
 		assert.notEqual(pids[1], pids[0]);
 		const receipt = receipts[0];
 		assert.ok(receipt);
@@ -552,10 +536,10 @@ for (const steerDuringRun of [false, true]) it(`refuses online relaunch after SI
 		assert.match(String(receipt?.answer), /durable runtime answer/u);
 		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
 		assert.equal(receipts.length, 1, "the host retires after one notice and acknowledgement of every input");
-		assert.equal(resumedManager.catalog.read(f.metadata.storageId).recoveryDue, false);
-		const history = await resumedManager.control("inspect", { sessionId: f.metadata.storageId, view: "history", source: "user", limit: 10 }, { id: ownerId, cwd: f.cwd }) as HistoryPage;
+		assert.equal(manager.catalog.read(f.metadata.storageId).recoveryDue, false);
+		const history = await manager.control("inspect", { sessionId: f.metadata.storageId, view: "history", source: "user", limit: 10 }, { id: ownerId, cwd: f.cwd }) as HistoryPage;
 		assert.equal(history.entries.length, expectedIds.length, "relaunch resumes retained submissions without another input");
-	} finally { controller.abort(); manager.close(); resumedController?.abort(); resumedManager?.close(); }
+	} finally { controller.abort(); await manager.close(); }
 });
 
 it("does not rerun an unsafe effect after SIGKILL and delivers the retained result once", { timeout: 120000 }, async (t) => {
@@ -705,13 +689,12 @@ it("keeps the same native process and usable controls after successful reload", 
 });
 
 for (const pendingDelivery of [false, true]) it(`exits after a failed reload with pending delivery=${pendingDelivery} and serves controls after acquisition`, { timeout: 120000 }, async (t) => {
-	const f = runtimeFixture(t, { offlineRecovery: true });
-	const initial = f.offline.generation();
+	const f = runtimeFixture(t);
 	const runner = fileURLToPath(new URL("./failed-reload-fixture.mts", import.meta.url));
-	const first = await initial.acquire(f.metadata, { runner, env: { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "0" }, retryAttempts: 0 });
+	const first = await acquireHost(f.metadata, { runner, env: { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: "0" }, retryAttempts: 0 });
 	trackHost(t, first.pid);
 	const paths = hostPaths(f.metadata);
-	const claimBefore = readFileSync(paths.claim), identityBefore = lstatSync(paths.claim);
+	const identityBefore = lstatSync(paths.claim);
 	let submission: SubmitResult | undefined;
 	try {
 		if (pendingDelivery) {
@@ -725,21 +708,20 @@ for (const pendingDelivery of [false, true]) it(`exits after a failed reload wit
 		assert.match(state.nextError, /closed/u, "later controls cannot use the torn-down runtime");
 		assert.equal(state.shutdownRequired, true, "the failed runtime requires process shutdown instead of retaining its live claim");
 		await waitForHostRelease(f.metadata, { signal: AbortSignal.timeout(10000) });
-		assert.equal(observeClaim(paths.claim, paths.identity).kind, "dead", "process death leaves a writer claim for offline recovery");
+		assert.equal(observeClaim(paths.claim, paths.identity).kind, "unknown", "diagnostic metadata does not establish writer possession");
 		assert.equal(new AgentCatalog(f.root).read(f.metadata.storageId).recoveryDue, true, "failure retains recovery due, including an unacknowledged delivery");
-		await assert.rejects(initial.acquire(f.metadata, { env: f.env("answer"), retryAttempts: 0 }), /requires offline recovery/u);
-		assert.deepEqual(readFileSync(paths.claim), claimBefore, "online refusal preserves the captured claim bytes");
 		const identityAfter = lstatSync(paths.claim);
 		assert.equal(identityAfter.dev, identityBefore.dev);
 		assert.equal(identityAfter.ino, identityBefore.ino);
 		assert.equal(identityAfter.uid, identityBefore.uid);
 	} finally { await first.close().catch(() => {}); }
-	const successor = await f.offline.recover();
-	assert.notEqual(successor, initial);
-	const second = await successor.acquire(f.metadata, { env: f.env("answer"), retryAttempts: 0 });
+	const second = await acquireHost(f.metadata, { env: f.env("answer"), retryAttempts: 0 });
 	trackHost(t, second.pid);
 	try {
 		assert.notEqual(second.pid, first.pid);
+		const replacement = lstatSync(paths.claim);
+		assert.equal(replacement.dev, identityBefore.dev);
+		assert.equal(replacement.ino, identityBefore.ino);
 		assert.equal((await second.request("status") as { storageId: string }).storageId, f.metadata.storageId);
 		await second.request("configure", { name: "after failed reload" });
 		if (submission) {

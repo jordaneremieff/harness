@@ -24,6 +24,7 @@ import { EffortAwarenessSchema } from "./effort-schema.ts";
 import { CreatedAgentsSchema } from "./agent-lineage.ts";
 import { CommunicationViewSchema } from "./communication.ts";
 import { AwaitFactSchema } from "./await-facts.ts";
+import { STORAGE_STATUS_ID_PATTERN } from "./storage-status.ts";
 import { ProviderBlockFactSchema } from "./provider-block-facts.ts";
 
 const string = str();
@@ -45,6 +46,14 @@ export const JsonValueSchema: Schema<JsonValue> = {
 };
 const jsonObject = map(JsonValueSchema);
 const cursorSchema = jsonObject;
+
+const storageStatusId = str({ pattern: STORAGE_STATUS_ID_PATTERN });
+const storageStatusLimit = int({ minimum: 1, maximum: 50 });
+export const StorageStatusPageInputSchema = obj({ view: lit("storage-page"), storageId: storageStatusId, cursor: opt(cursorSchema), limit: opt(storageStatusLimit) });
+export const StorageStatusCoverageSchema = obj({
+	complete: boolean, returned: count, scanned: count,
+	next: union([nul(), obj({ tool: lit("agent_status"), view: lit("storage-page"), storageId: storageStatusId, cursor: cursorSchema, limit: storageStatusLimit })]),
+});
 
 const modelCost = obj({ input: number, output: number, cacheRead: number, cacheWrite: number, total: number, totalFromProvider: opt(boolean) });
 export const UsageSchema = obj({
@@ -339,7 +348,7 @@ const overviewProperties = {
 	discovery: string,
 };
 const singlePayload = { conversation: ConversationStatusSchema };
-const pluralPayload = { conversations: arr(ConversationStatusSchema) };
+const pluralPayload = { conversations: arr(ConversationStatusSchema), coverage: StorageStatusCoverageSchema };
 const liveEnvelope = { inventory: DurableInventorySchema, pid: id, storageId: string, deliveryError: opt(string) };
 const coldEnvelope = { live: lit(false), storageId: string, deliveryError: opt(string) };
 
@@ -395,7 +404,7 @@ const absent = opt(false as unknown as Schema<never>);
 const toolCoverageProperties = { ...statusOverviewCoverage, inventory: catalogPriorityCoverage, omittedPriorityRows: count, omittedPriorityRecords: count };
 const toolOverviewProperties = { ...overviewProperties, sessions: arr(ToolOverviewRowSchema), coverage: obj(toolCoverageProperties) };
 const awarenessProperties = { awareness: opt(EffortAwarenessSchema) };
-const singleProperties = { ...singlePayload, conversations: absent, createdAgents: absent };
+const singleProperties = { ...singlePayload, conversations: absent, createdAgents: absent, coverage: absent };
 const pluralProperties = { ...pluralPayload, storageId: string, conversation: absent, createdAgents: opt(CreatedAgentsSchema) };
 const liveProperties = { ...liveEnvelope, live: absent };
 const coldProperties = { ...coldEnvelope, inventory: absent, pid: absent };
@@ -405,7 +414,7 @@ const toolOverview = all([partial(toolOverviewProperties), onlyKeys([...Object.k
 const toolSelected = all([
 	union([partial(singleProperties), partial(pluralProperties)]),
 	union([partial(liveProperties), partial(coldProperties), partial(bareProperties)]),
-	onlyKeys(["awareness", "conversation", "conversations", "createdAgents", "inventory", "pid", "live", "storageId", "deliveryError"]),
+	onlyKeys(["awareness", "conversation", "conversations", "coverage", "createdAgents", "inventory", "pid", "live", "storageId", "deliveryError"]),
 ]);
 const ToolStatusSchema = all([partial(awarenessProperties), union([toolOverview, toolSelected])]);
 export const StatusToolOutputSchema = union([ToolStatusSchema, FleetStatusSchema, OrdinaryPrimaryObservationSchema]);

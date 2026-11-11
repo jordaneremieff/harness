@@ -22,6 +22,7 @@ import { realpathSync } from "node:fs";
 import { hostname } from "node:os";
 import { IntentParams, validateIntentInput } from "./effort-schema.ts";
 import { agentRunControlDoc } from "./run-control-state.ts";
+import { storageStatusPageInput } from "./storage-status.ts";
 import { agentChildrenDoc, type AgentChild } from "./children.ts";
 import { readInputProviderBlock, captureProviderRecovery, linkProviderRecovery } from "./provider-block.ts";
 import { providerBlockText } from "./provider-block-facts.ts";
@@ -54,7 +55,7 @@ import type { Api, Message, Model, ModelThinkingLevel } from "@earendil-works/pi
 import { clampThinkingLevel } from "@earendil-works/pi-ai";
 import type * as Durable from "@earendil-works/pi-durable";
 import { inputEntry } from "./input-entry.ts";
-import { str, num, int, bool, unknown, opt, obj, map, type Static, type Schema } from "@earendil-works/pi-schema";
+import { str, num, int, bool, unknown, opt, obj, map, union, type Static, type Schema } from "@earendil-works/pi-schema";
 import { CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
 import { THINKING_LEVELS } from "./configuration.ts";
 import { AGENT_CONTROL_EXPOSURE, AGENT_CONTROL_TOOL_NAMES, AWAIT_INPUT_DELIVERY_BOUNDARY, FOLLOW_UP_DELIVERY_BOUNDARY, MODEL_SELECTION_GUIDANCE, REPORT_DELIVERY_BOUNDARY, agentControlGuidanceLines, type AgentControlToolName } from "./control-guidance.ts";
@@ -67,6 +68,7 @@ import type { DurableCommand, DurableCommandCall } from "./durable-services.ts";
 import {
 	InspectToolOutputSchema,
 	StatusToolOutputSchema,
+	StorageStatusPageInputSchema,
 	structuredObservation,
 	nativeStructuredObservation,
 } from "./observation-schema.ts";
@@ -469,7 +471,7 @@ const CommandParams = obj(
 	{},
 );
 
-const StatusParams = obj(
+const StatusParams = union([obj(
 	{
 		view: opt(StringEnum(["fleet"], { description: "Read sampled machine-local model evidence, without a sessionId. Optional exact model/provider filters select published evidence, not provider health." })),
 		...FleetSelectionProperties,
@@ -478,7 +480,7 @@ const StatusParams = obj(
 		),
 	},
 	{},
-);
+), StorageStatusPageInputSchema]);
 
 const ListParams = obj(
 	{
@@ -1635,6 +1637,7 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 	};
 
 	const readStatus = async (args: StatusInput, api: Durable.ToolExecutionApi<ControlDetails>, context: Context, selection: FleetSelection) => {
+		if (args.view === "storage-page") return hostObservation("status", { ...storageStatusPageInput(args) }, "Storage status failed", StatusToolOutputSchema);
 		if (args.view === "fleet") {
 			const created = await readCreatedAgents(api, Children, { storageId: host.storageId, conversationId: api.conversationId }, context);
 			return fleetObservation(host.catalogRoot, args.sessionId, identity(api.conversationId), created, selection);
@@ -1658,12 +1661,15 @@ function buildExtension(host: AgentContributionHost, options: AgentContributionO
 		...durable.defineTool({
 			name: "agent_status",
 			description:
-				"Read conversation state and tools through the host observation. A selected Durable session lists bounded pending timers with IDs and deadlines. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state. Without a target, read this storage's conversations, effort presence and intent claims, and recent active thread hints with explicit coverage. Fleet overviews use compact excerpts and summary coverage.",
+				"Read conversation state and tools through the host observation. A selected Durable session lists bounded pending timers with IDs and deadlines. An ordinary primary returns presence and bounded latest-retained ancestry, not live idle or selected-branch state. Without a target, read this storage's conversations, effort presence and intent claims, and recent active thread hints with explicit coverage. Fleet overviews use compact excerpts and summary coverage. For one storage, use view: storage-page with its exact storageId and follow coverage.next unchanged; this backend JSON cursor is separate from agent_list discovery.",
 			parameters: StatusParams,
 			replay: "safe",
 			execute: async (args: StatusInput, api, context) => {
 				let selection: FleetSelection;
-				try { selection = validateFleetSelection(args); }
+				try {
+					if (args.view === "storage-page") { storageStatusPageInput(args); selection = {}; }
+					else selection = validateFleetSelection(args);
+				}
 				catch (error) { return errorResult(error instanceof Error ? error.message : String(error)); }
 				return readStatus(args, api, context, selection);
 			},
