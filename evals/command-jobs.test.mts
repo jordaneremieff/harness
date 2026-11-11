@@ -154,9 +154,17 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 		}));
 		await session.bindExtensions({ mode: "json", onError: (error) => errors.push(error.error) });
 
-		// The active reader makes the package file-read policy applicable before job admission.
+		// Policy denies the traversal before any part of the background command executes.
 		writeFileSync(join(cwd, "input.txt"), "fixture input\n");
-		await call("bash", { command: "printf launched > denied-marker; cat input.txt", background: true }, true);
+		const denied = await call(
+			"bash",
+			{ command: "printf launched > denied-marker; find . -maxdepth 1 -name input.txt -print -quit", background: true },
+			true,
+		);
+		assert.deepEqual(denied.content, [{
+			type: "text",
+			text: "[policy] Rule form.find-discovery: Use rg --files, fd, or git ls-files for discovery: fd --max-results 50 -e ts src/. Matched command: find . -maxdepth 1 -name input.txt -print -quit",
+		}]);
 		assert.equal(existsSync(join(cwd, "denied-marker")), false);
 		assert.deepEqual((await data("jobs", { action: "list" })).jobs, []);
 
@@ -191,8 +199,14 @@ test("AgentSession admits command jobs through policy and owns their lifecycle",
 		assert.equal(logs.gap, false);
 		assert.equal((await data("jobs", { action: "logs", id, cursor: logs.next })).text, "");
 
-		const cancel = (await data("bash", { command: "printf '%s' $$ > cancel-pid; exec sleep 30", background: true }))
-			.job;
+		const cancelReceipt = await call("bash", {
+			command: "cat input.txt; printf '%s' $$ > cancel-pid; exec sleep 30",
+			background: true,
+		});
+		assert.ok(cancelReceipt.content.some((part) =>
+			part.type === "text" && part.text === "[policy] Use the read tool for file contents, one call per file: read path=README.md.",
+		));
+		const cancel = JSON.parse(JSON.stringify(cancelReceipt.details)).job;
 		await until(async () => existsSync(join(cwd, "cancel-pid")));
 		const cancelPid = Number(readFileSync(join(cwd, "cancel-pid"), "utf8"));
 		assert.equal((await data("jobs", { action: "cancel", id: cancel.id })).job.cancellationRequested, true);
