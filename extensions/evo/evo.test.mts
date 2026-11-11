@@ -118,6 +118,8 @@ function registeredEvo(): {
 	description: string | undefined;
 	toolRegistrations: number;
 	emissions: unknown[];
+	listenerCount: (event: string) => number;
+	fire: (event: string, value?: Record<string, unknown>) => void;
 } {
 	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
 	let description: string | undefined;
@@ -125,13 +127,19 @@ function registeredEvo(): {
 	const notifications: string[] = [];
 	const commandNames: string[] = [];
 	const emissions: unknown[] = [];
+	const listeners = new Map<string, Set<(...args: unknown[]) => void>>();
 	let toolRegistrations = 0;
-	let sessionName: string | undefined;
 	const api = {
 		events: {
 			emit(channel: string, data: unknown) {
 				if (channel === "durable:contribution") emissions.push(data);
 			},
+		},
+		on(event: string, handler: (...args: unknown[]) => void) {
+			const handlers = listeners.get(event) ?? new Set<(...args: unknown[]) => void>();
+			handlers.add(handler);
+			listeners.set(event, handlers);
+			return () => { handlers.delete(handler); };
 		},
 		registerCommand(
 			name: string,
@@ -149,10 +157,6 @@ function registeredEvo(): {
 		registerTool() {
 			toolRegistrations++;
 		},
-		getSessionName: () => sessionName,
-		setSessionName(name: string) {
-			sessionName = name;
-		},
 		sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }) {
 			sent.push({ content, options });
 		},
@@ -167,6 +171,10 @@ function registeredEvo(): {
 		description,
 		toolRegistrations,
 		emissions,
+		listenerCount: (event) => listeners.get(event)?.size ?? 0,
+		fire(event, value = {}) {
+			for (const handler of [...(listeners.get(event) ?? [])]) handler({ type: event, ...value }, context("tui", notifications));
+		},
 	};
 }
 
@@ -865,6 +873,37 @@ test("all modes use follow-up-safe delivery without idle-state inspection", asyn
 				direction: "status",
 			}),
 		);
+	}
+});
+
+test("direction listeners discard unrelated or transformed input and remove both hooks", async () => {
+	for (const source of ["interactive", "extension"]) {
+		const registered = registeredEvo();
+		await registered.handler("Repair parser", context("tui", registered.notifications));
+		assert.equal(registered.listenerCount("input"), 1);
+		assert.equal(registered.listenerCount("session_shutdown"), 1);
+		registered.fire("input", { source, text: "Different first input" });
+		assert.equal(registered.listenerCount("input"), 0);
+		assert.equal(registered.listenerCount("session_shutdown"), 0);
+		registered.fire("input", { source: "extension", text: registered.sent[0]?.content });
+		assert.equal(registered.sent.length, 1);
+	}
+});
+
+test("shutdown removes a pending direction listener", async () => {
+	const registered = registeredEvo();
+	await registered.handler("Repair parser", context("tui", registered.notifications));
+	registered.fire("session_shutdown");
+	assert.equal(registered.listenerCount("input"), 0);
+	assert.equal(registered.listenerCount("session_shutdown"), 0);
+});
+
+test("bare, invalid and rpc invocations create no direction listener", async () => {
+	for (const [raw, mode] of [["", "tui"], ["Repair parser", "rpc"], ["x".repeat(MAX_DIRECTION_CODE_POINTS + 1), "tui"]] as const) {
+		const registered = registeredEvo();
+		await registered.handler(raw, context(mode, registered.notifications));
+		assert.equal(registered.listenerCount("input"), 0);
+		assert.equal(registered.listenerCount("session_shutdown"), 0);
 	}
 });
 

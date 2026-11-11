@@ -3,7 +3,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { sessionNameFromInput } from "../../session-name/index.ts";
+import { offerSessionName } from "../../session-name/lifecycle.ts";
 import { parseEvoInvocation } from "./command.ts";
 import { createEvoContribution, EVO_COMMAND_DESCRIPTION } from "./durable.ts";
 import { buildEvoKickoff } from "./kickoff.ts";
@@ -17,15 +17,23 @@ function reportInvalidInvocation(ctx: ExtensionCommandContext, message: string):
 	else throw new Error(message);
 }
 
-/**
- * Give an unnamed session a name from the operator's direction. An RPC-mode
- * command leaves the name to the RPC client, as ordinary RPC input does; the
- * client names a session with Pi's `set_session_name` RPC command.
- */
-function nameSessionFromDirection(pi: ExtensionAPI, ctx: ExtensionCommandContext, direction: string | undefined): void {
-	if (direction === undefined || ctx.mode === "rpc" || pi.getSessionName() !== undefined) return;
-	const name = sessionNameFromInput(direction);
-	if (name !== undefined) pi.setSessionName(name);
+/** Correlate the original direction with its own generated input, not a later prompt. */
+function offerDirection(pi: ExtensionAPI, ctx: ExtensionCommandContext, direction: string | undefined, kickoff: string): () => void {
+	if (direction === undefined || ctx.mode === "rpc") return () => {};
+	let removeInput = () => {};
+	let removeShutdown = () => {};
+	const stop = () => { removeInput(); removeShutdown(); };
+	removeInput = pi.on("input", (event, inputContext) => {
+		stop();
+		if (event.source !== "extension" || event.text !== kickoff) return;
+		try {
+			offerSessionName(pi, inputContext, { source: "evo", text: direction });
+		} catch {
+			// An optional name must not suppress the authorised kickoff.
+		}
+	});
+	removeShutdown = pi.on("session_shutdown", stop);
+	return stop;
 }
 
 export default function registerEvo(pi: ExtensionAPI): void {
@@ -45,8 +53,13 @@ export default function registerEvo(pi: ExtensionAPI): void {
 				direction: invocation.direction,
 				release,
 			});
-			nameSessionFromDirection(pi, ctx, invocation.direction);
-			pi.sendUserMessage(kickoff, { deliverAs: "followUp" });
+			const stopOffer = offerDirection(pi, ctx, invocation.direction, kickoff);
+			try {
+				pi.sendUserMessage(kickoff, { deliverAs: "followUp" });
+			} catch (error) {
+				stopOffer();
+				throw error;
+			}
 		},
 	});
 }
