@@ -1156,7 +1156,7 @@ test("native restoration reconciles future evidence and preserves once allowance
 		const SeededState = DurableModule.defineDoc<DurableModule.JsonObject>({ kind: "policy.state", version: 1,
 			scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
 			initial: () => ({ identity: "synthetic-observation-state", generation: 0, turn: 0,
-				observation: observation as unknown as DurableModule.JsonValue, retainedGuidance: [], completedCalls: [],
+				observation: observation as unknown as DurableModule.JsonObject, retainedGuidance: [], completedCalls: [],
 				incomplete: 0, stale: 0, shellCard: null }),
 		});
 		await fixture.harness.commit((tx) => tx.doc(SeededState, fixture.root.id), context);
