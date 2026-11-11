@@ -859,6 +859,7 @@ test("an aborted call records an uncertain execution without a completed executi
 
 test("an interrupted safe tool reruns and answers after reopen", async () => {
 	const fixtureDirectory = await mkdtemp(join(tmpdir(), "policy-durable-safe-"));
+	const cleanups: HostCleanup[] = [];
 	const storeDir = join(fixtureDirectory, "policy");
 	const priorDir = process.env.PI_POLICY_DIR;
 	process.env.PI_POLICY_DIR = storeDir;
@@ -874,14 +875,15 @@ test("an interrupted safe tool reruns and answers after reopen", async () => {
 			fauxAssistantMessage("done"),
 		]);
 		const first = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
-		registry.install(blockOnce(await createPolicyDurableExtension(hostFor(fixtureDirectory, first)), "policy_rules", started.resolve));
+		registry.install(blockOnce(await createPolicyDurableExtension(hostFor(fixtureDirectory, first, cleanups)), "policy_rules", started.resolve));
 		const root = await first.root(context, { agent: { model: MODEL, modelTools: { add: policyTools(registry) } } });
 		const submission = await root.submit({ type: "input", content: "list" }, context);
 		await started.promise;
 		await first.close(context);
+		for (const dispose of cleanups.splice(0)) await dispose();
 
 		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
-		registry.install(await createPolicyDurableExtension(hostFor(fixtureDirectory, second)));
+		registry.install(await createPolicyDurableExtension(hostFor(fixtureDirectory, second, cleanups)));
 		second.resume();
 		const reacquired = await second.submission(submission.id, context);
 		assert.ok(reacquired);
@@ -893,6 +895,7 @@ test("an interrupted safe tool reruns and answers after reopen", async () => {
 		assert.match(textOf(result), /RULES/);
 		await second.close(context);
 	} finally {
+		for (const dispose of cleanups.splice(0)) await dispose();
 		await rm(fixtureDirectory, { recursive: true, force: true });
 		if (priorDir === undefined) delete process.env.PI_POLICY_DIR;
 		else process.env.PI_POLICY_DIR = priorDir;
@@ -1548,6 +1551,7 @@ test("durable inspection and control surfaces answer model-issued calls", async 
 
 test("a reset revision survives process loss", async () => {
 	const directory = await mkdtemp(join(tmpdir(), "policy-durable-reset-"));
+	const cleanups: HostCleanup[] = [];
 	const storeDir = join(directory, "policy");
 	const priorDir = process.env.PI_POLICY_DIR;
 	process.env.PI_POLICY_DIR = storeDir;
@@ -1562,7 +1566,7 @@ test("a reset revision survives process loss", async () => {
 			{ models, registry, onReport: reportHarnessError },
 			context,
 		);
-		registry.install(await createPolicyDurableExtension(hostFor(directory, first)));
+		registry.install(await createPolicyDurableExtension(hostFor(directory, first, cleanups)));
 		const firstRoot = await first.root(context, { agent: { model: MODEL, modelTools: { add: policyTools(registry) } } });
 		faux.appendResponses([
 			fauxAssistantMessage(fauxToolCall("policy_control", { operation: "reset-preview", id: "--all" }), {
@@ -1575,9 +1579,10 @@ test("a reset revision survives process loss", async () => {
 		const firstRevision = detailsOf((await toolResults(firstRoot, "policy_control")).at(-1))?.revision;
 		assert.equal(typeof firstRevision, "string");
 		await first.close(context);
+		for (const dispose of cleanups.splice(0)) await dispose();
 
 		const second = await DurableModule.Harness.open(storage, { models, registry, onReport: reportHarnessError }, context);
-		registry.install(await createPolicyDurableExtension(hostFor(directory, second)));
+		registry.install(await createPolicyDurableExtension(hostFor(directory, second, cleanups)));
 		const secondRoot = await second.root(context);
 		faux.appendResponses([
 			fauxAssistantMessage(fauxToolCall("policy_control", { operation: "reset-preview", id: "--all" }), {
@@ -1591,6 +1596,7 @@ test("a reset revision survives process loss", async () => {
 		assert.equal(secondRevision, firstRevision);
 		await second.close(context);
 	} finally {
+		for (const dispose of cleanups.splice(0)) await dispose();
 		await rm(directory, { recursive: true, force: true });
 		if (priorDir === undefined) delete process.env.PI_POLICY_DIR;
 		else process.env.PI_POLICY_DIR = priorDir;
