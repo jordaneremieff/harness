@@ -177,8 +177,10 @@ one instant. Cross-storage thread discovery uses the same catalog continuations.
 Dashboard, footer, and the no-target status roster share one manager-owned raw
 inventory observation. Initial discovery lists catalog names and reads each
 candidate's record and writer claim once. Each caller ranks those same facts
-with its own ownership set and manager-local launch/recovery facts. Live claims,
-caller-created records and local active stores come first. Catalog file
+with its own ownership set and manager-local launch/recovery facts. The priority
+projection retains its live-claim branch, but native diagnostic records never
+establish live priority. Caller-created records and local active stores retain
+their priority. A connected publication changes presentation, not catalogue rank. Catalog file
 modification time orders each group, with identity as the tie-breaker. Creation
 time is immutable; file modification time reflects published views and recovery
 marker changes. It describes metadata recency, not proof of current work.
@@ -1350,8 +1352,14 @@ not transcript text. Find
 previews the selected match before the filter is committed; Esc restores the
 previous filter and selection. A filter with no match is not an empty store:
 Enter does nothing and Esc clears the filter. An empty page or missing view is
-not proof of absence. A dead or absent writer claim marks
-previously working retained metadata Interrupted. Claim errors remain explicit.
+not proof of absence. Without verified current-link evidence, an absent or
+ended recorded generation marks previously working retained metadata Interrupted.
+A verified current link without a publication marks that state Unavailable.
+A valid clean-end marker for that exact writer takes precedence.
+Unknown ownership marks that state Unavailable and removes its stale current
+tool. A negotiated, connected host with a successful bounded publication keeps
+its published working state and current tool. Its timestamp qualifies the
+snapshot; it is not an instantaneous query. Claim errors remain explicit.
 Host health belongs to the publication time; later publications clear it.
 The manager adds current recovery errors without rewriting published views.
 
@@ -1443,11 +1451,14 @@ routes settlement elsewhere; the primary's retained results cannot establish
 that every request settled. No catalog schema or host protocol carries this scope.
 
 The status says `agents: <working>/<total> active · ~$<cost>` and disappears when
-no session-scoped rows are found. The numerator counts only `working` rows;
-the denominator includes every scoped row. Each registered primary receives its
-own caller-prioritized page and figures. A `+` after the denominator marks
-catalog output exclusions, unreadable records, or unknown writer claims; the
-loaded count is not a global total. Catalog publication notices refresh these figures even when the
+no session-scoped rows are found. The numerator counts displayed `working` rows
+with a verified current-host publication; the denominator includes every scoped
+row. Each registered primary receives its own caller-prioritized page and
+figures. A `+` after the denominator marks unresolved selected claims, unseen
+records, unreadable records, or incomplete published projections. Connected
+publications resolve selected claims for presentation only; raw catalogue
+coverage, including `unknownClaims`, remains unchanged. The loaded count is not
+a global total. Catalog publication notices refresh these figures even when the
 dashboard is closed and the primary has no connection to the publishing host.
 The primary and dashboard share one catalog observer; it closes after the last
 primary and dashboard listener leave. This observation starts no host and adds no
@@ -2072,8 +2083,13 @@ integration completion, so the host does not infer that transition.
 Current-source readers discover native claims from catalogue views in their own
 sessions root. The owning host publishes the
 view through its coalesced native commit path; a commit is not immediate peer
-visibility. Host writer claims supply native liveness. Absent or dead writers do
-not appear; unknown ownership remains unknown. Readers running the unchanged
+visibility. Native diagnostic records never prove a live lease holder. A valid
+same-host clean-end marker or same-host ESRCH ends only the recorded generation;
+those efforts and their declarations no longer appear. Present or reused PIDs,
+EPERM, foreign hosts, malformed markers and read failures remain unknown. A new
+holder can acquire before it rewrites the previous record, so this display
+evidence proves no global absence and grants no recovery, deletion or release
+wait authority. Unknown ownership remains unknown. Readers running the unchanged
 original Agent source read only ordinary `.primaries` descriptors and never see
 native claims. Updating one writer does not update another reader.
 
@@ -2450,9 +2466,17 @@ a token request after close.
 - Each storage has one descriptor-held writer lease on a permanent inode. The
   runner takes one nonblocking Darwin lock before it opens SQLite or resumes the
   Durable scheduler. A busy lease prevents a second runtime from opening. Normal
-  release closes the descriptor; it never removes or replaces the inode. The
-  bounded JSON record is diagnostic metadata, not ownership or process-liveness
-  evidence. Its PID, hostname, age and continued existence grant no takeover.
+  release writes the holder's complete diagnostic record with canonical
+  `endedAt` through the held descriptor at byte offset zero after runtime
+  closure and owned socket removal, then closes the descriptor. It never
+  removes or replaces the inode. The end time must not precede `createdAt`, and
+  the writer token must be a nonempty bounded identity. Runtime-close or
+  end-record write failure retains exclusion until actual process exit. A new
+  holder rewrites the record without `endedAt`. The bounded JSON record is
+  diagnostic metadata, not ownership or current process-liveness evidence. Its
+  PID, hostname, age and continued existence grant no takeover. An unopened
+  catalogue record remains retained for every present claim, including dead
+  evidence for a previous generation; only absence reaches guarded cleanup.
   This contract supports cooperating processes on a private local macOS
   filesystem, not shared/network filesystems or uncooperative writers. The
   adapter rejects unsafe files and other platforms. A rejected runtime factory
@@ -2468,8 +2492,10 @@ a token request after close.
   `transport/index.ts`, shared with other host clients. Its typed Endpoint
   contract is `pi.agent.endpoint/1`, separate from the manager and primary
   delivery contracts. A private 0700 directory, an owner-only 0600 socket, and
-  the exact `serverId` handshake are the boundary; no token crosses it. Closing
-  a client or canceling an observation does not cancel admitted work.
+  the exact `serverId` handshake provide local admission. The hello and change
+  feed carry a `writerId` for that host; observation feeds also carry their
+  tokens. These identities are protocol data, not authentication credentials.
+  Closing a client or canceling an observation does not cancel admitted work.
   Both connect and listen paths default to a 16 MiB encoded-frame limit and a
   64 MiB queue limit, with caller-configurable `maxFrameBytes` and `maxQueueBytes`.
 - The primary registers one channel over the same public transport. That channel
@@ -2521,10 +2547,11 @@ a token request after close.
   The transport exposes no per-response flush signal; the grace bounds the wait
   for a client that stays connected. Release never deletes delivery rows or
   cancels timers. The manager attaches for release without launching a host.
-  A confirmed absent or dead writer returns
-  `{ retiring: false, blockers: [], live: false }`; tools and `/agent` report that
-  the agent is not running. Live or unknown writer ownership preserves the
-  attachment error rather than claiming absence.
+  An unavailable endpoint preserves the attachment error. Permanent metadata
+  and an ended previous generation do not prove that no replacement holds the
+  lease; clients do not probe it. Release does not return a not-running result
+  from that evidence. Unrelated `live: false` results for cold reads retain
+  their read-only meaning.
 - Reload requires an idle storage and no live observation tokens. The runtime
   refuses reload before teardown while any observer remains, including native
   local command dispatch. Release the observers before reload; an attempted
@@ -2664,11 +2691,32 @@ not grant launch authority. Recovery first attempts attachment; an automatic
 replacement also requires retryable work and an exact owned failed-child exit.
 A clean child exit or successful owner close does not trigger a replacement.
 Foreign transport loss without an exit source remains unavailable and names
-`agent_attach` for explicit recovery. Client close is final, including during
+`agent_attach` for an explicit endpoint check. A qualified clean-end marker for
+that exact negotiated writer identifies expected retirement, not a recovery
+fault. It never authorises automatic replacement. A marker for another writer
+does not clear the current loss refusal. An uncertain launch without READY or
+exit remains unavailable: explicit attachment does not bypass that launch, and
+no failed endpoint check justifies a duplicate launch or PID kill. An actual
+exit or an owner-close acknowledgement tied to the same validated launch
+permits explicit reacquisition. Client close is final, including during
 recovery or subscription setup, and releases only local resources. Writer-release
 observation requires a child-exit event or a successful owner close, never a
-persistent inode's disappearance. Metadata-only unknown ownership changes a
-stale working row to unavailable, not to interrupted.
+persistent inode or end marker.
+
+The `changes/2.0.0` operation carries `{revision,writerId,view?}` in its initial
+and later frames. The server uses its immutable hello identity and the
+runtime's latest successfully published bounded catalogue view. The client
+consumes the initial subscription value and later values only for that exact
+link and binding. A bare revision proves no publication. Loss, rebind, local
+close and successful owner close clear the retained snapshot; old callbacks do
+not restore it. The manager uses its regular connection when present, otherwise
+its existing recovery connection. A current regular link without a publication
+does not fall back to an older recovery snapshot. A valid current-host
+publication restores connected working rows without a new socket probe, timer
+or recurring status request. A valid clean-end marker for that same writer
+overrides a still-connected retiring link. A changes-operation mismatch refuses
+without a retired-shape fallback; the current diagnostic path retains the
+unavailable publication reason.
 
 A host that does not advertise `release` started on code without that operation,
 regardless of its advertised release number. After active work and result
