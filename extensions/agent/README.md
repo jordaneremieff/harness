@@ -2459,6 +2459,11 @@ a token request after close.
   retains exclusion until the dedicated process exits because partial
   construction has no close handle. Validation failures before acquisition
   create no lease file.
+  A host that relies on claim-file existence instead of this kernel lease is
+  not excluded by the lease. Mixed operation is unsupported. Before a launcher
+  with this lease protocol starts a host, every host and every Pi launcher
+  that uses the claim-file protocol must stop. An unreachable socket does not
+  establish that those processes stopped.
 - The primary talks to the host through the package-level Chord transport at
   `transport/index.ts`, shared with other host clients. Its typed Endpoint
   contract is `pi.agent.endpoint/1`, separate from the manager and primary
