@@ -58,17 +58,20 @@ describe("CLI command-operand evidence", () => {
 		assert.equal(evidence.get(record.id), true);
 		assert.equal(evidence.segments.get(record.id), "git push");
 	});
-	it("does not infer substitution from an escaped here-document delimiter", () => {
-		assert.equal(evaluateCommandRecords("bash", "cat <<\\EOF\n$(git push)\nEOF", [record], scope).get(record.id), false);
+	it("leaves escaped-only here-document evidence unavailable", () => {
+		assert.equal(evaluateCommandRecords("bash", "cat <<\\EOF\n$(git push)\nEOF", [record], scope).get(record.id), "unknown");
 		for (const command of ["bash <<\\EOF\n$(git push)\nEOF", "cat <<\\EOF | sh\n$(git push)\nEOF"])
 			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), "unknown");
 	});
-	it("keeps trap commands and unsupported arithmetic in plain loops unavailable", () => {
+	it("gives plain loops the command evidence of their standalone bodies", () => {
 		for (const body of ["trap 'git push' EXIT", "'trap' 'git push' EXIT", "command trap 'git push' EXIT",
-			"builtin trap 'git push' EXIT", "trap 'echo cleanup' EXIT", 'echo $[ 1 <<"2" ]\ngit push\n2',
-			'(( x = 1 <<"2" ))\ngit push\n2']) {
-			const command = `for f in a; do ${body}\ndone\n`;
-			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), "unknown", command);
+			"builtin trap 'git push' EXIT", "trap 'echo cleanup' EXIT", 'echo $[ 1 <<"2" ]\ngit push\n2\n',
+			"echo $(trap 'git push' EXIT)", "echo <(trap 'git push' EXIT)",
+			"cat <<\\EOF\n$(git push)\nEOF\n", "cat <<'EOF'\n$(git push)\nEOF\n"]) {
+			const alone = evaluateCommandRecords("bash", body, [record], scope);
+			const loop = evaluateCommandRecords("bash", `for f in a; do ${body}\ndone\n`, [record], scope);
+			assert.equal(loop.get(record.id), alone.get(record.id), body);
+			assert.deepEqual(loop.reasons.get(record.id), alone.reasons.get(record.id), body);
 		}
 		assert.equal(evaluateCommandRecords("bash", "trap 'echo cleanup' EXIT", [record], scope).get(record.id), false);
 	});

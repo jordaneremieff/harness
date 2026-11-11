@@ -225,6 +225,10 @@ interface Split {
 	separator?: "newline" | "semicolon";
 }
 
+function escapedRegex(text: string): string {
+	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 interface Heredoc {
 	delimiter: string;
 	stripTabs: boolean;
@@ -236,6 +240,7 @@ interface ReaderState {
 	current: string;
 	literal: boolean;
 	quoted: boolean;
+	escaped: boolean;
 	started: boolean;
 	pendingRedirect: "in" | "out" | null;
 	pendingHeredoc: "<<" | "<<-" | null;
@@ -254,7 +259,7 @@ function dynamicChar(char: string, next: string | undefined): boolean {
 }
 
 function keywordEligible(state: ReaderState): boolean {
-	return state.literal && !state.quoted && !state.pendingRedirect && !state.pendingHeredoc;
+	return state.literal && !state.quoted && !state.escaped && !state.pendingRedirect && !state.pendingHeredoc;
 }
 
 function flushWord(state: ReaderState): void {
@@ -281,6 +286,7 @@ function flushWord(state: ReaderState): void {
 	state.current = "";
 	state.literal = true;
 	state.quoted = false;
+	state.escaped = false;
 	state.started = false;
 	state.pendingRedirect = null;
 	state.pendingHeredoc = null;
@@ -303,8 +309,12 @@ function afterHeredocBody(text: string, from: number, heredoc: Heredoc): number 
 function afterHeredocBodies(state: ReaderState, from: number): number {
 	let position = from;
 	for (const heredoc of state.heredocs) {
-		const end = afterHeredocBody(state.text, position, heredoc);
-		if (end === undefined) state.budget.reasons.add("malformed-shell");
+		const delimiter = escapedRegex(heredoc.delimiter.replace(/['"\\]/g, ""));
+		const pattern = new RegExp(`^[ \\t]*${delimiter}[ \\t]*(?:\\n|$)`, "m");
+		const match = pattern.exec(state.text.slice(position));
+		const end = match ? position + match.index + match[0].length : undefined;
+		if (end === undefined || afterHeredocBody(state.text, position, heredoc) !== end)
+			state.budget.reasons.add("malformed-shell");
 		position = end ?? state.text.length;
 	}
 	state.heredocs.length = 0;
@@ -459,10 +469,8 @@ function processSubstitutionAction(state: ReaderState): ReaderAction {
 }
 
 function readHeredocOperator(state: ReaderState): void {
-	state.index += 2;
-	while (state.text.slice(state.index, state.index + 2) === "\\\n") state.index += 2;
-	state.pendingHeredoc = state.text[state.index] === "-" ? "<<-" : "<<";
-	if (state.pendingHeredoc === "<<-") state.index++;
+	state.pendingHeredoc = state.text[state.index + 2] === "-" ? "<<-" : "<<";
+	state.index += state.pendingHeredoc === "<<-" ? 3 : 2;
 }
 
 function applyRedirectOperator(state: ReaderState, char: string): void {
@@ -481,7 +489,7 @@ function applyRedirectOperator(state: ReaderState, char: string): void {
 
 function redirectOperatorAction(state: ReaderState, char: string): ReaderAction {
 	let explicitFd: number | null = null;
-	if (state.started && !state.quoted && /^\d+$/.test(state.current)) {
+	if (state.started && /^\d+$/.test(state.current)) {
 		explicitFd = Number(state.current);
 		state.current = "";
 		state.started = false;
@@ -518,7 +526,7 @@ function backslashAction(state: ReaderState): ReaderAction {
 		state.index += 2;
 		return { kind: "continue" };
 	}
-	state.quoted = true;
+	state.escaped = true;
 	if (state.text[state.index + 1] === undefined) state.budget.reasons.add("malformed-shell");
 	state.current += state.text[state.index + 1] ?? "";
 	state.started = true;
@@ -527,13 +535,6 @@ function backslashAction(state: ReaderState): ReaderAction {
 }
 
 function dollarAction(state: ReaderState): ReaderAction {
-	if (state.frame.loop && state.text[state.index + 1] === "[") {
-		const close = skipBalanced(state.text, state.index + 1, "[", "]");
-		if (state.text.slice(state.index + 2, close).includes("<<"))
-			state.budget.reasons.add("unexpanded-arithmetic");
-	}
-	if (state.pendingHeredoc && (state.text[state.index + 1] === "'" || state.text[state.index + 1] === '"'))
-		state.budget.reasons.add("unexpanded-heredoc");
 	if (state.text.slice(state.index, state.index + 3) === "$((") {
 		state.budget.reasons.add("unexpanded-arithmetic");
 		const end = readerBalanced(state, state.index + 1, "(", ")");
@@ -639,6 +640,7 @@ function readWords(
 		current: "",
 		literal: true,
 		quoted: false,
+		escaped: false,
 		started: false,
 		pendingRedirect: null,
 		pendingHeredoc: null,
@@ -897,7 +899,6 @@ function loopSplit(split: Split, frame: ParseFrame, stages: Word[][], budget: Pa
 		return { ...split, words: words.slice(1) };
 	}
 	if (first.keyword && LOOP_CONTROLS.has(first.text)) budget.reasons.add("unsupported-for-syntax");
-	if (toStage(words, false, false).command === "trap") budget.reasons.add("unsupported-for-syntax");
 	frame.loop.body = true;
 	return split;
 }

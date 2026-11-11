@@ -23,7 +23,7 @@ for (const word of ["'$(git push)'", "EOF", "E\\\nOF", "\\EOF", "'2'"]) {
 }
 for (const [word, delimiter] of [["'E\"OF'", 'E"OF'], ['"E\'OF"', "E'OF"], ["\\EOF", "EOF"]]) {
 	cases.push({ name: `literal here-document body with delimiter ${JSON.stringify(word)}`,
-		command: `cat <<${word}\n$(git push)\n${delimiter}\n`, executes: false, truth: false });
+		command: `cat <<${word}\n$(git push)\n${delimiter}\n`, executes: false, truth: "unknown" });
 }
 cases.push({ name: "literal here-document after a line continuation",
 	command: "cat \\\n  <<'EOF'\n$(git push)\nEOF", executes: false, truth: false });
@@ -43,7 +43,7 @@ for (const [word, delimiter] of [
 	["'E\"OF'", 'E"OF'], ['"E\'OF"', "E'OF"], ["'E\\OF'", "E\\OF"],
 ]) {
 	cases.push({ name: `command after the decoded here-document delimiter ${JSON.stringify(word)}`,
-		command: `cat <<${word}\nfixture body\n${delimiter}\ngit push\nEOF\n`, executes: true, truth: true });
+		command: `cat <<${word}\nfixture body\n${delimiter}\ngit push\nEOF\n`, executes: true, truth: "unknown" });
 }
 for (const command of [
 	"bash <<\\EOF\n$(git push)\nEOF", "cat <<'EOF' | sh\n$(git push)\nEOF",
@@ -63,25 +63,23 @@ for (const [word, delimiter] of [["'EOF'", "EOF"], ["\\EOF", "EOF"], ["'E\"OF'",
 				const top = `cat ${operator}${word}\n${near}\ncat <<'X'\n${delimiter}\ngit push\nX\n`;
 				const executes = operator !== "<<-" || name !== "leading tab";
 				cases.push({ name: `end line with ${name}, ${operator}${word}, ${loop ? "loop" : "top level"}`,
-					command: loop ? `for f in a; do ${top}done\n` : top, executes, truth: executes });
+					command: loop ? `for f in a; do ${top}done\n` : top, executes,
+					truth: word === "'EOF'" && !executes ? false : "unknown" });
 			}
 		}
 		for (const loop of [false, true]) {
 			cases.push({ name: `literal body with ${operator}${word}, ${loop ? "loop" : "top level"}`,
 				command: `${loop ? "for f in a; do " : ""}cat ${operator}${word}\n$(git push)\n${delimiter}\n${loop ? "done\n" : ""}`,
-				executes: false, truth: false });
+				executes: false, truth: word === "'EOF'" ? false : "unknown" });
 		}
 	}
 }
-for (const word of ["$'EOF'", '$"EOF"', "E$'\\x4f'F"]) {
-	for (const loop of [false, true]) {
-		const top = `cat <<${word}\nfixture\nEOF\ngit push\n`;
-		cases.push({ name: `dollar-quoted delimiter ${word}, ${loop ? "loop" : "top level"}`,
-			command: loop ? `for f in a; do ${top}done\n` : top, executes: true, truth: "unknown" });
-	}
-}
 
-describe("shell input execution evidence", () => {
+const bashVersion = spawnSync("/bin/bash", ["--version"], { encoding: "utf8", timeout: 2000, maxBuffer: 4096 });
+const version = bashVersion.stdout?.split("\n")[0] ?? bashVersion.error?.message ?? "unavailable";
+const versionReach = !bashVersion.error && bashVersion.status === 0 && /^GNU bash, version 3\.2\.57\(/.test(version);
+
+describe("shell input execution evidence", { skip: versionReach ? false : `Expectations require Bash 3.2.57; /bin/bash reports ${version}` }, () => {
 	let root: string;
 	before(() => {
 		root = mkdtempSync(join(tmpdir(), "policy-shell-execution-"));

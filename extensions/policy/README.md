@@ -1404,10 +1404,12 @@ and data-driven commands in `parallel` or `xargs`. Literal command rules continu
 to select parsed lexical stages.
 
 The parser recognises a plain `for NAME in WORDS; do SIMPLE_LIST; done` loop with
-simple commands and pipelines. It retains command substitutions as separate
-evidence. Quoted keywords, arithmetic loops, nested control forms and malformed
-syntax do not acquire this certainty. A known command position is not proof that
-the command terminates or that its executable has no further effects.
+simple commands and pipelines. It reads the body with the same rules as top-level
+commands and retains command substitutions as separate evidence. Quoted or escaped
+keywords, arithmetic loops, nested control forms, control operators, redirects on
+the header and words after `done` leave evidence unavailable. A known command
+position is not proof that the command terminates or that its executable has no
+further effects.
 
 Each denying rule has its own labelled diagnostic and evidence. Several matched
 rules do not establish one combined correction. A cap before global sorting or
@@ -1417,19 +1419,15 @@ reason; it does not claim a matching command.
 
 The shell parser does not expand aliases, variables, globs, generated words, or
 shell data. It captures the command once and uses that same value for matching
-and bounded best-effort redaction. An unquoted here-document delimiter leaves
-body expansion unavailable (`unexpanded-heredoc`), including after a removed
-backslash-newline continuation. A quoted or escaped here-document delimiter,
-including `<<\EOF`, suppresses body expansion; literal here-string words
-(single-quoted text, plain words, continued words, escaped words and quoted
-numbers) also supply data, including inside a plain `for` loop.
-A here-document ends only at an exact delimiter line, ended by LF or the end of
-input. Only `<<-` removes leading tabs; spaces, CR and U+2028 remain line data.
-The reader removes ordinary shell quotes and backslash-newline continuations
-from delimiter words. Delimiters with `$'...'` or `$"..."` leave evidence
-unavailable (`unexpanded-heredoc`); an absent end line leaves evidence unavailable
-(`malformed-shell`). A plain `for` body with a `trap` command or an unsupported
-arithmetic form also leaves evidence unavailable.
+and bounded best-effort redaction. Here-document evidence requires a quote
+character in the delimiter word; an escaped-only or unquoted delimiter leaves
+body expansion unavailable (`unexpanded-heredoc`). The reader finds the first line
+that holds the decoded delimiter, with quote and backslash characters removed,
+between optional spaces or tabs. Evidence also requires this end to equal the end
+of an exact decoded-delimiter line, ended by LF or the end of input. Only `<<-`
+removes leading tabs in the exact comparison. A missing end or a difference between
+the two ends leaves evidence unavailable (`malformed-shell`). Literal here-string
+words use the same rules inside and outside a plain `for` loop.
 A shell interpreter that consumes either form still leaves execution evidence
 unavailable. See the [Bash here-document rules](https://www.gnu.org/software/bash/manual/bash.html#Here-Documents).
 

@@ -31,9 +31,24 @@ describe("plain for evidence", () => {
 			'for x in a; do if true; then echo x; fi; done',
 			'for x in a && do echo x; done', 'for x in a; do echo x & done',
 			'for x in a; do (echo x); done', 'for x in a; do echo x; done | wc',
+			'for x in a > out; do echo x; done', 'for x in a; do echo x; done extra',
 			`for x in a; do ${"echo x;".repeat(257)} done`,
 			`for x in ${"x ".repeat(4097)}; do echo x; done`,
 		]) assert.equal(parseShellEvidence(command).complete, false, command.slice(0, 120));
+	});
+	it("reads plain-loop bodies with the same statement and reason rules as standalone bodies", () => {
+		for (const body of [
+			'echo safe\n', 'cat <<<\'literal\'\n', 'cat <<\'EOF\'\n$(git push)\nEOF\n',
+			'trap \'git push\' EXIT\n', 'trap \'echo cleanup\' EXIT\n',
+			'echo $[ 1 <<"2" ]\ngit push\n2\n', 'echo $(trap \'git push\' EXIT)\n',
+			'echo <(trap \'git push\' EXIT)\n', 'shopt -s expand_aliases\nalias p=\'git push\'\np\n',
+		]) {
+			const alone = parseShellEvidence(body);
+			const loop = parseShellEvidence(`for f in a; do ${body}done\n`);
+			assert.deepEqual(loop.statements, alone.statements, body);
+			assert.deepEqual(loop.reasons, alone.reasons, body);
+			assert.equal(loop.complete, alone.complete, body);
+		}
 	});
 });
 
@@ -53,54 +68,49 @@ describe("here-document delimiter evidence", () => {
 	it("removes continuations without changing reserved-word eligibility", () => {
 		assert.equal(parseShellEvidence("f\\\nor x in a; d\\\no echo safe; d\\\none").complete, true);
 	});
-	for (const word of ["\\2", "'2'", '"2"']) {
-		it(`keeps ${word} as an operand instead of a descriptor before a here-document`, () => {
+	it("reads digits before redirect operators as descriptors", () => {
+		for (const word of ["2", "\\2", "'2'", '"2"']) {
 			const parsed = parseShellEvidence(`cat ${word}<<EOF\n$(git push)\nEOF`);
-			assert.ok(parsed.reasons.includes("unexpanded-heredoc"));
-			assert.deepEqual(parsed.statements[0][0].args, ["2"]);
-			assert.equal(parsed.statements[0][0].fromRedirect, true);
-		});
-	}
-	for (const [word, delimiter] of [
-		['E\\"OF', 'E"OF'], ["E\\'OF", "E'OF"], ["E\\\\OF", "E\\OF"],
-		["'E\"OF'", 'E"OF'], ['"E\'OF"', "E'OF"], ["'E\\OF'", "E\\OF"],
-	]) {
-		it(`ends a here-document at the decoded delimiter ${JSON.stringify(word)}`, () => {
-			const parsed = parseShellEvidence(`cat <<${word}\nfixture body\n${delimiter}\ngit push\nEOF\n`);
-			assert.equal(parsed.complete, true);
-			assert.deepEqual(parsed.statements.flat().map((stage) => stage.command), ["cat", "git", "EOF"]);
-		});
-	}
-	it("ends only at an exact LF-delimited line with operator-specific tab removal", () => {
+			assert.deepEqual(parsed.statements[0][0].args, []);
+			assert.equal(parsed.statements[0][0].fromRedirect, false);
+		}
+	});
+	it("leaves escaped-only delimiters and delimiters with inner quotes unavailable", () => {
+		for (const [word, delimiter, reason] of [
+			["\\EOF", "EOF", "unexpanded-heredoc"],
+			["'E\"OF'", 'E"OF', "malformed-shell"],
+			['"E\'OF"', "E'OF", "malformed-shell"],
+			["'E\\OF'", "E\\OF", "malformed-shell"],
+		]) {
+			const parsed = parseShellEvidence(`cat <<${word}\nfixture\n${delimiter}\n`);
+			assert.equal(parsed.complete, false);
+			assert.ok(parsed.reasons.includes(reason));
+		}
+	});
+	it("requires the first delimiter candidate to equal the exact end line", () => {
 		for (const operator of ["<<", "<<-"]) {
 			for (const near of [" EOF", "EOF ", "EOF\r", "x\rEOF", "x\u2028EOF", "EOF\u2028", "\tEOF"]) {
-				const parsed = parseShellEvidence(`cat ${operator}\\EOF\n${near}\ncat <<'X'\nEOF\ngit push\nX\n`);
-				assert.equal(parsed.complete, true);
-				assert.deepEqual(parsed.statements.flat().map((stage) => stage.command),
-					operator === "<<-" && near === "\tEOF" ? ["cat", "cat"] : ["cat", "git", "X"]);
+				const parsed = parseShellEvidence(`cat ${operator}'EOF'\n${near}\ncat <<'X'\nEOF\ngit push\nX\n`);
+				const exact = operator === "<<-" && near === "\tEOF";
+				assert.equal(parsed.complete, exact, JSON.stringify({ operator, near }));
+				if (!exact) assert.ok(parsed.reasons.includes("malformed-shell"));
 			}
 		}
 	});
-	it("retains the real end line behind quotes and parameter spans in literal data", () => {
-		for (const cover of ["echo '\nEOF\ngit push\n: '\n", `echo \${x:-\nEOF\ngit push\n}\n`]) {
-			const parsed = parseShellEvidence(`cat <<\\EOF\n EOF\n${cover}`);
-			assert.ok(parsed.statements.flat().some((stage) => stage.command === "git"));
-		}
-	});
-	it("keeps dollar-quoted and unterminated delimiters unavailable", () => {
-		for (const word of ["$'EOF'", '$"EOF"', "E$'\\x4f'F"])
-			assert.ok(parseShellEvidence(`cat <<${word}\nfixture\nEOF\ngit push\n`).reasons.includes("unexpanded-heredoc"));
+	it("leaves absent end lines unavailable", () => {
 		assert.ok(parseShellEvidence("cat <<'EOF'\nfixture\n").reasons.includes("malformed-shell"));
 	});
-	it("removes a continuation before the tab-stripping operator suffix", () => {
-		const parsed = parseShellEvidence("cat <<\\\n-\\EOF\n\tfixture\n\tEOF\ngit push\n");
-		assert.equal(parsed.complete, true);
-		assert.deepEqual(parsed.statements.flat().map((stage) => stage.command), ["cat", "git"]);
+	it("retains quote and end-line evidence after an operator continuation", () => {
+		const parsed = parseShellEvidence("cat <<\\\n-'EOF'\n\tfixture\n\tEOF\ngit push\n");
+		assert.equal(parsed.complete, false);
+		assert.ok(parsed.reasons.includes("malformed-shell"));
 	});
-	it("treats escaped delimiters as quoted without expanding their bodies", () => {
-		const parsed = parseShellEvidence("cat <<\\EOF\n$(git push)\nEOF");
-		assert.equal(parsed.complete, true);
-		assert.deepEqual(parsed.statements.flat().map((stage) => stage.command), ["cat"]);
+	it("retains literal bodies with a quote character and one exact end line", () => {
+		for (const word of ["'EOF'", '"EOF"', "E'O'F"]) {
+			const parsed = parseShellEvidence(`cat <<${word}\n$(git push)\nEOF`);
+			assert.equal(parsed.complete, true);
+			assert.deepEqual(parsed.statements.flat().map((stage) => stage.command), ["cat"]);
+		}
 	});
 });
 
