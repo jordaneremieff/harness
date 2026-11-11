@@ -2059,15 +2059,19 @@ declared purpose still supplies useful context.
 
 ### Automatic session names
 
-An ordinary session with no name receives one from its first genuine interactive
-input. Naming uses Pi's public session name API, so it works with or without a
-terminal projection and stays independent of the purpose record. A nonempty
-existing name, including a resumed name, is never replaced. RPC input, extension
-input, model responses and effort-purpose updates do not name a session. A later
-explicit name always wins because automatic naming only fills an empty name.
+Agent offers only genuine interactive input to the shared session-name lifecycle,
+not RPC input, extension input, model responses or purpose updates. The lifecycle
+writes an immediate fallback for useful input only when no name or name entry
+exists. A receipt is an internal record of the session, exact name entry and
+fallback or refined state. Only the current fallback with its matching receipt
+accepts one valid generator refinement. An absent or failed generator leaves the
+fallback; refined names remain unchanged. Automatic naming never replaces `/name`
+or RPC names, names without a receipt, repeated explicit writes or deliberate
+clears. Forks keep inherited names; forks, switches and reloads cancel pending
+refinement without replaying generation.
 
-The [session name convention](../../docs/conventions/session-names.md) defines the
-derivation and lists its current consumers.
+The [session name convention](../../docs/conventions/session-names.md) defines
+derivation and the shared lifecycle.
 
 `agent_intent` publishes only the invoking ordinary primary or native
 conversation. It takes no target identity. Native conversations retain claims in
