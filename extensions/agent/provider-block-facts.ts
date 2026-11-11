@@ -15,5 +15,8 @@ export const ProviderBlockFactSchema = obj({
 export type ProviderBlockFact = Static<typeof ProviderBlockFactSchema>;
 
 export function providerBlockText(block: ProviderBlockFact): string {
-	return `${PROVIDER_BLOCK_ERROR} Provider evidence: ${block.error}${block.errorRedacted ? " [credential redacted]" : ""}${block.errorTruncated ? " [truncated]" : ""} Block ${block.blockId}. Use explicit validated model configuration before a new recovery send.`;
+	const target = block.originalResults[0]?.sessionId;
+	const dispatch = block.source === "provider" ? "This call reached the provider." : "This call did not reach the provider; the host reused a retained block.";
+	const recovery = target === undefined ? "Recovery target unavailable: no retained original result identity." : `Target: ${target}. Choose an explicit provider/model under your existing authority, then call agent_configure({sessionId:${JSON.stringify(target)},model:<explicit provider/model>}). After successful configuration, send a new agent_send follow-up.`;
+	return `${PROVIDER_BLOCK_ERROR} ${dispatch} Received at: ${new Date(block.timestamp).toISOString()}. Provider evidence: ${block.error}${block.errorRedacted ? " [credential redacted]" : ""}${block.errorTruncated ? " [truncated]" : ""} A provider time without a stated zone has an unspecified zone. Block ${block.blockId}. ${recovery} Replaying the original request keeps its original settled result.`;
 }

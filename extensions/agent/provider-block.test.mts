@@ -7,7 +7,7 @@ import { it } from "node:test";
 import { matchesSchema } from "./schema-check.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { ProviderDoc, type ConversationId, type SubmissionId } from "@earendil-works/pi-durable";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, isContextOverflow, isRetryableAssistantError } from "@earendil-works/pi-ai";
 import { DurableHost } from "./durable-host.ts";
 import { answerMessage, fixtureRegistry, hostOptions, scriptedRuntime, fixtureProvider, fixtureModelId } from "./durable-host-fixture.mts";
 import { ProviderModels } from "./provider-models.ts";
@@ -59,26 +59,33 @@ it("replaces terminal raw text, keeps stream/result agreement and partial usage,
 	const raw = "Weekly usage limit reached: token limit exceeded; reset 2026-10-11 00:00; api_key=sk-abcdefghijklmnopqrstuv";
 	let calls = 0;
 	const original = { ...answerMessage("partial progress"), stopReason: "error" as const, errorMessage: raw };
-	models.streamSimple = (_model, _context, options) => {
-		calls++; assert.equal(options?.maxRetries, 7);
+	const context = { messages: [] }; const before = structuredClone(context);
+	models.streamSimple = (_model, received, options) => {
+		calls++; assert.equal(received, context); assert.equal(options?.maxRetries, 7);
 		const stream = createAssistantMessageEventStream(); stream.push({ type: "error", reason: "error", error: original }); stream.end(); return stream;
 	};
-	const stream = adapter.models.streamSimple(model, { messages: [] }, { sessionId, maxRetries: 7 });
+	const stream = adapter.models.streamSimple(model, context, { sessionId, maxRetries: 7 });
 	const events = []; for await (const event of stream) events.push(event);
 	const result = await stream.result();
 	assert.equal(result.errorMessage, PROVIDER_BLOCK_ERROR); assert.equal(events.at(-1)?.type, "error");
+	assert.equal(isContextOverflow(result), false); assert.equal(isRetryableAssistantError(result), false);
 	const terminal = events.at(-1); assert.deepEqual(terminal?.type === "error" ? terminal.error : undefined, result);
 	assert.deepEqual(result.content, original.content); assert.deepEqual(result.usage, original.usage); assert.equal(original.errorMessage, raw);
 	const block = await host.harness.commit((tx) => readProviderBlock(tx, 1 as ConversationId), BACKGROUND_CONTEXT);
 	assert.ok(block); assert.equal(matchesSchema(ProviderBlockFactSchema, block), true); assert.equal(block.errorRedacted, true); assert.match(block.error, /reset 2026-10-11 00:00/u);
-	assert.equal((await adapter.models.completeSimple(model, { messages: [] }, { sessionId })).errorMessage, PROVIDER_BLOCK_ERROR);
-	assert.equal(calls, 1);
+	const repeated = await adapter.models.completeSimple(model, context, { sessionId });
+	assert.equal(repeated.errorMessage, PROVIDER_BLOCK_ERROR);
+	assert.equal(isContextOverflow(repeated), false); assert.equal(isRetryableAssistantError(repeated), false);
+	assert.deepEqual(await host.harness.commit((tx) => readProviderBlock(tx, 1 as ConversationId), BACKGROUND_CONTEXT), block);
+	assert.equal(calls, 1); assert.deepEqual(context, before);
 });
 
 it("explicit same-model recovery invalidates pinned dispatch and old-epoch failures", async (t) => {
 	const { host, models, adapter, model, sessionId } = await fixture(t);
 	const old = await host.harness.commit((tx) => captureProviderAttempt(tx, sessionId, { provider: model.provider, modelId: model.id }), BACKGROUND_CONTEXT);
 	await host.harness.commit((tx) => retainProviderBlock(tx, old, "usage limit reached", host.storageId, Date.now()), BACKGROUND_CONTEXT);
+	const renamed = await host.request("configure", { name: "Retained quota" }) as { outcome: string };
+	assert.equal(renamed.outcome, "applied"); assert.ok(await host.harness.commit((tx) => readProviderBlock(tx, 1 as ConversationId), BACKGROUND_CONTEXT));
 	const reasoning = await host.request("configure", { thinkingLevel: "off" }) as { outcome: string };
 	assert.equal(reasoning.outcome, "applied"); assert.ok(await host.harness.commit((tx) => readProviderBlock(tx, 1 as ConversationId), BACKGROUND_CONTEXT));
 	const failed = await host.request("configure", { model: { provider: "missing", modelId: "model" } }) as { outcome: string }; assert.equal(failed.outcome, "failed");
