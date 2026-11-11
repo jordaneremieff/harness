@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import fs, { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { closeSync, constants, lstatSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -184,7 +184,7 @@ test("missing, ambiguous, overlapping, nested and no-op replacements refuse atom
 		assert.deepEqual(refused.receipt.written, []);
 		assert.equal(readFileSync(f.path, "utf8"), f.source);
 	}
-	assert.deepEqual(readdirSync(f.root).sort(), ["README.md", "editor-choice.md"]);
+	assert.deepEqual(readdirSync(f.root).sort(), [".memory-write.lock", "README.md", "editor-choice.md"]);
 });
 
 test("adjacent replacements work, while overlapping occurrences remain ambiguous", (t) => {
@@ -493,7 +493,7 @@ test("runtime validation bounds edits, requires verification and digest, and ref
 	];
 	for (const fields of invalid) assert.throws(() => editMemory(f.root, { ...f.input, ...fields } as MemoryEdit));
 	assert.equal(readFileSync(f.path, "utf8"), f.source);
-	assert.deepEqual(readdirSync(f.root).sort(), ["README.md", "editor-choice.md"]);
+	assert.deepEqual(readdirSync(f.root).sort(), [".memory-write.lock", "README.md", "editor-choice.md"]);
 });
 
 test("Unicode byte size and retained control characters bound the complete result", (t) => {
@@ -520,7 +520,7 @@ test("cancellation before work and after staging leaves the note unchanged and r
 	let writes = 0;
 	t.mock.method(fs, "writeFileSync", (...args: Parameters<typeof fs.writeFileSync>) => {
 		original(...args);
-		if (++writes === 2) controller.abort();
+		if (++writes === 1) controller.abort();
 	});
 	syncBuiltinESMExports();
 	try {
@@ -529,7 +529,10 @@ test("cancellation before work and after staging leaves the note unchanged and r
 		assert.deepEqual(refused.receipt.written, []);
 		assert.deepEqual(refused.receipt.notWritten, ["editor-choice.md"]);
 		assert.equal(readFileSync(f.path, "utf8"), f.source);
-		assert.deepEqual(readdirSync(f.root).sort(), ["README.md", "editor-choice.md"]);
+		assert.deepEqual(readdirSync(f.root).sort(), [".memory-write.lock", "README.md", "editor-choice.md"]);
+		assert.deepEqual(refused.receipt.captured, []);
+		const held = openSync(join(f.root, ".memory-write.lock"), constants.O_RDWR | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20);
+		closeSync(held);
 	} finally {
 		t.mock.restoreAll();
 		syncBuiltinESMExports();
@@ -540,9 +543,20 @@ test("writer contention refuses without altering the note or the owner's lock", 
 	const f = fixture(t);
 	const lock = join(f.root, ".memory-write.lock");
 	writeFileSync(lock, "active writer");
-	assert.throws(() => editMemory(f.root, f.input), /lock exists.*never remove a live lock/);
-	assert.equal(readFileSync(lock, "utf8"), "active writer");
-	assert.equal(readFileSync(f.path, "utf8"), f.source);
+	const before = lstatSync(lock);
+	const held = openSync(lock, constants.O_RDWR | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20);
+	try {
+		assert.throws(() => editMemory(f.root, f.input), {
+			message: "Memory writer is busy. This writer never removes the lock file. Do not remove it.",
+		});
+		assert.equal(readFileSync(lock, "utf8"), "active writer");
+		assert.equal(lstatSync(lock).ino, before.ino);
+		assert.equal(readFileSync(f.path, "utf8"), f.source);
+	} finally {
+		closeSync(held);
+	}
+	assert.equal(editMemory(f.root, f.input).ok, true);
+	assert.equal(lstatSync(lock).ino, before.ino);
 });
 
 test("an exact 64 KiB result succeeds and a missing corpus stays absent", (t) => {
@@ -611,5 +625,5 @@ test("edits do not create or replace the corpus contract", (t) => {
 	const f = fixture(t);
 	rmSync(join(f.root, "README.md"));
 	assert.equal(editMemory(f.root, f.input).initialized, false);
-	assert.deepEqual(readdirSync(f.root).sort(), [".memory-history", "editor-choice.md"]);
+	assert.deepEqual(readdirSync(f.root).sort(), [".memory-history", ".memory-write.lock", "editor-choice.md"]);
 });

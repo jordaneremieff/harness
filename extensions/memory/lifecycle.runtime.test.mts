@@ -320,7 +320,10 @@ return {
 		assert.equal(readFileSync(path, "utf8"), current);
 		const staleRead = await invoke("memory_read", { slug: input.slug, digest: firstDigest, offset: 4000 });
 		assert.equal(staleRead.isError, true);
-		assert.match(text(staleRead), /source changed.*restart memory_read at offset 0/);
+		assert.equal(
+			text(staleRead),
+			`note source changed since the supplied digest: ${input.slug}.md. Restart memory_read with {"slug":"${input.slug}","offset":0} without digest for the current note and digest. If the slug is absent, use memory_search; do not continue the previous page`,
+		);
 
 		const history = details(await invoke("memory_history", { slug: input.slug, limit: 1 }));
 		assert.ok(Array.isArray(history.revisions));

@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import fs, {
+	closeSync,
+	constants,
 	existsSync,
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readFileSync,
 	readdirSync,
 	rmSync,
@@ -41,6 +44,12 @@ function failure(fn: () => unknown): MemoryWriteError {
 		assert.ok(error instanceof MemoryWriteError);
 		return error;
 	}
+}
+function assertWriterReleased(root: string): void {
+	const lock = join(root, ".memory-write.lock");
+	assert.equal(existsSync(lock), true);
+	const held = openSync(lock, constants.O_RDWR | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20);
+	closeSync(held);
 }
 function revisions(
 	page: Record<string, unknown>,
@@ -332,7 +341,7 @@ test("all reciprocal prior captures precede any live publication, and failed wri
 	assert.deepEqual(result.receipt.notWritten, ["b.md"]);
 	assert.equal(readFileSync(join(root, "b.md"), "utf8"), originalB);
 	assert.notEqual(readFileSync(join(root, "a.md"), "utf8"), originalA);
-	assert.equal(existsSync(join(root, ".memory-write.lock")), false);
+	assertWriterReleased(root);
 });
 
 for (const phase of ["write", "sync", "close", "directory-sync", "directory-close", "publish"] as const) {
@@ -401,7 +410,7 @@ for (const phase of ["write", "sync", "close", "directory-sync", "directory-clos
 			assert.deepEqual(result.receipt.notWritten, ["subject.md"]);
 			assert.equal(result.receipt.captured.length, phase.startsWith("directory-") ? 1 : 0);
 			assert.equal(readFileSync(join(root, "subject.md"), "utf8"), before);
-			assert.equal(existsSync(join(root, ".memory-write.lock")), false);
+			assertWriterReleased(root);
 			assert.ok(readdirSync(join(root, ".memory-history", "subject")).every((name) => !name.endsWith(".tmp")));
 		} finally {
 			t.mock.restoreAll();
@@ -446,7 +455,10 @@ test("cancellation and changed sources before capture leave live files untouched
 			},
 		}),
 	);
-	assert.match(changed.message, /changed before history capture/);
+	assert.equal(
+		changed.receipt.error,
+		'Source digest changed before publication for "a"; read "a" with memory_read and update expectedDigest before retry.',
+	);
 	assert.deepEqual(changed.receipt.captured, []);
 	assert.deepEqual(changed.receipt.written, []);
 });
