@@ -1423,6 +1423,12 @@ backslash-newline continuation. A quoted or escaped here-document delimiter,
 including `<<\EOF`, suppresses body expansion; literal here-string words
 (single-quoted text, plain words, continued words, escaped words and quoted
 numbers) also supply data, including inside a plain `for` loop.
+A here-document ends only at an exact delimiter line, ended by LF or the end of
+input. Only `<<-` removes leading tabs; spaces, CR and U+2028 remain line data.
+The reader removes ordinary shell quotes and backslash-newline continuations
+from delimiter words. Delimiters with `$'...'` or `$"..."` leave evidence
+unavailable (`unexpanded-heredoc`); an absent end line leaves evidence unavailable
+(`malformed-shell`).
 A shell interpreter that consumes either form still leaves execution evidence
 unavailable. See the [Bash here-document rules](https://www.gnu.org/software/bash/manual/bash.html#Here-Documents).
 

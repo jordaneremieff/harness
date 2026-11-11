@@ -52,6 +52,35 @@ for (const command of [
 	cases.push({ name: `interpreter input ${JSON.stringify(command)}`, command, executes: true, truth: "unknown" });
 }
 
+for (const [word, delimiter] of [["'EOF'", "EOF"], ["\\EOF", "EOF"], ["'E\"OF'", 'E"OF']]) {
+	for (const operator of ["<<", "<<-"]) {
+		for (const [name, near] of [
+			["leading blank", ` ${delimiter}`], ["trailing blank", `${delimiter} `],
+			["carriage return", `${delimiter}\r`], ["unicode separator", `x\u2028${delimiter}`],
+			["leading tab", `\t${delimiter}`],
+		]) {
+			for (const loop of [false, true]) {
+				const top = `cat ${operator}${word}\n${near}\ncat <<'X'\n${delimiter}\ngit push\nX\n`;
+				const executes = operator !== "<<-" || name !== "leading tab";
+				cases.push({ name: `end line with ${name}, ${operator}${word}, ${loop ? "loop" : "top level"}`,
+					command: loop ? `for f in a; do ${top}done\n` : top, executes, truth: executes });
+			}
+		}
+		for (const loop of [false, true]) {
+			cases.push({ name: `literal body with ${operator}${word}, ${loop ? "loop" : "top level"}`,
+				command: `${loop ? "for f in a; do " : ""}cat ${operator}${word}\n$(git push)\n${delimiter}\n${loop ? "done\n" : ""}`,
+				executes: false, truth: false });
+		}
+	}
+}
+for (const word of ["$'EOF'", '$"EOF"', "E$'\\x4f'F"]) {
+	for (const loop of [false, true]) {
+		const top = `cat <<${word}\nfixture\nEOF\ngit push\n`;
+		cases.push({ name: `dollar-quoted delimiter ${word}, ${loop ? "loop" : "top level"}`,
+			command: loop ? `for f in a; do ${top}done\n` : top, executes: true, truth: "unknown" });
+	}
+}
+
 describe("shell input execution evidence", () => {
 	let root: string;
 	before(() => {

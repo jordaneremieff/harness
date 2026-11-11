@@ -71,6 +71,32 @@ describe("here-document delimiter evidence", () => {
 			assert.deepEqual(parsed.statements.flat().map((stage) => stage.command), ["cat", "git", "EOF"]);
 		});
 	}
+	it("ends only at an exact LF-delimited line with operator-specific tab removal", () => {
+		for (const operator of ["<<", "<<-"]) {
+			for (const near of [" EOF", "EOF ", "EOF\r", "x\rEOF", "x\u2028EOF", "EOF\u2028", "\tEOF"]) {
+				const parsed = parseShellEvidence(`cat ${operator}\\EOF\n${near}\ncat <<'X'\nEOF\ngit push\nX\n`);
+				assert.equal(parsed.complete, true);
+				assert.deepEqual(parsed.statements.flat().map((stage) => stage.command),
+					operator === "<<-" && near === "\tEOF" ? ["cat", "cat"] : ["cat", "git", "X"]);
+			}
+		}
+	});
+	it("retains the real end line behind quotes and parameter spans in literal data", () => {
+		for (const cover of ["echo '\nEOF\ngit push\n: '\n", "echo ${x:-\nEOF\ngit push\n}\n"]) {
+			const parsed = parseShellEvidence(`cat <<\\EOF\n EOF\n${cover}`);
+			assert.ok(parsed.statements.flat().some((stage) => stage.command === "git"));
+		}
+	});
+	it("keeps dollar-quoted and unterminated delimiters unavailable", () => {
+		for (const word of ["$'EOF'", '$"EOF"', "E$'\\x4f'F"])
+			assert.ok(parseShellEvidence(`cat <<${word}\nfixture\nEOF\ngit push\n`).reasons.includes("unexpanded-heredoc"));
+		assert.ok(parseShellEvidence("cat <<'EOF'\nfixture\n").reasons.includes("malformed-shell"));
+	});
+	it("removes a continuation before the tab-stripping operator suffix", () => {
+		const parsed = parseShellEvidence("cat <<\\\n-\\EOF\n\tfixture\n\tEOF\ngit push\n");
+		assert.equal(parsed.complete, true);
+		assert.deepEqual(parsed.statements.flat().map((stage) => stage.command), ["cat", "git"]);
+	});
 	it("treats escaped delimiters as quoted without expanding their bodies", () => {
 		const parsed = parseShellEvidence("cat <<\\EOF\n$(git push)\nEOF");
 		assert.equal(parsed.complete, true);

@@ -225,8 +225,9 @@ interface Split {
 	separator?: "newline" | "semicolon";
 }
 
-function escapedRegex(text: string): string {
-	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+interface Heredoc {
+	delimiter: string;
+	stripTabs: boolean;
 }
 
 interface ReaderState {
@@ -237,10 +238,10 @@ interface ReaderState {
 	quoted: boolean;
 	started: boolean;
 	pendingRedirect: "in" | "out" | null;
-	pendingHeredoc: boolean;
+	pendingHeredoc: "<<" | "<<-" | null;
 	pendingFd: number | null;
 	words: Word[];
-	heredocs: string[];
+	heredocs: Heredoc[];
 	nestedCommands: string[];
 	budget: ParseBudget;
 	frame: ParseFrame;
@@ -270,7 +271,7 @@ function flushWord(state: ReaderState): void {
 		if (state.current !== "") {
 			word.heredoc = true;
 			word.fd = state.pendingFd ?? 0;
-			state.heredocs.push(state.current);
+			state.heredocs.push({ delimiter: state.current, stripTabs: state.pendingHeredoc === "<<-" });
 		}
 	} else if (state.pendingRedirect) {
 		word.redirect = state.pendingRedirect;
@@ -282,17 +283,27 @@ function flushWord(state: ReaderState): void {
 	state.quoted = false;
 	state.started = false;
 	state.pendingRedirect = null;
-	state.pendingHeredoc = false;
+	state.pendingHeredoc = null;
 	state.pendingFd = null;
 }
 
 function afterHeredocBodies(state: ReaderState, from: number): number {
 	let position = from;
-	for (const delimiter of state.heredocs) {
-		const pattern = new RegExp(`^[ \\t]*${escapedRegex(delimiter)}[ \\t]*(?:\\n|$)`, "m");
-		const match = pattern.exec(state.text.slice(position));
-		if (!match) state.budget.reasons.add("malformed-shell");
-		position = match ? position + match.index + match[0].length : state.text.length;
+	for (const { delimiter, stripTabs } of state.heredocs) {
+		let found = false;
+		while (position < state.text.length) {
+			const newline = state.text.indexOf("\n", position);
+			const end = newline === -1 ? state.text.length : newline;
+			let start = position;
+			if (stripTabs) while (state.text[start] === "\t" && start < end) start++;
+			const line = state.text.slice(start, end);
+			position = newline === -1 ? end : end + 1;
+			if (line === delimiter) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) state.budget.reasons.add("malformed-shell");
 	}
 	state.heredocs.length = 0;
 	return position;
@@ -450,8 +461,10 @@ function applyRedirectOperator(state: ReaderState, char: string): void {
 		state.pendingRedirect = "in";
 		state.index += 3;
 	} else if (char === "<" && state.text[state.index + 1] === "<") {
-		state.pendingHeredoc = true;
-		state.index += state.text[state.index + 2] === "-" ? 3 : 2;
+		state.index += 2;
+		while (state.text.slice(state.index, state.index + 2) === "\\\n") state.index += 2;
+		state.pendingHeredoc = state.text[state.index] === "-" ? "<<-" : "<<";
+		if (state.pendingHeredoc === "<<-") state.index++;
 	} else {
 		state.pendingRedirect = char === "<" ? "in" : "out";
 		if (state.text[state.index + 1] === char || state.text[state.index + 1] === "&" || state.text[state.index + 1] === "|")
@@ -508,6 +521,8 @@ function backslashAction(state: ReaderState): ReaderAction {
 }
 
 function dollarAction(state: ReaderState): ReaderAction {
+	if (state.pendingHeredoc && (state.text[state.index + 1] === "'" || state.text[state.index + 1] === '"'))
+		state.budget.reasons.add("unexpanded-heredoc");
 	if (state.text.slice(state.index, state.index + 3) === "$((") {
 		state.budget.reasons.add("unexpanded-arithmetic");
 		const end = readerBalanced(state, state.index + 1, "(", ")");
@@ -602,7 +617,7 @@ function readerAction(state: ReaderState, char: string): ReaderAction {
 function readWords(
 	text: string,
 	start: number,
-	heredocs: string[],
+	heredocs: Heredoc[],
 	nestedCommands: string[],
 	budget: ParseBudget,
 	frame: ParseFrame,
@@ -615,7 +630,7 @@ function readWords(
 		quoted: false,
 		started: false,
 		pendingRedirect: null,
-		pendingHeredoc: false,
+		pendingHeredoc: null,
 		pendingFd: null,
 		words: [],
 		heredocs,
@@ -877,7 +892,7 @@ function loopSplit(split: Split, frame: ParseFrame, stages: Word[][], budget: Pa
 
 function parse(command: string, depth: number, budget: ParseBudget): Statement[] {
 	const statements: Statement[] = [];
-	const heredocs: string[] = [];
+	const heredocs: Heredoc[] = [];
 	const nestedCommands: string[] = [];
 	const frame: ParseFrame = { groups: [] };
 	const stages: Word[][] = [];
