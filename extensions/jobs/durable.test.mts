@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
-import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
+import { BACKGROUND_CONTEXT, withAbortSignal, type Context } from "@earendil-works/chord/context";
+import type { Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxResponseFactory } from "@earendil-works/pi-ai/providers/faux";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
@@ -14,7 +15,7 @@ import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createBashTool } from "@earendil-works/pi-durable/tools";
 import { JOB_COMPLETION_MESSAGE, type JobCompletionDetails } from "./completion.ts";
-import { createJobsContribution, JOB_TASK_NAME, type DurableContributionHost } from "./durable.ts";
+import { createJobsContribution, JOB_TASK_NAME, type DurableContributionHost, type JobInput } from "./durable.ts";
 
 const ENTRYPOINT = fileURLToPath(new URL("./index.ts", import.meta.url));
 const context = BACKGROUND_CONTEXT;
@@ -407,6 +408,115 @@ test("a finite background command continues its conversation once with its outco
 		assert.deepEqual(await liveJobTasks(harness), []);
 	} finally {
 		await close();
+	}
+});
+
+async function boundedBarrier(promise: Promise<void>): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([promise, new Promise<never>((_resolve, reject) => {
+			timer = setTimeout(() => reject(new Error("Controlled barrier exceeded 10 seconds")), 10_000);
+		})]);
+	} finally { clearTimeout(timer); }
+}
+
+for (const timing of ["before", "during"] as const) test(`a completion admitted ${timing} compaction reaches its owner after the summary boundary`, { timeout: 30_000 }, async (t) => {
+	const bounded = withAbortSignal(AbortSignal.any([t.signal, AbortSignal.timeout(20_000)]), context);
+	const jobRelease = barrier();
+	const ownerEntered = barrier(); const ownerRelease = barrier();
+	const compactEntered = barrier(); const compactRelease = barrier();
+	const instance = await openHarness(await openNodeSqliteStorage(join(root, `completion-${timing}.sqlite`)), () => fauxAssistantMessage("Unused."), { env: (target) => {
+		const env = new NodeExecutionEnv({ cwd: target.cwd ?? root });
+		env.exec = async (_command, options, executionContext) => {
+			await boundedBarrier(jobRelease.promise);
+			options?.onOutput?.(`completion-${timing}\n`, executionContext, { stream: "stdout" });
+			return { ok: true, value: { exitCode: 7 } };
+		};
+		return env;
+	} });
+	const conversation = await instance.harness.root(bounded, { agent: { model: { provider: "faux", modelId: "faux-1" }, cwd: root, compaction: { enabled: false, keepRecentTokens: 1 } } });
+	const requests: Array<{ head: Durable.EntryId | undefined; messages: readonly Message[] }> = [];
+	const respond: FauxResponseFactory = async (request) => {
+		const last = request.messages.at(-1);
+		const user = [...request.messages].reverse().find((message) => message.role === "user");
+		const text = user === undefined ? "" : typeof user.content === "string" ? user.content : user.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("\n");
+		if (text.includes("CONTROLLED COMPACTION")) {
+			compactEntered.resolve(); await boundedBarrier(compactRelease.promise);
+			return fauxAssistantMessage("Retained task summary.");
+		}
+		if (last?.role === "toolResult") return fauxAssistantMessage("Admitted.");
+		if (text === "LAUNCH") return fauxAssistantMessage(fauxToolCall("bash", { command: `controlled-${timing}`, background: true }, { id: `completion-${timing}` }), { stopReason: "toolUse" });
+		if (text === "OWNER BARRIER") {
+			ownerEntered.resolve(); await boundedBarrier(ownerRelease.promise);
+			return fauxAssistantMessage("Owner boundary.");
+		}
+		requests.push({ head: (await conversation.context(bounded)).head?.id, messages: structuredClone(request.messages) });
+		return fauxAssistantMessage("Completion received.");
+	};
+	instance.faux.setResponses(Array.from({ length: 12 }, () => respond));
+	try {
+		const admission = await conversation.submit({ type: "input", content: "LAUNCH" }, bounded);
+		await admission.wait(bounded); await conversation.waitForIdle(bounded);
+		const result = (await toolResults(conversation)).find((item) => item.name === "bash"); assert.ok(result && !result.isError);
+		const id = jobIdOf(result.text);
+		const job = await taskRecord(instance.harness, id);
+		assert.equal(job.conversationId, conversation.id);
+		assert.equal(job.background, true);
+		assert.equal(job.kind, JOB_TASK_NAME);
+		const input = job.input as JobInput;
+		const requestId = input.requestId;
+		assert.equal(requestId, `${JOB_COMPLETION_MESSAGE}:${conversation.id}:completion-${timing}`);
+		assert.equal(input.owner, `jobs-durable-test:${conversation.id}`);
+		assert.deepEqual(await completionEntries(conversation), []);
+		const owner = await conversation.submit({ type: "input", content: "OWNER BARRIER" }, bounded);
+		await boundedBarrier(ownerEntered.promise);
+		const finishJob = async () => {
+			jobRelease.resolve();
+			const settled = await instance.harness.waitForTask(Number(id) as Durable.TaskId, bounded);
+			assert.equal(settled.state.outcome.status, "completed");
+			const completion = await instance.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), bounded);
+			assert.ok(completion); assert.equal(completion.status, "queued");
+			assert.equal(completion.conversationId, conversation.id);
+			return completion;
+		};
+		const before = timing === "before" ? await finishJob() : undefined;
+		const compactId = await conversation.compact("CONTROLLED COMPACTION", bounded);
+		await boundedBarrier(compactEntered.promise);
+		if (timing === "during") {
+			assert.equal((await taskRecord(instance.harness, id)).state.status, "running");
+			assert.equal(await instance.harness.commit((tx) => tx.submissionByRequest(conversation.id, requestId), bounded), undefined);
+		}
+		const queued = before ?? await finishJob();
+		assert.equal((await instance.harness.getTask(compactId, bounded))?.state.status, "running");
+		assert.deepEqual(await completionEntries(conversation), [], "the completion remains queued while the owner request is held");
+		compactRelease.resolve();
+		const compact = await instance.harness.waitForTask(compactId, bounded);
+		assert.equal(compact.state.outcome.status, "completed");
+		assert.equal((await instance.harness.submission(queued.id, bounded))?.id, queued.id);
+		ownerRelease.resolve();
+		await owner.wait(bounded);
+		const completion = await instance.harness.submission(queued.id, bounded); assert.ok(completion);
+		const delivered = await completion.wait(bounded);
+		assert.equal(delivered.status, "done"); assert.equal(delivered.requestId, requestId);
+		await conversation.waitForIdle(bounded);
+		const history = await conversation.entries({ order: "ascending" }, 100, undefined, bounded);
+		assert.equal(history.next, undefined);
+		const summaries = history.items.filter((entry) => entry.kind === "pi.compaction"); assert.equal(summaries.length, 1);
+		const completions = history.items.filter((entry) => entry.kind === JOB_COMPLETION_MESSAGE); assert.equal(completions.length, 1);
+		const entry = completions[0];
+		assert.equal(entry.id, delivered.entry);
+		assert.equal(entry.conversationId, conversation.id);
+		const details = entry.data as JobCompletionDetails;
+		assert.equal(details.job.id, id); assert.equal(details.job.owner, `jobs-durable-test:${conversation.id}`);
+		assert.equal(details.job.exitCode, 7); assert.equal(details.job.status, "failed");
+		assert.equal(details.tail.text, `completion-${timing}`);
+		assert.equal(requests.length, 1, "one automatic completion request, without another host input");
+		assert.equal(requests[0].head, summaries[0].id, "the actual completion request follows the committed compaction boundary");
+		assert.equal(requests[0].messages.filter((message) => JSON.stringify(message) === JSON.stringify(entry.model?.[0])).length, 1);
+		t.diagnostic(JSON.stringify({ timing, owner: details.job.owner, jobTaskId: id, completionRequestId: requestId, completionSubmissionId: queued.id, completionEntryId: entry.id, compactionTaskId: compactId, compactionEntryId: summaries[0].id, completionRequests: requests.length }));
+	} finally {
+		jobRelease.resolve(); compactRelease.resolve(); ownerRelease.resolve();
+		await instance.close();
 	}
 });
 
