@@ -804,11 +804,13 @@ calls from that shared measurement. `afterTool` adds termination controls to
 unexecuted slots after two refused rounds. `afterTools` counts only the
 generation's actual model-slot results on an unreleased gate when the open
 decision round blocked a call or the band is stop. Other rounds clear the refused
-count without reading results; every completed round closes the decision round.
-`beforeRequest` clears the refused count before it reads Pi's public live run
-state. A zero count or released gate needs no live snapshot. Only a successful
+count without reading results. Every completed round in the decision band closes
+the decision round. An enabled `beforeRequest` clears the refused count before
+it reads Pi's public live run state. A zero count or released gate needs no live snapshot. Only a successful
 snapshot with existing tool rounds restores the saved count.
 An unavailable snapshot cannot carry refusals into a later run.
+An invalid-settings request skips the marker reset; if settings become valid at
+`afterTools`, the earlier marker can cause one extra bounded result scan.
 A native context reset or compaction clears the gate episode; closing the host
 clears all process-local gate state.
 
