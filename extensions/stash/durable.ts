@@ -14,7 +14,7 @@ import type { JsonValue } from "@earendil-works/chord/json";
 import type { AssistantMessage, Message, Models } from "@earendil-works/pi-ai";
 import type { Static } from "@earendil-works/pi-schema";
 import type { AgentSessionServices } from "@earendil-works/pi-coding-agent";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { calculateContextTokens, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type * as Durable from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
 import { publishSettings, readSettings, type SettingsBus } from "./settings.ts";
@@ -22,6 +22,8 @@ import {
 	CAPACITY_NOTICE_HEADER,
 	capacityConfig,
 	capacityDirectiveLines,
+	band, continuityTools, effectiveCheckpointPercent, gate, gateState, gateStatus, piAutoThreshold,
+	type GateState, type Measure,
 } from "./capacity.ts";
 import {
 	buildDistillPrompt,
@@ -360,12 +362,13 @@ function capacityNoticeText(
 	request: CapacityLatches,
 	episode: number,
 	conversation: string,
+	stopPercent: number,
 ): string {
 	const marker = `[stash-capacity e=${episode} c=${conversation}${request.checkpoint ? " checkpoint" : ""}${request.decision ? " decision" : ""}]`;
 	return [
 		CAPACITY_NOTICE_HEADER,
 		capacityObservation(estimate),
-		...capacityDirectiveLines(request.checkpoint, request.decision),
+		...capacityDirectiveLines(request.checkpoint, request.decision, stopPercent),
 		marker,
 	].join("\n\n");
 }
@@ -392,10 +395,57 @@ function sourceLocator(host: StashDurableHost, conversationId: Durable.Conversat
 	return conversationId === host.durable.ROOT_CONVERSATION_ID ? host.storageId : `${host.storageId}:${conversationId}`;
 }
 
+function unexecuted(diagnostics: readonly { code?: string }[] | undefined): boolean {
+	return diagnostics?.some((diagnostic) => diagnostic.code === "blocked" || diagnostic.code === "tool_unavailable" || diagnostic.code === "invalid_arguments") === true;
+}
+
+function nativePageMeasure(host: StashDurableHost, entries: readonly Durable.EntryRecord[], initial: Measure, usageSeen: boolean): { measure: Measure; episode?: string; usageSeen: boolean } {
+	let measure = initial;
+	for (const entry of entries) {
+		if (entry.kind === "pi.compaction" || entry.kind === "pi.reset") return { measure, episode: String(entry.id), usageSeen };
+		if (usageSeen) continue;
+		const reported = reportedUsageFor(entry.model ?? []);
+		if (!reported) continue;
+		usageSeen = true;
+		const window = providerContextWindow(reported.message.provider, reported.message.model, host.services.modelRuntime);
+		const tokens = calculateContextTokens(reported.message.usage);
+		if (window && Number.isFinite(tokens) && tokens > 0) measure = { kind: "known", tokens, contextWindow: window, percent: tokens / window * 100 };
+	}
+	return { measure, usageSeen };
+}
+
+async function nativeGateState(host: StashDurableHost, states: Map<string, GateState>, api: Durable.HookApi, context: Context): Promise<GateState> {
+	let measure: Measure = { kind: "unknown" };
+	let episode: string | null = null;
+	let cursor: Durable.Cursor | undefined;
+	let boundary = false;
+	let usageSeen = false;
+	for (let visited = 0; visited < 64 && !boundary; visited += 16) {
+		const page = await api.entries({ order: "descending" }, 16, cursor, context).catch(() => undefined);
+		if (!page) { measure = { kind: "unknown" }; break; }
+		const scanned = nativePageMeasure(host, page.items, measure, usageSeen);
+		measure = scanned.measure;
+		usageSeen = scanned.usageSeen;
+		if (scanned.episode !== undefined) {
+			episode = scanned.episode;
+			boundary = true;
+		}
+		if (!page.next) break;
+		cursor = page.next;
+	}
+	const key = String(api.conversationId);
+	// A bounded tail without a context boundary retains the last observed episode.
+	const state = gateState(states, key, boundary ? episode : states.get(key)?.episode ?? null);
+	state.measure = measure;
+	return state;
+}
+
 // ─── Commands ───────────────────────────────────────────────────────────────
 
 interface StashBinding {
 	readonly storeDir: string;
+	readonly gates: Map<string, GateState>;
+	readonly bus: SettingsBus;
 	readonly capacityDoc: Durable.ConversationDocToken<CapacityDocState>;
 	readonly receiptDoc: Durable.ConversationDocToken<DistillReceiptState>;
 	readonly launchDoc: Durable.ConversationDocFamilyToken<CapturedCreation, null>;
@@ -420,7 +470,7 @@ const STASH_DURABLE_USAGE = [
 	"  /stash release <id>         return an active stash to open",
 	"  /stash reopen <id>          return a closed stash to open",
 	"  /stash rotate <id>          archive a stale stash (recoverable)",
-	"  /stash capacity [reset]     inspect or explicitly restart the capacity episode",
+	"  /stash capacity [reset|release] inspect requests, reset notices, or lift the gate",
 	"  /stash help                 show this usage",
 	"",
 	"  <id> may be a full stash id or a unique prefix.",
@@ -647,14 +697,19 @@ async function capacityCommand(
 	host: StashDurableHost,
 	parts: string[],
 ): Promise<string> {
-	if (parts.length > 2 || (parts[1] !== undefined && parts[1] !== "reset")) {
-		throw new Error("Usage: /stash capacity [reset]");
+	if (parts.length > 2 || (parts[1] !== undefined && parts[1] !== "reset" && parts[1] !== "release")) {
+		throw new Error("Usage: /stash capacity [reset|release]");
 	}
 	let config: ReturnType<typeof capacityConfig>;
 	try {
 		config = capacityConfig(readSettings({ agentDir: host.agentDir }).values);
 	} catch (error) {
 		throw new Error(error instanceof Error ? error.message : String(error));
+	}
+	if (parts[1] === "release") {
+		const state = binding.gates.get(String(conversation.id)) ?? gateState(binding.gates, String(conversation.id), null);
+		state.released = true;
+		return "Stash stop and decision round released until the next compaction in this session. Reload restores them.";
 	}
 	if (parts[1] === "reset") {
 		const episode = await conversation.commit(async (tx) => {
@@ -676,7 +731,11 @@ async function capacityCommand(
 	);
 	const estimate = estimateContext(view.messages, host.services.modelRuntime, agent.model);
 	const latches = scanCapacityNotices(view.messages, episode, String(conversation.id));
+	const state = binding.gates.get(String(conversation.id)) ?? gateState(binding.gates, String(conversation.id), null);
+	const model = agent.model && host.services.modelRuntime.getModel(agent.model.provider, agent.model.modelId);
+	const threshold = piAutoThreshold(host.services.settingsManager.getCompactionSettings(model), model);
 	return [
+		gateStatus(state, config, continuityTools(binding.bus), threshold),
 		`Stash capacity: ${config.enabled ? "enabled" : "disabled"}.`,
 		`Thresholds: checkpoint ${config.checkpointPercent}%; continuity decision ${config.decisionPercent}%.`,
 		config.enabled ? `${capacityObservation(estimate)}` : "Capacity observation is disabled by stash.capacity.",
@@ -749,7 +808,7 @@ export function stashDurableContribution(
 			};
 			const dispose = publishSettings(bus, publicationOptions);
 			host.onClose(dispose);
-			return createStashDurableExtension(host);
+			return createStashDurableExtension(host, bus);
 		},
 		commands: [
 			{
@@ -784,7 +843,18 @@ async function publicationPlan(
 }
 
 /** Build the native Durable extension for one session host. */
-export function createStashDurableExtension(host: StashDurableHost): Durable.Extension {
+export function createStashDurableExtension(host: StashDurableHost, bus: SettingsBus): Durable.Extension {
+	let capacityErrorReported = false;
+	const readCapacityConfig = (report = false) => {
+		const values = readSettings({ agentDir: host.agentDir }).values;
+		try { return capacityConfig(values); }
+		catch (error) {
+			if (report && !capacityErrorReported) { capacityErrorReported = true; throw error; }
+			return capacityConfig({ ...values, capacity: false });
+		}
+	};
+	const gates = new Map<string, GateState>();
+	host.onClose(() => { gates.clear(); bindings.delete(host); });
 	const storeDir = resolveStoreDir(process.env, host.agentDir);
 
 	const capacityDoc = host.durable.defineDoc<CapacityDocState>({
@@ -1124,6 +1194,8 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 
 	bindings.set(host, {
 		storeDir,
+		gates,
+		bus,
 		capacityDoc,
 		receiptDoc,
 		launchDoc,
@@ -1136,9 +1208,43 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 		sections: [host.durable.section("stash", () => STASH_SECTION_TEXT)],
 		tools: [writeTool, listTool, readTool, editTool, completeTool, rotateTool],
 		hooks: [
+			host.durable.hook(host.durable.ToolTask, {
+				beforeTool: async (call, api, context) => {
+					const config = readCapacityConfig();
+					if (!config.enabled) return undefined;
+					const state = await nativeGateState(host, gates, api, context);
+					const decision = gate({ measure: state.measure ?? { kind: "unknown" }, toolName: call.name, args: call.arguments,
+						config, declared: continuityTools(bus), released: state.released,
+						decisionRoundOpen: !state.decisionRoundUsed, blockedRounds: state.blockedRounds });
+					if (decision.kind === "block") return { block: decision.reason };
+					return undefined;
+				},
+				afterTool: async (_call, result, api, context) => {
+					const config = readCapacityConfig();
+					if (!config.enabled) return undefined;
+					const state = await nativeGateState(host, gates, api, context);
+					if (config.enabled && !state.released && band(state.measure ?? { kind: "unknown" }, config) === "stop" && state.blockedRounds >= 2 && unexecuted(result.diagnostics)) {
+						return { ...result, control: { ...result.control, terminate: true } };
+					}
+					return undefined;
+				},
+			}),
 			host.durable.hook(host.durable.GenerationTask, {
+				afterTools: async (_assistant, results, api, context) => {
+					const config = readCapacityConfig();
+					if (!config.enabled) return;
+					const state = await nativeGateState(host, gates, api, context);
+					let refused = results.length > 0;
+					for (const id of results) {
+						const entry = await api.entry(host.durable.ToolResultEntry, id, context);
+						if (!entry || !unexecuted(entry.data.diagnostics)) refused = false;
+					}
+					state.blockedRounds = refused ? state.blockedRounds + 1 : 0;
+					if (band(state.measure ?? { kind: "unknown" }, config) === "decision") state.decisionRoundUsed = true;
+				},
+
 				beforeRequest: async (request, api, context) => {
-					const config = capacityConfig(readSettings({ agentDir: host.agentDir }).values);
+					const config = readCapacityConfig(true);
 					if (!config.enabled) return undefined;
 					const conversation = String(api.conversationId);
 					const doc = await api.snapshot(capacityDoc, api.conversationId, context);
@@ -1150,11 +1256,13 @@ export function createStashDurableExtension(host: StashDurableHost): Durable.Ext
 					const latches = scanCapacityNotices(request.messages, episode, conversation);
 					const agent = await api.snapshot(host.durable.AgentDoc, api.conversationId, context);
 					const estimate = estimateContext(request.messages, host.services.modelRuntime, agent?.model);
-					const crossing = capacityRequest(estimate, latches, config);
+					const model = agent?.model && host.services.modelRuntime.getModel(agent.model.provider, agent.model.modelId);
+					const threshold = piAutoThreshold(host.services.settingsManager.getCompactionSettings(model), model);
+					const crossing = capacityRequest(estimate, latches, { ...config, checkpointPercent: effectiveCheckpointPercent(config, threshold) });
 					if (!crossing.checkpoint && !crossing.decision) return undefined;
 					await api.memo(
 						"capacity",
-						{ episode, conversation, text: capacityNoticeText(estimate, crossing, episode, conversation) },
+						{ episode, conversation, text: [capacityNoticeText(estimate, crossing, episode, conversation, config.stopPercent), threshold !== undefined && effectiveCheckpointPercent(config, threshold) < config.checkpointPercent ? `Pi automatic compaction starts at ${threshold.toFixed(1)}%; the effective checkpoint threshold is ${effectiveCheckpointPercent(config, threshold).toFixed(1)}%.` : ""].filter(Boolean).join("\n") },
 						context,
 					);
 					return undefined;

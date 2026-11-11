@@ -21,11 +21,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { CAPACITY_REQUEST, CAPACITY_STATE, capacityTurnEnd, readCapacityState } from "./capacity.ts";
 import registerStash from "./index.ts";
+import { obj, opt, str } from "@earendil-works/pi-schema";
 import { listStashes } from "./store.ts";
 
-const config = { enabled: true, checkpointPercent: 60, decisionPercent: 70 };
+const config = { enabled: true, checkpointPercent: 60, decisionPercent: 70, stopPercent: 95 };
 
-async function runtime(t: TestContext, options: { stash?: boolean; abortAtBoundary?: boolean } = {}) {
+async function runtime(t: TestContext, options: { stash?: boolean; abortAtBoundary?: boolean; gate?: boolean } = {}) {
 	const root = await mkdtemp(join(tmpdir(), "stash-capacity-runtime-"));
 	t.after(() => rm(root, { recursive: true, force: true }));
 	const savedContext = ["PI_CODING_AGENT_DIR", "PI_HARNESS_FILE"].map((key) => [key, process.env[key]] as const);
@@ -58,6 +59,7 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 	let usageTokens = 100;
 	let session: AgentSession;
 	const errors: string[] = [];
+	const executed: string[] = [];
 	const fixture: ExtensionFactory = (pi) => {
 		// The fixture controls reported provider usage through Pi's message replacement contract.
 		pi.on("message_end", (event) => {
@@ -81,7 +83,24 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 				session.agent.abort();
 			});
 		}
-		if (options.stash) registerStash(pi);
+		if (options.gate) {
+			pi.events.on("harness:continuity-tools", (value) => {
+				const request = value as { declare(tool: { name: string; act: string; accepts?: (input: unknown) => boolean }): void };
+				request.declare({ name: "fake_compact", act: "compaction" });
+				request.declare({ name: "fake_resolve", act: "worker-resolution", accepts: (input) => {
+					const mode = (input as { mode?: string }).mode;
+					if (mode === "throw") throw new Error("refused form");
+					return mode === "report";
+				} });
+				void Promise.resolve().then(() => request.declare({ name: "fake_late", act: "compaction" }));
+			});
+			pi.on("tool_call", (event) => event.toolName === "other_blocked" ? { block: true, reason: "Another extension refused this call." } : undefined);
+			for (const name of ["fixture_read", "fake_compact", "fake_resolve", "fake_late", "other_blocked"]) pi.registerTool({
+				name, label: name, description: "Synthetic gate fixture", parameters: obj({ mode: opt(str()) }),
+				execute: async () => { executed.push(name); return { content: [{ type: "text", text: "done" }], details: {} }; },
+			});
+		}
+		if (options.stash || options.gate) registerStash(pi);
 		else {
 			pi.on("turn_end", (event) => ({
 				entries: [
@@ -115,7 +134,7 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 		settingsManager,
 		resourceLoader: loader,
 		sessionManager: SessionManager.inMemory(root),
-		tools: options.stash ? ["stash_write"] : [],
+		tools: options.gate ? ["stash_write", "stash_read", "fixture_read", "fake_compact", "fake_resolve", "fake_late", "other_blocked"] : options.stash ? ["stash_write"] : [],
 	}));
 	t.after(() => session.dispose());
 	await session.bindExtensions({
@@ -129,6 +148,7 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 		session,
 		faux,
 		errors,
+		executed,
 		setUsage: (tokens: number) => {
 			usageTokens = tokens;
 		},
@@ -147,6 +167,87 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 }
 
 const reply = () => fauxAssistantMessage("Synthetic response.");
+const calls = (...names: string[]) => fauxAssistantMessage(names.map((name, index) => fauxToolCall(name, name === "stash_read" ? { id: "retained" } : {}, { id: `${name}-${index}` })), { stopReason: "toolUse" });
+
+test("a decision round refuses intake and preserves a declared continuity call", { timeout: 20000 }, async (t) => {
+	const host = await runtime(t, { gate: true });
+	host.setUsage(9100);
+	await host.prompt([calls("fixture_read", "fake_compact"), calls("fixture_read"), reply()]);
+	const results = host.session.messages.filter((message) => message.role === "toolResult");
+	assert.equal(results[0].isError, true);
+	assert.match(JSON.stringify(results[0].content), /Stash decision round/);
+	assert.deepEqual(host.executed, ["fake_compact", "fixture_read"]);
+});
+
+test("the stop gate preserves accepted continuity forms and refuses late declarations", { timeout: 20000 }, async (t) => {
+	const host = await runtime(t, { gate: true });
+	host.setUsage(9600);
+	await host.prompt([
+		calls("fixture_read", "stash_read", "fake_late", "fake_compact"),
+		fauxAssistantMessage([
+			fauxToolCall("fake_resolve", { mode: "report" }, { id: "accepted" }),
+			fauxToolCall("fake_resolve", { mode: "followUp" }, { id: "refused" }),
+			fauxToolCall("fake_resolve", { mode: "throw" }, { id: "throws" }),
+			fauxToolCall("stash_write", { title: "Capacity", summary: "Retain the task.", checkpoint: true }, { id: "saved" }),
+		], { stopReason: "toolUse" }),
+		reply(),
+	]);
+	assert.deepEqual(host.executed, ["fake_compact", "fake_resolve"]);
+	for (const id of ["fixture_read-0", "stash_read-1", "fake_late-2", "refused", "throws"]) {
+		const message = host.session.messages.find((item) => item.role === "toolResult" && item.toolCallId === id);
+		assert.ok(message?.role === "toolResult" && message.isError);
+		assert.match(JSON.stringify(message.content), /Stash stop/);
+	}
+	const saved = host.session.messages.find((item) => item.role === "toolResult" && item.toolCallId === "saved");
+	assert.ok(saved?.role === "toolResult" && !saved.isError);
+});
+
+test("release remains reachable at the stop threshold and compaction restores the gate", { timeout: 20000 }, async (t) => {
+	const host = await runtime(t, { gate: true });
+	host.setUsage(9600);
+	await host.prompt([reply(), reply()]);
+	await host.session.sendCustomMessage({ customType: "fixture-owner-input", content: "Keep the authorised direction reachable.", display: false });
+	assert.match(JSON.stringify(host.session.messages), /Keep the authorised direction reachable/);
+	const command = host.session.extensionRunner.getCommand("stash");
+	assert.ok(command);
+	await assert.rejects(command.handler("capacity release", host.session.extensionRunner.createCommandContext()), /released until the next compaction/);
+	await host.prompt([calls("fixture_read"), reply()]);
+	assert.deepEqual(host.executed, ["fixture_read"]);
+	const firstKept = host.session.sessionManager.getLeafId();
+	assert.ok(firstKept);
+	host.session.sessionManager.appendCompaction("Retained task.", firstKept, 9600);
+	await host.prompt([calls("fixture_read"), reply()]);
+	assert.deepEqual(host.executed, ["fixture_read"]);
+});
+
+test("another extension's refusal resets the ordinary stop-round counter", { timeout: 20000 }, async (t) => {
+	const host = await runtime(t, { gate: true });
+	host.setUsage(9600);
+	await host.prompt([calls("fixture_read"), calls("other_blocked"), calls("fixture_read"), calls("fixture_read"), reply()]);
+	assert.equal(host.faux.state.callCount, 5);
+	assert.deepEqual(host.executed, []);
+});
+
+test("an error above the stop threshold reports measured facts once per episode", { timeout: 20000 }, async (t) => {
+	const host = await runtime(t, { gate: true });
+	const notices: string[] = [];
+	host.session.extensionRunner.setUIContext({ ...host.session.extensionRunner.getUIContext(), notify: (text) => { notices.push(text); } }, "tui");
+	host.setUsage(9600);
+	await host.prompt([reply(), reply()]);
+	for (let attempt = 0; attempt < 2; attempt++) await host.prompt([fauxAssistantMessage("failed", { stopReason: "error", errorMessage: "Synthetic provider failure" })]);
+	const failures = notices.filter((text) => text.includes("this turn failed while context use was"));
+	assert.equal(failures.length, 1);
+	assert.match(failures[0], /Pi automatic compaction is disabled/);
+	assert.match(failures[0], /Remedies: \/compact/);
+});
+
+test("three fully refused stop rounds terminate without a fourth provider request", { timeout: 20000 }, async (t) => {
+	const host = await runtime(t, { gate: true });
+	host.setUsage(9600);
+	await host.prompt([calls("fixture_read"), calls("fixture_read"), calls("fixture_read")]);
+	assert.equal(host.faux.state.callCount, 3);
+	assert.deepEqual(host.executed, []);
+});
 
 test("capacity boundaries add one request per threshold across a long real session", { timeout: 20_000 }, async (t) => {
 	const host = await runtime(t);

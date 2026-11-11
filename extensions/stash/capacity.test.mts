@@ -20,6 +20,7 @@ import {
 	capacityStatus,
 	capacityTurnEnd,
 	readCapacityState,
+	band, gate, continuityTools, isContinuityCall, piAutoThreshold, effectiveCheckpointPercent,
 } from "./capacity.ts";
 import { transcriptEntries } from "./test-fixtures.mts";
 
@@ -109,12 +110,61 @@ function requestContent(result: BoundaryResult | undefined): string {
 		.join("\n");
 }
 
+describe("capacity tool gate", () => {
+	const known = (percent: number) => ({ kind: "known" as const, tokens: percent * 10, contextWindow: 1000, percent });
+	it("opens on unknown usage and gates one decision round and consecutive stop rounds", () => {
+		const input = { config: defaults, declared: new Map(), released: false, decisionRoundOpen: true, blockedRounds: 0, toolName: "read", args: {} };
+		assert.equal(band({ kind: "unknown" }, defaults), "normal");
+		for (const measure of [{ kind: "unknown" as const }, known(89)]) assert.equal(gate({ ...input, measure }).kind, "allow");
+		assert.equal(gate({ ...input, measure: known(91) }).kind, "block");
+		assert.equal(gate({ ...input, measure: known(91), decisionRoundOpen: false }).kind, "allow");
+		for (const name of ["read", "stash_read", "stash_list", "stash_edit", "stash_complete", "stash_rotate"]) {
+			for (const blockedRounds of [0, 1, 2]) {
+				const result = gate({ ...input, measure: known(96), toolName: name, blockedRounds });
+				assert.equal(result.kind, "block");
+				if (result.kind === "block") assert.equal(result.terminate, blockedRounds >= 2);
+			}
+		}
+		assert.equal(gate({ ...input, measure: known(96), released: true }).kind, "allow");
+		assert.equal(gate({ ...input, measure: known(96), config: { ...defaults, enabled: false } }).kind, "allow");
+		assert.equal(gate({ ...input, measure: known(96), toolName: "stash_write" }).kind, "allow");
+	});
+	it("uses exact producer acceptance and ignores asynchronous declarations", async () => {
+		let late: (() => void) | undefined;
+		const declared = continuityTools({ emit(_channel, value) {
+			const request = value as { declare(tool: { name: string; act: "compaction" | "worker-resolution"; accepts?: (args: unknown) => boolean }): void };
+			request.declare({ name: "compact", act: "compaction" });
+			request.declare({ name: "resolve", act: "worker-resolution", accepts: (args) => args === "yes" });
+			request.declare({ name: "missing", act: "worker-resolution" });
+			request.declare({ name: "throws", act: "worker-resolution", accepts: () => { throw new Error("refuse"); } });
+			request.declare({ name: "truthy", act: "worker-resolution", accepts: (() => 1) as unknown as () => boolean });
+			late = () => request.declare({ name: "late", act: "compaction" });
+		} });
+		await Promise.resolve();
+		late?.();
+		assert.equal(declared.has("late"), false);
+		assert.equal(isContinuityCall("compact", {}, declared), true);
+		assert.equal(isContinuityCall("resolve", "yes", declared), true);
+		assert.equal(isContinuityCall("resolve", "no", declared), false);
+		for (const name of ["missing", "throws", "truthy", "late", "codemode", "tool_search"]) assert.equal(isContinuityCall(name, {}, declared), false);
+	});
+	it("leads Pi compaction using model reserve then ordinary reserve then the default", () => {
+		const model = { provider: "fixture", id: "model", contextWindow: 100000 };
+		assert.equal(piAutoThreshold(undefined, model), 83.616);
+		assert.equal(piAutoThreshold({ enabled: false }, model), undefined);
+		assert.equal(piAutoThreshold({ reserveTokens: 10000, modelOverrides: { "fixture/model": { reserveTokens: 20000 } } }, model), 80);
+		assert.equal(effectiveCheckpointPercent(defaults, 80), 75);
+		assert.equal(effectiveCheckpointPercent(defaults, 4), 85);
+	});
+});
+
 describe("capacity configuration", () => {
 	it("uses documented defaults and accepts explicit overrides", () => {
 		assert.deepEqual(defaults, {
 			enabled: true,
 			checkpointPercent: 85,
 			decisionPercent: 90,
+			stopPercent: 95,
 			intakeTokenBudget: undefined,
 		});
 		assert.deepEqual(
@@ -123,7 +173,7 @@ describe("capacity configuration", () => {
 				PI_STASH_DECISION_PERCENT: "75",
 				PI_STASH_INTAKE_TOKEN_BUDGET: "2500",
 			}),
-			{ enabled: true, checkpointPercent: 50, decisionPercent: 75, intakeTokenBudget: 2500 },
+			{ enabled: true, checkpointPercent: 50, decisionPercent: 75, stopPercent: 95, intakeTokenBudget: 2500 },
 		);
 		assert.equal(capacityConfig({ PI_STASH_CAPACITY: "0", PI_STASH_CHECKPOINT_PERCENT: "bad" }).enabled, false);
 	});
@@ -180,7 +230,7 @@ describe("capacity boundary", () => {
 		assert.equal(requests(result).length, 1);
 		assert.equal(result?.continue, true);
 		assert.match(requestContent(result), /stop substantive work/);
-		assert.match(requestContent(result), /does not authorize/);
+		assert.match(requestContent(result), /grants no authority/);
 		f.commit(result);
 		assert.equal(capacityTurnEnd(f.event(), f.ctx, defaults)?.continue, undefined);
 	});
@@ -294,7 +344,7 @@ describe("capacity boundary", () => {
 		const result = capacityTurnEnd(f.event(), f.ctx, config);
 		assert.equal(result?.continue, true);
 		assert.match(requestContent(result), /context use is unknown/);
-		assert.doesNotMatch(requestContent(result), /\d+%/);
+		assert.doesNotMatch(requestContent(result), /Pi estimates context use at/);
 		f.commit(result);
 		assert.equal(readCapacityState(f.ctx).intakeChars, 40);
 		assert.equal(capacityTurnEnd(f.event(), f.ctx, config)?.continue, undefined);

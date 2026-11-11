@@ -12,6 +12,7 @@ import {
 	type ExtensionAPI,
 	type ExtensionCommandContext,
 	type ExtensionContext,
+	type TurnEndEvent,
 	getAgentDir,
 	withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
@@ -23,6 +24,8 @@ import {
 	capacityReset,
 	capacityStatus,
 	capacityTurnEnd,
+	band, capacityEpisode, continuityTools, gate, gateState, gateStatus, measureUsage, piAutoThreshold,
+	type GateState,
 } from "./capacity.ts";
 import { prepareDistillSource } from "./distill.ts";
 import { stashDurableContribution } from "./durable.ts";
@@ -82,6 +85,7 @@ type StashMessageApi = Pick<ExtensionAPI, "sendUserMessage">;
 type StashExtensionApi = Pick<
 	ExtensionAPI,
 	| "events"
+	| "getSettings"
 	| "getCommands"
 	| "exec"
 	| "registerCommand"
@@ -284,7 +288,7 @@ const STASH_USAGE = [
 	"  /stash release <id>         return an active stash to open (dead-session cleanup)",
 	"  /stash reopen <id>          return a closed stash to open",
 	"  /stash rotate <id>          archive a stale stash (recoverable)",
-	"  /stash capacity [reset]     inspect capacity requests or start a new episode",
+	"  /stash capacity [reset|release] inspect requests, reset notices, or lift the gate",
 	"  /stash help                 show this usage",
 	"",
 	"  <id> may be a full stash id or a unique prefix.",
@@ -443,6 +447,24 @@ async function pickWithoutTerminal(pi: StashMessageApi, ctx: ExtensionContext, f
 	}
 }
 
+function finishCapacityRound(state: GateState, event: TurnEndEvent, ctx: ExtensionContext, config: ReturnType<typeof capacityConfig>): void {
+	if (event.outcome === "aborted" || ctx.signal?.aborted) state.blockedRounds = 0;
+	else {
+		state.blockedRounds = event.toolResults.length > 0 && event.toolResults.every((result) => state.blockedCalls.has(result.toolCallId)) ? state.blockedRounds + 1 : 0;
+		if (band(state.measure ?? { kind: "unknown" }, config) === "decision") state.decisionRoundUsed = true;
+	}
+	state.blockedCalls.clear();
+	state.decisionRoundOpen = false;
+}
+
+function reportCapacityFailure(state: GateState, event: TurnEndEvent, ctx: ExtensionContext, config: ReturnType<typeof capacityConfig>, threshold?: number): void {
+	if (!config.enabled || event.outcome !== "error" || state.failureReported || !ctx.hasUI) return;
+	const measured = measureUsage(() => ctx.getContextUsage());
+	if (measured.kind !== "known" || band(measured, config) !== "stop") return;
+	state.failureReported = true;
+	ctx.ui.notify(`Stash capacity: this turn failed while context use was ${measured.percent.toFixed(1)}% of ${measured.contextWindow} tokens. Pi automatic compaction is ${threshold === undefined ? "disabled or unknown" : `enabled at ${threshold.toFixed(1)}%`}. Remedies: /compact, then continue; or start a fresh session with the latest handover or checkpoint (stash_list with collection checkpoints).`, "error");
+}
+
 export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: string) => Promise<void> }) {
 	const { registerTool, publish } = toolDisplayPublisher(pi);
 	const publicationOptions = {
@@ -450,7 +472,9 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	};
 	const disposeSettings = publishSettings(pi.events, publicationOptions);
 	const creationStatus = new CreationStatus();
+	const gates = new Map<string, GateState>();
 	pi.on("session_shutdown", () => {
+		gates.clear();
 		creationStatus.close();
 		disposeSettings();
 	});
@@ -458,10 +482,44 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 		"durable:contribution",
 		stashDurableContribution(fileURLToPath(import.meta.url), pi.events, disposeSettings),
 	);
+	const stateFor = (ctx: ExtensionContext) => gateState(gates, ctx.sessionManager.getSessionId(), capacityEpisode(ctx));
 	let capacityErrorReported = false;
+	pi.on("agent_start", (_event, ctx) => { stateFor(ctx).blockedRounds = 0; });
+	pi.on("turn_start", (_event, ctx) => {
+		const state = stateFor(ctx);
+		state.measure = undefined;
+		state.decisionRoundOpen = !state.decisionRoundUsed;
+		state.blockedCalls.clear();
+	});
+	pi.on("tool_call", (event, ctx) => {
+		try {
+			const config = capacityConfig(readSettings({ agentDir: getAgentDir() }).values);
+			if (!config.enabled) return;
+			const state = stateFor(ctx);
+			state.measure ??= measureUsage(() => ctx.getContextUsage());
+			state.decisionRoundOpen ??= !state.decisionRoundUsed;
+			const decision = gate({ measure: state.measure, toolName: event.toolName, args: event.input, config,
+				declared: band(state.measure, config) === "normal" ? new Map() : continuityTools(pi.events),
+				released: state.released, decisionRoundOpen: state.decisionRoundOpen, blockedRounds: state.blockedRounds });
+			if (decision.kind === "block") {
+				state.blockedCalls.add(event.toolCallId);
+				return { block: true, reason: decision.reason, terminate: decision.terminate };
+			}
+		} catch (error) {
+			if (capacityErrorReported) return;
+			capacityErrorReported = true;
+			throw error;
+		}
+	});
 	pi.on("turn_end", (event, ctx) => {
 		try {
-			return capacityTurnEnd(event, ctx, capacityConfig(readSettings({ agentDir: getAgentDir() }).values));
+			const config = capacityConfig(readSettings({ agentDir: getAgentDir() }).values);
+			if (!config.enabled) return;
+			const state = stateFor(ctx);
+			finishCapacityRound(state, event, ctx, config);
+			const threshold = piAutoThreshold(pi.getSettings().compaction, ctx.model);
+			reportCapacityFailure(state, event, ctx, config, threshold);
+			return capacityTurnEnd(event, ctx, config, threshold);
 		} catch (error) {
 			if (capacityErrorReported) return;
 			capacityErrorReported = true;
@@ -710,7 +768,7 @@ export default function (pi: StashExtensionApi, overrides?: { copyText?: (text: 
 	pi.registerCommand("stash", {
 		description: "Create, browse, get, complete, release, reopen, or rotate stashed efforts",
 		getArgumentCompletions: stashArgumentCompletions,
-		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser, creationStatus),
+		handler: (args, ctx) => handleStashCommand(pi, args, ctx, openBrowser, creationStatus, gates),
 	});
 	pi.registerShortcut("ctrl+alt+s", {
 		description: "Open the stash browser",
@@ -728,6 +786,7 @@ async function handleStashCommand(
 	ctx: ExtensionCommandContext,
 	openBrowser: (ctx: ExtensionContext) => Promise<void>,
 	creationStatus: CreationStatus,
+	gates: Map<string, GateState>,
 ): Promise<void> {
 	const raw = args.trim();
 	const parts = raw.split(/\s+/).filter(Boolean);
@@ -751,7 +810,7 @@ async function handleStashCommand(
 		case "help":
 			return helpCommand(ctx, parts, fail);
 		case "capacity":
-			return capacityCommand(pi, ctx, parts, fail);
+			return capacityCommand(pi, ctx, parts, fail, gates);
 		case "get":
 			return getCommand(pi, ctx, parts, fail);
 		case "complete":
@@ -776,16 +835,20 @@ function capacityCommand(
 	ctx: ExtensionCommandContext,
 	parts: string[],
 	fail: CommandFailure,
+	gates: Map<string, GateState>,
 ): void {
-	if (parts.length > 2 || (parts[1] !== undefined && parts[1] !== "reset")) {
-		fail("Usage: /stash capacity [reset]");
+	if (parts.length > 2 || (parts[1] !== undefined && parts[1] !== "reset" && parts[1] !== "release")) {
+		fail("Usage: /stash capacity [reset|release]");
 		return;
 	}
 	let message: string;
 	try {
 		const config = capacityConfig(readSettings({ agentDir: getAgentDir() }).values);
 		if (parts[1] === "reset") pi.appendEntry(CAPACITY_STATE, capacityReset(ctx));
-		message = capacityStatus(ctx, config);
+		const state = gateState(gates, ctx.sessionManager.getSessionId(), capacityEpisode(ctx));
+		if (parts[1] === "release") state.released = true;
+		state.measure = measureUsage(() => ctx.getContextUsage());
+		message = [parts[1] === "release" ? "Stash stop and decision round released until the next compaction in this session. Reload restores them." : "", capacityStatus(ctx, config), gateStatus(state, config, continuityTools(pi.events), piAutoThreshold(pi.getSettings().compaction, ctx.model))].filter(Boolean).join("\n");
 	} catch (error) {
 		fail(error instanceof Error ? error.message : String(error));
 		return;

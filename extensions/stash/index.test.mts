@@ -45,6 +45,7 @@ function registry(overrides?: Parameters<typeof registerStash>[1]) {
 		(event: { type?: string; reason?: string }, ctx: TestContext) => Promise<void>
 	>();
 	const pi: Parameters<typeof registerStash>[0] = {
+		getSettings: () => ({ compaction: { enabled: false } }),
 		registerTool: (tool) => {
 			tools.set(tool.name, captureTool(tool));
 		},

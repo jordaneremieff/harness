@@ -6,7 +6,7 @@ import { after, before, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
-import { createEventBus, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
+import { createEventBus, SettingsManager, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { readSettings, publishSettings, SETTINGS_PUBLISH, type SettingsPublication, type SettingsBus, settings } from "./settings.ts";
 import { capacityConfig, invalidCapacityFields } from "./capacity.ts";
@@ -53,6 +53,14 @@ function read(env: Record<string, string | undefined> = {}) {
 	return readSettings({ agentDir, env });
 }
 
+test("requires a positive stop threshold above the decision threshold", async () => {
+	await document({ decisionPercent: 90, stopPercent: 90 });
+	assert.deepEqual(invalidCapacityFields(read().values), ["decisionPercent", "stopPercent"]);
+	assert.throws(() => capacityConfig(read().values), /stash.stopPercent/);
+	assert.equal(capacityConfig(read({ PI_STASH_STOP_PERCENT: "96" }).values).stopPercent, 96);
+	assert.equal(read({ PI_STASH_STOP_PERCENT: "0" }).values.stopPercent, 95);
+});
+
 test("declared defaults and file/environment selection preserve derived path dependencies", async () => {
 	await document({});
 	let snapshot = read();
@@ -62,6 +70,7 @@ test("declared defaults and file/environment selection preserve derived path dep
 		enabled: true,
 		checkpointPercent: 85,
 		decisionPercent: 90,
+		stopPercent: 95,
 		intakeTokenBudget: undefined,
 	});
 	await document({ dir: "file-store", checkpointPercent: 60, decisionPercent: 75, intakeTokenBudget: 2000 });
@@ -141,6 +150,7 @@ function factory() {
 		contribution = value as StashDurableContribution;
 	});
 	const pi: Parameters<typeof registerStash>[0] = {
+		getSettings: () => ({ compaction: { enabled: false } }),
 		events: bus,
 		getCommands: () => [],
 		registerTool: () => {},
@@ -254,7 +264,7 @@ test("native tools use file settings and resolve checkpoint paths against their 
 	models.setProvider(faux.provider);
 	const host: StashDurableHost = {
 		durable: Durable,
-		services: { modelRuntime: models } as unknown as AgentSessionServices,
+		services: { modelRuntime: models, settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }) } as unknown as AgentSessionServices,
 		cwd: join(root, "other-project"),
 		agentDir: nativeDir,
 		storageId: "runtime-fixture",
@@ -347,7 +357,7 @@ test("zero thresholds are invalid for file and environment selections", async ()
 	assert.equal(env.values.decisionPercent, 90);
 	assert.ok(
 		env.records
-			.filter((record) => record.type === "number")
+			.filter((record) => record.key === "checkpointPercent" || record.key === "decisionPercent")
 			.every((record) => record.status === "invalid" && record.origin === "default"),
 	);
 });

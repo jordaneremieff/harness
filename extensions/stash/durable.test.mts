@@ -10,9 +10,10 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { getCurrentSystemPrompt, getCurrentTools, type Message } from "@earendil-works/pi-ai";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { fauxAssistantMessage, fauxProvider, fauxToolCall, type FauxResponseStep } from "@earendil-works/pi-ai/providers/faux";
-import { createEventBus, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
+import { createEventBus, SettingsManager, type AgentSessionServices } from "@earendil-works/pi-coding-agent";
 import * as Durable from "@earendil-works/pi-durable";
 import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import { obj, opt, str } from "@earendil-works/pi-schema";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
@@ -31,6 +32,7 @@ after(() => {
 });
 
 interface TestHarness {
+	readonly bus: ReturnType<typeof createEventBus>;
 	readonly launches: IndependentCommandInput[];
 	readonly storage: MemoryStorage;
 	readonly harness: Durable.Harness;
@@ -47,6 +49,8 @@ async function startHarness(
 	t: { after(fn: () => void | Promise<void>): void },
 	contextWindow?: number,
 	codemode = false,
+	gateFixture = false,
+	nestedFixture = false,
 ): Promise<TestHarness> {
 	const launches: IndependentCommandInput[] = [];
 	const storeDir = await mkdtemp(join(tmpdir(), "stash-durable-store-"));
@@ -62,7 +66,7 @@ async function startHarness(
 	models.setProvider(faux.provider);
 	const host: StashDurableHost = {
 		durable: Durable,
-		services: { modelRuntime: models } as unknown as AgentSessionServices,
+		services: { modelRuntime: models, settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }) } as unknown as AgentSessionServices,
 		cwd: workdir,
 		agentDir: workdir,
 		storageId: "stash-durable-test",
@@ -78,10 +82,31 @@ async function startHarness(
 		onClose: () => {},
 		inventory: { contributions: [], ordinaryOnly: [] },
 	};
-	const contribution = stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), createEventBus(), () => {});
+	const bus = createEventBus();
+	const contribution = stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), bus, () => {});
 	const extension = contribution.create(host);
 	const registry = createRegistry();
 	registry.install(extension);
+	if (gateFixture) {
+		registry.install(Durable.defineExtension({ name: "continuity-fixture", tools: ["fake_compact", "fake_resolve", "fake_late"].map((name) => Durable.defineTool({
+			name, description: "Synthetic continuity operation", parameters: obj({ mode: opt(str()) }), replay: "safe",
+			execute: async (_args, api, context) => {
+				if (nestedFixture && name === "fake_compact") {
+					const nested = await api.executeTool("stash_list", {}, context);
+					assert.equal(nested.isError, true);
+					assert.ok(nested.diagnostics?.some((item) => item.code === "blocked"));
+					return { output: [{ type: "text" as const, text: nested.diagnostics?.map((item) => item.message).join("\n") ?? "" }], details: {} };
+				}
+				return { output: [{ type: "text" as const, text: "resolved" }], details: {} };
+			},
+		})) }));
+		bus.on("harness:continuity-tools", (value) => {
+			const request = value as { declare(tool: { name: string; act: string; accepts?: (input: unknown) => boolean }): void };
+			request.declare({ name: "fake_compact", act: "compaction" });
+			request.declare({ name: "fake_resolve", act: "worker-resolution", accepts: (input) => (input as { mode?: string }).mode === "report" });
+			void Promise.resolve().then(() => request.declare({ name: "fake_late", act: "compaction" }));
+		});
+	}
 	if (codemode) {
 		const sandbox = new CodemodeSandbox({ memoryLimitBytes: 64 * 1024 * 1024 });
 		t.after(() => sandbox.close());
@@ -95,7 +120,7 @@ async function startHarness(
 	t.after(async () => {
 		await harness.close(context);
 	});
-	return { harness, root, faux, host, contribution, extension, storeDir, workdir, launches, storage };
+	return { harness, root, faux, host, contribution, extension, storeDir, workdir, launches, storage, bus };
 }
 
 function messageText(message: Message | undefined): string {
@@ -639,6 +664,78 @@ text("NATIVE_RESULT=" + JSON.stringify({empty, written, recent, search, read, er
 	const details = (message as unknown as { details: { calls: Array<{ name: string; status: string }> } }).details;
 	assert.equal(details.calls.findLast((call) => call.name === "stash_list")?.status, "error");
 	assert.equal(details.calls.findLast((call) => call.name === "stash_read")?.status, "error");
+});
+
+function gateThresholds(t: { after(fn: () => void): void }, stop: string): void {
+	const values = { PI_STASH_CHECKPOINT_PERCENT: "0.01", PI_STASH_DECISION_PERCENT: "0.02", PI_STASH_STOP_PERCENT: stop };
+	const old = Object.keys(values).map((key) => [key, process.env[key]] as const);
+	Object.assign(process.env, values);
+	t.after(() => { for (const [key, value] of old) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } });
+}
+
+test("native decision rounds share declarations and then allow ordinary tool work", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 200000, false, true);
+	gateThresholds(t, "100");
+	await answerWith(h.root, h.faux, [
+		fauxAssistantMessage([fauxToolCall("stash_list", {}), fauxToolCall("fake_compact", {})], { stopReason: "toolUse" }),
+		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+		fauxAssistantMessage("done"), fauxAssistantMessage("done"),
+	], "Retain the task.");
+	const results = await toolResults(h.root);
+	assert.match(results[0].text, /Stash decision round/);
+	assert.equal(results[1].isError, false);
+	assert.equal(results[2].isError, false);
+});
+
+test("native stop rounds count actual unexecuted slots including invalid arguments", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000);
+	gateThresholds(t, "0.03");
+	const round = () => fauxAssistantMessage([fauxToolCall("stash_list", {}), fauxToolCall("stash_read", {})], { stopReason: "toolUse" });
+	await answerWith(h.root, h.faux, [round(), round(), round()], "Retain the task.");
+	assert.equal(h.faux.state.callCount, 3);
+	const results = await toolResults(h.root);
+	assert.equal(results.length, 6);
+	assert.ok(results.every((result) => result.isError));
+	assert.match(results[0].text, /Stash stop/);
+});
+
+test("nested refusals stay outside the model round and do not terminate their executed parent", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000, false, true, true);
+	gateThresholds(t, "0.03");
+	const refuse = () => fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" });
+	await answerWith(h.root, h.faux, [refuse(), refuse(),
+		fauxAssistantMessage(fauxToolCall("fake_compact", {}), { stopReason: "toolUse" }),
+		refuse(), refuse(), fauxAssistantMessage("answer"), fauxAssistantMessage("answer"),
+	], "Retain the task.");
+	const results = await toolResults(h.root);
+	assert.equal(results.length, 5);
+	assert.equal(results[2].name, "fake_compact");
+	assert.equal(results[2].isError, false);
+	assert.match(results[2].text, /Stash stop/);
+});
+
+test("native continuity execution resets refusal counts and release lifts the stop", { timeout: 30000 }, async (t) => {
+	const h = await startHarness(t, 2000, false, true);
+	gateThresholds(t, "0.03");
+	await answerWith(h.root, h.faux, [
+		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+		fauxAssistantMessage([fauxToolCall("stash_list", {}), fauxToolCall("fake_resolve", { mode: "report" }), fauxToolCall("fake_late", {})], { stopReason: "toolUse" }),
+		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+		fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }),
+		fauxAssistantMessage("answer"), fauxAssistantMessage("answer"),
+	], "Retain the task.");
+	const results = await toolResults(h.root);
+	assert.equal(results.find((result) => result.name === "fake_resolve")?.isError, false);
+	assert.equal(results.find((result) => result.name === "fake_late")?.isError, true);
+	assert.ok(h.faux.state.callCount >= 5);
+	const command = h.contribution.commands?.[0];
+	assert.ok(command);
+	assert.match(String(await command.run({ args: "capacity release", conversation: h.root, context, host: h.host, invocationId: "release", harness: h.harness })), /released until the next compaction/);
+	await answerWith(h.root, h.faux, [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("released")], "Continue the task.");
+	assert.equal((await toolResults(h.root)).at(-1)?.isError, false);
+	await h.root.reset("Retained task.", context);
+	await answerWith(h.root, h.faux, [fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" }), fauxAssistantMessage("reset"), fauxAssistantMessage("reset")], "Continue the task.");
+	assert.equal((await toolResults(h.root)).at(-1)?.isError, true);
 });
 
 test("issues one capacity notice per threshold crossing and re-arms through the command", {
@@ -1288,7 +1385,7 @@ async function recover(
 	models.setProvider(faux.provider);
 	const host: StashDurableHost = {
 		durable: Durable,
-		services: { modelRuntime: models } as unknown as AgentSessionServices,
+		services: { modelRuntime: models, settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }) } as unknown as AgentSessionServices,
 		cwd: workdir,
 		agentDir: workdir,
 		storageId: "stash-replay",

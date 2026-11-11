@@ -24,7 +24,7 @@ The agent distills an effort into a durable Markdown handover. The extension own
 | `/stash get <id>` | command | Pick up a stash by full id or unique prefix. |
 | `/stash get <id> <note>` | command | Pick up with an operator note: material recalled after the stash was written, delivered ahead of the artifact and authoritative on conflict. The artifact itself is never rewritten. |
 | `/stash release <id>` | command | Return an active stash to open (dead-session cleanup). |
-| `/stash capacity [reset]` | command | Inspect the last capacity observation and request latches, or explicitly start a new pressure episode. |
+| `/stash capacity [reset|release]` | command | Inspect capacity, reset request latches, or release the decision and stop gates until compaction. |
 
 Pickup is one system action. The command reads the selected artifact and sends it as the next user message through `pi.sendUserMessage()`. The agent does not need to orchestrate a second `stash_read` call. The current working directory is never changed implicitly; the pickup message names both the current workspace and the recorded project, and calls out a mismatch before edits begin. An optional operator note (`/stash get <id> <note…>`, or the browser's `a` key) rides along in the same message as a distinct amendment block placed ahead of the artifact, marked newer than it and authoritative on conflict; the note is trusted operator input, terminal-sanitized, capped at 20,000 characters, and never persisted — the stashed core material stays byte-identical. `stash_write` emits the equivalent fresh-session shortcut:
 
@@ -406,7 +406,8 @@ a plain move back into the store.
 
 ## Capacity checkpoints
 
-The `turn_end` hook reads Pi's context estimate once per enabled turn. At the
+The `turn_end` hook reads Pi's context estimate at each enabled boundary. Tool
+calls in one response share a separate measurement for the gate. At the
 checkpoint threshold it adds a short model-visible request to preserve a working
 synthesis with `stash_write({ checkpoint: true, ... })`. At the decision threshold
 it requests an authorized continuity choice before further broad intake: checked
@@ -475,14 +476,15 @@ that an existing runtime applied them.
 | capacity | `PI_STASH_CAPACITY` | boolean | true | none | Context-capacity observation and continuity requests. false turns off only this feature; other stash tools and commands stay available. |
 | checkpointPercent | `PI_STASH_CHECKPOINT_PERCENT` | number | 85 | max 100 | Positive checkpoint threshold, strictly below the decision threshold. |
 | decisionPercent | `PI_STASH_DECISION_PERCENT` | number | 90 | max 100 | Positive continuity-decision threshold, at most 100. |
+| stopPercent | `PI_STASH_STOP_PERCENT` | number | 95 | max 100 | Positive stop threshold, strictly above the decision threshold. |
 | intakeTokenBudget | `PI_STASH_INTAKE_TOKEN_BUDGET` | integer | unset | min 1 | Positive token budget for the unknown-usage text-intake trigger. |
 | checkpointDir | `PI_STASH_CHECKPOINT_DIR` | path | &lt;dir&gt;/checkpoints | none | Working-checkpoint directory, separate from the handover store. |
 <!-- harness:settings:end -->
 
-Both thresholds must be positive. When capacity is enabled, the effective
-checkpoint threshold must be strictly below the decision threshold. A reversed
-or equal pair stops capacity observation with a domain error and marks both
-published fields invalid. Stash does not silently adjust either scalar value.
+All thresholds must be positive. When capacity is enabled, they must satisfy
+`checkpointPercent < decisionPercent < stopPercent`. A reversed or equal pair
+disables capacity controls with a domain error and marks those published fields
+invalid. Stash does not silently adjust the configured scalar values.
 Other tools remain available. Disabling capacity skips this relation check.
 
 All relative paths resolve against the host's agent directory, not the invoking
@@ -507,13 +509,49 @@ not reset the latches. In TUI/RPC the command notifies; in print/JSON it returns
 its text through the existing command-error channel because those modes have no
 command-result notification surface.
 
-This is a request mechanism, not a hard stop at any percentage.
-Ordinary boundary results do not suppress natural tool work or queued messages.
-The decision notice refers to governing stop instructions, but this extension
-does not abort the agent, compact automatically, replace sessions, cancel
-workers, or omit tool results. Those semantic and authority decisions remain
-with the agent and operator. A later stop-threshold crossing does not produce an
-additional notice after the decision request was already latched.
+At the decision threshold, one tool round refuses substantive calls and preserves
+`stash_write` plus declared continuity tools. Later calls below the stop threshold
+run normally. At the stop threshold, new substantive tool calls are refused.
+The [continuity tool contract](../../docs/conventions/continuity-tools.md) lets
+producers declare compaction or bounded worker-resolution calls. Resolution
+requires the producer's argument predicate to return exactly true. This checks
+argument shape, not message intent, target activity, ownership, or authority.
+A steer still admits input and can wake an idle target.
+
+Unknown usage opens the gate. Calls already in flight finish; stored results,
+asynchronous input, reports and human input are never refused. Those inputs can
+still fill the window. Stash never aborts the agent, compacts automatically,
+replaces a session, cancels workers, rewrites a request, or omits stored results.
+The model chooses its authorised continuity act. A checkpoint notice asks it to
+carry the checkpoint identifier into any later compaction summary.
+
+Three consecutive fully refused rounds end a run. Ordinary rounds count only
+when Stash refused every result by tool call ID; unknown calls, invalid arguments,
+and another extension's refusal reset that count. Native rounds count actual
+unexecuted model slots, including invalid arguments and unavailable tools. Nested
+calls neither count nor terminate a generation. A native slot that faults or is
+orphaned before task creation has no control and prevents that round's termination.
+Any executed continuity call resets the count. Admitted resolution calls therefore
+remain bounded by the model, not by this refusal counter.
+
+`/stash capacity release` lifts the decision and stop gates until compaction in
+that session. Reload restores them. A native owner reaches the same command
+through `agent_command`. `/stash capacity` reports the band, episode, release,
+thresholds and declared tools. Gate state is process-local; compaction or a native context reset starts a new
+gate episode. `/stash capacity reset` resets notice latches, not a gate release. A failed compaction leaves the measured band in force.
+Stash does not block `/compact` or Pi's own compaction.
+
+If Pi automatic compaction is enabled, the effective checkpoint request threshold
+leads Pi's threshold by five percentage points when that value is positive and
+below the configured checkpoint threshold. Model reserve overrides take priority,
+then the ordinary reserve, then Pi's 16384-token default. Thresholds use the model's
+context window, not an Agent planning budget below that window.
+
+When an ordinary turn fails at or above the stop threshold, Stash reports measured
+context use and Pi's compaction setting once per episode in the UI. It makes no
+claim about the failure's cause. Recovery remains `/compact` or a fresh session
+with the latest handover or checkpoint (`stash_list` with `collection: checkpoints`).
+It neither persists that error notice nor continues the failed turn.
 
 The stash slice owns this mechanism. Evaluate it with the focused boundary and
 SDK tests below and observed checkpoint outcomes, not invocation counts alone.
@@ -720,6 +758,12 @@ separate acts; no operator-store migration occurs.
 
 ### Capacity guidance
 
+Native `beforeTool` gates new calls from bounded retained usage. `afterTool`
+adds termination controls to unexecuted slots after two refused rounds.
+`afterTools` counts only the generation's actual model-slot results and closes
+the decision round. A native context reset or compaction clears the gate episode;
+closing the host clears all process-local gate state.
+
 The contribution ports the ordinary capacity monitor to two native generation
 hooks. `beforeRequest` observes the request's model context, scans it for
 Durable capacity notices, and, when a threshold crossing is due, records the
@@ -786,7 +830,7 @@ This entry has no model message and starts no follow-up turn. Native generation 
 The remaining command verbs operate directly on the external store: `get`
 activates an artifact and queues the pickup message as the next user input,
 `complete`, `release`, `reopen`, and `rotate` run the same lifecycle transitions
-as the ordinary command, `capacity [reset]` reports the observation and
+as the ordinary command, `capacity [reset|release]` reports the observation and
 manages the episode counter, and `help` prints the Durable usage. A pickup
 submission is keyed by the command invocation identity, so a retry of one
 invocation reuses its submission while a distinct invocation is a distinct

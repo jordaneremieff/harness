@@ -17,7 +17,111 @@ export interface CapacityConfig {
 	enabled: boolean;
 	checkpointPercent: number;
 	decisionPercent: number;
+	stopPercent: number;
 	intakeTokenBudget?: number;
+}
+
+export type Measure = { kind: "unknown" } | { kind: "known"; tokens: number; contextWindow: number; percent: number };
+export type Band = "normal" | "decision" | "stop";
+export type GateDecision = { kind: "allow" } | { kind: "block"; reason: string; terminate: boolean };
+export type ContinuityTool = { name: string; act: "compaction" | "worker-resolution"; accepts?: (input: unknown) => boolean };
+export type Declared = ReadonlyMap<string, Omit<ContinuityTool, "name">>;
+export const STOP_ROUNDS_BEFORE_TERMINATE = 2;
+export const CONTINUITY_TOOLS = "harness:continuity-tools";
+
+/** Collect only declarations made synchronously during this evaluation. */
+export function continuityTools(bus: { emit(channel: string, data: unknown): void }): Declared {
+	const declarations = new Map<string, Omit<ContinuityTool, "name">>();
+	let open = true;
+	try {
+		bus.emit(CONTINUITY_TOOLS, {
+			version: 1,
+			declare(tool: ContinuityTool) {
+				if (!open || !tool || typeof tool.name !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(tool.name)) return;
+				if (tool.act !== "compaction" && tool.act !== "worker-resolution") return;
+				if (tool.accepts !== undefined && typeof tool.accepts !== "function") return;
+				declarations.set(tool.name, { act: tool.act, accepts: tool.accepts });
+			},
+		});
+	} finally { open = false; }
+	return declarations;
+}
+
+export function measureUsage(read: () => ContextUsage | undefined): Measure {
+	const usage = usageSnapshot(read);
+	return usage.kind === "unknown" ? usage : { ...usage, kind: "known" };
+}
+
+export function band(measure: Measure, config: CapacityConfig): Band {
+	if (measure.kind === "unknown") return "normal";
+	return measure.percent >= config.stopPercent ? "stop" : measure.percent >= config.decisionPercent ? "decision" : "normal";
+}
+
+export function isContinuityCall(name: string, args: unknown, declared: Declared): boolean {
+	if (name === "stash_write") return true;
+	const tool = declared.get(name);
+	if (!tool) return false;
+	if (tool.accepts === undefined) return tool.act === "compaction";
+	try { return tool.accepts(args) === true; } catch { return false; }
+}
+
+export function gate(input: {
+	measure: Measure; toolName: string; args: unknown; config: CapacityConfig; declared: Declared;
+	released: boolean; decisionRoundOpen: boolean; blockedRounds: number;
+}): GateDecision {
+	const { measure, config, declared } = input;
+	const current = band(measure, config);
+	if (!config.enabled || input.released || current === "normal" || isContinuityCall(input.toolName, input.args, declared)) return { kind: "allow" };
+	if (current === "decision" && !input.decisionRoundOpen) return { kind: "allow" };
+	if (measure.kind === "unknown") return { kind: "allow" };
+	const tools = (act: ContinuityTool["act"]) => [...declared].filter(([, value]) => value.act === act).map(([name]) => name).join(", ") || "none declared";
+	const observed = `${measure.percent.toFixed(1)}% (${Math.round(measure.tokens)} of ${measure.contextWindow} tokens)`;
+	if (current === "decision") return { kind: "block", terminate: false, reason: `Stash decision round: context use is at ${observed}, at or above the ${config.decisionPercent}% decision threshold. This call was not run. In this response choose one continuity act: compaction for the same effort (a declared continuity tool such as ${tools("compaction")}), a handover with stash_write, or the final answer. Your next tool calls run normally until ${config.stopPercent}%.` };
+	return { kind: "block", terminate: input.blockedRounds >= STOP_ROUNDS_BEFORE_TERMINATE, reason: `Stash stop: context use is at ${observed}, at or above the ${config.stopPercent}% stop threshold. This call was not run. Stop substantive work: compact with a declared continuity tool (${tools("compaction")}), write a handover with stash_write, or give the final answer. Settle live workers you own with a declared worker-resolution tool (${tools("worker-resolution")}), and name any that keep running in the handover or answer. The operator can lift this with /stash capacity release, compact with /compact, or start a fresh session.` };
+}
+
+export type GateState = {
+	episode: string | null; decisionRoundUsed: boolean; released: boolean; blockedRounds: number;
+	blockedCalls: Set<string>; measure?: Measure; decisionRoundOpen?: boolean; failureReported?: boolean;
+};
+export function gateState(states: Map<string, GateState>, key: string, episode: string | null): GateState {
+	let state = states.get(key);
+	if (!state || state.episode !== episode) {
+		state = { episode, decisionRoundUsed: false, released: false, blockedRounds: 0, blockedCalls: new Set() };
+		states.set(key, state);
+	}
+	return state;
+}
+
+export function capacityEpisode(ctx: Pick<ExtensionContext, "sessionManager">): string | null {
+	let id = ctx.sessionManager.getLeafId();
+	for (let visited = 0; id !== null && visited < MAX_ANCESTORS; visited++) {
+		const entry = ctx.sessionManager.getEntry(id);
+		if (!entry) return null;
+		if (entry.type === "compaction") return entry.id;
+		id = entry.parentId;
+	}
+	return null;
+}
+
+type PiCompaction = { enabled?: boolean; reserveTokens?: number; modelOverrides?: Record<string, { reserveTokens?: number }> };
+type CapacityModel = { provider: string; id: string; contextWindow: number };
+export function piAutoThreshold(compaction: PiCompaction | undefined, model: CapacityModel | undefined): number | undefined {
+	if (compaction?.enabled === false || !model || !(model.contextWindow > 0)) return;
+	const reserve = compaction?.modelOverrides?.[`${model.provider}/${model.id}`]?.reserveTokens ?? compaction?.reserveTokens ?? 16384;
+	return (model.contextWindow - reserve) / model.contextWindow * 100;
+}
+export function effectiveCheckpointPercent(config: CapacityConfig, piThreshold: number | undefined): number {
+	return piThreshold !== undefined && piThreshold > 5 ? Math.min(config.checkpointPercent, piThreshold - 5) : config.checkpointPercent;
+}
+
+export function gateStatus(state: GateState, config: CapacityConfig, declared: Declared, piThreshold?: number): string {
+	return [
+		`Band: ${band(state.measure ?? { kind: "unknown" }, config)}; stop threshold: ${config.stopPercent}%; episode: ${state.episode ?? "initial"}.`,
+		`Decision round used: ${state.decisionRoundUsed}; released: ${state.released}; refused rounds: ${state.blockedRounds}.`,
+		`Declared continuity tools: ${[...declared.keys()].join(", ") || "none declared"}.`,
+		`Pi automatic compaction: ${piThreshold === undefined ? "disabled or unknown" : `enabled at ${piThreshold.toFixed(1)}%`}.`,
+	].join("\n");
 }
 
 type Usage = { kind: "unknown" } | { kind: "host_estimate"; tokens: number; contextWindow: number; percent: number };
@@ -34,19 +138,27 @@ export interface CapacityState {
 type CapacityContext = Pick<ExtensionContext, "sessionManager" | "getContextUsage" | "signal">;
 
 export function invalidCapacityFields(values: StashSettings): (keyof StashSettings & string)[] {
-	return values.capacity && values.checkpointPercent >= values.decisionPercent
-		? ["checkpointPercent", "decisionPercent"]
-		: [];
+	if (!values.capacity) return [];
+	const fields = new Set<keyof StashSettings & string>();
+	if (values.checkpointPercent >= values.decisionPercent) {
+		fields.add("checkpointPercent");
+		fields.add("decisionPercent");
+	}
+	if (values.decisionPercent >= values.stopPercent) {
+		fields.add("decisionPercent");
+		fields.add("stopPercent");
+	}
+	return [...fields];
 }
 
 export function capacityConfig(values: StashSettings): CapacityConfig {
-	const { capacity: enabled, checkpointPercent, decisionPercent, intakeTokenBudget } = values;
+	const { capacity: enabled, checkpointPercent, decisionPercent, stopPercent, intakeTokenBudget } = values;
 	if (invalidCapacityFields(values).length) {
 		throw new Error(
-			"Stash settings stash.checkpointPercent must be below stash.decisionPercent. Capacity observation is unavailable until the thresholds are corrected.",
+			"Stash settings require stash.checkpointPercent < stash.decisionPercent < stash.stopPercent. Capacity controls are unavailable until the thresholds are corrected.",
 		);
 	}
-	return { enabled, checkpointPercent, decisionPercent, intakeTokenBudget };
+	return { enabled, checkpointPercent, decisionPercent, stopPercent, intakeTokenBudget };
 }
 
 function freshState(sessionId: string): CapacityState {
@@ -180,29 +292,32 @@ function usageSnapshot(read: () => ContextUsage | undefined): Usage {
 	return { kind: "unknown" };
 }
 
-function requestText(state: CapacityState, checkpoint: boolean, decision: boolean, config: CapacityConfig): string {
+function requestText(state: CapacityState, checkpoint: boolean, decision: boolean, config: CapacityConfig, piThreshold?: number): string {
 	const observation =
 		state.usage.kind === "host_estimate"
 			? `Pi estimates context use at ${state.usage.percent.toFixed(1)}% (${Math.round(state.usage.tokens)} tokens). This is not a safe remaining budget.`
 			: `Current context use is unknown. Estimated text intake reached the configured ${config.intakeTokenBudget}-token budget (text characters / 4, not a context percentage).`;
-	return [CAPACITY_NOTICE_HEADER, observation, ...capacityDirectiveLines(checkpoint, decision)].join("\n\n");
+	const lead = piThreshold !== undefined && effectiveCheckpointPercent(config, piThreshold) < config.checkpointPercent
+		? `Pi automatic compaction starts at ${piThreshold.toFixed(1)}%; the effective checkpoint threshold is ${effectiveCheckpointPercent(config, piThreshold).toFixed(1)}%.` : undefined;
+	return [CAPACITY_NOTICE_HEADER, observation, lead, ...capacityDirectiveLines(checkpoint, decision, config.stopPercent)].filter(Boolean).join("\n\n");
 }
 
 export const CAPACITY_NOTICE_HEADER = "Stash capacity notice from the local extension, not a new operator request.";
 
 /** Directive sentences after the observation; shared with the Durable capacity hook. */
-export function capacityDirectiveLines(checkpoint: boolean, decision: boolean): string[] {
+export function capacityDirectiveLines(checkpoint: boolean, decision: boolean, stopPercent = 95): string[] {
 	const instructions = [
 		"Follow the governing capacity instructions and preserve the operator's scope and authority.",
 	];
 	if (checkpoint) {
 		instructions.push(
-			"If substantial work remains, call stash_write with checkpoint: true to preserve a concise working synthesis: decisions, checked sources and their limits, open questions, authority limits, and exact next actions. Do not copy the transcript. If no work remains, finish the answer instead.",
+			"If substantial work remains, call stash_write with checkpoint: true to preserve a concise working synthesis: decisions, checked sources and their limits, open questions, authority limits, and exact next actions. Do not copy the transcript. If no work remains, finish the answer instead. When you later compact, put this checkpoint's identifier in the compaction summary.",
 		);
 	}
 	if (decision) {
 		instructions.push(
-			"Before further broad intake, choose and execute the authorized continuity path: checked compaction for the same effort, or stash_write without checkpoint for a fresh-session handover. If the governing stop threshold is reached, stop substantive work and deliver the result or handover now. Resolve live worker ownership before exit; a saved artifact does not transfer workers. This notice does not authorize compaction, session replacement, or worker cancellation.",
+			`Before further broad intake, choose and execute the authorized continuity path: checked compaction for the same effort, or stash_write without checkpoint for a fresh-session handover. If the governing stop threshold is reached, stop substantive work and deliver the result or handover now. Resolve live worker ownership before exit; a saved artifact does not transfer workers. This notice grants no authority; the governing instructions decide which continuity act you may take. At ${stopPercent}% tools stop except stash_write and declared continuity tools.`,
+
 		);
 	}
 	instructions.push(
@@ -228,6 +343,7 @@ export function capacityTurnEnd(
 	event: TurnEndEvent,
 	ctx: CapacityContext,
 	config: CapacityConfig,
+	piThreshold?: number,
 ): BoundaryResult | undefined {
 	if (!config.enabled) return;
 	const usage = usageSnapshot(() => ctx.getContextUsage());
@@ -244,7 +360,7 @@ export function capacityTurnEnd(
 	else state.usage = usage;
 	state.turnEntryId = event.messageEntryId;
 	const actionable = event.outcome === "completed" && !ctx.signal?.aborted;
-	const { checkpoint, decision } = requestLevels(state, config, actionable);
+	const { checkpoint, decision } = requestLevels(state, { ...config, checkpointPercent: effectiveCheckpointPercent(config, piThreshold) }, actionable);
 	state.checkpointRequested ||= checkpoint;
 	state.decisionRequested ||= decision;
 	const entries: SessionBoundaryDraft[] = [...event.entries];
@@ -253,7 +369,7 @@ export function capacityTurnEnd(
 		entries.push({
 			type: "custom_message",
 			customType: CAPACITY_REQUEST,
-			content: requestText(state, checkpoint, decision, config),
+			content: requestText(state, checkpoint, decision, config, piThreshold),
 			display: true,
 			details: state,
 		});
@@ -272,7 +388,7 @@ export function capacityStatus(ctx: Pick<ExtensionContext, "sessionManager">, co
 	const state = readCapacityState(ctx);
 	return [
 		`Stash capacity: ${config.enabled ? "enabled" : "disabled"}.`,
-		`Thresholds: checkpoint ${config.checkpointPercent}%; continuity decision ${config.decisionPercent}%.`,
+		`Thresholds: checkpoint ${config.checkpointPercent}%; continuity decision ${config.decisionPercent}%; stop ${config.stopPercent}%.`,
 		state.usage.kind === "unknown"
 			? "Last boundary context use: unknown."
 			: `Last boundary host estimate: ${state.usage.percent.toFixed(1)}%. This is not a live reading.`,

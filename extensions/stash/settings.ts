@@ -72,6 +72,13 @@ export const settings = {
 			default: 90,
 			max: 100,
 		},
+		stopPercent: {
+			type: "number",
+			env: "PI_STASH_STOP_PERCENT",
+			description: "Positive stop threshold, strictly above the decision threshold.",
+			default: 95,
+			max: 100,
+		},
 		intakeTokenBudget: {
 			type: "integer",
 			env: "PI_STASH_INTAKE_TOKEN_BUDGET",
@@ -91,6 +98,7 @@ export type StashSettings = {
 	capacity: boolean;
 	checkpointPercent: number;
 	decisionPercent: number;
+	stopPercent: number;
 	intakeTokenBudget: number | undefined;
 	checkpointDir: string;
 };
@@ -312,11 +320,26 @@ export function readSettings(options: ReadOptions): Snapshot {
 	return { version: 1, slice: settings.slice, source, values: values as Snapshot["values"], records, diagnostics };
 }
 
+function invalidRelations(values: StashSettings): Set<string> {
+	const invalid = new Set<string>();
+	if (!values.capacity) return invalid;
+	if (values.checkpointPercent >= values.decisionPercent) {
+		invalid.add("checkpointPercent");
+		invalid.add("decisionPercent");
+	}
+	if (values.decisionPercent >= values.stopPercent) {
+		invalid.add("decisionPercent");
+		invalid.add("stopPercent");
+	}
+	return invalid;
+}
+
 export function publishSettings(bus: SettingsBus, options: ReadOptions): () => void {
 	const publish = () => {
 		const snapshot = readSettings(options);
-		if (snapshot.values.capacity && snapshot.values.checkpointPercent >= snapshot.values.decisionPercent) {
-			for (const key of ["checkpointPercent", "decisionPercent"]) {
+		const invalid = invalidRelations(snapshot.values);
+		if (invalid.size) {
+			for (const key of invalid) {
 				const record = snapshot.records.find((item) => item.key === key);
 				if (!record) throw new Error(`Missing setting record ${settings.slice}.${key}`);
 				record.status = "invalid";
