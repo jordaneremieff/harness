@@ -34,6 +34,7 @@ export const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const DIGEST = /^[a-f0-9]{64}$/;
 const MAX_BYTES = 64 * 1024;
 const LOCK = ".memory-write.lock";
+const O_EXLOCK = 0x20;
 const CONTRACT = `# Memory corpus
 
 One Markdown file per durable operator-specific subject. README.md is this contract, not a note.
@@ -409,27 +410,56 @@ function stage(root: string, content: string): string {
 	return path;
 }
 
-/** Publish complete lock metadata in one link operation, never a half-written lock. */
-function acquire(root: string): () => void {
-	const lock = join(root, LOCK);
-	const candidate = stage(root, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }));
-	let acquired = false;
+interface WriteLease {
+	assertNamed(): void;
+	release(): void;
+}
+class LockIdentityError extends Error {
+	constructor() {
+		super("Memory lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.");
+	}
+}
+function heldLease(fd: number, path: string): WriteLease {
+	let released = false, invalid = false;
+	return {
+		assertNamed() {
+			if (released || invalid) throw new LockIdentityError();
+			try {
+				const held = fstatSync(fd), named = lstatSync(path);
+				if (!named.isFile() || held.dev !== named.dev || held.ino !== named.ino) throw new LockIdentityError();
+			} catch {
+				invalid = true;
+				throw new LockIdentityError();
+			}
+		},
+		release() {
+			if (released) return;
+			released = true;
+			closeSync(fd);
+		},
+	};
+}
+
+/** The descriptor owns exclusion; the persistent name and its contents never signal liveness. */
+function acquire(root: string): WriteLease {
+	if (process.platform !== "darwin") throw new Error("Memory mutations require macOS.");
+	const path = join(root, LOCK);
+	let fd: number | undefined;
 	try {
-		linkSync(candidate, lock);
-		acquired = true;
-		unlinkSync(candidate);
-		return () => unlinkSync(lock);
+		fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_EXLOCK, 0o600);
+		const info = fstatSync(fd);
+		if (!info.isFile() || info.uid !== process.getuid?.() || info.nlink < 1 || (info.mode & 0o077) !== 0 || info.size > 4096)
+			throw new Error("Unsafe lock inode");
+		const lease = heldLease(fd, path);
+		lease.assertNamed();
+		return lease;
 	} catch (error) {
-		const retained: string[] = [];
-		if (acquired && removeFile(lock)) retained.push(LOCK);
-		if (removeFile(candidate)) retained.push(candidate.slice(root.length + 1));
-		const reason =
-			!acquired && errorCode(error) === "EEXIST"
-				? "Memory writer lock exists (.memory-write.lock)."
-				: `Memory lock acquisition failed (${errorCode(error)}); no notes were written.`;
-		throw new Error(
-			`${reason} Inspect its owner and confirm no writer remains before manual removal; never remove a live lock.${retained.length ? ` Retained artifacts: ${retained.join(", ")}` : ""}`,
-		);
+		if (fd !== undefined) { try { closeSync(fd); } catch { /* Acquisition did not grant publication authority. */ } }
+		if (error instanceof LockIdentityError) throw error;
+		const code = errorCode(error);
+		throw new Error(code === "EAGAIN" || code === "EWOULDBLOCK"
+			? "Memory writer is busy. This writer never removes the lock file. Do not remove it."
+			: `Memory lock acquisition failed (${code}); no notes were written.`);
 	}
 }
 
@@ -742,21 +772,23 @@ export function retireMemory(
 	);
 }
 
-function publish(root: string, plan: Publication & { temp: string }): void {
+function publish(root: string, plan: Publication & { temp: string }, lease: WriteLease): void {
 	const path = join(root, plan.file);
 	if (plan.expected === undefined) {
+		lease.assertNamed();
 		linkSync(plan.temp, path);
 		return;
 	}
 	if (sourceDigest(readSource(path)) !== plan.expected)
 		throw new Error(`Source changed before publication: ${plan.file}`);
+	lease.assertNamed();
 	renameSync(plan.temp, path);
 }
 function recordFailure(receipt: WriteReceipt, message: string): void {
 	receipt.ok = false;
 	receipt.error = receipt.error ? `${receipt.error}; ${message}` : message;
 }
-function cleanup(staged: string[], release: () => void, receipt: WriteReceipt): void {
+function cleanup(staged: string[], lease: WriteLease, receipt: WriteReceipt): void {
 	for (const path of staged) {
 		const error = removeFile(path);
 		if (error)
@@ -766,7 +798,7 @@ function cleanup(staged: string[], release: () => void, receipt: WriteReceipt): 
 			);
 	}
 	try {
-		release();
+		lease.release();
 	} catch (error) {
 		recordFailure(receipt, `Writer lock cleanup failed (${errorCode(error)}); inspect .memory-write.lock before retry`);
 	}
@@ -814,6 +846,7 @@ function capturePriors(
 	staged: string[],
 	signal: AbortSignal | undefined,
 	hooks: WriteHooks,
+	lease: WriteLease,
 ): void {
 	for (const plan of plans) {
 		checkAbort(signal);
@@ -832,6 +865,7 @@ function capturePriors(
 		const revision = newRevision(digest);
 		const temp = stage(directory, plan.prior);
 		staged.push(temp);
+		lease.assertNamed();
 		linkSync(temp, join(directory, `${revision}.md`));
 		receipt.captured.push({
 			slug: subject,
@@ -853,6 +887,13 @@ function capturePriors(
 	}
 }
 
+function mutationFailure(error: unknown, lease: WriteLease): string {
+	try { lease.assertNamed(); } catch (identityError) { error = identityError; }
+	return error instanceof Error && !("code" in error)
+		? error.message
+		: `Filesystem operation failed (${errorCode(error)})`;
+}
+
 function mutate(
 	rootValue: string,
 	subject: string,
@@ -867,7 +908,7 @@ function mutate(
 	} catch (error) {
 		throw new Error(`Memory unavailable: corpus directory cannot be resolved (${errorCode(error)})`);
 	}
-	const release = acquire(root);
+	const lease = acquire(root);
 	const receipt: WriteReceipt = {
 		ok: false,
 		slug: subject,
@@ -888,11 +929,11 @@ function mutate(
 			staged.push(temp);
 			return { ...plan, temp };
 		});
-		capturePriors(root, prepared, receipt, staged, signal, hooks);
+		capturePriors(root, prepared, receipt, staged, signal, hooks, lease);
 		for (const plan of prepared) {
 			checkAbort(signal);
 			hooks.beforePublish?.(plan.file);
-			publish(root, plan);
+			publish(root, plan, lease);
 			memorySourceCache.invalidate(root, plan.file);
 			if (root !== rootValue) memorySourceCache.invalidate(rootValue, plan.file);
 			receipt.written.push(plan.file);
@@ -902,12 +943,9 @@ function mutate(
 		}
 		receipt.ok = true;
 	} catch (error) {
-		receipt.error =
-			error instanceof Error && !("code" in error)
-				? error.message
-				: `Filesystem operation failed (${errorCode(error)})`;
+		receipt.error = mutationFailure(error, lease);
 	} finally {
-		cleanup(staged, release, receipt);
+		cleanup(staged, lease, receipt);
 	}
 	if (!receipt.ok) throw new MemoryWriteError(receipt);
 	return receipt;

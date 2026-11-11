@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -411,9 +411,12 @@ test("new mutations reject stale digests, contention, cancellation and failed ca
 			}),
 		/digest changed/,
 	);
-	writeFileSync(join(f.root, ".memory-write.lock"), "Live writer");
-	assert.throws(() => retire(f), /lock exists/);
-	rmSync(join(f.root, ".memory-write.lock"));
+	const contended = fixture(t);
+	const held = openSync(join(contended.root, ".memory-write.lock"), constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20, 0o600);
+	try {
+		assert.throws(() => retire(contended), { message: "Memory writer is busy. This writer never removes the lock file. Do not remove it." });
+	} finally { closeSync(held); }
+	assert.equal(retire(contended).ok, true);
 	for (const operation of [reviewMemory, retireMemory]) {
 		const input = {
 			slug: "subject",
@@ -441,7 +444,7 @@ test("new mutations reject stale digests, contention, cancellation and failed ca
 		);
 		assert.deepEqual(refused.receipt.written, []);
 		assert.equal(f.source(), before);
-		assert.equal(existsSync(join(f.root, ".memory-write.lock")), false);
+		assert.equal(existsSync(join(f.root, ".memory-write.lock")), true);
 	}
 });
 
@@ -528,7 +531,7 @@ test("new mutation validation refuses malformed dates, outcomes and credential c
 			},
 		);
 	}
-	assert.deepEqual(readdirSync(f.root).sort(), ["README.md", "subject.md"]);
+	assert.deepEqual(readdirSync(f.root).sort(), [".memory-write.lock", "README.md", "subject.md"]);
 });
 
 test("freshness exposes policy, deadline and declared verification without inferred renewal", (t) => {

@@ -788,16 +788,47 @@ of power-loss durability. A deleted current source has no guaranteed final captu
 
 Storage requires hard-link support and atomic same-directory rename on the corpus
 filesystem. Unsupported filesystems fail explicitly; no fallback weakens the lock.
-Pi's file mutation queue serializes same-process calls for the corpus lock path.
-A cross-process exclusive hard link publishes complete lock metadata only after its
-private candidate file is written and synced. No partially written lock is published.
-Contention refuses immediately rather than waiting or stealing an owner's lock.
 
-A crash can leave `.memory-write.lock` and private `.memory-*.tmp` files. Read the lock,
-confirm its owner and all writers are absent, then remove the stale lock and temporary
-files manually. A PID alone does not prove stale ownership. Malformed or empty locks
-also refuse with this recovery instruction; no hidden unrecoverable state exists.
-Search ignores these hidden artifacts. The extension never reclaims locks by age.
+Memory mutations use a macOS kernel file lock on the persistent `.memory-write.lock`
+inode. One nonblocking acquisition either owns the lock or refuses contention before
+note publication. The writer retains the descriptor through planning, prior capture,
+publication and cleanup, then closes it. The kernel releases exclusion when its
+process exits, including after a crash. The extension neither unlinks the lock path
+nor treats its contents, age or a process identifier as liveness evidence. Unsupported
+platforms refuse mutations with `Memory mutations require macOS.`; retrieval remains
+available.
+
+A safe lock inode can have hard-link aliases, including a candidate left by an
+interrupted writer. Every alias shares the same kernel exclusion and stays unchanged.
+Acquisition requires read/write access and no group or other permission bits, not
+exact equality with mode `0600`. Unsafe modes refuse; an explicit owner chmod to
+`0600` at a quiet-writer boundary repairs the same inode without deletion. The
+extension performs no automatic permission repair.
+
+A crash can leave private `.memory-*.tmp` files and the persistent lock inode. The
+lock's presence does not require removal before another supported writer acquires
+it. The extension does not delete crash residue automatically. Note receipts and
+source inspection still govern repair after interrupted or partial publication.
+Search ignores these hidden artifacts.
+
+Before adoption, all older writers and write-capable launch routes for this corpus
+must end. Selecting a new release does not change existing processes. Older writers
+do not hold kernel exclusion and can overlap a new lease before old cleanup removes
+the inode. After the persistent inode exists, later old acquisitions refuse even when
+it is unlocked. Do not delete a lock to restore an old writer. Rollback also requires
+a quiet-writer boundary. See the [file-exclusion convention](../../docs/conventions/file-exclusion.md).
+
+Before each live rename or creation link and each prior-capture publication, the
+writer checks that the lock path still names its held inode. A missing or changed
+path stops that mutation without lock removal, recreation or retry. Published files
+and captures remain; `written` and `notWritten` identify the completed prefix and
+remaining files. The pathname check and publication are separate system calls, so
+an external unlink between them still defeats exclusion. Never remove a live or
+persistent lock file. Candidate trials require private agent, Pillars and Memory
+copies through all three environment overrides.
+
+Contention reports `Memory writer is busy. This writer never removes the lock file. Do not remove it.`
+Identity loss reports `Memory lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.`
 
 Retrieval refusals name unknown option keys and rejected subject slugs. The writer's
 recognised credential formats are redacted before error clipping, including in
@@ -819,7 +850,8 @@ that retry. Do not blindly repeat a create after partial success.
 
 Cancellation is checked before work and between bounded operations. A started
 synchronous filesystem operation finishes; cancellation does not undo a publication.
-The writer attempts temporary-file and lock cleanup on success and failure. Cleanup
+The writer removes only its private temporary files and closes its lock descriptor
+on success and failure. Cleanup
 failure is explicit, including when all note publications succeeded. Staging errors
 preserve the initial filesystem error code, report close and cleanup failures
 separately, and name any retained private temporary file without exposing corpus

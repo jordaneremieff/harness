@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync, linkSync } from "node:fs";
+import { chmodSync, closeSync, constants, lstatSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -40,53 +40,48 @@ function failure(fn: () => unknown): MemoryWriteError {
 	}
 }
 
-test("lock candidate cleanup failure releases ownership and explains recovery", (t) => {
-	const root = corpus(t);
-	const original = fs.unlinkSync;
-	let fail = true;
-	t.mock.method(fs, "unlinkSync", (path: fs.PathLike) => {
-		if (fail && String(path).endsWith(".tmp")) {
-			fail = false;
-			throw Object.assign(new Error("Controlled cleanup failure"), { code: "EACCES" });
-		}
-		return original(path);
-	});
-	syncBuiltinESMExports();
+const busyMessage = "Memory writer is busy. This writer never removes the lock file. Do not remove it.";
+const identityMessage = "Memory lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.";
+function holdWriter(path: string): number {
+	return openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NONBLOCK | constants.O_NOFOLLOW | 0x20, 0o600);
+}
+
+test("a held descriptor refuses contention without note publication or lock removal", (t) => {
+	const root = corpus(t), first = writeMemory(root, note());
+	const lock = join(root, ".memory-write.lock"), before = lstatSync(lock), held = holdWriter(lock);
 	try {
-		assert.throws(() => writeMemory(root, note()), /no notes were written.*manual removal/);
-		assert.deepEqual(readdirSync(root), []);
-	} finally {
-		t.mock.restoreAll();
-		syncBuiltinESMExports();
-	}
+		assert.throws(() => writeMemory(root, { ...note(), expectedDigest: first.digest }), { message: busyMessage });
+		assert.equal(sourceDigest(readFileSync(join(root, "editor-choice.md"))), first.digest);
+		assert.equal(lstatSync(lock).ino, before.ino);
+	} finally { closeSync(held); }
+	assert.equal(writeMemory(root, { ...note(), expectedDigest: first.digest }).ok, true);
+	assert.equal(lstatSync(lock).ino, before.ino);
 });
 
-test("contention cleanup failure preserves the existing writer lock", (t) => {
-	const root = corpus(t);
-	const lock = join(root, ".memory-write.lock");
-	writeFileSync(lock, "other writer");
-	const original = fs.unlinkSync;
-	t.mock.method(fs, "unlinkSync", (path: fs.PathLike) => {
-		if (String(path).endsWith(".tmp")) throw Object.assign(new Error("Controlled refusal"), { code: "EACCES" });
-		return original(path);
+test("acquisition errors retain the underlying code without exposing content", (t) => {
+	const root = corpus(t), lock = join(root, ".memory-write.lock");
+	writeFileSync(lock, "private metadata", { mode: 0o600 });
+	const original = fs.openSync;
+	t.mock.method(fs, "openSync", (...args: Parameters<typeof fs.openSync>) => {
+		if (args[0] === join(fs.realpathSync(root), ".memory-write.lock")) throw Object.assign(new Error("private metadata"), { code: "EACCES" });
+		return original(...args);
 	});
 	syncBuiltinESMExports();
 	try {
-		assert.throws(() => writeMemory(root, note()), /lock exists.*manual removal.*Retained artifacts/);
-		assert.equal(readFileSync(lock, "utf8"), "other writer");
-	} finally {
-		t.mock.restoreAll();
-		syncBuiltinESMExports();
-	}
+		assert.throws(() => writeMemory(root, note()), { message: "Memory lock acquisition failed (EACCES); no notes were written." });
+		assert.equal(readFileSync(lock, "utf8"), "private metadata");
+		assert.deepEqual(readdirSync(root), [".memory-write.lock"]);
+	} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
 });
 
 test("final cleanup failure reports published notes without false rollback", (t) => {
 	const root = corpus(t);
-	const original = fs.unlinkSync;
-	t.mock.method(fs, "unlinkSync", (path: fs.PathLike) => {
-		if (String(path).endsWith(".memory-write.lock"))
-			throw Object.assign(new Error("Controlled refusal"), { code: "EACCES" });
-		return original(path);
+	const original = fs.closeSync, stat = fs.fstatSync;
+	t.mock.method(fs, "closeSync", (fd: number) => {
+		const info = stat(fd), lock = lstatSync(join(root, ".memory-write.lock"));
+		original(fd);
+		if (info.ino === lock.ino && info.dev === lock.dev)
+			throw Object.assign(new Error("Controlled refusal"), { code: "EIO" });
 	});
 	syncBuiltinESMExports();
 	try {
@@ -164,7 +159,149 @@ test("separate processes cannot both commit from one source digest", async (t) =
 		});
 	const results = await Promise.all([run("First writer"), run("Second writer")]);
 	assert.deepEqual(results.sort(), ["refused", "written"]);
-	assert.ok(readdirSync(root).every((file) => file === ".memory-history" || !file.startsWith(".")));
+	assert.ok(readdirSync(root).every((file) => file === ".memory-history" || file === ".memory-write.lock" || !file.startsWith(".")));
+});
+
+test("a process crash releases the descriptor without changing the persistent inode", async (t) => {
+	const root = corpus(t), module = new URL("./store.ts", import.meta.url).href;
+	const source = `import {writeMemory} from ${JSON.stringify(module)}; import {writeSync} from 'node:fs'; writeMemory(${JSON.stringify(root)},${JSON.stringify(note())},undefined,{beforePublish(){writeSync(1,'held');Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);}});`;
+	const child = spawn(process.execPath, ["--input-type=module", "-e", source], { stdio: ["ignore", "pipe", "pipe"], timeout: 10000 });
+	t.after(() => { child.kill("SIGKILL"); });
+	const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
+	await new Promise<void>((resolve, reject) => {
+		child.once("error", reject);
+		child.stdout.once("data", (data) => { assert.equal(String(data), "held"); resolve(); });
+		child.once("close", () => reject(new Error("Writer exited before acquisition acknowledgement")));
+	});
+	const path = join(root, ".memory-write.lock"), before = lstatSync(path);
+	const residue = readdirSync(root).filter((file) => file.endsWith(".tmp"));
+	assert.equal(residue.length, 2);
+	child.kill("SIGKILL");
+	await exited;
+	assert.equal(writeMemory(root, note()).ok, true);
+	assert.equal(lstatSync(path).ino, before.ino);
+	assert.equal(readFileSync(path, "utf8"), "");
+	for (const file of residue) assert.equal(lstatSync(join(root, file)).isFile(), true);
+});
+
+test("lock modes require private read/write access without a private corpus mode", (t) => {
+	assert.notEqual(process.getuid?.(), 0, "permission refusals require a non-root process");
+	for (const mode of [0o600, 0o700, 0o400, 0o200, 0, 0o640, 0o602]) {
+		const root = corpus(t), path = join(root, ".memory-write.lock");
+		chmodSync(root, 0o755);
+		writeFileSync(path, "metadata", { mode: 0o600 });
+		chmodSync(path, mode);
+		const before = lstatSync(path);
+		if (mode === 0o600 || mode === 0o700) assert.equal(writeMemory(root, note()).ok, true);
+		else {
+			assert.throws(() => writeMemory(root, note()), /Memory lock acquisition failed/);
+			assert.equal(lstatSync(path).mode & 0o777, mode);
+			assert.equal(fs.existsSync(join(root, "README.md")), false);
+			chmodSync(path, 0o600);
+			assert.equal(writeMemory(root, note()).ok, true);
+		}
+		assert.equal(lstatSync(path).ino, before.ino);
+		assert.equal(readFileSync(path, "utf8"), "metadata");
+	}
+});
+
+test("unsafe lock type, size and ownership refuse before publication", (t) => {
+	const root = corpus(t), path = join(root, ".memory-write.lock");
+	mkdirSync(path);
+	assert.throws(() => writeMemory(root, note()), /Memory lock acquisition failed/);
+	rmSync(path, { recursive: true });
+	writeFileSync(path, "x".repeat(4097), { mode: 0o600 });
+	assert.throws(() => writeMemory(root, note()), /Memory lock acquisition failed/);
+	writeFileSync(path, "", { mode: 0o600 });
+	const original = fs.fstatSync;
+	t.mock.method(fs, "fstatSync", (...args: Parameters<typeof fs.fstatSync>) => {
+		const info = original(...args);
+		return Object.assign(Object.create(Object.getPrototypeOf(info)), info, { uid: Number(info.uid) + 1 });
+	});
+	syncBuiltinESMExports();
+	try { assert.throws(() => writeMemory(root, note()), /Memory lock acquisition failed/); }
+	finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+	assert.deepEqual(readdirSync(root), [".memory-write.lock"]);
+	assert.equal(writeMemory(root, note()).ok, true);
+});
+
+test("unsupported mutations refuse while current notes remain readable", async (t) => {
+	const root = corpus(t), first = writeMemory(root, note());
+	const platform = Object.getOwnPropertyDescriptor(process, "platform");
+	assert.ok(platform);
+	Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+	try {
+		assert.throws(() => writeMemory(root, { ...note(), expectedDigest: first.digest }), { message: "Memory mutations require macOS." });
+		await assert.doesNotReject(() => readMemory(root, { slug: "editor-choice" }));
+	} finally { Object.defineProperty(process, "platform", platform); }
+	assert.equal(sourceDigest(readFileSync(join(root, "editor-choice.md"))), first.digest);
+});
+
+for (const partial of [false, true]) {
+	test(`identity loss ${partial ? "after" : "before"} destination publication preserves the exact prefix and captures`, (t) => {
+		const root = corpus(t), alpha = writeMemory(root, note("alpha"));
+		const lock = join(root, ".memory-write.lock");
+		let successor: ReturnType<typeof lstatSync> | undefined, otherPublications = 0;
+		const error = failure(() => writeMemory(root, { ...note("beta"), supersedes: [{ slug: "alpha", digest: alpha.digest as string }] }, undefined, {
+			beforePublish(file) {
+				if (file !== (partial ? "alpha.md" : "beta.md")) return;
+				rmSync(lock);
+				const other = writeMemory(root, { ...note(partial ? "gamma" : "beta"), summary: "Successor publication" });
+				otherPublications += other.written.length;
+				successor = lstatSync(lock);
+			},
+		}));
+		assert.equal(error.receipt.error, identityMessage);
+		assert.deepEqual(error.receipt.written, partial ? ["beta.md"] : []);
+		assert.deepEqual(error.receipt.notWritten, partial ? ["alpha.md"] : ["beta.md", "alpha.md"]);
+		assert.equal(error.receipt.captured.length, 1);
+		assert.equal(error.receipt.captured[0].slug, "alpha");
+		assert.equal(otherPublications, 1);
+		assert.equal(lstatSync(lock).ino, successor?.ino);
+		assert.equal(sourceDigest(readFileSync(join(root, "alpha.md"))), alpha.digest);
+		if (partial) assert.equal(error.receipt.digest, sourceDigest(readFileSync(join(root, "beta.md"))));
+		else assert.ok(readFileSync(join(root, "beta.md"), "utf8").includes("Successor publication"));
+	});
+}
+
+test("identity loss guards README creation without undoing successor initialisation", (t) => {
+	const root = corpus(t), lock = join(root, ".memory-write.lock");
+	let other: ReturnType<typeof writeMemory> | undefined;
+	const error = failure(() => writeMemory(root, note("alpha"), undefined, {
+		beforePublish(file) {
+			if (file !== "README.md") return;
+			rmSync(lock);
+			other = writeMemory(root, note("successor"));
+		},
+	}));
+	assert.equal(error.receipt.error, identityMessage);
+	assert.deepEqual(error.receipt.written, []);
+	assert.deepEqual(error.receipt.notWritten, ["README.md", "alpha.md"]);
+	assert.equal(error.receipt.initialized, false);
+	assert.equal(other?.initialized, true);
+	assert.deepEqual(other?.written, ["README.md", "successor.md"]);
+	assert.equal(fs.existsSync(join(root, "alpha.md")), false);
+	assert.equal(fs.existsSync(lock), true);
+});
+
+test("identity loss guards the final history link and preserves earlier captures", (t) => {
+	const root = corpus(t), alpha = writeMemory(root, note("alpha")), beta = writeMemory(root, note("beta"));
+	const lock = join(root, ".memory-write.lock");
+	const error = failure(() => writeMemory(root, { ...note("beta"), expectedDigest: beta.digest, supersedes: [{ slug: "alpha", digest: alpha.digest as string }] }, undefined, {
+		beforeCapture(file) {
+			if (file !== "alpha.md") return;
+			rmSync(lock);
+			assert.deepEqual(writeMemory(root, note("successor")).written, ["successor.md"]);
+		},
+	}));
+	assert.equal(error.receipt.error, identityMessage);
+	assert.deepEqual(error.receipt.written, []);
+	assert.deepEqual(error.receipt.notWritten, ["beta.md", "alpha.md"]);
+	assert.deepEqual(error.receipt.captured.map((capture) => capture.slug), ["beta"]);
+	assert.equal(readdirSync(join(root, ".memory-history", "beta")).length, 1);
+	assert.deepEqual(readdirSync(join(root, ".memory-history", "alpha")), []);
+	assert.equal(sourceDigest(readFileSync(join(root, "alpha.md"))), alpha.digest);
+	assert.equal(sourceDigest(readFileSync(join(root, "beta.md"))), beta.digest);
 });
 
 test("configuration refuses missing, empty and relative roots", () => {
@@ -191,7 +328,7 @@ test("create initializes a missing root and complete dated contract", (t) => {
 		superseded_by: null,
 	});
 	assert.equal(result.digest, sourceDigest(readFileSync(join(root, "editor-choice.md"))));
-	assert.deepEqual(readdirSync(root).sort(), ["README.md", "editor-choice.md"]);
+	assert.deepEqual(readdirSync(root).sort(), [".memory-write.lock", "README.md", "editor-choice.md"]);
 });
 test("update preserves created and sets verification false with a null date", (t) => {
 	const root = corpus(t);
@@ -301,7 +438,7 @@ test("a publication failure reports exactly committed and remaining files", (t) 
 	assert.equal(metadata(root, "old-a").status, "superseded");
 	assert.equal(metadata(root, "old-b").status, "active");
 	assert.ok(error.receipt.digest);
-	assert.ok(readdirSync(root).every((name) => name === ".memory-history" || !name.startsWith(".")));
+	assert.ok(readdirSync(root).every((name) => name === ".memory-history" || name === ".memory-write.lock" || !name.startsWith(".")));
 	// Retry repairs the pending reciprocal link using current evidence.
 	writeMemory(root, {
 		...note("new"),
@@ -385,18 +522,21 @@ test("external changes before publication refuse rather than overwrite", (t) => 
 	);
 	assert.equal(readFileSync(join(root, "editor-choice.md"), "utf8"), "External edit");
 });
-test("an existing lock refuses and remains recoverable without overwriting it", (t) => {
-	const root = corpus(t);
-	const lock = join(root, ".memory-write.lock");
-	writeFileSync(lock, '{"pid":123,"started":"example"}');
-	assert.throws(() => writeMemory(root, note()), /Inspect its owner/);
-	assert.equal(readFileSync(lock, "utf8"), '{"pid":123,"started":"example"}');
-	assert.deepEqual(readdirSync(root), [".memory-write.lock"]);
-});
-test("empty lock has explicit manual recovery and never blocks reads by policy", (t) => {
-	const root = corpus(t);
-	writeFileSync(join(root, ".memory-write.lock"), "");
-	assert.throws(() => writeMemory(root, note()), /manual removal/);
+test("quiet lock residue and hard-link aliases retain their bytes and inode", (t) => {
+	for (const content of ["", '{"pid":123,"started":"example"}']) {
+		const root = corpus(t), lock = join(root, ".memory-write.lock"), alias = join(root, ".memory-candidate.tmp");
+		writeFileSync(lock, content, { mode: 0o600 });
+		linkSync(lock, alias);
+		const before = lstatSync(lock), held = holdWriter(alias);
+		try { assert.throws(() => writeMemory(root, note()), { message: busyMessage }); }
+		finally { closeSync(held); }
+		assert.equal(writeMemory(root, note()).ok, true);
+		assert.equal(readFileSync(lock, "utf8"), content);
+		assert.equal(readFileSync(alias, "utf8"), content);
+		assert.equal(lstatSync(lock).ino, before.ino);
+		assert.equal(lstatSync(alias).ino, before.ino);
+		assert.equal(lstatSync(lock).nlink, 2);
+	}
 });
 test("pre-abort creates no corpus, mid-publication abort reports partial state", (t) => {
 	const root = join(corpus(t), "notes");
@@ -582,7 +722,7 @@ test("ambiguous physical headers refuse edits, rewrites and supersession without
 	]) {
 		assert.match(failure(operation).message, /unambiguous frontmatter.*exact --- delimiter/);
 		assert.equal(readFileSync(path, "utf8"), source);
-		assert.deepEqual(readdirSync(root).sort(), ["README.md", "editor-choice.md"]);
+		assert.deepEqual(readdirSync(root).sort(), [".memory-write.lock", "README.md", "editor-choice.md"]);
 	}
 });
 
@@ -687,68 +827,52 @@ test("credential checks cover slugs, inherited links and complete supersession t
 	assert.equal(readFileSync(path, "utf8"), source);
 });
 
-for (const phase of ["lock", "note"] as const) {
-	test(`${phase} staging preserves flush and cleanup failures with the retained filename`, (t) => {
-		const root = corpus(t);
-		const first = writeMemory(root, note());
-		const originalSync = fs.fsyncSync;
-		const originalUnlink = fs.unlinkSync;
-		let syncs = 0;
-		let failed = false;
-		t.mock.method(fs, "fsyncSync", (fd: number) => {
-			if (++syncs === (phase === "lock" ? 1 : 2)) {
-				failed = true;
-				throw Object.assign(new Error("Synthetic flush failure"), { code: "EIO" });
-			}
-			return originalSync(fd);
-		});
-		t.mock.method(fs, "unlinkSync", (path: fs.PathLike) => {
-			if (failed && String(path).endsWith(".tmp"))
-				throw Object.assign(new Error("Synthetic cleanup failure"), { code: "EACCES" });
-			return originalUnlink(path);
-		});
-		syncBuiltinESMExports();
-		try {
-			assert.throws(
-				() => writeMemory(root, { ...note(), expectedDigest: first.digest }),
-				(error) => {
-					assert.ok(error instanceof Error);
-					assert.match(error.message, /staging failed \(EIO\).*cleanup failed \(EACCES\).*retained artifact/);
-					const retained = readdirSync(root).filter((file) => file.startsWith(".memory-"));
-					assert.equal(retained.length, 1);
-					assert.ok(error.message.includes(retained[0]));
-					assert.ok(!error.message.includes(root));
-					if (phase === "note") {
-						assert.ok(error instanceof MemoryWriteError);
-						assert.deepEqual(error.receipt.written, []);
-						assert.deepEqual(error.receipt.notWritten, ["editor-choice.md"]);
-					}
-					return true;
-				},
-			);
-			assert.equal(sourceDigest(readFileSync(join(root, "editor-choice.md"))), first.digest);
-		} finally {
-			t.mock.restoreAll();
-			syncBuiltinESMExports();
+test("note staging preserves flush and cleanup failures with the retained filename", (t) => {
+	const root = corpus(t), first = writeMemory(root, note());
+	const originalSync = fs.fsyncSync, originalUnlink = fs.unlinkSync;
+	let failed = false;
+	t.mock.method(fs, "fsyncSync", (fd: number) => {
+		if (!failed) {
+			failed = true;
+			throw Object.assign(new Error("Synthetic flush failure"), { code: "EIO" });
 		}
+		return originalSync(fd);
 	});
-}
+	t.mock.method(fs, "unlinkSync", (path: fs.PathLike) => {
+		if (failed && String(path).endsWith(".tmp")) throw Object.assign(new Error("Synthetic cleanup failure"), { code: "EACCES" });
+		return originalUnlink(path);
+	});
+	syncBuiltinESMExports();
+	try {
+		const error = failure(() => writeMemory(root, { ...note(), expectedDigest: first.digest }));
+		assert.match(error.message, /staging failed \(EIO\).*cleanup failed \(EACCES\).*retained artifact/);
+		const retained = readdirSync(root).filter((file) => file.startsWith(".memory-") && file.endsWith(".tmp"));
+		assert.equal(retained.length, 1);
+		assert.ok(error.message.includes(retained[0]));
+		assert.ok(!error.message.includes(root));
+		assert.deepEqual(error.receipt.written, []);
+		assert.deepEqual(error.receipt.notWritten, ["editor-choice.md"]);
+		assert.equal(sourceDigest(readFileSync(join(root, "editor-choice.md"))), first.digest);
+	} finally { t.mock.restoreAll(); syncBuiltinESMExports(); }
+});
 
 test("a staged note close failure cleans the private file and preserves the source", (t) => {
 	const root = corpus(t);
 	const first = writeMemory(root, note());
 	const original = fs.closeSync;
-	let closed = 0;
 	t.mock.method(fs, "closeSync", (fd: number) => {
+		const info = fs.fstatSync(fd);
+		const temp = readdirSync(root).find((file) => file.startsWith(".memory-") && file.endsWith(".tmp"));
+		const staged = temp !== undefined && lstatSync(join(root, temp)).ino === info.ino;
 		original(fd);
-		if (++closed === 4) throw Object.assign(new Error("Synthetic close failure"), { code: "EIO" });
+		if (staged) throw Object.assign(new Error("Synthetic close failure"), { code: "EIO" });
 	});
 	syncBuiltinESMExports();
 	try {
 		const error = failure(() => writeMemory(root, { ...note(), expectedDigest: first.digest }));
 		assert.match(error.message, /Temporary file close failed \(EIO\)/);
 		assert.deepEqual(error.receipt.written, []);
-		assert.deepEqual(readdirSync(root).sort(), ["README.md", "editor-choice.md"]);
+		assert.deepEqual(readdirSync(root).sort(), [".memory-write.lock", "README.md", "editor-choice.md"]);
 		assert.equal(sourceDigest(readFileSync(join(root, "editor-choice.md"))), first.digest);
 	} finally {
 		t.mock.restoreAll();
