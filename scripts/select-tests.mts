@@ -8,7 +8,10 @@ import { literalSpecifiers } from "./check-slices.mts";
 
 /** Paths are relative to the repository root; revision selection reads current source. */
 export function changedPaths(args: string[], readRange: (range: string) => string[]): string[] {
-	if (args.length === 2 && args[0] === "--range") return readRange(args[1]);
+	if (args.length === 2 && args[0] === "--range") {
+		if (args[1].startsWith("-")) throw new Error("Revision range must not start with '-'.");
+		return readRange(args[1]);
+	}
 	if (!args.length || args.some((arg) => arg.startsWith("--"))) {
 		throw new Error("Usage: select-tests.mts <path> [path...] | --range <revision-range>");
 	}
