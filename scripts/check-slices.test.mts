@@ -1261,14 +1261,18 @@ test("allows only the operator-ui public entrypoint, and only for its consumers"
 		assert.equal(auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length, allowed ? 0 : 1);
 });
 
-test("allows only the agent and evo session-name entrypoint", async () => {
+test("allows only the agent and evo session-name entrypoints", async () => {
 	const { auditSliceImports } = await import("./check-slices.mts");
 	const root = "/repo";
 	for (const [file, specifier, allowed] of [
 		["extensions/agent/index.ts", "../../session-name/index.ts", true],
+		["extensions/agent/index.ts", "../../session-name/lifecycle.ts", true],
 		["extensions/evo/index.ts", "../../session-name/index.ts", true],
+		["extensions/evo/index.ts", "../../session-name/lifecycle.ts", true],
 		["extensions/brave/index.ts", "../../session-name/index.ts", false],
+		["extensions/brave/index.ts", "../../session-name/lifecycle.ts", false],
 		["extensions/agent/index.ts", "../../session-name/helpers.ts", false],
+		["extensions/evo/index.ts", "../../session-name/helpers.ts", false],
 	] as const)
 		assert.equal(auditSliceImports(root, join(root, file), analyseSource(join(root, file), `import "${specifier}";`)).length, allowed ? 0 : 1, file);
 });
@@ -1276,20 +1280,28 @@ test("allows only the agent and evo session-name entrypoint", async () => {
 test("session-name imports nothing outside its own directory", async () => {
 	const { auditSelfContainedImports } = await import("./check-slices.mts");
 	const root = "/repo";
-	const file = join(root, "session-name", "index.ts");
-	for (const [specifier, allowed] of [
-		["./helpers.ts", true],
-		["node:buffer", true],
-		["@earendil-works/pi-coding-agent", true],
-		["../extensions/agent/index.ts", false],
-		["../transport/index.ts", false],
-		["/repo/session-name/helpers.ts", false],
-	] as const)
-		assert.equal(
-			auditSelfContainedImports(root, file, analyseSource(file, `import "${specifier}";`), "session-name").length,
-			allowed ? 0 : 1,
-			specifier,
+	for (const name of ["index.ts", "lifecycle.ts"]) {
+		const file = join(root, "session-name", name);
+		for (const [specifier, allowed] of [
+			["./helpers.ts", true],
+			["node:buffer", true],
+			["@earendil-works/pi-coding-agent", true],
+			["../extensions/agent/index.ts", false],
+			["../transport/index.ts", false],
+			["/repo/session-name/helpers.ts", false],
+		] as const)
+			assert.equal(
+				auditSelfContainedImports(root, file, analyseSource(file, `import "${specifier}";`), "session-name").length,
+				allowed ? 0 : 1,
+				`${name}: ${specifier}`,
+			);
+		assert.deepEqual(
+			auditSelfContainedImports(root, file, analyseSource(file,
+				'import type { ExtensionContext } from "@earendil-works/pi-coding-agent";'), "session-name"),
+			[],
+			name,
 		);
+	}
 });
 
 test("operator-ui imports nothing outside its own directory", async () => {

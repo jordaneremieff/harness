@@ -278,7 +278,8 @@ function publicImport(
 		(sliceName === "agent" && target === join(root, "transport", "index.ts")) ||
 		(OPERATOR_UI_CONSUMERS.has(sliceName) &&
 			(target === join(root, "operator-ui", "index.ts") || target === join(root, "operator-ui", "registration.ts"))) ||
-		(SESSION_NAME_CONSUMERS.has(sliceName) && target === join(root, "session-name", "index.ts")) ||
+		(SESSION_NAME_CONSUMERS.has(sliceName) &&
+			(target === join(root, "session-name", "index.ts") || target === join(root, "session-name", "lifecycle.ts"))) ||
 		evaluationImport(root, file, sliceDir, target)
 	);
 }
