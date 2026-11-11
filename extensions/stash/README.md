@@ -425,6 +425,14 @@ latches; forks ignore the parent session's latches. The hook preserves earlier
 boundary drafts and does not evaluate a pre-compaction percentage against an
 earlier compaction draft.
 
+Native request preparation reads committed document snapshots and task memos within
+one 500 ms deadline. Yield-time notice retrieval has the same deadline. A timeout
+skips that advisory notice; caller cancellation still propagates. A bounded gate
+history page or tool-result read has its own 500 ms deadline; unavailable usage
+leaves the gate open. These deadlines bound the waiter, not an underlying read
+that ignores cancellation. System-section bytes remain constant, and notices
+enter retained context only once through a continuation.
+
 The session owns compact custom state entries, not handover prose. Each state
 records the session identity, source assistant entry, request latches, usage
 availability, and text-intake estimate. Restoration walks at most 4096 active
@@ -538,7 +546,11 @@ remain bounded by the model, not by this refusal counter.
 that session. Reload restores them. A native owner reaches the same command
 through `agent_command`. `/stash capacity` reports the band, episode, release,
 thresholds and declared tools. Gate state is process-local; compaction or a native context reset starts a new
-gate episode. `/stash capacity reset` resets notice latches, not a gate release. A failed compaction leaves the measured band in force.
+gate episode. Native releases observe committed compaction and context-reset
+entries directly, so a later passive tail does not hide the boundary. The
+observation reads no history and ends with the host. `/stash capacity reset`
+resets notice latches, not a gate release. A failed compaction leaves the measured
+band in force.
 Stash does not block `/compact` or Pi's own compaction.
 
 If Pi automatic compaction is enabled, the effective checkpoint request threshold

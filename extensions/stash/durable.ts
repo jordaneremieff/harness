@@ -9,7 +9,7 @@
  */
 import { mkdir, realpath } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { Context } from "@earendil-works/chord/context";
+import { awaitWithContext, withCancel, type Context } from "@earendil-works/chord/context";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { AssistantMessage, Message, Models } from "@earendil-works/pi-ai";
 import type { Static } from "@earendil-works/pi-schema";
@@ -421,7 +421,7 @@ async function nativeGateState(host: StashDurableHost, states: Map<string, GateS
 	let boundary = false;
 	let usageSeen = false;
 	for (let visited = 0; visited < 64 && !boundary; visited += 16) {
-		const page = await api.entries({ order: "descending" }, 16, cursor, context).catch(() => undefined);
+		const page = await capacityRead(context, (bounded) => api.entries({ order: "descending" }, 16, cursor, bounded));
 		if (!page) { measure = { kind: "unknown" }; break; }
 		const scanned = nativePageMeasure(host, page.items, measure, usageSeen);
 		measure = scanned.measure;
@@ -440,11 +440,39 @@ async function nativeGateState(host: StashDurableHost, states: Map<string, GateS
 	return state;
 }
 
+function compactionLeadText(config: ReturnType<typeof capacityConfig>, threshold: number | undefined): string {
+	const checkpoint = effectiveCheckpointPercent(config, threshold);
+	return threshold !== undefined && checkpoint < config.checkpointPercent
+		? `Pi automatic compaction starts at ${threshold.toFixed(1)}%; the effective checkpoint threshold is ${checkpoint.toFixed(1)}%.`
+		: "";
+}
+
+const CAPACITY_READ_TIMEOUT_MS = 500;
+
+function checkCapacityCancellation(context: Context): void {
+	context.abortSignal?.throwIfAborted();
+}
+
+async function capacityRead<T>(parent: Context, read: (context: Context) => Promise<T>): Promise<T | undefined> {
+	const child = withCancel(parent);
+	const timer = setTimeout(() => child.cancel(new Error("Stash capacity read deadline reached")), CAPACITY_READ_TIMEOUT_MS);
+	try {
+		return await awaitWithContext(read(child.context), child.context);
+	} catch (error) {
+		if (parent.abortSignal?.aborted) throw error;
+		return undefined;
+	} finally {
+		clearTimeout(timer);
+		child.cancel();
+	}
+}
+
 // ─── Commands ───────────────────────────────────────────────────────────────
 
 interface StashBinding {
 	readonly storeDir: string;
 	readonly gates: Map<string, GateState>;
+	readonly releaseObservers: WeakSet<Durable.Harness>;
 	readonly bus: SettingsBus;
 	readonly capacityDoc: Durable.ConversationDocToken<CapacityDocState>;
 	readonly receiptDoc: Durable.ConversationDocToken<DistillReceiptState>;
@@ -500,7 +528,7 @@ async function runStashCommand(call: StashDurableCommandCall): Promise<string | 
 		case "rotate":
 			return await lifecycleCommand(binding, call.context, verb, parts);
 		case "capacity":
-			return await capacityCommand(binding, call.conversation, call.context, call.host, parts);
+			return await capacityCommand(binding, call.conversation, call.context, call.host, call.harness, parts);
 		case "help":
 		case undefined:
 			return STASH_DURABLE_USAGE;
@@ -690,11 +718,31 @@ async function browserRequestAnswer(binding: StashBinding, call: StashDurableCom
 	}
 }
 
+function observeReleaseBoundaries(binding: StashBinding, harness: Durable.Harness, host: StashDurableHost): void {
+	if (binding.releaseObservers.has(harness)) return;
+	const observation = harness.observeCommits({
+		advance: (publication) => {
+			for (const change of publication.changes) {
+				if (change.type !== "entry" || (change.value.kind !== "pi.compaction" && change.value.kind !== "pi.reset")) continue;
+				const key = String(change.value.conversationId);
+				const current = binding.gates.get(key);
+				if (current && (current.episode === null || Number(current.episode) < change.value.id)) {
+					gateState(binding.gates, key, String(change.value.id));
+				}
+			}
+		},
+		end: () => {},
+	});
+	binding.releaseObservers.add(harness);
+	host.onClose(() => observation.detach());
+}
+
 async function capacityCommand(
 	binding: StashBinding,
 	conversation: Durable.Conversation,
 	context: Context,
 	host: StashDurableHost,
+	harness: Durable.Harness,
 	parts: string[],
 ): Promise<string> {
 	if (parts.length > 2 || (parts[1] !== undefined && parts[1] !== "reset" && parts[1] !== "release")) {
@@ -707,6 +755,7 @@ async function capacityCommand(
 		throw new Error(error instanceof Error ? error.message : String(error));
 	}
 	if (parts[1] === "release") {
+		observeReleaseBoundaries(binding, harness, host);
 		const state = binding.gates.get(String(conversation.id)) ?? gateState(binding.gates, String(conversation.id), null);
 		state.released = true;
 		return "Stash stop and decision round released until the next compaction in this session. Reload restores them.";
@@ -1195,6 +1244,7 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 	bindings.set(host, {
 		storeDir,
 		gates,
+		releaseObservers: new WeakSet(),
 		bus,
 		capacityDoc,
 		receiptDoc,
@@ -1236,25 +1286,28 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					const state = await nativeGateState(host, gates, api, context);
 					let refused = results.length > 0;
 					for (const id of results) {
-						const entry = await api.entry(host.durable.ToolResultEntry, id, context);
+						const entry = await capacityRead(context, (bounded) => api.entry(host.durable.ToolResultEntry, id, bounded));
 						if (!entry || !unexecuted(entry.data.diagnostics)) refused = false;
 					}
 					state.blockedRounds = refused ? state.blockedRounds + 1 : 0;
 					if (band(state.measure ?? { kind: "unknown" }, config) === "decision") state.decisionRoundUsed = true;
 				},
 
-				beforeRequest: async (request, api, context) => {
+				beforeRequest: async (request, api, parent) => capacityRead(parent, async (context) => {
 					const config = readCapacityConfig(true);
 					if (!config.enabled) return undefined;
 					const conversation = String(api.conversationId);
 					const doc = await api.snapshot(capacityDoc, api.conversationId, context);
+					checkCapacityCancellation(context);
 					const episode = doc?.episode ?? 1;
 					const pending = await api.memo<CapacityMemo>("capacity", context);
+					checkCapacityCancellation(context);
 					if (pending !== undefined && pending.episode === episode && pending.conversation === conversation) {
 						return undefined;
 					}
 					const latches = scanCapacityNotices(request.messages, episode, conversation);
 					const agent = await api.snapshot(host.durable.AgentDoc, api.conversationId, context);
+					checkCapacityCancellation(context);
 					const estimate = estimateContext(request.messages, host.services.modelRuntime, agent?.model);
 					const model = agent?.model && host.services.modelRuntime.getModel(agent.model.provider, agent.model.modelId);
 					const threshold = piAutoThreshold(host.services.settingsManager.getCompactionSettings(model), model);
@@ -1262,19 +1315,21 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					if (!crossing.checkpoint && !crossing.decision) return undefined;
 					await api.memo(
 						"capacity",
-						{ episode, conversation, text: [capacityNoticeText(estimate, crossing, episode, conversation, config.stopPercent), threshold !== undefined && effectiveCheckpointPercent(config, threshold) < config.checkpointPercent ? `Pi automatic compaction starts at ${threshold.toFixed(1)}%; the effective checkpoint threshold is ${effectiveCheckpointPercent(config, threshold).toFixed(1)}%.` : ""].filter(Boolean).join("\n") },
+						{ episode, conversation, text: [capacityNoticeText(estimate, crossing, episode, conversation, config.stopPercent), compactionLeadText(config, threshold)].filter(Boolean).join("\n") },
 						context,
 					);
 					return undefined;
-				},
-				onYield: async (_answer: AssistantMessage, api, context) => {
+				}),
+				onYield: async (_answer: AssistantMessage, api, parent) => capacityRead(parent, async (context) => {
 					const pending = await api.memo<CapacityMemo>("capacity", context);
+					checkCapacityCancellation(context);
 					if (pending === undefined) return undefined;
 					const doc = await api.snapshot(capacityDoc, api.conversationId, context);
+					checkCapacityCancellation(context);
 					const episode = doc?.episode ?? 1;
 					if (pending.episode !== episode || pending.conversation !== String(api.conversationId)) return undefined;
 					return { continue: pending.text };
-				},
+				}),
 			}),
 		],
 		tasks: [distillTask],

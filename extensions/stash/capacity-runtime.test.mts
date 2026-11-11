@@ -7,6 +7,8 @@ import {
 	fauxAssistantMessage,
 	fauxProvider,
 	fauxToolCall,
+	getCurrentSystemPrompt,
+	type Message,
 	InMemoryCredentialStore,
 	InMemoryModelsStore,
 } from "@earendil-works/pi-ai";
@@ -314,6 +316,27 @@ test("capacity boundaries add one request per threshold across a long real sessi
 		44,
 	);
 	assert.equal(host.session.isStreaming, false);
+});
+
+test("ordinary capacity notices preserve the complete post-hook request prefix", { timeout: 20000 }, async (t) => {
+	const host = await runtime(t, { stash: true });
+	host.setUsage(9100);
+	const requests: Message[][] = [];
+	const capture = (request: { messages: readonly Message[] }) => {
+		requests.push(JSON.parse(JSON.stringify(request.messages)) as Message[]);
+		return reply();
+	};
+	await host.prompt([capture, capture], "Retain the current task.");
+	await host.prompt([capture], "Continue the current task.");
+	assert.equal(requests.length, 3);
+	assert.equal(host.requests().length, 1);
+	for (let index = 1; index < requests.length; index++) {
+		const previous = requests[index - 1];
+		assert.equal(JSON.stringify(requests[index].slice(0, previous.length)), JSON.stringify(previous));
+		assert.equal(getCurrentSystemPrompt(requests[index]), getCurrentSystemPrompt(previous));
+	}
+	assert.ok(!JSON.stringify(requests[0]).includes("continuity path"));
+	assert.ok(JSON.stringify(requests[1].slice(requests[0].length)).includes("continuity path"));
 });
 
 for (const stopReason of ["error", "aborted"] as const) {
