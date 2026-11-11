@@ -123,6 +123,12 @@ function fakeConnection(metadata: HostMetadata, handler: (method: string, params
 	} as FakeConnection;
 }
 
+async function settleCatalogueRecovery(manager: AgentManager): Promise<void> {
+	const state = manager as unknown as { catalogueScan?: Promise<void>; recoveryQueue: Promise<void> };
+	await state.catalogueScan;
+	await state.recoveryQueue;
+}
+
 /** A structural stand-in for one registered primary client. */
 function fakePrimary(signal: AbortSignal) {
 	const sent: Array<{ text: string; details: unknown }> = [];
@@ -1273,6 +1279,101 @@ it("stops repeated live host losses in Attention and permits an explicit attach 
 	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
 	assert.equal(connections.length, 5);
 	assert.equal((await manager.dashboardPage()).rows[0]?.health?.lastError, undefined);
+});
+
+for (const entry of ["cached", "recovery"] as const) for (const loss of ["foreign", "clean", "released"] as const) it(`catalogue recovery preserves ${loss} loss refusal for a ${entry} link`, { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), connections = eventLog<FakeConnection>();
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		observe: async () => ({ conversations: [] }), connect: noHost,
+		acquire: async (metadata) => {
+			const client = fakeConnection(metadata, async (method) => method === "recovery-state" ? { workPending: true, deliveriesPending: true, deliveriesActive: true } : {}, HOST_CONTRACT, loss !== "foreign");
+			connections.push(client);
+			return client;
+		},
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root), unrelated = createRecord(manager, root, "unrelated");
+	if (entry === "recovery") manager.catalog.markRecoveryDue(record.storageId, true);
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	if (entry === "cached") {
+		await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+		manager.catalog.markRecoveryDue(record.storageId, true);
+	}
+	await settleCatalogueRecovery(manager);
+	assert.equal(connections.length, 1, "initial registration or explicit attachment opens one link");
+	const first = connections[0];
+	assert.ok(first);
+	if (loss === "released") Object.defineProperty(first, "ownerReleased", { value: true });
+	if (loss === "foreign") await first.close();
+	else await first.exit({ code: loss === "clean" ? 0 : 1, signal: null, failed: loss !== "clean" });
+	await settleCatalogueRecovery(manager);
+	assert.equal(connections.length, 1, "the close notification does not authorise acquisition");
+	(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([unrelated.storageId]);
+	await settleCatalogueRecovery(manager);
+	assert.equal(connections.length, 1, "an unrelated catalogue change does not authorise acquisition");
+	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	assert.equal(connections.length, 2, "explicit agent_attach retains acquisition authority");
+});
+
+it("catalogue recovery waits for the current owned failed-exit source", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), connections = eventLog<FakeConnection>();
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		observe: async () => ({ conversations: [] }), connect: noHost,
+		acquire: async (metadata) => {
+			const client = fakeConnection(metadata, async () => ({ workPending: true, deliveriesPending: true, deliveriesActive: true }), HOST_CONTRACT, true);
+			connections.push(client);
+			return client;
+		},
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	await settleCatalogueRecovery(manager);
+	const first = connections[0];
+	assert.ok(first);
+	await first.close();
+	await settleCatalogueRecovery(manager);
+	assert.equal(connections.length, 1, "catalogue scans do not bypass a pending exit observation");
+	await first.exit({ code: 1, signal: null, failed: true });
+	await connections.waitForCount(2);
+	assert.equal(connections.length, 2, "the exact failed exit admits one replacement");
+});
+
+it("an older owned exit cannot release a newer foreign loss hold", { timeout: 10000 }, async (t) => {
+	const root = fixtureRoot(t), connections = eventLog<FakeConnection>();
+	const manager = new AgentManager(managerOptions(root, {
+		createPrimary: primaryFactory().factory,
+		observe: async () => ({ conversations: [] }), connect: noHost,
+		acquire: async (metadata) => {
+			const client = fakeConnection(metadata, async () => ({ workPending: true, deliveriesPending: true, deliveriesActive: true }), HOST_CONTRACT, connections.length === 0);
+			connections.push(client);
+			return client;
+		},
+	}));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	await settleCatalogueRecovery(manager);
+	const older = connections[0];
+	assert.ok(older);
+	await older.close();
+	await settleCatalogueRecovery(manager);
+	await manager.control("attach", { sessionId: record.storageId }, { id: "owner-1", cwd: root });
+	const current = connections[1];
+	assert.ok(current);
+	assert.equal(current.ownedExit, undefined);
+	await current.close();
+	await settleCatalogueRecovery(manager);
+	await older.exit({ code: 1, signal: null, failed: true });
+	(manager as unknown as { catalogChanged(change: string[]): void }).catalogChanged([record.storageId]);
+	await settleCatalogueRecovery(manager);
+	assert.equal(connections.length, 2, "an obsolete child outcome does not authorise replacement of the current foreign link");
 });
 
 it("does not relaunch an unmarked host or a host released with the last primary", async (t) => {

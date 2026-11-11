@@ -278,6 +278,8 @@ export class AgentManager {
 	private readonly opening = new Map<string, Promise<HostConnection>>();
 	private readonly launchRows = new Map<string, AgentConversationSummary>();
 	private readonly recovering = new Set<string>();
+	/** Catalogue work markers do not replace the exit evidence required after a known link loss. */
+	private readonly recoveryHolds = new Map<string, symbol>();
 	private recoveryQueue: Promise<void> = Promise.resolve();
 	private catalogueScan?: Promise<void>;
 	private catalogueScanAgain = false;
@@ -342,6 +344,7 @@ export class AgentManager {
 
 	private async subscribeClient(storageId: string, client: HostConnection): Promise<void> {
 		this.clients.set(storageId, client);
+		this.recoveryHolds.delete(storageId);
 		try {
 			await this.subscribe(storageId, client);
 			this.failures.delete(`changes:${storageId}`);
@@ -1042,7 +1045,7 @@ export class AgentManager {
 			if (this.recoveryCandidate(fact.record, registeringPrimary)) due.push(fact.record);
 		}
 		if (!complete) this.failures.set("startup", "Startup recovery reached its inventory bound or unreadable metadata; use agent_list for the remaining storage");
-		await this.enqueueRecovery(due, owner);
+		await this.enqueueRecovery(due, owner, registeringPrimary !== undefined);
 	}
 
 	/** Await only this registration's teardown, including endpoint removal before process replacement. */
@@ -1150,14 +1153,14 @@ export class AgentManager {
 		}
 	}
 
-	private async enqueueRecovery(due: CatalogRecord[], primary: RecoveryOwner): Promise<void> {
+	private async enqueueRecovery(due: CatalogRecord[], primary: RecoveryOwner, fromRegistration = false): Promise<void> {
 		let next = 0;
 		const recover = async () => {
 			while (!this.stopping(primary) && next < due.length) {
 				const record = due[next++];
 				if (record) {
 					this.queuedRecovery.delete(record.storageId);
-					await this.recover(record, primary);
+					await this.recover(record, primary, fromRegistration);
 				}
 			}
 		};
@@ -1167,7 +1170,7 @@ export class AgentManager {
 		for (const record of due.slice(next)) this.queuedRecovery.delete(record.storageId);
 	}
 
-	private async recover(record: CatalogRecord, primary: RecoveryOwner): Promise<void> {
+	private async recover(record: CatalogRecord, primary: RecoveryOwner, fromRegistration: boolean): Promise<void> {
 		if (this.crashes.get(record.storageId)?.stopped) return;
 		const cached = this.clients.get(record.storageId);
 		if (cached) {
@@ -1178,12 +1181,17 @@ export class AgentManager {
 		const recovering = this.recoveryClients.get(record.storageId);
 		if (recovering) { await recovering.refresh(); return; }
 		if (this.recovering.has(record.storageId)) return;
+		if (record.recoveryDue === true && this.recoveryHolds.has(record.storageId)) {
+			if (!fromRegistration) return;
+			this.recoveryHolds.set(record.storageId, Symbol());
+		}
 		this.recovering.add(record.storageId);
 		try {
 			const open = this.options.acquire ?? acquireHost;
 			const client = await open(hostMetadata(record, this.options.packageDir), MANAGED_LINK);
 			if (this.stopping(primary)) { await client.close(); this.recovering.delete(record.storageId); return; }
 			this.recoveryErrors.delete(record.storageId);
+			this.recoveryHolds.delete(record.storageId);
 			await this.monitorRecovery(record.storageId, client, primary);
 		} catch (error) {
 			this.recovering.delete(record.storageId);
@@ -1222,10 +1230,14 @@ export class AgentManager {
 	}
 
 	private hostLost(storageId: string, client: HostConnection): void {
-		if (this.shuttingDown || client.ownerReleased) return;
+		if (this.shuttingDown) return;
+		const loss = Symbol();
+		this.recoveryHolds.set(storageId, loss);
+		if (client.ownerReleased) return;
 		try { if (this.catalog.read(storageId).recoveryDue !== true) return; }
 		catch (error) { this.recordRecoveryError(storageId, errorText(error)); return; }
 		const recover = () => {
+			if (this.recoveryHolds.get(storageId) !== loss || this.shuttingDown || client.ownerReleased) return;
 			const primary = [...this.primaries.values()].find((candidate) => !this.stopping(candidate));
 			if (!primary || this.queuedRecovery.has(storageId)) return;
 			try {
@@ -1237,6 +1249,7 @@ export class AgentManager {
 				const stopped = times.length > MAX_AUTOMATIC_RESTARTS;
 				this.crashes.set(storageId, { times, stopped });
 				if (stopped) { this.recordRecoveryError(storageId, "Automatic recovery stopped after repeated host losses within 60 seconds. Inspect the host error, then use agent_attach to retry."); return; }
+				this.recoveryHolds.delete(storageId);
 				this.queuedRecovery.add(storageId);
 				void this.enqueueRecovery([record], primary).catch((error) => { this.queuedRecovery.delete(storageId); this.recordRecoveryError(storageId, errorText(error)); });
 			} catch (error) { this.recordRecoveryError(storageId, errorText(error)); }
@@ -1246,7 +1259,7 @@ export class AgentManager {
 			return;
 		}
 		void client.ownedExit.then((outcome) => { if (outcome.failed && !client.ownerReleased) recover(); }, (error: unknown) => {
-			if (!this.shuttingDown) this.recordRecoveryError(storageId, `Owned host exit is unavailable: ${errorText(error)}`);
+			if (!this.shuttingDown && this.recoveryHolds.get(storageId) === loss) this.recordRecoveryError(storageId, `Owned host exit is unavailable: ${errorText(error)}`);
 		});
 	}
 
@@ -1402,6 +1415,7 @@ export class AgentManager {
 	close(): Promise<void> {
 		if (this.closing) return this.closing;
 		this.shuttingDown = true;
+		this.recoveryHolds.clear();
 		this.lifecycle.abort();
 		this.locations.clear();
 		this.rosterListeners.clear();
