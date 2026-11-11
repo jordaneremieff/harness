@@ -361,6 +361,107 @@ test("stale digest refuses a second session update", (t) => {
 	writeMemory(root, { ...note(), summary: "New preference", expectedDigest: first.digest });
 	assert.match(failure(() => writeMemory(root, { ...note(), expectedDigest: first.digest })).message, /digest changed/);
 });
+function assertDigestRefusal(error: MemoryWriteError, root: string, subject: string, argument: string, publication = false): void {
+	const diagnostic = error.receipt.error;
+	assert.ok(diagnostic);
+	assert.ok(diagnostic.includes(`for "${subject}"`), diagnostic);
+	assert.ok(diagnostic.includes(`read "${subject}" with memory_read and update ${argument} before retry`), diagnostic);
+	assert.equal(diagnostic.includes("before publication"), publication);
+	assert.ok(!diagnostic.includes(root));
+	assert.ok(!/\b[a-f0-9]{64}\b/u.test(diagnostic));
+}
+
+test("every supplied supersession digest remains mandatory after the target names the same replacement", (t) => {
+	const root = corpus(t);
+	writeMemory(root, note("alpha"));
+	const alpha = join(root, "alpha.md"), beta = join(root, "beta.md");
+	const originalTargetDigest = sourceDigest(readFileSync(alpha));
+	writeMemory(root, { ...note("beta"), supersedes: [{ slug: "alpha", digest: originalTargetDigest }] });
+	const targetBefore = readFileSync(alpha), destinationBefore = readFileSync(beta);
+	const retry: MemoryWrite = { ...note("beta"), summary: "Updated preference.", expectedDigest: sourceDigest(destinationBefore), supersedes: [{ slug: "alpha", digest: originalTargetDigest }] };
+	const refused = failure(() => writeMemory(root, retry));
+	assertDigestRefusal(refused, root, "alpha", "supersedes[0].digest");
+	assert.deepEqual(refused.receipt.written, []);
+	assert.deepEqual(refused.receipt.captured, []);
+	assert.deepEqual(readFileSync(alpha), targetBefore);
+	assert.deepEqual(readFileSync(beta), destinationBefore);
+	const corrected = writeMemory(root, { ...retry, supersedes: [{ slug: "alpha", digest: sourceDigest(readFileSync(alpha)) }] });
+	assert.equal(corrected.ok, true);
+	const targetAfter = readFileSync(alpha);
+	const rewritten = writeMemory(root, { ...note("beta"), summary: "Updated preference.", expectedDigest: sourceDigest(readFileSync(beta)) });
+	assert.equal(rewritten.ok, true);
+	assert.deepEqual(rewritten.written, ["beta.md"]);
+	assert.deepEqual(metadata(root, "beta").supersedes, ["alpha"]);
+	assert.deepEqual(readFileSync(alpha), targetAfter);
+	const staleDestination = failure(() => writeMemory(root, { ...note("beta"), expectedDigest: sourceDigest(destinationBefore) }));
+	assertDigestRefusal(staleDestination, root, "beta", "expectedDigest");
+	assert.deepEqual(staleDestination.receipt.written, []);
+});
+
+test("a stale later supersession target names its actual argument index before any publication", (t) => {
+	const root = corpus(t);
+	writeMemory(root, note("alpha"));
+	writeMemory(root, note("gamma"));
+	const alpha = readFileSync(join(root, "alpha.md")), gamma = readFileSync(join(root, "gamma.md"));
+	const error = failure(() => writeMemory(root, { ...note("beta"), supersedes: [
+		{ slug: "alpha", digest: sourceDigest(alpha) },
+		{ slug: "gamma", digest: "0".repeat(64) },
+	] }));
+	assertDigestRefusal(error, root, "gamma", "supersedes[1].digest");
+	assert.deepEqual(error.receipt.written, []);
+	assert.deepEqual(error.receipt.captured, []);
+	assert.equal(fs.existsSync(join(root, "beta.md")), false);
+	assert.deepEqual(readFileSync(join(root, "alpha.md")), alpha);
+	assert.deepEqual(readFileSync(join(root, "gamma.md")), gamma);
+});
+
+test("publication rechecks retain source argument labels and exact partial receipts", (t) => {
+	for (const [subject, argument, written, remaining] of [
+		["beta", "expectedDigest", [], ["beta.md", "alpha.md", "gamma.md"]],
+		["gamma", "supersedes[1].digest", ["beta.md", "alpha.md"], ["gamma.md"]],
+	] as const) {
+		const root = corpus(t);
+		for (const name of ["alpha", "beta", "gamma"]) writeMemory(root, note(name));
+		const input: MemoryWrite = { ...note("beta"), summary: "Updated preference.", expectedDigest: sourceDigest(readFileSync(join(root, "beta.md"))), supersedes: [
+			{ slug: "alpha", digest: sourceDigest(readFileSync(join(root, "alpha.md"))) },
+			{ slug: "gamma", digest: sourceDigest(readFileSync(join(root, "gamma.md"))) },
+		] };
+		const error = failure(() => writeMemory(root, input, undefined, {
+			beforePublish(file) {
+				if (file === `${subject}.md`) writeFileSync(join(root, file), `${readFileSync(join(root, file), "utf8")}\nExternal source update.\n`);
+			},
+		}));
+		assertDigestRefusal(error, root, subject, argument, true);
+		assert.deepEqual(error.receipt.written, written);
+		assert.deepEqual(error.receipt.notWritten, remaining);
+		assert.equal(error.receipt.captured.length, 3);
+		assert.equal(error.receipt.digest, written.length ? sourceDigest(readFileSync(join(root, "beta.md"))) : undefined);
+		assert.match(readFileSync(join(root, `${subject}.md`), "utf8"), /External source update/);
+	}
+});
+
+test("history capture refusals identify the source digest argument before live publication", (t) => {
+	for (const [subject, argument, captured] of [["beta", "expectedDigest", 0], ["alpha", "supersedes[0].digest", 1]] as const) {
+		const root = corpus(t);
+		writeMemory(root, note("alpha"));
+		writeMemory(root, note("beta"));
+		const input: MemoryWrite = {
+			...note("beta"),
+			expectedDigest: sourceDigest(readFileSync(join(root, "beta.md"))),
+			supersedes: [{ slug: "alpha", digest: sourceDigest(readFileSync(join(root, "alpha.md"))) }],
+		};
+		const error = failure(() => writeMemory(root, input, undefined, {
+			beforeCapture(file) {
+				if (file === `${subject}.md`) writeFileSync(join(root, file), `${readFileSync(join(root, file), "utf8")}\nExternal source update.\n`);
+			},
+		}));
+		assertDigestRefusal(error, root, subject, argument, true);
+		assert.deepEqual(error.receipt.written, []);
+		assert.deepEqual(error.receipt.notWritten, ["beta.md", "alpha.md"]);
+		assert.equal(error.receipt.captured.length, captured);
+	}
+});
+
 test("supersession preserves all old body bytes including preamble, fences and tail", (t) => {
 	const root = corpus(t);
 	writeMemory(root, note("old-choice"));

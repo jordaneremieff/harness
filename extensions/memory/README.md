@@ -848,6 +848,15 @@ Read every reported file before repair; retry an update with the current destina
 digest and remaining targets' current digests. Existing supersession links survive
 that retry. Do not blindly repeat a create after partial success.
 
+Every supplied supersession target requires its current digest, including a target
+already superseded by this destination. A digest refusal names the changed subject
+and the argument to update: `expectedDigest` for the destination, or
+`supersedes[index].digest` for a target. Read that named subject before retry.
+A destination rewrite that omits `supersedes` retains its existing supersession
+links; it does not rewrite those targets. Publication-phase refusals keep the same
+source and argument identification and retain the existing partial-publication
+receipt.
+
 Cancellation is checked before work and between bounded operations. A started
 synchronous filesystem operation finishes; cancellation does not undo a publication.
 The writer removes only its private temporary files and closes its lock descriptor

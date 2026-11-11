@@ -271,10 +271,16 @@ interface Existing {
 	meta: Record<string, unknown>;
 	end: number;
 }
-function existing(path: string, expected?: string): Existing {
+type DigestArgument = "expectedDigest" | `supersedes[${number}].digest`;
+function digestMismatch(path: string, argument: DigestArgument, phase: "planning" | "publication"): Error {
+	const subject = basename(path, ".md");
+	const boundary = phase === "publication" ? " before publication" : "";
+	return new Error(`Source digest changed${boundary} for "${subject}"; read "${subject}" with memory_read and update ${argument} before retry.`);
+}
+function existing(path: string, expected?: string, argument: DigestArgument = "expectedDigest"): Existing {
 	const source = readSource(path);
 	if (expected !== undefined && sourceDigest(source) !== expected)
-		throw new Error("Source digest changed; read the current note before retry");
+		throw digestMismatch(path, argument, "planning");
 	const match = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/u.exec(source);
 	if (!match)
 		throw new Error(
@@ -476,16 +482,18 @@ interface Publication {
 	file: string;
 	content: string;
 	expected?: string;
+	expectedArgument?: DigestArgument;
 	prior?: string;
 }
 function targetPlans(root: string, input: MemoryWrite, today: string, signal?: AbortSignal): Publication[] {
-	return (input.supersedes ?? []).map((target) => {
+	return (input.supersedes ?? []).map((target, index) => {
 		checkAbort(signal);
 		const file = `${target.slug}.md`;
-		const source = existing(join(root, file), target.digest);
+		const expectedArgument: DigestArgument = `supersedes[${index}].digest`;
+		const source = existing(join(root, file), target.digest, expectedArgument);
 		if (source.meta.status === "superseded" && source.meta.superseded_by !== input.slug)
 			throw new Error("A supersession target already names another replacement");
-		return { file, content: superseded(source, input.slug, today), expected: target.digest, prior: source.text };
+		return { file, content: superseded(source, input.slug, today), expected: target.digest, expectedArgument, prior: source.text };
 	});
 }
 function destinationSource(destination: string, input: { expectedDigest?: string }): Existing | undefined {
@@ -780,7 +788,7 @@ function publish(root: string, plan: Publication & { temp: string }, lease: Writ
 		return;
 	}
 	if (sourceDigest(readSource(path)) !== plan.expected)
-		throw new Error(`Source changed before publication: ${plan.file}`);
+		throw digestMismatch(path, plan.expectedArgument ?? "expectedDigest", "publication");
 	lease.assertNamed();
 	renameSync(plan.temp, path);
 }
@@ -858,7 +866,7 @@ function capturePriors(
 		hooks.beforeCapture?.(plan.file);
 		checkAbort(signal);
 		if (sourceDigest(readSource(join(root, plan.file))) !== plan.expected)
-			throw new Error(`Source changed before history capture: ${plan.file}`);
+			throw digestMismatch(join(root, plan.file), plan.expectedArgument ?? "expectedDigest", "publication");
 		const subject = basename(plan.file, ".md");
 		const directory = historyDirectory(root, subject, true) as string;
 		const digest = sourceDigest(plan.prior);
