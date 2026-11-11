@@ -53,6 +53,11 @@ describe("here-document delimiter evidence", () => {
 	it("removes continuations without changing reserved-word eligibility", () => {
 		assert.equal(parseShellEvidence("f\\\nor x in a; d\\\no echo safe; d\\\none").complete, true);
 	});
+	it("treats escaped delimiters as quoted without expanding their bodies", () => {
+		const parsed = parseShellEvidence("cat <<\\EOF\n$(git push)\nEOF");
+		assert.equal(parsed.complete, true);
+		assert.deepEqual(parsed.statements.flat().map((stage) => stage.command), ["cat"]);
+	});
 });
 
 describe("parseStatements", () => {

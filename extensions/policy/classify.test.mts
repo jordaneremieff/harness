@@ -41,6 +41,28 @@ describe("CLI command-operand evidence", () => {
 			assert.equal(evidence.segments.get(record.id), undefined);
 		}
 	});
+	for (const command of [
+		"while true; do echo hi; done",
+		"until false; do echo hi; done",
+		'while read -r l; do echo "$l"; done < file',
+		'rg -l x | while read -r f; do wc -l "$f"; done',
+	]) {
+		it(`reads condition-loop evidence for ${command}`, () => {
+			const evidence = evaluateCommandRecords("bash", command, [record], scope);
+			assert.equal(evidence.get(record.id), false);
+			assert.deepEqual(evidence.reasons.get(record.id) ?? [], []);
+		});
+	}
+	it("retains a direct match inside a condition-loop body", () => {
+		const evidence = evaluateCommandRecords("bash", "while true; do git push; done", [record], scope);
+		assert.equal(evidence.get(record.id), true);
+		assert.equal(evidence.segments.get(record.id), "git push");
+	});
+	it("does not infer substitution from an escaped here-document delimiter", () => {
+		assert.equal(evaluateCommandRecords("bash", "cat <<\\EOF\n$(git push)\nEOF", [record], scope).get(record.id), false);
+		for (const command of ["bash <<\\EOF\n$(git push)\nEOF", "cat <<\\EOF | sh\n$(git push)\nEOF"])
+			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), "unknown");
+	});
 	it("keeps scope and tool exclusions ahead of unavailable evidence", () => {
 		const excluded = structuredClone(record);
 		excluded.definition.scope = { cwdPrefixes: ["/elsewhere"] };

@@ -39,6 +39,7 @@ import {
 	type EvaluationContext,
 	evaluatePrograms,
 	GUIDANCE_BYTES,
+	GUIDANCE_PREFIX,
 	type InputPlan,
 	observationSelected,
 	type ProgramEvaluation,
@@ -226,7 +227,7 @@ function commitInput(target: Record<string, unknown>, candidate: Record<string, 
 
 function refusalEvidence(entry: ProgramEvaluation, corrected: boolean): string | undefined {
 	if (entry.truth === "unknown") {
-		const reasons = entry.unavailableReasons?.map((reason) => reason === "unsupported-shell" ? `${reason} (shell group)` : reason).join(", ") || "evidence-unavailable";
+		const reasons = entry.unavailableReasons?.join(", ") || "evidence-unavailable";
 		if (entry.unavailableReasons !== undefined)
 			return `Policy could not determine whether this command matches the rule. Evidence unavailable: ${reasons}. The rule denies unavailable evidence. No matching command was established. Use plain literal commands joined with && or ; when that preserves the task.`;
 		return `Policy could not determine whether this call matches the rule. Evidence unavailable: ${reasons}. The rule denies unavailable evidence. No matching command was established.`;
@@ -249,7 +250,19 @@ function denialDiagnostic(id: string, record: RuleRecord | undefined, entries: P
 		? [`Rule ${id}:`, ...evidence, `Rule note: ${note}`]
 		: [`Rule ${id}: ${note}`, ...evidence];
 	const text = guidanceText([parts.join(" ")]);
-	return { text, suggestions };
+	return { text, suggestions, priorityParts: [`Rule ${id}:`, ...evidence, `Rule note: ${note}`] };
+}
+
+function firstDenialText(parts: readonly string[], reserve: string): string {
+	const limit = GUIDANCE_BYTES - Buffer.byteLength(`${GUIDANCE_PREFIX} …${reserve}`, "utf8");
+	let text = "";
+	let bytes = 0;
+	for (const char of parts.join(" ")) {
+		bytes += Buffer.byteLength(char, "utf8");
+		if (bytes > limit) break;
+		text += char;
+	}
+	return guidanceText([`${text}…`])!;
 }
 
 function appendRefusalSuggestions(text: string, suggestions: ReadonlySet<string>, reserve: string): string {
@@ -265,13 +278,18 @@ function appendRefusalSuggestions(text: string, suggestions: ReadonlySet<string>
 export function refusalText(plan: InputPlan, records: ReadonlyMap<string, RuleRecord>, fallbackIds: readonly string[]): string | undefined {
 	const denials = plan.evaluations.filter((evaluation) => evaluation.deny);
 	const ids = [...new Set(denials.length ? denials.map((evaluation) => evaluation.id) : fallbackIds)];
-	const reserve = `\n[policy] Omitted ${ids.length} rule diagnostics.`;
 	let text = "";
 	for (const [index, id] of ids.entries()) {
+		const remaining = ids.length - index - 1;
+		const reserve = remaining > 0 ? `\n[policy] Omitted ${remaining} rule diagnostics.` : "";
 		const diagnostic = denialDiagnostic(id, records.get(id), denials.filter((entry) => entry.id === id), plan.corrections.length > 0);
 		const candidate = diagnostic.text ? (text ? `${text}\n${diagnostic.text}` : diagnostic.text) : undefined;
 		if (!candidate || Buffer.byteLength(candidate + reserve, "utf8") > GUIDANCE_BYTES) {
-			return `${text}${text ? "\n" : ""}[policy] Omitted ${ids.length - index} rule diagnostics.`;
+			if (index === 0) {
+				const omitted = ids.length > 1 ? `\n[policy] Omitted ${ids.length - 1} rule diagnostics.` : "";
+				return firstDenialText(diagnostic.priorityParts, omitted) + omitted;
+			}
+			return `${text}\n[policy] Omitted ${ids.length - index} rule diagnostics.`;
 		}
 		text = appendRefusalSuggestions(candidate, diagnostic.suggestions, reserve);
 	}

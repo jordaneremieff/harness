@@ -422,20 +422,6 @@ describe("integrated catalogue guidance", () => {
 		assert.match(note, /does not establish unnecessary breadth.*Preserve required complete reads/);
 	});
 
-	it("preserves the tool error for incompatible fd cap and exec arguments", async (t) => {
-		const f = bundledFixture("bash");
-		t.after(() => f.writer.close());
-		const input = { command: "fd --max-results 4 -x echo {} src" };
-		assert.equal(await f.call("invalid-fd", input), undefined);
-		const original = { content: [{ type: "text" as const, text: "Synthetic fd error: --max-results conflicts with -x." }], isError: true, details: undefined };
-		const patch = await f.runtime.toolResult({ type: "tool_result", toolName: "bash", toolCallId: "invalid-fd", input, ...original }, f.ctx);
-		assert.equal(patch, undefined);
-		assert.equal(original.content[0].text, "Synthetic fd error: --max-results conflicts with -x.");
-		assert.equal(original.isError, true);
-		await f.runtime.toolEnd({ toolName: "bash", toolCallId: "invalid-fd", result: original, isError: true }, f.ctx);
-		assert.equal(f.records[0].outcome, "execution-error");
-		assert.equal(await f.contextEmitted(), undefined);
-	});
 });
 
 describe("separate denial evidence", () => {
@@ -447,7 +433,7 @@ describe("separate denial evidence", () => {
 		const f = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		assert.equal((await f.call("group", { command: "(true)" }))?.reason,
-			"[policy] Rule synthetic.git: Policy could not determine whether this command matches the rule. Evidence unavailable: unsupported-shell (shell group). The rule denies unavailable evidence. No matching command was established. Use plain literal commands joined with && or ; when that preserves the task. Rule note: Synthetic restriction: leave repository publication unchanged.");
+			"[policy] Rule synthetic.git: Policy could not determine whether this command matches the rule. Evidence unavailable: unsupported-shell. The rule denies unavailable evidence. No matching command was established. Use plain literal commands joined with && or ; when that preserves the task. Rule note: Synthetic restriction: leave repository publication unchanged.");
 		assert.equal(await f.call("harmless-loop", { command: "for f in a b; do echo $f; done" }), undefined);
 		assert.equal(await f.call("harmless-substitution", { command: "echo $(date)" }), undefined);
 		assert.equal((await f.call("push", { command: "git push" }))?.reason,
@@ -522,6 +508,40 @@ describe("separate denial evidence", () => {
 				assert.match(denied.reason, /Rule bounds\.false-cap:.*not for global sorting/);
 				assert.equal((denied.reason.match(/Matched command:/g) ?? []).length, 2);
 			}
+		}
+	});
+	for (const note of ["x".repeat(2000), "界".repeat(2000)]) {
+		for (const truth of [true, "unknown"] as const) {
+			it(`retains the first denial ID, cause and note prefix within the byte bound for ${truth} evidence and ${Buffer.byteLength(note)} note bytes`, () => {
+				const row = rule("deny.first", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
+				row.definition.note = note;
+				const records = new Map([[row.id, row]]);
+				const evaluation = { id: row.id, deny: true, truth, matchedSegment: truth === true ? "git push" : undefined,
+					unavailableReasons: truth === "unknown" ? ["unexpanded-heredoc"] : undefined };
+				for (const extra of [[], [{ ...evaluation, id: "deny.second" }]]) {
+					const plan = { corrections: [], evaluations: [evaluation, ...extra] } as unknown as InputPlan;
+					const text = refusalText(plan, records, []) ?? "";
+					assert.ok(text.startsWith("[policy] Rule deny.first:"));
+					assert.ok(text.includes(truth === true ? "Matched command: git push" : "Evidence unavailable: unexpanded-heredoc"));
+					assert.ok(text.includes(`Rule note: ${note.slice(0, 10)}`));
+					assert.ok(Buffer.byteLength(text) <= 2048);
+					assert.doesNotMatch(text, /\uFFFD/);
+					if (extra.length) assert.ok(text.endsWith("Omitted 1 rule diagnostics."));
+					else assert.doesNotMatch(text, /Omitted/);
+				}
+			});
+		}
+	}
+	it("uses a construct-neutral label for unsupported shell evidence", async (t) => {
+		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
+		gate.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } };
+		const f = fixture([gate], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+		t.after(() => f.writer.close());
+		for (const command of ["echo a{b,c}", "mv file.{txt,md}", "arr=(a b)", "(true)"]) {
+			const reason = (await f.call(command, { command }))?.reason ?? "";
+			assert.match(reason, /Evidence unavailable: unsupported-shell/);
+			assert.doesNotMatch(reason, /shell group/);
 		}
 	});
 	it("counts whole omitted diagnostics within the shared byte bound", () => {

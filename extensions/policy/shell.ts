@@ -838,7 +838,7 @@ function openFor(split: Split, frame: ParseFrame, stages: Word[][], budget: Pars
 			return { ...split, words: [] };
 		}
 		budget.reasons.add("unsupported-for-syntax");
-	} else if (keyword(split.words[0], "done")) budget.reasons.add("malformed-for-syntax");
+	}
 	return split;
 }
 

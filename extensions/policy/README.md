@@ -1417,7 +1417,12 @@ reason; it does not claim a matching command.
 
 The shell parser does not expand aliases, variables, globs, generated words, or
 shell data. It captures the command once and uses that same value for matching
-and bounded best-effort redaction.
+and bounded best-effort redaction. An unquoted here-document delimiter leaves
+body expansion unavailable (`unexpanded-heredoc`), including after a removed
+backslash-newline continuation. A quoted or escaped delimiter, including `<<\EOF`,
+suppresses body expansion, so its literal body supplies no command substitutions.
+A shell interpreter that consumes that body still leaves execution evidence
+unavailable. See the [Bash here-document rules](https://www.gnu.org/software/bash/manual/bash.html#Here-Documents).
 
 ```text
 match {
@@ -1434,8 +1439,8 @@ Every supplied command constraint must hold in one parsed stage. Command names
 match basenames. Each diagnostic starts with `Rule <id>:`. A confirmed match gives
 its rule note, then `Matched command:` with the first matching stage for that rule
 and input view. An unavailable-evidence denial first states that Policy could not
-determine whether the command matches, gives the parse reason (including a shell
-group label for `unsupported-shell`), and names plain literal commands joined with
+determine whether the command matches, gives the parse reason without inferring
+an unsupported construct's type, and names plain literal commands joined with
 `&&` or `;` as an accepted form when that preserves the task. It puts the stored
 note last, labelled `Rule note:`, rather than presenting that note as a detected match.
 The segment uses normalized command words, not an exact shell-source slice:
@@ -1443,6 +1448,8 @@ quotes are normalized, wrappers and redirects are omitted, and nested
 substitutions remain separate stages. Each excerpt is terminal-safe, uses
 best-effort credential redaction, and stays within 240 UTF-8 bytes. The complete
 denial keeps the shared guidance bound and reports the count of omitted rule diagnostics.
+If the first diagnostic exceeds that bound, it retains the rule ID, prioritises
+the cause, and includes as much of the note as fits, with an ellipsis at the cut.
 Denial notes identify denying rules, not unrelated matched guidance rules.
 Read-routing predicates also append `For this command:` with a concrete read
 call from that matched stage. Stored notes and suggestions remain unchanged.
