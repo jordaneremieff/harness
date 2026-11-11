@@ -252,11 +252,15 @@ function dynamicChar(char: string, next: string | undefined): boolean {
 	return char === "`" || (char === "$" && next !== undefined && /[A-Za-z_0-9{(?!@$*#'"-]/.test(next));
 }
 
+function keywordEligible(state: ReaderState): boolean {
+	return state.literal && !state.quoted && !state.pendingRedirect && !state.pendingHeredoc;
+}
+
 function flushWord(state: ReaderState): void {
 	if (!state.started) return;
 	const word: Word = {
 		text: state.current, literal: state.literal,
-		keyword: state.literal && !state.quoted && !state.pendingRedirect && !state.pendingHeredoc,
+		keyword: keywordEligible(state),
 	};
 	state.budget.words++;
 	if (state.budget.words > 4096) state.budget.reasons.add("word-limit");
@@ -816,39 +820,50 @@ function collectParsedNested(
 
 const LOOP_CONTROLS = new Set(["for", "select", "case", "function", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac", "!"]);
 
+function keyword(word: Word | undefined, text: string): boolean {
+	return word?.keyword === true && word.text === text;
+}
+
+function plainForHeader(split: Split, frame: ParseFrame, stages: Word[][]): boolean {
+	const words = split.words;
+	return stages.length === 0 && frame.groups.length === 0 && split.end === "statement" && !split.control &&
+		words[1]?.keyword === true && /^[A-Za-z_][A-Za-z0-9_]*$/.test(words[1].text) && keyword(words[2], "in") &&
+		!words.some((word) => word.redirect || word.heredoc);
+}
+
+function openFor(split: Split, frame: ParseFrame, stages: Word[][], budget: ParseBudget): Split {
+	if (keyword(split.words[0], "for")) {
+		if (plainForHeader(split, frame, stages)) {
+			frame.loop = { phase: "do", body: false };
+			return { ...split, words: [] };
+		}
+		budget.reasons.add("unsupported-for-syntax");
+	} else if (keyword(split.words[0], "done")) budget.reasons.add("malformed-for-syntax");
+	return split;
+}
+
+function startForBody(split: Split, frame: ParseFrame, stages: Word[][], budget: ParseBudget, loop: NonNullable<ParseFrame["loop"]>): Split {
+	if (!keyword(split.words[0], "do")) {
+		budget.reasons.add("malformed-for-syntax");
+		return split;
+	}
+	loop.phase = "body";
+	if (split.words.length === 1 && split.separator !== "newline") budget.reasons.add("malformed-for-syntax");
+	return loopSplit({ ...split, words: split.words.slice(1) }, frame, stages, budget);
+}
+
 /** Consume only the closed plain-for grammar; all other control remains unavailable. */
 function loopSplit(split: Split, frame: ParseFrame, stages: Word[][], budget: ParseBudget): Split {
 	const words = split.words;
 	const first = words[0];
-	const keyword = (word: Word | undefined, text: string) => word?.keyword && word.text === text;
-	if (!frame.loop) {
-		if (keyword(first, "for")) {
-			const header = stages.length === 0 && frame.groups.length === 0 && split.end === "statement" && !split.control &&
-				words[1]?.keyword && /^[A-Za-z_][A-Za-z0-9_]*$/.test(words[1].text) && keyword(words[2], "in") &&
-				!words.some((word) => word.redirect || word.heredoc);
-			if (header) {
-				frame.loop = { phase: "do", body: false };
-				return { ...split, words: [] };
-			}
-			budget.reasons.add("unsupported-for-syntax");
-		} else if (keyword(first, "done")) budget.reasons.add("malformed-for-syntax");
-		return split;
-	}
+	if (!frame.loop) return openFor(split, frame, stages, budget);
 	if (split.control || frame.groups.length) budget.reasons.add("unsupported-for-syntax");
 	if (!first) {
 		if (split.separator === "semicolon" || split.end === "pipe" || stages.length > 0)
 			budget.reasons.add("malformed-for-syntax");
 		return split;
 	}
-	if (frame.loop.phase === "do") {
-		if (!keyword(first, "do")) {
-			budget.reasons.add("malformed-for-syntax");
-			return split;
-		}
-		frame.loop.phase = "body";
-		if (words.length === 1 && split.separator !== "newline") budget.reasons.add("malformed-for-syntax");
-		return loopSplit({ ...split, words: words.slice(1) }, frame, stages, budget);
-	}
+	if (frame.loop.phase === "do") return startForBody(split, frame, stages, budget, frame.loop);
 	if (keyword(first, "done")) {
 		if (words.length !== 1 || stages.length || split.end === "pipe" || !frame.loop.body)
 			budget.reasons.add("malformed-for-syntax");
