@@ -1419,9 +1419,11 @@ The shell parser does not expand aliases, variables, globs, generated words, or
 shell data. It captures the command once and uses that same value for matching
 and bounded best-effort redaction. An unquoted here-document delimiter leaves
 body expansion unavailable (`unexpanded-heredoc`), including after a removed
-backslash-newline continuation. A quoted or escaped delimiter, including `<<\EOF`,
-suppresses body expansion, so its literal body supplies no command substitutions.
-A shell interpreter that consumes that body still leaves execution evidence
+backslash-newline continuation. A quoted or escaped here-document delimiter,
+including `<<\EOF`, suppresses body expansion; literal here-string words
+(single-quoted text, plain words, continued words, escaped words and quoted
+numbers) also supply data, including inside a plain `for` loop.
+A shell interpreter that consumes either form still leaves execution evidence
 unavailable. See the [Bash here-document rules](https://www.gnu.org/software/bash/manual/bash.html#Here-Documents).
 
 ```text
