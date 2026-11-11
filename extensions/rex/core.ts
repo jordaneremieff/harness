@@ -716,9 +716,9 @@ export class RexCore {
 	 * The effective deadline for one request. A request above the configured cap waits for the
 	 * cap instead of failing, and the result names the shorter deadline it actually used.
 	 */
-	private deadline(requested: number | undefined, name: string): { timeoutMs: number; capped: boolean } {
+	private deadline(requested: number | undefined, name: string): number {
 		const value = boundedInteger(requested ?? Math.min(30000, this.maxWaitMs), 1, 300000, name);
-		return { timeoutMs: Math.min(value, this.maxWaitMs), capped: value > this.maxWaitMs };
+		return Math.min(value, this.maxWaitMs);
 	}
 	private cappedDeadline(response: RexResult, requested: number | undefined): RexResult {
 		const note = `The requested ${requested} ms deadline exceeded the configured ${this.maxWaitMs} ms cap (rex.maxWaitMs); the operation used ${this.maxWaitMs} ms.`;
@@ -731,9 +731,8 @@ export class RexCore {
 		context: RexCallContext,
 	): Promise<RexResult> {
 		requireBlock(target);
-		const { timeoutMs, capped } = this.deadline(request.timeoutMs, "wait duration");
-		const response = await this.observe(request, target, context, timeoutMs);
-		return capped ? this.cappedDeadline(response, request.timeoutMs) : response;
+		const timeoutMs = this.deadline(request.timeoutMs, "wait duration");
+		return this.observe(request, target, context, timeoutMs);
 	}
 	private async observe(
 		request: Extract<RexRequest, { op: "wait" }>,
@@ -867,7 +866,7 @@ export class RexCore {
 				await this.json(["api", "describe", request.method, "--json"], target.server.endpoint, context),
 			);
 		}
-		const { timeoutMs, capped } = this.deadline(request.timeoutMs, "native duration");
+		const timeoutMs = this.deadline(request.timeoutMs, "native duration");
 		const cli = nativeCommand(request, target);
 		const verifiedRead = request.kind === "api" && VERIFIED_READ_METHODS.has(request.method ?? "");
 		const response = verifiedRead
@@ -881,7 +880,7 @@ export class RexCore {
 			response.effects.note = verifiedRead
 				? "Verified read-only API method: no ownership record was retained. Outer CLI success only; returned data is not an application outcome."
 				: "Outer CLI success only. No inner application outcome was established. Returned failure tables and child results remain application data, even if bulk data is omitted.";
-		return capped ? this.cappedDeadline(response, request.timeoutMs) : response;
+		return response;
 	}
 
 	/** A verified read keeps its real CLI outcome and leaves the ownership store untouched. */
@@ -947,7 +946,7 @@ export class RexCore {
 	}
 
 	private async observeOwned(request: Extract<RexRequest, { op: "observe" }>, context: RexCallContext): Promise<RexResult> {
-		const { capped } = this.deadline(request.timeoutMs, "observation duration");
+		this.deadline(request.timeoutMs, "observation duration");
 		const maxBytes = boundedInteger(request.maxBytes ?? this.defaultCaptureBytes(), 256, 16384, "observation tail bytes");
 		context.budget?.check("observe");
 		const signal = context.signal ?? new AbortController().signal;
@@ -968,7 +967,7 @@ export class RexCore {
 				note: "Read-only independent snapshots, not an atomic view. Stored phase is unchanged. Child state describes only the direct child; status and output do not establish task success. Cancellation stops observation only. Field bytes share the configured output budget; unavailable fields remain explicit. Use exact recordId or a smaller page for partial reports.",
 			},
 		};
-		return capped ? this.cappedDeadline(response, request.timeoutMs) : response;
+		return response;
 	}
 
 	private async observeWorkRecord(record: OwnershipRecord, context: RexCallContext, maxBytes: number, budget: ObservationBudget): Promise<WorkReport> {

@@ -73,8 +73,9 @@ test("runtime validation enforces each operation shape", () => {
 		["rex_owned", { op: "observe", phase: "pending", offset: 1, limit: 4 }],
 		["rex_owned", { op: "reconcile", recordId: "call-1", release: true, note: "handled" }],
 		["rex_owned", { op: "cleanup", recordId: "call-1", forget: true }],
-		["rex_status", { op: "snapshot" }],
-		["rex_status", { op: "bind", target: { server: "unix:///rex", session, block: "block:00000000-0000-0000-0000-000000000002" } }],
+		["rex_status", { op: "snapshot", timeoutMs: 1000 }],
+		["rex_status", { op: "unbind", timeoutMs: 1000 }],
+		["rex_status", { op: "bind", timeoutMs: 1000, target: { server: "unix:///rex", session, block: "block:00000000-0000-0000-0000-000000000002" } }],
 	];
 	for (const [tool, args] of accepted) {
 		const declaration = toolSpecs.find((spec) => spec.name === tool);
@@ -128,6 +129,8 @@ test("runtime validation enforces each operation shape", () => {
 		["rex_owned", { op: "forget", recordId: "x" }, /op must be one of owned, observe, reconcile, cleanup/],
 		["rex_status", { op: "status" }, /op must be one of snapshot, bind, unbind/],
 		["rex_status", { op: "snapshot", target: { block: "" } }, /\/target\/block/],
+		["rex_status", { op: "snapshot", timeoutMs: 0 }, /\/timeoutMs/],
+		["rex_status", { op: "snapshot", timeoutMs: 300001 }, /\/timeoutMs/],
 		["rex_status", "snapshot", /arguments must be a JSON object/],
 		["rex_status", null, /arguments must be a JSON object/],
 	];
@@ -149,9 +152,12 @@ test("result validation keeps the envelope closed and nested result objects open
 		ok: true, outcome: "observed",
 		records: [{ recordId: "call", server: {}, resources: [], extra: "record metadata" }],
 		effects: { state: "none", extra: "effect metadata" },
-		coverage: { bounded: true, extra: "coverage metadata" },
+		coverage: { bounded: true, extra: "coverage metadata", deadline: { effectiveMs: 1000, elapsedMs: 1200, phase: "finalise", overrunMs: 200 } },
 	};
 	assert.equal(validate.check(result), true);
+	for (const invalid of [{ effectiveMs: 0 }, { elapsedMs: -1 }, { phase: "other" }, { overrunMs: -1 }]) {
+		assert.equal(validate.check({ ...result, coverage: { ...result.coverage, deadline: { ...result.coverage.deadline, ...invalid } } }), false);
+	}
 	assert.equal(validate.check({ ...result, extra: true }), false);
 	assert.equal(validate.check({ ...result, effects: { state: "other" } }), false);
 	assert.equal(validate.check({ ...result, coverage: { bounded: false } }), false);

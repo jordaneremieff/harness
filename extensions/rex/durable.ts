@@ -68,7 +68,7 @@ export function nativeOwnershipStore(
 	};
 }
 
-function nativeStatusStore(api: Durable.ToolExecutionApi, token: Durable.ConversationDocToken<StatusDocument>, ownerId: string, context: Context, budget?: RexBudget): StatusStore {
+export function nativeStatusStore(api: Durable.ToolExecutionApi, token: Durable.ConversationDocToken<StatusDocument>, ownerId: string, context: Context, budget?: RexBudget): StatusStore {
 	return {
 		read: async () => {
 			budget?.check("resolve");

@@ -92,7 +92,7 @@ export function ordinaryOwnershipStore(
 		if (ownerId !== owner || ordinaryOwner(ctx) !== owner) throw new Error("The Rex caller changed sessions. Reconcile in the original session.");
 	};
 	const read = async (ownerId: string, phase: "work" | "finalise" = "work"): Promise<OwnershipState> => {
-		budget?.check(phase === "finalise" ? "finalise" : "effect");
+		budget?.check(phase === "finalise" ? "finalise" : "resolve");
 		assertOwner(ownerId);
 		const entries = ctx.sessionManager.getEntries();
 		for (let index = entries.length - 1; index >= 0; index--) {

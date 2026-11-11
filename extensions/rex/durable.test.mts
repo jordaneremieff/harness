@@ -10,10 +10,11 @@ import { fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-work
 import * as Durable from "@earendil-works/pi-durable";
 import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { createRexBudget } from "./deadline.ts";
-import { nativeOwnershipStore, rexContribution } from "./durable.ts";
+import { nativeOwnershipStore, nativeStatusStore, rexContribution } from "./durable.ts";
 import { beginOwnership, requestDigest } from "./ownership.ts";
-import { RexCore, type RexRequest, type RexResult } from "./core.ts";
+import { deadlineResult, RexCore, type RexRequest, type RexResult } from "./core.ts";
 import type { CliResult, RexTransport } from "./transport.ts";
+import { rexStatus, type StatusBinding } from "./status.ts";
 
 const server = { endpoint: "unix:///synthetic-rex", hostId: "host", instanceId: "instance", selection: "test" };
 const target = { server, source: "explicit" as const, sessionId: "session:00000000-0000-0000-0000-000000000001", blockId: "block:00000000-0000-0000-0000-000000000002" };
@@ -54,6 +55,62 @@ function mockResult(request: RexRequest, callId: string): RexResult {
 	if (request.op === "native" && request.code === "fail") return { ...ok({ layer: "script" }), ok: false, outcome: "script_failed", error: "synthetic failure", effects: { state: "unknown" } };
 	return { ...ok({ operation: request.op }), target };
 }
+
+test("native ownership reads report resolution without an effect", async () => {
+	for (const op of ["owned", "observe", "reconcile"] as const) {
+		for (const late of [false, true]) {
+			let now = 0;
+			const budget = createRexBudget(1000, 300000, undefined, { now: () => now, schedule: () => () => {} });
+			const api = {
+				conversationId: 1,
+				snapshot: async () => { if (late) now = 900; return undefined; },
+				commit: async () => { throw new Error("A read does not commit."); },
+			} as unknown as Parameters<typeof nativeOwnershipStore>[0];
+			const store = nativeOwnershipStore(api, {} as Parameters<typeof nativeOwnershipStore>[1], "storage:1", 128, BACKGROUND_CONTEXT, budget);
+			const core = new RexCore({ store, transport: readTransport });
+			try {
+				const result = await core.execute({ op }, { ownerId: "storage:1", callId: "read", cwd: "/test", budget });
+				assert.equal(result.coverage.deadline?.phase, "resolve", `${op} late=${late}`);
+				assert.equal(result.effects.state, "none");
+				if (late) {
+					assert.equal(result.outcome, "timeout");
+					assert.equal((result.data as { phase: string }).phase, "resolve");
+				}
+			} finally { core.dispose(); budget.dispose(); }
+		}
+	}
+});
+
+test("native status commits retain confirmed binding effects past the cutoff", async () => {
+	let now = 0;
+	const document = { ownerId: "", binding: null as unknown };
+	let commits = 0;
+	const budget = createRexBudget(1000, 300000, undefined, { now: () => now, schedule: () => () => {} });
+	const api = {
+		conversationId: 1,
+		snapshot: async () => document,
+		commit: async (change: (tx: { doc(): Promise<typeof document> }) => Promise<void>) => {
+			await change({ doc: async () => document });
+			commits++;
+			now = 1200;
+		},
+	} as unknown as Parameters<typeof nativeStatusStore>[0];
+	const store = nativeStatusStore(api, {} as Parameters<typeof nativeStatusStore>[1], "storage:1", BACKGROUND_CONTEXT, budget);
+	try {
+		const value = await rexStatus({ op: "bind", target: { server: server.endpoint, session: target.sessionId, block: target.blockId } },
+			{ ownerId: "storage:1", callId: "bind", cwd: "/test", budget, signal: budget.signal },
+			{ dispose: () => {}, execute: async () => ({ ...ok({}), target }) }, store,
+			async () => { throw new Error("Binding does not inspect host activity."); });
+		const result = deadlineResult(value, budget, "bind");
+		assert.equal(commits, 1);
+		assert.equal((document.binding as StatusBinding).ownerId, "storage:1");
+		assert.equal(result.ok, true);
+		assert.equal(result.outcome, "status_bound");
+		assert.equal(result.effects.state, "confirmed");
+		assert.match(result.effects.note ?? "", /no terminal effect occurred/);
+		assert.deepEqual(result.coverage.deadline, { effectiveMs: 1000, elapsedMs: 1200, phase: "effect", overrunMs: 200 });
+	} finally { budget.dispose(); }
+});
 
 test("native ownership detaches work cancellation only for bounded mandatory settlement", async () => {
 	let now = 0;

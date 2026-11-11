@@ -829,11 +829,13 @@ test("configured low wait caps supply valid defaults and bound explicit timeouts
 	const cappedWait = await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 45000, target }, context);
 	assert.equal(cappedWait.ok, true);
 	assert.match(cappedWait.coverage.note ?? "", /requested 45000 ms deadline exceeded the configured 1000 ms cap/);
+	assert.equal(cappedWait.coverage.note?.match(/The requested 45000 ms deadline/g)?.length, 1);
 	const cappedNative = await f.core.execute({ op: "native", kind: "api", method: "new.capability", timeoutMs: 45000, target }, { ...context, callId: "native-explicit" });
 	assert.equal(cappedNative.ok, true);
 	assert.equal(durations.length, 2);
 	assert.ok(durations.every((duration) => duration > 0 && duration <= 900));
 	assert.match(cappedNative.coverage.note ?? "", /used 1000 ms/);
+	assert.equal(cappedNative.coverage.note?.match(/The requested 45000 ms deadline/g)?.length, 1);
 	assert.equal((await f.core.execute({ op: "wait", condition: "child_exit", timeoutMs: 300001, target }, context)).ok, false);
 	assert.equal(durations.length, 2);
 	assert.ok(durations.every((duration) => duration > 0 && duration <= 900));
@@ -1437,6 +1439,7 @@ test("observation cancellation and one capped page deadline stop reads, not term
 		const response = await pending;
 		assert.equal(response.outcome, stop === "cancel" ? "cancelled" : "timeout");
 		assert.match(response.coverage.note ?? "", /configured 1000 ms cap/);
+		assert.equal(response.coverage.note?.match(/The requested 300000 ms deadline/g)?.length, 1);
 		assert.equal(maximum, 1);
 		assert.equal(active, 0);
 		assert.equal(f.transport.calls.length, count, "no later native read starts after interruption");

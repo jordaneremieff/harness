@@ -50,7 +50,7 @@ function explicitBinding(target: TargetIntent | undefined): target is TargetInte
 async function unbindStatus(request: StatusRequest, store: StatusStore): Promise<RexResult> {
 	if (request.target) return failure("Unbind acts on this caller's binding and accepts no target.");
 	await store.write(undefined);
-	return { ok: true, outcome: "status_unbound", effects: noEffects, coverage, data: { terminalRecordsCleared: false, meaning: "Only this caller's inspection binding was removed. No emitter or terminal work stopped." } };
+	return { ok: true, outcome: "status_unbound", effects: { state: "confirmed", note: "Only this caller's inspection binding was removed; no terminal effect occurred." }, coverage, data: { terminalRecordsCleared: false, meaning: "Only this caller's inspection binding was removed. No emitter or terminal work stopped." } };
 }
 
 async function bindStatus(request: StatusRequest, context: RexCallContext, core: RexExecutor, store: StatusStore): Promise<RexResult> {
@@ -64,7 +64,7 @@ async function bindStatus(request: StatusRequest, context: RexCallContext, core:
 	context.budget?.check("effect");
 	if (context.signal?.aborted) return failure("The status call was cancelled before binding.", "cancelled");
 	await store.write(binding);
-	return { ok: true, outcome: "status_bound", target: binding.target, effects: noEffects, coverage: statusCoverage(verification.coverage), data: { binding, reportedStatus: verification.data, meaning: "The binding selects status inspection only. It grants neither resource ownership nor a terminal output route." } };
+	return { ok: true, outcome: "status_bound", target: binding.target, effects: { state: "confirmed", note: "Only this caller's inspection binding was stored; no terminal effect occurred." }, coverage: statusCoverage(verification.coverage), data: { binding, reportedStatus: verification.data, meaning: "The binding selects status inspection only. It grants neither resource ownership nor a terminal output route." } };
 }
 
 async function statusSnapshot(request: StatusRequest, context: RexCallContext, core: RexExecutor, store: StatusStore, activity: () => Promise<HostActivity>): Promise<RexResult> {

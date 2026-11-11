@@ -23,13 +23,15 @@ test("status binding requires explicit verified IDs and never sends terminal inp
 	assert.equal(f.requests.length, 0);
 	const bound = await rexStatus({ op: "bind", target: { server: target.server.endpoint, session: target.sessionId, block: target.blockId } }, call, f.core, f.store, activity);
 	assert.equal(bound.ok, true);
+	assert.equal(bound.effects.state, "confirmed");
 	assert.equal(f.binding()?.ownerId, call.ownerId);
 	const snapshot = await rexStatus({ op: "snapshot" }, call, f.core, f.store, activity);
 	assert.equal(snapshot.ok, true);
 	assert.match(JSON.stringify(snapshot.data), /no terminal-output or status setter/);
 	assert.equal((snapshot.data as { hostActivity: HostActivity }).hostActivity.state, "active");
 	assert.ok(f.requests.every((request) => request.op === "resolve" || request.op === "inspect"));
-	await rexStatus({ op: "unbind" }, call, f.core, f.store, activity);
+	const unbound = await rexStatus({ op: "unbind" }, call, f.core, f.store, activity);
+	assert.equal(unbound.effects.state, "confirmed");
 	assert.equal(f.binding(), undefined);
 });
 

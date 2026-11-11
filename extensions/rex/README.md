@@ -223,7 +223,8 @@ resolution, nested CLI calls, observation and cleanup. `timeoutMs` defaults to 3
 or the configured `maxWaitMs` cap, whichever is lower. A larger request uses the cap and
 reports the effective duration. The same deadline applies to nested status checks and
 capture continuations; a new subprocess does not restart it. The operation reserves
-part of that allowance for process termination and state finalisation.
+part of that allowance for process termination and state finalisation. Ownership store reads
+use the `resolve` phase in both hosts; they do not perform an effect.
 
 At the deadline, Rex stops its CLI or observer process, not the independent terminal
 program. `timeout` means the deadline ended; `cancelled` means the caller or host
@@ -476,8 +477,10 @@ full block ID. The extension resolves the IDs and verifies status readback befor
 retaining the binding. Later snapshots recheck the server host and instance.
 The binding persists for this caller until `unbind`; forks start without it.
 The binding grants neither resource ownership nor attachment. `unbind` removes
-only that inspection binding and clears no terminal records. No background
-watcher exists for this capability.
+only that inspection binding and clears no terminal records. Successful binding writes report
+`effects.state: "confirmed"` for that local state change, not a terminal effect. A commit that
+finishes after the cutoff retains its confirmed outcome and reports deadline coverage.
+No background watcher exists for this capability.
 
 Pi 1.4.0's ordinary interactive `ProgramStatusReporter` already owns real OSC 7501
 run, compaction, dialog and settled-state reports. This extension does not emit a
@@ -550,6 +553,10 @@ I/O. A stale request withdraws its own unstarted claim. A /name or RPC name chan
 authority over a manual Rex label. Rex supplies no conditional setter, so a concurrent edit after
 the final observation still has a race with the automatic write.
 
+A session switch aborts the old transport and advances its generation; the new session starts
+from fresh eligibility checks. Lost route or foreground preserves the label and withdraws only
+unstarted claims. Already dispatched effects remain uncertain.
+
 Session start and every interactive input request a fresh serialized update. A session name change
 requests an update only when its sanitised label differs from the label already requested, so an
 unchanged name event runs no Rex process. Each update rechecks the server identity, the foreground
@@ -600,8 +607,9 @@ Shutdown waits at most two seconds for the active run. A lock stays held while i
 operation can still complete; shutdown never releases it. A step that belongs to a run makes no
 mutation once that run is cancelled, including a step that acquires the lock after cancellation: it
 releases the lock and changes nothing. Withdrawal of a claim whose write never began is cleanup. It
-still runs after cancellation, within the same bounded acquisition, and changes only a record that
-still carries its own `attempt`.
+makes one nonblocking lock attempt even after cancellation and changes only a record that still
+carries its own `attempt`. A contended withdrawal stays pending until the next real demand or the
+single shutdown attempt.
 
 One limit remains. Rex exposes no conditional label setter, so a simultaneous manual edit between
 the final `session.view` read and `session.set_window_label` can receive the automatic label.

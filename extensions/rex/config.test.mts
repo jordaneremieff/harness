@@ -3,7 +3,7 @@ import test from "node:test";
 import { compile } from "@earendil-works/pi-schema";
 import { SessionManager, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { ordinaryOwnershipStore, ordinaryStatusStore, resultChannels, serialiseOwners } from "./config.ts";
-import { boundResult, DEFAULT_MAX_OUTPUT_BYTES, resultByteLimit, type RexResult } from "./core.ts";
+import { boundResult, DEFAULT_MAX_OUTPUT_BYTES, resultByteLimit, RexCore, type RexResult } from "./core.ts";
 import { createRexBudget } from "./deadline.ts";
 import { settings } from "./settings.ts";
 import { beginOwnership, initialOwnershipState, requestDigest, type OwnershipRecord } from "./ownership.ts";
@@ -87,6 +87,30 @@ function fixture(sessionFile?: string) {
 		switchTo: (next: string) => { id = next; },
 	};
 }
+
+test("ordinary ownership reads report resolution without an effect", async () => {
+	for (const op of ["owned", "observe", "reconcile"] as const) {
+		for (const late of [false, true]) {
+			const f = fixture();
+			let now = 0;
+			const budget = createRexBudget(1000, 300000, undefined, { now: () => now, schedule: () => () => {} });
+			const entries = f.ctx.sessionManager.getEntries.bind(f.ctx.sessionManager);
+			f.ctx.sessionManager.getEntries = () => { if (late) now = 900; return entries(); };
+			const store = ordinaryOwnershipStore(f.pi, f.ctx, 128, serialiseOwners(), budget);
+			const core = new RexCore({ store });
+			try {
+				const result = await core.execute({ op }, { ownerId: "ordinary:one", callId: "read", cwd: "/test", budget });
+				assert.equal(result.coverage.deadline?.phase, "resolve", `${op} late=${late}`);
+				assert.equal(result.effects.state, "none");
+				if (late) {
+					assert.equal(result.outcome, "timeout");
+					assert.equal((result.data as { phase: string }).phase, "resolve");
+				}
+				assert.equal(f.entries.length, 0);
+			} finally { core.dispose(); budget.dispose(); }
+		}
+	}
+});
 
 test("ordinary ownership commits before the update resolves and serialises concurrent changes", async () => {
 	const f = fixture();
