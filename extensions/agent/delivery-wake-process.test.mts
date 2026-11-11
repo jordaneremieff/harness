@@ -35,6 +35,9 @@ function fixture(t: TestContext, idleMinutes = "60") {
 	const cleanup: Array<() => void | Promise<void>> = [];
 	t.after(async () => { for (const close of cleanup.reverse()) await close(); });
 	const f = runtimeFixture(t), connections = eventLog<HostConnection>();
+	const paths = hostPaths(f.metadata);
+	assert.ok(paths.socket.startsWith(`${f.agentDir}/`), "fixture host socket must remain in its private root");
+	t.diagnostic(`Private host socket: ${paths.socket}; claim: ${paths.claim}`);
 	const env = { ...f.env("answer"), PI_AGENT_IDLE_MINUTES: idleMinutes, PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root };
 	const manager = new AgentManager({ root: f.root, agentDir: f.agentDir, packageDir: f.metadata.packageDir, createPrimary: observerChannel, acquire: async (metadata, options) => {
 		const client = await acquireHost(metadata, { ...options, env });
@@ -93,17 +96,25 @@ for (const kind of ["parked", "terminal"] as const) it(`retires a ${kind}-only p
 it("resumes retained active delivery after an owned failed exit on the same inode", { timeout: 20000 }, async t => {
 	const f = fixture(t, "60"), owner = randomUUID();
 	const channelOptions = { id: owner, cwd: f.cwd, sessionsRoot: f.root, deliver: () => { throw new Error("temporary receiver failure"); }, promptTrust: async () => undefined };
+	assert.ok(Buffer.byteLength(`${f.root}/.primaries/${owner}.sock`) <= 100, "fixture primary socket must remain in its private root");
 	const channel = await createPrimaryChannel(channelOptions);
+	assert.ok(channel.socketPath.startsWith(`${f.root}/`));
 	f.cleanup(() => channel.close());
 	await seed(f, owner);
 	const source = await open(f);
 	assert.equal(f.manager.catalog.read(f.metadata.storageId).recoveryDue, true);
 	const inode = statSync(hostPaths(f.metadata).claim).ino;
-	process.kill(source.pid, "SIGKILL");
-	assert.ok(source.ownedExit);
-	await source.ownedExit;
-	await f.connections.waitForCount(2, 10000);
-	assert.notEqual(f.connections[1]?.pid, source.pid);
+	const originalPid = source.pid;
+	const ownedExit = source.ownedExit;
+	assert.ok(ownedExit);
+	const duplicate = await acquireHost(f.metadata, { retryAttempts: 0, env: f.env("answer") });
+	f.cleanup(() => duplicate.close());
+	assert.equal(duplicate.pid, originalPid);
+	f.connections.push(duplicate);
+	const beforeKill = f.connections.length;
+	process.kill(originalPid, "SIGKILL");
+	assert.equal((await ownedExit).failed, true);
+	await f.connections.waitFor(events => events.slice(beforeKill).some(client => client.pid > 0 && client.pid !== originalPid), 10000);
 	assert.equal(statSync(hostPaths(f.metadata).claim).ino, inode);
 	const retained = await observeDurableStorage(f.metadata, "receipts", { ownerId: owner }) as { reports: Array<{ requestId: string }> };
 	assert.equal(retained.reports.filter(row => row.requestId === "parked-result").length, 1);
