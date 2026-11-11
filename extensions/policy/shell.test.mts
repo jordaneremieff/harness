@@ -82,7 +82,7 @@ describe("here-document delimiter evidence", () => {
 		}
 	});
 	it("retains the real end line behind quotes and parameter spans in literal data", () => {
-		for (const cover of ["echo '\nEOF\ngit push\n: '\n", "echo ${x:-\nEOF\ngit push\n}\n"]) {
+		for (const cover of ["echo '\nEOF\ngit push\n: '\n", `echo \${x:-\nEOF\ngit push\n}\n`]) {
 			const parsed = parseShellEvidence(`cat <<\\EOF\n EOF\n${cover}`);
 			assert.ok(parsed.statements.flat().some((stage) => stage.command === "git"));
 		}

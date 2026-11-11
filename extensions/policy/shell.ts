@@ -287,23 +287,25 @@ function flushWord(state: ReaderState): void {
 	state.pendingFd = null;
 }
 
+function afterHeredocBody(text: string, from: number, heredoc: Heredoc): number | undefined {
+	let position = from;
+	while (position < text.length) {
+		const newline = text.indexOf("\n", position);
+		const end = newline === -1 ? text.length : newline;
+		const raw = text.slice(position, end);
+		const line = heredoc.stripTabs ? raw.replace(/^\t+/, "") : raw;
+		position = newline === -1 ? end : end + 1;
+		if (line === heredoc.delimiter) return position;
+	}
+	return undefined;
+}
+
 function afterHeredocBodies(state: ReaderState, from: number): number {
 	let position = from;
-	for (const { delimiter, stripTabs } of state.heredocs) {
-		let found = false;
-		while (position < state.text.length) {
-			const newline = state.text.indexOf("\n", position);
-			const end = newline === -1 ? state.text.length : newline;
-			let start = position;
-			if (stripTabs) while (state.text[start] === "\t" && start < end) start++;
-			const line = state.text.slice(start, end);
-			position = newline === -1 ? end : end + 1;
-			if (line === delimiter) {
-				found = true;
-				break;
-			}
-		}
-		if (!found) state.budget.reasons.add("malformed-shell");
+	for (const heredoc of state.heredocs) {
+		const end = afterHeredocBody(state.text, position, heredoc);
+		if (end === undefined) state.budget.reasons.add("malformed-shell");
+		position = end ?? state.text.length;
 	}
 	state.heredocs.length = 0;
 	return position;
@@ -456,15 +458,19 @@ function processSubstitutionAction(state: ReaderState): ReaderAction {
 	return { kind: "continue" };
 }
 
+function readHeredocOperator(state: ReaderState): void {
+	state.index += 2;
+	while (state.text.slice(state.index, state.index + 2) === "\\\n") state.index += 2;
+	state.pendingHeredoc = state.text[state.index] === "-" ? "<<-" : "<<";
+	if (state.pendingHeredoc === "<<-") state.index++;
+}
+
 function applyRedirectOperator(state: ReaderState, char: string): void {
 	if (char === "<" && state.text.slice(state.index, state.index + 3) === "<<<") {
 		state.pendingRedirect = "in";
 		state.index += 3;
 	} else if (char === "<" && state.text[state.index + 1] === "<") {
-		state.index += 2;
-		while (state.text.slice(state.index, state.index + 2) === "\\\n") state.index += 2;
-		state.pendingHeredoc = state.text[state.index] === "-" ? "<<-" : "<<";
-		if (state.pendingHeredoc === "<<-") state.index++;
+		readHeredocOperator(state);
 	} else {
 		state.pendingRedirect = char === "<" ? "in" : "out";
 		if (state.text[state.index + 1] === char || state.text[state.index + 1] === "&" || state.text[state.index + 1] === "|")
