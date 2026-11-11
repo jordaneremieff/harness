@@ -14,9 +14,9 @@ import { AgentCatalog, hostMetadata, type CatalogRecord } from "./catalog.ts";
 import { writeDeliveryWake } from "./delivery-wake.ts";
 import { publishCatalogChange } from "./catalog-events.ts";
 import { dashboardText } from "./dashboard-roster.ts";
-import { connectHost, type HostConnection, type OwnedHostExit } from "./host-client.ts";
+import { connectHost, HostBusyEndpointUnavailableError, HostReadinessUnavailableError, type HostConnection, type OwnedHostExit } from "./host-client.ts";
 import { runHost } from "./host-process.ts";
-import { hostPaths, type HostMetadata } from "./host-protocol.ts";
+import { HostError, hostPaths, type HostMetadata } from "./host-protocol.ts";
 import { HOST_CONTRACT, contractRefusal, type RuntimeContract } from "./version-contract.ts";
 import { eventLog, waitForConnectionClose } from "./host-fixture.mts";
 import { AgentManager, type AgentManagerOptions } from "./manager.ts";
@@ -1188,6 +1188,63 @@ it("returns a failed attach configuration instead of a recovery status", async (
 		assert.equal(outcome.outcome, "failed");
 		assert.equal(outcome.recovery, undefined);
 	} finally { manager.close(); }
+});
+
+for (const [kind, error] of [
+	["busy", new HostBusyEndpointUnavailableError("private-storage", new Error("endpoint unavailable"))],
+	["owned", new HostReadinessUnavailableError(new Error("owned launch has no exit"))],
+	["protocol", new HostError("Host identity is malformed", "invalid")],
+	["abort", Object.assign(new Error("Acquisition aborted"), { name: "AbortError" })],
+	["other", new Error("Host launch failed")],
+] as const) it(`qualifies the initial recovery acquisition outcome: ${kind}`, { timeout: 10000 }, async t => {
+	const root = fixtureRoot(t);
+	let acquisitions = 0;
+	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory, acquire: async () => { acquisitions++; throw error; } }));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	await manager.registerPrimary("owner-1", fakePrimary(new AbortController().signal).client);
+	await settleCatalogueRecovery(manager);
+	const page = await manager.dashboardPage(), row = page.rows.find(value => value.id === record.storageId);
+	const status = await manager.status() as { failures: Array<{ storageId: string; error: string }> };
+	assert.equal(acquisitions, 1, "qualification adds no acquire or retry");
+	if (kind === "busy") {
+		assert.match(row?.ownerLabel ?? "", /runner reported BUSY.*no native host endpoint was verified/u);
+		assert.equal(row?.health?.lastError, undefined);
+		assert.deepEqual(status.failures, []);
+	} else {
+		assert.equal(row?.health?.lastError, error.message);
+		assert.deepEqual(status.failures, [{ storageId: record.storageId, error: error.message }]);
+	}
+});
+
+it("a BUSY recovery note preserves an earlier genuine error until successful recovery", { timeout: 10000 }, async t => {
+	const root = fixtureRoot(t);
+	let acquisitions = 0;
+	const manager = new AgentManager(managerOptions(root, { createPrimary: primaryFactory().factory, acquire: async metadata => {
+		acquisitions++;
+		if (acquisitions === 1) throw new Error("Owned launch failed");
+		if (acquisitions === 2) throw new HostBusyEndpointUnavailableError(metadata.storageId, new Error("endpoint unavailable"));
+		return fakeConnection(metadata, async () => ({ workPending: true, deliveriesActive: true }));
+	} }));
+	t.after(() => manager.close());
+	const record = createRecord(manager, root);
+	manager.catalog.markRecoveryDue(record.storageId, true);
+	for (const owner of ["first", "second"]) {
+		await manager.registerPrimary(owner, fakePrimary(new AbortController().signal).client);
+		await settleCatalogueRecovery(manager);
+	}
+	const busy = (await manager.dashboardPage()).rows.find(row => row.id === record.storageId);
+	assert.match(busy?.ownerLabel ?? "", /runner reported BUSY/u);
+	assert.equal(busy?.health?.lastError, "Owned launch failed");
+	assert.deepEqual((await manager.status() as { failures: unknown[] }).failures, [{ storageId: record.storageId, error: "Owned launch failed" }]);
+	await manager.registerPrimary("third", fakePrimary(new AbortController().signal).client);
+	await settleCatalogueRecovery(manager);
+	const recovered = (await manager.dashboardPage()).rows.find(row => row.id === record.storageId);
+	assert.equal(recovered?.health?.lastError, undefined);
+	assert.doesNotMatch(recovered?.ownerLabel ?? "", /reported BUSY/u);
+	assert.deepEqual((await manager.status() as { failures: unknown[] }).failures, []);
+	assert.equal(acquisitions, 3);
 });
 
 for (const cached of [false, true]) it(`keeps a live host's recovery contract difference neutral (${cached ? "cached" : "transient"} link)`, { timeout: 15000 }, async (t) => {

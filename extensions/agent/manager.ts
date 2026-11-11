@@ -28,7 +28,7 @@ import { readRelatedEfforts, type EffortPresencePage, type EffortReadResources }
 import { createPrimaryLocationResolver, type PrimaryLocationResolver } from "./effort-location.ts";
 import type { ProjectTrustDecision } from "./trust-support.ts";
 import type { DeliveryOrigin } from "./durable-controls.ts";
-import { acquireHost, connectHost, HostEndpointUnavailableError, type HostConnection, type HostObservationListener } from "./host-client.ts";
+import { acquireHost, connectHost, HostBusyEndpointUnavailableError, HostEndpointUnavailableError, type HostConnection, type HostObservationListener } from "./host-client.ts";
 import { HostError, hostPaths, hostRequestVersionError, type HostMetadata } from "./host-protocol.ts";
 import { observeClaim, type ClaimObservation } from "./claims.ts";
 import { PlaceBook } from "./places.ts";
@@ -1218,6 +1218,11 @@ export class AgentManager {
 			await this.monitorRecovery(record.storageId, client, primary);
 		} catch (error) {
 			this.recovering.delete(record.storageId);
+			if (error instanceof HostBusyEndpointUnavailableError) {
+				this.recoveryNotes.set(record.storageId, error.message);
+				void this.refreshFooter();
+				return;
+			}
 			this.recordRecoveryError(record.storageId, errorText(error));
 		}
 	}

@@ -8,12 +8,13 @@ import { fileURLToPath } from "node:url";
 import type { JsonValue } from "@earendil-works/chord/json";
 import { connectTransport, createTransportServer } from "../../transport/index.ts";
 import { HOST_SOCKET_PATH_LIMIT_BYTES, hostPaths } from "./host-protocol.ts";
-import { acquireHost, connectHost, observeOwnedHostExit, snapshotHost, waitForHostRelease, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
+import { acquireHost, connectHost, HostBusyEndpointUnavailableError, HostReadinessUnavailableError, observeOwnedHostExit, snapshotHost, waitForHostRelease, type HostConnection, type HostLaunchOptions, type HostObservationScope } from "./host-client.ts";
 import { fixtureMetadata, readFixtureState, eventLog, waitForFixtureState, waitForConnectionClose } from "./host-fixture.mts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { HOST_CONTRACT, type RuntimeContract } from "./version-contract.ts";
 import { markerFixture } from "./durable-runtime-fixture.mts";
 import { runHost } from "./host-process.ts";
+import { tryNativeWriterLease } from "./native-lease.ts";
 
 const fixturePath = fileURLToPath(new URL("./host-fixture.mts", import.meta.url));
 
@@ -410,6 +411,26 @@ it("a busy runner causes one endpoint negotiation without a native runtime open"
 	t.after(() => client.close());
 	assert.equal(JSON.parse(readFileSync(evidence, "utf8")).calls, 1);
 	assert.equal(client.ownedExit, undefined, "busy supplies no owned writer identity");
+});
+
+it("reports a real BUSY lease without a verified endpoint as distinct unavailable evidence", { timeout: 10000 }, async t => {
+	const root = fixtureRoot(t), metadata = fixtureMetadata(root), paths = hostPaths(metadata);
+	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
+	const held = tryNativeWriterLease(paths.claim);
+	assert.equal(held.kind, "held");
+	if (held.kind !== "held") throw new Error("The private fixture lease was not acquired");
+	t.after(() => held.lease.release());
+	await assert.rejects(acquireHost(metadata, launch({ launchTimeoutMs: 3000 })), error => {
+		assert.ok(error instanceof HostBusyEndpointUnavailableError);
+		assert.equal(error instanceof HostReadinessUnavailableError, false);
+		assert.match(error.message, /runner reported BUSY.*no native host endpoint was verified/u);
+		assert.doesNotMatch(error.message, /owned runner remains unconfirmed|live owner|will succeed/u);
+		return true;
+	});
+	const exited = observeOwnedHostExit(metadata);
+	assert.ok(exited);
+	await exited;
+	assert.doesNotThrow(() => held.lease.assertNamed(), "the original held descriptor remains valid");
 });
 
 it("closing the connection with admitted work does not cancel it", { timeout: 30000 }, async (t) => {

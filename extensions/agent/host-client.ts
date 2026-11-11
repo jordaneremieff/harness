@@ -276,6 +276,13 @@ export class HostEndpointUnavailableError extends HostError {
 	}
 }
 
+export class HostBusyEndpointUnavailableError extends HostError {
+	constructor(storageId: string, cause: unknown) {
+		super(`A runner reported BUSY for ${storageId}; no native host endpoint was verified.`, "unavailable", { cause });
+		this.name = "HostBusyEndpointUnavailableError";
+	}
+}
+
 export class HostReadinessUnavailableError extends HostError {
 	constructor(cause: unknown) {
 		super("An owned runner remains unconfirmed. Use agent_attach after its endpoint is available; no replacement was started.", "unavailable", { cause });
@@ -453,7 +460,7 @@ async function attachBusyLink(metadata: HostMetadata, deadline: number, signal?:
 	try { return await attachLink(metadata, deadline, signal); }
 	catch (error) {
 		if (signal?.aborted || error instanceof HostError || isChordError(error) || error instanceof PluginError) throw error;
-		throw new HostReadinessUnavailableError(error);
+		throw new HostBusyEndpointUnavailableError(metadata.storageId, error);
 	}
 }
 
