@@ -1305,7 +1305,7 @@ describe("dispatch and telemetry", () => {
 		const input = {
 			get command() {
 				reads++;
-				return reads === 1 ? "cat notes.md" : "npm test";
+				return reads === 1 ? "find src -type f | head -n 10" : "npm test";
 			},
 		};
 		const blocked = (await pi.emit("tool_call", { toolName: "bash", toolCallId: "c1", input }, ctx)) as {
@@ -1314,7 +1314,7 @@ describe("dispatch and telemetry", () => {
 		};
 		assert.equal(reads, 1);
 		assert.equal(blocked.block, true);
-		assert.match(blocked.reason, /read tool/);
+		assert.match(blocked.reason, /Rule form\.find-discovery:/);
 		await pi.emit(
 			"tool_execution_end",
 			{ toolCallId: "c1", isError: true, result: { content: [{ type: "text", text: blocked.reason }] } },
@@ -1323,17 +1323,17 @@ describe("dispatch and telemetry", () => {
 		await pi.emit("session_shutdown", {}, ctx);
 		const records = await telemetry(dir);
 		assert.equal(records.length, 1);
-		assert.deepEqual(records[0].classes, ["routing.cat-read"]);
+		assert.deepEqual(records[0].classes, ["form.find-discovery"]);
 		assert.equal(records[0].blocked, true);
 		assert.equal(records[0].ruleStoreDegraded, false);
-		assert.equal(records[0].captured, "cat notes.md");
+		assert.equal(records[0].captured, "find src -type f | head -n 10");
 	});
 
 	it("prevents a disabled package rule from affecting enforcement", async () => {
 		const { pi, ctx } = await setup("enforce");
-		await pi.command().handler("disable routing.cat-read intentional exception", ctx as never);
+		await pi.command().handler("disable form.find-discovery intentional exception", ctx as never);
 		assert.equal(
-			await pi.emit("tool_call", { toolName: "bash", toolCallId: "c1", input: { command: "cat notes.md" } }, ctx),
+			await pi.emit("tool_call", { toolName: "bash", toolCallId: "c1", input: { command: "find src -type f | head -n 10" } }, ctx),
 			undefined,
 		);
 	});

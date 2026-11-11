@@ -23,8 +23,8 @@ export interface ShellRule extends PredicateRule {
 const READ_TOOL_NOTE = "Use the read tool for file contents, one call per file: read path=README.md.";
 const READ_SLICE_NOTE =
 	"Use the read tool for a file slice, one call per file: read path=src/index.ts offset=40 limit=20.";
-const OUTPUT_BOUND_NOTE = "Bound the output with a cap that stops the producer: | head -n 50.";
-const FD_BOUND_NOTE = "Bound fd with its own result cap: fd --max-results 50, or | head -n 50.";
+const OUTPUT_BOUND_NOTE = "No recognised producer stop is present. Bound the selected input or traversal. Use a stopping streaming cap only when it preserves the task; a cap after global sorting or aggregation limits display, not upstream work.";
+const FD_BOUND_NOTE = "fd has no recognised producer cap. For plain discovery, use --max-results N. This option conflicts with --list-details, --exec and --exec-batch. For those forms, bound the selected input or traversal. Use a streaming cap only when it preserves the requested result. A complete sorted result needs all selected input; head after sort limits display, not discovery.";
 const RG_FILES_BOUND_NOTE = "Bound rg --files with | head -n 50; --max-count does not bound a file listing.";
 const SEARCH_SCOPE_NOTE = "Scope the search to a path, or cap the results: rg -n pattern src/, or rg -m 20 -n pattern.";
 
@@ -499,7 +499,7 @@ const PREDICATE_RULES: PredicateRule[] = [
 	},
 	{
 		id: "bounds.false-cap",
-		note: "This cap does not stop its producer. Bound the producer itself: head -n 50 before sort.",
+		note: "The downstream cap follows a full-input step and does not stop this producer early. Bound the selected input or traversal first. Move the cap before that step only when the changed input preserves the task. Do not use that rewrite for global sorting or totals.",
 		matches: ({ statement, stage, index }) =>
 			(stage.command === "find" ||
 				isRecursiveGrep(stage) ||

@@ -6,7 +6,8 @@ import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { compile } from "@earendil-works/pi-schema";
 import { authoringGuide, checkDraft, type DraftCase } from "./authoring.ts";
-import { RuleRegistry, type RuleSnapshot } from "./local-rules.ts";
+import { PACKAGE_CATALOG } from "./catalog.ts";
+import { namedDataRevision, RuleRegistry, type RuleSnapshot } from "./local-rules.ts";
 import type { FactsProgram } from "./program.ts";
 import type { PolicyRecord } from "./record.ts";
 import { PolicyRuntime } from "./runtime.ts";
@@ -122,6 +123,53 @@ function noMismatches(result: Check) {
 		for (const row of entry.rows) assert.deepEqual(row.mismatches, []);
 	}
 }
+
+test("guided command replacements admit without changing their synthetic registry", async () => {
+	const f = fixture();
+	const rows = PACKAGE_CATALOG.filter((row) => row.matcher.kind === "code" && row.effect === "steer");
+	for (const row of rows) f.snapshot.records.set(row.id, {
+		id: row.id, source: { kind: "package" }, matcher: row.matcher, definition: { ...row, state: "active" },
+		matcherAvailable: true, staleOverride: false,
+	});
+	const before = JSON.stringify([...f.snapshot.records]);
+	for (const row of rows) {
+		assert.equal(row.matcher.kind, "code");
+		if (row.matcher.kind !== "code") continue;
+		noMismatches(await check({ operation: "replace", id: row.id, expectedRevision: row.revision,
+			purpose: row.purpose, authority: row.authority, reason: "Keep command preferences as guidance.",
+			note: row.note, predicate: row.matcher.key,
+		}, [], f, { effect: "steer" }));
+	}
+	const fd = rows.find((row) => row.id === "bounds.fd-uncapped");
+	assert.ok(fd);
+	const result = await check({ operation: "replace", id: fd.id, expectedRevision: fd.revision,
+		purpose: fd.purpose, authority: fd.authority, reason: "Preserve result semantics.", note: fd.note,
+		predicate: "bounds.fd-uncapped", scope: { cwdPrefixes: ["/selected"] },
+	}, [
+		{ name: "details", scope: { cwd: "/selected" }, steps: [{ ...call("fd -l . design"), expect: { denied: false, guidance: true } }] },
+		{ name: "producer cap", scope: { cwd: "/selected" }, steps: [{ ...call("fd --max-results 2 . design"), expect: { denied: false, guidance: false } }] },
+		{ name: "outside scope", scope: { cwd: "/elsewhere" }, steps: [{ ...call("fd -l . design"), expect: { denied: false, guidance: false } }] },
+	], f, { effect: "steer" });
+	noMismatches(result);
+	assert.equal(JSON.stringify([...f.snapshot.records]), before);
+	assert.equal(f.snapshot.pending.length, 0);
+	assert.equal(f.executions(), 0);
+});
+
+test("substitute does not insert an absent timeout from a null mapping", async () => {
+	const f = fixture();
+	const table = { name: "timeout-defaults", kind: "table" as const, rows: [{ key: null, value: 30 }],
+		source: "synthetic", capturedAt: 0, revision: "000000000000" };
+	table.revision = namedDataRevision(table);
+	f.snapshot.data.set(table.name, table);
+	const result = await check(draft({ phase: "input", selector: { tools: ["bash"] },
+		when: { not: { op: "exists", path: ["input", "timeout"] } }, data: [table.name],
+		action: { kind: "substitute", path: ["timeout"], table: table.name }, onUnavailable: "skip",
+	}), [{ name: "missing timeout", steps: [{ ...call("echo safe"), expect: { correctedInput: false, denied: false } }] }], f);
+	noMismatches(result);
+	assert.deepEqual(result.cases[0].rows[0].input, { command: "echo safe" });
+	assert.equal(f.executions(), 0);
+});
 
 test("draft checks share proposal admission without proposal or data writes", async (t) => {
 	const dir = await mkdtemp(join(tmpdir(), "policy-authoring-"));

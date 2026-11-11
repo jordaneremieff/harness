@@ -284,6 +284,40 @@ function shellRule(effect: "block" | "steer" = "block", key = "routing.cat-read"
 		staleOverride: false,
 	};
 }
+describe("starter intervention effects", () => {
+	it("preserves explicit effects for synthetic command rules", async (t) => {
+		const alpha = rule("synthetic.alpha", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "skip" });
+		alpha.matcher = { kind: "declarative", language: "command-shape/v1", spec: { command: "alpha" } };
+		const beta = rule("synthetic.beta", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
+		beta.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny", spec: { command: "beta" } };
+		const f = fixture([alpha, beta], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+		t.after(() => f.writer.close());
+		assert.match((await f.call("alpha", { command: "alpha 1" }))?.reason ?? "", /Rule synthetic\.alpha:/);
+		assert.match((await f.call("beta", { command: "beta" }))?.reason ?? "", /Rule synthetic\.beta:/);
+		assert.equal(await f.call("other", { command: "gamma" }), undefined);
+		assert.equal(await f.call("operand", { command: "echo alpha" }), undefined);
+	});
+	it("keeps slow traversal gates but delivers preferences only after success", async (t) => {
+		const rows = PACKAGE_CATALOG.filter((row) => row.matcher.kind === "code").map((row): RuleRecord => ({
+			id: row.id, source: { kind: "package" }, matcher: row.matcher,
+			definition: { ...row, state: "active" }, matcherAvailable: true, staleOverride: false,
+		}));
+		const f = fixture(rows, "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+		t.after(() => f.writer.close());
+		f.pi.getAllTools = () => [
+			{ name: "bash", description: "Synthetic command", parameters: obj({ command: str() }, { open: true }) },
+			{ name: "read", description: "Synthetic reader", parameters: obj({ path: str() }, { open: true }) },
+		];
+		f.pi.getActiveTools = () => ["bash", "read"];
+		assert.match((await f.call("traversal", { command: "find src -type f" }))?.reason ?? "", /Rule form\.find-discovery:/);
+		assert.equal(await f.call("failed-reader", { command: "cat notes.md" }), undefined);
+		assert.equal(await f.result("failed-reader", true), undefined);
+		assert.equal(await f.call("reader", { command: "cat notes.md" }), undefined);
+		assert.match(JSON.stringify(await f.result("reader")), /read tool for file contents/);
+		assert.equal(await f.call("details", { command: "fd -t f -l . design findings records | awk '{print $5, $9}' | sort -k2 | head -n 200" }), undefined);
+	});
+});
+
 describe("separate denial evidence", () => {
 	it("admits a supported harmless loop but denies unknown execution without a false match", async (t) => {
 		const hold = rule("local.push", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
@@ -437,7 +471,7 @@ describe("compact command inspection", () => {
 			assert.equal(preview.decision.denied, false);
 			assert.deepEqual(preview.input.evaluations, []);
 			assert.deepEqual(preview.results, []);
-			assert.equal(preview.nonMatchingRules, records.filter((row) => row.matcher.kind === "code").length + 1);
+			assert.equal(preview.nonMatchingRules, records.filter((row) => row.matcher.kind === "code" && row.definition.effect === "block").length + 1);
 		}
 	});
 

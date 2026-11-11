@@ -36,6 +36,8 @@ import { PolicyProposeParams, PolicyRulesParams, validateProposal } from "./tool
 import { PolicyControlParams } from "./control.ts";
 import { DraftCasesSchema } from "./authoring.ts";
 import { readTelemetry } from "./telemetry.ts";
+import { PACKAGE_CATALOG } from "./catalog.ts";
+import { packageRowRevision } from "./rule.ts";
 
 const context = BACKGROUND_CONTEXT;
 const plainTheme = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as PanelHost["theme"];
@@ -906,10 +908,17 @@ test("native read redirects preserve rule guidance and append concrete calls", a
 			execute: async () => { executed++; return { output: [{ type: "text", text: "unexpected execution" }] }; },
 		})),
 	});
-	const fixture = await openFixture({ mode: "enforce", extension });
+	const fixture = await openFixture({ mode: "enforce", extension, prepare: async (storeDir) => {
+		const readerIds = new Set(["routing.cat-read", "routing.sed-slice", "routing.head-slice", "routing.tail-slice", "routing.inline-script-read"]);
+		const catalog = PACKAGE_CATALOG.map((row) => {
+			if (!readerIds.has(row.id)) return row;
+			const { revision: _revision, ...definition } = row;
+			const blocked = { ...definition, effect: "block" as const };
+			return { ...blocked, revision: packageRowRevision(blocked) };
+		});
+		await new RuleRegistry(storeDir, { catalog }).snapshot();
+	} });
 	try {
-		const plan = await fixture.policy.planImport("--all");
-		await fixture.policy.importCatalog("--all", plan.revision, makeRuleAudit({ sessionManager: { getSessionId: () => "reader-test" }, model: null }, "command"));
 		const before = await readFile(join(fixture.storeDir, "rules.jsonl"), "utf8");
 		const cases = [
 			["cat notes.md", "read path=notes.md"],

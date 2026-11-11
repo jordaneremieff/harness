@@ -320,15 +320,30 @@ and package updates preserve edits, disablement, and retirement. Removing a rule
 from the bundled catalog does not remove it from an existing catalog. Updated
 starter definitions require an explicit import.
 
-Default selection follows the protected outcome and available evidence, not the
-rule's syntax. Command requirements use precise declared
-shapes; schema refusal needs known invalid arguments; outcome guidance observes
-completed work and never infers a retry's cause.
+Slow-traverser defaults retain pre-call denials for find, recursive ls, unscoped
+or unsummarised du, and uncapped find/recursive grep/recursive ls shapes. These
+checks prevent selected costly command shapes before a result is needed; they do
+not prove runtime bounds for every admitted command. Other command-form and
+fast-tool output defaults supply guidance. Bash output truncation bounds delivered
+text, not execution time or spill storage. Existing private stores retain approved
+effects until exact replacement approval. Catalogue updates change no existing
+private rule.
+
+fd --max-results conflicts with --list-details, --exec and --exec-batch. Bound
+selected input or traversal for those modes. A cap after sorting limits displayed
+output, not upstream work. A cap before sorting changes the input and is not an
+equivalent global sorted prefix. Several denying rules have separate labelled
+diagnostics, not one combined correction. Explicit timeout arguments or background
+jobs do not bypass retained denials. Policy adds no default Bash deadline.
+
+Schema refusal needs known invalid arguments. Outcome guidance observes completed
+work and never infers a retry's cause. Successful-result guidance does not protect
+a call that stalls or fails. Required complete reads remain valid.
 
 | Policy | Purpose and activation evidence |
 | --- | --- |
-| `routing.*`, `form.*` | Use appropriate readers, direct command inputs, purpose-built commands, and explicit scope. Their installed predicates select the calls. |
-| `bounds.*` | Require explicit discovery/output limits and identify caps that do not stop the producer. |
+| `routing.*`, `form.*` | Guide appropriate readers, direct command inputs, purpose-built commands, and explicit scope. The find, recursive ls and unscoped du form checks retain pre-call denials. |
+| `bounds.*` | Deny the selected uncapped slow-traverser shapes. Guide fast-tool limits and caps after full-input stages. |
 | `arguments.schema` | Refuse a final argument object that violates the available tool schema. This includes mutations from earlier hooks. Unavailable schemas remain unknown. |
 | `recovery.repeated-errors` | Diagnose two consecutive completed execution errors less than 30 seconds apart, across tools. Each further qualifying error triggers guidance again. Success resets future streaks without erasing a triggered notice; policy denials and unexecuted calls do not count. |
 | `recovery.pillars-application` | Guide after a successful draftless Pillars entry read; a successful draft resets the period. Projection requires an active `pillars` tool in the public catalog. The cross-extension seed contract is documented in [docs/conventions/policy-recovery.md](../../docs/conventions/policy-recovery.md). |
@@ -345,6 +360,13 @@ measured optimal thresholds or claims of cost savings. Observe mode applies no
 effects. The operator can replace, retire, or disable any seeded rule. Command
 defaults also declare an
 explicit `steer-or-block` choice; the other defaults declare exact actions.
+
+The output-volume notice reports measurement, not task necessity:
+
+> Recent executed tool results contain substantial text. This measure does not establish unnecessary breadth. Preserve required complete reads. For optional exploration, select relevant fields, paths, or bounded excerpts. Do not repeat source reads that already answer the question.
+
+Rules outside the bundled catalogue keep their approved effects and notes as
+stored. Catalogue defaults do not change these stored choices.
 
 A schema specifies accepted fields, not which unknown key or identifier the
 caller intended. Key/value correction therefore requires an explicitly approved

@@ -38,6 +38,24 @@ test("every installed policy has a validated purpose, action authority, and sour
 		assert.equal(installed(id).source.kind, "package");
 });
 
+test("command defaults retain slow-traverser gates and guide other preferences", () => {
+	const blocked = ["form.find-discovery", "form.ls-recursive", "form.du-traversal", "bounds.find-output-uncapped",
+		"bounds.grep-recursive-uncapped", "bounds.ls-recursive-uncapped", "bounds.du-uncapped"];
+	const guided = ["routing.cat-read", "routing.cat-pipe", "routing.head-slice", "routing.tail-slice", "routing.sed-slice",
+		"routing.inline-script-read", "routing.grep-pipe", "form.grep-file", "form.env-grep", "bounds.fd-uncapped",
+		"bounds.rg-files-uncapped", "bounds.rg-search-uncapped", "bounds.git-grep-uncapped", "bounds.false-cap"];
+	const commandRows = PACKAGE_CATALOG.filter((row) => row.matcher.kind === "code");
+	assert.deepEqual(commandRows.filter((row) => row.effect === "block").map((row) => row.id).sort(), blocked.sort());
+	assert.deepEqual(commandRows.filter((row) => row.effect === "steer").map((row) => row.id).sort(), guided.sort());
+	assert.equal(installed("arguments.schema").definition.effect, "block");
+	assert.equal(installed("recovery.repeated-errors").definition.effect, "steer");
+	assert.equal(PACKAGE_CATALOG.some((row) => /deadline|timeout/.test(row.id)), false);
+	const output = installed("resources.output-volume");
+	assert.match(output.definition.note, /Preserve required complete reads/);
+	assert.match(output.definition.note, /does not establish unnecessary breadth/);
+	assert.equal(output.matcher.kind === "declarative" && output.matcher.language === "facts/v1" && output.matcher.spec.action.kind === "guide" && output.matcher.spec.action.text, output.definition.note);
+});
+
 test("installed argument guard refuses only known-invalid final arguments", () => {
 	const rules = [compileRule(installed("arguments.schema"))];
 	const schema = {
@@ -68,7 +86,7 @@ test("installed reader replacements require an active read tool rather than an a
 				facts: { context: { tools: { read: { active } } } },
 			},
 		);
-		assert.equal(plan.denied, active === true);
+		assert.equal(plan.denied, false);
 		assert.equal(plan.matches.includes("routing.cat-read"), active === true);
 	}
 	const missing = planInput(rules, { command: "cat README.md" }, { tool: "bash" });

@@ -12,6 +12,9 @@ export const DEFAULT_LIMITS = {
 	outputEvents: 16,
 } as const;
 
+const OUTPUT_GUIDANCE =
+	"Recent executed tool results contain substantial text. This measure does not establish unnecessary breadth. Preserve required complete reads. For optional exploration, select relevant fields, paths, or bounded excerpts. Do not repeat source reads that already answer the question.";
+
 const RECOVERY_GUIDANCE =
 	"Two consecutive completed tool executions failed within 30 seconds. Check the actual failed assumption or tool contract before another attempt. Verify a recovery, then assess whether it is repeatable and warrants a narrowly scoped policy candidate. Use policy_propose only for a supported candidate; activation requires explicit operator approval.";
 
@@ -42,6 +45,11 @@ const READER_RULES = new Set([
 	"routing.inline-script-read",
 ]);
 
+const PRECALL_BLOCKS = new Set([
+	"form.find-discovery", "form.ls-recursive", "form.du-traversal",
+	"bounds.find-output-uncapped", "bounds.grep-recursive-uncapped", "bounds.ls-recursive-uncapped", "bounds.du-uncapped",
+]);
+
 export const PACKAGE_CATALOG: PackageDefinitionRow[] = [
 	...RULES.map((rule) =>
 		row({
@@ -52,7 +60,7 @@ export const PACKAGE_CATALOG: PackageDefinitionRow[] = [
 			...(READER_RULES.has(rule.id)
 				? { applicability: { op: "eq" as const, path: ["context", "tools", "read", "active"], value: true } }
 				: {}),
-			effect: "block",
+			effect: PRECALL_BLOCKS.has(rule.id) ? "block" : "steer",
 			note: rule.note,
 		}),
 	),
@@ -134,7 +142,7 @@ export const PACKAGE_CATALOG: PackageDefinitionRow[] = [
 	policy(
 		"resources.output-volume",
 		"Limit repeated large text results before they consume more context.",
-		"Recent tool results contain substantial text. Narrow the requested fields, paths, or result count before the next tool call.",
+		OUTPUT_GUIDANCE,
 		{
 			phase: "context",
 			when: { op: "gte", path: ["state", "windowTotal"], value: DEFAULT_LIMITS.outputBytes },
@@ -147,7 +155,7 @@ export const PACKAGE_CATALOG: PackageDefinitionRow[] = [
 			},
 			action: {
 				kind: "guide",
-				text: "Recent tool results contain substantial text. Narrow the requested fields, paths, or result count before the next tool call.",
+				text: OUTPUT_GUIDANCE,
 			},
 			onUnavailable: "skip",
 		},

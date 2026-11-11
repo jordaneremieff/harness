@@ -40,6 +40,19 @@ describe("installed shell contract card", () => {
 		assert.ok(Buffer.byteLength(text) <= SHELL_CARD_BYTES);
 	});
 
+	it("keeps preparation notes for both denied and guided command shapes", () => {
+		const ids = new Set(["routing.cat-read", "form.find-discovery", "bounds.fd-uncapped"]);
+		const records = PACKAGE_CATALOG.filter((row) => ids.has(row.id)).map((row): RuleRecord => ({
+			id: row.id, source: { kind: "package" }, matcher: row.matcher,
+			definition: { ...row, state: "active" }, matcherAvailable: true, staleOverride: false,
+		}));
+		assert.equal(records.find((row) => row.id === "routing.cat-read")?.definition.effect, "steer");
+		assert.equal(records.find((row) => row.id === "form.find-discovery")?.definition.effect, "block");
+		const text = card(records) ?? "";
+		for (const row of records) assert.ok(text.includes(row.definition.note));
+		assert.ok(Buffer.byteLength(text) <= SHELL_CARD_BYTES);
+	});
+
 	it("excludes disabled, retired, and out-of-scope definitions", () => {
 		const retired = rule("retired", "Retired note.");
 		retired.definition.state = "retired";

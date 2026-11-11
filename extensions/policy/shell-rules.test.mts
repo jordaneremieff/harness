@@ -6,6 +6,29 @@ import { parseStatements } from "./shell.ts";
 
 const bash = (command: string) => classify("bash", { command });
 
+describe("qualified output guidance", () => {
+	it("preserves matcher results without incompatible cap or global-sort advice", () => {
+		const fd = RULES.find((row) => row.id === "bounds.fd-uncapped");
+		const cap = RULES.find((row) => row.id === "bounds.false-cap");
+		assert.ok(fd);
+		assert.ok(cap);
+		assert.match(fd.note, /conflicts with --list-details, --exec and --exec-batch/);
+		assert.match(fd.note, /streaming cap only when it preserves the requested result/);
+		assert.match(cap.note, /only when the changed input preserves the task/);
+		assert.match(cap.note, /Do not use that rewrite for global sorting or totals/);
+		assert.doesNotMatch(cap.note, /head -n 50 before sort/);
+		for (const command of ["fd -l . design", "fd . design --exec echo {}", "fd . design --exec-batch echo {}"])
+			assert.ok(bash(command).includes(fd.id), command);
+		const pipeline = "fd -t f -l . design findings records | awk '{print $5, $9}' | sort -k2 | head -n 200";
+		assert.deepEqual(bash(pipeline), [fd.id, cap.id]);
+		for (const id of ["bounds.find-output-uncapped", "bounds.grep-recursive-uncapped", "bounds.ls-recursive-uncapped"]) {
+			const row = RULES.find((entry) => entry.id === id);
+			assert.ok(row);
+			assert.match(row.note, /cap after global sorting or aggregation limits display, not upstream work/);
+		}
+	});
+});
+
 describe("certain slice suggestions", () => {
 	it("omits mixed modes, repeated counts and uncertain paths", () => {
 		for (const command of [

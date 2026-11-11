@@ -144,6 +144,13 @@ Unknown conditions skip, unless an applicable input rule explicitly permits
 unavailable denial. Selected `steer` never denies. Arbitrary nested field names
 are not semantically proved by syntax admission; test their actual evidence.
 
+Choose denial or guidance from the observable failure and false-positive cost.
+A successful-result note does not prevent a stalled call. Current substitute
+actions replace existing mapped values; they do not add missing arguments. Do
+not describe an absent timeout as corrected without an approved action that
+actually inserts it. A rename moves an existing source value; it does not
+provide a constant default while preserving that source.
+
 Actions are `deny` and `require-approval` (input), `rename-key` and `substitute`
 (input), `assert-error` (result), `observe` (completion), and `guide`
 (input/result/completion/context).
