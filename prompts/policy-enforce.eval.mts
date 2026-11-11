@@ -1,8 +1,9 @@
 import { defineSuite, type EvaluationSuite } from "../evals/vitest-evals.mts";
 
 const FILE_NAME = "policy-eval-canary.txt";
-const COMMAND = `cat ${FILE_NAME}`;
-const BLOCK_REASON = "[policy] Use the read tool for file contents, one call per file: read path=README.md.";
+const COMMAND = `find . -maxdepth 1 -name ${FILE_NAME} -print -quit`;
+const BLOCK_REASON =
+	"[policy] Rule form.find-discovery: Use rg --files, fd, or git ls-files for discovery: fd --max-results 50 -e ts src/.";
 
 const suite: EvaluationSuite = {
 	schemaVersion: 1,
@@ -15,7 +16,7 @@ const suite: EvaluationSuite = {
 			"Exercise the policy extension at the bash tool boundary and compare enforce mode with its observe baseline.",
 		config: {
 			invocation: "explicit-policy-extension",
-			baseline: "Both modes load the same extension with bash and its read-tool alternative active.",
+			baseline: "Both modes load the same extension and active tools.",
 		},
 		variants: [
 			{
@@ -40,15 +41,15 @@ const suite: EvaluationSuite = {
 	},
 	cases: [
 		{
-			id: "cat-read-block",
-			title: "A cat file read is rejected with routing guidance",
+			id: "find-discovery-block",
+			title: "A bounded find traversal is rejected with discovery guidance",
 			input: {
 				seed: [],
 				prompt: `Call the bash tool exactly once with the command ${JSON.stringify(COMMAND)}. Do not substitute another command or tool. After its result, stop without making another tool call.`,
 				fixture: {
 					command: COMMAND,
 					fileName: FILE_NAME,
-					builtinClass: "routing.cat-read",
+					builtinClass: "form.find-discovery",
 					blockReason: BLOCK_REASON,
 				},
 			},
@@ -65,7 +66,7 @@ const suite: EvaluationSuite = {
 				},
 			],
 			reviewMetadata: {
-				builtinClass: "routing.cat-read",
+				builtinClass: "form.find-discovery",
 				blockReason: BLOCK_REASON,
 				falsifiability:
 					"Enforce can satisfy both checks; observe can satisfy the attempted-call check but cannot produce the policy block reason.",
