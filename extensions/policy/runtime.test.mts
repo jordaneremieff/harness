@@ -370,6 +370,74 @@ describe("starter intervention effects", () => {
 	});
 });
 
+describe("integrated catalogue guidance", () => {
+	const bundledFixture = (toolName: "bash" | "read") => {
+		const rows = PACKAGE_CATALOG.map((row): RuleRecord => ({ id: row.id, source: { kind: "package" }, matcher: row.matcher,
+			definition: { ...row, state: "active" }, matcherAvailable: true, staleOverride: false }));
+		const f = fixture(rows, "enforce", toolName === "bash" ? obj({ command: str() }, { open: true }) : obj({ path: str() }), false, "/unused", toolName);
+		const sourceInfo = { path: "builtin:fixture", source: "builtin", scope: "temporary" as const, origin: "top-level" as const };
+		f.pi.getAllTools = () => [
+			{ name: "bash", description: "Synthetic command", parameters: obj({ command: str() }, { open: true }), exposure: "direct", sourceInfo },
+			{ name: "read", description: "Synthetic reader", parameters: obj({ path: str() }), exposure: "direct", sourceInfo },
+		];
+		f.pi.getActiveTools = () => ["bash", "read"];
+		return f;
+	};
+
+	it("guides a successful single-file sed slice without denying execution", async (t) => {
+		const f = bundledFixture("bash");
+		t.after(() => f.writer.close());
+		const input = { command: "sed -n '4,8p' src/sample.ts" };
+		assert.equal(await f.call("slice", input), undefined);
+		const original = { content: [{ type: "text" as const, text: "Synthetic source lines." }], isError: false };
+		const patch = await f.runtime.toolResult({ type: "tool_result", toolName: "bash", toolCallId: "slice", input, ...original }, f.ctx);
+		const final = { ...original, ...patch };
+		const note = f.snapshot.records.get("routing.sed-slice")?.definition.note;
+		assert.ok(note);
+		assert.ok(JSON.stringify(final.content).includes(note));
+		assert.equal(final.isError, false);
+		await f.runtime.toolEnd({ toolName: "bash", toolCallId: "slice", result: final, isError: final.isError }, f.ctx);
+		assert.equal(f.records[0].outcome, "success");
+		assert.notEqual(f.records[0].blocked, true);
+	});
+
+	it("projects the qualified volume notice after several complete read results", async (t) => {
+		const f = bundledFixture("read");
+		t.after(() => f.writer.close());
+		for (let index = 0; index < 3; index++) {
+			const id = `read-${index}`;
+			const input = { path: `src/synthetic-${index}.txt` };
+			assert.equal(await f.call(id, input), undefined);
+			const original = { content: [{ type: "text" as const, text: "a".repeat(24_000) }], isError: false };
+			const patch = await f.runtime.toolResult({ type: "tool_result", toolName: "read", toolCallId: id, input, ...original }, f.ctx);
+			const final = { ...original, ...patch };
+			await f.runtime.toolEnd({ toolName: "read", toolCallId: id, result: final, isError: final.isError }, f.ctx);
+			if (index < 2) assert.equal(await f.contextEmitted(), undefined);
+		}
+		const note = f.snapshot.records.get("resources.output-volume")?.definition.note;
+		assert.ok(note);
+		assert.ok((await f.contextEmitted())?.includes(note));
+		const state = await f.runtime.inspect("state", {}, f.ctx) as { observationPeriods: Array<{ id: string; windowTotal: number }> };
+		assert.equal(state.observationPeriods.find((period) => period.id === "resources.output-volume")?.windowTotal, 72_000);
+		assert.match(note, /does not establish unnecessary breadth.*Preserve required complete reads/);
+	});
+
+	it("preserves the tool error for incompatible fd cap and exec arguments", async (t) => {
+		const f = bundledFixture("bash");
+		t.after(() => f.writer.close());
+		const input = { command: "fd --max-results 4 -x echo {} src" };
+		assert.equal(await f.call("invalid-fd", input), undefined);
+		const original = { content: [{ type: "text" as const, text: "Synthetic fd error: --max-results conflicts with -x." }], isError: true };
+		const patch = await f.runtime.toolResult({ type: "tool_result", toolName: "bash", toolCallId: "invalid-fd", input, ...original }, f.ctx);
+		assert.equal(patch, undefined);
+		assert.equal(original.content[0].text, "Synthetic fd error: --max-results conflicts with -x.");
+		assert.equal(original.isError, true);
+		await f.runtime.toolEnd({ toolName: "bash", toolCallId: "invalid-fd", result: original, isError: true }, f.ctx);
+		assert.equal(f.records[0].outcome, "execution-error");
+		assert.equal(await f.contextEmitted(), undefined);
+	});
+});
+
 describe("separate denial evidence", () => {
 	it("admits a supported harmless loop but denies unknown execution without a false match", async (t) => {
 		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
