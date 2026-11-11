@@ -495,11 +495,11 @@ function doubleQuoteAction(state: ReaderState): ReaderAction {
 }
 
 function backslashAction(state: ReaderState): ReaderAction {
-	state.quoted = true;
 	if (state.text[state.index + 1] === "\n") {
 		state.index += 2;
 		return { kind: "continue" };
 	}
+	state.quoted = true;
 	if (state.text[state.index + 1] === undefined) state.budget.reasons.add("malformed-shell");
 	state.current += state.text[state.index + 1] ?? "";
 	state.started = true;

@@ -37,6 +37,24 @@ describe("plain for evidence", () => {
 	});
 });
 
+describe("here-document delimiter evidence", () => {
+	const continuations = [
+		["before a delimiter with intervening blanks", "cat \\\n  <<EOF\n$(git push)\nEOF"],
+		["after an output redirection", "cat > out.txt \\\n<<EOF\n$(git push)\nEOF"],
+		["inside a delimiter", "cat <<E\\\nOF\n$(git push)\nEOF"],
+		["between the operator and delimiter", "cat <<\\\nEOF\n$(git push)\nEOF"],
+		["before a delimiter with a backtick body", "tee out.txt \\\n  <<EOF >/dev/null\n`git push`\nEOF"],
+	] as const;
+	for (const [position, command] of continuations) {
+		it(`retains unavailable expansion evidence for a continuation ${position}`, () => {
+			assert.ok(parseShellEvidence(command).reasons.includes("unexpanded-heredoc"));
+		});
+	}
+	it("removes continuations without changing reserved-word eligibility", () => {
+		assert.equal(parseShellEvidence("f\\\nor x in a; d\\\no echo safe; d\\\none").complete, true);
+	});
+});
+
 describe("parseStatements", () => {
 	it("reads one command and its operands", () => {
 		const [statement] = parseStatements("rg -n pattern src/");
