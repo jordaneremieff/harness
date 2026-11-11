@@ -1759,6 +1759,76 @@ test("an admitted atomic settlement finishes and reports its deadline overrun", 
 	} finally { time.budget.dispose(); }
 });
 
+test("an earlier event output limit survives teardown after the work cutoff", async () => {
+	const f = fixture();
+	const time = operationTime();
+	let causeAt = -1;
+	let entered!: () => void;
+	const initial = new Promise<void>((resolve) => { entered = resolve; });
+	const run = f.transport.run.bind(f.transport);
+	f.transport.run = (args, call) => {
+		if (!args.includes("events")) return run(args, call);
+		return new Promise((resolve) => {
+			time.clock.schedule(() => { causeAt = time.budget.elapsed(); }, 800);
+			time.clock.schedule(() => resolve({ ...reply({}), outcome: "output_limit", truncated: true, exitCode: null }), 950);
+		});
+	};
+	f.transport.handler = (method) => {
+		if (!method.endsWith(".format")) return undefined;
+		entered(); return reply({ content: "no marker", eof: true });
+	};
+	try {
+		const pending = f.core.execute({ op: "wait", condition: "text", text: "ready", timeoutMs: 1000, target }, { ...context, budget: time.budget });
+		await initial;
+		time.advance(950);
+		const result = await pending;
+		assert.equal(causeAt, 800);
+		assert.equal(result.outcome, "observation_failed");
+		assert.equal((result.data as { cause: CliResult }).cause.outcome, "output_limit");
+		assert.equal(time.budget.elapsed(), 950);
+	} finally { time.budget.dispose(); }
+});
+
+test("cleanup intent cancellation requests no close and no finalisation admission", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const caller = new AbortController();
+	const update = f.store.update.bind(f.store);
+	const phases: string[] = [];
+	f.store.update = async (owner, change, phase) => {
+		phases.push(phase);
+		const state = await update(owner, change, phase);
+		if (phase === "work") caller.abort();
+		return state;
+	};
+	const result = await f.core.execute({ op: "cleanup", recordId: context.callId }, { ...context, callId: "close-not-dispatched", signal: caller.signal });
+	assert.equal(result.outcome, "cancelled");
+	assert.equal(result.effects.state, "none");
+	assert.equal(result.effects.recordId, "close-not-dispatched");
+	assert.deepEqual(phases, ["work"]);
+	assert.equal(f.transport.calls.some((call) => call.method === "block.close"), false);
+	assert.equal(f.store.state.records.find((record) => record.callId === "close-not-dispatched")?.phase, "pending");
+});
+
+test("a rejected cleanup settlement retains uncertainty without another write", async () => {
+	const f = fixture();
+	await f.core.execute({ op: "create", kind: "session", label: "work" }, context);
+	const update = f.store.update.bind(f.store);
+	const phases: string[] = [];
+	f.store.update = async (owner, change, phase) => {
+		phases.push(phase);
+		if (phase === "finalise") throw new Error("settlement unavailable");
+		return update(owner, change, phase);
+	};
+	const result = await f.core.execute({ op: "cleanup", recordId: context.callId }, { ...context, callId: "close-unsettled" });
+	assert.equal(result.outcome, "cleanup_unknown");
+	assert.equal(result.effects.state, "unknown");
+	assert.equal(result.effects.recordId, "close-unsettled");
+	assert.deepEqual(phases, ["work", "finalise"]);
+	assert.equal(f.store.state.records.find((record) => record.callId === "close-unsettled")?.phase, "pending");
+	assert.equal(f.store.state.records.find((record) => record.callId === context.callId)?.phase, "unknown");
+});
+
 test("catalogue command and output-limit errors never become empty successful matches", async () => {
 	for (const failure of [
 		{ ...reply(null), exitCode: 2, stdout: "partial.method\n", stderr: "catalogue unavailable" },

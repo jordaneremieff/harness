@@ -802,16 +802,18 @@ export class RexCore {
 			Math.min(this.maxOutputBytes, 32768),
 			target.blockId,
 		);
-		let observation: ConditionObservation;
+		let observation: ConditionObservation | undefined;
+		let observationError: unknown;
 		let observerResult: CliResult;
 		try {
 			observation = await this.observeSnapshots(request, target, context, observer, timeoutMs, maxSnapshots);
-		} catch (error) {
-			if (!observer.failure) throw error;
+		} catch (error) { observationError = error; }
+		finally { observerResult = await observer.stop(); }
+		if (!observation) {
+			if (!observer.failure) throw observationError;
 			observation = { snapshot: undefined, snapshots: 0, matched: false, deadline: context.budget?.workEndsAt ?? 0, observerEnded: true };
-		} finally {
-			observerResult = await observer.stop();
 		}
+		if (observer.failure) observation.matched = false;
 		return conditionResult(request, target, context, observation, observer, observerResult);
 	}
 
@@ -1295,12 +1297,20 @@ export class RexCore {
 			);
 		}, "work");
 		const closed: ResourceRef[] = [];
+		let dispatched = false;
+		let settlementAttempted = false;
 		try {
 			for (const resource of record.resources) {
+				context.budget?.check("effect");
+				dispatched = true;
 				await this.api("block.close", { session_id: resource.sessionId, block_id: resource.blockId }, server, context);
 				closed.push(resource);
 			}
-			await this.options.store.update(context.ownerId, (current) => closeAcknowledgedClaims(current, record.callId, context.callId, context.ownerId, this.maxRecords), "finalise");
+			settlementAttempted = true;
+			await this.options.store.update(context.ownerId, (current) => {
+				context.budget?.check("finalise");
+				return closeAcknowledgedClaims(current, record.callId, context.callId, context.ownerId, this.maxRecords);
+			}, "finalise");
 			return {
 				...result(true, "cleanup_report", target, {
 					closed,
@@ -1317,21 +1327,25 @@ export class RexCore {
 				},
 			};
 		} catch (error) {
-			try {
-				await this.settleEffect(
-					context,
-					"unknown",
-					[],
-					"Cleanup outcome is unknown. Inspect the retained IDs before another close.",
-				);
-			} catch {
-				/* Pending and original unknown claims still prohibit replay. */
-			}
-			return {
-				...result(false, "cleanup_unknown", target, { closed }, errorText(error)),
-				effects: { state: "unknown", recordId: context.callId, resources: record.resources },
-			};
+			return this.failedCleanup(error, target, context, { closed, resources: record.resources, dispatched, settlementAttempted });
 		}
+	}
+
+	private async failedCleanup(error: unknown, target: ResolvedTarget, context: RexCallContext, progress: { closed: ResourceRef[]; resources: ResourceRef[]; dispatched: boolean; settlementAttempted: boolean }): Promise<RexResult> {
+		const { closed, resources, dispatched, settlementAttempted } = progress;
+		if (!dispatched) return {
+			...result(false, context.budget?.stopReason() ?? "cancelled", target, { closed }, errorText(error)),
+			effects: { state: "none", recordId: context.callId, note: "Cleanup intent remains retained; no close was requested." },
+		};
+		try {
+			if (!settlementAttempted) await this.settleEffect(context, "unknown", [], "Cleanup outcome is unknown. Inspect the retained IDs before another close.");
+		} catch {
+			/* Pending and original unknown claims still prohibit replay. */
+		}
+		return {
+			...result(false, "cleanup_unknown", target, { closed }, errorText(error)),
+			effects: { state: "unknown", recordId: context.callId, resources },
+		};
 	}
 }
 
@@ -1906,7 +1920,9 @@ class EventObserver {
 				onLine: (line) => this.line(line),
 			})
 			.then((value) => {
-				if (!this.controller.signal.aborted && !context.budget?.stopReason() && (value.outcome !== "exited" || value.exitCode !== 0)) this.failure = value;
+				// The transport retains its first stop cause even when close follows work cancellation.
+				const sourceStopped = value.outcome === "output_limit" || value.outcome === "spawn_error";
+				if (sourceStopped || (!this.controller.signal.aborted && !context.budget?.stopReason() && (value.outcome !== "exited" || value.exitCode !== 0))) this.failure = value;
 				this.ended = true;
 				this.generation++;
 				this.wake?.();
