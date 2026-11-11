@@ -75,8 +75,15 @@ for (const [word, delimiter] of [["'EOF'", "EOF"], ["\\EOF", "EOF"], ["'E\"OF'",
 	}
 }
 
-const deferredCases: { name: string; command: string; executes: boolean; truth: boolean | "unknown" }[] = [
+const deferredCases: { name: string; command: string; executes: boolean; truth: boolean | "unknown"; interpreter?: "csh" | "tcsh" }[] = [
 	{ name: "literal trap action", command: "trap 'git push' EXIT", executes: true, truth: true },
+	{ name: "loop-variable trap action", command: `for f in 'git push'; do trap "$f" EXIT; done`, executes: true, truth: "unknown" },
+	{ name: "loop-variable alias value", command: `shopt -s expand_aliases\nfor f in 'git push'; do alias p="$f"; done\np`, executes: true, truth: "unknown" },
+	{ name: "numeric delimiter before another redirect", command: "cat <<\\2>'x'\nfixture\n2\ngit push\nx\n", executes: true, truth: "unknown" },
+	{ name: "tcsh command string", command: "tcsh -f -c 'git push'", executes: true, truth: "unknown", interpreter: "tcsh" },
+	{ name: "tcsh document input", command: "tcsh -f <<'EOF'\ngit push\nEOF\n", executes: true, truth: "unknown", interpreter: "tcsh" },
+	{ name: "csh here-string input", command: "csh -f <<<'git push'", executes: true, truth: "unknown", interpreter: "csh" },
+	{ name: "tcsh document pipeline", command: "cat <<'EOF' | tcsh -f\ngit push\nEOF\n", executes: true, truth: "unknown", interpreter: "tcsh" },
 	{ name: "process substitution DEBUG action", command: "cat <(trap 'git push' DEBUG\n:\n)", executes: true, truth: true },
 	{ name: "process substitution explicit EXIT action", command: "cat <(trap 'git push' EXIT; exit)", executes: true, truth: true },
 	{ name: "process substitution implicit EXIT action", command: "cat <(trap 'git push' EXIT)", executes: false, truth: true },
@@ -126,7 +133,7 @@ describe("deferred shell execution evidence", { skip: versionReach ? false : `Ex
 	});
 	after(() => { if (root) rmSync(root, { recursive: true, force: true }); });
 	for (const [index, fixture] of deferredCases.entries()) {
-		it(fixture.name, () => {
+		it(fixture.name, { skip: fixture.interpreter && !existsSync(`/bin/${fixture.interpreter}`) ? `${fixture.interpreter} is unavailable.` : false }, () => {
 			assert.equal(/(?:^|[\s;|'"(])\/[A-Za-z]/.test(fixture.command), false, "Fixtures use private PATH resolution.");
 			const marker = join(root, `marker-${index}`);
 			const child = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", fixture.command], {

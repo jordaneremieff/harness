@@ -598,6 +598,7 @@ function applyRedirectOperator(state: ReaderState, char: string): void {
 }
 
 function redirectOperatorAction(state: ReaderState, char: string): ReaderAction {
+	if (state.pendingHeredoc && state.started && /^\d+$/.test(state.current)) state.budget.reasons.add("unexpanded-heredoc");
 	let explicitFd: number | null = null;
 	if (state.started && /^\d+$/.test(state.current)) {
 		explicitFd = Number(state.current);

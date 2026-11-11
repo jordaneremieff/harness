@@ -114,6 +114,22 @@ describe("deferred command meaning", () => {
 		assert.notEqual(truth(`tmp='ordinary; git push'; trap "echo $tmp" EXIT`), false);
 		assert.equal(truth("cleanup() { :; }; trap cleanup EXIT"), "unknown");
 	});
+	it("leaves declared interpreter execution unavailable without changing lexical matches", () => {
+		for (const interpreter of ["sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish"]) {
+			for (const body of [`${interpreter} -c 'git push'`, `${interpreter} <<'EOF'\ngit push\nEOF\n`, `${interpreter} <<<'git push'`, `cat <<'EOF' | ${interpreter}\ngit push\nEOF\n`])
+				assert.equal(truth(body), "unknown", body);
+			assert.equal(truth(`${interpreter} -c 'echo safe'; git push`), true);
+			const lexical = structuredClone(record);
+			lexical.matcher = { kind: "declarative", language: "command-shape/v1", spec: { command: interpreter } };
+			assert.equal(evaluateCommandRecords("bash", `${interpreter} -c 'git push'`, [lexical], scope).get(record.id), true);
+		}
+	});
+	it("leaves loop-variable actions and numeric document delimiters unavailable", () => {
+		for (const body of [`for f in 'git push'; do trap "$f" EXIT; done`, `for f in 'git push'; do alias p="$f"; done\np`])
+			for (const command of contexts(body)) assert.notEqual(truth(command), false, command);
+		for (const word of ["2", "\\2", "'2'", '"2"'])
+			for (const command of contexts(`cat <<${word}>'x'\nfixture\n2\ngit push\nx\n`)) assert.equal(truth(command), "unknown", command);
+	});
 	it("keeps lexical semantics and positive evidence ahead of added uncertainty", () => {
 		const lexical = structuredClone(record);
 		lexical.matcher = { kind: "declarative", language: "command-shape/v1", spec: { command: "echo" } };

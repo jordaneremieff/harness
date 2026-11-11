@@ -93,12 +93,27 @@ describe("here-document delimiter evidence", () => {
 	it("removes continuations without changing reserved-word eligibility", () => {
 		assert.equal(parseShellEvidence("f\\\nor x in a; d\\\no echo safe; d\\\none").complete, true);
 	});
-	it("reads digits before redirect operators as descriptors", () => {
+	it("retains descriptor extraction with unavailable document expansion", () => {
 		for (const word of ["2", "\\2", "'2'", '"2"']) {
 			const parsed = parseShellEvidence(`cat ${word}<<EOF\n$(git push)\nEOF`);
 			assert.deepEqual(parsed.statements[0][0].args, []);
 			assert.equal(parsed.statements[0][0].fromRedirect, false);
+			assert.ok(parsed.reasons.includes("unexpanded-heredoc"));
 		}
+	});
+	it("leaves numeric delimiters before another redirect unavailable", () => {
+		for (const word of ["2", "\\2", "'2'", '"2"']) {
+			for (const redirect of [">", "<"]) {
+				const body = `cat <<${word}${redirect}'x'\nfixture\n2\ngit push\nx\n`;
+				for (const command of [body, `for f in a; do\n${body}done\n`, `echo $(\n${body})`, `cat <(\n${body})`]) {
+					const parsed = parseShellEvidence(command);
+					assert.ok(parsed.reasons.includes("unexpanded-heredoc"), command);
+					assert.ok(!parsed.statements.flat().some((stage) => stage.command === "git"));
+				}
+			}
+		}
+		for (const command of ["cat <<'EOF'>'x'\nsafe\nEOF\n", "echo 2>'x'"])
+			assert.equal(parseShellEvidence(command).complete, true);
 	});
 	it("leaves escaped-only delimiters and delimiters with inner quotes unavailable", () => {
 		for (const [word, delimiter, reason] of [

@@ -1430,8 +1430,9 @@ physical `<<` later in its raw text leaves arithmetic unavailable
 (`unexpanded-arithmetic`).
 
 Here-document evidence requires quote characters on the delimiter itself, not on
-a preceding descriptor. An unquoted delimiter, dollar-quoted delimiter, or a
-continuation between `<<` and the delimiter leaves document interpretation
+a preceding descriptor. An unquoted delimiter, dollar-quoted delimiter, numeric
+delimiter directly before another redirect, or a continuation between `<<` and
+the delimiter leaves document interpretation
 unavailable (`unexpanded-heredoc`). A backslash escape alone does not establish
 available evidence. A delimiter or scanned document line with a control byte
 0x01, 0x7F, or an unpaired UTF-16 surrogate leaves comparison unavailable
@@ -1442,8 +1443,8 @@ of an exact decoded-delimiter line, ended by LF or the end of input. Only `<<-`
 removes leading tabs in the exact comparison. A missing end or a difference between
 the two ends leaves evidence unavailable (`malformed-shell`). Literal here-string
 words use the same rules inside and outside a plain `for` loop.
-`sh`, `bash`, `zsh`, `dash` and `ksh` leave CLI execution evidence unavailable when
-they consume either form. See the [Bash here-document rules](https://www.gnu.org/software/bash/manual/bash.html#Here-Documents).
+`sh`, `bash`, `zsh`, `dash`, `ksh`, `csh`, `tcsh` and `fish` leave CLI execution
+evidence unavailable when they consume either form. See the [Bash here-document rules](https://www.gnu.org/software/bash/manual/bash.html#Here-Documents).
 
 ```text
 match {
