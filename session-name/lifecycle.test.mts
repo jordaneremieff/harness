@@ -6,7 +6,7 @@ import { it, type TestContext } from "node:test";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import {
 	createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
-	type ExtensionAPI, type ExtensionContext,
+	type ExtensionAPI, type ExtensionContext, type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { offerSessionName, type ProvisionalName } from "./lifecycle.ts";
 
@@ -17,11 +17,16 @@ function gate() {
 }
 
 function receipts(manager: SessionManager) {
-	return manager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "session-name:automatic");
+	return manager.getEntries().filter((entry): entry is Extract<SessionEntry, { type: "custom" }> =>
+		entry.type === "custom" && entry.customType === "session-name:automatic");
 }
 
 function latest(manager: SessionManager) {
 	return manager.getEntries().findLast((entry) => entry.type === "session_info");
+}
+
+function namingContext(getManager: () => SessionManager): ExtensionContext {
+	return { cwd: "/work/example", get sessionManager() { return getManager(); } } as unknown as ExtensionContext;
 }
 
 type Handler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknown;
@@ -31,7 +36,7 @@ function harness(options: { manager?: SessionManager; appendFailure?: boolean; s
 	const handlers = new Map<string, Handler[]>();
 	const events: ProvisionalName[] = [];
 	bus.on("session-name:provisional", (value) => { events.push(value as ProvisionalName); });
-	const ctx = { cwd: "/work/example", get sessionManager() { return manager; } } as ExtensionContext;
+	const ctx = namingContext(() => manager);
 	function fire(type: string, event: Record<string, unknown> = {}) {
 		for (const handler of [...(handlers.get(type) ?? [])]) handler({ type, ...event }, ctx);
 	}
