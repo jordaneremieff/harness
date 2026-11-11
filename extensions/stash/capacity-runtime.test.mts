@@ -176,6 +176,42 @@ async function runtime(t: TestContext, options: { stash?: boolean; abortAtBounda
 const reply = () => fauxAssistantMessage("Synthetic response.");
 const calls = (...names: string[]) => fauxAssistantMessage(names.map((name, index) => fauxToolCall(name, name === "stash_read" ? { id: "retained" } : {}, { id: `${name}-${index}` })), { stopReason: "toolUse" });
 
+test("ordinary invalid capacity settings reach tool display and the next model request once", { timeout: 20000 }, async (t) => {
+	const host = await runtime(t, { gate: true });
+	const displayedErrors: string[] = [];
+	t.after(host.session.subscribe((event) => {
+		if (event.type === "tool_execution_end" && event.isError) displayedErrors.push(JSON.stringify(event.result.content));
+	}));
+	const values = { PI_STASH_CAPACITY: "1", PI_STASH_CHECKPOINT_PERCENT: "95", PI_STASH_DECISION_PERCENT: "90", PI_STASH_STOP_PERCENT: "98" };
+	const saved = Object.keys(values).map((key) => [key, process.env[key]] as const);
+	Object.assign(process.env, values);
+	t.after(() => {
+		for (const [key, value] of saved) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	});
+	let observed = 0;
+	await host.prompt([
+		calls("fixture_read"),
+		(request) => {
+			const errors = request.messages.filter((message) => message.role === "toolResult" && message.isError);
+			assert.equal(errors.length, 1);
+			assert.match(JSON.stringify(errors[0].content), /checkpointPercent.*decisionPercent/);
+			observed++;
+			return calls("fixture_read");
+		},
+		reply(),
+	]);
+	await host.prompt([calls("fixture_read"), reply()]);
+	assert.equal(observed, 1, "the next provider request includes the configuration error");
+	assert.equal(displayedErrors.length, 1, "Pi's tool display receives one error result");
+	assert.match(displayedErrors[0], /checkpointPercent.*decisionPercent/);
+	const results = host.session.messages.filter((message) => message.role === "toolResult");
+	assert.deepEqual(results.map((message) => message.isError), [true, false, false]);
+	assert.deepEqual(host.executed, ["fixture_read", "fixture_read"]);
+});
+
 test("a decision round refuses intake and preserves a declared continuity call", { timeout: 20000 }, async (t) => {
 	const host = await runtime(t, { gate: true });
 	host.setUsage(9100);

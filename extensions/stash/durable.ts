@@ -401,6 +401,24 @@ function unexecuted(diagnostics: readonly { code?: string }[] | undefined): bool
 
 type NativeGateRead = { through?: Durable.EntryId };
 
+async function refusedNativeRound(host: StashDurableHost, results: readonly Durable.EntryId[], api: Durable.HookApi, context: Context): Promise<boolean> {
+	if (results.length === 0) return false;
+	for (const id of results) {
+		const entry = await capacityRead(context, (bounded) => api.entry(host.durable.ToolResultEntry, id, bounded));
+		if (!entry || !unexecuted(entry.data.diagnostics)) return false;
+	}
+	return true;
+}
+
+async function restoreNativeRefusals(state: GateState, host: StashDurableHost, api: Durable.HookApi, context: Context): Promise<void> {
+	const blockedRounds = state.blockedRounds;
+	state.blockedRounds = 0;
+	if (blockedRounds === 0 || state.released) return;
+	const live = await api.snapshot(host.durable.LiveDoc, api.conversationId, context);
+	checkCapacityCancellation(context);
+	if (live?.run && live.run.turns > 0) state.blockedRounds = blockedRounds;
+}
+
 function nativeMeasure(host: StashDurableHost, message: AssistantMessage): Measure {
 	const window = providerContextWindow(message.provider, message.model, host.services.modelRuntime);
 	const tokens = calculateContextTokens(message.usage);
@@ -1297,13 +1315,13 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					const config = readCapacityConfig();
 					if (!config.enabled) return;
 					const state = currentGate(api);
-					let refused = results.length > 0;
-					for (const id of results) {
-						const entry = await capacityRead(context, (bounded) => api.entry(host.durable.ToolResultEntry, id, bounded));
-						if (!entry || !unexecuted(entry.data.diagnostics)) refused = false;
+					const currentBand = band(state.measure ?? { kind: "unknown" }, config);
+					if (currentBand === "decision") state.decisionRoundUsed = true;
+					if (state.released || currentBand !== "stop") {
+						state.blockedRounds = 0;
+						return;
 					}
-					state.blockedRounds = refused ? state.blockedRounds + 1 : 0;
-					if (band(state.measure ?? { kind: "unknown" }, config) === "decision") state.decisionRoundUsed = true;
+					state.blockedRounds = await refusedNativeRound(host, results, api, context) ? state.blockedRounds + 1 : 0;
 				},
 
 				afterResponse: async (message, api, context) => {
@@ -1324,11 +1342,7 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					if (!config.enabled) return undefined;
 					return capacityRead(parent, async (context) => {
 						const state = currentGate(api);
-						const blockedRounds = state.blockedRounds;
-						state.blockedRounds = 0;
-						const live = await api.snapshot(host.durable.LiveDoc, api.conversationId, context);
-						checkCapacityCancellation(context);
-						if (live?.run && live.run.turns > 0) state.blockedRounds = blockedRounds;
+						await restoreNativeRefusals(state, host, api, context);
 						const conversation = String(api.conversationId);
 						const doc = await api.snapshot(capacityDoc, api.conversationId, context);
 						checkCapacityCancellation(context);

@@ -927,31 +927,67 @@ for (const boundary of ["reset", "compaction"] as const) {
 	});
 }
 
-test("native gates read no history below decision and share one snapshot across each tool round", { timeout: 30000 }, async (t) => {
+test("native gates skip ineffective reads and share each response snapshot", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 2000);
 	gateThresholds(t, "100");
 	const generation = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)?.handlers as Durable.GenerationHooks;
 	const tool = h.extension.hooks?.find((hook) => hook.task === Durable.ToolTask.definition.name)?.handlers as Durable.ToolHooks;
-	let reads = 0;
+	const reads = { history: 0, results: 0, live: 0 };
 	const api = {
 		conversationId: h.root.id,
-		entries: async () => { reads++; return { items: [{ id: 1, kind: "fixture.passive" }] }; },
+		entries: async () => { reads.history++; return { items: [{ id: 1, kind: "fixture.passive" }] }; },
+		entry: async () => { reads.results++; return { data: { diagnostics: [{ code: "blocked" }] } }; },
+		snapshot: async (token: unknown) => {
+			if (token === Durable.LiveDoc) { reads.live++; return { run: { turns: 1 } }; }
+			return token === Durable.AgentDoc ? { model: { provider: "faux", modelId: "faux-1" } } : { episode: 1 };
+		},
+		memo: async () => undefined,
 	} as unknown as Durable.HookApi;
+	const resultIds = [1 as Durable.EntryId];
+	const assistantId = 2 as Durable.EntryId;
+	const request = { messages: [] };
 	const message = fauxAssistantMessage("answer");
 	message.provider = "faux";
 	message.model = "faux-1";
 	message.usage = { ...message.usage, input: 0.1, output: 0, cacheRead: 0, cacheWrite: 0 };
+	await generation.afterTools(assistantId, resultIds, api, context);
+	await generation.beforeRequest(request, api, context);
 	await generation.afterResponse(message, api, context);
-	assert.equal(reads, 0);
+	await generation.afterTools(assistantId, resultIds, api, context);
+	assert.deepEqual(reads, { history: 0, results: 0, live: 0 }, "unknown and normal bands need no gate reads");
 	message.usage.input = 1000;
 	await generation.afterResponse(message, api, context);
-	assert.equal(reads, 1);
+	assert.equal(reads.history, 1);
 	const call = fauxToolCall("stash_list", {}, { id: "read" });
+	assert.match((await tool.beforeTool(call, api, context))?.block ?? "", /Stash decision round/);
+	await generation.afterTools(assistantId, resultIds, api, context);
+	assert.equal(await tool.beforeTool(call, api, context), undefined, "the decision round closes without result reads");
+	await generation.beforeRequest(request, api, context);
+	assert.deepEqual(reads, { history: 1, results: 0, live: 0 });
 	for (let index = 0; index < 10; index++) {
 		await tool.beforeTool(call, api, context);
 		await tool.afterTool(call, { output: [], diagnostics: [{ severity: "error", code: "blocked", message: "refused" }] }, api, context);
 	}
-	assert.equal(reads, 1, "tool hooks reuse the response snapshot");
+	assert.equal(reads.history, 1, "tool hooks reuse the response snapshot");
+	process.env.PI_STASH_STOP_PERCENT = "40";
+	await generation.afterTools(assistantId, resultIds, api, context);
+	await generation.beforeRequest(request, api, context);
+	assert.deepEqual(reads, { history: 1, results: 1, live: 1 }, "a stop refusal needs the result and live-round evidence");
+	message.usage.input = 0.1;
+	await generation.afterResponse(message, api, context);
+	await generation.afterTools(assistantId, resultIds, api, context);
+	await generation.beforeRequest(request, api, context);
+	assert.deepEqual(reads, { history: 1, results: 1, live: 1 }, "a normal response clears the count without another live read");
+	message.usage.input = 1000;
+	await generation.afterResponse(message, api, context);
+	await generation.afterTools(assistantId, resultIds, api, context);
+	const command = h.contribution.commands?.find((item) => item.name === "stash");
+	assert.ok(command);
+	await command.run({ args: "capacity release", conversation: h.root, context, host: h.host, invocationId: "release", harness: h.harness });
+	await generation.beforeRequest(request, api, context);
+	await generation.afterTools(assistantId, resultIds, api, context);
+	assert.equal(reads.live, 1, "a released gate does not restore the unused count");
+	assert.equal(reads.results, 2, "a released gate does not read more results");
 });
 
 test("native boundary reads share a deadline and fail open without advancing past an unread entry", { timeout: 10000 }, async (t) => {
@@ -1018,7 +1054,7 @@ test("native capacity request reads share a deadline and cancel each stalled API
 	const hooks = h.extension.hooks?.find((hook) => hook.task === Durable.GenerationTask.definition.name)?.handlers as Durable.GenerationHooks;
 	assert.ok(hooks);
 	for (const phase of ["request", "yield"] as const) {
-		const steps = phase === "request" ? 5 : 2;
+		const steps = phase === "request" ? 4 : 2;
 		for (let stalled = 1; stalled <= steps; stalled++) {
 			let calls = 0;
 			let signal: AbortSignal | undefined;

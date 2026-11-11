@@ -439,9 +439,15 @@ availability, and text-intake estimate. Restoration walks at most 4096 active
 ancestors to the nearest state or compaction. A malformed state, missing ancestor,
 or exhausted scan reports an error instead of inventing an empty episode. Inspect
 it, then use `/stash capacity reset` to establish a new starting point. Invalid
-configuration disables the capacity action without disabling other stash tools;
-the hook reports its first error through Pi, and the capacity command reports the
-current error. No diagnostic writes to protocol stdout.
+configuration disables capacity enforcement. In an ordinary session, the first
+tool-call evaluation returns the error through Pi's tool display and the next
+model request, without a command. This ordinary report is the operator's
+configuration notice; later tools remain available without repeating it. If a
+turn-end hook encounters the error first, Pi receives an extension error instead.
+The native hook reports once through Harness.onReport, but the native host does
+not display or retain that report for the operator or owning agent. The capacity
+command reports the current error on either host. No diagnostic writes to
+protocol stdout.
 
 Requests precede their state entries and also retain their latch metadata, so a
 partial append after a request does not automatically repeat it. Pi validates
@@ -556,8 +562,14 @@ and ends with the host. `/stash capacity reset` resets notice latches, not a gat
 band in force.
 
 Native gates share one reported-usage measurement for each response and its tool
-round. Below the decision threshold they read no history. Above it, one bounded
-read examines only entries after the previous gate snapshot, including compaction
+round. Below the decision threshold they do not scan history or read tool-result
+entries. In the unreleased stop band, bounded reads of actual model-slot results
+stop at the first executed or unavailable result, which rules out a refused round.
+Before a request, a nonzero unreleased refused-round count needs one LiveDoc
+snapshot; a zero count or a released gate needs none. Capacity
+notice evaluation separately reads its episode document, task memo and agent model.
+At or above the decision threshold, one bounded read examines only entries after
+the previous gate snapshot, including compaction
 and reset entries hidden behind passive messages. The read shares a 500 ms
 deadline across one newest-entry read and at most 4096 interval entries per
 response. An incomplete or failed read opens the gate with unknown usage; a later
@@ -786,9 +798,11 @@ Native `afterResponse` measures the accepted response usage and refreshes the
 bounded boundary snapshot above the decision threshold. `beforeTool` gates new
 calls from that shared measurement. `afterTool` adds termination controls to
 unexecuted slots after two refused rounds. `afterTools` counts only the
-generation's actual model-slot results and closes the decision round.
-`beforeRequest` clears the refused count before it reads Pi's public live run
-state. Only a successful snapshot with existing tool rounds restores the count.
+generation's actual model-slot results in the unreleased stop band. Outside that
+band it clears the refused count without reading results; it still closes the
+decision round. `beforeRequest` clears the refused count before it reads Pi's
+public live run state. A zero count or released gate needs no live snapshot. Only a successful
+snapshot with existing tool rounds restores the saved count.
 An unavailable snapshot cannot carry refusals into a later run.
 A native context reset or compaction clears the gate episode; closing the host
 clears all process-local gate state.
