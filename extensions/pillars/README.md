@@ -424,7 +424,7 @@ The writer never removes or recreates the lock as recovery. A pathname check and
 rename are separate system calls; an external unlink between them still defeats
 exclusion. Never remove a live or persistent lock file.
 
-Contention reports `Pillars aggregate writer is busy. This writer never removes the lock file. Do not remove it.`
+Contention reports `Pillars aggregate writer is busy. The next publication event retries. This writer never removes the lock file. Do not remove it.`
 Identity loss reports `Pillars lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.`
 
 Kernel exclusion coordinates aggregate writers that use this protocol. A writer

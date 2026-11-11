@@ -827,7 +827,7 @@ remaining files. The pathname check and publication are separate system calls, s
 an external unlink between them still defeats exclusion. Never remove a live or
 persistent lock file.
 
-Contention reports `Memory writer is busy. This writer never removes the lock file. Do not remove it.`
+Contention reports `Memory writer is busy. Retry later. This writer never removes the lock file. Do not remove it.`
 Identity loss reports `Memory lock path changed during the write. Publication stopped. This writer never removes the lock file. Do not remove it.`
 
 Retrieval refusals name unknown option keys and rejected subject slugs. The writer's
