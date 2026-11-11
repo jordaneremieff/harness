@@ -1419,9 +1419,10 @@ reason; it does not claim a matching command.
 
 The shell parser does not expand aliases, variables, globs, generated words, or
 shell data. It captures the command once and uses that same value for matching
-and bounded best-effort redaction. Here-document evidence requires a quote
-character in the delimiter word; an escaped-only or unquoted delimiter leaves
-body expansion unavailable (`unexpanded-heredoc`). The reader finds the first line
+and bounded best-effort redaction. Here-document evidence requires the delimiter
+word's quote flag. Quote characters set this flag; a backslash escape alone does
+not. An unset flag leaves body expansion unavailable (`unexpanded-heredoc`). The
+reader finds the first line
 that holds the decoded delimiter, with quote and backslash characters removed,
 between optional spaces or tabs. Evidence also requires this end to equal the end
 of an exact decoded-delimiter line, ended by LF or the end of input. Only `<<-`
