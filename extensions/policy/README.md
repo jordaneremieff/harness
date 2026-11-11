@@ -1421,20 +1421,31 @@ reason; it does not claim a matching command.
 The shell parser does not expand aliases, variables, globs, generated words, or
 shell data. It captures the command once and uses that same value for matching
 and bounded best-effort redaction. Literal `trap` actions are read as commands after
-the original command tree, within its remaining budgets. An installation-expanded
-action or an alias definition leaves command meaning unavailable
+the original command tree, within its remaining budgets. For an action with signal
+operands, the reader accepts literal decimal digit strings or these uppercase names,
+with or without an uppercase `SIG` prefix: `EXIT`, `DEBUG`, `ERR`, `RETURN`, `HUP`,
+`INT`, `QUIT`, `ILL`, `TRAP`, `ABRT`, `EMT`, `FPE`, `KILL`, `BUS`, `SEGV`, `SYS`,
+`PIPE`, `ALRM`, `TERM`, `URG`, `STOP`, `TSTP`, `CONT`, `CHLD`, `TTIN`, `TTOU`, `IO`,
+`XCPU`, `XFSZ`, `VTALRM`, `PROF`, `WINCH`, `INFO`, `USR1`, `USR2`. Any other signal
+spelling, including a lower-case name, leaves command meaning unavailable
+(`unresolved-command`). An installation-expanded action or an alias definition
+leaves command meaning unavailable
 (`unresolved-command`). A continuation directly after an unescaped `$`, a split
 arithmetic expansion opener, or an ANSI-C escaped closing quote leaves syntax
 unavailable (`unsupported-shell`). A `$[` or arithmetic-command `((` opener with
 physical `<<` later in its raw text leaves arithmetic unavailable
 (`unexpanded-arithmetic`).
 
-Here-document evidence requires quote characters on the delimiter itself, not on
-a preceding descriptor. An unquoted delimiter, dollar-quoted delimiter, numeric
-delimiter directly before another redirect, or a continuation between `<<` and
-the delimiter leaves document interpretation
-unavailable (`unexpanded-heredoc`). A backslash escape alone does not establish
-available evidence. A delimiter or scanned document line with a control byte
+The reader marks a here-document delimiter as quoted when it encounters a single
+quote, double quote, or non-continuation backslash while it expects the delimiter.
+The quote checks also require the current word's quote flag, set by a single or
+double quote; extraction of digits directly before the redirect preserves that
+flag. For a CLI rule that matches `git push`, `cat '2'<<\EOF` followed by LF,
+`$(git push)`, LF, and `EOF` gives false, whereas `cat <<\EOF` with the same body
+and end line gives unknown. A missing delimiter mark or current-word quote flag,
+a dollar-quoted delimiter, a numeric delimiter directly before another redirect,
+or a continuation between `<<` and the delimiter leaves document interpretation
+unavailable (`unexpanded-heredoc`). A delimiter or scanned document line with a control byte
 0x01, 0x7F, or an unpaired UTF-16 surrogate leaves comparison unavailable
 (`malformed-shell`). The reader finds the first line
 that holds the decoded delimiter, with quote and backslash characters removed,
