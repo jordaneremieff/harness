@@ -53,6 +53,14 @@ describe("here-document delimiter evidence", () => {
 	it("removes continuations without changing reserved-word eligibility", () => {
 		assert.equal(parseShellEvidence("f\\\nor x in a; d\\\no echo safe; d\\\none").complete, true);
 	});
+	for (const word of ["\\2", "'2'", '"2"']) {
+		it(`keeps ${word} as an operand instead of a descriptor before a here-document`, () => {
+			const parsed = parseShellEvidence(`cat ${word}<<EOF\n$(git push)\nEOF`);
+			assert.ok(parsed.reasons.includes("unexpanded-heredoc"));
+			assert.deepEqual(parsed.statements[0][0].args, ["2"]);
+			assert.equal(parsed.statements[0][0].fromRedirect, true);
+		});
+	}
 	it("treats escaped delimiters as quoted without expanding their bodies", () => {
 		const parsed = parseShellEvidence("cat <<\\EOF\n$(git push)\nEOF");
 		assert.equal(parsed.complete, true);

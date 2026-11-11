@@ -462,7 +462,7 @@ function applyRedirectOperator(state: ReaderState, char: string): void {
 
 function redirectOperatorAction(state: ReaderState, char: string): ReaderAction {
 	let explicitFd: number | null = null;
-	if (state.started && /^\d+$/.test(state.current)) {
+	if (state.started && !state.quoted && /^\d+$/.test(state.current)) {
 		explicitFd = Number(state.current);
 		state.current = "";
 		state.started = false;
