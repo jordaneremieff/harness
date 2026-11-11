@@ -59,8 +59,7 @@ Stronger outside leads are recommendations, not substitute work.
 
 The parser bounds raw input at 256,000 UTF-8 bytes and sanitized input at 64,000
 Unicode code points. These limits bound preprocessing work and inline kickoff size,
-not model context capacity. The code-point cap provides headroom for multipart
-directions of 36,000 code points; the raw cap allows four UTF-8 bytes per code point.
+not model context capacity. The raw cap allows four UTF-8 bytes per code point.
 The parser replaces malformed UTF-16, removes terminal controls and hidden formatting,
 normalizes logical line separators, and trims whitespace. Oversized input is refused,
 not truncated. The refusal directs the caller to shorten the direction or send it as
