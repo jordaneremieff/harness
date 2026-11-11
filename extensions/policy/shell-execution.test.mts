@@ -75,9 +75,71 @@ for (const [word, delimiter] of [["'EOF'", "EOF"], ["\\EOF", "EOF"], ["'E\"OF'",
 	}
 }
 
+const deferredCases: { name: string; command: string; executes: boolean; truth: boolean | "unknown" }[] = [
+	{ name: "literal trap action", command: "trap 'git push' EXIT", executes: true, truth: true },
+	{ name: "process substitution DEBUG action", command: "cat <(trap 'git push' DEBUG\n:\n)", executes: true, truth: true },
+	{ name: "process substitution explicit EXIT action", command: "cat <(trap 'git push' EXIT; exit)", executes: true, truth: true },
+	{ name: "process substitution implicit EXIT action", command: "cat <(trap 'git push' EXIT)", executes: false, truth: true },
+	{ name: "alias invocation tail", command: "shopt -s expand_aliases\nalias p=git\np push", executes: true, truth: "unknown" },
+	{ name: "arithmetic expansion shift", command: 'echo $[ 1 <<"2" ]\ngit push\n2\n', executes: true, truth: "unknown" },
+	{ name: "arithmetic command shift", command: '(( x = 1 <<"2" ))\ngit push\n2\n', executes: true, truth: "unknown" },
+	{ name: "continued arithmetic command", command: '(\\\n( x = 1 <<"2" ))\ngit push\n2\n', executes: true, truth: "unknown" },
+	{ name: "continued arithmetic expansion", command: 'echo $(\\\n( 1 <<"2"\n$(git push)\n2\n))\n', executes: true, truth: "unknown" },
+	{ name: "ANSI-C escaped quote", command: "echo $'a\\'b'\ngit push\n: '\n", executes: true, truth: "unknown" },
+	{ name: "ANSI-C colour operand", command: "printf '%s' $'\\e[31m'", executes: false, truth: false },
+	{ name: "arithmetic without shift", command: "echo $[1+2]", executes: false, truth: false },
+	{ name: "continued document operator", command: "cat <<\\\n-'EOF'\nx\nEOF\ngit push\n-EOF\n", executes: true, truth: "unknown" },
+	{ name: "quoted descriptor unquoted document", command: "cat '2'<<EOF\n$(git push)\nEOF\n", executes: true, truth: "unknown" },
+	{ name: "quoted descriptor literal document", command: "cat '2'<<'EOF'\n$(git push)\nEOF\n", executes: false, truth: false },
+	{ name: "continued command parameter", command: "t=trap; $\\\nt 'git push' EXIT", executes: true, truth: "unknown" },
+	{ name: "continued locale command", command: "$\\\n\"trap\" 'git push' EXIT", executes: true, truth: "unknown" },
+	{ name: "continued alias parameter", command: "shopt -s expand_aliases\na=alias; $\\\na p=git\np push", executes: true, truth: "unknown" },
+	{ name: "continued locale alias", command: "shopt -s expand_aliases\n$\\\n\"alias\" p=git\np push", executes: true, truth: "unknown" },
+	{ name: "literal cleanup action", command: "trap ': cleanup' EXIT", executes: false, truth: false },
+	{ name: "installation expansion", command: 'trap "echo $(printf safe)" EXIT', executes: false, truth: "unknown" },
+	{ name: "injected installation value", command: `tmp='ordinary; git push'; trap "echo $tmp" EXIT`, executes: true, truth: "unknown" },
+];
+for (const quote of ["'", '"']) deferredCases.push({ name: `dollar-quoted document ${quote}`,
+	command: `cat <<$${quote}EOF${quote}\nfixture\nEOF\ngit push\n$EOF\n`, executes: true, truth: "unknown" });
+for (const [delimiter, candidate] of [["E\u0001F", "E\u0001\u0001F"], ["E\u007fF", "E\u0001\u007fF"], ["E\ud800F", "E�F"], ["E\udc00F", "E�F"], ["E�F", "E\ud800F"]])
+	deferredCases.push({ name: `delimiter code units ${JSON.stringify([delimiter, candidate])}`,
+		command: `cat <<'${delimiter}'\nfixture\n${candidate}\ngit push\n${delimiter}\n`, executes: true, truth: "unknown" });
+
 const bashVersion = spawnSync("/bin/bash", ["--version"], { encoding: "utf8", timeout: 2000, maxBuffer: 4096 });
 const version = bashVersion.stdout?.split("\n")[0] ?? bashVersion.error?.message ?? "unavailable";
 const versionReach = !bashVersion.error && bashVersion.status === 0 && /^GNU bash, version 3\.2\.57\(/.test(version);
+
+describe("deferred shell execution evidence", { skip: versionReach ? false : `Expectations require Bash 3.2.57; /bin/bash reports ${version}` }, () => {
+	let root: string;
+	before(() => {
+		root = mkdtempSync(join(tmpdir(), "policy-deferred-execution-"));
+		mkdirSync(join(root, "bin"));
+		mkdirSync(join(root, "scratch"));
+		writeFileSync(join(root, "scratch", "2"), "digit-file\n");
+		writeFileSync(join(root, "bin", "git"), '#!/bin/bash\nfor arg in "$@"; do\nif [ "$arg" = push ]; then : > "$POLICY_MARKER"; fi\ndone\n', { mode: 0o700 });
+		const resolved = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", "command -v git"], {
+			env: { PATH: `${join(root, "bin")}:/bin` }, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 2000, maxBuffer: 4096,
+		});
+		assert.ifError(resolved.error);
+		assert.equal(resolved.status, 0);
+		assert.equal(resolved.stdout.trim(), join(root, "bin", "git"));
+	});
+	after(() => { if (root) rmSync(root, { recursive: true, force: true }); });
+	for (const [index, fixture] of deferredCases.entries()) {
+		it(fixture.name, () => {
+			assert.equal(/(?:^|[\s;|'"(])\/[A-Za-z]/.test(fixture.command), false, "Fixtures use private PATH resolution.");
+			const marker = join(root, `marker-${index}`);
+			const child = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", fixture.command], {
+				cwd: join(root, "scratch"), env: { PATH: `${join(root, "bin")}:/bin`, POLICY_MARKER: marker },
+				stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", timeout: 2000, maxBuffer: 16_384,
+			});
+			assert.ifError(child.error);
+			assert.equal(child.signal, null, child.stderr);
+			assert.equal(existsSync(marker), fixture.executes, child.stderr);
+			assert.equal(evaluateCommandRecords("bash", fixture.command, [record], scope).get(record.id), fixture.truth, fixture.command);
+		});
+	}
+});
 
 describe("shell input execution evidence", { skip: versionReach ? false : `Expectations require Bash 3.2.57; /bin/bash reports ${version}` }, () => {
 	let root: string;

@@ -1420,11 +1420,22 @@ reason; it does not claim a matching command.
 
 The shell parser does not expand aliases, variables, globs, generated words, or
 shell data. It captures the command once and uses that same value for matching
-and bounded best-effort redaction. Here-document evidence uses the current word's
-quote flag, which also retains quotes from digits immediately before the redirect
-operator. Quote characters set this flag; a backslash escape alone does
-not. An unset flag leaves body expansion unavailable (`unexpanded-heredoc`). The
-reader finds the first line
+and bounded best-effort redaction. Literal `trap` actions are read as commands after
+the original command tree, within its remaining budgets. An installation-expanded
+action or an alias definition leaves command meaning unavailable
+(`unresolved-command`). A continuation directly after an unescaped `$`, a split
+arithmetic expansion opener, or an ANSI-C escaped closing quote leaves syntax
+unavailable (`unsupported-shell`). A `$[` or arithmetic-command `((` opener with
+physical `<<` later in its raw text leaves arithmetic unavailable
+(`unexpanded-arithmetic`).
+
+Here-document evidence requires quote characters on the delimiter itself, not on
+a preceding descriptor. An unquoted delimiter, dollar-quoted delimiter, or a
+continuation between `<<` and the delimiter leaves document interpretation
+unavailable (`unexpanded-heredoc`). A backslash escape alone does not establish
+available evidence. A delimiter or scanned document line with a control byte
+0x01, 0x7F, or an unpaired UTF-16 surrogate leaves comparison unavailable
+(`malformed-shell`). The reader finds the first line
 that holds the decoded delimiter, with quote and backslash characters removed,
 between optional spaces or tabs. Evidence also requires this end to equal the end
 of an exact decoded-delimiter line, ended by LF or the end of input. Only `<<-`

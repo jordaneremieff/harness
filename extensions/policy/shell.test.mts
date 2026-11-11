@@ -304,3 +304,73 @@ describe("parseStatements", () => {
 		assert.deepEqual(parseStatements("   "), []);
 	});
 });
+
+describe("supplemental shell evidence", () => {
+	it("reads literal trap actions after every original substitution", () => {
+		for (const prefix of ["trap", "'trap'", "command trap", "builtin -- trap", "command -p trap", "x=y trap"]) {
+			const parsed = parseShellEvidence(`${prefix} -- 'git push' EXIT`);
+			assert.deepEqual(parsed.statements.at(-1)?.[0].args, ["push"]);
+			assert.equal(parsed.statements.at(-1)?.[0].command, "git");
+		}
+		const first = `echo "$(trap '${":;".repeat(254)}' EXIT)"`;
+		const second = 'echo "$(git push)"';
+		for (const command of [`${first}; ${second}`, `${second}; ${first}`]) {
+			const parsed = parseShellEvidence(command);
+			assert.deepEqual(parsed.statements.slice(0, 4).flat().map((stage) => stage.command), ["echo", "echo", ...command.startsWith(first) ? ["trap", "git"] : ["git", "trap"]]);
+			assert.ok(parsed.reasons.includes("stage-limit") || parsed.reasons.includes("parse-limit"));
+		}
+	});
+	it("bounds supplemental depth, bytes and words without discarding original evidence", () => {
+		let nested = "trap 'git push' EXIT";
+		for (let index = 0; index < 8; index++) nested = `echo $(${nested})`;
+		assert.ok(parseShellEvidence(nested).reasons.includes("nested-depth-limit"));
+		assert.ok(parseShellEvidence(`trap '${"x".repeat(33_000)}' EXIT`).reasons.includes("command-byte-limit"));
+		const parsed = parseShellEvidence(`trap 'echo ${"x ".repeat(4100)}' EXIT; git push`);
+		assert.ok(parsed.reasons.includes("word-limit"));
+		assert.ok(parsed.statements.flat().some((stage) => stage.command === "git"));
+	});
+	it("adds cause-specific reasons at each nesting position", () => {
+		const cases = [
+			["alias p=git\np push", "unresolved-command"],
+			['echo $[ 1 <<"2" ]\ngit push\n2\n', "unexpanded-arithmetic"],
+			['(\\\n( x=1 <<"2" ))\ngit push\n2\n', "unexpanded-arithmetic"],
+			["echo $'a\\'b'\ngit push\n: '\n", "unsupported-shell"],
+			["cat <<$'EOF'\nsafe\nEOF\ngit push\n$EOF\n", "unexpanded-heredoc"],
+			["cat <<\\\n-'EOF'\nsafe\nEOF\ngit push\n-EOF\n", "unexpanded-heredoc"],
+			["cat '2'<<EOF\n$(git push)\nEOF\n", "unexpanded-heredoc"],
+			['echo "$\\\n(printf safe)"', "unsupported-shell"],
+			[`echo "\${x:-$\\\n(printf safe)}"`, "unsupported-shell"],
+			[`echo \${x:-$\\\n(printf safe)}`, "unsupported-shell"],
+			[`echo \${x:-$(echo "$\\\nx")}`, "unsupported-shell"],
+			['echo $(\\\n( 1 <<"2"\n$(git push)\n2\n))', "unsupported-shell"],
+		] as const;
+		for (const [body, reason] of cases) {
+			for (const command of [body, `for x in a; do\n${body}\ndone`, `echo $(\n${body}\n)`, `cat <(\n${body}\n)`])
+				assert.ok(parseShellEvidence(command).reasons.includes(reason), JSON.stringify(command));
+		}
+	});
+	it("checks delimiter and skipped-line code units without changing the document end", () => {
+		for (const bad of ["\u0001", "\u007f", "\ud800", "\udc00"]) {
+			for (const command of [`cat <<'E${bad}F'\nx\nE${bad}F\n`, `cat <<'EOF'\nE${bad}F\nEOF\n`])
+				assert.ok(parseShellEvidence(command).reasons.includes("malformed-shell"));
+		}
+		for (const body of ["cat <<'EOF'\n$\\\n(git push)\nEOF\n", "echo '$\\\nx'"]) {
+			assert.ok(!parseShellEvidence(`echo $(\n${body}\n)`).reasons.includes("unsupported-shell"));
+			assert.ok(!parseShellEvidence(`echo \${x:-$(\n${body}\n)}`).reasons.includes("unsupported-shell"));
+		}
+		for (const text of ["�", "😀"]) assert.equal(parseShellEvidence(`cat <<'E${text}F'\nsafe\nE${text}F\n`).complete, true);
+	});
+	it("retains literal neighbours and original redirect extraction", () => {
+		for (const command of ["alias", "alias -p", "alias -p p='git push'", "alias p", "echo $[1+2]", "(( x=1+2 ))",
+			"printf '%s' $'line\\n'", "printf '%s' $'\\e[31m'", "printf '%s' $'a\\\\'", "echo '$\\\nx'", "echo \\$\\\nx",
+			"cat <<'EOF'\n$\\\n(git push)\nEOF\n", "cat '2'<<'EOF'\nsafe\nEOF\n"]) assert.equal(parseShellEvidence(command).complete, true, command);
+		for (const word of ["'2'", '"2"', "2''"]) {
+			const parsed = parseShellEvidence(`cat ${word}<<EOF\n$(git push)\nEOF\n`);
+			assert.deepEqual(parsed.statements[0][0].args, []);
+			assert.equal(parsed.statements[0][0].fromRedirect, false);
+			assert.ok(parsed.reasons.includes("unexpanded-heredoc"));
+		}
+		for (const opener of ["echo $[1+2]", "(( x=1+2 ))"])
+			assert.ok(parseShellEvidence(`${opener}; cat <<'EOF'\nsafe\nEOF\n`).reasons.includes("unexpanded-arithmetic"));
+	});
+});

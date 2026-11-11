@@ -83,6 +83,46 @@ describe("CLI command-operand evidence", () => {
 	});
 });
 
+describe("deferred command meaning", () => {
+	const record: RuleRecord = {
+		id: "synthetic.git", source: { kind: "package" },
+		matcher: { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } },
+		definition: { purpose: "Evaluate the declared command.", authority: "exact", revision: "123456abcdef",
+			state: "active", effect: "block", note: "Use a permitted command shape." },
+		matcherAvailable: true, staleOverride: false,
+	};
+	const scope = { cwd: "/project", provider: "test", model: "test/model" };
+	const truth = (command: string) => evaluateCommandRecords("bash", command, [record], scope).get(record.id);
+	const contexts = (body: string) => [body, `for x in a; do\n${body}\ndone`, `echo $(\n${body}\n)`, `cat <(\n${body}\n)`];
+	it("matches literal trap actions as nested commands", () => {
+		for (const body of ["trap 'git push' EXIT", "'trap' -- 'git push' EXIT", "command trap 'git push' DEBUG", "builtin trap 'git push' EXIT"])
+			for (const command of contexts(body)) assert.equal(truth(command), true, command);
+	});
+	it("admits literal cleanup, reset, listing and signal-only forms", () => {
+		for (const body of ["trap 'rm -f \"$tmp\"' EXIT", "trap ': cleanup' EXIT", "trap cleanup EXIT", "trap - EXIT", "trap '' INT", "trap EXIT", "trap", "trap -p", "trap -l", "trap -p 'git push' EXIT", "alias", "alias -p", "alias -p p='git push'"])
+			for (const command of contexts(body)) assert.equal(truth(command), false, command);
+	});
+	it("leaves expanded actions, definitions and continued dollar syntax unavailable", () => {
+		for (const body of ['trap "rm -f $tmp" EXIT', 'trap "echo $(printf safe)" EXIT', "trap $action EXIT", "trap $option 'git push' EXIT", "trap -z 'git push' EXIT",
+			"alias p=git\np push", "alias p='echo safe'", "alias $arg", "alias -z p=git",
+			"t=trap; $\\\nt 'git push' EXIT", "$\\\n\"trap\" 'git push' EXIT",
+			"shopt -s expand_aliases\na=alias; $\\\na p=git\np push", "shopt -s expand_aliases\n$\\\n\"alias\" p=git\np push",
+			'g=safe; echo "$\\\ng"', `echo "\${x:-$\\\n(printf safe)}"`]) {
+			for (const command of contexts(body)) assert.notEqual(truth(command), false, command);
+		}
+		assert.notEqual(truth(`tmp='ordinary; git push'; trap "echo $tmp" EXIT`), false);
+		assert.equal(truth("cleanup() { :; }; trap cleanup EXIT"), "unknown");
+	});
+	it("keeps lexical semantics and positive evidence ahead of added uncertainty", () => {
+		const lexical = structuredClone(record);
+		lexical.matcher = { kind: "declarative", language: "command-shape/v1", spec: { command: "echo" } };
+		assert.equal(evaluateCommandRecords("bash", 'echo "$\\\nx"', [lexical], scope).get(record.id), true);
+		assert.equal(truth("alias p=git; git push"), true);
+		assert.equal(truth("trap 'git status' EXIT"), false);
+	});
+});
+
 describe("captureFor", () => {
 	it("returns the declared command text", () => {
 		assert.equal(captureFor("bash", { command: "ls -R ." }), "ls -R .");
