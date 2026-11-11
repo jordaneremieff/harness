@@ -222,6 +222,7 @@ interface Split {
 	end: "pipe" | "statement" | "eof";
 	/** Control operators and group boundaries are outside the plain-loop grammar. */
 	control?: boolean;
+	separator?: "newline" | "semicolon";
 }
 
 function escapedRegex(text: string): string {
@@ -385,7 +386,7 @@ function commentAction(state: ReaderState): ReaderAction {
 	const next = newline === -1 ? state.text.length : newline + 1;
 	return {
 		kind: "split",
-		split: { words: state.words, end: newline === -1 ? "eof" : "statement" },
+		split: { words: state.words, end: newline === -1 ? "eof" : "statement", ...(newline === -1 ? {} : { separator: "newline" as const }) },
 		next: state.heredocs.length > 0 && newline !== -1 ? afterHeredocBodies(state, next) : next,
 	};
 }
@@ -393,7 +394,7 @@ function commentAction(state: ReaderState): ReaderAction {
 function statementEndAction(state: ReaderState, char: string): ReaderAction {
 	flushWord(state);
 	const next = char === "\n" && state.heredocs.length > 0 ? afterHeredocBodies(state, state.index + 1) : state.index + 1;
-	return { kind: "split", split: { words: state.words, end: "statement" }, next };
+	return { kind: "split", split: { words: state.words, end: "statement", separator: char === "\n" ? "newline" : "semicolon" }, next };
 }
 
 function ampersandAction(state: ReaderState): ReaderAction {
@@ -834,14 +835,18 @@ function loopSplit(split: Split, frame: ParseFrame, stages: Word[][], budget: Pa
 		return split;
 	}
 	if (split.control || frame.groups.length) budget.reasons.add("unsupported-for-syntax");
-	if (!first) return split;
+	if (!first) {
+		if (split.separator === "semicolon" || split.end === "pipe" || stages.length > 0)
+			budget.reasons.add("malformed-for-syntax");
+		return split;
+	}
 	if (frame.loop.phase === "do") {
 		if (!keyword(first, "do")) {
 			budget.reasons.add("malformed-for-syntax");
 			return split;
 		}
 		frame.loop.phase = "body";
-		if (words.length === 1) budget.reasons.add("malformed-for-syntax");
+		if (words.length === 1 && split.separator !== "newline") budget.reasons.add("malformed-for-syntax");
 		return loopSplit({ ...split, words: words.slice(1) }, frame, stages, budget);
 	}
 	if (keyword(first, "done")) {

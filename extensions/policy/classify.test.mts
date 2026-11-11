@@ -32,6 +32,15 @@ describe("CLI command-operand evidence", () => {
 		const lexical = { ...record, matcher: { kind: "declarative" as const, language: "command-shape/v1" as const, spec: { command: "timeout" } } };
 		assert.equal(evaluateCommandRecords("bash", "timeout 1 git push", [lexical], scope).get(record.id), true);
 	});
+	it("admits newline bodies but keeps malformed list and pipeline evidence unknown", () => {
+		assert.equal(evaluateCommandRecords("bash", "for x in a; do\necho safe\ndone", [record], scope).get(record.id), false);
+		for (const command of ["for x in a; do echo safe;; done", "for x in a; do echo safe |; done", "for x in a; do | echo safe; done"]) {
+			const evidence = evaluateCommandRecords("bash", command, [record], scope);
+			assert.equal(evidence.get(record.id), "unknown", command);
+			assert.ok(evidence.reasons.get(record.id)?.includes("malformed-for-syntax"));
+			assert.equal(evidence.segments.get(record.id), undefined);
+		}
+	});
 	it("keeps scope and tool exclusions ahead of unavailable evidence", () => {
 		const excluded = structuredClone(record);
 		excluded.definition.scope = { cwdPrefixes: ["/elsewhere"] };

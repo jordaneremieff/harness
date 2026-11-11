@@ -7,6 +7,8 @@ describe("plain for evidence", () => {
 		for (const command of [
 			'for file in $(fd -t f design | head -n 20); do wc -c "$file"; done',
 			'for file in a b\ndo wc -c "$file" | sort\ndone',
+			'for file in a\ndo\nwc -c "$file"\ndone',
+			'for file in a; do # body follows\nwc -c "$file"; done',
 			'for file in; do echo empty; done',
 		]) {
 			const parsed = parseShellEvidence(command);
@@ -21,6 +23,9 @@ describe("plain for evidence", () => {
 			'for x "in" a; do echo x; done', 'for x in a; "do" echo x; done',
 			'for x in a; do echo x; "done"', 'for x in a; do echo x; do\\ne',
 			'for x in a; do echo x', 'for x in a; do; done', 'for x in a; do done',
+			'for x in a; do echo safe;; done', 'for x in a; do echo safe |; done',
+			'for x in a; do | echo safe; done', 'for x in a; do echo safe | | wc; done',
+			'for x in a;; do echo safe; done', 'for x in a; do; echo safe; done',
 			'for ((i=0;i<3;i++)); do echo x; done',
 			'for x in a; do for y in b; do echo x; done; done',
 			'for x in a; do if true; then echo x; fi; done',
