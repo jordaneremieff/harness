@@ -1723,12 +1723,16 @@ test("the attached view's Data actions set, set-file and remove through the owne
 		};
 		const layers: Array<{ view: OperatorView; controller: AbortController }> = [];
 		const notices: string[] = [];
+		let decisionComplete: (() => void) | undefined;
 		const panelHost = (controller: AbortController): PanelHost => ({
 			theme: plainTheme,
 			target: { id: String(fixture.root.id), label: "root" },
 			signal: controller.signal,
 			requestRender: () => {},
-			notify: (text) => notices.push(text),
+			notify: (text, level) => {
+				notices.push(text);
+				if (level === "success" || level === "error") decisionComplete?.();
+			},
 			push: (open) => {
 				const child = new AbortController();
 				layers.push({ view: open(panelHost(child)), controller: child });
@@ -1764,7 +1768,14 @@ test("the attached view's Data actions set, set-file and remove through the owne
 		};
 		const approveReview = async (label: string) => {
 			for (let page = 0; page < 200 && !shows(/All \d+ lines read/)(); page++) top()?.handleInput("\u001b[6~");
-			act(label);
+			const completed = deferred();
+			decisionComplete = completed.resolve;
+			try {
+				act(label);
+				await completed.promise;
+			} finally {
+				decisionComplete = undefined;
+			}
 		};
 		await until(shows(/\d+ rules/), "the registry loads");
 		top()?.focusNext?.(true);
