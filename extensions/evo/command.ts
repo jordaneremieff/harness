@@ -18,7 +18,7 @@ export function parseEvoInvocation(raw: string): EvoInvocation {
 	if (Buffer.byteLength(raw, "utf8") > MAX_RAW_DIRECTION_BYTES) {
 		return {
 			ok: false,
-			error: `The raw evo direction must be ${MAX_RAW_DIRECTION_BYTES} UTF-8 bytes or fewer. Shorten it or send the direction as a plain message.`,
+			error: `The raw evo direction must be ${MAX_RAW_DIRECTION_BYTES} UTF-8 bytes or fewer. Shorten the direction and invoke /evo again for an Evo run. A plain message starts no Evo run and carries no elevated grant.`,
 		};
 	}
 	const direction = raw
@@ -32,7 +32,7 @@ export function parseEvoInvocation(raw: string): EvoInvocation {
 	if (Array.from(direction).length > MAX_DIRECTION_CODE_POINTS) {
 		return {
 			ok: false,
-			error: `The evo direction must be ${MAX_DIRECTION_CODE_POINTS} Unicode code points or fewer. Shorten it or send the direction as a plain message.`,
+			error: `The evo direction must be ${MAX_DIRECTION_CODE_POINTS} Unicode code points or fewer. Shorten the direction and invoke /evo again for an Evo run. A plain message starts no Evo run and carries no elevated grant.`,
 		};
 	}
 	return { ok: true, direction };

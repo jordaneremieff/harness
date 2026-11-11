@@ -82,6 +82,8 @@ class NamingRuntime {
 		const entry = this.write(fallback, undefined, "fallback");
 		if (entry) {
 			this.pending = { entryId: entry.id, fallback, text: Array.from(text).slice(0, 4096).join(""), controller: new AbortController() };
+		} else {
+			this.close();
 		}
 	}
 

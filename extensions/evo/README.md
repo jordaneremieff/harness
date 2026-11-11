@@ -62,8 +62,9 @@ Unicode code points. These limits bound preprocessing work and inline kickoff si
 not model context capacity. The raw cap allows four UTF-8 bytes per code point.
 The parser replaces malformed UTF-16, removes terminal controls and hidden formatting,
 normalizes logical line separators, and trims whitespace. Oversized input is refused,
-not truncated. The refusal directs the caller to shorten the direction or send it as
-a plain message. UI hosts receive an error notification; headless hosts receive a
+not truncated. The refusal directs the caller to shorten the direction and invoke
+`/evo` again for an Evo run. A plain message starts no Evo run and carries no
+elevated grant. UI hosts receive an error notification; headless hosts receive a
 command error through Pi. Invalid input dispatches no kickoff.
 
 The kickoff encodes the direction as one JSON string on one line inside

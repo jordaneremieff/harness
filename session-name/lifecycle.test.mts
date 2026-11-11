@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import {
-	createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
+	AgentSessionRuntime, createAgentSession, createEventBus, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager,
 	type ExtensionAPI, type ExtensionContext, type SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { offerSessionName, type ProvisionalName } from "./lifecycle.ts";
@@ -113,12 +113,19 @@ async function sdkFixture(t: TestContext, options: { before?: (pi: ExtensionAPI)
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
 	const { session } = await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, sessionManager: manager, settingsManager: settings, resourceLoader: loader, tools: [] });
-	t.after(async () => { await session.abort(); session.dispose(); rmSync(root, { recursive: true, force: true }); });
+	const services = { cwd: root, agentDir: root, modelRuntime: runtime, settingsManager: settings, resourceLoader: loader, diagnostics: [] };
+	const owner = new AgentSessionRuntime(session, services, async ({ sessionManager, sessionStartEvent }) => {
+		await loader.reload();
+		const created = await createAgentSession({ cwd: root, agentDir: root, modelRuntime: runtime, sessionManager, sessionStartEvent, settingsManager: settings, resourceLoader: loader, tools: [] });
+		return { ...created, services, diagnostics: [] };
+	});
+	owner.setRebindSession(async (replacement) => { await replacement.bindExtensions({ onError: (error) => { errors.push(error); } }); });
+	t.after(async () => { await owner.dispose(); rmSync(root, { recursive: true, force: true }); });
 	await session.bindExtensions({ onError: (error) => { errors.push(error); } });
 	const model = runtime.getModel("name-fixture", "controlled");
 	assert.ok(model);
 	await session.setModel(model);
-	return { session, manager, events, get api() { return api; }, errors, get requests() { return requests; } };
+	return { session, owner, root, manager, events, get api() { return api; }, errors, get requests() { return requests; } };
 }
 
 it("refines through the public bus after turn start without delaying the turn", { timeout: 20000 }, async (t) => {
@@ -219,6 +226,56 @@ it("cancels the signal on SDK reload and ignores the old payload", { timeout: 20
 	assert.equal(fixture.events.length, 1);
 });
 
+it("cancels the signal on SDK fork and rejects the old result without replay", { timeout: 20000 }, async (t) => {
+	const fixture = await sdkFixture(t);
+	await fixture.session.prompt("Fix the parser");
+	const event = fixture.events[0]; assert.ok(event);
+	const leaf = fixture.manager.getLeafId(); assert.ok(leaf);
+	assert.equal((await fixture.owner.fork(leaf, { position: "at" })).cancelled, false);
+	assert.equal(event.signal.aborted, true);
+	const manager = fixture.owner.session.sessionManager;
+	const entry = latest(manager);
+	fixture.api.events.emit("session-name:refined", { sessionId: event.sessionId, nameEntryId: event.nameEntryId, title: "Wrong fork result" });
+	await fixture.owner.session.prompt("Continue the work");
+	assert.equal(latest(manager)?.id, entry?.id);
+	assert.equal(manager.getSessionName(), "Fix the parser");
+	assert.equal(fixture.events.length, 1);
+	assert.deepEqual(fixture.errors, []);
+});
+
+it("cancels the signal on SDK switch and rejects the old result without replay", { timeout: 20000 }, async (t) => {
+	const fixture = await sdkFixture(t);
+	await fixture.session.prompt("Fix the parser");
+	const event = fixture.events[0]; assert.ok(event);
+	const target = SessionManager.inMemory(fixture.root);
+	target.appendSessionInfo("Target name");
+	const path = join(fixture.root, "target.jsonl");
+	writeFileSync(path, [target.getHeader(), ...target.getEntries()].map((entry) => JSON.stringify(entry)).join("\n"));
+	assert.equal((await fixture.owner.switchSession(path)).cancelled, false);
+	assert.equal(event.signal.aborted, true);
+	const manager = fixture.owner.session.sessionManager;
+	const entry = latest(manager);
+	fixture.api.events.emit("session-name:refined", { sessionId: event.sessionId, nameEntryId: event.nameEntryId, title: "Wrong switched result" });
+	await fixture.owner.session.prompt("Continue the work");
+	assert.equal(latest(manager)?.id, entry?.id);
+	assert.equal(manager.getSessionName(), "Target name");
+	assert.equal(fixture.events.length, 1);
+	assert.deepEqual(fixture.errors, []);
+});
+
+it("sets no timer for fallback eligibility, refinement or shutdown", (t) => {
+	const fixture = harness();
+	const timeout = t.mock.method(globalThis, "setTimeout");
+	const interval = t.mock.method(globalThis, "setInterval");
+	const abortTimeout = t.mock.method(AbortSignal, "timeout");
+	fixture.offer(); fixture.fire("before_agent_start");
+	fixture.fire("turn_end"); fixture.fire("agent_end");
+	fixture.refine(); fixture.fire("session_shutdown");
+	assert.equal(timeout.mock.callCount(), 0);
+	assert.equal(interval.mock.callCount(), 0);
+	assert.equal(abortTimeout.mock.callCount(), 0);
+});
+
 it("keeps fallback behaviour without a generator and emits once", () => {
 	const fixture = harness(); fixture.offer();
 	assert.equal(fixture.manager.getSessionName(), "Fix the parser");
@@ -270,6 +327,21 @@ it("guards entry identity even before a direct-write observer runs", () => {
 	const entry = latest(fixture.manager);
 	fixture.refine();
 	assert.equal(latest(fixture.manager)?.id, entry?.id);
+});
+
+it("refines a later input's fallback after the first setter fails", () => {
+	const options = { setterFailure: true };
+	const fixture = harness(options);
+	fixture.pi.on("input", (event) => { fixture.offer(event.text); });
+	fixture.fire("input", { text: "First parser request" });
+	assert.equal(fixture.manager.getSessionName(), undefined);
+	options.setterFailure = false;
+	fixture.fire("input", { text: "Later parser request" });
+	fixture.fire("before_agent_start");
+	assert.equal(fixture.events.length, 1);
+	assert.equal(fixture.events[0]?.text, "Later parser request");
+	fixture.refine(undefined, "Repair parser");
+	assert.equal(fixture.manager.getSessionName(), "Repair parser");
 });
 
 it("protects writes without a valid receipt and contains partial writes", () => {

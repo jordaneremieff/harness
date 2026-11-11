@@ -282,7 +282,7 @@ test("visible directions are bounded by Unicode code points", () => {
 	const result = parseEvoInvocation(`${accepted}x`);
 	assert.equal(result.ok, false);
 	if (!result.ok)
-		assert.equal(result.error, `The evo direction must be ${MAX_DIRECTION_CODE_POINTS} Unicode code points or fewer. Shorten it or send the direction as a plain message.`);
+		assert.equal(result.error, `The evo direction must be ${MAX_DIRECTION_CODE_POINTS} Unicode code points or fewer. Shorten the direction and invoke /evo again for an Evo run. A plain message starts no Evo run and carries no elevated grant.`);
 });
 
 test("raw input is bounded before hidden formatting is removed", () => {
@@ -295,7 +295,7 @@ test("raw input is bounded before hidden formatting is removed", () => {
 	const result = parseEvoInvocation(hidden);
 	assert.equal(result.ok, false);
 	if (!result.ok)
-		assert.equal(result.error, `The raw evo direction must be ${MAX_RAW_DIRECTION_BYTES} UTF-8 bytes or fewer. Shorten it or send the direction as a plain message.`);
+		assert.equal(result.error, `The raw evo direction must be ${MAX_RAW_DIRECTION_BYTES} UTF-8 bytes or fewer. Shorten the direction and invoke /evo again for an Evo run. A plain message starts no Evo run and carries no elevated grant.`);
 });
 
 for (const direction of [undefined, "Improve ordinary document tasks; do not publish."]) {
