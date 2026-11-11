@@ -293,9 +293,12 @@ describe("separate denial evidence", () => {
 		const f = fixture([hold], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		assert.equal(await f.call("loop", { command: 'for f in $(fd -t f design | head -n 20); do wc -c "$f"; done' }), undefined);
+		assert.equal(await f.call("newline-loop", { command: "for x in a; do\necho safe; done" }), undefined);
 		for (const [id, command, reason] of [
 			["wrapper", "timeout 1 echo safe", "opaque-command-operand"],
 			["dynamic", "$command", "unresolved-command"],
+			["empty-list", "for x in a; do echo safe;; done", "malformed-for-syntax"],
+			["empty-pipe", "for x in a; do echo safe |; done", "malformed-for-syntax"],
 		]) {
 			const denied = await f.call(id, { command });
 			assert.ok(denied);
