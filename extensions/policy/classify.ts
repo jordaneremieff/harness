@@ -88,6 +88,9 @@ const INDIRECT_COMMANDS = new Set([
 	"function",
 ]);
 
+const COMMAND_OPERAND_WRAPPERS = new Set(["timeout", "setsid", "flock", "parallel", "xargs"]);
+const FIND_EXEC_ACTIONS = new Set(["-exec", "-execdir", "-ok", "-okdir"]);
+
 function pipeEvidenceMatches(
 	pipe: CommandShapeSpec["pipe"],
 	stage: Stage,
@@ -263,6 +266,9 @@ function declarativeStageTruth(
 		cli = decoded.get(stage);
 		if (cli === undefined) cli = { status: "unknown", reason: "option-limit" };
 	}
+	if (spec.cli && (COMMAND_OPERAND_WRAPPERS.has(stage.command) ||
+		(stage.command === "find" && (stage.args.some((arg) => FIND_EXEC_ACTIONS.has(arg)) || stage.argLiterals?.includes(false)))))
+		return { truth: "unknown", reason: "opaque-command-operand" };
 	const indirect =
 		spec.cli &&
 		(stage.commandLiteral === false ||

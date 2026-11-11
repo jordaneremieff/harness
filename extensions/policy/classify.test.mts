@@ -1,7 +1,44 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { captureFor, classify, matchRuleRecords, notesFor, redactFor, ruleScopeMatches } from "./classify.ts";
+import { captureFor, classify, evaluateCommandRecords, matchRuleRecords, notesFor, redactFor, ruleScopeMatches } from "./classify.ts";
 import type { RuleRecord } from "./rule.ts";
+
+describe("CLI command-operand evidence", () => {
+	const record: RuleRecord = {
+		id: "local.push", source: { kind: "package" },
+		matcher: { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } },
+		definition: { purpose: "Keep remote writes explicit.", authority: "exact", revision: "123456abcdef",
+			state: "active", effect: "block", note: "Do not push." },
+		matcherAvailable: true, staleOverride: false,
+	};
+	const scope = { cwd: "/project", provider: "test", model: "test/model" };
+	it("does not infer child argv from wrappers or find expressions", () => {
+		for (const command of ["timeout 1 git push", "setsid git push", "flock 9 git push",
+			"flock lock -c 'git push'", "parallel git push ::: origin", "xargs git push",
+			"find src -exec git push \\;", "find src -execdir git push +", "find src -ok git push \\;",
+			"find src -okdir git push \\;", "find src $expression"] ) {
+			const evidence = evaluateCommandRecords("bash", command, [record], scope);
+			assert.equal(evidence.get(record.id), "unknown", command);
+			assert.deepEqual(evidence.reasons.get(record.id), ["opaque-command-operand"]);
+			assert.equal(evidence.segments.get(record.id), undefined);
+		}
+	});
+	it("retains lexical matches and lets direct true evidence win", () => {
+		for (const command of ["git push", "timeout 1 echo x; git push", "for x in a; do git push; done"])
+			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), true);
+		for (const command of ["git status", "find src -type f", "echo safe", 'for f in $(fd -t f design | head -n 20); do wc -c "$f"; done'])
+			assert.equal(evaluateCommandRecords("bash", command, [record], scope).get(record.id), false, command);
+		const lexical = { ...record, matcher: { kind: "declarative" as const, language: "command-shape/v1" as const, spec: { command: "timeout" } } };
+		assert.equal(evaluateCommandRecords("bash", "timeout 1 git push", [lexical], scope).get(record.id), true);
+	});
+	it("keeps scope and tool exclusions ahead of unavailable evidence", () => {
+		const excluded = structuredClone(record);
+		excluded.definition.scope = { cwdPrefixes: ["/elsewhere"] };
+		assert.equal(evaluateCommandRecords("bash", "timeout 1 git push", [excluded], scope).get(record.id), false);
+		assert.equal(evaluateCommandRecords("read", "timeout 1 git push", [record], scope).get(record.id), false);
+	});
+});
 
 describe("captureFor", () => {
 	it("returns the declared command text", () => {

@@ -188,6 +188,8 @@ function collectNestedCommands(text: string, start: number, end: number, nestedC
 interface Word {
 	text: string;
 	literal: boolean;
+	/** Only unquoted, unescaped literal words are reserved-word candidates. */
+	keyword: boolean;
 	/** The word carries a redirect operator rather than an operand. */
 	redirect?: "in" | "out";
 	/** The word opened a heredoc; its text is the delimiter. */
@@ -198,6 +200,7 @@ interface Word {
 
 interface ParseFrame {
 	groups: string[];
+	loop?: { phase: "do" | "body"; body: boolean };
 }
 
 interface ParseBudget {
@@ -217,6 +220,8 @@ interface Split {
 	words: Word[];
 	/** Separator that ended this run of words. */
 	end: "pipe" | "statement" | "eof";
+	/** Control operators and group boundaries are outside the plain-loop grammar. */
+	control?: boolean;
 }
 
 function escapedRegex(text: string): string {
@@ -248,7 +253,10 @@ function dynamicChar(char: string, next: string | undefined): boolean {
 
 function flushWord(state: ReaderState): void {
 	if (!state.started) return;
-	const word: Word = { text: state.current, literal: state.literal };
+	const word: Word = {
+		text: state.current, literal: state.literal,
+		keyword: state.literal && !state.quoted && !state.pendingRedirect && !state.pendingHeredoc,
+	};
 	state.budget.words++;
 	if (state.budget.words > 4096) state.budget.reasons.add("word-limit");
 	if ((state.pendingRedirect || state.pendingHeredoc) && !state.current) state.budget.reasons.add("malformed-shell");
@@ -401,7 +409,7 @@ function ampersandAction(state: ReaderState): ReaderAction {
 	flushWord(state);
 	return {
 		kind: "split",
-		split: { words: state.words, end: "statement" },
+		split: { words: state.words, end: "statement", control: true },
 		next: state.text[state.index + 1] === "&" ? state.index + 2 : state.index + 1,
 	};
 }
@@ -409,7 +417,7 @@ function ampersandAction(state: ReaderState): ReaderAction {
 function pipeAction(state: ReaderState): ReaderAction {
 	flushWord(state);
 	if (state.text[state.index + 1] === "|")
-		return { kind: "split", split: { words: state.words, end: "statement" }, next: state.index + 2 };
+		return { kind: "split", split: { words: state.words, end: "statement", control: true }, next: state.index + 2 };
 	return {
 		kind: "split",
 		split: { words: state.words, end: "pipe" },
@@ -482,6 +490,7 @@ function doubleQuoteAction(state: ReaderState): ReaderAction {
 }
 
 function backslashAction(state: ReaderState): ReaderAction {
+	state.quoted = true;
 	if (state.text[state.index + 1] === "\n") {
 		state.index += 2;
 		return { kind: "continue" };
@@ -539,7 +548,7 @@ function groupAction(state: ReaderState, char: string): ReaderAction {
 	if (char === "(" || char === "{") state.frame.groups.push(char);
 	else if (state.frame.groups.pop() !== (char === ")" ? "(" : "{")) state.budget.reasons.add("malformed-shell");
 	flushWord(state);
-	return { kind: "split", split: { words: state.words, end: "statement" }, next: state.index + 1 };
+	return { kind: "split", split: { words: state.words, end: "statement", control: true }, next: state.index + 1 };
 }
 
 function plainAction(state: ReaderState, char: string): ReaderAction {
@@ -804,6 +813,48 @@ function collectParsedNested(
 	}
 }
 
+const LOOP_CONTROLS = new Set(["for", "select", "case", "function", "if", "then", "elif", "else", "fi", "while", "until", "do", "done", "esac", "!"]);
+
+/** Consume only the closed plain-for grammar; all other control remains unavailable. */
+function loopSplit(split: Split, frame: ParseFrame, stages: Word[][], budget: ParseBudget): Split {
+	const words = split.words;
+	const first = words[0];
+	const keyword = (word: Word | undefined, text: string) => word?.keyword && word.text === text;
+	if (!frame.loop) {
+		if (keyword(first, "for")) {
+			const header = stages.length === 0 && frame.groups.length === 0 && split.end === "statement" && !split.control &&
+				words[1]?.keyword && /^[A-Za-z_][A-Za-z0-9_]*$/.test(words[1].text) && keyword(words[2], "in") &&
+				!words.some((word) => word.redirect || word.heredoc);
+			if (header) {
+				frame.loop = { phase: "do", body: false };
+				return { ...split, words: [] };
+			}
+			budget.reasons.add("unsupported-for-syntax");
+		} else if (keyword(first, "done")) budget.reasons.add("malformed-for-syntax");
+		return split;
+	}
+	if (split.control || frame.groups.length) budget.reasons.add("unsupported-for-syntax");
+	if (!first) return split;
+	if (frame.loop.phase === "do") {
+		if (!keyword(first, "do")) {
+			budget.reasons.add("malformed-for-syntax");
+			return split;
+		}
+		frame.loop.phase = "body";
+		if (words.length === 1) budget.reasons.add("malformed-for-syntax");
+		return loopSplit({ ...split, words: words.slice(1) }, frame, stages, budget);
+	}
+	if (keyword(first, "done")) {
+		if (words.length !== 1 || stages.length || split.end === "pipe" || !frame.loop.body)
+			budget.reasons.add("malformed-for-syntax");
+		delete frame.loop;
+		return { ...split, words: words.slice(1) };
+	}
+	if (first.keyword && LOOP_CONTROLS.has(first.text)) budget.reasons.add("unsupported-for-syntax");
+	frame.loop.body = true;
+	return split;
+}
+
 function parse(command: string, depth: number, budget: ParseBudget): Statement[] {
 	const statements: Statement[] = [];
 	const heredocs: string[] = [];
@@ -818,10 +869,11 @@ function parse(command: string, depth: number, budget: ParseBudget): Statement[]
 			break;
 		}
 		const { split, next } = readWords(command, index, heredocs, nestedCommands, budget, frame);
-		if (admitSplit(split, next, index, stages, statements, budget)) break;
+		if (admitSplit(loopSplit(split, frame, stages, budget), next, index, stages, statements, budget)) break;
 		index = next;
 	}
 	if (heredocs.length || frame.groups.length) budget.reasons.add("malformed-shell");
+	if (frame.loop) budget.reasons.add("malformed-for-syntax");
 	collectParsedNested(statements, nestedCommands, depth, budget);
 	return statements;
 }

@@ -226,29 +226,36 @@ function commitInput(target: Record<string, unknown>, candidate: Record<string, 
 /** Preserve stored guidance and append bounded evidence for both policy runtimes. */
 export function refusalText(plan: InputPlan, records: ReadonlyMap<string, RuleRecord>, fallbackIds: readonly string[]): string | undefined {
 	const denials = plan.evaluations.filter((evaluation) => evaluation.deny);
-	const ids = new Set(denials.length ? denials.map((evaluation) => evaluation.id) : fallbackIds);
-	const suggestions = new Set<string>();
-	const lines = [...ids].flatMap((id) => {
+	const ids = [...new Set(denials.length ? denials.map((evaluation) => evaluation.id) : fallbackIds)];
+	const reserve = `\n[policy] Omitted ${ids.length} rule diagnostics.`;
+	let text = "";
+	for (const [index, id] of ids.entries()) {
 		const record = records.get(id);
-		if (!record) return [];
-		const evidence = new Set(
-			denials.filter((entry) => entry.id === id).flatMap((entry) => {
-				const corrected = entry.inputView === "effective" && plan.corrections.length > 0;
-				const segment = corrected ? "[corrected input omitted]" : entry.matchedSegment;
-				if (!corrected) for (const suggestion of entry.commandSuggestions ?? []) suggestions.add(suggestion);
-				return entry.matchedSegment ? [`Matched command: ${segment}`] : [];
-			}),
-		);
-		return [ruleGuidance(record), ...evidence];
-	});
-	let text = guidanceText(lines);
-	if (!text) return undefined;
-	for (const suggestion of suggestions) {
-		const extra = `\nFor this command: ${suggestion}`;
-		if (Buffer.byteLength(text + extra, "utf8") > GUIDANCE_BYTES) break;
-		text += extra;
+		const evidence = new Set<string>();
+		const suggestions = new Set<string>();
+		for (const entry of denials.filter((evaluation) => evaluation.id === id)) {
+			const corrected = entry.inputView === "effective" && plan.corrections.length > 0;
+			if (entry.truth === "unknown") {
+				const reasons = entry.unavailableReasons?.join(", ") || "evidence-unavailable";
+				evidence.add(`Evidence unavailable: ${reasons}. The rule denies unavailable evidence. No matching command was established.`);
+			} else if (entry.matchedSegment) {
+				evidence.add(`Matched command: ${corrected ? "[corrected input omitted]" : entry.matchedSegment}`);
+			}
+			if (!corrected) for (const suggestion of entry.commandSuggestions ?? []) suggestions.add(suggestion);
+		}
+		const diagnostic = guidanceText([[`Rule ${id}: ${record ? ruleGuidance(record) : "The rule denies this call."}`, ...evidence].join(" ")]);
+		const candidate = diagnostic ? (text ? `${text}\n${diagnostic}` : diagnostic) : undefined;
+		if (!candidate || Buffer.byteLength(candidate + reserve, "utf8") > GUIDANCE_BYTES) {
+			return `${text}${text ? "\n" : ""}[policy] Omitted ${ids.length - index} rule diagnostics.`;
+		}
+		text = candidate;
+		for (const suggestion of suggestions) {
+			const extra = `\nFor this command: ${suggestion}`;
+			if (Buffer.byteLength(text + extra + reserve, "utf8") > GUIDANCE_BYTES) break;
+			text += extra;
+		}
 	}
-	return text;
+	return text || undefined;
 }
 
 export class PolicyRuntime {

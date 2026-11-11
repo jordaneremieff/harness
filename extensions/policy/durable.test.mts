@@ -571,6 +571,41 @@ test("the shell contract card reaches a model when bash is callable only", async
 	} finally { await fixture.close(); }
 });
 
+test("native unavailable command denials name their rule without claiming a match", async () => {
+	let executions = 0;
+	const fixture = await openFixture({ mode: "enforce",
+		prepare: async (storeDir) => {
+			const registry = new RuleRegistry(storeDir);
+			const auditContext = { sessionManager: { getSessionId: () => "command-evidence" }, model: null };
+			const audit = makeRuleAudit(auditContext, "agent-tool");
+			const proposal = await registry.proposeAdd({
+				id: "local.push", purpose: "Keep remote writes held.", authority: "steer-or-block", note: "Do not push.",
+				matcher: { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
+					spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } },
+			}, "Synthetic restriction.", audit);
+			await registry.decide(proposal.id, "approved", "block", makeRuleAudit(auditContext, "command"), proposalRevision(proposal));
+		},
+		extension: DurableModule.defineExtension({ name: "command-evidence", tools: [DurableModule.defineTool({
+			name: "bash", description: "Nonexecuting command fixture", parameters: obj({ command: str() }, { open: true }),
+			execute: async () => { executions++; return { output: [{ type: "text", text: "fixture only" }] }; },
+		})] }),
+	});
+	try {
+		await submit(fixture, [fauxAssistantMessage(fauxToolCall("bash", { command: "timeout 1 echo safe" }), { stopReason: "toolUse" }), fauxAssistantMessage("done")], "inspect command evidence");
+		const result = (await toolResults(fixture.root, "bash")).at(-1);
+		assert.equal(executions, 0);
+		assert.equal(result?.isError, true);
+		assert.match(textOf(result), /Rule local\.push:.*opaque-command-operand/);
+		assert.match(textOf(result), /No matching command was established/);
+		assert.doesNotMatch(textOf(result), /Matched command:/);
+		await fixture.closeHost();
+		const records = (await telemetryLines(fixture.storeDir, localDate(new Date()))).map((line) => JSON.parse(line));
+		const record = records.find((entry) => entry.tool === "bash");
+		assert.equal(record?.outcome, "denied");
+		assert.equal(record?.policy.decision, "deny");
+	} finally { await fixture.close(); }
+});
+
 test("native result.content rules preserve structured values and mark nested errors", async () => {
 	const fixture = await openFixture({ mode: "enforce", extension: DurableModule.defineExtension({
 		name: "structured-probe",

@@ -11,10 +11,10 @@ import type { NamedData } from "./data.ts";
 import { GUIDANCE_ENTRY, GUIDANCE_HISTORY_LIMITS, GUIDANCE_RETIREMENT_ENTRY, messageDigest } from "./guidance-history.ts";
 import type { RuleSnapshot } from "./local-rules.ts";
 import type { PolicyMode } from "./mode.ts";
-import type { FactsProgram } from "./program.ts";
+import type { FactsProgram, InputPlan } from "./program.ts";
 import type { PolicyRecord } from "./record.ts";
 import type { RuleRecord } from "./rule.ts";
-import { PolicyRuntime } from "./runtime.ts";
+import { PolicyRuntime, refusalText } from "./runtime.ts";
 import { PolicyWriter } from "./store.ts";
 import { TELEMETRY_QUEUE_RECORDS } from "./telemetry-files.ts";
 
@@ -284,6 +284,68 @@ function shellRule(effect: "block" | "steer" = "block", key = "routing.cat-read"
 		staleOverride: false,
 	};
 }
+describe("separate denial evidence", () => {
+	it("admits a supported harmless loop but denies unknown execution without a false match", async (t) => {
+		const hold = rule("local.push", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
+		hold.definition.note = "Keep remote writes held.";
+		hold.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
+			spec: { command: "git", cli: { profile: "git", subcommand: ["push"] } } };
+		const f = fixture([hold], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+		t.after(() => f.writer.close());
+		assert.equal(await f.call("loop", { command: 'for f in $(fd -t f design | head -n 20); do wc -c "$f"; done' }), undefined);
+		for (const [id, command, reason] of [
+			["wrapper", "timeout 1 echo safe", "opaque-command-operand"],
+			["dynamic", "$command", "unresolved-command"],
+		]) {
+			const denied = await f.call(id, { command });
+			assert.ok(denied);
+			assert.match(denied.reason, /Rule local\.push:/);
+			assert.ok(denied.reason.includes(reason));
+			assert.match(denied.reason, /No matching command was established/);
+			assert.doesNotMatch(denied.reason, /Matched command:/);
+		}
+		assert.match((await f.call("push-loop", { command: "for x in a; do git push; done" }))?.reason ?? "", /Matched command: git push/);
+		hold.matcher.onUnavailable = "skip";
+		const skip = fixture([hold], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+		t.after(() => skip.writer.close());
+		assert.equal(await skip.call("skip", { command: "timeout 1 echo safe" }), undefined);
+	});
+	it("labels two qualified rules independently and respects their selected guidance effects", async (t) => {
+		const fd = shellRule("block", "bounds.fd-uncapped");
+		fd.definition.note = "For plain discovery use --max-results N; it conflicts with --list-details, --exec and --exec-batch. Bound selected input for those forms.";
+		const cap = shellRule("block", "bounds.false-cap");
+		cap.definition.note = "Bound selected input. Move the cap only when changed input preserves the task, not for global sorting or totals.";
+		const command = "fd -t f -l . design findings records | awk '{print $5, $9}' | sort -k2 | head -n 200";
+		for (const effect of ["block", "steer"] as const) {
+			for (const row of [fd, cap]) row.definition.effect = effect;
+			const f = fixture([fd, cap], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
+			t.after(() => f.writer.close());
+			const denied = await f.call(effect, { command });
+			if (effect === "steer") assert.equal(denied, undefined);
+			else {
+				assert.ok(denied);
+				assert.equal(denied.reason.split("\n").filter((line) => line.includes("Rule ")).length, 2);
+				assert.match(denied.reason, /Rule bounds\.fd-uncapped:.*conflicts with --list-details/);
+				assert.match(denied.reason, /Rule bounds\.false-cap:.*not for global sorting/);
+				assert.equal((denied.reason.match(/Matched command:/g) ?? []).length, 2);
+			}
+		}
+	});
+	it("counts whole omitted diagnostics within the shared byte bound", () => {
+		const records = new Map(Array.from({ length: 30 }, (_, index) => {
+			const row = rule(`deny.${index}`, { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "skip" });
+			row.definition.note = "Keep this restriction explicit. ".repeat(5);
+			return [row.id, row] as const;
+		}));
+		const plan = { corrections: [], evaluations: [...records.keys()].map((id) => ({ id, deny: true, truth: true })) } as unknown as InputPlan;
+		const text = refusalText(plan, records, []) ?? "";
+		const visible = (text.match(/Rule deny\./g) ?? []).length;
+		assert.ok(visible > 0 && visible < records.size);
+		assert.ok(text.endsWith(`Omitted ${records.size - visible} rule diagnostics.`));
+		assert.ok(Buffer.byteLength(text) <= 2048);
+	});
+});
+
 describe("command-specific refusal guidance", () => {
 	const cases: Array<[string, string, string[]]> = [
 		["routing.cat-read", "cat notes.md", ["read path=notes.md"]],
@@ -340,7 +402,7 @@ describe("command-specific refusal guidance", () => {
 			const denied = await f.call("read-call", { command });
 			assert.ok(denied);
 			const lines = denied.reason.split("\n");
-			assert.ok(lines[0].startsWith("[policy] Use your selected reader. Suggested form: reader --plain. Matched command:"));
+			assert.ok(lines[0].startsWith("[policy] Rule local.reader: Use your selected reader. Suggested form: reader --plain. Matched command:"));
 			assert.deepEqual(lines.filter((line) => line.startsWith("For this command:")), suggestions.map((value) => `For this command: ${value}`));
 			assert.deepEqual(record, before);
 		});
@@ -383,7 +445,7 @@ describe("compact command inspection", () => {
 			command: "printf safe && echo ready | wc -c; printf '%s' $(cat notes.md)",
 		});
 		assert.ok(denied);
-		assert.ok(denied.reason.startsWith(`[policy] ${shellRule().definition.note}`));
+		assert.ok(denied.reason.startsWith(`[policy] Rule ${shellRule().id}: ${shellRule().definition.note}`));
 		assert.match(denied.reason, /Matched command: cat notes\.md/);
 		assert.doesNotMatch(denied.reason, /printf safe|echo ready/);
 		await f.finish("nested", true);
@@ -399,7 +461,7 @@ describe("compact command inspection", () => {
 		const f = fixture([guide, blocker], "enforce", obj({ command: str() }, { open: true }), false, "/unused", "bash");
 		t.after(() => f.writer.close());
 		const denied = await f.call("mixed", { command: "cat notes.md" });
-		assert.equal(denied?.reason, "[policy] Rule restriction.");
+		assert.equal(denied?.reason, "[policy] Rule restriction: Rule restriction.");
 	});
 
 	it("bounds and redacts segments before denial projection", async (t) => {

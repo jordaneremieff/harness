@@ -1361,6 +1361,25 @@ remains TUI-only.
 
 ## Command-shape rules
 
+Command evidence describes bounded shell syntax, not every command a program might
+execute. Known command-operand wrappers leave CLI execution evidence unavailable.
+Policy does not guess their inner argument vectors. This includes descriptor forms
+such as `flock 9 command`, shell-string forms such as `flock path -c 'command'`,
+and data-driven commands in `parallel` or `xargs`. Literal command rules continue
+to select parsed lexical stages.
+
+The parser recognises a plain `for NAME in WORDS; do SIMPLE_LIST; done` loop with
+simple commands and pipelines. It retains command substitutions as separate
+evidence. Quoted keywords, arithmetic loops, nested control forms and malformed
+syntax do not acquire this certainty. A known command position is not proof that
+the command terminates or that its executable has no further effects.
+
+Each denying rule has its own labelled diagnostic and evidence. Several matched
+rules do not establish one combined correction. A cap before global sorting or
+aggregation changes the selected input; Policy does not recommend that rewrite as
+equivalent. An approved unavailable-evidence denial states the rule ID and fixed
+reason; it does not claim a matching command.
+
 The shell parser does not expand aliases, variables, globs, generated words, or
 shell data. It captures the command once and uses that same value for matching
 and bounded best-effort redaction.
@@ -1377,13 +1396,13 @@ scope {modelProviders?, models?, cwdPrefixes?}
 ```
 
 Every supplied command constraint must hold in one parsed stage. Command names
-match basenames. A matched command denial keeps the rule note first and adds
+match basenames. Each diagnostic starts with `Rule <id>:` and its rule note, then adds
 `Matched command:` with the first matching stage for that rule and input view.
 The segment uses normalized command words, not an exact shell-source slice:
 quotes are normalized, wrappers and redirects are omitted, and nested
 substitutions remain separate stages. Each excerpt is terminal-safe, uses
 best-effort credential redaction, and stays within 240 UTF-8 bytes. The complete
-denial keeps the shared guidance bound, so later excerpts can be omitted.
+denial keeps the shared guidance bound and reports the count of omitted rule diagnostics.
 Denial notes identify denying rules, not unrelated matched guidance rules.
 Read-routing predicates also append `For this command:` with a concrete read
 call from that matched stage. Stored notes and suggestions remain unchanged.

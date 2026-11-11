@@ -1,6 +1,36 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { parseStatements } from "./shell.ts";
+import { parseShellEvidence, parseStatements } from "./shell.ts";
+
+describe("plain for evidence", () => {
+	it("retains header substitutions and simple body pipelines without delimiter stages", () => {
+		for (const command of [
+			'for file in $(fd -t f design | head -n 20); do wc -c "$file"; done',
+			'for file in a b\ndo wc -c "$file" | sort\ndone',
+			'for file in; do echo empty; done',
+		]) {
+			const parsed = parseShellEvidence(command);
+			assert.equal(parsed.complete, true, command);
+			const names = parsed.statements.flat().map((stage) => stage.command);
+			assert.ok(!names.includes("for") && !names.includes("done"));
+			if (command.includes("$(")) assert.deepEqual(names, ["wc", "fd", "head"]);
+		}
+	});
+	it("leaves unsupported or incomplete control syntax unavailable", () => {
+		for (const command of [
+			'for x "in" a; do echo x; done', 'for x in a; "do" echo x; done',
+			'for x in a; do echo x; "done"', 'for x in a; do echo x; do\\ne',
+			'for x in a; do echo x', 'for x in a; do; done', 'for x in a; do done',
+			'for ((i=0;i<3;i++)); do echo x; done',
+			'for x in a; do for y in b; do echo x; done; done',
+			'for x in a; do if true; then echo x; fi; done',
+			'for x in a && do echo x; done', 'for x in a; do echo x & done',
+			'for x in a; do (echo x); done', 'for x in a; do echo x; done | wc',
+			`for x in a; do ${"echo x;".repeat(257)} done`,
+			`for x in ${"x ".repeat(4097)}; do echo x; done`,
+		]) assert.equal(parseShellEvidence(command).complete, false, command.slice(0, 120));
+	});
+});
 
 describe("parseStatements", () => {
 	it("reads one command and its operands", () => {
