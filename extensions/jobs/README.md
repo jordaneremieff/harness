@@ -215,8 +215,10 @@ history limit. Timeout and explicit cancellation retain backend errors. Text
 uses `Backend error after timeout` or `Backend error after cancellation` for
 those outcomes; other failures use `Execution error`. Error text never decides
 whether an error is an abort or gets discarded.
-At capacity, a new job evicts the oldest finished record, never a running job.
-Unknown or evicted IDs produce an error. Records retain the bounded command
+At capacity, the ordinary manager evicts the oldest finished record, never a
+running job. Unknown or evicted ordinary IDs produce an error. Native eviction
+removes only host-local output: logs become unavailable, while retained list and
+status still use persisted task records. Records retain the bounded command
 preview, working directory, and owner described above, never the full command
 text or environment variables. Use the originating Bash call for the complete
 command. List results omit backend error text; status returns the individual
