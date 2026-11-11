@@ -30,6 +30,7 @@ import {
 import type { RuleSnapshot } from "./local-rules.ts";
 import { type PreparedPolicy, attachedPreparedPolicy, preparedPolicyFor } from "./prepared.ts";
 import type { PolicyMode } from "./mode.ts";
+import { createObservationClock, type ObservationClock } from "./observation-clock.ts";
 import { readRecentActivity } from "./panel.ts";
 import {
 	type Condition,
@@ -273,7 +274,7 @@ export function refusalText(plan: InputPlan, records: ReadonlyMap<string, RuleRe
 
 export class PolicyRuntime {
 	private readonly actions = new ActionApprovals();
-	private readonly state = new ObservationState();
+	private readonly state: ObservationState;
 	private readonly pending = new Map<string, ObservedCall>();
 	private readonly ended = new Set<string>();
 	private readonly retainedGuidance = new Map<string, { pin: StatePin; evaluation: ProgramEvaluation }>();
@@ -310,6 +311,7 @@ export class PolicyRuntime {
 		enabled: () => boolean = () => true,
 		writer?: Pick<PolicyWriter, "enqueue" | "health" | "close">,
 		now: () => number = () => Date.now(),
+		observationClock: ObservationClock = createObservationClock(),
 		createActionState = true,
 		retention: TelemetryRetention = DEFAULT_TELEMETRY_RETENTION,
 	) {
@@ -322,6 +324,7 @@ export class PolicyRuntime {
 		this.mode = mode;
 		this.enabled = enabled;
 		this.now = now;
+		this.state = new ObservationState(observationClock);
 		this.createActionState = createActionState;
 		this.writer = writer ?? new PolicyWriter(dir, (health) => this.recordingChanged(health), undefined, retention);
 	}

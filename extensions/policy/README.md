@@ -843,6 +843,19 @@ the age bound. They do not claim an exhaustive time-window tally after the event
 limit. Missing metrics and unavailable historical turn totals remain unknown,
 not zero. Inspection renders unavailable values explicitly.
 
+Observation windows, cooldowns and natural expiry use process elapsed time anchored
+to a wall timestamp. Calendar record times and approved data freshness retain their
+wall-clock semantics. A restored conversation estimates downtime from persisted
+wall timestamps. Samples with negative or expired age do not enter a time window.
+A future period start creates a `clock-regression` period; a future cooldown stamp
+does not extend a cooldown. Previously consumed once allowances remain consumed
+unless the period itself resets.
+
+The stored format does not establish exact elapsed time across process loss and an
+unobserved wall-clock change. Read-only views do not change observation state. The
+next state transaction persists temporal reconciliation. No performance-clock
+reading is stored, and the clock owns no timer or cancellation behaviour.
+
 In ordinary sessions, load, reload, new session, resume, fork, and tree navigation
 reset observations. Disable, replacement, and explicit reset invalidate the
 affected rule's prior pins. Old completions cannot restore explicitly reset state.

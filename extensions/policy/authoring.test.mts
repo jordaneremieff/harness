@@ -26,7 +26,9 @@ interface Row {
 interface Check {
 	admitted: boolean;
 	diagnostics: Array<{ severity: string; message: string }>;
-	cases: Array<{ name: string; scopeMatches: boolean; rows: Row[]; state?: unknown; unavailable?: string }>;
+	cases: Array<{ name: string; scopeMatches: boolean; rows: Row[];
+		state?: { observationPeriods: Array<{ count: number; windowCount: number; eligible: boolean; projected: number; resetReason: string }> };
+		unavailable?: string }>;
 	omittedCases?: number;
 }
 interface Tool {
@@ -368,6 +370,60 @@ test("completion guidance survives a later success and cases isolate clock, rese
 		},
 	]);
 	noMismatches(result);
+});
+
+test("synthetic observation time controls window, cooldown, once and expiry boundaries", async () => {
+	const program: FactsProgram = { phase: "context",
+		when: { op: "gte", path: ["state", "windowCount"], value: 2 },
+		action: { kind: "guide", text: "Inspect the repeated errors." }, onUnavailable: "skip",
+		state: { observe: { op: "eq", path: ["outcome", "kind"], value: "execution-error" },
+			window: { maxEvents: 4, maxAgeMs: 10 }, cooldownMs: 5, once: "turn", expiresAfterMs: 30 },
+	};
+	const result = await check(draft(program), [
+		{ name: "window and cooldown", steps: [
+			call("allowed", true, 0), call("allowed", true, 9),
+			{ ...context(9), expect: { guidance: true } },
+			{ ...call("allowed", true, 10), turn: 2 },
+			{ ...context(10), turn: 2, expect: { guidance: false } },
+			{ ...context(14), turn: 2, expect: { guidance: false } },
+		] },
+		{ name: "cooldown waits", steps: [
+			call("allowed", true, 0), call("allowed", true, 9),
+			{ ...context(9), expect: { guidance: true } },
+			{ ...call("allowed", true, 10), turn: 2 },
+			{ ...context(10), turn: 2, expect: { guidance: false } },
+		] },
+		{ name: "once and strict age", steps: [
+			call("allowed", true, 0), call("allowed", true, 9),
+			{ ...context(9), expect: { guidance: true } },
+			{ ...context(10), expect: { guidance: false } },
+		] },
+		{ name: "natural expiry", steps: [
+			call("allowed", true, 0), call("allowed", true, 1),
+			{ ...context(1), expect: { guidance: true } },
+			{ ...call("allowed", true, 30), turn: 2 },
+			{ ...context(31), turn: 2, expect: { guidance: false } },
+			{ ...call("allowed", true, 32), turn: 2 },
+			{ ...context(32), turn: 2, expect: { guidance: false } },
+		] },
+	]);
+	noMismatches(result);
+	const periods = result.cases.map((entry) => {
+		const period = entry.state?.observationPeriods[0];
+		assert.ok(period, entry.name);
+		return period;
+	});
+	assert.equal(periods[0].eligible, true);
+	assert.equal(periods[0].windowCount, 2);
+	assert.equal(periods[0].projected, 1);
+	assert.equal(periods[1].eligible, false);
+	assert.equal(periods[1].windowCount, 2);
+	assert.equal(periods[2].eligible, false);
+	assert.equal(periods[2].windowCount, 1);
+	assert.equal(periods[3].eligible, true);
+	assert.equal(periods[3].resetReason, "expiry");
+	assert.equal(periods[3].count, 2);
+	assert.equal(periods[3].projected, 0);
 });
 
 test("checks apply production input/result corrections before completion guidance", async () => {

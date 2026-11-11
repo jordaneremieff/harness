@@ -957,7 +957,7 @@ export default function registerPolicy(pi: ExtensionAPI): void {
 		}
 		return valid;
 	};
-	runtime = new PolicyRuntime(pi, loadRegistry, () => mode, dir, ensureMode, undefined, undefined, true, retention);
+	runtime = new PolicyRuntime(pi, loadRegistry, () => mode, dir, ensureMode, undefined, undefined, undefined, true, retention);
 	registerRuleTools(pi, {
 		registry,
 		loadRegistry,

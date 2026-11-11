@@ -1,6 +1,7 @@
 /** Bounded observation periods. The runtime owns terminal-call deduplication. */
 import { cloneJson, readPath, UNKNOWN } from "./data.ts";
 import { evaluateCondition, PROGRAM_LIMITS, type ProgramRule, type StateSpec } from "./program.ts";
+import type { ObservationClock } from "./observation-clock.ts";
 
 export const STATE_LIMITS = { turns: 1024, events: 1024, total: Number.MAX_SAFE_INTEGER } as const;
 
@@ -121,25 +122,30 @@ function countCurrentTurn(period: ObservationPeriod, turn: number, total: Observ
 	current.total = addTotal(current.total, total);
 }
 
+function withinWindow(at: number, now: number, maxAge: number): boolean {
+	const age = now - at;
+	return age >= 0 && age < maxAge;
+}
+
 /** The age bound drops samples before the event bound trims the remaining window. */
 function recordWindow(
 	period: ObservationPeriod,
 	window: NonNullable<StateSpec["window"]>,
 	sample: EventSample,
 ): void {
-	period.window = period.window.filter((event) => sample.at - event.at < window.maxAgeMs);
+	period.window = period.window.filter((event) => withinWindow(event.at, sample.at, window.maxAgeMs));
 	period.window.push(sample);
 	if (period.window.length > window.maxEvents) period.window.splice(0, period.window.length - window.maxEvents);
 }
 
-/** An expired period reports an empty period that starts at the reading time. */
-function expiredView(id: string, period: ObservationPeriod, now: number): StateView {
+/** Invalid or expired periods report empty counters without changing live state. */
+function expiredView(id: string, period: ObservationPeriod, now: number, reason = "expiry"): StateView {
 	return {
 		id,
 		revision: period.revision,
 		generation: period.generation,
 		startedAt: now,
-		resetReason: "expiry",
+		resetReason: reason,
 		count: 0,
 		total: 0,
 		turns: 0,
@@ -165,6 +171,16 @@ function turnCounters(period: ObservationPeriod, turn: number): { count: Observe
 export class ObservationState {
 	private readonly periods = new Map<string, ObservationPeriod>();
 	private nextGeneration = 0;
+
+	private readonly clock?: ObservationClock;
+
+	constructor(clock?: ObservationClock) {
+		this.clock = clock;
+	}
+
+	private resolveTime(now: number): number {
+		return this.clock ? this.clock.now() : now;
+	}
 
 	private fresh(
 		id: string,
@@ -194,15 +210,29 @@ export class ObservationState {
 		return period.spec?.expiresAfterMs !== undefined && now - period.startedAt >= period.spec.expiresAfterMs;
 	}
 	private expire(period: ObservationPeriod, now: number): ObservationPeriod {
-		if (!this.expired(period, now)) return period;
-		const next = this.fresh(period.id, period.revision, period.spec, "expiry", now);
-		next.generation = period.generation;
-		this.periods.set(period.id, next);
-		return next;
+		if (now < period.startedAt) {
+			this.nextGeneration = Math.max(this.nextGeneration, period.generation);
+			const next = this.fresh(period.id, period.revision, period.spec, "clock-regression", now);
+			this.periods.set(period.id, next);
+			return next;
+		}
+		if (this.expired(period, now)) {
+			const next = this.fresh(period.id, period.revision, period.spec, "expiry", now);
+			next.generation = period.generation;
+			this.periods.set(period.id, next);
+			return next;
+		}
+		if (period.lastProjectedAt !== undefined && period.lastProjectedAt > now) delete period.lastProjectedAt;
+		if (period.spec?.window) {
+			const maxAge = period.spec.window.maxAgeMs;
+			period.window = period.window.filter((event) => withinWindow(event.at, now, maxAge));
+		}
+		return period;
 	}
 
 	/** Pass only active rules. Absence, revision changes, and return start new periods. */
 	sync(rules: readonly ProgramRule[], now: number): void {
+		now = this.resolveTime(now);
 		if (!validTime(now)) throw new Error("Invalid observation time");
 		if (rules.length > PROGRAM_LIMITS.rules || new Set(rules.map((rule) => rule.id)).size !== rules.length)
 			throw new Error("Invalid observation rule set");
@@ -220,6 +250,7 @@ export class ObservationState {
 	}
 
 	reset(reason: string, now: number, id?: string): void {
+		now = this.resolveTime(now);
 		if (!validTime(now)) throw new Error("Invalid observation time");
 		for (const [key, period] of this.periods)
 			if (id === undefined || key === id)
@@ -232,6 +263,7 @@ export class ObservationState {
 
 	/** One completed outcome enters one period only when its captured identity remains current. */
 	complete(pin: StatePin, facts: Record<string, unknown>, turn: number, now: number): boolean {
+		now = this.resolveTime(now);
 		if (!validTime(now) || !Number.isSafeInteger(turn) || turn < 0) return false;
 		let period = this.periods.get(pin.id);
 		if (!period) return false;
@@ -240,10 +272,10 @@ export class ObservationState {
 			return false;
 		const spec = period.spec;
 		if (!spec) return true;
-		const actual = { ...facts, state: this.view(pin.id, now, turn) };
+		const actual = { ...facts, state: this.viewAt(pin.id, now, turn) };
 		if (spec.resetWhen && evaluateCondition(spec.resetWhen, actual) === true)
 			period = this.resetForOutcome(period, spec, now);
-		if (evaluateCondition(spec.observe, { ...facts, state: this.view(pin.id, now, turn) }) !== true) return true;
+		if (evaluateCondition(spec.observe, { ...facts, state: this.viewAt(pin.id, now, turn) }) !== true) return true;
 		const total = outcomeTotal(spec, facts);
 		countOutcome(period, total);
 		countTurnSample(period, turn, total);
@@ -267,18 +299,24 @@ export class ObservationState {
 			(period.projectedTurns.has(turn) || period.projectedTurns.size >= STATE_LIMITS.turns)
 		)
 			return false;
-		return period.lastProjectedAt === undefined || now - period.lastProjectedAt >= (period.spec?.cooldownMs ?? 0);
+		return period.lastProjectedAt === undefined || period.lastProjectedAt > now ||
+			now - period.lastProjectedAt >= (period.spec?.cooldownMs ?? 0);
 	}
 
 	/** Views project expiry without changing the live period, for read-only previews. */
 	view(id: string, now: number, turn = 0): StateView | undefined {
+		return this.viewAt(id, this.resolveTime(now), turn);
+	}
+
+	private viewAt(id: string, now: number, turn: number): StateView | undefined {
 		const period = this.periods.get(id);
 		if (!period || !validTime(now)) return undefined;
+		if (now < period.startedAt) return expiredView(id, period, now, "clock-regression");
 		return this.expired(period, now) ? expiredView(id, period, now) : this.liveView(id, period, now, turn);
 	}
 
 	private liveView(id: string, period: ObservationPeriod, now: number, turn: number): StateView {
-		const events = period.window.filter((event) => now - event.at < (period.spec?.window?.maxAgeMs ?? 0));
+		const events = period.window.filter((event) => withinWindow(event.at, now, period.spec?.window?.maxAgeMs ?? 0));
 		const counters = turnCounters(period, turn);
 		return {
 			id,
@@ -300,11 +338,12 @@ export class ObservationState {
 		};
 	}
 	eligible(id: string, now: number, turn: number): boolean {
-		return this.view(id, now, turn)?.eligible === true;
+		return this.viewAt(id, this.resolveTime(now), turn)?.eligible === true;
 	}
 
 	/** The caller invokes this only after actual eligible context or result projection. */
 	project(id: string, now: number, turn: number): boolean {
+		now = this.resolveTime(now);
 		if (!validTime(now) || !Number.isSafeInteger(turn) || turn < 0) return false;
 		let period = this.periods.get(id);
 		if (!period) return false;
@@ -317,8 +356,9 @@ export class ObservationState {
 		return true;
 	}
 	snapshot(now: number, turn = 0): StateView[] {
+		now = this.resolveTime(now);
 		return [...this.periods.keys()].sort().flatMap((id) => {
-			const view = this.view(id, now, turn);
+			const view = this.viewAt(id, now, turn);
 			return view ? [view] : [];
 		});
 	}
@@ -365,12 +405,12 @@ export class ObservationState {
 	}
 
 	/** Restore a persisted state, or undefined when the stored value is not usable. */
-	static fromJSON(value: unknown): ObservationState | undefined {
+	static fromJSON(value: unknown, clock?: ObservationClock): ObservationState | undefined {
 		if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
 		const raw = value as { nextGeneration?: unknown; periods?: unknown };
 		if (!safeCount(raw.nextGeneration)) return undefined;
 		if (!Array.isArray(raw.periods) || raw.periods.length > PROGRAM_LIMITS.rules) return undefined;
-		const state = new ObservationState();
+		const state = new ObservationState(clock);
 		state.nextGeneration = raw.nextGeneration;
 		for (const entry of raw.periods) {
 			const period = storedPeriod(entry);

@@ -15,6 +15,7 @@ import type { FactsProgram, InputPlan } from "./program.ts";
 import type { PolicyRecord } from "./record.ts";
 import type { RuleRecord } from "./rule.ts";
 import { PolicyRuntime, refusalText } from "./runtime.ts";
+import type { ObservationClock } from "./observation-clock.ts";
 import { PolicyWriter } from "./store.ts";
 import { TELEMETRY_QUEUE_RECORDS } from "./telemetry-files.ts";
 
@@ -81,6 +82,7 @@ function fixture(
 	directory = "/unused",
 	toolName = "sample",
 	appendGate?: Promise<void>,
+	observationClock?: ObservationClock,
 ) {
 	const snapshot: RuleSnapshot = {
 		records: new Map(programs.map((r) => [r.id, r])),
@@ -129,7 +131,7 @@ function fixture(
 		return snapshot;
 	};
 	const restart = () => {
-		runtime = new PolicyRuntime(pi, load, () => mode, directory, () => true, writer);
+		runtime = new PolicyRuntime(pi, load, () => mode, directory, () => true, writer, undefined, observationClock);
 		runtime.sync(snapshot);
 		runtime.attach();
 	};
@@ -206,6 +208,7 @@ function fixture(
 					projected: number;
 					generation: number;
 					resetReason: string;
+					eligible: boolean;
 				}>;
 			}
 		).observationPeriods;
@@ -284,6 +287,54 @@ function shellRule(effect: "block" | "steer" = "block", key = "routing.cat-read"
 		staleOverride: false,
 	};
 }
+describe("observation time ownership", () => {
+	it("uses process elapsed time for completions and cooldown despite wall regression", async (t) => {
+		let wall = 1_700_000_000_000;
+		let monotonic = 20;
+		t.mock.method(Date, "now", () => wall);
+		t.mock.method(performance, "now", () => monotonic);
+		const observed = rule("elapsed", {
+			phase: "context", when: { op: "gte", path: ["state", "count"], value: 1 },
+			action: { kind: "guide", text: "Elapsed observation notice." }, onUnavailable: "skip",
+			state: { observe: success, cooldownMs: 10, window: { maxEvents: 4, maxAgeMs: 100 } },
+		});
+		const f = fixture([observed]);
+		t.after(() => f.writer.close());
+		await f.call("elapsed-call", {});
+		wall -= 1_000;
+		monotonic += 5;
+		await f.result("elapsed-call");
+		await f.finish("elapsed-call");
+		assert.equal((await f.views())[0].count, 1);
+		assert.match((await f.contextText()) ?? "", /Elapsed observation notice/);
+		assert.equal((await f.views())[0].projected, 1);
+		assert.equal((await f.views())[0].eligible, false);
+		monotonic += 9;
+		assert.equal((await f.views())[0].eligible, false);
+		monotonic++;
+		assert.equal((await f.views())[0].eligible, true);
+		assert.equal((await f.views())[0].count, 1);
+	});
+
+	it("retains wall-clock freshness for approved named data", async (t) => {
+		let wall = 1_700_000_000_000;
+		t.mock.method(Date, "now", () => wall);
+		t.mock.method(performance, "now", () => 20);
+		const gate = rule("wall-data", { phase: "input",
+			when: { op: "lookup", path: ["input", "name"], table: "values", value: "unique" },
+			action: { kind: "deny" }, data: ["values"], onUnavailable: "skip" });
+		const f = fixture([gate]);
+		t.after(() => f.writer.close());
+		f.snapshot.data.set("values", { kind: "table", name: "values", revision: "aabbccddeeff", source: "synthetic",
+			capturedAt: wall, maxAgeMs: 10, rows: [{ key: "blue", value: "target" }] });
+		assert.ok(await f.call("fresh", { name: "blue" }));
+		wall += 10;
+		assert.equal(await f.call("stale", { name: "blue" }), undefined);
+		wall -= 11;
+		assert.equal(await f.call("future", { name: "blue" }), undefined);
+	});
+});
+
 describe("starter intervention effects", () => {
 	it("preserves explicit effects for synthetic command rules", async (t) => {
 		const alpha = rule("synthetic.alpha", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "skip" });
@@ -713,7 +764,7 @@ describe("completion-triggered recovery guidance", () => {
 	it("uses a rolling strict age bound without expiring an already triggered notice", async (t) => {
 		let now = Date.now();
 		t.mock.method(Date, "now", () => now);
-		const f = fixture([recoveryRule()]);
+		const f = fixture([recoveryRule()], "enforce", undefined, false, "/unused", "sample", undefined, { now: () => now });
 		await completed(f, "old", true);
 		now += DEFAULT_LIMITS.errorWindowMs;
 		await completed(f, "new", true);

@@ -303,6 +303,7 @@ async function runCase(
 			health: () => ({ state: "ok", lostRecords: 0, lostBytes: 0 }),
 		},
 		() => now,
+		{ now: () => now },
 		false,
 	);
 	runtime.sync(snapshot);

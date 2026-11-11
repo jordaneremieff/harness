@@ -129,6 +129,7 @@ import {
 } from "./rule.ts";
 import { SHELL_CARD_BYTES, shellContractCard } from "./shell-card.ts";
 import { ObservationState, type StatePin, type StateView } from "./state.ts";
+import { createObservationClock } from "./observation-clock.ts";
 import { PolicyWriter } from "./store.ts";
 import type { AppendTelemetry, TelemetryHealth, TelemetryRetention } from "./telemetry-files.ts";
 import { formatTelemetry, readTelemetry } from "./telemetry.ts";
@@ -745,6 +746,7 @@ class DurablePolicyRuntime {
 	private readonly stateDoc: Durable.ConversationDocToken<PolicyStateValue>;
 	private readonly guidanceDoc: Durable.ConversationDocToken<GuidanceDocValue>;
 	private readonly writer: PolicyWriter;
+	private readonly observationClock = createObservationClock();
 	private stateTail: Promise<unknown> = Promise.resolve();
 
 	constructor(options: DurablePolicyRuntimeOptions) {
@@ -917,7 +919,7 @@ class DurablePolicyRuntime {
 	}
 
 	private observationOf(state: PolicyStateValue): ObservationState {
-		return ObservationState.fromJSON(state.observation) ?? new ObservationState();
+		return ObservationState.fromJSON(state.observation, this.observationClock) ?? new ObservationState(this.observationClock);
 	}
 
 	private retainedGuidanceOf(state: PolicyStateValue): StoredRetainedGuidance[] {

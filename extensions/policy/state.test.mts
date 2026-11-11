@@ -251,6 +251,124 @@ test("the shared capacity admits mixed shell-derived and facts plans without tru
 	assert.equal(state.snapshot(1).length, PROGRAM_LIMITS.rules);
 });
 
+test("window views exclude future and exact-age samples without mutating stored evidence", () => {
+	const state = new ObservationState();
+	state.sync([rule({ window: { maxEvents: 4, maxAgeMs: 10 } })], 0);
+	state.complete(pinOf(state), failed, 1, 90);
+	const before = state.toJSON();
+	assert.equal(state.view("failures", 89)?.windowCount, 0);
+	assert.equal(state.view("failures", 90)?.windowCount, 1);
+	assert.equal(state.view("failures", 99)?.windowCount, 1);
+	assert.equal(state.view("failures", 100)?.windowCount, 0);
+	assert.deepEqual(state.toJSON(), before);
+});
+
+test("mutating reconciliation prunes windows without erasing lifetime counts or resurrecting samples", () => {
+	const spec = rule({ totalPath: ["outcome", "tokens"], window: { maxEvents: 4, maxAgeMs: 10 } });
+	const source = new ObservationState();
+	source.sync([spec], 0);
+	for (const at of [80, 90, 100, 110]) source.complete(pinOf(source), failed, 1, at);
+	const stored = source.toJSON();
+	stored.periods[0].window = [80, 90, 100, 110].map((at) => ({ at, turn: 1, total: 7 }));
+	let now = 100;
+	const state = ObservationState.fromJSON(stored, { now: () => now });
+	assert.ok(state);
+	const before = state.toJSON();
+	assert.equal(state.view("failures", 999)?.windowCount, 1);
+	assert.deepEqual(state.toJSON(), before);
+	state.sync([spec], 999);
+	assert.deepEqual(state.toJSON().periods[0].window, [{ at: 100, turn: 1, total: 7 }]);
+	assert.equal(state.view("failures", 999)?.count, 4);
+	assert.equal(state.view("failures", 999)?.total, 28);
+	now = 110;
+	state.sync([spec], 999);
+	assert.equal(state.toJSON().periods[0].window.length, 0);
+	now = 100;
+	state.sync([spec], 999);
+	assert.equal(state.view("failures", 999)?.windowCount, 0);
+	assert.equal(state.view("failures", 999)?.count, 4);
+});
+
+test("future period starts reset with a new generation and reject old completion pins", () => {
+	const spec = rule({ once: "period" });
+	const source = new ObservationState();
+	source.sync([spec], 200);
+	source.complete(pinOf(source), failed, 1, 201);
+	source.project("failures", 202, 1);
+	const oldPin = pinOf(source);
+	let now = 100;
+	const stored = source.toJSON();
+	stored.nextGeneration = 0;
+	const state = ObservationState.fromJSON(stored, { now: () => now });
+	assert.ok(state);
+	const before = state.toJSON();
+	const preview = state.view("failures", 999);
+	assert.equal(preview?.resetReason, "clock-regression");
+	assert.equal(preview?.count, 0);
+	assert.equal(preview?.eligible, true);
+	assert.deepEqual(state.toJSON(), before);
+	state.sync([spec], 999);
+	assert.notEqual(pinOf(state).generation, oldPin.generation);
+	assert.equal(state.view("failures", 999)?.resetReason, "clock-regression");
+	assert.equal(state.complete(oldPin, failed, 1, 999), false);
+	now++;
+	assert.equal(state.complete(pinOf(state), failed, 1, 999), true);
+	assert.equal(state.view("failures", 999)?.count, 1);
+});
+
+test("future cooldown stamps do not extend cooldown or replenish consumed once allowances", () => {
+	for (const once of [undefined, "period", "turn"] as const) {
+		const spec = rule({ ...(once ? { once } : {}), cooldownMs: 20 });
+		const source = new ObservationState();
+		source.sync([spec], 0);
+		source.project("failures", 20, 1);
+		const state = ObservationState.fromJSON(source.toJSON(), { now: () => 10 });
+		assert.ok(state);
+		const before = state.toJSON();
+		assert.equal(state.eligible("failures", 999, 1), once === undefined);
+		assert.deepEqual(state.toJSON(), before);
+		state.sync([spec], 999);
+		const period = state.toJSON().periods[0];
+		assert.equal(period.lastProjectedAt, undefined);
+		assert.equal(period.projected, 1);
+		assert.deepEqual(period.projectedTurns, [1]);
+		assert.equal(state.eligible("failures", 999, 1), once === undefined);
+		assert.equal(state.eligible("failures", 999, 2), once !== "period");
+	}
+});
+
+test("each temporal operation samples its owned clock once, including composite views", () => {
+	let reads = 0;
+	const clock = { now: () => { reads++; return 10; } };
+	const state = new ObservationState(clock);
+	const rules = [rule({ resetWhen: { op: "eq", path: ["outcome", "kind"], value: "success" } }), { ...rule(), id: "other" }];
+	const once = (operation: () => unknown) => {
+		const before = reads;
+		operation();
+		assert.equal(reads, before + 1);
+	};
+	assert.equal(reads, 0);
+	once(() => state.sync(rules, NaN));
+	once(() => state.complete(pinOf(state), failed, 1, NaN));
+	once(() => state.view("failures", NaN));
+	once(() => state.eligible("failures", NaN, 1));
+	once(() => state.project("failures", NaN, 1));
+	once(() => state.snapshot(NaN));
+	once(() => state.reset("operator", NaN));
+	const beforeRestore = reads;
+	const restored = ObservationState.fromJSON(state.toJSON(), clock);
+	assert.ok(restored);
+	assert.equal(reads, beforeRestore);
+	once(() => restored.snapshot(NaN));
+});
+
+test("invalid owned clock samples retain invalid-time handling", () => {
+	const state = new ObservationState({ now: () => NaN });
+	assert.throws(() => state.sync([rule()], 1), /Invalid observation time/);
+	assert.equal(state.view("failures", 1), undefined);
+	assert.equal(state.project("failures", 1, 1), false);
+});
+
 test("invalid times and overbound rule sets do not enter state", () => {
 	const state = new ObservationState();
 	assert.throws(() => state.sync([rule()], NaN));

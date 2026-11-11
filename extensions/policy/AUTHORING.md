@@ -212,7 +212,10 @@ or establish a real service deployment.
 This complete request checks a direct-tool denial without executing `bash`.
 Each case starts with fresh observation state. `at` is milliseconds after one
 captured check time; `turn` is a synthetic turn counter. Both are nondecreasing.
-The scope override belongs only to the example, not the draft or live session.
+Draft checks use an explicit synthetic observation clock. Their nondecreasing
+timestamps do not test machine clock synchronisation or exact elapsed time across
+process loss. The scope override belongs only to the example, not the draft or
+live session.
 
 ```json
 {

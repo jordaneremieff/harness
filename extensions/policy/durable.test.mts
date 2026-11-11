@@ -38,6 +38,8 @@ import { DraftCasesSchema } from "./authoring.ts";
 import { readTelemetry } from "./telemetry.ts";
 import { PACKAGE_CATALOG } from "./catalog.ts";
 import { packageRowRevision } from "./rule.ts";
+import { compileRule } from "./compiler.ts";
+import { ObservationState, type StoredObservationPeriod } from "./state.ts";
 
 const context = BACKGROUND_CONTEXT;
 const plainTheme = { fg: (_c: string, text: string) => text, bg: (_c: string, text: string) => text, bold: (text: string) => text } as unknown as PanelHost["theme"];
@@ -1111,6 +1113,96 @@ test("annotate mode appends guide text and records the observation period", asyn
 		const stateText = textOf(stateResults.at(-1));
 		assert.match(stateText, /durable-observe-probe/);
 		assert.match(stateText, /"count": 1/);
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("native restoration reconciles future evidence and preserves once allowances across wall regression", async (t) => {
+	let wall = 1_700_000_000_000;
+	let monotonic = 0;
+	t.mock.method(Date, "now", () => wall);
+	t.mock.method(performance, "now", () => monotonic);
+	const storage = new DurableModule.MemoryStorage();
+	const fixture = await openFixture({ mode: "annotate", storage });
+	try {
+		const program = (text: string): FactsProgram => ({ phase: "context",
+			when: { op: "gte", path: ["state", "windowCount"], value: 1 },
+			action: { kind: "guide", text }, onUnavailable: "skip",
+			state: { observe: { op: "eq", path: ["outcome", "kind"], value: "execution-error" }, once: "period", cooldownMs: 50,
+				window: { maxEvents: 4, maxAgeMs: 100 } },
+		});
+		const ids = ["restored-window", "future-period", "consumed-once"];
+		await addRule(fixture.policy, ids[0], program("Restored window guidance."));
+		await addRule(fixture.policy, ids[1], program("Future evidence must not project."));
+		await addRule(fixture.policy, ids[2], program("Consumed allowance must not project."));
+		const snapshot = await fixture.policy.snapshot();
+		const rules = ids.map((id) => {
+			const record = snapshot.records.get(id);
+			assert.ok(record);
+			return compileRule(record);
+		});
+		const source = new ObservationState();
+		source.sync(rules, wall - 50);
+		const observation = source.toJSON();
+		for (const period of observation.periods) {
+			period.count = 3;
+			period.total = 3;
+			period.window = [wall - 20, wall - 1, wall + 1_000].map((at) => ({ at, turn: 1, total: 1 }));
+			period.lastProjectedAt = wall + 1_000;
+			if (period.id === "future-period") period.startedAt = wall + 1_000;
+			if (period.id === "consumed-once") { period.projected = 1; period.projectedTurns = [1]; }
+		}
+		const SeededState = DurableModule.defineDoc<DurableModule.JsonObject>({ kind: "policy.state", version: 1,
+			scope: "conversation", history: "latest", fork: "current", checkpointWhen: () => false,
+			initial: () => ({ identity: "synthetic-observation-state", generation: 0, turn: 0,
+				observation: observation as unknown as DurableModule.JsonValue, retainedGuidance: [], completedCalls: [],
+				incomplete: 0, stale: 0, shellCard: null }),
+		});
+		await fixture.harness.commit((tx) => tx.doc(SeededState, fixture.root.id), context);
+		const readPeriods = async () => {
+			const record = await storage.findDocument({ kind: "policy.state", scope: { kind: "conversation", conversationId: fixture.root.id } }, "current", context);
+			assert.ok(record);
+			const document = await storage.document(record.id, "current", context);
+			assert.ok(document);
+			const restored = ObservationState.fromJSON(document.value.observation);
+			assert.ok(restored);
+			return restored.toJSON().periods;
+		};
+		const periodOf = (periods: StoredObservationPeriod[], id: string) => {
+			const period = periods.find((entry) => entry.id === id);
+			assert.ok(period);
+			return period;
+		};
+		const seen: string[] = [];
+		const request = async (label: string) => {
+			fixture.faux.appendResponses([(callContext) => {
+				seen.push(JSON.stringify(callContext.messages));
+				return fauxAssistantMessage(label);
+			}]);
+			const submission = await fixture.root.submit({ type: "input", content: label }, context);
+			await submission.wait(context);
+		};
+		await request("first request");
+		const first = await readPeriods();
+		assert.equal(periodOf(first, "restored-window").window.length, 2);
+		assert.equal(periodOf(first, "restored-window").projected, 1);
+		assert.equal(periodOf(first, "future-period").resetReason, "clock-regression");
+		assert.equal(periodOf(first, "future-period").count, 0);
+		assert.equal(periodOf(first, "consumed-once").lastProjectedAt, undefined);
+		assert.equal(periodOf(first, "consumed-once").projected, 1);
+		wall -= 1_000;
+		monotonic += 10;
+		await request("second request");
+		const second = await readPeriods();
+		assert.equal(periodOf(second, "restored-window").count, 3);
+		assert.equal(periodOf(second, "restored-window").projected, 1);
+		assert.equal(periodOf(second, "future-period").generation, periodOf(first, "future-period").generation);
+		assert.equal(periodOf(second, "consumed-once").projected, 1);
+		for (const messages of seen) {
+			assert.equal(messages.split("Restored window guidance.").length - 1, 1);
+			assert.doesNotMatch(messages, /Future evidence must not project|Consumed allowance must not project/);
+		}
 	} finally {
 		await fixture.close();
 	}
