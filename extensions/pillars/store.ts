@@ -191,21 +191,27 @@ export class PillarsStore {
 				return status;
 			}
 			if (signal?.aborted) throw aborted();
-			const payload = Buffer.from(JSON.stringify(plan.candidate), "utf8");
-			let stored = 0;
-			for (const size of scan.slots.values()) stored += size;
-			if (payload.length > LIMITS.shardBytes || stored + payload.length + LIMITS.controlBytes > LIMITS.storeBytes) {
-				throw new StoreUnavailableError();
-			}
-			const published = await this.publish(payload, plan.slot, plan.expiredSlots);
+			const published = await this.publish(this.encode(plan.candidate, scan), plan.slot, plan.expiredSlots);
 			this.heldLock.assertNamed();
 			if (signal?.aborted) throw aborted();
 			return published ? plan.status : "publication_failed";
+		} catch (error) {
+			this.lease().assertNamed();
+			throw error;
 		} finally {
 			const held = this.heldLock;
 			this.heldLock = undefined;
 			held.release();
 		}
+	}
+
+	private encode(candidate: Shard, scan: Scan): Buffer {
+		const payload = Buffer.from(JSON.stringify(candidate), "utf8");
+		let stored = 0;
+		for (const size of scan.slots.values()) stored += size;
+		if (payload.length > LIMITS.shardBytes || stored + payload.length + LIMITS.controlBytes > LIMITS.storeBytes)
+			throw new StoreUnavailableError();
+		return payload;
 	}
 
 	private acquire(signal?: AbortSignal): ExclusiveLease {

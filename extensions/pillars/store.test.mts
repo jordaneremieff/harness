@@ -503,6 +503,33 @@ test("collector contention retries only at explicit events and warns once per ep
 	await collector.shutdown();
 });
 
+test("identity loss during scan blocks collector retries without recreating the lock", async (t) => {
+	await using f = await fixture();
+	const original = fs.lstat;
+	let removed = false, calls = 0;
+	const warnings: string[] = [];
+	const mocked = t.mock.method(fs, "lstat", async (...args: Parameters<typeof fs.lstat>) => {
+		if (args[0] === join(f.root, "store.lock") && !removed) {
+			removed = true;
+			await rm(join(f.root, "store.lock"));
+		}
+		return original(...args);
+	});
+	syncBuiltinESMExports();
+	const collector = new Collector({ commit: async (input, day, signal) => { calls++; return f.store.commit(input, day, signal); } }, { now: () => Date.parse(TODAY), diagnostic: (message) => warnings.push(message) });
+	try {
+		collector.admit(batch().cells[0]);
+		await collector.flush(true);
+		await collector.flush(true);
+		await collector.shutdown();
+		assert.equal(calls, 1);
+		assert.equal(collector.bufferedEvents, 1);
+		assert.deepEqual(warnings, [new StoreLockIdentityError().message]);
+		await assert.rejects(lstat(join(f.root, "store.lock")), { code: "ENOENT" });
+		await assert.rejects(lstat(join(f.root, slotFor(TODAY))), { code: "ENOENT" });
+	} finally { mocked.mock.restore(); syncBuiltinESMExports(); }
+});
+
 test("pending recovery checks the current lock identity before removal", async (t) => {
 	await using f = await fixture();
 	await f.store.commit(batch(), TODAY);
