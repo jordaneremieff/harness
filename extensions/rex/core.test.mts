@@ -768,7 +768,7 @@ test("recovery rechecks cleanup producer activity inside the ownership transacti
 	await f.core.execute({ op: "cleanup", recordId: "create" }, { ...context, callId: "close" });
 	f.transport.handler = undefined;
 	const update = f.store.update.bind(f.store);
-	f.store.update = (owner, change) => { active = true; return update(owner, change); };
+	f.store.update = (owner, change, phase) => { active = true; return update(owner, change, phase); };
 	const recovered = await f.core.execute({ op: "reconcile", recordId: "create", recover: true }, { ...context, callId: "recover" });
 	assert.equal(recovered.ok, false);
 	assert.match(recovered.error ?? "", /active or unknown at recovery admission/);
@@ -797,7 +797,7 @@ test("queued cancellation prevents release, recovery and forgetting at state adm
 		const entered = new Promise<void>((resolve) => { enter = resolve; });
 		const gate = new Promise<void>((resolve) => { release = resolve; });
 		const update = f.store.update.bind(f.store);
-		f.store.update = async (owner, change) => { enter(); await gate; return update(owner, change); };
+		f.store.update = async (owner, change, phase) => { enter(); await gate; return update(owner, change, phase); };
 		const controller = new AbortController();
 		const call = { ...context, callId: operation, signal: controller.signal };
 		const request = operation === "forget"
