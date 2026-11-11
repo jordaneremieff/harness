@@ -12,7 +12,7 @@ import {
 	type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { bool, int, map, num, obj, opt, str, unknown, type Schema, type Static } from "@earendil-works/pi-schema";
-import { sessionNameFromInput } from "../../session-name/index.ts";
+import { offerSessionName } from "../../session-name/lifecycle.ts";
 import { storageStatusPageInput, validateStatusSelectors } from "./storage-status.ts";
 import { createAgentObservationSource } from "./agent-observation.ts";
 import {
@@ -949,9 +949,8 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 		if (event.source === "interactive" && getManager().recordPrimaryInput(id, event.text, event.source)) {
 			pi.appendEntry(EFFORT_PURPOSE_ENTRY, { source: "interactive", text: purposeExcerpt(event.text) });
 		}
-		if (event.source === "interactive" && pi.getSessionName() === undefined) {
-			const name = sessionNameFromInput(event.text);
-			if (name !== undefined) pi.setSessionName(name);
+		if (event.source === "interactive") {
+			offerSessionName(pi, ctx, { source: "interactive", text: event.text });
 		}
 	});
 	pi.on("tool_execution_end", (_event, ctx) => {

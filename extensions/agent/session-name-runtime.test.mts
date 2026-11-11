@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { createAssistantMessageEventStream, type AssistantMessage } from "@earendil-works/pi-ai";
 import { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type AgentSession } from "@earendil-works/pi-coding-agent";
+import type { ProvisionalName } from "../../session-name/lifecycle.ts";
 import register from "./index.ts";
+import { EFFORT_PURPOSE_ENTRY } from "./effort-purpose.ts";
+import { readPrimaryEndpointDescriptor } from "./primary-channel.ts";
 import { eventLog } from "./host-fixture.mts";
 import { machineConfig } from "./settings-fixture.mts";
 import { createTestRuntime, testModel } from "./test-runtime.mts";
@@ -38,7 +42,7 @@ function completed() {
 }
 
 async function namingFixture(t: TestContext, options: { retainedName?: string } = {}) {
-	const root = realpathSync(mkdtempSync("/tmp/pi-name-"));
+	const root = realpathSync(mkdtempSync(join(tmpdir(), "n-")));
 	const cwd = join(root, "work");
 	const agentDir = join(root, "agent");
 	const sessionsRoot = join(root, "sessions");
@@ -84,26 +88,35 @@ async function namingFixture(t: TestContext, options: { retainedName?: string } 
 	});
 	const settingsManager = SettingsManager.create(cwd, agentDir);
 	const changes = eventLog<string | undefined>();
+	const provisional: ProvisionalName[] = [];
 	const started: Array<string | undefined> = [];
 	const loader = new DefaultResourceLoader({
 		cwd, agentDir, settingsManager, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
 		additionalExtensionPaths: [fileURLToPath(new URL("../evo/index.ts", import.meta.url))],
 		extensionFactories: [async (pi) => {
 			await register(pi);
+			pi.events.on("session-name:provisional", (event) => { provisional.push(event as ProvisionalName); });
 			pi.on("session_info_changed", (event) => { changes.push(event.name); });
 			pi.on("before_agent_start", () => { started.push(pi.getSessionName()); });
 		}],
 	});
 	await loader.reload();
 	assert.deepEqual(loader.getExtensions().errors, []);
+	const socketDirectory = join(sessionsRoot, ".primaries");
+	assert.ok(Buffer.byteLength(join(socketDirectory, `${sessionManager.getSessionId()}.sock`)) <= 100, "fixture primary socket must remain in its private root");
 	session = (await createAgentSession({ cwd, agentDir, modelRuntime: runtime, settingsManager, sessionManager, model: testModel, resourceLoader: loader, tools: [] })).session;
 	await session.bindExtensions({});
+	const endpoint = readPrimaryEndpointDescriptor(sessionsRoot, sessionManager.getSessionId());
+	assert.equal(endpoint.state, "live");
+	assert.equal(endpoint.info?.socketPath.startsWith(`${socketDirectory}/`), true);
+	t.diagnostic(`Private primary socket: ${endpoint.info?.socketPath}; endpoint directory: ${socketDirectory}`);
 	const opened = session;
 	const manager = sessionManager;
 	return {
 		get session() { return session ?? opened; },
 		sessionManager: manager,
 		changes,
+		provisional,
 		started,
 		async prompt(text: string, options?: { source?: "interactive" | "rpc" | "extension" }) {
 			await session?.prompt(text, options);
@@ -127,10 +140,17 @@ it("names an unnamed session from its first interactive input and says nothing a
 	await fixture.changes.waitForCount(1);
 	assert.deepEqual([...fixture.changes], ["Fix the parser bug"]);
 	assert.deepEqual(fixture.started, ["Fix the parser bug"], "the name exists before agent processing");
+	const offered = fixture.provisional[0];
+	assert.ok(offered);
+	assert.equal(offered.sessionId, fixture.sessionManager.getSessionId());
+	assert.equal(offered.text, "Fix the parser bug");
+	assert.equal(offered.fallback, "Fix the parser bug");
+	assert.equal(fixture.sessionManager.getEntry(offered.nameEntryId)?.type, "session_info");
 	await fixture.prompt("Rename it to something else");
 	assert.equal(fixture.sessionManager.getSessionName(), "Fix the parser bug");
 	assert.equal(fixture.changes.length, 1);
 	assert.deepEqual(fixture.started, ["Fix the parser bug", "Fix the parser bug"]);
+	assert.equal(fixture.provisional.length, 1);
 });
 
 it("keeps a name set before input and a resumed session name", { timeout: 20000 }, async (t) => {
@@ -163,8 +183,12 @@ it("does not name from rpc or extension input", { timeout: 20000 }, async (t) =>
 	await fixture.prompt("Extension input", { source: "extension" });
 	assert.equal(fixture.sessionManager.getSessionName(), undefined);
 	assert.equal(fixture.changes.length, 0);
+	assert.equal(fixture.provisional.length, 0);
+	assert.equal(fixture.sessionManager.getEntries().some((entry) => entry.type === "custom" && entry.customType === EFFORT_PURPOSE_ENTRY), false);
 	await fixture.prompt("Real task input");
 	assert.equal(fixture.sessionManager.getSessionName(), "Real task input");
+	assert.deepEqual(fixture.provisional.map((event) => event.text), ["Real task input"]);
+	assert.deepEqual(fixture.sessionManager.getEntries().flatMap((entry) => entry.type === "custom" && entry.customType === EFFORT_PURPOSE_ENTRY ? [entry.data] : []), [{ source: "interactive", text: "Real task input" }]);
 });
 
 it("names from slash-command arguments and not from a command alone", { timeout: 20000 }, async (t) => {
