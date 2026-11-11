@@ -60,6 +60,10 @@ Keep documentation outside `prompts/`. Pi discovers every immediate `.md` file
 there as a template, including a file named `README.md`. Tests and evaluations
 use their existing non-Markdown suffixes.
 
+Immediate prompt TypeScript sources, fixtures and tests are part of
+`npm run typecheck`. `npm test` runs immediate prompt test files. Evaluation
+execution remains a separate approved operation.
+
 Keep each command name unique across loaded resources. Pi reports prompt-name
 collisions and retains the first loaded match; a duplicate local file is not a
 reliable override contract. Select the intended resource explicitly rather
