@@ -70,6 +70,7 @@ of a push.
 - `npm run check` also verifies slice isolation, settings declarations, and the
   pillar inventory.
 - `npm run typecheck`, `npm run lint`.
+- `node scripts/select-tests.mts <repository-relative-path> [...]` or `node scripts/select-tests.mts --range <revision-range>` prints sorted test paths from current tracked and non-ignored source: same-directory tests and literal relative-import consumers, directly or through one intermediate import/re-export; it never runs tests and does not infer text-only dependencies, loader URLs, aliases, deeper chains, historical imports, or nested-directory neighbours. The settings and registration checks below still apply.
 - `node scripts/extension-load-check.mts extensions/<name>/index.ts` loads the
   requested entrypoints through Pi's public discovery API in isolated cwd and
   agent directories. It fails on a reported load error or an entrypoint Pi did
