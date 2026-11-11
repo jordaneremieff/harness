@@ -61,6 +61,16 @@ describe("here-document delimiter evidence", () => {
 			assert.equal(parsed.statements[0][0].fromRedirect, true);
 		});
 	}
+	for (const [word, delimiter] of [
+		['E\\"OF', 'E"OF'], ["E\\'OF", "E'OF"], ["E\\\\OF", "E\\OF"],
+		["'E\"OF'", 'E"OF'], ['"E\'OF"', "E'OF"], ["'E\\OF'", "E\\OF"],
+	]) {
+		it(`ends a here-document at the decoded delimiter ${JSON.stringify(word)}`, () => {
+			const parsed = parseShellEvidence(`cat <<${word}\nfixture body\n${delimiter}\ngit push\nEOF\n`);
+			assert.equal(parsed.complete, true);
+			assert.deepEqual(parsed.statements.flat().map((stage) => stage.command), ["cat", "git", "EOF"]);
+		});
+	}
 	it("treats escaped delimiters as quoted without expanding their bodies", () => {
 		const parsed = parseShellEvidence("cat <<\\EOF\n$(git push)\nEOF");
 		assert.equal(parsed.complete, true);

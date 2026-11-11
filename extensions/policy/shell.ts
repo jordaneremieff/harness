@@ -270,7 +270,7 @@ function flushWord(state: ReaderState): void {
 		if (state.current !== "") {
 			word.heredoc = true;
 			word.fd = state.pendingFd ?? 0;
-			state.heredocs.push(state.current.replace(/['"\\]/g, ""));
+			state.heredocs.push(state.current);
 		}
 	} else if (state.pendingRedirect) {
 		word.redirect = state.pendingRedirect;
