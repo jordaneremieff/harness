@@ -1323,9 +1323,12 @@ export function createStashDurableExtension(host: StashDurableHost, bus: Setting
 					const config = readCapacityConfig(true);
 					if (!config.enabled) return undefined;
 					return capacityRead(parent, async (context) => {
+						const state = currentGate(api);
+						const blockedRounds = state.blockedRounds;
+						state.blockedRounds = 0;
 						const live = await api.snapshot(host.durable.LiveDoc, api.conversationId, context);
 						checkCapacityCancellation(context);
-						if (live?.run?.turns === 0) currentGate(api).blockedRounds = 0;
+						if (live?.run && live.run.turns > 0) state.blockedRounds = blockedRounds;
 						const conversation = String(api.conversationId);
 						const doc = await api.snapshot(capacityDoc, api.conversationId, context);
 						checkCapacityCancellation(context);

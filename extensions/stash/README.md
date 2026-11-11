@@ -787,8 +787,9 @@ bounded boundary snapshot above the decision threshold. `beforeTool` gates new
 calls from that shared measurement. `afterTool` adds termination controls to
 unexecuted slots after two refused rounds. `afterTools` counts only the
 generation's actual model-slot results and closes the decision round.
-`beforeRequest` resets the refused count at the start of each run, from Pi's
-public live run state.
+`beforeRequest` clears the refused count before it reads Pi's public live run
+state. Only a successful snapshot with existing tool rounds restores the count.
+An unavailable snapshot cannot carry refusals into a later run.
 A native context reset or compaction clears the gate episode; closing the host
 clears all process-local gate state.
 

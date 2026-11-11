@@ -52,6 +52,7 @@ async function startHarness(
 	codemode = false,
 	gateFixture = false,
 	nestedFixture = false,
+	requestApi?: (api: Durable.HookApi) => Durable.HookApi,
 ): Promise<TestHarness> {
 	const launches: IndependentCommandInput[] = [];
 	const storeDir = await mkdtemp(join(tmpdir(), "stash-durable-store-"));
@@ -85,7 +86,15 @@ async function startHarness(
 	};
 	const bus = createEventBus();
 	const contribution = stashDurableContribution(fileURLToPath(new URL("./index.ts", import.meta.url)), bus, () => {});
-	const extension = contribution.create(host);
+	const native = contribution.create(host);
+	const extension = requestApi ? {
+		...native,
+		hooks: native.hooks?.map((hook) => {
+			if (hook.task !== Durable.GenerationTask.definition.name) return hook;
+			const hooks = hook.handlers as Durable.GenerationHooks;
+			return { ...hook, handlers: { ...hooks, beforeRequest: (request: Parameters<Durable.GenerationHooks["beforeRequest"]>[0], api: Durable.HookApi, context: typeof BACKGROUND_CONTEXT) => hooks.beforeRequest(request, requestApi(api), context) } };
+		}),
+	} : native;
 	const registry = createRegistry();
 	registry.install(extension);
 	if (gateFixture) {
@@ -712,6 +721,43 @@ test("native refusal counts start at zero after termination and an answer-only r
 	assert.equal(h.faux.state.callCount - before, 3);
 	assert.equal((await toolResults(h.root)).length, 6);
 });
+
+for (const unavailable of ["rejects", "times out", "is absent"] as const) {
+	test(`a native run does not inherit refused rounds when its first live snapshot ${unavailable}`, { timeout: 30000 }, async (t) => {
+		let failNext = false;
+		let failures = 0;
+		let stalledSignal: AbortSignal | undefined;
+		const h = await startHarness(t, 2000, false, false, false, (api) => new Proxy(api, {
+			get(target, key) {
+				if (key === "snapshot") return (...args: unknown[]) => {
+					if (args[0] !== Durable.LiveDoc || !failNext) return Reflect.apply(api.snapshot, api, args);
+					failNext = false;
+					failures++;
+					switch (unavailable) {
+						case "rejects": return Promise.reject(new Error("Synthetic live snapshot unavailable"));
+						case "is absent": return Promise.resolve(undefined);
+						case "times out":
+							stalledSignal = (args[args.length - 1] as typeof context).abortSignal;
+							return new Promise<never>(() => {});
+					}
+				};
+				const value = Reflect.get(target, key, target);
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		}));
+		gateThresholds(t, "0.03");
+		const refuse = () => fauxAssistantMessage(fauxToolCall("stash_list", {}), { stopReason: "toolUse" });
+		await answerWith(h.root, h.faux, [refuse(), refuse(), refuse()], "Retain the task.");
+		assert.equal(h.faux.state.callCount, 3);
+		failNext = true;
+		const before = h.faux.state.callCount;
+		await answerWith(h.root, h.faux, [refuse(), refuse(), refuse()], "Start the next run.");
+		assert.equal(failures, 1, "only the next run's first LiveDoc read is unavailable");
+		assert.equal(h.faux.state.callCount - before, 3, "the first refusal does not inherit termination from the prior run");
+		assert.ok((await toolResults(h.root)).slice(-3).every((result) => result.isError && /Stash stop/.test(result.text)));
+		if (unavailable === "times out") assert.equal(stalledSignal?.aborted, true);
+	});
+}
 
 test("native refusal counts start at zero after an abort", { timeout: 30000 }, async (t) => {
 	const h = await startHarness(t, 2000);
