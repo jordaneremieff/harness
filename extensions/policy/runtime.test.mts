@@ -510,28 +510,6 @@ describe("separate denial evidence", () => {
 			}
 		}
 	});
-	for (const note of ["x".repeat(2000), "界".repeat(2000)]) {
-		for (const truth of [true, "unknown"] as const) {
-			it(`retains the first denial ID, cause and note prefix within the byte bound for ${truth} evidence and ${Buffer.byteLength(note)} note bytes`, () => {
-				const row = rule("deny.first", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
-				row.definition.note = note;
-				const records = new Map([[row.id, row]]);
-				const evaluation = { id: row.id, deny: true, truth, matchedSegment: truth === true ? "git push" : undefined,
-					unavailableReasons: truth === "unknown" ? ["unexpanded-heredoc"] : undefined };
-				for (const extra of [[], [{ ...evaluation, id: "deny.second" }]]) {
-					const plan = { corrections: [], evaluations: [evaluation, ...extra] } as unknown as InputPlan;
-					const text = refusalText(plan, records, []) ?? "";
-					assert.ok(text.startsWith("[policy] Rule deny.first:"));
-					assert.ok(text.includes(truth === true ? "Matched command: git push" : "Evidence unavailable: unexpanded-heredoc"));
-					assert.ok(text.includes(`Rule note: ${note.slice(0, 10)}`));
-					assert.ok(Buffer.byteLength(text) <= 2048);
-					assert.doesNotMatch(text, /\uFFFD/);
-					if (extra.length) assert.ok(text.endsWith("Omitted 1 rule diagnostics."));
-					else assert.doesNotMatch(text, /Omitted/);
-				}
-			});
-		}
-	}
 	it("uses a construct-neutral label for unsupported shell evidence", async (t) => {
 		const gate = rule("synthetic.git", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
 		gate.matcher = { kind: "declarative", language: "command-shape/v1", onUnavailable: "deny",
@@ -557,6 +535,30 @@ describe("separate denial evidence", () => {
 		assert.ok(text.endsWith(`Omitted ${records.size - visible} rule diagnostics.`));
 		assert.ok(Buffer.byteLength(text) <= 2048);
 	});
+});
+
+describe("bounded first denial", () => {
+	const cases = ["x".repeat(2000), "界".repeat(2000)].flatMap((note) =>
+		([true, "unknown"] as const).flatMap((truth) => [false, true].map((later) => ({ note, truth, later }))));
+	for (const { note, truth, later } of cases) {
+		const cause = truth === true ? "Matched command: git push" : "Evidence unavailable: unexpanded-heredoc";
+		const row = rule("deny.first", { phase: "input", when: yes, action: { kind: "deny" }, onUnavailable: "deny" });
+		row.definition.note = note;
+		const records = new Map([[row.id, row]]);
+		const evaluation = { id: row.id, deny: true, truth, matchedSegment: truth === true ? "git push" : undefined,
+			unavailableReasons: truth === "unknown" ? ["unexpanded-heredoc"] : undefined };
+		const evaluations = later ? [evaluation, { ...evaluation, id: "deny.second" }] : [evaluation];
+		const plan = { corrections: [], evaluations } as unknown as InputPlan;
+		it(`retains the first denial ID, cause and note prefix within the byte bound for ${truth} evidence, ${Buffer.byteLength(note)} note bytes and later denial ${later}`, () => {
+			const text = refusalText(plan, records, []) ?? "";
+			assert.ok(text.startsWith("[policy] Rule deny.first:"));
+			assert.ok(text.includes(cause));
+			assert.ok(text.includes(`Rule note: ${note.slice(0, 10)}`));
+			assert.ok(Buffer.byteLength(text) <= 2048);
+			assert.doesNotMatch(text, /\uFFFD/);
+			assert.equal(text.endsWith("Omitted 1 rule diagnostics."), later);
+		});
+	}
 });
 
 describe("command-specific refusal guidance", () => {

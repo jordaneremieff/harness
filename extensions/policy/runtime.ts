@@ -262,7 +262,17 @@ function firstDenialText(parts: readonly string[], reserve: string): string {
 		if (bytes > limit) break;
 		text += char;
 	}
-	return guidanceText([`${text}…`])!;
+	return guidanceText([`${text}…`]) ?? GUIDANCE_PREFIX;
+}
+
+function omittedDenials(count: number): string {
+	return count > 0 ? `\n[policy] Omitted ${count} rule diagnostics.` : "";
+}
+
+function remainingRefusal(text: string, parts: readonly string[], remaining: number): string {
+	if (text) return text + omittedDenials(remaining + 1);
+	const reserve = omittedDenials(remaining);
+	return firstDenialText(parts, reserve) + reserve;
 }
 
 function appendRefusalSuggestions(text: string, suggestions: ReadonlySet<string>, reserve: string): string {
@@ -281,16 +291,11 @@ export function refusalText(plan: InputPlan, records: ReadonlyMap<string, RuleRe
 	let text = "";
 	for (const [index, id] of ids.entries()) {
 		const remaining = ids.length - index - 1;
-		const reserve = remaining > 0 ? `\n[policy] Omitted ${remaining} rule diagnostics.` : "";
+		const reserve = omittedDenials(remaining);
 		const diagnostic = denialDiagnostic(id, records.get(id), denials.filter((entry) => entry.id === id), plan.corrections.length > 0);
 		const candidate = diagnostic.text ? (text ? `${text}\n${diagnostic.text}` : diagnostic.text) : undefined;
-		if (!candidate || Buffer.byteLength(candidate + reserve, "utf8") > GUIDANCE_BYTES) {
-			if (index === 0) {
-				const omitted = ids.length > 1 ? `\n[policy] Omitted ${ids.length - 1} rule diagnostics.` : "";
-				return firstDenialText(diagnostic.priorityParts, omitted) + omitted;
-			}
-			return `${text}\n[policy] Omitted ${ids.length - index} rule diagnostics.`;
-		}
+		if (!candidate || Buffer.byteLength(candidate + reserve, "utf8") > GUIDANCE_BYTES)
+			return remainingRefusal(text, diagnostic.priorityParts, remaining);
 		text = appendRefusalSuggestions(candidate, diagnostic.suggestions, reserve);
 	}
 	return text || undefined;
