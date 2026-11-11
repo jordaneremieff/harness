@@ -544,10 +544,11 @@ acknowledged write records the confirmed label and clears `pending` and `attempt
 step succeeds. A contended confirmation leaves the claim pending for a later readback.
 
 Before a label setter starts, the projector rechecks the desired name, current runtime, foreground
-process, containing window and observed label. It also rechecks host identity and the exact stored
-claim after file I/O. A stale request withdraws its own unstarted claim. A /name or RPC name change
-never grants authority over a manual Rex label. Rex supplies no conditional setter, so a concurrent
-edit after the final observation still has a race with the automatic write.
+process, containing window and observed label. It checks host identity before the record step,
+checks the exact stored claim under the record lock, and rechecks the current request after file
+I/O. A stale request withdraws its own unstarted claim. A /name or RPC name change never grants
+authority over a manual Rex label. Rex supplies no conditional setter, so a concurrent edit after
+the final observation still has a race with the automatic write.
 
 Session start and every interactive input request a fresh serialized update. A session name change
 requests an update only when its sanitised label differs from the label already requested, so an
