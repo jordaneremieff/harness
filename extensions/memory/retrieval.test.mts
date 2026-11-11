@@ -655,7 +655,7 @@ test("binds search evidence and every continuation to the source digest", async 
 	const page = await read(root, { slug: "good", digest });
 	assert.equal(page.content, source);
 	writeFileSync(join(root, "good.md"), `${ACTIVE}\nreplacement phrase\n`);
-	await rejects(readMemory(root, { slug: "good", digest }), "changed", /Search again.*restart memory_read at offset 0/);
+	await rejects(readMemory(root, { slug: "good", digest }), "changed", /Restart memory_read with \{"slug":"good","offset":0\} without digest/);
 	await rejects(readMemory(root, { slug: "good", offset: number(page.nextOffset), digest }), "changed", /changed/);
 	assert.equal((await search(root, { query: '"body phrase"' })).totalMatches, 0);
 	assert.equal((await search(root, { query: "replacement phrase" })).totalMatches, 1);
@@ -664,6 +664,43 @@ test("binds search evidence and every continuation to the source digest", async 
 	assert.equal(removed.totalMatches, 0);
 	assert.equal(object(removed.search).complete, true);
 	await rejects(readMemory(root, { slug: "good" }), "corpus", /not found.*memory_search.*offset 0.*current digest/);
+});
+
+test("changed notes name a bounded restart call that returns current source from offset zero", async () => {
+	for (const slug of ["good", "x".repeat(120)]) {
+		const original = `${ACTIVE}\n${"Original body.\n".repeat(1200)}`;
+		const currentSource = `${ACTIVE}\n${"Current body.\n".repeat(1200)}`;
+		const root = corpus({ "README.md": README, [`${slug}.md`]: original });
+		const first = await read(root, { slug });
+		assert.equal(first.hasMore, true);
+		const restarts: ReadOptions[] = [];
+		writeFileSync(join(root, `${slug}.md`), currentSource);
+		for (const offset of [0, number(first.nextOffset)]) {
+			await assert.rejects(readMemory(root, { slug, offset, digest: string(first.digest) }), (error: unknown) => {
+				assert.ok(error instanceof MemoryRetrievalError);
+				assert.equal(error.code, "changed");
+				assert.ok(error.message.length <= 500);
+				const call = /Restart memory_read with (\{[^}]+\}) without digest/u.exec(error.message);
+				assert.ok(call, error.message);
+				const args = object(JSON.parse(call[1]));
+				assert.deepEqual(args, { slug, offset: 0 });
+				assert.match(error.message, /If the slug is absent, use memory_search/);
+				assert.match(error.message, /do not continue the previous page/);
+				restarts.push({ slug: string(args.slug), offset: number(args.offset) });
+				return true;
+			});
+		}
+		assert.equal(restarts.length, 2);
+		for (const args of restarts) {
+			const current = await read(root, args);
+			assert.equal(current.offset, 0);
+			assert.equal(current.digest, createHash("sha256").update(currentSource).digest("hex"));
+			assert.notEqual(current.digest, first.digest);
+			const next = await read(root, { slug, offset: number(current.nextOffset), digest: string(current.digest) });
+			assert.equal(string(current.content) + string(next.content), currentSource);
+		}
+		await rejects(readMemory(root, { slug, offset: number(first.nextOffset) }), "input", /requires digest/);
+	}
 });
 
 test("a changed contract restarts from zero without an old digest", async () => {

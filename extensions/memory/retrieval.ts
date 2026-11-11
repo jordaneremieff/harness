@@ -1235,7 +1235,7 @@ function refuseChangedSource(file: string): never {
 	const recovery =
 		file === "README.md"
 			? "Restart memory_read for README at offset 0 without the old digest to obtain the current contract and digest"
-			: "Search again for its current digest, then restart memory_read at offset 0";
+			: `Restart memory_read with {"slug":"${file.slice(0, -3)}","offset":0} without digest for the current note and digest. If the slug is absent, use memory_search`;
 	throw new DigestError(
 		`note source changed since the supplied digest: ${file}. ${recovery}; do not continue the previous page`,
 	);

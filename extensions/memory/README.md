@@ -222,11 +222,12 @@ on the first read. A page returns at most 12,000 Unicode code points within the
 48 KiB serialized result bound. Escaping overhead can shorten the page;
 pass its returned `nextOffset` and unchanged lowercase SHA-256 `digest` to continue.
 Nonzero offsets require the digest. A changed source refuses instead of mixing
-revisions. Search again for the current digest and restart from offset 0. For a
-changed `README`, restart its read at offset 0 without the old digest to obtain the
-current contract and digest. A missing note points back to search for its current
-slug. Read scope, qualifications, source dates and lifecycle before relying on a
-note. Sources above 64 KiB require bounded ordinary file reads; the tool refuses
+revisions. Read the same slug at offset 0 without a digest for the current note
+and digest. This also restarts a stale continuation; follow the new page's
+`nextOffset` and digest, not the previous page. For a changed `README`, restart its
+read at offset 0 without the old digest for the current contract and digest.
+Use search only if the slug no longer exists. Read scope, qualifications, source
+dates and lifecycle before relying on a note. Sources above 64 KiB require bounded ordinary file reads; the tool refuses
 them explicitly.
 
 Every note page includes a `lifecycle` record from the same complete bounded header

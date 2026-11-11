@@ -649,7 +649,7 @@ describe("memory_read result cards", () => {
 			renderResult(
 				"memory_read",
 				result(
-					"Error: note source changed since the supplied digest: provider-lessons.md. Search again for its current digest, then restart memory_read at offset 0; do not continue the previous page",
+					"Error: note source changed since the supplied digest: provider-lessons.md. Restart memory_read with {\"slug\":\"provider-lessons\",\"offset\":0} without digest for the current note and digest. If the slug is absent, use memory_search; do not continue the previous page",
 					undefined,
 				),
 				collapsed,
@@ -658,8 +658,10 @@ describe("memory_read result cards", () => {
 			),
 		);
 		assert.match(error, /note source changed since the supplied digest/);
-		assert.match(error, /Search again for its current digest/);
-		assert.match(error, /restart memory_read at offset 0/);
+		assert.match(error, /Restart memory_read with/);
+		assert.match(error, /"slug":"provider-lessons","offset":0/);
+		assert.match(error, /without digest for the current note and digest/);
+		assert.match(error, /If the slug is absent, use\s+memory_search/);
 		const missing =
 			"note not found: absent.md. Use memory_search to find the current slug; read it from offset 0 with its current digest";
 		assert.match(
