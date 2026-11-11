@@ -71,6 +71,33 @@ test("a header that continues over several lines is a signature at its first lin
 	assert.equal(scanText(["intro", `\t${route} scope="worktree"`, ' depth="1">'].join("\r\n"))?.line, 2);
 });
 
+test("LF and CRLF immediately after an envelope name retain its opening line", () => {
+	for (const name of ["request-context", "request-route", "efforts", "preferences"]) {
+		for (const newline of ["\n", "\r\n"]) {
+			const header = `${opening(name)}${newline} host="fixture">${newline}`;
+			assert.deepEqual(scanText(header), { line: 1, rule: "session-transcript" });
+			assert.deepEqual(scanText(`intro${newline}${header}`), { line: 2, rule: "session-transcript" });
+			assert.equal(scanText(`${opening(`${name}-extra`)}${newline}>`), undefined);
+			assert.equal(scanText(`inline ${header}`), undefined);
+			assert.equal(scanText(`${opening(name.toUpperCase())}${newline}>`), undefined);
+		}
+		assert.equal(scanText(opening(name)), undefined);
+	}
+});
+
+test("line terminators preserve credential, key and personal-path line reports", () => {
+	const signatures = [
+		{ rule: "credential", text: `ghp_${"a".repeat(36)}` },
+		{ rule: "private-key", text: ["-----BEGIN OPENSSH ", "PRIVATE KEY-----"].join("") },
+		{ rule: "personal-path", text: ["/", "Users/fixture/private"].join("") },
+	];
+	for (const { rule, text } of signatures) {
+		for (const newline of ["\n", "\r\n"]) {
+			assert.deepEqual(scanText(["plain", text, "last", ""].join(newline)), { line: 2, rule });
+		}
+	}
+});
+
 test("longer names and ordinary tags are not envelope signatures", () => {
 	for (const name of ["request-context-archive", "request-routes", "efforts-by-day", "preferences_extra"]) {
 		assert.equal(scanText(`${opening(name)}>`), undefined);

@@ -18,7 +18,7 @@ const rules: Array<[string, RegExp]> = [
 ];
 
 export function scanText(text: string): { line: number; rule: string } | undefined {
-	for (const [index, line] of text.split("\n").entries()) {
+	for (const [index, line] of text.split(/(?<=\n)/).entries()) {
 		for (const [rule, pattern] of rules) if (pattern.test(line)) return { line: index + 1, rule };
 	}
 	return undefined;
