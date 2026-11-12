@@ -289,7 +289,7 @@ it("preserves unchanged operations and refuses changed contracts across a featur
 	assert.notEqual(HOST_CONTRACT.operations.status.request, BASE_OPERATIONS.status.request);
 	assert.notEqual(HOST_CONTRACT.operations.status.response, BASE_OPERATIONS.status.response);
 	assert.notEqual(HOST_CONTRACT.operations.submit.request, BASE_OPERATIONS.submit.request);
-	assert.equal(HOST_CONTRACT.operations.submit.response, BASE_OPERATIONS.submit.response);
+	assert.notEqual(HOST_CONTRACT.operations.submit.response, BASE_OPERATIONS.submit.response);
 	const oldClient = await connectTransport({ serverId: paths.serverId, path: paths.socket });
 	t.after(() => oldClient.dispose());
 	const base = async (method: string, params: Record<string, unknown> = {}, contract = BASE_OPERATIONS[method]) => oldClient.request({
