@@ -46,26 +46,37 @@ export type OrdinaryWorkDetails = Static<typeof OrdinaryWorkOutputSchema>;
 export const ORDINARY_CONTINUE_TEXT = "The state note is stored and shown to the operator. The turn ends here: write no chat text.";
 const COMPLETE_TEXT = "The state note is cleared.";
 
+/** The widget as plain lines: the title with the local time of the note, then the note with collapsed white space. */
+export function ordinaryWorkLines(state: OrdinaryWorkNote): [title: string, note: string] {
+	const time = new Date(state.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	return [`agent state · ${time}`, displayText(state.note).replace(/\s+/gu, " ").trim()];
+}
+
 /** The widget: a title with the local time of the note, then the note on at most three lines. */
 export function ordinaryWorkWidget(state: OrdinaryWorkNote, theme: Pick<Theme, "fg">): Component {
-	const time = new Date(state.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+	const [title, note] = ordinaryWorkLines(state);
 	return {
 		invalidate() {},
 		render(width: number): string[] {
-			const lines = wrapTextWithAnsi(displayText(state.note).replace(/\s+/gu, " ").trim(), Math.max(1, width));
+			const lines = wrapTextWithAnsi(note, Math.max(1, width));
 			const shown = lines.slice(0, WIDGET_NOTE_LINES);
 			if (lines.length > WIDGET_NOTE_LINES) shown[WIDGET_NOTE_LINES - 1] = truncateToWidth(`${shown[WIDGET_NOTE_LINES - 1]} ${lines[WIDGET_NOTE_LINES]}`, Math.max(1, width), "…");
-			return [truncateToWidth(theme.fg("muted", `agent state · ${time}`), Math.max(1, width), "…"), ...shown.map((line) => theme.fg("text", line))];
+			return [truncateToWidth(theme.fg("muted", title), Math.max(1, width), "…"), ...shown.map((line) => theme.fg("text", line))];
 		},
 	};
 }
 
 type WorkUi = Pick<ExtensionContext, "hasUI"> & { readonly ui: Pick<ExtensionContext["ui"], "setWidget"> };
 
+/**
+ * RPC mode takes a widget as string lines only and ignores a component, and its client lays the lines out
+ * itself. So the lines are set first; in the TUI the component then replaces them in the same tick.
+ */
 function show(ctx: WorkUi, state: OrdinaryWorkNote | undefined): void {
 	if (!ctx.hasUI) return;
-	if (state === undefined) ctx.ui.setWidget(ORDINARY_WORK_WIDGET, undefined);
-	else ctx.ui.setWidget(ORDINARY_WORK_WIDGET, (_tui, theme) => ordinaryWorkWidget(state, theme));
+	if (state === undefined) { ctx.ui.setWidget(ORDINARY_WORK_WIDGET, undefined); return; }
+	ctx.ui.setWidget(ORDINARY_WORK_WIDGET, ordinaryWorkLines(state));
+	ctx.ui.setWidget(ORDINARY_WORK_WIDGET, (_tui, theme) => ordinaryWorkWidget(state, theme));
 }
 
 /** The note that the newest entry of the current branch keeps; undefined when it was cleared or never set. */

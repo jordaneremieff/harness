@@ -5,7 +5,8 @@ import type { ExtensionAPI, ExtensionContext, Theme, ToolDefinition } from "@ear
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { ORDINARY_CONTINUE_TEXT, ORDINARY_WORK_ENTRY, ORDINARY_WORK_WIDGET, registerOrdinaryWork } from "./ordinary-work.ts";
 
-type WidgetContent = undefined | ((tui: TUI, theme: Theme) => Component);
+type WidgetContent = undefined | string[] | ((tui: TUI, theme: Theme) => Component);
+const plain = (content: WidgetContent) => Array.isArray(content) ? content : undefined;
 const theme = { fg: (_color: string, value: string) => value, bold: (value: string) => value } as unknown as Theme;
 
 function fixture() {
@@ -22,7 +23,7 @@ function fixture() {
 	assert.ok(tool);
 	const registered = tool;
 	const context = (hasUI: boolean) => ({ hasUI, ui: { setWidget: (key: string, content: WidgetContent) => { widgets.push([key, content]); } }, sessionManager: { getBranch: () => entries } }) as unknown as ExtensionContext;
-	const lines = (content: WidgetContent, width = 40) => content?.(undefined as unknown as TUI, theme).render(width).map((line) => stripVTControlCharacters(line));
+	const lines = (content: WidgetContent, width = 40) => typeof content === "function" ? content(undefined as unknown as TUI, theme).render(width).map((line) => stripVTControlCharacters(line)) : undefined;
 	return {
 		entries, widgets, tool: registered, context, lines,
 		at: (value: number) => { now = value; },
@@ -40,10 +41,13 @@ it("ends the turn in continue with the note in one widget, keeps the note across
 	assert.deepEqual(first.content, [{ type: "text", text: ORDINARY_CONTINUE_TEXT }]);
 	assert.deepEqual(first.details, { action: "continue", note, at: Date.UTC(2026, 10, 12, 3, 4) });
 	assert.deepEqual(f.entries, [{ type: "custom", customType: ORDINARY_WORK_ENTRY, data: { note, at: Date.UTC(2026, 10, 12, 3, 4) } }]);
-	assert.deepEqual(f.widgets.map(([key]) => key), [ORDINARY_WORK_WIDGET], "one widget");
-	const shown = f.lines(f.widgets[0][1]);
+	const title = `agent state · ${new Date(Date.UTC(2026, 10, 12, 3, 4)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+	assert.deepEqual(f.widgets.map(([key]) => key), [ORDINARY_WORK_WIDGET, ORDINARY_WORK_WIDGET], "one widget, set twice");
+	assert.deepEqual(f.widgets[0][1], [title, note], "first as string lines, which is all that RPC mode takes");
+	assert.equal(typeof f.widgets[1][1], "function", "then as the component that replaces the lines in the TUI");
+	const shown = f.lines(f.widgets[1][1]);
 	assert.ok(shown);
-	assert.equal(shown[0], `agent state · ${new Date(Date.UTC(2026, 10, 12, 3, 4)).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`, "the title carries the local time of the note");
+	assert.equal(shown[0], title, "the title carries the local time of the note");
 	assert.equal(shown.length, 4, "the note takes at most three lines");
 	assert.ok(shown.every((line) => line.length <= 40));
 	assert.match(shown[3], /…$/u, "a longer note is clipped");
@@ -58,14 +62,16 @@ it("ends the turn in continue with the note in one widget, keeps the note across
 	f.at(Date.UTC(2026, 10, 12, 3, 9));
 	const second = await f.run({ action: "continue", note: "One result is in; one worker still runs." }, ui);
 	assert.equal(second.terminate, true);
-	assert.deepEqual(f.lines(f.widgets[1][1])?.slice(1), ["One result is in; one worker still runs."], "a repeated continue replaces the note");
+	assert.deepEqual(plain(f.widgets[2][1])?.slice(1), ["One result is in; one worker still runs."]);
+	assert.deepEqual(f.lines(f.widgets[3][1])?.slice(1), ["One result is in; one worker still runs."], "a repeated continue replaces the note");
 
 	// A reload registers the tool again and reads the newest entry of the branch.
 	const reloaded = fixture();
 	reloaded.entries.push(...f.entries);
 	const reloadedUi = reloaded.context(true);
 	reloaded.start(reloadedUi);
-	assert.deepEqual(reloaded.lines(reloaded.widgets[0][1])?.slice(1), ["One result is in; one worker still runs."]);
+	assert.deepEqual(plain(reloaded.widgets[0][1])?.slice(1), ["One result is in; one worker still runs."]);
+	assert.deepEqual(reloaded.lines(reloaded.widgets[1][1])?.slice(1), ["One result is in; one worker still runs."]);
 
 	const done = await f.run({ action: "complete" }, ui);
 	assert.equal(done.terminate, undefined, "complete does not end the turn");
