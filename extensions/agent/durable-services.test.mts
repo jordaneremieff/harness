@@ -463,29 +463,29 @@ it("runs the built-in read tool through a real Harness and returns images", { ti
 });
 
 it("resolves project trust from saved decisions and the default setting", async (t) => {
-	const f = fixture(t, { projectSettings: { steeringMode: "all" } });
+	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	const base = { cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust", extensionPaths: [f.silentPath] };
 	const untrusted = await createDurableServices(base);
-	assert.equal(untrusted.settings.steeringMode, "one-at-a-time");
+	assert.equal(untrusted.settings.followUpMode, "one-at-a-time");
 	await untrusted.close();
 	const store = new ProjectTrustStore(f.agentDir);
 	store.set(f.cwd, true);
 	const saved = await createDurableServices({ ...base, trustStore: store });
-	assert.equal(saved.settings.steeringMode, "all");
+	assert.equal(saved.settings.followUpMode, "all");
 	await saved.close();
 	store.set(f.cwd, false);
 	const explicit = await createDurableServices({ ...base, trustStore: store, trusted: true });
-	assert.equal(explicit.settings.steeringMode, "all");
+	assert.equal(explicit.settings.followUpMode, "all");
 	await explicit.close();
 	store.set(f.cwd, null);
 	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
 	const fallback = await createDurableServices(base);
-	assert.equal(fallback.settings.steeringMode, "all");
+	assert.equal(fallback.settings.followUpMode, "all");
 	await fallback.close();
 });
 
 for (const requiresTrust of [false, true]) it(`preserves saved trust and explicit decisions with project resources=${requiresTrust}`, async (t) => {
-	const f = fixture(t, requiresTrust ? { projectSettings: { steeringMode: "all" } } : {});
+	const f = fixture(t, requiresTrust ? { projectSettings: { followUpMode: "all" } } : {});
 	writeFileSync(join(f.cwd, "AGENTS.md"), "Project instructions\n");
 	assert.equal(hasTrustRequiringProjectResources(f.cwd), requiresTrust);
 	const store = new ProjectTrustStore(f.agentDir);
@@ -508,12 +508,12 @@ for (const requiresTrust of [false, true]) it(`preserves saved trust and explici
 });
 
 it("persists a project_trust handler decision through the public store", async (t) => {
-	const f = fixture(t, { projectSettings: { steeringMode: "all" } });
+	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	const trustPath = join(f.root, "trust-yes.ts");
 	writeFileSync(trustPath, TRUST_YES_EXTENSION);
 	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-handler", extensionPaths: [trustPath] });
 	try {
-		assert.equal(services.settings.steeringMode, "all");
+		assert.equal(services.settings.followUpMode, "all");
 		assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), true);
 	} finally {
 		await services.close();
@@ -521,13 +521,13 @@ it("persists a project_trust handler decision through the public store", async (
 });
 
 it("falls through an undecided handler to the default setting", async (t) => {
-	const f = fixture(t, { projectSettings: { steeringMode: "all" } });
+	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
 	const trustPath = join(f.root, "trust-undecided.ts");
 	writeFileSync(trustPath, TRUST_UNDECIDED_EXTENSION);
 	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-undecided", extensionPaths: [trustPath] });
 	try {
-		assert.equal(services.settings.steeringMode, "all");
+		assert.equal(services.settings.followUpMode, "all");
 		assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), null);
 	} finally {
 		await services.close();
@@ -535,14 +535,14 @@ it("falls through an undecided handler to the default setting", async (t) => {
 });
 
 it("reports a failing trust handler and continues resolution", async (t) => {
-	const f = fixture(t, { projectSettings: { steeringMode: "all" } });
+	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	writeFileSync(join(f.agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
 	const trustPath = join(f.root, "trust-throw.ts");
 	writeFileSync(trustPath, TRUST_THROW_EXTENSION);
 	const errors: unknown[] = [];
 	const services = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-throw", extensionPaths: [trustPath], onReport: (error) => errors.push(error) });
 	try {
-		assert.equal(services.settings.steeringMode, "all");
+		assert.equal(services.settings.followUpMode, "all");
 		assert.ok(errors.some((error) => String(error).includes("trust handler failed")));
 	} finally {
 		await services.close();
@@ -550,7 +550,7 @@ it("reports a failing trust handler and continues resolution", async (t) => {
 });
 
 it("routes an unresolved trust ask to the primary and persists the answer", async (t) => {
-	const f = fixture(t, { projectSettings: { steeringMode: "all" } });
+	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	const asked: string[] = [];
 	const services = await createDurableServices({
 		cwd: f.cwd,
@@ -560,7 +560,7 @@ it("routes an unresolved trust ask to the primary and persists the answer", asyn
 	});
 	try {
 		assert.deepEqual(asked, [f.cwd]);
-		assert.equal(services.settings.steeringMode, "all");
+		assert.equal(services.settings.followUpMode, "all");
 		assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), true);
 	} finally {
 		await services.close();
@@ -568,7 +568,7 @@ it("routes an unresolved trust ask to the primary and persists the answer", asyn
 });
 
 it("refuses an ask the primary does not answer without saving it", async (t) => {
-	const f = fixture(t, { projectSettings: { steeringMode: "all" } });
+	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	const asked: string[] = [];
 	const services = await createDurableServices({
 		cwd: f.cwd,
@@ -578,7 +578,7 @@ it("refuses an ask the primary does not answer without saving it", async (t) => 
 	});
 	try {
 		assert.deepEqual(asked, [f.cwd]);
-		assert.equal(services.settings.steeringMode, "one-at-a-time");
+		assert.equal(services.settings.followUpMode, "one-at-a-time");
 		assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), null);
 	} finally {
 		await services.close();
@@ -586,7 +586,7 @@ it("refuses an ask the primary does not answer without saving it", async (t) => 
 });
 
 it("never asks when a saved decision or an explicit decision resolves trust", async (t) => {
-	const f = fixture(t, { projectSettings: { steeringMode: "all" } });
+	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	const asked: string[] = [];
 	new ProjectTrustStore(f.agentDir).set(f.cwd, true);
 	const saved = await createDurableServices({
@@ -596,7 +596,7 @@ it("never asks when a saved decision or an explicit decision resolves trust", as
 		askPrimary: async () => { asked.push("saved"); return { trusted: false }; },
 	});
 	await saved.close();
-	assert.equal(saved.settings.steeringMode, "all");
+	assert.equal(saved.settings.followUpMode, "all");
 	const trustPath = join(f.root, "trust-throw.ts");
 	writeFileSync(trustPath, TRUST_THROW_EXTENSION);
 	const errors: unknown[] = [];
@@ -610,7 +610,7 @@ it("never asks when a saved decision or an explicit decision resolves trust", as
 		onReport: (error) => errors.push(error),
 	});
 	await explicit.close();
-	assert.equal(explicit.settings.steeringMode, "all");
+	assert.equal(explicit.settings.followUpMode, "all");
 	assert.deepEqual(asked, []);
 	assert.deepEqual(errors, []);
 });
@@ -631,10 +631,10 @@ it("maps primary UI selections to trust decisions", async () => {
 });
 
 it("persists an explicit trust decision and reuses it without asking", async (t) => {
-	const f = fixture(t, { projectSettings: { steeringMode: "all" } });
+	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	const explicit = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-explicit-true", trusted: true });
 	await explicit.close();
-	assert.equal(explicit.settings.steeringMode, "all");
+	assert.equal(explicit.settings.followUpMode, "all");
 	assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), true);
 	const asked: string[] = [];
 	const reused = await createDurableServices({
@@ -644,15 +644,15 @@ it("persists an explicit trust decision and reuses it without asking", async (t)
 		askPrimary: async (cwd) => { asked.push(cwd); return { trusted: false }; },
 	});
 	await reused.close();
-	assert.equal(reused.settings.steeringMode, "all");
+	assert.equal(reused.settings.followUpMode, "all");
 	assert.deepEqual(asked, []);
 });
 
 it("persists an explicit refusal and reuses it without asking", async (t) => {
-	const f = fixture(t, { projectSettings: { steeringMode: "all" } });
+	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	const explicit = await createDurableServices({ cwd: f.cwd, agentDir: f.agentDir, storageId: "fixture-trust-explicit-false", trusted: false });
 	await explicit.close();
-	assert.equal(explicit.settings.steeringMode, "one-at-a-time");
+	assert.equal(explicit.settings.followUpMode, "one-at-a-time");
 	assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), false);
 	const asked: string[] = [];
 	const reused = await createDurableServices({
@@ -662,12 +662,12 @@ it("persists an explicit refusal and reuses it without asking", async (t) => {
 		askPrimary: async (cwd) => { asked.push(cwd); return { trusted: true }; },
 	});
 	await reused.close();
-	assert.equal(reused.settings.steeringMode, "one-at-a-time");
+	assert.equal(reused.settings.followUpMode, "one-at-a-time");
 	assert.deepEqual(asked, []);
 });
 
 it("does not persist a session-only trust prompt answer", async (t) => {
-	const f = fixture(t, { projectSettings: { steeringMode: "all" } });
+	const f = fixture(t, { projectSettings: { followUpMode: "all" } });
 	const services = await createDurableServices({
 		cwd: f.cwd,
 		agentDir: f.agentDir,
@@ -675,7 +675,7 @@ it("does not persist a session-only trust prompt answer", async (t) => {
 		askPrimary: async () => ({ trusted: true, remember: false }),
 	});
 	try {
-		assert.equal(services.settings.steeringMode, "all");
+		assert.equal(services.settings.followUpMode, "all");
 		assert.equal(new ProjectTrustStore(f.agentDir).get(f.cwd), null);
 	} finally {
 		await services.close();

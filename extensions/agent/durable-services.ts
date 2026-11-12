@@ -903,7 +903,8 @@ export async function createDurableServices(options: CreateDurableServicesOption
 			get stream() { return providerStreamSettings(services.settingsManager); },
 			get retry() { return services.settingsManager.getRetrySettings(); },
 			get compaction() { return services.settingsManager.getCompactionSettings(); },
-			get steeringMode() { return services.settingsManager.getSteeringMode(); },
+			/** One tool boundary places every queued steer input; the Pi setting does not select this. */
+			steeringMode: "all",
 			get followUpMode() { return services.settingsManager.getFollowUpMode(); },
 		};
 
