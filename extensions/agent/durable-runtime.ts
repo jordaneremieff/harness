@@ -487,7 +487,8 @@ export async function createDurableRuntime(metadata: HostMetadata, options: Pick
 			});
 			const requestRoutes = new RequestRouteState();
 			services.registry.install({ name: "agent.request-context", sections: [requestContextSection(opened.harness)], hooks: [hook(GenerationTask, requestContextHooks(opened.harness, requestRoutes))] });
-			services.registry.install({ name: "agent.continuity", hooks: [hook(GenerationTask, opened.continuityHooks())] });
+			// Thread ranges settle first; the continuity note is the last change and reads memory only.
+			services.registry.install({ name: "agent.continuity", hooks: [hook(GenerationTask, opened.threadNoticeHooks()), hook(GenerationTask, opened.continuityHooks())] });
 			unsubscribeClose?.();
 			unsubscribeClose = opened.harness.subscribeClose(() => {
 				activityGeneration++;

@@ -26,6 +26,7 @@ import { recordContinuityDelivered } from "./continuity-native.ts";
 import { continuityRequestHooks } from "./continuity-request.ts";
 import { TaskHookReports } from "./task-hook-reports.ts";
 import { ChildCapacityReports, childContinuityFact, continuityLines, type PlanningBudgetLookup } from "./capacity-reports.ts";
+import { THREAD_NOTICE_ENTRY_KIND, threadNoticeRequestHooks } from "./thread-notice-request.ts";
 import type { ProviderRetryNotice } from "./provider-block.ts";
 import { readInputProviderBlock, initializeProviderControl, reconcileProviderControls } from "./provider-block.ts";
 import { canonicalIdentity } from "./native-identity.ts";
@@ -456,6 +457,15 @@ export class DurableHost {
 		});
 	}
 
+	/**
+	 * Generation hooks that replace passive thread notices with frozen range markers. The
+	 * composition root installs one instance before the continuity hooks; frozen ranges of the
+	 * process live in that instance.
+	 */
+	threadNoticeHooks(): Partial<GenerationHooks> {
+		return threadNoticeRequestHooks({ storageId: this.storageId, identity: (conversationId) => this.identity(conversationId) });
+	}
+
 	/** Resume only after the caller installs contributions and model-facing sections. */
 	async resume(context: Context = BACKGROUND_CONTEXT): Promise<void> {
 		await this.requireOpen();
@@ -709,7 +719,7 @@ export class DurableHost {
 				data = { format: "agent.communication-invalid/1", reason: "invalid" };
 			}
 		}
-		const submission = await conversation.submit({ type: "write", requestId, entry: { kind: communication?.kind === "report" ? "agent.passive-report" : "agent.thread-notice", model: [{ role: "user", content: message, timestamp: Date.now() }], ...(data === undefined ? {} : { data }) } }, context);
+		const submission = await conversation.submit({ type: "write", requestId, entry: { kind: communication?.kind === "report" ? "agent.passive-report" : THREAD_NOTICE_ENTRY_KIND, model: [{ role: "user", content: message, timestamp: Date.now() }], ...(data === undefined ? {} : { data }) } }, context);
 		return { submissionId: submission.id, conversationId: conversation.id, passive: true };
 	}
 
