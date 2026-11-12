@@ -1275,11 +1275,13 @@ export async function receiptsByOperation(harness: Harness, operationId: string,
 }
 
 /** Reacquire unlinked admissions through Durable's request dedupe before any replay. */
-export async function reconcileDeliveries(harness: Harness, context: Context): Promise<void> {
+export async function reconcileDeliveries(harness: Harness, context: Context, now: () => number = Date.now): Promise<void> {
 	const state = await deliveryState(harness, context, false, false);
 	for (const intent of state.intents) {
 		if (intent.submissionId !== null || intent.delivery?.state === "terminal") continue;
 		let submissionId = (await harness.commit((tx) => tx.submissionByRequest(intent.conversationId, intent.requestId), context))?.id;
+		const request = (await harness.snapshot(RequestContextDoc, intent.conversationId, context))?.requests.find((item) => item.requestId === intent.requestId);
+		const inputClass = sentInputClass(intent.origin, intent.whenBusy);
 		if (submissionId === undefined) {
 			const conversation = await harness.conversation(intent.conversationId, context);
 			if (!conversation) {
@@ -1289,8 +1291,7 @@ export async function reconcileDeliveries(harness: Harness, context: Context): P
 				}, context);
 				continue;
 			}
-			const request = (await harness.snapshot(RequestContextDoc, intent.conversationId, context))?.requests.find((item) => item.requestId === intent.requestId);
-			const admitted = await conversation.submit({ type: "input", content: deliveredMessage(intent.message), entry: inputEntry(intent.origin, request?.requester, { class: sentInputClass(intent.origin, intent.whenBusy), ...(request === undefined ? {} : { sender: request.requester }), requestId: intent.requestId }), requestId: intent.requestId, whenBusy: placementMode(intent.whenBusy) }, context);
+			const admitted = await conversation.submit({ type: "input", content: deliveredMessage(intent.message), entry: inputEntry(intent.origin, request?.requester, { class: inputClass, ...(request === undefined ? {} : { sender: request.requester }), requestId: intent.requestId }), requestId: intent.requestId, whenBusy: placementMode(intent.whenBusy) }, context);
 			submissionId = admitted.id;
 		}
 		const resolved = submissionId;
@@ -1298,6 +1299,8 @@ export async function reconcileDeliveries(harness: Harness, context: Context): P
 			const found = await retainedIntent(tx, intent.conversationId, intent.requestId);
 			if (found !== undefined && found.submissionId === null) await storeDeliveryRow(tx, "intent", { ...found, submissionId: resolved });
 		}, context);
+		// The admission that this replay completes ended before its unplaced record; a queued input still counts and is still watched.
+		await harness.commit((tx) => recordUnplacedInput(tx, intent.conversationId, { submissionId: resolved, class: inputClass, sender: request?.requester ?? "", admittedAt: now() }), context);
 	}
 	await settleDeliveries(harness, context);
 }

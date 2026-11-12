@@ -18,7 +18,7 @@ import { obj } from "@earendil-works/pi-schema";
 import { onStoredCommit } from "./commit-observation.ts";
 import { deliveryState } from "./delivery-store.ts";
 import { CheckInDeadlineTask, CheckInTask } from "./durable-checkins.ts";
-import { settleDeliveries } from "./durable-controls.ts";
+import { reconcileDeliveries, recordDeliveryIntent, settleDeliveries } from "./durable-controls.ts";
 import { answerMessage, completed } from "./durable-host-fixture.mts";
 import { DurableHost } from "./durable-host.ts";
 import { AgentTimerDoc, TimerTask } from "./durable-timers.ts";
@@ -304,6 +304,31 @@ it("two gated tools of one round place nothing until both end", { timeout: 60_00
 	const requests = f.requestsOf("BUSY-PARALLEL");
 	assert.equal(requests.length, 2, "the round's boundary placed the input before the next model request");
 	assert.ok(requests[1].some((message) => textOf(message).includes("BETWEEN the two tools")));
+});
+
+it("an admission that a replay completes records its queued input", { timeout: 60_000 }, async (t) => {
+	const f = await fixture(t);
+	await startBusy(f);
+	await f.gate("g1").started;
+	// An admission that stopped after its intent commit: the retained intent has no submission.
+	const request = { requestId: "replayed", requester: f.requester, replyTo: f.requester, origin: "model" as const };
+	await f.harness.commit((tx) => recordDeliveryIntent(tx, ROOT_CONVERSATION_ID, { requestId: request.requestId, ownerId: request.replyTo, message: "REPLAYED input", whenBusy: "followUp", origin: request.origin, requestContext: request }, f.now()), context);
+	assert.equal(await f.unplaced(ROOT_CONVERSATION_ID, "replayed"), undefined);
+	await reconcileDeliveries(f.harness, context, f.now);
+	const waiting = await f.unplaced(ROOT_CONVERSATION_ID, "replayed");
+	assert.deepEqual({ class: waiting?.class, sender: waiting?.sender, admittedAt: waiting?.admittedAt, noticed: waiting?.noticed }, { class: "followUp", sender: f.requester, admittedAt: f.now(), noticed: false });
+	assert.deepEqual(await readUnplacedSummary(f.harness, ROOT_CONVERSATION_ID, context), { unplaced: 1, oldestAdmittedAt: f.now() });
+	assert.ok(waiting);
+	const submissionId = waiting.submissionId as SubmissionId;
+	assert.equal((await f.status(submissionId))?.status, "queued");
+
+	f.gate("g1").open();
+	await f.gate("g2").started;
+	assert.equal((await f.status(submissionId))?.status, "placed");
+	assert.deepEqual(await readUnplacedSummary(f.harness, ROOT_CONVERSATION_ID, context), { unplaced: 0 });
+	assert.ok(f.requestsOf("BUSY")[1].some((message) => textOf(message).includes("REPLAYED input")));
+	f.gate("g2").open();
+	assert.equal((await (await f.harness.submission(submissionId, context))?.wait(context))?.status, "done");
 });
 
 it("a run that a worker result starts ends with a state note and sends its requester nothing", { timeout: 60_000 }, async (t) => {
