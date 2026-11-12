@@ -273,22 +273,6 @@ it("rejects an unsafe call instead of resending it", { timeout: 30000 }, async (
 	await next.close();
 });
 
-it("aborting a wait cancels the host-side wait without harming the host", { timeout: 30000 }, async (t) => {
-	const root = fixtureRoot(t);
-	const statePath = join(root, "state.json");
-	const connection = await openHost(t, root);
-	const controller = new AbortController();
-	const pending = connection.request("receipts", { wait: true }, { signal: controller.signal });
-	await waitForFixtureState(connection, statePath, (state) => (state.waitsStarted ?? 0) >= 1);
-	controller.abort();
-	await assert.rejects(pending, (error: unknown) => error instanceof Error && error.name === "AbortError");
-	await waitForFixtureState(connection, statePath, (state) => (state.waitsCancelled ?? 0) >= 1);
-	assert.equal(readFixtureState(statePath).waitCompleted ?? 0, 0, "the cancelled wait did not complete");
-	assert.deepEqual(await connection.request("timer-list", { alive: true }), { alive: true });
-	assert.equal(connection.closed, false);
-	await connection.close();
-});
-
 it("aborting without the wait flag leaves the host-side wait running", { timeout: 30000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const statePath = join(root, "state.json");

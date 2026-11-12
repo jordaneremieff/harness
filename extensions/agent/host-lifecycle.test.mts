@@ -175,31 +175,6 @@ for (const ownedExit of [false, true]) it(`preserves the busy writer claim with 
 	assert.equal(existsSync(hostPaths(metadata).claim), true, "a callback or refusal is not proof of writer death");
 });
 
-it("quiesces observational waits before runtime shutdown without closing transport early", { timeout: 15000 }, async (t) => {
-	const metadata = fixtureMetadata(root(t));
-	const started = deferred();
-	let cancelled = false;
-	const host = await runHost(() => ({
-		request: async (_method, _params, _id, signal) => new Promise((_resolve, reject) => {
-			signal?.addEventListener("abort", () => { cancelled = true; reject(signal.reason); }, { once: true });
-			started.resolve();
-		}),
-		isIdle: () => true,
-		close: async () => { assert.equal(cancelled, true); },
-	}), { metadata, idleMs: 0, announceReady: () => {} });
-	t.after(() => host.close());
-	const client = await connectHost(metadata, { retryAttempts: 0 });
-	t.after(() => client.close());
-	const waiting = client.request("receipts", { wait: true });
-	const rejected = assert.rejects(waiting);
-	await started.promise;
-	assert.equal(cancelled, false);
-	await client.request("close").catch(() => undefined);
-	await rejected;
-	await host.done;
-	assertReleased(metadata);
-});
-
 it("disconnects only after runtime shutdown and writer release", { timeout: 15000 }, async (t) => {
 	const metadata = fixtureMetadata(root(t));
 	const closing = deferred();

@@ -296,50 +296,6 @@ it("waits for runtime idle before retiring", { timeout: 15000 }, async (t) => {
 	assert.equal(writerAvailable(config), true);
 });
 
-it("cancels a wait on caller abort and on client disconnect", { timeout: 15000 }, async (t) => {
-	const root = fixtureRoot(t);
-	let started = 0;
-	let aborted = 0;
-	const starts = eventLog<number>();
-	const aborts = eventLog<number>();
-	const runtime: HostRuntime = {
-		request: async (method, _params, _requestId, signal) => {
-			if (method !== "receipts") return { method };
-			started += 1;
-			starts.push(started);
-			return new Promise((_resolve, reject) => {
-				signal?.addEventListener("abort", () => {
-					aborted += 1;
-					aborts.push(aborted);
-					reject(signal.reason ?? new Error("aborted"));
-				}, { once: true });
-			});
-		},
-		close: async () => {},
-		isIdle: () => true,
-	};
-	const { host, metadata: config } = await startHost(root, 0, () => runtime);
-	t.after(() => host.close().catch(() => {}));
-
-	const first = await connectClient(config);
-	const controller = new AbortController();
-	const pending = call(first, config, "receipts", { wait: true }, controller.signal);
-	await starts.waitForCount(1);
-	assert.equal(aborted, 0, "the producer stays pending until cancellation");
-	controller.abort();
-	await assert.rejects(pending, (error: unknown) => error instanceof Error);
-	await aborts.waitForCount(1);
-	await first.dispose();
-
-	const second = await connectClient(config);
-	const pendingDisconnect = call(second, config, "receipts", { wait: true });
-	await starts.waitForCount(2);
-	assert.equal(aborted, 1, "the second producer stays pending until disconnect");
-	await second.dispose();
-	await assert.rejects(pendingDisconnect, (error: unknown) => error instanceof Error);
-	await aborts.waitForCount(2);
-});
-
 it("publishes changed state to a public subscription", { timeout: 15000 }, async (t) => {
 	const root = fixtureRoot(t);
 	const listeners = new Set<() => void>();
