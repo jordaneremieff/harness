@@ -139,6 +139,8 @@ export interface ConversationStatus extends ConversationSummary {
 	/** Declared work that owes a final report, and the age in milliseconds of its oldest declaration. */
 	readonly openWorkCount?: number;
 	readonly openWorkOldest?: number;
+	/** Clock time in epoch milliseconds at which `oldest` and `openWorkOldest` were measured. */
+	readonly ageObservedAt?: number;
 	readonly usage?: UsageState;
 	readonly agent: {
 		readonly model?: { readonly provider: string; readonly modelId: string };
@@ -1056,6 +1058,8 @@ interface BacklogFacts {
 	readonly oldest?: number;
 	readonly openWorkCount: number;
 	readonly openWorkOldest?: number;
+	/** Clock time in epoch milliseconds at which the ages were measured; present with an age. */
+	readonly ageObservedAt?: number;
 }
 
 /**
@@ -1072,6 +1076,7 @@ async function backlogFacts(harness: Harness, conversationId: ConversationId, no
 		...(unplaced.oldestAdmittedAt === undefined ? {} : { oldest: age(unplaced.oldestAdmittedAt) }),
 		openWorkCount: open.length,
 		...(open.length === 0 ? {} : { openWorkOldest: age(Math.min(...open)) }),
+		...(unplaced.oldestAdmittedAt === undefined && open.length === 0 ? {} : { ageObservedAt: Math.round(now) }),
 	};
 }
 

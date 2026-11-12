@@ -28,7 +28,7 @@ function rowErrors(response: unknown): string[] {
 	return schemaErrors(StatusOutputSchema, response, 64).filter((error) => error.startsWith("/conversation"));
 }
 
-interface Row { readonly openWorkCount?: number; readonly openWorkOldest?: number; readonly unplaced?: number; readonly oldest?: number }
+interface Row { readonly openWorkCount?: number; readonly openWorkOldest?: number; readonly ageObservedAt?: number; readonly unplaced?: number; readonly oldest?: number }
 
 it("publishes the count and the oldest age of open work on the status rows without a target and on the roster rows", async (t) => {
 	const root = mkdtempSync(join(tmpdir(), "durable-host-backlog-"));
@@ -45,20 +45,20 @@ it("publishes the count and the oldest age of open work on the status rows witho
 		assert.deepEqual(schemaErrors(AgentConversationSummarySchema, roster[0], 4), [], "the roster row schema accepts the open-work members");
 		return { status: overview.conversations[0] ?? {}, selected: selected.conversation, roster: roster[0] ?? {} };
 	};
-	const facts = (row: Row) => ({ openWorkCount: row.openWorkCount, openWorkOldest: row.openWorkOldest });
+	const facts = (row: Row) => ({ openWorkCount: row.openWorkCount, openWorkOldest: row.openWorkOldest, ageObservedAt: row.ageObservedAt });
 
 	const none = await rows();
-	for (const row of [none.status, none.selected, none.roster]) assert.deepEqual(facts(row), { openWorkCount: 0, openWorkOldest: undefined }, "no open work is a zero count without an age");
+	for (const row of [none.status, none.selected, none.roster]) assert.deepEqual(facts(row), { openWorkCount: 0, openWorkOldest: undefined, ageObservedAt: undefined }, "no open work is a zero count without an age");
 
 	await host.harness.commit((tx) => placedInput(tx, id, "task-a"), BACKGROUND_CONTEXT);
 	const declared = await host.harness.commit((tx) => declareOpenWork(tx, fixtureStorageId, id, { results: [], note: "owes a final result" }, EPOCH + 1000), BACKGROUND_CONTEXT);
 	assert.ok(!("error" in declared), JSON.stringify(declared));
 	clock.now = EPOCH + 61_000;
 	const open = await rows();
-	for (const row of [open.status, open.selected, open.roster]) assert.deepEqual(facts(row), { openWorkCount: 1, openWorkOldest: 60_000 });
+	for (const row of [open.status, open.selected, open.roster]) assert.deepEqual(facts(row), { openWorkCount: 1, openWorkOldest: 60_000, ageObservedAt: EPOCH + 61_000 }, "the age carries the clock time of its measurement");
 
 	const completed = await host.harness.commit((tx) => completeOpenWork(tx, fixtureStorageId, id, { request: "task-a", status: "done", message: "final" }, EPOCH + 62_000), BACKGROUND_CONTEXT);
 	assert.ok(!("error" in completed), JSON.stringify(completed));
 	const closed = await rows();
-	for (const row of [closed.status, closed.selected, closed.roster]) assert.deepEqual(facts(row), { openWorkCount: 0, openWorkOldest: undefined }, "a closed item is not open work");
+	for (const row of [closed.status, closed.selected, closed.roster]) assert.deepEqual(facts(row), { openWorkCount: 0, openWorkOldest: undefined, ageObservedAt: undefined }, "a closed item is not open work");
 });
