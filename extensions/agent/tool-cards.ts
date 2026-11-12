@@ -1647,7 +1647,7 @@ function observeResult(result: AgentToolResult<unknown>, context: AgentCardConte
 function renderWorkCall(value: unknown, theme: Theme, context: AgentCardContext): Component {
 	const args = record(value);
 	const request = text(args.request), status = text(args.status), results = array(args.results).length;
-	const qualifier = [request ? `request ${displayPreview(request, 80)}` : "", status ? displayPreview(status, 20) : Array.isArray(args.results) ? `${results} result reference${results === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+	const qualifier = [request ? `request ${displayText(request)}` : "", status ? displayPreview(status, 20) : Array.isArray(args.results) ? `${results} result reference${results === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
 	return argumentCard("agent_work", displayPreview(text(args.action), 20) || "open work", qualifier || undefined, args, theme, context, true);
 }
 
@@ -1655,16 +1655,17 @@ const WORK_DEPENDENCY_ROWS = 4;
 
 function closedWorkLines(details: Record<string, unknown>, item: Record<string, unknown>, subject: string, theme: Theme, context: AgentCardContext): string[] {
 	const status = text(details.status), report = record(details.report), owner = text(report.ownerId);
-	const lines = [theme.fg(status === "done" ? "toolOutput" : "warning", `Work closed (${displayPreview(status, 20) || "status unknown"}) · ${subject}${details.deduped === true ? " · already closed" : ""}`)];
+	const lines = [theme.fg(status === "failed" ? "warning" : "toolOutput", `Work closed${status ? ` (${displayText(status)})` : ""} · ${subject}${details.deduped === true ? " · already closed" : ""}`)];
 	if (text(report.sourceId)) lines.push(muted(theme, `Final report retained${owner ? ` · ${targetLabel(owner, context)}` : ""} · ${report.acknowledged === true ? "acknowledged" : "acknowledgement pending"}`));
 	const delivery = text(record(item.close).delivery);
-	if (delivery) lines.push(theme.fg(["parked", "terminal", "absent"].includes(delivery) ? "warning" : "muted", `Final report delivery: ${displayPreview(delivery, 20)}`));
+	if (delivery) lines.push(theme.fg(delivery === "terminal" ? "warning" : "muted", `Final report delivery: ${displayPreview(delivery, 20)}`));
 	return lines;
 }
 
 function workDependencyLine(dependency: Record<string, unknown>, theme: Theme, context: AgentCardContext): string {
-	const reference = text(dependency.requestId), unavailable = text(dependency.unavailable);
-	return muted(theme, `${targetLabel(text(dependency.sessionId), context)} · submission ${String(count(dependency.submissionId) ?? "unknown")}${reference ? ` · request ${displayPreview(reference, 80)}` : ""} · ${displayPreview(text(dependency.state), 20) || "state unknown"}${unavailable ? ` · unavailable: ${displayPreview(unavailable, 120)}` : ""}`);
+	const reference = text(dependency.requestId), unavailable = text(dependency.unavailable), submission = count(dependency.submissionId);
+	return muted(theme, [targetLabel(text(dependency.sessionId), context), submission === undefined ? "" : `submission ${submission}`,
+		reference ? `request ${displayText(reference)}` : "", displayText(text(dependency.state)), unavailable ? `unavailable: ${displayPreview(unavailable, 120)}` : ""].filter(Boolean).join(" · "));
 }
 
 function declaredWorkLines(item: Record<string, unknown>, subject: string, theme: Theme, context: AgentCardContext): string[] {
@@ -1682,7 +1683,7 @@ function workLines(details: Record<string, unknown>, theme: Theme, context: Agen
 	const action = text(details.action), item = record(details.item);
 	const request = text(item.requestId) || text(details.requestId);
 	if ((action !== "continue" && action !== "complete") || !request) return undefined;
-	const subject = `request ${displayPreview(request, 120)}`;
+	const subject = `request ${displayText(request)}`;
 	return action === "complete" ? closedWorkLines(details, item, subject, theme, context) : declaredWorkLines(item, subject, theme, context);
 }
 
