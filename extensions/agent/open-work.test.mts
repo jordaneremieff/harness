@@ -13,7 +13,7 @@ import { inputEntry } from "./input-entry.ts";
 import {
 	AgentWorkOutputSchema, CLOSED_WORK_LIMIT, OPEN_WORK_LIMIT, OpenWorkDoc, boundClosedItems, closeOpenWork, closeWork, completeOpenWork, completeWork, continueWork,
 	declareOpenWork, dependencyState, executeAgentWork, finalReportLabel, finalReportRead, finalReportRequestId, finalReportToItself, openWorkCheckInLines, openWorkItems, openWorkStatus,
-	DEPENDENCY_MARK_LIMIT, markedState, parseAgentWorkInput, parseDependencyMarks, receiptDependencyMarks, receiptWork, recordDependencyMarks, reportDelivery, reportDependencyMarks,
+	DEPENDENCY_MARK_LIMIT, markedState, parseAgentWorkInput, parseDependencyMarks, receiptDependencyMarks, recordDependencyMarks, reportDelivery, reportDependencyMarks,
 	requestHasOpenWork, requestWork, stateNoteLabel, withDependencyMarks, withoutVoidItems, type OpenWorkItem, type WorkRoute,
 } from "./open-work.ts";
 import { recordRequestContext, type RequestContext } from "./request-context.ts";
@@ -163,7 +163,7 @@ it("keeps the request route, reads dependency states and completes with one fina
 
 	await harness.commit((tx) => answered(tx, conversation.id, ids.own), context);
 	assert.equal(await harness.commit((tx) => requestHasOpenWork(tx, conversation.id, "task-a"), context), true);
-	assert.deepEqual(await harness.commit((tx) => receiptWork(tx, conversation.id, "task-a"), context), { work: "open", label: stateNoteLabel("open") });
+	assert.deepEqual(await requestWork({ harness, context }, STORAGE, conversation.id, { requestId: "task-a", submissionId: ids.own }), { work: "open", label: stateNoteLabel("open") });
 
 	// The producer declares its own work and answers: its settled input is a state note.
 	await harness.commit((tx) => declareOpenWork(tx, STORAGE, producer.id, { results: [{ sessionId: "storage-z:2", submissionId: 6 }], note: "deeper" }, 12), context);
@@ -186,7 +186,8 @@ it("keeps the request route, reads dependency states and completes with one fina
 	assert.deepEqual([again.details?.deduped, again.details?.status, again.details?.report?.createdAt], [true, "done", done.details.report?.createdAt]);
 	assert.equal((await harness.commit((tx) => retainedReportRequest(tx, "recipient-c", `work-final:${conversation.id}:task-a`), context))?.message, row?.message);
 	assert.deepEqual(await harness.commit((tx) => openWorkItems(tx, conversation.id), context), []);
-	assert.deepEqual(await harness.commit((tx) => receiptWork(tx, conversation.id, "task-a"), context), { work: "closed", label: stateNoteLabel("closed", "done") });
+	const closedWork = await requestWork({ harness, context }, STORAGE, conversation.id, { requestId: "task-a", submissionId: ids.own });
+	assert.deepEqual([closedWork?.work, closedWork?.label], ["closed", stateNoteLabel("closed", "done")]);
 });
 
 it("selects the single routed input of the run and returns schema-valid details", async (t) => {
@@ -267,7 +268,7 @@ it("reads a dependency of another storage from the marks of admitted deliveries"
 	// The remote producer declares work and answers: its receipt is a labelled state note.
 	await remote.harness.commit((tx) => declareOpenWork(tx, REMOTE, remote.conversation.id, { results: [], note: "own work remains" }, 11), context);
 	await remote.harness.commit((tx) => answered(tx, remote.conversation.id, child), context);
-	const stateNote = await remote.harness.commit((tx) => receiptDependencyMarks(tx, REMOTE, [{ conversationId: remote.conversation.id, submissionId: child, requestId: "child-task" }]), context);
+	const stateNote = await receiptDependencyMarks({ harness: remote.harness, context }, REMOTE, [{ conversationId: remote.conversation.id, submissionId: child, requestId: "child-task", ownerId: STORAGE }]);
 	assert.deepEqual(stateNote, [{ sessionId: REMOTE, submissionId: child, requestId: "child-task", state: "state-note" }]);
 	await deliver(stateNote);
 	assert.deepEqual(await read(), [["state-note", true], ["open", false]]);
@@ -278,7 +279,7 @@ it("reads a dependency of another storage from the marks of admitted deliveries"
 
 	// A producer without declared work answers: its receipt is the result.
 	await remote.harness.commit((tx) => answered(tx, remote.producer.id, plain), context);
-	const ordinary = await remote.harness.commit((tx) => receiptDependencyMarks(tx, REMOTE, [{ conversationId: remote.producer.id, submissionId: plain, requestId: "plain-task" }]), context);
+	const ordinary = await receiptDependencyMarks({ harness: remote.harness, context }, REMOTE, [{ conversationId: remote.producer.id, submissionId: plain, requestId: "plain-task", ownerId: STORAGE }]);
 	assert.deepEqual(ordinary.map((mark) => mark.state), ["arrived"]);
 	await deliver(ordinary);
 	assert.deepEqual(await read(), [["state-note", true], ["arrived", true]]);
@@ -293,7 +294,7 @@ it("reads a dependency of another storage from the marks of admitted deliveries"
 	assert.deepEqual(final, [{ sessionId: REMOTE, submissionId: child, requestId: "child-task", state: "arrived" }]);
 	await deliver(final);
 	assert.deepEqual(await read(), [["arrived", true], ["arrived", true]]);
-	await deliver(await remote.harness.commit((tx) => receiptDependencyMarks(tx, REMOTE, [{ conversationId: remote.conversation.id, submissionId: child, requestId: "child-task" }]), context));
+	await deliver(await receiptDependencyMarks({ harness: remote.harness, context }, REMOTE, [{ conversationId: remote.conversation.id, submissionId: child, requestId: "child-task", ownerId: STORAGE }]));
 	assert.deepEqual(await read(), [["arrived", true], ["arrived", true]], "a late state-note receipt does not lower the state");
 });
 
@@ -384,7 +385,7 @@ it("reads the status through snapshots without a committed change", async (t) =>
 	assert.deepEqual(await openWorkStatus({ harness, context }, STORAGE, producer.id), [], "a conversation without the document has no item");
 	assert.deepEqual(await openWorkItems({ harness, context }, producer.id), []);
 	assert.equal(await requestHasOpenWork({ harness, context }, producer.id, "task-a"), false);
-	assert.equal(await receiptWork({ harness, context }, producer.id, "task-a"), undefined);
+	assert.equal(await requestWork({ harness, context }, STORAGE, producer.id, { requestId: "task-a", submissionId: id }), undefined);
 	assert.deepEqual(changes, [], "a snapshot read commits no change, also for a conversation without the document");
 	assert.equal(await harness.snapshot(OpenWorkDoc, producer.id, context), undefined);
 });
@@ -455,8 +456,10 @@ it("reads the exact final report in pages after acknowledgement and after the cl
 	assert.equal((await harness.commit((tx) => retainedReportRequest(tx, "recipient-c", `work-final:${conversation.id}:task-a`), context))?.acknowledged, true);
 	assert.equal(await readAll(), exact, "acknowledgement keeps the report readable");
 
+	const laterIds: SubmissionId[] = [];
 	for (let index = 0; index <= CLOSED_WORK_LIMIT; index++) {
 		const later = await harness.commit((tx) => placed(tx, conversation.id, route(`later-${index}`)), context);
+		laterIds.push(later);
 		await harness.commit((tx) => declareOpenWork(tx, STORAGE, conversation.id, { results: [], note: "own work remains" }, 30 + index), context);
 		await harness.commit((tx) => answered(tx, conversation.id, later), context);
 		assert.equal((await executeAgentWork({ action: "complete", request: `later-${index}`, status: "failed", message: `later ${index}` }, host(100 + index), context)).isError, undefined);
@@ -466,7 +469,11 @@ it("reads the exact final report in pages after acknowledgement and after the cl
 	const evicted = await inspect({ submissionId: id });
 	assert.deepEqual([evicted.answer, evicted.work?.state, evicted.work?.label, evicted.work?.finalReport?.status, evicted.work?.finalReport?.delivery], [stateNote, "closed", stateNoteLabel("closed", "done"), "done", "delivered"]);
 	const work = await requestWork({ harness, context }, STORAGE, conversation.id, { requestId: "task-a", submissionId: id, ownerId: "recipient-c" });
-	assert.equal(work?.work, "closed");
+	assert.deepEqual([work?.work, work?.label], ["closed", stateNoteLabel("closed", "done")], "the state note keeps its label after the closed item left");
+	assert.deepEqual(await receiptDependencyMarks({ harness, context }, STORAGE, [{ conversationId: conversation.id, submissionId: id, requestId: "task-a", ownerId: "recipient-c" }]), [{ sessionId: STORAGE, submissionId: id, requestId: "task-a", state: "state-note" }], "a late receipt of the evicted request still marks a state note, not an arrived result");
+	assert.equal((await harness.commit((tx) => retainedReportRequest(tx, "recipient-c", `work-final:${conversation.id}:later-0`), context))?.acknowledged, false);
+	assert.equal((await harness.snapshot(OpenWorkDoc, conversation.id, context))?.items.some((item) => item.requestId === "later-0"), false);
+	assert.deepEqual((await receiptDependencyMarks({ harness, context }, STORAGE, [{ conversationId: conversation.id, submissionId: laterIds[0], requestId: "later-0", ownerId: "recipient-c" }])).map((mark) => mark.state), ["state-note"], "an evicted request whose final report is still pending marks a state note");
 	assert.equal(await requestWork({ harness, context }, STORAGE, conversation.id, { requestId: "never-declared", submissionId: id, ownerId: "recipient-c" }), undefined);
 	await assert.rejects(inspect({ submissionId: id, finalReport: true, receiptCursor: "x" }), /finalReport and receiptCursor select different pages/u);
 	await assert.rejects(readInspection(harness, STORAGE, conversation, { view: "history", finalReport: true }, context), /finalReport selects only the result view/u);

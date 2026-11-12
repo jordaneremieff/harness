@@ -1718,7 +1718,12 @@ producer in another storage, an admitted labelled state-note receipt records
 `state-note`; an admitted ordinary result or explicit final report records
 `arrived`. The producer's delivery carries typed `dependencyMarks`, and the
 recipient retains them for its own open work. An `arrived` mark never becomes
-`state-note` again.
+`state-note` again. The producer classifies a receipt as a state note when its
+request has a retained work item or a retained final report row. A closed item
+that left the bounded work document therefore keeps its receipt a state note,
+in the receipt label, the delivery text and the mark, while the final report
+is still pending; the size of the work document never changes what a settled
+answer was.
 
 Without a matching admitted mark, that remote dependency remains `open` with
 `unavailable` and an exact inspection call, not a claimed pending outcome.
@@ -1771,7 +1776,8 @@ this declared-work closure.
 
 Sources: `open-work.ts` (`AgentWorkParams`, `declareOpenWork`,
 `continueWork`, `completeOpenWork`, `finalReport`, `OpenWorkDoc`,
-`openWorkStatus`, `receiptWork`, `closeOpenWork`), `durable-agents.ts`
+`openWorkStatus`, `requestWork`, `receiptDependencyMarks`, `closeOpenWork`),
+`durable-agents.ts`
 (`workTool`, `exposedControl`), `durable-observation.ts`
 (`readConversationStatus`), `durable-delivery.ts` (`receiptFollowText`,
 `receiptStateLine`, `finalReportLead`, `reportBody`), and

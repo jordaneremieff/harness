@@ -337,12 +337,6 @@ export async function requestHasOpenWork(reader: OpenWorkReader, conversationId:
 	return (await openWorkItems(reader, conversationId)).some((item) => item.requestId === requestId);
 }
 
-/** `work` of a settled input and its receipt label; undefined for a request without declared work. */
-export async function receiptWork(reader: OpenWorkReader, conversationId: ConversationId, requestId: string): Promise<{ work: "open" | "closed"; label: string } | undefined> {
-	const item = (await currentItems(reader, conversationId)).find((candidate) => candidate.requestId === requestId);
-	if (item === undefined) return undefined;
-	return item.close === undefined ? { work: "open", label: stateNoteLabel("open") } : { work: "closed", label: stateNoteLabel("closed", item.close.status) };
-}
 
 async function localInput(reader: OpenWorkReader, conversationId: ConversationId, reference: ResultReference): Promise<Extract<SubmissionRecord, { type: "input" }> | string> {
 	const record = await readSubmission(reader, reference.submissionId);
@@ -604,15 +598,13 @@ export async function closeOpenWork(tx: Tx, storageId: string, conversationId: C
 /**
  * Marks that the producer's host sends with a receipt delivery: a receipt of a request with declared work is
  * a state note, whether that work is open or closed; every other receipt is the result. Read in the
- * producer's storage when the delivery is sent.
+ * producer's storage when the delivery is sent, through `requestWork`, so a closed item that left the
+ * bounded work document still marks its receipt a state note.
  */
-export async function receiptDependencyMarks(reader: OpenWorkReader, storageId: string, receipts: readonly Pick<DeliveryReceipt, "conversationId" | "submissionId" | "requestId">[]): Promise<DependencyMark[]> {
-	const declared = new Map<ConversationId, OpenWorkItem[]>();
+export async function receiptDependencyMarks(reader: SnapshotReader, storageId: string, receipts: readonly Pick<DeliveryReceipt, "conversationId" | "submissionId" | "requestId" | "ownerId">[]): Promise<DependencyMark[]> {
 	const marks: DependencyMark[] = [];
 	for (const receipt of receipts.slice(0, DEPENDENCY_MARK_LIMIT)) {
-		const items = declared.get(receipt.conversationId) ?? await currentItems(reader, receipt.conversationId);
-		declared.set(receipt.conversationId, items);
-		const stateNote = items.some((item) => item.requestId === receipt.requestId);
+		const stateNote = await requestWork(reader, storageId, receipt.conversationId, { requestId: receipt.requestId, submissionId: receipt.submissionId, ownerId: receipt.ownerId }) !== undefined;
 		marks.push({ sessionId: canonicalIdentity(storageId, receipt.conversationId), submissionId: receipt.submissionId, requestId: receipt.requestId, state: stateNote ? "state-note" : "arrived" });
 	}
 	return marks;
