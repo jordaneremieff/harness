@@ -43,23 +43,30 @@ it("rejects a local protocol validation error without recovering the host", { ti
 		isIdle: () => true,
 		close: async () => {},
 	}), { metadata, idleMs: 0, announceReady: () => {} });
-	t.after(() => host.close());
-	const client = await connectHost(metadata, { retryAttempts: 0 });
-	t.after(() => client.close());
-	await assert.rejects(client.request("list", { limit: 5, cursor: undefined }), (error: unknown) => {
-		assert.ok(error instanceof HostError);
-		assert.equal(error.code, "invalid");
-		assert.match(error.message, /strict JSON value/u);
-		return true;
-	});
-	assert.equal(client.closed, false, "a local encoding error leaves the transport healthy");
-	assert.equal(requests, 0, "invalid parameters never reached the server");
-	assert.deepEqual(await client.request("list", { limit: 5 }), { requests: 1 });
+	try {
+		const client = await connectHost(metadata, { retryAttempts: 0 });
+		try {
+			await assert.rejects(client.request("list", { limit: 5, cursor: undefined }), (error: unknown) => {
+				assert.ok(error instanceof HostError);
+				assert.equal(error.code, "invalid");
+				assert.match(error.message, /strict JSON value/u);
+				return true;
+			});
+			assert.equal(client.closed, false, "a local encoding error leaves the transport healthy");
+			assert.equal(requests, 0, "invalid parameters never reached the server");
+			assert.deepEqual(await client.request("list", { limit: 5 }), { requests: 1 });
+		} finally {
+			await client.close();
+		}
+	} finally {
+		await host.close();
+	}
 });
 
 async function rejectingVersionHost(t: { after(fn: () => void | Promise<void>): void }, path: string, malformed = false) {
 	const metadata = fixtureMetadata(path);
 	const paths = hostPaths(metadata);
+	const writerId = randomUUID();
 	mkdirSync(paths.directory, { recursive: true, mode: 0o700 });
 	mkdirSync(dirname(paths.claim), { recursive: true, mode: 0o700 });
 	writeFileSync(paths.claim, JSON.stringify({ token: randomUUID(), pid: process.pid, host: hostname(), sessionId: metadata.storageId, cwd: path, createdAt: new Date().toISOString() }));
@@ -69,7 +76,7 @@ async function rejectingVersionHost(t: { after(fn: () => void | Promise<void>): 
 		serverId: paths.serverId, path: paths.socket,
 		request: async (_request, peerId) => {
 			peers.add(peerId);
-			if (malformed) return { format: "pi.agent.contract/1", release: "invalid" };
+			if (malformed) return { format: "pi.agent.host-hello/1", writerId, contract: { format: "pi.agent.contract/1", release: "invalid" } };
 			throw new Error("durable host is closed");
 		},
 		release: (peerId) => { peers.delete(peerId); released.resolve(); },
