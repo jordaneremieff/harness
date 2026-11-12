@@ -23,8 +23,8 @@ import { getCurrentSystemPrompt, type Message } from "@earendil-works/pi-ai";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai/providers/faux";
 import { createAgentContribution } from "./durable-agents.ts";
 import { HOST_CONTRACT, MANAGER_CONTRACT, CONTROL_BINDING_CONTRACT } from "./version-contract.ts";
-import { acquireHost, waitForHostRelease } from "./host-client.ts";
-import { runtimeFixture, trackHost, waitForReceipt } from "./durable-runtime-fixture.mts";
+import { acquireHost, waitForHostRelease, type HostConnection } from "./host-client.ts";
+import { runtimeFixture, trackHost } from "./durable-runtime-fixture.mts";
 import { AgentCatalog, hostMetadata } from "./catalog.ts";
 
 type RegisteredTool = { name: string; parameters: Schema; execute(id: string, input: Record<string, unknown>, signal: undefined, update: undefined, ctx: ExtensionContext): Promise<unknown> };
@@ -207,6 +207,24 @@ it("configure resolves a preset against its target and retains the snapshot acro
 	assert.equal(plain.after.thinkingLevel, "low");
 });
 
+/** Resolve when the host reports the native input as settled, observed through its commit notifications. */
+async function settledResult(host: HostConnection, submissionId: number): Promise<void> {
+	if (!host.subscribeChanges) throw new Error("host connection does not publish commit notifications");
+	const signal = AbortSignal.timeout(30000);
+	let wake = (): void => {};
+	const aborted = new Promise<never>((_resolve, reject) => signal.addEventListener("abort", () => reject(new Error(`no settled result for submission ${submissionId}`)), { once: true }));
+	aborted.catch(() => {});
+	const unsubscribe = await host.subscribeChanges(() => wake(), signal);
+	try {
+		for (;;) {
+			const changed = new Promise<void>((resolve) => { wake = resolve; });
+			const result = await host.request("inspect", { view: "result", submissionId }, { signal }) as { status: string };
+			if (result.status === "done" || result.status === "unanswered") return;
+			await Promise.race([changed, aborted]);
+		}
+	} finally { unsubscribe(); }
+}
+
 for (const method of ["resolve-agent", "place"] as const) it(`native ${method} replay retains its selection after a lost result, file edit, and target configure`, { timeout: 60000 }, async (t) => {
 	const f = runtimeFixture(t, { withAgentExtension: true });
 	const path = join(f.agentDir, "harness.json");
@@ -224,7 +242,8 @@ for (const method of ["resolve-agent", "place"] as const) it(`native ${method} r
 	assert.equal("selection" in record, false);
 	const target = await acquireHost(hostMetadata(record), { env: f.env("answer") }); trackHost(t, target.pid);
 	t.after(() => target.close());
-	await waitForReceipt(target, f.metadata.storageId, first.result.submissionId);
+	// The caller's host is live, so the delivery acknowledges the receipt at once; the settled result is the stable fact.
+	await settledResult(target, first.result.submissionId);
 	await target.request("acknowledge", { ownerId: f.metadata.storageId, submissionIds: [first.result.submissionId] });
 	writePreset("high", 3);
 	const configured = await target.request("configure", { thinkingLevel: "medium", requestId: "retune-target" }).catch((cause: unknown) => { throw new Error("Target configuration failed", { cause }); }) as { outcome: string };
