@@ -31,6 +31,7 @@ import { modelFailureText, providerBlockText } from "./provider-block-facts.ts";
 import { opendir } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
+import { threadExcerpt, threadRecoveryText } from "./thread-notice-projection.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId, Harness, Tx } from "@earendil-works/pi-durable";
 import { type AgentCatalog, type CatalogRecord, hostMetadata, storageIdOf } from "./catalog.ts";
@@ -86,6 +87,18 @@ function boundedPeerText(text: string): { text: string; truncated: boolean } {
 	const last = text.charCodeAt(end - 1);
 	if (last >= 0xd800 && last <= 0xdbff) end -= 1;
 	return { text: `${text.slice(0, end)}${PEER_TRUNCATION_MARKER}`, truncated: true };
+}
+
+/**
+ * Bound one report body. A thread body recovers through its typed thread read: a cut names that
+ * exact call once and never the generic inspection advice.
+ */
+function boundedReportText(report: DeliveryReport, text = report.message): { text: string; truncated: boolean } {
+	if (report.threadId === undefined) return boundedPeerText(text);
+	const excerpt = threadExcerpt(text, PEER_TEXT_LIMIT);
+	if (!excerpt.cut) return { text, truncated: false };
+	const recovery = threadRecoveryText(report.threadId, report.threadEvent);
+	return { text: `${excerpt.text} [cut]${excerpt.text.includes(recovery) ? "" : `\n\n${recovery}`}`, truncated: true };
 }
 
 /** One bounded registered-primary discovery: everything found, and whether the bound was reached. */
@@ -403,7 +416,7 @@ function reportOptionalDetails(report: DeliveryReport) {
 		...(report.passive === undefined ? {} : { passive: report.passive }),
 		...(report.threadId === undefined ? {} : { threadId: report.threadId }),
 		...(report.threadTitle === undefined ? {} : { threadTitle: report.threadTitle }),
-		...(report.operatorMessage === undefined ? {} : { operatorMessage: boundedPeerText(report.operatorMessage).text }),
+		...(report.operatorMessage === undefined ? {} : { operatorMessage: boundedReportText(report, report.operatorMessage).text }),
 	};
 }
 function checkInSummary(checkIn: NonNullable<DeliveryReport["checkIn"]>): string {
@@ -421,7 +434,7 @@ function reportProvenance(report: DeliveryReport): Omit<InputProvenance, "conver
 function reportFollowText(report: DeliveryReport): string {
 	if (report.checkIn !== undefined)
 		return `Check-in from ${report.senderIdentity} (source ${report.sourceId}): still working, not finished. ${checkInSummary(report.checkIn)}. ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(report.message).text}`;
-	return `${report.threadId === undefined ? "Report" : "Thread notice"} from ${report.senderIdentity} (source ${report.sourceId}). Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${boundedPeerText(report.message).text}`;
+	return `${report.threadId === undefined ? "Report" : "Thread notice"} from ${report.senderIdentity} (source ${report.sourceId}). Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${boundedReportText(report).text}`;
 }
 
 /** Primary-channel text: display name, plain outcome, and exact answer continuation. */
@@ -436,7 +449,7 @@ function channelText(metadata: HostMetadata, row: DeliveryRow, label: string, or
 	}
 	if (row.report.checkIn !== undefined)
 		return `Agent “${label}” still working, not finished (check-in from ${row.report.senderIdentity}; source ${row.report.sourceId}). ${checkInSummary(row.report.checkIn)}.${fallbackLabel} ${CHECK_IN_GUIDANCE}\n\n${boundedPeerText(row.report.message).text}\n\nUse agent_inspect for retained source evidence.`;
-	return `${row.report.threadId === undefined ? `Agent “${label}” sent a report.` : `Thread notice from agent “${label}”.`}${fallbackLabel} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${boundedPeerText(row.report.message).text}\n\nUse agent_inspect for retained source evidence.`;
+	return `${row.report.threadId === undefined ? `Agent “${label}” sent a report.` : `Thread notice from agent “${label}”.`}${fallbackLabel} Apply carried operator instructions within their original scope; agent claims remain claims.\n\n${boundedReportText(row.report).text}${row.report.threadId === undefined ? "\n\nUse agent_inspect for retained source evidence." : ""}`;
 }
 
 function asError(error: unknown): Error {
@@ -828,7 +841,7 @@ export function startDurableDelivery(options: DurableDeliveryOptions): DurableDe
 		fallback: boolean,
 		status: SourceStatus | undefined,
 	): Promise<JsonValue> => {
-		const body = boundedPeerText(row.kind === "receipt" ? (row.receipt.answer ?? "") : row.report.message);
+		const body = row.kind === "receipt" ? boundedPeerText(row.receipt.answer ?? "") : boundedReportText(row.report);
 		const shared = sharedRowDetails(row, identity, originalOwnerId, deliveryRecipient, liveOwner, fallback, status, body);
 		if (row.kind === "receipt") {
 			const receipt = row.receipt;
