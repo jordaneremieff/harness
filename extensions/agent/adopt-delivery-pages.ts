@@ -1,16 +1,18 @@
 /**
  * One-time manual transition of delivery reference pages that an earlier release wrote in version 1 format.
  * Run by hand: `node extensions/agent/adopt-delivery-pages.ts [--apply] [--storage <id>] [--agent-dir <dir>]`.
- * Each storage is read, and with `--apply` adopted, only while this process holds that storage's native writer
- * lease, so it never opens a storage beside its host. The default dry run changes no delivery data and prints
- * counts only. Pi's SQLite storage cannot open read-only: its open always runs the idempotent schema check in a
- * write transaction, so the dry run opens storages read-write under the lease as a host does.
+ * Each storage is classified, and with `--apply` adopted, only while this process holds that storage's native writer
+ * lease, so it never reads or writes beside a running host. Classification uses a read-only SQLite connection and
+ * writes nothing to the storage file or its WAL: Pi's own storage open runs a schema transaction and applies pending
+ * schema migrations, so only `--apply` uses it, and only for a current-schema `version 1` storage.
  */
 import { lstatSync, mkdirSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import { createRegistry, Harness, type Cursor, type Storage } from "@earendil-works/pi-durable";
+import { openNodeSqliteDatabase } from "@earendil-works/chord/sqlite/node";
+import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { CURRENT_SQLITE_SCHEMA_VERSION } from "@earendil-works/pi-durable/storage/sqlite";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AgentCatalog, type CatalogRecord } from "./catalog.ts";
@@ -18,62 +20,73 @@ import { adoptDeliveryPages } from "./delivery-store.ts";
 import { hostPaths } from "./host-protocol.ts";
 import { tryNativeWriterLease, type NativeWriterLease } from "./native-lease.ts";
 
-export const STORAGE_STATES = ["version 2 only", "no pages", "version 1", "version 1 with active task", "writer busy", "unreadable"] as const;
+export const STORAGE_STATES = ["version 2 only", "no pages", "version 1", "version 1 with active task", "older storage schema", "writer busy", "unreadable"] as const;
 export type StorageState = (typeof STORAGE_STATES)[number];
-const PAGE_KIND = "agent.delivery-page";
 const SETTLED: ReadonlySet<StorageState> = new Set(["version 2 only", "no pages"]);
-const SESSION = { kind: "session" } as const;
 const STORAGE_FILE = /^([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.sqlite$/u;
+/**
+ * The SQLite schema version whose table layout the queries below read (Durable 1.5.2 opens schema 2). Another
+ * installed schema version makes every storage `unreadable` until these queries are checked against it.
+ */
+const LAYOUT_SCHEMA_VERSION = 2;
 
-type StorageReader = Pick<Storage, "scanDocuments" | "document" | "scanTasks">;
+type Classification = { state: StorageState; schema?: number };
 
-/** Page versions and live version 1 Reporter tasks of one storage; reads only. */
-async function pageState(storage: StorageReader, context: Context): Promise<StorageState> {
-	let version1 = 0, version2 = 0;
-	let cursor: Cursor | undefined;
-	do {
-		const page = await storage.scanDocuments({ scope: SESSION, at: "current", kind: PAGE_KIND }, 256, cursor, context);
-		for (const record of page.items) {
-			if ((await storage.document(record.id, "current", context))?.version === 1) version1 += 1;
-			else version2 += 1;
-		}
-		cursor = page.next ?? undefined;
-	} while (cursor !== undefined);
-	if (version1 === 0) return version2 === 0 ? "no pages" : "version 2 only";
-	cursor = undefined;
-	do {
-		const page = await storage.scanTasks({ kind: "agent.reporter" }, 256, cursor, context);
-		if (page.items.some((task) => task.version === 1 && task.state.status !== "terminal")) return "version 1 with active task";
-		cursor = page.next ?? undefined;
-	} while (cursor !== undefined);
-	return "version 1";
+/**
+ * Without a WAL file the main file is complete, and `immutable=1` opens it without creating `-wal` or `-shm`. A
+ * retained WAL can hold committed pages, so a plain read-only connection reads it; it never writes the WAL.
+ */
+function readOnlyLocation(path: string): string {
+	return lstatSync(`${path}-wal`, { throwIfNoEntry: false }) === undefined ? `${pathToFileURL(path).href}?immutable=1` : path;
 }
 
-/** Classify one storage under its writer lease; with `apply`, adopt a version 1 storage in one commit. */
-async function visitStorage(record: CatalogRecord, apply: boolean, context: Context): Promise<{ state: StorageState; adopted?: number }> {
+type ReadExecutor = Pick<Awaited<ReturnType<typeof openNodeSqliteDatabase>>, "get" | "all">;
+
+/** The state that the SQLite schema version alone decides, if any. */
+function schemaState(schema: number | undefined): StorageState | undefined {
+	if (typeof schema !== "number") return "unreadable";
+	if (schema < CURRENT_SQLITE_SCHEMA_VERSION) return "older storage schema";
+	return schema === CURRENT_SQLITE_SCHEMA_VERSION && schema === LAYOUT_SCHEMA_VERSION ? undefined : "unreadable";
+}
+
+async function classifySnapshot(tx: ReadExecutor): Promise<Classification> {
+	const schema = (await tx.get<{ version: number }>("SELECT version FROM durable_schema WHERE singleton = 1"))?.version;
+	const decided = schemaState(schema);
+	if (decided !== undefined) return { state: decided, ...(schema === undefined ? {} : { schema }) };
+	const pages = await tx.all<{ version: number; count: number }>(`SELECT r.version AS version, count(*) AS count FROM documents d
+		JOIN document_revisions r ON r.document_id = d.id AND r.seq = (SELECT max(seq) FROM document_revisions WHERE document_id = d.id)
+		WHERE d.kind = ? AND d.scope_kind = 'session' AND d.retired_at IS NULL GROUP BY r.version`, JSON.stringify("agent.delivery-page"));
+	if (!pages.some((row) => row.version === 1)) return { state: pages.length === 0 ? "no pages" : "version 2 only", schema };
+	const active = await tx.get<{ count: number }>("SELECT count(*) AS count FROM tasks WHERE kind = ? AND status <> 'terminal' AND json_extract(record, '$.version') = 1", JSON.stringify("agent.reporter"));
+	return { state: (active?.count ?? 0) > 0 ? "version 1 with active task" : "version 1", schema };
+}
+
+/** Page versions and live version 1 Reporter tasks from one read snapshot; never writes. */
+export async function classifyStorage(path: string): Promise<Classification> {
+	let database: Awaited<ReturnType<typeof openNodeSqliteDatabase>> | undefined;
+	try {
+		database = await openNodeSqliteDatabase(readOnlyLocation(path), { mode: "read-only" });
+		return await database.transaction(classifySnapshot);
+	} catch { return { state: "unreadable" }; }
+	finally { await database?.close().catch(() => undefined); }
+}
+
+/** Classify one storage under its writer lease; with `apply`, adopt a current-schema version 1 storage in one commit. */
+async function visitStorage(record: CatalogRecord, apply: boolean, context: Context): Promise<Classification & { adopted?: number }> {
 	const claim = hostPaths(record).claim;
 	mkdirSync(dirname(claim), { recursive: true, mode: 0o700 });
 	const attempt = tryNativeWriterLease(claim);
 	if (attempt.kind === "busy") return { state: "writer busy" };
 	const lease: NativeWriterLease = attempt.lease;
-	let storage: Storage | undefined;
 	try {
-		let state: StorageState;
-		try {
-			storage = await openNodeSqliteStorage(record.storagePath);
-			state = await pageState(storage, context);
-		} catch { return { state: "unreadable" }; }
-		if (!apply || state !== "version 1") return { state };
+		const classified = await classifyStorage(record.storagePath);
+		if (!apply || classified.state !== "version 1") return classified;
+		const storage = await openNodeSqliteStorage(record.storagePath);
 		// The adoption starts no task and calls no model; Harness requires both options to open.
-		const opened = storage;
-		const harness = await Harness.open(opened, { models: () => { throw new Error("Delivery page adoption calls no model"); }, registry: createRegistry() }, context);
-		storage = undefined;
-		try { return { state, adopted: (await adoptDeliveryPages(harness, opened, context)).adopted }; }
+		const harness = await Harness.open(storage, { models: () => { throw new Error("Delivery page adoption calls no model"); }, registry: createRegistry() }, context).catch(async (error: unknown) => { await storage.close(context).catch(() => undefined); throw error; });
+		try { return { ...classified, adopted: (await adoptDeliveryPages(harness, storage, context)).adopted }; }
 		finally { await harness.close(context); }
-	} finally {
-		await storage?.close(context).catch(() => undefined);
-		lease.release();
-	}
+	} finally { lease.release(); }
 }
 
 function catalogRecords(sessionsRoot: string, only: string | undefined): CatalogRecord[] {
@@ -91,21 +104,29 @@ function sessionsRootOf(options: AdoptionOptions): string {
 	return resolve(env.PI_AGENT_SESSIONS_DIR ?? join(env.PI_AGENT_DIR ?? getAgentDir(), "agent-sessions"));
 }
 
+type Counts = Record<StorageState | "adopted storages" | "adopted pages", number>;
+function tally(counts: Counts, schemas: Map<number, number>, result: Classification & { adopted?: number }): void {
+	counts[result.state] += 1;
+	if (result.schema !== undefined) schemas.set(result.schema, (schemas.get(result.schema) ?? 0) + 1);
+	if (result.adopted !== undefined) { counts["adopted storages"] += 1; counts["adopted pages"] += result.adopted; }
+}
+
 /** Counts by storage state; with `apply`, the storages and pages adopted. Prints no message content. */
 export async function runAdoption(options: AdoptionOptions): Promise<Record<StorageState | "adopted storages" | "adopted pages", number>> {
 	const context = options.context ?? BACKGROUND_CONTEXT;
 	const sessionsRoot = sessionsRootOf(options);
 	const counts = Object.fromEntries([...STORAGE_STATES, "adopted storages", "adopted pages"].map((key) => [key, 0])) as Record<StorageState | "adopted storages" | "adopted pages", number>;
 	const write = options.write ?? ((line: string) => process.stdout.write(`${line}\n`));
+	const schemas = new Map<number, number>();
 	for (const record of catalogRecords(sessionsRoot, options.storage)) {
 		if (lstatSync(record.storagePath, { throwIfNoEntry: false }) === undefined) continue;
 		const result = await visitStorage(record, options.apply, context);
-		counts[result.state] += 1;
-		if (result.adopted !== undefined) { counts["adopted storages"] += 1; counts["adopted pages"] += result.adopted; }
-		else if (options.apply && !SETTLED.has(result.state)) write(`skipped ${record.storageId}: ${result.state}`);
+		tally(counts, schemas, result);
+		if (options.apply && result.adopted === undefined && !SETTLED.has(result.state)) write(`skipped ${record.storageId}: ${result.state}`);
 	}
 	write(`${options.apply ? "applied" : "dry run"} in ${sessionsRoot}`);
 	for (const [state, count] of Object.entries(counts)) if (options.apply || !state.startsWith("adopted")) write(`${state}: ${count}`);
+	for (const [schema, count] of [...schemas].sort(([a], [b]) => a - b)) write(`storage schema ${schema}: ${count}`);
 	return counts;
 }
 

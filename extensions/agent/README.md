@@ -3487,16 +3487,28 @@ use: `<dir>/agent-sessions` with `--agent-dir`, otherwise `PI_AGENT_SESSIONS_DIR
 otherwise `agent-sessions` under `PI_AGENT_DIR` or Pi's agent directory.
 `--storage` selects one catalogued storage. For each storage it takes the
 host's native writer lease (creating the lease file as a host does), so it never
-opens a storage beside a running host. It prints counts only, never message
-content: `version 2 only`, `no pages`, `version 1`, `version 1 with active task`
-(a live version 1 Reporter task), `writer busy` and `unreadable`.
+reads or writes a storage beside a running host. It prints counts only, never
+message content: `version 2 only`, `no pages`, `version 1`, `version 1 with
+active task` (a live version 1 Reporter task), `older storage schema`, `writer
+busy` and `unreadable`, then one `storage schema <n>: <count>` line for each
+SQLite schema version it read.
 
-The default is a dry run. It changes no delivery data. Pi's SQLite storage has
-no read-only open: each open runs Pi's idempotent schema check in a write
-transaction, as a host open does. `--apply` adopts each `version 1` storage and
-prints `skipped <id>: <state>` for each busy, active-task or unreadable one; it
-never changes a skipped storage. Rerun it after the host ends or the task
-settles.
+Every run classifies each storage through a read-only SQLite connection that
+writes nothing to the storage file or its WAL. Without a WAL file it opens the
+file with `immutable=1`, which creates no `-wal` or `-shm` file; a retained WAL
+is read, not written. The queries read Durable's SQLite table layout of schema
+version 2, the schema of the installed Durable release; under another installed
+schema version every storage reads `unreadable` until the queries are checked.
+A storage with an older schema is `older storage schema`: Pi's storage open
+applies its schema migration, so the command never opens it. That storage waits
+for the operator's schema migration decision, which a normal host open carries
+out; run the command again afterwards.
+
+The default is a dry run. `--apply` opens through Pi's storage only a storage
+that the read-only pass classified as `version 1` at the current schema, still
+under the same lease, and adopts it. It prints `skipped <id>: <state>` for each
+active-task, older-schema, busy or unreadable storage, and never opens or
+changes one. Rerun it after the host ends or the task settles.
 
 Adoption runs `adoptDeliveryPages` in `delivery-store.ts` in one commit per
 storage. It enumerates the current delivery lists once, walks each list from its
