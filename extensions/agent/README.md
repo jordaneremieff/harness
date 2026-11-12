@@ -1748,6 +1748,8 @@ further model request when that call is the only call of its tool batch, so a
 turn that needs nothing from the operator ends without a chat line. A queued
 steer or follow-up still starts the next request. A repeated `continue`
 replaces the note. Without a UI the tool stores the note and ends the turn.
+A client of Pi's RPC mode receives the widget as two plain lines (the title
+line, then the note with collapsed white space) and lays them out itself.
 
 `complete` clears the note and the widget and does not end the turn. The
 session calls it when the state that the note describes has ended, for example
