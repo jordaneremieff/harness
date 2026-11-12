@@ -5,6 +5,7 @@ import { basename, dirname, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { bindInstallationPackages } from "./installation-binding.ts";
 import type { HostMetadata } from "./host-protocol.ts";
+import { tryNativeWriterLease } from "./native-lease.ts";
 
 interface Input { sourceRoot: string; syntheticRoot: string; metadata: HostMetadata }
 interface Command { id: number; method: string; params?: unknown }
@@ -41,6 +42,42 @@ runner.stderr.on("data", (chunk: Buffer) => { output = (output + chunk.toString(
 runner.on("error", (error) => events.push({ error: String(error) }));
 runner.on("exit", (code, signal) => events.push({ exited: true, code, signal }));
 let client: Awaited<ReturnType<typeof connectHost>> | undefined;
+
+async function waitForReceipt(connection: NonNullable<typeof client>, raw: unknown) {
+	assert.ok(connection.subscribeChanges);
+	const params = raw as { ownerId: string; submissionId: number };
+	assert.equal(typeof params.ownerId, "string");
+	assert.ok(Number.isSafeInteger(params.submissionId));
+	const changes = eventLog<void>();
+	const signal = AbortSignal.timeout(30000);
+	const deadline = performance.now() + 30000;
+	const unsubscribe = await connection.subscribeChanges(() => changes.push(undefined), signal);
+	try {
+		for (;;) {
+			signal.throwIfAborted();
+			const next = changes.length + 1;
+			const page = await connection.request("receipts", { ownerId: params.ownerId }, { signal }) as { receipts: { submissionId: number }[] };
+			const receipt = page.receipts.find((row) => row.submissionId === params.submissionId);
+			if (receipt) return receipt;
+			await changes.waitForCount(next, Math.max(1, deadline - performance.now()));
+		}
+	} finally { unsubscribe(); }
+}
+
+async function drain(connection: NonNullable<typeof client>) {
+	assert.ok(connection.subscribeChanges);
+	const changes = eventLog<void>();
+	const unsubscribe = await connection.subscribeChanges(() => changes.push(undefined));
+	try {
+		for (;;) {
+			const next = changes.length + 1;
+			const state = await connection.request("recovery-state") as { workPending: boolean; deliveriesPending: boolean; deliveriesActive: boolean };
+			if (!state.workPending && !state.deliveriesPending && !state.deliveriesActive) return state;
+			await changes.waitForCount(next, 30000);
+		}
+	} finally { unsubscribe(); }
+}
+
 async function stop() {
 	await client?.close().catch(() => {});
 	if (runner.exitCode === null && runner.signalCode === null) {
@@ -62,18 +99,10 @@ try {
 			try {
 				assert.ok(client);
 				let result: unknown;
-				if (command.method === "drain") {
-					assert.ok(client.subscribeChanges);
-					const changes = eventLog<number>();
-					const unsubscribe = await client.subscribeChanges(() => changes.push(changes.length));
-					try {
-						for (;;) {
-							const next = changes.length + 1;
-							const state = await client.request("recovery-state") as { workPending: boolean; deliveriesPending: boolean; deliveriesActive: boolean };
-							if (!state.workPending && !state.deliveriesPending && !state.deliveriesActive) { result = state; break; }
-							await changes.waitForCount(next, 30000);
-						}
-					} finally { unsubscribe(); }
+				if (command.method === "wait-receipt") {
+					result = await waitForReceipt(client, command.params);
+				} else if (command.method === "drain") {
+					result = await drain(client);
 				} else if (command.method === "close-host") {
 					const state = await client.request("recovery-state");
 					assert.deepEqual(state, { workPending: false, deliveriesPending: false, deliveriesActive: false }, "Close requires drained work and deliveries");
@@ -83,7 +112,9 @@ try {
 					await waitForProcessExit(runner);
 					assert.equal(runner.exitCode, 0, output);
 					assert.equal(runner.signalCode, null);
-					assert.equal(existsSync(hostPaths(input.metadata).claim), false);
+					const writer = tryNativeWriterLease(hostPaths(input.metadata).claim);
+					assert.equal(writer.kind, "held", "The old writer released its lease before the new writer starts");
+					if (writer.kind === "held") writer.lease.release();
 					await client.close();
 					result = { pid: runner.pid, exited: true, claimReleased: true };
 				} else result = await client.request(command.method, command.params);

@@ -81,7 +81,8 @@ it("drains old native tool work before a fresh runtime migrates retained results
 		const child = spawn(process.execPath, [fileURLToPath(new URL("./host-upgrade-client-fixture.mts", import.meta.url)), JSON.stringify({
 			sourceRoot: source.root, syntheticRoot: realpathSync(f.root), metadata: { ...f.metadata, packageDir: source.packageDir },
 		})], { cwd: f.cwd, env: {
-			PATH: process.env.PATH, HOME: f.agentDir, PI_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root,
+			PATH: process.env.PATH, HOME: f.agentDir, PI_AGENT_DIR: f.agentDir, PI_CODING_AGENT_DIR: f.agentDir, PI_AGENT_SESSIONS_DIR: f.root,
+			PI_PILLARS_DIR: process.env.PI_PILLARS_DIR, PI_MEMORY_DIR: process.env.PI_MEMORY_DIR,
 			PI_PACKAGE_DIR: source.packageDir, PI_AGENT_IDLE_MINUTES: "0", DURABLE_TEST_DIR: f.testDir,
 			DURABLE_TEST_CHILD_CWD: f.childCwd, DURABLE_TEST_NOTIFY: barrier.notifyPath,
 		}, stdio: ["ignore", "pipe", "pipe", "ipc"] });
@@ -113,8 +114,7 @@ it("drains old native tool work before a fresh runtime migrates retained results
 		clients.push(client); return client;
 	}
 	async function complete(client: Awaited<ReturnType<typeof start>>, submissionId: number): Promise<Receipt> {
-		const response = await client.request("receipts", { ownerId: f.ownerId, wait: true }) as { receipts: Receipt[] };
-		const receipt = response.receipts.find((row) => row.submissionId === submissionId);
+		const receipt = await client.request("wait-receipt", { ownerId: f.ownerId, submissionId }) as Receipt;
 		assert.ok(receipt); assert.equal(receipt.status, "done");
 		await client.request("acknowledge", { ownerId: f.ownerId, submissionIds: [submissionId] });
 		assert.deepEqual(await client.request("drain"), { workPending: false, deliveriesPending: false, deliveriesActive: false });
