@@ -137,6 +137,8 @@ export function resultByteLimit(maxOutputBytes: number): number {
 
 /** Default retained bytes from one Rex CLI process when the configured value is absent. */
 export const DEFAULT_MAX_OUTPUT_BYTES = 65536;
+/** Shortest interval between two output snapshots of one text wait. */
+const TEXT_REFRESH_MIN_MS = 250;
 
 /**
  * A bounded slice of a terminal's screen and scrollback: bytes `start` to `end` of `total`.
@@ -843,8 +845,11 @@ export class RexCore {
 			observation.snapshots++;
 			observation.matched = !observer.failure && conditionMatches(request, observation.snapshot);
 			if (observation.matched || performance.now() >= deadline || observer.ended) break;
-			const refreshMs = request.condition === "text"
-				? Math.max(250, Math.ceil((deadline - performance.now()) / (maxSnapshots - observation.snapshots)))
+			const remaining = maxSnapshots - observation.snapshots;
+			// Early refreshes double from the minimum so quick readiness shows quickly; the even
+			// spread of the remaining snapshots caps them, so the last one reaches the deadline.
+			const refreshMs = request.condition === "text" && remaining > 0
+				? Math.max(TEXT_REFRESH_MIN_MS, Math.ceil(Math.min((deadline - performance.now()) / remaining, TEXT_REFRESH_MIN_MS * 2 ** Math.min(observation.snapshots - 1, 16))))
 				: undefined;
 			await observer.wait(seen, context.signal, refreshMs);
 		}

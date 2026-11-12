@@ -234,9 +234,11 @@ end without the condition is `observer_ended`. An evidence cap is `snapshot_limi
 
 Text and status observations resume on relevant events, event-process exit, cancellation
 or the deadline. Text observations also refresh the current output snapshot on a bounded
-cadence because Rex publishes no output-change event. The interval is at least 250 ms
-and lengthens when needed to spread the remaining snapshots across the remaining work
-window. `maxSnapshots` still bounds the total. Status observations remain event-driven.
+cadence because Rex publishes no output-change event. The interval starts at 250 ms and
+doubles after each snapshot, so quick readiness shows quickly. The even spread of the
+remaining snapshots across the remaining work window caps it, so the last snapshot
+reaches the deadline. `maxSnapshots` still bounds the total; after the last allowed
+snapshot no refresh runs. Status observations remain event-driven.
 The event source remains available through the work window; the same operation allowance
 includes its teardown. A budget-caused stop retains timeout or cancelled, not an event-source failure.
 A failed or interrupted capture, or an unverified end, does not match text. A valid EOF
