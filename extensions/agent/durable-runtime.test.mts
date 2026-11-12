@@ -540,13 +540,17 @@ it("marks recovery due before admission and reports the recovery state", { timeo
 it("publishes a bounded catalog view and clears recovery due on a clean close", { timeout: 120000 }, async (t) => {
 	const f = runtimeFixture(t);
 	const catalog = new AgentCatalog(dirname(dirname(f.storagePath)));
-	const primary = await acquireHost(f.metadata, { env: f.env("answer") });
+	const markers = markerFixture(t, f.testDir);
+	const release = markers.hold("answered");
+	const primary = await acquireHost(f.metadata, { env: { ...f.env("answer"), DURABLE_TEST_NOTIFY: markers.notifyPath } });
 	const pid = primary.pid;
 	try {
 		const submitted = await primary.request("submit", { message: "VIEW_SOURCE", requestId: "view-source", ownerId: f.ownerId, origin: "operator" }) as SubmitResult;
+		await markers.marker("answered");
+		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "the admitted request marked recovery due");
+		release();
 		const receipt = await waitForReceipt(primary, f.ownerId, submitted.submissionId);
 		assert.equal(receipt.status, "done");
-		assert.equal(catalog.read(f.metadata.storageId).recoveryDue, true, "the admitted request marked recovery due");
 		assert.ok(primary.subscribeChanges);
 		const observations = eventLog<void>();
 		const stop = await primary.subscribeChanges(() => observations.push(undefined));
@@ -559,6 +563,7 @@ it("publishes a bounded catalog view and clears recovery due on a clean close", 
 			}
 		} finally { stop(); }
 	} finally {
+		release();
 		await primary.close().catch(() => {});
 	}
 	// Clean close still flushes the final view after delivery observation completes.
