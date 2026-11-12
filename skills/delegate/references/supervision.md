@@ -3,8 +3,8 @@
 Supervise from delivered events: results, check-ins, thread notices, and
 operator input. Never poll, sleep, or loop on status or inspection, and never
 hold a run open for agent output. Continue your own part of the work while
-agents run; when none remains, end the run with a state note that names the
-open result references.
+agents run; when none remains, declare the open result references with
+`agent_work` `continue` and end the run with a state note.
 
 ## Contents
 
@@ -34,15 +34,19 @@ before you rely on dependent work.
 
 ## State notes
 
-An agent that sent work and has none left ends its run with a state note. The
-note says in its first words that it is not the result, and it names the open
-work. Read it as open work, not as completion:
+An agent that sent work and has none left declares the open work with
+`agent_work` `continue` and ends its run with a state note. The note says in
+its first words that it is not the result, and it names the open work. Read
+it as open work, not as completion:
 
 - Do not accept, integrate, or re-dispatch on a state note.
 - Read the open work in `agent_status` with the agent's `sessionId` when you
-  need its current state. Do not poll it.
-- The final result arrives as a report whose first line says that it is the
-  final result and names the request. Act on that.
+  need its current state: each open item, its note, and its dependencies. Do
+  not poll it.
+- The final report arrives when the agent calls `agent_work` `complete`. It
+  names the request and the status, `done` or `failed`. Act on that.
+- Declared work that never completes stays visible in the status. Steer the
+  agent to complete it or to name the blocker.
 - An answer that is neither a result nor a marked state note falls under "The
   displaced-answer pitfall".
 
@@ -59,6 +63,11 @@ submissions. Common causes:
   command.
 - **New work behind the current step:** a followUp is placed at the agent's
   next tool boundary; the agent finishes its current step first.
+- **Unplaced input:** the send receipt returns `placement: "unplaced"`, or
+  the status shows `unplaced: n` and `oldest: <age>`. No boundary exists
+  inside one running tool call, a provider retry, or a compaction. After 5
+  minutes one notice names the recipient's current step. Abort a hung tool;
+  otherwise let the step end. Do not send the input again.
 
 ## The displaced-answer pitfall
 

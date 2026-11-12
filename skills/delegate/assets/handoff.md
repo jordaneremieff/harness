@@ -13,7 +13,7 @@ The rules the receiver must keep: roster, boundaries, prohibitions.
 What is true now, each fact with the path, command output, or source checked.
 
 ## Owned agents <!-- required -->
-The live agents this session owns, with the exact result references still open.
+The live agents this session owns, with the exact result references still open and each declared open work item with its request.
 
 ## Unread inputs <!-- required -->
 Queued or expected inputs the receiver must handle.

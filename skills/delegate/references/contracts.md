@@ -65,9 +65,9 @@ directory). When a structural check helps, check the filled copy with
 - **Lead-only slots:** division of work (the parts you can see and any
   suggested helpers; the lead can do the work itself, revise the split, or use
   helpers selectively), result references (keep exact references for delegated
-  parts and name the open ones in each state note; hold no run open for
-  them), and composed answer (one answer for the whole result, gaps named;
-  after a state note it goes to the reply route as a final report).
+  parts and declare the open ones with `agent_work` `continue`; hold no run
+  open for them), and composed answer (one answer for the whole result, gaps
+  named; declared work ends with `agent_work` `complete`).
 - **Review-only slots:** the claim under review, the evidence each verdict must
   reach, and independence. Challenge contracts, omitted cases and evidence from
   defining sources rather than adopt the author's conclusion. Repeating the
@@ -97,20 +97,22 @@ discovery that changes the plan.
 | Next act at a check-in | `steer` | One concrete act, its completion condition, and the end condition if it changed |
 | New task to a reused agent | `followUp` | A sufficient task message; a busy agent gets it at its next tool boundary and may cover it in one answer with its current work |
 | Notice without an answer | `report` | The fact, its source, and whether any action is expected |
-| Final result after a state note | `report` to the request's reply recipient | First line: that it is the final result, and the request it answers; then the result or the exact blocker |
 | Operator decision relay | `steer` or thread post with `kind: "carried-authority"` | The verbatim words, source, and scope |
+
+The receiver reads each input by its class. A `steer` corrects the current
+work: apply it now. A `followUp` and operator input are new work: finish the
+current step, then do them in the same run. A `report`, a result, a check-in,
+and a thread notice are events: read them and continue. Send a busy agent a
+`steer` only when it must change its current work.
 
 A terminal answer from a contributor carries the result or the exact blocker.
 One case differs: a run that ends while work the contributor sent is open.
-That answer is a state note. Its first words say that it is a state note and
-not the result; it names the open work by exact result references and what the
-contributor does when each arrives. A state note is not a result. The final
-result then goes to the request's reply recipient with `agent_send`
-`mode: "report"`.
-
-An input reaches a running agent at its next tool boundary. Send a busy agent
-a `steer` only when it must change its current work; a `report` or `followUp`
-joins the work it already has.
+The contributor declares that work with `agent_work` `continue` and ends the
+run with a state note. Its first words say that it is a state note and not the
+result; it names the open work and what the contributor does when each result
+arrives. A state note is not a result. `agent_work` `complete`, with `status`
+`done` or `failed` and the result or exact blocker as `message`, sends the
+final report to the reply recipient of the original request.
 
 ## Check-in intervals
 
@@ -125,5 +127,5 @@ model turn.
   silent stall would cost more than the watchdog turns.
 
 A state note from the contributor does not end the task for the owner: the
-work is open until the final result arrives. Read the open work in
+work is open until the final report arrives. Read the open work in
 `agent_status`; do not poll.

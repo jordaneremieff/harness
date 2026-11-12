@@ -32,9 +32,9 @@ answers win over this table.
 |---|---|---|---|---|
 | Give an agent a task | `agent_spawn` with prompt, or `agent_send` | Answer-bearing calls return `result: { sessionId, submissionId, requestId? }`; keep it | Admission is not settlement; a receipt is not acceptance | `#controls` |
 | Spawn to host a thread | `agent_spawn` without prompt | Creation-only spawn returns no result reference; send the task after the thread exists | Do not spawn an agent only to hold a thread | `#peer-threads` |
-| New work for a busy Durable agent | `agent_send` `mode: "followUp"` | Placed at the agent's next tool boundary; it joins the current work | It may share one answer with the current work | `#controls` |
-| Interim notice to an owner | `agent_send` `mode: "report"` | No answer route and no check-in | An interim notice is not the final result; its first line says which it is | `#recovery-and-delivery` |
-| Final result after a state note | `agent_send` `mode: "report"` to the request's reply recipient | The first line says that it is the final result and names the request | A state note is not a result | `#recovery-and-delivery` |
+| New work for a busy Durable agent | `agent_send` `mode: "followUp"` | Placed at the agent's next tool boundary as new work for the same run | It may share one answer with the current work; the answer names each request it covers | `#controls` |
+| Interim notice to an owner | `agent_send` `mode: "report"` | Placed at the owner's next tool boundary as an event; no answer route and no check-in | A report does not complete declared work; `agent_work` `complete` does | `#recovery-and-delivery` |
+| Know where a sent input is | the send receipt, then `agent_status` with `sessionId` | The receipt returns `placement`: `"placed"` or `"unplaced"`; status shows `unplaced: n` and `oldest: <age>` | One notice arrives after 5 minutes unplaced, with the recipient's current step; do not send the input again | `#controls` |
 | Input at a time | `agent_send` with `deliverAt` | Durable timer; cancel with `agent_abort` `timerId` | Not a wait loop; the storage host must run at the deadline | `#controls` |
 
 ## Receive results
@@ -42,9 +42,10 @@ answers win over this table.
 | Moment | Control | Decision | Pitfall | Anchor |
 |---|---|---|---|---|
 | Work is sent and other work remains for you | none | Do your own part; each result, report, or message arrives as an event | No call waits for a result; do not poll status or inspect in a loop | `#recovery-and-delivery` |
-| Work is sent and nothing remains for you | none | End the run with a short state note: the open result references, and what you do when each arrives; an arriving result starts your next run | Do not hold the run open for agent output | `#recovery-and-delivery` |
+| Work is sent and nothing remains for you | `agent_work` `continue`, then a state note | Declare the request, the exact result references (at most 16), and a note; end the run with a short state note; an arriving result starts your next run | The declaration is not the answer; do not hold the run open for agent output | `#recovery-and-delivery` |
+| Declared work is done or failed | `agent_work` `complete` with `status` and `message` | Sends the final report to the reply recipient of the original request | It is the only act that completes declared work; arrived results and a settled input do not | `#recovery-and-delivery` |
 | A command can take more than about two minutes | a background job (`bash` with `background`) | Its completion arrives as an event; an input reaches you at your next tool boundary | A chain of long foreground calls keeps every sender out for its whole length | `#controls` |
-| A contributor ends a run with a state note | `agent_status` with `sessionId` | The note means open work, not completion; read the open work there | Do not poll; the final result arrives as a report | `#controls` |
+| A contributor ends a run with a state note | `agent_status` with `sessionId` | The note means open work, not completion; read each open item and its dependencies there | Do not poll; the final report arrives when the contributor completes the work | `#controls` |
 | A long answer is cut | `agent_inspect` `view: "result"` with the `submissionId` | Read the complete answer from the retained result | A truncated answer is not a failed one | `#live-conversation-and-history` |
 
 ## Supervise and correct

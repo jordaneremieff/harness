@@ -15,7 +15,7 @@ description: >
   evidence question (dig), orientation only (prime), Pi session audits
   (audit), harness surface changes (harness), or a small task the session can
   finish directly.
-compatibility: Requires Pi with the harness agent extension (spawn, send, steer, status, inspect, collaborate, intent, profile, reset) and codemode. Points to sibling sources extensions/agent/README.md and skills/dig/SKILL.md. Uses the operator's presets and delegation preferences; no fixed model or provider roster.
+compatibility: Requires Pi with the harness agent extension (spawn, send, steer, status, inspect, collaborate, intent, profile, reset, work) and codemode. Points to sibling sources extensions/agent/README.md and skills/dig/SKILL.md. Uses the operator's presets and delegation preferences; no fixed model or provider roster.
 ---
 
 # Delegate
@@ -252,24 +252,36 @@ Results, reports, and check-ins arrive as events. Do not hold a run open for
 agent output. No call waits for a result; do not poll status, sleep, or repeat
 inspections as a wait. After you send work:
 
-- **Do the work that remains for you.** When none remains, end the run with a
-  short state note: the open work by its exact result references, and what you
-  do when each one arrives. A result, a report, or a message starts your next
-  run.
+- **Do the work that remains for you.** When none remains, declare the open
+  work with `agent_work` `continue`: the request, the exact result references,
+  and a note. Then end the run with a short state note: what is open, and what
+  you do when each result arrives. A result, a report, or a message starts
+  your next run.
 - **Stay reachable.** An input reaches a running agent at its next tool
   boundary, the end of its current round of tool calls. The reach of the
   operator and of every other agent is therefore one tool call of yours. Run a
   command that can take more than about two minutes as a background job
   (`bash` with `background`); its completion arrives as an event. Do not chain
   long foreground calls.
+- **Read each input by its class.** A steer corrects the current work: apply
+  it now. A followUp and operator input are new work: finish the current step,
+  then do them in the same run. A report, a result, a check-in, and a thread
+  notice are events: read them and continue. An answer names each request that
+  it covers.
 - **Keep a state note apart from a result.** Open the note with words that say
-  it is a state note and not the result. When the work is complete, send the
-  final result of the request to its reply recipient with `agent_send`
-  `mode: "report"`. Its first line says that it is the final result and names
-  the request.
+  it is a state note and not the result. `agent_work` `complete` is the only
+  act that completes declared work; it sends the final report to the reply
+  recipient of the original request. A run that completes its request without
+  declared work answers with the result itself.
+- **Know where your input is.** The send receipt returns `placement`:
+  `"placed"` or `"unplaced"`. `agent_status` shows `unplaced: n` and
+  `oldest: <age>` for the recipient. After 5 minutes unplaced, one notice with
+  the recipient's current step goes to the sender of an explicit send and to
+  the recipient's requester. Act on the step that it names; do not send the
+  input again.
 - **Read a contributor's state note as open work, not completion.** Read the
   open work in `agent_status` with its `sessionId`, and act when the final
-  result arrives.
+  report arrives.
 
 At each check-in, read the bounded content and act: let work continue with a
 reason, steer a concrete next act, or abort a hung tool. Verify that a steer
@@ -334,7 +346,8 @@ Before the final answer:
 
 1. Resolve every live agent you own: accept its result, redirect changed work,
    or abort work that is no longer needed. Leave unrelated and standing work
-   alone.
+   alone. Close each open work item that you declared with `agent_work`
+   `complete`.
 2. Update or clear your intent claim.
 3. Post a conclusion to each thread you integrate; close it when the work ends.
 4. Restore any temporary configuration you changed.

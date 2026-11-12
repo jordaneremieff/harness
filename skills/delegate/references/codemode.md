@@ -81,9 +81,9 @@ return sent.map((s) => (s.ref ? { name: s.name, ref: s.ref } : { name: s.name, f
 
 A task message that already lives in a scratch file can come from
 `await tools.read({ path })`. No call waits for the results: each one arrives
-as an event. Do the work that remains for you. When none remains, end the run
-with a short state note that names the stored references still open and what
-you do when each arrives.
+as an event. Do the work that remains for you. When none remains, declare the
+stored references that are still open with `agent_work` `continue` (at most 16
+for one request), and end the run with a short state note.
 
 ## Fleet sweep
 
