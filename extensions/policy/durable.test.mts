@@ -656,6 +656,154 @@ test("native result.content rules preserve structured values and mark nested err
 	} finally { await fixture.close(); }
 });
 
+/** A tool whose successive executions return the queued texts; every execution counts. */
+function verdictExtension(verdicts: string[], counter: { executed: number }, replay?: "safe"): DurableModule.Extension {
+	return DurableModule.defineExtension({
+		name: "verdict-probe",
+		tools: [DurableModule.defineTool({
+			name: "verdict_probe",
+			description: "Return the next queued verdict",
+			parameters: obj({}, { open: true }),
+			...(replay ? { replay } : {}),
+			execute: async () => {
+				counter.executed += 1;
+				return { output: [{ type: "text", text: verdicts.shift() ?? "EMPTY" }] };
+			},
+		})],
+	});
+}
+
+const badVerdictRule: FactsProgram = {
+	phase: "result", selector: { tools: ["verdict_probe"] },
+	when: { op: "eq", path: ["result", "content", "0", "text"], value: "BAD" },
+	action: { kind: "assert-error" }, onUnavailable: "skip",
+};
+
+async function verdictCall(fixture: Fixture, id: string, conversation: DurableModule.Conversation = fixture.root): Promise<void> {
+	fixture.faux.appendResponses([
+		fauxAssistantMessage(fauxToolCall("verdict_probe", {}, { id }), { stopReason: "toolUse" }),
+		fauxAssistantMessage("done"),
+	]);
+	const submission = await conversation.submit({ type: "input", content: `call ${id}` }, context);
+	await submission.wait(context);
+}
+
+async function verdictRecords(storeDir: string): Promise<Array<{ outcome: string; error: boolean }>> {
+	return (await telemetryLines(storeDir, localDate(new Date())))
+		.map((line) => JSON.parse(line)).filter((record) => record.tool === "verdict_probe");
+}
+
+test("distinct tool tasks with one provider call id each receive their own result correction", async () => {
+	for (const verdicts of [["BAD", "GOOD", "GOOD"], ["GOOD", "BAD", "GOOD"]]) {
+		const counter = { executed: 0 };
+		const fixture = await openFixture({ mode: "enforce", extension: verdictExtension([...verdicts], counter) });
+		try {
+			await addRule(fixture.policy, "verdict-bad", badVerdictRule);
+			for (const id of ["same-provider-id", "same-provider-id", "fresh-provider-id"]) await verdictCall(fixture, id);
+			const errors = (await toolResults(fixture.root, "verdict_probe")).map((result) => result.isError);
+			assert.deepEqual(errors, verdicts.map((verdict) => verdict === "BAD"), verdicts.join(","));
+			await fixture.closeHost();
+			assert.equal(counter.executed, 3);
+			assert.equal((await verdictRecords(fixture.storeDir)).length, 3);
+		} finally { await fixture.close(); }
+	}
+});
+
+test("a forked conversation reusing a provider call id observes its own task", async () => {
+	const counter = { executed: 0 };
+	const fixture = await openFixture({ mode: "enforce", extension: verdictExtension(["BAD", "GOOD"], counter) });
+	try {
+		await addRule(fixture.policy, "verdict-bad", badVerdictRule);
+		await verdictCall(fixture, "shared-provider-id");
+		const head = (await fixture.root.entries({}, 200, undefined, context)).items[0];
+		assert.ok(head);
+		const fork = await fixture.root.fork(head.id, { ownership: { kind: "ownerless" } }, context);
+		await verdictCall(fixture, "shared-provider-id", fork);
+		assert.equal((await toolResults(fixture.root, "verdict_probe")).at(-1)?.isError, true);
+		assert.equal((await toolResults(fork, "verdict_probe")).at(-1)?.isError, false);
+		await fixture.closeHost();
+		assert.equal(counter.executed, 2);
+		assert.equal((await verdictRecords(fixture.storeDir)).length, 2);
+	} finally { await fixture.close(); }
+});
+
+test("a replayed tool task reuses its own correction once and a later task with its provider id does not", async () => {
+	const directory = await mkdtemp(join(tmpdir(), "policy-durable-task-replay-"));
+	const storeDir = join(directory, "policy");
+	const priorDir = process.env.PI_POLICY_DIR;
+	const priorMode = process.env.PI_POLICY_MODE;
+	process.env.PI_POLICY_DIR = storeDir;
+	process.env.PI_POLICY_MODE = "enforce";
+	try {
+		const storage = reopenableStorage();
+		const faux = fauxProvider();
+		const models = createModels();
+		models.setProvider(faux.provider);
+		const counter = { executed: 0 };
+		const verdicts = ["BAD", "BAD", "GOOD"];
+		const held = deferred();
+		let hold = true;
+		// Runs after Policy's afterTool and holds the first result until the host closes, so the task replays.
+		const holder = DurableModule.defineExtension({
+			name: "result-holder",
+			hooks: [DurableModule.hook(DurableModule.ToolTask, {
+				afterTool: async (_call, _result, _api, callContext) => {
+					if (!hold) return undefined;
+					hold = false;
+					held.resolve();
+					return aborted(callContext.abortSignal);
+				},
+			})],
+		});
+		const open = async (cleanups: HostCleanup[]) => {
+			const registry = DurableModule.createRegistry();
+			const harness = await DurableModule.Harness.open(storage, { models, registry }, context);
+			registry.install(await createPolicyDurableExtension(hostFor(directory, harness, cleanups)));
+			registry.install(verdictExtension(verdicts, counter, "safe"));
+			registry.install(holder);
+			return { harness, registry };
+		};
+		const policy = new RuleRegistry(storeDir);
+		await addRule(policy, "verdict-bad", badVerdictRule);
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("verdict_probe", {}, { id: "replayed-provider-id" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		const firstCleanups: HostCleanup[] = [];
+		const first = await open(firstCleanups);
+		const root = await first.harness.root(context, { agent: { model: MODEL } });
+		const submission = await root.submit({ type: "input", content: "call once" }, context);
+		await held.promise;
+		await first.harness.close(context);
+		for (const dispose of firstCleanups.splice(0)) await dispose();
+
+		const secondCleanups: HostCleanup[] = [];
+		const second = await open(secondCleanups);
+		second.harness.resume();
+		const reacquired = await second.harness.submission(submission.id, context);
+		assert.ok(reacquired);
+		await reacquired.wait(context);
+		const reopened = await second.harness.root(context);
+		faux.setResponses([
+			fauxAssistantMessage(fauxToolCall("verdict_probe", {}, { id: "replayed-provider-id" }), { stopReason: "toolUse" }),
+			fauxAssistantMessage("done"),
+		]);
+		await (await reopened.submit({ type: "input", content: "call again" }, context)).wait(context);
+		const errors = (await toolResults(reopened, "verdict_probe")).map((result) => result.isError);
+		assert.deepEqual(errors, [true, false]);
+		await second.harness.close(context);
+		for (const dispose of secondCleanups.splice(0)) await dispose();
+		assert.equal(counter.executed, 3);
+		assert.equal((await verdictRecords(storeDir)).length, 2);
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+		if (priorDir === undefined) delete process.env.PI_POLICY_DIR;
+		else process.env.PI_POLICY_DIR = priorDir;
+		if (priorMode === undefined) delete process.env.PI_POLICY_MODE;
+		else process.env.PI_POLICY_MODE = priorMode;
+	}
+});
+
 test("native telemetry preserves the full call interval from the input memo", async (t) => {
 	const start = Date.now();
 	let now = start;

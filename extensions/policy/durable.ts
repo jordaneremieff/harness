@@ -269,8 +269,11 @@ export interface PolicyDurableHost {
 	readonly inventory: PolicyDurableInventory;
 }
 
-/** Result effect of one completed call, recorded so a rerun replays it unchanged. */
-type StoredCompletedCall = { id: string; guidance?: string; correction?: boolean };
+/**
+ * Result effect of one completed tool task, recorded so a rerun of that task replays it unchanged. `task` is the
+ * Durable tool task; `callId` is the provider's label for the call and only describes it, since providers reuse it.
+ */
+type StoredCompletedCall = { task: number; callId?: string; guidance?: string; correction?: boolean };
 type StoredRetainedGuidance = {
 	id: string;
 	revision: string;
@@ -613,7 +616,7 @@ function isStoredGuidance(value: JsonValue): value is StoredRetainedGuidance {
 
 function isStoredCompleted(value: JsonValue): value is StoredCompletedCall {
 	const entry = objectValue(value);
-	return entry !== undefined && typeof entry.id === "string";
+	return entry !== undefined && typeof entry.task === "number" && Number.isSafeInteger(entry.task);
 }
 
 function normalizePolicyState(raw: Readonly<PolicyStateValue> | undefined): PolicyStateValue {
@@ -1380,8 +1383,9 @@ class DurablePolicyRuntime {
 		}
 	}
 
-	/** Run the result and completion phases and record one decision for this call id. */
+	/** Run the result and completion phases and record one decision for this tool task. */
 	private async completeCall(
+		task: Durable.TaskId,
 		call: ObservedCall,
 		result: PolicyResult,
 		outcome: CallOutcome,
@@ -1396,7 +1400,7 @@ class DurablePolicyRuntime {
 		return this.withState(surface, context, (state) => {
 			const observation = this.observationOf(state);
 			observation.sync(rules, now);
-			const existing = this.completedCallsOf(state).find((entry) => entry.id === call.callId);
+			const existing = this.completedCallsOf(state).find((entry) => entry.task === task);
 			if (existing) return { guidance: existing.guidance, correction: existing.correction === true };
 			const current = call.generation === state.generation ? this.currentRulesOf(call, observation) : [];
 			state.stale += call.rules.length - current.length;
@@ -1426,9 +1430,10 @@ class DurablePolicyRuntime {
 				truncated,
 			);
 			state.completedCalls = [
-				...this.completedCallsOf(state).filter((entry) => entry.id !== call.callId),
+				...this.completedCallsOf(state).filter((entry) => entry.task !== task),
 				{
-					id: call.callId,
+					task,
+					callId: call.callId,
 					...(effects.guidance ? { guidance: effects.guidance } : {}),
 					...(effects.correction ? { correction: true } : {}),
 				},
@@ -1599,6 +1604,7 @@ class DurablePolicyRuntime {
 		if (reason !== undefined) {
 			observed.resultSeen = false;
 			const update = await this.completeCall(
+				api.taskId,
 				observed,
 				{ isError: true },
 				"denied",
@@ -1664,6 +1670,7 @@ class DurablePolicyRuntime {
 		const details = objectValue(result.details);
 		const truncation = objectValue(details?.truncation);
 		const update = await this.completeCall(
+			api.taskId,
 			observed,
 			{ ...result, content: result.output },
 			disposition.outcome,

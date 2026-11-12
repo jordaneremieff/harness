@@ -237,7 +237,13 @@ The approved rule store stays external and revision-checked. Observation
 periods, retained guidance, the initial shell card, the counted turn, the
 revision identity, observation counters, and a bounded ring of completed calls
 live in the per-conversation `policy.state` document, so a replay after process
-loss returns the recorded decision instead of deciding again. Pending evidence
+loss returns the recorded decision instead of deciding again. A completed call is
+identified by its Durable tool task (`HookApi.taskId`). The provider's call ID is
+kept beside it only as a description: providers reuse call IDs, so a later task
+with the same provider ID is evaluated and observed as a new call, and only a
+rerun of the same task replays the recorded guidance and result correction.
+Entries without a task identity are dropped when the document is read, so a call
+that has no task-keyed entry is evaluated again on replay. Pending evidence
 for one call is stored with `api.memo()`. Hook writes go through the host's
 Harness by call or task identity, and the resolved agent comes from the host's
 conversation handle. Every state update recomputes and commits inside one
