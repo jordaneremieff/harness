@@ -521,34 +521,30 @@ it("preserves a successful spawn admission when its status snapshot fails", asyn
 	} finally { manager.close(); }
 });
 
-it("explains report consumption without changing follow-up admission", async (t) => {
+for (const placement of ["placed", "unplaced"] as const) it(`labels a forwarded report as an event and preserves its ${placement} receipt`, async (t) => {
 	const root = fixtureRoot(t);
 	const seen: Array<{ method: string; params: Record<string, unknown> }> = [];
 	const manager = new AgentManager(managerOptions(root, {
 		acquire: async (metadata) => fakeConnection(metadata, async (method, params) => {
 			seen.push({ method, params: params as Record<string, unknown> });
-			return { submissionId: 7 };
+			return { submissionId: 7, placement };
 		}),
 	}));
 	t.after(() => manager.close());
 	const record = createRecord(manager, root);
-	const receipt = await manager.control("report", { sessionId: record.storageId, message: "Progress", requestId: "report-progress" }, { id: "caller", cwd: root }) as { submissionId: number; boundary: string };
+	const receipt = await manager.control("report", { sessionId: record.storageId, message: "Progress", requestId: "report-progress" }, { id: "caller", cwd: root }) as { submissionId: number; placement: string; boundary: string };
 	assert.equal(receipt.submissionId, 7);
-	assert.match(receipt.boundary, /normally waits for the current run to end/u);
-	assert.match(receipt.boundary, /A report sent from an ordinary primary uses explicit admission/u);
-	assert.match(receipt.boundary, /even from an unrelated sender/u);
-	assert.match(receipt.boundary, /A report sent from a native Durable agent uses retained report provenance/u);
-	assert.match(receipt.boundary, /only a named awaited producer's report releases the wait/u);
-	assert.match(receipt.boundary, /unrelated native reports stay queued/u);
-	assert.match(receipt.boundary, /Automatic native Reporter result copies remain raw follow-ups/u);
-	assert.match(receipt.boundary, /Model-origin reports to ordinary primaries use steer/u);
-	assert.match(receipt.boundary, /steer.*next tool boundary/u);
-	assert.match(receipt.boundary, /steer does not interrupt a running tool/u);
-	assert.doesNotMatch(receipt.boundary, /this report waits for its current run to end/u);
+	assert.equal(receipt.placement, placement);
+	assert.match(receipt.boundary, /report to a running agent is placed at the recipient's next tool boundary, not at the end of its run/u);
+	assert.match(receipt.boundary, /does not interrupt a running tool, and it starts no answer-bearing task/u);
+	assert.match(receipt.boundary, /A report is an event for the recipient: it reads the report and continues/u);
+	assert.match(receipt.boundary, /Use steer when the recipient must change its current work/u);
+	assert.doesNotMatch(receipt.boundary, /agent_await|normally waits for the current run to end/u);
 	const admission = seen.find((call) => call.method === "submit");
-	assert.equal(admission?.params.whenBusy, "followUp");
-	assert.equal(admission?.params.provenance, undefined, "ordinary report admission keeps its explicit classification");
-	assert.equal(admission?.params.requestId, "report-progress");
+	assert.deepEqual(admission?.params, {
+		sessionId: record.storageId, message: "Report from caller:\nProgress", requestId: "report-progress",
+		whenBusy: "followUp", inputClass: "report", inputSender: "caller",
+	});
 });
 
 for (const operation of ["submit", "task-submit"] as const) it(`preserves caller admission keys and creates absent keys through ${operation}`, async (t) => {
