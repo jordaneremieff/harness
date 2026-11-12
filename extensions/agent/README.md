@@ -94,7 +94,7 @@ An ordinary primary remains responsive and receives normal routed results.
 |---|---|
 | `agent_spawn` | With `handle`, resolve or create one standing root and return `created`. Otherwise create a root storage; inside a Durable agent, the same cwd uses a native conversation and a different cwd uses a new storage host. An optional prompt starts work. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. |
 | `agent_work` | Inside a native agent, declare background work with `continue`, or close it with `complete` and one final report to its retained reply recipient. Both actions return at once. Results and native settlement do not complete declared work; see [declared background work](#declared-background-work). |
-| `agent_send` | Admit a task or correction. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. A busy Durable recipient receives each active input at its next tool boundary, for `steer` and for `followUp`; no input waits for the end of the run. These inputs do not promise separate answers. See [input placement](#input-placement-and-unplaced-notices). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
+| `agent_send` | Admit a task or correction. Omitted `mode` means `followUp`, new work, on every path. `mode: "steer"` corrects current work; both reach the same tool-round boundary. `mode: "report"` sends an explicit recipient a notice without an answer route or check-in task. A busy Durable recipient receives each active input at its next tool boundary, for `steer` and for `followUp`; no input waits for the end of the run. These inputs do not promise separate answers. See [input placement](#input-placement-and-unplaced-notices). Model-origin reports to ordinary primaries use steer. Report receipts describe this boundary and point to steer for changes to busy work. A successful report returns its identity and state facts (retention, acknowledgement, admission or queue placement) without the message body; these facts do not show that the recipient read the report. Inside a Durable agent, `passive: true` with `mode: "report"` sends progress that asks for no action: the report enters the recipient's context at its next result or normal boundary, starts no turn. `passive` is valid only for report mode. Owner check-ins run only when `checkInMinutes` or the `agent.checkInMinutes` setting names an interval; the default is none. With `deliverAt` (an absolute ISO 8601 time) and an optional `mode` (`followUp` by default, or `steer`), schedule the input as a durable timer instead. |
 | `agent_steer` | Admit steering through the recipient's storage owner. |
 | `agent_abort` | Abort the selected conversation without deleting its retained evidence. With `timerId`, cancel only that scheduled input. With `release: true`, abort and request host retirement; other work, timers and retained deliveries remain. Release never launches a cold host; an unavailable endpoint preserves the attachment error and proves no global host absence. `release` cannot be combined with `timerId` or `background: true`; abort with background first, then release. |
 | `agent_reset` | Start a new context for the selected conversation with an optional handoff note. History, identity, files, settings, and timers stay; no model turn starts. |
@@ -440,7 +440,8 @@ or selects an agent, that agent's identity. Observation actions (`list`,
 `status`, `inspect`, `profile`, `places`) keep their retained evidence. `/agent send`
 admits a follow-up when the target is busy; `/agent steer` admits steering. A
 busy Durable target receives both at its next tool boundary. The
-model-facing `agent_send` tool keeps its documented steering disposition. The
+model-facing `agent_send` also defaults to follow-up/new work; `agent_steer`
+marks a correction. The
 status card labels its newest text by role and state: `Latest reply` or
 `Latest input` when idle, and `Replying` or `Working on input` while active.
 Text without a retained author role uses `Latest message` or `Working on the task`.
@@ -1734,8 +1735,10 @@ The host submits each active native input with the `steer` busy mode; `reject`
 keeps its meaning. The native host fixes `steeringMode` to `all`, so the
 boundary after the recipient's current tool round places every queued active
 input. A tool round ends after all its tool calls end, not after one of its
-parallel calls ends. `followUp` selects new work rather than a correction;
-it does not delay placement until the end of the run. The same rule covers
+parallel calls ends. An omitted send mode is `followUp`, new work, on every
+path. Prompted spawn and fork admissions also carry the new-work class.
+`steer` marks a correction. The class does not delay placement until the end
+of the run. The same rule covers
 operator and model admissions, reports, answer copies, check-ins, timers,
 active thread notices and delivery replay. A running tool call, a provider
 retry and a compaction supply no placement boundary inside their work.

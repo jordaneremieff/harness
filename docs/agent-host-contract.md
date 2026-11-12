@@ -1093,6 +1093,9 @@ The host submits each active native input with the `steer` busy mode, whatever
 A queued input is therefore placed at the boundary after the recipient's
 current tool round and never waits for the end of the run. The host fixes
 `steeringMode` to `all`, so that boundary places every queued active input.
+An `agent_send` without a mode means `followUp`/new work in native and ordinary
+paths. The logical class remains distinct from physical `steer` placement;
+explicit `steer` identifies a correction, not an earlier placement boundary.
 A tool round reaches this boundary after every call in the round ends, not
 after one parallel call ends. A running tool, provider retry or compaction
 has no input-placement boundary inside it. Passive reports and thread notices
