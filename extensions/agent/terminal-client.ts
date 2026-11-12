@@ -35,10 +35,17 @@ import { cancelAgentTimer, readAgentTimerRows, resetAgentContext, scheduleAgentI
 import type { ActionResult, AgentFormHost } from "./agent-forms.ts";
 import type { ProfileDraft } from "./profile-dialog.ts";
 
+/** The placement that a receipt states: whether the input is in the recipient's context. Empty when the receipt states none. */
+export function placementText(receipt: unknown): string {
+	const placement = (receipt as { placement?: unknown } | null)?.placement;
+	return placement === "placed" ? "placed" : placement === "unplaced" ? "unplaced, the agent reads it at its next tool boundary" : "";
+}
+
 export function terminalAdmission(receipt: unknown, id: string, mode: "steer" | "followUp"): string {
 	const reference = admittedResult(id, receipt);
 	const deduped = (receipt as { deduped?: boolean }).deduped === true;
-	return `Input ${deduped ? "already admitted" : "admitted"} for ${reference.sessionId} (submission ${reference.submissionId}; requested ${mode === "followUp" ? "follow-up" : "steer"})`;
+	const placement = placementText(receipt);
+	return `Input ${deduped ? "already admitted" : "admitted"} for ${reference.sessionId} (submission ${reference.submissionId}; requested ${mode === "followUp" ? "follow-up" : "steer"}${placement ? `; ${placement}` : ""})`;
 }
 
 export type TerminalManager = Pick<AgentManager, "resolveTarget" | "control" | "snapshot" | "dashboardPage" | "observeLive" | "subscribeRoster" | "close"> &
@@ -362,10 +369,6 @@ export function terminalForms(controller: TerminalController, drafts: Map<string
 		attach: async () => {
 			await controller.connect(target.id);
 			return outcome(`Connected to “${label}”`);
-		},
-		"await-release": async (args) => {
-			const result = (await control("await-release", { expectedRunId: Number(args[0]) })) as { released?: boolean };
-			return outcome(result.released ? "Released the selected await" : "The selected await is no longer active");
 		},
 	};
 	return {

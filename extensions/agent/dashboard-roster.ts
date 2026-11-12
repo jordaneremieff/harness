@@ -90,7 +90,7 @@ function stateLabel(row: AgentConversationSummary): string {
 			: row.owner === "unknown" && row.state !== "starting"
 				? " · stored"
 				: "";
-	return `${row.awaiting === undefined ? sessionAppearance[row.state].label : "Awaiting"}${owner}`;
+	return `${sessionAppearance[row.state].label}${owner}`;
 }
 /** Catalog rank orders observed rows; a just-created startup row uses its source time until the next catalog refresh. */
 export function compareRosterRows(left: AgentConversationSummary, right: AgentConversationSummary): number {
@@ -231,9 +231,16 @@ export function argumentSummary(argument: string): string {
 export function activityOf(row: AgentConversationSummary): string {
 	const reason = attentionReason(row);
 	if (reason) return reason;
-	if (row.awaiting !== undefined) return `Awaiting ${row.awaiting.results.filter((item) => item.status === "pending").length} results · ${row.awaiting.queuedInputCount} queued inputs${row.awaiting.likelyCycle.length ? " · likely mutual wait" : ""}`;
 	if (row.state === "working") return row.currentTool ? oneLine(`${row.currentTool.name} ${argumentSummary(row.currentTool.argument)}`) : "Responding";
 	return row.latestReply ? oneLine(row.latestReply) : row.state === "starting" ? "Starting agent" : "No reply yet";
+}
+/** Admitted inputs that the agent has not read yet, with the age of the oldest one; empty when none waits. */
+export function unplacedText(row: Pick<AgentConversationSummary, "unplaced" | "oldest">): string {
+	if (!row.unplaced) return "";
+	if (row.oldest === undefined) return `unplaced: ${row.unplaced}`;
+	const seconds = Math.floor(row.oldest / 1000), minutes = Math.floor(seconds / 60);
+	const age = minutes < 1 ? `${seconds}s` : minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+	return `unplaced: ${row.unplaced}, oldest: ${age}`;
 }
 function rosterModel(row: AgentConversationSummary): string {
 	if (!row.model) return "";
@@ -241,17 +248,17 @@ function rosterModel(row: AgentConversationSummary): string {
 }
 /**
  * The roster's second line. A row with an error shows its reason; a working agent shows its current
- * tool; every other row shows its model, reasoning level and cost.
+ * tool; every other row shows its model, reasoning level and cost. Inputs that the agent has not
+ * read yet show as a count with the age of the oldest one.
  */
 export function rosterDetail(row: AgentConversationSummary): { text: string; color: ThemeColor } {
 	const reason = attentionReason(row);
 	// The list keeps the reason's first sentence; the selected agent's header shows all of it.
 	if (reason) return { text: reason.split(/(?<=[.!?])\s/u)[0] ?? reason, color: currentFault(row) ? "error" : "warning" };
 	const facts = [rosterModel(row), costOf(row)].filter(Boolean).join(" · ");
-	// An await names its pending results, queued inputs and a likely mutual wait; working names the current tool.
-	if (row.awaiting !== undefined) return { text: activityOf(row), color: row.awaiting.likelyCycle.length ? "warning" : "muted" };
-	if (row.state === "working") return { text: `${activityOf(row)} · ${facts}`, color: "muted" };
-	return { text: facts, color: "muted" };
+	const unplaced = unplacedText(row);
+	if (row.state === "working") return { text: [activityOf(row), unplaced, facts].filter(Boolean).join(" · "), color: "muted" };
+	return { text: [unplaced, facts].filter(Boolean).join(" · "), color: "muted" };
 }
 function rosterRow(
 	row: AgentConversationSummary,

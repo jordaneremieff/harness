@@ -357,7 +357,6 @@ describe("agent command discovery and help", () => {
 				"status",
 				"send",
 				"steer",
-				"await-release",
 				"abort",
 				"attach",
 				"fork",

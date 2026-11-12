@@ -5,7 +5,6 @@ import { NavigationFrame } from "../../operator-ui/index.ts";
 import { actionView, deliveryText, scheduleDeadline, type ActionResult, type AgentFormHost } from "./agent-forms.ts";
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import type { AgentConversationSummary } from "./dashboard-types.ts";
-import type { AwaitFact } from "./await-facts.ts";
 import type { AgentProfile } from "./profile-schema.ts";
 import type { TimerListRow } from "./durable-timers.ts";
 import { formsHost, row, source, theme, turn, type FormCall } from "./dashboard-test-fixture.mts";
@@ -282,14 +281,13 @@ it("details read the host status for the captured target", async () => {
 	assert.match(shown, /Directory: \/work/);
 });
 
-it("stop, release, reconnect and release await act only on their labelled action", async () => {
-	const awaiting = { runId: 4 } as AwaitFact;
-	for (const [name, label, args] of [["abort", "Stop current work", []], ["release", "Stop and release host", []], ["attach", "Reconnect", []], ["await-release", "Release await", ["4"]]] as const) {
-		const cancelled = setup({ target: row("storage:1", { name: "Parser review", awaiting }) });
+it("stop, release and reconnect act only on their labelled action", async () => {
+	for (const [name, label, args] of [["abort", "Stop current work", []], ["release", "Stop and release host", []], ["attach", "Reconnect", []]] as const) {
+		const cancelled = setup({ target: row("storage:1", { name: "Parser review" }) });
 		const first = mount(name, cancelled.host);
 		act(first.frame, "Cancel");
 		assert.deepEqual(cancelled.calls, [], `${name} Cancel sends nothing`);
-		const s = setup({ target: row("storage:1", { name: "Parser review", awaiting }) });
+		const s = setup({ target: row("storage:1", { name: "Parser review" }) });
 		const { frame, closes } = mount(name, s.host);
 		act(frame, label);
 		for (let attempt = 0; attempt < 20 && !closes(); attempt++) await turn();

@@ -66,7 +66,7 @@ export interface AgentViewWiring {
 }
 
 /** Actions whose form opens in the work view when a TUI command names a target without its other arguments. */
-const VIEW_ACTIONS = new Set(["configure", "fork", "rewind", "compact", "reset", "command", "schedule", "timers", "profile", "abort", "attach", "await-release", "timer-cancel"]);
+const VIEW_ACTIONS = new Set(["configure", "fork", "rewind", "compact", "reset", "command", "schedule", "timers", "profile", "abort", "attach", "timer-cancel"]);
 
 /** The form a command opens: cancelling one scheduled message starts from the list of them. */
 const formName = (name: string) => (name === "timer-cancel" ? "timers" : name);

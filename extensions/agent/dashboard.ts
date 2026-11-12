@@ -138,7 +138,7 @@ const HELP = [
 	"l hides or shows the list. Drag the list divider or the message field's grip to resize; double-click a handle to reset it.",
 	"",
 	"Selected agent",
-	"s stops current work, f switches the next message between a correction (steer) and new work (follow-up), w releases an await, r reconnects a stopped host.",
+	"s stops current work, f switches the next message between a correction (steer) and new work (follow-up), r reconnects a stopped host.",
 	"c configures name, model and reasoning; k shows the live tasks. x lists fork, rewind, compact, reset, schedules, commands, profile and details.",
 	"Forms open beside the conversation and bind to the agent they opened for; selecting another agent closes them without sending anything.",
 	"",
@@ -174,7 +174,14 @@ const CONVERSATION_ROWS = 4;
 
 /** Roster fields that change when an agent's host starts, works, finishes, or stops. */
 function rosterMark(row: AgentConversationSummary): string {
-	return `${row.id}|${row.modifiedAt}|${row.state}|${row.cost}|${row.owner}|${JSON.stringify(row.awaiting)}`;
+	return `${row.id}|${row.modifiedAt}|${row.state}|${row.cost}|${row.owner}|${row.unplaced ?? ""}|${row.oldest === undefined ? "" : Math.floor(row.oldest / 60000)}`;
+}
+
+/** The unplaced-input facts of an observed status: the count and the age of the oldest input; absent when the source states none. */
+function unplacedFacts(status: object): Pick<AgentConversationSummary, "unplaced" | "oldest"> {
+	const { unplaced, oldest } = status as { unplaced?: unknown; oldest?: unknown };
+	const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
+	return { unplaced: count(unplaced), oldest: count(oldest) };
 }
 
 const projectOf = (row: AgentConversationSummary) => row.cwd.split("/").filter(Boolean).at(-1) ?? row.cwd;
@@ -456,7 +463,7 @@ export class AgentDashboard implements Component, Focusable {
 		if (!this.primaryId || !this.page) return;
 		const targets = this.operations.taskTargets?.() ?? [];
 		this.relations.set(this.page.rows, this.primaryId, targets);
-		const mark = JSON.stringify([this.page.rows.map((row) => [row.id, row.creatingOwnerId, row.awaiting?.results]), targets]);
+		const mark = JSON.stringify([this.page.rows.map((row) => [row.id, row.creatingOwnerId]), targets]);
 		if (this.relationsDirty || mark !== this.relationMark) {
 			this.relationsDirty = false;
 			this.relationMark = mark;
@@ -734,7 +741,7 @@ export class AgentDashboard implements Component, Focusable {
 		return {
 			...row,
 			owner: "here",
-			awaiting: frame.status.awaiting,
+			...unplacedFacts(frame.status),
 			name: frame.status.name ?? row.name,
 			firstMessage: frame.status.firstMessage ?? row.firstMessage,
 			state: frame.status.busy
@@ -1012,7 +1019,7 @@ export class AgentDashboard implements Component, Focusable {
 		const labels: Record<string, string> = {
 			configure: "Configure", fork: "Fork", rewind: "Rewind", reset: "Reset context", compact: "Compact", command: "Run command",
 			schedule: "Schedule message", timers: "Scheduled messages", profile: "Profile", status: "Details", abort: "Stop",
-			release: "Release", attach: "Reconnect", "await-release": "Release await",
+			release: "Release", attach: "Reconnect",
 		};
 		return labels[name] ?? name;
 	}
@@ -1319,7 +1326,7 @@ export class AgentDashboard implements Component, Focusable {
 		return actions;
 	}
 
-	/** Stop, delivery, await, reconnect, host actions, configure and tasks for the selected agent. */
+	/** Stop, delivery, reconnect, host actions, configure and tasks for the selected agent. */
 	private primaryTargetActions(row: AgentConversationSummary): Action[] {
 		const working = row.state === "working";
 		const actions: Action[] = [];
@@ -1328,7 +1335,6 @@ export class AgentDashboard implements Component, Focusable {
 			const steer = this.console?.state.mode !== "followUp";
 			actions.push({ id: "mode", label: steer ? "Send as follow-up" : "Send as steer", key: "f", short: steer ? "follow-up" : "steer", primary: true, description: steer ? "The next message is new work for this run, read at the next step" : "The next message corrects the current work, read at the next step", run: () => this.toggleMode() });
 		}
-		if (row.awaiting !== undefined) actions.push({ id: "await-release", label: "Release await", key: "w", short: "release await", primary: true, description: "Return partial results; producers continue", run: () => this.openAction("await-release") });
 		// Reconnect shows in the footer for an agent that needs attention, and stays in More while its observation is lost.
 		const attention = needsAttention(row);
 		if (attention || this.source.availability(row.id)?.state === "unavailable")

@@ -12,7 +12,6 @@ import { fixture, formsHost, source, row, page, turn, deferred, conversationFram
 import { agentState, createDashboardState } from "./dashboard-state.ts";
 import type { ConversationFrame } from "./live-frames.ts";
 import { sessionFigures } from "./footer.ts";
-import type { AwaitFact } from "./await-facts.ts";
 import type { AgentConversationPage } from "./dashboard-types.ts";
 import { createAgentObservationSource } from "./agent-observation.ts";
 import type { ActionResult } from "./agent-forms.ts";
@@ -150,64 +149,6 @@ it("Help shows the current machine file, digest, default preset and models witho
 		}
 	}
 });
-
-for (const [width, height] of [[120, 36], [60, 24]]) {
-	it(`selected dependency facts update and retire through native frames at ${width}`, async () => {
-		const fact: AwaitFact = { runId: 7, heldInputs: [8], results: [{ result: { sessionId: "exact-peer:2", submissionId: 9, requestId: "exact-request" }, status: "pending" }], queuedInputCount: 1, queueSnapshot: "committed InboxDoc", omitted: { heldInputs: 1, results: 2 }, producers: [{ sessionId: "exact-peer:2", source: "producer await-state", observedAt: 123, unavailable: "Producer endpoint closed" }], omittedProducers: 3, likelyCycle: [], coverage: "one hop; remote graph incomplete" };
-		const observed = source([row("one", { awaiting: fact })]);
-		let notify = () => {};
-		observed.subscribe = (listener) => {
-			notify = listener;
-			return () => {};
-		};
-		let frame = conversationFrame();
-		frame = { ...frame, status: { ...frame.status, awaiting: fact } };
-		observed.frame = () => frame;
-		observed.availability = () => ({ state: "live", at: frame.observedAt });
-		const clock = manualClock();
-		const f = fixture(width, height, observed, undefined, undefined, undefined, undefined, clock);
-		const read = () => {
-			let text = "";
-			for (let index = 0; index < 5; index++) {
-				const lines = f.ui.render(width);
-				assert.ok(lines.every((line) => visibleWidth(line) <= width));
-				text += visible(lines).join("\n");
-				f.ui.handleInput("\x1b[5~");
-			}
-			f.ui.handleInput("\x1b[6~");
-			return text.replace(/\s+/gu, " ");
-		};
-		try {
-			await turn();
-			let text = read();
-			assert.match(text, /exact-peer:2/u);
-			assert.match(text, /submission 9.*pending/u);
-			assert.match(text, /Producer endpoint closed/u);
-			assert.match(text, /123/u);
-			assert.match(text, /Coverage: one hop/u);
-			assert.match(text, /omitted 1 held requests/u);
-			assert.match(actionText(f), /release await/u, "an await offers its release");
-			const next = { ...fact, results: [{ ...fact.results[0], status: "done" as const }], producers: [{ sessionId: "exact-peer:2", source: "producer await-state" as const, observedAt: 456 }] };
-			frame = { ...frame, revision: 2, status: { ...frame.status, awaiting: next } };
-			notify();
-			clock.advance(50);
-			await turn();
-			text = read();
-			assert.match(text, /submission 9.*done/u);
-			assert.match(text, /456/u);
-			assert.doesNotMatch(text, /Producer endpoint closed/u);
-			frame = { ...frame, revision: 3, status: { ...frame.status, awaiting: undefined } };
-			notify();
-			clock.advance(50);
-			await turn();
-			text = read();
-			assert.doesNotMatch(text, /exact-peer:2|Coverage: one hop|producer await-state/u);
-			assert.doesNotMatch(actionText(f), /release await/u, "a retired await offers no release");
-		} finally {
-			f.ui.dispose();
-		}
-	});
-}
 
 for (const [width, height] of [
 	[140, 45],

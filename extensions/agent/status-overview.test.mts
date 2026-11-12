@@ -121,7 +121,7 @@ it("retains every coordinator field on live rows with short Unicode-safe text ex
 	const row = summary(1, {
 		state: "working",
 		name: "worker",
-		awaiting,
+		...({ awaiting } as object),
 		firstMessage: text,
 		latestReply: text,
 		model: { provider: "test", modelId: "model", thinkingLevel: "high" },
@@ -603,7 +603,7 @@ it("retains exhaustive coordinator fields in every selected-session status varia
 		],
 		timers: [{ id: 20, target: "storage:2", deadline: 21, mode: "followUp", status: "pending", overdue: false }],
 		forkSource: { conversationId: 1, at: 22 },
-		awaiting,
+		...({ awaiting } as object),
 		ownerTaskId: 23,
 		providerBlock: {
 			blockId: "block-1", conversationId: 2, providerSessionId: "provider-session-2", epoch: 0,

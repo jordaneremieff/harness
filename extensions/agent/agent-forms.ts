@@ -435,10 +435,6 @@ export function actionView(name: string, host: AgentFormHost, view: ViewHost): O
 			return confirmView(view, "Release", `Stop ${who} and release its host`, "This stops the conversation and requests retirement of its host. Other work stays.", "Stop and release host", run("release"), "danger");
 		case "attach":
 			return confirmView(view, "Reconnect", `Reconnect ${who}`, "This starts the host if it is not running. Retained unfinished work resumes. No new input starts.", "Reconnect", run("attach"));
-		case "await-release": {
-			const runId = host.row.awaiting?.runId;
-			return confirmView(view, "Release await", `Release the await of ${who}`, "The original request resumes with partial results. Producers stay active.", "Release await", run("await-release", runId === undefined ? [] : [String(runId)]));
-		}
 		default:
 			return new ReaderView(name, view, () => `The action ${name} has no form here.`);
 	}

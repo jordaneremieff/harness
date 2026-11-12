@@ -1,5 +1,4 @@
 import type { ToolRenderers } from "@earendil-works/pi-coding-agent";
-import type { AwaitFact } from "./await-facts.ts";
 import type { TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { ScrollView } from "@earendil-works/pi-tui";
 import type { AgentConversationEntry, AgentConversationSnapshot } from "./dashboard-types.ts";
@@ -179,7 +178,7 @@ export class ConversationView {
 	private liveIdentity?: { id: string; timestamp: number };
 	private toolDisplay?: (name: string) => ToolRenderers | undefined;
 	/** What the current transcript was built from, so a new renderer lookup can rebuild it. */
-	private retained?: { entries: readonly AgentConversationEntry[]; cwd: string; awaiting?: AwaitFact };
+	private retained?: { entries: readonly AgentConversationEntry[]; cwd: string };
 	private viewport?: { width: number; height: number; top: number };
 	private readonly tui: TUI;
 	private readonly rows?: AgentCardLookup;
@@ -215,7 +214,6 @@ export class ConversationView {
 		this.expanded = this.state.expanded;
 		this.showThinking = this.state.showThinking;
 		this.transcript = new AgentConversation(retained.entries, retained.cwd, this.tui, this.state.expanded, this.state.showThinking, undefined, this.state, this.toolDisplay, this.rows);
-		this.transcript.setAwaiting(retained.awaiting);
 		this.viewport = undefined;
 		this.restored = false;
 	}
@@ -238,13 +236,13 @@ export class ConversationView {
 		return live.filter((entry) => !ids.has(entry.id) && !(entry === generation && duplicate))
 			.map((entry) => entry === generation && identity ? { ...entry, id: identity.id } : entry);
 	}
-	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[], cwd: string, awaiting?: AwaitFact): void {
+	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[], cwd: string): void {
 		this.viewport = undefined;
 		const committed = boundedEntries(entries);
 		const ids = new Set(committed.map((entry) => entry.id));
 		this.transferLiveInstance(entries);
 		const merged = [...committed, ...this.liveEntries(committed, live, ids)];
-		this.retained = { entries: merged, cwd, awaiting };
+		this.retained = { entries: merged, cwd };
 		if (!this.transcript || this.cwd !== cwd) {
 			this.transcript?.dispose();
 			this.transcript = new AgentConversation(merged, cwd, this.tui, this.state.expanded, this.state.showThinking, undefined, this.state, this.toolDisplay, this.rows);
@@ -256,7 +254,6 @@ export class ConversationView {
 		if (this.showThinking !== this.state.showThinking) this.transcript.setShowThinking(this.state.showThinking);
 		this.expanded = this.state.expanded;
 		this.showThinking = this.state.showThinking;
-		this.transcript.setAwaiting(awaiting);
 		if (!this.state.follow) this.restored = false;
 	}
 	render(width: number, height: number): string[] {

@@ -59,7 +59,7 @@ export class AgentConsole {
 		});
 	}
 	setContent(entries: readonly AgentConversationEntry[], live: readonly AgentConversationEntry[] = []): void {
-		this.conversation.setContent(entries, live, this.row.cwd, this.row.awaiting);
+		this.conversation.setContent(entries, live, this.row.cwd);
 	}
 	messageLabel(): string {
 		return this.messageMode().toLowerCase();

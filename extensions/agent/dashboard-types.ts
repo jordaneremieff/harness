@@ -10,7 +10,6 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { CommunicationView } from "./communication.ts";
 import type { TaskSenders } from "./task-senders.ts";
 import type { ProfileHint } from "./profile-schema.ts";
-import type { AwaitFact } from "./await-facts.ts";
 import type { CatalogPriorityCoverage } from "./catalog.ts";
 
 /** Dashboard lifecycle bucket for one durable conversation. */
@@ -105,7 +104,10 @@ export interface AgentConversationSummary {
 	health?: DashboardHealth;
 	/** The host-published intervention hint for this row; absent means the publication carried none, not that none applies. */
 	attention?: "provider-blocked" | "task-blocked" | "failed-turn";
-	awaiting?: AwaitFact;
+	/** Inputs admitted to the conversation and not yet in its context; absent when the source states none. */
+	unplaced?: number;
+	/** Age in milliseconds of the oldest unplaced input at the observation. */
+	oldest?: number;
 }
 
 /**

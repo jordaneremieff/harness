@@ -33,9 +33,6 @@ function creationChildren(rows: readonly AgentConversationSummary[], seeds: Read
 }
 function relationSeedEvidence(rows: readonly AgentConversationSummary[], caller: string, targets: readonly string[], lineage: readonly ConversationSummary[]): { identities: Set<string>; partial: boolean } {
 	const seeds = new Set([caller, ...targets].map(relationIdentity));
-	const awaitingRoots = new Set(seeds);
-	for (const row of rows) if (awaitingRoots.has(relationIdentity(row.id)))
-		for (const item of row.awaiting?.results ?? []) seeds.add(relationIdentity(item.result.sessionId));
 	// Creation lineage is bounded independently of shared-thread membership.
 	for (let depth = 0; depth < 8; depth++) {
 		const children = creationChildren(rows, seeds, lineage);

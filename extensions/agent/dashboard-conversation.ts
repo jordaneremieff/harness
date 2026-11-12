@@ -15,7 +15,6 @@ import type { AgentConversationEntry } from "./dashboard-types.ts";
 import { readingGeometry } from "./dashboard-layout.ts";
 import { createDashboardToolDefinitions } from "./dashboard-tool-definitions.ts";
 import type { AgentReadingState } from "./dashboard-state.ts";
-import { awaitFactLines, type AwaitFact } from "./await-facts.ts";
 import { parseCommunicationView, type Communication } from "./communication.ts";
 import { bindCardDisclosure, compactCommunicationRenderer, createAgentToolCards, type AgentCardLookup } from "./tool-cards.ts";
 
@@ -223,7 +222,6 @@ export class AgentConversation {
 	private readonly tui: TUI;
 	private expanded: boolean;
 	private showThinking: boolean;
-	private awaitingSignature = "";
 	private readonly renderCustom?: (entry: AgentConversationEntry) => Component | undefined;
 	/** Observed names and thread titles for notices; absent values keep exact identities. */
 	private readonly lookup?: AgentCardLookup;
@@ -343,16 +341,6 @@ export class AgentConversation {
 		}
 	}
 
-	/** Current dependency facts share the selected pane's scroll, not retained history. */
-	setAwaiting(fact?: AwaitFact): void {
-		const id = "current-await-facts";
-		const signature = JSON.stringify(fact) ?? "";
-		if (signature === this.awaitingSignature && this.blocks.some((block) => block.id === id) === (fact !== undefined)) return;
-		this.blocks = this.blocks.filter((block) => block.id !== id);
-		if (fact !== undefined) this.blocks.push({ id, component: new Text(awaitFactLines(fact).map(cleanDashboardText).join("\n"), 0, 0), step: id });
-		this.awaitingSignature = signature;
-		this.pruneComponents();
-	}
 	private pruneComponents(): void {
 		const retained = new Set(this.blocks.map((block) => block.component));
 		const caches: Array<{ keys(): Iterable<Component>; delete(component: Component): boolean }> = [this.agentCards, this.noticeCards, this.rendered, this.rows];

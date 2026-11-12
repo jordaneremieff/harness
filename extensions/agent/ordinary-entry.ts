@@ -676,7 +676,7 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 					{ name: "message", rest: true },
 				],
 				run: async ([sessionId, ...words], ctx) => {
-					await control(
+					const receipt = await control(
 						"submit",
 						{
 							sessionId,
@@ -687,23 +687,16 @@ export function registerOrdinaryAgentExtension(pi: ExtensionAPI, originalEntrypo
 						ctx,
 					);
 					const label = await agentLabel(sessionId);
+					// The receipt states whether the input is in the agent's context; an unplaced input waits for the next tool boundary.
+					const placement = (receipt as { placement?: unknown } | null)?.placement;
+					const placed = placement === "placed" ? " (placed)" : placement === "unplaced" ? " (unplaced: the agent reads it at its next tool boundary)" : "";
 					return outcome(
-						name === "steer" ? `Queued a correction for “${label}”` : `Sent a task to “${label}”`,
+						`${name === "steer" ? `Sent a correction to “${label}”` : `Sent a task to “${label}”`}${placed}`,
 						sessionId,
 					);
 				},
 			}),
 		),
-		{
-			name: "await-release",
-			description: "Return partial awaited results; keep producers active",
-			help: `${sessionHelp} The selected native run ID prevents release of a later request.`,
-			args: [{ name: "session", complete: "session-control" }, { name: "run" }],
-			run: async ([sessionId, runId], ctx) => {
-				const result = await control("await-release", { sessionId, expectedRunId: Number(runId) }, ctx) as { released: boolean };
-				return outcome(result.released ? "Released the selected await" : "The selected await is no longer active", sessionId);
-			},
-		},
 		{
 			name: "abort",
 			description: "Stop current work; keep the agent",
